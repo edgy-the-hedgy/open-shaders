@@ -8,7 +8,10 @@ namespace DevBenchBridge::ToolSpecs
 		R"(All {brand} graphics-feature operations — enumerate, inspect settings, mutate settings, restore defaults, toggle on/off, read live diagnostics, )"
 		R"(read/write runtime-only debug flags. Action-dispatched. list: returns an array of {name,shortName,loaded,version,category,isCore,supportsVR,inMenu,favorite,enabledAtBoot}; )"
 		R"(features with restart-gated settings also include restartFields:[{key,label,pending}]. get: params shortName, returns the )"
-		R"(SaveSettings blob (null if the feature has no override; set/reset then no-op). Upscaling exposes enableDLSSFrameGen (boolean, default false); )"
+		R"(SaveSettings blob (null if the feature has no override; set/reset then no-op). ScreenSpaceGI exposes EnableRayRegeneration (boolean, default true), )"
+		R"(requiring EnableGI, EnableExperimentalSpecularGI, boot-latched AO + GI resources, and a supported FidelityFX denoiser provider on SE/AE. RR is unavailable in VR. )"
+		R"(ScreenSpaceGI diagnostics report RR readiness, inactive reason, current-frame output application, history validity and internal resolution; runtime-only RayRegenerationDiagnostics enables provider counters. )"
+		R"(Upscaling exposes enableDLSSFrameGen (boolean, default false); )"
 		R"(existing configurations must opt in explicitly and restart to use NVIDIA DLSS-G. PostProcessing includes cinematic_camera settings for the optional linked physical camera; )"
 		R"(use get/set with shortName PostProcessing to inspect or change them without saving. LinearLighting uses Jiaye's per-channel diffuse calibration with fixed gamma 2.2, reflectance 0.5 at encoded 0.5, )"
 		R"(and white reflectance 1.0. These calibration values are not settings. PBR texture inputs bypass calibration. )"
@@ -51,7 +54,9 @@ namespace DevBenchBridge::ToolSpecs
 		"settings": {
 			"type": "object",
 			"description": "Partial )"
-		R"(SaveSettings object from get. Upscaling exposes enableDLSSFrameGen (boolean, default false, )"
+		R"(SaveSettings object from get. ScreenSpaceGI exposes EnableRayRegeneration (boolean, default true, live); requires Enabled, EnableGI, EnableExperimentalSpecularGI )"
+		R"(and AO + GI ResourceProfile=0 latched at boot. RR supports SE/AE only; settings do not override provider eligibility. RayRegenerationDiagnostics is a runtimeSet flag, not a saved setting. )"
+		R"(Upscaling exposes enableDLSSFrameGen (boolean, default false, )"
 		R"(restart required). Upscaling Neural Rendering material strengths live under settings.neuralRenderingTuning.materialStrength (the master switch), strengthSkin, strengthHair, strengthEyes, )"
 		R"(strengthFoliage, strengthLandscape, strengthCloth, strengthMetal and strengthOther (each 0 to 1) and strengthEdgeSoftness (0 to 4 pixels); )"
 		R"(read the live state and the active strengths back with the neuralRenderingStatus query. The material map debug view adds settings.neuralRenderingTuning.showMaterialMap (boolean), )"

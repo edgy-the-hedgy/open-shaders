@@ -420,6 +420,9 @@ public:
 
 	virtual void ClearShaderCache() override;
 
+	/** @brief Exposes the synchronized RR backend through the optional feature service. */
+	LightingReconstruction* GetLightingReconstruction() override { return &fidelityFX; }
+
 	// Static instances instead of singletons
 	static inline Streamline streamline;      ///< DX11 instance: DLSS + Reflex + PCL
 	static inline Streamline streamlineDX12;  ///< DX12 instance: DLSS-G frame generation

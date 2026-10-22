@@ -46,6 +46,20 @@ public:
 	virtual void RestoreDefaultSettings() override;
 	/** @brief Draws the ImGui settings UI with quality presets, visual parameters, and denoising options. */
 	virtual void DrawSettings() override;
+	/** @brief Draws Ray Regeneration controls and the latest output status. */
+	void DrawRayRegenerationSettings();
+	/** @brief Names the companion tab in Upscaling settings. */
+	const char* GetUpscalingTabName() const override { return "FSR Ray Regeneration"; }
+	/** @brief Draws the RR companion tab in Upscaling settings. */
+	void DrawUpscalingTab() override { DrawRayRegenerationSettings(); }
+	/** @brief Reports RR eligibility, history, and the latest output application. */
+	json GetDiagnostics() override;
+	/** @brief Returns the runtime-only RR diagnostics flag. */
+	json GetRuntimeFlags() override;
+	/** @brief Updates a runtime-only RR diagnostics flag by name. */
+	bool SetRuntimeFlag(std::string_view a_name, bool a_value) override;
+	/** @brief Registers RR status and temporal-reset actions with devbench. */
+	void RegisterUxActions() override;
 	virtual void DrawPerformanceSettings() override;
 	/// @brief DrawPerformanceSettings() only draws the stereo reprojection toggle.
 	bool PerformanceSectionRequiresVR() const override { return true; }
@@ -69,7 +83,7 @@ public:
 	/** @brief Compiles all SSGI compute shaders with current resolution and feature defines. */
 	void CompileComputeShaders();
 	/** @brief Checks whether all required compute shaders and the noise texture loaded successfully. */
-	bool ShadersOK();
+	bool ShadersOK() const;
 
 	/** @brief Executes the full SSGI pipeline: depth prefilter, radiance fetch, GI, blur, and upsample. */
 	void DrawSSGI();
@@ -105,6 +119,7 @@ public:
 		// Keep raw runtime check for ctor-time defaults before globals::ReInit().
 		bool EnableGI = REL::Module::IsVR() ? false : true;  // AO only for VR by default
 		bool EnableExperimentalSpecularGI = false;
+		bool EnableRayRegeneration = true;
 		bool EnableVanillaSSAO = false;
 		// performance/quality
 		uint NumSlices = REL::Module::IsVR() ? 3u : 4u;  // AO preset for VR
@@ -199,7 +214,7 @@ public:
 		float DistanceNormalisation;
 
 		uint UseModeTexture;  // VRStereoOptimizations' classification available this boot
-		float pad;
+		uint RRHistoryValid;
 	};
 	STATIC_ASSERT_ALIGNAS_16(SSGICB);
 	eastl::unique_ptr<ConstantBuffer> ssgiCB;
@@ -222,6 +237,21 @@ public:
 	eastl::unique_ptr<Texture2D> texIlY[2] = { nullptr };
 	eastl::unique_ptr<Texture2D> texIlCoCg[2] = { nullptr };
 	eastl::unique_ptr<Texture2D> texGiSpecular[2] = { nullptr };
+	// RR needs hit distance in alpha; the composited SSGI texture stores visibility.
+	eastl::unique_ptr<Texture2D> texRRSpecularInput = nullptr;
+	eastl::unique_ptr<Texture2D> texRRSpecularOutput = nullptr;
+
+	eastl::unique_ptr<Texture2D> texRRLinearDepth[2] = { nullptr };
+	uint rrDepthHistoryIdx = 0;
+	bool rrDepthHistoryValid = false;
+	bool rrOutputApplied = false;
+	uint32_t rrOutputFrame = UINT32_MAX;
+	bool rrDiagnosticsEnabled = false;
+	std::array<uint, 2> rrHistoryResolution{};
+	eastl::unique_ptr<Texture2D> texRRMotionVectors = nullptr;
+	eastl::unique_ptr<Texture2D> texRRNormalRoughness = nullptr;
+	eastl::unique_ptr<Texture2D> texRRSpecularAlbedo = nullptr;
+	eastl::unique_ptr<Texture2D> texRRDiffuseAlbedo = nullptr;
 
 	/** @brief Returns the current output SRVs for AO, indirect lighting Y/CoCg, and specular GI (or nullptrs if disabled). */
 	inline std::tuple<ID3D11ShaderResourceView*, ID3D11ShaderResourceView*, ID3D11ShaderResourceView*, ID3D11ShaderResourceView*> GetOutputTextures()
@@ -251,4 +281,18 @@ public:
 	winrt::com_ptr<ID3D11ComputeShader> reprojectCompute = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> reprojectDebugCompute = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> upsampleCompute = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> rrPrepareInputsCompute = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> rrApplyOutputCompute = nullptr;
+
+private:
+	/** @brief Reports whether RR output was applied during the current render frame. */
+	bool RayRegenerationOutputAppliedThisFrame() const;
+	/** @brief Returns RR runtime diagnostics for the devbench status query. */
+	json GetRayRegenerationStatus() const;
+	/** @brief Returns the reason RR cannot run, or nullptr when ready. */
+	const char* GetRayRegenerationInactiveReason() const;
+	/** @brief Allocates RR inputs and output, retaining ordinary SSGI on failure. */
+	void SetupRayRegenerationResources(const D3D11_TEXTURE2D_DESC& a_textureDesc);
+	/** @brief Reconstructs current-frame specular GI and applies successful RR output. */
+	void DrawRayRegeneration(const std::array<uint, 2>& a_internalResolution, uint a_outputTexIdx);
 };

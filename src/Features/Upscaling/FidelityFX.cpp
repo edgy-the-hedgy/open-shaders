@@ -77,6 +77,7 @@ void FidelityFX::LoadFFX()
 {
 	featureFSR3FG = false;
 	featureRuntimeUpscaler = false;
+	featureRayRegeneration = false;
 
 	const auto pluginDir = (Util::PathHelpers::GetDataPath() / "Shaders" / "Upscaling" / "FidelityFX").lexically_normal();
 	if (!pluginDir.is_absolute()) {
@@ -89,6 +90,7 @@ void FidelityFX::LoadFFX()
 	const auto loaderPath = pluginDir / "amd_fidelityfx_loader_dx12.dll";
 	const auto frameGenerationPath = pluginDir / "amd_fidelityfx_framegeneration_dx12.dll";
 	const auto runtimeUpscalerPath = pluginDir / RuntimeUpscalerDllName;
+	const auto denoiserPath = pluginDir / "amd_fidelityfx_denoiser_dx12.dll";
 
 	FidelityFX::dllVersions = Util::EnumerateDllVersions(pluginDir);
 	for (const auto& [name, versionStr] : FidelityFX::dllVersions)
@@ -154,11 +156,13 @@ void FidelityFX::LoadFFX()
 
 		reportSkippedDll("Frame generation DLL", frameGenerationPath);
 		reportSkippedDll("Runtime upscaler DLL", runtimeUpscalerPath);
+		reportSkippedDll("Denoiser DLL", denoiserPath);
 		return;
 	}
 
 	featureFSR3FG = loadDll("Frame generation DLL", frameGenerationPath, frameGenerationModule);
 	featureRuntimeUpscaler = loadDll("Runtime upscaler DLL", runtimeUpscalerPath, runtimeUpscalerModule);
+	featureRayRegeneration = loadDll("Denoiser DLL", denoiserPath, denoiserModule);
 }
 
 void FidelityFX::SetupFrameGeneration()

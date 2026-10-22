@@ -414,6 +414,7 @@ namespace
 
 FidelityFX::~FidelityFX()
 {
+	ResetRayRegeneration();
 	ReleaseRuntimeUpscalerResourcesForRelatch();
 	ResetFSRIdleFence();
 }
@@ -802,7 +803,7 @@ bool FidelityFX::EnsureRuntimeCommandContexts()
 	return true;
 }
 
-FidelityFX::RuntimeCommandContext* FidelityFX::AcquireRuntimeCommandContext()
+FidelityFX::RuntimeCommandContext* FidelityFX::AcquireRuntimeCommandContext(bool a_waitForAvailable)
 {
 	if (!runtimeFence.fence12 || !EnsureRuntimeCommandContexts())
 		return nullptr;
@@ -812,7 +813,7 @@ FidelityFX::RuntimeCommandContext* FidelityFX::AcquireRuntimeCommandContext()
 	for (uint32_t i = 0; i < commandContextCount; ++i) {
 		const uint32_t index = (runtimeCommandContextCursor + i) % commandContextCount;
 		auto& commandContext = runtimeCommandContexts[index];
-		if (!commandContext.commandAllocator || !commandContext.commandList)
+		if (commandContext.quarantined || !commandContext.commandAllocator || !commandContext.commandList)
 			continue;
 		if (commandContext.fenceValue != 0 && completedValue < commandContext.fenceValue)
 			continue;
@@ -822,11 +823,14 @@ FidelityFX::RuntimeCommandContext* FidelityFX::AcquireRuntimeCommandContext()
 		return &commandContext;
 	}
 
+	if (!a_waitForAvailable)
+		return nullptr;
+
 	uint32_t waitIndex = commandContextCount;
 	uint64_t waitValue = std::numeric_limits<uint64_t>::max();
 	for (uint32_t i = 0; i < commandContextCount; ++i) {
 		auto& commandContext = runtimeCommandContexts[i];
-		if (!commandContext.commandAllocator || !commandContext.commandList || commandContext.fenceValue == 0)
+		if (commandContext.quarantined || !commandContext.commandAllocator || !commandContext.commandList || commandContext.fenceValue == 0)
 			continue;
 		if (commandContext.fenceValue < waitValue) {
 			waitValue = commandContext.fenceValue;
@@ -850,6 +854,8 @@ FidelityFX::RuntimeCommandContext* FidelityFX::AcquireRuntimeCommandContext()
 void FidelityFX::ResetRuntimeCommandContexts()
 {
 	for (auto& commandContext : runtimeCommandContexts) {
+		if (commandContext.quarantined)
+			continue;
 		commandContext.commandList = nullptr;
 		commandContext.commandAllocator = nullptr;
 		commandContext.fenceValue = 0;

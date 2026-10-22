@@ -51,6 +51,9 @@ RWTexture2D<float4> outY : register(u1);
 RWTexture2D<float2> outCoCg : register(u2);
 RWTexture2D<float4> outGISpecular : register(u3);
 RWTexture2D<half3> outPrevGeo : register(u4);
+#if defined(GI_SPECULAR) && !defined(VR)
+RWTexture2D<float4> outRRSpecular : register(u5);  // RGB radiance, A hit distance; pre-temporal
+#endif
 
 float GetDepthFade(float depth)
 {
@@ -85,9 +88,10 @@ float GetVisibilityFunctionSmithJointApprox(float roughness, float NdotV, float 
 	return vis > 0 ? (0.5 / vis) : 0;
 }
 
+/** @brief Computes AO, indirect-lighting coefficients, and noisy specular radiance with RR hit distance. */
 void CalculateGI(
 	uint2 dtid, float2 uv, float viewspaceZ, float3 viewspaceNormal,
-	out float o_ao, out sh2 o_currY, out float2 o_currCoCg, out float4 o_currGIAOSpecular)
+	out float o_ao, out sh2 o_currY, out float2 o_currCoCg, out float4 o_currGIAOSpecular, out float4 o_rrSpecular)
 {
 	const float2 frameScale = FrameDim * RcpTexDim;
 
@@ -175,9 +179,13 @@ void CalculateGI(
 	float4 radianceY = 0;
 	float2 radianceCoCg = 0;
 	float3 radianceSpecular = 0;
+#ifndef VR
+	float rrHitDistanceWeighted = 0;
+	float rrHitWeight = 0;
+#endif
 
 #ifdef GI_SPECULAR
-	const float roughness = max(0.2, saturate(1 - FULLRES_LOAD(srcNormalRoughness, dtid, uv * frameScale, samplerLinearClamp).z));  // can't handle low roughness
+	const float roughness = max(SSGI_MIN_SPECULAR_ROUGHNESS, saturate(1 - FULLRES_LOAD(srcNormalRoughness, dtid, uv * frameScale, samplerLinearClamp).z));  // can't handle low roughness
 #endif
 
 	for (uint slice = 0; slice < NumSlices; slice++) {
@@ -339,6 +347,13 @@ void CalculateGI(
 						specularRadiance = max(0, specularRadiance);
 
 						radianceSpecular += specularRadiance;
+
+#		ifndef VR
+						// A horizon march has multiple hits, so RR receives a radiance-weighted representative distance.
+						float rrWeight = max(max(specularRadiance.r, specularRadiance.g), specularRadiance.b);
+						rrHitDistanceWeighted += length(sampleDelta) * rrWeight;
+						rrHitWeight += rrWeight;
+#		endif
 #	endif
 					}
 				}
@@ -383,8 +398,14 @@ void CalculateGI(
 	o_currY = radianceY;
 	o_currCoCg = radianceCoCg;
 	o_currGIAOSpecular = float4(radianceSpecular, visibilitySpecular);
+#ifndef VR
+	o_rrSpecular = float4(radianceSpecular, rrHitWeight > 1e-6 ? rrHitDistanceWeighted / rrHitWeight : -1.0);
+#else
+	o_rrSpecular = float4(0, 0, 0, -1);
+#endif
 }
 
+/** @brief Evaluates screen-space ambient occlusion and enabled diffuse or specular indirect lighting. */
 [numthreads(8, 8, 1)] void main(const uint2 dtid : SV_DispatchThreadID) {
 	if (any(dtid >= uint2(OUT_FRAME_DIM)))
 		return;
@@ -414,6 +435,9 @@ void CalculateGI(
 			outAo[pxCoord] = 0;
 			outY[pxCoord] = 0;
 			outCoCg[pxCoord] = 0;
+#	if defined(GI_SPECULAR) && !defined(VR)
+			outRRSpecular[pxCoord] = float4(0, 0, 0, -1);
+#	endif
 			return;
 		}
 	}
@@ -430,12 +454,13 @@ void CalculateGI(
 	float4 currY = 0;
 	float2 currCoCg = 0;
 	float4 currGIAOSpecular = float4(0, 0, 0, 0);
+	float4 rrSpecular = float4(0, 0, 0, -1);
 
 	bool needGI = viewspaceZ > FP_Z && viewspaceZ < DepthFadeRange.y;
 	if (needGI) {
 		CalculateGI(
 			pxCoord, uv, viewspaceZ, viewspaceNormal,
-			currAo, currY, currCoCg, currGIAOSpecular);
+			currAo, currY, currCoCg, currGIAOSpecular, rrSpecular);
 
 #ifdef TEMPORAL_DENOISER
 		float lerpFactor = rcp(srcAccumFrames[pxCoord] * 255);
@@ -484,5 +509,9 @@ void CalculateGI(
 	outCoCg[pxCoord] = currCoCg;
 #ifdef GI_SPECULAR
 	outGISpecular[pxCoord] = currGIAOSpecular;
+#	ifndef VR
+	// Temporal accumulation would hide current-frame noise from RR.
+	outRRSpecular[pxCoord] = filterNaN(rrSpecular);
+#	endif
 #endif
 }

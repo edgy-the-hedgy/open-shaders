@@ -7,9 +7,26 @@
 #include "Deferred.h"
 #include "Features/ReverseZ.h"
 #include "Features/VR.h"
+#include "LightingReconstruction.h"
 #include "State.h"
 #include "Util.h"
 #include "Utils/Game.h"
+#include "Utils/DevBenchUx.h"
+
+namespace
+{
+	/** @brief Returns the first loaded feature offering a lighting-reconstruction provider, or nullptr. */
+	LightingReconstruction* GetLightingReconstructionProvider()
+	{
+		for (auto* feature : Feature::GetFeatureList()) {
+			if (feature->loaded) {
+				if (auto* provider = feature->GetLightingReconstruction())
+					return provider;
+			}
+		}
+		return nullptr;
+	}
+}
 
 #define I18N_KEY_PREFIX "feature.screen_space_gi."
 
@@ -18,6 +35,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	Enabled,
 	EnableGI,
 	EnableExperimentalSpecularGI,
+	EnableRayRegeneration,
 	EnableVanillaSSAO,
 	NumSlices,
 	NumSteps,
@@ -80,6 +98,95 @@ bool ScreenSpaceGI::MatchesPerformanceProfile(PerfProfile profile) const
 	// Specular GI forces bilateral sync (view-dependent), so the reproject setting is moot
 	// then, so don't veto the hub's active-profile detection for a knob the user can't apply.
 	return settings.EnableExperimentalSpecularGI || settings.UseStereoReproject == ProfileEnablesReproject(profile);
+}
+
+const char* ScreenSpaceGI::GetRayRegenerationInactiveReason() const
+{
+	if (globals::game::isVR)
+		return T(TKEY("ray_regeneration_vr_unavailable"), "Ray Regeneration currently supports SE/AE only; stereo reconstruction is unavailable.");
+	if (!loaded || !settings.Enabled)
+		return T(TKEY("ray_regeneration_ssgi_disabled"), "Screen Space GI is disabled.");
+	if (!ShadersOK())
+		return T(TKEY("ray_regeneration_ssgi_shaders_unavailable"), "Screen Space GI shaders are unavailable.");
+	if (!IsSpecularGIActive())
+		return T(TKEY("ray_regeneration_requirements"), "Requires AO + GI resources, Indirect Lighting, and HQ Specular IL.");
+	if (!settings.EnableRayRegeneration)
+		return T(TKEY("ray_regeneration_disabled"), "Ray Regeneration is disabled.");
+	if (!rrPrepareInputsCompute || !rrApplyOutputCompute ||
+		!texRRSpecularInput || !texRRSpecularOutput ||
+		!texRRLinearDepth[0] || !texRRLinearDepth[1] ||
+		!texRRMotionVectors || !texRRNormalRoughness ||
+		!texRRSpecularAlbedo || !texRRDiffuseAlbedo)
+		return T(TKEY("ray_regeneration_resources_unavailable"), "Ray Regeneration shaders or resources are unavailable.");
+	const auto* reconstruction = GetLightingReconstructionProvider();
+	if (!reconstruction || !reconstruction->CanDispatchRayRegeneration())
+		return T(TKEY("ray_regeneration_provider_unavailable"), "A supported FidelityFX Ray Regeneration provider is unavailable.");
+	return nullptr;
+}
+
+void ScreenSpaceGI::DrawRayRegenerationSettings()
+{
+	ImGui::Checkbox(T(TKEY("ray_regeneration"), "Ray Regeneration"), &settings.EnableRayRegeneration);
+	ImGui::Checkbox(T(TKEY("ray_regeneration_diagnostics"), "Ray Regeneration Diagnostics"), &rrDiagnosticsEnabled);
+
+	if (const auto* reason = GetRayRegenerationInactiveReason()) {
+		ImGui::TextWrapped("%s", reason);
+	} else {
+		ImGui::TextUnformatted(RayRegenerationOutputAppliedThisFrame() ? T(TKEY("ray_regeneration_applied"), "Output applied") :
+		                                                             T(TKEY("ray_regeneration_ready"), "Ready"));
+	}
+}
+
+bool ScreenSpaceGI::RayRegenerationOutputAppliedThisFrame() const
+{
+	return rrOutputApplied && globals::game::frameCounter &&
+	       rrOutputFrame == static_cast<uint32_t>(*globals::game::frameCounter);
+}
+
+json ScreenSpaceGI::GetDiagnostics()
+{
+	return GetRayRegenerationStatus();
+}
+
+json ScreenSpaceGI::GetRayRegenerationStatus() const
+{
+	const auto* reason = GetRayRegenerationInactiveReason();
+	const auto* reconstruction = GetLightingReconstructionProvider();
+	return json{
+		{ "rayRegenerationEnabled", settings.EnableRayRegeneration },
+		{ "rayRegenerationRuntimeSupported", !globals::game::isVR },
+		{ "rayRegenerationReady", reason == nullptr },
+		{ "rayRegenerationOutputApplied", RayRegenerationOutputAppliedThisFrame() },
+		{ "rayRegenerationOutputFrame", rrOutputFrame },
+		{ "rayRegenerationHistoryValid", rrDepthHistoryValid },
+		{ "rayRegenerationInactiveReason", reason ? reason : "" },
+		{ "rayRegenerationInternalWidth", rrHistoryResolution[0] },
+		{ "rayRegenerationInternalHeight", rrHistoryResolution[1] },
+		{ "rayRegenerationProvider", reconstruction ? reconstruction->GetRayRegenerationDiagnostics() : json::object() }
+	};
+}
+
+json ScreenSpaceGI::GetRuntimeFlags()
+{
+	return json{ { "RayRegenerationDiagnostics", rrDiagnosticsEnabled } };
+}
+
+bool ScreenSpaceGI::SetRuntimeFlag(std::string_view a_name, bool a_value)
+{
+	if (a_name != "RayRegenerationDiagnostics")
+		return false;
+	rrDiagnosticsEnabled = a_value;
+	return true;
+}
+
+void ScreenSpaceGI::RegisterUxActions()
+{
+	FEATURE_COMMAND("resetRayRegenerationHistory", "Discard Ray Regeneration depth and denoiser history before the next RR dispatch. Params: none.", [](Feature* a_self, const json&) {
+		static_cast<ScreenSpaceGI*>(a_self)->rrDepthHistoryValid = false;
+	});
+	FEATURE_QUERY("rayRegenerationStatus", "Return RR readiness, unsupported-runtime reason, last output application, depth-history validity and internal dimensions. Params: none.", [](const Feature* a_self, const json&) -> json {
+		return static_cast<const ScreenSpaceGI*>(a_self)->GetRayRegenerationStatus();
+	});
 }
 
 void ScreenSpaceGI::DrawSettings()
@@ -636,6 +743,9 @@ void ScreenSpaceGI::SetupResources()
 				texGiSpecular[1] = eastl::make_unique<Texture2D>(texDesc, "SSGI::GiSpecular[1]");
 				texGiSpecular[1]->CreateSRV(srvDesc);
 				texGiSpecular[1]->CreateUAV(uavDesc);
+
+				if (!globals::game::isVR)
+					SetupRayRegenerationResources(texDesc);
 			}
 			srvDesc.Format = uavDesc.Format = texDesc.Format = DXGI_FORMAT_R16G16_FLOAT;
 			{
@@ -732,9 +842,57 @@ void ScreenSpaceGI::SetupResources()
 	CompileComputeShaders();
 }
 
+void ScreenSpaceGI::SetupRayRegenerationResources(const D3D11_TEXTURE2D_DESC& a_textureDesc)
+{
+	rrDepthHistoryIdx = 0;
+	rrDepthHistoryValid = false;
+	rrOutputApplied = false;
+	rrOutputFrame = UINT32_MAX;
+	rrHistoryResolution = {};
+
+	try {
+		const auto createTexture = [](const D3D11_TEXTURE2D_DESC& a_desc, const char* a_name) {
+			auto texture = eastl::make_unique<Texture2D>(a_desc, a_name);
+			D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+			srvDesc.Format = a_desc.Format;
+			srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+			srvDesc.Texture2D.MipLevels = 1;
+			texture->CreateSRV(srvDesc);
+			D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc{};
+			uavDesc.Format = a_desc.Format;
+			uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+			texture->CreateUAV(uavDesc);
+			return texture;
+		};
+
+		texRRSpecularInput = createTexture(a_textureDesc, "SSGI::RRSpecularInput");
+		texRRSpecularOutput = createTexture(a_textureDesc, "SSGI::RRSpecularOutput");
+		texRRNormalRoughness = createTexture(a_textureDesc, "SSGI::RRNormalRoughness");
+		texRRMotionVectors = createTexture(a_textureDesc, "SSGI::RRMotionVectors");
+		texRRSpecularAlbedo = createTexture(a_textureDesc, "SSGI::RRSpecularAlbedo");
+		texRRDiffuseAlbedo = createTexture(a_textureDesc, "SSGI::RRDiffuseAlbedo");
+
+		auto depthDesc = a_textureDesc;
+		depthDesc.Format = DXGI_FORMAT_R32_FLOAT;
+		texRRLinearDepth[0] = createTexture(depthDesc, "SSGI::RRLinearDepth[0]");
+		texRRLinearDepth[1] = createTexture(depthDesc, "SSGI::RRLinearDepth[1]");
+	} catch (const DX::com_exception& e) {
+		logger::error("SSGI Ray Regeneration resources unavailable: {}", e.what());
+		texRRSpecularInput.reset();
+		texRRSpecularOutput.reset();
+		texRRNormalRoughness.reset();
+		texRRMotionVectors.reset();
+		texRRSpecularAlbedo.reset();
+		texRRDiffuseAlbedo.reset();
+		for (auto& depth : texRRLinearDepth)
+			depth.reset();
+	}
+}
+
 void ScreenSpaceGI::ClearShaderCache()
 {
-	Util::ClearShaders<ID3D11ComputeShader>({ prefilterDepthsCompute, prefilterRadianceCompute, prefilterNormalCompute, radianceDisoccCompute, giCompute, giEye0OnlyCompute, blurCompute, stereoSyncCompute, reprojectCompute, reprojectDebugCompute, upsampleCompute });
+	Util::ClearShaders<ID3D11ComputeShader>({ prefilterDepthsCompute, prefilterRadianceCompute, prefilterNormalCompute, radianceDisoccCompute, giCompute, giEye0OnlyCompute, blurCompute, stereoSyncCompute, reprojectCompute, reprojectDebugCompute, upsampleCompute, rrPrepareInputsCompute, rrApplyOutputCompute });
+	rrDepthHistoryValid = false;
 
 	CompileComputeShaders();
 }
@@ -759,6 +917,10 @@ void ScreenSpaceGI::CompileComputeShaders()
 	if (HasGIResources()) {
 		shaderInfos.push_back({ &prefilterRadianceCompute, "prefilterRadiance.cs.hlsl", {} });
 		shaderInfos.push_back({ &blurCompute, "blur.cs.hlsl", {} });
+		if (!globals::game::isVR) {
+			shaderInfos.push_back({ &rrPrepareInputsCompute, "rrPrepareInputs.cs.hlsl", {} });
+			shaderInfos.push_back({ &rrApplyOutputCompute, "rrApplyOutput.cs.hlsl", {} });
+		}
 	}
 
 	if (globals::game::isVR) {
@@ -801,7 +963,7 @@ void ScreenSpaceGI::CompileComputeShaders()
 	recompileFlag = false;
 }
 
-bool ScreenSpaceGI::ShadersOK()
+bool ScreenSpaceGI::ShadersOK() const
 {
 	const bool baseShadersOK = texNoise &&
 	                           prefilterDepthsCompute &&
@@ -885,14 +1047,92 @@ void ScreenSpaceGI::UpdateSB()
 		data.DistanceNormalisation = settings.DistanceNormalisation;
 		useModeTextureThisFrame = settings.UseStereoReproject && globals::features::vr.stereoOpt.CanExternallyConsumeClassification();
 		data.UseModeTexture = useModeTextureThisFrame;
+		data.RRHistoryValid = rrDepthHistoryValid ? 1u : 0u;
 	}
 
 	ssgiCB->Update(data);
 }
 
+void ScreenSpaceGI::DrawRayRegeneration(const std::array<uint, 2>& a_internalResolution, uint a_outputTexIdx)
+{
+	auto* reconstruction = GetLightingReconstructionProvider();
+	if (reconstruction)
+		reconstruction->SetRRDiagnosticsEnabled(rrDiagnosticsEnabled);
+	if (GetRayRegenerationInactiveReason() || !a_internalResolution[0] || !a_internalResolution[1]) {
+		rrDepthHistoryValid = false;
+		return;
+	}
+
+	auto context = globals::d3d::context;
+	auto rts = globals::game::renderer->GetRuntimeData().renderTargets;
+	const uint currentDepthIdx = !rrDepthHistoryIdx;
+	std::array<ID3D11ShaderResourceView*, 6> srvs{};
+	std::array<ID3D11UnorderedAccessView*, 5> uavs{};
+	const auto unbindViews = [&]() {
+		srvs.fill(nullptr);
+		uavs.fill(nullptr);
+		context->CSSetShaderResources(0, static_cast<uint>(srvs.size()), srvs.data());
+		context->CSSetUnorderedAccessViews(0, static_cast<uint>(uavs.size()), uavs.data(), nullptr);
+	};
+
+	{
+		CS_GPU_PASS("ScreenSpaceGI::RRPrepareInputs");
+		srvs = {
+			texWorkingDepth->srv.get(),
+			Util::AsReal(rts[NORMALROUGHNESS].SRV),
+			Util::AsReal(rts[RE::RENDER_TARGET::kMOTION_VECTOR].SRV),
+			Util::AsReal(rts[REFLECTANCE].SRV),
+			Util::AsReal(rts[ALBEDO].SRV),
+			texRRLinearDepth[rrDepthHistoryIdx]->srv.get()
+		};
+		uavs = {
+			texRRLinearDepth[currentDepthIdx]->uav.get(),
+			texRRMotionVectors->uav.get(),
+			texRRNormalRoughness->uav.get(),
+			texRRSpecularAlbedo->uav.get(),
+			texRRDiffuseAlbedo->uav.get()
+		};
+		context->CSSetShaderResources(0, static_cast<uint>(srvs.size()), srvs.data());
+		context->CSSetUnorderedAccessViews(0, static_cast<uint>(uavs.size()), uavs.data(), nullptr);
+		context->CSSetShader(rrPrepareInputsCompute.get(), nullptr, 0);
+		context->Dispatch((a_internalResolution[0] + 7u) >> 3, (a_internalResolution[1] + 7u) >> 3, 1);
+	}
+
+	unbindViews();
+	const bool resetRR = !rrDepthHistoryValid ||
+	                     (globals::state && globals::state->IsMainOrLoadingMenuOpen());
+	const bool succeeded = reconstruction->DispatchRayRegeneration(
+		texRRSpecularInput->resource.get(),
+		texRRLinearDepth[currentDepthIdx]->resource.get(),
+		texRRMotionVectors->resource.get(),
+		texRRNormalRoughness->resource.get(),
+		texRRSpecularAlbedo->resource.get(),
+		texRRDiffuseAlbedo->resource.get(),
+		texRRSpecularOutput->resource.get(),
+		a_internalResolution[0],
+		a_internalResolution[1],
+		resetRR);
+
+	if (succeeded) {
+		CS_GPU_PASS("ScreenSpaceGI::RRApplyOutput");
+		srvs[0] = texRRSpecularOutput->srv.get();
+		uavs[0] = texGiSpecular[a_outputTexIdx]->uav.get();
+		context->CSSetShaderResources(0, 1, srvs.data());
+		context->CSSetUnorderedAccessViews(0, 1, uavs.data(), nullptr);
+		context->CSSetShader(rrApplyOutputCompute.get(), nullptr, 0);
+		context->Dispatch((a_internalResolution[0] + 7u) >> 3, (a_internalResolution[1] + 7u) >> 3, 1);
+		rrOutputApplied = true;
+		rrOutputFrame = static_cast<uint32_t>(*globals::game::frameCounter);
+	}
+	unbindViews();
+	rrDepthHistoryIdx = currentDepthIdx;
+	rrDepthHistoryValid = succeeded;
+}
+
 void ScreenSpaceGI::DrawSSGI()
 {
 	auto context = globals::d3d::context;
+	rrOutputApplied = false;
 
 	if (auto* setting = RE::GetINISetting("bSAOEnable:Display"))
 		setting->data.b = settings.EnableVanillaSSAO;
@@ -905,6 +1145,7 @@ void ScreenSpaceGI::DrawSSGI()
 		sao->enableSAO = settings.EnableVanillaSSAO;
 
 	if (!(settings.Enabled && ShadersOK())) {
+		rrDepthHistoryValid = false;
 		FLOAT clr[4] = { 0.f, 0.f, 0.f, 0.f };
 		if (texAo[outputAoIdx])
 			context->ClearUnorderedAccessViewFloat(texAo[outputAoIdx]->uav.get(), clr);
@@ -941,6 +1182,7 @@ void ScreenSpaceGI::DrawSSGI()
 		FLOAT clr[4] = { 0.f, 0.f, 0.f, 0.f };
 		for (auto& tex : texAccumFrames)
 			context->ClearUnorderedAccessViewFloat(tex->uav.get(), clr);
+		rrDepthHistoryValid = false;
 	}
 
 	//////////////////////////////////////////////////////
@@ -948,6 +1190,19 @@ void ScreenSpaceGI::DrawSSGI()
 	if (recompileFlag)
 		ClearShaderCache();
 
+	const auto dynamicSize = Util::ConvertToDynamic(globals::state->screenSize);
+	const std::array<uint, 2> rrResolution{
+		static_cast<uint>(dynamicSize.x) >> settings.ResolutionMode,
+		static_cast<uint>(dynamicSize.y) >> settings.ResolutionMode
+	};
+	if (rrHistoryResolution != rrResolution) {
+		rrDepthHistoryValid = false;
+		rrHistoryResolution = rrResolution;
+	}
+	if (globals::game::isVR || !settings.EnableRayRegeneration || !IsSpecularGIActive() ||
+		!globals::game::frameCounter ||
+		(rrDepthHistoryValid && rrOutputFrame + 1u != static_cast<uint32_t>(*globals::game::frameCounter)))
+		rrDepthHistoryValid = false;
 	UpdateSB();
 
 	//////////////////////////////////////////////////////
@@ -1103,6 +1358,8 @@ void ScreenSpaceGI::DrawSSGI()
 			uavs.at(3) = texGiSpecular[!inputAoTexIdx]->uav.get();
 		}
 		uavs.at(4) = texPrevGeo->uav.get();
+		if (IsSpecularGIActive() && texRRSpecularInput)
+			uavs.at(5) = texRRSpecularInput->uav.get();
 
 		context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
 		context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
@@ -1114,6 +1371,9 @@ void ScreenSpaceGI::DrawSSGI()
 		lastFrameGITexIdx = inputGITexIdx;
 		lastFrameAoTexIdx = inputAoTexIdx;
 	}
+
+	resetViews();
+	DrawRayRegeneration(internalRes, inputAoTexIdx);
 
 	// View-independent reproject: fill eye 1's diffuse GI from eye 0 before the blur, whose
 	// seam taps read across eyes. Replaces the tail bilateral stereo sync below.

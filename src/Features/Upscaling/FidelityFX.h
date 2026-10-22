@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../../LightingReconstruction.h"
+
 #include <array>
 #include <atomic>
 #include <d3d11_4.h>
@@ -16,6 +18,7 @@
 
 #include <FidelityFX/api/include/ffx_api.hpp>
 #include <FidelityFX/api/include/ffx_api_loader.h>
+#include <FidelityFX/denoisers/include/ffx_denoiser.h>
 #include <FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.hpp>
 #include <FidelityFX/framegeneration/include/ffx_framegeneration.hpp>
 #include <FidelityFX/upscalers/include/ffx_upscale.hpp>
@@ -24,8 +27,8 @@
 #include "../../State.h"
 #include "DX12SwapChain.h"
 
-/** @brief Manages AMD FidelityFX upscaling and frame generation, including the host FSR3 SDK and the runtime-loaded FSR4 provider. */
-class FidelityFX
+/** @brief Manages AMD FidelityFX upscaling, frame generation and Ray Regeneration providers. */
+class FidelityFX : public LightingReconstruction
 {
 public:
 	static constexpr const wchar_t* PluginDir = L"Data\\Shaders\\Upscaling\\FidelityFX";
@@ -44,6 +47,25 @@ public:
 
 	bool featureFSR3FG = false;
 	bool featureRuntimeUpscaler = false;
+	bool featureRayRegeneration = false;
+	bool rayRegenerationFailureLatched = false;
+
+	/** @brief Reports whether the RR provider is available without a session failure. */
+	bool CanDispatchRayRegeneration() const override;
+	/** @brief Returns RR counters, context dimensions and provider availability. */
+	nlohmann::json GetRayRegenerationDiagnostics() const override
+	{
+		return {
+			{ "successfulDispatches", rayRegenerationSuccessfulDispatches },
+			{ "failedDispatches", rayRegenerationFailedDispatches },
+			{ "historyResets", rayRegenerationHistoryResets },
+			{ "contextWidth", rayRegenerationWidth },
+			{ "contextHeight", rayRegenerationHeight },
+			{ "failureLatched", rayRegenerationFailureLatched },
+			{ "providerLoaded", featureRayRegeneration },
+			{ "available", CanDispatchRayRegeneration() }
+		};
+	}
 
 	// Track if FidelityFX is currently being used for frame generation
 	bool isFrameGenActive = false;
@@ -146,6 +168,15 @@ public:
 	/** @brief Tears down runtime upscaler resources, optionally invalidating the cached provider. */
 	void ResetRuntimeUpscalerResources(bool a_invalidateProviderCache = false);
 
+	/** @brief Reconstructs indirect specular through the shared DX12 bridge into the supplied D3D11 output. */
+	bool DispatchRayRegeneration(ID3D11Texture2D* a_signal, ID3D11Texture2D* a_linearDepth, ID3D11Texture2D* a_motionVectors,
+		ID3D11Texture2D* a_normalRoughness, ID3D11Texture2D* a_specularAlbedo, ID3D11Texture2D* a_diffuseAlbedo,
+		ID3D11Texture2D* a_output, uint32_t a_width, uint32_t a_height, bool a_resetHistory) override;
+	/** @brief Retires RR GPU work before releasing its context and shared resources. */
+	void ResetRayRegeneration();
+	/** @brief Enables or disables RR diagnostic counters. */
+	void SetRRDiagnosticsEnabled(bool a_enabled) override { rrDiagnosticsEnabled = a_enabled; }
+
 	/**
 	 * @brief Upscales one context (eye) via the runtime provider or the host FSR3 SDK. Per-context/eye
 	 * dispatch primitive used by Upscale(); chooses runtime vs host FSR3.
@@ -203,6 +234,7 @@ private:
 		winrt::com_ptr<ID3D12CommandAllocator> commandAllocator;
 		winrt::com_ptr<ID3D12GraphicsCommandList4> commandList;
 		uint64_t fenceValue = 0;
+		bool quarantined = false;
 	};
 	std::array<RuntimeCommandContext, kRuntimeCommandContextCount> runtimeCommandContexts;
 	uint32_t runtimeCommandContextCursor = 0;
@@ -216,6 +248,26 @@ private:
 
 	HMODULE frameGenerationModule = nullptr;
 	HMODULE runtimeUpscalerModule = nullptr;
+	HMODULE denoiserModule = nullptr;
+	ffxContext rayRegenerationContext = nullptr;
+	bool rrDiagnosticsEnabled = false;
+	uint64_t rayRegenerationSuccessfulDispatches = 0;
+	uint64_t rayRegenerationFailedDispatches = 0;
+	uint64_t rayRegenerationHistoryResets = 0;
+	uint64_t rayRegenerationLastFenceValue = 0;
+	uint32_t rayRegenerationWidth = 0;
+	uint32_t rayRegenerationHeight = 0;
+	WrappedResource* rrSharedSignal = nullptr;
+	WrappedResource* rrSharedDepth = nullptr;
+	WrappedResource* rrSharedMotion = nullptr;
+	WrappedResource* rrSharedNormal = nullptr;
+	WrappedResource* rrSharedSpecularAlbedo = nullptr;
+	WrappedResource* rrSharedDiffuseAlbedo = nullptr;
+	WrappedResource* rrSharedOutput = nullptr;
+	/** @brief Creates or reuses the indirect-specular RR context and interop textures for an extent. */
+	bool EnsureRayRegenerationResources(ID3D11Texture2D* a_signal, ID3D11Texture2D* a_linearDepth, ID3D11Texture2D* a_motionVectors,
+		ID3D11Texture2D* a_normalRoughness, ID3D11Texture2D* a_specularAlbedo, ID3D11Texture2D* a_diffuseAlbedo,
+		ID3D11Texture2D* a_output, uint32_t a_width, uint32_t a_height);
 
 	enum class RuntimeUpscalerFramePath : uint8_t
 	{
@@ -259,7 +311,7 @@ private:
 	void RecordRuntimeUpscalerFramePath(RuntimeUpscalerFramePath a_path);
 	bool EnsureRuntimeUpscalerInterop();
 	bool EnsureRuntimeCommandContexts();
-	RuntimeCommandContext* AcquireRuntimeCommandContext();
+	RuntimeCommandContext* AcquireRuntimeCommandContext(bool a_waitForAvailable = true);
 	void ResetRuntimeCommandContexts();
 	bool WaitForRuntimeD3D12Fence(uint64_t a_value);
 	bool EnsureRuntimeUpscalerContexts(uint32_t a_fullRenderWidth, uint32_t a_fullRenderHeight, uint32_t a_fullDisplayWidth, uint32_t a_fullDisplayHeight, uint32_t a_contextCount, uint32_t a_requestedVersion);

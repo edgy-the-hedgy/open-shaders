@@ -698,6 +698,15 @@ void Upscaling::DrawSettings()
 		ImGui::EndTabItem();
 	}
 
+	for (auto* feature : Feature::GetFeatureList()) {
+		if (!feature->loaded)
+			continue;
+		if (const char* tabName = feature->GetUpscalingTabName(); tabName && ImGui::BeginTabItem(tabName)) {
+			feature->DrawUpscalingTab();
+			ImGui::EndTabItem();
+		}
+	}
+
 	const bool reflexSupported = streamline.reflexSupportedOnCurrentAdapter || streamlineDX12.reflexSupportedOnCurrentAdapter;
 	if (reflexSupported && ImGui::BeginTabItem(T(TKEY("nvidia_reflex"), "NVIDIA Reflex"))) {
 		DrawReflexSettings();

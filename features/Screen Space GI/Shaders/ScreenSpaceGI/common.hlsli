@@ -63,13 +63,15 @@ cbuffer SSGICB : register(b1)
 	float DistanceNormalisation;
 
 	uint UseModeTexture;  // VRStereoOptimizations' classification available this boot
-	float pad;
+	uint RRHistoryValid;
 };
 
 SamplerState samplerPointClamp : register(s0);
 SamplerState samplerLinearClamp : register(s1);
 
 ///////////////////////////////////////////////////////////////////////////////
+
+static const float SSGI_MIN_SPECULAR_ROUGHNESS = 0.2;
 
 // first person z
 #define FP_Z (18.0)

@@ -9,7 +9,9 @@ namespace DevBenchBridge::ToolSpecs
 		R"(every feature also gets two built-in queries for free: matchesPerformanceProfile and profilePreviewText (params: profile=performance|balanced|quality), )"
 		R"(mirroring Feature::MatchesPerformanceProfile/GetProfilePreviewText so a profile button's highlighted/tooltip state is readable without re-deriving it from raw settings. Action-dispatched. listCommands/listQueries: params shortName, )"
 		R"(returns [{name,description}]. invokeCommand: params shortName, name, args (object, optional) -- queued onto the main thread, fire-and-forget, )"
-		R"(same as openshaders.feature toggle/set. invokeQuery: params shortName, name, args (object, optional) -- runs synchronously on the main thread and returns the result (queries read live feature state, )"
+		R"(same as openshaders.feature toggle/set. ScreenSpaceGI registers resetRayRegenerationHistory (no args) to discard RR history before the next dispatch )"
+		R"(and rayRegenerationStatus (no args) to query RR readiness, current-frame output application, history validity and inactive reason. )"
+		R"(invokeQuery: params shortName, name, args (object, optional) -- runs synchronously on the main thread and returns the result (queries read live feature state, )"
 		R"(so they marshal the same way a settings get does). Unknown shortName/name returns a plain error, never a crash.")"
 		R"(,"inputSchema":{
 	"type": "object",
@@ -19,7 +21,7 @@ namespace DevBenchBridge::ToolSpecs
 			"enum": ["listCommands","listQueries","invokeCommand","invokeQuery"]
 		},
 		"shortName": {"type":"string"},
-		"name": {"type":"string"},
+		"name": {"type":"string","description":"Registered action name. ScreenSpaceGI: resetRayRegenerationHistory command or rayRegenerationStatus query; no args."},
 		"args": {"type":"object"}
 	}
 })"
