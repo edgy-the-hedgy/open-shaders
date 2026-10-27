@@ -9,6 +9,7 @@ namespace DevBenchBridge::ToolSpecs
 		R"(read/write runtime-only debug flags. Action-dispatched. list: returns an array of {name,shortName,loaded,version,category,isCore,supportsVR,inMenu,favorite,enabledAtBoot}; )"
 		R"(features with restart-gated settings also include restartFields:[{key,label,pending}]. get: params shortName, returns the )"
 		R"(SaveSettings blob (null if the feature has no override; set/reset then no-op). Anti-Lag 2 is automatic for a supported FSR Frame Generation session, with no independent setting or FPS cap. )"
+		R"(Upscaling fsrRedstoneEnabled selects RGI at runtime in eligible FSR-FG sessions; false selects original SSGI. Read actual state with the Upscaling redstoneStatus query. )"
 		R"(Upscaling exposes enableDLSSFrameGen (boolean, default false); )"
 		R"(existing configurations must opt in explicitly and restart to use NVIDIA DLSS-G. PostProcessing includes cinematic_camera settings for the optional linked physical camera; )"
 		R"(use get/set with shortName PostProcessing to inspect or change them without saving. LinearLighting uses Jiaye's per-channel diffuse calibration with fixed gamma 2.2, reflectance 0.5 at encoded 0.5, )"

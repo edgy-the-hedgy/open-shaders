@@ -13,6 +13,7 @@
 #include "Features/IBL.h"
 #include "Features/LightLimitFix/ShadowCasterManager.h"
 #include "Features/ScreenSpaceGI.h"
+#include "Features/Upscaling/redstone/Routing.h"
 #include "Features/Skylighting.h"
 #include "Features/SubsurfaceScattering.h"
 #include "Features/TerrainBlending.h"
@@ -404,9 +405,9 @@ void Deferred::DeferredPasses()
 
 	auto& skylighting = globals::features::skylighting;
 
-	auto& ssgi = globals::features::screenSpaceGI;
+	auto& ssgi = *Redstone::activeSSGI;
 	if (ssgi.loaded)
-		ssgi.DrawSSGI();
+		(ssgi.*Redstone::drawSSGI)();
 	auto [ssgi_ao, ssgi_y, ssgi_cocg, ssgi_gi_spec] = ssgi.GetOutputTextures();
 	bool ssgi_hq_spec = ssgi.IsSpecularGIActive();
 
@@ -462,8 +463,12 @@ void Deferred::DeferredPasses()
 		globals::state->BindSharedDataCS(context);
 
 		if (auto* shader = interior ? GetComputeMainCompositeInterior() : GetComputeMainComposite()) {
+			if (Redstone::bindComposite)
+				Redstone::bindComposite();
 			context->CSSetShader(shader, nullptr, 0);
 			context->Dispatch(dispatchCount.x, dispatchCount.y, 1);
+			if (Redstone::finishComposite)
+				Redstone::finishComposite(Redstone::privateCompositeSelected);
 		}
 
 		// Unbind mode texture SRV
@@ -759,9 +764,9 @@ ID3D11ComputeShader* Deferred::GetComputeMainComposite()
 	if (globals::features::skylighting.loaded)
 		defines.push_back({ "SKYLIGHTING", nullptr });
 
-	if (globals::features::screenSpaceGI.loaded) {
+	if (Redstone::activeSSGI->loaded) {
 		defines.push_back({ "SSGI", nullptr });
-		if (!globals::features::screenSpaceGI.HasGIResources())
+		if (!Redstone::activeSSGI->HasGIResources())
 			defines.push_back({ "SSGI_AO_ONLY", nullptr });
 	}
 
@@ -776,6 +781,12 @@ ID3D11ComputeShader* Deferred::GetComputeMainComposite()
 	if (globals::features::terrainBlending.loaded)
 		defines.push_back({ "TERRAIN_BLENDING", nullptr });
 
+	if (Redstone::getCompositeShader) {
+		auto* shader = Redstone::getCompositeShader(false, defines);
+		Redstone::privateCompositeSelected = shader != nullptr;
+		if (shader)
+			return shader;
+	}
 	return mainCompositeCS.Get(L"Data\\Shaders\\DeferredCompositeCS.hlsl", defines, "cs_5_0");
 }
 
@@ -787,9 +798,9 @@ ID3D11ComputeShader* Deferred::GetComputeMainCompositeInterior()
 	if (globals::features::dynamicCubemaps.loaded)
 		defines.push_back({ "DYNAMIC_CUBEMAPS", nullptr });
 
-	if (globals::features::screenSpaceGI.loaded) {
+	if (Redstone::activeSSGI->loaded) {
 		defines.push_back({ "SSGI", nullptr });
-		if (!globals::features::screenSpaceGI.HasGIResources())
+		if (!Redstone::activeSSGI->HasGIResources())
 			defines.push_back({ "SSGI_AO_ONLY", nullptr });
 	}
 
@@ -804,6 +815,12 @@ ID3D11ComputeShader* Deferred::GetComputeMainCompositeInterior()
 	if (globals::features::terrainBlending.loaded)
 		defines.push_back({ "TERRAIN_BLENDING", nullptr });
 
+	if (Redstone::getCompositeShader) {
+		auto* shader = Redstone::getCompositeShader(true, defines);
+		Redstone::privateCompositeSelected = shader != nullptr;
+		if (shader)
+			return shader;
+	}
 	return mainCompositeInteriorCS.Get(L"Data\\Shaders\\DeferredCompositeCS.hlsl", defines, "cs_5_0");
 }
 

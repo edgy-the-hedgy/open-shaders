@@ -153,6 +153,10 @@ void OverlayRenderer::RenderOverlay(
 
 bool OverlayRenderer::ShouldSkipRendering()
 {
+	const bool featureOverlayVisible = std::ranges::any_of(Feature::GetFeatureList(), [](Feature* feature) {
+		const auto* overlay = dynamic_cast<const OverlayFeature*>(feature);
+		return feature && feature->loaded && overlay && overlay->IsOverlayVisible();
+	});
 #if defined(ENABLE_EFFECTS11)
 	if (Effects11Editor::GetSingleton().IsOpen())
 		return false;
@@ -169,7 +173,7 @@ bool OverlayRenderer::ShouldSkipRendering()
 	uint32_t effectFailed = 0;
 #endif
 
-	return !(shaderCache->IsCompiling() ||
+	return !(featureOverlayVisible || shaderCache->IsCompiling() ||
 			 Menu::GetSingleton()->IsEnabled ||
 			 HomePageRenderer::ShouldShowFirstTimeSetup() ||
 			 EditorWindow::GetSingleton()->open ||

@@ -426,6 +426,9 @@ void FeatureListRenderer::RenderFeatureList(
 
 	auto menuList = BuildMenuList(drawGeneralSettings, drawAdvancedSettings);
 	static std::string selectedMenuId = "Home";
+	static std::string selectedParentMenuId;
+	if (!selectedParentMenuId.empty() && std::ranges::none_of(menuList, [&](const auto& item) { return GetMenuId(item) == selectedMenuId; }))
+		selectedMenuId = selectedParentMenuId;
 	selectedMenu = 0;
 	for (size_t i = 0; i < menuList.size(); ++i) {
 		if (GetMenuId(menuList[i]) == selectedMenuId) {
@@ -435,6 +438,16 @@ void FeatureListRenderer::RenderFeatureList(
 	}
 
 	HandlePendingFeatureSelection(pendingFeatureSelection, menuList, selectedMenu);
+	selectedParentMenuId.clear();
+	if (selectedMenu < menuList.size()) {
+		const auto* selected = std::get_if<Feature*>(&menuList[selectedMenu]);
+		if (selected) {
+			for (auto* parent : Feature::GetFeatureList()) {
+				const auto pages = parent->GetAdditionalMenuPages();
+				if (std::ranges::find(pages, *selected) != pages.end()) selectedParentMenuId = parent->GetShortName();
+			}
+		}
+	}
 	if (editorLayout) {
 		RenderEditorColumns(menuList, selectedMenu, featureSearch, pendingFeatureSelection, resetLayout);
 		if (selectedMenu < menuList.size())
@@ -521,6 +534,8 @@ std::vector<FeatureListRenderer::MenuFuncInfo> FeatureListRenderer::BuildMenuLis
 	// Build the menu list
 	auto& featureList = Feature::GetFeatureList();
 	auto sortedFeatureList{ featureList };  // need a copy so the load order is not lost
+	for (auto*& feature : sortedFeatureList)
+		feature = feature->GetMenuRepresentation();
 	std::ranges::sort(sortedFeatureList, [](Feature* a, Feature* b) {
 		return a->GetDisplayName() < b->GetDisplayName();
 	});
@@ -584,6 +599,26 @@ std::vector<FeatureListRenderer::MenuFuncInfo> FeatureListRenderer::BuildMenuLis
 													  } });
 	}
 
+	for (size_t i = 0; i < menuList.size(); ++i) {
+		const auto* feature = std::get_if<Feature*>(&menuList[i]);
+		if (!feature) continue;
+		const auto pages = (*feature)->GetAdditionalMenuPages();
+		size_t inserted = 0;
+		for (auto* page : pages) {
+			if (!page || !page->loaded || !page->IsInMenu()) continue;
+			menuList.insert(menuList.begin() + i + 1u + inserted, page);
+			++inserted;
+		}
+		if (inserted) {
+			for (size_t header = i; header > 0; --header) {
+				if (auto* category = std::get_if<CategoryHeader>(&menuList[header - 1])) {
+					category->count += static_cast<int>(inserted);
+					break;
+				}
+			}
+			i += inserted;
+		}
+	}
 	return menuList;
 }
 

@@ -834,6 +834,7 @@ install(
 )
 include(FeaturePackaging)
 include(FidelityFX-Runtime)
+include(src/Features/Upscaling/redstone/Runtime.cmake)
 include(Streamline-Runtime)
 # A package install fails on a payload file a skipped download left absent, so the only
 # path left to guard is the AIO archive, which is staged from the tree rather than installed.
