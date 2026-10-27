@@ -74,6 +74,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	renderAtUpscaleRes,
 	vrRenderScale,
 	fsr4RuntimeEnable,
+	fsrRedstoneEnabled,
 	fsr4RuntimeSelectionSchemaVersion);
 
 decltype(&D3D11CreateDeviceAndSwapChain) ptrD3D11CreateDeviceAndSwapChainUpscaling;
@@ -129,9 +130,12 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 	DXGI_ADAPTER_DESC adapterDesc{};
 	if (pAdapter && SUCCEEDED(pAdapter->GetDesc(&adapterDesc))) {
 		globals::state->SetAdapterDescription(adapterDesc.Description);
-		ApplyLegacyFsr4RuntimeSelectionMigration(upscaling.settings, FidelityFX::GetFsr4AdapterSupport(adapterDesc));
+		const auto adapterSupport = FidelityFX::GetFsr4AdapterSupport(adapterDesc);
+		ApplyLegacyFsr4RuntimeSelectionMigration(upscaling.settings, adapterSupport);
+		upscaling.redstoneHardwareCompatible = !globals::game::isVR && adapterSupport == FidelityFX::Fsr4AdapterSupport::RadeonRx9000;
 	}
 
+	upscaling.bootSnapshot.LatchIfNeeded(upscaling.settings);
 	upscaling.LoadUpscalingSDKs();
 
 	if (!globals::game::isVR) {
@@ -267,6 +271,8 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 				upscaling.PostBackendDevice();
 			}
 
+			if (!dlssgAvailable)
+				upscaling.InitializeRedstoneSession();
 			return S_OK;
 		} else {
 			logger::warn("[Frame Generation] No frame generation module available, skipping proxy");
@@ -661,6 +667,138 @@ namespace
 /** @brief Registers upscaling and frame-generation commands for menu and devbench use. */
 void Upscaling::RegisterUxActions()
 {
+	FEATURE_QUERY("redstoneStatus",
+		"Return cached FSR-Redstone startup gates, independent RGI settings, engine context capacity, active RR dispatch size, independent IL and occlusion RR signals, packed occlusion layout, checkerboard layout and compositor consumption. Runtime flags RROutputOnly and RRInputsOnly select mutually exclusive previews; setRedstoneDebugView selects combined/diffuse/specular/diffuseAO/specularOcclusion/combinedOcclusion/allSignals/geometryDepth and inputs/outputs. Geometry depth shows native working depth with fixed zero white, frame-maximum black and invalid pixels red, independent of RR success. IL previews apply scene gains and display exposure; occlusion previews show raw grayscale visibility without gains. Params: none.",
+		[](const Feature* a_self, const json&) { return static_cast<const Upscaling*>(a_self)->GetRedstoneStatus(); });
+	FEATURE_COMMAND("setRedstoneDebugView",
+		"Select and enable a temporary RR preview without changing saved settings or scene contributions. Params: view (required string: combined, diffuse, specular, diffuseAO, specularOcclusion, combinedOcclusion, allSignals or geometryDepth), source (optional string: inputs or outputs; default outputs). IL previews apply scene gains and preview exposure. Occlusion previews show raw grayscale visibility (0 blocked, 1 exposed), require the selected AO control enabled and ignore strength/exposure. With FSR-RR off, output views show raw resolved signals and are labeled bypassed. Combined occlusion is R/G; allSignals is a labeled 2x2 grid. Checkerboard input gaps remain black. geometryDepth instead displays native working linear depth: zero is fixed white, the farthest valid surface in the current frame is black, and missing/invalid depth is red. It ignores source, checkerboard and exposure and does not require RR success.",
+		[](Feature* a_self, const json& a_args) {
+			auto* upscaling = static_cast<Upscaling*>(a_self);
+			if (!upscaling->redstone)
+				throw std::runtime_error("FSR-Redstone is inactive");
+			const auto view = a_args.at("view").get<std::string>();
+			RedstoneGI::RRDebugView selected;
+			if (view == "combined")
+				selected = RedstoneGI::RRDebugView::Combined;
+			else if (view == "diffuse")
+				selected = RedstoneGI::RRDebugView::Diffuse;
+			else if (view == "specular")
+				selected = RedstoneGI::RRDebugView::Specular;
+			else if (view == "diffuseAO")
+				selected = RedstoneGI::RRDebugView::DiffuseOcclusion;
+			else if (view == "specularOcclusion")
+				selected = RedstoneGI::RRDebugView::SpecularOcclusion;
+			else if (view == "combinedOcclusion")
+				selected = RedstoneGI::RRDebugView::CombinedOcclusion;
+			else if (view == "allSignals")
+				selected = RedstoneGI::RRDebugView::AllSignals;
+			else if (view == "geometryDepth")
+				selected = RedstoneGI::RRDebugView::GeometryDepth;
+			else
+				throw std::runtime_error("Unknown RR debug view");
+			const auto source = a_args.value("source", std::string("outputs"));
+			if (source != "inputs" && source != "outputs")
+				throw std::runtime_error("RR debug source must be inputs or outputs");
+			upscaling->redstone->gi.SetRRDebugView(selected);
+			if (source == "inputs")
+				upscaling->redstone->gi.SetRRInputsOnly(true);
+			else
+				upscaling->redstone->gi.SetRROutputOnly(true);
+		});
+	FEATURE_COMMAND("setRedstoneCheckerboard",
+		"Set RR checkerboard sampling for the active Redstone session and reset its history. Saved by the normal settings Save action; baseline SSGI is unchanged. Params: enabled (boolean, required).",
+		[](Feature* a_self, const json& a_args) {
+			auto* upscaling = static_cast<Upscaling*>(a_self);
+			if (!upscaling->redstone)
+				throw std::runtime_error("FSR-Redstone is inactive");
+			upscaling->redstone->gi.SetRRCheckerboard(a_args.at("enabled").get<bool>());
+		});
+	FEATURE_COMMAND("setRedstoneRenderer",
+		"Select the live GI renderer. Params: renderer (required: ssgi or rgi). RGI requires ready resources in an eligible non-VR FSR-FG session. Switches at the next world-render boundary, resets GI histories and preserves both configurations. Only the selected renderer runs. The RGI page appears directly below Upscaling while active; original SSGI remains its own page. Normal Save persists selection. Query redstoneStatus for requested and actual state.",
+		[](Feature* a_self, const json& a_args) {
+			auto* upscaling = static_cast<Upscaling*>(a_self);
+			const auto renderer = a_args.at("renderer").get<std::string>();
+			if (renderer != "ssgi" && renderer != "rgi") throw std::invalid_argument("renderer must be ssgi or rgi");
+			if (renderer == "rgi" && (!upscaling->redstoneResourcesReady || upscaling->redstoneSwitchFailed))
+				throw std::runtime_error("RGI resources or compositor are unavailable");
+			upscaling->settings.fsrRedstoneEnabled = renderer == "rgi";
+		});
+	FEATURE_COMMAND("setRedstoneDenoiserConfiguration",
+		"Set SDK 2.3.0 RR configuration overrides. Optional params: normalStrength, stabilityBias, maxRadiance, radianceClipStdK, gaussianRelaxation, disocclusionThreshold, debugDepthMin, debugDepthMax (finite numbers or null to restore provider default); reset (boolean) clears all overrides first. Omitted keys remain unchanged. Debug bounds must be nonnegative and ordered and affect only SDK depth visualization. Applies before the next RR dispatch and resets history. Saved by normal Save. Read provider defaults, overrides and pending status through getRedstoneStatus.",
+		[](Feature* a_self, const json& a_args) {
+			auto* upscaling = static_cast<Upscaling*>(a_self);
+			if (!upscaling->redstone) throw std::runtime_error("FSR-Redstone is inactive");
+			auto& denoiser = upscaling->redstone->denoiser;
+			auto selected = a_args.value("reset", false) ? json::object() : denoiser.GetConfiguration().at("overrides");
+			for (const auto* key : { "normalStrength", "stabilityBias", "maxRadiance", "radianceClipStdK", "gaussianRelaxation", "disocclusionThreshold", "debugDepthMin", "debugDepthMax" })
+				if (a_args.contains(key)) selected[key] = a_args.at(key);
+			denoiser.SetConfiguration(selected);
+		});
+	FEATURE_COMMAND("setRedstoneSampling",
+		"Set independent direct-RGB RGI sampling and diagnostics. Optional params: diffuseSlices/specularSlices (1..10), diffuseSteps/specularSteps (1..20), adaptiveSampling (boolean), vanillaSSAO (boolean), roughnessFloor (0.02..1; default 0.2). Each estimator defaults to 2 slices and 10 steps. Vanilla SSAO is independent of both lighting signals. Saved by normal Save; baseline SSGI stays separate.",
+		[](Feature* a_self, const json& a_args) {
+			auto* upscaling = static_cast<Upscaling*>(a_self);
+			if (!upscaling->redstone)
+				throw std::runtime_error("FSR-Redstone is inactive");
+			json selected;
+			upscaling->redstone->gi.SaveRedstoneSettings(selected);
+			for (const auto& [parameter, setting] : { std::pair{ "diffuseSlices", "DiffuseSlices" },
+					 std::pair{ "diffuseSteps", "DiffuseSteps" }, std::pair{ "specularSlices", "SpecularSlices" },
+					 std::pair{ "specularSteps", "SpecularSteps" } }) {
+				if (a_args.contains(parameter))
+					selected[setting] = std::clamp(a_args.at(parameter).get<int>(), 1, std::string_view(parameter).ends_with("Slices") ? 10 : 20);
+			}
+			if (a_args.contains("adaptiveSampling")) selected["EnableAdaptiveSampling"] = a_args.at("adaptiveSampling").get<bool>();
+			if (a_args.contains("vanillaSSAO")) selected["EnableVanillaSSAO"] = a_args.at("vanillaSSAO").get<bool>();
+			if (a_args.contains("roughnessFloor")) selected["SpecularRoughnessFloor"] = a_args.at("roughnessFloor").get<float>();
+			upscaling->redstone->gi.LoadRedstoneSettings(selected);
+		});
+	FEATURE_COMMAND("setRedstoneSignals",
+		"Set independently saved Redstone signal toggles. Optional booleans: rrEnabled (default true; false uses raw resolve), diffuseEnabled/specularEnabled (default true; stop IL estimators and contributions), diffuseOcclusionEnabled/specularOcclusionEnabled (default false). Omitted values remain unchanged. Resets history; does not change startup FSR-FG/hardware gates or baseline SSGI.",
+		[](Feature* a_self, const json& a_args) {
+			auto* upscaling = static_cast<Upscaling*>(a_self);
+			if (!upscaling->redstone) throw std::runtime_error("FSR-Redstone is inactive");
+			json selected;
+			upscaling->redstone->gi.SaveRedstoneSettings(selected);
+			for (const auto& [parameter, setting] : { std::pair{ "rrEnabled", "RREnabled" },
+				std::pair{ "diffuseEnabled", "DiffuseEnabled" }, std::pair{ "specularEnabled", "SpecularEnabled" },
+				std::pair{ "diffuseOcclusionEnabled", "DiffuseOcclusionEnabled" }, std::pair{ "specularOcclusionEnabled", "SpecularOcclusionEnabled" } }) {
+				if (a_args.contains(parameter)) selected[setting] = a_args.at(parameter).get<bool>();
+			}
+			upscaling->redstone->gi.LoadRedstoneSettings(selected);
+		});
+	FEATURE_COMMAND("setRedstoneOcclusion",
+		"Set independent RGI occlusion controls without changing baseline SSGI or IL budgets. Optional params: diffuseEnabled/specularEnabled (boolean, default false), diffuseSlices/specularSlices (1..10, default 2), diffuseSteps/specularSteps (1..20, default 10), diffuseRadius/specularRadius (16..8192 world units, default 256), diffuseStrength/specularStrength (0..1, default 1). Signals are denoised separately, then packed as diffuse R/specular G; visibility 1 is neutral. Only estimated native ambient and environment specular are attenuated. Saved by normal Save. Params omitted remain unchanged.",
+		[](Feature* a_self, const json& a_args) {
+			auto* upscaling = static_cast<Upscaling*>(a_self);
+			if (!upscaling->redstone) throw std::runtime_error("FSR-Redstone is inactive");
+			json selected;
+			upscaling->redstone->gi.SaveRedstoneSettings(selected);
+			for (const auto& [parameter, setting] : {
+				std::pair{ "diffuseEnabled", "DiffuseOcclusionEnabled" }, std::pair{ "specularEnabled", "SpecularOcclusionEnabled" },
+				std::pair{ "diffuseSlices", "DiffuseOcclusionSlices" }, std::pair{ "specularSlices", "SpecularOcclusionSlices" },
+				std::pair{ "diffuseSteps", "DiffuseOcclusionSteps" }, std::pair{ "specularSteps", "SpecularOcclusionSteps" },
+				std::pair{ "diffuseRadius", "DiffuseOcclusionRadius" }, std::pair{ "specularRadius", "SpecularOcclusionRadius" },
+				std::pair{ "diffuseStrength", "DiffuseOcclusionStrength" }, std::pair{ "specularStrength", "SpecularOcclusionStrength" } }) {
+				if (a_args.contains(parameter)) selected[setting] = a_args.at(parameter);
+			}
+			upscaling->redstone->gi.LoadRedstoneSettings(selected);
+		});
+	FEATURE_COMMAND("setRedstoneContributions",
+		"Set active RGI lighting contribution in EV (0=unchanged, +1=double), clamped to [-8,8]. Affects scene composition and both RR previews, before display-only preview exposure. Saved by the normal Save action; baseline SSGI stays separate. Params: overallEV, specularEV, diffuseEV (optional numbers; omitted values stay unchanged).",
+		[](Feature* a_self, const json& a_args) {
+			auto* upscaling = static_cast<Upscaling*>(a_self);
+			if (!upscaling->redstone)
+				throw std::runtime_error("FSR-Redstone is inactive");
+			json selected;
+			upscaling->redstone->gi.SaveRedstoneSettings(selected);
+			for (const auto& [parameter, setting] : { std::pair{ "overallEV", "ContributionEV" },
+					 std::pair{ "specularEV", "SpecularContributionEV" }, std::pair{ "diffuseEV", "DiffuseContributionEV" } }) {
+				if (a_args.contains(parameter))
+					selected[setting] = a_args.at(parameter).get<float>();
+			}
+			upscaling->redstone->gi.LoadRedstoneSettings(selected);
+		});
 	FEATURE_COMMAND("applyFoveationPreset",
 		"Apply a named foveation crop preset (see openshaders.feature get shortName=Upscaling -> foveatedRender.CropPresets[].name, e.g. \"Center 75%\") -- the same code path as clicking the preset dropdown, including right-eye auto-mirror. Params: name (string).",
 		[](Feature*, const json& args) {
@@ -705,6 +843,11 @@ void Upscaling::DrawSettings()
 
 	if (!globals::game::isVR && ImGui::BeginTabItem(T(TKEY("frame_generation"), "Frame Generation"))) {
 		DrawFrameGenerationSettings();
+		ImGui::EndTabItem();
+	}
+
+	if (redstoneHardwareCompatible && ImGui::BeginTabItem("FSR-Redstone")) {
+		DrawRedstoneSettings();
 		ImGui::EndTabItem();
 	}
 
@@ -797,7 +940,7 @@ void Upscaling::DrawUpscalingSettings()
 
 	// PerfMode: BSOpenVR size hook + RT::Create run once at world load, so
 	// runtime reads of method/qualityMode route through the boot snapshot.
-	// The always-present explanation is plain text — only the staged-change
+	// The always-present explanation is plain text Ă˘â‚¬â€ť only the staged-change
 	// diff uses the RestartNeeded color so users learn the cue means "you
 	// changed something that won't apply yet."
 	if (perfMode.IsHookActive()) {
@@ -839,7 +982,7 @@ void Upscaling::DrawUpscalingSettings()
 		const char* baseLabel = GetQualityModeName(settings.qualityMode);
 
 		if (baseLabel) {
-			// Derive scale from live `settings.qualityMode` — `resolution-
+			// Derive scale from live `settings.qualityMode` Ă˘â‚¬â€ť `resolution-
 			// Scale` is locked to the PerfMode boot snapshot, so reusing it
 			// here would mismatch the slider position the user sees.
 			const float displayScale = 1.0f / GetQualityModeRatio(settings.qualityMode);
@@ -1201,6 +1344,7 @@ void Upscaling::SaveSettings(json& o_json)
 	// Persist None, not the user's prior method, while OpenComposite owns upscaling.
 	ApplyOpenCompositeUpscalingBlocker(true);
 	o_json = settings;
+	SaveRedstoneSettings(o_json["redstoneGI"]);
 	// Nest FoveatedRender's settings under a sub-key so they round-trip alongside
 	// Upscaling's own. Subrect controller persistence is owned by FoveatedRender.
 	json foveatedRenderJson;
@@ -1218,10 +1362,11 @@ void Upscaling::SaveSettings(json& o_json)
 /** @brief Loads upscaling settings and validates supported options and FPS limits. */
 void Upscaling::LoadSettings(json& o_json)
 {
+	LoadRedstoneSettings(o_json.value("redstoneGI", RedstoneGI::DefaultRedstoneSettings()));
 	// Pull FoveatedRender's nested block first so its absence doesn't fail the
 	// outer settings deserialize. FoveatedRender::ClampSettings touches sibling
 	// presetDLSS (cross-feature compat), so re-run it after `settings = o_json`
-	// below — otherwise the JSON re-assign overwrites the clamp and an
+	// below Ă˘â‚¬â€ť otherwise the JSON re-assign overwrites the clamp and an
 	// incompatible preset slips through.
 	if (o_json.contains("foveatedRender")) {
 		foveatedRender.LoadSettings(o_json["foveatedRender"]);
@@ -1272,7 +1417,7 @@ void Upscaling::LoadSettings(json& o_json)
 	}
 	// Re-apply FoveatedRender's cross-feature clamp now that the JSON
 	// re-assign above has overwritten anything it set during its own
-	// LoadSettings (which fired before this block ran). Idempotent — no-op
+	// LoadSettings (which fired before this block ran). Idempotent Ă˘â‚¬â€ť no-op
 	// if FoveatedRender is inactive or the preset is already compatible.
 	foveatedRender.ClampSettings();
 	// Override a loaded method with None when OpenComposite owns upscaling.
@@ -1305,6 +1450,7 @@ void Upscaling::LoadSettings(json& o_json)
 void Upscaling::RestoreDefaultSettings()
 {
 	settings = {};
+	LoadRedstoneSettings(RedstoneGI::DefaultRedstoneSettings());
 	neuralRendering.ResetHistory();
 	foveatedRender.RestoreDefaultSettings();
 	ApplyOpenCompositeUpscalingBlocker(true);
@@ -1388,7 +1534,7 @@ struct BSImageSpace_Init_FXAA
 #ifdef TRACY_ENABLE
 #	include <optional>
 // Diagnostic GPU zone around the engine SSR raymarch DRAW, bracketed by the shader's PreRender
-// (0x0A) / PostRender (0x0B) vfuncs — the correct hook points, stable on SE/AE/VR (see commit message).
+// (0x0A) / PostRender (0x0B) vfuncs Ă˘â‚¬â€ť the correct hook points, stable on SE/AE/VR (see commit message).
 static constexpr tracy::SourceLocationData kSSRZoneSrcLoc{ "SSR ReflectionsRayTracing", "ISReflectionsRayTracing::Render", __FILE__, (uint32_t)__LINE__, 0 };
 // In-place holder (no per-frame heap): opened on PreRender, closed on PostRender, render-thread only
 // and non-nested for this shader.
@@ -1455,7 +1601,7 @@ void Upscaling::PostPostLoad()
 	stl::detour_thunk<BSImageSpace_Init_FXAA>(REL::RelocationID(98974, 105626));
 
 #ifdef TRACY_ENABLE
-	// SSR raymarch GPU zone — see the SSRPreRender_Hook / SSRPostRender_Hook definitions above.
+	// SSR raymarch GPU zone Ă˘â‚¬â€ť see the SSRPreRender_Hook / SSRPostRender_Hook definitions above.
 	stl::write_vfunc<0x0A, SSRPreRender_Hook>(RE::VTABLE_BSImagespaceShaderReflectionsRayTracing[0]);
 	stl::write_vfunc<0x0B, SSRPostRender_Hook>(RE::VTABLE_BSImagespaceShaderReflectionsRayTracing[0]);
 	logger::info("[Upscaling] Installed SSR ReflectionsRayTracing Tracy zone (PreRender/PostRender 0x0A/0x0B, TRACY_ENABLE)");
@@ -1466,10 +1612,10 @@ void Upscaling::PostPostLoad()
 
 float Upscaling::GetQualityModeRatio(uint qualityMode)
 {
-	// Lower bound is 0, not 1: qualityMode=0 is DLAA / NATIVEAA (1.0x —
+	// Lower bound is 0, not 1: qualityMode=0 is DLAA / NATIVEAA (1.0x Ă˘â‚¬â€ť
 	// render at display resolution). The FfxFsr3QualityMode enum header
 	// doesn't *declare* a 0 value, but the implementation delegates to
-	// FfxFsr3UpscalerQualityMode which has NATIVEAA=0 → 1.0f. Clamping to
+	// FfxFsr3UpscalerQualityMode which has NATIVEAA=0 Ă˘â€ â€™ 1.0f. Clamping to
 	// 1 would force DLAA into Quality (1.5x) and shrink the rendered
 	// region of kMAIN to 67%.
 	const float ratio = ffxFsr3GetUpscaleRatioFromQualityMode(
@@ -1485,14 +1631,14 @@ Upscaling::UpscaleMethod Upscaling::GetUpscaleMethod() const
 
 	// PerfMode sizes the engine RTs at boot for a testTexture-redirecting upscaler. Keep the
 	// boot-latched method while DLSS is available; if DLSS drops out (RenderDoc / no-DLSS GPU)
-	// fall to FSR — the only other redirecting method — never a live or non-redirecting choice
+	// fall to FSR Ă˘â‚¬â€ť the only other redirecting method Ă˘â‚¬â€ť never a live or non-redirecting choice
 	// that would desync the fixed RT sizing.
 	if (globals::features::upscaling.perfMode.IsHookActive())
 		return streamline.featureDLSS ?
 		           static_cast<UpscaleMethod>(bootSnapshot.Boot(&Settings::upscaleMethod)) :
 		           UpscaleMethod::kFSR;
 
-	// No PerfMode: the DLSS-capable preference, or the no-DLSS preference when DLSS is unavailable —
+	// No PerfMode: the DLSS-capable preference, or the no-DLSS preference when DLSS is unavailable Ă˘â‚¬â€ť
 	// coerced off DLSS so an out-of-range config can't re-select an unresolved DLSS path.
 	if (!streamline.featureDLSS) {
 		const auto noDlss = static_cast<UpscaleMethod>(settings.upscaleMethodNoDLSS);
@@ -1967,7 +2113,7 @@ void Upscaling::PreparePerEyeInputs(ID3D11Resource* colorSrc)
 	uint32_t eyeHeightIn = (uint32_t)renderSize.y;
 
 	// Textures guaranteed to exist: EnsureVRIntermediateTextures() was called in Upscale()
-	// Read the original game depth SRV for ClearHMDMask — the combined stereo buffer is
+	// Read the original game depth SRV for ClearHMDMask Ă˘â‚¬â€ť the combined stereo buffer is
 	// definitively valid here, whereas the per-eye copy may silently produce zeros on some
 	// depth-stencil format / driver combinations.
 	auto& depthTexture = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
@@ -2136,15 +2282,15 @@ void Upscaling::ConfigureUpscaling(RE::BSGraphics::State* a_viewport)
 
 	if (upscaleMethod != UpscaleMethod::kNONE && upscaleMethod != UpscaleMethod::kTAA) {
 		// PerfMode: when the BSOpenVR size hook is live, every engine RT was
-		// already allocated at RenderRes — so the DRS-style scale is identity.
+		// already allocated at RenderRes Ă˘â‚¬â€ť so the DRS-style scale is identity.
 		// Jitter is still computed at the real DisplayRes phase ratio so the
 		// upscaler has enough sub-pixel diversity for reconstruction.
 		//
 		// The upscaleMethod here comes from GetUpscaleMethod(), which under
-		// PerfMode+hookActive is locked to the boot snapshot — so this gate
+		// PerfMode+hookActive is locked to the boot snapshot Ă˘â‚¬â€ť so this gate
 		// reads the value the user had selected at game start, not what they
 		// later moved the slider to. Engine RTs were sized off that boot
-		// choice (irreversible — the size hook can't un-allocate them); the
+		// choice (irreversible Ă˘â‚¬â€ť the size hook can't un-allocate them); the
 		// boot-snapshot lock keeps the runtime evaluate consistent with those
 		// allocations. UI staged-change banners explain the restart
 		// requirement for method/quality edits. Branch fires for both DLSS
@@ -2245,6 +2391,7 @@ void Upscaling::SetupResources()
 	}
 
 	QueryPerformanceFrequency(&qpf);
+	SetupRedstoneResources();
 
 	auto renderer = globals::game::renderer;
 	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
@@ -2333,6 +2480,10 @@ void Upscaling::ClearShaderCache()
 {
 	rainLayer.ClearShaderCache();
 	neuralRendering.ClearShaderCache();
+	if (redstone && redstoneResourcesReady) {
+		redstone->gi.ClearShaderCache();
+		redstoneSwitchFailed = false;
+	}
 	foveatedRender.ClearShaderCache();
 	vrClearHMDMaskCS.Reset();
 	for (auto& methodSlot : encodeTexturesCS) {
@@ -2612,7 +2763,7 @@ bool Upscaling::IsUpscalingActive() const
 // Unified interface methods
 void Upscaling::LoadUpscalingSDKs()
 {
-	// Hooked into device creation, so this can fire repeatedly — log the skip once.
+	// Hooked into device creation, so this can fire repeatedly Ă˘â‚¬â€ť log the skip once.
 	ApplyOpenCompositeUpscalingBlocker(true);
 	const auto& blocker = GetOpenCompositeUpscalingBlocker();
 	if (blocker.active) {
@@ -2981,7 +3132,7 @@ void Upscaling::Upscale()
 				transparencyCompositionMaskTexture->resource.get(),
 				motionVectorCopyTexture->resource.get());
 			if (!routeHandled) {
-				logger::warn("[FOVEATED] route preflight failed — falling through to standard {} path", a_methodLabel);
+				logger::warn("[FOVEATED] route preflight failed Ă˘â‚¬â€ť falling through to standard {} path", a_methodLabel);
 			}
 			return routeHandled;
 		};
@@ -2989,10 +3140,10 @@ void Upscaling::Upscale()
 		if (upscaleMethod == UpscaleMethod::kDLSS) {
 			// VR-only workaround: a worldspace/cell transition causes ~2-3ms persistent GPU-time
 			// regression in the DLSS feature that only clears on a manual mode/preset toggle.
-			// Mirror that toggle by tearing down the DLSS feature on LoadingMenu close — the next
+			// Mirror that toggle by tearing down the DLSS feature on LoadingMenu close Ă˘â‚¬â€ť the next
 			// SetDLSSOptions/slEvaluateFeature call below recreates it with current per-eye extents.
 			if (globals::game::isVR && pendingDLSSReset.exchange(false, std::memory_order_relaxed)) {
-				logger::debug("[Upscaling] LoadingMenu close detected — rebuilding DLSS feature");
+				logger::debug("[Upscaling] LoadingMenu close detected Ă˘â‚¬â€ť rebuilding DLSS feature");
 				streamline.DestroyDLSSResources();
 			}
 
@@ -3109,7 +3260,7 @@ void Upscaling::UpscaleDepth()
 	// Unbind any prior render targets before issuing CopyResource on depth/
 	// depthCopy. Upscale() does this for the standard upscale path, but
 	// UpscaleDepth() can now be invoked standalone from Main_PostProcessing
-	// (kNONE/kTAA VR path) without going through Upscale() first — match the
+	// (kNONE/kTAA VR path) without going through Upscale() first Ă˘â‚¬â€ť match the
 	// same precondition here to avoid a debug-layer hazard when depth happens
 	// to still be bound as a DSV from a prior pass.
 	context->OMSetRenderTargets(0, nullptr, nullptr);
@@ -3278,13 +3429,13 @@ void Upscaling::RunUnderwaterMaskRepair()
 
 	CS_GPU_PASS("Upscaling::UnderwaterMaskRepairStandalone");
 
-	// Unbind RTs/DSV before the CopyResource calls below — if the caller
+	// Unbind RTs/DSV before the CopyResource calls below Ă˘â‚¬â€ť if the caller
 	// still has depth bound as a DSV the copy is a debug-layer hazard.
 	// Mirrors UpscaleDepth's entry-time precondition. The caller's save/
 	// restore (FullscreenPassScope) restores the original binding on exit.
 	context->OMSetRenderTargets(0, nullptr, nullptr);
 
-	// Fullscreen triangle setup — pipeline state is the caller's
+	// Fullscreen triangle setup Ă˘â‚¬â€ť pipeline state is the caller's
 	// responsibility to save/restore; we do not touch the existing OM
 	// bindings beyond the explicit binds below.
 	context->IASetInputLayout(nullptr);
@@ -3441,7 +3592,7 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 		// way dev's path does (the route writes to its own per-eye intermediates
 		// and copies back to kMAIN/testTexture), so dev's zero-copy
 		// ApplySharpening can't read sharpenerTexture. Route through
-		// Postprocess::ApplyDlssSharpening which does the kMAIN → sharpener →
+		// Postprocess::ApplyDlssSharpening which does the kMAIN Ă˘â€ â€™ sharpener Ă˘â€ â€™
 		// kMAIN round-trip. Both paths honor sharpnessDLSS=0 to disable RCAS.
 		const bool perfModeActive = upscaling.perfMode.IsPresentingTestTexture();
 		if (!perfModeActive && FoveatedRenderImpl::Bridge::routeHandledThisFrame) {
@@ -3463,7 +3614,7 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 	if (hdrLoaded)
 		globals::features::hdrDisplay.RedirectFramebuffer();
 
-	// PerfMode: hybrid Post — HandlePostProcessing performs a two-layer
+	// PerfMode: hybrid Post Ă˘â‚¬â€ť HandlePostProcessing performs a two-layer
 	// struct swap around the engine's func() so tonemap + refraction read
 	// the DisplayRes testTexture instead of the small kMAIN. The supplied
 	// lambda is the engine call we'd normally make directly.
@@ -3472,7 +3623,7 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 	// (Streamline routes DLSS colorOut there, FidelityFX routes FSR
 	// colorOut there). Under PerfMode+hookActive, GetUpscaleMethod() returns
 	// the boot snapshot so this check evaluates against the install-time
-	// choice — staged UI method changes don't reach here until restart.
+	// choice Ă˘â‚¬â€ť staged UI method changes don't reach here until restart.
 	// ShouldHandlePost() covers the partial-init case (post resources
 	// missing).
 	const bool upscalerWritesTestTexture =
@@ -3486,7 +3637,7 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 		func(a_this, a3, a_target, a_4, a_5);
 	}
 
-	// Restore kFRAMEBUFFER after ISHDR — hdrTexture now has the HDR scene
+	// Restore kFRAMEBUFFER after ISHDR Ă˘â‚¬â€ť hdrTexture now has the HDR scene
 	if (hdrLoaded)
 		globals::features::hdrDisplay.RestoreFramebuffer();
 

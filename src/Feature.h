@@ -197,6 +197,10 @@ public:
 	 * Whether the feature will show up in the GUI menu
 	 */
 	virtual bool IsInMenu() const { return true; }
+	/** @brief Supplies a menu-only representation without changing rendering or persisted settings. */
+	virtual Feature* GetMenuRepresentation() { return this; }
+	/** @brief Supplies owned settings pages displayed immediately after this feature. */
+	virtual std::vector<Feature*> GetAdditionalMenuPages() { return {}; }
 
 	/**
 	 * Whether to print the INI version missing message when this feature is unloaded
@@ -617,6 +621,8 @@ public:
 	virtual void ClearShaderCacheScoped() { ClearShaderCache(); }
 
 	static const std::vector<Feature*>& GetFeatureList();
+	/** @brief Replaces a registered implementation during startup, before GPU resource setup. */
+	static bool ReplaceRegisteredFeature(Feature& a_original, Feature& a_replacement);
 
 	/**
 	 * @brief The loaded features that opted into OnRenderPassBegin() via WantsRenderPassHook(),

@@ -246,7 +246,7 @@ void Feature::WriteDiskCacheInfo(CSimpleIniA& a_ini)
 namespace
 {
 	/** @brief Every Feature instance Open Shaders knows about, independent of VR filtering. */
-	const std::vector<Feature*>& GetAllFeatures()
+	std::vector<Feature*>& GetAllFeatures()
 	{
 		static std::vector<Feature*> features = {
 			&globals::features::truePBR,
@@ -308,6 +308,17 @@ namespace
 		};
 		return features;
 	}
+}
+
+bool Feature::ReplaceRegisteredFeature(Feature& a_original, Feature& a_replacement)
+{
+	auto& all = GetAllFeatures();
+	if (std::find(all.begin(), all.end(), &a_original) == all.end())
+		return false;
+	std::replace(all.begin(), all.end(), &a_original, &a_replacement);
+	auto& active = const_cast<std::vector<Feature*>&>(GetFeatureList());
+	std::replace(active.begin(), active.end(), &a_original, &a_replacement);
+	return true;
 }
 
 /**
