@@ -1,0 +1,67 @@
+RaytracingAccelerationStructure Scene : register(t0);
+Texture2D<float4> Receivers : register(t1);
+StructuredBuffer<uint> ValidationOffsets : register(t2);
+ByteAddressBuffer GeometryBuffers[8192] : register(t0, space1);
+RWTexture2D<float4> Shadow : register(u0);
+
+cbuffer Trace : register(b0)
+{
+	uint2 Size;
+	uint FrameIndex;
+	uint InstanceCount;
+	float3 LightDirection;
+	float MaximumDistance;
+	float3 CameraOrigin;
+	float MinimumDistance;
+	float AngularRadius;
+	uint3 Padding;
+};
+
+uint Hash(uint value)
+{
+	value ^= value >> 16;
+	value *= 0x7feb352d;
+	value ^= value >> 15;
+	value *= 0x846ca68b;
+	return value ^ (value >> 16);
+}
+
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+	if (any(id.xy >= Size)) return;
+	float4 receiver = Receivers.Load(int3(id.xy, 0));
+	if (receiver.w == 0 || !all(isfinite(receiver))) {
+		Shadow[id.xy] = 0;
+		return;
+	}
+	uint seed = Hash(id.x + id.y * Size.x + FrameIndex * 0x9e3779b9);
+	float2 diskSample = float2(seed & 0xffff, seed >> 16) / 65536.0;
+	float cosine = lerp(1.0, cos(AngularRadius), diskSample.x);
+	float sine = sqrt(saturate(1.0 - cosine * cosine));
+	float3 tangent = normalize(cross(abs(LightDirection.z) < 0.9 ? float3(0, 0, 1) : float3(0, 1, 0), LightDirection));
+	float3 bitangent = cross(LightDirection, tangent);
+	float angle = diskSample.y * 6.28318530718;
+	float3 direction = normalize(cosine * LightDirection + sine * (cos(angle) * tangent + sin(angle) * bitangent));
+	RayDesc ray;
+	ray.Origin = receiver.xyz + CameraOrigin;
+	ray.Direction = direction;
+	ray.TMin = MinimumDistance;
+	ray.TMax = MaximumDistance;
+	RayQuery<RAY_FLAG_FORCE_NON_OPAQUE | RAY_FLAG_CULL_BACK_FACING_TRIANGLES> query;
+	query.TraceRayInline(Scene, RAY_FLAG_NONE, 0xff, ray);
+	bool invalidGeometry = false;
+	while (query.Proceed()) {
+		if (query.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
+		uint instance = query.CandidateInstanceID();
+		if (instance >= InstanceCount) { invalidGeometry = true; continue; }
+		if (GeometryBuffers[NonUniformResourceIndex(instance)].Load(ValidationOffsets[instance]) != 0) {
+			invalidGeometry = true;
+			continue;
+		}
+		query.CommitNonOpaqueTriangleHit();
+	}
+	bool hit = query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
+	float distance = hit ? query.CommittedRayT() : 65504.0;
+	Shadow[id.xy] = float4(distance, invalidGeometry ? 0.0 : 1.0, hit ? 0.0 : 1.0, 1.0);
+}

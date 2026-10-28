@@ -9,8 +9,6 @@
 #include "Upscaling/RCAS/RCAS.h"
 #include "Upscaling/RainLayer.h"
 #include "Upscaling/Streamline.h"
-#include "Upscaling/redstone/Session.h"
-#include "Upscaling/redstone/StartupGate.h"
 #include "Utils/BootSnapshot.h"
 #include "Utils/LazyShader.h"
 #include "VR/OpenVRDetection.h"
@@ -32,11 +30,9 @@ private:
 	static constexpr std::string_view MOD_ID = "156952";
 
 public:
-	/** @brief Draws NR diagnostics and the active Redstone session's optional RR preview. */
+	/** @brief Draws the neural-rendering diagnostics overlay. */
 	void DrawOverlay() override;
 	bool IsOverlayVisible() const override;
-	json GetRuntimeFlags() override;
-	bool SetRuntimeFlag(std::string_view a_name, bool a_value) override;
 	// Feature interface
 	virtual inline std::string GetName() override { return "Upscaling"; }
 	virtual std::string GetDisplayName() override { return T("feature.upscaling.name", "Upscaling"); }
@@ -125,7 +121,6 @@ public:
 		// Opt in to AMD's runtime FSR4 upscaler DLL on eligible AMD hardware instead of the
 		// host-linked FSR3 SDK; falls back to FSR3 on any failure.
 		bool fsr4RuntimeEnable = false;
-		bool fsrRedstoneEnabled = false;
 
 		// Tracks whether fsr4RuntimeEnable has been auto-migrated for the detected adapter.
 		// Defaults to current so a fresh config needs no migration; LoadSettings resets it to
@@ -297,8 +292,6 @@ public:
 	bool WantsForwardMaterialCategory() const override { return settings.neuralRenderingEnabled; }
 	/** @brief Resets NR history across loading transitions. */
 	void OnSceneTransitionReset(bool) override;
-	void OnWorldRenderBegin() override;
-	std::vector<Feature*> GetAdditionalMenuPages() override;
 	/** @brief Exposes the display-sized scene to post-processing through the shared feature contract. */
 	PostProcessingInput GetPostProcessingInput() const override;
 
@@ -440,23 +433,9 @@ public:
 	static inline Streamline streamlineDX12;  ///< DX12 instance: DLSS-G frame generation
 	static inline FidelityFX fidelityFX;      ///< AMD FSR frame generation
 	static inline DX12SwapChain dx12SwapChain;
-	std::unique_ptr<RedstoneSession> redstone;
-	json redstoneGISettings = RedstoneGI::DefaultRedstoneSettings();
-	/** @brief Persists independent RGI controls under Upscaling without touching SSGI's root block. */
-	void SaveRedstoneSettings(json& a_json) const;
-	void LoadRedstoneSettings(const json& a_json);
-	Redstone::StartupGate redstoneGate;
-	bool redstoneHardwareCompatible = false;
-	/** @brief Latches eligibility once on the successfully selected FSR-FG startup path. */
-	void InitializeRedstoneSession();
-	void SetupRedstoneResources();
-	bool redstoneResourcesReady = false;
-	bool redstoneSwitchFailed = false;
-	std::atomic<bool> redstoneActive{ false };
-	/** @brief Draws the live renderer selector for eligible sessions. */
-	void DrawRedstoneSettings();
-	/** @brief Reports the latched gate and selected setting without probing hardware. */
-	json GetRedstoneStatus() const;
+	bool rayRegenerationHardware = false;
+	/** @brief Shares the existing eligible backend without transferring its lifecycle. */
+	std::optional<GraphicsBackend> GetGraphicsBackend() const override;
 	static inline RCAS rcas;                      ///< Standalone RCAS sharpening for DLSS
 	static inline PerfMode perfMode;              ///< VR-only: render engine at upscaled-render res
 	static inline FoveatedRender foveatedRender;  ///< VR-only: foveated subrect DLSS

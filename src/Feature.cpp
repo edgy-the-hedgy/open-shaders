@@ -38,6 +38,8 @@
 #include "Features/SceneManager.h"
 #include "Features/SceneSelector.h"
 #include "Features/ScreenSpaceGI.h"
+#include "Features/RedstoneGI/RedstoneGI.h"
+#include "Features/RedstoneShadows/RedstoneShadows.h"
 #include "Features/ScreenSpaceShadows.h"
 #include "Features/ScreenshotFeature.h"
 #include "Features/Skin.h"
@@ -179,6 +181,7 @@ void Feature::Load(json& o_json)
 		if (!UsesMainSettings())
 			return;
 
+		ImportLegacySettings(o_json);
 		// No errors, load settings now
 		if (o_json[GetName()].is_structured()) {
 			logger::info("Loading {} settings", GetName());
@@ -283,6 +286,8 @@ namespace
 			&globals::features::ibl,
 			&globals::features::extendedTranslucency,
 			&globals::features::upscaling,
+			&globals::features::redstoneGI,
+			&globals::features::redstoneShadows,
 			&globals::features::renderDoc,
 			&globals::features::remoteControl,
 			&globals::features::csEditor,
@@ -743,4 +748,14 @@ bool Feature::IsFeatureKnown(const std::string& shortName, REL::Version* outVers
 	}
 
 	return false;
+}
+
+std::optional<GraphicsBackend> Feature::FindGraphicsBackend()
+{
+	for (auto* feature : GetFeatureList()) {
+		if (feature->loaded) {
+			if (auto backend = feature->GetGraphicsBackend()) return backend;
+		}
+	}
+	return std::nullopt;
 }

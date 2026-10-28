@@ -834,7 +834,8 @@ install(
 )
 include(FeaturePackaging)
 include(FidelityFX-Runtime)
-include(src/Features/Upscaling/redstone/Runtime.cmake)
+include(src/Features/RedstoneGI/Runtime.cmake)
+include(src/Features/RedstoneShadows/Shaders.cmake)
 include(Streamline-Runtime)
 # A package install fails on a payload file a skipped download left absent, so the only
 # path left to guard is the AIO archive, which is staged from the tree rather than installed.
@@ -1151,6 +1152,7 @@ if(AUTO_PLUGIN_DEPLOYMENT OR AIO_ZIP_TO_DIST)
 
     append_copy_if_different(_shader_copy_cmds _package_shaders "${CMAKE_SOURCE_DIR}/package/Shaders" "${AIO_DIR}/Shaders")
     append_copy_if_different(_shader_copy_cmds FFX_RUNTIME_FILES "${FFX_RUNTIME_SHADER_ROOT}" "${AIO_DIR}/Shaders")
+    append_copy_if_different(_shader_copy_cmds REDSTONE_DXIL_FILES "${REDSTONE_DXIL_DIRECTORY}" "${AIO_DIR}/Shaders/RedstoneShadows")
     # Streamline-Runtime.cmake's payload is a build-tree dir, not a FEATURE_PATH, so
     # the glob below never discovers it -- wire it in explicitly, same as FFX above.
     append_copy_if_different(_shader_copy_cmds STREAMLINE_RUNTIME_FILES "${STREAMLINE_RUNTIME_DIRECTORY}" "${AIO_DIR}/${STREAMLINE_RUNTIME_RELATIVE_DIRECTORY}")
@@ -1180,6 +1182,7 @@ if(AUTO_PLUGIN_DEPLOYMENT OR AIO_ZIP_TO_DIST)
         COMMAND ${CMAKE_COMMAND} -E touch copy_shaders.stamp
         DEPENDS
             ${HLSL_FILES}
+            ${REDSTONE_DXIL_FILES}
             ${FFX_RUNTIME_FILES}
             ${STREAMLINE_RUNTIME_FILES}
             ${STREAMLINE_RUNTIME_DX12_FILES}
@@ -1697,7 +1700,7 @@ file(
 )
 # Add SKSE plugin dll as dependency (use target-file generator expression so CMake
 # knows the actual output path of the target at build time)
-list(APPEND CORE_SOURCES "$<TARGET_FILE:${PROJECT_NAME}>")
+list(APPEND CORE_SOURCES "$<TARGET_FILE:${PROJECT_NAME}>" ${REDSTONE_DXIL_FILES})
 
 set(CORE_FEATURE_PATHS "${CMAKE_SOURCE_DIR}/package/")
 
@@ -1720,6 +1723,7 @@ add_custom_command(
         --component SKSE
     COMMAND
         ${CMAKE_COMMAND} -E copy_directory ${CORE_FEATURE_PATHS} ${FEATURE_PATH}
+    ${REDSTONE_DXIL_CORE_COMMANDS}
     COMMAND ${CMAKE_COMMAND} -E rm -f -- ${FEATURE_PATH}/Core
     COMMAND ${CMAKE_COMMAND} -E remove_directory "${FEATURE_PATH}/Shaders/Tests"
     COMMAND ${CMAKE_COMMAND} -E tar cfv ${CORE_PACKAGE} --format=7zip -- .

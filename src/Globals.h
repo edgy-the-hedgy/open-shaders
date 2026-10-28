@@ -27,6 +27,8 @@ struct InteriorSun;
 struct FurShells;
 struct RainRefraction;
 struct ScreenSpaceGI;
+struct RedstoneGI;
+struct RedstoneShadows;
 struct ScreenSpaceShadows;
 struct Skylighting;
 struct TerrainVariation;
@@ -133,6 +135,8 @@ namespace globals
 		extern FurShells furShells;
 		extern RainRefraction rainRefraction;
 		extern ScreenSpaceGI screenSpaceGI;
+		extern RedstoneGI redstoneGI;
+		extern RedstoneShadows redstoneShadows;
 		extern ScreenSpaceShadows screenSpaceShadows;
 		extern Skylighting skylighting;
 		extern TerrainVariation terrainVariation;

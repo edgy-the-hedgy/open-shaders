@@ -14,6 +14,8 @@
 #define MASKS RE::RENDER_TARGETS::kRAWINDIRECT_PREVIOUS
 #define MASKS2 RE::RENDER_TARGETS::kRAWINDIRECT_PREVIOUS_DOWNSCALED
 
+struct Feature;
+
 class Deferred
 {
 public:
@@ -80,6 +82,11 @@ public:
 
 	/** @brief Creates render targets, samplers, and the directional shadow structured buffer. */
 	void SetupResources();
+	/** @brief Reports the currently selected indirect-lighting owner, if any. */
+	Feature* GetIndirectLightingProvider() const { return indirectLighting; }
+	/** @brief Selects one estimator together with its compositor before drawing. */
+	void SelectIndirectLighting();
+	Feature* indirectLighting = nullptr;
 
 	/** @brief Runs feature reflection prepasses with render targets unbound. */
 	void ReflectionsPrepasses();

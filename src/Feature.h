@@ -1,6 +1,7 @@
 #pragma once
 
 #include "FeatureCategories.h"
+#include "GraphicsBackend.h"
 #include "FeatureConstraints.h"
 #include "FeatureVersions.h"
 #include "I18n/I18n.h"
@@ -8,6 +9,7 @@
 
 #include <cstring>
 #include <span>
+#include <optional>
 #include <string_view>
 #ifdef TRACY_ENABLE
 #	include <Tracy/Tracy.hpp>
@@ -16,6 +18,7 @@
 
 struct ID3D11ShaderResourceView;
 struct ID3D11Texture2D;
+struct ID3D11ComputeShader;
 
 namespace globals
 {
@@ -212,6 +215,36 @@ public:
 	 * @return Pair of {description, key feature bullet points}.
 	 */
 	virtual std::pair<std::string, std::vector<std::string>> GetFeatureSummary() { return {}; }
+
+	/** @brief Imports legacy settings only when the feature-owned block is absent. */
+	virtual void ImportLegacySettings(json&) {}
+	/** @brief Returns a bounded view of an existing graphics session, if provided. */
+	virtual std::optional<GraphicsBackend> GetGraphicsBackend() const { return std::nullopt; }
+	/** @brief Finds an existing backend without creating devices or swap chains. */
+	static std::optional<GraphicsBackend> FindGraphicsBackend();
+	/** @brief Ranks eligible indirect-lighting providers; negative values opt out. */
+	virtual int GetIndirectLightingPriority() const { return -1; }
+	/** @brief Adds the selected provider's native composite permutations. */
+	virtual void AddIndirectLightingDefines(std::vector<std::pair<const char*, const char*>>&) {}
+	/** @brief Supplies an optional private compositor paired with this estimator. */
+	virtual bool UsesPrivateComposite() const { return false; }
+	/** @brief Retrieves the selected private compositor without falling back to another estimator. */
+	virtual ID3D11ComputeShader* GetCompositeShader(bool, std::vector<std::pair<const char*, const char*>>&) { return nullptr; }
+	/** @brief Invalidates selection after a private compositor fails. */
+	virtual void OnCompositeFailure() {}
+	/** @brief Resets history when entering or leaving indirect-lighting ownership. */
+	virtual void OnIndirectLightingSelection(bool) {}
+	/** @brief Executes only the selected indirect-lighting estimator. */
+	virtual void DrawIndirectLighting() {}
+	using IndirectLightingTextures = std::tuple<ID3D11ShaderResourceView*, ID3D11ShaderResourceView*, ID3D11ShaderResourceView*, ID3D11ShaderResourceView*>;
+	/** @brief Supplies the native compositor's AO, diffuse and specular textures. */
+	virtual IndirectLightingTextures GetIndirectLightingTextures() { return {}; }
+	/** @brief Selects the native compositor's specular layout. */
+	virtual bool UsesSpecularIndirectLighting() const { return false; }
+	/** @brief Binds and retires the selected provider's private composite state. */
+	virtual void BindCompositeResources() {}
+	/** @brief Retires private composite state and records output consumption. */
+	virtual void FinishComposite(bool) {}
 
 	/** @brief Allocates GPU resources (textures, buffers) needed by this feature. */
 	virtual void SetupResources() {}

@@ -5120,9 +5120,9 @@ namespace SceneSettingsCatalog
         checks = "\n".join(part for part in [direct_checks, *component_checks] if part)
         resolver_name = f"Resolve{feature_class}SceneSettingControl"
         feature_blocks.append(f'''\tconst SceneSettingsCatalog::SettingMetadata* {resolver_name}(
-\t\tFeature* feature, const void* valueAddress)
+\t\tFeature* feature, [[maybe_unused]] const void* valueAddress)
 \t{{
-\t\tauto* typedFeature = static_cast<{feature_class}*>(feature);
+\t\t[[maybe_unused]] auto* typedFeature = static_cast<{feature_class}*>(feature);
 {checks}
 \t\treturn nullptr;
 \t}}

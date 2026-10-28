@@ -74,7 +74,6 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	renderAtUpscaleRes,
 	vrRenderScale,
 	fsr4RuntimeEnable,
-	fsrRedstoneEnabled,
 	fsr4RuntimeSelectionSchemaVersion);
 
 decltype(&D3D11CreateDeviceAndSwapChain) ptrD3D11CreateDeviceAndSwapChainUpscaling;
@@ -132,7 +131,7 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 		globals::state->SetAdapterDescription(adapterDesc.Description);
 		const auto adapterSupport = FidelityFX::GetFsr4AdapterSupport(adapterDesc);
 		ApplyLegacyFsr4RuntimeSelectionMigration(upscaling.settings, adapterSupport);
-		upscaling.redstoneHardwareCompatible = !globals::game::isVR && adapterSupport == FidelityFX::Fsr4AdapterSupport::RadeonRx9000;
+		upscaling.rayRegenerationHardware = !globals::game::isVR && adapterSupport == FidelityFX::Fsr4AdapterSupport::RadeonRx9000;
 	}
 
 	upscaling.bootSnapshot.LatchIfNeeded(upscaling.settings);
@@ -271,8 +270,6 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 				upscaling.PostBackendDevice();
 			}
 
-			if (!dlssgAvailable)
-				upscaling.InitializeRedstoneSession();
 			return S_OK;
 		} else {
 			logger::warn("[Frame Generation] No frame generation module available, skipping proxy");
@@ -667,138 +664,61 @@ namespace
 /** @brief Registers upscaling and frame-generation commands for menu and devbench use. */
 void Upscaling::RegisterUxActions()
 {
-	FEATURE_QUERY("redstoneStatus",
-		"Return cached FSR-Redstone startup gates, independent RGI settings, engine context capacity, active RR dispatch size, independent IL and occlusion RR signals, packed occlusion layout, checkerboard layout and compositor consumption. Runtime flags RROutputOnly and RRInputsOnly select mutually exclusive previews; setRedstoneDebugView selects combined/diffuse/specular/diffuseAO/specularOcclusion/combinedOcclusion/allSignals/geometryDepth and inputs/outputs. Geometry depth shows native working depth with fixed zero white, frame-maximum black and invalid pixels red, independent of RR success. IL previews apply scene gains and display exposure; occlusion previews show raw grayscale visibility without gains. Params: none.",
-		[](const Feature* a_self, const json&) { return static_cast<const Upscaling*>(a_self)->GetRedstoneStatus(); });
-	FEATURE_COMMAND("setRedstoneDebugView",
-		"Select and enable a temporary RR preview without changing saved settings or scene contributions. Params: view (required string: combined, diffuse, specular, diffuseAO, specularOcclusion, combinedOcclusion, allSignals or geometryDepth), source (optional string: inputs or outputs; default outputs). IL previews apply scene gains and preview exposure. Occlusion previews show raw grayscale visibility (0 blocked, 1 exposed), require the selected AO control enabled and ignore strength/exposure. With FSR-RR off, output views show raw resolved signals and are labeled bypassed. Combined occlusion is R/G; allSignals is a labeled 2x2 grid. Checkerboard input gaps remain black. geometryDepth instead displays native working linear depth: zero is fixed white, the farthest valid surface in the current frame is black, and missing/invalid depth is red. It ignores source, checkerboard and exposure and does not require RR success.",
-		[](Feature* a_self, const json& a_args) {
-			auto* upscaling = static_cast<Upscaling*>(a_self);
-			if (!upscaling->redstone)
-				throw std::runtime_error("FSR-Redstone is inactive");
-			const auto view = a_args.at("view").get<std::string>();
-			RedstoneGI::RRDebugView selected;
-			if (view == "combined")
-				selected = RedstoneGI::RRDebugView::Combined;
-			else if (view == "diffuse")
-				selected = RedstoneGI::RRDebugView::Diffuse;
-			else if (view == "specular")
-				selected = RedstoneGI::RRDebugView::Specular;
-			else if (view == "diffuseAO")
-				selected = RedstoneGI::RRDebugView::DiffuseOcclusion;
-			else if (view == "specularOcclusion")
-				selected = RedstoneGI::RRDebugView::SpecularOcclusion;
-			else if (view == "combinedOcclusion")
-				selected = RedstoneGI::RRDebugView::CombinedOcclusion;
-			else if (view == "allSignals")
-				selected = RedstoneGI::RRDebugView::AllSignals;
-			else if (view == "geometryDepth")
-				selected = RedstoneGI::RRDebugView::GeometryDepth;
-			else
-				throw std::runtime_error("Unknown RR debug view");
-			const auto source = a_args.value("source", std::string("outputs"));
-			if (source != "inputs" && source != "outputs")
-				throw std::runtime_error("RR debug source must be inputs or outputs");
-			upscaling->redstone->gi.SetRRDebugView(selected);
-			if (source == "inputs")
-				upscaling->redstone->gi.SetRRInputsOnly(true);
-			else
-				upscaling->redstone->gi.SetRROutputOnly(true);
-		});
-	FEATURE_COMMAND("setRedstoneCheckerboard",
-		"Set RR checkerboard sampling for the active Redstone session and reset its history. Saved by the normal settings Save action; baseline SSGI is unchanged. Params: enabled (boolean, required).",
-		[](Feature* a_self, const json& a_args) {
-			auto* upscaling = static_cast<Upscaling*>(a_self);
-			if (!upscaling->redstone)
-				throw std::runtime_error("FSR-Redstone is inactive");
-			upscaling->redstone->gi.SetRRCheckerboard(a_args.at("enabled").get<bool>());
-		});
-	FEATURE_COMMAND("setRedstoneRenderer",
-		"Select the live GI renderer. Params: renderer (required: ssgi or rgi). RGI requires ready resources in an eligible non-VR FSR-FG session. Switches at the next world-render boundary, resets GI histories and preserves both configurations. Only the selected renderer runs. The RGI page appears directly below Upscaling while active; original SSGI remains its own page. Normal Save persists selection. Query redstoneStatus for requested and actual state.",
-		[](Feature* a_self, const json& a_args) {
-			auto* upscaling = static_cast<Upscaling*>(a_self);
-			const auto renderer = a_args.at("renderer").get<std::string>();
-			if (renderer != "ssgi" && renderer != "rgi") throw std::invalid_argument("renderer must be ssgi or rgi");
-			if (renderer == "rgi" && (!upscaling->redstoneResourcesReady || upscaling->redstoneSwitchFailed))
-				throw std::runtime_error("RGI resources or compositor are unavailable");
-			upscaling->settings.fsrRedstoneEnabled = renderer == "rgi";
-		});
-	FEATURE_COMMAND("setRedstoneDenoiserConfiguration",
-		"Set SDK 2.3.0 RR configuration overrides. Optional params: normalStrength, stabilityBias, maxRadiance, radianceClipStdK, gaussianRelaxation, disocclusionThreshold, debugDepthMin, debugDepthMax (finite numbers or null to restore provider default); reset (boolean) clears all overrides first. Omitted keys remain unchanged. Debug bounds must be nonnegative and ordered and affect only SDK depth visualization. Applies before the next RR dispatch and resets history. Saved by normal Save. Read provider defaults, overrides and pending status through getRedstoneStatus.",
-		[](Feature* a_self, const json& a_args) {
-			auto* upscaling = static_cast<Upscaling*>(a_self);
-			if (!upscaling->redstone) throw std::runtime_error("FSR-Redstone is inactive");
-			auto& denoiser = upscaling->redstone->denoiser;
-			auto selected = a_args.value("reset", false) ? json::object() : denoiser.GetConfiguration().at("overrides");
-			for (const auto* key : { "normalStrength", "stabilityBias", "maxRadiance", "radianceClipStdK", "gaussianRelaxation", "disocclusionThreshold", "debugDepthMin", "debugDepthMax" })
-				if (a_args.contains(key)) selected[key] = a_args.at(key);
-			denoiser.SetConfiguration(selected);
-		});
-	FEATURE_COMMAND("setRedstoneSampling",
-		"Set independent direct-RGB RGI sampling and diagnostics. Optional params: diffuseSlices/specularSlices (1..10), diffuseSteps/specularSteps (1..20), adaptiveSampling (boolean), vanillaSSAO (boolean), roughnessFloor (0.02..1; default 0.2). Each estimator defaults to 2 slices and 10 steps. Vanilla SSAO is independent of both lighting signals. Saved by normal Save; baseline SSGI stays separate.",
-		[](Feature* a_self, const json& a_args) {
-			auto* upscaling = static_cast<Upscaling*>(a_self);
-			if (!upscaling->redstone)
-				throw std::runtime_error("FSR-Redstone is inactive");
-			json selected;
-			upscaling->redstone->gi.SaveRedstoneSettings(selected);
-			for (const auto& [parameter, setting] : { std::pair{ "diffuseSlices", "DiffuseSlices" },
-					 std::pair{ "diffuseSteps", "DiffuseSteps" }, std::pair{ "specularSlices", "SpecularSlices" },
-					 std::pair{ "specularSteps", "SpecularSteps" } }) {
-				if (a_args.contains(parameter))
-					selected[setting] = std::clamp(a_args.at(parameter).get<int>(), 1, std::string_view(parameter).ends_with("Slices") ? 10 : 20);
-			}
-			if (a_args.contains("adaptiveSampling")) selected["EnableAdaptiveSampling"] = a_args.at("adaptiveSampling").get<bool>();
-			if (a_args.contains("vanillaSSAO")) selected["EnableVanillaSSAO"] = a_args.at("vanillaSSAO").get<bool>();
-			if (a_args.contains("roughnessFloor")) selected["SpecularRoughnessFloor"] = a_args.at("roughnessFloor").get<float>();
-			upscaling->redstone->gi.LoadRedstoneSettings(selected);
-		});
-	FEATURE_COMMAND("setRedstoneSignals",
-		"Set independently saved Redstone signal toggles. Optional booleans: rrEnabled (default true; false uses raw resolve), diffuseEnabled/specularEnabled (default true; stop IL estimators and contributions), diffuseOcclusionEnabled/specularOcclusionEnabled (default false). Omitted values remain unchanged. Resets history; does not change startup FSR-FG/hardware gates or baseline SSGI.",
-		[](Feature* a_self, const json& a_args) {
-			auto* upscaling = static_cast<Upscaling*>(a_self);
-			if (!upscaling->redstone) throw std::runtime_error("FSR-Redstone is inactive");
-			json selected;
-			upscaling->redstone->gi.SaveRedstoneSettings(selected);
-			for (const auto& [parameter, setting] : { std::pair{ "rrEnabled", "RREnabled" },
-				std::pair{ "diffuseEnabled", "DiffuseEnabled" }, std::pair{ "specularEnabled", "SpecularEnabled" },
-				std::pair{ "diffuseOcclusionEnabled", "DiffuseOcclusionEnabled" }, std::pair{ "specularOcclusionEnabled", "SpecularOcclusionEnabled" } }) {
-				if (a_args.contains(parameter)) selected[setting] = a_args.at(parameter).get<bool>();
-			}
-			upscaling->redstone->gi.LoadRedstoneSettings(selected);
-		});
-	FEATURE_COMMAND("setRedstoneOcclusion",
-		"Set independent RGI occlusion controls without changing baseline SSGI or IL budgets. Optional params: diffuseEnabled/specularEnabled (boolean, default false), diffuseSlices/specularSlices (1..10, default 2), diffuseSteps/specularSteps (1..20, default 10), diffuseRadius/specularRadius (16..8192 world units, default 256), diffuseStrength/specularStrength (0..1, default 1). Signals are denoised separately, then packed as diffuse R/specular G; visibility 1 is neutral. Only estimated native ambient and environment specular are attenuated. Saved by normal Save. Params omitted remain unchanged.",
-		[](Feature* a_self, const json& a_args) {
-			auto* upscaling = static_cast<Upscaling*>(a_self);
-			if (!upscaling->redstone) throw std::runtime_error("FSR-Redstone is inactive");
-			json selected;
-			upscaling->redstone->gi.SaveRedstoneSettings(selected);
-			for (const auto& [parameter, setting] : {
-				std::pair{ "diffuseEnabled", "DiffuseOcclusionEnabled" }, std::pair{ "specularEnabled", "SpecularOcclusionEnabled" },
-				std::pair{ "diffuseSlices", "DiffuseOcclusionSlices" }, std::pair{ "specularSlices", "SpecularOcclusionSlices" },
-				std::pair{ "diffuseSteps", "DiffuseOcclusionSteps" }, std::pair{ "specularSteps", "SpecularOcclusionSteps" },
-				std::pair{ "diffuseRadius", "DiffuseOcclusionRadius" }, std::pair{ "specularRadius", "SpecularOcclusionRadius" },
-				std::pair{ "diffuseStrength", "DiffuseOcclusionStrength" }, std::pair{ "specularStrength", "SpecularOcclusionStrength" } }) {
-				if (a_args.contains(parameter)) selected[setting] = a_args.at(parameter);
-			}
-			upscaling->redstone->gi.LoadRedstoneSettings(selected);
-		});
-	FEATURE_COMMAND("setRedstoneContributions",
-		"Set active RGI lighting contribution in EV (0=unchanged, +1=double), clamped to [-8,8]. Affects scene composition and both RR previews, before display-only preview exposure. Saved by the normal Save action; baseline SSGI stays separate. Params: overallEV, specularEV, diffuseEV (optional numbers; omitted values stay unchanged).",
-		[](Feature* a_self, const json& a_args) {
-			auto* upscaling = static_cast<Upscaling*>(a_self);
-			if (!upscaling->redstone)
-				throw std::runtime_error("FSR-Redstone is inactive");
-			json selected;
-			upscaling->redstone->gi.SaveRedstoneSettings(selected);
-			for (const auto& [parameter, setting] : { std::pair{ "overallEV", "ContributionEV" },
-					 std::pair{ "specularEV", "SpecularContributionEV" }, std::pair{ "diffuseEV", "DiffuseContributionEV" } }) {
-				if (a_args.contains(parameter))
-					selected[setting] = a_args.at(parameter).get<float>();
-			}
-			upscaling->redstone->gi.LoadRedstoneSettings(selected);
-		});
+	auto& registry = Util::DevBenchUx::Registry::GetSingleton();
+	registry.RegisterCommand(GetShortName(), "setRedstoneDebugView", "Compatibility alias for RedstoneGI.setRedstoneDebugView; use RedstoneGI discovery for parameters.", +[](Feature*, const json& args) {
+		auto* target = Feature::FindFeatureByShortName("RedstoneGI");
+		const auto* entry = Util::DevBenchUx::Registry::GetSingleton().FindCommand("RedstoneGI", "setRedstoneDebugView");
+		if (!target || !entry) throw std::runtime_error("RedstoneGI is unavailable");
+		entry->fn(target, args);
+	});
+	registry.RegisterCommand(GetShortName(), "setRedstoneCheckerboard", "Compatibility alias for RedstoneGI.setRedstoneCheckerboard; use RedstoneGI discovery for parameters.", +[](Feature*, const json& args) {
+		auto* target = Feature::FindFeatureByShortName("RedstoneGI");
+		const auto* entry = Util::DevBenchUx::Registry::GetSingleton().FindCommand("RedstoneGI", "setRedstoneCheckerboard");
+		if (!target || !entry) throw std::runtime_error("RedstoneGI is unavailable");
+		entry->fn(target, args);
+	});
+	registry.RegisterCommand(GetShortName(), "setRedstoneRenderer", "Compatibility alias for RedstoneGI.setRedstoneRenderer; use RedstoneGI discovery for parameters.", +[](Feature*, const json& args) {
+		auto* target = Feature::FindFeatureByShortName("RedstoneGI");
+		const auto* entry = Util::DevBenchUx::Registry::GetSingleton().FindCommand("RedstoneGI", "setRedstoneRenderer");
+		if (!target || !entry) throw std::runtime_error("RedstoneGI is unavailable");
+		entry->fn(target, args);
+	});
+	registry.RegisterCommand(GetShortName(), "setRedstoneDenoiserConfiguration", "Compatibility alias for RedstoneGI.setRedstoneDenoiserConfiguration; use RedstoneGI discovery for parameters.", +[](Feature*, const json& args) {
+		auto* target = Feature::FindFeatureByShortName("RedstoneGI");
+		const auto* entry = Util::DevBenchUx::Registry::GetSingleton().FindCommand("RedstoneGI", "setRedstoneDenoiserConfiguration");
+		if (!target || !entry) throw std::runtime_error("RedstoneGI is unavailable");
+		entry->fn(target, args);
+	});
+	registry.RegisterCommand(GetShortName(), "setRedstoneSampling", "Compatibility alias for RedstoneGI.setRedstoneSampling; use RedstoneGI discovery for parameters.", +[](Feature*, const json& args) {
+		auto* target = Feature::FindFeatureByShortName("RedstoneGI");
+		const auto* entry = Util::DevBenchUx::Registry::GetSingleton().FindCommand("RedstoneGI", "setRedstoneSampling");
+		if (!target || !entry) throw std::runtime_error("RedstoneGI is unavailable");
+		entry->fn(target, args);
+	});
+	registry.RegisterCommand(GetShortName(), "setRedstoneSignals", "Compatibility alias for RedstoneGI.setRedstoneSignals; use RedstoneGI discovery for parameters.", +[](Feature*, const json& args) {
+		auto* target = Feature::FindFeatureByShortName("RedstoneGI");
+		const auto* entry = Util::DevBenchUx::Registry::GetSingleton().FindCommand("RedstoneGI", "setRedstoneSignals");
+		if (!target || !entry) throw std::runtime_error("RedstoneGI is unavailable");
+		entry->fn(target, args);
+	});
+	registry.RegisterCommand(GetShortName(), "setRedstoneOcclusion", "Compatibility alias for RedstoneGI.setRedstoneOcclusion; use RedstoneGI discovery for parameters.", +[](Feature*, const json& args) {
+		auto* target = Feature::FindFeatureByShortName("RedstoneGI");
+		const auto* entry = Util::DevBenchUx::Registry::GetSingleton().FindCommand("RedstoneGI", "setRedstoneOcclusion");
+		if (!target || !entry) throw std::runtime_error("RedstoneGI is unavailable");
+		entry->fn(target, args);
+	});
+	registry.RegisterCommand(GetShortName(), "setRedstoneContributions", "Compatibility alias for RedstoneGI.setRedstoneContributions; use RedstoneGI discovery for parameters.", +[](Feature*, const json& args) {
+		auto* target = Feature::FindFeatureByShortName("RedstoneGI");
+		const auto* entry = Util::DevBenchUx::Registry::GetSingleton().FindCommand("RedstoneGI", "setRedstoneContributions");
+		if (!target || !entry) throw std::runtime_error("RedstoneGI is unavailable");
+		entry->fn(target, args);
+	});
+	FEATURE_QUERY("redstoneStatus", "Compatibility alias for RedstoneGI.redstoneStatus; reports feature-owned settings, eligibility, selection, signals and consumption.", [](const Feature*, const json& args) -> json {
+		auto* target = Feature::FindFeatureByShortName("RedstoneGI");
+		const auto* entry = Util::DevBenchUx::Registry::GetSingleton().FindQuery("RedstoneGI", "redstoneStatus");
+		return target && entry ? entry->fn(target, args) : (json{ { "active", false }, { "reason", "RedstoneGI is unavailable" } });
+	});
+
 	FEATURE_COMMAND("applyFoveationPreset",
 		"Apply a named foveation crop preset (see openshaders.feature get shortName=Upscaling -> foveatedRender.CropPresets[].name, e.g. \"Center 75%\") -- the same code path as clicking the preset dropdown, including right-eye auto-mirror. Params: name (string).",
 		[](Feature*, const json& args) {
@@ -843,11 +763,6 @@ void Upscaling::DrawSettings()
 
 	if (!globals::game::isVR && ImGui::BeginTabItem(T(TKEY("frame_generation"), "Frame Generation"))) {
 		DrawFrameGenerationSettings();
-		ImGui::EndTabItem();
-	}
-
-	if (redstoneHardwareCompatible && ImGui::BeginTabItem("FSR-Redstone")) {
-		DrawRedstoneSettings();
 		ImGui::EndTabItem();
 	}
 
@@ -1344,7 +1259,6 @@ void Upscaling::SaveSettings(json& o_json)
 	// Persist None, not the user's prior method, while OpenComposite owns upscaling.
 	ApplyOpenCompositeUpscalingBlocker(true);
 	o_json = settings;
-	SaveRedstoneSettings(o_json["redstoneGI"]);
 	// Nest FoveatedRender's settings under a sub-key so they round-trip alongside
 	// Upscaling's own. Subrect controller persistence is owned by FoveatedRender.
 	json foveatedRenderJson;
@@ -1362,7 +1276,6 @@ void Upscaling::SaveSettings(json& o_json)
 /** @brief Loads upscaling settings and validates supported options and FPS limits. */
 void Upscaling::LoadSettings(json& o_json)
 {
-	LoadRedstoneSettings(o_json.value("redstoneGI", RedstoneGI::DefaultRedstoneSettings()));
 	// Pull FoveatedRender's nested block first so its absence doesn't fail the
 	// outer settings deserialize. FoveatedRender::ClampSettings touches sibling
 	// presetDLSS (cross-feature compat), so re-run it after `settings = o_json`
@@ -1450,7 +1363,6 @@ void Upscaling::LoadSettings(json& o_json)
 void Upscaling::RestoreDefaultSettings()
 {
 	settings = {};
-	LoadRedstoneSettings(RedstoneGI::DefaultRedstoneSettings());
 	neuralRendering.ResetHistory();
 	foveatedRender.RestoreDefaultSettings();
 	ApplyOpenCompositeUpscalingBlocker(true);
@@ -2391,7 +2303,6 @@ void Upscaling::SetupResources()
 	}
 
 	QueryPerformanceFrequency(&qpf);
-	SetupRedstoneResources();
 
 	auto renderer = globals::game::renderer;
 	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
@@ -2480,10 +2391,6 @@ void Upscaling::ClearShaderCache()
 {
 	rainLayer.ClearShaderCache();
 	neuralRendering.ClearShaderCache();
-	if (redstone && redstoneResourcesReady) {
-		redstone->gi.ClearShaderCache();
-		redstoneSwitchFailed = false;
-	}
 	foveatedRender.ClearShaderCache();
 	vrClearHMDMaskCS.Reset();
 	for (auto& methodSlot : encodeTexturesCS) {
@@ -3659,4 +3566,28 @@ void Upscaling::BSFaceGenManager_UpdatePendingCustomizationTextures::thunk()
 	runtimeData.dynamicResolutionLock = 1;
 	func();
 	runtimeData.dynamicResolutionLock = 0;
+}
+
+std::optional<GraphicsBackend> Upscaling::GetGraphicsBackend() const
+{
+	if (!dx12SwapChain.d3d11Device || !dx12SwapChain.d3d11Context || !dx12SwapChain.d3d12Device || !dx12SwapChain.commandQueue) return std::nullopt;
+	extern ffxFunctions ffxModule;
+	return GraphicsBackend{ dx12SwapChain.d3d11Device, dx12SwapChain.d3d11Context,
+		dx12SwapChain.d3d12Device, dx12SwapChain.commandQueue, ffxModule, jitter,
+		GetFrameGenMethod() == FrameGenMethod::kFSR && fidelityFX.frameGenContext != nullptr, rayRegenerationHardware };
+}
+
+void Upscaling::OnSceneTransitionReset(bool)
+{
+	neuralRendering.ResetHistory();
+}
+
+void Upscaling::DrawOverlay()
+{
+	neuralRendering.DrawDiagnosticsOverlay();
+}
+
+bool Upscaling::IsOverlayVisible() const
+{
+	return neuralRendering.DiagnosticsOverlayVisible();
 }

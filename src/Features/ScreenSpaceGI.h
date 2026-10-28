@@ -80,6 +80,23 @@ public:
 
 	//////////////////////////////////////////////////////////////////////////////////
 
+	/** @brief Offers native SSGI whenever its own enable setting permits it. */
+	int GetIndirectLightingPriority() const override { return settings.Enabled ? 0 : -1; }
+	/** @brief Runs SSGI only when selected by the deferred renderer. */
+	void DrawIndirectLighting() override { DrawSSGI(); }
+	/** @brief Supplies the native compositor with SSGI outputs. */
+	IndirectLightingTextures GetIndirectLightingTextures() override { return GetOutputTextures(); }
+	/** @brief Reports the native SSGI specular layout. */
+	bool UsesSpecularIndirectLighting() const override { return IsSpecularGIActive(); }
+	/** @brief Resets SSGI history when estimator ownership changes. */
+	void OnIndirectLightingSelection(bool) override { QueueHistoryReset(); }
+	/** @brief Adds only SSGI-owned native composite permutations. */
+	void AddIndirectLightingDefines(std::vector<std::pair<const char*, const char*>>& a_defines) override
+	{
+		a_defines.emplace_back("SSGI", nullptr);
+		if (!HasGIResources()) a_defines.emplace_back("SSGI_AO_ONLY", nullptr);
+	}
+
 	bool recompileFlag = false;
 	uint outputAoIdx = 0;
 	uint outputIlIdx = 0;

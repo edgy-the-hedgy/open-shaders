@@ -1,4 +1,5 @@
 #include "Deferred.h"
+#include <limits>
 
 #include <DDSTextureLoader.h>
 
@@ -12,8 +13,6 @@
 #include "Features/Effects11.h"
 #include "Features/IBL.h"
 #include "Features/LightLimitFix/ShadowCasterManager.h"
-#include "Features/ScreenSpaceGI.h"
-#include "Features/Upscaling/redstone/Routing.h"
 #include "Features/Skylighting.h"
 #include "Features/SubsurfaceScattering.h"
 #include "Features/TerrainBlending.h"
@@ -405,11 +404,10 @@ void Deferred::DeferredPasses()
 
 	auto& skylighting = globals::features::skylighting;
 
-	auto& ssgi = *Redstone::activeSSGI;
-	if (ssgi.loaded)
-		(ssgi.*Redstone::drawSSGI)();
-	auto [ssgi_ao, ssgi_y, ssgi_cocg, ssgi_gi_spec] = ssgi.GetOutputTextures();
-	bool ssgi_hq_spec = ssgi.IsSpecularGIActive();
+	SelectIndirectLighting();
+	if (indirectLighting) indirectLighting->DrawIndirectLighting();
+	auto [ssgi_ao, ssgi_y, ssgi_cocg, ssgi_gi_spec] = indirectLighting ? indirectLighting->GetIndirectLightingTextures() : Feature::IndirectLightingTextures{};
+	bool ssgi_hq_spec = indirectLighting && indirectLighting->UsesSpecularIndirectLighting();
 
 	auto dispatchCount = Util::GetScreenDispatchCount(true);
 
@@ -463,12 +461,12 @@ void Deferred::DeferredPasses()
 		globals::state->BindSharedDataCS(context);
 
 		if (auto* shader = interior ? GetComputeMainCompositeInterior() : GetComputeMainComposite()) {
-			if (Redstone::bindComposite)
-				Redstone::bindComposite();
+			if (indirectLighting)
+				indirectLighting->BindCompositeResources();
 			context->CSSetShader(shader, nullptr, 0);
 			context->Dispatch(dispatchCount.x, dispatchCount.y, 1);
-			if (Redstone::finishComposite)
-				Redstone::finishComposite(Redstone::privateCompositeSelected);
+			if (indirectLighting)
+				indirectLighting->FinishComposite(indirectLighting->UsesPrivateComposite());
 		}
 
 		// Unbind mode texture SRV
@@ -764,11 +762,7 @@ ID3D11ComputeShader* Deferred::GetComputeMainComposite()
 	if (globals::features::skylighting.loaded)
 		defines.push_back({ "SKYLIGHTING", nullptr });
 
-	if (Redstone::activeSSGI->loaded) {
-		defines.push_back({ "SSGI", nullptr });
-		if (!Redstone::activeSSGI->HasGIResources())
-			defines.push_back({ "SSGI_AO_ONLY", nullptr });
-	}
+	if (indirectLighting) indirectLighting->AddIndirectLightingDefines(defines);
 
 	if (globals::features::ibl.loaded)
 		defines.push_back({ "IBL", nullptr });
@@ -781,12 +775,8 @@ ID3D11ComputeShader* Deferred::GetComputeMainComposite()
 	if (globals::features::terrainBlending.loaded)
 		defines.push_back({ "TERRAIN_BLENDING", nullptr });
 
-	if (Redstone::getCompositeShader) {
-		auto* shader = Redstone::getCompositeShader(false, defines);
-		Redstone::privateCompositeSelected = shader != nullptr;
-		if (shader)
-			return shader;
-	}
+	if (indirectLighting && indirectLighting->UsesPrivateComposite())
+		return indirectLighting->GetCompositeShader(false, defines);
 	return mainCompositeCS.Get(L"Data\\Shaders\\DeferredCompositeCS.hlsl", defines, "cs_5_0");
 }
 
@@ -798,11 +788,7 @@ ID3D11ComputeShader* Deferred::GetComputeMainCompositeInterior()
 	if (globals::features::dynamicCubemaps.loaded)
 		defines.push_back({ "DYNAMIC_CUBEMAPS", nullptr });
 
-	if (Redstone::activeSSGI->loaded) {
-		defines.push_back({ "SSGI", nullptr });
-		if (!Redstone::activeSSGI->HasGIResources())
-			defines.push_back({ "SSGI_AO_ONLY", nullptr });
-	}
+	if (indirectLighting) indirectLighting->AddIndirectLightingDefines(defines);
 
 	if (globals::features::ibl.loaded)
 		defines.push_back({ "IBL", nullptr });
@@ -815,12 +801,8 @@ ID3D11ComputeShader* Deferred::GetComputeMainCompositeInterior()
 	if (globals::features::terrainBlending.loaded)
 		defines.push_back({ "TERRAIN_BLENDING", nullptr });
 
-	if (Redstone::getCompositeShader) {
-		auto* shader = Redstone::getCompositeShader(true, defines);
-		Redstone::privateCompositeSelected = shader != nullptr;
-		if (shader)
-			return shader;
-	}
+	if (indirectLighting && indirectLighting->UsesPrivateComposite())
+		return indirectLighting->GetCompositeShader(true, defines);
 	return mainCompositeInteriorCS.Get(L"Data\\Shaders\\DeferredCompositeCS.hlsl", defines, "cs_5_0");
 }
 
@@ -918,4 +900,35 @@ void Deferred::Hooks::Renderer_ResetState::thunk(void* This)
 	ID3D11Buffer* buffers[3] = { state->permutationCB->CB(), state->sharedDataCB->CB(), state->featureDataCB->CB() };
 	context->PSSetConstantBuffers(4, 3, buffers);
 	state->BindSharedDataCS(context);
+}
+
+void Deferred::SelectIndirectLighting()
+{
+	auto* previous = indirectLighting;
+	int priorityCeiling = std::numeric_limits<int>::max();
+	size_t firstAtCeiling = 0;
+	for (;;) {
+		indirectLighting = nullptr;
+		int priority = -1;
+		const auto& features = Feature::GetFeatureList();
+		size_t selectedIndex = 0;
+		for (size_t i = 0; i < features.size(); ++i) {
+			auto* feature = features[i];
+			const int candidatePriority = feature->loaded ? feature->GetIndirectLightingPriority() : -1;
+			if (candidatePriority > priority && (candidatePriority < priorityCeiling || (candidatePriority == priorityCeiling && i >= firstAtCeiling))) {
+				priority = candidatePriority;
+				indirectLighting = feature;
+				selectedIndex = i;
+			}
+		}
+		if (!indirectLighting || !indirectLighting->UsesPrivateComposite() || (GetComputeMainComposite() && GetComputeMainCompositeInterior())) break;
+		indirectLighting->OnCompositeFailure();
+		priorityCeiling = priority;
+		firstAtCeiling = selectedIndex + 1;
+	}
+	if (previous != indirectLighting) {
+		if (previous) previous->OnIndirectLightingSelection(false);
+		if (indirectLighting) indirectLighting->OnIndirectLightingSelection(true);
+		ClearShaderCache();
+	}
 }

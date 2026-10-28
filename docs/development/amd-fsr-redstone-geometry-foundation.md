@@ -1,5 +1,8 @@
 # FSR-Redstone geometry and Ray Regeneration contract
 
+> Current source update (2026-10-28; unbuilt, untested): RedstoneGI is now a registered Feature under `src/Features/RedstoneGI/`, with assets under `features/RedstoneGI/Shaders/RedstoneGI/`. This implementation uses one native sample per RR footprint and exact matching hit surfaces, without the previous mixed-grid depth/normal/radiance mip reductions. RR Z motion is camera-expected previous depth when native XY agrees with camera motion, otherwise zero; the former historical-depth lookup is removed. This is a static-camera-transform approximation, not demonstrated animated correspondence. Four signal producers remain wired; direct-light exports, animated depth/validity transport and dominant-light blocker distance remain deferred. Historical descriptions and validation below do not validate this patch.
+
+
 Analysis date: 2026-10-26. This document explains the public API and traces this checkout's producer-to-consumer transformations. It does not reverse-engineer AMD's proprietary denoising implementation or claim runtime validation of a revised integration.
 
 ## 1. Agreed boundaries

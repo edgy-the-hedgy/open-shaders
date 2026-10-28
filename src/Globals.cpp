@@ -38,6 +38,8 @@
 #include "Features/SceneManager.h"
 #include "Features/SceneSelector.h"
 #include "Features/ScreenSpaceGI.h"
+#include "Features/RedstoneGI/RedstoneGI.h"
+#include "Features/RedstoneShadows/RedstoneShadows.h"
 #include "Features/ScreenSpaceShadows.h"
 #include "Features/ScreenshotFeature.h"
 #include "Features/Skin.h"
@@ -98,6 +100,8 @@ namespace globals
 		FurShells furShells{};
 		RainRefraction rainRefraction{};
 		ScreenSpaceGI screenSpaceGI{};
+		RedstoneGI redstoneGI{};
+		RedstoneShadows redstoneShadows{};
 		ScreenSpaceShadows screenSpaceShadows{};
 		Skylighting skylighting{};
 		TerrainVariation terrainVariation{};

@@ -3,7 +3,6 @@
 #include "Feature.h"
 #include "Features/LightLimitFix.h"
 #include "Features/ScreenSpaceGI.h"
-#include "Features/Upscaling/redstone/Routing.h"
 #include "Features/ScreenSpaceShadows.h"
 #include "Features/Upscaling.h"
 #include "Features/VolumetricLighting.h"
@@ -244,7 +243,7 @@ namespace CSPluginAPI
 
 	bool CSInterface001::GetSSGIEnabled()
 	{
-		return Redstone::activeSSGI->settings.Enabled;
+		return globals::features::screenSpaceGI.settings.Enabled;
 	}
 
 	void CSInterface001::SetSSGIEnabled(bool enabled)
