@@ -21,6 +21,7 @@ namespace RedstoneShadow
 		std::vector<Instance> instances;
 		uint64_t generation = 0, sweep = 0, bytes = 0, blasRevision = 0;
 		uint32_t omittedInstances = 0;
+		CasterObservation::Scope scope;
 	};
 
 	/** @brief Builds bounded acceleration structures independently of engine object traversal. */
@@ -33,8 +34,21 @@ namespace RedstoneShadow
 		~AccelerationScene();
 		/** @brief Invalidates publication and retires pending builds by generation. */
 		void Reset();
-		/** @brief Builds at most one missing BLAS and one TLAS per frame, with two in-flight jobs. */
-		void Advance(const Snapshot* a_snapshot, const GeometryBridge& a_bridge, uint64_t a_budgetBytes);
+		/** @brief Replaces the observed light scope without discarding completed immutable BLASes. */
+		void ReplaceScope() { ++generation; published.reset(); }
+		using GeometryMap = std::unordered_map<const Mesh*, std::shared_ptr<const Geometry>>;
+		/** @brief Advances one missing BLAS and one ready TLAS per worker step, retaining two GPU slots. */
+		void Advance(const Snapshot* a_snapshot, const GeometryMap& a_geometries, uint64_t a_budgetBytes);
+		/** @brief Retains the native completion fence for nonblocking progress polling. */
+		winrt::com_ptr<ID3D12Fence> CompletionFence() const { return completion; }
+		/** @brief Returns the last submitted GPU retirement point. */
+		uint64_t SubmittedFence() const { return nextFence; }
+		/** @brief Reports whether submitted builds still own GPU work. */
+		bool HasPendingBuilds() const;
+		/** @brief Reports allocation deferrals without rebuilding diagnostics. */
+		uint64_t BudgetDeferrals() const { return budgetDeferrals; }
+		/** @brief Returns the latched device/build failure. */
+		const std::string& Failure() const { return failure; }
 		/** @brief Retains the latest completed TLAS for a separately fenced ray consumer. */
 		std::shared_ptr<const TopLevel> GetScene() const { return published; }
 		/** @brief Reports build submission/completion separately from traversal and coverage. */
@@ -83,5 +97,39 @@ namespace RedstoneShadow
 		uint64_t budgetDeferrals = 0, busyFrames = 0;
 		size_t buildCursor = 0;
 		std::string failure;
+	};
+
+	/** @brief Hands owned batches to one AS worker without render-thread waits. */
+	class AccelerationWorker
+	{
+	public:
+		/** @brief Starts one owned batch; never queues another worker task while busy. */
+		void Start(const GraphicsBackend& a_backend, std::shared_ptr<const Snapshot> a_snapshot,
+			AccelerationScene::GeometryMap a_geometries, uint64_t a_budgetBytes);
+		/** @brief Polls publication and GPU completion, then schedules one progress step. */
+		void Advance();
+		/** @brief Cancels eligibility and requests asynchronous resource retirement. */
+		void Reset();
+		/** @brief True once the active batch completed or could not progress. */
+		bool Finished() const { return finished; }
+		/** @brief Retains the completed worker scene for a separately fenced diagnostic consumer. */
+		std::shared_ptr<const TopLevel> GetScene() const;
+		/** @brief Returns cached worker evidence without accessing worker-owned caches. */
+		json GetDiagnostics() const;
+
+	private:
+		struct State;
+		struct Input;
+		struct Output;
+		std::shared_ptr<State> state;
+		std::shared_ptr<const Input> input;
+		std::shared_ptr<const Output> output;
+		uint64_t revision = 0;
+		bool finished = true, retiring = false;
+		std::string dispatchFailure;
+		json lastDiagnostics;
+		CasterObservation::Scope lastDiagnosticScope, lastCompletedScope;
+		std::string lastBatchFailure;
+		uint64_t lastFailedBatch = 0;
 	};
 }

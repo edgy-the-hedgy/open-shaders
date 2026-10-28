@@ -397,6 +397,7 @@ namespace ShadowCasterManager
 	struct LightEntry
 	{
 		RE::BSShadowLight* Light{ nullptr };
+		uint64_t observationGeneration{ 0 };
 
 		/// Sort key: LastDrawnFrame + computed interval. Lower = higher priority.
 		double RedrawScore{ 0.0 };
@@ -497,6 +498,7 @@ namespace ShadowCasterManager
 		void Clear()
 		{
 			Light = nullptr;
+			observationGeneration = 0;
 			LastDrawnFrame = -1;
 			FadeStartSeconds = -1.0;
 			RedrawFrame = false;

@@ -6,7 +6,7 @@ namespace DevBenchBridge::ToolSpecs
 	inline constexpr const char* kActionsTool =
 		R"({"description":")"
 		R"(Devbench-registered one-shot commands and read-only queries -- the imperative/derived-state counterpart to openshaders.feature's settings get/set. A feature exposes these via FEATURE_COMMAND/FEATURE_QUERY in its Feature::RegisterUxActions() override (see Utils/DevBenchUx.h); )"
-		R"(RedstoneShadows exposes shadowStatus (no params), setSceneAcquisition (required enabled boolean) and resetShadowScene (no params). Acquisition is opt-in and builds partial opaque BLAS/TLAS while retaining native production. Use openshaders.feature runtimeSet flags TraceDirectional or PreviewDirectional for unsaved raw traversal/preview; PreviewDirectional enables tracing and requires AcquireScene. Status distinguishes GPU copies/exports, AS builds, traversal, debug consumption, RR and scene-lighting consumption. )"
+		R"(RedstoneShadows exposes shadowStatus (no params), setSceneAcquisition (required enabled boolean), setPreparedScene (required enabled boolean; optional preview boolean and light integer 0..255), and resetShadowScene (no params). Prepared mode loads offline cell geometry on a worker, builds native BLAS/TLAS including flagged material geometry, and optionally traces a baseline local light into a diagnostic preview. Unresolved material instances are masked from traversal. Native lighting remains active. SCM acquisition and CaptureDebug retain their independent local-light observation diagnostics. TraceDirectional and PreviewDirectional remain false. shadowStatus includes prepared loading, acceleration and historical trace/preview counters; runtime coverage, RR, production consumption and CPU bypass remain unvalidated. )"
 		R"(every feature also gets two built-in queries for free: matchesPerformanceProfile and profilePreviewText (params: profile=performance|balanced|quality), )"
 		R"(mirroring Feature::MatchesPerformanceProfile/GetProfilePreviewText so a profile button's highlighted/tooltip state is readable without re-deriving it from raw settings. Action-dispatched. listCommands/listQueries: params shortName, )"
 		R"(returns [{name,description}]. invokeCommand: params shortName, name, args (object, optional) -- queued onto the main thread, fire-and-forget, )"
@@ -21,9 +21,18 @@ namespace DevBenchBridge::ToolSpecs
 		},
 		"shortName": {"type":"string"},
 		"name": {"type":"string"},
-		"args": {"type":"object","properties":{"mesh":{"type":"string","description":"Mesh path for Wind setTreeBendEnabled."},"enabled":{"type":"boolean","description":"Broad bending enabled for Wind setTreeBendEnabled."}}}
+		"args": {"type":"object","properties":{"mesh":{"type":"string","description":"Mesh path for Wind setTreeBendEnabled."},"enabled":{"type":"boolean","description":"Enable Wind broad bending or opt-in RedstoneShadows SCM observation, according to the selected command."}}}
 	},
 	"allOf": [{
+		"if": {
+			"properties":{"shortName":{"const":"RedstoneShadows"},"name":{"const":"setPreparedScene"}},
+			"required":["shortName","name"]
+		},
+		"then":{"properties":{"args":{
+			"type":"object","properties":{"enabled":{"type":"boolean"},"preview":{"type":"boolean"},"light":{"type":"integer","minimum":0,"maximum":255}},
+			"required":["enabled"],"additionalProperties":false
+		}},"required":["args"]}
+	}, {
 		"if": {
 			"properties":{"shortName":{"const":"RedstoneShadows"},"name":{"const":"setSceneAcquisition"}},
 			"required":["shortName","name"]

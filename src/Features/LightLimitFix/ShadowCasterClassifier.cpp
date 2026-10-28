@@ -11,6 +11,7 @@
 #include "../../Utils/FileSystem.h"
 #include "../../Utils/Game.h"
 #include "ShadowCasterInternal.h"
+#include "CasterObservation.h"
 
 namespace ShadowCasterManager
 {
@@ -457,6 +458,7 @@ namespace ShadowCasterManager
 		{
 			const float angularMin = s_settings.CasterCullAngularMin;
 			RE::BSShadowLight* light = CurrentCullLight();
+			if (light) CasterObservation::Observe(a_visible);
 			// Heals a missed geometry attachment (see s_accumRebuildAttach).
 			// Gated on s_accumRebuildAttach alone, not `!light->objectNode`:
 			// that tracks scene-node attach, unrelated to this light's geomList.
@@ -536,6 +538,7 @@ namespace ShadowCasterManager
 			// Same missed-geometry-attachment heal as Hook_ParabolicCullAppend,
 			// for frustum/spot lights (this vtable) instead of point/omni.
 			RE::BSShadowLight* light = CurrentCullLight();
+			if (light) CasterObservation::Observe(a_visible);
 			if (light && s_accumRebuildAttach.load(std::memory_order_relaxed)) {
 				const bool newlyAttached = s_healAttached.insert(&a_visible).second;
 				if (auto* ni = light->light.get();

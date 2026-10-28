@@ -17,6 +17,7 @@
 #include "../VR.h"
 #include "I18n/I18n.h"
 #include "ShadowCasterInternal.h"
+#include "CasterObservation.h"
 
 #include <Windows.h>  // SEH (__try) for the shadow-light usability backstop
 #include <mutex>
@@ -385,6 +386,7 @@ namespace ShadowCasterManager
 
 	void ResetSession()
 	{
+		CasterObservation::Invalidate();
 		FreeAllTiles();
 		// Wholesale drop of pointers the engine is about to free during
 		// a scene transition. Called from LightLimitFix::OnSceneTransitionReset

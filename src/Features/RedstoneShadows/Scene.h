@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Features/LightLimitFix/CasterObservation.h"
 #include <d3d11.h>
 #include <winrt/base.h>
 #include <memory>
@@ -9,10 +10,20 @@
 
 namespace RedstoneShadow
 {
+	inline constexpr uint8_t kOpaqueInstanceMask = 1;
+	inline constexpr uint8_t kMaterialPendingInstanceMask = 2;
+	/** @brief Preserves offline material work classes without rediscovering them during traversal. */
+	enum class OfflineMaterialFlags : uint32_t
+	{
+		None = 0,
+		AlphaCoverage = 1,
+		VertexAlpha = 2,
+		AnimatedMaterial = 4,
+		Unknown = 0x80000000u
+	};
 	/** @brief Budgets engine observations and owned GPU geometry independently. */
 	struct SceneLimits
 	{
-		uint32_t nodesPerFrame = 2048;
 		uint32_t maxInstances = 8192;
 		uint64_t bufferBytes = 128ull * 1024 * 1024;
 	};
@@ -38,6 +49,8 @@ namespace RedstoneShadow
 		int32_t textureClampMode = 0;
 		bool twoSided = false;
 		bool alphaTest = false;
+		bool opaqueCandidate = true;
+		OfflineMaterialFlags offlineMaterialFlags = OfflineMaterialFlags::None;
 	};
 
 	/** @brief Records a rigid instance separately from retained mesh bytes. */
@@ -58,84 +71,56 @@ namespace RedstoneShadow
 	{
 		uint64_t generation = 0;
 		uint64_t sweep = 0;
+		CasterObservation::Scope scope;
 		uint64_t firstFrame = 0, lastFrame = 0;
 		std::vector<Instance> instances;
 		std::unordered_map<std::string, uint32_t> omissions;
 		uint32_t visitedNodes = 0;
 		bool truncated = false;
+		bool offline = false;
 	};
 
-	/** @brief Acquires bounded off-screen scene records on the engine render thread. */
+	/** @brief Consumes owned SCM batches at the existing render-thread handoff. */
 	class Scene
 	{
 	public:
-		/** @brief Initializes the nonblocking GPU-copy completion query. */
+		/** @brief Creates the nonblocking copy query. */
 		bool Initialize();
-		/** @brief Advances one bounded observation batch and polls pending copies without flushing. */
+		/** @brief Consumes one queued batch only when the prior batch is released. */
 		void Advance(const SceneLimits& a_limits, uint64_t a_frame);
-		/** @brief Retires completed copies without starting new acquisition, including while disabled. */
+		/** @brief Polls copy completion without flushing or waiting. */
 		bool RetireCopies();
-		/** @brief Invalidates scene identity and releases engine references on the engine thread. */
+		/** @brief Invalidates publication while preserving pending copy ownership. */
 		void Reset();
-		/** @brief Returns acquisition, memory and coverage evidence without a GPU readback. */
-		json GetDiagnostics() const;
-		/** @brief Borrows the copy-complete snapshot until the next engine-thread scene mutation. */
+		/** @brief Releases the current batch after consumer processing finishes. */
+		void ReleaseSnapshot() { published.reset(); }
+		/** @brief Borrows the current completed snapshot. */
 		const Snapshot* GetSnapshot() const { return published.get(); }
-
+		/** @brief Borrows observed scalar records while copies are pending or complete. */
+		const Snapshot* GetDebugSnapshot() const { return published ? published.get() : collecting.get(); }
+		/** @brief Retains owned immutable records for asynchronous preparation. */
+		std::shared_ptr<const Snapshot> RetainSnapshot() const { return published; }
+		/** @brief Returns observed-subset validity and copy costs. */
+		json GetDiagnostics() const;
+		/** @brief Returns a latched copy/allocation failure without building diagnostics. */
+		bool Failed() const { return !failure.empty(); }
 	private:
-		static constexpr uint32_t kMaximumNodes = 65536;
-		static constexpr uint32_t kMaximumGridLength = 32;
-		static constexpr uint64_t kMaximumCopyBytesPerFrame = 16ull * 1024 * 1024;
-		struct Identity
+		struct Cached
 		{
-			RE::NiPointer<RE::BSGeometry> object;
-			uint64_t serial = 0, sweep = 0;
+			winrt::com_ptr<ID3D11Buffer> vertices, indices;
+			std::shared_ptr<const Mesh> mesh;
+			uint64_t batch = 0;
 		};
-		struct CachedMesh
-		{
-			winrt::com_ptr<ID3D11Buffer> sourceVertices, sourceIndices;
-			std::shared_ptr<const Mesh> owned;
-			uint64_t sweep = 0;
-		};
-		struct MeshKey
-		{
-			uintptr_t vertices = 0, indices = 0;
-			uint64_t descriptor = 0;
-			uint64_t revision = 0;
-			bool operator==(const MeshKey&) const = default;
-		};
-		struct MeshKeyHash
-		{
-			size_t operator()(const MeshKey& a_key) const
-			{
-				return std::hash<uintptr_t>{}(a_key.vertices) ^ std::rotl(std::hash<uintptr_t>{}(a_key.indices), 1) ^
-					std::hash<uint64_t>{}(a_key.descriptor) ^ std::rotl(std::hash<uint64_t>{}(a_key.revision), 2);
-			}
-		};
-		struct PendingNode
-		{
-			RE::NiPointer<RE::NiAVObject> object;
-			uint32_t child = 0;
-		};
-		void Begin(uint64_t a_frame);
-		void Enqueue(RE::NiAVObject* a_object);
-		void Observe(RE::BSGeometry* a_geometry, const SceneLimits& a_limits, uint64_t a_frame);
-		std::shared_ptr<const Mesh> AcquireMesh(RE::BSGeometry* a_geometry, const SceneLimits& a_limits, uint64_t a_frame);
+		std::shared_ptr<const Mesh> Acquire(const CasterObservation::Record& a_record, const SceneLimits& a_limits);
 		uint64_t ResidentBytes() const;
-		void Complete();
-		std::vector<PendingNode> pending;
-		std::unordered_map<RE::NiAVObject*, RE::NiPointer<RE::NiAVObject>> visited;
-		std::unordered_map<RE::BSGeometry*, Identity> identities;
-		std::unordered_map<MeshKey, CachedMesh, MeshKeyHash> meshes;
-		std::unique_ptr<Snapshot> collecting;
-		std::unique_ptr<const Snapshot> published;
+		std::vector<Cached> meshes;
+		std::shared_ptr<Snapshot> collecting;
+		std::shared_ptr<const Snapshot> published;
 		winrt::com_ptr<ID3D11Query> completion;
-		bool copiesPending = false, discardPending = false, retryObservation = false;
-		uint64_t generation = 1, sweep = 0, nextIdentity = 1;
+		bool copiesPending = false, discardPending = false;
 		uint64_t copiedBytes = 0, reusedMeshes = 0, busyFrames = 0;
-		uint64_t residentBytes = 0;
-		uint64_t frameCopiedBytes = 0;
-		double acquisitionMs = 0;
+		uint64_t batchCopiedBytes = 0;
+		uint64_t queuedEpochDiscards = 0, copyEpochDiscards = 0, resetEpochDiscards = 0;
 		std::string failure;
 	};
 }

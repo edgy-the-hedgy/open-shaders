@@ -13,6 +13,7 @@
 #include "../VR.h"
 #include "I18n/I18n.h"
 #include "ShadowCasterInternal.h"
+#include "CasterObservation.h"
 
 #include <Windows.h>  // CONTEXT for the register-context hook thunks
 
@@ -938,6 +939,7 @@ namespace ShadowCasterManager
 		auto* light = reinterpret_cast<RE::NiLight*>(ctx.Rdx);
 		if (ssn != GetShadowSceneNode())
 			return;
+		CasterObservation::Invalidate();
 		for (auto it = s_normalConvert.begin(); it != s_normalConvert.end(); ++it) {
 			auto* nl = it->light->light.get();
 			if (nl && nl == light) {
@@ -961,6 +963,7 @@ namespace ShadowCasterManager
 		static void thunk(RE::ShadowSceneNode* a_ssn, std::uint64_t a_2, std::uint64_t a_3, std::uint64_t a_4)
 		{
 			if (a_ssn == GetShadowSceneNode()) {
+				CasterObservation::Invalidate();
 				s_pendingSessionReset.store(true, std::memory_order_release);
 				s_teardownWaiting.store(true, std::memory_order_release);
 				const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
@@ -997,6 +1000,7 @@ namespace ShadowCasterManager
 		static void thunk(RE::ShadowSceneNode* a_ssn, RE::BSPortalGraph* a_graph)
 		{
 			std::unique_lock lock(s_portalGraphMutex);
+			CasterObservation::Invalidate();
 			func(a_ssn, a_graph);
 			// Cell-grid shift: freed caster geometry can have its address recycled
 			// by the new cell, aliasing s_casterMobility's stale identity onto it.
@@ -1015,8 +1019,10 @@ namespace ShadowCasterManager
 		static void thunk(RE::ShadowSceneNode* a_ssn, RE::BSLight* a_light, void* a3, std::uint8_t a4)
 		{
 			std::shared_lock lock(s_portalGraphMutex, std::try_to_lock);
-			if (!lock.owns_lock())
+			if (!lock.owns_lock()) {
+				CasterObservation::Incomplete();
 				return;  // ResetScene is swapping portalGraph; skip rather than read a null graph
+			}
 			func(a_ssn, a_light, a3, a4);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;

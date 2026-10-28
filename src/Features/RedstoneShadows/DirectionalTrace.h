@@ -20,9 +20,11 @@ namespace RedstoneShadow
 		/** @brief Retires frames and consumes completed raw output without CPU waits. */
 		void Retire();
 		/** @brief Traces a bounded current native receiver grid against a retained completed TLAS. */
-		void Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes);
+		void Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight = false);
 		/** @brief Returns a raw preview view whose image remains owned by this service. */
 		ID3D11ShaderResourceView* Preview() const { return previewValid && preview ? preview->srv.get() : nullptr; }
+		/** @brief Returns the completed preview dimensions for an undistorted diagnostic image. */
+		std::array<uint32_t, 2> PreviewSize() const { return previewSize; }
 		/** @brief Records an ImGui preview draw reference separately from scene-lighting consumption. */
 		void MarkPreviewDrawSubmitted() { if (Preview()) ++previewDrawSubmissions; }
 		/** @brief Reports raw traversal and preview evidence without claiming RR or replacement coverage. */
@@ -52,7 +54,7 @@ namespace RedstoneShadow
 		};
 		void CreatePipeline();
 		void PrepareReceivers(Frame& a_frame, const std::array<uint32_t, 2>& a_nativeSize);
-		void Record(Frame& a_frame, const float3& a_direction);
+		void Record(Frame& a_frame, const float3& a_direction, bool a_localLight);
 		void Consume(Frame& a_frame);
 		uint64_t ResidentBytes() const;
 		GraphicsBackend backend;
@@ -67,6 +69,7 @@ namespace RedstoneShadow
 		uint64_t generation = 0, nextCompletion = 0, submissions = 0, completions = 0, previewDrawSubmissions = 0, busyFrames = 0, budgetDeferrals = 0;
 		uint32_t previewFrame = 0;
 		bool previewValid = false;
+		bool localLightMode = false;
 		std::string failure;
 	};
 }

@@ -15,6 +15,7 @@ namespace RedstoneShadow
 		uint64_t allocationBytes = 0;
 		uint64_t indexOffset = 0;
 		uint64_t validationOffset = 0;
+		bool prepared = false;
 	};
 
 	/** @brief Converts owned D3D11 geometry into persistent DX12 buffers through existing texture interop. */
@@ -35,6 +36,12 @@ namespace RedstoneShadow
 		json GetDiagnostics() const;
 		/** @brief Retains a copy-complete DX12 mesh for independently fenced consumers. */
 		std::shared_ptr<const Geometry> Find(const Mesh* a_mesh) const;
+		/** @brief Reads render-owned export progress to avoid rebuilding preparation on unchanged polls. */
+		uint64_t Progress() const { return completed; }
+		/** @brief Exposes latched transport failure without allocating diagnostics. */
+		bool Failed() const { return failed; }
+		/** @brief Reports export deferrals for bounded batch abandonment. */
+		uint64_t BudgetDeferrals() const { return budgetDeferrals; }
 
 	private:
 		static constexpr uint32_t kTextureWidth = 1024;
@@ -66,5 +73,7 @@ namespace RedstoneShadow
 		uint64_t nextFence = 0;
 		bool failed = false;
 		std::string failure;
+		std::string lastDeferral;
+		uint64_t lastRequiredBytes = 0, lastBudgetBytes = 0;
 	};
 }

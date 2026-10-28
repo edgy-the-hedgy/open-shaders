@@ -3,6 +3,7 @@ Texture2D<float4> Receivers : register(t1);
 StructuredBuffer<uint> ValidationOffsets : register(t2);
 ByteAddressBuffer GeometryBuffers[8192] : register(t0, space1);
 RWTexture2D<float4> Shadow : register(u0);
+static const uint OpaqueInstanceMask = 1;
 
 cbuffer Trace : register(b0)
 {
@@ -35,21 +36,31 @@ void main(uint3 id : SV_DispatchThreadID)
 		Shadow[id.xy] = 0;
 		return;
 	}
+	float maximum = MaximumDistance;
+	float3 localDirection = LightDirection - (receiver.xyz + CameraOrigin);
+	if (Padding.x != 0) {
+		maximum = min(MaximumDistance, length(localDirection) - MinimumDistance);
+		if (maximum <= MinimumDistance || !isfinite(maximum)) {
+			Shadow[id.xy] = float4(65504.0, 1.0, 1.0, 1.0);
+			return;
+		}
+	}
 	uint seed = Hash(id.x + id.y * Size.x + FrameIndex * 0x9e3779b9);
 	float2 diskSample = float2(seed & 0xffff, seed >> 16) / 65536.0;
 	float cosine = lerp(1.0, cos(AngularRadius), diskSample.x);
 	float sine = sqrt(saturate(1.0 - cosine * cosine));
-	float3 tangent = normalize(cross(abs(LightDirection.z) < 0.9 ? float3(0, 0, 1) : float3(0, 1, 0), LightDirection));
-	float3 bitangent = cross(LightDirection, tangent);
+	float3 axis = Padding.x != 0 ? normalize(localDirection) : normalize(LightDirection);
+	float3 tangent = normalize(cross(abs(axis.z) < 0.9 ? float3(0, 0, 1) : float3(0, 1, 0), axis));
+	float3 bitangent = cross(axis, tangent);
 	float angle = diskSample.y * 6.28318530718;
-	float3 direction = normalize(cosine * LightDirection + sine * (cos(angle) * tangent + sin(angle) * bitangent));
+	float3 direction = normalize(cosine * axis + sine * (cos(angle) * tangent + sin(angle) * bitangent));
 	RayDesc ray;
 	ray.Origin = receiver.xyz + CameraOrigin;
 	ray.Direction = direction;
 	ray.TMin = MinimumDistance;
-	ray.TMax = MaximumDistance;
+	ray.TMax = maximum;
 	RayQuery<RAY_FLAG_FORCE_NON_OPAQUE | RAY_FLAG_CULL_BACK_FACING_TRIANGLES> query;
-	query.TraceRayInline(Scene, RAY_FLAG_NONE, 0xff, ray);
+	query.TraceRayInline(Scene, RAY_FLAG_NONE, OpaqueInstanceMask, ray);
 	bool invalidGeometry = false;
 	while (query.Proceed()) {
 		if (query.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;

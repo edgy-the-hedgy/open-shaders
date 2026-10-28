@@ -21,6 +21,7 @@
 #include "LitCap.h"
 #include "LitRegion.h"
 #include "ShadowCasterInternal.h"
+#include "CasterObservation.h"
 #include "SplitLatchBackoff.h"
 
 #include <Windows.h>  // SEH (__try) for the shadow-light usability backstop
@@ -1201,7 +1202,9 @@ namespace ShadowCasterManager
 				// attach otherwise casts nothing forever.
 				s_healAttached.clear();
 				s_accumRebuildAttach.store(light->geomList.empty(), std::memory_order_relaxed);
+				const bool observing = CasterObservation::Begin(accumFrame, idx, s_lights.Lights[idx].observationGeneration, static_cast<uint32_t>(mode));
 				s_cpuAccumUs.fetch_add(TimeUs([&] { light->Accumulate(idx, idx, nullptr); }), std::memory_order_relaxed);
+				if (observing) CasterObservation::End();
 				s_accumRebuildAttach.store(false, std::memory_order_relaxed);
 				s_cpuAccumN.fetch_add(1, std::memory_order_relaxed);
 				s_splitAccumByMode[static_cast<int>(mode)].fetch_add(1, std::memory_order_relaxed);
@@ -1406,6 +1409,8 @@ namespace ShadowCasterManager
 	// propagation without /EHa; a left-unreset cull light filters every walk after.
 	static void LogShadowSehCatch(RE::BSShadowLight* a_light = nullptr)
 	{
+		CasterObservation::Incomplete();
+		CasterObservation::End();
 		SetCurrentCullLight(nullptr);
 		s_cullPassMode.store(static_cast<int>(CasterPass::All), std::memory_order_relaxed);
 		static std::atomic<int> n{ 0 };
@@ -2110,6 +2115,7 @@ namespace ShadowCasterManager
 					// A tile can be parked at any light-free index; reclaim it only inside the point range.
 					if (ownerIdx >= pointFirst && ownerIdx < pointEnd && !s_lights.Lights[ownerIdx].Light) {
 						s_lights.Lights[ownerIdx].Light = c.light;
+						s_lights.Lights[ownerIdx].observationGeneration = CasterObservation::NewLightGeneration();
 						reclaimed = true;
 					}
 				}
@@ -2143,6 +2149,7 @@ namespace ShadowCasterManager
 					s_hashRadiusAnchor.erase(ni);
 				}
 				s_lights.Lights[idx].Light = cp->light;
+				s_lights.Lights[idx].observationGeneration = CasterObservation::NewLightGeneration();
 			}
 
 			// Update sun slot (slot 0).
@@ -3652,6 +3659,8 @@ namespace ShadowCasterManager
 		// change can delete[]/new[] s_lights.Lights concurrently); held for the whole
 		// pass so every s_lights.Lights[slot] access sees a consistent pointer/Size pair.
 		std::shared_lock poolLock(s_lightsPoolMutex);
+		CasterObservation::Select(globals::state->frameCountAtomic.load(std::memory_order_relaxed), s_lights.PointLightFirst(),
+			uint32_t(std::max(0, std::min(s_settings.ShadowLightCount, s_lights.Size - s_lights.PointLightFirst()))));
 
 		// Drain a pending teardown reset before touching any slot, then SKIP this pass:
 		// ClearLightArrays frees the lights but doesn't shrink activeShadowLights, so

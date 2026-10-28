@@ -10,7 +10,8 @@ namespace DevBenchBridge::ToolSpecs
 		R"(features with restart-gated settings also include restartFields:[{key,label,pending}]. get: params shortName, returns the )"
 		R"(SaveSettings blob (null if the feature has no override; set/reset then no-op). Anti-Lag 2 is automatic for a supported FSR Frame Generation session, with no independent setting or FPS cap. )"
 		R"(RedstoneGI.Selected selects RGI at runtime in eligible FSR-FG sessions; false selects an available native provider. Read actual state with the RedstoneGI redstoneStatus query. RedstoneGI.OccluderDepth controls assumed occluder depth for all four Redstone signals (1..300 world units, default 300), independently of original SSGI. )"
-		R"(RedstoneShadows independently exposes AcquireScene (boolean, default false), NodesPerFrame (64..8192), MaxInstances (128..32768) and BufferBudgetMB (16..512). Acquisition builds partial opaque BLAS/TLAS and retains native shadow ownership. Unsaved runtime flags TraceDirectional and PreviewDirectional enable DXR 1.1 raw queries and their asynchronous preview; PreviewDirectional also enables tracing. Both require AcquireScene. shadowStatus distinguishes geometry export, AS builds, traversal, debug display, RR and scene-lighting consumption. )"
+		R"(RedstoneShadows exposes AcquireScene (boolean, default false), MaxInstances (1..256) and BufferBudgetMB (16..512). NodesPerFrame is retained only for old settings compatibility and no longer controls a scene walk. Opt-in acquisition samples one rotating SCM local-light slot only when it naturally accumulates, then prepares opaque BLAS/TLAS asynchronously. Native shadow production remains active. Runtime flag CaptureDebug enables a temporary flat-screen overlay of copied caster bounds, light slot/lifetime, capture age, omissions and live copy/export/AS progress, export budget/deferral reasons, discarded batches, retained worker counter samples and last completed TLAS identity, plus selection/capture/callback counts, first-failure admission reasons and epoch discards; default false, not saved. SSE rigid positions use float XYZ regardless of FULLPREC; admission validates a 16-byte position prefix and following attribute offsets. Counters include admittedWithoutFullPrecisionFlag and unsupportedPositionLayout. Bounds are partial diagnostic snapshots, not triangle or visibility proof. Runtime flags TraceDirectional and PreviewDirectional are always false and reject enabling because this local-light scope cannot supply directional coverage. shadowStatus reports source revisions, queue/worker progress, partial coverage and costs. SCM observation does not trace; prepared-mode trace counters are independent. RR, production lighting consumption and CPU bypass remain false. )"
+		R"(RedstoneShadows also exposes UsePreparedScene and PreviewPreparedScene (booleans, default false) and PreparedLight (0..255 baseline light index). Prepared mode replaces SCM acquisition as geometry input, reads the current interior's prepared package once on a worker, and builds all supplied mesh instances including material-masked geometry. Optional local-light tracing runs after world depth completion, at most once every eight rendered frames, into an incomplete diagnostic preview. Native lighting and GI remain authoritative. shadowStatus reports prepared loading, AS, trace and preview counters; no runtime coverage or production consumption is implied. )"
 		R"(Upscaling exposes enableDLSSFrameGen (boolean, default false); )"
 		R"(existing configurations must opt in explicitly and restart to use NVIDIA DLSS-G. PostProcessing includes cinematic_camera settings for the optional linked physical camera; )"
 		R"(use get/set with shortName PostProcessing to inspect or change them without saving. LinearLighting uses Jiaye's per-channel diffuse calibration with fixed gamma 2.2, reflectance 0.5 at encoded 0.5, )"
@@ -74,9 +75,16 @@ namespace DevBenchBridge::ToolSpecs
 		R"(gamma offsets and opacity controls retain their meanings."
 		},
 		"enabled": {"type":"boolean"},
-		"name": {"type":"string"},
+		"name": {"type":"string","description":"Runtime flag name from runtimeGet; RedstoneShadows CaptureDebug toggles temporary capture bounds, pipeline diagnostics and selection/capture/callback/admission counters; totals persist across toggles."},
 		"value": {"type":"boolean"}
 	},
+	"allOf": [{
+		"if": {
+			"properties":{"action":{"const":"runtimeSet"},"shortName":{"const":"RedstoneShadows"},"name":{"enum":["TraceDirectional","PreviewDirectional"]}},
+			"required":["action","shortName","name"]
+		},
+		"then":{"properties":{"value":{"const":false}}}
+	}],
 	"oneOf": [
 		{
 			"properties": {

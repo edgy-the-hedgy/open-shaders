@@ -159,7 +159,7 @@ namespace RedstoneShadow
 		DX::ThrowIfFailed(backend.commandQueue->Wait(producer.fence12.get(), produced));
 	}
 
-	void DirectionalTrace::Record(Frame& a_frame, const float3& a_direction)
+	void DirectionalTrace::Record(Frame& a_frame, const float3& a_direction, bool a_localLight)
 	{
 		CS_GPU_PASS("RedstoneShadows::DirectionalTraversal");
 		a_frame.root = root;
@@ -223,7 +223,7 @@ namespace RedstoneShadow
 			uint32_t padding[3]{};
 		};
 		const auto& origin = globals::game::frameBufferCached.GetCameraPosAdjust();
-		const Constants constants{ a_frame.size[0], a_frame.size[1], a_frame.number, uint32_t(offsets.size()), a_direction, kRayMaximum, { origin.x, origin.y, origin.z }, kRayMinimum, kSunAngularRadius };
+		const Constants constants{ a_frame.size[0], a_frame.size[1], a_frame.number, uint32_t(offsets.size()), a_direction, kRayMaximum, { origin.x, origin.y, origin.z }, kRayMinimum, a_localLight ? 0.0f : kSunAngularRadius, { a_localLight ? 1u : 0u, 0, 0 } };
 		static_assert(sizeof(Constants) == 16 * sizeof(uint32_t));
 		commands->SetComputeRoot32BitConstants(5, 16, &constants, 0);
 		const D3D12_RESOURCE_BARRIER begin[]{
@@ -308,7 +308,7 @@ namespace RedstoneShadow
 		} catch (const std::exception& error) { failure = error.what(); previewValid = false; }
 	}
 
-	void DirectionalTrace::Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes)
+	void DirectionalTrace::Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight)
 	{
 		CS_GPU_PASS("RedstoneShadows::DirectionalDispatch");
 		if (!pipeline || !failure.empty() || !a_scene || a_scene->instances.empty() || a_scene->instances.size() > kMaximumInstances || !a_nativeSize[0] || !a_nativeSize[1]) return;
@@ -341,7 +341,8 @@ namespace RedstoneShadow
 			available->receivers = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RedstoneShadows::Receivers");
 			available->output = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RedstoneShadows::BlockerDistance");
 			PrepareReceivers(*available, a_nativeSize);
-			Record(*available, a_lightDirection);
+			Record(*available, a_lightDirection, a_localLight);
+			localLightMode = a_localLight;
 		} catch (const std::exception& error) {
 			failure = error.what(); previewValid = false;
 			if (!available->submitted) *available = {};
@@ -354,7 +355,8 @@ namespace RedstoneShadow
 			{ "submissions", submissions }, { "completions", completions }, { "previewDrawSubmissions", previewDrawSubmissions },
 			{ "previewValid", previewValid }, { "previewFrame", previewFrame }, { "previewSize", previewSize },
 			{ "residentBytes", ResidentBytes() }, { "budgetDeferrals", budgetDeferrals }, { "busyFrames", busyFrames },
-			{ "failure", failure }, { "minimumDistance", kRayMinimum }, { "maximumDistance", kRayMaximum }, { "angularRadius", kSunAngularRadius },
+			{ "failure", failure }, { "minimumDistance", kRayMinimum }, { "maximumDistance", kRayMaximum }, { "angularRadius", localLightMode ? 0.0f : kSunAngularRadius },
+			{ "lightMode", localLightMode ? "baseline-local" : "directional" },
 			{ "blockerDistance", "nearest accepted triangle along the sampled unit direction; exposed sentinel 65504" },
 			{ "coverageValid", false }, { "sceneLightingConsumed", false }, { "rrSubmitted", false }
 		};

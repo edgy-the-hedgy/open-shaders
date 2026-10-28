@@ -79,7 +79,7 @@ namespace RedstoneShadow
 		a_mesh->indices->GetDesc(&indices);
 		const uint64_t words = uint64_t(vertices.ByteWidth) / sizeof(uint32_t) + indices.ByteWidth / sizeof(uint16_t) + 1;
 		const auto height = (words + kTextureWidth - 1) / kTextureWidth;
-		if (!height || height > kMaximumTextureHeight) { ++budgetDeferrals; return; }
+		if (!height || height > kMaximumTextureHeight) { ++budgetDeferrals; lastDeferral = "Mesh exceeds export texture height limit"; lastRequiredBytes = 0; lastBudgetBytes = a_budgetBytes; return; }
 		const uint64_t sharedBytes = kTextureWidth * height * sizeof(uint32_t);
 		const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
 		const auto buffer = CD3DX12_RESOURCE_DESC::Buffer(sharedBytes);
@@ -89,7 +89,13 @@ namespace RedstoneShadow
 		const auto textureAllocation = backend.d3d12Device->GetResourceAllocationInfo(0, 1, &texture);
 		if (bufferAllocation.SizeInBytes == UINT64_MAX || textureAllocation.SizeInBytes == UINT64_MAX) throw std::runtime_error("Geometry allocation layout unsupported");
 		const uint64_t required = bufferAllocation.SizeInBytes + textureAllocation.SizeInBytes + a_mesh->bytes;
-		if (required > a_budgetBytes || ResidentBytes() > a_budgetBytes - required) { ++budgetDeferrals; return; }
+		if (required > a_budgetBytes || ResidentBytes() > a_budgetBytes - required) {
+			++budgetDeferrals;
+			lastDeferral = required > a_budgetBytes ? "One mesh exceeds stage budget" : "Resident exports leave insufficient stage budget";
+			lastRequiredBytes = required;
+			lastBudgetBytes = a_budgetBytes;
+			return;
+		}
 		D3D11_TEXTURE2D_DESC desc{};
 		desc.Width = kTextureWidth;
 		desc.Height = uint32_t(height);
@@ -234,6 +240,8 @@ namespace RedstoneShadow
 			{ "submittedExports", submitted }, { "completedExports", completed }, { "residentMeshes", geometries.size() },
 			{ "residentBytes", ResidentBytes() }, { "busyFrames", busyFrames }, { "budgetDeferrals", budgetDeferrals },
 			{ "failed", failed }, { "failure", failure }, { "cpuReadbacks", 0 },
+			{ "lastDeferral", lastDeferral }, { "lastRequiredBytes", lastRequiredBytes }, { "lastBudgetBytes", lastBudgetBytes },
+			{ "submittedFence", nextFence }, { "completedFence", completion ? completion->GetCompletedValue() : 0 },
 			{ "coverageValid", false }
 		};
 	}
