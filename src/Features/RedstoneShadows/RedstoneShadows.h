@@ -13,12 +13,15 @@ struct RedstoneShadows final : OverlayFeature
 {
 	struct Settings
 	{
+		//yes this slider should be moved to FSR-RayRegeneration but until settings catalogue is optimized i will be staying here
+		//peace and love, egdy
+		float RedstoneBlend = 1.0f;
 		bool AcquireScene = false;
 		bool UsePreparedScene = false;
 		bool PreviewPreparedScene = false;
 		bool UsePreparedMaterials = false;
 		bool UsePreparedDirectLighting = false;
-		bool UseAllPreparedLights = false;
+		bool UseAllPreparedLights = true;
 		bool ConnectIndirectLighting = true;
 		bool UseDirectRayRegeneration = true;
 		bool UseDXRIndirect = false;
@@ -28,6 +31,7 @@ struct RedstoneShadows final : OverlayFeature
 		float SpecularStrength = 1.0f;
 		float EmissionStrength = 1.0f;
 		float IndirectStrength = 1.0f;
+		float RedstoneBlend = 1.0f;
 		uint32_t PreparedMaterialView = 0;
 		uint32_t MaterialTextureBudgetMB = 512;
 		uint32_t DirectLightingBudgetMB = 256;

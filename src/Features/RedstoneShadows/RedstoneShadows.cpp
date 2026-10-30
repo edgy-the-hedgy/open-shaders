@@ -9,7 +9,7 @@
 #include "Util.h"
 #include <chrono>
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RedstoneShadows::Settings, AcquireScene, UsePreparedScene, PreviewPreparedScene, UsePreparedMaterials, UsePreparedDirectLighting, UseAllPreparedLights, ConnectIndirectLighting, UseDirectRayRegeneration, UseDXRIndirect, IndirectRays, IndirectStrength, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, PreparedMaterialView, MaterialTextureBudgetMB, DirectLightingBudgetMB, PreparedLight, NodesPerFrame, MaxInstances, BufferBudgetMB)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RedstoneShadows::Settings, AcquireScene, UsePreparedScene, PreviewPreparedScene, UsePreparedMaterials, UsePreparedDirectLighting, UseAllPreparedLights, ConnectIndirectLighting, UseDirectRayRegeneration, UseDXRIndirect, IndirectRays, IndirectStrength, RedstoneBlend, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, PreparedMaterialView, MaterialTextureBudgetMB, DirectLightingBudgetMB, PreparedLight, NodesPerFrame, MaxInstances, BufferBudgetMB)
 
 std::pair<std::string, std::vector<std::string>> RedstoneShadows::GetFeatureSummary()
 {
@@ -28,6 +28,7 @@ void RedstoneShadows::LoadSettings(json& a_json)
 	selected.PreparedMaterialView = std::min(selected.PreparedMaterialView, RedstoneShadow::DirectionalTrace::kCombinedDirectView);
 	selected.MaterialTextureBudgetMB = std::clamp(selected.MaterialTextureBudgetMB, 64u, 1024u);
 	selected.DirectLightingBudgetMB = std::clamp(selected.DirectLightingBudgetMB, 64u, 1024u);
+	selected.RedstoneBlend = std::isfinite(selected.RedstoneBlend) ? std::clamp(selected.RedstoneBlend, 0.0f, 1.0f) : 1.0f;
 	if (selected.UsePreparedScene != settings.UsePreparedScene) ready = false;
 	for (auto* value : { &selected.DirectStrength, &selected.DiffuseStrength, &selected.SpecularStrength, &selected.EmissionStrength, &selected.IndirectStrength })
 		*value = std::isfinite(*value) ? std::clamp(*value, 0.0f, 8.0f) : 1.0f;
@@ -255,6 +256,7 @@ void RedstoneShadows::DrawSettings()
 		ImGui::Text("Ready source materials: %u | rejected: %u", trace.value("readySourceMaterials", 0u), trace.value("rejectedSourceMaterials", 0u));
 		if (!trace.value("materialFailure", std::string{}).empty()) ImGui::TextWrapped("%s", trace.at("materialFailure").get_ref<const std::string&>().c_str());
 	}
+	ImGui::SliderFloat("Raster / Redstone blend", &settings.RedstoneBlend, 0.0f, 1.0f, "%.2f");
 	ImGui::SliderFloat("Direct lighting strength", &settings.DirectStrength, 0.0f, 8.0f, "%.2fx");
 	ImGui::SliderFloat("Direct diffuse strength", &settings.DiffuseStrength, 0.0f, 8.0f, "%.2fx");
 	ImGui::SliderFloat("Direct specular strength", &settings.SpecularStrength, 0.0f, 8.0f, "%.2fx");

@@ -29,6 +29,8 @@ cbuffer LightingComposite : register(b0)
 	uint UseDirectRR;
 	float IndirectStrength;
 	uint UseDXRIndirect;
+	float RedstoneBlend;
+	float3 Padding;
 };
 
 [numthreads(8, 8, 1)]
@@ -40,6 +42,7 @@ void main(uint3 id : SV_DispatchThreadID)
 	uint targetWidth, targetHeight;
 	SceneColor.GetDimensions(targetWidth, targetHeight);
 	if (id.x >= targetWidth || id.y >= targetHeight) return;
+	if (RedstoneBlend <= 0.0f) return;
 	float4 lighting = DirectLighting.Load(int3(id.xy, 0));
 	if (lighting.w != DirectRadianceTag || !all(isfinite(lighting.rgb))) return;
 	uint rrFlags = UseDirectRR;
@@ -79,5 +82,14 @@ void main(uint3 id : SV_DispatchThreadID)
 		working += (diffuse + specular) * IndirectStrength;
 	}
 	if (!all(isfinite(working))) return;
-	SceneColor[id.xy] = float4(Color::SceneLinearToGamma(working), 1);
+	if (RedstoneBlend >= 1.0f) {
+        SceneColor[id.xy] = float4(Color::SceneLinearToGamma(working), 1.0f);
+        return;
+    }
+
+    float4 raster = SceneColor[id.xy];
+    float3 rasterLinear = Color::SceneGammaToLinear(raster.rgb);
+    float3 blendedLinear = lerp(rasterLinear, working, saturate(RedstoneBlend));
+
+    SceneColor[id.xy] = float4(Color::SceneLinearToGamma(blendedLinear), raster.a);
 }

@@ -1,5 +1,6 @@
 #include "DirectionalTrace.h"
 
+#include "RedstoneShadows.h"
 #include "Globals.h"
 #include "GpuPass.h"
 #include "State.h"
@@ -490,7 +491,7 @@ namespace RedstoneShadow
 	{
 		CS_GPU_PASS("RedstoneShadows::DirectSceneComposite");
 		auto* context = backend.d3d11Context.get();
-		struct Settings { uint32_t indirect, directRR; float indirectStrength; uint32_t padding; };
+		struct Settings { uint32_t indirect, directRR; float indirectStrength; uint32_t useDXRIndirect; float redstoneBlend; float padding[3]{}; };
 		if (!lightingCompositeSettings) lightingCompositeSettings = std::make_unique<ConstantBuffer>(ConstantBufferDesc<Settings>(), "RedstoneShadows::LightingComposite CB");
 		winrt::com_ptr<ID3D11ComputeShader> shader;
 		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 15> inputs;
@@ -517,7 +518,7 @@ namespace RedstoneShadow
 		auto& indirect = globals::features::redstoneGI;
 		const bool useIndirect = a_frame.useIndirect && indirect.HasCurrentIndirectLighting();
 		if (useIndirect) indirect.BindCompositeResources();
-		lightingCompositeSettings->Update(Settings{ useIndirect ? 1u : 0u, rrFlags, a_frame.indirectStrength, a_frame.indirectRays != 0 ? 1u : 0u });
+		lightingCompositeSettings->Update(Settings{ useIndirect ? 1u : 0u, rrFlags, a_frame.indirectStrength, a_frame.indirectRays != 0 ? 1u : 0u, globals::features::redstoneShadows.settings.RedstoneBlend });
 		auto* cb = lightingCompositeSettings->CB();
 		context->CSSetConstantBuffers(0, 1, &cb);
 		const auto& targets = globals::game::renderer->GetRuntimeData().renderTargets;
