@@ -1,20 +1,27 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Reflection;
 using NiflySharp;
 using NiflySharp.Blocks;
 using NiflySharp.Enums;
 
 internal sealed record CompiledMaterial(uint ShaderFlags1, uint ShaderFlags2, string ShaderType, bool TwoSided,
-    float Alpha, uint? AlphaFlags, string[] Textures, float[] UvOffsetScale);
+    float Alpha, uint? AlphaFlags, string[] Textures, float[] UvOffsetScale,
+    byte? AlphaThreshold, uint TextureClampMode, float[] EmissiveColor, float EmissiveMultiple,
+    float[] SpecularColor, float SpecularStrength, float Glossiness, float EnvironmentMapScale,
+    string Interpretation = "raw-patched-nif-parameters; material evaluation and reference overrides unresolved");
 internal sealed record CompiledShape(int BlockIndex, string Name, string BlockType, string Status, string? GeometryFile,
     string? GeometrySha256, int VertexCount, int IndexCount, float[]? ShapeToModel, float[]? LocalBounds, CompiledMaterial? Material,
-    bool OpaqueOccluderCandidate = false);
+    bool OpaqueOccluderCandidate = false, string ShadingStatus = "not-compiled", string? ShadingFile = null, string? ShadingSha256 = null,
+    string TangentStatus = "absent:shading");
 internal sealed record CompiledNif(string SourcePath, string SourceSha256, string CompilerKey, string Status, bool CacheHit,
     int EmbeddedLights, CompiledShape[] Shapes);
 
 internal sealed class MeshCompiler
 {
+    private static readonly FieldInfo TextureClampField = typeof(BSLightingShaderProperty).GetField("_textureClampMode", BindingFlags.Instance | BindingFlags.NonPublic)
+        ?? throw new InvalidOperationException("Pinned Nifly texture clamp field is unavailable.");
     private readonly string output;
     private readonly JsonSerializerOptions options;
     private readonly string compilerKey;
@@ -25,6 +32,13 @@ internal sealed class MeshCompiler
         options = jsonOptions;
         var executable = File.ReadAllBytes(typeof(MeshCompiler).Assembly.Location);
         compilerKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("rigid-opaque-v1/Nifly-1.1.0/" + Convert.ToHexString(SHA256.HashData(executable))))).ToLowerInvariant();
+            // Include settings in the compiler cache key so changed test depth recompiles meshes.
+            compilerKey = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
+                compilerKey + "/DXRHEIGHT-v1/" + string.Join("/", new[] {
+                    "REDSTONE_DXR_HEIGHT_ENABLED", "REDSTONE_DXR_HEIGHT_SCALE", "REDSTONE_DXR_AO_SCALE",
+                    "REDSTONE_DXR_SUBDIV", "REDSTONE_DXR_TRI_CAP", "REDSTONE_DXR_HEIGHT_REF",
+                    "REDSTONE_DXR_HEIGHT_TARGET", "REDSTONE_DXR_FLIP_V"
+                }.Select(k => Environment.GetEnvironmentVariable(k) ?? ""))))).ToLowerInvariant();
     }
 
     public CompiledNif Compile(PgAsset asset)
@@ -37,7 +51,7 @@ internal sealed class MeshCompiler
             {
                 var cached = JsonSerializer.Deserialize<CompiledNif>(File.ReadAllText(cacheFile), options);
                 if (cached != null && cached.CompilerKey == compilerKey && cached.SourceSha256 == asset.Sha256 && cached.Shapes != null &&
-                    cached.Shapes.All(shape => shape != null && (shape.GeometryFile == null ? shape.Status != "compiled" && !shape.Status.StartsWith("preview-only:", StringComparison.Ordinal) : VerifyGeometry(shape))))
+                    cached.Shapes.All(shape => shape != null && (shape.GeometryFile == null ? shape.Status != "compiled" && !shape.Status.StartsWith("preview-only:", StringComparison.Ordinal) : VerifyGeometry(shape)) && VerifyShading(shape)))
                     return cached with { SourcePath = asset.Path, CacheHit = true };
             }
             catch (JsonException) { }
@@ -74,6 +88,15 @@ internal sealed class MeshCompiler
         return File.Exists(path) && Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))).Equals(shape.GeometrySha256, StringComparison.OrdinalIgnoreCase);
     }
 
+    private bool VerifyShading(CompiledShape shape)
+    {
+        if (shape.ShadingStatus != "compiled") return shape.ShadingFile == null && shape.ShadingSha256 == null;
+        var hash = shape.ShadingSha256;
+        if (hash == null || hash.Length != 64 || !hash.All(Uri.IsHexDigit) || shape.ShadingFile != $"shading/{hash}.rsga") return false;
+        var path = Path.Combine(output, shape.ShadingFile);
+        return File.Exists(path) && Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))).Equals(hash, StringComparison.OrdinalIgnoreCase);
+    }
+
     private CompiledShape CompileShape(NifFile file, INiShape shape, NifTransforms transforms)
     {
         file.GetBlockIndex(shape, out var index);
@@ -88,7 +111,13 @@ internal sealed class MeshCompiler
             var textures = file.GetBlock(shader.TextureSetRef)?.Textures?.Select(texture => texture.Content).ToArray() ?? [];
             material = new((uint)shader.ShaderFlags_SSPF1, (uint)shader.ShaderFlags_SSPF2, shader.ShaderType_SK_FO4.ToString(),
                 shader.ShaderFlags_SSPF2.HasFlag(SkyrimShaderPropertyFlags2.Double_Sided), shader.Alpha,
-                alpha == null ? null : alpha.Flags.Value, textures, [shader.UVOffset.U, shader.UVOffset.V, shader.UVScale.U, shader.UVScale.V]);
+                alpha == null ? null : alpha.Flags.Value, textures, [shader.UVOffset.U, shader.UVOffset.V, shader.UVScale.U, shader.UVScale.V],
+                alpha?.Threshold, Convert.ToUInt32(TextureClampField.GetValue(shader)),
+                [shader.EmissiveColor.R, shader.EmissiveColor.G, shader.EmissiveColor.B], shader.EmissiveMultiple,
+                [shader.SpecularColor.R, shader.SpecularColor.G, shader.SpecularColor.B], shader.SpecularStrength, shader.Glossiness, shader.EnvironmentMapScale);
+            var scalars = new[] { material.Alpha, material.EmissiveMultiple, material.SpecularStrength, material.Glossiness, material.EnvironmentMapScale };
+            if (!scalars.Concat(material.EmissiveColor).Concat(material.SpecularColor).Concat(material.UvOffsetScale).All(float.IsFinite))
+                throw new InvalidDataException("Non-finite patched material parameters.");
         }
         var reason = shape is not BSTriShape || type is not ("BSTriShape" or "BSSubIndexTriShape") ? "unsupported-shape-type" :
             shape.HasSkinInstance || shape.IsSkinned ? "skinned-shape" : transform.Exclusion;
@@ -113,8 +142,11 @@ internal sealed class MeshCompiler
             var vertices = ((BSTriShape)shape).VertexPositions;
             var triangles = shape.Triangles;
             var blob = GeometryBlob.Write(output, vertices, triangles);
-            return new(index, name, type, previewOnly ? "preview-only:" + reason : "compiled", blob.Path, blob.Sha256,
-                vertices.Count, checked(triangles.Count * 3), transform.Matrix, blob.Bounds, material, !previewOnly);
+            var shading = ShadingBlob.Write(output, (BSTriShape)shape);
+            var quick = DxrHeightQuick.Apply(output, material, blob, shading, vertices.Count, checked(triangles.Count * 3));
+            return new(index, name, type, previewOnly ? "preview-only:" + reason : "compiled",
+                quick.GeometryFile, quick.GeometrySha, quick.VertexCount, quick.IndexCount, transform.Matrix,
+                quick.Bounds, material, !previewOnly, quick.ShadingStatus, quick.ShadingFile, quick.ShadingSha, quick.TangentStatus);
         }
         catch (InvalidDataException error)
         {

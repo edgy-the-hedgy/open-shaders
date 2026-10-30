@@ -30,6 +30,8 @@ private:
 	static constexpr std::string_view MOD_ID = "156952";
 
 public:
+	/** @brief Imports prior GI-owned reconstruction controls into the Upscaling settings block. */
+	void ImportLegacySettings(json& a_root) override;
 	/** @brief Draws the neural-rendering diagnostics overlay. */
 	void DrawOverlay() override;
 	bool IsOverlayVisible() const override;

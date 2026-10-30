@@ -23,6 +23,30 @@ foreach ($mesh in ($manifest.instances | Sort-Object geometrySha256 -Unique)) {
     if ((Get-FileHash -LiteralPath $sourceFile -Algorithm SHA256).Hash.ToLowerInvariant() -cne $hash) { throw "Prepared geometry hash mismatch: $hash" }
     Copy-Item -LiteralPath $sourceFile -Destination (Join-Path $geometryDirectory "$hash.rsgm") -Force
 }
+foreach ($attributes in ($manifest.instances | Where-Object { $_.shadingStatus -eq 'compiled' } | Sort-Object shadingSha256 -Unique)) {
+    $hash = $attributes.shadingSha256
+    if ($hash -notmatch '^[0-9a-f]{64}$' -or $attributes.shadingFile -cne "shading/$hash.rsga") { throw 'Invalid prepared shading path.' }
+    $sourceFile = Join-Path $source $attributes.shadingFile
+    if ((Get-FileHash -LiteralPath $sourceFile -Algorithm SHA256).Hash.ToLowerInvariant() -cne $hash) { throw "Prepared shading hash mismatch: $hash" }
+    $shadingDirectory = Join-Path $destination 'shading'
+    $null = New-Item -ItemType Directory -Path $shadingDirectory -Force
+    Copy-Item -LiteralPath $sourceFile -Destination (Join-Path $shadingDirectory "$hash.rsga") -Force
+}
+$textureManifest = Join-Path $source 'cell-textures.json'
+if (Test-Path -LiteralPath $textureManifest) {
+    $textures = Get-Content -LiteralPath $textureManifest -Raw | ConvertFrom-Json
+    if ($textures.schemaVersion -ne 1 -or $textures.cell -cne $manifest.cell -or $textures.layoutDigest -cne $manifest.layoutDigest) { throw 'Texture source manifest does not match prepared layout.' }
+    $textureDirectory = Join-Path $destination 'textures'
+    $null = New-Item -ItemType Directory -Path $textureDirectory -Force
+    foreach ($texture in ($textures.textures | Where-Object status -eq 'cached' | Sort-Object sha256 -Unique)) {
+        $hash = $texture.sha256
+        if ($hash -notmatch '^[0-9a-f]{64}$' -or $texture.file -cne "textures/$hash.dds") { throw 'Invalid prepared texture path.' }
+        $sourceFile = Join-Path $source $texture.file
+        if ((Get-FileHash -LiteralPath $sourceFile -Algorithm SHA256).Hash.ToLowerInvariant() -cne $hash) { throw "Prepared texture hash mismatch: $hash" }
+        Copy-Item -LiteralPath $sourceFile -Destination (Join-Path $textureDirectory "$hash.dds") -Force
+    }
+    Copy-Item -LiteralPath $textureManifest -Destination (Join-Path $destination 'cell-textures.json') -Force
+}
 Copy-Item -LiteralPath (Join-Path $source 'cell-layout.json') -Destination (Join-Path $destination 'cell-layout.json') -Force
 Write-Output "Staged prepared cell: $destination"
 Write-Output 'No game deployment or plugin build was performed.'

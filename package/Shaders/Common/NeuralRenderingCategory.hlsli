@@ -4,7 +4,7 @@
 /**
  * @brief Material category stored in the green channel of the deferred Masks2 target.
  *
- * Masks2 is R16G16_UNORM: r keeps 1 - vertexAO and g holds a category code. The target is alpha
+ * Masks2 uses R16G16_UNORM or extended RGBA16_UNORM: r keeps 1 - vertexAO and g holds a category code. The target is alpha
  * blended, so a blended pixel carries a mix of two codes. The codes are spaced so that no code is
  * the midpoint of two others, and Decode accepts only a value within a small window of an exact
  * code, so a blend decodes to None instead of a neighbouring material.

@@ -245,6 +245,10 @@ public:
 	virtual void BindCompositeResources() {}
 	/** @brief Retires private composite state and records output consumption. */
 	virtual void FinishComposite(bool) {}
+	/** @brief Offers the completed opaque lighting target before forward world rendering. */
+	virtual void OnAfterDeferredLighting(ID3D11UnorderedAccessView*, const std::array<uint32_t, 2>&) {}
+	/** @brief Requests extended opaque metadata for current-frame receiver room classification. */
+	virtual bool WantsOpaqueRoomMetadata() const { return false; }
 
 	/** @brief Allocates GPU resources (textures, buffers) needed by this feature. */
 	virtual void SetupResources() {}

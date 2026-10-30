@@ -108,6 +108,7 @@ void SetupRenderTarget(RE::RENDER_TARGET target, D3D11_TEXTURE2D_DESC texDesc, D
 
 void Deferred::SetupResources()
 {
+	opaqueMetadataAllocationFailed = false;
 	auto renderer = globals::game::renderer;
 
 	{
@@ -264,6 +265,49 @@ void Deferred::EarlyPrepasses()
 	CopyShadowLightData();
 
 	Feature::ForEachLoadedFeature("EarlyPrepass", [](Feature* feature) { feature->EarlyPrepass(); }, true);
+	UpdateOpaqueMetadataTarget();
+}
+
+void Deferred::UpdateOpaqueMetadataTarget()
+{
+	if (globals::game::isVR || opaqueMetadataAllocationFailed) return;
+	const bool extended = std::ranges::any_of(Feature::GetFeatureList(), [](const Feature* feature) {
+		return feature->loaded && feature->WantsOpaqueRoomMetadata();
+	});
+	auto& target = globals::game::renderer->GetRuntimeData().renderTargets[MASKS2];
+	if (!target.texture || !target.SRV || !target.RTV) return;
+	D3D11_TEXTURE2D_DESC desc{};
+	Util::AsReal(target.texture)->GetDesc(&desc);
+	const auto format = extended ? DXGI_FORMAT_R16G16B16A16_UNORM : DXGI_FORMAT_R16G16_UNORM;
+	if (desc.Format == format) return;
+	try {
+		if (target.textureCopy || target.SRVCopy || target.UAV) throw std::runtime_error("Opaque metadata has incompatible auxiliary views");
+		desc.Format = format;
+		winrt::com_ptr<ID3D11Texture2D> texture;
+		winrt::com_ptr<ID3D11ShaderResourceView> srv;
+		winrt::com_ptr<ID3D11RenderTargetView> rtv;
+		auto* device = globals::d3d::device;
+		DX::ThrowIfFailed(device->CreateTexture2D(&desc, nullptr, texture.put()));
+		Util::SetResourceName(texture.get(), "Deferred::OpaqueMetadata");
+		DX::ThrowIfFailed(device->CreateShaderResourceView(texture.get(), nullptr, srv.put()));
+		Util::SetResourceName(srv.get(), "Deferred::OpaqueMetadata SRV");
+		DX::ThrowIfFailed(device->CreateRenderTargetView(texture.get(), nullptr, rtv.put()));
+		Util::SetResourceName(rtv.get(), "Deferred::OpaqueMetadata RTV");
+		globals::d3d::context->OMSetRenderTargets(0, nullptr, nullptr);
+		globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
+		winrt::com_ptr<ID3D11Texture2D> previousTexture;
+		winrt::com_ptr<ID3D11ShaderResourceView> previousSrv;
+		winrt::com_ptr<ID3D11RenderTargetView> previousRtv;
+		previousTexture.attach(*Util::AsReal(&target.texture));
+		previousSrv.attach(*Util::AsReal(&target.SRV));
+		previousRtv.attach(*Util::AsReal(&target.RTV));
+		*Util::AsReal(&target.texture) = texture.detach();
+		*Util::AsReal(&target.SRV) = srv.detach();
+		*Util::AsReal(&target.RTV) = rtv.detach();
+	} catch (const std::exception& error) {
+		opaqueMetadataAllocationFailed = true;
+		logger::error("Opaque metadata format update failed: {}", error.what());
+	}
 }
 
 void Deferred::PrepassPasses()
@@ -504,6 +548,11 @@ void Deferred::DeferredPasses()
 		context->CSSetShader(nullptr, nullptr, 0);
 	}
 
+	Feature::ForEachLoadedFeature("OnAfterDeferredLighting", [&](Feature* feature) {
+		const auto resolution = Util::ConvertToDynamic(globals::state->screenSize);
+		feature->OnAfterDeferredLighting(Util::AsReal(main.UAV), { uint32_t(resolution.x), uint32_t(resolution.y) });
+	});
+
 	if (dynamicCubemaps.loaded)
 		dynamicCubemaps.PostDeferred();
 
@@ -647,6 +696,17 @@ void Deferred::OverrideBlendStates()
 								blendDesc.RenderTarget[i].BlendOpAlpha = D3D11_BLEND_OP_ADD;
 								blendDesc.RenderTarget[i].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
 							}
+
+							const auto& metadataBlend = blendDesc.RenderTarget[7];
+							const bool replacesAtFullOpacity = metadataBlend.BlendOp == D3D11_BLEND_OP_ADD &&
+								(metadataBlend.SrcBlend == D3D11_BLEND_SRC_ALPHA || metadataBlend.SrcBlend == D3D11_BLEND_ONE) &&
+								(metadataBlend.DestBlend == D3D11_BLEND_INV_SRC_ALPHA || metadataBlend.DestBlend == D3D11_BLEND_ZERO) &&
+								(metadataBlend.RenderTargetWriteMask & D3D11_COLOR_WRITE_ENABLE_BLUE) != 0;
+							// Full-opacity replacement preserves a room code; partial opacity writes no source code and invalid coverage.
+							blendDesc.RenderTarget[7].SrcBlendAlpha = replacesAtFullOpacity ? D3D11_BLEND_SRC_ALPHA : D3D11_BLEND_ZERO;
+							blendDesc.RenderTarget[7].DestBlendAlpha = D3D11_BLEND_ZERO;
+							blendDesc.RenderTarget[7].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+							blendDesc.RenderTarget[7].RenderTargetWriteMask |= D3D11_COLOR_WRITE_ENABLE_ALPHA;
 
 							DX::ThrowIfFailed(device->CreateBlendState(&blendDesc, &deferredBlendStates[a][b][c][d]));
 						} else {

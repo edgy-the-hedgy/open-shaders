@@ -82,6 +82,9 @@ public:
 
 	/** @brief Creates render targets, samplers, and the directional shadow structured buffer. */
 	void SetupResources();
+	/** @brief Updates optional opaque metadata storage while world render targets are unbound. */
+	void UpdateOpaqueMetadataTarget();
+	bool opaqueMetadataAllocationFailed = false;
 	/** @brief Reports the currently selected indirect-lighting owner, if any. */
 	Feature* GetIndirectLightingProvider() const { return indirectLighting; }
 	/** @brief Selects one estimator together with its compositor before drawing. */

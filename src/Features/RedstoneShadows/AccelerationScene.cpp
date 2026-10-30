@@ -175,6 +175,7 @@ namespace RedstoneShadow
 		top->generation = a_snapshot.generation;
 		top->sweep = a_snapshot.sweep;
 		top->scope = a_snapshot.scope;
+		top->materialSource = a_snapshot.materialSource;
 		top->blasRevision = bottomCompletions;
 		std::vector<D3D12_RAYTRACING_INSTANCE_DESC> instances;
 		for (const auto& instance : a_snapshot.instances) {

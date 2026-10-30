@@ -1,4 +1,5 @@
 #include "RuntimeDenoiser.h"
+#include "Utils/RayRegenerationSettings.h"
 #include "Globals.h"
 #include "GpuPass.h"
 #include "State.h"
@@ -9,6 +10,7 @@ namespace
 {
 	constexpr float kMinimumRayRegenerationDepth = 0.001f;
 	constexpr uint32_t kIndirectLightingSignals = FFX_DENOISER_SIGNAL_INDIRECT_DIFFUSE | FFX_DENOISER_SIGNAL_INDIRECT_SPECULAR;
+	constexpr uint32_t kDirectLightingSignals = FFX_DENOISER_SIGNAL_DIRECT_DIFFUSE | FFX_DENOISER_SIGNAL_DIRECT_SPECULAR;
 
 	/** @brief Builds a single-mip interop texture descriptor with the requested extent and bindings. */
 	D3D11_TEXTURE2D_DESC SharedDesc(ID3D11Texture2D* source, uint32_t width, uint32_t height, UINT bind)
@@ -123,9 +125,10 @@ void RedstoneDenoiser::ResetRayRegeneration()
 bool RedstoneDenoiser::EnsureRayRegenerationResources(ID3D11Texture2D* signal, ID3D11Texture2D* depth, ID3D11Texture2D* motion,
 	ID3D11Texture2D* normal, ID3D11Texture2D* specAlbedo, ID3D11Texture2D* diffAlbedo, ID3D11Texture2D* output,
 	ID3D11Texture2D* diffuseSignal, ID3D11Texture2D* diffuseOutput,
-	const OcclusionResources& occlusion, const std::array<uint32_t, 2>& engineResolution, uint32_t width, uint32_t height, bool checkerboard)
+	const OcclusionResources& occlusion, const std::array<uint32_t, 2>& engineResolution, uint32_t width, uint32_t height, bool checkerboard, bool directSignals)
 {
 	constexpr uint32_t supportedOcclusionSignals = FFX_DENOISER_SIGNAL_AMBIENT_OCCLUSION | FFX_DENOISER_SIGNAL_SPECULAR_OCCLUSION;
+	if (directSignals && occlusion.signalFlags) return false;
 	if (occlusion.signalFlags & ~supportedOcclusionSignals) return false;
 	if (!CanDispatchRayRegeneration() || !denoiserModule || !denoiserFunctions.CreateContext || !denoiserFunctions.DestroyContext || !denoiserFunctions.Dispatch)
 		return false;
@@ -137,6 +140,7 @@ bool RedstoneDenoiser::EnsureRayRegenerationResources(ID3D11Texture2D* signal, I
 	}
 	const std::array<ID3D11Texture2D*, 13> textures{ signal, depth, motion, normal, specAlbedo, diffAlbedo, output, diffuseSignal, diffuseOutput, occlusion.diffuseInput, occlusion.specularInput, occlusion.diffuseOutput, occlusion.specularOutput };
 	for (size_t i = 0; i < textures.size(); ++i) {
+		if (i >= 9 && !(occlusion.signalFlags & ((i == 9 || i == 11) ? FFX_DENOISER_SIGNAL_AMBIENT_OCCLUSION : FFX_DENOISER_SIGNAL_SPECULAR_OCCLUSION))) continue;
 		D3D11_TEXTURE2D_DESC desc{};
 		if (textures[i])
 			textures[i]->GetDesc(&desc);
@@ -156,7 +160,7 @@ bool RedstoneDenoiser::EnsureRayRegenerationResources(ID3D11Texture2D* signal, I
 
 	if (rayRegenerationContext && rayRegenerationWidth == width && rayRegenerationHeight == height &&
 		rayRegenerationMaxRenderSize == engineResolution &&
-		rayRegenerationCheckerboard == checkerboard && rayRegenerationOcclusionSignals == occlusion.signalFlags && rrSharedOutput && rrSharedDiffuseOutput)
+		rayRegenerationCheckerboard == checkerboard && rayRegenerationDirectSignals == directSignals && rayRegenerationOcclusionSignals == occlusion.signalFlags && rrSharedOutput && rrSharedDiffuseOutput)
 		return true;
 
 	ResetRayRegeneration();
@@ -186,7 +190,7 @@ bool RedstoneDenoiser::EnsureRayRegenerationResources(ID3D11Texture2D* signal, I
 		create.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_DENOISER;
 		create.version = FFX_DENOISER_VERSION;
 		create.maxRenderSize = { engineResolution[0], engineResolution[1] };
-		create.signalFlags = kIndirectLightingSignals | occlusion.signalFlags;
+		create.signalFlags = (directSignals ? kDirectLightingSignals : kIndirectLightingSignals) | occlusion.signalFlags;
 		create.checkerboardSignalFlags = checkerboard ? create.signalFlags : 0;
 		create.flags = 0;
 		ffx::CreateBackendDX12Desc backendDesc{};
@@ -202,9 +206,10 @@ bool RedstoneDenoiser::EnsureRayRegenerationResources(ID3D11Texture2D* signal, I
 		rayRegenerationHeight = height;
 		rayRegenerationMaxRenderSize = engineResolution;
 		rayRegenerationCheckerboard = checkerboard;
+		rayRegenerationDirectSignals = directSignals;
 		rayRegenerationOcclusionSignals = occlusion.signalFlags;
-		logger::info("[RayRegeneration] FidelityFX Denoiser 1.2 context capacity {}x{}; RR grid {}x{}; indirect diffuse + specular; checkerboard={}; occlusion signals={}",
-			engineResolution[0], engineResolution[1], width, height, checkerboard, occlusion.signalFlags);
+		logger::info("[RayRegeneration] FidelityFX Denoiser 1.2 context capacity {}x{}; RR grid {}x{}; {} diffuse + specular; checkerboard={}; occlusion signals={}",
+			engineResolution[0], engineResolution[1], width, height, directSignals ? "direct" : "indirect", checkerboard, occlusion.signalFlags);
 		return true;
 	} catch (const std::exception& e) {
 		logger::error("[RayRegeneration] Resource/context setup failed: {}", e.what());
@@ -217,13 +222,18 @@ bool RedstoneDenoiser::EnsureRayRegenerationResources(ID3D11Texture2D* signal, I
 bool RedstoneDenoiser::DispatchRayRegeneration(ID3D11Texture2D* signal, ID3D11Texture2D* depth, ID3D11Texture2D* motion,
 	ID3D11Texture2D* normal, ID3D11Texture2D* specAlbedo, ID3D11Texture2D* diffAlbedo, ID3D11Texture2D* output,
 	ID3D11Texture2D* diffuseSignal, ID3D11Texture2D* diffuseOutput,
-	const OcclusionResources& occlusion, const std::array<uint32_t, 2>& engineResolution, uint32_t width, uint32_t height, bool resetHistory, bool checkerboard, uint32_t checkerboardOrigin)
+	const OcclusionResources& occlusion, const std::array<uint32_t, 2>& engineResolution, uint32_t width, uint32_t height, bool resetHistory, bool checkerboard, uint32_t checkerboardOrigin, bool directSignals)
 {
-	CS_GPU_PASS("RedstoneGI::RuntimeDispatch");
-	const bool engineExtentChanged = rayRegenerationMaxRenderSize != engineResolution || rayRegenerationOcclusionSignals != occlusion.signalFlags;
-	if (!EnsureRayRegenerationResources(signal, depth, motion, normal, specAlbedo, diffAlbedo, output, diffuseSignal, diffuseOutput, occlusion, engineResolution, width, height, checkerboard))
+	CS_GPU_PASS_SELECT(directSignals, "RedstoneShadows::RuntimeDirectDispatch", "Redstone::RuntimeIndirectDispatch");
+	const bool engineExtentChanged = rayRegenerationMaxRenderSize != engineResolution || rayRegenerationOcclusionSignals != occlusion.signalFlags || rayRegenerationDirectSignals != directSignals;
+	if (!EnsureRayRegenerationResources(signal, depth, motion, normal, specAlbedo, diffAlbedo, output, diffuseSignal, diffuseOutput, occlusion, engineResolution, width, height, checkerboard, directSignals))
 		return false;
 	resetHistory |= engineExtentChanged;
+	const auto& configuration = RayRegeneration::GetConfiguration();
+	if (sharedConfigurationRevision != configuration.revision) {
+		SetConfiguration(configuration.overrides);
+		sharedConfigurationRevision = configuration.revision;
+	}
 	if (!ApplyConfiguration(resetHistory))
 		return false;
 	auto& sc = backend;
@@ -303,6 +313,16 @@ bool RedstoneDenoiser::DispatchRayRegeneration(ID3D11Texture2D* signal, ID3D11Te
 		diffuse.signal.checkerboardOrigin = spec.signal.checkerboardOrigin;
 		common.header.pNext = &diffuse.header;
 		diffuse.header.pNext = &spec.header;
+		ffxDispatchDescDenoiserDirectDiffuse directDiffuse{};
+		directDiffuse.header.type = FFX_API_DISPATCH_DESC_TYPE_DENOISER_DIRECT_DIFFUSE;
+		directDiffuse.signal = diffuse.signal;
+		ffxDispatchDescDenoiserDirectSpecular directSpecular{};
+		directSpecular.header.type = FFX_API_DISPATCH_DESC_TYPE_DENOISER_DIRECT_SPECULAR;
+		directSpecular.signal = spec.signal;
+		if (directSignals) {
+			common.header.pNext = &directDiffuse.header;
+			directDiffuse.header.pNext = &directSpecular.header;
+		}
 		ffxDispatchDescDenoiserAmbientOcclusion diffuseOcclusion{};
 		diffuseOcclusion.header.type = FFX_API_DISPATCH_DESC_TYPE_DENOISER_AMBIENT_OCCLUSION;
 
@@ -323,8 +343,7 @@ bool RedstoneDenoiser::DispatchRayRegeneration(ID3D11Texture2D* signal, ID3D11Te
 		bool dispatchFaulted = false;
 		const ffxReturnCode_t dispatchResult = DispatchDenoiserProtected(denoiserFunctions, &rayRegenerationContext, &common.header, dispatchFaulted);
 		if (dispatchFaulted || dispatchResult != FFX_API_RETURN_OK) {
-			if (rrDiagnosticsEnabled)
-				++rayRegenerationFailedDispatches;
+			++rayRegenerationFailedDispatches;
 			logger::error("[RayRegeneration] Denoiser dispatch {}; disabling RR for this session", dispatchFaulted ? "faulted inside the provider" : "returned failure");
 			rayRegenerationFailureLatched = true;
 
@@ -362,12 +381,8 @@ bool RedstoneDenoiser::DispatchRayRegeneration(ID3D11Texture2D* signal, ID3D11Te
 		if (occlusion.signalFlags & FFX_DENOISER_SIGNAL_SPECULAR_OCCLUSION)
 			sc.d3d11Context->CopySubresourceRegion(occlusion.specularOutput, 0, 0, 0, 0, rrSharedOcclusionOutput[1]->resource11, 0, &box);
 
-		if (rrDiagnosticsEnabled) {
-			++rayRegenerationSuccessfulDispatches;
-
-			if (resetHistory)
-				++rayRegenerationHistoryResets;
-		}
+		++rayRegenerationSuccessfulDispatches;
+		if (resetHistory) ++rayRegenerationHistoryResets;
 
 		return true;
 	} catch (const std::exception& e) {
@@ -375,8 +390,7 @@ bool RedstoneDenoiser::DispatchRayRegeneration(ID3D11Texture2D* signal, ID3D11Te
 			(void)cc->commandList->Close();
 			commandListRecording = false;
 		}
-		if (rrDiagnosticsEnabled)
-			++rayRegenerationFailedDispatches;
+		++rayRegenerationFailedDispatches;
 		rayRegenerationFailureLatched = true;
 		logger::error("[RayRegeneration] Dispatch failed: {}", e.what());
 		return false;

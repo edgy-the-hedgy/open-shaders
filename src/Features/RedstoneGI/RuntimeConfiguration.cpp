@@ -1,4 +1,5 @@
 #include "RuntimeDenoiser.h"
+#include "Utils/RayRegenerationSettings.h"
 #include "Utils/UI.h"
 
 namespace
@@ -26,13 +27,14 @@ namespace
 json RedstoneDenoiser::GetConfiguration() const
 {
 	std::scoped_lock lock(configurationMutex);
+	const auto& shared = RayRegeneration::GetConfiguration();
 	json overrides = json::object(), defaults = json::object();
 	for (size_t i = 0; i < configurationOverrides.size(); ++i) {
 		const char* name = i < kConfigurationKeys.size() ? kConfigurationKeys[i].name : kBoundsNames[i - kConfigurationKeys.size()];
-		overrides[name] = configurationOverrides[i] ? json(*configurationOverrides[i]) : json(nullptr);
+		overrides[name] = shared.overrides.contains(name) ? shared.overrides.at(name) : json(nullptr);
 		defaults[name] = configurationDefaultsReady ? json(configurationDefaults[i]) : json(nullptr);
 	}
-	return { { "overrides", overrides }, { "defaults", defaults }, { "defaultsReady", configurationDefaultsReady }, { "pending", configurationDirty } };
+	return { { "overrides", overrides }, { "defaults", defaults }, { "defaultsReady", configurationDefaultsReady }, { "pending", configurationDirty || sharedConfigurationRevision != shared.revision } };
 }
 
 void RedstoneDenoiser::SetConfiguration(const json& a_configuration)
@@ -51,6 +53,7 @@ void RedstoneDenoiser::SetConfiguration(const json& a_configuration)
 	if ((selected[6] && *selected[6] < 0) || (selected[7] && *selected[7] < 0) ||
 		(selected[6] && selected[7] && *selected[6] > *selected[7]))
 		throw std::invalid_argument("RR debug depth bounds must be nonnegative and ordered");
+	RayRegeneration::SetConfiguration(a_configuration);
 	std::scoped_lock lock(configurationMutex);
 	if (selected == configurationOverrides) return;
 	configurationOverrides = selected;
@@ -114,6 +117,7 @@ bool RedstoneDenoiser::ApplyConfiguration(bool& a_resetHistory)
 
 void RedstoneDenoiser::DrawConfigurationSettings()
 {
+	SetConfiguration(RayRegeneration::GetConfiguration().overrides);
 	if (!ImGui::TreeNode("RR Denoiser Configuration")) return;
 	auto snapshot = GetConfiguration();
 	auto selected = snapshot.at("overrides");

@@ -22,6 +22,7 @@ namespace RedstoneShadow
 		uint64_t generation = 0, sweep = 0, bytes = 0, blasRevision = 0;
 		uint32_t omittedInstances = 0;
 		CasterObservation::Scope scope;
+		std::shared_ptr<const MaterialSource> materialSource;
 	};
 
 	/** @brief Builds bounded acceleration structures independently of engine object traversal. */

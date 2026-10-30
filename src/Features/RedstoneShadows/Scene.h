@@ -2,16 +2,26 @@
 
 #include "Features/LightLimitFix/CasterObservation.h"
 #include <d3d11.h>
+#include <d3d12.h>
 #include <winrt/base.h>
 #include <memory>
 #include <bit>
 #include <unordered_map>
 #include <unordered_set>
+#include <filesystem>
 
 namespace RedstoneShadow
 {
 	inline constexpr uint8_t kOpaqueInstanceMask = 1;
 	inline constexpr uint8_t kMaterialPendingInstanceMask = 2;
+	/** @brief Owns the prepared material package identity and its independent residency limit. */
+	struct MaterialSource
+	{
+		std::filesystem::path directory;
+		std::string cell, layoutDigest;
+		uint64_t budget = 0;
+		std::shared_ptr<const json> rooms;
+	};
 	/** @brief Preserves offline material work classes without rediscovering them during traversal. */
 	enum class OfflineMaterialFlags : uint32_t
 	{
@@ -38,6 +48,15 @@ namespace RedstoneShadow
 		uint64_t bytes = 0;
 	};
 
+	/** @brief Owns compiled normal/UV/color data independently of shared intersection geometry. */
+	struct VertexAttributes
+	{
+		winrt::com_ptr<ID3D12Resource> buffer;
+		uint32_t vertexCount = 0, stride = 0;
+		bool hasTangentFrame = false;
+		uint64_t allocationBytes = 0;
+	};
+
 	/** @brief Captures material coverage without a live Skyrim material pointer. */
 	struct Material
 	{
@@ -51,6 +70,10 @@ namespace RedstoneShadow
 		bool alphaTest = false;
 		bool opaqueCandidate = true;
 		OfflineMaterialFlags offlineMaterialFlags = OfflineMaterialFlags::None;
+		std::shared_ptr<const VertexAttributes> attributes;
+		std::shared_ptr<const json> offlineDescription;
+		std::string shadingStatus;
+		uint32_t roomIndex = UINT32_MAX;
 	};
 
 	/** @brief Records a rigid instance separately from retained mesh bytes. */
@@ -78,6 +101,7 @@ namespace RedstoneShadow
 		uint32_t visitedNodes = 0;
 		bool truncated = false;
 		bool offline = false;
+		std::shared_ptr<const MaterialSource> materialSource;
 	};
 
 	/** @brief Consumes owned SCM batches at the existing render-thread handoff. */

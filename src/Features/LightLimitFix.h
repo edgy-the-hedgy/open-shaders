@@ -2,6 +2,7 @@
 
 #include "Buffer.h"
 #include "Features/LightLimitFix/ParticleLights.h"
+#include "Features/LightLimitFix/LightView.h"
 #include "LightLimitFix/ShadowCasterManager.h"
 #include "OverlayFeature.h"
 #include "Utils/LazyShader.h"
@@ -15,6 +16,9 @@
 struct LightLimitFix : OverlayFeature
 {
 private:
+	uint32_t uploadedLightFrame = 0;
+	bool uploadedLightsValid = false;
+	uint32_t roomUploadFrame = UINT32_MAX, roomUploadCount = 0, uploadedRoomGeneration = 0;
 	void DrawContactShadowSettings();
 	void DrawLightAttachSettings();
 	void DrawParticleLightSettings();
@@ -22,7 +26,7 @@ private:
 	void DrawLightStatistics();
 	void DrawLightDebugSettings();
 
-	static constexpr uint32_t MAX_LIGHTS = 1024;
+	static constexpr uint32_t MAX_LIGHTS = LightLimitFixData::kMaximumLights;
 	// Per-cluster visible-light cap; sizes the global lightIndexList pool as
 	// clusterCount * CLUSTER_MAX_LIGHTS. MUST match MAX_CLUSTER_LIGHTS in the
 	// shader-side Common.hlsli or the cull pass can overrun the pool.
@@ -73,9 +77,11 @@ public:
 		uint128_t roomFlags = uint32_t(0);
 		stl::enumeration<LightFlags> lightFlags;
 		uint32_t shadowMapIndex = 0;
-		float2 pad0;
+		uint32_t sourceReference = 0;
+		uint32_t sourceBase = 0;
 	};
 	STATIC_ASSERT_ALIGNAS_16(LightData);
+	static_assert(sizeof(LightData) == 96 && offsetof(LightData, sourceReference) == 88 && offsetof(LightData, sourceBase) == 92);
 
 	struct ClusterAABB
 	{
@@ -167,12 +173,13 @@ public:
 	{
 		uint NumStrictLights;
 		int RoomIndex;
-		uint ShadowBitMask;
+		uint RoomGeneration;
 		uint FirstPerson;
-		float4 WorldEyePosition;  ///< True world-camera eye for FP shadow projection (w unused).
+		float4 WorldEyePosition;  ///< xyz: true world-camera eye; w: opaque draw coverage independent of material alpha.
 		LightData StrictLights[15];
 	};
 	STATIC_ASSERT_ALIGNAS_16(StrictLightDataCB);
+	static_assert(sizeof(StrictLightDataCB) == 1472);
 
 	StrictLightDataCB strictLightDataTemp;
 
@@ -335,6 +342,8 @@ public:
 	bool wasFirstPerson = false;
 	RE::NiPoint3 previousWorldEyePosition{};
 	int previousRoomIndex = -1;
+	uint32_t previousRoomGeneration = 0;
+	float previousOpaqueRoomCoverage = 0.0f;
 
 	Util::FrameChecker frameChecker;
 
@@ -438,6 +447,8 @@ public:
 
 	/** @brief Gathers all active scene lights and uploads them to the GPU light buffer. */
 	void UpdateLights();
+	/** @brief Borrows only a successfully uploaded current-frame light table; contains no shadow-map resources. */
+	LightLimitFixData::LightView GetLightView(uint32_t a_frame) const;
 	/** @brief Rebuilds the light cluster structure and performs GPU light culling. */
 	void UpdateStructure();
 	virtual void EarlyPrepass() override;

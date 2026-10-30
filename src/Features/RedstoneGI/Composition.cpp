@@ -24,6 +24,12 @@ namespace
 	};
 }
 
+bool RedstoneGI::HasCurrentIndirectLighting() const
+{
+	return loaded && IsActive() && rrLightingReady && compositionSettings && globals::game::frameCounter &&
+		rrOutputFrame == static_cast<uint32_t>(*globals::game::frameCounter);
+}
+
 ID3D11ComputeShader* RedstoneGI::GetCompositeShader(bool a_interior, std::vector<std::pair<const char*, const char*>>& a_defines)
 {
 	auto defines = a_defines;

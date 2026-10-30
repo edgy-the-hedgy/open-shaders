@@ -1010,8 +1010,8 @@ struct NeuralRendering::Impl
 	}
 
 	/**
-	 * @brief Returns the Masks2 SRV only when it carries the R16G16 material category lane this
-	 *        alpha decodes. Any other target would read as None everywhere and protect everything.
+	 * @brief Returns the base or extended Masks2 SRV carrying the unchanged material category lane.
+	 *        Other formats cannot supply material protection.
 	 */
 	ID3D11ShaderResourceView* MaterialLane()
 	{
@@ -1020,7 +1020,7 @@ struct NeuralRendering::Impl
 			return nullptr;
 		auto* srv = Util::AsReal(target.SRV);
 		D3D11_TEXTURE2D_DESC desc{};
-		return Util::GetTexture2DDesc(srv, desc) && desc.Format == DXGI_FORMAT_R16G16_UNORM ? srv : nullptr;
+		return Util::GetTexture2DDesc(srv, desc) && (desc.Format == DXGI_FORMAT_R16G16_UNORM || desc.Format == DXGI_FORMAT_R16G16B16A16_UNORM) ? srv : nullptr;
 	}
 
 	/**

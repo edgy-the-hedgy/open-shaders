@@ -11,6 +11,7 @@
 #include "Common/Math.hlsli"
 #include "Common/MotionBlur.hlsli"
 #include "Common/NeuralRenderingCategory.hlsli"
+#include "Common/ReceiverRoom.hlsli"
 #include "Common/Permutation.hlsli"
 #include "Common/Random.hlsli"
 #include "Common/ReverseZ.hlsli"
@@ -4118,7 +4119,15 @@ FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFro
 #		if defined(HAIR)
 	masks2Blend = step(0.5, psout.Diffuse.w);
 #		endif
-	psout.Masks2 = float4(1.0 - vertexAO, NeuralRenderingCategory::Encode(neuralRenderingCategory), 0, masks2Blend);
+	float receiverRoom = 0;
+#		if defined(LIGHT_LIMIT_FIX) && !defined(VR)
+	bool opaqueRoomCoverage = LightLimitFix::WorldEyePosition.w == 1;
+	if (opaqueRoomCoverage || masks2Blend == 1) receiverRoom = ReceiverRoom::Encode(LightLimitFix::RoomIndex, LightLimitFix::RoomGeneration);
+#		endif
+	psout.Masks2 = float4(1.0 - vertexAO, NeuralRenderingCategory::Encode(neuralRenderingCategory), receiverRoom, masks2Blend);
+#		if defined(LIGHT_LIMIT_FIX) && !defined(VR)
+	if (opaqueRoomCoverage) psout.Masks2.w = 1;
+#		endif
 
 	float stochasticBlend = (screenNoise * screenNoise) < psout.Diffuse.w ? 1.0 : 0.0;
 	psout.NormalGlossiness.w = stochasticBlend;

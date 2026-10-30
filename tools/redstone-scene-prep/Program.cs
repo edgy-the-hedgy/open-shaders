@@ -92,13 +92,25 @@ try
             model, position = reference.Placement is { } placement ? new[] { placement.Position.X, placement.Position.Y, placement.Position.Z } : null,
             rotationRadians = reference.Placement is { } transform ? new[] { transform.Rotation.X, transform.Rotation.Y, transform.Rotation.Z } : null,
             scale = obj?.Scale ?? 1f, flags = reference.MajorRecordFlagsRaw,
+            roomReferenceKey = obj?.MultiBoundReference.FormKeyNullable is { } roomKey && roomKey != FormKey.Null ? roomKey.ToString() : null,
+            roomBounds = obj?.BoundHalfExtents is { } roomBounds ? new[] { roomBounds.X, roomBounds.Y, roomBounds.Z } : null,
             hasEnableParent = obj?.EnableParent != null, hasScripts = obj?.VirtualMachineAdapter != null, hasBaseScripts,
             hasReferenceLightOverrides = obj?.LightData != null,
             light = baseRecord is ILightGetter light ? new
             {
+                referenceKey = reference.FormKey.ToString(), baseKey = obj?.Base.FormKey.ToString(),
+                valueInterpretation = "raw-plugin-record-values; no color/radiometric conversion or reference-override application",
                 radius = light.Radius, color = new int[] { light.Color.R, light.Color.G, light.Color.B },
                 flags = light.Flags.ToString(), falloffExponent = light.FalloffExponent, fov = light.FOV,
-                flickerPeriod = light.FlickerPeriod, flickerMovementAmplitude = light.FlickerMovementAmplitude
+                nearClip = light.NearClip, fadeValue = light.FadeValue,
+                flickerPeriod = light.FlickerPeriod, flickerIntensityAmplitude = light.FlickerIntensityAmplitude,
+                flickerMovementAmplitude = light.FlickerMovementAmplitude,
+                referenceOverrides = obj?.LightData is { } lightData ? new
+                {
+                    fovOffset = lightData.FovOffset, fadeOffset = lightData.FadeOffset,
+                    endDistanceCap = lightData.EndDistanceCap, shadowDepthBias = lightData.ShadowDepthBias,
+                    versioning = lightData.Versioning.ToString(), unknown = lightData.Unknown
+                } : null
             } : null
         });
     }
@@ -126,6 +138,7 @@ try
         assets = pgAssets.Select(asset => new { asset.Path, asset.Status, asset.Sha256 })
     }))).ToLowerInvariant();
     var layout = CellLayout.Write(output, target.FormKey.ToString(), target.EditorID, inputDigest, rows, compiledAssets, options);
+    TextureSources.Write(data, output, listings, options);
     File.WriteAllText(Path.Combine(output, "cell-records.json"), JsonSerializer.Serialize(new
     {
         schemaVersion = 1, tool = "RedstoneScenePrep", recordReader = "Mutagen.Bethesda.Skyrim/0.54.4",

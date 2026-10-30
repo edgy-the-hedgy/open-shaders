@@ -2,6 +2,8 @@
 #include "GpuPass.h"
 #include "RedstoneGI.h"
 #include "State.h"
+#include "Globals.h"
+#include "Features/RedstoneShadows/RedstoneShadows.h"
 
 namespace
 {
@@ -12,6 +14,7 @@ namespace
 
 void RedstoneGI::SetRROutputOnly(bool a_enabled)
 {
+	if (a_enabled) globals::features::redstoneShadows.ClearRRDebugOverlay();
 	if (a_enabled)
 		rrDebugSource.store(RRDebugSource::Outputs, std::memory_order_relaxed);
 	else {
@@ -22,6 +25,7 @@ void RedstoneGI::SetRROutputOnly(bool a_enabled)
 
 void RedstoneGI::SetRRInputsOnly(bool a_enabled)
 {
+	if (a_enabled) globals::features::redstoneShadows.ClearRRDebugOverlay();
 	if (a_enabled)
 		rrDebugSource.store(RRDebugSource::Inputs, std::memory_order_relaxed);
 	else {

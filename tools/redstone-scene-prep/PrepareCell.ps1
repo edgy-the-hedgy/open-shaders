@@ -12,8 +12,10 @@ if (!$OutputDirectory) { $OutputDirectory = Join-Path $artifactRoot ('cells\' + 
 $projectFile = Join-Path $PSScriptRoot 'RedstoneScenePrep.csproj'
 $artifacts = Join-Path $artifactRoot 'artifacts'
 $previousCliHome = $env:DOTNET_CLI_HOME
+$previousDxrData = $env:REDSTONE_DXR_HEIGHT_DATA
 try {
     $env:DOTNET_CLI_HOME = Join-Path $artifactRoot 'cli'
+    $env:REDSTONE_DXR_HEIGHT_DATA = $DataDirectory
     & dotnet restore $projectFile --locked-mode --packages (Join-Path $artifactRoot 'nuget') --artifacts-path $artifacts --verbosity minimal
     if ($LASTEXITCODE -ne 0) { throw 'Standalone preparation tool dependency restore failed.' }
     & dotnet build $projectFile --no-restore --artifacts-path $artifacts -c Release --verbosity minimal
@@ -22,4 +24,5 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Cell preparation failed; inspect the error above.' }
 } finally {
     $env:DOTNET_CLI_HOME = $previousCliHome
+    $env:REDSTONE_DXR_HEIGHT_DATA = $previousDxrData
 }

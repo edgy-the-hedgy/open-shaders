@@ -24,7 +24,6 @@ public:
 	bool Initialize(const GraphicsBackend& a_backend);
 	~RedstoneDenoiser();
 	bool CanDispatchRayRegeneration() const { return featureRayRegeneration && !rayRegenerationFailureLatched; }
-	void SetRRDiagnosticsEnabled(bool a_enabled) { rrDiagnosticsEnabled = a_enabled; }
 	json GetRayRegenerationDiagnostics() const;
 	/** @brief Returns saved overrides and provider defaults for the seven SDK configuration keys. */
 	json GetConfiguration() const;
@@ -37,7 +36,7 @@ public:
 		ID3D11Texture2D* a_normalRoughness, ID3D11Texture2D* a_specularAlbedo, ID3D11Texture2D* a_diffuseAlbedo,
 		ID3D11Texture2D* a_output, ID3D11Texture2D* a_diffuseSignal, ID3D11Texture2D* a_diffuseOutput,
 		const OcclusionResources& a_occlusion, const std::array<uint32_t, 2>& a_engineResolution, uint32_t a_width, uint32_t a_height, bool a_resetHistory,
-		bool a_checkerboard, uint32_t a_checkerboardOrigin);
+		bool a_checkerboard, uint32_t a_checkerboardOrigin, bool a_directSignals = false);
 
 private:
 	bool ApplyConfiguration(bool& a_resetHistory);
@@ -46,6 +45,7 @@ private:
 	std::array<float, 8> configurationDefaults{};
 	bool configurationDefaultsReady = false;
 	bool configurationDirty = true;
+	uint64_t sharedConfigurationRevision = UINT64_MAX;
 	void ResetRayRegeneration();
 	bool EnsureRuntimeUpscalerInterop();
 	struct RuntimeCommandContext
@@ -66,7 +66,6 @@ private:
 	bool featureRayRegeneration = false;
 	bool rayRegenerationFailureLatched = false;
 	ffxContext rayRegenerationContext = nullptr;
-	bool rrDiagnosticsEnabled = false;
 	uint64_t rayRegenerationSuccessfulDispatches = 0;
 	uint64_t rayRegenerationFailedDispatches = 0;
 	uint64_t rayRegenerationHistoryResets = 0;
@@ -75,6 +74,7 @@ private:
 	uint32_t rayRegenerationHeight = 0;
 	std::array<uint32_t, 2> rayRegenerationMaxRenderSize{};
 	bool rayRegenerationCheckerboard = false;
+	bool rayRegenerationDirectSignals = false;
 	WrappedResource* rrSharedSignal = nullptr;
 	WrappedResource* rrSharedDepth = nullptr;
 	WrappedResource* rrSharedMotion = nullptr;
@@ -91,5 +91,5 @@ private:
 	bool EnsureRayRegenerationResources(ID3D11Texture2D* a_signal, ID3D11Texture2D* a_linearDepth, ID3D11Texture2D* a_motionVectors,
 		ID3D11Texture2D* a_normalRoughness, ID3D11Texture2D* a_specularAlbedo, ID3D11Texture2D* a_diffuseAlbedo,
 		ID3D11Texture2D* a_output, ID3D11Texture2D* a_diffuseSignal, ID3D11Texture2D* a_diffuseOutput,
-		const OcclusionResources& a_occlusion, const std::array<uint32_t, 2>& a_engineResolution, uint32_t a_width, uint32_t a_height, bool a_checkerboard);
+		const OcclusionResources& a_occlusion, const std::array<uint32_t, 2>& a_engineResolution, uint32_t a_width, uint32_t a_height, bool a_checkerboard, bool a_directSignals);
 };

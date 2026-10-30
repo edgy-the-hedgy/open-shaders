@@ -1,6 +1,7 @@
 #include "RedstoneGI.h"
 #include "RuntimeDenoiser.h"
 #include "Globals.h"
+#include "Features/RedstoneShadows/RedstoneShadows.h"
 #include "Utils/UI.h"
 
 namespace
@@ -14,10 +15,8 @@ namespace
 
 	struct RedstoneConfiguration : RedstoneGI::Settings
 	{
-		bool RREnabled = true;
 		bool DiffuseEnabled = true;
 		bool SpecularEnabled = true;
-		bool RRCheckerboard = true;
 		float ContributionEV = 0.0f;
 		float SpecularContributionEV = 0.0f;
 		float DiffuseContributionEV = 0.0f;
@@ -43,10 +42,10 @@ namespace
 
 	NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RedstoneConfiguration,
 		EnableVanillaSSAO,
-		ResolutionMode, EnableAdaptiveSampling,
+		EnableAdaptiveSampling,
 		MinScreenRadius, GIRadius, DepthFadeRange,
 		GISaturation, GIDistanceCompensation, GIStrength,
-		RREnabled, DiffuseEnabled, SpecularEnabled, RRCheckerboard, ContributionEV, SpecularContributionEV, DiffuseContributionEV,
+		DiffuseEnabled, SpecularEnabled, ContributionEV, SpecularContributionEV, DiffuseContributionEV,
 		DiffuseSlices, DiffuseSteps, SpecularSlices, SpecularSteps, OccluderDepth, ILCompensationDistance, SpecularRoughnessFloor,
 		DiffuseOcclusionEnabled, SpecularOcclusionEnabled, DiffuseOcclusionSlices, SpecularOcclusionSlices, DiffuseOcclusionSteps, SpecularOcclusionSteps, DiffuseOcclusionRadius, SpecularOcclusionRadius, DiffuseOcclusionStrength, SpecularOcclusionStrength)
 }
@@ -64,13 +63,17 @@ json RedstoneGI::DefaultRedstoneSettings()
 void RedstoneGI::EnforceFixedPath()
 {
 	settings.GIRadius = std::isfinite(settings.GIRadius) ? std::clamp(settings.GIRadius, kILRadiusMin, kILRadiusMax) : kILRadiusDefault;
-	settings.ResolutionMode = std::clamp(settings.ResolutionMode, 0, 2);
+	rrResolutionMode = std::min(rrResolutionMode, 2u);
 }
 
 void RedstoneGI::LoadRedstoneSettings(const json& a_json)
 {
 	const auto configuration = a_json.get<RedstoneConfiguration>();
 	settings = configuration;
+	const auto rrPolicy = RayRegeneration::GetSettings();
+	rrResolutionMode = rrPolicy.resolutionMode;
+	rrCheckerboardEnabled = rrPolicy.checkerboard;
+	rrEnabled = rrPolicy.enabled;
 	const auto sanitizeEV = [](float a_value) {
 		return std::isfinite(a_value) ? std::clamp(a_value, kContributionMinEV, kContributionMaxEV) : 0.0f;
 	};
@@ -95,11 +98,10 @@ void RedstoneGI::LoadRedstoneSettings(const json& a_json)
 	occlusion.specularRadius = std::isfinite(configuration.SpecularOcclusionRadius) ? std::clamp(configuration.SpecularOcclusionRadius, 16.0f, 8192.0f) : 256.0f;
 	occlusion.diffuseStrength = std::isfinite(configuration.DiffuseOcclusionStrength) ? std::clamp(configuration.DiffuseOcclusionStrength, 0.0f, 1.0f) : 1.0f;
 	occlusion.specularStrength = std::isfinite(configuration.SpecularOcclusionStrength) ? std::clamp(configuration.SpecularOcclusionStrength, 0.0f, 1.0f) : 1.0f;
-	rrEnabled = configuration.RREnabled;
+	rrEnabled = rrPolicy.enabled;
 	diffuseEnabled = configuration.DiffuseEnabled;
 	specularEnabled = configuration.SpecularEnabled;
-	SetRRCheckerboard(configuration.RRCheckerboard);
-	denoiser.SetConfiguration(a_json.value("RRConfiguration", json::object()));
+
 	EnforceFixedPath();
 	recompileFlag = true;
 	QueueHistoryReset();
@@ -109,10 +111,9 @@ void RedstoneGI::SaveRedstoneSettings(json& a_json) const
 {
 	RedstoneConfiguration configuration;
 	static_cast<RedstoneGI::Settings&>(configuration) = settings;
-	configuration.RREnabled = rrEnabled;
 	configuration.DiffuseEnabled = diffuseEnabled;
 	configuration.SpecularEnabled = specularEnabled;
-	configuration.RRCheckerboard = rrCheckerboardEnabled;
+
 	configuration.ContributionEV = rgiContributionEV;
 	configuration.SpecularContributionEV = specularContributionEV;
 	configuration.DiffuseContributionEV = diffuseContributionEV;
@@ -134,7 +135,9 @@ void RedstoneGI::SaveRedstoneSettings(json& a_json) const
 	configuration.DiffuseOcclusionStrength = occlusion.diffuseStrength;
 	configuration.SpecularOcclusionStrength = occlusion.specularStrength;
 	a_json = configuration;
-	a_json["RRConfiguration"] = denoiser.GetConfiguration().at("overrides");
+	a_json.erase("ResolutionMode");
+	a_json.erase("RRCheckerboard");
+	a_json.erase("RREnabled");
 }
 
 void RedstoneGI::RestoreDefaultSettings()
@@ -147,10 +150,11 @@ void RedstoneGI::RestoreDefaultSettings()
 	occluderDepth = kDefaultOccluderDepth;
 	giCompensationMaxDistance = 256.0f;
 	specularRoughnessFloor = 0.2f;
-	rrEnabled = diffuseEnabled = specularEnabled = true;
+	rrEnabled = RayRegeneration::GetSettings().enabled;
+	rrResolutionMode = RayRegeneration::GetSettings().resolutionMode;
+	diffuseEnabled = specularEnabled = true;
 	occlusion = OcclusionSettings{};
-	denoiser.SetConfiguration(json::object());
-	SetRRCheckerboard(true);
+
 	EnforceFixedPath();
 	recompileFlag = true;
 	QueueHistoryReset();
@@ -180,29 +184,42 @@ const void* RedstoneGI::GetBootValue(std::string_view) const
 
 void RedstoneGI::SetRRCheckerboard(bool a_enabled)
 {
-	if (rrCheckerboardEnabled == a_enabled)
-		return;
-	rrCheckerboardEnabled = a_enabled;
-	rrHistoryValid = false;
-	QueueHistoryReset();
+	const auto rr = RayRegeneration::GetSettings();
+	RayRegeneration::Configure(rr.resolutionMode, a_enabled, rr.enabled);
 }
 
 void RedstoneGI::DrawRayRegenerationSettings()
 {
-	if (ImGui::Checkbox(T("feature.upscaling.redstone.rr_enabled", "FSR-RR"), &rrEnabled)) QueueHistoryReset();
+	ImGui::BeginDisabled(!IsActive());
 	DrawRRDebugSettings();
+	ImGui::EndDisabled();
+	if (!IsActive()) ImGui::TextUnformatted("Raymarched indirect is inactive; displayed buffers are from its last submitted frame.");
 	denoiser.DrawConfigurationSettings();
-	bool checkerboard = rrCheckerboardEnabled;
-	if (ImGui::Checkbox(T("feature.upscaling.redstone.checkerboard", "RR Checkerboard Sampling"), &checkerboard))
-		SetRRCheckerboard(checkerboard);
-	if (ImGui::BeginTable("RedstoneGIResolution", 3)) {
-		ImGui::TableNextColumn();
-		recompileFlag |= ImGui::RadioButton(T("feature.upscaling.redstone.full_res", "Full Res"), &settings.ResolutionMode, 0);
-		ImGui::TableNextColumn();
-		recompileFlag |= ImGui::RadioButton(T("feature.upscaling.redstone.half_res", "Half Res"), &settings.ResolutionMode, 1);
-		ImGui::TableNextColumn();
-		recompileFlag |= ImGui::RadioButton(T("feature.upscaling.redstone.quarter_res", "Quarter Res"), &settings.ResolutionMode, 2);
-		ImGui::EndTable();
+	const auto status = denoiser.GetRayRegenerationDiagnostics();
+	ImGui::Text("Successful dispatches: %llu | failed: %llu", status.value("successfulDispatches", 0ull), status.value("failedDispatches", 0ull));
+	if (ImGui::TreeNode(T("feature.upscaling.redstone.buffer_viewer", "Buffer Viewer"))) {
+		static float debugRescale = 0.3f;
+		ImGui::SliderFloat(T("feature.upscaling.redstone.view_resize", "View Resize"), &debugRescale, 0.f, 1.f);
+		BUFFER_VIEWER_NODE(texRRDiffuseInput, debugRescale)
+		BUFFER_VIEWER_NODE(texRRSpecularInput, debugRescale)
+		BUFFER_VIEWER_NODE(texRRDiffuseOutput, debugRescale)
+		BUFFER_VIEWER_NODE(texRRSpecularOutput, debugRescale)
+		BUFFER_VIEWER_NODE(texRRNormalRoughness, debugRescale)
+		BUFFER_VIEWER_NODE(texRRLinearDepth, debugRescale)
+		BUFFER_VIEWER_NODE(texRRMotionVectors, debugRescale)
+		BUFFER_VIEWER_NODE(texNoise, debugRescale)
+		BUFFER_VIEWER_NODE(texWorkingDepth, debugRescale)
+		BUFFER_VIEWER_NODE(texRadiance, debugRescale)
+		if (occlusion.diffuseEnabled) {
+			BUFFER_VIEWER_NODE(texDiffuseOcclusionInput, debugRescale)
+			if (rrProviderSucceeded) { BUFFER_VIEWER_NODE(texDiffuseOcclusionOutput, debugRescale) }
+		}
+		if (occlusion.specularEnabled) {
+			BUFFER_VIEWER_NODE(texSpecularOcclusionInput, debugRescale)
+			if (rrProviderSucceeded) { BUFFER_VIEWER_NODE(texSpecularOcclusionOutput, debugRescale) }
+		}
+		if (occlusion.diffuseEnabled || occlusion.specularEnabled) { BUFFER_VIEWER_NODE(texPackedOcclusion, debugRescale) }
+		ImGui::TreePop();
 	}
 }
 
@@ -237,8 +254,10 @@ void RedstoneGI::DrawAmbientOcclusionSettings()
 
 void RedstoneGI::DrawSettings()
 {
+	globals::features::redstoneShadows.DrawIndirectLightingSettings();
+	if (globals::features::redstoneShadows.UsesDXRIndirect() && !globals::game::isVR) return;
 	DrawRendererSettings();
-	DrawRayRegenerationSettings();
+	if (!selected) return;
 	ImGui::SeparatorText("RedstoneGI");
 	ImGui::SliderFloat(T("feature.upscaling.redstone.contribution", "RGI Contribution (EV)"), &rgiContributionEV, kContributionMinEV, kContributionMaxEV, "%.1f", ImGuiSliderFlags_AlwaysClamp);
 	recompileFlag |= ImGui::Checkbox(T("feature.upscaling.redstone.adaptive", "Adaptive Sampling"), &settings.EnableAdaptiveSampling);
@@ -281,23 +300,15 @@ void RedstoneGI::DrawSettings()
 		ImGui::TreePop();
 	}
 
-	if (ImGui::TreeNode(T("feature.upscaling.redstone.buffer_viewer", "Buffer Viewer"))) {
-		static float debugRescale = 0.3f;
-		ImGui::SliderFloat(T("feature.upscaling.redstone.view_resize", "View Resize"), &debugRescale, 0.f, 1.f);
-		BUFFER_VIEWER_NODE(texNoise, debugRescale)
-		BUFFER_VIEWER_NODE(texWorkingDepth, debugRescale)
-		BUFFER_VIEWER_NODE(texRadiance, debugRescale)
-		BUFFER_VIEWER_NODE(texRRDiffuseInput, debugRescale)
-		BUFFER_VIEWER_NODE(texRRSpecularInput, debugRescale)
-		if (occlusion.diffuseEnabled) {
-			BUFFER_VIEWER_NODE(texDiffuseOcclusionInput, debugRescale)
-			if (rrProviderSucceeded) { BUFFER_VIEWER_NODE(texDiffuseOcclusionOutput, debugRescale) }
-		}
-		if (occlusion.specularEnabled) {
-			BUFFER_VIEWER_NODE(texSpecularOcclusionInput, debugRescale)
-			if (rrProviderSucceeded) { BUFFER_VIEWER_NODE(texSpecularOcclusionOutput, debugRescale) }
-		}
-		if (occlusion.diffuseEnabled || occlusion.specularEnabled) { BUFFER_VIEWER_NODE(texPackedOcclusion, debugRescale) }
-		ImGui::TreePop();
-	}
+
+}
+
+void RedstoneGI::SetLightingSamples(uint32_t a_diffuseSlices, uint32_t a_specularSlices)
+{
+	const auto diffuse = std::clamp(a_diffuseSlices, 1u, 10u);
+	const auto specular = std::clamp(a_specularSlices, 1u, 10u);
+	if (diffuse == diffuseSlices && specular == specularSlices) return;
+	diffuseSlices = diffuse;
+	specularSlices = specular;
+	QueueHistoryReset();
 }

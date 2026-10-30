@@ -16,6 +16,28 @@ From PowerShell:
 & .\tools\redstone-scene-prep\PrepareCell.ps1
 ```
 
+`PrepareAndDeployGuestRoom.bat` is the separate desktop-launcher workflow for
+Unslaad.esm:04FD2B. Close Skyrim, then double-click it. It rebuilds only this
+standalone tool, regenerates current material/shading/texture source data,
+requires all texture sources to resolve, stages/hash-checks the payloads and
+deploys the selected room cache. It backs up SettingsUser.json and changes only
+the flat RedstoneShadows object to enable prepared geometry, preview and maps;
+an existing nonzero view and existing material budget are preserved. Otherwise
+it selects source base color and the default 512 MiB material budget. It does
+not build the Skyrim plugin, run tests or launch the game. PowerShell 7 is
+preferred when installed. Log: `build/scene-prep/prepare-deploy-guestroom.log`.
+
+`PrepareAndDeployJulianosChapel.bat` prepares Glenmoril's **Abandoned Chapel of
+Julianos**, `Glenmoril.esm:0099F2` / `zzzGHhqChurchJulianos`, resolved from the
+installed Glenmoril.esm CELL record. Close Skyrim before running it. It shares
+the same preparation, staging, payload validation and deployment implementation,
+but preserves saved runtime settings. The cache goes to
+`SKSE/Plugins/CommunityShaders/RedstoneScene/cells/Glenmoril.esm/0099F2` alongside
+the guest room. Log: `build/scene-prep/prepare-deploy-Glenmoril.esm-0099F2.log`.
+The renderer selects the current interior's cache automatically. This shortcut
+has been added in source; its generated geometry and in-game coverage remain
+unverified until the user runs preparation and visits the chapel.
+
 Arguments `-DataDirectory`, `-Cell`, `-PluginsFile` and `-OutputDirectory` select
 another deployed environment or output location. Cell identity is
 `PluginName.esm:hex-local-id`; output record keys use Mutagen's
@@ -23,6 +45,28 @@ another deployed environment or output location. Cell identity is
 Unslaad guest room, `Unslaad.esm:04FD2B` / `zzzCrbKedamaHouse`.
 
 ## Inputs and boundaries
+
+The builder also exports `roomSchemaVersion: 1`, stable per-reference room links,
+and room volumes with inverse cell transforms and half extents (maximum 128).
+These use Skyrim's [XMBR and XMBO record fields](https://raw.githubusercontent.com/Mutagen-Modding/Mutagen/dev/Mutagen.Bethesda.Skyrim/Records/Major%20Records/PlacedObject.xml).
+Room data participates in the layout digest. Runtime room indices and generation
+stamps are resolved from the current native light table, not stored in the cache.
+Native portal-strict light flags are preserved. Unknown, overlapping or
+unresolved secondary membership remains unavailable. Existing caches still serve
+direct lighting; regenerate both test cells before testing DXR indirect lighting.
+
+The runtime offers exclusive raymarched or DXR indirect lighting. DXR traces
+1..8 normalized one-bounce cosine-hemisphere samples per native pixel, evaluating
+diffuse and specular lobes from the same samples. Secondary hits use prepared
+materials/emission and the represented live point lights, including shadow rays.
+This remains a static prepared interior scene; sky misses contribute zero and
+unsupported or unvalidated hits do not invoke a raymarch fallback.
+
+Reconstruction controls are saved under `Upscaling.FSRRayRegeneration` and shown
+in **Upscaling > FSR-RayRegeneration**. RR resolution and checkerboard packing
+are independent of DXR ray count and native trace resolution. Indirect strength
+controls brightness without multiplying sample count. All new paths require user
+build/deploy, cache regeneration and runtime verification.
 
 - The explicit deployed Plugins.txt supplies enabled plugin order. Installed SE
   official masters and installed entries in the adjacent Skyrim.ccc are included
@@ -83,6 +127,114 @@ The default output is `build/scene-prep/cells/Unslaad.esm/04FD2B`:
   Float32 XYZ positions follow, then uint32 triangle indices. Positions remain
   shape-local, with original vertex/index ordering and no mesh simplification.
   Shape-to-model transforms are row-major 3x4 matrices for column-vector use.
+- `shading/<sha256>.rsga`: optional little-endian shading sidecars, leaving RSGM v1
+  unchanged. Four uint32 header values contain magic `0x41475352` (RSGA), version 1,
+  vertex count and stride 36. Each vertex contains float3 normal, float2 UV and
+  float4 vertex RGBA in the original geometry vertex order. Normals and UVs are
+  the reader's shape-local values, without flipping or normalization. RGBA defaults
+  to white only when the source explicitly has no vertex colors. Missing normals
+  or UVs and invalid counts/non-finite attributes/zero normals produce an explicit
+  shading status without excluding the otherwise compiled geometry.
+
+`shadingSchemaVersion` is independent of `rendererSchemaVersion: 1`. New output
+uses shading schema 2, which permits both RSGA v1 and v2 blobs. Version 2 has
+stride 60: the original 36-byte vertex attributes followed by original float3
+tangent and float3 bitangent. Source basis orientation is retained, without
+normalization or reconstruction. Counts, finite values and a nonzero basis
+determinant are checked. Missing/invalid tangent frames retain v1 shading and an
+explicit `tangentStatus`; they do not remove intersection geometry. The native
+reader accepts both versions and reports `tangentInstances` separately.
+
+Material schema 1 additionally retains the raw alpha threshold, emissive RGB
+and multiplier, specular RGB/strength, glossiness, environment-map scale and
+texture clamp mode. Nifly 1.1.0 has no public lighting-shader clamp accessor;
+the exporter reads its pinned `_textureClampMode` field and fails explicitly if
+that field is unavailable. These remain source parameters, not a declaration of
+complete PBR, multilayer or runtime material support.
+
+The producer also discovers optional sibling `<diffuse-stem>_p.dds` parallax
+maps, caches their source bytes and records diffuse-to-parallax associations in
+`parallaxSources`. Missing optional siblings do not prevent deployment; explicit
+NIF texture references retain their existing validation. This does not add
+runtime parallax displacement.
+
+`cell-textures.json` records unique texture paths used by represented shapes,
+layout identity, content hashes, DDS metadata and source byte counts. The tool
+uses deployed loose textures only with an explicit loose-override INI setting;
+otherwise it records unresolved precedence. Archive candidates come from the
+modeled active plugins and the merged standard Skyrim.ini/SkyrimCustom.ini
+archive lists under the user's Documents/My Games/Skyrim Special Edition folder.
+Exactly one applicable archive entry is required; ambiguous winners and failed
+archive indexing stay explicit. Custom INI/profile mount behavior and runtime
+material swaps are not validated. PGPatcher's patched NIF choices are retained;
+its conflict resolution is not re-run.
+
+Source DDS files are cached as `textures/<sha256>.dds`, bounded to 128 MiB per
+source and 512 MiB per cell (conservative path-byte accounting). Headers and hashes
+are checked; `cached` means retained source bytes, not a complete DDS payload or
+GPU material validation. Staging verifies hashes and matching cell/layout identity
+before copying this optional manifest and its cached sources. Old geometry-only
+packages remain stageable. Native texture upload, texture pools, ray-hit sampling,
+normal-map transform evaluation and alpha-candidate admission are not enabled by
+these source-cache additions.
+
+## Native source-material consumer
+
+RedstoneShadows now has an opt-in `Load prepared material maps` control, an
+independent 64..1024 MiB material texture budget (default 512) and ten preview
+modes. `setPreparedMaterials` exposes the same controls through devbench: required
+`enabled`, optional `view` 0..9 and `textureBudgetMB` 64..1024. Views are visibility,
+base color, world normal, source roughness, metalness, emission, material coverage,
+material AO, PBR F0 and opacity. Prepared geometry and its preview must also be
+enabled. Use a newly regenerated and staged package; the source cache is not
+regenerated automatically by the native loader.
+
+The binding worker validates the texture manifest identity and hashes, uses the
+existing DirectXTex DDS reader, retains original mip chains and block formats,
+and groups matching 2D maps into array pages of at most eight slices. Cubemaps,
+arrays, unsupported formats and invalid/budget-exceeding inputs fail explicitly.
+GPU destination and staging allocations are checked together. Upload completion
+waits occur only on that worker with a five-second bound. Submitted work that
+cannot retire retains its GPU resources and latches a trace failure. No upload or
+engine-object work is added to per-object render callbacks.
+
+Shared 128-byte material and 32-byte surface records connect instance/triangle
+IDs to indices, compiled attributes and pooled maps. Ray hits interpolate the
+original UVs/vertex channels, apply UV transforms and sampler addressing, and
+sample each map at an explicit mip level from a camera-cone/triangle-area
+footprint. Opacity decisions use mip zero. Original normal/tangent/bitangent data
+is transformed for model-space or tangent-space normals, including non-uniform
+and mirrored transforms. Source PBR channels use the existing on-disk PBR flag,
+RMAOS slot/channel conventions and raw NIF roughness/specular scales. Legacy
+roughness uses the shared shininess conversion; legacy F0 has no invented PBR
+conversion and displays unsupported. Color diagnostics use an explicit linear
+sRGB source convention, not the renderer's dynamic working-space pipeline.
+
+Certified opaque blockers retain the opaque path. Material-pending candidates
+are accepted only for a supported static, nonblended alpha-tested material with
+validated opacity data and source alpha comparison/threshold. Other pending
+materials remain excluded. Primary material views are world-space intersections
+of prepared triangles; native depth still selects the receiver grid. They are
+not complete runtime coverage or final game lighting. Layered PBR, glint,
+subsurface/fuzz technique behavior, reference texture/material swaps, texture-set
+JSON overrides and dynamic environmental effects are not declared equivalent.
+Coverage shows supported source records in green, unavailable data in magenta
+and unsupported techniques in orange.
+
+Stable-scene submissions reuse the tables, pool descriptors and geometry views.
+Changing only the diagnostic view does not reload textures. Scene changes defer
+new texture residency until old material-bearing frames retire. Frame/output
+generation checks remain independent of immutable scene-binding reuse. Status
+reports trace memory separately from texture residency and table bytes. This
+consumer is source-only until separately built and checked in game; it does not
+replace native lighting, retire RGI, bypass SCM or submit additional RR signals.
+
+Compiled shapes and placed instances carry `shadingStatus`, `shadingFile` and
+`shadingSha256`; placed instances also retain the compiled `material` metadata.
+Sidecar hashes are verified before classification-cache reuse and staging.
+Older manifests without sidecars continue to stage their v1 geometry. These raw
+attributes and material metadata do not establish complete material evaluation
+or alpha coverage, and no native renderer behavior changes in this exporter step.
 
 The initial compiler accepts SSE stream-100 BSTriShape and BSSubIndexTriShape
 geometry with an unambiguous supported node hierarchy and rigid opaque lighting
@@ -112,7 +264,7 @@ and opaque-candidate flags. Stage a freshly prepared cell for local deployment:
 & .\tools\redstone-scene-prep\StagePreparedCell.ps1 -SourceDirectory .\build\scene-prep\cells\Unslaad.esm\04FD2B
 ```
 
-This verifies geometry hashes and copies only the manifest/referenced mesh blobs
+This verifies geometry/sidecar hashes and copies only the manifest/referenced blobs
 under ignored `build/scene-prep/runtime/SKSE/Plugins/CommunityShaders/RedstoneScene`.
 It does not deploy to the game. The local build/deploy wrapper can copy that staged
 tree with the DLL and production shader payload when explicitly run.

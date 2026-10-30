@@ -17,9 +17,9 @@ namespace LightLimitFix
 	{
 		uint NumStrictLights;
 		int RoomIndex;
-		uint ShadowBitMask;
+		uint RoomGeneration;
 		uint FirstPerson;
-		float4 WorldEyePosition;  // true world-camera eye for FP shadow projection (w unused)
+		float4 WorldEyePosition;  // xyz: true world-camera eye; w: opaque draw coverage
 		Light StrictLights[15];
 	};
 

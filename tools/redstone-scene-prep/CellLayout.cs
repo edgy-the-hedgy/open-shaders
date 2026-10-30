@@ -3,8 +3,8 @@ using System.Text.Json;
 
 internal sealed record PlacedShape(string ReferenceKey, string? BaseKey, string Model, string SourceSha256,
     int BlockIndex, string ShapeName, string GeometryFile, string GeometrySha256, int IndexCount,
-    float[] ModelToCell, float[] ShapeToCell, float[] CellBounds, string? BaseEditorId, string RecordClassification,
-    bool OpaqueOccluderCandidate, string GeometryStatus, bool TwoSided);
+    float[] ModelToCell, float[] ShapeToCell, float[] CellBounds, string? BaseEditorId, string RecordClassification, string? RoomReferenceKey,
+    bool OpaqueOccluderCandidate, string GeometryStatus, bool TwoSided, string ShadingStatus, string? ShadingFile, string? ShadingSha256, CompiledMaterial? Material, string TangentStatus);
 internal sealed record LayoutOmission(string ReferenceKey, string? Model, string Reason, int? BlockIndex);
 internal sealed record LayoutResult(int PlacedReferences, int Instances, long Triangles, int OmittedReferences, string Digest);
 
@@ -57,7 +57,8 @@ internal static class CellLayout
                     placed.Add(new(key, row.GetProperty("baseKey").GetString(), asset.SourcePath, asset.SourceSha256,
                         shape.BlockIndex, shape.Name, shape.GeometryFile!, shape.GeometrySha256!, shape.IndexCount,
                         PlacementTransform.ToRows(placement), matrix, PlacementTransform.Bounds(shape.LocalBounds!, transform),
-                        row.GetProperty("baseEditorId").GetString(), classification, shape.OpaqueOccluderCandidate, shape.Status, shape.Material?.TwoSided ?? false));
+                        row.GetProperty("baseEditorId").GetString(), classification, row.GetProperty("roomReferenceKey").GetString(), shape.OpaqueOccluderCandidate, shape.Status, shape.Material?.TwoSided ?? false,
+                        shape.ShadingStatus, shape.ShadingFile, shape.ShadingSha256, shape.Material, shape.TangentStatus));
                     if (!shape.OpaqueOccluderCandidate) omissions.Add(new(key, model, shape.Status, shape.BlockIndex));
                 }
                 instances.AddRange(placed);
@@ -76,14 +77,25 @@ internal static class CellLayout
             classification = row.GetProperty("classification"), baseline = row.GetProperty("light"),
             hasReferenceOverrides = row.GetProperty("hasReferenceLightOverrides"), runtimeValidated = false
         }).ToArray();
+        var rooms = records.Where(row => row.GetProperty("roomBounds").ValueKind == JsonValueKind.Array).Select(row =>
+        {
+            var extents = row.GetProperty("roomBounds").Deserialize<float[]>() ?? [];
+            if (extents.Length != 3 || extents.Any(value => !float.IsFinite(value) || value <= 0))
+                throw new InvalidDataException("Invalid room half extents.");
+            var transform = PlacementTransform.FromRecord(row.GetProperty("position").Deserialize<float[]>() ?? [],
+                row.GetProperty("rotationRadians").Deserialize<float[]>() ?? [], row.GetProperty("scale").GetSingle());
+            if (!System.Numerics.Matrix4x4.Invert(transform, out var inverse)) throw new InvalidDataException("Singular room transform.");
+            return new { referenceKey = row.GetProperty("key"), halfExtents = extents, cellToRoom = PlacementTransform.ToRows(inverse) };
+        }).ToArray();
+        if (rooms.Length > 128) throw new InvalidDataException("Prepared room count exceeds 128.");
         var digest = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
         {
-            schemaVersion = 1, inputDigest, compilerKeys = assets.Select(asset => asset.CompilerKey).Distinct(), instances, omissions, lights
+            schemaVersion = 1, roomSchemaVersion = 1, inputDigest, compilerKeys = assets.Select(asset => asset.CompilerKey).Distinct(), instances, omissions, lights, rooms
         }, options))).ToLowerInvariant();
         var placedReferences = instances.Select(instance => instance.ReferenceKey).Distinct().Count();
         var layout = new
         {
-            schemaVersion = 1, rendererSchemaVersion = 1, cell, editorId, inputDigest, layoutDigest = digest,
+            schemaVersion = 1, rendererSchemaVersion = 1, shadingSchemaVersion = 2, materialSchemaVersion = 1, roomSchemaVersion = 1, rooms, cell, editorId, inputDigest, layoutDigest = digest,
             coordinateSystem = "Skyrim cell coordinates, Z up, native game units",
             rotationConvention = "CommonLibSSE-NG NiMatrix3::SetEulerAnglesXYZ; record radians; runtime comparison pending",
             nifRotationConvention = "Nifly 1.1.0 Matrix33 wire-order fields mapped to native NIF rows, then transposed for System.Numerics",

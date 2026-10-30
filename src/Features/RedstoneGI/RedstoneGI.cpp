@@ -308,8 +308,8 @@ void RedstoneGI::CompileComputeShaders()
 	};
 	for (const auto& shader : shaders) {
 		std::vector<std::pair<const char*, const char*>> defines;
-		if (settings.ResolutionMode == 1) defines.emplace_back("HALF_RES", "");
-		if (settings.ResolutionMode == 2) defines.emplace_back("QUARTER_RES", "");
+		if (rrResolutionMode == 1) defines.emplace_back("HALF_RES", "");
+		if (rrResolutionMode == 2) defines.emplace_back("QUARTER_RES", "");
 		if (settings.EnableAdaptiveSampling) defines.emplace_back("ADAPTIVE_SAMPLING", "");
 		auto path = std::filesystem::path("Data\\Shaders\\RedstoneGI") / shader.filename;
 		if (auto* raw = static_cast<ID3D11ComputeShader*>(Util::CompileShader(path.c_str(), defines, "cs_5_0")))
@@ -346,7 +346,7 @@ void RedstoneGI::UpdateSB()
 	data.RRHistoryValid = rrHistoryValid;
 	data.RRCheckerboardEnabled = rrCheckerboardThisFrame;
 	data.RRCheckerboardOrigin = rrCheckerboardOrigin;
-	data.MinScreenRadius = settings.MinScreenRadius * data.FrameDim.x / static_cast<float>(1u << settings.ResolutionMode);
+	data.MinScreenRadius = settings.MinScreenRadius * data.FrameDim.x / static_cast<float>(1u << rrResolutionMode);
 	data.EffectRadius = settings.GIRadius;
 	data.GIRadius = settings.GIRadius / data.EffectRadius;
 	data.SpecularRoughnessFloor = specularRoughnessFloor;
@@ -366,7 +366,6 @@ void RedstoneGI::UpdateSB()
 
 void RedstoneGI::DrawRayRegeneration(const std::array<uint, 2>& a_engineResolution, const std::array<uint, 2>& a_internalResolution)
 {
-	denoiser.SetRRDiagnosticsEnabled(rrDiagnosticsEnabled);
 	if (!HasRayRegenerationResources() || !a_internalResolution[0] || !a_internalResolution[1]) {
 		rrHistoryValid = false;
 		return;
@@ -444,6 +443,15 @@ void RedstoneGI::DrawGI()
 	CS_GPU_PASS("RedstoneGI::DrawGI");
 	if (!globals::game::frameCounter) return;
 	EnforceFixedPath();
+	const auto rrPolicy = RayRegeneration::GetSettings();
+	if (rrPolicyRevision != rrPolicy.revision) {
+		rrPolicyRevision = rrPolicy.revision;
+		rrResolutionMode = rrPolicy.resolutionMode;
+		rrCheckerboardEnabled = rrPolicy.checkerboard;
+		rrEnabled = rrPolicy.enabled;
+		recompileFlag = true;
+		ResetRuntimeHistory();
+	}
 	ID3D11ShaderResourceView* previousInputs[16]{};
 	globals::d3d::context->CSSetShaderResources(0, ARRAYSIZE(previousInputs), previousInputs);
 	rrPreviewValid = rrOutputApplied = rrLightingReady = rrProviderSucceeded = false;
@@ -459,7 +467,7 @@ void RedstoneGI::DrawGI()
 	}
 	const auto dynamic = Util::ConvertToDynamic(globals::state->screenSize);
 	const std::array<uint, 2> resolution{ static_cast<uint>(dynamic.x), static_cast<uint>(dynamic.y) };
-	const std::array<uint, 2> internal{ resolution[0] >> settings.ResolutionMode, resolution[1] >> settings.ResolutionMode };
+	const std::array<uint, 2> internal{ resolution[0] >> rrResolutionMode, resolution[1] >> rrResolutionMode };
 	if (!internal[0] || !internal[1]) return;
 	if (queuedResetHistory.exchange(false) || rrHistoryResolution != internal ||
 		!globals::game::frameCounter || (geometryHistoryValid && rrOutputFrame + 1u != static_cast<uint32_t>(*globals::game::frameCounter)))

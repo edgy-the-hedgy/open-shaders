@@ -1,8 +1,18 @@
 RaytracingAccelerationStructure Scene : register(t0);
 Texture2D<float4> Receivers : register(t1);
 StructuredBuffer<uint> ValidationOffsets : register(t2);
+Texture2D<float4> LightSnapshot : register(t3);
 ByteAddressBuffer GeometryBuffers[8192] : register(t0, space1);
 RWTexture2D<float4> Shadow : register(u0);
+RWTexture2D<float4> DirectDiffuse : register(u1);
+RWTexture2D<float4> DirectSpecular : register(u2);
+RWTexture2D<float4> DirectNormalRoughness : register(u3);
+RWTexture2D<float4> DirectSpecularAlbedo : register(u4);
+RWTexture2D<float4> DirectDiffuseAlbedo : register(u5);
+RWTexture2D<float4> IndirectDiffuse : register(u6);
+RWTexture2D<float4> IndirectSpecular : register(u7);
+struct RoomVolume { float4 inverse0; float4 inverse1; float4 inverse2; float4 halfExtents; };
+StructuredBuffer<RoomVolume> RoomVolumes : register(t6);
 static const uint OpaqueInstanceMask = 1;
 
 cbuffer Trace : register(b0)
@@ -16,7 +26,18 @@ cbuffer Trace : register(b0)
 	float MinimumDistance;
 	float AngularRadius;
 	uint3 Padding;
+	float4 LightingStrengths;
+	uint ExportDirectSignals;
+	uint3 SignalPadding;
+	uint IndirectRayCount;
+	uint BakedRoomCount;
+	uint BakedRoomsKnown;
+	uint IndirectPadding;
 };
+
+#include "materials.hlsli"
+#include "directLighting.hlsli"
+#include "indirectLighting.hlsli"
 
 uint Hash(uint value)
 {
@@ -31,14 +52,59 @@ uint Hash(uint value)
 void main(uint3 id : SV_DispatchThreadID)
 {
 	if (any(id.xy >= Size)) return;
+	if (ExportDirectSignals != 0) {
+		DirectDiffuse[id.xy] = 0;
+		DirectSpecular[id.xy] = 0;
+		DirectNormalRoughness[id.xy] = 0;
+		DirectSpecularAlbedo[id.xy] = 0;
+		DirectDiffuseAlbedo[id.xy] = 0;
+		IndirectDiffuse[id.xy] = float4(0, 0, 0, -2);
+		IndirectSpecular[id.xy] = float4(0, 0, 0, -2);
+	}
 	float4 receiver = Receivers.Load(int3(id.xy, 0));
 	if (receiver.w == 0 || !all(isfinite(receiver))) {
-		Shadow[id.xy] = 0;
+		Shadow[id.xy] = Unavailable(MissingReceiver);
 		return;
 	}
 	float maximum = MaximumDistance;
+	if (Padding.y != 0) {
+		RayDesc primary;
+		primary.Origin = CameraOrigin;
+		primary.Direction = normalize(receiver.xyz);
+		primary.TMin = MinimumDistance;
+		primary.TMax = MaximumDistance;
+		RayQuery<RAY_FLAG_FORCE_NON_OPAQUE | RAY_FLAG_CULL_BACK_FACING_TRIANGLES> surfaceQuery;
+		surfaceQuery.TraceRayInline(Scene, RAY_FLAG_NONE, 3, primary);
+		while (surfaceQuery.Proceed()) {
+			if (surfaceQuery.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
+			uint instance = surfaceQuery.CandidateInstanceID();
+			if (instance >= InstanceCount || GeometryBuffers[NonUniformResourceIndex(instance)].Load(ValidationOffsets[instance]) != 0) continue;
+			if (AdmitCandidate(instance, surfaceQuery.CandidatePrimitiveIndex(), surfaceQuery.CandidateTriangleBarycentrics())) surfaceQuery.CommitNonOpaqueTriangleHit();
+		}
+		if (surfaceQuery.CommittedStatus() != COMMITTED_TRIANGLE_HIT) { Shadow[id.xy] = Unavailable(MissedGeometry); return; }
+		float4 adjacent = Receivers.Load(int3(min(id.xy + uint2(1, 1), Size - 1), 0));
+		float spread = adjacent.w != 0 ? length(normalize(adjacent.xyz) - primary.Direction) : 2.0 / max(Size.x, Size.y);
+		float footprint = max(spread, 1e-6) * surfaceQuery.CommittedRayT();
+		if (Padding.y >= DirectDiffuseView) {
+			Shadow[id.xy] = EvaluateDirectLighting(surfaceQuery.CommittedInstanceID(), surfaceQuery.CommittedPrimitiveIndex(), surfaceQuery.CommittedTriangleBarycentrics(),
+				surfaceQuery.CommittedObjectToWorld3x4(), surfaceQuery.CommittedWorldToObject3x4(), primary.Direction, surfaceQuery.CommittedRayT(), receiver, footprint, Padding.y, id.xy);
+			return;
+		}
+		Shadow[id.xy] = EvaluateMaterial(surfaceQuery.CommittedInstanceID(), surfaceQuery.CommittedPrimitiveIndex(), surfaceQuery.CommittedTriangleBarycentrics(),
+			surfaceQuery.CommittedObjectToWorld3x4(), surfaceQuery.CommittedWorldToObject3x4(), footprint, Padding.y);
+		return;
+	}
 	float3 localDirection = LightDirection - (receiver.xyz + CameraOrigin);
 	if (Padding.x != 0) {
+		float4 source = LightSnapshot.Load(int3(6, 0, 0));
+		if (source.w == 0) {
+			Shadow[id.xy] = UnavailableLight(LightSnapshot.Load(int3(5, 0, 0)));
+			return;
+		}
+		int admission = LightRoomAdmission(receiver.w, 0);
+		if (admission < 0) { Shadow[id.xy] = UnavailableRoom(receiver.w); return; }
+		if (admission == 0) { Shadow[id.xy] = Unavailable(ExcludedRoom); return; }
+		localDirection = LightSnapshot.Load(int3(2, 0, 0)).xyz + source.xyz - (receiver.xyz + CameraOrigin);
 		maximum = min(MaximumDistance, length(localDirection) - MinimumDistance);
 		if (maximum <= MinimumDistance || !isfinite(maximum)) {
 			Shadow[id.xy] = float4(65504.0, 1.0, 1.0, 1.0);
@@ -60,7 +126,7 @@ void main(uint3 id : SV_DispatchThreadID)
 	ray.TMin = MinimumDistance;
 	ray.TMax = maximum;
 	RayQuery<RAY_FLAG_FORCE_NON_OPAQUE | RAY_FLAG_CULL_BACK_FACING_TRIANGLES> query;
-	query.TraceRayInline(Scene, RAY_FLAG_NONE, OpaqueInstanceMask, ray);
+	query.TraceRayInline(Scene, RAY_FLAG_NONE, 3, ray);
 	bool invalidGeometry = false;
 	while (query.Proceed()) {
 		if (query.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
@@ -70,7 +136,7 @@ void main(uint3 id : SV_DispatchThreadID)
 			invalidGeometry = true;
 			continue;
 		}
-		query.CommitNonOpaqueTriangleHit();
+		if (AdmitCandidate(instance, query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics())) query.CommitNonOpaqueTriangleHit();
 	}
 	bool hit = query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
 	float distance = hit ? query.CommittedRayT() : 65504.0;

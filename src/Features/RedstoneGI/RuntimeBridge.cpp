@@ -81,7 +81,7 @@ RedstoneDenoiser::RuntimeCommandContext* RedstoneDenoiser::AcquireRuntimeCommand
 
 json RedstoneDenoiser::GetRayRegenerationDiagnostics() const
 {
-	json signals = { "indirectDiffuse", "indirectSpecular" };
+	json signals = rayRegenerationDirectSignals ? json{ "directDiffuse", "directSpecular" } : json{ "indirectDiffuse", "indirectSpecular" };
 	if (rayRegenerationOcclusionSignals & FFX_DENOISER_SIGNAL_AMBIENT_OCCLUSION) signals.push_back("ambientOcclusion");
 	if (rayRegenerationOcclusionSignals & FFX_DENOISER_SIGNAL_SPECULAR_OCCLUSION) signals.push_back("specularOcclusion");
 	return {
@@ -96,16 +96,16 @@ json RedstoneDenoiser::GetRayRegenerationDiagnostics() const
 		{ "dispatchWidth", rayRegenerationWidth },
 		{ "dispatchHeight", rayRegenerationHeight },
 		{ "checkerboard", rayRegenerationCheckerboard },
-		{ "signalFlags", rayRegenerationContext ? (FFX_DENOISER_SIGNAL_INDIRECT_DIFFUSE | FFX_DENOISER_SIGNAL_INDIRECT_SPECULAR) | rayRegenerationOcclusionSignals : 0u },
+		{ "signalFlags", rayRegenerationContext ? (rayRegenerationDirectSignals ? FFX_DENOISER_SIGNAL_DIRECT_DIFFUSE | FFX_DENOISER_SIGNAL_DIRECT_SPECULAR : FFX_DENOISER_SIGNAL_INDIRECT_DIFFUSE | FFX_DENOISER_SIGNAL_INDIRECT_SPECULAR) | rayRegenerationOcclusionSignals : 0u },
 		{ "occlusionSignalFlags", rayRegenerationOcclusionSignals },
 		{ "signals", rayRegenerationContext ? signals : json::array() },
 		{ "signalSupport", {
-			{ "indirectDiffuse", "screen-space RGB and representative hit distance" },
-			{ "indirectSpecular", "screen-space GGX RGB and representative hit distance" },
+			{ "indirectDiffuse", rayRegenerationDirectSignals ? "not requested by this context" : "indirect RGB and representative hit distance" },
+			{ "indirectSpecular", rayRegenerationDirectSignals ? "not requested by this context" : "indirect specular RGB and representative hit distance" },
 			{ "diffuseAO", "independent visibility producer, optional" },
 			{ "specularOcclusion", "independent GGX visibility producer, optional" },
-			{ "directDiffuse", "unavailable: native pre-mix export and verified storage required" },
-			{ "directSpecular", "unavailable: native pre-mix export and verified storage required" },
+			{ "directDiffuse", rayRegenerationDirectSignals ? "prepared RT diffuse radiance, separate before emission/composition" : "not requested by this context" },
+			{ "directSpecular", rayRegenerationDirectSignals ? "prepared RT specular radiance, separate before emission/composition" : "not requested by this context" },
 			{ "dominantLightVisibility", "unavailable: genuine blocker distance producer required" }
 		} },
 		{ "signalWidth", rayRegenerationCheckerboard ? rayRegenerationWidth / 2u : rayRegenerationWidth }

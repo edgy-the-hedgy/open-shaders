@@ -16,6 +16,21 @@ struct RedstoneShadows final : OverlayFeature
 		bool AcquireScene = false;
 		bool UsePreparedScene = false;
 		bool PreviewPreparedScene = false;
+		bool UsePreparedMaterials = false;
+		bool UsePreparedDirectLighting = false;
+		bool UseAllPreparedLights = false;
+		bool ConnectIndirectLighting = true;
+		bool UseDirectRayRegeneration = true;
+		bool UseDXRIndirect = false;
+		uint32_t IndirectRays = 1;
+		float DirectStrength = 1.0f;
+		float DiffuseStrength = 1.0f;
+		float SpecularStrength = 1.0f;
+		float EmissionStrength = 1.0f;
+		float IndirectStrength = 1.0f;
+		uint32_t PreparedMaterialView = 0;
+		uint32_t MaterialTextureBudgetMB = 512;
+		uint32_t DirectLightingBudgetMB = 256;
 		uint32_t PreparedLight = 0;
 		uint32_t NodesPerFrame = 2048;
 		uint32_t MaxInstances = CasterObservation::kCapacity;
@@ -37,6 +52,12 @@ struct RedstoneShadows final : OverlayFeature
 	void RestoreDefaultSettings() override;
 	/** @brief Draws acquisition controls and explicit production/fallback status. */
 	void DrawSettings() override;
+	/** @brief Draws exclusive producer selection and settings for the selected indirect signal. */
+	void DrawIndirectLightingSettings();
+	/** @brief Draws reconstruction controls, contexts and buffers inside Upscaling's RR section. */
+	void DrawRayRegenerationSettings();
+	/** @brief Clears prepared full-screen debugging when another RR viewer takes ownership. */
+	void ClearRRDebugOverlay() { preparedTrace.ClearRRDebugOverlay(); }
 	/** @brief Draws copied caster bounds and diagnostic pipeline progress. */
 	void DrawOverlay() override;
 	/** @brief Enables the temporary flat-screen capture diagnostic overlay. */
@@ -45,8 +66,14 @@ struct RedstoneShadows final : OverlayFeature
 	void SetupResources() override;
 	/** @brief Advances owned scene acquisition without changing shadow ownership. */
 	void EarlyPrepass() override;
-	/** @brief Traces the prepared baseline scene only after native world depth is complete. */
-	void OnWorldRenderEnd(RE::RENDER_TARGET a_target) override;
+	/** @brief Traces previews or direct scene lighting with the opaque world camera and matching depth. */
+	void OnAfterDeferredLighting(ID3D11UnorderedAccessView* a_target, const std::array<uint32_t, 2>& a_size) override;
+	/** @brief Requests receiver-room storage only for the active eligible prepared-scene session. */
+	bool WantsOpaqueRoomMetadata() const override;
+	/** @brief Claims exclusive indirect ownership even when a requested DXR scene is unavailable. */
+	int GetIndirectLightingPriority() const override;
+	/** @brief Reports the selected indirect producer independently of resource availability. */
+	bool UsesDXRIndirect() const { return settings.UseDXRIndirect; }
 	/** @brief Disarms native observation before the feature stops receiving render callbacks. */
 	void OnRuntimeDisabled() override;
 	/** @brief Invalidates observations across scene transitions. */
@@ -72,6 +99,8 @@ private:
 	bool preparedSubmitted = false;
 	bool preparedActive = false;
 	std::optional<uint32_t> preparedTraceFrame;
+	std::vector<std::array<uint32_t, 2>> preparedLightReferences;
+	std::array<uint32_t, 128> preparedRoomReferences{};
 	/** @brief Identifies the loaded cell and advances offline upload/AS/preview without scene traversal. */
 	void AdvancePreparedScene(uint32_t a_frame, uint64_t a_budgetBytes);
 	/** @brief Invalidates prepared publication and retains in-flight work for nonblocking retirement. */

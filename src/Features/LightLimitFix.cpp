@@ -78,11 +78,12 @@ namespace
 	void ClearStrictLightData(LightLimitFix::StrictLightDataCB& a_data, bool a_resetRoomIndex) noexcept
 	{
 		a_data.NumStrictLights = 0;
-		a_data.ShadowBitMask = 0;
 		a_data.FirstPerson = 0;
 		a_data.WorldEyePosition = float4{};
-		if (a_resetRoomIndex)
+		if (a_resetRoomIndex) {
 			a_data.RoomIndex = -1;
+			a_data.RoomGeneration = 0;
+		}
 	}
 
 	void SetPointLightTypeFlags(LightLimitFix::LightData& a_light, RE::BSLight* a_bsLight)
@@ -861,6 +862,8 @@ void LightLimitFix::BSLightingShader_SetupGeometry_Before(RE::BSRenderPass* a_pa
 		return;
 
 	ClearStrictLightData(strictLightDataTemp, true);
+	if (uploadedLightsValid && uploadedLightFrame == globals::game::graphicsState->GetFrameCount())
+		strictLightDataTemp.RoomGeneration = uploadedRoomGeneration;
 
 	if (!a_pass || !a_pass->geometry)
 		return;
@@ -963,11 +966,6 @@ void LightLimitFix::BSLightingShader_SetupGeometry_GeometrySetupConstantPointLig
 			strictLightDataTemp.StrictLights[outIndex++] = light;
 		}
 		strictLightDataTemp.NumStrictLights = outIndex;
-
-		// Don't build strictLightDataTemp.ShadowBitMask: no shader reads it (the
-		// IsLightIgnored bit-mask branch was replaced by per-light shadowMapIndex
-		// sampling, set inline above). The field stays for cbuffer ABI stability
-		// and is zero-initialised by ClearStrictLightData.
 	}
 #if defined(_MSC_VER)
 	__except (1) {
@@ -999,13 +997,24 @@ void LightLimitFix::BSLightingShader_SetupGeometry_After(RE::BSRenderPass*)
 	const auto roomIndex = strictLightDataTemp.RoomIndex;
 	const bool isFirstPerson = strictLightDataTemp.FirstPerson != 0;
 	const bool worldEyeMoved = isFirstPerson && eyePositionCached[0] != previousWorldEyePosition;
+	float opaqueRoomCoverage = 0.0f;
+	if (!globals::game::isVR && globals::game::shadowState) {
+		auto* shadowState = globals::game::shadowState;
+		GET_INSTANCE_MEMBER(alphaBlendMode, shadowState)
+		GET_INSTANCE_MEMBER(alphaBlendAlphaToCoverage, shadowState)
+		opaqueRoomCoverage = alphaBlendMode == 0 && alphaBlendAlphaToCoverage == 0 ? 1.0f : 0.0f;
+	}
+	strictLightDataTemp.WorldEyePosition.w = opaqueRoomCoverage;
 
-	if (!isEmpty || (isEmpty && !wasEmpty) || isWorld != wasWorld || isFirstPerson != wasFirstPerson || previousRoomIndex != roomIndex || worldEyeMoved) {
+	if (!isEmpty || (isEmpty && !wasEmpty) || isWorld != wasWorld || isFirstPerson != wasFirstPerson || previousRoomIndex != roomIndex ||
+		previousRoomGeneration != strictLightDataTemp.RoomGeneration || previousOpaqueRoomCoverage != opaqueRoomCoverage || worldEyeMoved) {
 		strictLightDataCB->Update(strictLightDataTemp);
 		wasEmpty = isEmpty;
 		wasWorld = isWorld;
 		wasFirstPerson = isFirstPerson;
 		previousRoomIndex = roomIndex;
+		previousRoomGeneration = strictLightDataTemp.RoomGeneration;
+		previousOpaqueRoomCoverage = opaqueRoomCoverage;
 		previousWorldEyePosition = eyePositionCached[0];
 	}
 
@@ -1180,6 +1189,13 @@ LightLimitFix::LightData LightLimitFix::ProcessLight(RE::BSLight* bsLight, RE::N
 	LightData light{};
 	light.lightFlags = runtimeData->flags;
 	light.lightFlags.reset(LightFlags::Shadow);
+	if (const auto* reference = niLight->GetUserData()) {
+		if (const auto* base = reference->GetObjectReference(); base && base->GetFormType() == RE::FormType::Light &&
+			runtimeData->lighFormId == base->GetFormID()) {
+			light.sourceReference = reference->GetFormID();
+			light.sourceBase = base->GetFormID();
+		}
+	}
 	light.color = float3{ runtimeData->diffuse.red, runtimeData->diffuse.green, runtimeData->diffuse.blue };
 	light.radius = runtimeData->radius;
 	light.fade = runtimeData->fade;
@@ -1282,9 +1298,28 @@ void LightLimitFix::CompileComputeShaders()
 	shadowDepthPyramidCS.Get(L"Data\\Shaders\\LightLimitFix\\ShadowDepthPyramidCS.hlsl", clusterDefines, "cs_5_0");
 }
 
+LightLimitFixData::LightView LightLimitFix::GetLightView(uint32_t a_frame) const
+{
+	static_assert(sizeof(LightData) == LightLimitFixData::kRecordBytes);
+	if (!loaded || !uploadedLightsValid || uploadedLightFrame != a_frame || !lights || !lights->srv || !lightCount || lightCount > MAX_LIGHTS)
+		return {};
+	const auto& origin = eyePositionCached[0];
+	LightLimitFixData::LightView view{ lights->srv.get(), { origin.x, origin.y, origin.z }, lightCount, uploadedLightFrame, uploadedRoomGeneration };
+	for (const auto& [node, index] : roomNodes)
+		if (node && index < view.roomReferences.size())
+			if (const auto* reference = node->GetUserData()) view.roomReferences[index] = reference->GetFormID();
+	return view;
+}
+
 void LightLimitFix::UpdateLights()
 {
 	ZoneScopedN("LLF::UpdateLights");
+	uploadedLightsValid = false;
+	const auto uploadFrame = globals::game::graphicsState->GetFrameCount();
+	if (roomUploadFrame != uploadFrame) { roomUploadFrame = uploadFrame; roomUploadCount = 0; }
+	constexpr uint32_t kMaximumRoomGeneration = 255;
+	if (roomUploadCount < kMaximumRoomGeneration + 1) ++roomUploadCount;
+	uploadedRoomGeneration = roomUploadCount <= kMaximumRoomGeneration ? roomUploadCount : 0;
 
 	auto context = globals::d3d::context;
 	if (!context || !lights || !lights->resource) {
@@ -1510,6 +1545,8 @@ void LightLimitFix::UpdateLights()
 			memcpy_s(mapped.pData, bytes, lightsData.data(), bytes);
 		context->Unmap(lights->resource.get(), 0);
 	}
+	uploadedLightFrame = globals::game::graphicsState->GetFrameCount();
+	uploadedLightsValid = true;
 
 	UpdateStructure();
 }

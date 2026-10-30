@@ -2,6 +2,7 @@
 #include "Features/OverlayFeature.h"
 #include "Buffer.h"
 #include "RuntimeDenoiser.h"
+#include "Utils/RayRegenerationSettings.h"
 #include "StartupGate.h"
 #include "Utils/LazyShader.h"
 
@@ -35,7 +36,7 @@ struct RedstoneGI final : OverlayFeature
 	const void* GetBootValue(std::string_view a_key) const override;
 	/** @brief Changes RGI sampling and invalidates reconstruction history. */
 	void SetRRCheckerboard(bool a_enabled);
-	bool IsRRCheckerboardEnabled() const { return rrCheckerboardEnabled; }
+	bool IsRRCheckerboardEnabled() const { return RayRegeneration::GetSettings().checkerboard; }
 	std::string GetDisplayName() override { return "RedstoneGI"; }
 	std::string GetShortName() override { return "RedstoneGI"; }
 	std::string GetName() override { return "RedstoneGI"; }
@@ -119,11 +120,16 @@ struct RedstoneGI final : OverlayFeature
 	/** @brief Provides saved provider overrides to the existing devbench commands. */
 	RedstoneDenoiser& GetDenoiser() { return denoiser; }
 	bool IsActive() const { return active.load(); }
+	/** @brief Reports whether the selected provider has current-frame indirect lighting to compose. */
+	bool HasCurrentIndirectLighting() const;
+	/** @brief Changes normalized screen-space sampling work and invalidates reconstruction history. */
+	void SetLightingSamples(uint32_t a_diffuseSlices, uint32_t a_specularSlices);
+	/** @brief Returns diffuse and specular slice counts, each tracing both screen-space directions. */
+	std::array<uint32_t, 2> GetLightingSamples() const { return { diffuseSlices, specularSlices }; }
 	struct Settings
 	{
 		bool EnableVanillaSSAO = false;
 		bool EnableAdaptiveSampling = true;
-		int ResolutionMode = 1;
 		float MinScreenRadius = 0.01f;
 		float GIRadius = 4096.0f;
 		float2 DepthFadeRange = { 4e4f, 5e4f };
@@ -143,6 +149,7 @@ private:
 	void QueueHistoryReset() { queuedResetHistory.store(true); }
 	std::atomic<bool> queuedResetHistory{ true };
 	bool recompileFlag = false;
+	uint32_t rrResolutionMode = 1;
 	eastl::unique_ptr<ConstantBuffer> settingsBuffer;
 	eastl::unique_ptr<Texture2D> texNoise, texWorkingDepth, texRadiance;
 	winrt::com_ptr<ID3D11SamplerState> linearClampSampler, pointClampSampler;
@@ -160,6 +167,7 @@ private:
 	bool diffuseEnabled = true;
 	bool specularEnabled = true;
 	bool rrCheckerboardEnabled = true;
+	uint64_t rrPolicyRevision = UINT64_MAX;
 	bool rrCheckerboardThisFrame = false;
 	uint32_t rrCheckerboardOrigin = 0;
 	float rgiContributionEV = 0.0f;
@@ -269,7 +277,6 @@ private:
 	float4 previousCameraOrigin{};
 	bool rrOutputApplied = false;
 	uint32_t rrOutputFrame = UINT32_MAX;
-	bool rrDiagnosticsEnabled = false;
 	std::array<uint, 2> rrHistoryResolution{};
 	eastl::unique_ptr<Texture2D> texRRMotionVectors = nullptr;
 	eastl::unique_ptr<Texture2D> texRRNormalRoughness = nullptr;

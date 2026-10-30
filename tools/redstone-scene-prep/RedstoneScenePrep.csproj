@@ -10,5 +10,6 @@
     <Content Include="LayoutPreview.html" CopyToOutputDirectory="PreserveNewest" />
     <PackageReference Include="Mutagen.Bethesda.Skyrim" Version="0.54.4" />
     <PackageReference Include="Nifly" Version="1.1.0" />
+    <PackageReference Include="BCnEncoder.Net" Version="2.3.0" />
   </ItemGroup>
 </Project>
