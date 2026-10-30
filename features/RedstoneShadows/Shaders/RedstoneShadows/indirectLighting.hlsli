@@ -27,7 +27,86 @@ uint BakedRoomCode(uint instance, float3 position)
 	return matches == 1 ? uint(LightSnapshot.Load(int3(roomIndex, 1, 0)).x) : ReceiverRoom::Unknown;
 }
 
-bool SecondaryRadiance(float3 origin, float3 direction, float footprint, out float3 radiance, out float distance)
+// DXR two-bounce diffuse GI experiment: set to 0 for A/B comparison.
+// This is one additional indirect path segment, NOT an addition to DirectDiffuse.
+#ifndef REDSTONE_IL_SECOND_BOUNCE
+#define REDSTONE_IL_SECOND_BOUNCE 1
+#endif
+
+#if REDSTONE_IL_SECOND_BOUNCE
+// One terminal ray at the second indirect surface. Direct DIFFUSE is the
+// terminal incident-radiance source; primary direct signals stay unchanged.
+bool TraceTerminalDiffuse(float3 origin, float3 direction, float footprint,
+    uint selectedLight, uint lightCount, out float3 radiance)
+{
+    radiance = 0;
+    RayDesc ray;
+    ray.Origin = origin;
+    ray.Direction = direction;
+    ray.TMin = MinimumDistance;
+    ray.TMax = MaximumDistance;
+    RayQuery<RAY_FLAG_FORCE_NON_OPAQUE | RAY_FLAG_CULL_BACK_FACING_TRIANGLES> query;
+    query.TraceRayInline(Scene, RAY_FLAG_NONE, 3, ray);
+    while (query.Proceed()) {
+        if (query.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
+        uint instance = query.CandidateInstanceID();
+        if (instance >= InstanceCount ||
+            GeometryBuffers[NonUniformResourceIndex(instance)].Load(ValidationOffsets[instance]) != 0) return false;
+        if (AdmitCandidate(instance, query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics()))
+            query.CommitNonOpaqueTriangleHit();
+    }
+    // The prepared scene has no environment radiance yet.
+    if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) return true;
+    uint instance = query.CommittedInstanceID();
+    uint primitive = query.CommittedPrimitiveIndex();
+    MaterialRecord record = Materials[Surfaces[instance].material.x];
+    if ((record.flags.x & 3) != 3 || record.flags.w != 0) return false;
+    EvaluatedSourceMaterial material;
+    if (!LoadSourceMaterial(instance, primitive, query.CommittedTriangleBarycentrics(),
+        query.CommittedObjectToWorld3x4(), query.CommittedWorldToObject3x4(), footprint, material)) return false;
+    TriangleSurface surface;
+    if (!LoadTriangle(instance, primitive, query.CommittedTriangleBarycentrics(), surface)) return false;
+    float3x3 transform = (float3x3)query.CommittedObjectToWorld3x4();
+    float3 geometricNormal = normalize(cross(
+        mul(transform, surface.position1 - surface.position0),
+        mul(transform, surface.position2 - surface.position0)));
+    if (!all(isfinite(geometricNormal))) return false;
+
+    float3 position = origin + direction * query.CommittedRayT();
+    uint room = BakedRoomCode(instance, position);
+    radiance = material.emission * LightingStrengths.w;
+
+    // Uniformly select one light and divide by its selection PDF (= 1/lightCount).
+    // Emission is not multiplied by lightCount.
+    float3 directDiffuse, unusedSpecular;
+    float4 unavailable;
+    if (EvaluatePointLight(selectedLight, material, position, -direction,
+        geometricNormal, room, directDiffuse, unusedSpecular, unavailable))
+        radiance += directDiffuse * float(lightCount);
+
+    return all(isfinite(radiance)) && all(radiance >= 0);
+}
+
+float3 SampleSecondBounceDirection(float3 normal, uint2 pixel, uint sampleIndex, out uint selectedLight, uint lightCount)
+{
+    uint seed = IndirectHash(pixel.x + pixel.y * Size.x +
+        FrameIndex * 0x9e3779b9u + sampleIndex * 0x85ebca6bu + 0xd1b54a35u);
+    uint angular = IndirectHash(seed ^ 0x68bc21ebu);
+    uint light = IndirectHash(seed ^ 0x02e5be93u);
+    selectedLight = light % max(lightCount, 1u);
+
+    float2 random = (float2(angular & 0xffffu, angular >> 16) + 0.5) / 65536.0;
+    float radius = sqrt(random.x);
+    float phi = random.y * 6.28318530718;
+    float3 tangent = normalize(cross(abs(normal.z) < 0.9 ? float3(0, 0, 1) : float3(0, 1, 0), normal));
+    float3 bitangent = cross(normal, tangent);
+    return normalize(tangent * (radius * cos(phi)) + bitangent * (radius * sin(phi)) +
+        normal * sqrt(1.0 - random.x));
+}
+#endif
+
+bool SecondaryRadiance(float3 origin, float3 direction, float footprint,
+    uint2 pixel, uint sampleIndex, out float3 radiance, out float distance)
 {
 	radiance = 0; distance = -1;
 	RayDesc ray;
@@ -62,6 +141,27 @@ bool SecondaryRadiance(float3 origin, float3 direction, float footprint, out flo
 		if (!EvaluatePointLight(light, material, position, -direction, geometricNormal, room, diffuse, specular, unavailable)) return false;
 		radiance += diffuse + specular;
 	}
+#if REDSTONE_IL_SECOND_BOUNCE
+    // The second segment is traced only from a valid first indirect hit.
+    // Existing first-hit emission and direct lighting are always retained.
+    uint selectedLight = 0;
+    float3 shadingNormal = normalize(material.normal);
+    float3 outward = dot(geometricNormal, -direction) >= 0 ? geometricNormal : -geometricNormal;
+    if (dot(shadingNormal, outward) < 0) shadingNormal = -shadingNormal;
+    float3 bounceDirection = SampleSecondBounceDirection(shadingNormal, pixel, sampleIndex,
+        selectedLight, lightCount);
+    if (dot(bounceDirection, outward) > 0) {
+        float3 terminal;
+        if (TraceTerminalDiffuse(position + outward * MinimumDistance, bounceDirection,
+            footprint, selectedLight, lightCount, terminal)) {
+            // Cosine-weighted Lambert estimator: BRDF*cos / (cos/pi) = albedo.
+            // Use a simple F0 diffuse-energy approximation at the intermediate hit.
+            float3 throughput = saturate(1.0 - material.f0) *
+                (1.0 - material.metallic) * material.baseColor;
+            radiance += terminal * throughput;
+        }
+    }
+#endif
 	return all(isfinite(radiance)) && all(radiance >= 0);
 }
 
@@ -84,7 +184,7 @@ bool EvaluateIndirectLighting(EvaluatedSourceMaterial material, float3 position,
 		float3 l = normalize(tangent * (radius * cos(angle)) + bitangent * (radius * sin(angle)) + material.normal * sqrt(1 - random.x));
 		if (dot(outward, l) <= 0) continue;
 		float3 incoming; float distance;
-		if (!SecondaryRadiance(position + outward * MinimumDistance, l, footprint, incoming, distance)) return false;
+		if (!SecondaryRadiance(position + outward * MinimumDistance, l, footprint, pixel, sampleIndex, incoming, distance)) return false;
 		float3 h = normalize(viewDirection + l), fresnel;
 		float3 specularWeight = PBR::SpecularMicrofacet(material.roughness, material.f0, saturate(dot(material.normal, l)), max(nDotV, 1e-4), saturate(dot(material.normal, h)), saturate(dot(viewDirection, h)), fresnel);
 		float3 diffuseWeight = (1 - fresnel) * (1 - material.metallic) * material.baseColor * BRDF::Diffuse_Lambert();
