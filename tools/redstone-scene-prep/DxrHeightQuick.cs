@@ -112,7 +112,7 @@ internal static class DxrHeightQuick
     {
         var original = new Result(blob.Path, blob.Sha256, blob.Bounds, inputVertices,
             inputIndices, shading.Status, shading.File, shading.Sha256, shading.TangentStatus);
-        if (Setting("REDSTONE_DXR_HEIGHT_ENABLED", 0) == 0 ||
+        if ((Setting("REDSTONE_DXR_HEIGHT_ENABLED", 0) == 0 && Setting("REDSTONE_DXR_NORMAL_ENABLED", 0) == 0) ||
             material == null || shading.Status != "compiled" ||
             shading.TangentStatus != "compiled:source-basis" || shading.File == null ||
             material.Textures.Length == 0 || string.IsNullOrWhiteSpace(material.Textures[0]))
@@ -125,11 +125,30 @@ internal static class DxrHeightQuick
         string heightName = diffuse.EndsWith("_d.dds", StringComparison.OrdinalIgnoreCase)
             ? diffuse[..^6] + "_p.dds" : diffuse[..^4] + "_p.dds";
         string? heightPath = FindTexture(output, heightName);
-        if (heightPath == null) { Console.WriteLine($"[DXR height] missing {heightName}"); return original; }
+        if (heightPath == null) Console.WriteLine($"[DXR surface] height absent: {heightName}");
 
         try
         {
-            var height = LoadTexture(heightPath);
+                        Texture? height = Setting("REDSTONE_DXR_HEIGHT_ENABLED", 0) != 0 && heightPath != null
+                ? LoadTexture(heightPath) : null;
+
+            DxrNormalQuick.Field? micro = null;
+            if (Setting("REDSTONE_DXR_NORMAL_ENABLED", 0) != 0 &&
+                material.Textures.Length > 1 &&
+                !string.IsNullOrWhiteSpace(material.Textures[1]))
+            {
+                string? normalPath = FindTexture(output, material.Textures[1]);
+                if (normalPath != null)
+                {
+                    try { micro = DxrNormalQuick.Load(normalPath); }
+                    catch (Exception e) {
+                        Console.WriteLine("[DXR normal] unavailable: " + e.Message);
+                    }
+                }
+            }
+
+            if (height == null && micro == null)
+                return original;
             // AO source is optional; never modifies RMAOS/lighting AO.
             string aoName = diffuse.EndsWith("_d.dds", StringComparison.OrdinalIgnoreCase)
                 ? diffuse[..^6] + "_rmaos.dds" : diffuse[..^4] + "_rmaos.dds";
@@ -140,8 +159,8 @@ internal static class DxrHeightQuick
                 try { ao = LoadTexture(aoPath); }
                 catch (Exception e) { Console.WriteLine("[DXR height] AO ignored: " + e.Message); }
             }
-            var outputData = Build(output, blob.Path, shading.File, material, height, ao);
-            Console.WriteLine($"[DXR height] {diffuse} {inputIndices/3} -> {outputData.IndexCount/3} triangles, DDS={heightName}, AO={(ao!=null ? "yes":"no")}");
+            var outputData = Build(output, blob.Path, shading.File, material, height, ao, micro);
+            Console.WriteLine($"[DXR surface] {diffuse}: {inputIndices/3} -> {outputData.IndexCount/3} triangles; height={(height!=null ? "yes":"no")}; normal={(micro!=null ? "yes":"no")}; AO={(ao!=null ? "yes":"no")}");
             return outputData;
         }
         catch (Exception e)
@@ -152,7 +171,7 @@ internal static class DxrHeightQuick
     }
 
     private static Result Build(string output, string geometryFile, string shadingFile,
-        CompiledMaterial material, Texture height, Texture? ao)
+        CompiledMaterial material, Texture? height, Texture? ao, DxrNormalQuick.Field? micro)
     {
         List<V> verts = new();
         List<(int A, int B, int C)> tris = new();
@@ -242,7 +261,8 @@ internal static class DxrHeightQuick
 
         float scale=Math.Clamp(Setting("REDSTONE_DXR_HEIGHT_SCALE", 4f),-32f,32f);
         float aoScale=Math.Clamp(Setting("REDSTONE_DXR_AO_SCALE",.5f),0f,16f);
-        float reference=Math.Clamp(Setting("REDSTONE_DXR_HEIGHT_REF", .5f),0f,1f);
+                float reference=Math.Clamp(Setting("REDSTONE_DXR_HEIGHT_REF", .5f),0f,1f);
+        float microScale=Math.Clamp(Setting("REDSTONE_DXR_NORMAL_MICRO_SCALE", .5f),0f,8f);
         var uv=material.UvOffsetScale;
         float su=uv.Length>2 ? uv[2] : 1, sv=uv.Length>3 ? uv[3] : 1;
         float ou=uv.Length>0 ? uv[0] : 0, ov=uv.Length>1 ? uv[1] : 0;
@@ -252,10 +272,12 @@ internal static class DxrHeightQuick
             if (v.Boundary) continue;
             float vv = Setting("REDSTONE_DXR_FLIP_V", 0) != 0 ? 1f-v.UV.Y : v.UV.Y;
             var tc = new Vector2(v.UV.X*su+ou, vv*sv+ov);
-            float h=height.Sample(tc,false);
+            float h=height?.Sample(tc,false) ?? reference;
             float cavity=Math.Clamp((reference-h)*3f,0f,1f);
             float a=ao?.Sample(tc,true) ?? 1f;
-            float d = scale*(h-reference) - aoScale*(1-a)*(1-a)*cavity;
+                        float d = scale*(h-reference) - aoScale*(1-a)*(1-a)*cavity;
+            if (micro != null)
+                d += micro.Sample(tc) * microScale;
             if (!float.IsFinite(d)) throw new InvalidDataException("Nonfinite displacement");
             var n=Vector3.Normalize(v.N);
             if (!float.IsFinite(n.X)) throw new InvalidDataException("Invalid vertex normal");

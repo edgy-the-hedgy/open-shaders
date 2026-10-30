@@ -38,51 +38,123 @@ bool TraceDirectVisibility(float3 origin, float3 direction, float distance, out 
 	return valid;
 }
 
-bool EvaluatePointLight(uint lightIndex, EvaluatedSourceMaterial material, float3 position, float3 viewDirection,
-	float3 geometricNormal, float receiverCode, out float3 diffuse, out float3 specular, out float4 unavailable)
+// EXPERIMENTAL: Normal-independent direct lighting.
+// No NdotL, NdotV, normal-dependent BRDF or normal-based shadow bias.
+bool EvaluatePointLight(
+    uint lightIndex,
+    EvaluatedSourceMaterial material,
+    float3 position,
+    float3 viewDirection,
+    float3 geometricNormal,
+    float receiverCode,
+    out float3 diffuse,
+    out float3 specular,
+    out float4 unavailable)
 {
-	diffuse = specular = 0;
-	unavailable = 0;
-	uint snapshotBase = lightIndex * LightSnapshotTexels;
-	float4 source = LightSnapshot.Load(int3(snapshotBase + 6, 0, 0));
-	float4 radiance = LightSnapshot.Load(int3(snapshotBase + 7, 0, 0));
-	if (source.w != 1 || radiance.w != 1) {
-		unavailable = UnavailableLight(LightSnapshot.Load(int3(snapshotBase + 5, 0, 0)));
-		return false;
-	}
-	float3 lightPosition = LightSnapshot.Load(int3(snapshotBase + 2, 0, 0)).xyz + source.xyz;
-	float3 lightVector = lightPosition - position;
-	float lightDistance = length(lightVector);
-	if (!isfinite(lightDistance) || lightDistance <= MinimumDistance) { unavailable = Unavailable(InvalidSurface); return false; }
-	float4 falloff = LightSnapshot.Load(int3(snapshotBase + 1, 0, 0));
-	if (lightDistance >= falloff.x) return true;
-	float3 l = lightVector / lightDistance;
-	float nDotL = saturate(dot(material.normal, l));
-	float nDotV = saturate(dot(material.normal, viewDirection));
-	if (nDotL == 0 || nDotV == 0) return true;
-	int admission = LightRoomAdmission(receiverCode, lightIndex);
-	if (admission < 0) { unavailable = UnavailableRoom(receiverCode); return false; }
-	if (admission == 0) return true;
-	if (lightDistance >= MaximumDistance) { unavailable = Unavailable(InvalidSurface); return false; }
-	LightLimitFix::Light light = (LightLimitFix::Light)0;
-	light.radius = falloff.x; light.invRadius = falloff.y; light.fadeZone = falloff.z; light.sizeBias = falloff.w;
-	light.lightFlags = asuint(LightSnapshot.Load(int3(snapshotBase + 5, 0, 0)).x);
-	float attenuation = LightLimitFix::GetAttenuation(lightDistance, light);
-	if (attenuation <= 0) return true;
-	float3 offsetNormal = dot(geometricNormal, l) < 0 ? -geometricNormal : geometricNormal;
-	float3 origin = position + offsetNormal * MinimumDistance;
-	float3 shadowVector = lightPosition - origin;
-	bool visible;
-	if (!TraceDirectVisibility(origin, normalize(shadowVector), length(shadowVector), visible)) { unavailable = Unavailable(InvalidSurface); return false; }
-	if (!visible) return true;
-	float3 h = normalize(viewDirection + l);
-	float3 fresnel;
-	specular = PBR::SpecularMicrofacet(material.roughness, material.f0, nDotL, max(nDotV, 1e-4),
-		saturate(dot(material.normal, h)), saturate(dot(viewDirection, h)), fresnel);
-	diffuse = (1 - fresnel) * (1 - material.metallic) * material.baseColor * BRDF::Diffuse_Lambert();
-	float3 incident = radiance.rgb * attenuation * nDotL;
-	diffuse *= incident; specular *= incident;
-	return true;
+    diffuse = 0;
+    specular = 0;
+    unavailable = 0;
+
+    uint snapshotBase = lightIndex * LightSnapshotTexels;
+
+    float4 source =
+        LightSnapshot.Load(int3(snapshotBase + 6, 0, 0));
+
+    float4 radiance =
+        LightSnapshot.Load(int3(snapshotBase + 7, 0, 0));
+
+    if (source.w != 1 || radiance.w != 1)
+    {
+        unavailable = UnavailableLight(
+            LightSnapshot.Load(int3(snapshotBase + 5, 0, 0)));
+        return false;
+    }
+
+    float3 lightPosition =
+        LightSnapshot.Load(int3(snapshotBase + 2, 0, 0)).xyz
+        + source.xyz;
+
+    float3 lightVector = lightPosition - position;
+    float lightDistance = length(lightVector);
+
+    if (!isfinite(lightDistance) ||
+        lightDistance <= MinimumDistance)
+    {
+        unavailable = Unavailable(InvalidSurface);
+        return false;
+    }
+
+    float4 falloff =
+        LightSnapshot.Load(int3(snapshotBase + 1, 0, 0));
+
+    if (lightDistance >= falloff.x)
+        return true;
+
+    float3 l = lightVector / lightDistance;
+
+    // Room restrictions remain intact.
+    int admission = LightRoomAdmission(receiverCode, lightIndex);
+
+    if (admission < 0)
+    {
+        unavailable = UnavailableRoom(receiverCode);
+        return false;
+    }
+
+    if (admission == 0)
+        return true;
+
+    if (lightDistance >= MaximumDistance)
+    {
+        unavailable = Unavailable(InvalidSurface);
+        return false;
+    }
+
+    LightLimitFix::Light light = (LightLimitFix::Light) 0;
+    light.radius = falloff.x;
+    light.invRadius = falloff.y;
+    light.fadeZone = falloff.z;
+    light.sizeBias = falloff.w;
+    light.lightFlags = asuint(
+        LightSnapshot.Load(int3(snapshotBase + 5, 0, 0)).x);
+
+    float attenuation =
+        LightLimitFix::GetAttenuation(lightDistance, light);
+
+    if (attenuation <= 0)
+        return true;
+
+    // Offset toward light, not along the surface normal.
+    float3 origin = position + l * MinimumDistance;
+    float3 shadowVector = lightPosition - origin;
+
+    bool visible;
+
+    if (!TraceDirectVisibility(
+        origin,
+        normalize(shadowVector),
+        length(shadowVector),
+        visible))
+    {
+        unavailable = Unavailable(InvalidSurface);
+        return false;
+    }
+
+    if (!visible)
+        return true;
+
+    // No normal-dependent illumination.
+    // Direct specular deliberately disabled.
+    diffuse =
+        (1.0 - material.metallic) *
+        material.baseColor *
+        BRDF::Diffuse_Lambert() *
+        radiance.rgb *
+        attenuation;
+
+    specular = 0;
+
+    return true;
 }
 
 float4 EvaluateDirectLighting(uint instance, uint primitive, float2 barycentric, float3x4 objectToWorld,
@@ -90,7 +162,7 @@ float4 EvaluateDirectLighting(uint instance, uint primitive, float2 barycentric,
 {
 	MaterialRecord record = Materials[Surfaces[instance].material.x];
 	if ((record.flags.x & 3) != 3 || record.flags.w != 0) return Unavailable(UnsupportedMaterial);
-	if (abs(distance - length(receiver.xyz)) > max(MinimumDistance, distance * ReceiverRelativeTolerance)) return Unavailable(MismatchedDepth);
+	if (abs(distance - length(receiver.xyz)) > max(5.0f, distance * ReceiverRelativeTolerance)) return Unavailable(MismatchedDepth);
 	EvaluatedSourceMaterial material;
 	if (!LoadSourceMaterial(instance, primitive, barycentric, objectToWorld, worldToObject, footprint, material)) return Unavailable(InvalidSurface);
 	TriangleSurface surface;

@@ -37,7 +37,7 @@ internal sealed class MeshCompiler
                 compilerKey + "/DXRHEIGHT-v1/" + string.Join("/", new[] {
                     "REDSTONE_DXR_HEIGHT_ENABLED", "REDSTONE_DXR_HEIGHT_SCALE", "REDSTONE_DXR_AO_SCALE",
                     "REDSTONE_DXR_SUBDIV", "REDSTONE_DXR_TRI_CAP", "REDSTONE_DXR_HEIGHT_REF",
-                    "REDSTONE_DXR_HEIGHT_TARGET", "REDSTONE_DXR_FLIP_V"
+                    "REDSTONE_DXR_HEIGHT_TARGET", "REDSTONE_DXR_FLIP_V", "REDSTONE_DXR_NORMAL_ENABLED", "REDSTONE_DXR_NORMAL_MICRO_SCALE", "REDSTONE_DXR_NORMAL_GRID", "REDSTONE_DXR_NORMAL_FLIP_Y"
                 }.Select(k => Environment.GetEnvironmentVariable(k) ?? ""))))).ToLowerInvariant();
     }
 

@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("RedstoneScenePrep")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+3582a6c24bf1c4f864f47698b4099991dddbccb2")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+b702e84c32c68f8ea5a1036e78685361f7df526b")]
 [assembly: System.Reflection.AssemblyProductAttribute("RedstoneScenePrep")]
 [assembly: System.Reflection.AssemblyTitleAttribute("RedstoneScenePrep")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
