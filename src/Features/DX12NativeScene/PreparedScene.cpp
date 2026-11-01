@@ -249,19 +249,27 @@ namespace DX12Native
 				result->lightDefinitions.push_back(light);
 				PreparedPointLight native{};
 				native.position = { position[0], position[1], position[2] };
-				// Raw plugin baseline, never a promise of current dynamic light state.
+				// Temporary inverse-square baseline: advanced source flags and
+				// reference overrides are not modeled yet, but do not suppress the
+				// point-light approximation when its fundamental data is valid.
+				std::string eligibility = "invalid-baseline";
 				try {
 					const auto& data = light.at("baseline");
 					const auto rgb = data.at("color").get<std::vector<int>>();
 					const auto flags = data.value("flags", std::string{});
 					const float radius = data.at("radius").get<float>();
 					const float fade = data.value("fadeValue", 1.0f);
-					const bool unsupported = light.value("hasReferenceOverrides", true) ||
-						flags.find("PortalStrict") != std::string::npos || flags.find("Spot") != std::string::npos ||
-						flags.find("Particle") != std::string::npos || flags.find("Disabled") != std::string::npos;
-					if (!unsupported && rgb.size() == 3 && std::isfinite(radius) && std::isfinite(fade) &&
-						radius > 0 && fade > 0 && radius <= 60000.0f &&
-						std::ranges::all_of(rgb, [](int c) { return c >= 0 && c <= 255; })) {
+					const bool disabled = flags.find("Disabled") != std::string::npos;
+					const bool approximate = light.value("hasReferenceOverrides", false) ||
+						flags.find("PortalStrict") != std::string::npos ||
+						flags.find("Spot") != std::string::npos ||
+						flags.find("Particle") != std::string::npos;
+					if (disabled) eligibility = "disabled";
+					else if (rgb.size() != 3 || !std::isfinite(radius) || !std::isfinite(fade) ||
+						radius <= 0 || fade <= 0 || radius > 60000.0f ||
+						!std::ranges::all_of(rgb, [](int c) { return c >= 0 && c <= 255; }))
+						eligibility = "invalid-baseline";
+					else {
 						const auto srgb = [](float v) { return v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f); };
 						const float scale = fade * radius * radius;
 						native.radiance = { srgb(float(rgb[0]) / 255.0f) * scale,
@@ -269,8 +277,10 @@ namespace DX12Native
 						native.radius = radius;
 						native.sourceRadius = std::max(0.5f, radius * 0.025f);
 						native.supported = true;
+						eligibility = approximate ? "approximated" : "supported";
 					}
-				} catch (const json::exception&) { /* Leave unsupported; raster fallback. */ }
+				} catch (const json::exception&) { eligibility = "invalid-baseline"; }
+				result->lightEligibility.push_back(std::move(eligibility));
 				result->nativeLights.push_back(native);
 			}
 			result->snapshot = std::move(snapshot);
@@ -327,13 +337,19 @@ namespace DX12Native
 	{
 		const bool busy = state && state->busy.load(std::memory_order_acquire);
 		const auto cell = GetCell();
-		uint32_t supportedLights = 0;
+		uint32_t supportedLights = 0, approximatedLights = 0, invalidLights = 0, disabledLights = 0;
 		if (cell)
-			for (const auto& light : cell->nativeLights)
-				if (light.supported) ++supportedLights;
+			for (const auto& eligibility : cell->lightEligibility) {
+				if (eligibility == "supported" || eligibility == "approximated") ++supportedLights;
+				if (eligibility == "approximated") ++approximatedLights;
+				if (eligibility == "invalid-baseline") ++invalidLights;
+				if (eligibility == "disabled") ++disabledLights;
+			}
 		return { { "loading", busy }, { "loaded", bool(cell) }, { "requested", requested },
 			{ "lightCount", cell ? cell->lights.size() : 0 },
 			{ "supportedLightCount", supportedLights },
+			{ "approximatedLightCount", approximatedLights }, { "invalidLightCount", invalidLights }, { "disabledLightCount", disabledLights },
+			{ "lightEligibility", cell ? cell->lightEligibility : std::vector<std::string>{} },
 			{ "unsupportedLightCount", cell ? cell->nativeLights.size() - supportedLights : 0 },
 			{ "failure", state && !busy && state->completedRevision == revision ? state->failure : "" },
 			{ "geometryBytes", cell ? cell->bytes : 0 }, { "meshes", cell ? cell->geometries.size() : 0 },
