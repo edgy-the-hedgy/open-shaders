@@ -11,7 +11,7 @@
 #include "Utils/DevBenchUx.h"
 #include "Util.h"
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTDirectLighting::Settings, RedstoneBlend, UsePreparedDirectLighting, UseAllPreparedLights, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, SelectedDirectLight, NormalInfluence, DirectTraceResolution, PointLightRadiusMultiplier, PointLightFalloffFraction, PointLightFalloffExponent, StochasticSampling, EmitterRadiusMultiplier)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTDirectLighting::Settings, RedstoneBlend, UsePreparedDirectLighting, UseAllPreparedLights, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, SelectedDirectLight, NormalInfluence, PointLightRadiusMultiplier, PointLightFalloffFraction, PointLightFalloffExponent, StochasticSampling, EmitterRadiusMultiplier)
 
 std::pair<std::string, std::vector<std::string>> RTDirectLighting::GetFeatureSummary()
 {
@@ -266,8 +266,8 @@ void RTDirectLighting::RegisterUxActions()
 			if (d.settings.UsePreparedDirectLighting) n.RequestPreparedScene();
 			if (args.contains("allLights")) d.settings.UseAllPreparedLights = args.at("allLights").get<bool>();
 			if (args.contains("normalMode")) d.settings.NormalInfluence = std::min(args.at("normalMode").get<uint32_t>(), 2u);
-			if (args.contains("traceResolution")) d.settings.DirectTraceResolution = std::min(args.at("traceResolution").get<uint32_t>(), 4u);
-			if (args.contains("rrResolution")) d.settings.DirectRRResolution = std::min(args.at("rrResolution").get<uint32_t>(), 3u);
+			if (args.contains("traceResolution") || args.contains("rrResolution"))
+                throw std::invalid_argument("Independent trace/RR resolution settings are retired. Use RTComposer setRayRegeneration samplingMode=0..3.");
 			if (args.contains("rrMaterialIsolation")) d.settings.RRMaterialIsolation = args.at("rrMaterialIsolation").get<bool>();
 			if (args.contains("rrGlossyRoughness")) d.settings.RRGlossyRoughness = std::clamp(args.at("rrGlossyRoughness").get<float>(), 0.04f, 1.0f);
 			if (args.contains("indirect")) globals::features::rtIndirectLighting.settings.ConnectHybrid = args.at("indirect").get<bool>();
