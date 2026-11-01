@@ -34,6 +34,19 @@ namespace DX12Native
 		void Retire();
 		/** @brief Traces selected-light visibility or a bounded prepared light set against a retained TLAS. */
 		void Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight = false, const LightLimitFixData::LightView& a_lights = {}, uint32_t a_materialView = 0, ID3D11UnorderedAccessView* a_sceneTarget = nullptr, uint32_t a_lightReference = 0, uint32_t a_lightBase = 0, ID3D11ShaderResourceView* a_roomMetadata = nullptr, std::span<const std::array<uint32_t, 2>> a_lightIdentities = {}, bool a_allPreparedLights = false, float4 a_strengths = { 1, 1, 1, 1 }, bool a_useIndirect = true, float a_indirectStrength = 1.0f, bool a_useDirectRR = false, uint32_t a_indirectRays = 0, std::span<const uint32_t> a_roomReferences = {}, float a_rasterBlend = 1.0f, uint32_t a_normalMode = 2u, std::span<const PreparedPointLight> a_preparedLights = {}, uint32_t a_directResolutionMode = 0u, uint32_t a_indirectResolutionMode = 0u, uint32_t a_directRRResolutionMode = 3u, bool a_rrMaterialIsolation = false, float a_rrGlossyRoughness = 0.2f, float4 a_falloffParameters = { 1.0f, 0.1f, 1.0f, 0.0f }, float4 a_stochasticParameters = { 0.0f, 1.0f, 0.0f, 0.0f });
+		/** @brief Non-owning, fence-gated DX12 mask publication. Consumers must wait on completionFence/value
+		 * and use the resources before the owning frame is retired; no CPU readback is involved. */
+		struct ShadowMaskPublication
+		{
+			ID3D12Resource* mask = nullptr;
+			ID3D12Resource* perLightVisibility = nullptr;
+			ID3D12Fence* completionFence = nullptr;
+			uint64_t completionValue = 0;
+			std::array<uint32_t, 2> size{};
+			explicit operator bool() const { return mask && perLightVisibility && completionFence && completionValue; }
+		};
+		/** @brief Returns a current, generation-matched mask without consuming it on D3D11. */
+		ShadowMaskPublication GetShadowMask(uint32_t a_frame) const;
 		/** @brief Returns a raw preview view whose image remains owned by this service. */
 		ID3D11ShaderResourceView* Preview() const { return previewValid && preview ? preview->srv.get() : nullptr; }
 		/** @brief Returns the completed preview dimensions for an undistorted diagnostic image. */
@@ -63,7 +76,8 @@ namespace DX12Native
 		static constexpr uint32_t kLightSnapshotTexels = 8;
 		static constexpr uint32_t kLightSnapshotWidth = kLightSnapshotTexels * kMaximumDirectLights;
 		static constexpr uint32_t kDirectSignalCount = 7;
-		static constexpr uint32_t kFrameDescriptorCount = 3 + kDirectSignalCount;
+		static constexpr uint32_t kShadowSignalCount = 2;
+		static constexpr uint32_t kFrameDescriptorCount = 3 + kDirectSignalCount + kShadowSignalCount;
 		static constexpr uint32_t kGeometryDescriptorBase = 2 * kFrameDescriptorCount;
 		static constexpr uint32_t kAttributeDescriptorBase = kGeometryDescriptorBase + kMaximumInstances;
 		static constexpr uint32_t kTextureDescriptorBase = kAttributeDescriptorBase + kMaximumInstances;
@@ -81,6 +95,8 @@ namespace DX12Native
 			std::shared_ptr<const TopLevel> scene;
 			std::shared_ptr<const Bindings> bindings;
 			std::unique_ptr<WrappedResource> receivers, output, light;
+			// Per-light bitsets (R32G32_UINT: visible, valid) and weighted visibility (R16G16_FLOAT: visibility, confidence).
+			std::unique_ptr<WrappedResource> visibilityBits, shadowMask;
 			std::array<std::unique_ptr<WrappedResource>, kDirectSignalCount> directSignals;
 			winrt::com_ptr<ID3D12RootSignature> root;
 			winrt::com_ptr<ID3D12PipelineState> pipeline;
@@ -186,6 +202,7 @@ namespace DX12Native
 		uint64_t unavailableLightFrames = 0;
 		uint64_t directSubmissions = 0, sceneCompositeSubmissions = 0;
 		uint64_t directTraceDispatches = 0, indirectTraceDispatches = 0;
+		uint64_t shadowMaskTraceDispatches = 0, shadowMaskResolveDispatches = 0;
 		uint32_t sceneCompositeFrame = 0;
 		std::string failure;
 	};

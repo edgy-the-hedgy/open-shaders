@@ -11,6 +11,10 @@ RWTexture2D<float4> DirectSpecularAlbedo : register(u4);
 RWTexture2D<float4> DirectDiffuseAlbedo : register(u5);
 RWTexture2D<float4> IndirectDiffuse : register(u6);
 RWTexture2D<float4> IndirectSpecular : register(u7);
+// Produced independently before radiance: R32G32_UINT visibility/validity bits and
+// R16G16_FLOAT luminance-weighted visibility/confidence. Neutral = float2(1, 0).
+RWTexture2D<uint2> DirectVisibilityBits : register(u8);
+RWTexture2D<float2> DirectShadowMask : register(u9);
 struct RoomVolume { float4 inverse0; float4 inverse1; float4 inverse2; float4 halfExtents; };
 StructuredBuffer<RoomVolume> RoomVolumes : register(t6);
 static const uint OpaqueInstanceMask = 1;
@@ -28,7 +32,7 @@ cbuffer Trace : register(b0)
 	uint3 Padding;
 	float4 LightingStrengths;
 	uint ExportDirectSignals;
-	uint TracePass;  // 0: direct, 1: RT-exclusive indirect
+	uint TracePass;  // 0: direct, 1: indirect, 2/3: radiance resolves, 4: shadow mask, 5: mask resolve
 	uint DirectTraceMode;
 	uint IndirectTraceMode;
 	uint IndirectRayCount;
@@ -37,6 +41,7 @@ cbuffer Trace : register(b0)
 	uint DirectNormalMode;
 	float4 PointLightFalloff;  // effective-radius scale, transition fraction, cutoff curve exponent, reserved
 	float4 DirectStochastic;  // enabled, emitter radius multiplier, reserved, reserved
+	uint EnableVisibilityCache; // scene-target direct dispatch only; preview preserves its existing ray path
 };
 
 #include "materials.hlsli"
@@ -99,8 +104,9 @@ void main(uint3 id : SV_DispatchThreadID)
 	if (any(id.xy >= Size)) return;
 	// Separate resolve kernel: copy only from a traced anchor on the same
 	// receiver surface. Mismatched depth/room retains raster fallback.
-	if (TracePass >= 2u) {
-		const bool direct = TracePass == 2u;
+	if (TracePass == 2u || TracePass == 3u || TracePass == 5u) {
+		const bool maskResolve = TracePass == 5u;
+		const bool direct = TracePass != 3u;
 		const uint mode = direct ? DirectTraceMode : IndirectTraceMode;
 		if (mode == 0u) return;
 		const uint2 sourcePixel = TraceAnchor(id.xy, mode, TracePass == 1u || TracePass == 3u ? 0x51b349d5u : 0u);
@@ -112,7 +118,10 @@ void main(uint3 id : SV_DispatchThreadID)
 			all(isfinite(receiver)) && all(isfinite(anchor)) &&
 			delta <= max(0.5, length(receiver.xyz) * 0.005);
 		if (!compatible) return;
-		if (direct) {
+		if (maskResolve) {
+			DirectShadowMask[id.xy] = DirectShadowMask[sourcePixel];
+			DirectVisibilityBits[id.xy] = DirectVisibilityBits[sourcePixel];
+		} else if (direct) {
 			const float4 raw = Shadow[sourcePixel];
 			if (raw.w != DirectRadianceTag) return;
 			Shadow[id.xy] = raw;
@@ -131,6 +140,11 @@ void main(uint3 id : SV_DispatchThreadID)
 			IndirectSpecular[id.xy] = specular;
 		}
 		return;
+	}
+	if (TracePass == 4u) {
+		// Clear every pixel, including non-anchors and unresolved geometry, before tracing.
+		DirectShadowMask[id.xy] = float2(1.0f, 0.0f);
+		DirectVisibilityBits[id.xy] = uint2(0u, 0u);
 	}
 	if (ExportDirectSignals != 0 && TracePass == 0) {
 		DirectDiffuse[id.xy] = 0;
@@ -174,6 +188,13 @@ void main(uint3 id : SV_DispatchThreadID)
 		float spread = adjacent.w != 0 ? length(normalize(adjacent.xyz) - primary.Direction) : 2.0 / max(Size.x, Size.y);
 		float footprint = max(spread, 1e-6) * surfaceQuery.CommittedRayT();
 		if (Padding.y >= DirectDiffuseView) {
+			if (TracePass == 4u) {
+				EvaluateShadowMaskForSurface(surfaceQuery.CommittedInstanceID(), surfaceQuery.CommittedPrimitiveIndex(),
+					surfaceQuery.CommittedTriangleBarycentrics(), surfaceQuery.CommittedObjectToWorld3x4(),
+					surfaceQuery.CommittedWorldToObject3x4(), primary.Direction, surfaceQuery.CommittedRayT(),
+					receiver, footprint, id.xy);
+				return;
+			}
 			if (TracePass == 1u) {
 				EvaluateIndirectForSurface(surfaceQuery.CommittedInstanceID(), surfaceQuery.CommittedPrimitiveIndex(),
 					surfaceQuery.CommittedTriangleBarycentrics(), surfaceQuery.CommittedObjectToWorld3x4(),

@@ -47,6 +47,37 @@ bool TraceDirectVisibility(float3 origin, float3 direction, float distance, out 
 	return valid;
 }
 
+// Single stochastic emitter sample shared by the independent mask pass and the
+// legacy direct path (when no valid mask cache is available). Never scales radiance.
+bool TracePreparedPointVisibility(uint lightIndex, float3 position, float3 lightPosition,
+    float sourceRadius, float3 l, float lightDistance, uint2 pixel, uint sampleIndex, out bool visible)
+{
+    float3 target = lightPosition;
+    if (DirectStochastic.x >= 0.5f && DirectStochastic.y > 0.0f) {
+        const float emitterRadius = min(sourceRadius * DirectStochastic.y, lightDistance * 0.5f);
+        if (emitterRadius > 0.0f) {
+            const uint seed = DirectVisibilityHash(pixel.x * 0x9e3779b9u ^
+                pixel.y * 0x85ebca6bu ^ FrameIndex * 0xc2b2ae35u ^
+                lightIndex * 0x27d4eb2fu ^ sampleIndex * 0x165667b1u);
+            const uint r0 = DirectVisibilityHash(seed ^ 0x68bc21ebu);
+            const uint r1 = DirectVisibilityHash(seed ^ 0x02e5be93u);
+            const float2 u = (float2(r0 >> 8u, r1 >> 8u) + 0.5f) / 16777216.0f;
+            const float angle = u.y * 6.28318530718f;
+            const float spread = emitterRadius * sqrt(u.x);
+            const float3 tangent = normalize(cross(abs(l.z) < 0.9f ?
+                float3(0, 0, 1) : float3(0, 1, 0), l));
+            const float3 bitangent = cross(l, tangent);
+            target += spread * (cos(angle) * tangent + sin(angle) * bitangent);
+        }
+    }
+    // Offset toward the light instead of the surface normal; the ray terminates
+    // at the sampled emitter point, not behind it.
+    float3 origin = position + l * MinimumDistance;
+    float3 shadowVector = target - origin;
+
+    return TraceDirectVisibility(origin, normalize(shadowVector), length(shadowVector), visible);
+}
+
 // Normal mode 0 preserves the shipped flat response. Modes 1 and 2 reuse
 // True PBR GGX/Schlick/Smith and Fresnel-weighted diffuse. Ray bias stays unchanged.
 bool EvaluatePointLight(
@@ -135,47 +166,20 @@ bool EvaluatePointLight(
     if (attenuation <= 0)
         return true;
 
-    // Preserve the inverse-square center-light estimator and BRDF direction.
-    // Randomize only visibility across a receiver-facing emitter disk, estimating
-    // a fractional visibility (soft shadow) without random brightness scaling.
-    float3 target = lightPosition;
-    if (DirectStochastic.x >= 0.5f && DirectStochastic.y > 0.0f) {
-        const float emitterRadius = min(sourceRadius * DirectStochastic.y, lightDistance * 0.5f);
-        if (emitterRadius > 0.0f) {
-            const uint seed = DirectVisibilityHash(pixel.x * 0x9e3779b9u ^
-                pixel.y * 0x85ebca6bu ^ FrameIndex * 0xc2b2ae35u ^
-                lightIndex * 0x27d4eb2fu ^ sampleIndex * 0x165667b1u);
-            const uint r0 = DirectVisibilityHash(seed ^ 0x68bc21ebu);
-            const uint r1 = DirectVisibilityHash(seed ^ 0x02e5be93u);
-            const float2 u = (float2(r0 >> 8u, r1 >> 8u) + 0.5f) / 16777216.0f;
-            const float angle = u.y * 6.28318530718f;
-            const float spread = emitterRadius * sqrt(u.x);
-            const float3 tangent = normalize(cross(abs(l.z) < 0.9f ?
-                float3(0, 0, 1) : float3(0, 1, 0), l));
-            const float3 bitangent = cross(l, tangent);
-            target += spread * (cos(angle) * tangent + sin(angle) * bitangent);
-        }
-    }
-    // Offset toward the light instead of the surface normal; the ray terminates
-    // at the sampled emitter point, not behind it.
-    float3 origin = position + l * MinimumDistance;
-    float3 shadowVector = target - origin;
-
-    bool visible;
-
-    if (!TraceDirectVisibility(
-        origin,
-        normalize(shadowVector),
-        length(shadowVector),
-        visible))
-    {
+    // Use the shadow prepass's per-light visibility when validated. Invalid
+    // geometry retains the existing direct-light fallback instead of treating
+    // a missing bit as darkness.
+    bool visible = false;
+    const uint bit = 1u << lightIndex;
+    const uint2 cached = EnableVisibilityCache != 0u ? DirectVisibilityBits[pixel] : uint2(0u, 0u);
+    if ((cached.y & bit) != 0u) {
+        visible = (cached.x & bit) != 0u;
+    } else if (!TracePreparedPointVisibility(lightIndex, position, lightPosition, sourceRadius, l,
+        lightDistance, pixel, sampleIndex, visible)) {
         unavailable = Unavailable(InvalidSurface);
         return false;
     }
-
-    if (!visible)
-        return true;
-
+    if (!visible) return true;
 
     const float3 incidentRadiance = radiance.rgb * attenuation;
     if ((DirectNormalMode & 3u) == 0u) {
@@ -206,6 +210,80 @@ bool EvaluatePointLight(
     specular = microfacet * weightedIrradiance;
 
     return true;
+}
+
+// Shadow visibility is a separate pass, independent of both direct radiance
+// strength and the final raster/RT blend. Its normal/room/attenuation tests
+// match the direct producer; unsupported areas remain neutral, never dark.
+void EvaluateShadowMaskForSurface(uint instance, uint primitive, float2 barycentric, float3x4 objectToWorld,
+    float3x4 worldToObject, float3 direction, float distance, float4 receiver, float footprint, uint2 pixel)
+{
+    MaterialRecord record = Materials[Surfaces[instance].material.x];
+    if ((record.flags.x & 3u) != 3u || record.flags.w != 0u ||
+        abs(distance - length(receiver.xyz)) > max(5.0f, distance * ReceiverRelativeTolerance)) return;
+    EvaluatedSourceMaterial material;
+    TriangleSurface triangle;
+    if (!LoadSourceMaterial(instance, primitive, barycentric, objectToWorld, worldToObject, footprint, material) ||
+        !LoadTriangle(instance, primitive, barycentric, triangle)) return;
+    const float3 edge0 = mul((float3x3)objectToWorld, triangle.position1 - triangle.position0);
+    const float3 edge1 = mul((float3x3)objectToWorld, triangle.position2 - triangle.position0);
+    const float3 geometryNormal = normalize(cross(edge0, edge1));
+    const uint normalMode = DirectNormalMode & 3u;
+    const float3 surfaceNormal = normalize(normalMode == 1u ? geometryNormal : material.normal);
+    if (!all(isfinite(geometryNormal)) || (normalMode != 0u && !all(isfinite(surfaceNormal)))) return;
+
+    const uint count = Padding.z != 0u ? Padding.z : 1u;
+    if (count > MaximumDirectLights) return;
+    const float3 position = CameraOrigin + direction * distance;
+    uint2 visibility = uint2(0u, 0u);
+    float weightSum = 0.0f;
+    float visibleWeight = 0.0f;
+    bool valid = true;
+    uint eligible = 0u;
+    [loop] for (uint lightIndex = 0u; lightIndex < count; ++lightIndex) {
+        const uint base = lightIndex * LightSnapshotTexels;
+        const float4 source = LightSnapshot.Load(int3(base + 6u, 0, 0));
+        const float4 radiance = LightSnapshot.Load(int3(base + 7u, 0, 0));
+        if (source.w != 1.0f || radiance.w != 1.0f) continue;
+        ++eligible;
+        const uint bit = 1u << lightIndex; // 32 lights, including light 31.
+        const float3 lightPosition = LightSnapshot.Load(int3(base + 2u, 0, 0)).xyz + source.xyz;
+        const float3 delta = lightPosition - position;
+        const float dist = length(delta);
+        if (!isfinite(dist) || dist <= MinimumDistance) { valid = false; continue; }
+        const float4 falloff = LightSnapshot.Load(int3(base + 1u, 0, 0));
+        const float radius = min(max(falloff.x * PointLightFalloff.x, MinimumDistance), MaximumDistance);
+        if (dist >= radius) { visibility |= uint2(bit, bit); continue; }
+        const int admission = LightRoomAdmission(receiver.w, lightIndex);
+        if (admission < 0) { valid = false; continue; }
+        if (admission == 0) { visibility |= uint2(bit, bit); continue; }
+        if (dist >= MaximumDistance) { valid = false; continue; }
+        const float sourceRadius = max(falloff.w, MinimumDistance);
+        const float fadeWidth = max(radius * PointLightFalloff.y, MinimumDistance);
+        const float fadeT = saturate((radius - dist) / fadeWidth);
+        const float smoothCutoff = fadeT * fadeT * (3.0f - 2.0f * fadeT);
+        const float attenuation = pow(smoothCutoff, PointLightFalloff.z) /
+            max(dist * dist + sourceRadius * sourceRadius, 1e-4f);
+        if (attenuation <= 0.0f) { visibility |= uint2(bit, bit); continue; }
+        const float3 l = delta / dist;
+        const float facing = normalMode == 0u ? 1.0f : max(0.0f, dot(surfaceNormal, l));
+        // Light contribution estimate is independent of DirectStrength and
+        // Diffuse/SpecularStrength. Non-contributing lights cannot darken another.
+        const float weight = dot(max(radiance.rgb, 0.0f), float3(0.2126f, 0.7152f, 0.0722f)) * attenuation * facing;
+        bool visible;
+        if (!TracePreparedPointVisibility(lightIndex, position, lightPosition, sourceRadius, l,
+            dist, pixel, 0u, visible)) { valid = false; continue; }
+        visibility.y |= bit;
+        if (visible) visibility.x |= bit;
+        if (isfinite(weight) && weight > 0.0f) {
+            weightSum += weight;
+            if (visible) visibleWeight += weight;
+        } else if (!isfinite(weight)) valid = false;
+    }
+    DirectVisibilityBits[pixel] = visibility;
+    if (valid && eligible > 0u && isfinite(weightSum) && weightSum > 1e-6f)
+        DirectShadowMask[pixel] = float2(saturate(visibleWeight / weightSum), 1.0f);
+    // Otherwise retain neutral (1,0) set by the pass for this pixel.
 }
 
 float4 EvaluateDirectLighting(uint instance, uint primitive, float2 barycentric, float3x4 objectToWorld,
