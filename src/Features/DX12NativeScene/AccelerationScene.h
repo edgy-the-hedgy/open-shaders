@@ -2,7 +2,7 @@
 
 #include "GeometryBridge.h"
 
-namespace RedstoneShadow
+namespace DX12Native
 {
 	/** @brief Retains a range-specific BLAS and its immutable native input geometry. */
 	struct BottomLevel

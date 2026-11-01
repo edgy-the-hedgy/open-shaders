@@ -5,7 +5,7 @@
 #include "Utils/D3D.h"
 #include "Utils/RayRegenerationSettings.h"
 
-namespace RedstoneShadow
+namespace DX12Native
 {
 	uint32_t DirectionalTrace::DenoiseDirect(Frame& a_frame)
 	{

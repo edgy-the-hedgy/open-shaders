@@ -5,7 +5,7 @@
 #include "Utils/RayRegenerationSettings.h"
 #include <cmath>
 
-namespace RedstoneShadow
+namespace DX12Native
 {
 	void DirectionalTrace::SetRRDebug(uint32_t a_source, uint32_t a_signal, uint32_t a_buffer, float a_exposure)
 	{

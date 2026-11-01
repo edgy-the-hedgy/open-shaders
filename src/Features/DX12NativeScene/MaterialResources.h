@@ -4,7 +4,7 @@
 #include <array>
 #include <stdexcept>
 
-namespace RedstoneShadow
+namespace DX12Native
 {
 	/** @brief Latches a failed submitted upload so automatic retries cannot accumulate abandoned GPU work. */
 	struct MaterialUploadError : std::runtime_error

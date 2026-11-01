@@ -100,7 +100,7 @@ void RTDirectLighting::DrawDirectLightingSettings()
         const auto trace = globals::features::dx12NativeScene.Tracer().GetDiagnostics();
         if (settings.UseDXRIndirect && trace.value("cachedSceneBindings", false) && !trace.value("bakedRoomsKnown", false))
             ImGui::TextWrapped("DXR indirect requires regenerated room metadata. Rebuild the current cell's geometry cache.");
-        ImGui::Text("Submitted light count: %u | limit: %u", trace.value("requestedLightCount", 0u), RedstoneShadow::DirectionalTrace::kMaximumDirectLights);
+        ImGui::Text("Submitted light count: %u | limit: %u", trace.value("requestedLightCount", 0u), DX12Native::DirectionalTrace::kMaximumDirectLights);
         ImGui::Text("Scene submissions: %llu | last frame: %u | budget deferrals: %llu | busy frames: %llu",
             trace.value("sceneCompositeSubmissions", 0ull), trace.value("sceneCompositeFrame", 0u), trace.value("budgetDeferrals", 0ull), trace.value("busyFrames", 0ull));
         const auto failure = trace.value("failure", std::string{});
@@ -177,7 +177,7 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
 	D3D11_TEXTURE2D_DESC desc{};
 	if (!Util::GetTexture2DDesc(metadata, desc) || desc.Format != DXGI_FORMAT_R16G16B16A16_UNORM) metadata = nullptr;
 	tracer.Dispatch(snapshot->acceleration, size, light, frame, native.GetLightingBudgetBytes(), true, lights,
-		RedstoneShadow::DirectionalTrace::kCombinedDirectView, target, identity[0], identity[1], metadata,
+		DX12Native::DirectionalTrace::kCombinedDirectView, target, identity[0], identity[1], metadata,
 		settings.UseAllPreparedLights ? std::span<const std::array<uint32_t, 2>>(snapshot->lightReferences) : std::span<const std::array<uint32_t, 2>>{},
 		settings.UseAllPreparedLights, { settings.DirectStrength, settings.DiffuseStrength, settings.SpecularStrength, settings.EmissionStrength },
 		settings.ConnectIndirectLighting && !settings.UseDXRIndirect, settings.IndirectStrength, settings.UseDirectRayRegeneration,

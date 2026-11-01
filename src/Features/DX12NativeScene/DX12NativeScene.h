@@ -1,11 +1,11 @@
 #pragma once
 
 #include "Features/OverlayFeature.h"
-#include "Features/RedstoneShadows/Scene.h"
-#include "Features/RedstoneShadows/GeometryBridge.h"
-#include "Features/RedstoneShadows/AccelerationScene.h"
-#include "Features/RedstoneShadows/PreparedScene.h"
-#include "Features/RedstoneShadows/DirectionalTrace.h"
+#include "Features/DX12NativeScene/Scene.h"
+#include "Features/DX12NativeScene/GeometryBridge.h"
+#include "Features/DX12NativeScene/AccelerationScene.h"
+#include "Features/DX12NativeScene/PreparedScene.h"
+#include "Features/DX12NativeScene/DirectionalTrace.h"
 #include <atomic>
 
 /** @brief Independently owns Redstone shadow acquisition, settings and diagnostics. */
@@ -50,8 +50,8 @@ struct DX12NativeScene final : OverlayFeature
 	/** @brief Retained completed native-scene publication, with no borrowed scene pointers. */
 	struct PublishedScene
 	{
-		std::shared_ptr<const RedstoneShadow::PreparedCell> cell;
-		std::shared_ptr<const RedstoneShadow::TopLevel> acceleration;
+		std::shared_ptr<const DX12Native::PreparedCell> cell;
+		std::shared_ptr<const DX12Native::TopLevel> acceleration;
 		std::vector<std::array<uint32_t, 2>> lightReferences;
 		std::array<uint32_t, 128> roomReferences{};
 		uint32_t cellID = 0;
@@ -62,8 +62,8 @@ struct DX12NativeScene final : OverlayFeature
 	/** @brief Scene-only request; used by the future lighting feature's compatibility controls. */
 	void RequestPreparedScene();
 	/** @brief Shared tracer remains owned by the native-scene lifetime. */
-	RedstoneShadow::DirectionalTrace& Tracer() { return preparedTrace; }
-	const RedstoneShadow::DirectionalTrace& Tracer() const { return preparedTrace; }
+	DX12Native::DirectionalTrace& Tracer() { return preparedTrace; }
+	const DX12Native::DirectionalTrace& Tracer() const { return preparedTrace; }
 	json GetPreparedDiagnostics() const { return preparedScene.GetDiagnostics(); }
 	uint64_t GetLightingBudgetBytes() const { return uint64_t(settings.DirectLightingBudgetMB) * 1024 * 1024; }
 
@@ -104,9 +104,9 @@ struct DX12NativeScene final : OverlayFeature
 
 private:
 	void DrawNativeSceneSettings();
-	RedstoneShadow::PreparedScene preparedScene;
-	RedstoneShadow::AccelerationWorker preparedAcceleration;
-	RedstoneShadow::DirectionalTrace preparedTrace;
+	DX12Native::PreparedScene preparedScene;
+	DX12Native::AccelerationWorker preparedAcceleration;
+	DX12Native::DirectionalTrace preparedTrace;
 	uint32_t preparedCellID = 0;
 	uint64_t preparedRevision = 1;
 	bool preparedSubmitted = false;
@@ -119,10 +119,10 @@ private:
 	/** @brief Invalidates prepared publication and retains in-flight work for nonblocking retirement. */
 	void ResetPreparedScene();
 	static constexpr uint32_t kBackendRetryFrames = 60;
-	RedstoneShadow::Scene scene;
-	RedstoneShadow::GeometryBridge geometryBridge;
-	RedstoneShadow::AccelerationWorker acceleration;
-	RedstoneShadow::AccelerationScene::GeometryMap preparedGeometry;
+	DX12Native::Scene scene;
+	DX12Native::GeometryBridge geometryBridge;
+	DX12Native::AccelerationWorker acceleration;
+	DX12Native::AccelerationScene::GeometryMap preparedGeometry;
 	uint64_t observedEpoch = 0, preparingBatch = 0, workerBatch = 0, exportProgress = UINT64_MAX, discardedBatches = 0;
 	bool acquisitionActive = false;
 	bool ready = false, dxrCapable = false, rrEligible = false;

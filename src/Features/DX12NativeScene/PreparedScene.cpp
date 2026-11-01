@@ -7,7 +7,7 @@
 #include <span>
 #include <fstream>
 
-namespace RedstoneShadow
+namespace DX12Native
 {
 	namespace
 	{

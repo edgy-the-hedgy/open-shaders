@@ -9,7 +9,7 @@
 #include <cctype>
 #include <cstring>
 
-namespace RedstoneShadow
+namespace DX12Native
 {
 	namespace
 	{

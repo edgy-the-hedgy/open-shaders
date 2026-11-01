@@ -2,7 +2,7 @@
 #include "Globals.h"
 #include "Utils/D3D.h"
 
-namespace RedstoneShadow
+namespace DX12Native
 {
 	bool Scene::Initialize()
 	{

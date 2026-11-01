@@ -5,7 +5,7 @@
 #include <chrono>
 #include "../../../extern/FidelityFX-SDK/framework/cauldron/framework/libs/pix/pix3.h"
 
-namespace RedstoneShadow
+namespace DX12Native
 {
 	namespace
 	{

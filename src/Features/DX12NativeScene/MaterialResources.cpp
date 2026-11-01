@@ -6,7 +6,7 @@
 #include <cmath>
 #include <cstring>
 
-namespace RedstoneShadow
+namespace DX12Native
 {
 	namespace
 	{

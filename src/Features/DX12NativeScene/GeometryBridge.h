@@ -5,7 +5,7 @@
 #include "GraphicsInterop.h"
 #include <directx/d3dx12.h>
 
-namespace RedstoneShadow
+namespace DX12Native
 {
 	/** @brief Owns native DX12 geometry exported entirely on the GPU. */
 	struct Geometry

@@ -8,7 +8,7 @@
 #include <atomic>
 #include <span>
 
-namespace RedstoneShadow
+namespace DX12Native
 {
 	/** @brief Traces directional blocker distances and publishes an explicitly partial raw preview. */
 	class DirectionalTrace

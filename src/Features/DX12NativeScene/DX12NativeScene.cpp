@@ -41,7 +41,7 @@ void DX12NativeScene::LoadSettings(json& value)
 	selected.MaxInstances = std::clamp(selected.MaxInstances, 1u, CasterObservation::kCapacity);
 	selected.BufferBudgetMB = std::clamp(selected.BufferBudgetMB, 16u, 512u);
 	selected.PreviewLight = std::min(selected.PreviewLight, 255u);
-	selected.PreparedMaterialView = std::min(selected.PreparedMaterialView, RedstoneShadow::DirectionalTrace::kCombinedDirectView);
+	selected.PreparedMaterialView = std::min(selected.PreparedMaterialView, DX12Native::DirectionalTrace::kCombinedDirectView);
 	selected.MaterialTextureBudgetMB = std::clamp(selected.MaterialTextureBudgetMB, 64u, 1024u);
 	selected.DirectLightingBudgetMB = std::clamp(selected.DirectLightingBudgetMB, 64u, 1024u);
 	for (auto* v : { &selected.PreviewDirectStrength, &selected.PreviewDiffuseStrength,
@@ -341,7 +341,7 @@ void DX12NativeScene::RegisterUxActions()
 			const bool previousEnabled = n.settings.UsePreparedMaterials;
 			const uint32_t previousBudget = n.settings.MaterialTextureBudgetMB;
 			n.settings.UsePreparedMaterials = args.at("enabled").get<bool>();
-			if (args.contains("view")) n.settings.PreparedMaterialView = std::clamp(args.at("view").get<uint32_t>(), 0u, RedstoneShadow::DirectionalTrace::kCombinedDirectView);
+			if (args.contains("view")) n.settings.PreparedMaterialView = std::clamp(args.at("view").get<uint32_t>(), 0u, DX12Native::DirectionalTrace::kCombinedDirectView);
 			if (args.contains("textureBudgetMB")) n.settings.MaterialTextureBudgetMB = std::clamp(args.at("textureBudgetMB").get<uint32_t>(), 64u, 1024u);
 			if (args.contains("allLights")) n.settings.PreviewAllLights = args.at("allLights").get<bool>();
 			if (previousEnabled != n.settings.UsePreparedMaterials || previousBudget != n.settings.MaterialTextureBudgetMB) n.resetRequested = true;
@@ -406,13 +406,13 @@ void DX12NativeScene::DrawOverlay()
 		CS_GPU_PASS("DX12NativeScene::PreparedPreviewDraw");
 		if (ImGui::Begin("Prepared cell shadow preview###RedstonePreparedPreview")) {
 			static constexpr std::array views{ "Visibility", "Source base color", "World normal", "Source roughness", "Metalness", "Emission", "Material coverage", "Material AO", "PBR F0", "Opacity", "Direct diffuse", "Direct specular", "Direct combined and emission" };
-			const auto selectedView = settings.UsePreparedMaterials ? std::min(settings.PreparedMaterialView, RedstoneShadow::DirectionalTrace::kCombinedDirectView) : 0u;
+			const auto selectedView = settings.UsePreparedMaterials ? std::min(settings.PreparedMaterialView, DX12Native::DirectionalTrace::kCombinedDirectView) : 0u;
 			const auto trace = preparedTrace.GetDiagnostics();
 			ImGui::Text("%s | native shadows active", views[selectedView]);
-			if (settings.PreviewAllLights && selectedView >= RedstoneShadow::DirectionalTrace::kFirstDirectView)
-				ImGui::Text("All prepared lights | submitted light count: %u | limit: %u", trace.value("requestedLightCount", 0u), RedstoneShadow::DirectionalTrace::kMaximumDirectLights);
+			if (settings.PreviewAllLights && selectedView >= DX12Native::DirectionalTrace::kFirstDirectView)
+				ImGui::Text("All prepared lights | submitted light count: %u | limit: %u", trace.value("requestedLightCount", 0u), DX12Native::DirectionalTrace::kMaximumDirectLights);
 
-			else if (selectedView >= RedstoneShadow::DirectionalTrace::kFirstDirectView) ImGui::TextUnformatted("Selected-light direct radiance; display tone map. Black can be valid zero lighting.");
+			else if (selectedView >= DX12Native::DirectionalTrace::kFirstDirectView) ImGui::TextUnformatted("Selected-light direct radiance; display tone map. Black can be valid zero lighting.");
 			ImGui::TextWrapped("Red: no depth receiver | blue: no ray hit | orange: unsupported material | magenta: no light match/material unavailable | yellow: depth mismatch | white: invalid data. Cyan: unknown room | gray: room excludes light.");
 			if (settings.UsePreparedMaterials) {
 				if (trace.value("bindingsLoading", false)) ImGui::TextUnformatted("Preparing material tables and texture uploads...");

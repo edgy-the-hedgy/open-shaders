@@ -120,8 +120,8 @@ void DX12NativeScene::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target,
 	const auto state = GetPublishedScene();
 	if (!state) { preparedTrace.Reset(); return; }
 	const uint32_t view = settings.UsePreparedMaterials ? settings.PreparedMaterialView : 0u;
-	const bool all = settings.PreviewAllLights && view >= RedstoneShadow::DirectionalTrace::kFirstDirectView;
-	if (!all && (!view || view >= RedstoneShadow::DirectionalTrace::kFirstDirectView) && settings.PreviewLight >= state->cell->lights.size()) return;
+	const bool all = settings.PreviewAllLights && view >= DX12Native::DirectionalTrace::kFirstDirectView;
+	if (!all && (!view || view >= DX12Native::DirectionalTrace::kFirstDirectView) && settings.PreviewLight >= state->cell->lights.size()) return;
 	const auto backend = Feature::FindGraphicsBackend();
 	if (!backend || !preparedTrace.Initialize(*backend)) return;
 	const auto lights = globals::features::lightLimitFix.GetLightView(frame);

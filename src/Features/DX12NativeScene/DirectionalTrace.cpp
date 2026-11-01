@@ -11,7 +11,7 @@
 #include <fstream>
 #include <BS_thread_pool.hpp>
 
-namespace RedstoneShadow
+namespace DX12Native
 {
 	bool DirectionalTrace::Initialize(const GraphicsBackend& a_backend)
 	{

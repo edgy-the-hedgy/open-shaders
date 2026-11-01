@@ -4,7 +4,7 @@
 #include <atomic>
 #include <filesystem>
 
-namespace RedstoneShadow
+namespace DX12Native
 {
 	/** @brief Owns offline geometry and baseline lights independently of engine pointers. */
 	struct PreparedCell

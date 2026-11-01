@@ -10,7 +10,7 @@
 #include <unordered_set>
 #include <filesystem>
 
-namespace RedstoneShadow
+namespace DX12Native
 {
 	inline constexpr uint8_t kOpaqueInstanceMask = 1;
 	inline constexpr uint8_t kMaterialPendingInstanceMask = 2;

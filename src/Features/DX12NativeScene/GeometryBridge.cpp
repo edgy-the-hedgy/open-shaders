@@ -3,7 +3,7 @@
 #include "GpuPass.h"
 #include "Utils/D3D.h"
 
-namespace RedstoneShadow
+namespace DX12Native
 {
 	bool GeometryBridge::Initialize(const GraphicsBackend& a_backend)
 	{
