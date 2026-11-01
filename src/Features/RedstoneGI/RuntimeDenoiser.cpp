@@ -525,7 +525,11 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
             ffxCreateContextDescDenoiser create{};
             create.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_DENOISER;
             create.version = FFX_DENOISER_VERSION;
-            create.maxRenderSize = { resources.nativeSize[0], resources.nativeSize[1] };
+            // Native RR contexts operate at the producer's LOGICAL resolution.
+            // Native pixel dimensions belong to guides/composition only.
+            // Allocating quarter-mode RR at full native size needlessly
+            // reserves up to 4x the per-context resolution footprint.
+            create.maxRenderSize = { logical[0], logical[1] };
             create.signalFlags = familyFlags[family];
             create.checkerboardSignalFlags =
                 resources.checkerboard ? familyFlags[family] : 0u;
