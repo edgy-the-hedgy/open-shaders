@@ -25,6 +25,8 @@ void main(uint3 id : SV_DispatchThreadID)
 	const float4 indirectDiffuse = IndirectDiffuse.Load(int3(pixel, 0));
 	const float4 indirectSpecular = IndirectSpecular.Load(int3(pixel, 0));
 	const bool directValid = direct.w == DirectRadianceTag && all(isfinite(direct.rgb)) && all(direct.rgb >= 0);
+	// Spatial (-3) is a real provisional contribution for the compositor,
+	// but it is not a native ray and must not become an RR input.
 	const bool indirectValid = indirectDiffuse.a >= -1.0f && indirectSpecular.a >= -1.0f &&
 		all(isfinite(indirectDiffuse)) && all(isfinite(indirectSpecular)) &&
 		all(indirectDiffuse.rgb >= 0) && all(indirectSpecular.rgb >= 0);

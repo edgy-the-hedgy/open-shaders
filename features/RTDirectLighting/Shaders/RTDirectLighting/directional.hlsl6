@@ -85,7 +85,7 @@ void main(uint3 id : SV_DispatchThreadID)
 		if (direct) {
 			const float4 raw = Shadow[sourcePixel];
 			if (raw.w != DirectRadianceTag) return;
-			Shadow[id.xy] = raw;
+			Shadow[id.xy] = float4(raw.rgb, ReconstructedDirectRadianceTag);
 			if (ExportDirectSignals != 0) {
 				DirectDiffuse[id.xy] = DirectDiffuse[sourcePixel];
 				DirectSpecular[id.xy] = DirectSpecular[sourcePixel];
@@ -97,8 +97,10 @@ void main(uint3 id : SV_DispatchThreadID)
 			const float4 diffuse = IndirectDiffuse[sourcePixel];
 			const float4 specular = IndirectSpecular[sourcePixel];
 			if (diffuse.a < -1.0 || specular.a < -1.0) return;
-			IndirectDiffuse[id.xy] = diffuse;
-			IndirectSpecular[id.xy] = specular;
+			// Preserve separate provenance: reconstructed GI is not a ray
+			// sample and must not enter native checkerboard RR packing.
+			IndirectDiffuse[id.xy] = float4(diffuse.rgb, ReconstructedIndirectDistanceTag);
+			IndirectSpecular[id.xy] = float4(specular.rgb, ReconstructedIndirectDistanceTag);
 		}
 		return;
 	}

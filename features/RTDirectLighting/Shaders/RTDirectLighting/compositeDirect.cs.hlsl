@@ -47,14 +47,17 @@ void main(uint3 id : SV_DispatchThreadID)
     if (id.x >= targetWidth || id.y >= targetHeight || RedstoneBlend <= 0.0f) return;
 
     const float4 rawDirect = DirectLighting.Load(int3(id.xy, 0));
-    const bool directValid = rawDirect.w == DirectRadianceTag &&
+    const bool directRaw = rawDirect.w == DirectRadianceTag;
+    const bool directValid = (directRaw || rawDirect.w == ReconstructedDirectRadianceTag) &&
         all(isfinite(rawDirect.rgb)) && all(rawDirect.rgb >= 0.0f);
     const float4 rawIndirectD = UseDXRIndirect != 0 ?
         RawIndirectDiffuse.Load(int3(id.xy, 0)) : float4(0, 0, 0, -2);
     const float4 rawIndirectS = UseDXRIndirect != 0 ?
         RawIndirectSpecular.Load(int3(id.xy, 0)) : float4(0, 0, 0, -2);
-    const bool giValid = UseDXRIndirect != 0 &&
-        rawIndirectD.a >= -1.0f && rawIndirectS.a >= -1.0f &&
+    const bool giRaw = rawIndirectD.a >= -1.0f && rawIndirectS.a >= -1.0f;
+    const bool giSpatial = rawIndirectD.a == ReconstructedIndirectDistanceTag &&
+        rawIndirectS.a == ReconstructedIndirectDistanceTag;
+    const bool giValid = UseDXRIndirect != 0 && (giRaw || giSpatial) &&
         all(isfinite(rawIndirectD)) && all(isfinite(rawIndirectS)) &&
         all(rawIndirectD.rgb >= 0.0f) && all(rawIndirectS.rgb >= 0.0f);
     if (!directValid && !giValid && UseIndirect == 0u) return;
@@ -83,7 +86,7 @@ void main(uint3 id : SV_DispatchThreadID)
     }
 
     float3 directRGB = directValid ? rawDirect.rgb : 0.0f;
-    if (directValid && (rrFlags & 1u) != 0u) {
+    if (directRaw && (rrFlags & 1u) != 0u) {
         const float3 filteredDiffuse = FilteredDirectDiffuse.Load(int3(rrPixel, 0)).rgb;
         const float3 filteredSpecular = FilteredDirectSpecular.Load(int3(rrPixel, 0)).rgb;
         if (all(isfinite(filteredDiffuse)) && all(isfinite(filteredSpecular)) &&
@@ -105,7 +108,7 @@ void main(uint3 id : SV_DispatchThreadID)
     if (giValid) {
         float3 diffuse = rawIndirectD.rgb;
         float3 specular = rawIndirectS.rgb;
-        if ((rrFlags & 2u) != 0u) {
+        if (giRaw && (rrFlags & 2u) != 0u) {
             const float3 filteredD = FilteredIndirectDiffuse.Load(int3(rrPixel, 0)).rgb;
             const float3 filteredS = FilteredIndirectSpecular.Load(int3(rrPixel, 0)).rgb;
             if (all(isfinite(filteredD)) && all(isfinite(filteredS)) &&
