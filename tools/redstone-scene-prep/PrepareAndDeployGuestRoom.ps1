@@ -20,10 +20,25 @@ function Enable-PreparedMaterialPreview {
     $settingsPath = Join-Path $DataDirectory 'SKSE\Plugins\CommunityShaders\SettingsUser.json'
     $original = [IO.File]::ReadAllText($settingsPath)
     $null = $original | ConvertFrom-Json
-    $pattern = '("RedstoneShadows"\s*:\s*)(\{[^{}]*\})'
-    $featureMatches = [regex]::Matches($original, $pattern)
-    if ($featureMatches.Count -ne 1) { throw 'Cannot safely locate the flat RedstoneShadows settings object; installed settings were not edited.' }
-    $match = $featureMatches[0]
+    # Prefer the split feature's own settings. Old installations are migrated
+    # by DX12NativeScene::ImportLegacySettings when the runtime first loads them.
+    $featureName = $null
+    $match = $null
+    foreach ($candidate in @('DX12NativeScene', 'RedstoneShadows')) {
+        $pattern = '("' + [regex]::Escape($candidate) + '"\s*:\s*)(\{[^{}]*\})'
+        $matches = [regex]::Matches($original, $pattern)
+        if ($matches.Count -gt 1) {
+            throw ("Ambiguous {0} settings objects; installed settings were not edited." -f $candidate)
+        }
+        if ($matches.Count -eq 1) {
+            $featureName = $candidate
+            $match = $matches[0]
+            break
+        }
+    }
+    if ($null -eq $match) {
+        throw 'Cannot safely locate flat DX12NativeScene or legacy RedstoneShadows settings; installed settings were not edited.'
+    }
     $feature = $match.Groups[2].Value | ConvertFrom-Json
     foreach ($name in @('UsePreparedScene', 'PreviewPreparedScene', 'UsePreparedMaterials')) {
         $feature | Add-Member -NotePropertyName $name -NotePropertyValue $true -Force
@@ -39,7 +54,7 @@ function Enable-PreparedMaterialPreview {
     $null = $updated | ConvertFrom-Json
     Copy-Item -LiteralPath $settingsPath -Destination (Join-Path $artifactRoot ('SettingsUser-before-materials-{0}.json' -f (Get-Date -Format 'yyyyMMdd-HHmmss-fff')))
     [IO.File]::WriteAllText($settingsPath, $updated, (New-Object Text.UTF8Encoding($false)))
-    Write-Host 'Enabled prepared geometry, its preview and material maps. Existing nonzero material view/budget selections were preserved.'
+    Write-Host ('Enabled prepared geometry, its preview and material maps in {0}. Existing nonzero material view/budget selections were preserved.' -f $featureName)
 }
 
 $null = New-Item -ItemType Directory -Path $artifactRoot -Force
