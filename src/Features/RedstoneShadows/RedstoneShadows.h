@@ -59,6 +59,26 @@ struct RedstoneShadows final : OverlayFeature
 	void SaveSettings(json& a_json) override;
 	/** @brief Disables acquisition and invalidates scene records. */
 	void RestoreDefaultSettings() override;
+	/** @brief Retained completed native-scene publication, with no borrowed scene pointers. */
+	struct PublishedScene
+	{
+		std::shared_ptr<const RedstoneShadow::PreparedCell> cell;
+		std::shared_ptr<const RedstoneShadow::TopLevel> acceleration;
+		std::vector<std::array<uint32_t, 2>> lightReferences;
+		std::array<uint32_t, 128> roomReferences{};
+		uint32_t cellID = 0;
+		uint64_t revision = 0;
+	};
+	/** @brief Returns the current cell's completed scene, or no scene if disabled/stale. */
+	std::optional<PublishedScene> GetPublishedScene() const;
+	/** @brief Scene-only request; used by the future lighting feature's compatibility controls. */
+	void RequestPreparedScene();
+	/** @brief Shared tracer remains owned by the native-scene lifetime. */
+	RedstoneShadow::DirectionalTrace& Tracer() { return preparedTrace; }
+	const RedstoneShadow::DirectionalTrace& Tracer() const { return preparedTrace; }
+	json GetPreparedDiagnostics() const { return preparedScene.GetDiagnostics(); }
+	uint64_t GetLightingBudgetBytes() const { return uint64_t(settings.DirectLightingBudgetMB) * 1024 * 1024; }
+
 	/** @brief Draws acquisition controls and explicit production/fallback status. */
 	void DrawSettings() override;
 	/** @brief Draws exclusive producer selection and settings for the selected indirect signal. */

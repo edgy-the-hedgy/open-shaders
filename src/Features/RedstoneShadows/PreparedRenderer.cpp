@@ -8,6 +8,30 @@
 #include "Util.h"
 #include "Utils/Form.h"
 
+std::optional<RedstoneShadows::PublishedScene> RedstoneShadows::GetPublishedScene() const
+{
+	if (!loaded || !ready || !settings.UsePreparedScene || !settings.UsePreparedMaterials ||
+		!preparedActive || transitionOpen || globals::game::isVR || globals::state->isMapMenuOpen)
+		return std::nullopt;
+	auto cell = preparedScene.GetCell();
+	auto acceleration = preparedAcceleration.GetScene();
+	if (!cell || !acceleration || acceleration->scope.scene != preparedRevision)
+		return std::nullopt;
+	const auto* current = globals::game::player ? globals::game::player->GetParentCell() : nullptr;
+	if (!current || current->GetFormID() != preparedCellID)
+		return std::nullopt;
+	return PublishedScene{ std::move(cell), std::move(acceleration), preparedLightReferences, preparedRoomReferences, preparedCellID, preparedRevision };
+}
+
+void RedstoneShadows::RequestPreparedScene()
+{
+	if (!settings.UsePreparedScene || !settings.UsePreparedMaterials) {
+		if (!settings.UsePreparedScene) ready = false;
+		settings.UsePreparedScene = settings.UsePreparedMaterials = true;
+		resetRequested = true;
+	}
+}
+
 void RedstoneShadows::ResetPreparedScene()
 {
 	++preparedRevision;
