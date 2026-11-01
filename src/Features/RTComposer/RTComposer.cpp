@@ -118,7 +118,7 @@ const char* RTComposer::IndirectTierDescription(CompositorMode mode)
 }
 std::pair<std::string, std::vector<std::string>> RTComposer::GetFeatureSummary()
 {
-    return { "DX12 Hybrid-Shadowed production composition and dedicated Shadow Only raster-mask fallback, with separate native-direct and SSGI-sized HybridGI sampling and Ray Regeneration.", {} };
+    return { "Six locked compositor tiers and a persistent Custom profile, with mode-specific direct/indirect settings panels; native DX12 HybridGI and RR remain available in supported modes.", {} };
 }
 
 bool RTComposer::DX12HybridReady() const
@@ -189,6 +189,10 @@ json RTComposer::GetDiagnostics()
         { "directCheckerboard", composition.directCheckerboard },
         { "hybridResolution", composition.hybridResolution },
         { "hybridCheckerboard", composition.hybridCheckerboard },
+        { "effectiveHybridResolution", composition.enabled && IsFixedPreset() && WantsNativeHybrid() ?
+            GetTierPolicy(CompositorMode::HybridShadowed).hybridResolution : composition.hybridResolution },
+        { "effectiveHybridCheckerboard", composition.enabled && IsFixedPreset() && WantsNativeHybrid() ?
+            GetTierPolicy(CompositorMode::HybridShadowed).hybridCheckerboard : composition.hybridCheckerboard },
         { "hybridSamplingMode", composition.hybridResolution },
         { "hybridSpatialScale", 1u << composition.hybridResolution },
         { "shadowThreshold", composition.shadowThreshold },
@@ -425,7 +429,7 @@ void RTComposer::DrawSettings()
         OnCompositionPolicyChanged();
 
     if (IsFixedPreset()) {
-        ImGui::TextWrapped("Fixed tier: rendering controls are locked. Select Custom to edit direct, shadow, indirect, reconstruction or RR settings.");
+        ImGui::TextWrapped("Fixed tier: compositor tuning is locked. Select Custom to edit direct, shadow, indirect, reconstruction or RR settings. Legacy feature settings remain editable while the compositor is disabled.");
         ImGui::TextWrapped("Direct: %s", DirectTierDescription(composition.mode));
         ImGui::TextWrapped("Indirect: %s", IndirectTierDescription(composition.mode));
         if (!GetTierPolicy(composition.mode).ready)

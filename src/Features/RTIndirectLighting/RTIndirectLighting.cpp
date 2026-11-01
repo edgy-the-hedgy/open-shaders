@@ -103,7 +103,16 @@ void RTIndirectLighting::DrawSettings()
             static_cast<unsigned long long>(trace.value("nativeHybridAODispatches", uint64_t{0})));
         return;
     }
-    const bool blocked = globals::features::rtComposer.BlocksRTIndirect();
+    if (composer.composition.enabled &&
+        composer.composition.mode == RTComposer::CompositorMode::Custom &&
+        composer.composition.customHybridShadowed) {
+        ImGui::SeparatorText("Custom native DX12 HybridGI");
+        ImGui::TextWrapped("Native Hybrid-Shadowed is selected in RT Composer. Legacy DX11 HybridGI and the separate RT-exclusive provider are unavailable in this backend.");
+        ImGui::TextWrapped("Adjust native GI/AO sampling, RR and post-filtering in RT Composer. Material and lighting estimator settings remain editable below.");
+        globals::features::redstoneGI.DrawSettings();
+        return;
+    }
+    const bool blocked = composer.BlocksRTIndirect();
     if (blocked) ImGui::TextWrapped("Unavailable in RT Composer mode: RT-exclusive GI and DX11 HybridGI are disabled. Saved selections are retained; baseline SSGI is the permitted provider.");
     ImGui::BeginDisabled(blocked);
 	ImGui::TextUnformatted("How would you like your GI to be rendered?");

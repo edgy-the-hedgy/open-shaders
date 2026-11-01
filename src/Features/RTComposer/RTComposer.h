@@ -110,7 +110,14 @@ struct RTComposer final : Feature
             return EffectiveMode::HybridShadowed;
         return EffectiveMode::ShadowOnly;
     }
-    bool BlocksRTIndirect() const { return composition.enabled; }
+    // Custom Shadow Only retains the DX11 composition exception, so the
+    // existing DXR indirect producer can be selected there if desired.
+    // Fixed tiers and native HybridGI continue to exclude the old producer.
+    bool BlocksRTIndirect() const
+    {
+        return composition.enabled &&
+            !(composition.mode == CompositorMode::Custom && !composition.customHybridShadowed);
+    }
     bool ShadowOnlyActive() const { return ResolveEffectiveMode() == EffectiveMode::ShadowOnly; }
     bool DX12HybridActive() const { return ResolveEffectiveMode() == EffectiveMode::HybridShadowed; }
     // The native producer is eligible when its shaders and retained scene are ready.
