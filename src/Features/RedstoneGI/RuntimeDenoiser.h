@@ -71,6 +71,9 @@ private:
     std::array<bool, 3> nativeHybridConfigurationDefaultsReady{};
     std::array<bool, 3> nativeHybridConfigurationApplied{};
     uint64_t nativeHybridAppliedConfigurationRevision = UINT64_MAX;
+    // SDK Query/Configure errors only block the rejected revision, allowing
+    // the user to correct a value without reloading the renderer.
+    uint64_t nativeHybridBlockedConfigurationRevision = UINT64_MAX;
     uint64_t nativeHybridConfigurationApplications = 0;
     std::string nativeHybridConfigurationFailure;
 	void ResetRayRegeneration();
