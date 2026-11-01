@@ -1,0 +1,56 @@
+// Stage 5B: DX12-native final radiance composition.
+// The only DX11-facing product will be the completed scene; no GI/AO signal
+// returns to D3D11. This pass intentionally consumes raw GI pending RR wiring.
+Texture2D<float4> ShadowedRaster : register(t0);
+Texture2D<float4> NativeDirect : register(t1);
+Texture2D<float4> IndirectDiffuse : register(t2);
+Texture2D<float4> IndirectSpecular : register(t3);
+Texture2D<float> DiffuseAO : register(t4);
+Texture2D<float> SpecularAO : register(t5);
+Texture2D<uint> ReceiverEligibility : register(t6);
+RWTexture2D<float4> ComposedScene : register(u0);
+
+cbuffer NativeHybridComposition : register(b13)
+{
+    uint2 FrameSize;
+    float DirectBlend;
+    float GIContribution;
+};
+
+[numthreads(8, 8, 1)]
+void main(uint2 pixel : SV_DispatchThreadID)
+{
+    if (any(pixel >= FrameSize)) return;
+
+    const float4 shadowed = ShadowedRaster.Load(int3(pixel, 0));
+    float3 linearColor = all(isfinite(shadowed.rgb)) ? max(0.0, shadowed.rgb) : 0.0;
+
+    // Matches RTDirectLighting/directContract.hlsli::DirectRadianceTag.
+    // Unsupported or invalid direct receivers retain the shadowed raster.
+    const float4 direct = NativeDirect.Load(int3(pixel, 0));
+    if (direct.a == 4.0 && all(isfinite(direct.rgb)) && all(direct.rgb >= 0.0))
+        linearColor = lerp(linearColor, direct.rgb, saturate(DirectBlend));
+
+    // 0: intentional shadow-controlled GI skip; 1: GI evaluated;
+    // 2: invalid receiver. No indirect history may resurrect 0 or 2.
+    if (ReceiverEligibility.Load(int3(pixel, 0)) == 1u)
+    {
+        const float4 diffuse = IndirectDiffuse.Load(int3(pixel, 0));
+        const float4 specular = IndirectSpecular.Load(int3(pixel, 0));
+        const float aoDiffuse = DiffuseAO.Load(int3(pixel, 0));
+        const float aoSpecular = SpecularAO.Load(int3(pixel, 0));
+        if (all(isfinite(diffuse)) && all(isfinite(specular)) &&
+            isfinite(aoDiffuse) && isfinite(aoSpecular))
+        {
+            linearColor += saturate(GIContribution) *
+                (max(0.0, diffuse.rgb) * saturate(aoDiffuse) +
+                 max(0.0, specular.rgb) * saturate(aoSpecular));
+        }
+    }
+
+    // The game still presents a gamma-domain scene at this stage.
+    // Keep the DX12 composition linear and encode exactly once for export.
+    const float3 encoded = pow(max(0.0, linearColor), 1.0 / 1.6);
+    ComposedScene[pixel] = float4(all(isfinite(encoded)) ? encoded : 0.0,
+        isfinite(shadowed.a) ? shadowed.a : 1.0);
+}
