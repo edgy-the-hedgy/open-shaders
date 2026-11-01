@@ -198,10 +198,13 @@ namespace DX12Native
 		SharedFence producer, completion;
 		winrt::com_ptr<ID3D11ComputeShader> prepare, display, composite;
         winrt::com_ptr<ID3D11ComputeShader> prepareHybrid;
+        winrt::com_ptr<ID3D11ComputeShader> nativeHybridResolve;
         winrt::com_ptr<ID3D12RootSignature> hybridSourceRoot;
         winrt::com_ptr<ID3D12PipelineState> hybridSourcePipeline;
         winrt::com_ptr<ID3D12DescriptorHeap> hybridSourceHeap;
         std::unique_ptr<NativeHybridGI> nativeHybridGI;
+        uint64_t nativeHybridPreviewSubmissions = 0;
+        std::string nativeHybridPreviewFailure;
 		winrt::com_ptr<ID3D11ComputeShader> prepareDirectGuides;
 		winrt::com_ptr<ID3D11ComputeShader> packRRSignals;
 		std::unique_ptr<ConstantBuffer> rrGridSettings;
