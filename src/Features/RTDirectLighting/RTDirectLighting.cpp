@@ -146,8 +146,10 @@ void RTDirectLighting::DrawDirectLightingSettings()
         ImGui::Text("Native direct dispatches: %llu | RR dispatches: %llu",
             trace.value("directTraceDispatches", 0ull), trace.value("directRRDispatches", 0ull));
         const auto& preparedLights = diagnostics.at("preparedScene");
-        ImGui::Text("Prepared lights: %llu supported / %llu unsupported",
-            preparedLights.value("supportedLightCount", 0ull), preparedLights.value("unsupportedLightCount", 0ull));
+        ImGui::Text("Prepared lights: %llu eligible / %llu rejected (%llu approximated, %llu invalid, %llu disabled)",
+            preparedLights.value("supportedLightCount", 0ull), preparedLights.value("unsupportedLightCount", 0ull),
+            preparedLights.value("approximatedLightCount", 0ull), preparedLights.value("invalidLightCount", 0ull),
+            preparedLights.value("disabledLightCount", 0ull));
         ImGui::Text("Submitted light count: %u | limit: %u", trace.value("requestedLightCount", 0u), DX12Native::DirectionalTrace::kMaximumDirectLights);
         ImGui::Text("Scene submissions: %llu | last frame: %u | budget deferrals: %llu | busy frames: %llu",
             trace.value("sceneCompositeSubmissions", 0ull), trace.value("sceneCompositeFrame", 0u), trace.value("budgetDeferrals", 0ull), trace.value("busyFrames", 0ull));
