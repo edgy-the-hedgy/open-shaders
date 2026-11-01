@@ -23,6 +23,7 @@ Texture2D<float4> RRNormalRoughness : register(t12);
 Texture2D<float4> NativeReceivers : register(t13);
 Texture2D<float4> RawNormalRoughness : register(t14);
 Texture2D<float4> RawDirectDiffuseAlbedo : register(t15);
+Texture2D<float4> ShadowMaskExport : register(t16);
 RWTexture2D<float4> SceneColor : register(u0);
 cbuffer LightingComposite : register(b0)
 {
@@ -31,7 +32,9 @@ cbuffer LightingComposite : register(b0)
 	float IndirectStrength;
 	uint UseDXRIndirect;
 	float RedstoneBlend;
-	float3 Padding;
+	uint ShadowOnlyEnabled;
+	float ShadowInfluence;
+	float DirectContributionPadding;
 };
 
 [numthreads(8, 8, 1)]
@@ -43,6 +46,17 @@ void main(uint3 id : SV_DispatchThreadID)
 	uint targetWidth, targetHeight;
 	SceneColor.GetDimensions(targetWidth, targetHeight);
 	if (id.x >= targetWidth || id.y >= targetHeight) return;
+	// Shadow Only acts after baseline SSGI and raster composition. GI generation
+	// is untouched; this attenuates final raster color only.
+	if (ShadowOnlyEnabled != 0u) {
+		const float2 mask = ShadowMaskExport.Load(int3(id.xy, 0)).rg;
+		if (mask.y >= 0.5f && all(isfinite(mask))) {
+			const float4 original = SceneColor[id.xy];
+			const float factor = lerp(1.0f, saturate(mask.x), saturate(ShadowInfluence));
+			const float3 linearColor = Color::SceneGammaToLinear(original.rgb);
+			SceneColor[id.xy] = float4(Color::SceneLinearToGamma(linearColor * factor), original.a);
+		}
+	}
 	if (RedstoneBlend <= 0.0f) return;
 	float4 lighting = DirectLighting.Load(int3(id.xy, 0));
 	if (lighting.w != DirectRadianceTag || !all(isfinite(lighting.rgb))) return;

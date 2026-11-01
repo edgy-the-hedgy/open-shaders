@@ -5,6 +5,7 @@
 #include "State.h"
 #include "Utils/D3D.h"
 #include "Features/RedstoneGI/RedstoneGI.h"
+#include "Features/RTComposer/RTComposer.h"
 #include "Deferred.h"
 #include "Utils/RayRegenerationSettings.h"
 
@@ -362,6 +363,9 @@ namespace DX12Native
 		output.Format = DXGI_FORMAT_R16G16_FLOAT;
 		backend.d3d12Device->CreateUnorderedAccessView(a_frame.shadowMask ? a_frame.shadowMask.get() : nullptr, nullptr, &output, cpu);
 		cpu.ptr += step;
+		output.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+		backend.d3d12Device->CreateUnorderedAccessView(a_frame.shadowMaskExport ? a_frame.shadowMaskExport->resource.get() : nullptr, nullptr, &output, cpu);
+		cpu.ptr += step;
 		backend.d3d12Device->CreateShaderResourceView(a_frame.light->resource.get(), &receiver, cpu);
 		ID3D12DescriptorHeap* heaps[]{ a_frame.bindings->heap.get() };
 		auto* commands = a_frame.commands.get();
@@ -413,6 +417,7 @@ namespace DX12Native
 		for (const auto& signal : a_frame.directSignals) if (signal) begin.push_back(CD3DX12_RESOURCE_BARRIER::Transition(signal->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
 		if (a_frame.visibilityBits) begin.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_frame.visibilityBits.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
 		if (a_frame.shadowMask) begin.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_frame.shadowMask.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
+		if (a_frame.shadowMaskExport) begin.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_frame.shadowMaskExport->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
 		commands->ResourceBarrier(uint32_t(begin.size()), begin.data());
 		if (a_frame.shadowMask && a_frame.visibilityBits) {
 			Constants maskPass = constants;
@@ -420,10 +425,12 @@ namespace DX12Native
 			commands->SetComputeRoot32BitConstants(5, 36, &maskPass, 0);
 			commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 			++shadowMaskTraceDispatches;
-			std::array<D3D12_RESOURCE_BARRIER, 2> maskBarriers{
+			std::vector<D3D12_RESOURCE_BARRIER> maskBarriers{
 				CD3DX12_RESOURCE_BARRIER::UAV(a_frame.visibilityBits.get()),
 				CD3DX12_RESOURCE_BARRIER::UAV(a_frame.shadowMask.get())
 			};
+			if (a_frame.shadowMaskExport)
+				maskBarriers.push_back(CD3DX12_RESOURCE_BARRIER::UAV(a_frame.shadowMaskExport->resource.get()));
 			commands->ResourceBarrier(uint32_t(maskBarriers.size()), maskBarriers.data());
 			if (a_frame.directTraceMode != 0u) {
 				maskPass.signalPadding[0] = 5u;
@@ -483,6 +490,7 @@ namespace DX12Native
 		for (const auto& signal : a_frame.directSignals) if (signal) end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(signal->resource.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON));
 		if (a_frame.visibilityBits) end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_frame.visibilityBits.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON));
 		if (a_frame.shadowMask) end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_frame.shadowMask.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON));
+		if (a_frame.shadowMaskExport) end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_frame.shadowMaskExport->resource.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON));
 		commands->ResourceBarrier(uint32_t(end.size()), end.data());
 		DX::ThrowIfFailed(commands->Close());
 		ID3D12CommandList* lists[]{ commands };
@@ -562,10 +570,10 @@ namespace DX12Native
 	{
 		CS_GPU_PASS("RTDirectLighting::DirectSceneComposite");
 		auto* context = backend.d3d11Context.get();
-		struct Settings { uint32_t indirect, directRR; float indirectStrength; uint32_t useDXRIndirect; float redstoneBlend; float padding[3]{}; };
+		struct Settings { uint32_t indirect, directRR; float indirectStrength; uint32_t useDXRIndirect; float redstoneBlend; uint32_t shadowOnly; float shadowInfluence; float directContribution; };
 		if (!lightingCompositeSettings) lightingCompositeSettings = std::make_unique<ConstantBuffer>(ConstantBufferDesc<Settings>(), "RTDirectLighting::LightingComposite CB");
 		winrt::com_ptr<ID3D11ComputeShader> shader;
-		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 16> inputs;
+		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 17> inputs;
 		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 6> indirectInputs;
 		std::array<winrt::com_ptr<ID3D11UnorderedAccessView>, 7> outputs;
 		winrt::com_ptr<ID3D11Buffer> shared, features, settings, camera;
@@ -589,7 +597,12 @@ namespace DX12Native
 		auto& indirect = globals::features::redstoneGI;
 		const bool useIndirect = a_frame.useIndirect && indirect.HasCurrentIndirectLighting();
 		if (useIndirect) indirect.BindCompositeResources();
-		lightingCompositeSettings->Update(Settings{ useIndirect ? 1u : 0u, rrFlags, a_frame.indirectStrength, a_frame.indirectRays != 0 ? 1u : 0u, a_frame.rasterBlend });
+		const auto& composer = globals::features::rtComposer;
+		const bool shadowOnly = composer.ShadowOnlyActive() && a_frame.shadowMaskExport;
+		lightingCompositeSettings->Update(Settings{ useIndirect ? 1u : 0u, rrFlags, a_frame.indirectStrength,
+			a_frame.indirectRays != 0 ? 1u : 0u,
+			a_frame.rasterBlend * (shadowOnly ? composer.composition.rtDirectContribution : 1.0f),
+			shadowOnly ? 1u : 0u, shadowOnly ? composer.composition.shadowInfluence : 0.0f, 0.0f });
 		auto* cb = lightingCompositeSettings->CB();
 		context->CSSetConstantBuffers(0, 1, &cb);
 		const auto& targets = globals::game::renderer->GetRuntimeData().renderTargets;
@@ -600,8 +613,9 @@ namespace DX12Native
 			(rrFlags & 2u) ? directRRTextures[4]->srv.get() : nullptr, (rrFlags & 2u) ? directRRTextures[5]->srv.get() : nullptr,
 			rrFlags ? directRRTextures[0]->srv.get() : nullptr, rrFlags ? directRRTextures[10]->srv.get() : nullptr, a_frame.receivers->srv,
 			rrFlags ? a_frame.directSignals[2]->srv : nullptr,
-			directRR ? a_frame.directSignals[4]->srv : nullptr };
-		context->CSSetShaderResources(0, 16, reads);
+			directRR ? a_frame.directSignals[4]->srv : nullptr,
+			shadowOnly ? a_frame.shadowMaskExport->srv : nullptr };
+		context->CSSetShaderResources(0, 17, reads);
 		context->CSSetUnorderedAccessViews(0, 1, &a_target, nullptr);
 		context->CSSetShader(composite.get(), nullptr, 0);
 		context->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
@@ -667,8 +681,10 @@ namespace DX12Native
 		const auto rrPolicy = RayRegeneration::GetSettings();
 		const uint32_t effectiveRRMode = a_directRRResolutionMode == 3u ? rrPolicy.resolutionMode : std::min(a_directRRResolutionMode, 2u);
 		const bool directRR = a_sceneTarget && a_useDirectRR && rrPolicy.enabled;
+		const bool wantExport = a_sceneTarget && globals::features::rtComposer.ShadowOnlyActive();
 		const bool reuse = available->size == size && available->useDirectRR == directRR && available->indirectRays == a_indirectRays && available->receivers && available->output && available->light &&
-			bool(available->shadowMask) == bool(a_sceneTarget) && (!a_sceneTarget || available->visibilityBits);
+			bool(available->shadowMask) == bool(a_sceneTarget) &&
+			bool(available->shadowMaskExport) == wantExport && (!a_sceneTarget || available->visibilityBits);
 		constexpr uint64_t kFrameOverheadBytes = 1024 * 1024;
 		const auto textureDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32G32B32A32_FLOAT, size[0], size[1], 1, 1, 1, 0,
 			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS);
@@ -686,11 +702,12 @@ namespace DX12Native
 			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 		const uint64_t visibilityBytes = a_sceneTarget ? backend.d3d12Device->GetResourceAllocationInfo(0, 1, &visibilityDesc).SizeInBytes : 0;
 		const uint64_t maskBytes = a_sceneTarget ? backend.d3d12Device->GetResourceAllocationInfo(0, 1, &maskDesc).SizeInBytes : 0;
+		const uint64_t exportBytes = wantExport ? nextPreviewBytes : 0;
 		if (textureBytes == UINT64_MAX || lightBytes == UINT64_MAX || nextPreviewBytes == UINT64_MAX ||
 			visibilityBytes == UINT64_MAX || maskBytes == UINT64_MAX) { failure = "Directional texture allocation unsupported"; return; }
 		const uint64_t signalBytes = (directRR || a_indirectRays) ? nextPreviewBytes * kDirectSignalCount : 0;
 		const uint64_t rrInteropReserve = directRR ? uint64_t(std::max(1u, size[0] >> effectiveRRMode)) * std::max(1u, size[1] >> effectiveRRMode) * 256 + kFrameOverheadBytes : 0;
-		const uint64_t required = (reuse ? 0 : textureBytes * 2 + lightBytes + signalBytes + visibilityBytes + maskBytes + kFrameOverheadBytes) + (a_sceneTarget ? 0 : nextPreviewBytes) + bindingBytes + rrInteropReserve;
+		const uint64_t required = (reuse ? 0 : textureBytes * 2 + lightBytes + signalBytes + visibilityBytes + maskBytes + exportBytes + kFrameOverheadBytes) + (a_sceneTarget ? 0 : nextPreviewBytes) + bindingBytes + rrInteropReserve;
 		const uint64_t retainedBytes = ResidentBytes() - (reuse ? 0 : available->bytes);
 		if (required > a_budgetBytes || retainedBytes > a_budgetBytes - required) {
 			if (directRR) {
@@ -756,7 +773,7 @@ namespace DX12Native
 				std::vector<PreparedPointLight>{ a_preparedLights.empty() ? PreparedPointLight{} : a_preparedLights.front() };
 			if (a_allPreparedLights) available->lightIdentities.assign(a_lightIdentities.begin(), a_lightIdentities.end());
 			else available->lightIdentities = { { a_lightReference, a_lightBase } };
-			available->bytes = textureBytes * 2 + lightBytes + signalBytes + visibilityBytes + maskBytes + kFrameOverheadBytes;
+			available->bytes = textureBytes * 2 + lightBytes + signalBytes + visibilityBytes + maskBytes + exportBytes + kFrameOverheadBytes;
 			D3D11_TEXTURE2D_DESC desc{};
 			desc.Width = size[0]; desc.Height = size[1];
 			desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
@@ -777,6 +794,11 @@ namespace DX12Native
 						&heap, D3D12_HEAP_FLAG_NONE, &maskDesc, D3D12_RESOURCE_STATE_COMMON,
 						nullptr, IID_PPV_ARGS(available->shadowMask.put())));
 					available->shadowMask->SetName(L"RTDirectLighting::WeightedShadowMask");
+				}
+				if (wantExport && !available->shadowMaskExport) {
+					desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+					available->shadowMaskExport = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RTDirectLighting::ShadowMaskDX11Export");
+					desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
 				}
 			}
 			if (directRR || a_indirectRays) {

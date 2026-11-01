@@ -282,7 +282,11 @@ void EvaluateShadowMaskForSurface(uint instance, uint primitive, float2 barycent
     }
     DirectVisibilityBits[pixel] = visibility;
     if (valid && eligible > 0u && isfinite(weightSum) && weightSum > 1e-6f)
-        DirectShadowMask[pixel] = float2(saturate(visibleWeight / weightSum), 1.0f);
+        {
+        const float v = saturate(visibleWeight / weightSum);
+        DirectShadowMask[pixel] = float2(v, 1.0f);
+        ShadowMaskExport[pixel] = float4(v, 1.0f, 0.0f, 0.0f);
+    }
     // Otherwise retain neutral (1,0) set by the pass for this pixel.
 }
 

@@ -76,7 +76,7 @@ namespace DX12Native
 		static constexpr uint32_t kLightSnapshotTexels = 8;
 		static constexpr uint32_t kLightSnapshotWidth = kLightSnapshotTexels * kMaximumDirectLights;
 		static constexpr uint32_t kDirectSignalCount = 7;
-		static constexpr uint32_t kShadowSignalCount = 2;
+		static constexpr uint32_t kShadowSignalCount = 3;
 		static constexpr uint32_t kFrameDescriptorCount = 3 + kDirectSignalCount + kShadowSignalCount;
 		static constexpr uint32_t kGeometryDescriptorBase = 2 * kFrameDescriptorCount;
 		static constexpr uint32_t kAttributeDescriptorBase = kGeometryDescriptorBase + kMaximumInstances;
@@ -98,6 +98,8 @@ namespace DX12Native
 			// DX12-only UAVs: no DX11 sharing, CPU readback, or intermediate handoff.
 			// R32G32_UINT: visible/valid per-light bitsets; R16G16_FLOAT: visibility/confidence.
 			winrt::com_ptr<ID3D12Resource> visibilityBits, shadowMask;
+			// DX11-visible transfer only for final Shadow Only composition.
+			std::unique_ptr<WrappedResource> shadowMaskExport;
 			std::array<std::unique_ptr<WrappedResource>, kDirectSignalCount> directSignals;
 			winrt::com_ptr<ID3D12RootSignature> root;
 			winrt::com_ptr<ID3D12PipelineState> pipeline;

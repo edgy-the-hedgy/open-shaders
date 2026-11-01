@@ -15,6 +15,7 @@ RWTexture2D<float4> IndirectSpecular : register(u7);
 // R16G16_FLOAT luminance-weighted visibility/confidence. Neutral = float2(1, 0).
 RWTexture2D<uint2> DirectVisibilityBits : register(u8);
 RWTexture2D<float2> DirectShadowMask : register(u9);
+RWTexture2D<float4> ShadowMaskExport : register(u10); // DX11-visible RG16BA16F
 struct RoomVolume { float4 inverse0; float4 inverse1; float4 inverse2; float4 halfExtents; };
 StructuredBuffer<RoomVolume> RoomVolumes : register(t6);
 static const uint OpaqueInstanceMask = 1;
@@ -120,6 +121,7 @@ void main(uint3 id : SV_DispatchThreadID)
 		if (maskResolve) {
 			DirectShadowMask[id.xy] = DirectShadowMask[sourcePixel];
 			DirectVisibilityBits[id.xy] = DirectVisibilityBits[sourcePixel];
+			ShadowMaskExport[id.xy] = ShadowMaskExport[sourcePixel];
 		} else if (direct) {
 			const float4 raw = Shadow[sourcePixel];
 			if (raw.w != DirectRadianceTag) return;
@@ -144,6 +146,7 @@ void main(uint3 id : SV_DispatchThreadID)
 		// Clear every pixel, including non-anchors and unresolved geometry, before tracing.
 		DirectShadowMask[id.xy] = float2(1.0f, 0.0f);
 		DirectVisibilityBits[id.xy] = uint2(0u, 0u);
+		ShadowMaskExport[id.xy] = float4(1.0f, 0.0f, 0.0f, 0.0f);
 	}
 	if (ExportDirectSignals != 0 && TracePass == 0) {
 		DirectDiffuse[id.xy] = 0;
