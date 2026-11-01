@@ -72,6 +72,32 @@ uint NearestSample(uint coordinate, uint first, uint second)
 
 uint2 TraceAnchor(uint2 pixel, uint mode, uint passSalt)
 {
+    // Universal native sampling density:
+    // 0=100%, 5=native checkerboard (50%), 7=quarter rotating (25%),
+    // 6=quarter checkerboard (12.5%). Checkerboard selects only eligible
+    // source anchors; the existing surface-aware resolve handles the gaps.
+    if (mode == 5u) {
+        const uint selected = (pixel.y + FrameIndex) & 1u;
+        return uint2(min((pixel.x & ~1u) + selected, Size.x - 1u), pixel.y);
+    }
+    if (mode == 7u) {
+        const uint phase = FrameIndex & 3u;
+        const uint2 offset = uint2(phase & 1u, (phase >> 1u) & 1u);
+        return min((pixel / 2u) * 2u + offset, Size - 1u);
+    }
+    if (mode == 6u) {
+        const uint2 tile = pixel / 2u;
+        uint2 chosen = tile;
+        const bool active = ((tile.x + tile.y + FrameIndex) & 1u) == 0u;
+        if (!active) {
+            // Restore from a neighboring active 2x2 logical macroblock.
+            // A one-macroblock-wide frame degrades to quarter sampling.
+            if (Size.x > 2u) chosen.x = tile.x > 0u ? tile.x - 1u : tile.x + 1u;
+        }
+        const uint phase = (FrameIndex >> 1u) & 3u;
+        const uint2 offset = uint2(phase & 1u, (phase >> 1u) & 1u);
+        return min(chosen * 2u + offset, Size - 1u);
+    }
 	if (mode == 0u) return pixel;
 	if (DirectStochastic.x >= 0.5f) {
 		const uint tileSpan = TraceTileSpan(mode);
