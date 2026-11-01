@@ -19,10 +19,12 @@ void main(uint2 pixel : SV_DispatchThreadID)
     const float visibility = mask.y >= 0.5 && all(isfinite(mask)) ? saturate(mask.x) : 1.0;
     const float attenuation = lerp(1.0, visibility, saturate(ShadowInfluence));
     const float3 linearColor = sign(source.rgb) * pow(abs(source.rgb), 1.6);
-    const float3 shadowed = linearColor * attenuation;
-    const float3 encoded = sign(shadowed) * pow(abs(shadowed), 1.0 / 1.6);
-    OutShadowedScene[pixel] = all(isfinite(encoded)) ?
-        float4(encoded, source.a) : float4(0, 0, 0, source.a);
+    const float3 shadowedLinearRadiance = max(0.0, linearColor * attenuation);
+    // RedstoneGI::SampleEmission consumes linear light; do not re-encode.
+    // The untouched raster input remains independently available for the final
+    // opaque composer, so no inverse conversion is required for GI.
+    OutShadowedScene[pixel] = all(isfinite(shadowedLinearRadiance)) ?
+        float4(shadowedLinearRadiance, source.a) : float4(0, 0, 0, source.a);
     // Exact RedstoneGI::ScreenToViewDepth equation, using the same
     // Util::GetCameraData values supplied to the DX11 SharedData cbuffer.
     const float raw = RawDepth.Load(int3(pixel, 0)).x;

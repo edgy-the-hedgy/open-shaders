@@ -1171,7 +1171,7 @@ namespace DX12Native
             { "hybridShadowedSourceDispatches", hybridSourceDispatches },
             { "hybridShadowedSourceLastFrame", hybridSourceLastFrame },
             { "hybridShadowedSourceFailure", hybridSourceFailure },
-            { "hybridShadowedSourceStage", "5A-preparation; DX12-native shadowed scene and linear view depth" },
+            { "hybridShadowedSourceStage", "5A-preparation; native shadowed linear radiance and linear view depth" },
             { "hybridInputLastFrame", hybridInputLastFrame },
             { "hybridInputLastBytes", hybridInputLastBytes },
             { "hybridInputBudgetDeferrals", hybridInputBudgetDeferrals },

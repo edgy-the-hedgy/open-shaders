@@ -61,6 +61,7 @@ namespace DX12Native
             explicit operator bool() const { return inputs[0] && completionFence && completionValue; }
         };
         HybridInputsPublication GetHybridInputs(uint32_t a_frame) const;
+        // The scene texture is *linear radiance*, not gamma-encoded raster.
         struct ShadowedSourcePublication {
             ID3D12Resource* scene = nullptr;
             ID3D12Resource* linearDepth = nullptr;
