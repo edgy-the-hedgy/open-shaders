@@ -1247,6 +1247,14 @@ namespace DX12Native
                 result.outputs[i] = frame.nativeGI.textures[i].get();
             result.sampling = frame.nativeGI.sampling;
             result.rrGuidesValid = frame.nativeGI.rrGuidesValid;
+            result.rrValid = frame.nativeGI.rrValid;
+            result.postValid = frame.nativeGI.postValid;
+            if (result.rrValid)
+                for (uint32_t i = 0; i < result.rrOutputs.size(); ++i)
+                    result.rrOutputs[i] = frame.nativeGI.rrOutputs[i].get();
+            if (result.postValid)
+                for (uint32_t i = 0; i < result.reconstructed.size(); ++i)
+                    result.reconstructed[i] = frame.nativeGI.nativeFinal[i];
             if (result.rrGuidesValid)
                 for (uint32_t i = 0; i < result.rrGuides.size(); ++i)
                     result.rrGuides[i] = frame.nativeGI.rrGuides[i].get();
