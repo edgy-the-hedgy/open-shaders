@@ -8,6 +8,7 @@ import json
 import math
 import os
 import re
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -5575,18 +5576,22 @@ def main() -> int:
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--min-entries", type=int, default=1)
     parser.add_argument("--no-cache", action="store_true", help="Force full source analysis")
+    parser.add_argument("--timings", action="store_true", help="Report catalog generation timings")
     args = parser.parse_args()
 
     source_dir = Path(args.source_dir)
     out_dir = Path(args.out_dir)
     cache_path = out_dir / ".scene-settings-catalog.cache.json"
+    started_at = time.perf_counter()
     fingerprint = None if args.no_cache else source_fingerprint(source_dir)
+    fingerprint_done_at = time.perf_counter()
     entries = load_cached_entries(cache_path, fingerprint) if fingerprint else None
     if entries is None:
         entries = build_entries(source_dir)
         generated_from_source = True
     else:
         generated_from_source = False
+    build_done_at = time.perf_counter()
     try:
         validate_entries(entries, args.min_entries)
     except ValueError as error:
@@ -5595,6 +5600,13 @@ def main() -> int:
     if generated_from_source and fingerprint:
         store_cached_entries(cache_path, fingerprint, entries)
     print(f"Generated {len(entries)} scene setting catalog entries")
+    if args.timings:
+        total = time.perf_counter() - started_at
+        print(f"Scene catalog timing: cache={'miss' if generated_from_source else 'hit'} "
+              f"fingerprint={fingerprint_done_at - started_at:.3f}s "
+              f"analysis={build_done_at - fingerprint_done_at:.3f}s "
+              f"write={time.perf_counter() - build_done_at:.3f}s "
+              f"total={total:.3f}s")
     return 0
 
 
