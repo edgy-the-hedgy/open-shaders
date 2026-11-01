@@ -189,7 +189,7 @@ void main(uint3 id : SV_DispatchThreadID)
 			else
 				Shadow[id.xy] = Unavailable(MismatchedDepth);
 			if (giSampled)
-				EvaluatePreparedIndirect(material, CameraOrigin + primary.Direction * distance,
+				EvaluatePreparedIndirect(instance, material, CameraOrigin + primary.Direction * distance,
 					primary.Direction, geometricNormal, receiver, footprint, id.xy);
 			return;
 		}

@@ -287,7 +287,7 @@ float4 EvaluateDirectLighting(uint instance, uint primitive, float2 barycentric,
 // scene/receiver resources but never writes or composites direct radiance.
 // GI validity is independent of the direct-light result; no second
 // camera-to-scene query or first-hit material evaluation is permitted here.
-void EvaluatePreparedIndirect(EvaluatedSourceMaterial material, float3 position,
+void EvaluatePreparedIndirect(uint instance, EvaluatedSourceMaterial material, float3 position,
     float3 direction, float3 geometricNormal, float4 receiver,
     float footprint, uint2 pixel)
 {
@@ -337,6 +337,6 @@ void EvaluateIndirectForSurface(uint instance, uint primitive, float2 barycentri
     const float3 edge1 = mul((float3x3)objectToWorld, surface.position2 - surface.position0);
     const float3 geometricNormal = normalize(cross(edge0, edge1));
     if (!all(isfinite(geometricNormal))) return;
-    EvaluatePreparedIndirect(material, CameraOrigin + direction * distance,
+    EvaluatePreparedIndirect(instance, material, CameraOrigin + direction * distance,
         direction, geometricNormal, receiver, footprint, pixel);
 }

@@ -443,9 +443,10 @@ namespace DX12Native
 					CD3DX12_RESOURCE_BARRIER::UAV(a_frame.directSignals[6]->resource.get())
 				};
 				commands->ResourceBarrier(uint32_t(resolveOrder.size()), resolveOrder.data());
-				indirectConstants.signalPadding[0] = 3u;
+				Constants indirectResolve = constants;
+				indirectResolve.signalPadding[0] = 3u;
 				++indirectSpatialResolveSubmissions;
-				commands->SetComputeRoot32BitConstants(5, 36, &indirectConstants, 0);
+				commands->SetComputeRoot32BitConstants(5, 36, &indirectResolve, 0);
 				commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 			}
 		}
