@@ -562,10 +562,25 @@ namespace DX12Native
                 frame.hybridInputs[5]->resource.get(),
                 frame.hybridInputs[3]->resource.get(),
                 frame.hybridInputs[4]->resource.get());
-            // Raw native preview has no RR/upscaler yet: never read packed
-            // signal textures as if they were full-size scene pixels.
-            // Sampling remains active diagnostically for RR integration.
-            if (sampling.effective == HybridSamplingMode::Native)
+            // The production compositor remains closed. This is an
+            // opt-in diagnostics path on an otherwise Shadow Only frame.
+            bool rrSucceeded = false;
+            const bool rrRequested = composition.enabled &&
+                composition.mode == RTComposer::CompositorMode::HybridShadowed &&
+                composition.previewNativeRR && RayRegeneration::GetSettings().enabled;
+            if (rrRequested && frame.nativeGI.rrGuidesValid) {
+                auto& denoiser = globals::features::redstoneGI.GetDenoiser();
+                if (denoiser.Initialize(backend))
+                    rrSucceeded = nativeHybridGI->RecordPostRR(
+                        backend.d3d12Device.get(), frame.commands.get(),
+                        frame.nativeGI, uint32_t(&frame - frames.data()),
+                        frame.number, frame.hybridLinearDepth.get(),
+                        frame.hybridInputs[2]->resource.get(), composition, denoiser);
+            }
+            const bool rawPreview = !composition.previewNativeRR &&
+                composition.previewNativeRaw &&
+                sampling.effective == HybridSamplingMode::Native;
+            if (rrSucceeded || rawPreview)
                 nativeHybridGI->RecordComposition(backend.d3d12Device.get(),
                     backend.d3d11Device.get(), frame.commands.get(), frame.nativeGI,
                     uint32_t(&frame - frames.data()), frame.size,
@@ -843,7 +858,8 @@ namespace DX12Native
         const auto& compositionPolicy = globals::features::rtComposer.composition;
         const bool diagnosticNative = compositionPolicy.enabled &&
             compositionPolicy.mode == RTComposer::CompositorMode::HybridShadowed &&
-            compositionPolicy.previewNativeRaw && a_frame.nativeGI.composedValid &&
+            (compositionPolicy.previewNativeRaw || compositionPolicy.previewNativeRR) &&
+            a_frame.nativeGI.composedValid &&
             a_frame.nativeGI.composedScene;
         if (diagnosticNative) {
             if (!nativeHybridResolve && nativeHybridPreviewFailure.empty()) {
@@ -1321,6 +1337,12 @@ namespace DX12Native
             { "nativeHybridGIFailure", nativeHybridGI ? nativeHybridGI->Failure() : std::string{} },
             { "nativeHybridCompositionDispatches", nativeHybridGI ? nativeHybridGI->CompositionDispatches() : uint64_t{0} },
             { "nativeHybridCompositionFailure", nativeHybridGI ? nativeHybridGI->CompositionFailure() : std::string{} },
+            { "nativeHybridPostDispatches", nativeHybridGI ? nativeHybridGI->PostDispatches() : uint64_t{0} },
+            { "nativeHybridBlurDispatches", nativeHybridGI ? nativeHybridGI->BlurDispatches() : uint64_t{0} },
+            { "nativeHybridPostFailure", nativeHybridGI ? nativeHybridGI->PostFailure() : std::string{} },
+            { "nativeHybridRRDispatches", globals::features::redstoneGI.GetDenoiser().NativeHybridDispatches() },
+            { "nativeHybridRRResets", globals::features::redstoneGI.GetDenoiser().NativeHybridResets() },
+            { "nativeHybridRRFailure", globals::features::redstoneGI.GetDenoiser().NativeHybridFailure() },
             { "nativeHybridPreviewSubmissions", nativeHybridPreviewSubmissions },
             { "nativeHybridPreviewFailure", nativeHybridPreviewFailure },
             { "nativeHybridGIStatus", "Native sampled GI/AO, full-native eligibility; raw composition only at native density; RR/upscaler staged" },
