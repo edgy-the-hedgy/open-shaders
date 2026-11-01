@@ -79,6 +79,11 @@ std::pair<std::string, std::vector<std::string>> RTComposer::GetFeatureSummary()
 }
 void RTComposer::OnCompositionPolicyChanged()
 {
+    // On leaving native Hybrid-Shadowed, release AMD's private RR histories
+    // after queue retirement. Do not keep three contexts consuming VRAM
+    // throughout Shadow Only or when the compositor is disabled.
+    if (!composition.enabled || composition.mode != CompositorMode::HybridShadowed)
+        (void)globals::features::redstoneGI.GetDenoiser().RetireNativeHybridContexts();
     // Saved RT-exclusive/Hybrid settings are not mutated. Incompatible GPU
     // history is discarded when the effective compositor selection changes.
     globals::features::redstoneGI.ResetRuntimeHistory();
@@ -372,7 +377,10 @@ void RTComposer::DrawSettings()
         }
         if (ImGui::Checkbox("Preview denoised DX12 Hybrid-Shadowed (experimental)",
                 &composition.previewNativeRR)) {
-            if (composition.previewNativeRR) composition.previewNativeRaw = false;
+            if (composition.previewNativeRR)
+                composition.previewNativeRaw = false;
+            else
+                (void)globals::features::redstoneGI.GetDenoiser().RetireNativeHybridContexts();
             OnCompositionPolicyChanged();
         }
         ImGui::TextWrapped("RR preview uses three native DX12 RR family histories and the independent post-RR filter and blur settings. Production activation remains gated until this runtime path is validated.");
@@ -451,9 +459,12 @@ void RTComposer::DrawSettings()
     ImGui::SeparatorText("FSR Ray Regeneration");
     const auto old = RayRegeneration::GetSettings();
     bool enabled = old.enabled;
-    if (ImGui::Checkbox("Enable FSR Ray Regeneration", &enabled))
+    if (ImGui::Checkbox("Enable FSR Ray Regeneration", &enabled)) {
         RayRegeneration::Configure(DX12Native::RRLogicalReduction(composition.samplingMode),
             DX12Native::RRCheckerboard(composition.samplingMode), enabled);
+        if (!enabled)
+            (void)globals::features::redstoneGI.GetDenoiser().RetireNativeHybridContexts();
+    }
     ImGui::TextWrapped("RR render size and checkerboard packing derive exclusively from the universal RT sampling selector above; no separate resolution controls.");
     ImGui::SeparatorText("Direct Lighting RR");
     globals::features::rtDirectLighting.DrawRayRegenerationSettings();
