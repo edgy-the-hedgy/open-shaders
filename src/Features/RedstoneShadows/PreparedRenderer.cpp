@@ -122,6 +122,6 @@ void RedstoneShadows::OnAfterDeferredLighting(ID3D11UnorderedAccessView* a_targe
 	preparedTrace.Dispatch(completedScene, a_size, light, frame, budget, true, lights, materialView, direct ? a_target : nullptr,
 		identity[0], identity[1], metadataSrv, allLights ? std::span<const std::array<uint32_t, 2>>(preparedLightReferences) : std::span<const std::array<uint32_t, 2>>{}, allLights,
 		direct ? float4{ settings.DirectStrength, settings.DiffuseStrength, settings.SpecularStrength, settings.EmissionStrength } : float4{ settings.PreviewDirectStrength, settings.PreviewDiffuseStrength, settings.PreviewSpecularStrength, settings.PreviewEmissionStrength },
-		settings.ConnectIndirectLighting && !settings.UseDXRIndirect, settings.IndirectStrength, settings.UseDirectRayRegeneration, settings.UseDXRIndirect ? settings.IndirectRays : 0u, preparedRoomReferences);
+		settings.ConnectIndirectLighting && !settings.UseDXRIndirect, settings.IndirectStrength, settings.UseDirectRayRegeneration, settings.UseDXRIndirect ? settings.IndirectRays : 0u, preparedRoomReferences, settings.RedstoneBlend);
 	preparedTraceFrame = frame;
 }

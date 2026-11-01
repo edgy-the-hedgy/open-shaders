@@ -1,6 +1,5 @@
 #include "DirectionalTrace.h"
 
-#include "RedstoneShadows.h"
 #include "Globals.h"
 #include "GpuPass.h"
 #include "State.h"
@@ -518,7 +517,7 @@ namespace RedstoneShadow
 		auto& indirect = globals::features::redstoneGI;
 		const bool useIndirect = a_frame.useIndirect && indirect.HasCurrentIndirectLighting();
 		if (useIndirect) indirect.BindCompositeResources();
-		lightingCompositeSettings->Update(Settings{ useIndirect ? 1u : 0u, rrFlags, a_frame.indirectStrength, a_frame.indirectRays != 0 ? 1u : 0u, globals::features::redstoneShadows.settings.RedstoneBlend });
+		lightingCompositeSettings->Update(Settings{ useIndirect ? 1u : 0u, rrFlags, a_frame.indirectStrength, a_frame.indirectRays != 0 ? 1u : 0u, a_frame.rasterBlend });
 		auto* cb = lightingCompositeSettings->CB();
 		context->CSSetConstantBuffers(0, 1, &cb);
 		const auto& targets = globals::game::renderer->GetRuntimeData().renderTargets;
@@ -557,7 +556,7 @@ namespace RedstoneShadow
 	}
 
 
-	void DirectionalTrace::Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight, const LightLimitFixData::LightView& a_lights, uint32_t a_materialView, ID3D11UnorderedAccessView* a_sceneTarget, uint32_t a_lightReference, uint32_t a_lightBase, ID3D11ShaderResourceView* a_roomMetadata, std::span<const std::array<uint32_t, 2>> a_lightIdentities, bool a_allPreparedLights, float4 a_strengths, bool a_useIndirect, float a_indirectStrength, bool a_useDirectRR, uint32_t a_indirectRays, std::span<const uint32_t> a_roomReferences)
+	void DirectionalTrace::Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight, const LightLimitFixData::LightView& a_lights, uint32_t a_materialView, ID3D11UnorderedAccessView* a_sceneTarget, uint32_t a_lightReference, uint32_t a_lightBase, ID3D11ShaderResourceView* a_roomMetadata, std::span<const std::array<uint32_t, 2>> a_lightIdentities, bool a_allPreparedLights, float4 a_strengths, bool a_useIndirect, float a_indirectStrength, bool a_useDirectRR, uint32_t a_indirectRays, std::span<const uint32_t> a_roomReferences, float a_rasterBlend)
 	{
 		CS_GPU_PASS("RedstoneShadows::DirectionalDispatch");
 		const bool direct = a_materialView >= kFirstDirectView;
@@ -613,7 +612,7 @@ namespace RedstoneShadow
 			if (directRR) {
 				++directRRBudgetDeferrals;
 				Dispatch(a_scene, a_nativeSize, a_lightDirection, a_frame, a_budgetBytes, a_localLight, a_lights, a_materialView, a_sceneTarget,
-					a_lightReference, a_lightBase, a_roomMetadata, a_lightIdentities, a_allPreparedLights, a_strengths, a_useIndirect, a_indirectStrength, false, a_indirectRays, a_roomReferences);
+					a_lightReference, a_lightBase, a_roomMetadata, a_lightIdentities, a_allPreparedLights, a_strengths, a_useIndirect, a_indirectStrength, false, a_indirectRays, a_roomReferences, a_rasterBlend);
 			} else ++budgetDeferrals;
 			return;
 		}
@@ -656,6 +655,7 @@ namespace RedstoneShadow
 			std::copy_n(a_roomReferences.begin(), std::min(a_roomReferences.size(), available->roomReferences.size()), available->roomReferences.begin());
 			available->indirectStrength = a_indirectStrength;
 			available->useDirectRR = directRR;
+			available->rasterBlend = a_rasterBlend;
 			if (a_allPreparedLights) available->lightIdentities.assign(a_lightIdentities.begin(), a_lightIdentities.end());
 			else available->lightIdentities = { { a_lightReference, a_lightBase } };
 			available->bytes = textureBytes * 2 + lightBytes + signalBytes + kFrameOverheadBytes;
