@@ -475,6 +475,7 @@ void RTComposer::RegisterUxActions()
             auto& composer = *static_cast<RTComposer*>(self);
             auto& policy = composer.composition;
             const auto beforePolicy = std::pair{ policy.enabled, policy.mode };
+            const auto beforeSampling = policy.samplingMode;
             if (args.contains("enabled")) policy.enabled = args.at("enabled").get<bool>();
             if (args.contains("mode")) {
                 const auto mode = args.at("mode").get<uint32_t>();
@@ -490,13 +491,37 @@ void RTComposer::RegisterUxActions()
             setUnit("shadowInfluence", policy.shadowInfluence);
             setUnit("rtDirectContribution", policy.rtDirectContribution);
             setUnit("shadowThreshold", policy.shadowThreshold);
-            if (beforePolicy != std::pair{ policy.enabled, policy.mode }) composer.OnCompositionPolicyChanged();
+            setUnit("giContribution", policy.giContribution);
+            if (args.contains("samplingMode")) {
+                const uint32_t mode = args.at("samplingMode").get<uint32_t>();
+                if (mode > 3u) throw std::invalid_argument("Unknown universal sampling mode");
+                policy.samplingMode = static_cast<DX12Native::HybridSamplingMode>(mode);
+                ApplyUnifiedSampling(policy.samplingMode);
+            }
+            if (beforePolicy != std::pair{ policy.enabled, policy.mode } ||
+                beforeSampling != policy.samplingMode)
+                composer.OnCompositionPolicyChanged();
         });
     registry.RegisterCommand(GetShortName(), "setRayRegeneration",
-        "Set shared RR controls; saved under RTComposer.FSRRayRegeneration.",
-        +[](Feature*, const json& args) {
-            const auto prior = RayRegeneration::GetSettings();
-            RayRegeneration::Configure(args.value("resolutionMode", prior.resolutionMode),
-                args.value("checkerboard", prior.checkerboard), args.value("enabled", prior.enabled));
+        "Set the universal samplingMode (0=native, 1=native checkerboard, 2=quarter, 3=quarter checkerboard) and RR enablement.",
+        +[](Feature* self, const json& args) {
+            auto& composer = *static_cast<RTComposer*>(self);
+            if (args.contains("resolutionMode") || args.contains("checkerboard"))
+                throw std::invalid_argument("Separate RR resolution and checkerboard are retired. Use samplingMode 0..3.");
+            const auto oldRR = RayRegeneration::GetSettings();
+            const auto previous = composer.composition.samplingMode;
+            if (args.contains("samplingMode")) {
+                const uint32_t mode = args.at("samplingMode").get<uint32_t>();
+                if (mode > 3u) throw std::invalid_argument("Unknown universal sampling mode");
+                composer.composition.samplingMode =
+                    static_cast<DX12Native::HybridSamplingMode>(mode);
+            }
+            ApplyUnifiedSampling(composer.composition.samplingMode);
+            RayRegeneration::Configure(
+                DX12Native::RRLogicalReduction(composer.composition.samplingMode),
+                DX12Native::RRCheckerboard(composer.composition.samplingMode),
+                args.value("enabled", oldRR.enabled));
+            if (previous != composer.composition.samplingMode)
+                composer.OnCompositionPolicyChanged();
         });
 }
