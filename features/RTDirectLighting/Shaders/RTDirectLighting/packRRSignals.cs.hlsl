@@ -20,7 +20,7 @@ cbuffer RRGrid : register(b0) { uint2 NativeSize; uint2 RRSize; uint Checkerboar
 void main(uint3 id : SV_DispatchThreadID)
 {
 	if (any(id.xy >= RRSize)) return;
-	uint2 pixel = min(uint2((float2(id.xy) + 0.5) * NativeSize / RRSize), NativeSize - 1);
+	uint2 pixel = id.xy; // Native-resolution guides; the signals alone may be half-width.
 	const float4 direct = Lighting.Load(int3(pixel, 0));
 	const float4 indirectDiffuse = IndirectDiffuse.Load(int3(pixel, 0));
 	const float4 indirectSpecular = IndirectSpecular.Load(int3(pixel, 0));
@@ -34,12 +34,23 @@ void main(uint3 id : SV_DispatchThreadID)
 	PackedNormal[id.xy] = guideValid ? normalRoughness : 0;
 	PackedSpecularAlbedo[id.xy] = guideValid ? SpecularAlbedo.Load(int3(pixel, 0)) : 0;
 	PackedDiffuseAlbedo[id.xy] = guideValid ? DiffuseAlbedo.Load(int3(pixel, 0)) : 0;
-	if (Checkerboard != 0 && ((id.x + id.y) & 1u) != Phase) return;
-	uint2 destination = uint2(Checkerboard != 0 ? id.x / 2 : id.x, id.y);
-	PackedDirectDiffuse[destination] = directValid && guideValid ? DirectDiffuse.Load(int3(pixel, 0)) : 0;
-	PackedDirectSpecular[destination] = directValid && guideValid ? DirectSpecular.Load(int3(pixel, 0)) : 0;
-	// An absent GI sample is not a zero-radiance ray. Preserve invalidity
-	// explicitly; sparse RR must not be presented as native checkerboard.
-	PackedIndirectDiffuse[destination] = indirectValid && guideValid ? indirectDiffuse : float4(0, 0, 0, -2);
-	PackedIndirectSpecular[destination] = indirectValid && guideValid ? indirectSpecular : float4(0, 0, 0, -2);
+	const bool directCB = (Checkerboard & 1u) != 0u;
+	const bool indirectCB = (Checkerboard & 2u) != 0u;
+	const uint directOrigin = Phase & 1u;
+	const uint indirectOrigin = (Phase >> 1u) & 1u;
+	// Pack only pixels actually selected by the corresponding trace mask.
+	// A spatially reconstructed inactive pixel must never masquerade as a ray.
+	const bool directSample = !directCB || ((pixel.x + pixel.y + directOrigin) & 1u) == 0u;
+	const bool indirectSample = !indirectCB || ((pixel.x + pixel.y + indirectOrigin) & 1u) == 0u;
+	const uint2 directDestination = uint2(directCB ? pixel.x / 2u : pixel.x, pixel.y);
+	const uint2 indirectDestination = uint2(indirectCB ? pixel.x / 2u : pixel.x, pixel.y);
+	if (directSample) {
+		PackedDirectDiffuse[directDestination] = directValid && guideValid ? DirectDiffuse.Load(int3(pixel, 0)) : 0;
+		PackedDirectSpecular[directDestination] = directValid && guideValid ? DirectSpecular.Load(int3(pixel, 0)) : 0;
+	}
+	if (indirectSample) {
+		// -2 explicitly denotes a missing GI sample; never label it a hit.
+		PackedIndirectDiffuse[indirectDestination] = indirectValid && guideValid ? indirectDiffuse : float4(0, 0, 0, -2);
+		PackedIndirectSpecular[indirectDestination] = indirectValid && guideValid ? indirectSpecular : float4(0, 0, 0, -2);
+	}
 }

@@ -124,11 +124,6 @@ void RTDirectLighting::DrawDirectLightingSettings()
         globals::features::dx12NativeScene.Tracer().Reset();
     }
     ImGui::TextWrapped("Percentage of native pixels traced each frame. Full is deterministic; partial patterns rotate only when stochastic sampling is enabled.");
-    int rrRes = static_cast<int>(settings.DirectRRResolution);
-    if (ImGui::Combo("Direct RR resolution", &rrRes, "Full\0Half\0Quarter\0Use shared RR setting (legacy)\0")) {
-        settings.DirectRRResolution = uint32_t(rrRes);
-        globals::features::dx12NativeScene.Tracer().Reset();
-    }
     ImGui::SliderFloat("Raster / RT blend", &settings.RedstoneBlend, 0.0f, 1.0f, "%.2f");
     ImGui::SliderFloat("Direct lighting strength", &settings.DirectStrength, 0.0f, 8.0f, "%.2fx");
 
@@ -267,7 +262,8 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
 		{ settings.PointLightRadiusMultiplier, settings.PointLightFalloffFraction, settings.PointLightFalloffExponent, 0.0f },
 		{ settings.StochasticSampling ? 1.0f : 0.0f, settings.EmitterRadiusMultiplier,
 			rtExclusive ? float(gi.settings.RTBounces) : 0.0f,
-			settings.SpatialReconstruction ? 1.0f : 0.0f });
+			settings.SpatialReconstruction ? 1.0f : 0.0f },
+		gi.settings.UseIndirectRayRegeneration);
 	lastFrame = frame;
 }
 
@@ -285,7 +281,7 @@ void RTDirectLighting::RegisterUxActions()
 			if (args.contains("normalMode")) d.settings.NormalInfluence = std::min(args.at("normalMode").get<uint32_t>(), 2u);
 			if (args.contains("samplingMode")) d.settings.DirectSamplingMode = std::min(args.at("samplingMode").get<uint32_t>(), 7u);
 			if (args.contains("traceResolution")) d.settings.DirectSamplingMode = uint32_t(DX12Native::RTSampling::MigrateLegacy(args.at("traceResolution").get<uint32_t>()));
-			if (args.contains("rrResolution")) d.settings.DirectRRResolution = std::min(args.at("rrResolution").get<uint32_t>(), 3u);
+			// Legacy rrResolution is intentionally ignored; RR now uses native render dimensions.
 			if (args.contains("rrMaterialIsolation")) d.settings.RRMaterialIsolation = args.at("rrMaterialIsolation").get<bool>();
 			if (args.contains("rrGlossyRoughness")) d.settings.RRGlossyRoughness = std::clamp(args.at("rrGlossyRoughness").get<float>(), 0.04f, 1.0f);
 			if (args.contains("indirect")) globals::features::rtIndirectLighting.settings.ConnectHybrid = args.at("indirect").get<bool>();

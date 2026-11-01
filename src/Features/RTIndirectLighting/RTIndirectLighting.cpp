@@ -6,7 +6,7 @@
 #include "Utils/DevBenchUx.h"
 #include <cmath>
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTIndirectLighting::Settings, UseRTExclusive, IndirectRays, RTBounces, IndirectStrength, ConnectHybrid, RTTraceResolution, RTSamplingMode, HybridResolution)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTIndirectLighting::Settings, UseRTExclusive, IndirectRays, RTBounces, UseIndirectRayRegeneration, IndirectStrength, ConnectHybrid, RTTraceResolution, RTSamplingMode, HybridResolution)
 
 std::pair<std::string, std::vector<std::string>> RTIndirectLighting::GetFeatureSummary()
 {
@@ -109,6 +109,9 @@ void RTIndirectLighting::DrawSettings()
 
 	if (settings.UseRTExclusive) {
 		ImGui::TextWrapped("RT-exclusive uses prepared geometry for indirect diffuse/specular. Bounce 0 disables secondary GI rays; bounce 1 evaluates the first indirect hit; bounce 2 adds the bounded terminal segment. Direct lighting remains independent.");
+		if (ImGui::Checkbox("RT-exclusive GI Ray Regeneration", &settings.UseIndirectRayRegeneration))
+			globals::features::dx12NativeScene.Tracer().Reset();
+		ImGui::TextWrapped("GI RR is independent of direct RR and can denoise stochastic GI even with Full direct lighting.");
 		int bounces = int(settings.RTBounces);
 		if (ImGui::Combo("RT-exclusive GI bounces", &bounces, "Off (0)\0One indirect bounce\0Two indirect bounces\0")) {
 			settings.RTBounces = uint32_t(bounces);
@@ -212,7 +215,7 @@ json RTIndirectLighting::GetDiagnostics()
 		{ "rtExclusiveActive", UsesRTExclusive() },
 		{ "rtDirectRequired", settings.UseRTExclusive },
 		{ "rtDirectEnabled", direct.loaded && direct.settings.UsePreparedDirectLighting },
-		{ "indirectRays", settings.IndirectRays }, { "rtBounces", settings.RTBounces }, { "indirectStrength", settings.IndirectStrength },
+		{ "indirectRays", settings.IndirectRays }, { "rtBounces", settings.RTBounces }, { "indirectRREnabled", settings.UseIndirectRayRegeneration }, { "indirectStrength", settings.IndirectStrength },
 		{ "rtSamplingMode", settings.RTSamplingMode },
 		{ "connectHybrid", settings.ConnectHybrid },
 		{ "trace", globals::features::dx12NativeScene.Tracer().GetDiagnostics() } };
@@ -232,6 +235,7 @@ void RTIndirectLighting::RegisterUxActions()
 			else throw std::invalid_argument("Producer must be rt-exclusive or hybrid");
 			if (args.contains("rays")) gi.settings.IndirectRays = std::clamp(args.at("rays").get<uint32_t>(), 1u, 8u);
 			if (args.contains("bounces")) gi.settings.RTBounces = std::min(args.at("bounces").get<uint32_t>(), 2u);
+			if (args.contains("rr")) gi.settings.UseIndirectRayRegeneration = args.at("rr").get<bool>();
 			if (args.contains("samplingMode")) gi.settings.RTSamplingMode = std::min(args.at("samplingMode").get<uint32_t>(), 7u);
 			if (args.contains("traceResolution")) gi.settings.RTSamplingMode = uint32_t(DX12Native::RTSampling::MigrateLegacy(args.at("traceResolution").get<uint32_t>()));
 			globals::features::dx12NativeScene.Tracer().Reset();

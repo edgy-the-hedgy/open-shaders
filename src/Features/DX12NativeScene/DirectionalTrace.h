@@ -34,7 +34,7 @@ namespace DX12Native
 		/** @brief Retires frames and consumes completed raw output without CPU waits. */
 		void Retire();
 		/** @brief Traces selected-light visibility or a bounded prepared light set against a retained TLAS. */
-		void Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight = false, const LightLimitFixData::LightView& a_lights = {}, uint32_t a_materialView = 0, ID3D11UnorderedAccessView* a_sceneTarget = nullptr, uint32_t a_lightReference = 0, uint32_t a_lightBase = 0, ID3D11ShaderResourceView* a_roomMetadata = nullptr, std::span<const std::array<uint32_t, 2>> a_lightIdentities = {}, bool a_allPreparedLights = false, float4 a_strengths = { 1, 1, 1, 1 }, bool a_useIndirect = true, float a_indirectStrength = 1.0f, bool a_useDirectRR = false, uint32_t a_indirectRays = 0, std::span<const uint32_t> a_roomReferences = {}, float a_rasterBlend = 1.0f, uint32_t a_normalMode = 2u, std::span<const PreparedPointLight> a_preparedLights = {}, uint32_t a_directResolutionMode = 0u, uint32_t a_indirectResolutionMode = 0u, uint32_t a_directRRResolutionMode = 3u, bool a_rrMaterialIsolation = false, float a_rrGlossyRoughness = 0.2f, float4 a_falloffParameters = { 1.0f, 0.1f, 1.0f, 0.0f }, float4 a_stochasticParameters = { 0.0f, 1.0f, 0.0f, 1.0f });
+		void Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight = false, const LightLimitFixData::LightView& a_lights = {}, uint32_t a_materialView = 0, ID3D11UnorderedAccessView* a_sceneTarget = nullptr, uint32_t a_lightReference = 0, uint32_t a_lightBase = 0, ID3D11ShaderResourceView* a_roomMetadata = nullptr, std::span<const std::array<uint32_t, 2>> a_lightIdentities = {}, bool a_allPreparedLights = false, float4 a_strengths = { 1, 1, 1, 1 }, bool a_useIndirect = true, float a_indirectStrength = 1.0f, bool a_useDirectRR = false, uint32_t a_indirectRays = 0, std::span<const uint32_t> a_roomReferences = {}, float a_rasterBlend = 1.0f, uint32_t a_normalMode = 2u, std::span<const PreparedPointLight> a_preparedLights = {}, uint32_t a_directResolutionMode = 0u, uint32_t a_indirectResolutionMode = 0u, uint32_t a_directRRResolutionMode = 3u, bool a_rrMaterialIsolation = false, float a_rrGlossyRoughness = 0.2f, float4 a_falloffParameters = { 1.0f, 0.1f, 1.0f, 0.0f }, float4 a_stochasticParameters = { 0.0f, 1.0f, 0.0f, 1.0f }, bool a_useIndirectRR = true);
 		/** @brief Returns a raw preview view whose image remains owned by this service. */
 		ID3D11ShaderResourceView* Preview() const { return previewValid && preview ? preview->srv.get() : nullptr; }
 		/** @brief Returns the completed preview dimensions for an undistorted diagnostic image. */
@@ -98,7 +98,7 @@ namespace DX12Native
 			float4 strengths{ 1, 1, 1, 1 };
 			float4 falloffParameters{ 1.0f, 0.1f, 1.0f, 0.0f };
 			float4 stochasticParameters{ 0.0f, 1.0f, 0.0f, 1.0f };
-			bool useIndirect = true, useDirectRR = false;
+			bool useIndirect = true, useDirectRR = false, useIndirectRR = false;
 			float indirectStrength = 1.0f;
 			float rasterBlend = 1.0f;
 			uint32_t normalMode = 2;
@@ -143,8 +143,8 @@ namespace DX12Native
 		uint32_t directRRIndirectRays = 0;
 		uint32_t directRRNormalMode = UINT32_MAX;
 		uint32_t directRRMaterialPolicy = UINT32_MAX;
-		bool directRRCheckerboard = false;
-		uint32_t directRRPhase = 0;
+		bool directRRCheckerboard = false, indirectRRCheckerboard = false;
+		uint32_t directRRPhase = 0, indirectRRPhase = 0;
 		uint32_t rrPackFrame = UINT32_MAX;
 		std::unique_ptr<Texture2D> rrDebugPreview;
 		std::unique_ptr<ConstantBuffer> rrDebugSettings;
@@ -164,6 +164,14 @@ namespace DX12Native
 		float4 directRRStochastic{};
 		std::vector<std::array<uint32_t, 2>> directRRIdentities;
 		uint64_t directRRDispatches = 0, indirectCompositeSubmissions = 0;
+		uint64_t directRRAttempts = 0, indirectRRAttempts = 0;
+		uint64_t directRRSuccesses = 0, indirectRRSuccesses = 0;
+		uint64_t directRRFailures = 0, indirectRRFailures = 0;
+		uint64_t indirectRRGeneration = UINT64_MAX, indirectRRPolicyRevision = UINT64_MAX;
+		uint32_t indirectRRFrame = 0, indirectRRMode = UINT32_MAX, indirectRRCachedRays = UINT32_MAX;
+		uint32_t indirectRRNormalMode = UINT32_MAX, indirectRRMaterialPolicy = UINT32_MAX;
+		float4 indirectRRFalloff{}, indirectRRStochastic{};
+		std::vector<std::array<uint32_t, 2>> indirectRRIdentities;
 		uint64_t directRRBudgetDeferrals = 0;
 		winrt::com_ptr<ID3D12RootSignature> root;
 		winrt::com_ptr<ID3D12PipelineState> pipeline;

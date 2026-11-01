@@ -607,7 +607,7 @@ namespace DX12Native
 	}
 
 
-	void DirectionalTrace::Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight, const LightLimitFixData::LightView& a_lights, uint32_t a_materialView, ID3D11UnorderedAccessView* a_sceneTarget, uint32_t a_lightReference, uint32_t a_lightBase, ID3D11ShaderResourceView* a_roomMetadata, std::span<const std::array<uint32_t, 2>> a_lightIdentities, bool a_allPreparedLights, float4 a_strengths, bool a_useIndirect, float a_indirectStrength, bool a_useDirectRR, uint32_t a_indirectRays, std::span<const uint32_t> a_roomReferences, float a_rasterBlend, uint32_t a_normalMode, std::span<const PreparedPointLight> a_preparedLights, uint32_t a_directResolutionMode, uint32_t a_indirectResolutionMode, uint32_t a_directRRResolutionMode, bool a_rrMaterialIsolation, float a_rrGlossyRoughness, float4 a_falloffParameters, float4 a_stochasticParameters)
+	void DirectionalTrace::Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight, const LightLimitFixData::LightView& a_lights, uint32_t a_materialView, ID3D11UnorderedAccessView* a_sceneTarget, uint32_t a_lightReference, uint32_t a_lightBase, ID3D11ShaderResourceView* a_roomMetadata, std::span<const std::array<uint32_t, 2>> a_lightIdentities, bool a_allPreparedLights, float4 a_strengths, bool a_useIndirect, float a_indirectStrength, bool a_useDirectRR, uint32_t a_indirectRays, std::span<const uint32_t> a_roomReferences, float a_rasterBlend, uint32_t a_normalMode, std::span<const PreparedPointLight> a_preparedLights, uint32_t a_directResolutionMode, uint32_t a_indirectResolutionMode, uint32_t a_directRRResolutionMode, bool a_rrMaterialIsolation, float a_rrGlossyRoughness, float4 a_falloffParameters, float4 a_stochasticParameters, bool a_useIndirectRR)
 	{
 		CS_GPU_PASS("RTDirectLighting::DirectionalDispatch");
 		const bool direct = a_materialView >= kFirstDirectView;
@@ -643,9 +643,11 @@ namespace DX12Native
 		if (bindingBytes == UINT64_MAX) { failure = "Directional binding allocation unsupported"; return; }
 		const std::array<uint32_t, 2> size = a_sceneTarget ? a_nativeSize : std::array<uint32_t, 2>{ (a_nativeSize[0] + kGridDivisor - 1) / kGridDivisor, (a_nativeSize[1] + kGridDivisor - 1) / kGridDivisor };
 		const auto rrPolicy = RayRegeneration::GetSettings();
-		const uint32_t effectiveRRMode = a_directRRResolutionMode == 3u ? rrPolicy.resolutionMode : std::min(a_directRRResolutionMode, 2u);
-		const bool directRR = a_sceneTarget && a_useDirectRR && rrPolicy.enabled;
-		const bool reuse = available->size == size && available->useDirectRR == directRR && available->indirectRays == a_indirectRays && available->receivers && available->output && available->light;
+		// Native-resolution contexts: no independent RR downsampling.
+		(void)a_directRRResolutionMode; // Legacy dispatch argument only.
+		const bool directRR = a_sceneTarget && a_useDirectRR && rrPolicy.enabled && a_directResolutionMode != 0u;
+		const bool indirectRR = a_sceneTarget && a_useIndirectRR && rrPolicy.enabled && a_indirectRays != 0u;
+		const bool reuse = available->size == size && available->useDirectRR == directRR && available->useIndirectRR == indirectRR && available->indirectRays == a_indirectRays && available->receivers && available->output && available->light;
 		constexpr uint64_t kFrameOverheadBytes = 1024 * 1024;
 		const auto textureDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32G32B32A32_FLOAT, size[0], size[1], 1, 1, 1, 0,
 			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS);
@@ -657,14 +659,18 @@ namespace DX12Native
 		const auto nextPreviewBytes = backend.d3d12Device->GetResourceAllocationInfo(0, 1, &previewDesc).SizeInBytes;
 		if (textureBytes == UINT64_MAX || lightBytes == UINT64_MAX || nextPreviewBytes == UINT64_MAX) { failure = "Directional texture allocation unsupported"; return; }
 		const uint64_t signalBytes = (directRR || a_indirectRays) ? nextPreviewBytes * kDirectSignalCount : 0;
-		const uint64_t rrInteropReserve = directRR ? uint64_t(std::max(1u, size[0] >> effectiveRRMode)) * std::max(1u, size[1] >> effectiveRRMode) * 256 + kFrameOverheadBytes : 0;
+		// Interop textures/FFX contexts use native dimensions even when input
+		// signals are half-width checkerboard. 112 B/pixel covers guide, inputs,
+		// outputs and their shared DX12 copies with alignment reserve.
+		const uint64_t rrInteropReserve = (directRR || indirectRR) ?
+			uint64_t(size[0]) * size[1] * 112u + kFrameOverheadBytes : 0;
 		const uint64_t required = (reuse ? 0 : textureBytes * 2 + lightBytes + signalBytes + kFrameOverheadBytes) + (a_sceneTarget ? 0 : nextPreviewBytes) + bindingBytes + rrInteropReserve;
 		const uint64_t retainedBytes = ResidentBytes() - (reuse ? 0 : available->bytes);
 		if (required > a_budgetBytes || retainedBytes > a_budgetBytes - required) {
-			if (directRR) {
+			if (directRR || indirectRR) {
 				++directRRBudgetDeferrals;
 				Dispatch(a_scene, a_nativeSize, a_lightDirection, a_frame, a_budgetBytes, a_localLight, a_lights, a_materialView, a_sceneTarget,
-					a_lightReference, a_lightBase, a_roomMetadata, a_lightIdentities, a_allPreparedLights, a_strengths, a_useIndirect, a_indirectStrength, false, a_indirectRays, a_roomReferences, a_rasterBlend, a_normalMode, a_preparedLights, a_directResolutionMode, a_indirectResolutionMode, a_directRRResolutionMode, a_rrMaterialIsolation, a_rrGlossyRoughness, a_falloffParameters, a_stochasticParameters);
+					a_lightReference, a_lightBase, a_roomMetadata, a_lightIdentities, a_allPreparedLights, a_strengths, a_useIndirect, a_indirectStrength, false, a_indirectRays, a_roomReferences, a_rasterBlend, a_normalMode, a_preparedLights, a_directResolutionMode, a_indirectResolutionMode, a_directRRResolutionMode, a_rrMaterialIsolation, a_rrGlossyRoughness, a_falloffParameters, a_stochasticParameters, false);
 			} else ++budgetDeferrals;
 			return;
 		}
@@ -715,6 +721,7 @@ namespace DX12Native
 			std::copy_n(a_roomReferences.begin(), std::min(a_roomReferences.size(), available->roomReferences.size()), available->roomReferences.begin());
 			available->indirectStrength = a_indirectStrength;
 			available->useDirectRR = directRR;
+			available->useIndirectRR = indirectRR;
 			available->rasterBlend = a_rasterBlend;
 			available->normalMode = std::min(a_normalMode, 2u);
 			available->directTraceMode = std::min(a_directResolutionMode, 7u);
@@ -799,7 +806,14 @@ namespace DX12Native
 			{ "rrDebugSource", rrFullscreenSource }, { "rrDebugSignal", rrSignalView }, { "rrDebugPreviewValid", rrDebugPreviewValid }, { "rrDebugPreviewFrame", rrDebugPreviewFrame },
 			{ "rrDebugPreviewFailed", rrDebugFailed }, { "rrDebugStorageSize", rrDebugStorageSize },
 			{ "directRR", directDenoiser.GetRayRegenerationDiagnostics() }, { "dxrIndirectRR", indirectDenoiser.GetRayRegenerationDiagnostics() },
-			{ "rrSize", directRRSize }, { "rrCheckerboard", directRRCheckerboard }, { "bakedRoomCount", materials ? materials->roomCount : 0 }, { "bakedRoomsKnown", materials && materials->roomsKnown }, { "indirectCompositeSubmissions", indirectCompositeSubmissions },
+			{ "rrSize", directRRSize }, { "rrCheckerboard", directRRCheckerboard },
+			{ "indirectRRCheckerboard", indirectRRCheckerboard },
+			{ "directRRAttempts", directRRAttempts }, { "indirectRRAttempts", indirectRRAttempts },
+			{ "directRRSuccesses", directRRSuccesses }, { "indirectRRSuccesses", indirectRRSuccesses },
+			{ "directRRFailures", directRRFailures }, { "indirectRRFailures", indirectRRFailures },
+			{ "directRRPhase", directRRPhase }, { "indirectRRPhase", indirectRRPhase },
+			{ "rrSignalWidthDirect", directRRCheckerboard ? directRRSize[0] / 2u : directRRSize[0] },
+			{ "rrSignalWidthIndirect", indirectRRCheckerboard ? directRRSize[0] / 2u : directRRSize[0] }, { "bakedRoomCount", materials ? materials->roomCount : 0 }, { "bakedRoomsKnown", materials && materials->roomsKnown }, { "indirectCompositeSubmissions", indirectCompositeSubmissions },
 			{ "previewValid", previewValid }, { "previewFrame", previewFrame }, { "previewSize", previewSize },
 			{ "receiverStage", "opaque world lighting complete; before first-person camera rebasing" },
 			{ "previewUnavailableLegend", "red: receiver; blue: ray miss; orange: unsupported material; magenta: no reference match/material unavailable; yellow: depth mismatch; cyan: unknown room; gray: room exclusion; dark purple: no table; brown: unresolved reference; pink: ambiguous reference; violet: unsupported light; white: invalid data" },
