@@ -1223,6 +1223,11 @@ namespace DX12Native
             NativeGIOutputsPublication result{};
             for (uint32_t i = 0; i < NativeHybridGI::kOutputs; ++i)
                 result.outputs[i] = frame.nativeGI.textures[i].get();
+            result.sampling = frame.nativeGI.sampling;
+            result.rrGuidesValid = frame.nativeGI.rrGuidesValid;
+            if (result.rrGuidesValid)
+                for (uint32_t i = 0; i < result.rrGuides.size(); ++i)
+                    result.rrGuides[i] = frame.nativeGI.rrGuides[i].get();
             result.composedValid = frame.nativeGI.composedValid &&
                 bool(frame.nativeGI.composedScene);
             result.composedScene = result.composedValid ?
