@@ -1,5 +1,6 @@
 #pragma once
 #include "GraphicsInterop.h"
+#include "HybridSamplingPolicy.h"
 #include <array>
 #include <cstdint>
 #include <memory>
@@ -20,16 +21,19 @@ namespace DX12Native
         {
             std::array<winrt::com_ptr<ID3D12Resource>, kOutputs> textures{};
             winrt::com_ptr<ID3D12Resource> constants;
+            HybridSamplingLayout sampling{};
             // DX12-produced final color; the sole eventual DX11 export product.
             std::unique_ptr<WrappedResource> composedScene;
             bool valid = false;
             bool composedValid = false;
         };
         static bool ShadersAvailable();
-        static uint64_t EstimateBytes(ID3D12Device* device, uint32_t width, uint32_t height);
+        static uint64_t EstimateBytes(ID3D12Device* device, uint32_t width, uint32_t height,
+            const HybridSamplingLayout& sampling);
         bool Record(ID3D12Device* device, ID3D12GraphicsCommandList* list,
             FrameOutputs& frame, uint32_t slot, uint32_t frameNumber,
             const std::array<uint32_t, 2>& size,
+            const HybridSamplingLayout& sampling,
             ID3D12Resource* linearDepth, ID3D12Resource* normalRough,
             ID3D12Resource* linearRadiance, ID3D12Resource* albedo,
             ID3D12Resource* reflectance, ID3D12Resource* shadowMask,
