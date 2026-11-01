@@ -94,8 +94,8 @@ namespace RedstoneShadow
 			const auto stagingHeap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
 			DX::ThrowIfFailed(a_backend.d3d12Device->CreateCommittedResource(&deviceHeap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(upload.target.put())));
 			DX::ThrowIfFailed(a_backend.d3d12Device->CreateCommittedResource(&stagingHeap, D3D12_HEAP_FLAG_NONE, &stagingDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(upload.staging.put())));
-			upload.target->SetName(L"RedstoneShadows::MaterialTexturePool");
-			upload.staging->SetName(L"RedstoneShadows::MaterialTextureStaging");
+			upload.target->SetName(L"DX12NativeScene::MaterialTexturePool");
+			upload.staging->SetName(L"DX12NativeScene::MaterialTextureStaging");
 			void* mapped = nullptr;
 			const D3D12_RANGE noRead{};
 			DX::ThrowIfFailed(upload.staging->Map(0, &noRead, &mapped));
@@ -112,7 +112,7 @@ namespace RedstoneShadow
 			upload.staging->Unmap(0, nullptr);
 			DX::ThrowIfFailed(a_backend.d3d12Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(upload.allocator.put())));
 			DX::ThrowIfFailed(a_backend.d3d12Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, upload.allocator.get(), nullptr, IID_PPV_ARGS(upload.commands.put())));
-			upload.commands->SetName(L"RedstoneShadows::MaterialTextureUpload");
+			upload.commands->SetName(L"DX12NativeScene::MaterialTextureUpload");
 			for (uint32_t subresource = 0; subresource < subresources; ++subresource) {
 				const auto destination = CD3DX12_TEXTURE_COPY_LOCATION(upload.target.get(), subresource);
 				const auto source = CD3DX12_TEXTURE_COPY_LOCATION(upload.staging.get(), footprints[subresource]);

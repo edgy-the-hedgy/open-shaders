@@ -31,7 +31,7 @@ namespace RedstoneShadow
 			DX::ThrowIfFailed(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options, sizeof(options)));
 			if (options.RaytracingTier < D3D12_RAYTRACING_TIER_1_1) throw std::runtime_error("Inline shadows require DXR 1.1");
 			DX::ThrowIfFailed(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(completion.put())));
-			completion->SetName(L"RedstoneShadows::AccelerationCompletion");
+			completion->SetName(L"DX12NativeScene::AccelerationCompletion");
 			return true;
 		} catch (const std::exception& error) { failure = error.what(); return false; }
 	}
@@ -145,15 +145,15 @@ namespace RedstoneShadow
 		const auto required = resultBytes + scratchBytes + a_geometry->allocationBytes + mesh.bytes;
 		if (required > a_budgetBytes || ResidentBytes() > a_budgetBytes - required) { ++budgetDeferrals; return false; }
 		Begin(a_build);
-		BeginBuildEvent(a_build.commands.get(), L"RedstoneShadows::BuildBLAS");
+		BeginBuildEvent(a_build.commands.get(), L"DX12NativeScene::BuildBLAS");
 		a_build.bottom = std::make_shared<BottomLevel>();
 		auto& bottom = *a_build.bottom;
 		bottom.geometry = std::move(a_geometry);
 		bottom.firstIndex = a_instance.firstIndex;
 		bottom.indexCount = a_instance.indexCount;
 		bottom.bytes = resultBytes;
-		bottom.result = Buffer(info.ResultDataMaxSizeInBytes, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, L"RedstoneShadows::BLAS");
-		a_build.scratch = Buffer(info.ScratchDataSizeInBytes, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"RedstoneShadows::BLAS Scratch");
+		bottom.result = Buffer(info.ResultDataMaxSizeInBytes, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, L"DX12NativeScene::BLAS");
+		a_build.scratch = Buffer(info.ScratchDataSizeInBytes, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"DX12NativeScene::BLAS Scratch");
 		a_build.transientBytes = scratchBytes;
 		D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build{};
 		build.Inputs = inputs;
@@ -206,12 +206,12 @@ namespace RedstoneShadow
 		const auto required = resultBytes + scratchBytes + uploadBytes;
 		if (required > a_budgetBytes || ResidentBytes() > a_budgetBytes - required) { ++budgetDeferrals; return false; }
 		Begin(a_build);
-		BeginBuildEvent(a_build.commands.get(), L"RedstoneShadows::BuildTLAS");
-		top->result = Buffer(info.ResultDataMaxSizeInBytes, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, L"RedstoneShadows::TLAS");
+		BeginBuildEvent(a_build.commands.get(), L"DX12NativeScene::BuildTLAS");
+		top->result = Buffer(info.ResultDataMaxSizeInBytes, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, L"DX12NativeScene::TLAS");
 		top->bytes = resultBytes;
 		a_build.top = std::move(top);
-		a_build.scratch = Buffer(info.ScratchDataSizeInBytes, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"RedstoneShadows::TLAS Scratch");
-		a_build.instanceUpload = Buffer(uploadSize, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ, L"RedstoneShadows::TLAS Instances");
+		a_build.scratch = Buffer(info.ScratchDataSizeInBytes, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"DX12NativeScene::TLAS Scratch");
+		a_build.instanceUpload = Buffer(uploadSize, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ, L"DX12NativeScene::TLAS Instances");
 		a_build.transientBytes = scratchBytes + uploadBytes;
 		void* mapped = nullptr;
 		const D3D12_RANGE noRead{ 0, 0 };

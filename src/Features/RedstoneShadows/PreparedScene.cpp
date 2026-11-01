@@ -88,7 +88,7 @@ namespace RedstoneShadow
 			shading->stride = kShadingStride;
 			shading->hasTangentFrame = header[1] == 2;
 			shading->buffer = UploadBuffer(a_backend, std::span(a_bytes).subspan(16), a_limit,
-				shading->allocationBytes, L"RedstoneShadows::PreparedShading");
+				shading->allocationBytes, L"DX12NativeScene::PreparedShading");
 			return shading;
 		}
 
@@ -119,7 +119,7 @@ namespace RedstoneShadow
 			geometry->indexOffset = vertexBytes;
 			geometry->validationOffset = vertexBytes + indexBytes;
 			geometry->buffer = UploadBuffer(a_backend, std::span(a_bytes).subspan(16), a_limit,
-				geometry->allocationBytes, L"RedstoneShadows::PreparedGeometry");
+				geometry->allocationBytes, L"DX12NativeScene::PreparedGeometry");
 			return geometry;
 		}
 

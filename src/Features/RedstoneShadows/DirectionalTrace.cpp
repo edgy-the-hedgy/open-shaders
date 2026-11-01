@@ -26,12 +26,12 @@ namespace RedstoneShadow
 			DX::ThrowIfFailed(backend.d3d12Device->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &model, sizeof(model)));
 			if (model.HighestShaderModel < D3D_SHADER_MODEL_6_5) throw std::runtime_error("Directional queries require shader model 6.5");
 			if (!completion.fence12) {
-				producer.Create(backend.d3d12Device.get(), backend.d3d11Device.get(), "RedstoneShadows::ReceiverProducer");
-				completion.Create(backend.d3d12Device.get(), backend.d3d11Device.get(), "RedstoneShadows::TraceCompletion");
+				producer.Create(backend.d3d12Device.get(), backend.d3d11Device.get(), "RTDirectLighting::ReceiverProducer");
+				completion.Create(backend.d3d12Device.get(), backend.d3d11Device.get(), "RTDirectLighting::TraceCompletion");
 			}
 			CreatePipeline();
-			prepare.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\RedstoneShadows\\prepareReceivers.cs.hlsl", {}, "cs_5_0")));
-			display.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\RedstoneShadows\\previewDirectional.cs.hlsl", {}, "cs_5_0")));
+			prepare.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\RTDirectLighting\\prepareReceivers.cs.hlsl", {}, "cs_5_0")));
+			display.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\RTDirectLighting\\previewDirectional.cs.hlsl", {}, "cs_5_0")));
 			if (!prepare || !display) throw std::runtime_error("Directional receiver/preview shader unavailable");
 			return true;
 		} catch (const std::exception& error) { failure = error.what(); return false; }
@@ -81,7 +81,7 @@ namespace RedstoneShadow
 	void DirectionalTrace::CreatePipeline()
 	{
 		if (pipeline) return;
-		std::ifstream file("Data/Shaders/RedstoneShadows/directional.dxil", std::ios::binary | std::ios::ate);
+		std::ifstream file("Data/Shaders/RTDirectLighting/directional.dxil", std::ios::binary | std::ios::ate);
 		if (!file) throw std::runtime_error("Packaged directional.dxil unavailable; build the RedstoneShadowDXIL target");
 		const std::streamoff size = file.tellg();
 		constexpr std::streamoff kMaximumShaderBytes = 16 * 1024 * 1024;
@@ -132,12 +132,12 @@ namespace RedstoneShadow
 		winrt::com_ptr<ID3DBlob> serialized, errors;
 		DX::ThrowIfFailed(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, serialized.put(), errors.put()));
 		DX::ThrowIfFailed(backend.d3d12Device->CreateRootSignature(0, serialized->GetBufferPointer(), serialized->GetBufferSize(), IID_PPV_ARGS(root.put())));
-		root->SetName(L"RedstoneShadows::Directional Root");
+		root->SetName(L"RTDirectLighting::Directional Root");
 		D3D12_COMPUTE_PIPELINE_STATE_DESC state{};
 		state.pRootSignature = root.get();
 		state.CS = { bytecode.data(), bytecode.size() };
 		DX::ThrowIfFailed(backend.d3d12Device->CreateComputePipelineState(&state, IID_PPV_ARGS(pipeline.put())));
-		pipeline->SetName(L"RedstoneShadows::Directional Pipeline");
+		pipeline->SetName(L"RTDirectLighting::Directional Pipeline");
 	}
 
 	uint64_t DirectionalTrace::ResidentBytes() const
@@ -195,7 +195,7 @@ namespace RedstoneShadow
 		result->materials = MaterialResources::Load(a_backend, *result->scene);
 		const D3D12_DESCRIPTOR_HEAP_DESC heapDesc{ D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kTextureDescriptorBase + kMaximumTexturePools, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
 		DX::ThrowIfFailed(a_backend.d3d12Device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(result->heap.put())));
-		result->heap->SetName(L"RedstoneShadows::SceneBindings");
+		result->heap->SetName(L"RTDirectLighting::SceneBindings");
 		const auto step = a_backend.d3d12Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		auto cpu = result->heap->GetCPUDescriptorHandleForHeapStart();
 		cpu.ptr += uint64_t(kGeometryDescriptorBase) * step;
@@ -242,7 +242,7 @@ namespace RedstoneShadow
 		const auto uploadHeap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
 		const auto upload = CD3DX12_RESOURCE_DESC::Buffer(offsets.size() * sizeof(uint32_t));
 		DX::ThrowIfFailed(a_backend.d3d12Device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &upload, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(result->offsets.put())));
-		result->offsets->SetName(L"RedstoneShadows::ValidationOffsets");
+		result->offsets->SetName(L"RTDirectLighting::ValidationOffsets");
 		const D3D12_RANGE noRead{ 0, 0 };
 		void* mapped = nullptr;
 		DX::ThrowIfFailed(result->offsets->Map(0, &noRead, &mapped));
@@ -253,7 +253,7 @@ namespace RedstoneShadow
 
 	void DirectionalTrace::PrepareReceivers(Frame& a_frame, const std::array<uint32_t, 2>& a_nativeSize, const LightLimitFixData::LightView& a_lights, ID3D11ShaderResourceView* a_roomMetadata)
 	{
-		CS_GPU_PASS("RedstoneShadows::PrepareReceivers");
+		CS_GPU_PASS("RTDirectLighting::PrepareReceivers");
 		auto create = [&](const void* data, uint32_t bytes, winrt::com_ptr<ID3D11Buffer>& output, const char* name) {
 			if (output) { backend.d3d11Context->UpdateSubresource(output.get(), 0, nullptr, data, 0, 0); return; }
 			D3D11_BUFFER_DESC desc{};
@@ -279,8 +279,8 @@ namespace RedstoneShadow
 			grid.identities[index] = { a_frame.lightIdentities[index][0], a_frame.lightIdentities[index][1], 0, 0 };
 		for (uint32_t room = 0; room < grid.rooms.size(); ++room) grid.rooms[room] = { a_frame.roomReferences[room], a_lights.roomReferences[room], 0, 0 };
 		static_assert(sizeof(Grid) == 64 + kMaximumDirectLights * 16 + 128 * 16);
-		create(&grid, sizeof(grid), a_frame.grid, "RedstoneShadows::ReceiverGrid CB");
-		create(&globals::game::frameBufferCached.nonVR, sizeof(globals::FrameBuffer), a_frame.camera, "RedstoneShadows::ReceiverCamera CB");
+		create(&grid, sizeof(grid), a_frame.grid, "RTDirectLighting::ReceiverGrid CB");
+		create(&globals::game::frameBufferCached.nonVR, sizeof(globals::FrameBuffer), a_frame.camera, "RTDirectLighting::ReceiverCamera CB");
 		winrt::com_ptr<ID3D11ComputeShader> shader;
 		winrt::com_ptr<ID3D11ShaderResourceView> input, lightInput, roomInput;
 		winrt::com_ptr<ID3D11UnorderedAccessView> output, lightOutput;
@@ -328,7 +328,7 @@ namespace RedstoneShadow
 
 	void DirectionalTrace::Record(Frame& a_frame, const float3& a_direction, bool a_localLight)
 	{
-		CS_GPU_PASS("RedstoneShadows::DirectionalTraversal");
+		CS_GPU_PASS("RTDirectLighting::DirectionalTraversal");
 		a_frame.root = root;
 		a_frame.pipeline = pipeline;
 		if (a_frame.allocator) DX::ThrowIfFailed(a_frame.allocator->Reset());
@@ -422,14 +422,14 @@ namespace RedstoneShadow
 
 	void DirectionalTrace::Consume(Frame& a_frame)
 	{
-		CS_GPU_PASS("RedstoneShadows::PreviewRawVisibility");
+		CS_GPU_PASS("RTDirectLighting::PreviewRawVisibility");
 		if (previewSize != a_frame.size || !preview) {
 			D3D11_TEXTURE2D_DESC desc{};
 			desc.Width = a_frame.size[0]; desc.Height = a_frame.size[1];
 			desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
 			desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
 			desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-			preview = std::make_unique<Texture2D>(desc, "RedstoneShadows::Directional Preview");
+			preview = std::make_unique<Texture2D>(desc, "RTDirectLighting::Directional Preview");
 			D3D11_SHADER_RESOURCE_VIEW_DESC srv{};
 			srv.Format = desc.Format;
 			srv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
@@ -488,10 +488,10 @@ namespace RedstoneShadow
 
 	void DirectionalTrace::CompositeScene(Frame& a_frame, ID3D11UnorderedAccessView* a_target)
 	{
-		CS_GPU_PASS("RedstoneShadows::DirectSceneComposite");
+		CS_GPU_PASS("RTDirectLighting::DirectSceneComposite");
 		auto* context = backend.d3d11Context.get();
 		struct Settings { uint32_t indirect, directRR; float indirectStrength; uint32_t useDXRIndirect; float redstoneBlend; float padding[3]{}; };
-		if (!lightingCompositeSettings) lightingCompositeSettings = std::make_unique<ConstantBuffer>(ConstantBufferDesc<Settings>(), "RedstoneShadows::LightingComposite CB");
+		if (!lightingCompositeSettings) lightingCompositeSettings = std::make_unique<ConstantBuffer>(ConstantBufferDesc<Settings>(), "RTDirectLighting::LightingComposite CB");
 		winrt::com_ptr<ID3D11ComputeShader> shader;
 		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 15> inputs;
 		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 6> indirectInputs;
@@ -558,7 +558,7 @@ namespace RedstoneShadow
 
 	void DirectionalTrace::Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight, const LightLimitFixData::LightView& a_lights, uint32_t a_materialView, ID3D11UnorderedAccessView* a_sceneTarget, uint32_t a_lightReference, uint32_t a_lightBase, ID3D11ShaderResourceView* a_roomMetadata, std::span<const std::array<uint32_t, 2>> a_lightIdentities, bool a_allPreparedLights, float4 a_strengths, bool a_useIndirect, float a_indirectStrength, bool a_useDirectRR, uint32_t a_indirectRays, std::span<const uint32_t> a_roomReferences, float a_rasterBlend)
 	{
-		CS_GPU_PASS("RedstoneShadows::DirectionalDispatch");
+		CS_GPU_PASS("RTDirectLighting::DirectionalDispatch");
 		const bool direct = a_materialView >= kFirstDirectView;
 		lightSelectionFailure.clear();
 		if (a_allPreparedLights && (!direct || a_lightIdentities.empty() || a_lightIdentities.size() > kMaximumDirectLights)) {
@@ -619,7 +619,7 @@ namespace RedstoneShadow
 		try {
 			if (!reuse) *available = {};
 			if (a_sceneTarget && !composite) {
-				composite.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\RedstoneShadows\\compositeDirect.cs.hlsl", {}, "cs_5_0")));
+				composite.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\RTDirectLighting\\compositeDirect.cs.hlsl", {}, "cs_5_0")));
 				if (!composite) throw std::runtime_error("Direct-light scene compositor unavailable");
 			}
 			if (!cachedBindings) {
@@ -664,17 +664,17 @@ namespace RedstoneShadow
 			desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
 			desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
 			desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-			if (!available->receivers) available->receivers = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RedstoneShadows::Receivers");
-			if (!available->output) available->output = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RedstoneShadows::BlockerDistance");
+			if (!available->receivers) available->receivers = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RTDirectLighting::Receivers");
+			if (!available->output) available->output = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RTDirectLighting::BlockerDistance");
 			if (directRR || a_indirectRays) {
 				desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-				static constexpr std::array names{ "RedstoneShadows::DirectDiffuse", "RedstoneShadows::DirectSpecular", "RedstoneShadows::DirectNormalRoughness", "RedstoneShadows::DirectSpecularAlbedo", "RedstoneShadows::DirectDiffuseAlbedo", "RedstoneShadows::IndirectDiffuse", "RedstoneShadows::IndirectSpecular" };
+				static constexpr std::array names{ "RTDirectLighting::DirectDiffuse", "RTDirectLighting::DirectSpecular", "RTDirectLighting::DirectNormalRoughness", "RTDirectLighting::DirectSpecularAlbedo", "RTDirectLighting::DirectDiffuseAlbedo", "RTDirectLighting::IndirectDiffuse", "RTDirectLighting::IndirectSpecular" };
 				for (uint32_t i = 0; i < kDirectSignalCount; ++i)
 					if (!available->directSignals[i]) available->directSignals[i] = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), names[i]);
 			}
 			desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
 			desc.Width = kLightSnapshotWidth; desc.Height = 2;
-			if (!available->light) available->light = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RedstoneShadows::EvaluatedLightSnapshot");
+			if (!available->light) available->light = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RTDirectLighting::EvaluatedLightSnapshot");
 			PrepareReceivers(*available, a_nativeSize, lights, a_roomMetadata);
 			Record(*available, a_lightDirection, a_localLight);
 			if (direct) ++directSubmissions;

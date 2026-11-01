@@ -19,10 +19,10 @@ namespace RedstoneShadow
 	{
 		const bool inlineRequested = rrViewerRequestFrame != UINT32_MAX && a_frame.number - rrViewerRequestFrame <= 1;
 		if ((!rrFullscreenSource && !inlineRequested) || rrDebugFailed) return;
-		CS_GPU_PASS("RedstoneShadows::RRDebugPreview");
+		CS_GPU_PASS("RTDirectLighting::RRDebugPreview");
 		rrDebugPreviewValid = false;
 		try {
-			if (!rrDebugShader) rrDebugShader.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\RedstoneShadows\\rrPreview.cs.hlsl", {}, "cs_5_0")));
+			if (!rrDebugShader) rrDebugShader.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\RTDirectLighting\\rrPreview.cs.hlsl", {}, "cs_5_0")));
 			if (!rrDebugShader) { rrDebugFailed = true; return; }
 			const auto policy = RayRegeneration::GetSettings();
 			const std::array<uint32_t, 2> size{ std::max(1u, a_frame.size[0] >> policy.resolutionMode), std::max(1u, a_frame.size[1] >> policy.resolutionMode) };
@@ -46,7 +46,7 @@ namespace RedstoneShadow
 				desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
 				desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
 				desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-				rrDebugPreview = std::make_unique<Texture2D>(desc, "RedstoneShadows::RRDebugPreview");
+				rrDebugPreview = std::make_unique<Texture2D>(desc, "RTDirectLighting::RRDebugPreview");
 				D3D11_SHADER_RESOURCE_VIEW_DESC srv{};
 				srv.Format = desc.Format; srv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; srv.Texture2D.MipLevels = 1;
 				D3D11_UNORDERED_ACCESS_VIEW_DESC uav{};
@@ -60,7 +60,7 @@ namespace RedstoneShadow
 				uint32_t indirect, unavailable, padding = 0;
 			};
 			static_assert(sizeof(Settings) == 48);
-			if (!rrDebugSettings) rrDebugSettings = std::make_unique<ConstantBuffer>(ConstantBufferDesc<Settings>(), "RedstoneShadows::RRDebugSettings CB");
+			if (!rrDebugSettings) rrDebugSettings = std::make_unique<ConstantBuffer>(ConstantBufferDesc<Settings>(), "RTDirectLighting::RRDebugSettings CB");
 			rrDebugSettings->Update(Settings{ size, a_frame.size, kind, inputs && directRRCheckerboard ? 1u : 0u, directRRPhase, combined ? 1u : 0u, rrPreviewExposure, indirect ? 1u : 0u, unavailable ? 1u : 0u });
 			auto* context = backend.d3d11Context.get();
 			auto* cb = rrDebugSettings->CB();

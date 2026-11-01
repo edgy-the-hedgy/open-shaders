@@ -4,7 +4,7 @@
 #endif
 #include "Common/Color.hlsli"
 #include "Common/ReceiverRoom.hlsli"
-#include "RedstoneShadows/directContract.hlsli"
+#include "RTDirectLighting/directContract.hlsli"
 
 namespace LightLimitFix
 {

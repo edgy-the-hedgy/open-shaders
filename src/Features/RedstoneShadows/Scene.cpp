@@ -9,7 +9,7 @@ namespace RedstoneShadow
 		if (completion) return true;
 		const D3D11_QUERY_DESC desc{ D3D11_QUERY_EVENT, 0 };
 		if (FAILED(globals::d3d::device->CreateQuery(&desc, completion.put()))) { failure = "SCM copy query unavailable"; return false; }
-		Util::SetResourceName(completion.get(), "RedstoneShadows::SCM CopyCompletion");
+		Util::SetResourceName(completion.get(), "DX12NativeScene::SCM CopyCompletion");
 		return true;
 	}
 	void Scene::Reset()
@@ -52,8 +52,8 @@ namespace RedstoneShadow
 			DX::ThrowIfFailed(globals::d3d::device->CreateBuffer(&desc, nullptr, destination.put()));
 			Util::SetResourceName(destination.get(), name);
 		};
-		create(vb.ByteWidth, mesh->vertices, "RedstoneShadows::SCM Vertices");
-		create(ib.ByteWidth, mesh->indices, "RedstoneShadows::SCM Indices");
+		create(vb.ByteWidth, mesh->vertices, "DX12NativeScene::SCM Vertices");
+		create(ib.ByteWidth, mesh->indices, "DX12NativeScene::SCM Indices");
 		meshes.push_back({ record.vertices, record.indices, mesh, collecting->sweep });
 		globals::d3d::context->CopyResource(mesh->vertices.get(), record.vertices.get());
 		globals::d3d::context->CopyResource(mesh->indices.get(), record.indices.get());

@@ -1,4 +1,4 @@
-#include "RedstoneShadows/directContract.hlsli"
+#include "RTDirectLighting/directContract.hlsli"
 Texture2D<float4> Source : register(t0);
 Texture2D<float4> Paired : register(t1);
 Texture2D<float4> NativeLighting : register(t2);

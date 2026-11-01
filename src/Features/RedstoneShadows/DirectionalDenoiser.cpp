@@ -11,10 +11,10 @@ namespace RedstoneShadow
 	{
 		const auto policy = RayRegeneration::GetSettings();
 		if (!a_frame.useDirectRR || !policy.enabled) return 0;
-		CS_GPU_PASS("RedstoneShadows::PrepareLightingRR");
+		CS_GPU_PASS("RTDirectLighting::PrepareLightingRR");
 		try {
-			if (!prepareDirectGuides) prepareDirectGuides.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\RedstoneShadows\\prepareDirectGuides.cs.hlsl", {}, "cs_5_0")));
-			if (!packRRSignals) packRRSignals.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\RedstoneShadows\\packRRSignals.cs.hlsl", {}, "cs_5_0")));
+			if (!prepareDirectGuides) prepareDirectGuides.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\RTDirectLighting\\prepareDirectGuides.cs.hlsl", {}, "cs_5_0")));
+			if (!packRRSignals) packRRSignals.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\RTDirectLighting\\packRRSignals.cs.hlsl", {}, "cs_5_0")));
 			if (!prepareDirectGuides || !packRRSignals) return 0;
 			const std::array<uint32_t, 2> size{ std::max(1u, a_frame.size[0] >> policy.resolutionMode), std::max(1u, a_frame.size[1] >> policy.resolutionMode) };
 			const bool checkerboard = policy.checkerboard && size[0] >= 2 && (size[0] & 1u) == 0;
@@ -27,7 +27,7 @@ namespace RedstoneShadow
 					desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
 					desc.Format = i == 0 ? DXGI_FORMAT_R32_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT;
 					desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-					const auto name = std::format("RedstoneShadows::RR{}", names[i]);
+					const auto name = std::format("RTDirectLighting::RR{}", names[i]);
 					textures[i] = std::make_unique<Texture2D>(desc, name.c_str());
 					D3D11_SHADER_RESOURCE_VIEW_DESC srv{};
 					srv.Format = desc.Format; srv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; srv.Texture2D.MipLevels = 1;
@@ -43,7 +43,7 @@ namespace RedstoneShadow
 			auto* context = backend.d3d11Context.get();
 			const auto& targets = globals::game::renderer->GetRuntimeData().renderTargets;
 			struct Grid { std::array<uint32_t, 2> nativeSize, size; uint32_t checkerboard, phase, padding[2]{}; };
-			if (!rrGridSettings) rrGridSettings = std::make_unique<ConstantBuffer>(ConstantBufferDesc<Grid>(), "RedstoneShadows::RRGrid CB");
+			if (!rrGridSettings) rrGridSettings = std::make_unique<ConstantBuffer>(ConstantBufferDesc<Grid>(), "RTDirectLighting::RRGrid CB");
 			const uint32_t phase = globals::game::frameCounter ? uint32_t(*globals::game::frameCounter) & 1u : 0;
 			rrGridSettings->Update(Grid{ a_frame.size, size, checkerboard ? 1u : 0u, phase });
 			auto* cb = rrGridSettings->CB();

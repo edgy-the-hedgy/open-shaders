@@ -1,4 +1,4 @@
-#include "RedstoneShadows/directContract.hlsli"
+#include "RTDirectLighting/directContract.hlsli"
 
 Texture2D<float4> Shadow : register(t0);
 RWTexture2D<float4> Preview : register(u0);

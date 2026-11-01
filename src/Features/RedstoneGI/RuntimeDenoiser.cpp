@@ -224,7 +224,7 @@ bool RedstoneDenoiser::DispatchRayRegeneration(ID3D11Texture2D* signal, ID3D11Te
 	ID3D11Texture2D* diffuseSignal, ID3D11Texture2D* diffuseOutput,
 	const OcclusionResources& occlusion, const std::array<uint32_t, 2>& engineResolution, uint32_t width, uint32_t height, bool resetHistory, bool checkerboard, uint32_t checkerboardOrigin, bool directSignals)
 {
-	CS_GPU_PASS_SELECT(directSignals, "RedstoneShadows::RuntimeDirectDispatch", "Redstone::RuntimeIndirectDispatch");
+	CS_GPU_PASS_SELECT(directSignals, "RTDirectLighting::RuntimeDirectDispatch", "Redstone::RuntimeIndirectDispatch");
 	const bool engineExtentChanged = rayRegenerationMaxRenderSize != engineResolution || rayRegenerationOcclusionSignals != occlusion.signalFlags || rayRegenerationDirectSignals != directSignals;
 	if (!EnsureRayRegenerationResources(signal, depth, motion, normal, specAlbedo, diffAlbedo, output, diffuseSignal, diffuseOutput, occlusion, engineResolution, width, height, checkerboard, directSignals))
 		return false;

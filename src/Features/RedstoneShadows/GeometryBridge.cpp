@@ -17,12 +17,12 @@ namespace RedstoneShadow
 			constexpr UINT required = D3D11_FORMAT_SUPPORT_TEXTURE2D | D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW;
 			if ((support & required) != required) throw std::runtime_error("Integer geometry interop format unsupported");
 			if (!completion) {
-				producer.Create(backend.d3d12Device.get(), backend.d3d11Device.get(), "RedstoneShadows::GeometryProducer");
+				producer.Create(backend.d3d12Device.get(), backend.d3d11Device.get(), "DX12NativeScene::GeometryProducer");
 				DX::ThrowIfFailed(backend.d3d12Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(completion.put())));
-				completion->SetName(L"RedstoneShadows::GeometryCompletion");
+				completion->SetName(L"DX12NativeScene::GeometryCompletion");
 			}
 			exportShader = nullptr;
-			exportShader.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\RedstoneShadows\\exportGeometry.cs.hlsl", {}, "cs_5_0")));
+			exportShader.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\DX12NativeScene\\exportGeometry.cs.hlsl", {}, "cs_5_0")));
 			if (!exportShader) throw std::runtime_error("Geometry export shader unavailable");
 			return true;
 		} catch (const std::exception& error) {
@@ -73,7 +73,7 @@ namespace RedstoneShadow
 
 	void GeometryBridge::Submit(Transfer& a_transfer, const std::shared_ptr<const Mesh>& a_mesh, uint64_t a_budgetBytes)
 	{
-		CS_GPU_PASS("RedstoneShadows::ExportGeometry");
+		CS_GPU_PASS("DX12NativeScene::ExportGeometry");
 		D3D11_BUFFER_DESC vertices{}, indices{};
 		a_mesh->vertices->GetDesc(&vertices);
 		a_mesh->indices->GetDesc(&indices);
@@ -104,7 +104,7 @@ namespace RedstoneShadow
 		desc.SampleDesc.Count = 1;
 		desc.Usage = D3D11_USAGE_DEFAULT;
 		desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-		a_transfer.texture = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RedstoneShadows::GeometryExport");
+		a_transfer.texture = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "DX12NativeScene::GeometryExport");
 		a_transfer.sharedBytes = textureAllocation.SizeInBytes;
 		a_transfer.geometry = std::make_shared<Geometry>();
 		auto& geometry = *a_transfer.geometry;
@@ -114,7 +114,7 @@ namespace RedstoneShadow
 		geometry.allocationBytes = bufferAllocation.SizeInBytes;
 		DX::ThrowIfFailed(backend.d3d12Device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buffer,
 			D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(geometry.buffer.put())));
-		geometry.buffer->SetName(L"RedstoneShadows::Geometry");
+		geometry.buffer->SetName(L"DX12NativeScene::Geometry");
 		auto view = [&](ID3D11Buffer* source, DXGI_FORMAT format, uint32_t count, winrt::com_ptr<ID3D11ShaderResourceView>& destination, const char* name) {
 			D3D11_SHADER_RESOURCE_VIEW_DESC srv{};
 			srv.Format = format;
@@ -123,8 +123,8 @@ namespace RedstoneShadow
 			DX::ThrowIfFailed(backend.d3d11Device->CreateShaderResourceView(source, &srv, destination.put()));
 			Util::SetResourceName(destination.get(), name);
 		};
-		view(a_mesh->vertices.get(), DXGI_FORMAT_R32_UINT, vertices.ByteWidth / sizeof(uint32_t), a_transfer.vertices, "RedstoneShadows::ExportVertices SRV");
-		view(a_mesh->indices.get(), DXGI_FORMAT_R16_UINT, indices.ByteWidth / sizeof(uint16_t), a_transfer.indices, "RedstoneShadows::ExportIndices SRV");
+		view(a_mesh->vertices.get(), DXGI_FORMAT_R32_UINT, vertices.ByteWidth / sizeof(uint32_t), a_transfer.vertices, "DX12NativeScene::ExportVertices SRV");
+		view(a_mesh->indices.get(), DXGI_FORMAT_R16_UINT, indices.ByteWidth / sizeof(uint16_t), a_transfer.indices, "DX12NativeScene::ExportIndices SRV");
 		const uint32_t constants[]{ a_mesh->stride / sizeof(uint32_t), a_mesh->vertexCount, 0, 0 };
 		D3D11_BUFFER_DESC settingsDesc{};
 		settingsDesc.ByteWidth = sizeof(constants);
@@ -132,7 +132,7 @@ namespace RedstoneShadow
 		settingsDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
 		const D3D11_SUBRESOURCE_DATA settingsData{ constants, 0, 0 };
 		DX::ThrowIfFailed(backend.d3d11Device->CreateBuffer(&settingsDesc, &settingsData, a_transfer.settings.put()));
-		Util::SetResourceName(a_transfer.settings.get(), "RedstoneShadows::GeometryExport CB");
+		Util::SetResourceName(a_transfer.settings.get(), "DX12NativeScene::GeometryExport CB");
 		DX::ThrowIfFailed(backend.d3d12Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(a_transfer.allocator.put())));
 		DX::ThrowIfFailed(backend.d3d12Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, a_transfer.allocator.get(), nullptr, IID_PPV_ARGS(a_transfer.commands.put())));
 		D3D12_TEXTURE_COPY_LOCATION source{};

@@ -135,8 +135,8 @@ namespace RedstoneShadow
 			surfaces.push_back(surface);
 		}
 		if (materials.empty() || surfaces.empty()) throw std::runtime_error("Empty material tables");
-		result->materials = UploadTable(a_backend, materials, result->tableBytes, L"RedstoneShadows::MaterialTable");
-		result->surfaces = UploadTable(a_backend, surfaces, result->tableBytes, L"RedstoneShadows::SurfaceTable");
+		result->materials = UploadTable(a_backend, materials, result->tableBytes, L"DX12NativeScene::MaterialTable");
+		result->surfaces = UploadTable(a_backend, surfaces, result->tableBytes, L"DX12NativeScene::SurfaceTable");
 		struct RoomVolume { std::array<float4, 3> inverse; float4 halfExtents; };
 		static_assert(sizeof(RoomVolume) == 64);
 		std::vector<RoomVolume> volumes;
@@ -156,7 +156,7 @@ namespace RedstoneShadow
 		}
 		result->roomCount = uint32_t(volumes.size());
 		if (volumes.empty()) volumes.push_back({});
-		result->roomVolumes = UploadTable(a_backend, volumes, result->tableBytes, L"RedstoneShadows::RoomVolumes");
+		result->roomVolumes = UploadTable(a_backend, volumes, result->tableBytes, L"DX12NativeScene::RoomVolumes");
 		return result;
 	}
 }

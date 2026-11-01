@@ -4,7 +4,7 @@
 #include "Common/Color.hlsli"
 #include "Common/GBuffer.hlsli"
 #include "Common/ReverseZ.hlsli"
-#include "RedstoneShadows/directContract.hlsli"
+#include "RTDirectLighting/directContract.hlsli"
 #include "RedstoneGI/Composition.hlsli"
 
 Texture2D<float4> DirectLighting : register(t0);

@@ -1,4 +1,4 @@
-#include "RedstoneShadows/directContract.hlsli"
+#include "RTDirectLighting/directContract.hlsli"
 Texture2D<float4> Lighting : register(t0);
 Texture2D<float4> DirectDiffuse : register(t1);
 Texture2D<float4> DirectSpecular : register(t2);
