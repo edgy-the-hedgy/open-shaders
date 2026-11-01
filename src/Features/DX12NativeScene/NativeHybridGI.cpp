@@ -343,7 +343,11 @@ namespace DX12Native
         }
 
         try {
-            if (!guidePipeline) {
+            if (!guidePipeline || !guideRoot || !guideDescriptors) {
+                // Retry partial initialization safely after deployment/cache reset.
+                guidePipeline = nullptr;
+                guideRoot = nullptr;
+                guideDescriptors = nullptr;
                 const auto code = ReadDXIL(
                     "Data/Shaders/RTDirectLighting/nativeHybridRRGuides.dxil");
                 D3D12_DESCRIPTOR_RANGE ranges[2]{};
