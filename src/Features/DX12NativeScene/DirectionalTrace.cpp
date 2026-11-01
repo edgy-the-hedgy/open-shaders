@@ -539,24 +539,28 @@ namespace DX12Native
             !frame.hybridLinearDepth || !frame.hybridShadowedSource || !frame.shadowMask ||
             !frame.hybridInputs[2] || !frame.hybridInputs[3] || !frame.hybridInputs[4]) return;
         if (!nativeHybridGI) nativeHybridGI = std::make_unique<NativeHybridGI>();
+        const auto& composition = globals::features::rtComposer.composition;
+        const auto sampling = MakeHybridSamplingLayout(
+            composition.samplingMode, frame.size, frame.number);
         if (nativeHybridGI->Record(backend.d3d12Device.get(), frame.commands.get(),
                 frame.nativeGI, uint32_t(&frame - frames.data()), frame.number, frame.size,
-                frame.hybridLinearDepth.get(), frame.hybridInputs[2]->resource.get(),
+                sampling, frame.hybridLinearDepth.get(), frame.hybridInputs[2]->resource.get(),
                 frame.hybridShadowedSource.get(), frame.hybridInputs[3]->resource.get(),
                 frame.hybridInputs[4]->resource.get(), frame.shadowMask.get(),
                 globals::features::redstoneGI,
                 globals::features::rtComposer.composition.shadowInfluence,
                 globals::features::rtComposer.composition.shadowThreshold)) {
             frame.nativeGIFrame = frame.number;
-            // Full DX12 composition is produced on the same queue, after
-            // native GI/AO. Only this completed scene may be exported to DX11.
-            const auto& composition = globals::features::rtComposer.composition;
-            nativeHybridGI->RecordComposition(backend.d3d12Device.get(),
-                backend.d3d11Device.get(), frame.commands.get(), frame.nativeGI,
-                uint32_t(&frame - frames.data()), frame.size,
-                frame.hybridShadowedSource.get(), frame.output->resource.get(),
-                frame.rasterBlend * composition.rtDirectContribution,
-                composition.giContribution);
+            // Raw native preview has no RR/upscaler yet: never read packed
+            // signal textures as if they were full-size scene pixels.
+            // Sampling remains active diagnostically for RR integration.
+            if (sampling.effective == HybridSamplingMode::Native)
+                nativeHybridGI->RecordComposition(backend.d3d12Device.get(),
+                    backend.d3d11Device.get(), frame.commands.get(), frame.nativeGI,
+                    uint32_t(&frame - frames.data()), frame.size,
+                    frame.hybridShadowedSource.get(), frame.output->resource.get(),
+                    frame.rasterBlend * composition.rtDirectContribution,
+                    composition.giContribution);
         }
     }
 
@@ -961,6 +965,8 @@ namespace DX12Native
             globals::features::rtComposer.composition.enabled &&
             globals::features::rtComposer.composition.mode == RTComposer::CompositorMode::HybridShadowed;
         bool wantNativeGI = wantHybridInputs && NativeHybridGI::ShadersAvailable();
+        const auto hybridSampling = MakeHybridSamplingLayout(
+            globals::features::rtComposer.composition.samplingMode, size, a_frame);
 		bool reuse = available->size == size && available->useDirectRR == directRR && available->indirectRays == a_indirectRays && available->receivers && available->output && available->light &&
 			bool(available->shadowMask) == bool(a_sceneTarget) &&
 			bool(available->shadowMaskExport) == wantExport &&
@@ -993,7 +999,8 @@ namespace DX12Native
             backend.d3d12Device->GetResourceAllocationInfo(0, 1, &linearDepthDesc).SizeInBytes : 0;
         uint64_t hybridBytes = wantHybridInputs ? nextPreviewBytes * kHybridInputCount + textureBytes + linearDepthBytes : 0;
         uint64_t nativeGIBytes = wantNativeGI ?
-            NativeHybridGI::EstimateBytes(backend.d3d12Device.get(), size[0], size[1]) : 0;
+            NativeHybridGI::EstimateBytes(backend.d3d12Device.get(), size[0], size[1],
+                hybridSampling) : 0;
         if (nativeGIBytes == UINT64_MAX) {
             // Unsupported optional diagnostic allocation must not block shadows.
             wantNativeGI = false;
