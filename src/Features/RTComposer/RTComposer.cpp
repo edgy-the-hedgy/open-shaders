@@ -330,7 +330,9 @@ void RTComposer::DrawSettings()
                 changed |= ImGui::Checkbox("Post-filter blur", &settings.blurEnabled);
                 changed |= ImGui::SliderFloat("Blur radius", &settings.blurRadius, 0.5f, 3.0f, "%.1f px");
                 changed |= ImGui::SliderFloat("Blur strength", &settings.blurStrength, 0.0f, 1.0f);
-                if (changed) OnCompositionPolicyChanged();
+                // Filter/blur parameters affect only the next post-RR
+                // dispatch. Never invalidate RR histories just for tuning.
+                (void)changed;
                 ImGui::TreePop();
             }
             ImGui::PopID();
@@ -351,7 +353,7 @@ void RTComposer::DrawSettings()
             composition.samplingMode != DX12Native::HybridSamplingMode::Native)
             ImGui::TextWrapped("Raw preview is available only at full native density. Reduced-density samples still dispatch for diagnostics, but cannot be displayed as finished lighting before RR and post-RR reconstruction; Shadow Only stays active.");
         else
-            ImGui::TextWrapped("Native GI/AO composition and GPU RR guides are diagnostic. RR provider dispatch, selective history rejection and post-RR reconstruction are still gated.");
+            ImGui::TextWrapped("Native DX12 RR, selective history validation and post-RR reconstruction are wired behind the experimental preview. Production Hybrid-Shadowed remains gated pending runtime verification.");
         const auto trace = globals::features::dx12NativeScene.Tracer().GetDiagnostics();
         ImGui::Text("DX12 input bridge dispatches: %llu",
             static_cast<unsigned long long>(trace.value("hybridInputDispatches", uint64_t{ 0 })));
@@ -369,6 +371,12 @@ void RTComposer::DrawSettings()
             static_cast<unsigned long long>(trace.value("nativeHybridEligibilityDispatches", uint64_t{ 0 })));
         ImGui::Text("Native GPU-only RR guide dispatches: %llu",
             static_cast<unsigned long long>(trace.value("nativeHybridRRGuideDispatches", uint64_t{ 0 })));
+        ImGui::Text("GPU temporal surface-validation dispatches: %llu",
+            static_cast<unsigned long long>(trace.value("nativeHybridHistoryValidationDispatches", uint64_t{0})));
+        const auto historyFailure = trace.value("nativeHybridHistoryFailure", std::string{});
+        if (!historyFailure.empty() &&
+            composition.previewNativeRR && trace.value("nativeHybridRRDispatches", uint64_t{0}) == 0)
+            ImGui::TextWrapped("Native RR history: %s", historyFailure.c_str());
         ImGui::Text("Native RR frames / resets: %llu / %llu",
             static_cast<unsigned long long>(trace.value("nativeHybridRRDispatches", uint64_t{0})),
             static_cast<unsigned long long>(trace.value("nativeHybridRRResets", uint64_t{0})));
