@@ -895,7 +895,6 @@ namespace DX12Native
 		context->CSGetConstantBuffers(6, 1, features.put());
 		context->CSGetConstantBuffers(12, 1, camera.put());
 		DX::ThrowIfFailed(context->Wait(completion.fence11.get(), a_frame.fence));
-        const auto& compositionPolicy = globals::features::rtComposer.composition;
         const bool nativeHybridActive = globals::features::rtComposer.DX12HybridActive();
         if (nativeHybridActive && a_frame.nativeGI.composedValid &&
             a_frame.nativeGI.composedScene) {
