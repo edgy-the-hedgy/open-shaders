@@ -30,6 +30,8 @@ namespace DX12Native
             std::array<winrt::com_ptr<ID3D12Resource>, kGuideCount> rrGuides{};
             std::array<uint32_t, 2> rrGuideSize{};
             bool rrGuidesValid = false;
+            winrt::com_ptr<ID3D12Resource> rrValidatedMotion;
+            bool rrHistoryValid = false;
             // 0 diffuse, 1 specular, 2 AO, 3 specular AO.
             static constexpr uint32_t kSignals = 4;
             std::array<winrt::com_ptr<ID3D12Resource>, kSignals> rrOutputs{};
@@ -63,6 +65,11 @@ namespace DX12Native
             ID3D12Resource* specularAlbedo);
         const std::string& GuideFailure() const { return guideFailure; }
         uint64_t GuideDispatches() const { return guideDispatches; }
+        bool RecordHistoryValidation(ID3D12Device* device,
+            ID3D12GraphicsCommandList* list, FrameOutputs& current,
+            const FrameOutputs* previous, uint32_t slot);
+        uint64_t HistoryValidationDispatches() const { return historyValidationDispatches; }
+        const std::string& HistoryFailure() const { return historyFailure; }
         bool RecordPostRR(ID3D12Device* device, ID3D12GraphicsCommandList* list,
             FrameOutputs& frame, uint32_t slot, uint32_t frameNumber,
             ID3D12Resource* nativeDepth, ID3D12Resource* nativeNormal,
@@ -91,15 +98,19 @@ namespace DX12Native
         winrt::com_ptr<ID3D12RootSignature> guideRoot;
         winrt::com_ptr<ID3D12PipelineState> guidePipeline;
         winrt::com_ptr<ID3D12DescriptorHeap> guideDescriptors;
+        winrt::com_ptr<ID3D12RootSignature> historyRoot;
+        winrt::com_ptr<ID3D12PipelineState> historyPipeline;
+        winrt::com_ptr<ID3D12DescriptorHeap> historyDescriptors;
         winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
         winrt::com_ptr<ID3D12PipelineState> compositionPipeline;
         winrt::com_ptr<ID3D12DescriptorHeap> compositionDescriptors;
         winrt::com_ptr<ID3D12RootSignature> postRoot;
         std::array<winrt::com_ptr<ID3D12PipelineState>, 2> postPipelines;
         winrt::com_ptr<ID3D12DescriptorHeap> postDescriptors;
-        std::string failure, compositionFailure, guideFailure, postFailure;
+        std::string failure, compositionFailure, guideFailure, postFailure, historyFailure;
         uint64_t giDispatches = 0, aoDispatches = 0, compositionDispatches = 0,
             eligibilityDispatches = 0, guideDispatches = 0,
-            postDispatches = 0, blurDispatches = 0;
+            postDispatches = 0, blurDispatches = 0,
+            historyValidationDispatches = 0;
     };
 }
