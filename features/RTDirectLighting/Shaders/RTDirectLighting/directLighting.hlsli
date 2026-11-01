@@ -191,13 +191,21 @@ float4 EvaluateDirectLighting(uint instance, uint primitive, float2 barycentric,
 	if (lightCount > MaximumDirectLights) return Unavailable(InvalidSurface);
 	float3 position = CameraOrigin + direction * distance;
 	float3 diffuseSum = 0, specularSum = 0;
+	uint eligibleLightCount = 0;
 	[loop] for (uint lightIndex = 0; lightIndex < lightCount; ++lightIndex) {
+		const uint base = lightIndex * LightSnapshotTexels;
+		// Unsupported baseline lights are not surface failures. Preserve the
+		// raster fallback only if the entire submitted light set is unsupported.
+		if (LightSnapshot.Load(int3(base + 6, 0, 0)).w != 1.0 ||
+			LightSnapshot.Load(int3(base + 7, 0, 0)).w != 1.0) continue;
+		++eligibleLightCount;
 		float3 diffuse, specular;
 		float4 unavailable;
 		if (!EvaluatePointLight(lightIndex, material, position, -direction, geometricNormal, receiver.w, diffuse, specular, unavailable)) return unavailable;
 		diffuseSum += diffuse;
 		specularSum += specular;
 	}
+	if (eligibleLightCount == 0) return Unavailable(MissingLight);
 	diffuseSum *= LightingStrengths.x * LightingStrengths.y;
 	specularSum *= LightingStrengths.x * LightingStrengths.z;
 	float3 result = mode == DirectDiffuseView ? diffuseSum : mode == DirectSpecularView ? specularSum : diffuseSum + specularSum + material.emission * LightingStrengths.w;
