@@ -12,7 +12,7 @@ const char* RedstoneGI::GetRayRegenerationInactiveReason() const
 {
 	if (!rrEnabled) return "FSR-RR is disabled; using raw signal resolve.";
 	if (!loaded || !ShadersOK())
-		return "RedstoneGI is disabled or its shaders are unavailable.";
+		return "Hybrid GI is disabled or its shaders are unavailable.";
 	if (!HasRayRegenerationResources())
 		return "Ray Regeneration shaders or resources are unavailable.";
 	return denoiser.CanDispatchRayRegeneration() ? nullptr : "Ray Regeneration provider is unavailable.";

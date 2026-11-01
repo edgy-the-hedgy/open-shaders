@@ -24,8 +24,7 @@ namespace DX12Native
 		try {
 			if (!rrDebugShader) rrDebugShader.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\RTDirectLighting\\rrPreview.cs.hlsl", {}, "cs_5_0")));
 			if (!rrDebugShader) { rrDebugFailed = true; return; }
-			const auto policy = RayRegeneration::GetSettings();
-			const std::array<uint32_t, 2> size{ std::max(1u, a_frame.size[0] >> policy.resolutionMode), std::max(1u, a_frame.size[1] >> policy.resolutionMode) };
+			const std::array<uint32_t, 2> size{ std::max(1u, a_frame.size[0] >> a_frame.directRRResolutionMode), std::max(1u, a_frame.size[1] >> a_frame.directRRResolutionMode) };
 			uint32_t selected = rrBuffer;
 			if (rrFullscreenSource) {
 				static constexpr std::array inputViews{ 6u, 7u, 13u, 8u, 9u, 14u, 15u };

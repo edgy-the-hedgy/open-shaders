@@ -34,4 +34,9 @@ struct RTIndirectLighting final : Feature
 	/** @brief Switches to the raymarched Hybrid mode, retiring exclusive trace history. */
 	void SelectHybrid();
 	void SelectRTExclusive();
+	void DrawUnifiedDebugSettings();
+	bool DebugAtlasActive() const { return debugView == 13u; }
+private:
+	uint32_t debugView = 0;
+	float debugExposure = 0.0f;
 };

@@ -100,7 +100,7 @@ void RTIndirectLighting::DrawSettings()
 		ImGui::TextWrapped("RT-exclusive requires the RT Direct Lighting feature to be enabled.");
 
 	if (settings.UseRTExclusive) {
-		ImGui::TextWrapped("RT-exclusive uses the prepared native scene for indirect diffuse and specular. RT Direct Lighting is required and both contributions share one GPU trace.");
+		ImGui::TextWrapped("RT-exclusive uses the prepared native scene for indirect diffuse and specular. RT Direct Lighting is required. Direct and indirect run separate GPU compute dispatches using shared retained scene and receiver resources.");
 		int rays = int(settings.IndirectRays);
 		if (ImGui::SliderInt("Indirect rays per pixel", &rays, 1, 8)) {
 			settings.IndirectRays = uint32_t(rays);
@@ -130,10 +130,67 @@ void RTIndirectLighting::DrawSettings()
 	}
 }
 
+
+void RTIndirectLighting::DrawUnifiedDebugSettings()
+{
+	ImGui::SeparatorText("RT Lighting Diagnostics");
+	int view = int(debugView);
+	static constexpr const char* views =
+		"Off\0Direct diffuse (RR input)\0Direct diffuse (RR output)\0"
+		"Direct specular (RR input)\0Direct specular (RR output)\0"
+		"Direct combined\0RT indirect diffuse\0RT indirect specular\0RT indirect combined\0"
+		"Hybrid GI combined\0Hybrid diffuse AO\0Hybrid specular occlusion\0Surface validity\0"
+		"All signals (native + Hybrid)\0";
+	bool changed = ImGui::Combo("Debug view", &view, views);
+	changed |= ImGui::SliderFloat("Debug exposure (EV)", &debugExposure, -8.0f, 8.0f, "%.1f");
+	if (changed) {
+		debugView = uint32_t(std::clamp(view, 0, 13));
+		auto& tracer = globals::features::dx12NativeScene.Tracer();
+		auto& hybrid = globals::features::redstoneGI;
+		tracer.ClearRRDebugOverlay();
+		hybrid.SetRROutputOnly(false);
+		hybrid.SetRRInputsOnly(false);
+		if (debugView >= 1 && debugView <= 8) {
+			static constexpr std::array sources{ 1u, 2u, 1u, 2u, 2u, 2u, 2u, 2u };
+			static constexpr std::array signals{ 0u, 0u, 1u, 1u, 2u, 3u, 4u, 5u };
+			tracer.SetRRDebug(sources[debugView - 1], signals[debugView - 1], 2u, debugExposure);
+		} else if (debugView == 12) {
+			tracer.SetRRDebug(2, 6, 15, debugExposure);
+		} else if (debugView >= 9 && debugView <= 11) {
+			hybrid.SetRRDebugView(debugView == 9 ? RedstoneGI::RRDebugView::Combined :
+				debugView == 10 ? RedstoneGI::RRDebugView::DiffuseOcclusion : RedstoneGI::RRDebugView::SpecularOcclusion);
+			hybrid.SetRROutputOnly(true);
+		} else if (debugView == 13) {
+			// RGI's already implemented 2x2 atlas and the native combined signal
+			// are displayed together; stale providers remain explicitly unavailable.
+			hybrid.SetRRDebugView(RedstoneGI::RRDebugView::AllSignals);
+			hybrid.SetRROutputOnly(true);
+			tracer.SetRRDebug(2, 2, 13, debugExposure);
+		}
+	}
+	if (debugView == 13) {
+		if (ImGui::BeginTable("RTLightingSignalAtlas", 2, ImGuiTableFlags_SizingStretchSame)) {
+			ImGui::TableNextRow();
+			ImGui::TableSetColumnIndex(0);
+			ImGui::TextUnformatted("Native direct diffuse + specular");
+			if (auto* native = globals::features::dx12NativeScene.Tracer().RRDebugPreview())
+				ImGui::Image(reinterpret_cast<ImTextureID>(native), ImVec2(320, 180));
+			else ImGui::TextUnformatted("No current native RR signals");
+			ImGui::TableSetColumnIndex(1);
+			ImGui::TextUnformatted("Hybrid GI / occlusion 2x2");
+			if (auto* hybrid = globals::features::redstoneGI.RRDebugPreview())
+				ImGui::Image(reinterpret_cast<ImTextureID>(hybrid), ImVec2(320, 180));
+			else ImGui::TextUnformatted("Hybrid signal atlas not active");
+			ImGui::EndTable();
+		}
+	}
+	ImGui::TextWrapped("View selection affects only diagnostics. Existing shader resources and RR histories remain owned by their producers.");
+}
+
 json RTIndirectLighting::GetDiagnostics()
 {
 	const auto& direct = globals::features::rtDirectLighting;
-	return { { "mode", settings.UseRTExclusive ? "rt-exclusive" : "hybrid" },
+	return { { "mode", settings.UseRTExclusive ? "rt-exclusive" : "hybrid" }, { "unifiedDebugView", debugView },
 		{ "rtExclusiveActive", UsesRTExclusive() },
 		{ "rtDirectRequired", settings.UseRTExclusive },
 		{ "rtDirectEnabled", direct.loaded && direct.settings.UsePreparedDirectLighting },

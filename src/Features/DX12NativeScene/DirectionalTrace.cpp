@@ -631,7 +631,9 @@ namespace DX12Native
 		const auto bindingBytes = cachedBindings ? 0 : BindingBytes(backend, *a_scene);
 		if (bindingBytes == UINT64_MAX) { failure = "Directional binding allocation unsupported"; return; }
 		const std::array<uint32_t, 2> size = a_sceneTarget ? a_nativeSize : std::array<uint32_t, 2>{ (a_nativeSize[0] + kGridDivisor - 1) / kGridDivisor, (a_nativeSize[1] + kGridDivisor - 1) / kGridDivisor };
-		const bool directRR = a_sceneTarget && a_useDirectRR && RayRegeneration::GetSettings().enabled;
+		const auto rrPolicy = RayRegeneration::GetSettings();
+		const uint32_t effectiveRRMode = a_directRRResolutionMode == 3u ? rrPolicy.resolutionMode : std::min(a_directRRResolutionMode, 2u);
+		const bool directRR = a_sceneTarget && a_useDirectRR && rrPolicy.enabled;
 		const bool reuse = available->size == size && available->useDirectRR == directRR && available->indirectRays == a_indirectRays && available->receivers && available->output && available->light;
 		constexpr uint64_t kFrameOverheadBytes = 1024 * 1024;
 		const auto textureDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32G32B32A32_FLOAT, size[0], size[1], 1, 1, 1, 0,
@@ -644,7 +646,7 @@ namespace DX12Native
 		const auto nextPreviewBytes = backend.d3d12Device->GetResourceAllocationInfo(0, 1, &previewDesc).SizeInBytes;
 		if (textureBytes == UINT64_MAX || lightBytes == UINT64_MAX || nextPreviewBytes == UINT64_MAX) { failure = "Directional texture allocation unsupported"; return; }
 		const uint64_t signalBytes = (directRR || a_indirectRays) ? nextPreviewBytes * kDirectSignalCount : 0;
-		const uint64_t rrInteropReserve = directRR ? uint64_t(std::max(1u, size[0] >> std::min(a_directRRResolutionMode, 2u))) * std::max(1u, size[1] >> std::min(a_directRRResolutionMode, 2u)) * 256 + kFrameOverheadBytes : 0;
+		const uint64_t rrInteropReserve = directRR ? uint64_t(std::max(1u, size[0] >> effectiveRRMode)) * std::max(1u, size[1] >> effectiveRRMode) * 256 + kFrameOverheadBytes : 0;
 		const uint64_t required = (reuse ? 0 : textureBytes * 2 + lightBytes + signalBytes + kFrameOverheadBytes) + (a_sceneTarget ? 0 : nextPreviewBytes) + bindingBytes + rrInteropReserve;
 		const uint64_t retainedBytes = ResidentBytes() - (reuse ? 0 : available->bytes);
 		if (required > a_budgetBytes || retainedBytes > a_budgetBytes - required) {
@@ -698,7 +700,7 @@ namespace DX12Native
 			available->normalMode = std::min(a_normalMode, 2u);
 			available->directStride = 1u << std::min(a_directResolutionMode, 1u);
 			available->indirectStride = 1u << std::min(a_indirectResolutionMode, 2u);
-			available->directRRResolutionMode = std::min(a_directRRResolutionMode, 2u);
+			available->directRRResolutionMode = effectiveRRMode;
 			available->rrMaterialPolicy = a_rrMaterialIsolation ? (0x80000000u |
 				(uint32_t(std::clamp(a_rrGlossyRoughness, 0.04f, 1.0f) * 65535.0f) << 8u)) : 0u;
 			available->preparedLights = a_allPreparedLights ? std::vector<PreparedPointLight>(a_preparedLights.begin(), a_preparedLights.end()) :

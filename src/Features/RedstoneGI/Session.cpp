@@ -57,7 +57,7 @@ void RedstoneGI::DrawRendererSettings()
 	ImGui::SameLine();
 	{
 		Util::DisableGuard disabled(!resourcesReady || switchFailed);
-		if (ImGui::RadioButton("RedstoneGI", selected)) selected = true;
+		if (ImGui::RadioButton("Hybrid (raymarched)", selected)) selected = true;
 	}
 	auto* provider = globals::deferred->GetIndirectLightingProvider();
 	ImGui::Text("Active renderer: %s", provider ? provider->GetDisplayName().c_str() : "Native lighting");
@@ -74,7 +74,7 @@ void RedstoneGI::DrawOverlay()
 
 bool RedstoneGI::IsOverlayVisible() const
 {
-	return active.load() && IsRRDebugVisible();
+	return active.load() && IsRRDebugVisible() && !globals::features::rtIndirectLighting.DebugAtlasActive();
 }
 
 json RedstoneGI::GetRuntimeFlags()

@@ -89,6 +89,7 @@ struct RedstoneGI final : OverlayFeature
 	/** @brief Draws runtime-only preview controls and its full-screen presentation overlay. */
 	void DrawRRDebugSettings();
 	void DrawRRDebugOverlay();
+	ID3D11ShaderResourceView* RRDebugPreview() const { return IsRRDebugPreviewCurrent() && rrPreview ? rrPreview->srv.get() : nullptr; }
 	/** @brief Binds the current paired lighting outputs and full-resolution composition guides. */
 	void BindCompositeResources() override;
 	/** @brief Retires private bindings and records whether the RGI compositor consumed RR. */

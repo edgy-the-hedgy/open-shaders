@@ -774,6 +774,7 @@ void Upscaling::DrawSettings()
 		ImGui::TextWrapped("FSR Ray Regeneration reconstructs direct and indirect RT signals on a shared grid. Indirect producer selection and ray counts remain separate; Normal Save persists these controls here.");
 		ImGui::SeparatorText("RT lighting reconstruction");
 		globals::features::rtDirectLighting.DrawRayRegenerationSettings();
+		globals::features::rtIndirectLighting.DrawUnifiedDebugSettings();
 		if (!globals::features::rtIndirectLighting.UsesRTExclusive()) {
 			ImGui::SeparatorText("Screen-space indirect");
 			globals::features::redstoneGI.DrawRayRegenerationSettings();

@@ -109,26 +109,7 @@ namespace DX12Native
 		};
 		contextSettings("Direct diffuse / specular", directDenoiser);
 		if (a_dxrIndirect) contextSettings("DXR indirect diffuse / specular", indirectDenoiser);
-		bool inputsOnly = rrFullscreenSource == 1, outputsOnly = rrFullscreenSource == 2;
-		if (ImGui::Checkbox("Prepared RR inputs only", &inputsOnly)) rrFullscreenSource = inputsOnly ? 1u : 0u;
-		if (ImGui::Checkbox("Prepared RR outputs only", &outputsOnly)) rrFullscreenSource = outputsOnly ? 2u : 0u;
-		int signal = int(rrSignalView);
-		if (ImGui::Combo("Full-screen signal", &signal, "Direct diffuse\0Direct specular\0Direct combined\0Indirect diffuse\0Indirect specular\0Indirect combined\0Validity\0")) rrSignalView = uint32_t(signal);
-		ImGui::SliderFloat("Prepared RR preview exposure (EV)", &rrPreviewExposure, -8.0f, 8.0f, "%.1f");
-		ImGui::TextWrapped("Raw RR signals, before indirect intensity. Magenta: rejected primary surface. Yellow: depth mismatch. Orange: unavailable indirect or current RR output. Dark checker squares: untraced input. Validity shows available primary surfaces green; valid radiance can still be black.");
-		if (ImGui::TreeNodeEx("Prepared RR buffers", ImGuiTreeNodeFlags_DefaultOpen)) {
-			int selected = int(rrBuffer);
-			static float scale = 0.5f;
-			if (ImGui::Combo("Buffer", &selected, "Linear depth\0Motion\0Direct diffuse output\0Direct specular output\0Indirect diffuse output\0Indirect specular output\0Direct diffuse input\0Direct specular input\0Indirect diffuse input\0Indirect specular input\0Normal / roughness\0Specular albedo\0Diffuse albedo\0Direct combined\0Indirect combined\0Validity\0")) rrBuffer = uint32_t(selected);
-			ImGui::SliderFloat("Display scale", &scale, 0.1f, 1.0f);
-			rrViewerRequestFrame = globals::game::graphicsState->GetFrameCount();
-			if (rrDebugPreviewValid && rrDebugPreview) {
-				ImGui::Text("Physical source: %u x %u | logical RR grid: %u x %u", rrDebugStorageSize[0], rrDebugStorageSize[1], rrDebugPreview->desc.Width, rrDebugPreview->desc.Height);
-				ImGui::Text("Preview: %u x %u | generated frame: %u", rrDebugPreview->desc.Width, rrDebugPreview->desc.Height, rrDebugPreviewFrame);
-				ImGui::Image(reinterpret_cast<ImTextureID>(rrDebugPreview->srv.get()), { float(rrDebugPreview->desc.Width) * scale, float(rrDebugPreview->desc.Height) * scale });
-			} else ImGui::TextUnformatted("No current preview; enable prepared scene lighting and allow a render frame.");
-			ImGui::TreePop();
-		}
+		ImGui::TextUnformatted("Choose signal views in RT Indirect Lighting > RT Lighting Diagnostics.");
 		ImGui::PopID();
 	}
 

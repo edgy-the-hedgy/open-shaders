@@ -190,37 +190,12 @@ void RedstoneGI::SetRRCheckerboard(bool a_enabled)
 
 void RedstoneGI::DrawRayRegenerationSettings()
 {
-	ImGui::BeginDisabled(!IsActive());
-	DrawRRDebugSettings();
-	ImGui::EndDisabled();
+	// Visual selection now belongs to the single RT Lighting Diagnostics dropdown.
 	if (!IsActive()) ImGui::TextUnformatted("Raymarched indirect is inactive; displayed buffers are from its last submitted frame.");
 	denoiser.DrawConfigurationSettings();
 	const auto status = denoiser.GetRayRegenerationDiagnostics();
 	ImGui::Text("Successful dispatches: %llu | failed: %llu", status.value("successfulDispatches", 0ull), status.value("failedDispatches", 0ull));
-	if (ImGui::TreeNode(T("feature.upscaling.redstone.buffer_viewer", "Buffer Viewer"))) {
-		static float debugRescale = 0.3f;
-		ImGui::SliderFloat(T("feature.upscaling.redstone.view_resize", "View Resize"), &debugRescale, 0.f, 1.f);
-		BUFFER_VIEWER_NODE(texRRDiffuseInput, debugRescale)
-		BUFFER_VIEWER_NODE(texRRSpecularInput, debugRescale)
-		BUFFER_VIEWER_NODE(texRRDiffuseOutput, debugRescale)
-		BUFFER_VIEWER_NODE(texRRSpecularOutput, debugRescale)
-		BUFFER_VIEWER_NODE(texRRNormalRoughness, debugRescale)
-		BUFFER_VIEWER_NODE(texRRLinearDepth, debugRescale)
-		BUFFER_VIEWER_NODE(texRRMotionVectors, debugRescale)
-		BUFFER_VIEWER_NODE(texNoise, debugRescale)
-		BUFFER_VIEWER_NODE(texWorkingDepth, debugRescale)
-		BUFFER_VIEWER_NODE(texRadiance, debugRescale)
-		if (occlusion.diffuseEnabled) {
-			BUFFER_VIEWER_NODE(texDiffuseOcclusionInput, debugRescale)
-			if (rrProviderSucceeded) { BUFFER_VIEWER_NODE(texDiffuseOcclusionOutput, debugRescale) }
-		}
-		if (occlusion.specularEnabled) {
-			BUFFER_VIEWER_NODE(texSpecularOcclusionInput, debugRescale)
-			if (rrProviderSucceeded) { BUFFER_VIEWER_NODE(texSpecularOcclusionOutput, debugRescale) }
-		}
-		if (occlusion.diffuseEnabled || occlusion.specularEnabled) { BUFFER_VIEWER_NODE(texPackedOcclusion, debugRescale) }
-		ImGui::TreePop();
-	}
+	ImGui::TextUnformatted("Use RT Lighting Diagnostics to inspect Hybrid GI and occlusion signals.");
 }
 
 void RedstoneGI::DrawAmbientOcclusionSettings()
