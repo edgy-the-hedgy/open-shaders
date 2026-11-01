@@ -77,6 +77,9 @@ namespace DX12Native
             std::array<ID3D12Resource*, NativeHybridGI::kOutputs> outputs{};
             std::array<ID3D12Resource*, NativeHybridGI::FrameOutputs::kGuideCount> rrGuides{};
             bool rrGuidesValid = false;
+            bool rrValid = false, postValid = false;
+            std::array<ID3D12Resource*, NativeHybridGI::FrameOutputs::kSignals> rrOutputs{};
+            std::array<ID3D12Resource*, NativeHybridGI::FrameOutputs::kSignals> reconstructed{};
             HybridSamplingLayout sampling{};
             // Optional DX12-composed final scene. Valid only for the same frame/fence.
             ID3D12Resource* composedScene = nullptr;
