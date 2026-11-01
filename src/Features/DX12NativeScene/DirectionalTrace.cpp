@@ -1126,8 +1126,8 @@ namespace DX12Native
 			available->useDirectRR = directRR;
 			available->rasterBlend = a_rasterBlend;
 			available->normalMode = std::min(a_normalMode, 2u);
-			available->directTraceMode = std::min(a_directResolutionMode, 4u);
-			available->indirectTraceMode = std::min(a_indirectResolutionMode, 4u);
+			available->directTraceMode = std::min(a_directResolutionMode, 7u);
+			available->indirectTraceMode = std::min(a_indirectResolutionMode, 7u);
 			available->directRRResolutionMode = effectiveRRMode;
 			available->rrMaterialPolicy = a_rrMaterialIsolation ? (0x80000000u |
 				(uint32_t(std::clamp(a_rrGlossyRoughness, 0.04f, 1.0f) * 65535.0f) << 8u)) : 0u;
