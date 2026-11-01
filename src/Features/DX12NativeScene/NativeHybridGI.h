@@ -44,14 +44,17 @@ namespace DX12Native
         uint64_t CompositionDispatches() const { return compositionDispatches; }
         uint64_t GIDispatches() const { return giDispatches; }
         uint64_t AODispatches() const { return aoDispatches; }
+        uint64_t EligibilityDispatches() const { return eligibilityDispatches; }
     private:
         bool Initialize(ID3D12Device* device);
         winrt::com_ptr<ID3D12RootSignature> root;
         std::array<winrt::com_ptr<ID3D12PipelineState>, 2> pipelines;
+        winrt::com_ptr<ID3D12PipelineState> eligibilityPipeline;
         winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
         winrt::com_ptr<ID3D12PipelineState> compositionPipeline;
         winrt::com_ptr<ID3D12DescriptorHeap> compositionDescriptors;
         std::string failure, compositionFailure;
-        uint64_t giDispatches = 0, aoDispatches = 0, compositionDispatches = 0;
+        uint64_t giDispatches = 0, aoDispatches = 0, compositionDispatches = 0,
+            eligibilityDispatches = 0;
     };
 }
