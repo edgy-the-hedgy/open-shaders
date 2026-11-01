@@ -8,6 +8,7 @@ struct RTIndirectLighting final : Feature
 	{
 		bool UseRTExclusive = false;
 		uint32_t IndirectRays = 1;
+		uint32_t RTBounces = 2; // 0=disabled, 1=first indirect hit, 2=terminal second bounce
 		float IndirectStrength = 1.0f;
 		bool ConnectHybrid = true;
 		uint32_t HybridResolution = 3; // 3=inherit existing RR resolution; 0/1/2=full/half/quarter

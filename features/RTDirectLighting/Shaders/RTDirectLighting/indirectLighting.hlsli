@@ -27,13 +27,8 @@ uint BakedRoomCode(uint instance, float3 position)
 	return matches == 1 ? uint(LightSnapshot.Load(int3(roomIndex, 1, 0)).x) : ReceiverRoom::Unknown;
 }
 
-// DXR two-bounce diffuse GI experiment: set to 0 for A/B comparison.
-// This is one additional indirect path segment, NOT an addition to DirectDiffuse.
-#ifndef REDSTONE_IL_SECOND_BOUNCE
-#define REDSTONE_IL_SECOND_BOUNCE 1
-#endif
-
-#if REDSTONE_IL_SECOND_BOUNCE
+// Optional terminal GI segment. Runtime bounce count is passed in
+// DirectStochastic.z; the first camera hit does not count as a GI bounce.
 // One terminal ray at the second indirect surface. Direct DIFFUSE is the
 // terminal incident-radiance source; primary direct signals stay unchanged.
 bool TraceTerminalDiffuse(float3 origin, float3 direction, float footprint,
@@ -103,8 +98,6 @@ float3 SampleSecondBounceDirection(float3 normal, uint2 pixel, uint sampleIndex,
     return normalize(tangent * (radius * cos(phi)) + bitangent * (radius * sin(phi)) +
         normal * sqrt(1.0 - random.x));
 }
-#endif
-
 bool SecondaryRadiance(float3 origin, float3 direction, float footprint,
     uint2 pixel, uint sampleIndex, out float3 radiance, out float distance)
 {
@@ -141,8 +134,8 @@ bool SecondaryRadiance(float3 origin, float3 direction, float footprint,
 		if (!EvaluatePointLight(light, material, position, -direction, geometricNormal, room, pixel, sampleIndex + 1u, diffuse, specular, unavailable)) return false;
 		radiance += diffuse + specular;
 	}
-#if REDSTONE_IL_SECOND_BOUNCE
-    // The second segment is traced only from a valid first indirect hit.
+    // Bounce 2 is traced only from a valid first indirect hit.
+    if (DirectStochastic.z >= 1.5f) {
     // Existing first-hit emission and direct lighting are always retained.
     uint selectedLight = 0;
     float3 shadingNormal = normalize(material.normal);
@@ -161,7 +154,7 @@ bool SecondaryRadiance(float3 origin, float3 direction, float footprint,
             radiance += terminal * throughput;
         }
     }
-#endif
+    }
 	return all(isfinite(radiance)) && all(radiance >= 0);
 }
 

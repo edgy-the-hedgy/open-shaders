@@ -697,7 +697,8 @@ namespace DX12Native
 				std::isfinite(a_falloffParameters.y) ? std::clamp(a_falloffParameters.y, 0.02f, 1.0f) : 0.1f,
 				std::isfinite(a_falloffParameters.z) ? std::clamp(a_falloffParameters.z, 0.25f, 4.0f) : 1.0f, 0.0f };
 			available->stochasticParameters = { a_stochasticParameters.x >= 0.5f ? 1.0f : 0.0f,
-				std::isfinite(a_stochasticParameters.y) ? std::clamp(a_stochasticParameters.y, 0.0f, 8.0f) : 1.0f, 0.0f, 0.0f };
+				std::isfinite(a_stochasticParameters.y) ? std::clamp(a_stochasticParameters.y, 0.0f, 8.0f) : 1.0f,
+				std::isfinite(a_stochasticParameters.z) ? std::clamp(a_stochasticParameters.z, 0.0f, 2.0f) : 0.0f, 0.0f };
 			available->useIndirect = a_useIndirect && a_indirectRays == 0;
 			available->indirectRays = std::min(a_indirectRays, 8u);
 			available->roomReferences.fill(0);

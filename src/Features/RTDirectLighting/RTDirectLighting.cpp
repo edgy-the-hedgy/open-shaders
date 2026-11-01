@@ -247,13 +247,14 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
 		settings.UseAllPreparedLights ? std::span<const std::array<uint32_t, 2>>(snapshot->lightReferences) : std::span<const std::array<uint32_t, 2>>{},
 		settings.UseAllPreparedLights, { settings.DirectStrength, settings.DiffuseStrength, settings.SpecularStrength, settings.EmissionStrength },
 		gi.loaded && gi.settings.ConnectHybrid && !rtExclusive, gi.settings.IndirectStrength, settings.UseDirectRayRegeneration,
-		rtExclusive ? gi.settings.IndirectRays : 0u, snapshot->roomReferences, settings.RedstoneBlend, settings.NormalInfluence,
+		rtExclusive && gi.settings.RTBounces != 0u ? gi.settings.IndirectRays : 0u, snapshot->roomReferences, settings.RedstoneBlend, settings.NormalInfluence,
 		settings.UseAllPreparedLights ? std::span<const DX12Native::PreparedPointLight>(snapshot->cell->nativeLights) :
 			std::span<const DX12Native::PreparedPointLight>(snapshot->cell->nativeLights).subspan(settings.SelectedDirectLight, 1),
 		settings.DirectTraceResolution, gi.settings.RTTraceResolution, settings.DirectRRResolution,
 		settings.RRMaterialIsolation, settings.RRGlossyRoughness,
 		{ settings.PointLightRadiusMultiplier, settings.PointLightFalloffFraction, settings.PointLightFalloffExponent, 0.0f },
-		{ settings.StochasticSampling ? 1.0f : 0.0f, settings.EmitterRadiusMultiplier, 0.0f, 0.0f });
+		{ settings.StochasticSampling ? 1.0f : 0.0f, settings.EmitterRadiusMultiplier,
+			rtExclusive ? float(gi.settings.RTBounces) : 0.0f, 0.0f });
 	lastFrame = frame;
 }
 
