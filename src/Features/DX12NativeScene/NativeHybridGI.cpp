@@ -23,6 +23,8 @@ namespace DX12Native
         constexpr uint64_t kCameraOffset = 1280;
         constexpr uint64_t kMaskOffset = 2048;
         constexpr uint64_t kCompositionOffset = 2304;
+        constexpr uint64_t kRRGuideOffset = 2560;
+        constexpr uint32_t kRRGuideDescriptorsPerFrame = 10;
         constexpr uint32_t kCompositionDescriptorsPerFrame = 12;
         struct NativeLightingCB
         {
@@ -84,6 +86,20 @@ namespace DX12Native
             const auto bytes = device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
             if (bytes == UINT64_MAX || UINT64_MAX - total < bytes) return UINT64_MAX;
             total += bytes;
+        }
+        // RR guides are full logical-grid textures, even for checkerboard
+        // signals. Only noisy signal storage is horizontally packed.
+        for (uint32_t i = 0; i < FrameOutputs::kGuideCount; ++i) {
+            const DXGI_FORMAT format = i == 0 ?
+                DXGI_FORMAT_R32_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT;
+            const auto guideDesc = CD3DX12_RESOURCE_DESC::Tex2D(format,
+                sampling.logical[0], sampling.logical[1], 1, 1, 1, 0,
+                D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+            const uint64_t guideBytes =
+                device->GetResourceAllocationInfo(0, 1, &guideDesc).SizeInBytes;
+            if (guideBytes == UINT64_MAX || UINT64_MAX - total < guideBytes)
+                return UINT64_MAX;
+            total += guideBytes;
         }
         // The final scene is also allocated on DX12, then exported once.
         const auto finalDesc = CD3DX12_RESOURCE_DESC::Tex2D(
@@ -307,6 +323,166 @@ namespace DX12Native
         } catch (const std::exception& error) {
             frame.valid = false;
             failure = error.what();
+            return false;
+        }
+    }
+
+
+    bool NativeHybridGI::RecordRRGuides(ID3D12Device* device,
+        ID3D12GraphicsCommandList* list, FrameOutputs& frame, uint32_t slot,
+        ID3D12Resource* linearDepth, ID3D12Resource* normalRough,
+        ID3D12Resource* motion, ID3D12Resource* diffuseAlbedo,
+        ID3D12Resource* specularAlbedo)
+    {
+        frame.rrGuidesValid = false;
+        if (!frame.valid || !frame.constants || !device || !list || slot >= 2u ||
+            !linearDepth || !normalRough || !motion || !diffuseAlbedo || !specularAlbedo ||
+            !frame.sampling.logical[0] || !frame.sampling.logical[1]) {
+            guideFailure = "Native RR guide inputs or GI frame unavailable";
+            return false;
+        }
+
+        try {
+            if (!guidePipeline) {
+                const auto code = ReadDXIL(
+                    "Data/Shaders/RTDirectLighting/nativeHybridRRGuides.dxil");
+                D3D12_DESCRIPTOR_RANGE ranges[2]{};
+                ranges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 5, 0, 0, 0 };
+                ranges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 5, 0, 0, 0 };
+                D3D12_ROOT_PARAMETER params[4]{};
+                for (uint32_t i = 0; i < 2; ++i) {
+                    params[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+                    params[i].DescriptorTable = { 1, &ranges[i] };
+                }
+                params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+                params[2].Descriptor = { 0, 0 };
+                params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+                params[3].Descriptor = { 12, 0 };
+                const D3D12_ROOT_SIGNATURE_DESC rs{
+                    4, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE };
+                winrt::com_ptr<ID3DBlob> serialized, errors;
+                DX::ThrowIfFailed(D3D12SerializeRootSignature(
+                    &rs, D3D_ROOT_SIGNATURE_VERSION_1, serialized.put(), errors.put()));
+                DX::ThrowIfFailed(device->CreateRootSignature(0,
+                    serialized->GetBufferPointer(), serialized->GetBufferSize(),
+                    IID_PPV_ARGS(guideRoot.put())));
+                D3D12_COMPUTE_PIPELINE_STATE_DESC state{};
+                state.pRootSignature = guideRoot.get();
+                state.CS = { code.data(), code.size() };
+                DX::ThrowIfFailed(device->CreateComputePipelineState(
+                    &state, IID_PPV_ARGS(guidePipeline.put())));
+                const D3D12_DESCRIPTOR_HEAP_DESC heap{
+                    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+                    kRRGuideDescriptorsPerFrame * 2,
+                    D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
+                DX::ThrowIfFailed(device->CreateDescriptorHeap(
+                    &heap, IID_PPV_ARGS(guideDescriptors.put())));
+            }
+
+            const auto size = frame.sampling.logical;
+            if (frame.rrGuideSize != size) {
+                for (auto& guide : frame.rrGuides) guide = nullptr;
+                frame.rrGuideSize = size;
+            }
+            for (uint32_t i = 0; i < frame.rrGuides.size(); ++i) {
+                if (frame.rrGuides[i]) continue;
+                const DXGI_FORMAT format = i == 0 ?
+                    DXGI_FORMAT_R32_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT;
+                const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(
+                    format, size[0], size[1], 1, 1, 1, 0,
+                    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+                const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+                DX::ThrowIfFailed(device->CreateCommittedResource(&heap,
+                    D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON,
+                    nullptr, IID_PPV_ARGS(frame.rrGuides[i].put())));
+            }
+
+            struct alignas(16) GuideSettings {
+                uint32_t nativeWidth, nativeHeight, logicalWidth, logicalHeight;
+                uint32_t representativePhase, quarterSampling, linearLighting, reserved;
+            };
+            static_assert(sizeof(GuideSettings) == 32);
+            static_assert(kRRGuideOffset + sizeof(GuideSettings) <= kUploadBytes);
+            const GuideSettings guideSettings{
+                frame.sampling.native[0], frame.sampling.native[1],
+                size[0], size[1], frame.sampling.representativePhase,
+                uint32_t(frame.sampling.quarter),
+                uint32_t(globals::features::linearLighting.IsLinearLightingActive()), 0u };
+            uint8_t* mapped = nullptr;
+            const D3D12_RANGE noRead{ 0, 0 };
+            DX::ThrowIfFailed(frame.constants->Map(0, &noRead,
+                reinterpret_cast<void**>(&mapped)));
+            std::memcpy(mapped + kRRGuideOffset, &guideSettings, sizeof(guideSettings));
+            frame.constants->Unmap(0, nullptr);
+
+            const std::array<ID3D12Resource*, 5> reads{
+                linearDepth, normalRough, motion, diffuseAlbedo, specularAlbedo };
+            const std::array<DXGI_FORMAT, 5> formats{
+                DXGI_FORMAT_R32_FLOAT,
+                DXGI_FORMAT_R16G16B16A16_FLOAT,
+                DXGI_FORMAT_R16G16B16A16_FLOAT,
+                DXGI_FORMAT_R16G16B16A16_FLOAT,
+                DXGI_FORMAT_R16G16B16A16_FLOAT };
+            const UINT step = device->GetDescriptorHandleIncrementSize(
+                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            auto cpu = guideDescriptors->GetCPUDescriptorHandleForHeapStart();
+            cpu.ptr += uint64_t(slot * kRRGuideDescriptorsPerFrame) * step;
+            D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+            srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srv.Texture2D.MipLevels = 1;
+            for (uint32_t i = 0; i < reads.size(); ++i) {
+                srv.Format = formats[i];
+                device->CreateShaderResourceView(reads[i], &srv, cpu);
+                cpu.ptr += step;
+            }
+            D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+            uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+            for (uint32_t i = 0; i < frame.rrGuides.size(); ++i) {
+                uav.Format = formats[i];
+                device->CreateUnorderedAccessView(frame.rrGuides[i].get(),
+                    nullptr, &uav, cpu);
+                cpu.ptr += step;
+            }
+            std::array<D3D12_RESOURCE_BARRIER, 10> before{}, after{};
+            for (uint32_t i = 0; i < reads.size(); ++i) {
+                before[i] = CD3DX12_RESOURCE_BARRIER::Transition(reads[i],
+                    D3D12_RESOURCE_STATE_COMMON,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                after[i] = CD3DX12_RESOURCE_BARRIER::Transition(reads[i],
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_COMMON);
+                before[i + 5] = CD3DX12_RESOURCE_BARRIER::Transition(
+                    frame.rrGuides[i].get(), D3D12_RESOURCE_STATE_COMMON,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                after[i + 5] = CD3DX12_RESOURCE_BARRIER::Transition(
+                    frame.rrGuides[i].get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_COMMON);
+            }
+
+            list->ResourceBarrier(UINT(before.size()), before.data());
+            ID3D12DescriptorHeap* heaps[]{ guideDescriptors.get() };
+            list->SetDescriptorHeaps(1, heaps);
+            list->SetPipelineState(guidePipeline.get());
+            list->SetComputeRootSignature(guideRoot.get());
+            auto gpu = guideDescriptors->GetGPUDescriptorHandleForHeapStart();
+            gpu.ptr += uint64_t(slot * kRRGuideDescriptorsPerFrame) * step;
+            list->SetComputeRootDescriptorTable(0, gpu);
+            gpu.ptr += reads.size() * step;
+            list->SetComputeRootDescriptorTable(1, gpu);
+            list->SetComputeRootConstantBufferView(2,
+                frame.constants->GetGPUVirtualAddress() + kRRGuideOffset);
+            list->SetComputeRootConstantBufferView(3,
+                frame.constants->GetGPUVirtualAddress() + kCameraOffset);
+            list->Dispatch((size[0] + 7u) / 8u, (size[1] + 7u) / 8u, 1);
+            list->ResourceBarrier(UINT(after.size()), after.data());
+            frame.rrGuidesValid = true;
+            ++guideDispatches;
+            guideFailure.clear();
+            return true;
+        } catch (const std::exception& error) {
+            guideFailure = error.what();
+            frame.rrGuidesValid = false;
             return false;
         }
     }
