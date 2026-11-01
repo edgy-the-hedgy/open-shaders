@@ -117,6 +117,17 @@ namespace DX12Native
                 total += bytes;
             }
         }
+        // A logical-grid motion scratch isolates per-pixel history rejections
+        // from the original physical motion input.
+        const auto motionDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+            DXGI_FORMAT_R16G16B16A16_FLOAT,
+            sampling.logical[0], sampling.logical[1], 1, 1, 1, 0,
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+        const auto motionBytes = device->GetResourceAllocationInfo(
+            0, 1, &motionDesc).SizeInBytes;
+        if (motionBytes == UINT64_MAX || UINT64_MAX - total < motionBytes)
+            return UINT64_MAX;
+        total += motionBytes;
         // The final scene is also allocated on DX12, then exported once.
         const auto finalDesc = CD3DX12_RESOURCE_DESC::Tex2D(
             DXGI_FORMAT_R16G16B16A16_FLOAT, width, height, 1, 1);
@@ -508,6 +519,142 @@ namespace DX12Native
     }
 
 
+
+    bool NativeHybridGI::RecordHistoryValidation(ID3D12Device* device,
+        ID3D12GraphicsCommandList* list, FrameOutputs& current,
+        const FrameOutputs* previous, uint32_t slot)
+    {
+        current.rrHistoryValid = false;
+        if (!device || !list || !current.rrGuidesValid || !previous ||
+            !previous->rrGuidesValid || slot >= 2u ||
+            current.sampling.logical != previous->sampling.logical ||
+            current.sampling.effective != previous->sampling.effective) {
+            // First frame, mode change, or discontinuity resets the family
+            // histories; no unsafe previous resource is dereferenced.
+            historyFailure = "No compatible previous logical RR receiver history";
+            return false;
+        }
+        try {
+            if (!historyPipeline || !historyRoot || !historyDescriptors) {
+                historyPipeline = nullptr; historyRoot = nullptr;
+                historyDescriptors = nullptr;
+                const auto code = ReadDXIL(
+                    "Data/Shaders/RTDirectLighting/nativeHybridRRHistory.dxil");
+                D3D12_DESCRIPTOR_RANGE ranges[2]{};
+                ranges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 5, 0, 0, 0 };
+                ranges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 0 };
+                D3D12_ROOT_PARAMETER params[3]{};
+                for (uint32_t i = 0; i < 2; ++i) {
+                    params[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+                    params[i].DescriptorTable = { 1, &ranges[i] };
+                }
+                params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+                params[2].Constants = { 0, 0, 4 };
+                const D3D12_ROOT_SIGNATURE_DESC rs{
+                    3, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE };
+                winrt::com_ptr<ID3DBlob> serialized, errors;
+                DX::ThrowIfFailed(D3D12SerializeRootSignature(&rs,
+                    D3D_ROOT_SIGNATURE_VERSION_1, serialized.put(), errors.put()));
+                DX::ThrowIfFailed(device->CreateRootSignature(0,
+                    serialized->GetBufferPointer(), serialized->GetBufferSize(),
+                    IID_PPV_ARGS(historyRoot.put())));
+                D3D12_COMPUTE_PIPELINE_STATE_DESC state{};
+                state.pRootSignature = historyRoot.get();
+                state.CS = { code.data(), code.size() };
+                DX::ThrowIfFailed(device->CreateComputePipelineState(
+                    &state, IID_PPV_ARGS(historyPipeline.put())));
+                const D3D12_DESCRIPTOR_HEAP_DESC heapDesc{
+                    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+                    6u * 2u, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
+                DX::ThrowIfFailed(device->CreateDescriptorHeap(
+                    &heapDesc, IID_PPV_ARGS(historyDescriptors.put())));
+            }
+            const auto size = current.sampling.logical;
+            if (!current.rrValidatedMotion ||
+                current.rrValidatedMotion->GetDesc().Width != size[0] ||
+                current.rrValidatedMotion->GetDesc().Height != size[1]) {
+                current.rrValidatedMotion = nullptr;
+                const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(
+                    DXGI_FORMAT_R16G16B16A16_FLOAT,
+                    size[0], size[1], 1, 1, 1, 0,
+                    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+                const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+                DX::ThrowIfFailed(device->CreateCommittedResource(&heap,
+                    D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON,
+                    nullptr, IID_PPV_ARGS(current.rrValidatedMotion.put())));
+            }
+            const std::array<ID3D12Resource*, 5> inputs{
+                current.rrGuides[0].get(), current.rrGuides[1].get(),
+                current.rrGuides[2].get(), previous->rrGuides[0].get(),
+                previous->rrGuides[2].get()
+            };
+            const std::array<DXGI_FORMAT, 5> formats{
+                DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
+                DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R32_FLOAT,
+                DXGI_FORMAT_R16G16B16A16_FLOAT
+            };
+            const auto step = device->GetDescriptorHandleIncrementSize(
+                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            auto cpu = historyDescriptors->GetCPUDescriptorHandleForHeapStart();
+            cpu.ptr += uint64_t(slot * 6u) * step;
+            D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+            srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srv.Texture2D.MipLevels = 1;
+            for (uint32_t i = 0; i < inputs.size(); ++i) {
+                srv.Format = formats[i];
+                device->CreateShaderResourceView(inputs[i], &srv, cpu);
+                cpu.ptr += step;
+            }
+            D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+            uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+            uav.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            device->CreateUnorderedAccessView(
+                current.rrValidatedMotion.get(), nullptr, &uav, cpu);
+            std::array<D3D12_RESOURCE_BARRIER, 6> begin{}, end{};
+            for (uint32_t i = 0; i < inputs.size(); ++i) {
+                begin[i] = CD3DX12_RESOURCE_BARRIER::Transition(inputs[i],
+                    D3D12_RESOURCE_STATE_COMMON,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                end[i] = CD3DX12_RESOURCE_BARRIER::Transition(inputs[i],
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_COMMON);
+            }
+            begin[5] = CD3DX12_RESOURCE_BARRIER::Transition(
+                current.rrValidatedMotion.get(), D3D12_RESOURCE_STATE_COMMON,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            end[5] = CD3DX12_RESOURCE_BARRIER::Transition(
+                current.rrValidatedMotion.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_COMMON);
+            list->ResourceBarrier(UINT(begin.size()), begin.data());
+            ID3D12DescriptorHeap* heaps[]{ historyDescriptors.get() };
+            list->SetDescriptorHeaps(1, heaps);
+            list->SetPipelineState(historyPipeline.get());
+            list->SetComputeRootSignature(historyRoot.get());
+            auto gpu = historyDescriptors->GetGPUDescriptorHandleForHeapStart();
+            gpu.ptr += uint64_t(slot * 6u) * step;
+            list->SetComputeRootDescriptorTable(0, gpu);
+            gpu.ptr += 5u * step;
+            list->SetComputeRootDescriptorTable(1, gpu);
+            struct HistoryConstants {
+                uint32_t width, height;
+                float depthTolerance, normalThreshold;
+            } constants{ size[0], size[1], 0.02f, 0.5f };
+            static_assert(sizeof(constants) == 16);
+            list->SetComputeRoot32BitConstants(2, 4, &constants, 0);
+            list->Dispatch((size[0] + 7u) / 8u, (size[1] + 7u) / 8u, 1);
+            list->ResourceBarrier(UINT(end.size()), end.data());
+            current.rrHistoryValid = true;
+            ++historyValidationDispatches;
+            historyFailure.clear();
+            return true;
+        } catch (const std::exception& error) {
+            current.rrHistoryValid = false;
+            historyFailure = error.what();
+            return false;
+        }
+    }
+
     bool NativeHybridGI::RecordPostRR(ID3D12Device* device,
         ID3D12GraphicsCommandList* list, FrameOutputs& frame, uint32_t slot,
         uint32_t frameNumber, ID3D12Resource* nativeDepth,
@@ -559,6 +706,9 @@ namespace DX12Native
             }
             for (uint32_t i = 0; i < resources.guides.size(); ++i)
                 resources.guides[i] = frame.rrGuides[i].get();
+            if (frame.rrHistoryValid && frame.rrValidatedMotion)
+                resources.guides[1] = frame.rrValidatedMotion.get();
+            resources.resetHistory = !frame.rrHistoryValid;
             resources.nativeSize = native;
             resources.logicalSize = logical;
             resources.frame = frameNumber;
