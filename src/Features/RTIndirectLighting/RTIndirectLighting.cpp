@@ -199,7 +199,7 @@ json RTIndirectLighting::GetDiagnostics()
 		{ "rtDirectRequired", settings.UseRTExclusive },
 		{ "rtDirectEnabled", direct.loaded && direct.settings.UsePreparedDirectLighting },
 		{ "indirectRays", settings.IndirectRays }, { "indirectStrength", settings.IndirectStrength },
-		{ "rtTraceResolutionMode", settings.RTTraceResolution },
+		{ "rtTraceResolutionMode", DX12Native::NativeTraceShaderMode(globals::features::rtComposer.composition.samplingMode) },
 		{ "connectHybrid", settings.ConnectHybrid },
 		{ "trace", globals::features::dx12NativeScene.Tracer().GetDiagnostics() } };
 }
