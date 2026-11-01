@@ -880,6 +880,42 @@ void SyntheticFeature::SaveSettings(json& output) { output = settings; }
             GENERATOR.join_catalog_path(("Group/Heading", "Value~Name")),
             "Group~1Heading/Value~0Name")
 
+    def test_generated_outputs_preserve_bytes_and_timestamps_when_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            files = [root / name for name in (
+                "SceneSettingsCatalog.generated.h",
+                "SceneSettingsCatalog.generated.cpp",
+                "FeatureSceneSettingsAdapters.generated.cpp",
+            )]
+            GENERATOR.write_catalog(self.entries, root)
+            initial = [(file.read_bytes(), file.stat().st_mtime_ns) for file in files]
+            GENERATOR.write_catalog(self.entries, root)
+            self.assertEqual(
+                [(file.read_bytes(), file.stat().st_mtime_ns) for file in files],
+                initial,
+            )
+            modified = [dict(entry) for entry in self.entries]
+            modified[0]["displayName"] += " (renamed)"
+            GENERATOR.write_catalog(modified, root)
+            self.assertNotEqual(files[1].read_bytes(), initial[1][0])
+
+    def test_source_text_cache_does_not_survive_separate_builds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_synthetic_source(root)
+            first = GENERATOR.build_entries(root)
+            self.assertIn("Synthetic", {entry["feature"] for entry in first})
+            header = root / "src" / "SyntheticFeature.h"
+            header.write_text(
+                header.read_text(encoding="utf-8").replace(
+                    'return "Synthetic";', 'return "SyntheticNext";'),
+                encoding="utf-8",
+            )
+            second = GENERATOR.build_entries(root)
+            self.assertIn("SyntheticNext", {entry["feature"] for entry in second})
+            self.assertNotIn("Synthetic", {entry["feature"] for entry in second})
+
     def test_repository_catalog_validates_without_a_test_inventory(self):
         entries = GENERATOR.build_entries(ROOT)
         self.assertTrue(entries)

@@ -547,6 +547,9 @@ set(SCENE_SETTINGS_CATALOG_SOURCE
 set(SCENE_SETTINGS_ADAPTERS_SOURCE
     "${SCENE_SETTINGS_CATALOG_DIR}/FeatureSceneSettingsAdapters.generated.cpp"
 )
+set(SCENE_SETTINGS_CATALOG_STAMP
+    "${SCENE_SETTINGS_CATALOG_DIR}/SceneSettingsCatalog.stamp"
+)
 
 file(
     GLOB_RECURSE SCENE_SETTINGS_CATALOG_INPUTS
@@ -558,21 +561,41 @@ file(
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cxx"
 )
 
+# The stamp tracks successful analysis separately from the generated C++ files.
+# An irrelevant source edit still reruns discovery, but identical C++ output is
+# not timestamp-touched and therefore cannot cascade into recompilation.
 add_custom_command(
     OUTPUT
+        "${SCENE_SETTINGS_CATALOG_STAMP}"
+    BYPRODUCTS
         "${SCENE_SETTINGS_CATALOG_HEADER}"
         "${SCENE_SETTINGS_CATALOG_SOURCE}"
         "${SCENE_SETTINGS_ADAPTERS_SOURCE}"
+    COMMAND
+        ${CMAKE_COMMAND} -E make_directory "${SCENE_SETTINGS_CATALOG_DIR}"
     COMMAND
         ${SCENE_SETTINGS_PYTHON_EXECUTABLE} ${SCENE_SETTINGS_PYTHON_ARGS}
         "${CMAKE_CURRENT_SOURCE_DIR}/cmake/generate_scene_settings_catalog.py"
         --source-dir "${CMAKE_CURRENT_SOURCE_DIR}" --out-dir
         "${SCENE_SETTINGS_CATALOG_DIR}" --min-entries 250
+    COMMAND
+        ${CMAKE_COMMAND} -E touch "${SCENE_SETTINGS_CATALOG_STAMP}"
     DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/cmake/generate_scene_settings_catalog.py"
         ${SCENE_SETTINGS_CATALOG_INPUTS}
     COMMENT "Generating scene settings catalog"
     VERBATIM
+)
+
+add_custom_target(SceneSettingsCatalogGenerate
+    DEPENDS "${SCENE_SETTINGS_CATALOG_STAMP}"
+)
+add_dependencies("${PROJECT_NAME}" SceneSettingsCatalogGenerate)
+set_source_files_properties(
+    "${SCENE_SETTINGS_CATALOG_HEADER}"
+    "${SCENE_SETTINGS_CATALOG_SOURCE}"
+    "${SCENE_SETTINGS_ADAPTERS_SOURCE}"
+    PROPERTIES GENERATED TRUE
 )
 
 target_include_directories(

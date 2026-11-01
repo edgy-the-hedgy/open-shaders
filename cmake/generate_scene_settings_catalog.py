@@ -292,8 +292,29 @@ SHIFT_UNIFIED_CONTROL_RE = re.compile(
 
 
 
+# Scoped to one catalog build. Discovery uses many independent passes over the
+# same sources; keep their decoded text in memory without persisting stale data
+# across later generator/test invocations.
+_SOURCE_TEXT_CACHE: dict[Path, str] | None = None
+
+
 def read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8", errors="ignore")
+    if _SOURCE_TEXT_CACHE is not None:
+        cached = _SOURCE_TEXT_CACHE.get(path)
+        if cached is not None:
+            return cached
+    content = path.read_text(encoding="utf-8", errors="ignore")
+    if _SOURCE_TEXT_CACHE is not None:
+        _SOURCE_TEXT_CACHE[path] = content
+    return content
+
+
+def write_if_different(path: Path, content: str, encoding: str = "utf-8") -> None:
+    # Avoid changing generated C++ timestamps when source edits do not affect
+    # catalog metadata. The original writer's encoding/newline policy is kept.
+    if path.is_file() and path.read_text(encoding=encoding) == content:
+        return
+    path.write_text(content, encoding=encoding)
 
 
 def cpp_escape(value: str) -> str:
@@ -4312,7 +4333,7 @@ def collect_navigation_controls(paths: list[Path]) -> dict[str, tuple[tuple[str,
     return {owner: tuple(sorted(labels)) for owner, labels in controls.items()}
 
 
-def build_entries(source_dir: Path) -> list[dict[str, object]]:
+def _build_entries_impl(source_dir: Path) -> list[dict[str, object]]:
     src_paths = list((source_dir / "src").rglob("*.cpp")) + list((source_dir / "src").rglob("*.h"))
     src_paths += [source_dir / "src" / "TruePBR.cpp", source_dir / "src" / "TruePBR.h"]
     src_paths = sorted({p for p in src_paths if p.exists()})
@@ -4851,6 +4872,16 @@ def build_entries(source_dir: Path) -> list[dict[str, object]]:
     return entries
 
 
+def build_entries(source_dir: Path) -> list[dict[str, object]]:
+    global _SOURCE_TEXT_CACHE
+    previous_cache = _SOURCE_TEXT_CACHE
+    _SOURCE_TEXT_CACHE = {}
+    try:
+        return _build_entries_impl(source_dir)
+    finally:
+        _SOURCE_TEXT_CACHE = previous_cache
+
+
 def write_catalog(entries: list[dict[str, object]], out_dir: Path):
     out_dir.mkdir(parents=True, exist_ok=True)
     header = out_dir / "SceneSettingsCatalog.generated.h"
@@ -4862,7 +4893,7 @@ def write_catalog(entries: list[dict[str, object]], out_dir: Path):
         key=lambda entry: (entry["feature"], entry["path"], entry["key"]),
     )
 
-    header.write_text("""#pragma once
+    write_if_different(header, """#pragma once
 
 #include <cstddef>
 #include <cstdint>
@@ -5131,7 +5162,7 @@ namespace SceneSettingsCatalog
 \t\tSceneSettingsCatalog::RegisterControlResolver(
 \t\t\t"{cpp_escape(feature_short)}", {resolver_name});''')
     joined_feature_blocks = "\n".join(feature_blocks)
-    source.write_text(f"""#include "SceneSettingsCatalog.generated.h"
+    write_if_different(source, f"""#include "SceneSettingsCatalog.generated.h"
 
 #include <algorithm>
 #include <array>
@@ -5193,7 +5224,7 @@ namespace SceneSettingsCatalog
 }}
 """, encoding="utf-8")
 
-    adapters.write_text(f"""#include "SceneSettingsCatalog.generated.h"
+    write_if_different(adapters, f"""#include "SceneSettingsCatalog.generated.h"
 
 #include "Feature.h"
 {includes}
