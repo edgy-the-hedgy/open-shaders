@@ -29,8 +29,8 @@ cbuffer Trace : register(b0)
 	float4 LightingStrengths;
 	uint ExportDirectSignals;
 	uint TracePass;  // 0: direct, 1: RT-exclusive indirect
-	uint DirectTraceStride;
-	uint IndirectTraceStride;
+	uint DirectTraceMode;
+	uint IndirectTraceMode;
 	uint IndirectRayCount;
 	uint BakedRoomCount;
 	uint BakedRoomsKnown;
@@ -51,6 +51,19 @@ uint Hash(uint value)
 	return value ^ (value >> 16);
 }
 
+// Maps every output pixel to a traced anchor. In the 2/3 mode, two of
+// every three pixels on each axis are traced (indices 0 and 2); index 1
+// resolves from 0. 1/3 mode traces the first pixel of each 3x3 tile.
+uint2 TraceAnchor(uint2 pixel, uint mode)
+{
+	if (mode == 1u) return (pixel / 2u) * 2u;
+	if (mode == 2u) return (pixel / 4u) * 4u;
+	if (mode == 3u) return pixel - uint2((pixel.x % 3u) == 1u ? 1u : 0u,
+		(pixel.y % 3u) == 1u ? 1u : 0u);
+	if (mode == 4u) return (pixel / 3u) * 3u;
+	return pixel;
+}
+
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID)
 {
@@ -59,9 +72,9 @@ void main(uint3 id : SV_DispatchThreadID)
 	// receiver surface. Mismatched depth/room retains raster fallback.
 	if (TracePass >= 2u) {
 		const bool direct = TracePass == 2u;
-		const uint stride = direct ? DirectTraceStride : IndirectTraceStride;
-		if (stride <= 1u) return;
-		const uint2 sourcePixel = (id.xy / stride) * stride;
+		const uint mode = direct ? DirectTraceMode : IndirectTraceMode;
+		if (mode == 0u) return;
+		const uint2 sourcePixel = TraceAnchor(id.xy, mode);
 		if (all(sourcePixel == id.xy)) return;
 		const float4 receiver = Receivers.Load(int3(id.xy, 0));
 		const float4 anchor = Receivers.Load(int3(sourcePixel, 0));
@@ -99,8 +112,8 @@ void main(uint3 id : SV_DispatchThreadID)
 		IndirectDiffuse[id.xy] = float4(0, 0, 0, -2);
 		IndirectSpecular[id.xy] = float4(0, 0, 0, -2);
 	}
-	const uint stride = TracePass == 1u ? IndirectTraceStride : DirectTraceStride;
-	if (stride > 1u && ((id.x % stride) != 0u || (id.y % stride) != 0u)) {
+	const uint mode = TracePass == 1u ? IndirectTraceMode : DirectTraceMode;
+	if (any(TraceAnchor(id.xy, mode) != id.xy)) {
 		if (TracePass == 0u) Shadow[id.xy] = Unavailable(MismatchedDepth);
 		return;
 	}

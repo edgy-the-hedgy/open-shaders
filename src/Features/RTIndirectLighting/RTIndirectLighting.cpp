@@ -39,7 +39,7 @@ void RTIndirectLighting::LoadSettings(json& value)
 {
 	Settings selected = value;
 	selected.IndirectRays = std::clamp(selected.IndirectRays, 1u, 8u);
-	selected.RTTraceResolution = std::min(selected.RTTraceResolution, 2u);
+	selected.RTTraceResolution = std::min(selected.RTTraceResolution, 4u);
 	selected.HybridResolution = std::min(selected.HybridResolution, 3u);
 	selected.IndirectStrength = std::isfinite(selected.IndirectStrength) ? std::clamp(selected.IndirectStrength, 0.0f, 8.0f) : 1.0f;
 	settings = selected;
@@ -106,11 +106,14 @@ void RTIndirectLighting::DrawSettings()
 			settings.IndirectRays = uint32_t(rays);
 			globals::features::dx12NativeScene.Tracer().Reset();
 		}
-		int resolution = static_cast<int>(settings.RTTraceResolution);
-		if (ImGui::Combo("RT-exclusive indirect trace resolution", &resolution, "Full\0Half\0Quarter\0")) {
-			settings.RTTraceResolution = uint32_t(resolution);
+		int resolution = 0;
+		for (int option = 0; option < int(DX12Native::DirectionalTrace::kTraceResolutionMenuOrder.size()); ++option)
+			if (DX12Native::DirectionalTrace::kTraceResolutionMenuOrder[option] == settings.RTTraceResolution) resolution = option;
+		if (ImGui::Combo("RT-exclusive indirect trace resolution", &resolution, DX12Native::DirectionalTrace::kTraceResolutionMenuLabels)) {
+			settings.RTTraceResolution = DX12Native::DirectionalTrace::kTraceResolutionMenuOrder[resolution];
 			globals::features::dx12NativeScene.Tracer().Reset();
 		}
+		ImGui::TextWrapped("Independent from direct trace resolution and RR. Sparse RTGI samples resolve only to compatible receiver surfaces.");
 		ImGui::SliderFloat("Indirect intensity", &settings.IndirectStrength, 0.0f, 8.0f, "%.2fx");
 		const auto trace = globals::features::dx12NativeScene.Tracer().GetDiagnostics();
 		if (!trace.value("bakedRoomsKnown", false))
@@ -197,6 +200,7 @@ json RTIndirectLighting::GetDiagnostics()
 		{ "rtDirectRequired", settings.UseRTExclusive },
 		{ "rtDirectEnabled", direct.loaded && direct.settings.UsePreparedDirectLighting },
 		{ "indirectRays", settings.IndirectRays }, { "indirectStrength", settings.IndirectStrength },
+		{ "rtTraceResolutionMode", settings.RTTraceResolution },
 		{ "connectHybrid", settings.ConnectHybrid },
 		{ "trace", globals::features::dx12NativeScene.Tracer().GetDiagnostics() } };
 }
@@ -214,6 +218,8 @@ void RTIndirectLighting::RegisterUxActions()
 			} else if (producer == "hybrid" || producer == "raymarched") gi.SelectHybrid();
 			else throw std::invalid_argument("Producer must be rt-exclusive or hybrid");
 			if (args.contains("rays")) gi.settings.IndirectRays = std::clamp(args.at("rays").get<uint32_t>(), 1u, 8u);
+			if (args.contains("traceResolution")) gi.settings.RTTraceResolution = std::min(args.at("traceResolution").get<uint32_t>(), 4u);
+			globals::features::dx12NativeScene.Tracer().Reset();
 		});
 	FEATURE_COMMAND("setLightingSampling", "Adjust existing Hybrid GI slice counts.",
 		[](Feature*, const json& args) {

@@ -394,7 +394,7 @@ namespace DX12Native
 			float4 falloffParameters;
 		};
 		const auto& origin = globals::game::frameBufferCached.GetCameraPosAdjust();
-		const Constants constants{ a_frame.size[0], a_frame.size[1], a_frame.number, uint32_t(a_frame.scene->bottoms.size()), a_direction, kRayMaximum, { origin.x, origin.y, origin.z }, kRayMinimum, a_localLight ? 0.0f : kSunAngularRadius, { a_localLight ? 1u : 0u, a_frame.materialView, a_frame.allPreparedLights ? uint32_t(a_frame.lightIdentities.size()) : 0u }, a_frame.strengths, (a_frame.useDirectRR || a_frame.indirectRays) ? 1u : 0u, { 0u, a_frame.directStride, a_frame.indirectStride }, { a_frame.indirectRays, a_frame.bindings->materials->roomCount, a_frame.bindings->materials->roomsKnown ? 1u : 0u, a_frame.normalMode | a_frame.rrMaterialPolicy }, a_frame.falloffParameters };
+		const Constants constants{ a_frame.size[0], a_frame.size[1], a_frame.number, uint32_t(a_frame.scene->bottoms.size()), a_direction, kRayMaximum, { origin.x, origin.y, origin.z }, kRayMinimum, a_localLight ? 0.0f : kSunAngularRadius, { a_localLight ? 1u : 0u, a_frame.materialView, a_frame.allPreparedLights ? uint32_t(a_frame.lightIdentities.size()) : 0u }, a_frame.strengths, (a_frame.useDirectRR || a_frame.indirectRays) ? 1u : 0u, { 0u, a_frame.directTraceMode, a_frame.indirectTraceMode }, { a_frame.indirectRays, a_frame.bindings->materials->roomCount, a_frame.bindings->materials->roomsKnown ? 1u : 0u, a_frame.normalMode | a_frame.rrMaterialPolicy }, a_frame.falloffParameters };
 		static_assert(sizeof(Constants) == 32 * sizeof(uint32_t));
 		commands->SetComputeRoot32BitConstants(5, 32, &constants, 0);
 		std::vector<D3D12_RESOURCE_BARRIER> begin{
@@ -406,7 +406,7 @@ namespace DX12Native
 		commands->ResourceBarrier(uint32_t(begin.size()), begin.data());
 		commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 		++directTraceDispatches;
-		if (a_frame.directStride > 1u) {
+		if (a_frame.directTraceMode != 0u) {
 			std::vector<D3D12_RESOURCE_BARRIER> barriers{
 				CD3DX12_RESOURCE_BARRIER::UAV(a_frame.output->resource.get())
 			};
@@ -432,7 +432,7 @@ namespace DX12Native
 			commands->SetComputeRoot32BitConstants(5, 32, &indirectConstants, 0);
 			commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 			++indirectTraceDispatches;
-			if (a_frame.indirectStride > 1u) {
+			if (a_frame.indirectTraceMode != 0u) {
 				std::array<D3D12_RESOURCE_BARRIER, 2> resolveOrder{
 					CD3DX12_RESOURCE_BARRIER::UAV(a_frame.directSignals[5]->resource.get()),
 					CD3DX12_RESOURCE_BARRIER::UAV(a_frame.directSignals[6]->resource.get())
@@ -703,8 +703,8 @@ namespace DX12Native
 			available->useDirectRR = directRR;
 			available->rasterBlend = a_rasterBlend;
 			available->normalMode = std::min(a_normalMode, 2u);
-			available->directStride = 1u << std::min(a_directResolutionMode, 1u);
-			available->indirectStride = 1u << std::min(a_indirectResolutionMode, 2u);
+			available->directTraceMode = std::min(a_directResolutionMode, 4u);
+			available->indirectTraceMode = std::min(a_indirectResolutionMode, 4u);
 			available->directRRResolutionMode = effectiveRRMode;
 			available->rrMaterialPolicy = a_rrMaterialIsolation ? (0x80000000u |
 				(uint32_t(std::clamp(a_rrGlossyRoughness, 0.04f, 1.0f) * 65535.0f) << 8u)) : 0u;

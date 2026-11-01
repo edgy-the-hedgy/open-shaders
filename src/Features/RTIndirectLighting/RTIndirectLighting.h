@@ -11,7 +11,7 @@ struct RTIndirectLighting final : Feature
 		float IndirectStrength = 1.0f;
 		bool ConnectHybrid = true;
 		uint32_t HybridResolution = 3; // 3=inherit existing RR resolution; 0/1/2=full/half/quarter
-		uint32_t RTTraceResolution = 0;  // 0=full, 1=half, 2=quarter
+		uint32_t RTTraceResolution = 0;  // 0=full, 1=half, 2=quarter, 3=two-thirds, 4=one-third (linear sampling)
 	} settings;
 
 	std::string GetName() override { return "RTIndirectLighting"; }

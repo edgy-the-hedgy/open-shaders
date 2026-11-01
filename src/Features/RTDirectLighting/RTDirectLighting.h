@@ -19,7 +19,7 @@ struct RTDirectLighting final : OverlayFeature
 		float PointLightFalloffFraction = 0.1f;
 		float PointLightFalloffExponent = 1.0f;
 		uint32_t SelectedDirectLight = 0;
-		uint32_t DirectTraceResolution = 0;  // 0=full, 1=half linear
+		uint32_t DirectTraceResolution = 0;  // 0=full, 1=half, 2=quarter, 3=two-thirds, 4=one-third (linear sampling)
 		bool RRMaterialIsolation = false;
 		float RRGlossyRoughness = 0.2f;
 		uint32_t DirectRRResolution = 3;  // 3 inherits existing shared RR resolution
