@@ -173,7 +173,10 @@ namespace DX12Native
             // Slots are reused only after their completion fence retires.
             // Recreate raw signal textures when the logical RR grid changes;
             // the full-native eligibility texture retains its own dimensions.
-            if (frame.sampling.packed != sampling.packed) {
+            if (frame.sampling.native != sampling.native) {
+                for (auto& texture : frame.textures) texture = nullptr;
+                frame.composedScene.reset();
+            } else if (frame.sampling.packed != sampling.packed) {
                 for (uint32_t i = 0; i < kOutputs; ++i)
                     if (i != Eligibility) frame.textures[i] = nullptr;
             }
