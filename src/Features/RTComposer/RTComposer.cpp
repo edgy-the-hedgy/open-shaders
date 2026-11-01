@@ -76,6 +76,46 @@ namespace
     }
 }
 
+const char* RTComposer::DirectTierDescription(CompositorMode mode)
+{
+    switch (mode) {
+    case CompositorMode::ShadowOnly:
+        return "Quarter-density (1/4 native pixels), surface-aware shadow-mask resolve; 0.8 shadow influence, 0.25 raster/RT blend. Direct diffuse only, no specular and no direct RR.";
+    case CompositorMode::HybridShadowed:
+        return "Quarter-density direct/shadow DXR; shadow influence 0.8, raster/RT direct blend 0.5. Direct diffuse only, direct RR off; native DX12 HybridGI handles indirect/AO RR.";
+    case CompositorMode::RTExclusiveI:
+        return "PENDING: quarter-density direct/shadows, diffuse only, 50% first-bounce survival, diffuse-only RR. The live renderer safely falls back to Shadow Only.";
+    case CompositorMode::RTExclusiveII:
+        return "PENDING: quarter-density direct/shadows, 50% first-bounce survival, 50/50 diffuse/specular branch split. The live renderer falls back to Shadow Only.";
+    case CompositorMode::RTEnhanced:
+        return "PENDING: native checkerboard, 50/50 diffuse/specular first-bounce split, 50% indirect survival and lowest-quality checkerboard HybridGI. The live renderer falls back to Shadow Only.";
+    case CompositorMode::FSRRedstone:
+        return "PENDING: native checkerboard diffuse/specular split, 66% first-bounce survival, and 25% second-bounce continuation. High-end recent AMD GPU recommended; FSR-RC is deferred.";
+    case CompositorMode::Custom:
+        return "Custom: editable direct, shadow, material and RR options; separate SSGI-sized HybridGI resolution.";
+    }
+    return "Unknown compositor tier.";
+}
+const char* RTComposer::IndirectTierDescription(CompositorMode mode)
+{
+    switch (mode) {
+    case CompositorMode::ShadowOnly:
+        return "Native HybridGI and RT-exclusive indirect are disabled. Baseline raster SSGI may remain active; legacy DX11 HybridGI stays disabled. No FSR-RR for direct/shadow.";
+    case CompositorMode::HybridShadowed:
+        return "Native DX12 HybridGI: quarter width/height by default (6.25% pixels), checkerboard off. Indirect diffuse/specular, AO and specular occlusion use RR and native DX12 reconstruction.";
+    case CompositorMode::RTExclusiveI:
+        return "PENDING: a diffuse-only indirect bounce from 50% surviving rays, using diffuse-only RR signals. No tier-exclusive indirect rays are currently dispatched.";
+    case CompositorMode::RTExclusiveII:
+        return "PENDING: 50% indirect survival, diffuse/specular split and family-specific RR mapping. No tier-exclusive indirect rays are currently dispatched.";
+    case CompositorMode::RTEnhanced:
+        return "PENDING: 50% indirect survival, native DX12 scene composition, then quarter width/height checkerboard HybridGI. Tier-exclusive transport is not active.";
+    case CompositorMode::FSRRedstone:
+        return "PENDING: 66% initial bounce survival, 25% secondary continuation and future FSR Radiance Cache. Radiance Cache remains unimplemented.";
+    case CompositorMode::Custom:
+        return "Custom: select Shadow Only or DX12 Hybrid-Shadowed in RT Composer; edit indirect and AO sampling, reconstruction and RR settings.";
+    }
+    return "Unknown compositor tier.";
+}
 std::pair<std::string, std::vector<std::string>> RTComposer::GetFeatureSummary()
 {
     return { "DX12 Hybrid-Shadowed production composition and dedicated Shadow Only raster-mask fallback, with separate native-direct and SSGI-sized HybridGI sampling and Ray Regeneration.", {} };
@@ -94,7 +134,7 @@ void RTComposer::OnCompositionPolicyChanged()
     // On leaving native Hybrid-Shadowed, release AMD's private RR histories
     // after queue retirement. Do not keep three contexts consuming VRAM
     // throughout Shadow Only or when the compositor is disabled.
-    if (!composition.enabled || composition.mode != CompositorMode::HybridShadowed)
+    if (!composition.enabled || !WantsNativeHybrid())
         (void)globals::features::redstoneGI.GetDenoiser().RetireNativeHybridContexts();
     // Saved RT-exclusive/Hybrid settings are not mutated. Incompatible GPU
     // history is discarded when the effective compositor selection changes.
@@ -111,7 +151,9 @@ json RTComposer::GetDiagnostics()
     return {
         { "enabled", composition.enabled },
         { "requestedMode", ModeName(composition.mode) },
-        { "requestedTierReady", GetTierPolicy(composition.mode).ready },
+        { "requestedTierReady", composition.mode == CompositorMode::Custom || GetTierPolicy(composition.mode).ready },
+        { "tierControlsLocked", TierControlsLocked() },
+        { "customHybridShadowed", composition.customHybridShadowed },
         { "firstBounceSurvival", GetTierPolicy(composition.mode).firstBounceSurvival },
         { "specularBounceFraction", GetTierPolicy(composition.mode).specularBounceFraction },
         { "secondBounceSurvival", GetTierPolicy(composition.mode).secondBounceSurvival },
@@ -119,7 +161,7 @@ json RTComposer::GetDiagnostics()
             effective == EffectiveMode::ShadowOnly ? "shadow-only" : "hybrid-shadowed" },
         { "hybridDX12Ready", DX12HybridReady() },
         { "hybridFallbackReason", composition.enabled &&
-            composition.mode == CompositorMode::HybridShadowed && !DX12HybridReady() ?
+            WantsNativeHybrid() && !DX12HybridReady() ?
             "DX12 HybridGI unavailable; Shadow Only fallback selected" :
             (composition.enabled && !GetTierPolicy(composition.mode).ready ?
             "Selected transport tier not implemented: safe Shadow Only fallback" : "") },
@@ -130,9 +172,11 @@ json RTComposer::GetDiagnostics()
         { "giProviderStatus", effective != EffectiveMode::Legacy ?
             (ssgiAvailable && effective == EffectiveMode::ShadowOnly ? "baseline-ssgi" :
              effective == EffectiveMode::ShadowOnly ? "no-active-indirect-provider" : "dx12-hybrid") : "legacy" },
-        { "shadowInfluence", composition.enabled && composition.mode <= CompositorMode::HybridShadowed ?
+        { "shadowInfluence", composition.enabled && IsFixedPreset() &&
+            composition.mode <= CompositorMode::HybridShadowed ?
             GetTierPolicy(composition.mode).shadowInfluence : composition.shadowInfluence },
-        { "directContribution", composition.enabled && composition.mode <= CompositorMode::HybridShadowed ?
+        { "directContribution", composition.enabled && IsFixedPreset() &&
+            composition.mode <= CompositorMode::HybridShadowed ?
             GetTierPolicy(composition.mode).directContribution : composition.rtDirectContribution },
         { "effectiveShadowTraceMode", GetTierPolicy(
             effective == EffectiveMode::HybridShadowed ?
@@ -141,7 +185,7 @@ json RTComposer::GetDiagnostics()
             globals::features::rtDirectLighting.settings.UseDirectRayRegeneration &&
             RayRegeneration::GetSettings().enabled },
         { "giContribution", composition.giContribution },
-        { "nativeProductionRequested", composition.enabled && composition.mode == CompositorMode::HybridShadowed },
+        { "nativeProductionRequested", composition.enabled && WantsNativeHybrid() },
         { "directCheckerboard", composition.directCheckerboard },
         { "hybridResolution", composition.hybridResolution },
         { "hybridCheckerboard", composition.hybridCheckerboard },
@@ -258,6 +302,7 @@ void RTComposer::SaveSettings(json& value)
         { "Composition", {
             { "enabled", composition.enabled },
             { "mode", static_cast<uint32_t>(composition.mode) },
+            { "customHybridShadowed", composition.customHybridShadowed },
             { "shadowInfluence", composition.shadowInfluence },
             { "rtDirectContribution", composition.rtDirectContribution },
             { "giContribution", composition.giContribution },
@@ -274,7 +319,7 @@ void RTComposer::LoadSettings(json& value)
 {
     if (!value.is_object()) return;
     const auto beforePolicy = std::pair{ composition.enabled, composition.mode };
-    const auto beforeSampling = std::tuple{ composition.directCheckerboard, composition.hybridResolution, composition.hybridCheckerboard };
+    const auto beforeSampling = std::tuple{ composition.directCheckerboard, composition.hybridResolution, composition.hybridCheckerboard, composition.customHybridShadowed };
     // Migrate older shared four-mode settings to two independent policies:
     // direct native checkerboard and SSGI-sized HybridGI with checkerboard.
     // Do not revive retired direct/RR/RT-exclusive resolution selectors.
@@ -291,7 +336,8 @@ void RTComposer::LoadSettings(json& value)
         CompositionSettings next{};
         next.enabled = it->value("enabled", false);
         const auto mode = it->value("mode", 0u);
-        next.mode = static_cast<CompositorMode>(std::min(mode, 5u));
+        next.mode = static_cast<CompositorMode>(std::min(mode, 6u));
+        next.customHybridShadowed = it->value("customHybridShadowed", false);
         auto bounded = [&](const char* name, float fallback) {
             const float x = it->value(name, fallback);
             return std::isfinite(x) ? std::clamp(x, 0.0f, 1.0f) : fallback;
@@ -316,7 +362,7 @@ void RTComposer::LoadSettings(json& value)
         composition.hybridCheckerboard = composition.directCheckerboard;
     }
     if (beforePolicy != std::pair{ composition.enabled, composition.mode } ||
-        beforeSampling != std::tuple{ composition.directCheckerboard, composition.hybridResolution, composition.hybridCheckerboard })
+        beforeSampling != std::tuple{ composition.directCheckerboard, composition.hybridResolution, composition.hybridCheckerboard, composition.customHybridShadowed })
         OnCompositionPolicyChanged();
     const bool enabledRR = legacyRR.is_object() ?
         legacyRR.value("enabled", currentRR.enabled) : currentRR.enabled;
@@ -345,10 +391,10 @@ void RTComposer::LoadSettings(json& value)
 void RTComposer::RestoreDefaultSettings()
 {
     const auto beforePolicy = std::pair{ composition.enabled, composition.mode };
-    const auto beforeSampling = std::tuple{ composition.directCheckerboard, composition.hybridResolution, composition.hybridCheckerboard };
+    const auto beforeSampling = std::tuple{ composition.directCheckerboard, composition.hybridResolution, composition.hybridCheckerboard, composition.customHybridShadowed };
     composition = {};
     if (beforePolicy != std::pair{ composition.enabled, composition.mode } ||
-        beforeSampling != std::tuple{ composition.directCheckerboard, composition.hybridResolution, composition.hybridCheckerboard })
+        beforeSampling != std::tuple{ composition.directCheckerboard, composition.hybridResolution, composition.hybridCheckerboard, composition.customHybridShadowed })
         OnCompositionPolicyChanged();
     RayRegeneration::Configure(0u, false, true);
     globals::features::redstoneGI.GetDenoiser().SetConfiguration(json::object());

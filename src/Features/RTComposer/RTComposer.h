@@ -10,7 +10,7 @@ struct RTComposer final : Feature
     // every previously configured direct/SSGI/Hybrid path unchanged.
     enum class CompositorMode : uint32_t {
         ShadowOnly = 0, HybridShadowed = 1, RTExclusiveI = 2,
-        RTExclusiveII = 3, RTEnhanced = 4, FSRRedstone = 5
+        RTExclusiveII = 3, RTEnhanced = 4, FSRRedstone = 5, Custom = 6
     };
     struct TierPolicy
     {
@@ -43,6 +43,8 @@ struct RTComposer final : Feature
             return { 5u, .8f, .5f, true, true, true, true, 2u, true, .5f, .5f, 0.f, false };
         case CompositorMode::FSRRedstone:
             return { 5u, .8f, .5f, true, true, true, true, 2u, true, .66f, .5f, .25f, false };
+        case CompositorMode::Custom:
+            return { 0u, 0.f, 0.f, true, true, false, false, 0u, false, 0.f, 0.f, 0.f, true };
         }
         return GetTierPolicy(CompositorMode::ShadowOnly);
     }
@@ -55,6 +57,7 @@ struct RTComposer final : Feature
         case CompositorMode::RTExclusiveII: return "rt-exclusive-tier-two";
         case CompositorMode::RTEnhanced: return "rt-enhanced";
         case CompositorMode::FSRRedstone: return "fsr-redstone";
+        case CompositorMode::Custom: return "custom";
         }
         return "invalid";
     }
@@ -76,6 +79,7 @@ struct RTComposer final : Feature
     {
         bool enabled = false;
         CompositorMode mode = CompositorMode::ShadowOnly;
+        bool customHybridShadowed = false; // saved custom backend choice
         float shadowInfluence = 0.8f;
         float rtDirectContribution = 0.25f; // composition blend; tier's direct radiance still distinct
         float giContribution = 1.0f; // Hybrid-only native GI blend, independent of direct
@@ -87,13 +91,22 @@ struct RTComposer final : Feature
         std::array<SignalReconstructionSettings, 3> reconstruction{};
     } composition;
     enum class EffectiveMode : uint32_t { Legacy = 0, ShadowOnly = 1, HybridShadowed = 2 };
+    bool IsFixedPreset() const { return composition.mode != CompositorMode::Custom; }
+    bool TierControlsLocked() const { return composition.enabled && IsFixedPreset(); }
+    bool WantsNativeHybrid() const
+    {
+        return composition.mode == CompositorMode::HybridShadowed ||
+            (composition.mode == CompositorMode::Custom && composition.customHybridShadowed);
+    }
+    static const char* DirectTierDescription(CompositorMode mode);
+    static const char* IndirectTierDescription(CompositorMode mode);
     // Never expose unimplemented RT-exclusive / enhanced transport as a live
     // production path. Their selected presets remain visible in diagnostics,
     // but the effective renderer falls back to the supported Shadow Only mode.
     EffectiveMode ResolveEffectiveMode() const
     {
         if (!composition.enabled) return EffectiveMode::Legacy;
-        if (composition.mode == CompositorMode::HybridShadowed && DX12HybridReady())
+        if (WantsNativeHybrid() && DX12HybridReady())
             return EffectiveMode::HybridShadowed;
         return EffectiveMode::ShadowOnly;
     }

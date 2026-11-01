@@ -233,7 +233,7 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
     // Direct RR preferences remain persisted but do not dispatch in these tiers.
     const auto& composer = globals::features::rtComposer;
     const auto effectiveMode = composer.ResolveEffectiveMode();
-    const bool tieredDirect = effectiveMode != RTComposer::EffectiveMode::Legacy;
+    const bool tieredDirect = composer.TierControlsLocked();
     const auto activeTier = RTComposer::GetTierPolicy(
         effectiveMode == RTComposer::EffectiveMode::HybridShadowed ?
             RTComposer::CompositorMode::HybridShadowed :

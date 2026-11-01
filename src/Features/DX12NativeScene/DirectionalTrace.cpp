@@ -532,8 +532,10 @@ namespace DX12Native
             commands->SetComputeRootDescriptorTable(0, gpu);
             gpu.ptr += 3 * step;
             commands->SetComputeRootDescriptorTable(1, gpu);
-            const float influence = RTComposer::GetTierPolicy(
-                RTComposer::CompositorMode::HybridShadowed).shadowInfluence;
+            const auto& composer = globals::features::rtComposer;
+            const float influence = composer.IsFixedPreset() ?
+                RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed).shadowInfluence :
+                composer.composition.shadowInfluence;
             const auto projection = globals::game::frameBufferCached.GetCameraProj();
             const bool reverseDepth = projection._33 * projection._43 < 0.0f;
             const float4 cameraData = Util::GetCameraData();
@@ -585,8 +587,10 @@ namespace DX12Native
                 frame.hybridShadowedSource.get(), frame.hybridInputs[3]->resource.get(),
                 frame.hybridInputs[4]->resource.get(), frame.shadowMask.get(),
                 globals::features::redstoneGI,
-                RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed).shadowInfluence,
-                globals::features::rtComposer.composition.shadowThreshold)) {
+                (globals::features::rtComposer.IsFixedPreset() ?
+                    RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed).shadowInfluence :
+                    composition.shadowInfluence),
+                composition.shadowThreshold)) {
             frame.nativeGIFrame = frame.number;
             // Native RR guides are GPU-only and allocated at the *logical*
             // RR grid. They are not sent through the legacy DX11 denoiser.
@@ -628,8 +632,9 @@ namespace DX12Native
                     uint32_t(&frame - frames.data()), frame.size,
                     frame.hybridShadowedSource.get(), frame.output->resource.get(),
                     frame.hybridInputs[3]->resource.get(), frame.hybridInputs[4]->resource.get(),
-                    frame.rasterBlend * RTComposer::GetTierPolicy(
-                        RTComposer::CompositorMode::HybridShadowed).directContribution,
+                    frame.rasterBlend * (globals::features::rtComposer.IsFixedPreset() ?
+                        RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed).directContribution :
+                        composition.rtDirectContribution),
                     composition.giContribution);
         }
     }
@@ -952,10 +957,12 @@ namespace DX12Native
 		const auto& composer = globals::features::rtComposer;
 		const bool shadowOnly = composer.ShadowOnlyActive() && a_frame.shadowMaskExport;
         const auto shadowTier = RTComposer::GetTierPolicy(RTComposer::CompositorMode::ShadowOnly);
+        const float directBlend = composer.IsFixedPreset() ? shadowTier.directContribution : composer.composition.rtDirectContribution;
+        const float shadowStrength = composer.IsFixedPreset() ? shadowTier.shadowInfluence : composer.composition.shadowInfluence;
 		lightingCompositeSettings->Update(Settings{ useIndirect ? 1u : 0u, rrFlags, a_frame.indirectStrength,
 			a_frame.indirectRays != 0 ? 1u : 0u,
-			a_frame.rasterBlend * (shadowOnly ? shadowTier.directContribution : 1.0f),
-			shadowOnly ? 1u : 0u, shadowOnly ? shadowTier.shadowInfluence : 0.0f, 0.0f });
+			a_frame.rasterBlend * (shadowOnly ? directBlend : 1.0f),
+			shadowOnly ? 1u : 0u, shadowOnly ? shadowStrength : 0.0f, 0.0f });
 		auto* cb = lightingCompositeSettings->CB();
 		context->CSSetConstantBuffers(0, 1, &cb);
 		const auto& targets = globals::game::renderer->GetRuntimeData().renderTargets;
