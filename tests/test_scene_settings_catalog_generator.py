@@ -923,5 +923,61 @@ void Fixture::DrawSettings() {
             self.assertIn('"More Options", "feature.fixture.expanded"', output)
 
 
+    def test_generated_files_keep_mtimes_when_content_is_identical(self):
+        import os
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            GENERATOR.write_catalog(self.entries, output)
+            outputs = [
+                output / "SceneSettingsCatalog.generated.h",
+                output / "SceneSettingsCatalog.generated.cpp",
+                output / "FeatureSceneSettingsAdapters.generated.cpp",
+            ]
+            original_contents = [path.read_bytes() for path in outputs]
+            for path in outputs:
+                os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+            GENERATOR.write_catalog(self.entries, output)
+            self.assertEqual(original_contents, [path.read_bytes() for path in outputs])
+            self.assertEqual(
+                [path.stat().st_mtime_ns for path in outputs],
+                [1_000_000_000] * len(outputs))
+
+    def test_persistent_catalog_cache_preserves_entries_and_invalidates_on_source_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_synthetic_source(root)
+            entries = GENERATOR.build_entries(root)
+            fingerprint = GENERATOR.source_fingerprint(root)
+            cache_path = root / "catalog.cache.json"
+            GENERATOR.store_cached_entries(cache_path, fingerprint, entries)
+            loaded = GENERATOR.load_cached_entries(cache_path, fingerprint)
+            self.assertEqual(loaded, entries)
+            GENERATOR.validate_entries(loaded, 1)
+            self.assertIsNone(
+                GENERATOR.load_cached_entries(cache_path, "different-source-fingerprint"))
+            (root / "src" / "SyntheticFeature.cpp").write_text(
+                SYNTHETIC_SOURCE + "\n// changed source\n", encoding="utf-8")
+            self.assertNotEqual(fingerprint, GENERATOR.source_fingerprint(root))
+            self.assertIsNone(GENERATOR.load_cached_entries(
+                cache_path, GENERATOR.source_fingerprint(root)))
+            cache_path.write_text("{ invalid json", encoding="utf-8")
+            self.assertIsNone(GENERATOR.load_cached_entries(cache_path, fingerprint))
+
+    def test_source_analysis_cache_is_scoped_to_one_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_synthetic_source(root)
+            first = GENERATOR.build_entries(root)
+            header = root / "src" / "SyntheticFeature.h"
+            header.write_text(
+                SYNTHETIC_HEADER.replace(
+                    "float regular = 0.0f;", "float regular = 0.0f;\n        bool newToggle = false;").replace(
+                    "    regular,\n", "    regular,\n    newToggle,\n"),
+                encoding="utf-8")
+            second = GENERATOR.build_entries(root)
+            self.assertEqual(len(second), len(first) + 1)
+            self.assertTrue(any(item["key"] == "newToggle" for item in second))
+
+
 if __name__ == "__main__":
     unittest.main()
