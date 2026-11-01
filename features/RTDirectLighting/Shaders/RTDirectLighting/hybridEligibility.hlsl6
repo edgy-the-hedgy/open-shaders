@@ -1,0 +1,37 @@
+// Full-native receiver eligibility for Hybrid-Shadowed. Never reduced with
+// quarter sampling or checkerboard; this mask is authoritative AFTER RR and
+// edge-aware upsampling, preventing GI from leaking into suppressed surfaces.
+Texture2D<float> NativeLinearDepth : register(t0);
+Texture2D<float4> NativeNormalRoughness : register(t1);
+Texture2D<float2> NativeShadowMask : register(t7);
+RWTexture2D<uint> NativeEligibility : register(u2);
+
+cbuffer NativeMaskPolicy : register(b13)
+{
+    float ShadowInfluence;
+    float SkipThreshold;
+    float MinimumValidDepth;
+    float MaximumValidDepth;
+};
+
+[numthreads(8, 8, 1)]
+void main(uint2 pixel : SV_DispatchThreadID)
+{
+    uint width, height;
+    NativeLinearDepth.GetDimensions(width, height);
+    if (any(pixel >= uint2(width, height))) return;
+    const float depth = NativeLinearDepth.Load(int3(pixel, 0));
+    const float4 nr = NativeNormalRoughness.Load(int3(pixel, 0));
+    const bool valid = isfinite(depth) && depth > MinimumValidDepth &&
+        depth < MaximumValidDepth && all(isfinite(nr));
+    if (!valid) {
+        NativeEligibility[pixel] = 2u; // invalid depth / surface, never history
+        return;
+    }
+    const float2 mask = NativeShadowMask.Load(int3(pixel, 0));
+    const bool maskValid = all(isfinite(mask)) && mask.y >= 0.5;
+    const float visibility = 1.0 -
+        saturate(ShadowInfluence) * (1.0 - (maskValid ? saturate(mask.x) : 1.0));
+    NativeEligibility[pixel] = maskValid && visibility < saturate(SkipThreshold)
+        ? 0u : 1u; // intentionally suppressed vs eligible
+}
