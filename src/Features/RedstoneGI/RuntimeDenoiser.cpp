@@ -63,7 +63,8 @@ namespace
 /** @brief Retires paired RR GPU work before releasing its context and wrapped textures. */
 void RedstoneDenoiser::ResetRayRegeneration()
 {
-	if (rayRegenerationContext || rrSharedSignal) {
+	if (rayRegenerationContext || rrSharedSignal ||
+        nativeHybridContexts[0] || nativeHybridContexts[1] || nativeHybridContexts[2]) {
 		auto& sc = backend;
 		if (!sc.d3d11Context || !sc.commandQueue || !runtimeFence.fence11 || !runtimeFence.fence12) {
 			rayRegenerationFailureLatched = true;
@@ -99,6 +100,18 @@ void RedstoneDenoiser::ResetRayRegeneration()
 	if (rayRegenerationContext && denoiserFunctions.DestroyContext)
 		(void)denoiserFunctions.DestroyContext(&rayRegenerationContext, nullptr);
 	rayRegenerationContext = nullptr;
+    // Native contexts share the same DX12 queue retirement. Never destroy a
+    // provider history while any earlier native frame is GPU-resident.
+    for (auto& native : nativeHybridContexts) {
+        if (native && denoiserFunctions.DestroyContext)
+            (void)denoiserFunctions.DestroyContext(&native, nullptr);
+        native = nullptr;
+    }
+    nativeHybridExtent = {};
+    nativeHybridCheckerboard = false;
+    nativeHybridLastFrame = UINT32_MAX;
+    nativeHybridFailed = false;
+    nativeHybridFailure.clear();
 	{
 		std::scoped_lock lock(configurationMutex);
 		configurationDefaultsReady = false;
@@ -395,4 +408,200 @@ bool RedstoneDenoiser::DispatchRayRegeneration(ID3D11Texture2D* signal, ID3D11Te
 		logger::error("[RayRegeneration] Dispatch failed: {}", e.what());
 		return false;
 	}
+}
+
+/** @brief Native Hybrid-Shadowed RR: three isolated contexts, no DX11 interop. */
+bool RedstoneDenoiser::DispatchNativeHybridRR(
+    ID3D12GraphicsCommandList* list, const NativeHybridResources& resources)
+{
+    const auto& logical = resources.logicalSize;
+    if (!list || !CanDispatchRayRegeneration() || !denoiserModule ||
+        !denoiserFunctions.CreateContext || !denoiserFunctions.DestroyContext ||
+        !denoiserFunctions.Dispatch || nativeHybridFailed || !logical[0] || !logical[1] ||
+        !resources.nativeSize[0] || !resources.nativeSize[1] ||
+        (resources.checkerboard && (logical[0] < 2u || (logical[0] & 1u)))) {
+        nativeHybridFailure = "Native FSR RR provider or logical signal layout unavailable";
+        return false;
+    }
+    const uint32_t packedWidth = resources.checkerboard ? logical[0] / 2u : logical[0];
+    auto validate = [](ID3D12Resource* texture, uint32_t width, uint32_t height,
+        DXGI_FORMAT format) {
+        if (!texture) return false;
+        const auto desc = texture->GetDesc();
+        return desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+            desc.Width == width && desc.Height == height &&
+            desc.Format == format && desc.MipLevels == 1 &&
+            desc.DepthOrArraySize == 1 && desc.SampleDesc.Count == 1;
+    };
+    constexpr std::array<DXGI_FORMAT, 4> formats{
+        DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
+        DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8_UNORM };
+    for (uint32_t i = 0; i < 4; ++i) {
+        if (!validate(resources.inputs[i], packedWidth, logical[1], formats[i]) ||
+            !validate(resources.outputs[i], logical[0], logical[1], formats[i])) {
+            nativeHybridFailure = "Native RR signal input/output dimensions or format mismatch";
+            return false;
+        }
+    }
+    for (uint32_t i = 0; i < 5; ++i) {
+        if (!validate(resources.guides[i], logical[0], logical[1],
+            i == 0 ? DXGI_FORMAT_R32_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT)) {
+            nativeHybridFailure = "Native RR geometry/material guide dimensions mismatch";
+            return false;
+        }
+    }
+    const bool changed = nativeHybridExtent != logical ||
+        nativeHybridCheckerboard != resources.checkerboard;
+    if (changed && (nativeHybridContexts[0] || nativeHybridContexts[1] ||
+                    nativeHybridContexts[2])) {
+        // Context shader tables and temporal buffers depend on checkerboard
+        // and capacity. The shared retirement path waits for all prior queue
+        // work before destroying any native context; resize is uncommon.
+        ResetRayRegeneration();
+        if (nativeHybridContexts[0] || nativeHybridContexts[1] ||
+            nativeHybridContexts[2] || rayRegenerationFailureLatched) {
+            nativeHybridFailure = "Native RR context retirement failed";
+            return false;
+        }
+    }
+    const bool fresh = !nativeHybridContexts[0];
+    if (fresh) {
+        constexpr std::array<uint32_t, 3> familyFlags{
+            FFX_DENOISER_SIGNAL_INDIRECT_DIFFUSE,
+            FFX_DENOISER_SIGNAL_INDIRECT_SPECULAR,
+            FFX_DENOISER_SIGNAL_AMBIENT_OCCLUSION | FFX_DENOISER_SIGNAL_SPECULAR_OCCLUSION };
+        for (uint32_t family = 0; family < familyFlags.size(); ++family) {
+            ffxCreateContextDescDenoiser create{};
+            create.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_DENOISER;
+            create.version = FFX_DENOISER_VERSION;
+            create.maxRenderSize = { resources.nativeSize[0], resources.nativeSize[1] };
+            create.signalFlags = familyFlags[family];
+            create.checkerboardSignalFlags =
+                resources.checkerboard ? familyFlags[family] : 0u;
+            ffx::CreateBackendDX12Desc backendDesc{};
+            backendDesc.device = backend.d3d12Device.get();
+            create.header.pNext = &backendDesc.header;
+            if (denoiserFunctions.CreateContext(&nativeHybridContexts[family],
+                &create.header, nullptr) != FFX_API_RETURN_OK ||
+                !nativeHybridContexts[family]) {
+                nativeHybridFailure = "Native FSR RR family context creation failed";
+                nativeHybridFailed = true;
+                return false;
+            }
+        }
+        nativeHybridExtent = logical;
+        nativeHybridCheckerboard = resources.checkerboard;
+    }
+    const bool reset = fresh || changed || resources.resetHistory ||
+        nativeHybridLastFrame == UINT32_MAX ||
+        (resources.frame != nativeHybridLastFrame + 1u);
+    const auto& configuration = RayRegeneration::GetConfiguration();
+    if (sharedConfigurationRevision != configuration.revision) {
+        SetConfiguration(configuration.overrides);
+        sharedConfigurationRevision = configuration.revision;
+    }
+    bool configReset = reset;
+    if (!ApplyConfiguration(configReset)) {
+        nativeHybridFailure = "Native FSR RR SDK configuration failed";
+        return false;
+    }
+
+    std::vector<D3D12_RESOURCE_BARRIER> begin, end;
+    for (auto* input : resources.inputs) {
+        begin.push_back(CD3DX12_RESOURCE_BARRIER::Transition(input,
+            D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
+        end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(input,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON));
+    }
+    for (auto* guide : resources.guides) {
+        begin.push_back(CD3DX12_RESOURCE_BARRIER::Transition(guide,
+            D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
+        end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(guide,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON));
+    }
+    for (auto* output : resources.outputs) {
+        begin.push_back(CD3DX12_RESOURCE_BARRIER::Transition(output,
+            D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
+        end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(output,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON));
+    }
+    list->ResourceBarrier(UINT(begin.size()), begin.data());
+
+    const auto& frame = globals::game::frameBufferCached;
+    const auto& cur = frame.GetCameraPosAdjust();
+    const auto& prev = frame.GetCameraPreviousPosAdjust();
+    const auto jitter = backend.jitter;
+    const auto renderSize = Util::ConvertToDynamic(globals::state->screenSize);
+    auto makeCommon = [&]() {
+        ffxDispatchDescDenoiser desc{};
+        desc.header.type = FFX_API_DISPATCH_DESC_TYPE_DENOISER;
+        desc.commandList = list;
+        desc.linearDepth = ffxApiGetResourceDX12(resources.guides[0], FFX_API_RESOURCE_STATE_COMPUTE_READ);
+        desc.motionVectors = ffxApiGetResourceDX12(resources.guides[1], FFX_API_RESOURCE_STATE_COMPUTE_READ);
+        desc.normals = ffxApiGetResourceDX12(resources.guides[2], FFX_API_RESOURCE_STATE_COMPUTE_READ);
+        desc.diffuseAlbedo = ffxApiGetResourceDX12(resources.guides[3], FFX_API_RESOURCE_STATE_COMPUTE_READ);
+        desc.specularAlbedo = ffxApiGetResourceDX12(resources.guides[4], FFX_API_RESOURCE_STATE_COMPUTE_READ);
+        desc.motionVectorScale = { 1.f, 1.f, 1.f };
+        desc.jitterOffsets = {
+            -jitter.x * float(logical[0]) / std::max(1.0f, renderSize.x),
+            -jitter.y * float(logical[1]) / std::max(1.0f, renderSize.y) };
+        desc.cameraPositionDelta = { prev.x - cur.x, prev.y - cur.y, prev.z - cur.z };
+        desc.view = ToFfxMatrix(frame.GetCameraView());
+        desc.projection = ToFfxMatrix(frame.GetCameraProjUnjittered());
+        desc.linearDepthBounds = { std::max(kMinimumRayRegenerationDepth, *globals::game::cameraNear),
+            *globals::game::cameraFar };
+        desc.renderSize = { logical[0], logical[1] };
+        desc.frameIndex = resources.frame;
+        desc.flags = FFX_DENOISER_DISPATCH_NON_GAMMA_ALBEDO |
+            (configReset ? FFX_DENOISER_DISPATCH_RESET : 0u);
+        return desc;
+    };
+    auto setSignal = [&](FfxApiDenoiserSignal& signal, uint32_t index) {
+        signal.input = ffxApiGetResourceDX12(resources.inputs[index],
+            FFX_API_RESOURCE_STATE_COMPUTE_READ);
+        signal.output = ffxApiGetResourceDX12(resources.outputs[index],
+            FFX_API_RESOURCE_STATE_UNORDERED_ACCESS, FFX_API_RESOURCE_USAGE_UAV);
+        signal.checkerboardOrigin = resources.checkerboard ? resources.checkerboardOrigin & 1u : 0u;
+    };
+
+    for (uint32_t family = 0; family < 3; ++family) {
+        auto common = makeCommon();
+        ffxDispatchDescDenoiserIndirectDiffuse diffuse{};
+        ffxDispatchDescDenoiserIndirectSpecular specular{};
+        ffxDispatchDescDenoiserAmbientOcclusion ao{};
+        ffxDispatchDescDenoiserSpecularOcclusion so{};
+        if (family == 0) {
+            diffuse.header.type = FFX_API_DISPATCH_DESC_TYPE_DENOISER_INDIRECT_DIFFUSE;
+            setSignal(diffuse.signal, 0);
+            common.header.pNext = &diffuse.header;
+        } else if (family == 1) {
+            specular.header.type = FFX_API_DISPATCH_DESC_TYPE_DENOISER_INDIRECT_SPECULAR;
+            setSignal(specular.signal, 1);
+            common.header.pNext = &specular.header;
+        } else {
+            ao.header.type = FFX_API_DISPATCH_DESC_TYPE_DENOISER_AMBIENT_OCCLUSION;
+            so.header.type = FFX_API_DISPATCH_DESC_TYPE_DENOISER_SPECULAR_OCCLUSION;
+            setSignal(ao.signal, 2);
+            setSignal(so.signal, 3);
+            common.header.pNext = &ao.header;
+            ao.header.pNext = &so.header;
+        }
+        bool faulted = false;
+        const auto result = DispatchDenoiserProtected(denoiserFunctions,
+            &nativeHybridContexts[family], &common.header, faulted);
+        if (faulted || result != FFX_API_RETURN_OK) {
+            nativeHybridFailed = true;
+            nativeHybridFailure = faulted ?
+                "Native FSR RR provider exception" : "Native FSR RR provider rejected dispatch";
+            // Recorded work in the caller command list may already be partially
+            // encoded. The caller must discard the entire frame on failure.
+            return false;
+        }
+    }
+    list->ResourceBarrier(UINT(end.size()), end.data());
+    nativeHybridLastFrame = resources.frame;
+    ++nativeHybridDispatches;
+    if (configReset) ++nativeHybridResets;
+    nativeHybridFailure.clear();
+    return true;
 }
