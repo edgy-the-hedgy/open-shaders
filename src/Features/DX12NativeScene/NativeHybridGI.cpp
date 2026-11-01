@@ -117,6 +117,17 @@ namespace DX12Native
                 total += bytes;
             }
         }
+        // Persistent logical depth and normal snapshots survive recycled
+        // frame slots and are updated with ordered GPU-only copies.
+        for (uint32_t i = 0; i < 2; ++i) {
+            const auto fmt = i == 0 ? DXGI_FORMAT_R32_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT;
+            const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(fmt,
+                sampling.logical[0], sampling.logical[1], 1, 1, 1, 0,
+                D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+            const auto bytes = device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
+            if (bytes == UINT64_MAX || UINT64_MAX - total < bytes) return UINT64_MAX;
+            total += bytes;
+        }
         // A logical-grid motion scratch isolates per-pixel history rejections
         // from the original physical motion input.
         const auto motionDesc = CD3DX12_RESOURCE_DESC::Tex2D(
@@ -522,16 +533,11 @@ namespace DX12Native
 
     bool NativeHybridGI::RecordHistoryValidation(ID3D12Device* device,
         ID3D12GraphicsCommandList* list, FrameOutputs& current,
-        const FrameOutputs* previous, uint32_t slot)
+        uint32_t slot, uint32_t frameNumber, uint64_t sceneGeneration)
     {
         current.rrHistoryValid = false;
-        if (!device || !list || !current.rrGuidesValid || !previous ||
-            !previous->rrGuidesValid || slot >= 2u ||
-            current.sampling.logical != previous->sampling.logical ||
-            current.sampling.effective != previous->sampling.effective) {
-            // First frame, mode change, or discontinuity resets the family
-            // histories; no unsafe previous resource is dereferenced.
-            historyFailure = "No compatible previous logical RR receiver history";
+        if (!device || !list || !current.rrGuidesValid || slot >= 2u) {
+            historyFailure = "Current native RR guide frame unavailable";
             return false;
         }
         try {
@@ -570,6 +576,28 @@ namespace DX12Native
                     &heapDesc, IID_PPV_ARGS(historyDescriptors.put())));
             }
             const auto size = current.sampling.logical;
+            if (historySize != size) {
+                for (auto& previousGuide : historyGuides) previousGuide = nullptr;
+                historySize = size;
+                historyLastFrame = UINT32_MAX;
+            }
+            const bool compatible = historyGuides[0] && historyGuides[1] &&
+                historyLastFrame != UINT32_MAX &&
+                historyLastFrame + 1u == frameNumber &&
+                historyGeneration == sceneGeneration &&
+                historyMode == current.sampling.effective;
+            for (uint32_t guideIndex = 0; guideIndex < 2; ++guideIndex) {
+                if (historyGuides[guideIndex]) continue;
+                const auto format = guideIndex == 0 ?
+                    DXGI_FORMAT_R32_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT;
+                const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(format,
+                    size[0], size[1], 1, 1, 1, 0,
+                    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+                const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+                DX::ThrowIfFailed(device->CreateCommittedResource(&heap,
+                    D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON,
+                    nullptr, IID_PPV_ARGS(historyGuides[guideIndex].put())));
+            }
             if (!current.rrValidatedMotion ||
                 current.rrValidatedMotion->GetDesc().Width != size[0] ||
                 current.rrValidatedMotion->GetDesc().Height != size[1]) {
@@ -583,10 +611,12 @@ namespace DX12Native
                     D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON,
                     nullptr, IID_PPV_ARGS(current.rrValidatedMotion.put())));
             }
+            // All future reads come from persistent snapshots, never the
+            // two independently recyclable scene frame slots.
             const std::array<ID3D12Resource*, 5> inputs{
                 current.rrGuides[0].get(), current.rrGuides[1].get(),
-                current.rrGuides[2].get(), previous->rrGuides[0].get(),
-                previous->rrGuides[2].get()
+                current.rrGuides[2].get(), historyGuides[0].get(),
+                historyGuides[1].get()
             };
             const std::array<DXGI_FORMAT, 5> formats{
                 DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
@@ -611,6 +641,7 @@ namespace DX12Native
             uav.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
             device->CreateUnorderedAccessView(
                 current.rrValidatedMotion.get(), nullptr, &uav, cpu);
+            if (compatible) {
             std::array<D3D12_RESOURCE_BARRIER, 6> begin{}, end{};
             for (uint32_t i = 0; i < inputs.size(); ++i) {
                 begin[i] = CD3DX12_RESOURCE_BARRIER::Transition(inputs[i],
@@ -646,8 +677,36 @@ namespace DX12Native
             list->ResourceBarrier(UINT(end.size()), end.data());
             current.rrHistoryValid = true;
             ++historyValidationDispatches;
-            historyFailure.clear();
-            return true;
+            } // compatible persistent history
+
+            // Capture the current logical depth and surface normal for the
+            // following frame. These copies stay on the same DX12 queue;
+            // there is no CPU readback, D3D11 handoff, or GPU-stalling wait.
+            for (uint32_t i = 0; i < 2; ++i) {
+                auto* src = current.rrGuides[i == 0 ? 0 : 2].get();
+                auto* dst = historyGuides[i].get();
+                const std::array<D3D12_RESOURCE_BARRIER, 2> before{
+                    CD3DX12_RESOURCE_BARRIER::Transition(src,
+                        D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE),
+                    CD3DX12_RESOURCE_BARRIER::Transition(dst,
+                        D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST)
+                };
+                list->ResourceBarrier(UINT(before.size()), before.data());
+                list->CopyResource(dst, src);
+                const std::array<D3D12_RESOURCE_BARRIER, 2> after{
+                    CD3DX12_RESOURCE_BARRIER::Transition(src,
+                        D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON),
+                    CD3DX12_RESOURCE_BARRIER::Transition(dst,
+                        D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON)
+                };
+                list->ResourceBarrier(UINT(after.size()), after.data());
+            }
+            historyLastFrame = frameNumber;
+            historyGeneration = sceneGeneration;
+            historyMode = current.sampling.effective;
+            historyFailure = compatible ? "" :
+                "Temporal history reset: first frame, resize, mode or scene transition";
+            return current.rrHistoryValid;
         } catch (const std::exception& error) {
             current.rrHistoryValid = false;
             historyFailure = error.what();
