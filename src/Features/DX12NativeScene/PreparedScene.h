@@ -23,6 +23,8 @@ namespace DX12Native
 		std::vector<float3> lights;
 		std::vector<json> lightDefinitions;
 		std::vector<PreparedPointLight> nativeLights;
+		// Per-light baseline admission result, kept in the same order as nativeLights.
+		std::vector<std::string> lightEligibility;
 		std::vector<json> roomDefinitions;
 		std::string digest;
 		uint64_t bytes = 0;
