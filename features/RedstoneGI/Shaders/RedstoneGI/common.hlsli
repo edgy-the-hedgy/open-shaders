@@ -43,7 +43,7 @@ cbuffer RedstoneGISettings : register(b1)
 #if defined(DX12_HYBRID_GI)
     // Shares the three legacy DX11 padding dwords at the end of b1.
     uint NativeRepresentativePhase;
-    uint NativeSampleQuarter;
+    uint NativeSampleScale;
     uint NativeSignalPadding;
 #else
 	uint3 geometryPadding;
@@ -87,12 +87,13 @@ uint2 SelectSurfacePixel(Texture2D<float> depthTexture, uint2 pixel)
 {
 #if defined(DX12_HYBRID_GI)
     // A single representative native pixel for the entire logical block.
-    // Phase moves the representative within each 2x2 block while the
-    // RR render grid stays fixed and temporal reprojection remains possible.
-    if (NativeSampleQuarter != 0u) {
-        uint2 phase = uint2(NativeRepresentativePhase & 1u,
-            (NativeRepresentativePhase >> 1u) & 1u);
-        return min(pixel * 2u + phase, uint2(FrameDim) - 1u);
+    // SSGI-sized 1x1, 2x2 or 4x4 native blocks. The RR logical grid remains
+    // stable while the representative cycles across the block.
+    if (NativeSampleScale > 1u) {
+        const uint scale = NativeSampleScale;
+        const uint2 phase = uint2(NativeRepresentativePhase % scale,
+            NativeRepresentativePhase / scale);
+        return min(pixel * scale + phase, uint2(FrameDim) - 1u);
     }
     return min(pixel, uint2(FrameDim) - 1u);
 #else

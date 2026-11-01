@@ -20,17 +20,17 @@ cbuffer NativeHybridRRGuidePolicy : register(b0)
     uint2 NativeSize;
     uint2 LogicalRRSize;
     uint RepresentativePhase;
-    uint QuarterSampling;
+    uint SampleScale;
     uint LinearLighting;
     uint GuideReserved;
 };
 
 uint2 NativePixel(uint2 logical)
 {
-    if (QuarterSampling == 0u) return min(logical, NativeSize - 1u);
-    uint2 offset = uint2(RepresentativePhase & 1u,
-        (RepresentativePhase >> 1u) & 1u);
-    return min(logical * 2u + offset, NativeSize - 1u);
+    if (SampleScale <= 1u) return min(logical, NativeSize - 1u);
+    uint2 offset = uint2(RepresentativePhase % SampleScale,
+        RepresentativePhase / SampleScale);
+    return min(logical * SampleScale + offset, NativeSize - 1u);
 }
 
 [numthreads(8, 8, 1)]

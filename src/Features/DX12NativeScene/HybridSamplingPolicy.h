@@ -4,83 +4,71 @@
 
 namespace DX12Native
 {
-    // Hybrid-Shadowed producer sampling; not an SDK-wide RR resolution selector.
-    // The RR render extent is the LOGICAL extent. For checkerboard, only the
-    // input signal storage width is halved, as required by the RR signal ABI.
+    // Legacy four-mode identifiers remain for saved-settings migration.
     enum class HybridSamplingMode : uint32_t {
-        Native = 0,
-        NativeCheckerboard = 1,
-        Quarter = 2,
-        QuarterCheckerboard = 3
+        Native = 0, NativeCheckerboard = 1, Quarter = 2, QuarterCheckerboard = 3
     };
-
     struct HybridSamplingLayout {
         std::array<uint32_t, 2> native{};
-        std::array<uint32_t, 2> logical{}; // RR renderSize and reconstructed output
-        std::array<uint32_t, 2> packed{};  // ray signal storage, not RR guides
+        std::array<uint32_t, 2> logical{}; // RR logical render extent
+        std::array<uint32_t, 2> packed{}; // storage for checkerboarded raw signals
         HybridSamplingMode requested = HybridSamplingMode::Native;
         HybridSamplingMode effective = HybridSamplingMode::Native;
-        uint32_t checkerboardOrigin = 0;
-        uint32_t representativePhase = 0;
-        bool quarter = false;
+        uint32_t checkerboardOrigin = 0, representativePhase = 0;
+        uint32_t spatialScale = 1; // 1x/2x/4x native pixel block, matching SSGI dimensions
         bool checkerboard = false;
         uint64_t tracedPixels = 0;
     };
-
+    // SSGI: full, half and quarter width AND height, with a separate
+    // checkerboard flag. Retain odd-sized edge blocks (ceil rather than floor).
     constexpr HybridSamplingLayout MakeHybridSamplingLayout(
-        HybridSamplingMode requested, std::array<uint32_t, 2> native, uint32_t frame)
+        uint32_t ssgiResolution, bool wantsCheckerboard,
+        std::array<uint32_t, 2> native, uint32_t frame)
     {
         HybridSamplingLayout result{};
         result.native = native;
-        result.requested = requested;
-        result.quarter = requested == HybridSamplingMode::Quarter ||
-                         requested == HybridSamplingMode::QuarterCheckerboard;
-        const bool wantsCheckerboard =
-            requested == HybridSamplingMode::NativeCheckerboard ||
-            requested == HybridSamplingMode::QuarterCheckerboard;
-
-        // Quarter = one sample per 2x2 native-pixel block (NOT width/4,
-        // height/4). Round up odd native extents without dropping edge pixels.
-        result.logical = result.quarter ?
-            std::array<uint32_t, 2>{ native[0] / 2u + native[0] % 2u,
-                                     native[1] / 2u + native[1] % 2u } : native;
-
-        // Packed RR checkerboard requires an even logical width. For an odd
-        // width, retain the requested spatial density and bypass checkerboard
-        // rather than silently dropping the final column.
+        result.spatialScale = 1u << (ssgiResolution > 2u ? 2u : ssgiResolution);
+        const uint32_t scale = result.spatialScale;
+        result.logical = {
+            native[0] / scale + (native[0] % scale != 0u),
+            native[1] / scale + (native[1] % scale != 0u) };
+        // RR ABI expects horizontally packed checkerboard signals and full
+        // logical-grid guides. Odd logical widths cannot be packed losslessly.
         result.checkerboard = wantsCheckerboard && result.logical[0] >= 2u &&
-            (result.logical[0] % 2u == 0u) && result.logical[1] > 0u;
-        result.effective = result.quarter ?
-            (result.checkerboard ? HybridSamplingMode::QuarterCheckerboard : HybridSamplingMode::Quarter) :
-            (result.checkerboard ? HybridSamplingMode::NativeCheckerboard : HybridSamplingMode::Native);
-        result.packed = { result.checkerboard ? result.logical[0] / 2u : result.logical[0],
-                          result.logical[1] };
+            result.logical[0] % 2u == 0u && result.logical[1] != 0u;
+        result.requested = scale == 1u ?
+            (wantsCheckerboard ? HybridSamplingMode::NativeCheckerboard : HybridSamplingMode::Native) :
+            (wantsCheckerboard ? HybridSamplingMode::QuarterCheckerboard : HybridSamplingMode::Quarter);
+        result.effective = scale == 1u ?
+            (result.checkerboard ? HybridSamplingMode::NativeCheckerboard : HybridSamplingMode::Native) :
+            (result.checkerboard ? HybridSamplingMode::QuarterCheckerboard : HybridSamplingMode::Quarter);
+        result.packed = { result.checkerboard ? result.logical[0] / 2u : result.logical[0], result.logical[1] };
         result.checkerboardOrigin = result.checkerboard ? frame % 2u : 0u;
-
-        // Stable logical grid. Quarter visits 4 native subpixel positions over
-        // 4 frames; quarter checkerboard visits all 4 over 8 frames, with the
-        // active macroblock parity alternating on successive frames.
-        result.representativePhase = result.quarter ?
-            (result.checkerboard ? (frame / 2u) % 4u : frame % 4u) : 0u;
+        result.representativePhase = (frame / (result.checkerboard ? 2u : 1u)) % (scale * scale);
         result.tracedPixels = uint64_t(result.packed[0]) * result.packed[1];
         return result;
     }
-
-    // Authoritative four-mode policy for all native lighting producers.
-    // The pre-existing direct DXR shader retains its ABI; these reserved
-    // mode IDs identify our unified tile/checkerboard pattern.
-    // Native full = 0; native checkerboard = 5; quarter 2x2 = 7;
-    // quarter checkerboard (one 2x2 macroblock in two) = 6.
+    // Compatibility only: the previous 'quarter' was a 2x2 native block.
+    constexpr HybridSamplingLayout MakeHybridSamplingLayout(
+        HybridSamplingMode mode, std::array<uint32_t, 2> native, uint32_t frame)
+    {
+        const bool coarse = mode == HybridSamplingMode::Quarter ||
+            mode == HybridSamplingMode::QuarterCheckerboard;
+        const bool checker = mode == HybridSamplingMode::NativeCheckerboard ||
+            mode == HybridSamplingMode::QuarterCheckerboard;
+        return MakeHybridSamplingLayout(coarse ? 1u : 0u, checker, native, frame);
+    }
+    constexpr HybridSamplingLayout MakeDirectSamplingLayout(
+        bool checkerboard, std::array<uint32_t, 2> native, uint32_t frame)
+    {
+        return MakeHybridSamplingLayout(0u, checkerboard, native, frame);
+    }
+    // Direct DXR only ever uses native (mode 0) or native checkerboard (mode 5).
     constexpr uint32_t NativeTraceShaderMode(HybridSamplingMode mode)
     {
-        switch (mode) {
-        case HybridSamplingMode::Native: return 0u;
-        case HybridSamplingMode::NativeCheckerboard: return 5u;
-        case HybridSamplingMode::Quarter: return 7u;
-        case HybridSamplingMode::QuarterCheckerboard: return 6u;
-        }
-        return 0u;
+        return mode == HybridSamplingMode::NativeCheckerboard ? 5u : 0u;
     }
+    // Deprecated compatibility helpers for old config migration.
     constexpr uint32_t RRLogicalReduction(HybridSamplingMode mode)
     {
         return mode == HybridSamplingMode::Quarter ||
@@ -91,20 +79,13 @@ namespace DX12Native
         return mode == HybridSamplingMode::NativeCheckerboard ||
             mode == HybridSamplingMode::QuarterCheckerboard;
     }
-    static_assert(NativeTraceShaderMode(HybridSamplingMode::QuarterCheckerboard) == 6u);
-    static_assert(RRLogicalReduction(HybridSamplingMode::Quarter) == 1u);
-    static_assert(RRCheckerboard(HybridSamplingMode::NativeCheckerboard));
-
-    static_assert(MakeHybridSamplingLayout(HybridSamplingMode::Native,
-        {1920u, 1080u}, 0u).tracedPixels == 1920ull * 1080ull);
-    static_assert(MakeHybridSamplingLayout(HybridSamplingMode::NativeCheckerboard,
-        {1920u, 1080u}, 0u).tracedPixels == 960ull * 1080ull);
-    static_assert(MakeHybridSamplingLayout(HybridSamplingMode::Quarter,
-        {1920u, 1080u}, 0u).tracedPixels == 960ull * 540ull);
-    static_assert(MakeHybridSamplingLayout(HybridSamplingMode::QuarterCheckerboard,
-        {1920u, 1080u}, 0u).tracedPixels == 480ull * 540ull);
-    static_assert(MakeHybridSamplingLayout(HybridSamplingMode::QuarterCheckerboard,
-        {1920u, 1080u}, 7u).representativePhase == 3u);
-    static_assert(MakeHybridSamplingLayout(HybridSamplingMode::NativeCheckerboard,
-        {1919u, 1080u}, 0u).effective == HybridSamplingMode::Native);
+    static_assert(NativeTraceShaderMode(HybridSamplingMode::NativeCheckerboard) == 5u);
+    static_assert(MakeHybridSamplingLayout(0u, false, {1920, 1080}, 0).tracedPixels == 2073600ull);
+    static_assert(MakeHybridSamplingLayout(0u, true, {1920, 1080}, 0).tracedPixels == 1036800ull);
+    static_assert(MakeHybridSamplingLayout(1u, false, {1920, 1080}, 0).tracedPixels == 518400ull);
+    static_assert(MakeHybridSamplingLayout(1u, true, {1920, 1080}, 0).tracedPixels == 259200ull);
+    static_assert(MakeHybridSamplingLayout(2u, false, {1920, 1080}, 0).tracedPixels == 129600ull);
+    static_assert(MakeHybridSamplingLayout(2u, true, {1920, 1080}, 0).tracedPixels == 64800ull);
+    static_assert(MakeHybridSamplingLayout(2u, true, {1920, 1080}, 31).representativePhase == 15u);
+    static_assert(MakeHybridSamplingLayout(0u, true, {1919, 1080}, 0).effective == HybridSamplingMode::Native);
 }

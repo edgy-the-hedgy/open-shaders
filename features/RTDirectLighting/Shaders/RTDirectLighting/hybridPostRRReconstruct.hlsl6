@@ -13,7 +13,7 @@ cbuffer PostRRSettings : register(b0)
     uint2 RRSize;
     uint SignalFamily;     // 0 diffuse, 1 specular, 2 AO
     uint FilterEnabled;
-    uint QuarterSampling;
+    uint SampleScale;
     uint RepresentativePhase;
     float FilterRadius;
     float FilterStrength;
@@ -34,9 +34,10 @@ float3 DecodeOct(float2 packed)
 
 uint2 Representative(uint2 sample)
 {
-    if (QuarterSampling == 0u) return min(sample, FullSize - 1u);
-    const uint2 phase = uint2(RepresentativePhase & 1u, (RepresentativePhase >> 1u) & 1u);
-    return min(sample * 2u + phase, FullSize - 1u);
+    if (SampleScale <= 1u) return min(sample, FullSize - 1u);
+    const uint2 phase = uint2(RepresentativePhase % SampleScale,
+        RepresentativePhase / SampleScale);
+    return min(sample * SampleScale + phase, FullSize - 1u);
 }
 
 float4 NeutralSignal()

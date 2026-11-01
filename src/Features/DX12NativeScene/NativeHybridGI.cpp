@@ -443,14 +443,14 @@ namespace DX12Native
 
             struct alignas(16) GuideSettings {
                 uint32_t nativeWidth, nativeHeight, logicalWidth, logicalHeight;
-                uint32_t representativePhase, quarterSampling, linearLighting, reserved;
+                uint32_t representativePhase, sampleScale, linearLighting, reserved;
             };
             static_assert(sizeof(GuideSettings) == 32);
             static_assert(kRRGuideOffset + sizeof(GuideSettings) <= kUploadBytes);
             const GuideSettings guideSettings{
                 frame.sampling.native[0], frame.sampling.native[1],
                 size[0], size[1], frame.sampling.representativePhase,
-                uint32_t(frame.sampling.quarter),
+                uint32_t(frame.sampling.spatialScale),
                 uint32_t(globals::features::linearLighting.IsLinearLightingActive()), 0u };
             uint8_t* mapped = nullptr;
             const D3D12_RANGE noRead{ 0, 0 };
@@ -587,7 +587,8 @@ namespace DX12Native
                 historyLastFrame != UINT32_MAX &&
                 historyLastFrame + 1u == frameNumber &&
                 historyGeneration == sceneGeneration &&
-                historyMode == current.sampling.effective;
+                historyMode == current.sampling.effective &&
+                historyScale == current.sampling.spatialScale;
             for (uint32_t guideIndex = 0; guideIndex < 2; ++guideIndex) {
                 if (historyGuides[guideIndex]) continue;
                 const auto format = guideIndex == 0 ?
@@ -706,6 +707,7 @@ namespace DX12Native
             historyLastFrame = frameNumber;
             historyGeneration = sceneGeneration;
             historyMode = current.sampling.effective;
+            historyScale = current.sampling.spatialScale;
             historyFailure = compatible ? "" :
                 "Temporal history reset: first frame, resize, mode or scene transition";
             return current.rrHistoryValid;
@@ -833,7 +835,7 @@ namespace DX12Native
             // required 256-byte CBV address alignment handled below.
             struct alignas(16) ReconstructCB {
                 uint32_t width, height, logicalWidth, logicalHeight;
-                uint32_t family, filter, quarter, phase;
+                uint32_t family, filter, sampleScale, phase;
                 float radius, strength, depth, normal, roughness;
                 float padding[3]{};
             };
@@ -855,7 +857,7 @@ namespace DX12Native
                 const auto& settings = policy.reconstruction[family];
                 const ReconstructCB reconstruct{
                     native[0], native[1], logical[0], logical[1], family,
-                    uint32_t(settings.filterEnabled), uint32_t(frame.sampling.quarter),
+                    uint32_t(settings.filterEnabled), uint32_t(frame.sampling.spatialScale),
                     frame.sampling.representativePhase,
                     settings.filterRadius, settings.filterStrength,
                     settings.depthSensitivity, settings.normalSensitivity,

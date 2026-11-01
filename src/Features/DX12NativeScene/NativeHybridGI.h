@@ -109,6 +109,7 @@ namespace DX12Native
         uint32_t historyLastFrame = UINT32_MAX;
         uint64_t historyGeneration = UINT64_MAX;
         HybridSamplingMode historyMode = HybridSamplingMode::Native;
+        uint32_t historyScale = 1u;
         winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
         winrt::com_ptr<ID3D12PipelineState> compositionPipeline;
         winrt::com_ptr<ID3D12DescriptorHeap> compositionDescriptors;

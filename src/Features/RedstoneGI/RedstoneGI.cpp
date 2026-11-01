@@ -353,7 +353,7 @@ RedstoneGI::RGICB RedstoneGI::GetNativeGISettings(std::array<uint32_t, 2> native
     // Reuse the existing final three padding dwords in b1, retaining the
     // exact layout of the legacy DX11 constant buffer.
     data.geometryPadding[0] = sampling.representativePhase;
-    data.geometryPadding[1] = sampling.quarter ? 1u : 0u;
+    data.geometryPadding[1] = sampling.spatialScale;
     data.MinScreenRadius = settings.MinScreenRadius * grid.x;
     data.EffectRadius = std::max(1.0f, settings.GIRadius);
     data.GIRadius = settings.GIRadius / data.EffectRadius;
