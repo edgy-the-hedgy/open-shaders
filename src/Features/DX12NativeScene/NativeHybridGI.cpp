@@ -32,7 +32,7 @@ namespace DX12Native
         struct NativeMaskCB
         {
             float influence, threshold;
-            uint32_t padding[2]{};
+            float minimumValidDepth, maximumValidDepth;
         };
         struct NativeCompositionCB
         {
@@ -66,7 +66,8 @@ namespace DX12Native
     {
         std::ifstream gi("Data/Shaders/RTDirectLighting/hybridGI.dxil", std::ios::binary);
         std::ifstream ao("Data/Shaders/RTDirectLighting/hybridAO.dxil", std::ios::binary);
-        return bool(gi) && bool(ao);
+        std::ifstream eligibility("Data/Shaders/RTDirectLighting/hybridEligibility.dxil", std::ios::binary);
+        return bool(gi) && bool(ao) && bool(eligibility);
     }
 
     uint64_t NativeHybridGI::EstimateBytes(ID3D12Device* device, uint32_t width, uint32_t height)
@@ -90,11 +91,12 @@ namespace DX12Native
 
     bool NativeHybridGI::Initialize(ID3D12Device* device)
     {
-        if (pipelines[0] && pipelines[1] && descriptors && root) return true;
+        if (pipelines[0] && pipelines[1] && eligibilityPipeline && descriptors && root) return true;
         try {
             if (!ShadersAvailable()) throw std::runtime_error("Native GI/AO DXIL not deployed; build RTComposerHybridDXIL");
             auto giCode = ReadDXIL("Data/Shaders/RTDirectLighting/hybridGI.dxil");
             auto aoCode = ReadDXIL("Data/Shaders/RTDirectLighting/hybridAO.dxil");
+            auto eligibilityCode = ReadDXIL("Data/Shaders/RTDirectLighting/hybridEligibility.dxil");
             D3D12_DESCRIPTOR_RANGE ranges[2]{};
             ranges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 8, 0, 0, 0 };
             ranges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 3, 0, 0, 0 };
@@ -129,6 +131,11 @@ namespace DX12Native
                 state.CS = { code.data(), code.size() };
                 DX::ThrowIfFailed(device->CreateComputePipelineState(&state, IID_PPV_ARGS(pipelines[i].put())));
             }
+            D3D12_COMPUTE_PIPELINE_STATE_DESC eligibilityState{};
+            eligibilityState.pRootSignature = root.get();
+            eligibilityState.CS = { eligibilityCode.data(), eligibilityCode.size() };
+            DX::ThrowIfFailed(device->CreateComputePipelineState(
+                &eligibilityState, IID_PPV_ARGS(eligibilityPipeline.put())));
             const D3D12_DESCRIPTOR_HEAP_DESC heap{ D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
                 kPerFrame * 2, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
             DX::ThrowIfFailed(device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(descriptors.put())));
@@ -138,6 +145,7 @@ namespace DX12Native
             // A partially created root/PSO/descriptor heap cannot be reused.
             // Reinitialize cleanly after a shader deployment or cache reload.
             for (auto& pipeline : pipelines) pipeline = nullptr;
+            eligibilityPipeline = nullptr;
             descriptors = nullptr;
             root = nullptr;
             failure = e.what();
@@ -175,7 +183,8 @@ namespace DX12Native
             const NativeLightingCB light{ Util::GetCameraData(),
                 uint32_t(globals::features::linearLighting.IsLinearLightingActive()),
                 globals::features::linearLighting.settings.enableACEScg };
-            const NativeMaskCB mask{ shadowInfluence, skipThreshold };
+            const NativeMaskCB mask{ shadowInfluence, skipThreshold, 18.0f,
+                nativeGI.DepthFadeRange.y };
             const auto& camera = globals::game::frameBufferCached.nonVR;
             if (sizeof(nativeGI) > kAOSettingsOffset ||
                 sizeof(nativeAO) > kLightingOffset - kAOSettingsOffset ||
@@ -254,6 +263,17 @@ namespace DX12Native
                 if (pass == 0) ++giDispatches;
                 else ++aoDispatches;
             }
+            // Full-resolution eligibility is never estimated from quarter- or
+            // checkerboard-traced outputs. It uses native depth, normal and
+            // shadow visibility and remains authoritative after RR/upscaling.
+            list->SetPipelineState(eligibilityPipeline.get());
+            auto eligibilityGPU = descriptors->GetGPUDescriptorHandleForHeapStart();
+            eligibilityGPU.ptr += uint64_t(slot * kPerFrame) * step;
+            list->SetComputeRootDescriptorTable(0, eligibilityGPU);
+            eligibilityGPU.ptr += 8u * step;
+            list->SetComputeRootDescriptorTable(1, eligibilityGPU);
+            list->Dispatch((size[0] + 7u) / 8u, (size[1] + 7u) / 8u, 1);
+            ++eligibilityDispatches;
             std::vector<D3D12_RESOURCE_BARRIER> end;
             for (auto* source : sources)
                 if (source) end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(source,
