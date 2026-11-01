@@ -17,7 +17,7 @@ RWTexture2D<float4> outDiffuse : register(u1);
 // Native HybridGI consumes the independent per-light weighted visibility mask.
 // Resource t7 remains unbound in the legacy DX11 RedstoneGI pipeline.
 Texture2D<float2> srcShadowMask : register(t7);
-RWTexture2D<uint> outReceiverEligibility : register(u2);
+// Full-native eligibility is generated separately, independent of GI sampling.
 cbuffer HybridMaskPolicy : register(b13)
 {
     float HybridShadowInfluence;
@@ -114,14 +114,12 @@ float4 EstimateSpecular(Surface surface, float roughness, bool traceRadiance)
         saturate(HybridShadowInfluence) * (1.0 - (maskValid ? saturate(mask.x) : 1.0));
     const bool suppressRays = receiverValid && maskValid &&
         effectiveVisibility < saturate(HybridSkipThreshold);
-    const uint2 eligibilityPixel = uint2(RRCheckerboardEnabled ? pixel.x >> 1u : pixel.x, pixel.y);
-    // Explicit native receiver contract: 0 = intentionally skipped,
-    // 1 = evaluated by GI, 2 = invalid geometry/depth. Neither 0 nor 2
-    // represents an unobserved checkerboard sample eligible for RR history.
-    outReceiverEligibility[eligibilityPixel] = !receiverValid ? 2u : (suppressRays ? 0u : 1u);
+    // Do not write the native mask from the sampled GI grid: quarter and
+    // checkerboard GI cannot represent every full-native receiver.
     if (!receiverValid || suppressRays) {
-        outDiffuse[eligibilityPixel] = float4(0, 0, 0, -1);
-        outSpecular[eligibilityPixel] = float4(0, 0, 0, -1);
+        const uint2 outputPixel = uint2(RRCheckerboardEnabled ? pixel.x >> 1u : pixel.x, pixel.y);
+        outDiffuse[outputPixel] = float4(0, 0, 0, -1);
+        outSpecular[outputPixel] = float4(0, 0, 0, -1);
         return;
     }
 #endif
