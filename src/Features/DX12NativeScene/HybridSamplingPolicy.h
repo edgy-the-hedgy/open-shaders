@@ -66,6 +66,35 @@ namespace DX12Native
         return result;
     }
 
+    // Authoritative four-mode policy for all native lighting producers.
+    // The pre-existing direct DXR shader retains its ABI; these reserved
+    // mode IDs identify our unified tile/checkerboard pattern.
+    // Native full = 0; native checkerboard = 5; quarter 2x2 = 7;
+    // quarter checkerboard (one 2x2 macroblock in two) = 6.
+    constexpr uint32_t NativeTraceShaderMode(HybridSamplingMode mode)
+    {
+        switch (mode) {
+        case HybridSamplingMode::Native: return 0u;
+        case HybridSamplingMode::NativeCheckerboard: return 5u;
+        case HybridSamplingMode::Quarter: return 7u;
+        case HybridSamplingMode::QuarterCheckerboard: return 6u;
+        }
+        return 0u;
+    }
+    constexpr uint32_t RRLogicalReduction(HybridSamplingMode mode)
+    {
+        return mode == HybridSamplingMode::Quarter ||
+            mode == HybridSamplingMode::QuarterCheckerboard ? 1u : 0u;
+    }
+    constexpr bool RRCheckerboard(HybridSamplingMode mode)
+    {
+        return mode == HybridSamplingMode::NativeCheckerboard ||
+            mode == HybridSamplingMode::QuarterCheckerboard;
+    }
+    static_assert(NativeTraceShaderMode(HybridSamplingMode::QuarterCheckerboard) == 6u);
+    static_assert(RRLogicalReduction(HybridSamplingMode::Quarter) == 1u);
+    static_assert(RRCheckerboard(HybridSamplingMode::NativeCheckerboard));
+
     static_assert(MakeHybridSamplingLayout(HybridSamplingMode::Native,
         {1920u, 1080u}, 0u).tracedPixels == 1920ull * 1080ull);
     static_assert(MakeHybridSamplingLayout(HybridSamplingMode::NativeCheckerboard,
