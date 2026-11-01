@@ -8,6 +8,8 @@ Texture2D<float4> IndirectSpecular : register(t3);
 Texture2D<float> DiffuseAO : register(t4);
 Texture2D<float> SpecularAO : register(t5);
 Texture2D<uint> ReceiverEligibility : register(t6);
+Texture2D<float4> DiffuseAlbedo : register(t7);
+Texture2D<float4> SpecularAlbedo : register(t8);
 RWTexture2D<float4> ComposedScene : register(u0);
 
 cbuffer NativeHybridComposition : register(b13)
@@ -15,6 +17,8 @@ cbuffer NativeHybridComposition : register(b13)
     uint2 FrameSize;
     float DirectBlend;
     float GIContribution;
+    uint NativeLinearLighting;
+    uint NativeEnableACEScg; // reserved for a full gamut-correct scene handoff
 };
 
 [numthreads(8, 8, 1)]
@@ -42,9 +46,17 @@ void main(uint2 pixel : SV_DispatchThreadID)
         if (all(isfinite(diffuse)) && all(isfinite(specular)) &&
             isfinite(aoDiffuse) && isfinite(aoSpecular))
         {
-            linearColor += saturate(GIContribution) *
-                (max(0.0, diffuse.rgb) * saturate(aoDiffuse) +
-                 max(0.0, specular.rgb) * saturate(aoSpecular));
+            const float pbrScale = NativeLinearLighting != 0u ? 1.0 : 0.65;
+            const float3 diffuseFactor = NativeLinearLighting != 0u ?
+                max(0.0, DiffuseAlbedo.Load(int3(pixel, 0)).rgb / pbrScale) :
+                pow(abs(DiffuseAlbedo.Load(int3(pixel, 0)).rgb / pbrScale), 1.6);
+            const float3 specularFactor = max(0.0, SpecularAlbedo.Load(int3(pixel, 0)).rgb);
+            // Input to RR contains NO first-bounce albedo. Modulate exactly
+            // once here, after RR and optional post-RR spatial reconstruction.
+            if (all(isfinite(diffuseFactor)) && all(isfinite(specularFactor)))
+                linearColor += saturate(GIContribution) *
+                    (max(0.0, diffuse.rgb) * diffuseFactor * saturate(aoDiffuse) +
+                     max(0.0, specular.rgb) * specularFactor * saturate(aoSpecular));
         }
     }
 
