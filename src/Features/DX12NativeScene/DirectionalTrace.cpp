@@ -562,23 +562,12 @@ namespace DX12Native
                 frame.hybridInputs[5]->resource.get(),
                 frame.hybridInputs[3]->resource.get(),
                 frame.hybridInputs[4]->resource.get());
-            // Reuse only a consecutive frame from the same scene generation
-            // with the same stable logical sampling layout. GPU queue order
-            // establishes the prior-frame guide-write/this-frame-read order.
-            const NativeHybridGI::FrameOutputs* previous = nullptr;
-            for (const auto& candidate : frames) {
-                if (&candidate == &frame || !candidate.nativeGI.rrGuidesValid ||
-                    !candidate.nativeGI.valid || candidate.generation != frame.generation ||
-                    candidate.number + 1u != frame.number ||
-                    candidate.nativeGI.sampling.logical != sampling.logical ||
-                    candidate.nativeGI.sampling.effective != sampling.effective) continue;
-                previous = &candidate.nativeGI;
-                break;
-            }
+            // The native RR provider owns persistent previous-frame depth
+            // and normal snapshots; recyclable tracer slots never do.
             if (guidesReady)
                 nativeHybridGI->RecordHistoryValidation(
                     backend.d3d12Device.get(), frame.commands.get(), frame.nativeGI,
-                    previous, uint32_t(&frame - frames.data()));
+                    uint32_t(&frame - frames.data()), frame.number, frame.generation);
             // The production compositor remains closed. This is an
             // opt-in diagnostics path on an otherwise Shadow Only frame.
             bool rrSucceeded = false;
