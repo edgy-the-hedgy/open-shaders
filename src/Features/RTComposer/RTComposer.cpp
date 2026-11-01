@@ -130,8 +130,16 @@ json RTComposer::GetDiagnostics()
         { "giProviderStatus", effective != EffectiveMode::Legacy ?
             (ssgiAvailable && effective == EffectiveMode::ShadowOnly ? "baseline-ssgi" :
              effective == EffectiveMode::ShadowOnly ? "no-active-indirect-provider" : "dx12-hybrid") : "legacy" },
-        { "shadowInfluence", composition.shadowInfluence },
-        { "directContribution", composition.rtDirectContribution },
+        { "shadowInfluence", composition.enabled && composition.mode <= CompositorMode::HybridShadowed ?
+            GetTierPolicy(composition.mode).shadowInfluence : composition.shadowInfluence },
+        { "directContribution", composition.enabled && composition.mode <= CompositorMode::HybridShadowed ?
+            GetTierPolicy(composition.mode).directContribution : composition.rtDirectContribution },
+        { "effectiveShadowTraceMode", GetTierPolicy(
+            effective == EffectiveMode::HybridShadowed ?
+                CompositorMode::HybridShadowed : CompositorMode::ShadowOnly).directTraceMode },
+        { "effectiveDirectRREnabled", effective == EffectiveMode::Legacy &&
+            globals::features::rtDirectLighting.settings.UseDirectRayRegeneration &&
+            RayRegeneration::GetSettings().enabled },
         { "giContribution", composition.giContribution },
         { "nativeProductionRequested", composition.enabled && composition.mode == CompositorMode::HybridShadowed },
         { "directCheckerboard", composition.directCheckerboard },

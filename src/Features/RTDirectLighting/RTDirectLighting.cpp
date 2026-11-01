@@ -229,11 +229,22 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
 	if (!settings.UseAllPreparedLights && settings.SelectedDirectLight >= snapshot->cell->lights.size()) return;
 	auto backend = Feature::FindGraphicsBackend();
 	auto& tracer = native.Tracer();
-    // Direct DXR is native or native checkerboard, independent of HybridGI.
+    // Composer Shadow Only/Hybrid-Shadowed: quarter-density (one 2x2 anchor).
+    // Direct RR preferences remain persisted but do not dispatch in these tiers.
+    const auto& composer = globals::features::rtComposer;
+    const auto effectiveMode = composer.ResolveEffectiveMode();
+    const bool tieredDirect = effectiveMode != RTComposer::EffectiveMode::Legacy;
+    const auto activeTier = RTComposer::GetTierPolicy(
+        effectiveMode == RTComposer::EffectiveMode::HybridShadowed ?
+            RTComposer::CompositorMode::HybridShadowed :
+            RTComposer::CompositorMode::ShadowOnly);
     const auto directLayout = DX12Native::MakeDirectSamplingLayout(
-        globals::features::rtComposer.composition.directCheckerboard, size, frame);
-    const uint32_t directTraceMode =
+        composer.composition.directCheckerboard, size, frame);
+    const uint32_t directTraceMode = tieredDirect ? activeTier.directTraceMode :
         DX12Native::NativeTraceShaderMode(directLayout.effective);
+    const bool directRR = !tieredDirect && settings.UseDirectRayRegeneration;
+    const float4 strengths{ settings.DirectStrength, settings.DiffuseStrength,
+        tieredDirect ? 0.0f : settings.SpecularStrength, settings.EmissionStrength };
 	if (!backend || !tracer.Initialize(*backend)) return;
 	// LLF is retained only for the existing opaque-room generation/stamp, not for lighting.
 	const auto lights = globals::features::lightLimitFix.GetLightView(frame);
@@ -245,9 +256,9 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
 	tracer.Dispatch(snapshot->acceleration, size, light, frame, native.GetLightingBudgetBytes(), true, lights,
 		DX12Native::DirectionalTrace::kCombinedDirectView, target, identity[0], identity[1], metadata,
 		settings.UseAllPreparedLights ? std::span<const std::array<uint32_t, 2>>(snapshot->lightReferences) : std::span<const std::array<uint32_t, 2>>{},
-		settings.UseAllPreparedLights, { settings.DirectStrength, settings.DiffuseStrength, settings.SpecularStrength, settings.EmissionStrength },
+		settings.UseAllPreparedLights, strengths,
 		!globals::features::rtComposer.BlocksRTIndirect() &&
-            gi.loaded && gi.settings.ConnectHybrid && !rtExclusive, gi.settings.IndirectStrength, settings.UseDirectRayRegeneration,
+            gi.loaded && gi.settings.ConnectHybrid && !rtExclusive, gi.settings.IndirectStrength, directRR,
 		!globals::features::rtComposer.BlocksRTIndirect() && rtExclusive ? gi.settings.IndirectRays : 0u, snapshot->roomReferences, settings.RedstoneBlend, settings.NormalInfluence,
 		settings.UseAllPreparedLights ? std::span<const DX12Native::PreparedPointLight>(snapshot->cell->nativeLights) :
 			std::span<const DX12Native::PreparedPointLight>(snapshot->cell->nativeLights).subspan(settings.SelectedDirectLight, 1),

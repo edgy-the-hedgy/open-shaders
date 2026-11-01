@@ -123,3 +123,9 @@ struct RTComposer final : Feature
     static void MigrateLegacySettings(json& root);
     static void MigrateChangedLegacySettings(const json& before, json& after);
 };
+
+static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::ShadowOnly).directTraceMode == 7u);
+static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed).shadowInfluence == .8f);
+static_assert(!RTComposer::GetTierPolicy(RTComposer::CompositorMode::ShadowOnly).directRR);
+static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed).hybridResolution == 2u);
+static_assert(!RTComposer::GetTierPolicy(RTComposer::CompositorMode::FSRRedstone).ready);
