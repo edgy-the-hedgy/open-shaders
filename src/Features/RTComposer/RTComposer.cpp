@@ -61,6 +61,7 @@ json RTComposer::GetDiagnostics()
         { "shadowInfluence", composition.shadowInfluence },
         { "directContribution", composition.rtDirectContribution },
         { "giContribution", composition.giContribution },
+        { "nativeRawPreviewRequested", composition.previewNativeRaw },
         { "shadowThreshold", composition.shadowThreshold },
         { "rtIndirectTraceDispatchesCumulative", tracer.GetDiagnostics().value("indirectTraceDispatches", uint64_t{ 0 }) }
     };
@@ -259,7 +260,9 @@ void RTComposer::DrawSettings()
         ImGui::SliderFloat("Native GI contribution", &composition.giContribution, 0.0f, 1.0f, "%.2f");
         if (ImGui::SliderFloat("GI skip visibility threshold", &composition.shadowThreshold, 0.0f, 1.0f, "%.2f"))
             OnCompositionPolicyChanged();
-        ImGui::TextWrapped("Native GI/AO and DX12 composition are diagnostic until the independent RR histories and final output handoff are validated. Shadow Only/SSGI fallback remains active.");
+        if (ImGui::Checkbox("Preview raw native Hybrid-Shadowed (diagnostic, no RR)", &composition.previewNativeRaw))
+            OnCompositionPolicyChanged();
+        ImGui::TextWrapped("Native GI/AO and DX12 composition are diagnostic until independent RR histories and the final output handoff are validated. This session-only preview writes the DX12 scene through a minimal DX11 copy shader; invalid frames fall back to Shadow Only.");
         const auto trace = globals::features::dx12NativeScene.Tracer().GetDiagnostics();
         ImGui::Text("DX12 input bridge dispatches: %llu",
             static_cast<unsigned long long>(trace.value("hybridInputDispatches", uint64_t{ 0 })));
