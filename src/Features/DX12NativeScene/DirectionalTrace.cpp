@@ -577,9 +577,12 @@ namespace DX12Native
             !frame.hybridInputs[2] || !frame.hybridInputs[3] || !frame.hybridInputs[4] ||
             !frame.hybridInputs[5]) return;
         if (!nativeHybridGI) nativeHybridGI = std::make_unique<NativeHybridGI>();
-        const auto& composition = globals::features::rtComposer.composition;
+        const auto& composer = globals::features::rtComposer;
+        const auto& composition = composer.composition;
+        const auto tier = RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed);
         const auto sampling = MakeHybridSamplingLayout(
-            composition.hybridResolution, composition.hybridCheckerboard,
+            composer.IsFixedPreset() ? tier.hybridResolution : composition.hybridResolution,
+            composer.IsFixedPreset() ? tier.hybridCheckerboard : composition.hybridCheckerboard,
             frame.size, frame.number);
         if (nativeHybridGI->Record(backend.d3d12Device.get(), frame.commands.get(),
                 frame.nativeGI, uint32_t(&frame - frames.data()), frame.number, frame.size,
@@ -587,10 +590,8 @@ namespace DX12Native
                 frame.hybridShadowedSource.get(), frame.hybridInputs[3]->resource.get(),
                 frame.hybridInputs[4]->resource.get(), frame.shadowMask.get(),
                 globals::features::redstoneGI,
-                (globals::features::rtComposer.IsFixedPreset() ?
-                    RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed).shadowInfluence :
-                    composition.shadowInfluence),
-                composition.shadowThreshold)) {
+                composer.IsFixedPreset() ? tier.shadowInfluence : composition.shadowInfluence,
+                composer.IsFixedPreset() ? 0.25f : composition.shadowThreshold)) {
             frame.nativeGIFrame = frame.number;
             // Native RR guides are GPU-only and allocated at the *logical*
             // RR grid. They are not sent through the legacy DX11 denoiser.
@@ -611,16 +612,23 @@ namespace DX12Native
             // Native Hybrid-Shadowed is a production path. The completed DX12
             // scene is the only product returned to D3D11, not legacy GI signals.
             bool rrSucceeded = false;
-            const bool rrRequested = globals::features::rtComposer.DX12HybridActive() &&
-                RayRegeneration::GetSettings().enabled;
+            // Fixed Hybrid-Shadowed requires indirect/AO RR regardless of
+            // the saved Custom RR toggle. Leave user preferences untouched.
+            const bool rrRequested = composer.DX12HybridActive() &&
+                (composer.IsFixedPreset() || RayRegeneration::GetSettings().enabled);
             if (rrRequested && frame.nativeGI.rrGuidesValid) {
                 auto& denoiser = globals::features::redstoneGI.GetDenoiser();
                 if (denoiser.Initialize(backend))
+                {
+                    auto activeReconstruction = composition;
+                    if (composer.IsFixedPreset())
+                        activeReconstruction.reconstruction = {};
                     rrSucceeded = nativeHybridGI->RecordPostRR(
                         backend.d3d12Device.get(), frame.commands.get(),
                         frame.nativeGI, uint32_t(&frame - frames.data()),
                         frame.number, frame.hybridLinearDepth.get(),
-                        frame.hybridInputs[2]->resource.get(), composition, denoiser);
+                        frame.hybridInputs[2]->resource.get(), activeReconstruction, denoiser);
+                }
             }
             // Full-native raw composition remains valid without RR or if RR
             // rejects this frame. Sparse signals must never be composed raw.
@@ -635,7 +643,7 @@ namespace DX12Native
                     frame.rasterBlend * (globals::features::rtComposer.IsFixedPreset() ?
                         RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed).directContribution :
                         composition.rtDirectContribution),
-                    composition.giContribution);
+                    composer.IsFixedPreset() ? 1.0f : composition.giContribution);
         }
     }
 
@@ -1047,9 +1055,13 @@ namespace DX12Native
         bool wantHybridInputs = a_sceneTarget &&
             globals::features::rtComposer.DX12HybridActive();
         bool wantNativeGI = wantHybridInputs && NativeHybridGI::ShadersAvailable();
-        const auto& composition = globals::features::rtComposer.composition;
+        const auto& composer = globals::features::rtComposer;
+        const auto& composition = composer.composition;
+        const auto fixed = RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed);
         const auto hybridSampling = MakeHybridSamplingLayout(
-            composition.hybridResolution, composition.hybridCheckerboard, size, a_frame);
+            composer.IsFixedPreset() ? fixed.hybridResolution : composition.hybridResolution,
+            composer.IsFixedPreset() ? fixed.hybridCheckerboard : composition.hybridCheckerboard,
+            size, a_frame);
 		bool reuse = available->size == size && available->useDirectRR == directRR && available->indirectRays == a_indirectRays && available->receivers && available->output && available->light &&
 			bool(available->shadowMask) == bool(a_sceneTarget) &&
 			bool(available->shadowMaskExport) == wantExport &&
@@ -1083,7 +1095,9 @@ namespace DX12Native
         uint64_t hybridBytes = wantHybridInputs ? nextPreviewBytes * kHybridInputCount + textureBytes + linearDepthBytes : 0;
         const auto& recon = globals::features::rtComposer.composition.reconstruction;
         const std::array<bool, 3> optionalBlur{
-            recon[0].blurEnabled, recon[1].blurEnabled, recon[2].blurEnabled };
+            !composer.IsFixedPreset() && recon[0].blurEnabled,
+            !composer.IsFixedPreset() && recon[1].blurEnabled,
+            !composer.IsFixedPreset() && recon[2].blurEnabled };
         uint64_t nativeGIBytes = wantNativeGI ?
             NativeHybridGI::EstimateBytes(backend.d3d12Device.get(), size[0], size[1],
                 hybridSampling, optionalBlur) : 0;
