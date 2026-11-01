@@ -181,6 +181,8 @@ json RTComposer::GetDiagnostics()
         { "effectiveShadowTraceMode", GetTierPolicy(
             effective == EffectiveMode::HybridShadowed ?
                 CompositorMode::HybridShadowed : CompositorMode::ShadowOnly).directTraceMode },
+        { "shadowAuraRadiusPixels", composition.enabled && IsFixedPreset() ? 3u : 0u },
+        { "shadowAuraIgnoresDestinationValidity", composition.enabled && IsFixedPreset() },
         { "effectiveDirectRREnabled", effective == EffectiveMode::Legacy &&
             globals::features::rtDirectLighting.settings.UseDirectRayRegeneration &&
             RayRegeneration::GetSettings().enabled },
