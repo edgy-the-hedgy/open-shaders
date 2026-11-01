@@ -495,16 +495,14 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
     const bool reset = fresh || changed || resources.resetHistory ||
         nativeHybridLastFrame == UINT32_MAX ||
         (resources.frame != nativeHybridLastFrame + 1u);
+    // Native family contexts are independent of the legacy DX11 context.
+    // Never call ApplyConfiguration here: it targets the legacy context,
+    // not the three native contexts. A global configuration change does
+    // invalidate histories until family-specific Configure chains land.
     const auto& configuration = RayRegeneration::GetConfiguration();
-    if (sharedConfigurationRevision != configuration.revision) {
-        SetConfiguration(configuration.overrides);
-        sharedConfigurationRevision = configuration.revision;
-    }
-    bool configReset = reset;
-    if (!ApplyConfiguration(configReset)) {
-        nativeHybridFailure = "Native FSR RR SDK configuration failed";
-        return false;
-    }
+    const bool configChanged = sharedConfigurationRevision != configuration.revision;
+    bool configReset = reset || configChanged;
+    sharedConfigurationRevision = configuration.revision;
 
     std::vector<D3D12_RESOURCE_BARRIER> begin, end;
     for (auto* input : resources.inputs) {
