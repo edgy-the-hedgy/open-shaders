@@ -115,6 +115,115 @@ bool RedstoneDenoiser::ApplyConfiguration(bool& a_resetHistory)
 	return true;
 }
 
+/** @brief Applies AMD's own queried defaults and shared overrides to each
+ * native DX12 RR context, without touching the legacy DX11 RR context.
+ * Family 0 = indirect diffuse, 1 = indirect specular, 2 = both AO signals. */
+bool RedstoneDenoiser::ApplyNativeHybridConfiguration(bool& a_resetHistory)
+{
+    std::scoped_lock lock(configurationMutex);
+    const auto& shared = RayRegeneration::GetConfiguration();
+    const bool revisionChanged =
+        nativeHybridAppliedConfigurationRevision != shared.revision;
+    if (!revisionChanged &&
+        std::ranges::all_of(nativeHybridConfigurationApplied, [](bool applied) { return applied; }))
+        return true;
+
+    if (!denoiserFunctions.Query || !denoiserFunctions.Configure) {
+        nativeHybridConfigurationFailure = "FidelityFX RR provider Query/Configure unavailable";
+        return false;
+    }
+
+    constexpr std::array familyNames{ "indirect diffuse", "indirect specular", "AO" };
+    for (size_t family = 0; family < nativeHybridContexts.size(); ++family) {
+        auto* context = &nativeHybridContexts[family];
+        if (!*context) {
+            nativeHybridConfigurationFailure =
+                std::string("Native RR configuration context missing: ") + familyNames[family];
+            return false;
+        }
+
+        auto& defaults = nativeHybridConfigurationDefaults[family];
+        if (!nativeHybridConfigurationDefaultsReady[family]) {
+            // These values are returned by THIS native SDK context. The
+            // legacy context's defaults are never assumed to be identical.
+            for (size_t i = 0; i <= kConfigurationKeys.size(); ++i) {
+                ffxQueryDescDenoiserGetDefaultKeyValue query{};
+                query.header.type = FFX_API_QUERY_DESC_TYPE_DENOISER_GET_DEFAULT_KEYVALUE;
+                query.key = i < kConfigurationKeys.size() ?
+                    kConfigurationKeys[i].key : kDebugDepthKey;
+                query.count = 1;
+                FfxApiFloatBounds bounds{};
+                query.data = i < kConfigurationKeys.size() ?
+                    static_cast<void*>(&defaults[i]) : static_cast<void*>(&bounds);
+                const auto result = denoiserFunctions.Query(context, &query.header);
+                if (result != FFX_API_RETURN_OK) {
+                    nativeHybridConfigurationFailure =
+                        std::string("Native RR default query failed for ") + familyNames[family] +
+                        " key " + std::to_string(query.key) + " (SDK result " +
+                        std::to_string(static_cast<int>(result)) + ")";
+                    logger::error("[RayRegeneration] {}", nativeHybridConfigurationFailure);
+                    return false;
+                }
+                if (i == kConfigurationKeys.size()) {
+                    defaults[6] = bounds.min;
+                    defaults[7] = bounds.max;
+                }
+            }
+            if (!std::ranges::all_of(defaults, [](float value) { return std::isfinite(value); }) ||
+                defaults[6] < 0.0f || defaults[7] < defaults[6]) {
+                nativeHybridConfigurationFailure =
+                    std::string("Native RR provider returned invalid defaults for ") + familyNames[family];
+                logger::error("[RayRegeneration] {}", nativeHybridConfigurationFailure);
+                return false;
+            }
+            nativeHybridConfigurationDefaultsReady[family] = true;
+        }
+
+        if (!revisionChanged && nativeHybridConfigurationApplied[family]) continue;
+        const FfxApiFloatBounds bounds{
+            configurationOverrides[6].value_or(defaults[6]),
+            configurationOverrides[7].value_or(defaults[7])
+        };
+        if (!std::isfinite(bounds.min) || !std::isfinite(bounds.max) ||
+            bounds.min < 0.0f || bounds.max < bounds.min) {
+            nativeHybridConfigurationFailure =
+                std::string("Invalid configured native RR debug depth bounds for ") + familyNames[family];
+            return false;
+        }
+
+        for (size_t i = 0; i <= kConfigurationKeys.size(); ++i) {
+            ffxConfigureDescDenoiserKeyValue configure{};
+            configure.header.type = FFX_API_CONFIGURE_DESC_TYPE_DENOISER_KEYVALUE;
+            configure.key = i < kConfigurationKeys.size() ?
+                kConfigurationKeys[i].key : kDebugDepthKey;
+            configure.count = 1;
+            const float value = i < kConfigurationKeys.size() ?
+                configurationOverrides[i].value_or(defaults[i]) : 0.0f;
+            configure.data = i < kConfigurationKeys.size() ?
+                static_cast<const void*>(&value) : static_cast<const void*>(&bounds);
+            const auto result = denoiserFunctions.Configure(context, &configure.header);
+            if (result != FFX_API_RETURN_OK) {
+                nativeHybridConfigurationApplied[family] = false;
+                nativeHybridConfigurationFailure =
+                    std::string("Native RR Configure failed for ") + familyNames[family] +
+                    " key " + std::to_string(configure.key) + " (SDK result " +
+                    std::to_string(static_cast<int>(result)) + ")";
+                logger::error("[RayRegeneration] {}", nativeHybridConfigurationFailure);
+                return false;
+            }
+        }
+        nativeHybridConfigurationApplied[family] = true;
+        ++nativeHybridConfigurationApplications;
+    }
+
+    nativeHybridAppliedConfigurationRevision = shared.revision;
+    nativeHybridConfigurationFailure.clear();
+    a_resetHistory = true; // SDK parameters changed: reset all affected histories
+    logger::info("[RayRegeneration] Native RR configuration revision {} applied to diffuse, specular and AO contexts",
+        nativeHybridAppliedConfigurationRevision);
+    return true;
+}
+
 void RedstoneDenoiser::DrawConfigurationSettings()
 {
 	SetConfiguration(RayRegeneration::GetConfiguration().overrides);
