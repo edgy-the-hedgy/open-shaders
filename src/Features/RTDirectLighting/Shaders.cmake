@@ -85,6 +85,16 @@ if(REDSTONE_DXC)
             "${CMAKE_CURRENT_SOURCE_DIR}/features/RTDirectLighting/Shaders/RTDirectLighting/nativeHybridCompose.hlsl6"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/features/RTDirectLighting/Shaders/RTDirectLighting/nativeHybridCompose.hlsl6"
         VERBATIM)
+    set(_rt_hybrid_guides "${REDSTONE_DXIL_DIRECTORY}/nativeHybridRRGuides.dxil")
+    add_custom_command(OUTPUT "${_rt_hybrid_guides}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${REDSTONE_DXIL_DIRECTORY}"
+        COMMAND "${REDSTONE_DXC}" -T cs_6_5 -E main -HV 2021 -O3 -Ges
+            -I "${CMAKE_CURRENT_SOURCE_DIR}/package/Shaders"
+            -Fo "${_rt_hybrid_guides}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/features/RTDirectLighting/Shaders/RTDirectLighting/nativeHybridRRGuides.hlsl6"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/features/RTDirectLighting/Shaders/RTDirectLighting/nativeHybridRRGuides.hlsl6"
+            "${CMAKE_CURRENT_SOURCE_DIR}/package/Shaders/Common/FrameBuffer.hlsli"
+        VERBATIM)
     # Optional post-RR passes: compiled and packaged now, but not dispatched
     # until native DX12 RR output and independent histories are wired.
     set(_rt_hybrid_reconstruct "${REDSTONE_DXIL_DIRECTORY}/hybridPostRRReconstruct.dxil")
@@ -106,11 +116,11 @@ if(REDSTONE_DXC)
     # Deliberately opt-in until DX12 native estimator resource bindings exist:
     # CMake --build <build> --target RTComposerHybridDXIL compiles the exact
     # RedstoneGI estimator and AO shader for Shader Model 6.5.
-    add_custom_target(RTComposerHybridDXIL DEPENDS "${_rt_hybrid_0}" "${_rt_hybrid_1}" "${_rt_hybrid_eligibility}" "${_rt_hybrid_compose}" "${_rt_hybrid_reconstruct}" "${_rt_hybrid_blur}")
+    add_custom_target(RTComposerHybridDXIL DEPENDS "${_rt_hybrid_0}" "${_rt_hybrid_1}" "${_rt_hybrid_eligibility}" "${_rt_hybrid_compose}" "${_rt_hybrid_guides}" "${_rt_hybrid_reconstruct}" "${_rt_hybrid_blur}")
     add_custom_target(RTDirectLightingDXIL DEPENDS
-        "${_redstone_directional}" "${_hybrid_source}" "${_rt_hybrid_0}" "${_rt_hybrid_1}" "${_rt_hybrid_eligibility}" "${_rt_hybrid_compose}" "${_rt_hybrid_reconstruct}" "${_rt_hybrid_blur}")
+        "${_redstone_directional}" "${_hybrid_source}" "${_rt_hybrid_0}" "${_rt_hybrid_1}" "${_rt_hybrid_eligibility}" "${_rt_hybrid_compose}" "${_rt_hybrid_guides}" "${_rt_hybrid_reconstruct}" "${_rt_hybrid_blur}")
     add_dependencies(${PROJECT_NAME} RTDirectLightingDXIL)
-    list(APPEND REDSTONE_DXIL_FILES "${_redstone_directional}" "${_hybrid_source}" "${_rt_hybrid_0}" "${_rt_hybrid_1}" "${_rt_hybrid_eligibility}" "${_rt_hybrid_compose}" "${_rt_hybrid_reconstruct}" "${_rt_hybrid_blur}")
+    list(APPEND REDSTONE_DXIL_FILES "${_redstone_directional}" "${_hybrid_source}" "${_rt_hybrid_0}" "${_rt_hybrid_1}" "${_rt_hybrid_eligibility}" "${_rt_hybrid_compose}" "${_rt_hybrid_guides}" "${_rt_hybrid_reconstruct}" "${_rt_hybrid_blur}")
     register_feature_payload(RTDirectLighting FILES ${REDSTONE_DXIL_FILES} DESTINATION "Shaders/RTDirectLighting")
     list(APPEND REDSTONE_DXIL_CORE_COMMANDS
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/Core/Shaders/RTDirectLighting"
