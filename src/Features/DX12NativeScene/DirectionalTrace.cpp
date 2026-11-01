@@ -737,7 +737,6 @@ namespace DX12Native
 			latestDirectSamplePhase = available->directSamplePhase;
 			latestIndirectSamplePhase = available->indirectSamplePhase;
 			latestTraceSize = size;
-			available->directRRResolutionMode = effectiveRRMode;
 			available->rrMaterialPolicy = a_rrMaterialIsolation ? (0x80000000u |
 				(uint32_t(std::clamp(a_rrGlossyRoughness, 0.04f, 1.0f) * 65535.0f) << 8u)) : 0u;
 			available->preparedLights = a_allPreparedLights ? std::vector<PreparedPointLight>(a_preparedLights.begin(), a_preparedLights.end()) :
