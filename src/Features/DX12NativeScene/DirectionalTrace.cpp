@@ -537,7 +537,8 @@ namespace DX12Native
 	{
 		CS_GPU_PASS("RTDirectLighting::DirectSceneComposite");
 		auto* context = backend.d3d11Context.get();
-		struct Settings { uint32_t indirect, directRR; float indirectStrength; uint32_t useDXRIndirect; float redstoneBlend; float padding[3]{}; };
+		struct Settings { uint32_t indirect, directRR; float indirectStrength; uint32_t useDXRIndirect; float redstoneBlend; uint32_t useRasterFallback; float padding[2]{}; };
+		static_assert(sizeof(Settings) == 8 * sizeof(uint32_t));
 		if (!lightingCompositeSettings) lightingCompositeSettings = std::make_unique<ConstantBuffer>(ConstantBufferDesc<Settings>(), "RTDirectLighting::LightingComposite CB");
 		winrt::com_ptr<ID3D11ComputeShader> shader;
 		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 16> inputs;
@@ -564,7 +565,7 @@ namespace DX12Native
 		auto& indirect = globals::features::redstoneGI;
 		const bool useIndirect = a_frame.useIndirect && indirect.HasCurrentIndirectLighting();
 		if (useIndirect) indirect.BindCompositeResources();
-		lightingCompositeSettings->Update(Settings{ useIndirect ? 1u : 0u, rrFlags, a_frame.indirectStrength, a_frame.indirectRays != 0 ? 1u : 0u, a_frame.rasterBlend });
+		lightingCompositeSettings->Update(Settings{ useIndirect ? 1u : 0u, rrFlags, a_frame.indirectStrength, a_frame.indirectRays != 0 ? 1u : 0u, a_frame.rasterBlend, a_frame.rasterFallback ? 1u : 0u });
 		auto* cb = lightingCompositeSettings->CB();
 		context->CSSetConstantBuffers(0, 1, &cb);
 		const auto& targets = globals::game::renderer->GetRuntimeData().renderTargets;
@@ -604,7 +605,7 @@ namespace DX12Native
 	}
 
 
-	void DirectionalTrace::Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight, const LightLimitFixData::LightView& a_lights, uint32_t a_materialView, ID3D11UnorderedAccessView* a_sceneTarget, uint32_t a_lightReference, uint32_t a_lightBase, ID3D11ShaderResourceView* a_roomMetadata, std::span<const std::array<uint32_t, 2>> a_lightIdentities, bool a_allPreparedLights, float4 a_strengths, bool a_useIndirect, float a_indirectStrength, bool a_useDirectRR, uint32_t a_indirectRays, std::span<const uint32_t> a_roomReferences, float a_rasterBlend, uint32_t a_normalMode, std::span<const PreparedPointLight> a_preparedLights, uint32_t a_directResolutionMode, uint32_t a_indirectResolutionMode, uint32_t a_directRRResolutionMode, bool a_rrMaterialIsolation, float a_rrGlossyRoughness, float4 a_falloffParameters, float4 a_stochasticParameters, bool a_useIndirectRR)
+	void DirectionalTrace::Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight, const LightLimitFixData::LightView& a_lights, uint32_t a_materialView, ID3D11UnorderedAccessView* a_sceneTarget, uint32_t a_lightReference, uint32_t a_lightBase, ID3D11ShaderResourceView* a_roomMetadata, std::span<const std::array<uint32_t, 2>> a_lightIdentities, bool a_allPreparedLights, float4 a_strengths, bool a_useIndirect, float a_indirectStrength, bool a_useDirectRR, uint32_t a_indirectRays, std::span<const uint32_t> a_roomReferences, float a_rasterBlend, uint32_t a_normalMode, std::span<const PreparedPointLight> a_preparedLights, uint32_t a_directResolutionMode, uint32_t a_indirectResolutionMode, uint32_t a_directRRResolutionMode, bool a_rrMaterialIsolation, float a_rrGlossyRoughness, float4 a_falloffParameters, float4 a_stochasticParameters, bool a_useIndirectRR, bool a_rasterFallback)
 	{
 		CS_GPU_PASS("RTDirectLighting::DirectionalDispatch");
 		const bool direct = a_materialView >= kFirstDirectView;
@@ -667,7 +668,7 @@ namespace DX12Native
 			if (directRR || indirectRR) {
 				++directRRBudgetDeferrals;
 				Dispatch(a_scene, a_nativeSize, a_lightDirection, a_frame, a_budgetBytes, a_localLight, a_lights, a_materialView, a_sceneTarget,
-					a_lightReference, a_lightBase, a_roomMetadata, a_lightIdentities, a_allPreparedLights, a_strengths, a_useIndirect, a_indirectStrength, false, a_indirectRays, a_roomReferences, a_rasterBlend, a_normalMode, a_preparedLights, a_directResolutionMode, a_indirectResolutionMode, a_directRRResolutionMode, a_rrMaterialIsolation, a_rrGlossyRoughness, a_falloffParameters, a_stochasticParameters, false);
+					a_lightReference, a_lightBase, a_roomMetadata, a_lightIdentities, a_allPreparedLights, a_strengths, a_useIndirect, a_indirectStrength, false, a_indirectRays, a_roomReferences, a_rasterBlend, a_normalMode, a_preparedLights, a_directResolutionMode, a_indirectResolutionMode, a_directRRResolutionMode, a_rrMaterialIsolation, a_rrGlossyRoughness, a_falloffParameters, a_stochasticParameters, false, a_rasterFallback);
 			} else ++budgetDeferrals;
 			return;
 		}
@@ -720,6 +721,7 @@ namespace DX12Native
 			available->useDirectRR = directRR;
 			available->useIndirectRR = indirectRR;
 			available->rasterBlend = a_rasterBlend;
+			available->rasterFallback = a_rasterFallback;
 			available->normalMode = std::min(a_normalMode, 2u);
 			available->directTraceMode = std::min(a_directResolutionMode, 7u);
 			available->indirectTraceMode = std::min(a_indirectResolutionMode, 7u);

@@ -20,7 +20,8 @@ struct RTDirectLighting final : OverlayFeature
 		float PointLightFalloffExponent = 1.0f;
 		// Combined temporal sparse sampling and finite-emitter visibility (optional experimental path).
 		bool StochasticSampling = false;
-		bool SpatialReconstruction = true;  // Independent spatial sparse-fill experiment
+		bool SpatialReconstruction = false; // Sparse pixel reconstruction is opt-in.
+		bool RasterFallback = true;         // Independent safety baseline for missing native direct.
 		float EmitterRadiusMultiplier = 1.0f;
 		uint32_t SelectedDirectLight = 0;
 		uint32_t DirectTraceResolution = 0; // legacy JSON migration input only

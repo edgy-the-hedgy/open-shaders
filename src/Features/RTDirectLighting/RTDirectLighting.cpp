@@ -10,7 +10,7 @@
 #include "Utils/DevBenchUx.h"
 #include "Util.h"
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTDirectLighting::Settings, RedstoneBlend, UsePreparedDirectLighting, UseAllPreparedLights, UseDirectRayRegeneration, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, SelectedDirectLight, NormalInfluence, DirectTraceResolution, DirectSamplingMode, DirectRRResolution, RRMaterialIsolation, RRGlossyRoughness, PointLightRadiusMultiplier, PointLightFalloffFraction, PointLightFalloffExponent, StochasticSampling, EmitterRadiusMultiplier, SpatialReconstruction)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTDirectLighting::Settings, RedstoneBlend, UsePreparedDirectLighting, UseAllPreparedLights, UseDirectRayRegeneration, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, SelectedDirectLight, NormalInfluence, DirectTraceResolution, DirectSamplingMode, DirectRRResolution, RRMaterialIsolation, RRGlossyRoughness, PointLightRadiusMultiplier, PointLightFalloffFraction, PointLightFalloffExponent, StochasticSampling, EmitterRadiusMultiplier, SpatialReconstruction, RasterFallback)
 
 std::pair<std::string, std::vector<std::string>> RTDirectLighting::GetFeatureSummary()
 {
@@ -92,7 +92,7 @@ json RTDirectLighting::GetDiagnostics()
 		{ "pointLightRadiusMultiplier", settings.PointLightRadiusMultiplier },
 		{ "pointLightFalloffFraction", settings.PointLightFalloffFraction },
 		{ "pointLightFalloffExponent", settings.PointLightFalloffExponent },
-		{ "stochasticSampling", settings.StochasticSampling }, { "spatialReconstruction", settings.SpatialReconstruction }, { "emitterRadiusMultiplier", settings.EmitterRadiusMultiplier },
+		{ "stochasticSampling", settings.StochasticSampling }, { "spatialReconstruction", settings.SpatialReconstruction }, { "rasterFallback", settings.RasterFallback }, { "emitterRadiusMultiplier", settings.EmitterRadiusMultiplier },
 		{ "directSamplingMode", settings.DirectSamplingMode },
 		{ "nativeFeatureLoaded", native.loaded }, { "preparedSceneEnabled", native.settings.UsePreparedScene },
 		{ "preparedMaterialsEnabled", native.settings.UsePreparedMaterials }, { "preparedScenePublished", scenePublished },
@@ -125,6 +125,9 @@ void RTDirectLighting::DrawDirectLightingSettings()
     }
     ImGui::TextWrapped("Percentage of native pixels traced each frame. Full is deterministic; partial patterns rotate only when stochastic sampling is enabled.");
     ImGui::SliderFloat("Raster / RT blend", &settings.RedstoneBlend, 0.0f, 1.0f, "%.2f");
+    if (ImGui::Checkbox("Raster fallback for missing RT samples", &settings.RasterFallback))
+        globals::features::dx12NativeScene.Tracer().Reset();
+    ImGui::TextWrapped("On: missing native direct samples retain raster lighting. Off: missing native direct starts from black; valid RT GI still adds independently. With no valid RT contribution, the pixel is black at any nonzero RT blend. A zero RT blend explicitly selects raster.");
     ImGui::SliderFloat("Direct lighting strength", &settings.DirectStrength, 0.0f, 8.0f, "%.2fx");
 
     ImGui::SeparatorText("Point-light reach / falloff (live tuning)");
@@ -140,7 +143,7 @@ void RTDirectLighting::DrawDirectLightingSettings()
     ImGui::SeparatorText("Spatial reconstruction (experimental)");
     if (ImGui::Checkbox("Spatial reconstruction", &settings.SpatialReconstruction))
         globals::features::dx12NativeScene.Tracer().Reset();
-    ImGui::TextWrapped("On: resolve compatible sparse receivers from traced anchors. Off: leave missing samples untraced and use raster fallback. The raw traced signal is unchanged; RR comparison still requires separate validation.");
+    ImGui::TextWrapped("On: spatially fill compatible sparse receivers. Off (default): preserve unsampled pixels as missing. The separate raster fallback setting determines whether those pixels show raster or black.");
     ImGui::SeparatorText("Stochastic RT sampling (experimental)");
     if (ImGui::Checkbox("Stochastic sampling (temporal grid + soft shadows)", &settings.StochasticSampling))
         globals::features::dx12NativeScene.Tracer().Reset();
@@ -181,7 +184,7 @@ void RTDirectLighting::DrawDirectLightingSettings()
     ImGui::TextWrapped("Direct strength scales diffuse and specular; emission is independent. Strength changes apply to the next trace/preview dispatch. Normal Save persists values.");
 
     if (settings.UsePreparedDirectLighting) {
-        ImGui::TextWrapped("Requires prepared geometry and material maps. Supported depth-matched opaque pixels receive direct diffuse/specular and emission; others retain raster output. Missing or unsupported lights keep native output. Unlisted direct lights remain absent at full RT blend; connected indirect lighting is selected separately. Native shadow production remains active.");
+        ImGui::TextWrapped("Requires prepared geometry and material maps. Supported depth-matched opaque pixels receive direct diffuse/specular and emission; raster fallback or black holes are selected independently for missing RT samples. Missing or unsupported lights do not invalidate independent GI. Unlisted direct lights remain absent at full RT blend; connected indirect lighting is selected separately. Native shadow production remains active.");
         const auto diagnostics = GetDiagnostics();
         const auto& trace = diagnostics.at("trace");
         ImGui::Text("Activation: %s", diagnostics.value("activationStatus", std::string{}).c_str());
@@ -263,7 +266,7 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
 		{ settings.StochasticSampling ? 1.0f : 0.0f, settings.EmitterRadiusMultiplier,
 			rtExclusive ? float(gi.settings.RTBounces) : 0.0f,
 			settings.SpatialReconstruction ? 1.0f : 0.0f },
-		gi.settings.UseIndirectRayRegeneration);
+		gi.settings.UseIndirectRayRegeneration, settings.RasterFallback);
 	lastFrame = frame;
 }
 
@@ -278,6 +281,7 @@ void RTDirectLighting::RegisterUxActions()
 			if (d.settings.UsePreparedDirectLighting) n.RequestPreparedScene();
 			if (args.contains("allLights")) d.settings.UseAllPreparedLights = args.at("allLights").get<bool>();
 			if (args.contains("spatialReconstruction")) d.settings.SpatialReconstruction = args.at("spatialReconstruction").get<bool>();
+			if (args.contains("rasterFallback")) d.settings.RasterFallback = args.at("rasterFallback").get<bool>();
 			if (args.contains("normalMode")) d.settings.NormalInfluence = std::min(args.at("normalMode").get<uint32_t>(), 2u);
 			if (args.contains("samplingMode")) d.settings.DirectSamplingMode = std::min(args.at("samplingMode").get<uint32_t>(), 7u);
 			if (args.contains("traceResolution")) d.settings.DirectSamplingMode = uint32_t(DX12Native::RTSampling::MigrateLegacy(args.at("traceResolution").get<uint32_t>()));

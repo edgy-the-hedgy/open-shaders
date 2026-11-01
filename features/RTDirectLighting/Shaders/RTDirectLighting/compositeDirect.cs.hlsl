@@ -31,7 +31,8 @@ cbuffer LightingComposite : register(b0)
 	float IndirectStrength;
 	uint UseDXRIndirect;
 	float RedstoneBlend;
-	float3 Padding;
+	uint UseRasterFallback;
+	float2 Padding;
 };
 
 // Direct lighting is a replaceable baseline; GI is an additive independent
@@ -60,7 +61,14 @@ void main(uint3 id : SV_DispatchThreadID)
     const bool giValid = UseDXRIndirect != 0 && (giRaw || giSpatial) &&
         all(isfinite(rawIndirectD)) && all(isfinite(rawIndirectS)) &&
         all(rawIndirectD.rgb >= 0.0f) && all(rawIndirectS.rgb >= 0.0f);
-    if (!directValid && !giValid && UseIndirect == 0u) return;
+    // With spatial reconstruction disabled, unsampled RT pixels must
+    // never silently inherit raster unless fallback was explicitly enabled.
+    // Still allow GI to contribute even when direct lighting is unavailable.
+    if (!directValid && !giValid && UseIndirect == 0u) {
+        if (UseRasterFallback == 0u)
+            SceneColor[id.xy] = float4(0.0f, 0.0f, 0.0f, SceneColor[id.xy].a);
+        return;
+    }
 
     uint rrFlags = UseDirectRR;
     uint2 rrPixel = 0;
@@ -122,10 +130,12 @@ void main(uint3 id : SV_DispatchThreadID)
 
     const float4 raster = SceneColor[id.xy];
     const float3 rasterLinear = Color::SceneGammaToLinear(raster.rgb);
-    // With no native direct light, preserve the entire raster baseline and
-    // add only valid native GI. This avoids discarding raster direct lighting.
+    // Missing native direct light chooses raster or zero baseline, WITHOUT
+    // altering GI validity. GI-only samples remain visible over a black base.
+    const bool rasterFallback = UseRasterFallback != 0u;
+    const float3 missingDirectBase = rasterFallback ? rasterLinear : float3(0.0f, 0.0f, 0.0f);
     float3 working = directValid ?
-        (ENABLE_LL ? Color::GamutTransform(directRGB) : directRGB) : rasterLinear;
+        (ENABLE_LL ? Color::GamutTransform(directRGB) : directRGB) : missingDirectBase;
     working += indirectRGB;
 
     if (UseIndirect != 0u) {
@@ -137,10 +147,16 @@ void main(uint3 id : SV_DispatchThreadID)
         SampleRedstone(id.xy, normal, 1.0f - nr.z, diffuse, specular, visibility);
         working += (diffuse + specular) * IndirectStrength;
     }
-    if (!all(isfinite(working))) return;
+    if (!all(isfinite(working))) {
+        if (!rasterFallback)
+            SceneColor[id.xy] = float4(0.0f, 0.0f, 0.0f, raster.a);
+        return;
+    }
 
-    // If direct is valid this retains the original direct-replacement blend.
-    // Otherwise it blends only additive indirect on top of existing raster.
-    const float3 result = lerp(rasterLinear, working, saturate(RedstoneBlend));
+    // For missing direct RT with fallback disabled, do not reintroduce raster
+    // via the blend's lower endpoint. Valid GI can still light that pixel.
+    const float3 blendBase = !directValid && !rasterFallback ?
+        float3(0.0f, 0.0f, 0.0f) : rasterLinear;
+    const float3 result = lerp(blendBase, working, saturate(RedstoneBlend));
     SceneColor[id.xy] = float4(Color::SceneLinearToGamma(result), raster.a);
 }
