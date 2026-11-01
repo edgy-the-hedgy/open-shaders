@@ -36,6 +36,7 @@ cbuffer Trace : register(b0)
 	uint BakedRoomsKnown;
 	uint DirectNormalMode;
 	float4 PointLightFalloff;  // effective-radius scale, transition fraction, cutoff curve exponent, reserved
+	float4 DirectStochastic;  // enabled, emitter radius multiplier, reserved, reserved
 };
 
 #include "materials.hlsli"
@@ -51,11 +52,39 @@ uint Hash(uint value)
 	return value ^ (value >> 16);
 }
 
-// Maps every output pixel to a traced anchor. In the 2/3 mode, two of
-// every three pixels on each axis are traced (indices 0 and 2); index 1
-// resolves from 0. 1/3 mode traces the first pixel of each 3x3 tile.
-uint2 TraceAnchor(uint2 pixel, uint mode)
+// The fixed mode is preserved for A/B comparisons. In stochastic mode each
+// tile receives a deterministic hash offset in a balanced temporal phase
+// cycle. Every location is eventually sampled without changing ray density.
+uint TraceTileSpan(uint mode)
 {
+	return mode == 1u ? 2u : mode == 2u ? 4u : 3u;
+}
+
+uint NearestSample(uint coordinate, uint first, uint second)
+{
+	return abs(int(coordinate) - int(first)) <= abs(int(coordinate) - int(second)) ? first : second;
+}
+
+uint2 TraceAnchor(uint2 pixel, uint mode, uint passSalt)
+{
+	if (mode == 0u) return pixel;
+	if (DirectStochastic.x >= 0.5f) {
+		const uint tileSpan = TraceTileSpan(mode);
+		const uint2 tile = pixel / tileSpan;
+		const uint2 local = pixel % tileSpan;
+		const uint phases = tileSpan * tileSpan;
+		const uint seed = Hash(tile.x * 0x9e3779b9u ^ tile.y * 0x85ebca6bu ^ passSalt);
+		const uint phase = (FrameIndex + seed % phases) % phases;
+		const uint2 first = uint2(phase % tileSpan, phase / tileSpan);
+		if (mode == 3u) {
+			const uint2 second = (first + 2u) % 3u;
+			return tile * tileSpan + uint2(
+				NearestSample(local.x, first.x, second.x),
+				NearestSample(local.y, first.y, second.y));
+		}
+		return tile * tileSpan + first;
+	}
+
 	if (mode == 1u) return (pixel / 2u) * 2u;
 	if (mode == 2u) return (pixel / 4u) * 4u;
 	if (mode == 3u) return pixel - uint2((pixel.x % 3u) == 1u ? 1u : 0u,
@@ -74,7 +103,7 @@ void main(uint3 id : SV_DispatchThreadID)
 		const bool direct = TracePass == 2u;
 		const uint mode = direct ? DirectTraceMode : IndirectTraceMode;
 		if (mode == 0u) return;
-		const uint2 sourcePixel = TraceAnchor(id.xy, mode);
+		const uint2 sourcePixel = TraceAnchor(id.xy, mode, TracePass == 1u || TracePass == 3u ? 0x51b349d5u : 0u);
 		if (all(sourcePixel == id.xy)) return;
 		const float4 receiver = Receivers.Load(int3(id.xy, 0));
 		const float4 anchor = Receivers.Load(int3(sourcePixel, 0));
@@ -113,13 +142,13 @@ void main(uint3 id : SV_DispatchThreadID)
 		IndirectSpecular[id.xy] = float4(0, 0, 0, -2);
 	}
 	const uint mode = TracePass == 1u ? IndirectTraceMode : DirectTraceMode;
-	if (any(TraceAnchor(id.xy, mode) != id.xy)) {
+	if (any(TraceAnchor(id.xy, mode, TracePass == 1u || TracePass == 3u ? 0x51b349d5u : 0u) != id.xy)) {
 		if (TracePass == 0u) Shadow[id.xy] = Unavailable(MismatchedDepth);
 		return;
 	}
 	float4 receiver = Receivers.Load(int3(id.xy, 0));
 	if (receiver.w == 0 || !all(isfinite(receiver))) {
-		Shadow[id.xy] = Unavailable(MissingReceiver);
+		if (TracePass == 0u) Shadow[id.xy] = Unavailable(MissingReceiver);
 		return;
 	}
 	float maximum = MaximumDistance;
@@ -137,7 +166,10 @@ void main(uint3 id : SV_DispatchThreadID)
 			if (instance >= InstanceCount || GeometryBuffers[NonUniformResourceIndex(instance)].Load(ValidationOffsets[instance]) != 0) continue;
 			if (AdmitCandidate(instance, surfaceQuery.CandidatePrimitiveIndex(), surfaceQuery.CandidateTriangleBarycentrics())) surfaceQuery.CommitNonOpaqueTriangleHit();
 		}
-		if (surfaceQuery.CommittedStatus() != COMMITTED_TRIANGLE_HIT) { Shadow[id.xy] = Unavailable(MissedGeometry); return; }
+		if (surfaceQuery.CommittedStatus() != COMMITTED_TRIANGLE_HIT) {
+			if (TracePass == 0u) Shadow[id.xy] = Unavailable(MissedGeometry);
+			return;
+		}
 		float4 adjacent = Receivers.Load(int3(min(id.xy + uint2(1, 1), Size - 1), 0));
 		float spread = adjacent.w != 0 ? length(normalize(adjacent.xyz) - primary.Direction) : 2.0 / max(Size.x, Size.y);
 		float footprint = max(spread, 1e-6) * surfaceQuery.CommittedRayT();

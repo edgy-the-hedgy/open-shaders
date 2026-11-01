@@ -107,7 +107,7 @@ namespace DX12Native
 		parameters[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
 		parameters[4].Descriptor.ShaderRegister = 2;
 		parameters[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-		parameters[5].Constants = { 0, 0, 32 };
+		parameters[5].Constants = { 0, 0, 36 };
 		parameters[11].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
 		parameters[11].Descriptor.ShaderRegister = 6;
 		parameters[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -392,11 +392,12 @@ namespace DX12Native
 			uint32_t exportSignals, signalPadding[3]{};
 			uint32_t indirect[4]{};
 			float4 falloffParameters;
+			float4 stochasticParameters;
 		};
 		const auto& origin = globals::game::frameBufferCached.GetCameraPosAdjust();
-		const Constants constants{ a_frame.size[0], a_frame.size[1], a_frame.number, uint32_t(a_frame.scene->bottoms.size()), a_direction, kRayMaximum, { origin.x, origin.y, origin.z }, kRayMinimum, a_localLight ? 0.0f : kSunAngularRadius, { a_localLight ? 1u : 0u, a_frame.materialView, a_frame.allPreparedLights ? uint32_t(a_frame.lightIdentities.size()) : 0u }, a_frame.strengths, (a_frame.useDirectRR || a_frame.indirectRays) ? 1u : 0u, { 0u, a_frame.directTraceMode, a_frame.indirectTraceMode }, { a_frame.indirectRays, a_frame.bindings->materials->roomCount, a_frame.bindings->materials->roomsKnown ? 1u : 0u, a_frame.normalMode | a_frame.rrMaterialPolicy }, a_frame.falloffParameters };
-		static_assert(sizeof(Constants) == 32 * sizeof(uint32_t));
-		commands->SetComputeRoot32BitConstants(5, 32, &constants, 0);
+		const Constants constants{ a_frame.size[0], a_frame.size[1], a_frame.number, uint32_t(a_frame.scene->bottoms.size()), a_direction, kRayMaximum, { origin.x, origin.y, origin.z }, kRayMinimum, a_localLight ? 0.0f : kSunAngularRadius, { a_localLight ? 1u : 0u, a_frame.materialView, a_frame.allPreparedLights ? uint32_t(a_frame.lightIdentities.size()) : 0u }, a_frame.strengths, (a_frame.useDirectRR || a_frame.indirectRays) ? 1u : 0u, { 0u, a_frame.directTraceMode, a_frame.indirectTraceMode }, { a_frame.indirectRays, a_frame.bindings->materials->roomCount, a_frame.bindings->materials->roomsKnown ? 1u : 0u, a_frame.normalMode | a_frame.rrMaterialPolicy }, a_frame.falloffParameters, a_frame.stochasticParameters };
+		static_assert(sizeof(Constants) == 36 * sizeof(uint32_t));
+		commands->SetComputeRoot32BitConstants(5, 36, &constants, 0);
 		std::vector<D3D12_RESOURCE_BARRIER> begin{
 			CD3DX12_RESOURCE_BARRIER::Transition(a_frame.light->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
 			CD3DX12_RESOURCE_BARRIER::Transition(a_frame.receivers->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
@@ -415,7 +416,7 @@ namespace DX12Native
 			commands->ResourceBarrier(uint32_t(barriers.size()), barriers.data());
 			Constants resolve = constants;
 			resolve.signalPadding[0] = 2u;
-			commands->SetComputeRoot32BitConstants(5, 32, &resolve, 0);
+			commands->SetComputeRoot32BitConstants(5, 36, &resolve, 0);
 			commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 		}
 		if (a_frame.indirectRays != 0) {
@@ -429,7 +430,7 @@ namespace DX12Native
 			commands->ResourceBarrier(uint32_t(independentSignals.size()), independentSignals.data());
 			Constants indirectConstants = constants;
 			indirectConstants.signalPadding[0] = 1u;
-			commands->SetComputeRoot32BitConstants(5, 32, &indirectConstants, 0);
+			commands->SetComputeRoot32BitConstants(5, 36, &indirectConstants, 0);
 			commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 			++indirectTraceDispatches;
 			if (a_frame.indirectTraceMode != 0u) {
@@ -439,7 +440,7 @@ namespace DX12Native
 				};
 				commands->ResourceBarrier(uint32_t(resolveOrder.size()), resolveOrder.data());
 				indirectConstants.signalPadding[0] = 3u;
-				commands->SetComputeRoot32BitConstants(5, 32, &indirectConstants, 0);
+				commands->SetComputeRoot32BitConstants(5, 36, &indirectConstants, 0);
 				commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 			}
 		}
@@ -597,7 +598,7 @@ namespace DX12Native
 	}
 
 
-	void DirectionalTrace::Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight, const LightLimitFixData::LightView& a_lights, uint32_t a_materialView, ID3D11UnorderedAccessView* a_sceneTarget, uint32_t a_lightReference, uint32_t a_lightBase, ID3D11ShaderResourceView* a_roomMetadata, std::span<const std::array<uint32_t, 2>> a_lightIdentities, bool a_allPreparedLights, float4 a_strengths, bool a_useIndirect, float a_indirectStrength, bool a_useDirectRR, uint32_t a_indirectRays, std::span<const uint32_t> a_roomReferences, float a_rasterBlend, uint32_t a_normalMode, std::span<const PreparedPointLight> a_preparedLights, uint32_t a_directResolutionMode, uint32_t a_indirectResolutionMode, uint32_t a_directRRResolutionMode, bool a_rrMaterialIsolation, float a_rrGlossyRoughness, float4 a_falloffParameters)
+	void DirectionalTrace::Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight, const LightLimitFixData::LightView& a_lights, uint32_t a_materialView, ID3D11UnorderedAccessView* a_sceneTarget, uint32_t a_lightReference, uint32_t a_lightBase, ID3D11ShaderResourceView* a_roomMetadata, std::span<const std::array<uint32_t, 2>> a_lightIdentities, bool a_allPreparedLights, float4 a_strengths, bool a_useIndirect, float a_indirectStrength, bool a_useDirectRR, uint32_t a_indirectRays, std::span<const uint32_t> a_roomReferences, float a_rasterBlend, uint32_t a_normalMode, std::span<const PreparedPointLight> a_preparedLights, uint32_t a_directResolutionMode, uint32_t a_indirectResolutionMode, uint32_t a_directRRResolutionMode, bool a_rrMaterialIsolation, float a_rrGlossyRoughness, float4 a_falloffParameters, float4 a_stochasticParameters)
 	{
 		CS_GPU_PASS("RTDirectLighting::DirectionalDispatch");
 		const bool direct = a_materialView >= kFirstDirectView;
@@ -654,7 +655,7 @@ namespace DX12Native
 			if (directRR) {
 				++directRRBudgetDeferrals;
 				Dispatch(a_scene, a_nativeSize, a_lightDirection, a_frame, a_budgetBytes, a_localLight, a_lights, a_materialView, a_sceneTarget,
-					a_lightReference, a_lightBase, a_roomMetadata, a_lightIdentities, a_allPreparedLights, a_strengths, a_useIndirect, a_indirectStrength, false, a_indirectRays, a_roomReferences, a_rasterBlend, a_normalMode, a_preparedLights, a_directResolutionMode, a_indirectResolutionMode, a_directRRResolutionMode, a_rrMaterialIsolation, a_rrGlossyRoughness, a_falloffParameters);
+					a_lightReference, a_lightBase, a_roomMetadata, a_lightIdentities, a_allPreparedLights, a_strengths, a_useIndirect, a_indirectStrength, false, a_indirectRays, a_roomReferences, a_rasterBlend, a_normalMode, a_preparedLights, a_directResolutionMode, a_indirectResolutionMode, a_directRRResolutionMode, a_rrMaterialIsolation, a_rrGlossyRoughness, a_falloffParameters, a_stochasticParameters);
 			} else ++budgetDeferrals;
 			return;
 		}
@@ -695,6 +696,8 @@ namespace DX12Native
 				std::isfinite(a_falloffParameters.x) ? std::clamp(a_falloffParameters.x, 0.1f, 64.0f) : 1.0f,
 				std::isfinite(a_falloffParameters.y) ? std::clamp(a_falloffParameters.y, 0.02f, 1.0f) : 0.1f,
 				std::isfinite(a_falloffParameters.z) ? std::clamp(a_falloffParameters.z, 0.25f, 4.0f) : 1.0f, 0.0f };
+			available->stochasticParameters = { a_stochasticParameters.x >= 0.5f ? 1.0f : 0.0f,
+				std::isfinite(a_stochasticParameters.y) ? std::clamp(a_stochasticParameters.y, 0.0f, 8.0f) : 1.0f, 0.0f, 0.0f };
 			available->useIndirect = a_useIndirect && a_indirectRays == 0;
 			available->indirectRays = std::min(a_indirectRays, 8u);
 			available->roomReferences.fill(0);

@@ -2,6 +2,16 @@
 
 static const float ReceiverRelativeTolerance = 1e-5;
 static const float MaximumHalfRadiance = 65504;
+
+// Independent integer hash streams for visibility sampling (no noise texture).
+uint DirectVisibilityHash(uint value)
+{
+	value ^= value >> 16u;
+	value *= 0x7feb352du;
+	value ^= value >> 15u;
+	value *= 0x846ca68bu;
+	return value ^ (value >> 16u);
+}
 uint BakedRoomCode(uint instance, float3 position);
 
 bool EvaluateIndirectLighting(EvaluatedSourceMaterial material, float3 position, float3 viewDirection, float3 geometricNormal,
@@ -46,6 +56,8 @@ bool EvaluatePointLight(
     float3 viewDirection,
     float3 geometricNormal,
     float receiverCode,
+    uint2 pixel,
+    uint sampleIndex,
     out float3 diffuse,
     out float3 specular,
     out float4 unavailable)
@@ -123,9 +135,31 @@ bool EvaluatePointLight(
     if (attenuation <= 0)
         return true;
 
-    // Offset toward light, not along the surface normal.
+    // Preserve the inverse-square center-light estimator and BRDF direction.
+    // Randomize only visibility across a receiver-facing emitter disk, estimating
+    // a fractional visibility (soft shadow) without random brightness scaling.
+    float3 target = lightPosition;
+    if (DirectStochastic.x >= 0.5f && DirectStochastic.y > 0.0f) {
+        const float emitterRadius = min(sourceRadius * DirectStochastic.y, lightDistance * 0.5f);
+        if (emitterRadius > 0.0f) {
+            const uint seed = DirectVisibilityHash(pixel.x * 0x9e3779b9u ^
+                pixel.y * 0x85ebca6bu ^ FrameIndex * 0xc2b2ae35u ^
+                lightIndex * 0x27d4eb2fu ^ sampleIndex * 0x165667b1u);
+            const uint r0 = DirectVisibilityHash(seed ^ 0x68bc21ebu);
+            const uint r1 = DirectVisibilityHash(seed ^ 0x02e5be93u);
+            const float2 u = (float2(r0 >> 8u, r1 >> 8u) + 0.5f) / 16777216.0f;
+            const float angle = u.y * 6.28318530718f;
+            const float spread = emitterRadius * sqrt(u.x);
+            const float3 tangent = normalize(cross(abs(l.z) < 0.9f ?
+                float3(0, 0, 1) : float3(0, 1, 0), l));
+            const float3 bitangent = cross(l, tangent);
+            target += spread * (cos(angle) * tangent + sin(angle) * bitangent);
+        }
+    }
+    // Offset toward the light instead of the surface normal; the ray terminates
+    // at the sampled emitter point, not behind it.
     float3 origin = position + l * MinimumDistance;
-    float3 shadowVector = lightPosition - origin;
+    float3 shadowVector = target - origin;
 
     bool visible;
 
@@ -202,7 +236,7 @@ float4 EvaluateDirectLighting(uint instance, uint primitive, float2 barycentric,
 		++eligibleLightCount;
 		float3 diffuse, specular;
 		float4 unavailable;
-		if (!EvaluatePointLight(lightIndex, material, position, -direction, geometricNormal, receiver.w, diffuse, specular, unavailable)) return unavailable;
+		if (!EvaluatePointLight(lightIndex, material, position, -direction, geometricNormal, receiver.w, pixel, 0u, diffuse, specular, unavailable)) return unavailable;
 		diffuseSum += diffuse;
 		specularSum += specular;
 	}

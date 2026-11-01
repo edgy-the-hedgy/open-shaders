@@ -10,7 +10,7 @@
 #include "Utils/DevBenchUx.h"
 #include "Util.h"
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTDirectLighting::Settings, RedstoneBlend, UsePreparedDirectLighting, UseAllPreparedLights, UseDirectRayRegeneration, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, SelectedDirectLight, NormalInfluence, DirectTraceResolution, DirectRRResolution, RRMaterialIsolation, RRGlossyRoughness, PointLightRadiusMultiplier, PointLightFalloffFraction, PointLightFalloffExponent)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTDirectLighting::Settings, RedstoneBlend, UsePreparedDirectLighting, UseAllPreparedLights, UseDirectRayRegeneration, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, SelectedDirectLight, NormalInfluence, DirectTraceResolution, DirectRRResolution, RRMaterialIsolation, RRGlossyRoughness, PointLightRadiusMultiplier, PointLightFalloffFraction, PointLightFalloffExponent, StochasticSampling, EmitterRadiusMultiplier)
 
 std::pair<std::string, std::vector<std::string>> RTDirectLighting::GetFeatureSummary()
 {
@@ -40,6 +40,7 @@ void RTDirectLighting::LoadSettings(json& value)
 	selected.PointLightRadiusMultiplier = std::isfinite(selected.PointLightRadiusMultiplier) ? std::clamp(selected.PointLightRadiusMultiplier, 0.1f, 64.0f) : 1.0f;
 	selected.PointLightFalloffFraction = std::isfinite(selected.PointLightFalloffFraction) ? std::clamp(selected.PointLightFalloffFraction, 0.02f, 1.0f) : 0.1f;
 	selected.PointLightFalloffExponent = std::isfinite(selected.PointLightFalloffExponent) ? std::clamp(selected.PointLightFalloffExponent, 0.25f, 4.0f) : 1.0f;
+	selected.EmitterRadiusMultiplier = std::isfinite(selected.EmitterRadiusMultiplier) ? std::clamp(selected.EmitterRadiusMultiplier, 0.0f, 8.0f) : 1.0f;
 	for (auto* v : { &selected.DirectStrength, &selected.DiffuseStrength, &selected.SpecularStrength,
 			&selected.EmissionStrength })
 		*v = std::isfinite(*v) ? std::clamp(*v, 0.0f, 8.0f) : 1.0f;
@@ -83,6 +84,7 @@ json RTDirectLighting::GetDiagnostics()
 		{ "pointLightRadiusMultiplier", settings.PointLightRadiusMultiplier },
 		{ "pointLightFalloffFraction", settings.PointLightFalloffFraction },
 		{ "pointLightFalloffExponent", settings.PointLightFalloffExponent },
+		{ "stochasticSampling", settings.StochasticSampling }, { "emitterRadiusMultiplier", settings.EmitterRadiusMultiplier },
 		{ "directTraceResolutionMode", settings.DirectTraceResolution },
 		{ "nativeFeatureLoaded", native.loaded }, { "preparedSceneEnabled", native.settings.UsePreparedScene },
 		{ "preparedMaterialsEnabled", native.settings.UsePreparedMaterials }, { "preparedScenePublished", scenePublished },
@@ -132,6 +134,14 @@ void RTDirectLighting::DrawDirectLightingSettings()
         settings.PointLightFalloffFraction = 0.1f;
         settings.PointLightFalloffExponent = 1.0f;
     }
+    ImGui::SeparatorText("Stochastic RT sampling (experimental)");
+    if (ImGui::Checkbox("Stochastic sampling (temporal grid + soft shadows)", &settings.StochasticSampling))
+        globals::features::dx12NativeScene.Tracer().Reset();
+    ImGui::BeginDisabled(!settings.StochasticSampling);
+    if (ImGui::SliderFloat("Emitter radius scale", &settings.EmitterRadiusMultiplier, 0.0f, 8.0f, "%.2fx"))
+        globals::features::dx12NativeScene.Tracer().Reset();
+    ImGui::EndDisabled();
+    ImGui::TextWrapped("Combined mode: hash-scrambled balanced sampling phases for both native direct and RT-exclusive indirect trace resolutions, plus one randomized disk-visibility ray per point light. RR resolves the resulting stochastic signals. Emitter size affects penumbra, NOT the light's cutoff radius or inverse-square energy; zero emitter scale isolates grid sampling. Off restores deterministic anchors and center-point visibility.");
     if (ImGui::Checkbox("All prepared cell lights (direct only)", &settings.UseAllPreparedLights)) globals::features::dx12NativeScene.Tracer().Reset();
 
     const auto prepared = globals::features::dx12NativeScene.GetPreparedDiagnostics();
@@ -242,7 +252,8 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
 			std::span<const DX12Native::PreparedPointLight>(snapshot->cell->nativeLights).subspan(settings.SelectedDirectLight, 1),
 		settings.DirectTraceResolution, gi.settings.RTTraceResolution, settings.DirectRRResolution,
 		settings.RRMaterialIsolation, settings.RRGlossyRoughness,
-		{ settings.PointLightRadiusMultiplier, settings.PointLightFalloffFraction, settings.PointLightFalloffExponent, 0.0f });
+		{ settings.PointLightRadiusMultiplier, settings.PointLightFalloffFraction, settings.PointLightFalloffExponent, 0.0f },
+		{ settings.StochasticSampling ? 1.0f : 0.0f, settings.EmitterRadiusMultiplier, 0.0f, 0.0f });
 	lastFrame = frame;
 }
 
@@ -273,6 +284,8 @@ void RTDirectLighting::RegisterUxActions()
 			tune("radiusMultiplier", d.settings.PointLightRadiusMultiplier, 0.1f, 64.0f);
 			tune("falloffFraction", d.settings.PointLightFalloffFraction, 0.02f, 1.0f);
 			tune("falloffExponent", d.settings.PointLightFalloffExponent, 0.25f, 4.0f);
+			if (args.contains("stochasticSampling")) d.settings.StochasticSampling = args.at("stochasticSampling").get<bool>();
+			tune("emitterRadiusMultiplier", d.settings.EmitterRadiusMultiplier, 0.0f, 8.0f);
 			n.Tracer().Reset();
 		});
 	FEATURE_COMMAND("setLightingStrengths", "Set existing direct, diffuse, specular, emission and indirect intensity.",

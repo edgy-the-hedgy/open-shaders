@@ -18,6 +18,9 @@ struct RTDirectLighting final : OverlayFeature
 		float PointLightRadiusMultiplier = 1.0f;
 		float PointLightFalloffFraction = 0.1f;
 		float PointLightFalloffExponent = 1.0f;
+		// Combined temporal sparse sampling and finite-emitter visibility (optional experimental path).
+		bool StochasticSampling = false;
+		float EmitterRadiusMultiplier = 1.0f;
 		uint32_t SelectedDirectLight = 0;
 		uint32_t DirectTraceResolution = 0;  // 0=full, 1=half, 2=quarter, 3=two-thirds, 4=one-third (linear sampling)
 		bool RRMaterialIsolation = false;

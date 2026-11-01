@@ -69,7 +69,8 @@ namespace DX12Native
 			directRRPhase = phase; rrPackFrame = a_frame.number;
 			const bool reset = directRRGeneration != a_frame.generation || directRRFrame + 1u != a_frame.number || directRRPolicyRevision != policy.revision || directRRIndirectRays != a_frame.indirectRays || directRRNormalMode != a_frame.normalMode || directRRMaterialPolicy != a_frame.rrMaterialPolicy ||
 				std::memcmp(&directRRStrengths, &a_frame.strengths, sizeof(float4)) != 0 ||
-				std::memcmp(&directRRFalloff, &a_frame.falloffParameters, sizeof(float4)) != 0 || directRRIdentities != a_frame.lightIdentities;
+				std::memcmp(&directRRFalloff, &a_frame.falloffParameters, sizeof(float4)) != 0 ||
+				std::memcmp(&directRRStochastic, &a_frame.stochasticParameters, sizeof(float4)) != 0 || directRRIdentities != a_frame.lightIdentities;
 			auto dispatch = [&](RedstoneDenoiser& denoiser, bool direct) {
 				if (!denoiser.Initialize(backend)) return false;
 				return denoiser.DispatchRayRegeneration(directRRTextures[direct ? 7 : 9]->resource.get(), directRRTextures[0]->resource.get(), directRRTextures[1]->resource.get(), directRRTextures[10]->resource.get(), directRRTextures[11]->resource.get(), directRRTextures[12]->resource.get(), directRRTextures[direct ? 3 : 5]->resource.get(), directRRTextures[direct ? 6 : 8]->resource.get(), directRRTextures[direct ? 2 : 4]->resource.get(), {}, a_frame.size, size[0], size[1], reset, checkerboard, phase, direct);
@@ -79,7 +80,7 @@ namespace DX12Native
 			if (flags) {
 				directRRGeneration = flags == (a_frame.indirectRays ? 3u : 1u) ? a_frame.generation : UINT64_MAX;
 				directRRFrame = a_frame.number; directRRPolicyRevision = policy.revision; directRRIndirectRays = a_frame.indirectRays; directRRNormalMode = a_frame.normalMode; directRRMaterialPolicy = a_frame.rrMaterialPolicy;
-				directRRStrengths = a_frame.strengths; directRRFalloff = a_frame.falloffParameters; directRRIdentities = a_frame.lightIdentities;
+				directRRStrengths = a_frame.strengths; directRRFalloff = a_frame.falloffParameters; directRRStochastic = a_frame.stochasticParameters; directRRIdentities = a_frame.lightIdentities;
 				++directRRDispatches;
 			}
 			return flags;

@@ -37,7 +37,7 @@ uint BakedRoomCode(uint instance, float3 position)
 // One terminal ray at the second indirect surface. Direct DIFFUSE is the
 // terminal incident-radiance source; primary direct signals stay unchanged.
 bool TraceTerminalDiffuse(float3 origin, float3 direction, float footprint,
-    uint selectedLight, uint lightCount, out float3 radiance)
+    uint selectedLight, uint lightCount, uint2 pixel, uint sampleIndex, out float3 radiance)
 {
     radiance = 0;
     RayDesc ray;
@@ -81,7 +81,7 @@ bool TraceTerminalDiffuse(float3 origin, float3 direction, float footprint,
     float3 directDiffuse, unusedSpecular;
     float4 unavailable;
     if (EvaluatePointLight(selectedLight, material, position, -direction,
-        geometricNormal, room, directDiffuse, unusedSpecular, unavailable))
+        geometricNormal, room, pixel, sampleIndex + 0x1000u, directDiffuse, unusedSpecular, unavailable))
         radiance += directDiffuse * float(lightCount);
 
     return all(isfinite(radiance)) && all(radiance >= 0);
@@ -138,7 +138,7 @@ bool SecondaryRadiance(float3 origin, float3 direction, float footprint,
 	for (uint light = 0; light < lightCount; ++light) {
 		float3 diffuse, specular;
 		float4 unavailable;
-		if (!EvaluatePointLight(light, material, position, -direction, geometricNormal, room, diffuse, specular, unavailable)) return false;
+		if (!EvaluatePointLight(light, material, position, -direction, geometricNormal, room, pixel, sampleIndex + 1u, diffuse, specular, unavailable)) return false;
 		radiance += diffuse + specular;
 	}
 #if REDSTONE_IL_SECOND_BOUNCE
@@ -153,7 +153,7 @@ bool SecondaryRadiance(float3 origin, float3 direction, float footprint,
     if (dot(bounceDirection, outward) > 0) {
         float3 terminal;
         if (TraceTerminalDiffuse(position + outward * MinimumDistance, bounceDirection,
-            footprint, selectedLight, lightCount, terminal)) {
+            footprint, selectedLight, lightCount, pixel, sampleIndex, terminal)) {
             // Cosine-weighted Lambert estimator: BRDF*cos / (cos/pi) = albedo.
             // Use a simple F0 diffuse-energy approximation at the intermediate hit.
             float3 throughput = saturate(1.0 - material.f0) *
