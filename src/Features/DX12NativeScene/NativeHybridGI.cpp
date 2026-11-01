@@ -70,12 +70,15 @@ namespace DX12Native
         return bool(gi) && bool(ao) && bool(eligibility);
     }
 
-    uint64_t NativeHybridGI::EstimateBytes(ID3D12Device* device, uint32_t width, uint32_t height)
+    uint64_t NativeHybridGI::EstimateBytes(ID3D12Device* device, uint32_t width, uint32_t height,
+        const HybridSamplingLayout& sampling)
     {
         if (!device || !width || !height) return UINT64_MAX;
         uint64_t total = kUploadBytes;
         for (uint32_t i = 0; i < kOutputs; ++i) {
-            const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(OutputFormat(i), width, height, 1, 1, 1, 0,
+            const auto extent = i == Eligibility ? std::array<uint32_t, 2>{width, height} : sampling.packed;
+            if (!extent[0] || !extent[1]) return UINT64_MAX;
+            const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(OutputFormat(i), extent[0], extent[1], 1, 1, 1, 0,
                 D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
             const auto bytes = device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
             if (bytes == UINT64_MAX || UINT64_MAX - total < bytes) return UINT64_MAX;
@@ -155,19 +158,30 @@ namespace DX12Native
 
     bool NativeHybridGI::Record(ID3D12Device* device, ID3D12GraphicsCommandList* list,
         FrameOutputs& frame, uint32_t slot, uint32_t frameNumber,
-        const std::array<uint32_t, 2>& size, ID3D12Resource* linearDepth,
+        const std::array<uint32_t, 2>& size,
+        const HybridSamplingLayout& sampling, ID3D12Resource* linearDepth,
         ID3D12Resource* normalRough, ID3D12Resource* linearRadiance,
         ID3D12Resource* albedo, ID3D12Resource* reflectance, ID3D12Resource* shadowMask,
         const RedstoneGI& settings, float shadowInfluence, float skipThreshold)
     {
         frame.valid = false;
         if (slot >= 2 || !list || !linearDepth || !normalRough || !linearRadiance ||
-            !albedo || !reflectance || !shadowMask || !Initialize(device)) return false;
+            !albedo || !reflectance || !shadowMask || !sampling.packed[0] ||
+            !sampling.packed[1] || !Initialize(device)) return false;
         try {
             const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+            // Slots are reused only after their completion fence retires.
+            // Recreate raw signal textures when the logical RR grid changes;
+            // the full-native eligibility texture retains its own dimensions.
+            if (frame.sampling.packed != sampling.packed) {
+                for (uint32_t i = 0; i < kOutputs; ++i)
+                    if (i != Eligibility) frame.textures[i] = nullptr;
+            }
+            frame.sampling = sampling;
             for (uint32_t i = 0; i < kOutputs; ++i) {
                 if (frame.textures[i]) continue;
-                auto desc = CD3DX12_RESOURCE_DESC::Tex2D(OutputFormat(i), size[0], size[1], 1, 1, 1, 0,
+                const auto extent = i == Eligibility ? size : sampling.packed;
+                auto desc = CD3DX12_RESOURCE_DESC::Tex2D(OutputFormat(i), extent[0], extent[1], 1, 1, 1, 0,
                     D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
                 DX::ThrowIfFailed(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
                     D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(frame.textures[i].put())));
@@ -178,7 +192,7 @@ namespace DX12Native
                 DX::ThrowIfFailed(device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &desc,
                     D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(frame.constants.put())));
             }
-            auto nativeGI = settings.GetNativeGISettings(size, frameNumber);
+            auto nativeGI = settings.GetNativeGISettings(size, frameNumber, sampling);
             auto nativeAO = settings.GetNativeOcclusionSettings();
             const NativeLightingCB light{ Util::GetCameraData(),
                 uint32_t(globals::features::linearLighting.IsLinearLightingActive()),
@@ -259,7 +273,8 @@ namespace DX12Native
                 list->SetComputeRootDescriptorTable(0, gpu);
                 gpu.ptr += 8 * step;
                 list->SetComputeRootDescriptorTable(1, gpu);
-                list->Dispatch((size[0] + 7u) / 8u, (size[1] + 7u) / 8u, 1);
+                list->Dispatch((sampling.packed[0] + 7u) / 8u,
+                    (sampling.packed[1] + 7u) / 8u, 1);
                 if (pass == 0) ++giDispatches;
                 else ++aoDispatches;
             }
