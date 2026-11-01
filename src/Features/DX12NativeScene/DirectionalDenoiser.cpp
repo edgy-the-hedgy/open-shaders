@@ -17,7 +17,8 @@ namespace DX12Native
 			if (!packRRSignals) packRRSignals.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\RTDirectLighting\\packRRSignals.cs.hlsl", {}, "cs_5_0")));
 			if (!prepareDirectGuides || !packRRSignals) return 0;
 			const std::array<uint32_t, 2> size{ std::max(1u, a_frame.size[0] >> a_frame.directRRResolutionMode), std::max(1u, a_frame.size[1] >> a_frame.directRRResolutionMode) };
-			const bool checkerboard = policy.checkerboard && size[0] >= 2 && (size[0] & 1u) == 0;
+			const bool checkerboard = a_frame.directTraceMode == 5u &&
+                size[0] >= 2 && (size[0] & 1u) == 0;
 			if (directRRSize != size || directRRCheckerboard != checkerboard || !directRRTextures[0]) {
 				std::array<std::unique_ptr<Texture2D>, 13> textures;
 				static constexpr std::array names{ "Depth", "Motion", "FilteredDirectDiffuse", "FilteredDirectSpecular", "FilteredIndirectDiffuse", "FilteredIndirectSpecular", "InputDirectDiffuse", "InputDirectSpecular", "InputIndirectDiffuse", "InputIndirectSpecular", "NormalRoughness", "SpecularAlbedo", "DiffuseAlbedo" };

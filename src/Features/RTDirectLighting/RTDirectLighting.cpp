@@ -92,7 +92,7 @@ json RTDirectLighting::GetDiagnostics()
 		{ "pointLightFalloffFraction", settings.PointLightFalloffFraction },
 		{ "pointLightFalloffExponent", settings.PointLightFalloffExponent },
 		{ "stochasticSampling", settings.StochasticSampling }, { "emitterRadiusMultiplier", settings.EmitterRadiusMultiplier },
-		{ "directTraceResolutionMode", DX12Native::NativeTraceShaderMode(globals::features::rtComposer.composition.samplingMode) },
+		{ "directTraceResolutionMode", (globals::features::rtComposer.composition.directCheckerboard ? 5u : 0u) },
 		{ "nativeFeatureLoaded", native.loaded }, { "preparedSceneEnabled", native.settings.UsePreparedScene },
 		{ "preparedMaterialsEnabled", native.settings.UsePreparedMaterials }, { "preparedScenePublished", scenePublished },
 		{ "preparedScene", prepared }, { "trace", trace } };
@@ -115,7 +115,7 @@ void RTDirectLighting::DrawDirectLightingSettings()
         globals::features::dx12NativeScene.Tracer().Reset();
     }
     ImGui::TextWrapped("Geometry mode ignores normal maps. Full material mode uses loaded shading normals. Legacy flat retains the old response with zero direct specular.");
-    ImGui::TextWrapped("Direct trace density and RR input dimensions follow the universal four-mode sampling setting in RT Composer.");
+    ImGui::TextWrapped("Direct lighting traces native or native checkerboard only. Its RR output stays native; HybridGI uses independent SSGI-sized sampling in RT Composer.");
 
     ImGui::SliderFloat("Raster / RT blend", &settings.RedstoneBlend, 0.0f, 1.0f, "%.2f");
     ImGui::SliderFloat("Direct lighting strength", &settings.DirectStrength, 0.0f, 8.0f, "%.2fx");
@@ -229,12 +229,11 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
 	if (!settings.UseAllPreparedLights && settings.SelectedDirectLight >= snapshot->cell->lights.size()) return;
 	auto backend = Feature::FindGraphicsBackend();
 	auto& tracer = native.Tracer();
-    const auto unifiedSampling = globals::features::rtComposer.composition.samplingMode;
-    // Match the native GI/RR layout's odd-width checkerboard fallback.
-    const auto unifiedLayout = DX12Native::MakeHybridSamplingLayout(
-        unifiedSampling, size, frame);
-    const uint32_t unifiedTraceMode =
-        DX12Native::NativeTraceShaderMode(unifiedLayout.effective);
+    // Direct DXR is native or native checkerboard, independent of HybridGI.
+    const auto directLayout = DX12Native::MakeDirectSamplingLayout(
+        globals::features::rtComposer.composition.directCheckerboard, size, frame);
+    const uint32_t directTraceMode =
+        DX12Native::NativeTraceShaderMode(directLayout.effective);
 	if (!backend || !tracer.Initialize(*backend)) return;
 	// LLF is retained only for the existing opaque-room generation/stamp, not for lighting.
 	const auto lights = globals::features::lightLimitFix.GetLightView(frame);
@@ -252,7 +251,7 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
 		!globals::features::rtComposer.BlocksRTIndirect() && rtExclusive ? gi.settings.IndirectRays : 0u, snapshot->roomReferences, settings.RedstoneBlend, settings.NormalInfluence,
 		settings.UseAllPreparedLights ? std::span<const DX12Native::PreparedPointLight>(snapshot->cell->nativeLights) :
 			std::span<const DX12Native::PreparedPointLight>(snapshot->cell->nativeLights).subspan(settings.SelectedDirectLight, 1),
-		unifiedTraceMode, unifiedTraceMode, 3u, // trace/denoise follow one canonical policy
+		directTraceMode, directTraceMode, 0u, // direct RR logical grid always native
 		settings.RRMaterialIsolation, settings.RRGlossyRoughness,
 		{ settings.PointLightRadiusMultiplier, settings.PointLightFalloffFraction, settings.PointLightFalloffExponent, 0.0f },
 		{ settings.StochasticSampling ? 1.0f : 0.0f, settings.EmitterRadiusMultiplier, 0.0f, 0.0f });
@@ -271,7 +270,7 @@ void RTDirectLighting::RegisterUxActions()
 			if (args.contains("allLights")) d.settings.UseAllPreparedLights = args.at("allLights").get<bool>();
 			if (args.contains("normalMode")) d.settings.NormalInfluence = std::min(args.at("normalMode").get<uint32_t>(), 2u);
 			if (args.contains("traceResolution") || args.contains("rrResolution"))
-                throw std::invalid_argument("Independent trace/RR resolution settings are retired. Use RTComposer setRayRegeneration samplingMode=0..3.");
+                throw std::invalid_argument("Independent direct resolution settings are retired. Use RTComposer directCheckerboard.");
 			if (args.contains("rrMaterialIsolation")) d.settings.RRMaterialIsolation = args.at("rrMaterialIsolation").get<bool>();
 			if (args.contains("rrGlossyRoughness")) d.settings.RRGlossyRoughness = std::clamp(args.at("rrGlossyRoughness").get<float>(), 0.04f, 1.0f);
 			if (args.contains("indirect")) globals::features::rtIndirectLighting.settings.ConnectHybrid = args.at("indirect").get<bool>();

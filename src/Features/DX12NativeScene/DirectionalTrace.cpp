@@ -576,7 +576,8 @@ namespace DX12Native
         if (!nativeHybridGI) nativeHybridGI = std::make_unique<NativeHybridGI>();
         const auto& composition = globals::features::rtComposer.composition;
         const auto sampling = MakeHybridSamplingLayout(
-            composition.samplingMode, frame.size, frame.number);
+            composition.hybridResolution, composition.hybridCheckerboard,
+            frame.size, frame.number);
         if (nativeHybridGI->Record(backend.d3d12Device.get(), frame.commands.get(),
                 frame.nativeGI, uint32_t(&frame - frames.data()), frame.number, frame.size,
                 sampling, frame.hybridLinearDepth.get(), frame.hybridInputs[2]->resource.get(),
@@ -1036,8 +1037,9 @@ namespace DX12Native
         bool wantHybridInputs = a_sceneTarget &&
             globals::features::rtComposer.DX12HybridActive();
         bool wantNativeGI = wantHybridInputs && NativeHybridGI::ShadersAvailable();
+        const auto& composition = globals::features::rtComposer.composition;
         const auto hybridSampling = MakeHybridSamplingLayout(
-            globals::features::rtComposer.composition.samplingMode, size, a_frame);
+            composition.hybridResolution, composition.hybridCheckerboard, size, a_frame);
 		bool reuse = available->size == size && available->useDirectRR == directRR && available->indirectRays == a_indirectRays && available->receivers && available->output && available->light &&
 			bool(available->shadowMask) == bool(a_sceneTarget) &&
 			bool(available->shadowMaskExport) == wantExport &&
@@ -1388,6 +1390,7 @@ namespace DX12Native
             { "nativeHybridPackedGrid", sampling.packed },
             { "nativeHybridTracedPixels", sampling.tracedPixels },
             { "nativeHybridSamplePhase", sampling.representativePhase },
+            { "nativeHybridSpatialScale", sampling.spatialScale },
             { "nativeHybridCheckerboardOrigin", sampling.checkerboardOrigin },
             { "nativeHybridEffectiveSamplingMode", static_cast<uint32_t>(sampling.effective) },
             { "nativeHybridGIFailure", nativeHybridGI ? nativeHybridGI->Failure() : std::string{} },

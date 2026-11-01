@@ -199,7 +199,7 @@ json RTIndirectLighting::GetDiagnostics()
 		{ "rtDirectRequired", settings.UseRTExclusive },
 		{ "rtDirectEnabled", direct.loaded && direct.settings.UsePreparedDirectLighting },
 		{ "indirectRays", settings.IndirectRays }, { "indirectStrength", settings.IndirectStrength },
-		{ "rtTraceResolutionMode", DX12Native::NativeTraceShaderMode(globals::features::rtComposer.composition.samplingMode) },
+		{ "rtTraceResolutionMode", (globals::features::rtComposer.composition.directCheckerboard ? 5u : 0u) },
 		{ "connectHybrid", settings.ConnectHybrid },
 		{ "trace", globals::features::dx12NativeScene.Tracer().GetDiagnostics() } };
 }
@@ -218,7 +218,7 @@ void RTIndirectLighting::RegisterUxActions()
 			else throw std::invalid_argument("Producer must be rt-exclusive or hybrid");
 			if (args.contains("rays")) gi.settings.IndirectRays = std::clamp(args.at("rays").get<uint32_t>(), 1u, 8u);
 			if (args.contains("traceResolution"))
-                throw std::invalid_argument("Independent RT-exclusive resolution is retired. Use RTComposer setRayRegeneration samplingMode=0..3.");
+                throw std::invalid_argument("Independent RT-exclusive resolution is retired; use native directCheckerboard.");
 			globals::features::dx12NativeScene.Tracer().Reset();
 		});
 	FEATURE_COMMAND("setLightingSampling", "Adjust existing Hybrid GI slice counts.",

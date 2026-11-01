@@ -186,7 +186,7 @@ void RedstoneGI::RegisterUxActions()
 					selected[setting] = std::clamp(a_args.at(parameter).get<int>(), 1, std::string_view(parameter).ends_with("Slices") ? 10 : 20);
 			}
 			if (a_args.contains("resolutionMode"))
-				throw std::invalid_argument("Independent GI resolution is retired. Use RTComposer samplingMode 0..3.");
+				throw std::invalid_argument("Independent GI resolution is retired. Use RTComposer hybridResolution / hybridCheckerboard.");
 			if (a_args.contains("adaptiveSampling")) selected["EnableAdaptiveSampling"] = a_args.at("adaptiveSampling").get<bool>();
 			if (a_args.contains("vanillaSSAO")) selected["EnableVanillaSSAO"] = a_args.at("vanillaSSAO").get<bool>();
 			if (a_args.contains("roughnessFloor")) selected["SpecularRoughnessFloor"] = a_args.at("roughnessFloor").get<float>();
@@ -200,7 +200,7 @@ void RedstoneGI::RegisterUxActions()
 			json selected;
 			redstone->SaveRedstoneSettings(selected);
 			if (a_args.contains("resolutionMode") || a_args.contains("checkerboard"))
-				throw std::invalid_argument("Independent GI sampling is retired. Use RTComposer samplingMode 0..3.");
+				throw std::invalid_argument("Independent GI sampling is retired. Use RTComposer hybridResolution / hybridCheckerboard.");
 			if (a_args.contains("rrEnabled")) {
 				const auto rr = RayRegeneration::GetSettings();
 				RayRegeneration::Configure(rr.resolutionMode, rr.checkerboard, a_args.at("rrEnabled").get<bool>());
