@@ -277,7 +277,7 @@ void RTDirectLighting::RegisterUxActions()
 			if (args.contains("rrGlossyRoughness")) d.settings.RRGlossyRoughness = std::clamp(args.at("rrGlossyRoughness").get<float>(), 0.04f, 1.0f);
 			if (args.contains("indirect")) globals::features::rtIndirectLighting.settings.ConnectHybrid = args.at("indirect").get<bool>();
 			if (args.contains("rr")) d.settings.UseDirectRayRegeneration = args.at("rr").get<bool>();
-			if (args.contains("bufferBudgetMB")) n.settings.DirectLightingBudgetMB = std::clamp(args.at("bufferBudgetMB").get<uint32_t>(), 64u, 1024u);
+			if (args.contains("bufferBudgetMB")) n.settings.DirectLightingBudgetMB = std::min(args.at("bufferBudgetMB").get<uint32_t>(), DX12NativeScene::kMaxLightingBudgetMiB);
 			auto tune = [&](const char* name, float& value, float min, float max) {
 				if (!args.contains(name)) return;
 				const float requested = args.at(name).get<float>();
