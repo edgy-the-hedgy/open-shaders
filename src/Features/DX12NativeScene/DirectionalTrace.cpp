@@ -82,7 +82,7 @@ namespace DX12Native
 	{
 		if (pipeline) return;
 		std::ifstream file("Data/Shaders/RTDirectLighting/directional.dxil", std::ios::binary | std::ios::ate);
-		if (!file) throw std::runtime_error("Packaged directional.dxil unavailable; build the RedstoneShadowDXIL target");
+		if (!file) throw std::runtime_error("Packaged directional.dxil unavailable at Data/Shaders/RTDirectLighting; build RTDirectLightingDXIL and deploy shaders");
 		const std::streamoff size = file.tellg();
 		constexpr std::streamoff kMaximumShaderBytes = 16 * 1024 * 1024;
 		if (size <= 0 || size > kMaximumShaderBytes) throw std::runtime_error("Invalid directional DXIL size");

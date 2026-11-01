@@ -89,7 +89,7 @@ list(
 
 append_copy_if_different(_shader_copy_cmds _package_shaders "${CMAKE_SOURCE_DIR}/package/Shaders" "${AIO_DIR}/Shaders")
 append_copy_if_different(_shader_copy_cmds FFX_RUNTIME_FILES "${FFX_RUNTIME_SHADER_ROOT}" "${AIO_DIR}/Shaders")
-append_copy_if_different(_shader_copy_cmds REDSTONE_DXIL_FILES "${REDSTONE_DXIL_DIRECTORY}" "${AIO_DIR}/Shaders/RedstoneShadows")
+append_copy_if_different(_shader_copy_cmds REDSTONE_DXIL_FILES "${REDSTONE_DXIL_DIRECTORY}" "${AIO_DIR}/Shaders/RTDirectLighting")
 # Streamline-Runtime.cmake's payload is a build-tree dir, not a FEATURE_PATH, so
 # the glob below never discovers it -- wire it in explicitly, same as FFX above.
 append_copy_if_different(_shader_copy_cmds STREAMLINE_RUNTIME_FILES "${STREAMLINE_RUNTIME_DIRECTORY}" "${AIO_DIR}/${STREAMLINE_RUNTIME_RELATIVE_DIRECTORY}")
