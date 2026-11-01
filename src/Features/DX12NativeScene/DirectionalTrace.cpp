@@ -76,6 +76,8 @@ namespace DX12Native
 		prepare = nullptr;
 		display = nullptr;
 		composite = nullptr;
+        nativeHybridResolve = nullptr;
+        nativeHybridPreviewFailure.clear();
 		prepareDirectGuides = nullptr;
 		packRRSignals = nullptr;
 		rrDebugShader = nullptr;
@@ -822,6 +824,43 @@ namespace DX12Native
 		context->CSGetConstantBuffers(6, 1, features.put());
 		context->CSGetConstantBuffers(12, 1, camera.put());
 		DX::ThrowIfFailed(context->Wait(completion.fence11.get(), a_frame.fence));
+        const auto& compositionPolicy = globals::features::rtComposer.composition;
+        const bool diagnosticNative = compositionPolicy.enabled &&
+            compositionPolicy.mode == RTComposer::CompositorMode::HybridShadowed &&
+            compositionPolicy.previewNativeRaw && a_frame.nativeGI.composedValid &&
+            a_frame.nativeGI.composedScene;
+        if (diagnosticNative) {
+            if (!nativeHybridResolve && nativeHybridPreviewFailure.empty()) {
+                try {
+                    nativeHybridResolve.attach(static_cast<ID3D11ComputeShader*>(
+                        Util::CompileShader(L"Data\\Shaders\\RTDirectLighting\\nativeHybridResolve.cs.hlsl",
+                            {}, "cs_5_0")));
+                    if (!nativeHybridResolve)
+                        nativeHybridPreviewFailure = "Native hybrid DX11 output shader missing";
+                } catch (const std::exception& error) {
+                    nativeHybridPreviewFailure = error.what();
+                }
+            }
+            if (nativeHybridResolve) {
+                auto* nativeOutput = a_frame.nativeGI.composedScene->srv;
+                context->CSSetShaderResources(0, 1, &nativeOutput);
+                context->CSSetUnorderedAccessViews(0, 1, &a_target, nullptr);
+                context->CSSetShader(nativeHybridResolve.get(), nullptr, 0);
+                context->Dispatch((a_frame.size[0] + 7u) / 8u,
+                    (a_frame.size[1] + 7u) / 8u, 1);
+                auto* oldOutput = outputs[0].get();
+                auto* oldInput = inputs[0].get();
+                context->CSSetUnorderedAccessViews(0, 1, &oldOutput, nullptr);
+                context->CSSetShaderResources(0, 1, &oldInput);
+                context->CSSetShader(shader.get(), nullptr, 0);
+                a_frame.retirement = producer.Next();
+                DX::ThrowIfFailed(context->Signal(producer.fence11.get(), a_frame.retirement));
+                ++sceneCompositeSubmissions;
+                ++nativeHybridPreviewSubmissions;
+                sceneCompositeFrame = a_frame.number;
+                return;
+            }
+        }
 		globals::state->BindSharedDataCS(context);
 		auto* cameraBuffer = a_frame.camera.get();
 		context->CSSetConstantBuffers(12, 1, &cameraBuffer);
@@ -1242,6 +1281,8 @@ namespace DX12Native
             { "nativeHybridGIFailure", nativeHybridGI ? nativeHybridGI->Failure() : std::string{} },
             { "nativeHybridCompositionDispatches", nativeHybridGI ? nativeHybridGI->CompositionDispatches() : uint64_t{0} },
             { "nativeHybridCompositionFailure", nativeHybridGI ? nativeHybridGI->CompositionFailure() : std::string{} },
+            { "nativeHybridPreviewSubmissions", nativeHybridPreviewSubmissions },
+            { "nativeHybridPreviewFailure", nativeHybridPreviewFailure },
             { "nativeHybridGIStatus", "5B diagnostic GI/AO + DX12 composition; not yet presented or denoised by native RR" },
             { "hybridShadowedSourceLastFrame", hybridSourceLastFrame },
             { "hybridShadowedSourceFailure", hybridSourceFailure },
