@@ -49,7 +49,8 @@ namespace DX12Native
 		ShadowMaskPublication GetShadowMask(uint32_t a_frame) const;
         // Stage 4A: GPU-only, frame-fence-gated DX11->DX12 input transport.
         // Channels: scene color, depth, normal/roughness, albedo, reflectance,
-        // motion vectors. Each resource is RGBA16F for DX11 shared UAV support.
+        // motion vectors. Depth is RGBA32F to preserve reconstruction precision;
+        // the other five inputs use RGBA16F.
         static constexpr uint32_t kHybridInputCount = 6;
         struct HybridInputsPublication
         {

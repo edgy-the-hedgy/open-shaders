@@ -890,7 +890,7 @@ namespace DX12Native
 		const uint64_t visibilityBytes = a_sceneTarget ? backend.d3d12Device->GetResourceAllocationInfo(0, 1, &visibilityDesc).SizeInBytes : 0;
 		const uint64_t maskBytes = a_sceneTarget ? backend.d3d12Device->GetResourceAllocationInfo(0, 1, &maskDesc).SizeInBytes : 0;
 		const uint64_t exportBytes = wantExport ? nextPreviewBytes : 0;
-        uint64_t hybridBytes = wantHybridInputs ? nextPreviewBytes * (kHybridInputCount + 1u) : 0;
+        uint64_t hybridBytes = wantHybridInputs ? nextPreviewBytes * kHybridInputCount + textureBytes : 0;
 		if (textureBytes == UINT64_MAX || lightBytes == UINT64_MAX || nextPreviewBytes == UINT64_MAX ||
 			visibilityBytes == UINT64_MAX || maskBytes == UINT64_MAX) { failure = "Directional texture allocation unsupported"; return; }
 		const uint64_t signalBytes = (directRR || a_indirectRays) ? nextPreviewBytes * kDirectSignalCount : 0;
@@ -1006,11 +1006,13 @@ namespace DX12Native
                     "RTComposer::HybridNormalRoughness", "RTComposer::HybridAlbedo",
                     "RTComposer::HybridReflectance", "RTComposer::HybridMotion"
                 };
-                desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-                for (uint32_t i = 0; i < kHybridInputCount; ++i)
+                for (uint32_t i = 0; i < kHybridInputCount; ++i) {
+                    desc.Format = i == 1u ? DXGI_FORMAT_R32G32B32A32_FLOAT :
+                        DXGI_FORMAT_R16G16B16A16_FLOAT;
                     if (!available->hybridInputs[i])
                         available->hybridInputs[i] = std::make_unique<WrappedResource>(
                             desc, backend.d3d11Device.get(), backend.d3d12Device.get(), names[i]);
+                }
                 desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
                 hybridInputLastBytes = hybridBytes;
             }
