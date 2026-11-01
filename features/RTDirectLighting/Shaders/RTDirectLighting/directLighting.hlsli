@@ -1,4 +1,3 @@
-#include "LightLimitFix/Attenuation.hlsli"
 #include "directContract.hlsli"
 
 static const float ReceiverRelativeTolerance = 1e-5;
@@ -110,16 +109,15 @@ bool EvaluatePointLight(
         return false;
     }
 
-    LightLimitFix::Light light = (LightLimitFix::Light) 0;
-    light.radius = falloff.x;
-    light.invRadius = falloff.y;
-    light.fadeZone = falloff.z;
-    light.sizeBias = falloff.w;
-    light.lightFlags = asuint(
-        LightSnapshot.Load(int3(snapshotBase + 5, 0, 0)).x);
-
-    float attenuation =
-        LightLimitFix::GetAttenuation(lightDistance, light);
+    // Independent temporary inverse-square law: I / (d^2 + r0^2),
+    // with a smooth finite-distance cutoff. No LLF attenuation flag.
+    const float radius = max(falloff.x, MinimumDistance);
+    const float sourceRadius = max(falloff.w, MinimumDistance);
+    const float fadeWidth = max(radius * 0.1, MinimumDistance);
+    const float fadeT = saturate((radius - lightDistance) / fadeWidth);
+    const float cutoff = fadeT * fadeT * (3.0 - 2.0 * fadeT);
+    const float attenuation = cutoff / max(lightDistance * lightDistance +
+        sourceRadius * sourceRadius, 1e-4);
 
     if (attenuation <= 0)
         return true;
