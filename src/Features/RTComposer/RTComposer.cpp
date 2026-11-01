@@ -17,6 +17,15 @@ namespace
 {
     constexpr std::array kDirectKeys{ "UseDirectRayRegeneration", "DirectRRResolution", "RRMaterialIsolation", "RRGlossyRoughness" };
     constexpr std::array kHybridFamilies{ "diffuse", "specular", "ao" };
+    void ApplyUnifiedSampling(DX12Native::HybridSamplingMode mode)
+    {
+        const auto rr = RayRegeneration::GetSettings();
+        RayRegeneration::Configure(DX12Native::RRLogicalReduction(mode),
+            DX12Native::RRCheckerboard(mode), rr.enabled);
+        globals::features::rtDirectLighting.settings.DirectRRResolution = 3u;
+        globals::features::dx12NativeScene.Tracer().Reset();
+    }
+
     using HybridFilters = std::array<RTComposer::SignalReconstructionSettings, 3>;
     json SaveHybridFilters(const HybridFilters& filters)
     {
@@ -304,15 +313,17 @@ void RTComposer::DrawSettings()
     if (previousPolicy != std::pair{ composition.enabled, composition.mode }) OnCompositionPolicyChanged();
     ImGui::SliderFloat("Shadow influence", &composition.shadowInfluence, 0.0f, 1.0f, "%.2f");
     ImGui::SliderFloat("RT direct contribution", &composition.rtDirectContribution, 0.0f, 1.0f, "%.2f");
+    ImGui::SeparatorText("Universal RT sampling");
+    int modeChoice = static_cast<int>(composition.samplingMode);
+    if (ImGui::Combo("Ray tracing / RR sampling density", &modeChoice,
+        "Native (100%)\0Native checkerboard (50%)\0Quarter (25%)\0Quarter checkerboard (12.5%)\0")) {
+        composition.samplingMode = static_cast<DX12Native::HybridSamplingMode>(modeChoice);
+        ApplyUnifiedSampling(composition.samplingMode);
+        OnCompositionPolicyChanged();
+    }
+    ImGui::TextWrapped("One grid for native direct, indirect, GI/AO and each corresponding RR input. Quarter = one traced pixel per 2x2; checkerboard halves the active sample count again. Native depth and eligibility remain full-resolution.");
     if (composition.mode == CompositorMode::HybridShadowed) {
         ImGui::SliderFloat("Native GI contribution", &composition.giContribution, 0.0f, 1.0f, "%.2f");
-        int hybridSampling = static_cast<int>(composition.samplingMode);
-        if (ImGui::Combo("Native hybrid sampling", &hybridSampling,
-                "Native (100%)\0Native checkerboard (50%)\0Quarter (25%)\0Quarter checkerboard (12.5%)\0")) {
-            composition.samplingMode = static_cast<DX12Native::HybridSamplingMode>(hybridSampling);
-            OnCompositionPolicyChanged();
-        }
-        ImGui::TextWrapped("Quarter is one sample per 2x2 block; its checkerboard phase alternates by logical block. The native RR behavior is unchanged in this stage.");
         ImGui::SeparatorText("Post-RR spatial reconstruction");
         ImGui::TextWrapped("These controls operate only after native FSR RR, and do not affect the raw diagnostic preview.");
         constexpr std::array familyNames{ "Indirect diffuse", "Indirect specular", "Ambient/specular AO" };
@@ -423,20 +434,12 @@ void RTComposer::DrawSettings()
     ImGui::TextWrapped("Compositor controls are opt-in. Existing lighting and RR behavior remains unchanged while disabled.");
     ImGui::SeparatorText("FSR Ray Regeneration");
     const auto old = RayRegeneration::GetSettings();
-    bool enabled = old.enabled, checkerboard = old.checkerboard;
-    int resolution = static_cast<int>(old.resolutionMode);
-    bool changed = ImGui::Checkbox("Enable FSR Ray Regeneration", &enabled);
-    changed |= ImGui::Combo("Reconstruction resolution", &resolution, "Full resolution\0Half resolution\0Quarter resolution\0");
-    changed |= ImGui::Checkbox("Checkerboard RR inputs", &checkerboard);
-    if (changed) RayRegeneration::Configure(uint32_t(resolution), checkerboard, enabled);
-    ImGui::TextWrapped("Shared RR policy. Independent Direct, RT-exclusive and Hybrid policies remain deferred.");
+    bool enabled = old.enabled;
+    if (ImGui::Checkbox("Enable FSR Ray Regeneration", &enabled))
+        RayRegeneration::Configure(DX12Native::RRLogicalReduction(composition.samplingMode),
+            DX12Native::RRCheckerboard(composition.samplingMode), enabled);
+    ImGui::TextWrapped("RR render size and checkerboard packing derive exclusively from the universal RT sampling selector above; no separate resolution controls.");
     ImGui::SeparatorText("Direct Lighting RR");
-    auto& direct = globals::features::rtDirectLighting.settings;
-    int directResolution = int(direct.DirectRRResolution);
-    if (ImGui::Combo("Direct RR resolution", &directResolution, "Full\0Half\0Quarter\0Use shared RR setting (legacy)\0")) {
-        direct.DirectRRResolution = uint32_t(directResolution);
-        globals::features::dx12NativeScene.Tracer().Reset();
-    }
     globals::features::rtDirectLighting.DrawRayRegenerationSettings();
     ImGui::SeparatorText("RR Signals and Diagnostics");
     globals::features::rtIndirectLighting.DrawUnifiedDebugSettings();
