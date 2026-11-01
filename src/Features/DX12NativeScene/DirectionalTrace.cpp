@@ -407,7 +407,7 @@ namespace DX12Native
 		commands->ResourceBarrier(uint32_t(begin.size()), begin.data());
 		commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 		++directTraceDispatches;
-		if (a_frame.directTraceMode != 0u) {
+		if (a_frame.directTraceMode != 0u && a_frame.stochasticParameters.w >= 0.5f) {
 			std::vector<D3D12_RESOURCE_BARRIER> barriers{
 				CD3DX12_RESOURCE_BARRIER::UAV(a_frame.output->resource.get())
 			};
@@ -416,6 +416,7 @@ namespace DX12Native
 			commands->ResourceBarrier(uint32_t(barriers.size()), barriers.data());
 			Constants resolve = constants;
 			resolve.signalPadding[0] = 2u;
+			++directSpatialResolveSubmissions;
 			commands->SetComputeRoot32BitConstants(5, 36, &resolve, 0);
 			commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 		}
@@ -433,13 +434,14 @@ namespace DX12Native
 			commands->SetComputeRoot32BitConstants(5, 36, &indirectConstants, 0);
 			commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 			++indirectTraceDispatches;
-			if (a_frame.indirectTraceMode != 0u) {
+			if (a_frame.indirectTraceMode != 0u && a_frame.stochasticParameters.w >= 0.5f) {
 				std::array<D3D12_RESOURCE_BARRIER, 2> resolveOrder{
 					CD3DX12_RESOURCE_BARRIER::UAV(a_frame.directSignals[5]->resource.get()),
 					CD3DX12_RESOURCE_BARRIER::UAV(a_frame.directSignals[6]->resource.get())
 				};
 				commands->ResourceBarrier(uint32_t(resolveOrder.size()), resolveOrder.data());
 				indirectConstants.signalPadding[0] = 3u;
+				++indirectSpatialResolveSubmissions;
 				commands->SetComputeRoot32BitConstants(5, 36, &indirectConstants, 0);
 				commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 			}
@@ -698,7 +700,8 @@ namespace DX12Native
 				std::isfinite(a_falloffParameters.z) ? std::clamp(a_falloffParameters.z, 0.25f, 4.0f) : 1.0f, 0.0f };
 			available->stochasticParameters = { a_stochasticParameters.x >= 0.5f ? 1.0f : 0.0f,
 				std::isfinite(a_stochasticParameters.y) ? std::clamp(a_stochasticParameters.y, 0.0f, 8.0f) : 1.0f,
-				std::isfinite(a_stochasticParameters.z) ? std::clamp(a_stochasticParameters.z, 0.0f, 2.0f) : 0.0f, 0.0f };
+				std::isfinite(a_stochasticParameters.z) ? std::clamp(a_stochasticParameters.z, 0.0f, 2.0f) : 0.0f,
+				a_stochasticParameters.w >= 0.5f ? 1.0f : 0.0f };
 			available->useIndirect = a_useIndirect && a_indirectRays == 0;
 			available->indirectRays = std::min(a_indirectRays, 8u);
 			available->roomReferences.fill(0);
@@ -784,7 +787,8 @@ namespace DX12Native
 			{ "failure", failure }, { "minimumDistance", kRayMinimum }, { "maximumDistance", kRayMaximum }, { "angularRadius", localLightMode ? 0.0f : kSunAngularRadius },
 			{ "lightMode", localLightMode ? "prepared-static" : "directional" },
 			{ "allPreparedLights", allPreparedLights }, { "requestedLightCount", requestedLightCount }, { "maximumDirectLights", kMaximumDirectLights }, { "lightSelectionFailure", lightSelectionFailure },
-			{ "directSubmissions", directSubmissions }, { "directTraceDispatches", directTraceDispatches }, { "indirectTraceDispatches", indirectTraceDispatches }, { "sceneCompositeSubmissions", sceneCompositeSubmissions }, { "sceneCompositeFrame", sceneCompositeFrame },
+			{ "directSubmissions", directSubmissions }, { "directTraceDispatches", directTraceDispatches }, { "indirectTraceDispatches", indirectTraceDispatches },
+			{ "directSpatialResolveSubmissions", directSpatialResolveSubmissions }, { "indirectSpatialResolveSubmissions", indirectSpatialResolveSubmissions }, { "sceneCompositeSubmissions", sceneCompositeSubmissions }, { "sceneCompositeFrame", sceneCompositeFrame },
 			{ "directScope", "selected light or complete bounded prepared point-light set; supported depth-matched PBR surfaces; per-light diffuse/specular, emission once; no native CPU bypass" },
 			{ "sourceLightCount", sourceLightCount }, { "sourceLightFrame", sourceLightFrame }, { "unavailableLightFrames", unavailableLightFrames },
 			{ "bindingCreations", bindingCreations }, { "bindingDeferrals", bindingDeferrals }, { "cachedSceneBindings", bool(cachedBindings) },

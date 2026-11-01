@@ -10,7 +10,7 @@
 #include "Utils/DevBenchUx.h"
 #include "Util.h"
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTDirectLighting::Settings, RedstoneBlend, UsePreparedDirectLighting, UseAllPreparedLights, UseDirectRayRegeneration, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, SelectedDirectLight, NormalInfluence, DirectTraceResolution, DirectRRResolution, RRMaterialIsolation, RRGlossyRoughness, PointLightRadiusMultiplier, PointLightFalloffFraction, PointLightFalloffExponent, StochasticSampling, EmitterRadiusMultiplier)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTDirectLighting::Settings, RedstoneBlend, UsePreparedDirectLighting, UseAllPreparedLights, UseDirectRayRegeneration, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, SelectedDirectLight, NormalInfluence, DirectTraceResolution, DirectRRResolution, RRMaterialIsolation, RRGlossyRoughness, PointLightRadiusMultiplier, PointLightFalloffFraction, PointLightFalloffExponent, StochasticSampling, EmitterRadiusMultiplier, SpatialReconstruction)
 
 std::pair<std::string, std::vector<std::string>> RTDirectLighting::GetFeatureSummary()
 {
@@ -84,7 +84,7 @@ json RTDirectLighting::GetDiagnostics()
 		{ "pointLightRadiusMultiplier", settings.PointLightRadiusMultiplier },
 		{ "pointLightFalloffFraction", settings.PointLightFalloffFraction },
 		{ "pointLightFalloffExponent", settings.PointLightFalloffExponent },
-		{ "stochasticSampling", settings.StochasticSampling }, { "emitterRadiusMultiplier", settings.EmitterRadiusMultiplier },
+		{ "stochasticSampling", settings.StochasticSampling }, { "spatialReconstruction", settings.SpatialReconstruction }, { "emitterRadiusMultiplier", settings.EmitterRadiusMultiplier },
 		{ "directTraceResolutionMode", settings.DirectTraceResolution },
 		{ "nativeFeatureLoaded", native.loaded }, { "preparedSceneEnabled", native.settings.UsePreparedScene },
 		{ "preparedMaterialsEnabled", native.settings.UsePreparedMaterials }, { "preparedScenePublished", scenePublished },
@@ -134,6 +134,10 @@ void RTDirectLighting::DrawDirectLightingSettings()
         settings.PointLightFalloffFraction = 0.1f;
         settings.PointLightFalloffExponent = 1.0f;
     }
+    ImGui::SeparatorText("Spatial reconstruction (experimental)");
+    if (ImGui::Checkbox("Spatial reconstruction", &settings.SpatialReconstruction))
+        globals::features::dx12NativeScene.Tracer().Reset();
+    ImGui::TextWrapped("On: resolve compatible sparse receivers from traced anchors. Off: leave missing samples untraced and use raster fallback. The raw traced signal is unchanged; RR comparison still requires separate validation.");
     ImGui::SeparatorText("Stochastic RT sampling (experimental)");
     if (ImGui::Checkbox("Stochastic sampling (temporal grid + soft shadows)", &settings.StochasticSampling))
         globals::features::dx12NativeScene.Tracer().Reset();
@@ -254,7 +258,8 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
 		settings.RRMaterialIsolation, settings.RRGlossyRoughness,
 		{ settings.PointLightRadiusMultiplier, settings.PointLightFalloffFraction, settings.PointLightFalloffExponent, 0.0f },
 		{ settings.StochasticSampling ? 1.0f : 0.0f, settings.EmitterRadiusMultiplier,
-			rtExclusive ? float(gi.settings.RTBounces) : 0.0f, 0.0f });
+			rtExclusive ? float(gi.settings.RTBounces) : 0.0f,
+			settings.SpatialReconstruction ? 1.0f : 0.0f });
 	lastFrame = frame;
 }
 
@@ -268,6 +273,7 @@ void RTDirectLighting::RegisterUxActions()
 			if (!d.settings.UsePreparedDirectLighting) globals::features::rtIndirectLighting.SelectHybrid();
 			if (d.settings.UsePreparedDirectLighting) n.RequestPreparedScene();
 			if (args.contains("allLights")) d.settings.UseAllPreparedLights = args.at("allLights").get<bool>();
+			if (args.contains("spatialReconstruction")) d.settings.SpatialReconstruction = args.at("spatialReconstruction").get<bool>();
 			if (args.contains("normalMode")) d.settings.NormalInfluence = std::min(args.at("normalMode").get<uint32_t>(), 2u);
 			if (args.contains("traceResolution")) d.settings.DirectTraceResolution = std::min(args.at("traceResolution").get<uint32_t>(), 4u);
 			if (args.contains("rrResolution")) d.settings.DirectRRResolution = std::min(args.at("rrResolution").get<uint32_t>(), 3u);
