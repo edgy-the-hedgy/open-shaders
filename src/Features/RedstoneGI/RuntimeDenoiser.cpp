@@ -591,8 +591,10 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
             nativeHybridFailed = true;
             nativeHybridFailure = faulted ?
                 "Native FSR RR provider exception" : "Native FSR RR provider rejected dispatch";
-            // Recorded work in the caller command list may already be partially
-            // encoded. The caller must discard the entire frame on failure.
+            // Keep declared resource states balanced on the caller command
+            // list even when a family provider rejects its dispatch. The
+            // partly written signal is NOT eligible for publication.
+            list->ResourceBarrier(UINT(end.size()), end.data());
             return false;
         }
     }
