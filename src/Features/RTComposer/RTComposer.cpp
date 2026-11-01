@@ -1,6 +1,7 @@
 #include "RTComposer.h"
 
 #include "Features/DX12NativeScene/DX12NativeScene.h"
+#include "Features/DX12NativeScene/NativeHybridGI.h"
 #include "Features/RedstoneGI/RedstoneGI.h"
 #include "Features/RTDirectLighting/RTDirectLighting.h"
 #include "Features/RTIndirectLighting/RTIndirectLighting.h"
@@ -75,7 +76,16 @@ namespace
 
 std::pair<std::string, std::vector<std::string>> RTComposer::GetFeatureSummary()
 {
-    return { "Central Ray Regeneration and mutually exclusive RT shadow composition; Shadow Only permits baseline SSGI, never RT GI.", {} };
+    return { "DX12 Hybrid-Shadowed production composition and dedicated Shadow Only raster-mask fallback, with unified RT sampling and Ray Regeneration.", {} };
+}
+
+bool RTComposer::DX12HybridReady() const
+{
+    const auto& direct = globals::features::rtDirectLighting;
+    const auto& native = globals::features::dx12NativeScene;
+    return !globals::game::isVR && direct.loaded && direct.settings.UsePreparedDirectLighting &&
+        native.loaded && native.settings.UsePreparedScene && native.settings.UsePreparedMaterials &&
+        bool(native.GetPublishedScene()) && DX12Native::NativeHybridGI::ShadersAvailable();
 }
 void RTComposer::OnCompositionPolicyChanged()
 {
@@ -107,7 +117,7 @@ json RTComposer::GetDiagnostics()
             "DX12 HybridGI unavailable; Shadow Only fallback selected" : "" },
         { "indirectRestriction", BlocksRTIndirect() ? "disabled-by-compositor-policy" : "" },
         { "rtExclusiveAllowed", !BlocksRTIndirect() },
-        { "dx11HybridAllowed", !BlocksRTIndirect() },
+        { "dx11HybridAllowed", false },
         { "ssgiAvailable", ssgiAvailable },
         { "giProviderStatus", effective != EffectiveMode::Legacy ?
             (ssgiAvailable && effective == EffectiveMode::ShadowOnly ? "baseline-ssgi" :
@@ -115,7 +125,7 @@ json RTComposer::GetDiagnostics()
         { "shadowInfluence", composition.shadowInfluence },
         { "directContribution", composition.rtDirectContribution },
         { "giContribution", composition.giContribution },
-        { "nativeRawPreviewRequested", composition.previewNativeRaw },
+        { "nativeProductionRequested", composition.enabled && composition.mode == CompositorMode::HybridShadowed },
         { "hybridSamplingMode", static_cast<uint32_t>(composition.samplingMode) },
         { "shadowThreshold", composition.shadowThreshold },
         { "rtIndirectTraceDispatchesCumulative", tracer.GetDiagnostics().value("indirectTraceDispatches", uint64_t{ 0 }) }
@@ -371,24 +381,10 @@ void RTComposer::DrawSettings()
         }
         if (ImGui::SliderFloat("GI skip visibility threshold", &composition.shadowThreshold, 0.0f, 1.0f, "%.2f"))
             OnCompositionPolicyChanged();
-        if (ImGui::Checkbox("Preview raw native Hybrid-Shadowed (diagnostic, no RR)", &composition.previewNativeRaw)) {
-            if (composition.previewNativeRaw) composition.previewNativeRR = false;
-            OnCompositionPolicyChanged();
-        }
-        if (ImGui::Checkbox("Preview denoised DX12 Hybrid-Shadowed (experimental)",
-                &composition.previewNativeRR)) {
-            if (composition.previewNativeRR)
-                composition.previewNativeRaw = false;
-            else
-                (void)globals::features::redstoneGI.GetDenoiser().RetireNativeHybridContexts();
-            OnCompositionPolicyChanged();
-        }
-        ImGui::TextWrapped("RR preview uses three native DX12 RR family histories and the independent post-RR filter and blur settings. Production activation remains gated until this runtime path is validated.");
-        if (composition.previewNativeRaw &&
-            composition.samplingMode != DX12Native::HybridSamplingMode::Native)
-            ImGui::TextWrapped("Raw preview is available only at full native density. Reduced-density samples still dispatch for diagnostics, but cannot be displayed as finished lighting before RR and post-RR reconstruction; Shadow Only stays active.");
-        else
-            ImGui::TextWrapped("Native DX12 RR, selective history validation and post-RR reconstruction are wired behind the experimental preview. Production Hybrid-Shadowed remains gated pending runtime verification.");
+        ImGui::TextWrapped("Native Hybrid-Shadowed is the production DX12 GI/AO/RR compositor when the prepared scene and shaders are ready. With RR disabled, only full-native raw GI/AO can be composed. Reduced-density RR failure preserves the raster scene for that frame.");
+        if (!DX12HybridReady())
+            ImGui::TextWrapped("Native DX12 scene or shaders are not ready; effective mode is Shadow Only until they become available.");
+        globals::features::redstoneGI.DrawSettings();
         const auto trace = globals::features::dx12NativeScene.Tracer().GetDiagnostics();
         ImGui::Text("DX12 input bridge dispatches: %llu",
             static_cast<unsigned long long>(trace.value("hybridInputDispatches", uint64_t{ 0 })));
@@ -410,7 +406,7 @@ void RTComposer::DrawSettings()
             static_cast<unsigned long long>(trace.value("nativeHybridHistoryValidationDispatches", uint64_t{0})));
         const auto historyFailure = trace.value("nativeHybridHistoryFailure", std::string{});
         if (!historyFailure.empty() &&
-            composition.previewNativeRR && trace.value("nativeHybridRRDispatches", uint64_t{0}) == 0)
+            RayRegeneration::GetSettings().enabled && trace.value("nativeHybridRRDispatches", uint64_t{0}) == 0)
             ImGui::TextWrapped("Native RR history: %s", historyFailure.c_str());
         ImGui::Text("Native RR frames / resets: %llu / %llu",
             static_cast<unsigned long long>(trace.value("nativeHybridRRDispatches", uint64_t{0})),
@@ -435,7 +431,7 @@ void RTComposer::DrawSettings()
             static_cast<unsigned long long>(trace.value("nativeHybridTracedPixels", uint64_t{0})),
             trace.value("nativeHybridSamplePhase", 0u),
             trace.value("nativeHybridCheckerboardOrigin", 0u));
-        ImGui::Text("Native diagnostic scene exports: %llu",
+        ImGui::Text("Native completed-scene exports: %llu",
             static_cast<unsigned long long>(trace.value("nativeHybridPreviewSubmissions", uint64_t{ 0 })));
         const auto giFailure = trace.value("nativeHybridGIFailure", std::string{});
         const auto previewFailure = trace.value("nativeHybridPreviewFailure", std::string{});
@@ -481,7 +477,7 @@ void RTComposer::RegisterUxActions()
 {
     auto& registry = Util::DevBenchUx::Registry::GetSingleton();
     registry.RegisterCommand(GetShortName(), "setComposition",
-        "Set independent shadow compositor mode and influence; Hybrid-Shadowed remains gated until DX12 GI is ready.",
+        "Set Shadow Only or production DX12 Hybrid-Shadowed mode and unified sampling.",
         +[](Feature* self, const json& args) {
             auto& composer = *static_cast<RTComposer*>(self);
             auto& policy = composer.composition;

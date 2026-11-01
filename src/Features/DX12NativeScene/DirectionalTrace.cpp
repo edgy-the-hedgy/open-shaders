@@ -602,12 +602,11 @@ namespace DX12Native
                 nativeHybridGI->RecordHistoryValidation(
                     backend.d3d12Device.get(), frame.commands.get(), frame.nativeGI,
                     uint32_t(&frame - frames.data()), frame.number, frame.generation);
-            // The production compositor remains closed. This is an
-            // opt-in diagnostics path on an otherwise Shadow Only frame.
+            // Native Hybrid-Shadowed is a production path. The completed DX12
+            // scene is the only product returned to D3D11, not legacy GI signals.
             bool rrSucceeded = false;
-            const bool rrRequested = composition.enabled &&
-                composition.mode == RTComposer::CompositorMode::HybridShadowed &&
-                composition.previewNativeRR && RayRegeneration::GetSettings().enabled;
+            const bool rrRequested = globals::features::rtComposer.DX12HybridActive() &&
+                RayRegeneration::GetSettings().enabled;
             if (rrRequested && frame.nativeGI.rrGuidesValid) {
                 auto& denoiser = globals::features::redstoneGI.GetDenoiser();
                 if (denoiser.Initialize(backend))
@@ -617,10 +616,11 @@ namespace DX12Native
                         frame.number, frame.hybridLinearDepth.get(),
                         frame.hybridInputs[2]->resource.get(), composition, denoiser);
             }
-            const bool rawPreview = !composition.previewNativeRR &&
-                composition.previewNativeRaw &&
+            // Full-native raw composition remains valid without RR or if RR
+            // rejects this frame. Sparse signals must never be composed raw.
+            const bool rawNative = !rrSucceeded &&
                 sampling.effective == HybridSamplingMode::Native;
-            if (rrSucceeded || rawPreview)
+            if (rrSucceeded || rawNative)
                 nativeHybridGI->RecordComposition(backend.d3d12Device.get(),
                     backend.d3d11Device.get(), frame.commands.get(), frame.nativeGI,
                     uint32_t(&frame - frames.data()), frame.size,
@@ -896,12 +896,9 @@ namespace DX12Native
 		context->CSGetConstantBuffers(12, 1, camera.put());
 		DX::ThrowIfFailed(context->Wait(completion.fence11.get(), a_frame.fence));
         const auto& compositionPolicy = globals::features::rtComposer.composition;
-        const bool diagnosticNative = compositionPolicy.enabled &&
-            compositionPolicy.mode == RTComposer::CompositorMode::HybridShadowed &&
-            (compositionPolicy.previewNativeRaw || compositionPolicy.previewNativeRR) &&
-            a_frame.nativeGI.composedValid &&
-            a_frame.nativeGI.composedScene;
-        if (diagnosticNative) {
+        const bool nativeHybridActive = globals::features::rtComposer.DX12HybridActive();
+        if (nativeHybridActive && a_frame.nativeGI.composedValid &&
+            a_frame.nativeGI.composedScene) {
             if (!nativeHybridResolve && nativeHybridPreviewFailure.empty()) {
                 try {
                     nativeHybridResolve.attach(static_cast<ID3D11ComputeShader*>(
@@ -932,6 +929,14 @@ namespace DX12Native
                 sceneCompositeFrame = a_frame.number;
                 return;
             }
+        }
+        if (nativeHybridActive) {
+            // Never route failed native GI/RR through the legacy DX11 direct or
+            // HybridGI composer. The already-composed raster scene stays intact.
+            ++nativeHybridFallbackFrames;
+            a_frame.retirement = producer.Next();
+            DX::ThrowIfFailed(context->Signal(producer.fence11.get(), a_frame.retirement));
+            return;
         }
 		globals::state->BindSharedDataCS(context);
 		auto* cameraBuffer = a_frame.camera.get();
@@ -1027,11 +1032,10 @@ namespace DX12Native
 		const uint32_t effectiveRRMode = a_directRRResolutionMode == 3u ? rrPolicy.resolutionMode : std::min(a_directRRResolutionMode, 2u);
 		const bool directRR = a_sceneTarget && a_useDirectRR && rrPolicy.enabled;
 		const bool wantExport = a_sceneTarget && globals::features::rtComposer.ShadowOnlyActive();
-        // A requested Hybrid-Shadowed mode exercises the bridge diagnostically
-        // while Stage 4/5 readiness remains false and Shadow Only is active.
+        // Acquire DX11 inputs only when production native Hybrid-Shadowed is
+        // eligible; Shadow Only is the sole DX11 scene-composition mode.
         bool wantHybridInputs = a_sceneTarget &&
-            globals::features::rtComposer.composition.enabled &&
-            globals::features::rtComposer.composition.mode == RTComposer::CompositorMode::HybridShadowed;
+            globals::features::rtComposer.DX12HybridActive();
         bool wantNativeGI = wantHybridInputs && NativeHybridGI::ShadersAvailable();
         const auto hybridSampling = MakeHybridSamplingLayout(
             globals::features::rtComposer.composition.samplingMode, size, a_frame);
@@ -1398,7 +1402,8 @@ namespace DX12Native
             { "nativeHybridRRFailure", globals::features::redstoneGI.GetDenoiser().NativeHybridFailure() },
             { "nativeHybridPreviewSubmissions", nativeHybridPreviewSubmissions },
             { "nativeHybridPreviewFailure", nativeHybridPreviewFailure },
-            { "nativeHybridGIStatus", "Native sampled GI/AO, full-native eligibility; raw composition only at native density; RR/upscaler staged" },
+            { "nativeHybridGIStatus", "Production DX12 Hybrid-Shadowed; GPU RR or full-native raw, raster preserved on failed frame" },
+            { "nativeHybridFallbackFrames", nativeHybridFallbackFrames },
             { "hybridShadowedSourceLastFrame", hybridSourceLastFrame },
             { "hybridShadowedSourceFailure", hybridSourceFailure },
             { "hybridShadowedSourceStage", "5A-preparation; native shadowed linear radiance and linear view depth" },
@@ -1406,7 +1411,7 @@ namespace DX12Native
             { "hybridInputLastBytes", hybridInputLastBytes },
             { "hybridInputBudgetDeferrals", hybridInputBudgetDeferrals },
             { "hybridInputFailure", hybridInputFailure },
-            { "hybridInputStage", "4A-diagnostic; DX11 capture / DX12 shared inputs / one producer fence; no GI consumption" },
+            { "hybridInputStage", "DX11 raster capture / DX12 shared inputs / producer fence; native GI consumed on DX12" },
 			{ "shadowMaskFormat", "R16G16_FLOAT (visibility, confidence)" }, { "perLightVisibilityFormat", "R32G32_UINT (visible, valid bitsets)" }, { "sceneCompositeSubmissions", sceneCompositeSubmissions }, { "sceneCompositeFrame", sceneCompositeFrame },
 			{ "directScope", "selected light or complete bounded prepared point-light set; supported depth-matched PBR surfaces; per-light diffuse/specular, emission once; no native CPU bypass" },
 			{ "sourceLightCount", sourceLightCount }, { "sourceLightFrame", sourceLightFrame }, { "unavailableLightFrames", unavailableLightFrames },

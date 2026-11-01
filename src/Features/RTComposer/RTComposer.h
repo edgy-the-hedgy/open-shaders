@@ -34,11 +34,6 @@ struct RTComposer final : Feature
         DX12Native::HybridSamplingMode samplingMode = DX12Native::HybridSamplingMode::Native;
         // Separate settings for diffuse, specular and AO, respectively.
         std::array<SignalReconstructionSettings, 3> reconstruction{};
-        // Session-only diagnostic override; never persisted or treated as RR-ready.
-        bool previewNativeRaw = false;
-        // Session-only opt-in: never auto-enable production RR until runtime
-        // dispatch/history/quality validation has passed on this hardware.
-        bool previewNativeRR = false;
     } composition;
     enum class EffectiveMode : uint32_t { Legacy = 0, ShadowOnly = 1, HybridShadowed = 2 };
     // The saved mode and the actually dispatched mode are intentionally distinct:
@@ -54,9 +49,9 @@ struct RTComposer final : Feature
     bool BlocksRTIndirect() const { return composition.enabled; }
     bool ShadowOnlyActive() const { return ResolveEffectiveMode() == EffectiveMode::ShadowOnly; }
     bool DX12HybridActive() const { return ResolveEffectiveMode() == EffectiveMode::HybridShadowed; }
-    // Future Stage 5 implementation will replace this readiness gate with
-    // verified live DX12 estimator/denoiser/composer availability.
-    bool DX12HybridReady() const { return false; }
+    // The native producer is eligible when its shaders and retained scene are ready.
+    // Per-frame RR/compose failures fail open to unchanged raster, never DX11 HybridGI.
+    bool DX12HybridReady() const;
     void OnCompositionPolicyChanged();
     json GetDiagnostics() override;
     std::string GetName() override { return "RTComposer"; }

@@ -213,6 +213,7 @@ namespace DX12Native
         winrt::com_ptr<ID3D12DescriptorHeap> hybridSourceHeap;
         std::unique_ptr<NativeHybridGI> nativeHybridGI;
         uint64_t nativeHybridPreviewSubmissions = 0;
+        uint64_t nativeHybridFallbackFrames = 0;
         std::string nativeHybridPreviewFailure;
 		winrt::com_ptr<ID3D11ComputeShader> prepareDirectGuides;
 		winrt::com_ptr<ID3D11ComputeShader> packRRSignals;
