@@ -585,7 +585,7 @@ def collect_feature_struct_fields(paths: list[Path], features: dict[str, dict[st
     feature_bases: dict[str, dict[str, list[str]]] = {}
     for path in paths:
         text = read_text(path)
-        candidate_classes = set(re.findall(r"\\b(?:struct|class)\\s+([A-Za-z_]\\w*)\\b", text))
+        candidate_classes = set(re.findall(r"\b(?:struct|class)\s+([A-Za-z_]\w*)\b", text))
         for feature_class in features:
             if feature_class not in candidate_classes:
                 continue
@@ -5040,7 +5040,7 @@ def _build_entries_uncached(source_dir: Path) -> list[dict[str, object]]:
     return entries
 
 
-def write_text_if_changed(path: Path, content: str) -> None:
+def write_text_if_changed(path: Path, content: str, *, encoding: str = "utf-8") -> None:
     """Avoid invalidating compiler outputs when generation is byte-identical."""
     try:
         if path.read_text(encoding="utf-8") == content:
