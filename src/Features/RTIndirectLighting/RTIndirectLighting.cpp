@@ -140,11 +140,11 @@ void RTIndirectLighting::DrawUnifiedDebugSettings()
 		"Direct specular (RR input)\0Direct specular (RR output)\0"
 		"Direct combined\0RT indirect diffuse\0RT indirect specular\0RT indirect combined\0"
 		"Hybrid GI combined\0Hybrid diffuse AO\0Hybrid specular occlusion\0Surface validity\0"
-		"All signals (native + Hybrid)\0";
+		"All signals (native + Hybrid)\0Raw direct lighting (RR independent)\0";
 	bool changed = ImGui::Combo("Debug view", &view, views);
 	changed |= ImGui::SliderFloat("Debug exposure (EV)", &debugExposure, -8.0f, 8.0f, "%.1f");
 	if (changed) {
-		debugView = uint32_t(std::clamp(view, 0, 13));
+		debugView = uint32_t(std::clamp(view, 0, 14));
 		auto& tracer = globals::features::dx12NativeScene.Tracer();
 		auto& hybrid = globals::features::redstoneGI;
 		tracer.ClearRRDebugOverlay();
@@ -160,6 +160,8 @@ void RTIndirectLighting::DrawUnifiedDebugSettings()
 			hybrid.SetRRDebugView(debugView == 9 ? RedstoneGI::RRDebugView::Combined :
 				debugView == 10 ? RedstoneGI::RRDebugView::DiffuseOcclusion : RedstoneGI::RRDebugView::SpecularOcclusion);
 			hybrid.SetRROutputOnly(true);
+		} else if (debugView == 14) {
+			tracer.SetRRDebug(3, 0, 16, debugExposure);
 		} else if (debugView == 13) {
 			// RGI's already implemented 2x2 atlas and the native combined signal
 			// are displayed together; stale providers remain explicitly unavailable.

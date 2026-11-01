@@ -10,9 +10,9 @@ namespace DX12Native
 	void DirectionalTrace::SetRRDebug(uint32_t a_source, uint32_t a_signal, uint32_t a_buffer, float a_exposure)
 	{
 		if (!std::isfinite(a_exposure)) throw std::invalid_argument("Preview exposure must be finite");
-		rrFullscreenSource = std::min(a_source, 2u);
+		rrFullscreenSource = std::min(a_source, 3u);
 		rrSignalView = std::min(a_signal, 6u);
-		rrBuffer = std::min(a_buffer, 15u);
+		rrBuffer = std::min(a_buffer, 16u);
 		rrPreviewExposure = std::clamp(a_exposure, -8.0f, 8.0f);
 	}
 	void DirectionalTrace::PrepareRRPreview(Frame& a_frame, uint32_t a_rrFlags)
@@ -26,7 +26,7 @@ namespace DX12Native
 			if (!rrDebugShader) { rrDebugFailed = true; return; }
 			const std::array<uint32_t, 2> size{ std::max(1u, a_frame.size[0] >> a_frame.directRRResolutionMode), std::max(1u, a_frame.size[1] >> a_frame.directRRResolutionMode) };
 			uint32_t selected = rrBuffer;
-			if (rrFullscreenSource) {
+			if (rrFullscreenSource == 1u || rrFullscreenSource == 2u) {
 				static constexpr std::array inputViews{ 6u, 7u, 13u, 8u, 9u, 14u, 15u };
 				static constexpr std::array outputViews{ 2u, 3u, 13u, 4u, 5u, 14u, 15u };
 				selected = (rrFullscreenSource == 1 ? inputViews : outputViews)[std::min(rrSignalView, 6u)];
@@ -35,10 +35,11 @@ namespace DX12Native
 			const bool indirect = selected == 4 || selected == 5 || selected == 8 || selected == 9 || selected == 14;
 			const bool inputs = (selected >= 6 && selected <= 9) || (combined && rrFullscreenSource == 1);
 			const uint32_t sourceIndex = combined ? (indirect ? (inputs ? 8u : 4u) : (inputs ? 6u : 2u)) : std::min(selected, 12u);
-			const uint32_t kind = selected == 15 ? 5u : selected == 0 ? 1u : selected == 1 ? 2u : selected == 10 ? 3u : selected >= 11 && selected <= 12 ? 4u : 0u;
-			const bool current = rrPackFrame == a_frame.number && directRRSize == size;
-			const bool unavailable = !current || !directRRTextures[sourceIndex] || (indirect && !a_frame.indirectRays) ||
-				(kind == 0 && !inputs && !(a_rrFlags & (indirect ? 2u : 1u)));
+			const bool rawDirect = selected == 16u && rrFullscreenSource == 3u;
+			const uint32_t kind = rawDirect ? 6u : selected == 15 ? 5u : selected == 0 ? 1u : selected == 1 ? 2u : selected == 10 ? 3u : selected >= 11 && selected <= 12 ? 4u : 0u;
+			const bool current = rawDirect || (rrPackFrame == a_frame.number && directRRSize == size);
+			const bool unavailable = !current || (!rawDirect && !directRRTextures[sourceIndex]) || (indirect && !a_frame.indirectRays) ||
+				(kind == 0 && !rawDirect && !inputs && !(a_rrFlags & (indirect ? 2u : 1u)));
 			if (!rrDebugPreview || rrDebugPreview->desc.Width != size[0] || rrDebugPreview->desc.Height != size[1]) {
 				D3D11_TEXTURE2D_DESC desc{};
 				desc.Width = size[0]; desc.Height = size[1];
@@ -63,7 +64,7 @@ namespace DX12Native
 			rrDebugSettings->Update(Settings{ size, a_frame.size, kind, inputs && directRRCheckerboard ? 1u : 0u, directRRPhase, combined ? 1u : 0u, rrPreviewExposure, indirect ? 1u : 0u, unavailable ? 1u : 0u });
 			auto* context = backend.d3d11Context.get();
 			auto* cb = rrDebugSettings->CB();
-			ID3D11ShaderResourceView* reads[]{ directRRTextures[sourceIndex] ? directRRTextures[sourceIndex]->srv.get() : nullptr,
+			ID3D11ShaderResourceView* reads[]{ rawDirect ? a_frame.output->srv : directRRTextures[sourceIndex] ? directRRTextures[sourceIndex]->srv.get() : nullptr,
 				combined && directRRTextures[sourceIndex + 1] ? directRRTextures[sourceIndex + 1]->srv.get() : nullptr,
 				a_frame.output->srv, a_frame.indirectRays ? a_frame.directSignals[5]->srv : nullptr };
 			auto* write = rrDebugPreview->uav.get();
@@ -76,8 +77,8 @@ namespace DX12Native
 			write = nullptr;
 			context->CSSetUnorderedAccessViews(0, 1, &write, nullptr);
 			context->CSSetShaderResources(0, 4, clear);
-			rrDebugStorageSize = kind == 5 ? a_frame.size : directRRTextures[sourceIndex] ? std::array<uint32_t, 2>{ directRRTextures[sourceIndex]->desc.Width, directRRTextures[sourceIndex]->desc.Height } : std::array<uint32_t, 2>{};
-			rrDebugIsInput = rrFullscreenSource ? rrFullscreenSource == 1 : inputs; rrDebugUnavailable = unavailable;
+			rrDebugStorageSize = (kind == 5 || kind == 6) ? a_frame.size : directRRTextures[sourceIndex] ? std::array<uint32_t, 2>{ directRRTextures[sourceIndex]->desc.Width, directRRTextures[sourceIndex]->desc.Height } : std::array<uint32_t, 2>{};
+			rrDebugIsInput = rrFullscreenSource == 1u || (!rrFullscreenSource && inputs); rrDebugUnavailable = unavailable;
 			rrDebugPreviewFrame = a_frame.number; rrDebugPreviewValid = true;
 		} catch (const std::exception& error) {
 			rrDebugFailed = true;
@@ -94,7 +95,7 @@ namespace DX12Native
 		draw->AddRectFilled(viewport->Pos, end, IM_COL32(0, 0, 0, 255));
 		const bool current = rrDebugPreviewValid && rrDebugPreview && globals::game::graphicsState->GetFrameCount() - rrDebugPreviewFrame <= 1;
 		if (current) draw->AddImage(reinterpret_cast<ImTextureID>(rrDebugPreview->srv.get()), viewport->Pos, end);
-		const auto label = current ? std::format("Prepared RR {} | RR grid {}x{} | physical source {}x{} | frame {}{}", rrDebugIsInput ? "inputs" : "outputs", rrDebugPreview->desc.Width, rrDebugPreview->desc.Height, rrDebugStorageSize[0], rrDebugStorageSize[1], rrDebugPreviewFrame, rrDebugUnavailable ? " | unavailable this frame" : "") : std::string("Prepared RR preview unavailable for this frame");
+		const auto label = current ? std::format("Prepared RR {} | RR grid {}x{} | physical source {}x{} | frame {}{}", rrFullscreenSource == 3u ? "raw direct" : rrDebugIsInput ? "inputs" : "outputs", rrDebugPreview->desc.Width, rrDebugPreview->desc.Height, rrDebugStorageSize[0], rrDebugStorageSize[1], rrDebugPreviewFrame, rrDebugUnavailable ? " | unavailable this frame" : "") : std::string("Prepared RR preview unavailable for this frame");
 		static constexpr float inset = 24.0f;
 		draw->AddText({ viewport->Pos.x + inset, viewport->Pos.y + inset }, IM_COL32_WHITE, label.c_str());
 	}

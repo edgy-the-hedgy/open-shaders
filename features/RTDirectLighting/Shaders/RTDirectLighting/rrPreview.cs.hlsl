@@ -27,6 +27,13 @@ void main(uint3 id : SV_DispatchThreadID)
 	bool valid = lighting.w == DirectRadianceTag;
 	float3 color = float3(1, 0, 1);
 	if (Kind == 5) color = valid ? float3(0, 1, 0) : lighting.x == MismatchedDepth ? float3(1, 1, 0) : float3(1, 0, 1);
+	else if (Kind == 6) {
+		if (!valid) color = lighting.x == MismatchedDepth ? float3(1, 1, 0) : float3(1, 0, 1);
+		else {
+			float3 raw = max(lighting.rgb * exp2(Exposure), 0);
+			color = pow(raw / (1 + raw), 1.0 / 2.2);
+		}
+	}
 	else if (Unavailable != 0) color = float3(1, 0.3, 0);
 	else if (!valid) color = lighting.x == MismatchedDepth ? float3(1, 1, 0) : float3(1, 0, 1);
 	else if (Indirect != 0 && NativeIndirect.Load(int3(nativePixel, 0)).a < -1) color = float3(1, 0.3, 0);
