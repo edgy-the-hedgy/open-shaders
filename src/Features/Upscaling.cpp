@@ -1,7 +1,7 @@
 #include "Upscaling.h"
 #include "Utils/RayRegenerationSettings.h"
 #include "Features/RedstoneGI/RedstoneGI.h"
-#include "Features/RedstoneShadows/RedstoneShadows.h"
+#include "Features/RTDirectLighting/RTDirectLighting.h"
 #include "GpuPass.h"
 
 #include "../I18n/I18n.h"
@@ -772,8 +772,8 @@ void Upscaling::DrawSettings()
 		if (changed) RayRegeneration::Configure(uint32_t(resolution), policy.checkerboard, policy.enabled);
 		ImGui::TextWrapped("FSR Ray Regeneration reconstructs direct and indirect RT signals on a shared grid. Indirect producer selection and ray counts remain separate; Normal Save persists these controls here.");
 		ImGui::SeparatorText("RT direct / DXR indirect");
-		globals::features::redstoneShadows.DrawRayRegenerationSettings();
-		if (!globals::features::redstoneShadows.UsesDXRIndirect()) {
+		globals::features::rtDirectLighting.DrawRayRegenerationSettings();
+		if (!globals::features::rtDirectLighting.UsesDXRIndirect()) {
 			ImGui::SeparatorText("Screen-space indirect");
 			globals::features::redstoneGI.DrawRayRegenerationSettings();
 		}

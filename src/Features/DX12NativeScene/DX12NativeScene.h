@@ -1,40 +1,27 @@
 #pragma once
 
 #include "Features/OverlayFeature.h"
-#include "Scene.h"
-#include "GeometryBridge.h"
-#include "AccelerationScene.h"
-#include "PreparedScene.h"
-#include "DirectionalTrace.h"
+#include "Features/RedstoneShadows/Scene.h"
+#include "Features/RedstoneShadows/GeometryBridge.h"
+#include "Features/RedstoneShadows/AccelerationScene.h"
+#include "Features/RedstoneShadows/PreparedScene.h"
+#include "Features/RedstoneShadows/DirectionalTrace.h"
 #include <atomic>
 
 /** @brief Independently owns Redstone shadow acquisition, settings and diagnostics. */
-struct RedstoneShadows final : OverlayFeature
+struct DX12NativeScene final : OverlayFeature
 {
 	struct Settings
 	{
 		//yes this slider should be moved to FSR-RayRegeneration but until settings catalogue is optimized i will be staying here
 		//peace and love, egdy
-		float RedstoneBlend = 1.0f;
 		bool AcquireScene = false;
 		bool UsePreparedScene = false;
 		bool PreviewPreparedScene = false;
 		bool UsePreparedMaterials = false;
-		bool UsePreparedDirectLighting = false;
-		bool UseAllPreparedLights = true;
-		bool ConnectIndirectLighting = true;
-		bool UseDirectRayRegeneration = true;
-		bool UseDXRIndirect = false;
-		uint32_t IndirectRays = 1;
-		float DirectStrength = 1.0f;
-		float DiffuseStrength = 1.0f;
-		float SpecularStrength = 1.0f;
-		float EmissionStrength = 1.0f;
-		float IndirectStrength = 1.0f;
 		uint32_t PreparedMaterialView = 0;
 		uint32_t MaterialTextureBudgetMB = 512;
 		uint32_t DirectLightingBudgetMB = 256;
-		uint32_t PreparedLight = 0;
 		uint32_t PreviewLight = 0;
 		bool PreviewAllLights = true;
 		float PreviewDirectStrength = 1.0f;
@@ -46,14 +33,15 @@ struct RedstoneShadows final : OverlayFeature
 		uint32_t BufferBudgetMB = 128;
 	} settings;
 
-	std::string GetName() override { return "RedstoneShadows"; }
-	std::string GetShortName() override { return "RedstoneShadows"; }
-	std::string GetDisplayName() override { return "RT Direct Lighting"; }
+	std::string GetName() override { return "DX12NativeScene"; }
+	std::string GetShortName() override { return "DX12NativeScene"; }
+	std::string GetDisplayName() override { return "DX12 Native Scene"; }
 	std::string_view GetCategory() const override { return FeatureCategories::kLighting; }
 	bool IsCore() const override { return true; }
 	bool UsesMainSettings() const override { return true; }
 	std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override;
 	/** @brief Loads bounded independent acquisition settings. */
+	void ImportLegacySettings(json& root) override;
 	void LoadSettings(json& a_json) override;
 	/** @brief Saves only feature-owned settings. */
 	void SaveSettings(json& a_json) override;
@@ -82,11 +70,8 @@ struct RedstoneShadows final : OverlayFeature
 	/** @brief Draws acquisition controls and explicit production/fallback status. */
 	void DrawSettings() override;
 	/** @brief Draws exclusive producer selection and settings for the selected indirect signal. */
-	void DrawIndirectLightingSettings();
 	/** @brief Draws reconstruction controls, contexts and buffers inside Upscaling's RR section. */
-	void DrawRayRegenerationSettings();
 	/** @brief Clears prepared full-screen debugging when another RR viewer takes ownership. */
-	void ClearRRDebugOverlay() { preparedTrace.ClearRRDebugOverlay(); }
 	/** @brief Draws copied caster bounds and diagnostic pipeline progress. */
 	void DrawOverlay() override;
 	/** @brief Enables the temporary flat-screen capture diagnostic overlay. */
@@ -100,9 +85,7 @@ struct RedstoneShadows final : OverlayFeature
 	/** @brief Requests receiver-room storage only for the active eligible prepared-scene session. */
 	bool WantsOpaqueRoomMetadata() const override;
 	/** @brief Claims exclusive indirect ownership even when a requested DXR scene is unavailable. */
-	int GetIndirectLightingPriority() const override;
 	/** @brief Reports the selected indirect producer independently of resource availability. */
-	bool UsesDXRIndirect() const { return settings.UseDXRIndirect; }
 	/** @brief Disarms native observation before the feature stops receiving render callbacks. */
 	void OnRuntimeDisabled() override;
 	/** @brief Invalidates observations across scene transitions. */
@@ -121,7 +104,6 @@ struct RedstoneShadows final : OverlayFeature
 
 private:
 	void DrawNativeSceneSettings();
-	void DrawDirectLightingSettings();
 	RedstoneShadow::PreparedScene preparedScene;
 	RedstoneShadow::AccelerationWorker preparedAcceleration;
 	RedstoneShadow::DirectionalTrace preparedTrace;

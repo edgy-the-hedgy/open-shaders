@@ -39,7 +39,8 @@
 #include "Features/SceneSelector.h"
 #include "Features/ScreenSpaceGI.h"
 #include "Features/RedstoneGI/RedstoneGI.h"
-#include "Features/RedstoneShadows/RedstoneShadows.h"
+#include "Features/DX12NativeScene/DX12NativeScene.h"
+#include "Features/RTDirectLighting/RTDirectLighting.h"
 #include "Features/ScreenSpaceShadows.h"
 #include "Features/ScreenshotFeature.h"
 #include "Features/Skin.h"
@@ -101,7 +102,8 @@ namespace globals
 		RainRefraction rainRefraction{};
 		ScreenSpaceGI screenSpaceGI{};
 		RedstoneGI redstoneGI{};
-		RedstoneShadows redstoneShadows{};
+		DX12NativeScene dx12NativeScene{};
+		RTDirectLighting rtDirectLighting{};
 		ScreenSpaceShadows screenSpaceShadows{};
 		Skylighting skylighting{};
 		TerrainVariation terrainVariation{};

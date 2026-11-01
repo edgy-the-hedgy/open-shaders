@@ -1,7 +1,7 @@
 #include "RedstoneGI.h"
 #include "RuntimeDenoiser.h"
 #include "Globals.h"
-#include "Features/RedstoneShadows/RedstoneShadows.h"
+#include "Features/RTDirectLighting/RTDirectLighting.h"
 #include "Utils/UI.h"
 
 namespace
@@ -254,8 +254,8 @@ void RedstoneGI::DrawAmbientOcclusionSettings()
 
 void RedstoneGI::DrawSettings()
 {
-	globals::features::redstoneShadows.DrawIndirectLightingSettings();
-	if (globals::features::redstoneShadows.UsesDXRIndirect() && !globals::game::isVR) return;
+	globals::features::rtDirectLighting.DrawIndirectLightingSettings();
+	if (globals::features::rtDirectLighting.UsesDXRIndirect() && !globals::game::isVR) return;
 	DrawRendererSettings();
 	if (!selected) return;
 	ImGui::SeparatorText("Screen-space indirect lighting");

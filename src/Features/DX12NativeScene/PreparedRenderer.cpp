@@ -1,4 +1,5 @@
-#include "RedstoneShadows.h"
+#include "DX12NativeScene.h"
+#include "Features/RTDirectLighting/RTDirectLighting.h"
 #include "Features/LightLimitFix.h"
 #include "Deferred.h"
 
@@ -8,9 +9,9 @@
 #include "Util.h"
 #include "Utils/Form.h"
 
-std::optional<RedstoneShadows::PublishedScene> RedstoneShadows::GetPublishedScene() const
+std::optional<DX12NativeScene::PublishedScene> DX12NativeScene::GetPublishedScene() const
 {
-	if (!loaded || !ready || !settings.UsePreparedScene || !settings.UsePreparedMaterials ||
+	if (!loaded || !ready || !settings.UsePreparedScene ||
 		!preparedActive || transitionOpen || globals::game::isVR || globals::state->isMapMenuOpen)
 		return std::nullopt;
 	auto cell = preparedScene.GetCell();
@@ -23,7 +24,7 @@ std::optional<RedstoneShadows::PublishedScene> RedstoneShadows::GetPublishedScen
 	return PublishedScene{ std::move(cell), std::move(acceleration), preparedLightReferences, preparedRoomReferences, preparedCellID, preparedRevision };
 }
 
-void RedstoneShadows::RequestPreparedScene()
+void DX12NativeScene::RequestPreparedScene()
 {
 	if (!settings.UsePreparedScene || !settings.UsePreparedMaterials) {
 		if (!settings.UsePreparedScene) ready = false;
@@ -32,7 +33,7 @@ void RedstoneShadows::RequestPreparedScene()
 	}
 }
 
-void RedstoneShadows::ResetPreparedScene()
+void DX12NativeScene::ResetPreparedScene()
 {
 	++preparedRevision;
 	preparedCellID = 0;
@@ -45,9 +46,9 @@ void RedstoneShadows::ResetPreparedScene()
 	preparedTrace.Reset(true);
 }
 
-void RedstoneShadows::AdvancePreparedScene(uint32_t, uint64_t a_budgetBytes)
+void DX12NativeScene::AdvancePreparedScene(uint32_t, uint64_t a_budgetBytes)
 {
-	CS_GPU_PASS("RedstoneShadows::PreparedSceneProgress");
+	CS_GPU_PASS("DX12NativeScene::PreparedSceneProgress");
 	auto* cell = globals::game::player ? globals::game::player->GetParentCell() : nullptr;
 	const auto cellID = cell ? cell->GetFormID() : 0;
 	const bool active = ready && !transitionOpen && !globals::game::isVR && !globals::state->isMapMenuOpen && cell && cell->IsInteriorCell();
@@ -102,50 +103,37 @@ void RedstoneShadows::AdvancePreparedScene(uint32_t, uint64_t a_budgetBytes)
 	preparedAcceleration.Advance();
 }
 
-bool RedstoneShadows::WantsOpaqueRoomMetadata() const
+bool DX12NativeScene::WantsOpaqueRoomMetadata() const
 {
 	return ready && settings.UsePreparedScene && preparedActive && !transitionOpen && !globals::game::isVR && !globals::state->isMapMenuOpen;
 }
 
-int RedstoneShadows::GetIndirectLightingPriority() const
+void DX12NativeScene::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target, const std::array<uint32_t, 2>& size)
 {
-	return settings.UseDXRIndirect && !globals::game::isVR ? 200 : -1;
-}
-
-void RedstoneShadows::OnAfterDeferredLighting(ID3D11UnorderedAccessView* a_target, const std::array<uint32_t, 2>& a_size)
-{
-	CS_GPU_PASS("RedstoneShadows::PreparedLighting");
-	constexpr uint32_t kPreviewInterval = 8;
-	const bool direct = settings.UsePreparedDirectLighting || settings.UseDXRIndirect;
-	if (!a_target || !settings.UsePreparedScene || (!direct && !settings.PreviewPreparedScene) ||
-		!ready || !preparedActive || transitionOpen || globals::game::isVR || globals::state->isMapMenuOpen) return;
-	if (direct && !settings.UsePreparedMaterials) return;
-	if (a_target != Util::AsReal(globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].UAV) ||
+	if (!settings.PreviewPreparedScene || !settings.UsePreparedScene ||
+		(globals::features::rtDirectLighting.loaded && globals::features::rtDirectLighting.WantsComposite())) return;
+	if (!target || !ready || !preparedActive || transitionOpen || globals::game::isVR || globals::state->isMapMenuOpen) return;
+	if (target != Util::AsReal(globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].UAV) ||
 		(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections))) return;
 	const auto frame = globals::game::graphicsState->GetFrameCount();
-	if ((!direct && frame % kPreviewInterval) || preparedTraceFrame == frame) return;
-	auto* cell = globals::game::player ? globals::game::player->GetParentCell() : nullptr;
-	if (!cell || cell->GetFormID() != preparedCellID) { preparedTrace.Reset(); return; }
-	const auto prepared = preparedScene.GetCell();
-	const auto completedScene = preparedAcceleration.GetScene();
-	if (!prepared || !completedScene || completedScene->scope.scene != preparedRevision) return;
-	const auto materialView = direct ? RedstoneShadow::DirectionalTrace::kCombinedDirectView : settings.UsePreparedMaterials ? settings.PreparedMaterialView : 0;
-	const uint32_t selectedLight = direct ? settings.PreparedLight : settings.PreviewLight;
-	const bool allLights = (direct ? settings.UseAllPreparedLights : settings.PreviewAllLights) && materialView >= RedstoneShadow::DirectionalTrace::kFirstDirectView;
-	if (!allLights && (!materialView || materialView >= RedstoneShadow::DirectionalTrace::kFirstDirectView) && selectedLight >= prepared->lights.size()) return;
+	if (frame % 8 || preparedTraceFrame == frame) return;
+	const auto state = GetPublishedScene();
+	if (!state) { preparedTrace.Reset(); return; }
+	const uint32_t view = settings.UsePreparedMaterials ? settings.PreparedMaterialView : 0u;
+	const bool all = settings.PreviewAllLights && view >= RedstoneShadow::DirectionalTrace::kFirstDirectView;
+	if (!all && (!view || view >= RedstoneShadow::DirectionalTrace::kFirstDirectView) && settings.PreviewLight >= state->cell->lights.size()) return;
 	const auto backend = Feature::FindGraphicsBackend();
 	if (!backend || !preparedTrace.Initialize(*backend)) return;
 	const auto lights = globals::features::lightLimitFix.GetLightView(frame);
-	const auto light = selectedLight < prepared->lights.size() ? prepared->lights[selectedLight] : float3{};
-	const auto budget = direct ? uint64_t(settings.DirectLightingBudgetMB) * 1024 * 1024 : uint64_t(settings.BufferBudgetMB) * 1024 * 1024 / 4;
-	const auto identity = selectedLight < preparedLightReferences.size() ? preparedLightReferences[selectedLight] : std::array<uint32_t, 2>{};
-	const auto& metadata = globals::game::renderer->GetRuntimeData().renderTargets[MASKS2];
-	D3D11_TEXTURE2D_DESC metadataDesc{};
-	auto* metadataSrv = Util::AsReal(metadata.SRV);
-	if (!Util::GetTexture2DDesc(metadataSrv, metadataDesc) || metadataDesc.Format != DXGI_FORMAT_R16G16B16A16_UNORM) metadataSrv = nullptr;
-	preparedTrace.Dispatch(completedScene, a_size, light, frame, budget, true, lights, materialView, direct ? a_target : nullptr,
-		identity[0], identity[1], metadataSrv, allLights ? std::span<const std::array<uint32_t, 2>>(preparedLightReferences) : std::span<const std::array<uint32_t, 2>>{}, allLights,
-		direct ? float4{ settings.DirectStrength, settings.DiffuseStrength, settings.SpecularStrength, settings.EmissionStrength } : float4{ settings.PreviewDirectStrength, settings.PreviewDiffuseStrength, settings.PreviewSpecularStrength, settings.PreviewEmissionStrength },
-		settings.ConnectIndirectLighting && !settings.UseDXRIndirect, settings.IndirectStrength, settings.UseDirectRayRegeneration, settings.UseDXRIndirect ? settings.IndirectRays : 0u, preparedRoomReferences, settings.RedstoneBlend);
+	const float3 light = settings.PreviewLight < state->cell->lights.size() ? state->cell->lights[settings.PreviewLight] : float3{};
+	const auto identity = settings.PreviewLight < state->lightReferences.size() ? state->lightReferences[settings.PreviewLight] : std::array<uint32_t, 2>{};
+	auto* metadata = Util::AsReal(globals::game::renderer->GetRuntimeData().renderTargets[MASKS2].SRV);
+	D3D11_TEXTURE2D_DESC desc{};
+	if (!Util::GetTexture2DDesc(metadata, desc) || desc.Format != DXGI_FORMAT_R16G16B16A16_UNORM) metadata = nullptr;
+	preparedTrace.Dispatch(state->acceleration, size, light, frame, uint64_t(settings.BufferBudgetMB) * 1024 * 1024 / 4, true, lights,
+		view, nullptr, identity[0], identity[1], metadata,
+		all ? std::span<const std::array<uint32_t, 2>>(state->lightReferences) : std::span<const std::array<uint32_t, 2>>{},
+		all, { settings.PreviewDirectStrength, settings.PreviewDiffuseStrength, settings.PreviewSpecularStrength, settings.PreviewEmissionStrength },
+		false, 1.0f, false, 0u, state->roomReferences, 1.0f);
 	preparedTraceFrame = frame;
 }

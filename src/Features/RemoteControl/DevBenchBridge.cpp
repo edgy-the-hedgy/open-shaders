@@ -498,8 +498,21 @@ namespace
 	json BuildActionsResult(const json& a_args)
 	{
 		const std::string action = a_args.value("action", std::string{});
-		const std::string shortName = a_args.value("shortName", std::string{});
+		const std::string requestedShortName = a_args.value("shortName", std::string{});
+		const std::string commandName = a_args.value("name", std::string{});
+		const bool legacy = requestedShortName == "RedstoneShadows";
+		const bool nativeCommand = commandName == "setPreparedMaterials" || commandName == "setPreparedScene" ||
+			commandName == "setSceneAcquisition" || commandName == "resetShadowScene" || commandName == "shadowStatus";
+		const std::string shortName = legacy ? (nativeCommand ? "DX12NativeScene" : "RTDirectLighting") : requestedShortName;
 
+		if (legacy && (action == "listCommands" || action == "listQueries")) {
+			auto& registry = Util::DevBenchUx::Registry::GetSingleton();
+			const bool commands = action == "listCommands";
+			json values = commands ? registry.ListCommands("DX12NativeScene") : registry.ListQueries("DX12NativeScene");
+			const auto other = commands ? registry.ListCommands("RTDirectLighting") : registry.ListQueries("RTDirectLighting");
+			for (const auto& entry : other) values.push_back(entry);
+			return json{ { "shortName", requestedShortName }, { commands ? "commands" : "queries", std::move(values) } };
+		}
 		if (action == "listCommands" || action == "listQueries") {
 			if (!Feature::FindRegisteredFeatureByShortName(shortName))
 				return json{ { "error", "unknown or missing shortName" }, { "shortName", shortName } };
@@ -511,7 +524,7 @@ namespace
 			};
 		}
 
-		const std::string name = a_args.value("name", std::string{});
+		const std::string name = commandName;
 		const json actionArgs = a_args.value("args", json::object());
 
 		if (action == "invokeCommand") {
