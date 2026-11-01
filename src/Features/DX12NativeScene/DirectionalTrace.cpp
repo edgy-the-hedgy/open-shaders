@@ -537,7 +537,8 @@ namespace DX12Native
         frame.nativeGI.composedValid = false;
         if (!frame.nativeGIRequested || !frame.hybridShadowedSourceReady ||
             !frame.hybridLinearDepth || !frame.hybridShadowedSource || !frame.shadowMask ||
-            !frame.hybridInputs[2] || !frame.hybridInputs[3] || !frame.hybridInputs[4]) return;
+            !frame.hybridInputs[2] || !frame.hybridInputs[3] || !frame.hybridInputs[4] ||
+            !frame.hybridInputs[5]) return;
         if (!nativeHybridGI) nativeHybridGI = std::make_unique<NativeHybridGI>();
         const auto& composition = globals::features::rtComposer.composition;
         const auto sampling = MakeHybridSamplingLayout(
@@ -551,6 +552,16 @@ namespace DX12Native
                 globals::features::rtComposer.composition.shadowInfluence,
                 globals::features::rtComposer.composition.shadowThreshold)) {
             frame.nativeGIFrame = frame.number;
+            // Native RR guides are GPU-only and allocated at the *logical*
+            // RR grid. They are not sent through the legacy DX11 denoiser.
+            nativeHybridGI->RecordRRGuides(
+                backend.d3d12Device.get(), frame.commands.get(),
+                frame.nativeGI, uint32_t(&frame - frames.data()),
+                frame.hybridLinearDepth.get(),
+                frame.hybridInputs[2]->resource.get(),
+                frame.hybridInputs[5]->resource.get(),
+                frame.hybridInputs[3]->resource.get(),
+                frame.hybridInputs[4]->resource.get());
             // Raw native preview has no RR/upscaler yet: never read packed
             // signal textures as if they were full-size scene pixels.
             // Sampling remains active diagnostically for RR integration.
@@ -1294,6 +1305,8 @@ namespace DX12Native
             { "nativeHybridGIDispatches", nativeHybridGI ? nativeHybridGI->GIDispatches() : uint64_t{0} },
             { "nativeHybridAODispatches", nativeHybridGI ? nativeHybridGI->AODispatches() : uint64_t{0} },
             { "nativeHybridEligibilityDispatches", nativeHybridGI ? nativeHybridGI->EligibilityDispatches() : uint64_t{0} },
+            { "nativeHybridRRGuideDispatches", nativeHybridGI ? nativeHybridGI->GuideDispatches() : uint64_t{0} },
+            { "nativeHybridRRGuideFailure", nativeHybridGI ? nativeHybridGI->GuideFailure() : std::string{} },
             { "nativeHybridLogicalGrid", sampling.logical },
             { "nativeHybridPackedGrid", sampling.packed },
             { "nativeHybridTracedPixels", sampling.tracedPixels },
