@@ -325,10 +325,11 @@ bool RedstoneGI::ShadersOK() const
 	       sourceRadianceCompute && giCompute && HasRayRegenerationResources();
 }
 
-RedstoneGI::RGICB RedstoneGI::GetNativeGISettings(std::array<uint32_t, 2> nativeSize, uint32_t frameNumber) const
+RedstoneGI::RGICB RedstoneGI::GetNativeGISettings(std::array<uint32_t, 2> nativeSize,
+    uint32_t frameNumber, const DX12Native::HybridSamplingLayout& sampling) const
 {
-    // Matches UpdateSB(), with full-resolution native sampling and no RR
-    // checkerboard until the DX12 reconstruction context is available.
+    // Stable logical RR grid. Native source/guide coordinates remain full-size,
+    // and checkerboard packing is applied only to traced signal storage.
     RGICB data{};
     if (!nativeSize[0] || !nativeSize[1]) return data;
     const float2 size{ float(nativeSize[0]), float(nativeSize[1]) };
@@ -336,18 +337,23 @@ RedstoneGI::RGICB RedstoneGI::GetNativeGISettings(std::array<uint32_t, 2> native
     if (std::abs(projection._11) < 1e-8f || std::abs(projection._22) < 1e-8f) return data;
     data.NDCToViewMul = { 2.0f / projection._11, -2.0f / projection._22 };
     data.NDCToViewAdd = { -1.0f / projection._11, 1.0f / projection._22 };
-    data.TexDim = size;
-    data.RcpTexDim = { 1.0f / size.x, 1.0f / size.y };
+    const float2 grid{ float(sampling.logical[0]), float(sampling.logical[1]) };
+    data.TexDim = grid;
+    data.RcpTexDim = { 1.0f / grid.x, 1.0f / grid.y };
     data.FrameDim = size;
-    data.RcpFrameDim = data.RcpTexDim;
+    data.RcpFrameDim = { 1.0f / size.x, 1.0f / size.y };
     data.FrameIndex = frameNumber;
     data.DiffuseSlices = diffuseEnabled ? diffuseSlices : 0u;
     data.DiffuseSteps = diffuseSteps;
     data.SpecularSlices = specularEnabled ? specularSlices : 0u;
     data.SpecularSteps = specularSteps;
-    data.RRHistoryValid = 0u;
-    data.RRCheckerboardEnabled = 0u;
-    data.RRCheckerboardOrigin = 0u;
+    data.RRHistoryValid = 0u; // native RR provider owns temporal validity
+    data.RRCheckerboardEnabled = sampling.checkerboard ? 1u : 0u;
+    data.RRCheckerboardOrigin = sampling.checkerboardOrigin;
+    // Reuse the existing final three padding dwords in b1, retaining the
+    // exact layout of the legacy DX11 constant buffer.
+    data.geometryPadding[0] = sampling.representativePhase;
+    data.geometryPadding[1] = sampling.quarter ? 1u : 0u;
     data.MinScreenRadius = settings.MinScreenRadius * size.x;
     data.EffectRadius = std::max(1.0f, settings.GIRadius);
     data.GIRadius = settings.GIRadius / data.EffectRadius;
