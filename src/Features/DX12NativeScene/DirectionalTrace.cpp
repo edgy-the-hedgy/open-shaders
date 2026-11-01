@@ -107,7 +107,7 @@ namespace DX12Native
 		parameters[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
 		parameters[4].Descriptor.ShaderRegister = 2;
 		parameters[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-		parameters[5].Constants = { 0, 0, 37 };
+		parameters[5].Constants = { 0, 0, 36 };
 		parameters[11].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
 		parameters[11].Descriptor.ShaderRegister = 6;
 		parameters[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -399,12 +399,12 @@ namespace DX12Native
 			uint32_t indirect[4]{};
 			float4 falloffParameters;
 			float4 stochasticParameters;
-			uint32_t enableVisibilityCache;
 		};
 		const auto& origin = globals::game::frameBufferCached.GetCameraPosAdjust();
-		const Constants constants{ a_frame.size[0], a_frame.size[1], a_frame.number, uint32_t(a_frame.scene->bottoms.size()), a_direction, kRayMaximum, { origin.x, origin.y, origin.z }, kRayMinimum, a_localLight ? 0.0f : kSunAngularRadius, { a_localLight ? 1u : 0u, a_frame.materialView, a_frame.allPreparedLights ? uint32_t(a_frame.lightIdentities.size()) : 0u }, a_frame.strengths, (a_frame.useDirectRR || a_frame.indirectRays) ? 1u : 0u, { 0u, a_frame.directTraceMode, a_frame.indirectTraceMode }, { a_frame.indirectRays, a_frame.bindings->materials->roomCount, a_frame.bindings->materials->roomsKnown ? 1u : 0u, a_frame.normalMode | a_frame.rrMaterialPolicy }, a_frame.falloffParameters, a_frame.stochasticParameters, a_frame.shadowMask ? 1u : 0u };
-		static_assert(sizeof(Constants) == 37 * sizeof(uint32_t));
-		commands->SetComputeRoot32BitConstants(5, 37, &constants, 0);
+		const Constants constants{ a_frame.size[0], a_frame.size[1], a_frame.number, uint32_t(a_frame.scene->bottoms.size()), a_direction, kRayMaximum, { origin.x, origin.y, origin.z }, kRayMinimum, a_localLight ? 0.0f : kSunAngularRadius, { a_localLight ? 1u : 0u, a_frame.materialView, a_frame.allPreparedLights ? uint32_t(a_frame.lightIdentities.size()) : 0u }, a_frame.strengths, (a_frame.useDirectRR || a_frame.indirectRays) ? 1u : 0u, { 0u, a_frame.directTraceMode, a_frame.indirectTraceMode }, { a_frame.indirectRays, a_frame.bindings->materials->roomCount, a_frame.bindings->materials->roomsKnown ? 1u : 0u, a_frame.normalMode | a_frame.rrMaterialPolicy }, a_frame.falloffParameters, { a_frame.stochasticParameters.x, a_frame.stochasticParameters.y,
+				a_frame.shadowMask ? 1.0f : 0.0f, a_frame.stochasticParameters.w } };
+		static_assert(sizeof(Constants) == 36 * sizeof(uint32_t));
+		commands->SetComputeRoot32BitConstants(5, 36, &constants, 0);
 		std::vector<D3D12_RESOURCE_BARRIER> begin{
 			CD3DX12_RESOURCE_BARRIER::Transition(a_frame.light->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
 			CD3DX12_RESOURCE_BARRIER::Transition(a_frame.receivers->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
@@ -417,7 +417,7 @@ namespace DX12Native
 		if (a_frame.shadowMask && a_frame.visibilityBits) {
 			Constants maskPass = constants;
 			maskPass.signalPadding[0] = 4u;
-			commands->SetComputeRoot32BitConstants(5, 37, &maskPass, 0);
+			commands->SetComputeRoot32BitConstants(5, 36, &maskPass, 0);
 			commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 			++shadowMaskTraceDispatches;
 			std::array<D3D12_RESOURCE_BARRIER, 2> maskBarriers{
@@ -427,12 +427,12 @@ namespace DX12Native
 			commands->ResourceBarrier(uint32_t(maskBarriers.size()), maskBarriers.data());
 			if (a_frame.directTraceMode != 0u) {
 				maskPass.signalPadding[0] = 5u;
-				commands->SetComputeRoot32BitConstants(5, 37, &maskPass, 0);
+				commands->SetComputeRoot32BitConstants(5, 36, &maskPass, 0);
 				commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 				++shadowMaskResolveDispatches;
 				commands->ResourceBarrier(uint32_t(maskBarriers.size()), maskBarriers.data());
 			}
-			commands->SetComputeRoot32BitConstants(5, 37, &constants, 0);
+			commands->SetComputeRoot32BitConstants(5, 36, &constants, 0);
 		}
 		commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 		++directTraceDispatches;
@@ -445,7 +445,7 @@ namespace DX12Native
 			commands->ResourceBarrier(uint32_t(barriers.size()), barriers.data());
 			Constants resolve = constants;
 			resolve.signalPadding[0] = 2u;
-			commands->SetComputeRoot32BitConstants(5, 37, &resolve, 0);
+			commands->SetComputeRoot32BitConstants(5, 36, &resolve, 0);
 			commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 		}
 		if (a_frame.indirectRays != 0) {
@@ -459,7 +459,7 @@ namespace DX12Native
 			commands->ResourceBarrier(uint32_t(independentSignals.size()), independentSignals.data());
 			Constants indirectConstants = constants;
 			indirectConstants.signalPadding[0] = 1u;
-			commands->SetComputeRoot32BitConstants(5, 37, &indirectConstants, 0);
+			commands->SetComputeRoot32BitConstants(5, 36, &indirectConstants, 0);
 			commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 			++indirectTraceDispatches;
 			if (a_frame.indirectTraceMode != 0u) {
@@ -469,7 +469,7 @@ namespace DX12Native
 				};
 				commands->ResourceBarrier(uint32_t(resolveOrder.size()), resolveOrder.data());
 				indirectConstants.signalPadding[0] = 3u;
-				commands->SetComputeRoot32BitConstants(5, 37, &indirectConstants, 0);
+				commands->SetComputeRoot32BitConstants(5, 36, &indirectConstants, 0);
 				commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 			}
 		}

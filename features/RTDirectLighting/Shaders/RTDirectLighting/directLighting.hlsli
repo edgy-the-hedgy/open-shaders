@@ -171,7 +171,7 @@ bool EvaluatePointLight(
     // a missing bit as darkness.
     bool visible = false;
     const uint bit = 1u << lightIndex;
-    const uint2 cached = EnableVisibilityCache != 0u ? DirectVisibilityBits[pixel] : uint2(0u, 0u);
+    const uint2 cached = DirectStochastic.z >= 0.5f ? DirectVisibilityBits[pixel] : uint2(0u, 0u);
     if ((cached.y & bit) != 0u) {
         visible = (cached.x & bit) != 0u;
     } else if (!TracePreparedPointVisibility(lightIndex, position, lightPosition, sourceRadius, l,

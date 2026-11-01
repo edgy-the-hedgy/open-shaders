@@ -40,8 +40,7 @@ cbuffer Trace : register(b0)
 	uint BakedRoomsKnown;
 	uint DirectNormalMode;
 	float4 PointLightFalloff;  // effective-radius scale, transition fraction, cutoff curve exponent, reserved
-	float4 DirectStochastic;  // enabled, emitter radius multiplier, reserved, reserved
-	uint EnableVisibilityCache; // scene-target direct dispatch only; preview preserves its existing ray path
+	float4 DirectStochastic;  // enabled, emitter radius multiplier, visibility cache enabled, reserved
 };
 
 #include "materials.hlsli"
