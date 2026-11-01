@@ -222,11 +222,11 @@ void EvaluateShadowMaskForSurface(uint instance, uint primitive, float2 barycent
     if ((record.flags.x & 3u) != 3u || record.flags.w != 0u ||
         abs(distance - length(receiver.xyz)) > max(5.0f, distance * ReceiverRelativeTolerance)) return;
     EvaluatedSourceMaterial material;
-    TriangleSurface triangle;
+    TriangleSurface triSurface;
     if (!LoadSourceMaterial(instance, primitive, barycentric, objectToWorld, worldToObject, footprint, material) ||
-        !LoadTriangle(instance, primitive, barycentric, triangle)) return;
-    const float3 edge0 = mul((float3x3)objectToWorld, triangle.position1 - triangle.position0);
-    const float3 edge1 = mul((float3x3)objectToWorld, triangle.position2 - triangle.position0);
+        !LoadTriangle(instance, primitive, barycentric, triSurface)) return;
+    const float3 edge0 = mul((float3x3)objectToWorld, triSurface.position1 - triSurface.position0);
+    const float3 edge1 = mul((float3x3)objectToWorld, triSurface.position2 - triSurface.position0);
     const float3 geometryNormal = normalize(cross(edge0, edge1));
     const uint normalMode = DirectNormalMode & 3u;
     const float3 surfaceNormal = normalize(normalMode == 1u ? geometryNormal : material.normal);
