@@ -36,6 +36,9 @@ struct RTComposer final : Feature
         std::array<SignalReconstructionSettings, 3> reconstruction{};
         // Session-only diagnostic override; never persisted or treated as RR-ready.
         bool previewNativeRaw = false;
+        // Session-only opt-in: never auto-enable production RR until runtime
+        // dispatch/history/quality validation has passed on this hardware.
+        bool previewNativeRR = false;
     } composition;
     enum class EffectiveMode : uint32_t { Legacy = 0, ShadowOnly = 1, HybridShadowed = 2 };
     // The saved mode and the actually dispatched mode are intentionally distinct:
