@@ -3,7 +3,7 @@
 #include "Features/RedstoneGI/RedstoneGI.h"
 #include "Features/LinearLighting.h"
 #include "Utils/D3D.h"
-#include <d3dx12.h>
+#include <directx/d3dx12.h>
 #include <algorithm>
 #include <cstring>
 #include <fstream>
