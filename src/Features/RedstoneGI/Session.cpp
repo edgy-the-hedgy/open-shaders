@@ -152,12 +152,16 @@ void RedstoneGI::RegisterUxActions()
 	FEATURE_COMMAND("setRedstoneCheckerboard",
 		"Set native HybridGI checkerboard sampling independently from direct DXR. Saved by the normal settings Save action; baseline SSGI is unchanged. Params: enabled (boolean, required).",
 		[](Feature* a_self, const json& a_args) {
+            if (globals::features::rtComposer.TierControlsLocked())
+                throw std::invalid_argument("Fixed composer tier locks RedstoneGI controls; choose Custom.");
 			auto* redstone = static_cast<RedstoneGI*>(a_self);
 			redstone->SetRRCheckerboard(a_args.at("enabled").get<bool>());
 		});
 	FEATURE_COMMAND("setRedstoneRenderer",
 		"Select the live GI renderer. Params: renderer (required: ssgi or rgi). RGI requires ready resources in an eligible non-VR FSR-FG session. Switches at the next world-render boundary, resets GI histories and preserves both configurations. Only the selected renderer runs. RedstoneGI owns its registered page and settings; original SSGI remains independently usable. Normal Save persists selection. Query redstoneStatus for requested and actual state.",
 		[](Feature* a_self, const json& a_args) {
+            if (globals::features::rtComposer.TierControlsLocked())
+                throw std::invalid_argument("Fixed composer tier locks RedstoneGI controls; choose Custom.");
 			auto* redstone = static_cast<RedstoneGI*>(a_self);
 			const auto renderer = a_args.at("renderer").get<std::string>();
 			if (renderer != "ssgi") throw std::invalid_argument("Legacy RGI is retired. Use RTComposer Hybrid-Shadowed for native DX12 GI; 'ssgi' remains available.");
@@ -166,6 +170,8 @@ void RedstoneGI::RegisterUxActions()
 	FEATURE_COMMAND("setRedstoneDenoiserConfiguration",
 		"Set shared SDK 2.3.0 RR configuration overrides for all active RR contexts. Optional params: normalStrength, stabilityBias, maxRadiance, radianceClipStdK, gaussianRelaxation, disocclusionThreshold, debugDepthMin, debugDepthMax (finite numbers or null to restore provider default); reset (boolean) clears all overrides first. Omitted keys remain unchanged. Debug bounds must be nonnegative and ordered and affect only SDK depth visualization. Applies before the next RR dispatch and resets history. Normal Save persists under Upscaling.FSRRayRegeneration.configuration. Read provider defaults, overrides and pending status through getRedstoneStatus.",
 		[](Feature* a_self, const json& a_args) {
+            if (globals::features::rtComposer.TierControlsLocked())
+                throw std::invalid_argument("Fixed composer tier locks RedstoneGI controls; choose Custom.");
 			auto* redstone = static_cast<RedstoneGI*>(a_self);
 			auto& denoiser = redstone->GetDenoiser();
 			auto selected = a_args.value("reset", false) ? json::object() : RayRegeneration::GetConfiguration().overrides;
@@ -176,6 +182,8 @@ void RedstoneGI::RegisterUxActions()
 	FEATURE_COMMAND("setRedstoneSampling",
 		"Set independent direct-RGB RGI sampling and diagnostics. Optional params: diffuseSlices/specularSlices (1..10), diffuseSteps/specularSteps (1..20), adaptiveSampling (boolean), vanillaSSAO (boolean), roughnessFloor (0.02..1; default 0.2), occluderDepth (1..300 world units; default 300; shared by all four signals). Each estimator defaults to 2 slices and 10 steps. Vanilla SSAO is independent of both lighting signals. Saved by normal Save; baseline SSGI stays separate.",
 		[](Feature* a_self, const json& a_args) {
+            if (globals::features::rtComposer.TierControlsLocked())
+                throw std::invalid_argument("Fixed composer tier locks RedstoneGI controls; choose Custom.");
 			auto* redstone = static_cast<RedstoneGI*>(a_self);
 			json selected;
 			redstone->SaveRedstoneSettings(selected);
@@ -196,6 +204,8 @@ void RedstoneGI::RegisterUxActions()
 	FEATURE_COMMAND("setRedstoneSignals",
 		"Set independently saved Redstone signal toggles. Optional booleans: rrEnabled (default true; false uses raw resolve), diffuseEnabled/specularEnabled (default true; stop IL estimators and contributions), diffuseOcclusionEnabled/specularOcclusionEnabled (default false). Omitted values remain unchanged. Resets history; does not change startup FSR-FG/hardware gates or baseline SSGI.",
 		[](Feature* a_self, const json& a_args) {
+            if (globals::features::rtComposer.TierControlsLocked())
+                throw std::invalid_argument("Fixed composer tier locks RedstoneGI controls; choose Custom.");
 			auto* redstone = static_cast<RedstoneGI*>(a_self);
 			json selected;
 			redstone->SaveRedstoneSettings(selected);
@@ -215,6 +225,8 @@ void RedstoneGI::RegisterUxActions()
 	FEATURE_COMMAND("setRedstoneOcclusion",
 		"Set independent RGI occlusion controls without changing baseline SSGI or IL budgets. Optional params: diffuseEnabled/specularEnabled (boolean, default false), diffuseSlices/specularSlices (1..10, default 2), diffuseSteps/specularSteps (1..20, default 10), diffuseRadius/specularRadius (16..8192 world units, default 256), diffuseStrength/specularStrength (0..1, default 1). Signals are denoised separately, then packed as diffuse R/specular G; visibility 1 is neutral. Only estimated native ambient and environment specular are attenuated. Saved by normal Save. Params omitted remain unchanged.",
 		[](Feature* a_self, const json& a_args) {
+            if (globals::features::rtComposer.TierControlsLocked())
+                throw std::invalid_argument("Fixed composer tier locks RedstoneGI controls; choose Custom.");
 			auto* redstone = static_cast<RedstoneGI*>(a_self);
 			json selected;
 			redstone->SaveRedstoneSettings(selected);
@@ -231,6 +243,8 @@ void RedstoneGI::RegisterUxActions()
 	FEATURE_COMMAND("setRedstoneContributions",
 		"Set active RGI lighting contribution in EV (0=unchanged, +1=double), clamped to [-8,8]. Affects scene composition and both RR previews, before display-only preview exposure. Saved by the normal Save action; baseline SSGI stays separate. Params: overallEV, specularEV, diffuseEV (optional numbers; omitted values stay unchanged).",
 		[](Feature* a_self, const json& a_args) {
+            if (globals::features::rtComposer.TierControlsLocked())
+                throw std::invalid_argument("Fixed composer tier locks RedstoneGI controls; choose Custom.");
 			auto* redstone = static_cast<RedstoneGI*>(a_self);
 			json selected;
 			redstone->SaveRedstoneSettings(selected);

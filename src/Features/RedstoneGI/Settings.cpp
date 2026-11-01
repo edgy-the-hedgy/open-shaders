@@ -234,15 +234,23 @@ void RedstoneGI::DrawAmbientOcclusionSettings()
 
 void RedstoneGI::DrawSettings()
 {
-	// This is the Hybrid backend's controls, presented by RTIndirectLighting.
-	// The two-mode method selector is owned solely by RTIndirectLighting.
-	if (!selected) {
-		ImGui::TextWrapped("Hybrid raymarched GI is not selected.");
-		return;
-	}
-	if (!resourcesReady || switchFailed)
-		ImGui::TextWrapped("Hybrid raymarched GI resources or composite are unavailable; the existing provider fallback remains active.");
-	ImGui::SeparatorText("Screen-space indirect lighting");
+    const auto& composer = globals::features::rtComposer;
+    if (composer.TierControlsLocked()) {
+        ImGui::SeparatorText("Indirect lighting - fixed compositor tier");
+        ImGui::TextWrapped("%s", RTComposer::IndirectTierDescription(composer.composition.mode));
+        ImGui::TextWrapped("Estimator and occlusion controls are locked; select Custom.");
+        return;
+    }
+    const bool customNative = composer.composition.enabled &&
+        composer.composition.mode == RTComposer::CompositorMode::Custom &&
+        composer.composition.customHybridShadowed;
+    if (!selected && !customNative) {
+        ImGui::TextWrapped("Legacy raymarched GI is retired; configure native HybridGI under Custom.");
+        return;
+    }
+    if (!customNative && (!resourcesReady || switchFailed))
+        ImGui::TextWrapped("Legacy raymarched GI resources are unavailable; renderer fallback remains active.");
+    ImGui::SeparatorText(customNative ? "Native DX12 HybridGI estimators" : "Screen-space indirect lighting");
 	ImGui::SliderFloat(T("feature.upscaling.redstone.contribution", "RGI Contribution (EV)"), &rgiContributionEV, kContributionMinEV, kContributionMaxEV, "%.1f", ImGuiSliderFlags_AlwaysClamp);
 	recompileFlag |= ImGui::Checkbox(T("feature.upscaling.redstone.adaptive", "Adaptive Sampling"), &settings.EnableAdaptiveSampling);
 
