@@ -1,8 +1,8 @@
 #pragma once
-#include "Features/OverlayFeature.h"
+#include "Feature.h"
 
 /** @brief Owns the indirect-lighting method and its direct-lighting dependency. */
-struct RTIndirectLighting final : OverlayFeature
+struct RTIndirectLighting final : Feature
 {
 	struct Settings
 	{
