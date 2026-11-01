@@ -13,7 +13,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RedstoneShadows::Settings, Acqui
 
 std::pair<std::string, std::vector<std::string>> RedstoneShadows::GetFeatureSummary()
 {
-	return { "Prepared cell geometry feeds native DX12 acceleration, material previews and optional prepared-light RT diffuse/specular scene lighting. SCM observation remains separate. Native shadow production remains active.", {} };
+	return { "Native DX12 scene preparation and RT direct-light controls. Scene acquisition and native shadow production remain independent.", {} };
 }
 
 void RedstoneShadows::LoadSettings(json& a_json)
@@ -243,70 +243,126 @@ json RedstoneShadows::GetDiagnostics()
 
 void RedstoneShadows::DrawSettings()
 {
-	if (ImGui::Checkbox("Use prepared cell geometry", &settings.UsePreparedScene)) { ready = false; resetRequested = true; }
-	if (ImGui::Checkbox("Prepared local-light shadow preview", &settings.PreviewPreparedScene)) { preparedTrace.Reset(); }
-	if (ImGui::Checkbox("Load prepared material maps", &settings.UsePreparedMaterials)) resetRequested = true;
-	if (settings.UsePreparedMaterials) {
-		int view = int(settings.PreparedMaterialView), materialBudget = int(settings.MaterialTextureBudgetMB);
-		if (ImGui::Combo("Prepared material view", &view, "Visibility\0Base color\0World normal\0Source roughness\0Metalness\0Emission\0Material coverage\0Material AO\0PBR F0\0Opacity\0Direct diffuse\0Direct specular\0Direct combined and emission\0")) { settings.PreparedMaterialView = uint32_t(view); preparedTrace.Reset(); }
-		if (ImGui::SliderInt("Material texture budget (MiB)", &materialBudget, 64, 1024)) { settings.MaterialTextureBudgetMB = uint32_t(materialBudget); resetRequested = true; }
-		ImGui::TextWrapped("Prepared maps load once on a background worker. Material views trace the prepared geometry; orange marks unsupported techniques and magenta marks unavailable data. These are baseline source-material views, not final game lighting.");
-		const auto trace = preparedTrace.GetDiagnostics();
-		ImGui::Text("Texture pools: %llu | unique textures: %u | texture MiB: %.1f", trace.value("texturePools", 0ull), trace.value("uniqueTextures", 0u), double(trace.value("materialTextureBytes", 0ull)) / (1024.0 * 1024.0));
-		ImGui::Text("Ready source materials: %u | rejected: %u", trace.value("readySourceMaterials", 0u), trace.value("rejectedSourceMaterials", 0u));
-		if (!trace.value("materialFailure", std::string{}).empty()) ImGui::TextWrapped("%s", trace.at("materialFailure").get_ref<const std::string&>().c_str());
-	}
-	ImGui::SliderFloat("Raster / Redstone blend", &settings.RedstoneBlend, 0.0f, 1.0f, "%.2f");
-	ImGui::SliderFloat("Direct lighting strength", &settings.DirectStrength, 0.0f, 8.0f, "%.2fx");
-	ImGui::SliderFloat("Direct diffuse strength", &settings.DiffuseStrength, 0.0f, 8.0f, "%.2fx");
-	ImGui::SliderFloat("Direct specular strength", &settings.SpecularStrength, 0.0f, 8.0f, "%.2fx");
-	ImGui::SliderFloat("Prepared emission strength", &settings.EmissionStrength, 0.0f, 8.0f, "%.2fx");
-	if (ImGui::Button("Reset lighting strengths")) settings.DirectStrength = settings.DiffuseStrength = settings.SpecularStrength = settings.EmissionStrength = settings.IndirectStrength = 1.0f;
-	ImGui::TextWrapped("Strength changes apply to the next direct-light frame or preview dispatch. Direct strength scales diffuse and specular; emission is independent. Normal Save persists values.");
-	if (ImGui::Checkbox("All prepared cell lights (direct only)", &settings.UseAllPreparedLights)) preparedTrace.Reset();
-	if (ImGui::Checkbox("Prepared RT direct scene lighting", &settings.UsePreparedDirectLighting)) preparedTrace.Reset();
-	if (settings.UsePreparedDirectLighting || settings.UseDXRIndirect) {
-		ImGui::TextWrapped("Requires prepared geometry and material maps. Replaces supported, depth-matched opaque pixels with direct diffuse/specular plus emission. All-prepared mode accumulates every prepared light, up to 32; selected mode uses the baseline selector. Missing or unsupported requested lights keep native output rather than dropping contributions. Unlisted direct lights remain absent. The exclusive indirect selection adds either connected current RedstoneGI output or one-bounce DXR diffuse/specular. DXR requires regenerated baked room data and contributes only validated samples. Runs every frame at native render resolution; native shadow work remains active.");
-		const auto trace = preparedTrace.GetDiagnostics();
-		if (settings.UseDXRIndirect && trace.value("cachedSceneBindings", false) && !trace.value("bakedRoomsKnown", false))
-			ImGui::TextWrapped("DXR indirect requires regenerated room metadata. Rebuild this cell's geometry cache with the current preparation tool.");
-		ImGui::Text("Submitted light count: %u | limit: %u", trace.value("requestedLightCount", 0u), RedstoneShadow::DirectionalTrace::kMaximumDirectLights);
-		ImGui::Text("Scene submissions: %llu | last frame: %u | budget deferrals: %llu | busy frames: %llu",
-			trace.value("sceneCompositeSubmissions", 0ull), trace.value("sceneCompositeFrame", 0u), trace.value("budgetDeferrals", 0ull), trace.value("busyFrames", 0ull));
-		const auto failure = trace.value("failure", std::string{});
-		if (!failure.empty()) ImGui::TextWrapped("Direct lighting unavailable: %s", failure.c_str());
-	}
-	const auto selectionFailure = preparedTrace.GetDiagnostics().value("lightSelectionFailure", std::string{});
-	if (!selectionFailure.empty()) ImGui::TextWrapped("Light set unavailable: %s", selectionFailure.c_str());
-	const auto prepared = preparedScene.GetDiagnostics();
-	int light = int(settings.PreparedLight);
-	const auto maximumLight = std::max(0, int(prepared.value("lightCount", 0ull)) - 1);
-	if (ImGui::SliderInt("Prepared baseline light", &light, 0, maximumLight)) { settings.PreparedLight = uint32_t(light); preparedTrace.Reset(); }
-	ImGui::TextWrapped("Visibility and direct-light views require one evaluated point light with the selected placed-reference and base identity; flicker movement does not affect matching. PortalStrict uses the current native receiver room mask. Source-material views inspect prepared world-space ray hits without a live light. Magenta marks unavailable data; orange marks unsupported material techniques. Native shadows remain active; saved/moved objects and animation are not validated.");
-	ImGui::Text("Prepared meshes: %llu | instances: %llu | material-masked: %u", prepared.value("meshes", 0ull), prepared.value("instances", 0ull), prepared.value("maskedInstances", 0u));
-	if (prepared.contains("failure") && !prepared.at("failure").get_ref<const std::string&>().empty())
-		ImGui::TextWrapped("%s", prepared.at("failure").get_ref<const std::string&>().c_str());
-	if (ImGui::Checkbox("Observe SCM shadow casters", &settings.AcquireScene)) resetRequested = true;
-	ImGui::TextWrapped("Observes one rotating local-light slot only when SCM updates it. Native shadows remain active. Directional tracing and preview are unavailable for this partial local-light scope.");
-	bool showCaptureDebug = captureDebug.load();
-	if (ImGui::Checkbox("Capture diagnostics (temporary overlay)", &showCaptureDebug)) {
-		captureDebug.store(showCaptureDebug);
-		CasterObservation::SetDiagnosticsEnabled(showCaptureDebug);
-		debugBoundCount = 0;
-		debugScope = {};
-		debugStatus = {};
-	}
-	ImGui::TextWrapped("Diagnostic boxes enclose captured world bounds, including hidden objects. They are not mesh wireframes or ray-traced shadows.");
-	if (!unavailable.empty()) ImGui::TextWrapped("%s", unavailable.c_str());
-	ImGui::Text("DXR: %s; RR session: %s", dxrCapable ? "supported" : "unavailable", rrEligible ? "eligible" : "ineligible");
-	int instances = int(settings.MaxInstances), budget = int(settings.BufferBudgetMB);
-	bool changed = ImGui::SliderInt("Maximum admitted instances", &instances, 1, int(CasterObservation::kCapacity));
-	changed |= ImGui::SliderInt("Geometry buffer budget (MiB)", &budget, 16, 512);
-	if (changed) {
-		settings.MaxInstances = uint32_t(instances);
-		settings.BufferBudgetMB = uint32_t(budget);
-		resetRequested = true;
-	}
+    if (!ImGui::BeginTabBar("##NativeDX12LightingTabs")) return;
+    if (ImGui::BeginTabItem("DX12 Native Scene")) {
+        DrawNativeSceneSettings();
+        ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("RT Direct Lighting")) {
+        DrawDirectLightingSettings();
+        ImGui::EndTabItem();
+    }
+    ImGui::EndTabBar();
+}
+
+void RedstoneShadows::DrawNativeSceneSettings()
+{
+    bool useNativeScene = settings.UsePreparedScene && settings.UsePreparedMaterials;
+    if (ImGui::Checkbox("Use DX12 native scene", &useNativeScene)) {
+        if (settings.UsePreparedScene != useNativeScene) ready = false;
+        settings.UsePreparedScene = useNativeScene;
+        settings.UsePreparedMaterials = useNativeScene;
+        resetRequested = true;
+    }
+    if (settings.UsePreparedScene != settings.UsePreparedMaterials)
+        ImGui::TextWrapped("Legacy settings enable only part of the native scene. Changing the unified toggle will enable or disable geometry and materials together.");
+
+    ImGui::SeparatorText("Budgets");
+    int instances = int(settings.MaxInstances), geometryBudget = int(settings.BufferBudgetMB);
+    bool geometryChanged = ImGui::SliderInt("Maximum admitted instances", &instances, 1, int(CasterObservation::kCapacity));
+    geometryChanged |= ImGui::SliderInt("Geometry buffer budget (MiB)", &geometryBudget, 16, 512);
+    if (geometryChanged) {
+        settings.MaxInstances = uint32_t(instances);
+        settings.BufferBudgetMB = uint32_t(geometryBudget);
+        resetRequested = true;
+    }
+    int materialBudget = int(settings.MaterialTextureBudgetMB);
+    if (ImGui::SliderInt("Material texture budget (MiB)", &materialBudget, 64, 1024)) {
+        settings.MaterialTextureBudgetMB = uint32_t(materialBudget);
+        resetRequested = true;
+    }
+    int lightingBudget = int(settings.DirectLightingBudgetMB);
+    if (ImGui::SliderInt("Prepared lighting buffer budget (MiB)", &lightingBudget, 64, 1024))
+        settings.DirectLightingBudgetMB = uint32_t(lightingBudget);
+    ImGui::TextWrapped("The prepared lighting budget also covers reconstruction buffers; insufficient capacity falls back to raw signals. Provider-internal allocations are additional.");
+
+    ImGui::SeparatorText("Debug");
+    if (ImGui::Checkbox("Native scene preview", &settings.PreviewPreparedScene)) preparedTrace.Reset();
+    if (settings.UsePreparedMaterials) {
+        int view = int(settings.PreparedMaterialView);
+        if (ImGui::Combo("Prepared material view", &view, "Visibility\0Base color\0World normal\0Source roughness\0Metalness\0Emission\0Material coverage\0Material AO\0PBR F0\0Opacity\0Direct diffuse\0Direct specular\0Direct combined and emission\0")) {
+            settings.PreparedMaterialView = uint32_t(view);
+            preparedTrace.Reset();
+        }
+        ImGui::TextWrapped("Material views trace prepared geometry; orange marks unsupported techniques and magenta unavailable data. These are source-material views, not final scene lighting.");
+        const auto trace = preparedTrace.GetDiagnostics();
+        ImGui::Text("Texture pools: %llu | unique textures: %u | texture MiB: %.1f", trace.value("texturePools", 0ull), trace.value("uniqueTextures", 0u), double(trace.value("materialTextureBytes", 0ull) / (1024.0 * 1024.0)));
+        ImGui::Text("Ready source materials: %u | rejected: %u", trace.value("readySourceMaterials", 0u), trace.value("rejectedSourceMaterials", 0u));
+        if (!trace.value("materialFailure", std::string{}).empty()) ImGui::TextWrapped("%s", trace.at("materialFailure").get_ref<const std::string&>().c_str());
+    }
+    bool showCaptureDebug = captureDebug.load();
+    if (ImGui::Checkbox("Capture diagnostics (temporary overlay)", &showCaptureDebug)) {
+        captureDebug.store(showCaptureDebug);
+        CasterObservation::SetDiagnosticsEnabled(showCaptureDebug);
+        debugBoundCount = 0;
+        debugScope = {};
+        debugStatus = {};
+    }
+    ImGui::TextWrapped("Diagnostic boxes enclose captured world bounds, including hidden objects. They are not mesh wireframes or ray-traced shadows.");
+    const auto prepared = preparedScene.GetDiagnostics();
+    ImGui::Text("Prepared meshes: %llu | instances: %llu | material-masked: %u", prepared.value("meshes", 0ull), prepared.value("instances", 0ull), prepared.value("maskedInstances", 0u));
+    if (prepared.contains("failure") && !prepared.at("failure").get_ref<const std::string&>().empty())
+        ImGui::TextWrapped("%s", prepared.at("failure").get_ref<const std::string&>().c_str());
+    if (!unavailable.empty()) ImGui::TextWrapped("%s", unavailable.c_str());
+    ImGui::Text("DXR: %s; RR session: %s", dxrCapable ? "supported" : "unavailable", rrEligible ? "eligible" : "ineligible");
+}
+
+void RedstoneShadows::DrawDirectLightingSettings()
+{
+    if (ImGui::Checkbox("RT direct lighting", &settings.UsePreparedDirectLighting)) preparedTrace.Reset();
+    if (ImGui::Checkbox("Observe SCM shadow casters", &settings.AcquireScene)) resetRequested = true;
+    ImGui::TextWrapped("SCM observation covers one rotating local-light slot when SCM updates it. Native shadows remain active; this is not complete-scene interception.");
+
+    ImGui::SeparatorText("Direct lighting");
+    ImGui::SliderFloat("Raster / RT blend", &settings.RedstoneBlend, 0.0f, 1.0f, "%.2f");
+    ImGui::SliderFloat("Direct lighting strength", &settings.DirectStrength, 0.0f, 8.0f, "%.2fx");
+    if (ImGui::Checkbox("All prepared cell lights (direct only)", &settings.UseAllPreparedLights)) preparedTrace.Reset();
+
+    const auto prepared = preparedScene.GetDiagnostics();
+    int light = int(settings.PreparedLight);
+    const auto maximumLight = std::max(0, int(prepared.value("lightCount", 0ull)) - 1);
+    if (ImGui::SliderInt("Prepared baseline light", &light, 0, maximumLight)) {
+        settings.PreparedLight = uint32_t(light);
+        preparedTrace.Reset();
+    }
+
+    if (ImGui::TreeNodeEx("Diffuse", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat("Direct diffuse strength", &settings.DiffuseStrength, 0.0f, 8.0f, "%.2fx");
+        ImGui::TreePop();
+    }
+    if (ImGui::TreeNodeEx("Specular", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat("Direct specular strength", &settings.SpecularStrength, 0.0f, 8.0f, "%.2fx");
+        ImGui::TreePop();
+    }
+    ImGui::SliderFloat("Prepared emission strength", &settings.EmissionStrength, 0.0f, 8.0f, "%.2fx");
+    if (ImGui::Button("Reset lighting strengths"))
+        settings.DirectStrength = settings.DiffuseStrength = settings.SpecularStrength = settings.EmissionStrength = settings.IndirectStrength = 1.0f;
+    ImGui::TextWrapped("Direct strength scales diffuse and specular; emission is independent. Strength changes apply to the next trace/preview dispatch. Normal Save persists values.");
+
+    if (settings.UsePreparedDirectLighting || settings.UseDXRIndirect) {
+        ImGui::TextWrapped("Requires prepared geometry and material maps. Supported depth-matched opaque pixels receive direct diffuse/specular and emission; others retain raster output. Missing or unsupported lights keep native output. Unlisted direct lights remain absent at full RT blend; connected indirect lighting is selected separately. Native shadow production remains active.");
+        const auto trace = preparedTrace.GetDiagnostics();
+        if (settings.UseDXRIndirect && trace.value("cachedSceneBindings", false) && !trace.value("bakedRoomsKnown", false))
+            ImGui::TextWrapped("DXR indirect requires regenerated room metadata. Rebuild the current cell's geometry cache.");
+        ImGui::Text("Submitted light count: %u | limit: %u", trace.value("requestedLightCount", 0u), RedstoneShadow::DirectionalTrace::kMaximumDirectLights);
+        ImGui::Text("Scene submissions: %llu | last frame: %u | budget deferrals: %llu | busy frames: %llu",
+            trace.value("sceneCompositeSubmissions", 0ull), trace.value("sceneCompositeFrame", 0u), trace.value("budgetDeferrals", 0ull), trace.value("busyFrames", 0ull));
+        const auto failure = trace.value("failure", std::string{});
+        if (!failure.empty()) ImGui::TextWrapped("Direct lighting unavailable: %s", failure.c_str());
+    }
+    const auto selectionFailure = preparedTrace.GetDiagnostics().value("lightSelectionFailure", std::string{});
+    if (!selectionFailure.empty()) ImGui::TextWrapped("Light set unavailable: %s", selectionFailure.c_str());
+    ImGui::TextWrapped("Visibility and direct-light previews require a live matching placed-reference/base light. PortalStrict uses the native receiver-room mask; unsupported materials and saved/moved objects are not validated.");
 }
 
 void RedstoneShadows::RegisterUxActions()
@@ -638,9 +694,6 @@ void RedstoneShadows::DrawIndirectLightingSettings()
 void RedstoneShadows::DrawRayRegenerationSettings()
 {
 	ImGui::Checkbox("Reconstruct prepared lighting", &settings.UseDirectRayRegeneration);
-	int budget = int(settings.DirectLightingBudgetMB);
-	if (ImGui::SliderInt("Prepared lighting buffer budget (MiB)", &budget, 64, 1024)) settings.DirectLightingBudgetMB = uint32_t(budget);
-	ImGui::TextWrapped("This budget includes prepared lighting and reconstruction buffers. If it is insufficient, lighting uses raw signals. Provider-internal memory is additional.");
 	const bool wasDebugging = preparedTrace.IsRRDebugVisible();
 	preparedTrace.DrawRayRegenerationSettings(settings.UseDXRIndirect && !globals::game::isVR);
 	if (!wasDebugging && preparedTrace.IsRRDebugVisible()) {

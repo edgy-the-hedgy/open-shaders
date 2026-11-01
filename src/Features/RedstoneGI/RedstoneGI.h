@@ -37,7 +37,7 @@ struct RedstoneGI final : OverlayFeature
 	/** @brief Changes RGI sampling and invalidates reconstruction history. */
 	void SetRRCheckerboard(bool a_enabled);
 	bool IsRRCheckerboardEnabled() const { return RayRegeneration::GetSettings().checkerboard; }
-	std::string GetDisplayName() override { return "RedstoneGI"; }
+	std::string GetDisplayName() override { return "RT Indirect Lighting / AO"; }
 	std::string GetShortName() override { return "RedstoneGI"; }
 	std::string GetName() override { return "RedstoneGI"; }
 	std::string GetFeatureModLink() override { return {}; }
@@ -45,7 +45,7 @@ struct RedstoneGI final : OverlayFeature
 	bool IsAlwaysEnabled() const override { return true; }
 	std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
 	{
-		return { "Independent Redstone global illumination with FSR Ray Regeneration. Select SSGI or RGI on this page.", {} };
+		return { "RT indirect lighting, screen-space GI and ambient/specular occlusion with optional FSR Ray Regeneration.", {} };
 	}
 	/** @brief Reports whether the owned shaders and textures can render RGI. */
 	bool IsRuntimeReady() const { return loaded && ShadersOK() && HasRayRegenerationResources(); }

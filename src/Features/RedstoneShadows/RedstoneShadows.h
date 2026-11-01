@@ -42,7 +42,7 @@ struct RedstoneShadows final : OverlayFeature
 
 	std::string GetName() override { return "RedstoneShadows"; }
 	std::string GetShortName() override { return "RedstoneShadows"; }
-	std::string GetDisplayName() override { return "RedstoneShadows"; }
+	std::string GetDisplayName() override { return "RT Direct Lighting"; }
 	std::string_view GetCategory() const override { return FeatureCategories::kLighting; }
 	bool IsCore() const override { return true; }
 	bool UsesMainSettings() const override { return true; }
@@ -94,6 +94,8 @@ struct RedstoneShadows final : OverlayFeature
 	void RegisterUxActions() override;
 
 private:
+	void DrawNativeSceneSettings();
+	void DrawDirectLightingSettings();
 	RedstoneShadow::PreparedScene preparedScene;
 	RedstoneShadow::AccelerationWorker preparedAcceleration;
 	RedstoneShadow::DirectionalTrace preparedTrace;

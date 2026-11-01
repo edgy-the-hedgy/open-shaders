@@ -258,7 +258,7 @@ void RedstoneGI::DrawSettings()
 	if (globals::features::redstoneShadows.UsesDXRIndirect() && !globals::game::isVR) return;
 	DrawRendererSettings();
 	if (!selected) return;
-	ImGui::SeparatorText("RedstoneGI");
+	ImGui::SeparatorText("Screen-space indirect lighting");
 	ImGui::SliderFloat(T("feature.upscaling.redstone.contribution", "RGI Contribution (EV)"), &rgiContributionEV, kContributionMinEV, kContributionMaxEV, "%.1f", ImGuiSliderFlags_AlwaysClamp);
 	recompileFlag |= ImGui::Checkbox(T("feature.upscaling.redstone.adaptive", "Adaptive Sampling"), &settings.EnableAdaptiveSampling);
 
