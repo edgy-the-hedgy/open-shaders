@@ -1,12 +1,14 @@
 #pragma once
 #include "GraphicsInterop.h"
 #include "HybridSamplingPolicy.h"
+#include "Features/RTComposer/RTComposer.h"
 #include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
 
 struct RedstoneGI;
+class RedstoneDenoiser;
 
 namespace DX12Native
 {
@@ -28,6 +30,14 @@ namespace DX12Native
             std::array<winrt::com_ptr<ID3D12Resource>, kGuideCount> rrGuides{};
             std::array<uint32_t, 2> rrGuideSize{};
             bool rrGuidesValid = false;
+            // 0 diffuse, 1 specular, 2 AO, 3 specular AO.
+            static constexpr uint32_t kSignals = 4;
+            std::array<winrt::com_ptr<ID3D12Resource>, kSignals> rrOutputs{};
+            std::array<winrt::com_ptr<ID3D12Resource>, kSignals> nativeFiltered{};
+            std::array<winrt::com_ptr<ID3D12Resource>, kSignals> nativeBlurred{};
+            std::array<ID3D12Resource*, kSignals> nativeFinal{};
+            std::array<uint32_t, 2> rrOutputSize{};
+            bool rrValid = false, postValid = false;
             // DX12-produced final color; the sole eventual DX11 export product.
             std::unique_ptr<WrappedResource> composedScene;
             bool valid = false;
@@ -53,6 +63,14 @@ namespace DX12Native
             ID3D12Resource* specularAlbedo);
         const std::string& GuideFailure() const { return guideFailure; }
         uint64_t GuideDispatches() const { return guideDispatches; }
+        bool RecordPostRR(ID3D12Device* device, ID3D12GraphicsCommandList* list,
+            FrameOutputs& frame, uint32_t slot, uint32_t frameNumber,
+            ID3D12Resource* nativeDepth, ID3D12Resource* nativeNormal,
+            const RTComposer::CompositionSettings& policy,
+            RedstoneDenoiser& denoiser);
+        const std::string& PostFailure() const { return postFailure; }
+        uint64_t PostDispatches() const { return postDispatches; }
+        uint64_t BlurDispatches() const { return blurDispatches; }
         // Records only when GI and AO were produced for this frame. No CPU readback.
         bool RecordComposition(ID3D12Device* device, ID3D11Device5* device11,
             ID3D12GraphicsCommandList* list, FrameOutputs& frame, uint32_t slot,
@@ -76,8 +94,12 @@ namespace DX12Native
         winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
         winrt::com_ptr<ID3D12PipelineState> compositionPipeline;
         winrt::com_ptr<ID3D12DescriptorHeap> compositionDescriptors;
-        std::string failure, compositionFailure, guideFailure;
+        winrt::com_ptr<ID3D12RootSignature> postRoot;
+        std::array<winrt::com_ptr<ID3D12PipelineState>, 2> postPipelines;
+        winrt::com_ptr<ID3D12DescriptorHeap> postDescriptors;
+        std::string failure, compositionFailure, guideFailure, postFailure;
         uint64_t giDispatches = 0, aoDispatches = 0, compositionDispatches = 0,
-            eligibilityDispatches = 0, guideDispatches = 0;
+            eligibilityDispatches = 0, guideDispatches = 0,
+            postDispatches = 0, blurDispatches = 0;
     };
 }
