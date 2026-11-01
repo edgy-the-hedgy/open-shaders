@@ -14,6 +14,10 @@ struct RTDirectLighting final : OverlayFeature
 		float DiffuseStrength = 1.0f;
 		float SpecularStrength = 1.0f;
 		float EmissionStrength = 1.0f;
+		// Runtime tuning of the prepared point-light cutoff (inverse-square intensity is unchanged).
+		float PointLightRadiusMultiplier = 1.0f;
+		float PointLightFalloffFraction = 0.1f;
+		float PointLightFalloffExponent = 1.0f;
 		uint32_t SelectedDirectLight = 0;
 		uint32_t DirectTraceResolution = 0;  // 0=full, 1=half linear
 		bool RRMaterialIsolation = false;

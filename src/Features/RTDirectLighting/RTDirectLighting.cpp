@@ -10,7 +10,7 @@
 #include "Utils/DevBenchUx.h"
 #include "Util.h"
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTDirectLighting::Settings, RedstoneBlend, UsePreparedDirectLighting, UseAllPreparedLights, UseDirectRayRegeneration, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, SelectedDirectLight, NormalInfluence, DirectTraceResolution, DirectRRResolution, RRMaterialIsolation, RRGlossyRoughness)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTDirectLighting::Settings, RedstoneBlend, UsePreparedDirectLighting, UseAllPreparedLights, UseDirectRayRegeneration, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, SelectedDirectLight, NormalInfluence, DirectTraceResolution, DirectRRResolution, RRMaterialIsolation, RRGlossyRoughness, PointLightRadiusMultiplier, PointLightFalloffFraction, PointLightFalloffExponent)
 
 std::pair<std::string, std::vector<std::string>> RTDirectLighting::GetFeatureSummary()
 {
@@ -37,6 +37,9 @@ void RTDirectLighting::LoadSettings(json& value)
 	selected.DirectRRResolution = std::min(selected.DirectRRResolution, 3u);
 	selected.RRGlossyRoughness = std::isfinite(selected.RRGlossyRoughness) ? std::clamp(selected.RRGlossyRoughness, 0.04f, 1.0f) : 0.2f;
 	selected.RedstoneBlend = std::isfinite(selected.RedstoneBlend) ? std::clamp(selected.RedstoneBlend, 0.0f, 1.0f) : 1.0f;
+	selected.PointLightRadiusMultiplier = std::isfinite(selected.PointLightRadiusMultiplier) ? std::clamp(selected.PointLightRadiusMultiplier, 0.1f, 64.0f) : 1.0f;
+	selected.PointLightFalloffFraction = std::isfinite(selected.PointLightFalloffFraction) ? std::clamp(selected.PointLightFalloffFraction, 0.02f, 1.0f) : 0.1f;
+	selected.PointLightFalloffExponent = std::isfinite(selected.PointLightFalloffExponent) ? std::clamp(selected.PointLightFalloffExponent, 0.25f, 4.0f) : 1.0f;
 	for (auto* v : { &selected.DirectStrength, &selected.DiffuseStrength, &selected.SpecularStrength,
 			&selected.EmissionStrength })
 		*v = std::isfinite(*v) ? std::clamp(*v, 0.0f, 8.0f) : 1.0f;
@@ -77,6 +80,9 @@ json RTDirectLighting::GetDiagnostics()
 		trace.value("sceneCompositeSubmissions", uint64_t{ 0 }) == 0 ? "no-scene-composite-yet" : "composite-dispatched-radiance-unverified";
 	return { { "directLightingEnabled", settings.UsePreparedDirectLighting }, { "selectedDirectLight", settings.SelectedDirectLight },
 		{ "rasterRTBlend", settings.RedstoneBlend }, { "activationStatus", status },
+		{ "pointLightRadiusMultiplier", settings.PointLightRadiusMultiplier },
+		{ "pointLightFalloffFraction", settings.PointLightFalloffFraction },
+		{ "pointLightFalloffExponent", settings.PointLightFalloffExponent },
 		{ "nativeFeatureLoaded", native.loaded }, { "preparedSceneEnabled", native.settings.UsePreparedScene },
 		{ "preparedMaterialsEnabled", native.settings.UsePreparedMaterials }, { "preparedScenePublished", scenePublished },
 		{ "preparedScene", prepared }, { "trace", trace } };
@@ -111,6 +117,17 @@ void RTDirectLighting::DrawDirectLightingSettings()
     }
     ImGui::SliderFloat("Raster / RT blend", &settings.RedstoneBlend, 0.0f, 1.0f, "%.2f");
     ImGui::SliderFloat("Direct lighting strength", &settings.DirectStrength, 0.0f, 8.0f, "%.2fx");
+
+    ImGui::SeparatorText("Point-light reach / falloff (live tuning)");
+    ImGui::SliderFloat("Radius multiplier", &settings.PointLightRadiusMultiplier, 0.1f, 64.0f, "%.2fx", ImGuiSliderFlags_Logarithmic);
+    ImGui::SliderFloat("Falloff transition width", &settings.PointLightFalloffFraction, 0.02f, 1.0f, "%.2f of radius");
+    ImGui::SliderFloat("Falloff curve exponent", &settings.PointLightFalloffExponent, 0.25f, 4.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+    ImGui::TextWrapped("Reach is measured in Skyrim units. Transition width is the final fraction of the scaled radius over which intensity fades to zero. Lower curve exponent gives a softer edge; higher exponent cuts off faster. Inverse-square intensity stays unchanged. Changes apply on the next trace and reset RR history.");
+    if (ImGui::Button("Reset light reach / falloff")) {
+        settings.PointLightRadiusMultiplier = 1.0f;
+        settings.PointLightFalloffFraction = 0.1f;
+        settings.PointLightFalloffExponent = 1.0f;
+    }
     if (ImGui::Checkbox("All prepared cell lights (direct only)", &settings.UseAllPreparedLights)) globals::features::dx12NativeScene.Tracer().Reset();
 
     const auto prepared = globals::features::dx12NativeScene.GetPreparedDiagnostics();
@@ -119,6 +136,14 @@ void RTDirectLighting::DrawDirectLightingSettings()
     if (ImGui::SliderInt("Prepared baseline light", &light, 0, maximumLight)) {
         settings.SelectedDirectLight = uint32_t(light);
         globals::features::dx12NativeScene.Tracer().Reset();
+    }
+
+    if (const auto scene = globals::features::dx12NativeScene.GetPublishedScene();
+        scene && settings.SelectedDirectLight < scene->cell->nativeLights.size()) {
+        const auto& selected = scene->cell->nativeLights[settings.SelectedDirectLight];
+        if (selected.supported)
+            ImGui::Text("Selected light: baseline radius %.1f units | scaled cutoff %.1f units",
+                selected.radius, std::min(selected.radius * settings.PointLightRadiusMultiplier, 60000.0f));
     }
 
     if (ImGui::TreeNodeEx("Diffuse", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -212,7 +237,8 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
 		settings.UseAllPreparedLights ? std::span<const DX12Native::PreparedPointLight>(snapshot->cell->nativeLights) :
 			std::span<const DX12Native::PreparedPointLight>(snapshot->cell->nativeLights).subspan(settings.SelectedDirectLight, 1),
 		settings.DirectTraceResolution, gi.settings.RTTraceResolution, settings.DirectRRResolution,
-		settings.RRMaterialIsolation, settings.RRGlossyRoughness);
+		settings.RRMaterialIsolation, settings.RRGlossyRoughness,
+		{ settings.PointLightRadiusMultiplier, settings.PointLightFalloffFraction, settings.PointLightFalloffExponent, 0.0f });
 	lastFrame = frame;
 }
 
@@ -234,6 +260,15 @@ void RTDirectLighting::RegisterUxActions()
 			if (args.contains("indirect")) globals::features::rtIndirectLighting.settings.ConnectHybrid = args.at("indirect").get<bool>();
 			if (args.contains("rr")) d.settings.UseDirectRayRegeneration = args.at("rr").get<bool>();
 			if (args.contains("bufferBudgetMB")) n.settings.DirectLightingBudgetMB = std::clamp(args.at("bufferBudgetMB").get<uint32_t>(), 64u, 1024u);
+			auto tune = [&](const char* name, float& value, float min, float max) {
+				if (!args.contains(name)) return;
+				const float requested = args.at(name).get<float>();
+				if (!std::isfinite(requested)) throw std::invalid_argument("Light tuning value must be finite");
+				value = std::clamp(requested, min, max);
+			};
+			tune("radiusMultiplier", d.settings.PointLightRadiusMultiplier, 0.1f, 64.0f);
+			tune("falloffFraction", d.settings.PointLightFalloffFraction, 0.02f, 1.0f);
+			tune("falloffExponent", d.settings.PointLightFalloffExponent, 0.25f, 4.0f);
 			n.Tracer().Reset();
 		});
 	FEATURE_COMMAND("setLightingStrengths", "Set existing direct, diffuse, specular, emission and indirect intensity.",

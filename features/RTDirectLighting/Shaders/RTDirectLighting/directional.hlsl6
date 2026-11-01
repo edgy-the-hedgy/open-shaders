@@ -35,6 +35,7 @@ cbuffer Trace : register(b0)
 	uint BakedRoomCount;
 	uint BakedRoomsKnown;
 	uint DirectNormalMode;
+	float4 PointLightFalloff;  // effective-radius scale, transition fraction, cutoff curve exponent, reserved
 };
 
 #include "materials.hlsli"
