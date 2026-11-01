@@ -494,14 +494,13 @@ void RedstoneGI::DrawGI()
 	const auto rrPolicy = RayRegeneration::GetSettings();
 	if (rrPolicyRevision != rrPolicy.revision) {
 		rrPolicyRevision = rrPolicy.revision;
-		rrResolutionMode = globals::features::rtIndirectLighting.settings.HybridResolution == 3u ? rrPolicy.resolutionMode : globals::features::rtIndirectLighting.settings.HybridResolution;
+		rrResolutionMode = rrPolicy.resolutionMode; // producer-derived universal sampling, no HybridResolution override
 		rrCheckerboardEnabled = rrPolicy.checkerboard;
 		rrEnabled = rrPolicy.enabled;
 		recompileFlag = true;
 		ResetRuntimeHistory();
 	}
-	const uint32_t requestedGIResolution = globals::features::rtIndirectLighting.settings.HybridResolution == 3u ?
-		rrPolicy.resolutionMode : globals::features::rtIndirectLighting.settings.HybridResolution;
+	const uint32_t requestedGIResolution = rrPolicy.resolutionMode;
 	if (rrResolutionMode != requestedGIResolution) {
 		rrResolutionMode = requestedGIResolution;
 		recompileFlag = true;
