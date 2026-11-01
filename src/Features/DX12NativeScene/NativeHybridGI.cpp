@@ -753,7 +753,8 @@ namespace DX12Native
     {
         frame.composedValid = false;
         if (!frame.valid || !device || !device11 || !list || !shadowedSource ||
-            !nativeDirect || !diffuseAlbedo || !specularAlbedo || slot >= 2 || !size[0] || !size[1]) {
+            !nativeDirect || !diffuseAlbedo || !specularAlbedo || slot >= 2 || !size[0] || !size[1] ||
+            (!frame.postValid && frame.sampling.effective != HybridSamplingMode::Native)) {
             compositionFailure = "Missing valid GI/AO, source, or DX12 composition resources";
             return false;
         }
@@ -800,10 +801,16 @@ namespace DX12Native
             std::memcpy(mapped + kCompositionOffset, &constants, sizeof(constants));
             frame.constants->Unmap(0, nullptr);
 
+            // Native post-RR outputs are full resolution. Sparse inputs must NEVER
+            // be bound as if they were full-native textures.
+            const bool reconstructed = frame.postValid;
             const std::array<ID3D12Resource*, 9> reads{
-                shadowedSource, nativeDirect, frame.textures[Diffuse].get(),
-                frame.textures[Specular].get(), frame.textures[DiffuseAO].get(),
-                frame.textures[SpecularAO].get(), frame.textures[Eligibility].get(),
+                shadowedSource, nativeDirect,
+                reconstructed ? frame.nativeFinal[0] : frame.textures[Diffuse].get(),
+                reconstructed ? frame.nativeFinal[1] : frame.textures[Specular].get(),
+                reconstructed ? frame.nativeFinal[2] : frame.textures[DiffuseAO].get(),
+                reconstructed ? frame.nativeFinal[3] : frame.textures[SpecularAO].get(),
+                frame.textures[Eligibility].get(),
                 diffuseAlbedo, specularAlbedo
             };
             const std::array<DXGI_FORMAT, 9> formats{
