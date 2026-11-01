@@ -239,6 +239,17 @@ void RTComposer::LoadSettings(json& value)
 {
     if (!value.is_object()) return;
     const auto beforePolicy = std::pair{ composition.enabled, composition.mode };
+    // Older profiles used three independent resolution settings. Migrate
+    // once into one canonical four-mode policy; never revive parallel
+    // DirectRR, RT-exclusive or Hybrid GI resolution controls.
+    const auto legacyRR = value.value("FSRRayRegeneration", json::object());
+    const auto currentRR = RayRegeneration::GetSettings();
+    const uint32_t legacyReduction = legacyRR.is_object() ?
+        legacyRR.value("resolutionMode", currentRR.resolutionMode) : currentRR.resolutionMode;
+    const bool legacyCheckerboard = legacyRR.is_object() ?
+        legacyRR.value("checkerboard", currentRR.checkerboard) : currentRR.checkerboard;
+    const uint32_t migratedSampling = legacyReduction == 0u ?
+        (legacyCheckerboard ? 1u : 0u) : (legacyCheckerboard ? 3u : 2u);
     // Each setting is optional: old profiles retain the disabled legacy path.
     if (auto it = value.find("Composition"); it != value.end() && it->is_object()) {
         CompositionSettings next{};
@@ -253,18 +264,22 @@ void RTComposer::LoadSettings(json& value)
         next.rtDirectContribution = bounded("rtDirectContribution", 0.0f);
         next.giContribution = bounded("giContribution", 1.0f);
         next.shadowThreshold = bounded("shadowThreshold", 0.25f);
-        const uint32_t sampling = it->value("samplingMode", 0u);
+        const uint32_t sampling = it->value("samplingMode", migratedSampling);
         next.samplingMode = static_cast<DX12Native::HybridSamplingMode>(std::min(sampling, 3u));
         if (auto filters = it->find("reconstruction"); filters != it->end())
             LoadHybridFilters(*filters, next.reconstruction);
         composition = next;
-    } else composition = {};
+    } else {
+        composition = {};
+        composition.samplingMode = static_cast<DX12Native::HybridSamplingMode>(migratedSampling);
+    }
     if (beforePolicy != std::pair{ composition.enabled, composition.mode }) OnCompositionPolicyChanged();
-    if (auto it = value.find("FSRRayRegeneration"); it != value.end() && it->is_object()) {
-        const auto prior = RayRegeneration::GetSettings();
-        RayRegeneration::Configure(it->value("resolutionMode", prior.resolutionMode),
-            it->value("checkerboard", prior.checkerboard), it->value("enabled", prior.enabled));
-        if (auto cfg = it->find("configuration"); cfg != it->end() && cfg->is_object())
+    const bool enabledRR = legacyRR.is_object() ?
+        legacyRR.value("enabled", currentRR.enabled) : currentRR.enabled;
+    RayRegeneration::Configure(DX12Native::RRLogicalReduction(composition.samplingMode),
+        DX12Native::RRCheckerboard(composition.samplingMode), enabledRR);
+    if (legacyRR.is_object()) {
+        if (auto cfg = legacyRR.find("configuration"); cfg != legacyRR.end() && cfg->is_object())
             globals::features::redstoneGI.GetDenoiser().SetConfiguration(*cfg);
     }
     if (auto it = value.find("DirectRR"); it != value.end() && it->is_object()) {
