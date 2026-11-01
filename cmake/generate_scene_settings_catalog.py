@@ -3,8 +3,12 @@
 
 import argparse
 import ast
+import hashlib
+import json
 import math
+import os
 import re
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -292,8 +296,31 @@ SHIFT_UNIFIED_CONTROL_RE = re.compile(
 
 
 
+# Limit analysis memoization to one build. Tests and subsequent invocations always
+# observe new file contents, even if their paths are reused.
+_SOURCE_TEXT_CACHE: dict[Path, str] | None = None
+_SOURCE_MASK_CACHE: dict[str, str] | None = None
+_SOURCE_FUNCTION_CACHE: dict[tuple[tuple[Path, ...], bool], tuple[SourceFunction, ...]] | None = None
+
+
+@contextmanager
+def source_analysis_cache():
+    global _SOURCE_TEXT_CACHE, _SOURCE_MASK_CACHE, _SOURCE_FUNCTION_CACHE
+    previous = (_SOURCE_TEXT_CACHE, _SOURCE_MASK_CACHE, _SOURCE_FUNCTION_CACHE)
+    _SOURCE_TEXT_CACHE, _SOURCE_MASK_CACHE, _SOURCE_FUNCTION_CACHE = {}, {}, {}
+    try:
+        yield
+    finally:
+        _SOURCE_TEXT_CACHE, _SOURCE_MASK_CACHE, _SOURCE_FUNCTION_CACHE = previous
+
+
 def read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8", errors="ignore")
+    cache = _SOURCE_TEXT_CACHE
+    if cache is None:
+        return path.read_text(encoding="utf-8", errors="ignore")
+    if path not in cache:
+        cache[path] = path.read_text(encoding="utf-8", errors="ignore")
+    return cache[path]
 
 
 def cpp_escape(value: str) -> str:
@@ -558,7 +585,10 @@ def collect_feature_struct_fields(paths: list[Path], features: dict[str, dict[st
     feature_bases: dict[str, dict[str, list[str]]] = {}
     for path in paths:
         text = read_text(path)
+        candidate_classes = set(re.findall(r"\\b(?:struct|class)\\s+([A-Za-z_]\\w*)\\b", text))
         for feature_class in features:
+            if feature_class not in candidate_classes:
+                continue
             feature_match = re.search(rf"\b(?:struct|class)\s+{re.escape(feature_class)}\b[^\{{;]*\{{", text)
             if not feature_match:
                 continue
@@ -607,7 +637,10 @@ def collect_feature_member_fields(paths: list[Path], features: dict[str, dict[st
     feature_members: dict[str, dict[str, str]] = {}
     for path in paths:
         text = read_text(path)
+        candidate_classes = set(re.findall(r"\\b(?:struct|class)\\s+([A-Za-z_]\\w*)\\b", text))
         for feature_class in features:
+            if feature_class not in candidate_classes:
+                continue
             feature_match = re.search(rf"\b(?:struct|class)\s+{re.escape(feature_class)}\b[^\{{;]*\{{", text)
             if not feature_match:
                 continue
@@ -640,7 +673,10 @@ def collect_feature_type_aliases(paths: list[Path], features: dict[str, dict[str
     feature_aliases: dict[str, dict[str, str]] = {}
     for path in paths:
         text = read_text(path)
+        candidate_classes = set(re.findall(r"\\b(?:struct|class)\\s+([A-Za-z_]\\w*)\\b", text))
         for feature_class in features:
+            if feature_class not in candidate_classes:
+                continue
             feature_match = re.search(rf"\b(?:struct|class)\s+{re.escape(feature_class)}\b[^\{{;]*\{{", text)
             if not feature_match:
                 continue
@@ -1120,6 +1156,9 @@ def resolve_control_translation(
 
 
 def mask_cpp_source(text: str) -> str:
+    cache = _SOURCE_MASK_CACHE if len(text) >= 2048 else None
+    if cache is not None and text in cache:
+        return cache[text]
     result = list(text)
     i = 0
     while i < len(text):
@@ -1154,7 +1193,10 @@ def mask_cpp_source(text: str) -> str:
                     result[i] = " "
                 i += 1
         i += 1
-    return "".join(result)
+    masked = "".join(result)
+    if cache is not None:
+        cache[text] = masked
+    return masked
 
 
 def extract_draw_settings_body(text: str) -> tuple[str, str] | None:
@@ -2329,12 +2371,15 @@ def collect_indirect_numeric_projections(paths: list[Path]):
 
     texts = {path: read_text(path) for path in paths}
     source_functions = collect_source_functions(paths)
+    functions_by_path = {}
+    for function in source_functions:
+        functions_by_path.setdefault(function.source, []).append(function)
     definitions = {}
     for path, text in texts.items():
         companion_header = path.with_suffix(".h")
         constants = collect_numeric_constants(
             text + (read_text(companion_header) if companion_header.exists() else ""))
-        for function in (value for value in source_functions if value.source == path):
+        for function in functions_by_path.get(path, ()):
             parameters = tuple(
                 (value.type_name, value.name, value.default)
                 for value in function.parameters)
@@ -3322,6 +3367,10 @@ def collect_mapped_combo_helpers(paths: list[Path]) -> dict[str, MappedComboHelp
 
 def collect_source_functions(
         paths: list[Path], include_qualifiers: bool = False) -> tuple[SourceFunction, ...]:
+    cache = _SOURCE_FUNCTION_CACHE
+    cache_key = (tuple(paths), include_qualifiers)
+    if cache is not None and cache_key in cache:
+        return cache[cache_key]
     functions = []
     pattern = re.compile(
         r"\b(?:static\s+)?(?:inline\s+)?(?:bool|void)\s+"
@@ -3368,7 +3417,10 @@ def collect_source_functions(
                 prefix,
                 path,
                 text[match.start("parameters"):match.end("parameters")]))
-    return tuple(functions)
+    result = tuple(functions)
+    if cache is not None:
+        cache[cache_key] = result
+    return result
 
 
 def _localized_text(expression: str, prefix: str) -> LocalizedText | None:
@@ -3814,13 +3866,17 @@ def _project_standard_controls(
                 add_metadata((function.owner, setting_path), binding, 3)
                 add_choices((function.owner, setting_path), summary.choices)
 
+    active_functions = set(templates)
     for _ in range(len(functions)):
         changed = False
+        next_active_functions = set()
         for wrapper in functions:
             wrapper_parameters = tuple(
                 (parameter.type_name, parameter.name, parameter.default)
                 for parameter in wrapper.parameters)
             for callee, position, call_args in call_sites[wrapper]:
+                if callee not in active_functions and callee not in next_active_functions:
+                    continue
                 summaries = templates.get(callee, ())
                 if callee == wrapper:
                     continue
@@ -3851,9 +3907,11 @@ def _project_standard_controls(
                     existing = templates.setdefault(wrapper, [])
                     if projected not in existing:
                         existing.append(projected)
+                        next_active_functions.add(wrapper)
                         changed = True
         if not changed:
             break
+        active_functions = next_active_functions
 
     for caller in functions:
         caller_parameters = tuple(
@@ -4435,6 +4493,11 @@ def assign_enabled_by(entries: list[dict[str, object]], features: dict[str, dict
 
 
 def build_entries(source_dir: Path) -> list[dict[str, object]]:
+    with source_analysis_cache():
+        return _build_entries_uncached(source_dir)
+
+
+def _build_entries_uncached(source_dir: Path) -> list[dict[str, object]]:
     src_paths = list((source_dir / "src").rglob("*.cpp")) + list((source_dir / "src").rglob("*.h"))
     src_paths += [source_dir / "src" / "TruePBR.cpp", source_dir / "src" / "TruePBR.h"]
     src_paths = sorted({p for p in src_paths if p.exists()})
@@ -4977,6 +5040,16 @@ def build_entries(source_dir: Path) -> list[dict[str, object]]:
     return entries
 
 
+def write_text_if_changed(path: Path, content: str) -> None:
+    """Avoid invalidating compiler outputs when generation is byte-identical."""
+    try:
+        if path.read_text(encoding="utf-8") == content:
+            return
+    except FileNotFoundError:
+        pass
+    path.write_text(content, encoding="utf-8")
+
+
 def write_catalog(entries: list[dict[str, object]], out_dir: Path):
     out_dir.mkdir(parents=True, exist_ok=True)
     header = out_dir / "SceneSettingsCatalog.generated.h"
@@ -4988,7 +5061,7 @@ def write_catalog(entries: list[dict[str, object]], out_dir: Path):
         key=lambda entry: (entry["feature"], entry["path"], entry["key"]),
     )
 
-    header.write_text("""#pragma once
+    write_text_if_changed(header, """#pragma once
 
 #include <cstddef>
 #include <cstdint>
@@ -5261,7 +5334,7 @@ namespace SceneSettingsCatalog
 \t\tSceneSettingsCatalog::RegisterControlResolver(
 \t\t\t"{cpp_escape(feature_short)}", {resolver_name});''')
     joined_feature_blocks = "\n".join(feature_blocks)
-    source.write_text(f"""#include "SceneSettingsCatalog.generated.h"
+    write_text_if_changed(source, f"""#include "SceneSettingsCatalog.generated.h"
 
 #include <algorithm>
 #include <array>
@@ -5323,7 +5396,7 @@ namespace SceneSettingsCatalog
 }}
 """, encoding="utf-8")
 
-    adapters.write_text(f"""#include "SceneSettingsCatalog.generated.h"
+    write_text_if_changed(adapters, f"""#include "SceneSettingsCatalog.generated.h"
 
 #include "Feature.h"
 {includes}
@@ -5439,21 +5512,88 @@ def validate_entries(entries: list[dict[str, object]], min_entries: int) -> None
         raise ValueError("scene settings catalog validation failed: " + "; ".join(errors[:10]))
 
 
+# Persistent cache is intentionally an all-input snapshot: a change to any
+# contributing source invalidates it. Partial invalidation would require proving
+# every cross-file UI and serialization dependency and is not yet safe.
+_CATALOG_CACHE_SCHEMA = 1
+_CATALOG_CACHE_TUPLES = ("choices", "virtualControls", "navigationControls")
+
+
+def source_fingerprint(source_dir: Path) -> str:
+    root = source_dir.resolve()
+    paths = sorted(set((root / "src").rglob("*.cpp")) |
+                   set((root / "src").rglob("*.h")))
+    paths.append(Path(__file__).resolve())
+    digest = hashlib.sha256()
+    for path in paths:
+        relative = path.relative_to(root).as_posix() if path.is_relative_to(root) else path.name
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()
+
+
+def load_cached_entries(cache_path: Path, fingerprint: str) -> list[dict[str, object]] | None:
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        if payload["schema"] != _CATALOG_CACHE_SCHEMA or payload["fingerprint"] != fingerprint:
+            return None
+        entries = payload["entries"]
+        if not isinstance(entries, list):
+            return None
+        for entry in entries:
+            if not isinstance(entry, dict):
+                return None
+            for key in _CATALOG_CACHE_TUPLES:
+                entry[key] = tuple(tuple(value) for value in entry[key])
+        return entries
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+
+
+def store_cached_entries(cache_path: Path, fingerprint: str, entries: list[dict[str, object]]) -> None:
+    # Atomic replacement prevents interrupted builds from leaving a valid-looking
+    # but incomplete cache. Failure to cache must never make generation fail.
+    temporary = cache_path.with_name(f"{cache_path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps({"schema": _CATALOG_CACHE_SCHEMA,
+                        "fingerprint": fingerprint, "entries": entries},
+                       ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8")
+        os.replace(temporary, cache_path)
+    except OSError:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-dir", required=True)
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--min-entries", type=int, default=1)
+    parser.add_argument("--no-cache", action="store_true", help="Force full source analysis")
     args = parser.parse_args()
 
     source_dir = Path(args.source_dir)
     out_dir = Path(args.out_dir)
-    entries = build_entries(source_dir)
+    cache_path = out_dir / ".scene-settings-catalog.cache.json"
+    fingerprint = None if args.no_cache else source_fingerprint(source_dir)
+    entries = load_cached_entries(cache_path, fingerprint) if fingerprint else None
+    if entries is None:
+        entries = build_entries(source_dir)
+        generated_from_source = True
+    else:
+        generated_from_source = False
     try:
         validate_entries(entries, args.min_entries)
     except ValueError as error:
         parser.error(str(error))
     write_catalog(entries, out_dir)
+    if generated_from_source and fingerprint:
+        store_cached_entries(cache_path, fingerprint, entries)
     print(f"Generated {len(entries)} scene setting catalog entries")
     return 0
 
