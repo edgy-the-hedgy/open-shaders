@@ -277,9 +277,26 @@ void RedstoneDenoiser::DrawConfigurationSettings()
 	auto snapshot = GetConfiguration();
 	auto selected = snapshot.at("overrides");
 	const auto& defaults = snapshot.at("defaults");
-	const bool ready = snapshot.at("defaultsReady").get<bool>();
-	bool changed = false;
-	if (!ready) ImGui::TextUnformatted("Provider defaults become available after the first RR frame.");
+    const bool ready = snapshot.at("defaultsReady").get<bool>();
+    const auto& native = snapshot.at("native");
+    const auto& families = native.at("families");
+    bool changed = false;
+    if (!ready)
+        ImGui::TextUnformatted("Provider defaults appear after a native or legacy RR context initializes.");
+    else
+        ImGui::Text("AMD defaults source: %s", snapshot.at("defaultsSource").get<std::string>().c_str());
+    ImGui::Text("Native RR configuration applications: %llu",
+        static_cast<unsigned long long>(native.value("configurationApplications", uint64_t{0})));
+    const auto applied = native.at("appliedRevision");
+    if (!applied.is_null())
+        ImGui::Text("Native applied revision: %llu | requested: %llu",
+            static_cast<unsigned long long>(applied.get<uint64_t>()),
+            static_cast<unsigned long long>(native.value("requestedRevision", uint64_t{0})));
+    if (native.at("pending").get<bool>())
+        ImGui::TextUnformatted("Native configuration changes pending SDK application.");
+    const auto failure = native.value("failure", std::string{});
+    if (!failure.empty()) ImGui::TextWrapped("Native RR configure failure: %s", failure.c_str());
+    ImGui::TextWrapped("All three native contexts receive the shared overrides. With Override off, each context uses its own queried AMD defaults.");
 	for (size_t i = 0; i < configurationOverrides.size(); ++i) {
 		const char* name = i < kConfigurationKeys.size() ? kConfigurationKeys[i].name : kBoundsNames[i - kConfigurationKeys.size()];
 		const char* label = i < kConfigurationKeys.size() ? kConfigurationKeys[i].label : i == 6 ? "Debug depth minimum" : "Debug depth maximum";
@@ -300,11 +317,25 @@ void RedstoneDenoiser::DrawConfigurationSettings()
 			selected[name] = value;
 			changed = true;
 		}
-		ImGui::EndDisabled();
-		ImGui::EndDisabled();
-		ImGui::PopID();
+        ImGui::EndDisabled();
+        ImGui::EndDisabled();
+        if (ready) {
+            const float providerDefault = defaults.at(name).get<float>();
+            ImGui::Text("SDK default: %.6g | effective: %.6g",
+                providerDefault, overridden ? selected.at(name).get<float>() : providerDefault);
+            if (families.at("diffuse").at("defaultsReady").get<bool>() &&
+                families.at("specular").at("defaultsReady").get<bool>() &&
+                families.at("ao").at("defaultsReady").get<bool>()) {
+                const float diffuse = families.at("diffuse").at("defaults").at(name).get<float>();
+                const float specular = families.at("specular").at("defaults").at(name).get<float>();
+                const float ao = families.at("ao").at("defaults").at(name).get<float>();
+                ImGui::TextDisabled("Native defaults: diffuse %.6g | specular %.6g | AO %.6g",
+                    diffuse, specular, ao);
+            }
+        }
+        ImGui::PopID();
 	}
-	ImGui::TextWrapped("Stability bias trades responsiveness for stability. Debug depth bounds only affect the SDK depth visualization.");
+    ImGui::TextWrapped("Stability bias trades responsiveness for stability. Debug depth bounds only affect the SDK depth visualization. Values are provider-reported and configured directly into the native DX12 contexts, not applied as a separate shader multiplier.");
 	if (ImGui::Button("Restore provider defaults")) { selected = json::object(); changed = true; }
 	if (changed) {
 		try { SetConfiguration(selected); }
