@@ -1,0 +1,105 @@
+// GPU-resident guide preparation at the stable, logical native Hybrid RR grid.
+// This pass selects one representative native pixel per logical cell. It does
+// not spatially average, filter or alter the noisy input signals before RR.
+#include "Common/FrameBuffer.hlsli"
+
+Texture2D<float> NativeDepth : register(t0);
+Texture2D<float4> NativeNormalRoughness : register(t1);
+Texture2D<float4> NativeMotion : register(t2);
+Texture2D<float4> NativeDiffuseAlbedo : register(t3);
+Texture2D<float4> NativeSpecularAlbedo : register(t4);
+
+RWTexture2D<float> RRDepth : register(u0);
+RWTexture2D<float4> RRMotion : register(u1);
+RWTexture2D<float4> RRNormalRoughness : register(u2);
+RWTexture2D<float4> RRDiffuseAlbedo : register(u3);
+RWTexture2D<float4> RRSpecularAlbedo : register(u4);
+
+cbuffer NativeHybridRRGuidePolicy : register(b0)
+{
+    uint2 NativeSize;
+    uint2 LogicalRRSize;
+    uint RepresentativePhase;
+    uint QuarterSampling;
+    uint LinearLighting;
+    uint GuideReserved;
+};
+
+uint2 NativePixel(uint2 logical)
+{
+    if (QuarterSampling == 0u) return min(logical, NativeSize - 1u);
+    uint2 offset = uint2(RepresentativePhase & 1u,
+        (RepresentativePhase >> 1u) & 1u);
+    return min(logical * 2u + offset, NativeSize - 1u);
+}
+
+[numthreads(8, 8, 1)]
+void main(uint2 logical : SV_DispatchThreadID)
+{
+    if (any(logical >= LogicalRRSize)) return;
+    const uint2 samplePixel = NativePixel(logical);
+    const int3 samplePoint = int3(samplePixel, 0);
+    const float depth = NativeDepth.Load(samplePoint);
+    const float4 nr = NativeNormalRoughness.Load(samplePoint);
+    const bool depthValid = isfinite(depth) && depth > 0.001 &&
+        all(isfinite(nr));
+    RRDepth[logical] = depthValid ? depth : 0.0;
+    RRNormalRoughness[logical] = depthValid ? nr : float4(0, 0, 0, 0);
+
+    // Preserve material and roughness correspondence of the actual traced
+    // representative pixel. The FFX NON_GAMMA_ALBEDO flag will be used.
+    const float pbrScale = LinearLighting != 0u ? 1.0 : 0.65;
+    const float3 nativeDiff = NativeDiffuseAlbedo.Load(samplePoint).rgb / pbrScale;
+    const float3 diffuseAlbedo = LinearLighting != 0u ?
+        max(0.0, nativeDiff) : pow(abs(nativeDiff), 1.6);
+    const float3 specularAlbedo = max(0.0, NativeSpecularAlbedo.Load(samplePoint).rgb);
+    RRDiffuseAlbedo[logical] = all(isfinite(diffuseAlbedo)) ?
+        float4(diffuseAlbedo, 1) : 0;
+    RRSpecularAlbedo[logical] = all(isfinite(specularAlbedo)) ?
+        float4(specularAlbedo, 1) : 0;
+
+    // The motion must describe the SAME representative surface as depth and
+    // material guides. Verify its geometric reprojection rather than just
+    // treating any finite engine motion vector as a valid temporal match.
+    const float4 nativeMV = NativeMotion.Load(samplePoint);
+    const float2 motion = nativeMV.xy;
+    bool correspondence = depthValid && all(isfinite(motion));
+    float previousDepthDelta = 0;
+    if (correspondence) {
+        const float2 uv = (float2(samplePixel) + 0.5) / float2(NativeSize);
+        const float4 clip = float4(uv * float2(2, -2) + float2(-1, 1), 0.5, 1);
+        const float4 projectedView = mul(FrameBuffer::CameraProjInverse[0], clip);
+        correspondence = all(isfinite(projectedView)) && abs(projectedView.z) > 1e-6;
+        if (correspondence) {
+            const float3 positionVS = projectedView.xyz * (depth / projectedView.z);
+            const float3 relativeWS = mul(FrameBuffer::CameraViewInverse[0],
+                float4(positionVS, 1)).xyz;
+            const float3 previousRelative = relativeWS +
+                FrameBuffer::CameraPosAdjust[0].xyz -
+                FrameBuffer::CameraPreviousPosAdjust[0].xyz;
+            const float4 previousClip = mul(
+                FrameBuffer::CameraPreviousViewProjUnjittered[0],
+                float4(previousRelative, 1));
+            const float4 currentClip = mul(
+                FrameBuffer::CameraProjUnjittered[0],
+                float4(positionVS, 1));
+            correspondence = all(isfinite(previousClip)) &&
+                all(isfinite(currentClip)) &&
+                previousClip.w > 0.0 && currentClip.w > 0.0;
+            if (correspondence) {
+                const float2 expected =
+                    (previousClip.xy / previousClip.w -
+                     currentClip.xy / currentClip.w) * float2(0.5, -0.5);
+                correspondence = all(abs(expected - motion) *
+                    float2(NativeSize) <= 0.5);
+                previousDepthDelta = previousClip.w - depth;
+                correspondence = correspondence && isfinite(previousDepthDelta) &&
+                    abs(previousDepthDelta) < 65504.0;
+            }
+        }
+    }
+    RRMotion[logical] = depthValid ?
+        float4(all(isfinite(motion)) ? motion : float2(0, 0),
+            correspondence ? previousDepthDelta : 0.0,
+            correspondence ? 1.0 : 0.0) : 0;
+}
