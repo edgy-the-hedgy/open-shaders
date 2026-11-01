@@ -9,6 +9,18 @@ Texture2D<float3> srcDiffuseAlbedo : register(t5);
 Texture2D<float3> srcSpecularAlbedo : register(t6);
 RWTexture2D<float4> outSpecular : register(u0);
 RWTexture2D<float4> outDiffuse : register(u1);
+#if defined(DX12_HYBRID_GI)
+// Native HybridGI consumes the independent per-light weighted visibility mask.
+// Resource t7 remains unbound in the legacy DX11 RedstoneGI pipeline.
+Texture2D<float2> srcShadowMask : register(t7);
+RWTexture2D<uint> outReceiverEligibility : register(u2);
+cbuffer HybridMaskPolicy : register(b13)
+{
+    float HybridShadowInfluence;
+    float HybridSkipThreshold;
+    uint2 HybridPolicyPadding;
+};
+#endif
 #include "RedstoneGI/Sampling.hlsli"
 
 float4 EstimateDiffuse(Surface surface)
@@ -87,6 +99,22 @@ float4 EstimateSpecular(Surface surface, float roughness, bool traceRadiance)
 	if (any(pixel >= uint2(OUT_FRAME_DIM))) return;
 	if (RRCheckerboardEnabled && ((pixel.x + pixel.y) & 1u) != RRCheckerboardOrigin) return;
 	uint2 surfacePixel = SelectSurfacePixel(srcWorkingDepth, pixel);
+#if defined(DX12_HYBRID_GI)
+    const float2 mask = srcShadowMask.Load(int3(surfacePixel, 0));
+    const float effectiveVisibility = 1.0 -
+        saturate(HybridShadowInfluence) * (1.0 - (mask.y >= 0.5 && all(isfinite(mask)) ? saturate(mask.x) : 1.0));
+    const bool suppressRays = mask.y >= 0.5 && all(isfinite(mask)) &&
+        effectiveVisibility < saturate(HybridSkipThreshold);
+    const uint2 eligibilityPixel = uint2(RRCheckerboardEnabled ? pixel.x >> 1u : pixel.x, pixel.y);
+    // 0 = intentional skip; 1 = rays eligible. The eventual RR integration
+    // must not treat 0 as an unobserved pixel requiring historical reconstruction.
+    outReceiverEligibility[eligibilityPixel] = suppressRays ? 0u : 1u;
+    if (suppressRays) {
+        outDiffuse[eligibilityPixel] = float4(0, 0, 0, -1);
+        outSpecular[eligibilityPixel] = float4(0, 0, 0, -1);
+        return;
+    }
+#endif
 	float depth = srcWorkingDepth.Load(int3(surfacePixel, 0));
 	float4 diffuse = float4(0,0,0,-1);
 	float4 specular = float4(0,0,0,-1);
