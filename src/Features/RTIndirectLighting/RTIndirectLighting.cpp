@@ -89,6 +89,20 @@ void RTIndirectLighting::SelectRTExclusive()
 
 void RTIndirectLighting::DrawSettings()
 {
+    const auto& composer = globals::features::rtComposer;
+    if (composer.TierControlsLocked()) {
+        ImGui::SeparatorText("Indirect lighting - fixed composer tier");
+        ImGui::Text("Selected: %s", RTComposer::ModeName(composer.composition.mode));
+        ImGui::TextWrapped("%s", RTComposer::IndirectTierDescription(composer.composition.mode));
+        ImGui::TextWrapped("Indirect controls are locked. Choose Custom in RT Composer to edit GI and RR settings.");
+        if (composer.WantsNativeHybrid() && !composer.DX12HybridReady())
+            ImGui::TextWrapped("Native DX12 HybridGI is not ready; Shadow Only fallback is active.");
+        const auto trace = globals::features::dx12NativeScene.Tracer().GetDiagnostics();
+        ImGui::Text("Native GI/AO dispatches: %llu / %llu",
+            static_cast<unsigned long long>(trace.value("nativeHybridGIDispatches", uint64_t{0})),
+            static_cast<unsigned long long>(trace.value("nativeHybridAODispatches", uint64_t{0})));
+        return;
+    }
     const bool blocked = globals::features::rtComposer.BlocksRTIndirect();
     if (blocked) ImGui::TextWrapped("Unavailable in RT Composer mode: RT-exclusive GI and DX11 HybridGI are disabled. Saved selections are retained; baseline SSGI is the permitted provider.");
     ImGui::BeginDisabled(blocked);
@@ -208,6 +222,8 @@ void RTIndirectLighting::RegisterUxActions()
 {
 	FEATURE_COMMAND("setIndirectProducer", "Select rt-exclusive or hybrid GI; dxr/raymarched aliases remain accepted.",
 		[](Feature* self, const json& args) {
+			if (globals::features::rtComposer.TierControlsLocked())
+                throw std::invalid_argument("Fixed composer tier locks indirect producer settings; choose Custom.");
 			auto& gi = *static_cast<RTIndirectLighting*>(self);
 			const auto producer = args.at("producer").get<std::string>();
 			if (producer == "rt-exclusive" || producer == "dxr") {
@@ -223,6 +239,8 @@ void RTIndirectLighting::RegisterUxActions()
 		});
 	FEATURE_COMMAND("setLightingSampling", "Adjust existing Hybrid GI slice counts.",
 		[](Feature*, const json& args) {
+			if (globals::features::rtComposer.TierControlsLocked())
+                throw std::invalid_argument("Fixed composer tier locks GI sampling; choose Custom.");
 			auto& gi = globals::features::redstoneGI;
 			const auto current = gi.GetLightingSamples();
 			gi.SetLightingSamples(args.value("diffuseSlices", current[0]), args.value("specularSlices", current[1]));

@@ -100,6 +100,22 @@ json RTDirectLighting::GetDiagnostics()
 
 void RTDirectLighting::DrawDirectLightingSettings()
 {
+    const auto& composer = globals::features::rtComposer;
+    if (composer.TierControlsLocked()) {
+        ImGui::SeparatorText("Direct lighting - fixed composer tier");
+        ImGui::Text("Selected: %s", RTComposer::ModeName(composer.composition.mode));
+        ImGui::TextWrapped("%s", RTComposer::DirectTierDescription(composer.composition.mode));
+        ImGui::TextWrapped("Direct controls are locked. Choose Custom in RT Composer to edit these settings.");
+        if (!settings.UsePreparedDirectLighting)
+            ImGui::TextWrapped("Prepared direct lighting is currently disabled in saved settings; fixed tier selection does not automatically enable this feature.");
+        const auto trace = globals::features::dx12NativeScene.Tracer().GetDiagnostics();
+        ImGui::Text("DX12 direct dispatches: %llu | shadow-mask dispatches: %llu",
+            static_cast<unsigned long long>(trace.value("directTraceDispatches", uint64_t{0})),
+            static_cast<unsigned long long>(trace.value("shadowMaskTraceDispatches", uint64_t{0})));
+        const auto failure = trace.value("failure", std::string{});
+        if (!failure.empty()) ImGui::TextWrapped("DX12 direct status: %s", failure.c_str());
+        return;
+    }
     if (ImGui::Checkbox("RT direct lighting", &settings.UsePreparedDirectLighting)) {
         if (settings.UsePreparedDirectLighting)
             globals::features::dx12NativeScene.RequestPreparedScene();
@@ -198,6 +214,12 @@ void RTDirectLighting::DrawDirectLightingSettings()
 
 void RTDirectLighting::DrawRayRegenerationSettings()
 {
+    const auto& composer = globals::features::rtComposer;
+    if (composer.TierControlsLocked()) {
+        ImGui::TextWrapped("Fixed tier: direct RR and direct settings are locked. Select Custom to modify them.");
+        ImGui::TextWrapped("%s", RTComposer::DirectTierDescription(composer.composition.mode));
+        return;
+    }
 	ImGui::Checkbox("Reconstruct prepared lighting", &settings.UseDirectRayRegeneration);
 	if (ImGui::Checkbox("Separate RR history by material type", &settings.RRMaterialIsolation))
 		globals::features::dx12NativeScene.Tracer().Reset();
@@ -273,6 +295,8 @@ void RTDirectLighting::RegisterUxActions()
 {
 	FEATURE_COMMAND("setPreparedDirectLighting", "Configure direct lighting, light selection, reconstruction and budget.",
 		[](Feature* self, const json& args) {
+			if (globals::features::rtComposer.TierControlsLocked())
+                throw std::invalid_argument("Fixed composer tier locks direct lighting settings; choose Custom.");
 			auto& d = *static_cast<RTDirectLighting*>(self);
 			auto& n = globals::features::dx12NativeScene;
 			d.settings.UsePreparedDirectLighting = args.at("enabled").get<bool>();
@@ -302,6 +326,8 @@ void RTDirectLighting::RegisterUxActions()
 		});
 	FEATURE_COMMAND("setLightingStrengths", "Set existing direct, diffuse, specular, emission and indirect intensity.",
 		[](Feature* self, const json& args) {
+			if (globals::features::rtComposer.TierControlsLocked())
+                throw std::invalid_argument("Fixed composer tier locks lighting strengths; choose Custom.");
 			auto& s = static_cast<RTDirectLighting*>(self)->settings;
 			for (const char* key : { "direct", "diffuse", "specular", "emission", "indirect" })
 				if (args.contains(key) && !std::isfinite(args.at(key).get<float>())) throw std::invalid_argument("Strength must be finite");
