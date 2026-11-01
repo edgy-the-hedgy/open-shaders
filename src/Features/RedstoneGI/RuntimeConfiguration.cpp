@@ -66,12 +66,18 @@ json RedstoneDenoiser::GetConfiguration() const
         (nativeHybridAppliedConfigurationRevision != shared.revision ||
          !std::ranges::all_of(nativeHybridConfigurationApplied,
             [](bool configured) { return configured; }));
+    // The legacy bridge may not be instantiated at all while testing the
+    // native Hybrid path. Do not report its unapplied dirty bit as though
+    // the three native contexts were still waiting for configuration.
+    const bool legacyPending = rayRegenerationContext &&
+        (configurationDirty || sharedConfigurationRevision != shared.revision);
     return {
         { "overrides", overrides },
         { "defaults", defaults },
         { "defaultsReady", defaultsReady },
         { "defaultsSource", source },
-        { "pending", configurationDirty || sharedConfigurationRevision != shared.revision || nativePending },
+        { "pending", bool(legacyPending || nativePending) },
+        { "legacyPending", legacyPending },
         { "native", {
             { "families", families },
             { "appliedRevision", nativeHybridAppliedConfigurationRevision == UINT64_MAX ?
