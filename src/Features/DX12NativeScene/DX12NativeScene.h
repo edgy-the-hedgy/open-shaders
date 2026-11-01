@@ -7,6 +7,7 @@
 #include "Features/DX12NativeScene/PreparedScene.h"
 #include "Features/DX12NativeScene/DirectionalTrace.h"
 #include <atomic>
+#include <dxgi1_4.h>
 
 /** @brief Independently owns Redstone shadow acquisition, settings and diagnostics. */
 struct DX12NativeScene final : OverlayFeature
@@ -21,7 +22,8 @@ struct DX12NativeScene final : OverlayFeature
 		bool UsePreparedMaterials = false;
 		uint32_t PreparedMaterialView = 0;
 		uint32_t MaterialTextureBudgetMB = 512;
-		uint32_t DirectLightingBudgetMB = 256;
+		// 0 = DXGI local-memory-aware auto budget; otherwise an explicit MiB cap.
+		uint32_t DirectLightingBudgetMB = 0;
 		uint32_t PreviewLight = 0;
 		bool PreviewAllLights = true;
 		float PreviewDirectStrength = 1.0f;
@@ -65,9 +67,20 @@ struct DX12NativeScene final : OverlayFeature
 	DX12Native::DirectionalTrace& Tracer() { return preparedTrace; }
 	const DX12Native::DirectionalTrace& Tracer() const { return preparedTrace; }
 	json GetPreparedDiagnostics() const { return preparedScene.GetDiagnostics(); }
-	uint64_t GetLightingBudgetBytes() const { return uint64_t(settings.DirectLightingBudgetMB) * 1024 * 1024; }
+	uint64_t GetLightingBudgetBytes() const;
+    /** @brief OS-reported local memory budget/headroom, including all allocations. */
+    json GetLightingBudgetDiagnostics() const;
 
 	/** @brief Draws acquisition controls and explicit production/fallback status. */
+    // Query the adapter associated with the active DX12 device, not the
+    // primary display adapter. Cached to avoid factory enumeration per frame.
+    mutable winrt::com_ptr<IDXGIAdapter3> lightingBudgetAdapter;
+    mutable LUID lightingBudgetAdapterLuid{};
+    mutable DXGI_QUERY_VIDEO_MEMORY_INFO lastLightingMemoryInfo{};
+    mutable bool lightingMemoryInfoValid = false;
+    mutable uint64_t lastEffectiveLightingBudgetBytes = 0;
+    static constexpr uint32_t kMaxLightingBudgetMiB = 32768;
+
 	void DrawSettings() override;
 	/** @brief Draws exclusive producer selection and settings for the selected indirect signal. */
 	/** @brief Draws reconstruction controls, contexts and buffers inside Upscaling's RR section. */
