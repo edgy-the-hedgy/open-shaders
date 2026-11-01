@@ -327,8 +327,14 @@ namespace DX12Native
 	{
 		const bool busy = state && state->busy.load(std::memory_order_acquire);
 		const auto cell = GetCell();
+		uint32_t supportedLights = 0;
+		if (cell)
+			for (const auto& light : cell->nativeLights)
+				if (light.supported) ++supportedLights;
 		return { { "loading", busy }, { "loaded", bool(cell) }, { "requested", requested },
 			{ "lightCount", cell ? cell->lights.size() : 0 },
+			{ "supportedLightCount", supportedLights },
+			{ "unsupportedLightCount", cell ? cell->nativeLights.size() - supportedLights : 0 },
 			{ "failure", state && !busy && state->completedRevision == revision ? state->failure : "" },
 			{ "geometryBytes", cell ? cell->bytes : 0 }, { "meshes", cell ? cell->geometries.size() : 0 },
 			{ "instances", cell ? cell->snapshot->instances.size() : 0 }, { "maskedInstances", cell ? cell->maskedInstances : 0 },
