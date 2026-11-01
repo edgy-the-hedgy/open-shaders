@@ -763,18 +763,18 @@ void Upscaling::DrawSettings()
 	if (!ImGui::BeginTabBar("##UpscalingTabs"))
 		return;
 
-	if (!globals::game::isVR && ImGui::BeginTabItem("FSR-RayRegeneration")) {
+	if (!globals::game::isVR && ImGui::BeginTabItem("RT Denoiser")) {
 		auto policy = RayRegeneration::GetSettings();
 		bool changed = ImGui::Checkbox("Enable FSR Ray Regeneration", &policy.enabled);
 		int resolution = int(policy.resolutionMode);
 		changed |= ImGui::Combo("Reconstruction resolution", &resolution, "Full resolution\0Half resolution\0Quarter resolution\0");
 		changed |= ImGui::Checkbox("Checkerboard RR inputs", &policy.checkerboard);
 		if (changed) RayRegeneration::Configure(uint32_t(resolution), policy.checkerboard, policy.enabled);
-		ImGui::TextWrapped("Shared reconstruction grid for direct and indirect signals. Indirect producer selection and ray counts are independent. Normal Save persists these controls here.");
-		ImGui::SeparatorText("Prepared direct / DXR indirect");
+		ImGui::TextWrapped("FSR Ray Regeneration reconstructs direct and indirect RT signals on a shared grid. Indirect producer selection and ray counts remain separate; Normal Save persists these controls here.");
+		ImGui::SeparatorText("RT direct / DXR indirect");
 		globals::features::redstoneShadows.DrawRayRegenerationSettings();
 		if (!globals::features::redstoneShadows.UsesDXRIndirect()) {
-			ImGui::SeparatorText("Raymarched indirect");
+			ImGui::SeparatorText("Screen-space indirect");
 			globals::features::redstoneGI.DrawRayRegenerationSettings();
 		}
 		ImGui::EndTabItem();
