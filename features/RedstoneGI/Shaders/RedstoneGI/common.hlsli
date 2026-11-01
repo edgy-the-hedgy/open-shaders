@@ -40,12 +40,28 @@ cbuffer RedstoneGISettings : register(b1)
 	row_major float4x4 PreviousCameraProjection;
 	float4 PreviousCameraOrigin;
 	uint GeometryHistoryValid;
+#if defined(DX12_HYBRID_GI)
+    // Shares the three legacy DX11 padding dwords at the end of b1.
+    uint NativeRepresentativePhase;
+    uint NativeSampleQuarter;
+    uint NativeSignalPadding;
+#else
 	uint3 geometryPadding;
+#endif
 };
 SamplerState samplerPointClamp : register(s0);
 SamplerState samplerLinearClamp : register(s1);
 #define FP_Z 18.0
-#ifdef HALF_RES
+#if defined(DX12_HYBRID_GI)
+    // DX12 producers trace at the explicitly selected logical RR grid.
+    // FrameDim remains the full native depth, normal and radiance extent.
+    #define RES_MIP 0
+    #define READ_DEPTH(tex, px) tex.Load(int3(SelectSurfacePixel(tex, px), 0))
+    #define FULLRES_LOAD(tex, px, uv, samp) tex.Load(int3(SelectSurfacePixel(tex, px), 0))
+    #define OUT_FRAME_DIM TexDim
+    #define RCP_OUT_FRAME_DIM RcpTexDim
+    #define OUT_FRAME_SCALE frameScale
+#elif defined(HALF_RES)
 	#define RES_MIP 1
 	#define READ_DEPTH(tex, px) tex.Load(int3(SelectSurfacePixel(tex, px), 0))
 	#define FULLRES_LOAD(tex, px, uv, samp) tex.SampleLevel(samp, uv, 0)
@@ -69,7 +85,19 @@ SamplerState samplerLinearClamp : register(s1);
 #endif
 uint2 SelectSurfacePixel(Texture2D<float> depthTexture, uint2 pixel)
 {
+#if defined(DX12_HYBRID_GI)
+    // A single representative native pixel for the entire logical block.
+    // Phase moves the representative within each 2x2 block while the
+    // RR render grid stays fixed and temporal reprojection remains possible.
+    if (NativeSampleQuarter != 0u) {
+        uint2 phase = uint2(NativeRepresentativePhase & 1u,
+            (NativeRepresentativePhase >> 1u) & 1u);
+        return min(pixel * 2u + phase, uint2(FrameDim) - 1u);
+    }
+    return min(pixel, uint2(FrameDim) - 1u);
+#else
 	return min(uint2((float2(pixel) + 0.5) * FrameDim / OUT_FRAME_DIM), uint2(FrameDim) - 1u);
+#endif
 }
 float3 ScreenToViewPosition(float2 screen, float depth, uint eyeIndex = 0)
 {
