@@ -41,7 +41,7 @@ void RTComposer::MigrateLegacySettings(json& root)
     const json* oldGI = nullptr;
     if (auto gi = root.find("RedstoneGI"); gi != root.end() && gi->is_object()) oldGI = &*gi;
     else if (auto up = root.find("Upscaling"); up != root.end() && up->is_object()) {
-        if (auto gi = up->find("redstoneGI"); gi != up->end() && gi->is_object()) oldGI = &*gi;
+        if (auto legacyGI = up->find("redstoneGI"); legacyGI != up->end() && legacyGI->is_object()) oldGI = &*legacyGI;
     }
     if (oldGI) {
         if (!oldRR.contains("resolutionMode") && oldGI->contains("ResolutionMode"))
