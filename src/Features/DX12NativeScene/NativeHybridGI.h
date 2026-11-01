@@ -67,7 +67,7 @@ namespace DX12Native
         uint64_t GuideDispatches() const { return guideDispatches; }
         bool RecordHistoryValidation(ID3D12Device* device,
             ID3D12GraphicsCommandList* list, FrameOutputs& current,
-            const FrameOutputs* previous, uint32_t slot);
+            uint32_t slot, uint32_t frameNumber, uint64_t sceneGeneration);
         uint64_t HistoryValidationDispatches() const { return historyValidationDispatches; }
         const std::string& HistoryFailure() const { return historyFailure; }
         bool RecordPostRR(ID3D12Device* device, ID3D12GraphicsCommandList* list,
@@ -101,6 +101,13 @@ namespace DX12Native
         winrt::com_ptr<ID3D12RootSignature> historyRoot;
         winrt::com_ptr<ID3D12PipelineState> historyPipeline;
         winrt::com_ptr<ID3D12DescriptorHeap> historyDescriptors;
+        // Persistent GPU snapshots are independent of the two recyclable
+        // scene frame slots; no CPU readback or cross-API copies.
+        std::array<winrt::com_ptr<ID3D12Resource>, 2> historyGuides{};
+        std::array<uint32_t, 2> historySize{};
+        uint32_t historyLastFrame = UINT32_MAX;
+        uint64_t historyGeneration = UINT64_MAX;
+        HybridSamplingMode historyMode = HybridSamplingMode::Native;
         winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
         winrt::com_ptr<ID3D12PipelineState> compositionPipeline;
         winrt::com_ptr<ID3D12DescriptorHeap> compositionDescriptors;
