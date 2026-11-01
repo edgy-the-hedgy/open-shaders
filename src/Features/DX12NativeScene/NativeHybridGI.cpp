@@ -16,7 +16,7 @@ namespace DX12Native
     {
         constexpr uint32_t kPerPass = 12; // t0..t8 then u0..u2
         constexpr uint32_t kPerFrame = kPerPass * 2;
-        constexpr uint64_t kUploadBytes = 4096;
+        constexpr uint64_t kUploadBytes = 8192;
         constexpr uint64_t kGISettingsOffset = 0;
         constexpr uint64_t kAOSettingsOffset = 768;
         constexpr uint64_t kLightingOffset = 1024;
