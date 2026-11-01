@@ -112,6 +112,10 @@ void RedstoneDenoiser::ResetRayRegeneration()
     nativeHybridLastFrame = UINT32_MAX;
     nativeHybridFailed = false;
     nativeHybridFailure.clear();
+    nativeHybridConfigurationDefaultsReady.fill(false);
+    nativeHybridConfigurationApplied.fill(false);
+    nativeHybridAppliedConfigurationRevision = UINT64_MAX;
+    nativeHybridConfigurationFailure.clear();
 	{
 		std::scoped_lock lock(configurationMutex);
 		configurationDefaultsReady = false;
@@ -495,14 +499,27 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
     const bool reset = fresh || changed || resources.resetHistory ||
         nativeHybridLastFrame == UINT32_MAX ||
         (resources.frame != nativeHybridLastFrame + 1u);
-    // Native family contexts are independent of the legacy DX11 context.
-    // Never call ApplyConfiguration here: it targets the legacy context,
-    // not the three native contexts. A global configuration change does
-    // invalidate histories until family-specific Configure chains land.
+    // The same persisted SDK overrides used by the legacy RR path must
+    // be applied to EACH independently owned native DX12 context. Query the
+    // provider defaults per family; never assume a zero or sample value.
     const auto& configuration = RayRegeneration::GetConfiguration();
-    const bool configChanged = sharedConfigurationRevision != configuration.revision;
-    bool configReset = reset || configChanged;
-    sharedConfigurationRevision = configuration.revision;
+    if (sharedConfigurationRevision != configuration.revision) {
+        try {
+            SetConfiguration(configuration.overrides);
+            sharedConfigurationRevision = configuration.revision;
+        } catch (const std::exception& error) {
+            nativeHybridFailure = std::string("Native RR SDK overrides invalid: ") + error.what();
+            return false;
+        }
+    }
+    bool configReset = reset;
+    if (!ApplyNativeHybridConfiguration(configReset)) {
+        nativeHybridFailure = nativeHybridConfigurationFailure;
+        // Prevent partially configured contexts from dispatching; retain
+        // Shadow Only fallback and report the exact SDK key/reason.
+        nativeHybridFailed = true;
+        return false;
+    }
 
     std::vector<D3D12_RESOURCE_BARRIER> begin, end;
     for (auto* input : resources.inputs) {
