@@ -255,6 +255,19 @@ void RTComposer::DrawSettings()
     if (composition.mode == CompositorMode::HybridShadowed) {
         ImGui::SliderFloat("GI skip visibility threshold", &composition.shadowThreshold, 0.0f, 1.0f, "%.2f");
         ImGui::TextWrapped("DX12 HybridGI is not yet available. Shadow Only/SSGI fallback is active; RT-exclusive and DX11 HybridGI are blocked.");
+        const auto trace = globals::features::dx12NativeScene.Tracer().GetDiagnostics();
+        ImGui::Text("DX12 input bridge dispatches: %llu",
+            static_cast<unsigned long long>(trace.value("hybridInputDispatches", uint64_t{ 0 })));
+        ImGui::Text("DX12 shadowed-source dispatches: %llu",
+            static_cast<unsigned long long>(trace.value("hybridShadowedSourceDispatches", uint64_t{ 0 })));
+        ImGui::Text("Bridge memory allocation: %.1f MiB",
+            double(trace.value("hybridInputLastBytes", uint64_t{ 0 })) / (1024.0 * 1024.0));
+        ImGui::Text("Bridge budget deferrals: %llu",
+            static_cast<unsigned long long>(trace.value("hybridInputBudgetDeferrals", uint64_t{ 0 })));
+        const auto inputFailure = trace.value("hybridInputFailure", std::string{});
+        const auto sourceFailure = trace.value("hybridShadowedSourceFailure", std::string{});
+        if (!inputFailure.empty()) ImGui::TextWrapped("DX12 bridge: %s", inputFailure.c_str());
+        if (!sourceFailure.empty()) ImGui::TextWrapped("DX12 source: %s", sourceFailure.c_str());
     } else {
         ImGui::TextWrapped("Shadow Only preserves existing DX11 SSGI and masks the final raster image. Invalid visibility remains neutral.");
     }
