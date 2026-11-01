@@ -9,7 +9,7 @@
 #include "Util.h"
 #include <chrono>
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RedstoneShadows::Settings, AcquireScene, UsePreparedScene, PreviewPreparedScene, UsePreparedMaterials, UsePreparedDirectLighting, UseAllPreparedLights, ConnectIndirectLighting, UseDirectRayRegeneration, UseDXRIndirect, IndirectRays, IndirectStrength, RedstoneBlend, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, PreparedMaterialView, MaterialTextureBudgetMB, DirectLightingBudgetMB, PreparedLight, NodesPerFrame, MaxInstances, BufferBudgetMB)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RedstoneShadows::Settings, AcquireScene, UsePreparedScene, PreviewPreparedScene, UsePreparedMaterials, UsePreparedDirectLighting, UseAllPreparedLights, ConnectIndirectLighting, UseDirectRayRegeneration, UseDXRIndirect, IndirectRays, IndirectStrength, RedstoneBlend, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, PreparedMaterialView, MaterialTextureBudgetMB, DirectLightingBudgetMB, PreparedLight, PreviewLight, PreviewAllLights, PreviewDirectStrength, PreviewDiffuseStrength, PreviewSpecularStrength, PreviewEmissionStrength, NodesPerFrame, MaxInstances, BufferBudgetMB)
 
 std::pair<std::string, std::vector<std::string>> RedstoneShadows::GetFeatureSummary()
 {
@@ -19,18 +19,27 @@ std::pair<std::string, std::vector<std::string>> RedstoneShadows::GetFeatureSumm
 void RedstoneShadows::LoadSettings(json& a_json)
 {
 	Settings selected = a_json;
+	// One-time migration: seed independent native-scene preview settings from
+	// the prior direct-lighting controls only when the new fields are absent.
+	if (!a_json.contains("PreviewLight")) selected.PreviewLight = selected.PreparedLight;
+	if (!a_json.contains("PreviewAllLights")) selected.PreviewAllLights = selected.UseAllPreparedLights;
+	if (!a_json.contains("PreviewDirectStrength")) selected.PreviewDirectStrength = selected.DirectStrength;
+	if (!a_json.contains("PreviewDiffuseStrength")) selected.PreviewDiffuseStrength = selected.DiffuseStrength;
+	if (!a_json.contains("PreviewSpecularStrength")) selected.PreviewSpecularStrength = selected.SpecularStrength;
+	if (!a_json.contains("PreviewEmissionStrength")) selected.PreviewEmissionStrength = selected.EmissionStrength;
 	selected.IndirectRays = std::clamp(selected.IndirectRays, 1u, 8u);
 	if (selected.UseDXRIndirect) selected.UsePreparedScene = selected.UsePreparedMaterials = true;
 	selected.NodesPerFrame = std::clamp(selected.NodesPerFrame, 64u, 8192u);
 	selected.MaxInstances = std::clamp(selected.MaxInstances, 1u, CasterObservation::kCapacity);
 	selected.BufferBudgetMB = std::clamp(selected.BufferBudgetMB, 16u, 512u);
 	selected.PreparedLight = std::min(selected.PreparedLight, 255u);
+	selected.PreviewLight = std::min(selected.PreviewLight, 255u);
 	selected.PreparedMaterialView = std::min(selected.PreparedMaterialView, RedstoneShadow::DirectionalTrace::kCombinedDirectView);
 	selected.MaterialTextureBudgetMB = std::clamp(selected.MaterialTextureBudgetMB, 64u, 1024u);
 	selected.DirectLightingBudgetMB = std::clamp(selected.DirectLightingBudgetMB, 64u, 1024u);
 	selected.RedstoneBlend = std::isfinite(selected.RedstoneBlend) ? std::clamp(selected.RedstoneBlend, 0.0f, 1.0f) : 1.0f;
 	if (selected.UsePreparedScene != settings.UsePreparedScene) ready = false;
-	for (auto* value : { &selected.DirectStrength, &selected.DiffuseStrength, &selected.SpecularStrength, &selected.EmissionStrength, &selected.IndirectStrength })
+	for (auto* value : { &selected.DirectStrength, &selected.DiffuseStrength, &selected.SpecularStrength, &selected.EmissionStrength, &selected.IndirectStrength, &selected.PreviewDirectStrength, &selected.PreviewDiffuseStrength, &selected.PreviewSpecularStrength, &selected.PreviewEmissionStrength })
 		*value = std::isfinite(*value) ? std::clamp(*value, 0.0f, 8.0f) : 1.0f;
 	settings = selected;
 	resetRequested = true;
@@ -294,6 +303,21 @@ void RedstoneShadows::DrawNativeSceneSettings()
             settings.PreparedMaterialView = uint32_t(view);
             preparedTrace.Reset();
         }
+        const auto prepared = preparedScene.GetDiagnostics();
+        int previewLight = int(settings.PreviewLight);
+        const auto maxPreviewLight = std::max(0, int(prepared.value("lightCount", 0ull)) - 1);
+        if (ImGui::SliderInt("Preview baseline light", &previewLight, 0, maxPreviewLight)) {
+            settings.PreviewLight = uint32_t(previewLight);
+            preparedTrace.Reset();
+        }
+        if (ImGui::Checkbox("All prepared lights (preview only)", &settings.PreviewAllLights)) preparedTrace.Reset();
+        if (ImGui::TreeNode("Preview lighting strengths")) {
+            ImGui::SliderFloat("Direct##nativePreview", &settings.PreviewDirectStrength, 0.0f, 8.0f, "%.2fx");
+            ImGui::SliderFloat("Diffuse##nativePreview", &settings.PreviewDiffuseStrength, 0.0f, 8.0f, "%.2fx");
+            ImGui::SliderFloat("Specular##nativePreview", &settings.PreviewSpecularStrength, 0.0f, 8.0f, "%.2fx");
+            ImGui::SliderFloat("Emission##nativePreview", &settings.PreviewEmissionStrength, 0.0f, 8.0f, "%.2fx");
+            ImGui::TreePop();
+        }
         ImGui::TextWrapped("Material views trace prepared geometry; orange marks unsupported techniques and magenta unavailable data. These are source-material views, not final scene lighting.");
         const auto trace = preparedTrace.GetDiagnostics();
         ImGui::Text("Texture pools: %llu | unique textures: %u | texture MiB: %.1f", trace.value("texturePools", 0ull), trace.value("uniqueTextures", 0u), double(trace.value("materialTextureBytes", 0ull) / (1024.0 * 1024.0)));
@@ -512,7 +536,7 @@ void RedstoneShadows::DrawOverlay()
 			const auto selectedView = settings.UsePreparedMaterials ? std::min(settings.PreparedMaterialView, RedstoneShadow::DirectionalTrace::kCombinedDirectView) : 0u;
 			const auto trace = preparedTrace.GetDiagnostics();
 			ImGui::Text("%s | native shadows active", views[selectedView]);
-			if (settings.UseAllPreparedLights && (selectedView >= RedstoneShadow::DirectionalTrace::kFirstDirectView || settings.UsePreparedDirectLighting))
+			if ((settings.UsePreparedDirectLighting ? settings.UseAllPreparedLights : settings.PreviewAllLights) && (selectedView >= RedstoneShadow::DirectionalTrace::kFirstDirectView || settings.UsePreparedDirectLighting))
 				ImGui::Text("All prepared lights | submitted light count: %u | limit: %u", trace.value("requestedLightCount", 0u), RedstoneShadow::DirectionalTrace::kMaximumDirectLights);
 			if (settings.UsePreparedDirectLighting) ImGui::Text("Direct scene mode | composite submissions: %llu | frame: %u", trace.value("sceneCompositeSubmissions", 0ull), trace.value("sceneCompositeFrame", 0u));
 			else if (selectedView >= RedstoneShadow::DirectionalTrace::kFirstDirectView) ImGui::TextUnformatted("Selected-light direct radiance; display tone map. Black can be valid zero lighting.");

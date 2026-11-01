@@ -35,6 +35,12 @@ struct RedstoneShadows final : OverlayFeature
 		uint32_t MaterialTextureBudgetMB = 512;
 		uint32_t DirectLightingBudgetMB = 256;
 		uint32_t PreparedLight = 0;
+		uint32_t PreviewLight = 0;
+		bool PreviewAllLights = true;
+		float PreviewDirectStrength = 1.0f;
+		float PreviewDiffuseStrength = 1.0f;
+		float PreviewSpecularStrength = 1.0f;
+		float PreviewEmissionStrength = 1.0f;
 		uint32_t NodesPerFrame = 2048;
 		uint32_t MaxInstances = CasterObservation::kCapacity;
 		uint32_t BufferBudgetMB = 128;

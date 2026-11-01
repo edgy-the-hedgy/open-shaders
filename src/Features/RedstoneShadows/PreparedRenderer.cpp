@@ -106,21 +106,22 @@ void RedstoneShadows::OnAfterDeferredLighting(ID3D11UnorderedAccessView* a_targe
 	const auto completedScene = preparedAcceleration.GetScene();
 	if (!prepared || !completedScene || completedScene->scope.scene != preparedRevision) return;
 	const auto materialView = direct ? RedstoneShadow::DirectionalTrace::kCombinedDirectView : settings.UsePreparedMaterials ? settings.PreparedMaterialView : 0;
-	const bool allLights = settings.UseAllPreparedLights && materialView >= RedstoneShadow::DirectionalTrace::kFirstDirectView;
-	if (!allLights && (!materialView || materialView >= RedstoneShadow::DirectionalTrace::kFirstDirectView) && settings.PreparedLight >= prepared->lights.size()) return;
+	const uint32_t selectedLight = direct ? settings.PreparedLight : settings.PreviewLight;
+	const bool allLights = (direct ? settings.UseAllPreparedLights : settings.PreviewAllLights) && materialView >= RedstoneShadow::DirectionalTrace::kFirstDirectView;
+	if (!allLights && (!materialView || materialView >= RedstoneShadow::DirectionalTrace::kFirstDirectView) && selectedLight >= prepared->lights.size()) return;
 	const auto backend = Feature::FindGraphicsBackend();
 	if (!backend || !preparedTrace.Initialize(*backend)) return;
 	const auto lights = globals::features::lightLimitFix.GetLightView(frame);
-	const auto light = settings.PreparedLight < prepared->lights.size() ? prepared->lights[settings.PreparedLight] : float3{};
+	const auto light = selectedLight < prepared->lights.size() ? prepared->lights[selectedLight] : float3{};
 	const auto budget = direct ? uint64_t(settings.DirectLightingBudgetMB) * 1024 * 1024 : uint64_t(settings.BufferBudgetMB) * 1024 * 1024 / 4;
-	const auto identity = settings.PreparedLight < preparedLightReferences.size() ? preparedLightReferences[settings.PreparedLight] : std::array<uint32_t, 2>{};
+	const auto identity = selectedLight < preparedLightReferences.size() ? preparedLightReferences[selectedLight] : std::array<uint32_t, 2>{};
 	const auto& metadata = globals::game::renderer->GetRuntimeData().renderTargets[MASKS2];
 	D3D11_TEXTURE2D_DESC metadataDesc{};
 	auto* metadataSrv = Util::AsReal(metadata.SRV);
 	if (!Util::GetTexture2DDesc(metadataSrv, metadataDesc) || metadataDesc.Format != DXGI_FORMAT_R16G16B16A16_UNORM) metadataSrv = nullptr;
 	preparedTrace.Dispatch(completedScene, a_size, light, frame, budget, true, lights, materialView, direct ? a_target : nullptr,
 		identity[0], identity[1], metadataSrv, allLights ? std::span<const std::array<uint32_t, 2>>(preparedLightReferences) : std::span<const std::array<uint32_t, 2>>{}, allLights,
-		{ settings.DirectStrength, settings.DiffuseStrength, settings.SpecularStrength, settings.EmissionStrength },
+		direct ? float4{ settings.DirectStrength, settings.DiffuseStrength, settings.SpecularStrength, settings.EmissionStrength } : float4{ settings.PreviewDirectStrength, settings.PreviewDiffuseStrength, settings.PreviewSpecularStrength, settings.PreviewEmissionStrength },
 		settings.ConnectIndirectLighting && !settings.UseDXRIndirect, settings.IndirectStrength, settings.UseDirectRayRegeneration, settings.UseDXRIndirect ? settings.IndirectRays : 0u, preparedRoomReferences);
 	preparedTraceFrame = frame;
 }
