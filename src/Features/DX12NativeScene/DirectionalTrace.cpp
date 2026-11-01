@@ -1165,6 +1165,10 @@ namespace DX12Native
             NativeGIOutputsPublication result{};
             for (uint32_t i = 0; i < NativeHybridGI::kOutputs; ++i)
                 result.outputs[i] = frame.nativeGI.textures[i].get();
+            result.composedValid = frame.nativeGI.composedValid &&
+                bool(frame.nativeGI.composedScene);
+            result.composedScene = result.composedValid ?
+                frame.nativeGI.composedScene->resource.get() : nullptr;
             result.completionFence = completion.fence12.get();
             result.completionValue = frame.fence;
             result.size = frame.size;
