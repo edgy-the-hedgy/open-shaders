@@ -28,6 +28,7 @@ struct FurShells;
 struct RainRefraction;
 struct ScreenSpaceGI;
 struct RedstoneGI;
+struct RTComposer;
 struct DX12NativeScene;
 struct RTDirectLighting;
 struct RTIndirectLighting;
@@ -138,6 +139,7 @@ namespace globals
 		extern RainRefraction rainRefraction;
 		extern ScreenSpaceGI screenSpaceGI;
 		extern RedstoneGI redstoneGI;
+		extern RTComposer rtComposer;
 		extern DX12NativeScene dx12NativeScene;
 		extern RTDirectLighting rtDirectLighting;
 		extern RTIndirectLighting rtIndirectLighting;

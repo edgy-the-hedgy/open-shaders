@@ -10,7 +10,7 @@
 #include "Utils/DevBenchUx.h"
 #include "Util.h"
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTDirectLighting::Settings, RedstoneBlend, UsePreparedDirectLighting, UseAllPreparedLights, UseDirectRayRegeneration, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, SelectedDirectLight, NormalInfluence, DirectTraceResolution, DirectRRResolution, RRMaterialIsolation, RRGlossyRoughness, PointLightRadiusMultiplier, PointLightFalloffFraction, PointLightFalloffExponent, StochasticSampling, EmitterRadiusMultiplier)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTDirectLighting::Settings, RedstoneBlend, UsePreparedDirectLighting, UseAllPreparedLights, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, SelectedDirectLight, NormalInfluence, DirectTraceResolution, PointLightRadiusMultiplier, PointLightFalloffFraction, PointLightFalloffExponent, StochasticSampling, EmitterRadiusMultiplier)
 
 std::pair<std::string, std::vector<std::string>> RTDirectLighting::GetFeatureSummary()
 {
@@ -30,7 +30,13 @@ void RTDirectLighting::ImportLegacySettings(json& root)
 }
 void RTDirectLighting::LoadSettings(json& value)
 {
+	// RTComposer owns RR persistence; keep live state if old RR keys are absent.
+	const Settings current = settings;
 	Settings selected = value;
+	selected.UseDirectRayRegeneration = value.value("UseDirectRayRegeneration", current.UseDirectRayRegeneration);
+	selected.DirectRRResolution = value.value("DirectRRResolution", current.DirectRRResolution);
+	selected.RRMaterialIsolation = value.value("RRMaterialIsolation", current.RRMaterialIsolation);
+	selected.RRGlossyRoughness = value.value("RRGlossyRoughness", current.RRGlossyRoughness);
 	selected.SelectedDirectLight = std::min(selected.SelectedDirectLight, 255u);
 	selected.NormalInfluence = std::min(selected.NormalInfluence, 2u);
 	selected.DirectTraceResolution = std::min(selected.DirectTraceResolution, 4u);
@@ -116,11 +122,7 @@ void RTDirectLighting::DrawDirectLightingSettings()
         globals::features::dx12NativeScene.Tracer().Reset();
     }
     ImGui::TextWrapped("Trace density per axis; 2/3 and 1/3 use a depth-aware sparse resolve. This is independent of RR resolution.");
-    int rrRes = static_cast<int>(settings.DirectRRResolution);
-    if (ImGui::Combo("Direct RR resolution", &rrRes, "Full\0Half\0Quarter\0Use shared RR setting (legacy)\0")) {
-        settings.DirectRRResolution = uint32_t(rrRes);
-        globals::features::dx12NativeScene.Tracer().Reset();
-    }
+
     ImGui::SliderFloat("Raster / RT blend", &settings.RedstoneBlend, 0.0f, 1.0f, "%.2f");
     ImGui::SliderFloat("Direct lighting strength", &settings.DirectStrength, 0.0f, 8.0f, "%.2fx");
 
@@ -182,8 +184,7 @@ void RTDirectLighting::DrawDirectLightingSettings()
             diagnostics.value("preparedSceneEnabled", false) ? "enabled" : "off",
             diagnostics.value("preparedMaterialsEnabled", false) ? "enabled" : "off",
             diagnostics.value("preparedScenePublished", false) ? "yes" : "no");
-        ImGui::Text("Native direct dispatches: %llu | RR dispatches: %llu",
-            trace.value("directTraceDispatches", 0ull), trace.value("directRRDispatches", 0ull));
+        ImGui::Text("Native direct dispatches: %llu", trace.value("directTraceDispatches", 0ull));
         const auto& preparedLights = diagnostics.at("preparedScene");
         ImGui::Text("Prepared lights: %llu eligible / %llu rejected (%llu approximated, %llu invalid, %llu disabled)",
             preparedLights.value("supportedLightCount", 0ull), preparedLights.value("unsupportedLightCount", 0ull),

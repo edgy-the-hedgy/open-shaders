@@ -27,6 +27,7 @@
 #include "Features/PostProcessing.h"
 #include "Features/RainRefraction.h"
 #include "Features/RemoteControl/NvPerf.h"
+#include "Features/RTComposer/RTComposer.h"
 #include "Features/SceneManager.h"
 #include "Features/SceneSelector.h"
 #include "Features/Skin.h"
@@ -582,6 +583,7 @@ void State::Load(ConfigMode a_configMode, bool a_allowReload)
 			try {
 				userFile >> userSettings;
 				userFile.close();
+				RTComposer::MigrateLegacySettings(userSettings);
 
 				Util::Settings::OverlayRecognizedRootSettings(settings, userSettings);
 				if (const auto menu = userSettings.find("Menu"); menu != userSettings.end() && menu->is_object())
@@ -612,6 +614,7 @@ void State::Load(ConfigMode a_configMode, bool a_allowReload)
 		logger::warn("Could not clean up orphaned user overwrite settings");
 
 	if (overridesDiscovered > 0) {
+		const json beforeGlobalOverrides = settings;
 		logger::info("Discovered {} override files", overridesDiscovered);
 
 		// Apply global overrides to main settings
@@ -624,6 +627,7 @@ void State::Load(ConfigMode a_configMode, bool a_allowReload)
 		if (overrideManager->LoadUserOverride("Global", settings)) {
 			logger::info("Applied global user override customizations");
 		}
+		RTComposer::MigrateChangedLegacySettings(beforeGlobalOverrides, settings);
 	}
 
 	try {
@@ -664,6 +668,13 @@ void State::Load(ConfigMode a_configMode, bool a_allowReload)
 							logger::info("Applied user override customizations to {}", feature->GetName());
 						}
 
+						// Translate feature-specific legacy RR overrides into the new owner before loading.
+						if (featureName == "Upscaling" || featureName == "RTDirectLighting" || featureName == "RedstoneGI") {
+							json migrated = { { feature->GetName(), featureJson } };
+							RTComposer::MigrateLegacySettings(migrated);
+							if (migrated.contains("RTComposer"))
+								settings["RTComposer"].merge_patch(migrated["RTComposer"]);
+						}
 						// Reload settings with overrides applied
 						try {
 							feature->LoadSettings(featureJson);

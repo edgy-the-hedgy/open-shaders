@@ -764,23 +764,7 @@ void Upscaling::DrawSettings()
 	if (!ImGui::BeginTabBar("##UpscalingTabs"))
 		return;
 
-	if (!globals::game::isVR && ImGui::BeginTabItem("RT Denoiser")) {
-		auto policy = RayRegeneration::GetSettings();
-		bool changed = ImGui::Checkbox("Enable FSR Ray Regeneration", &policy.enabled);
-		int resolution = int(policy.resolutionMode);
-		changed |= ImGui::Combo("Reconstruction resolution", &resolution, "Full resolution\0Half resolution\0Quarter resolution\0");
-		changed |= ImGui::Checkbox("Checkerboard RR inputs", &policy.checkerboard);
-		if (changed) RayRegeneration::Configure(uint32_t(resolution), policy.checkerboard, policy.enabled);
-		ImGui::TextWrapped("FSR Ray Regeneration reconstructs direct and indirect RT signals on a shared grid. Indirect producer selection and ray counts remain separate; Normal Save persists these controls here.");
-		ImGui::SeparatorText("RT lighting reconstruction");
-		globals::features::rtDirectLighting.DrawRayRegenerationSettings();
-		globals::features::rtIndirectLighting.DrawUnifiedDebugSettings();
-		if (!globals::features::rtIndirectLighting.UsesRTExclusive()) {
-			ImGui::SeparatorText("Screen-space indirect");
-			globals::features::redstoneGI.DrawRayRegenerationSettings();
-		}
-		ImGui::EndTabItem();
-	}
+
 	if (ImGui::BeginTabItem(GetDisplayName().c_str())) {
 		DrawUpscalingSettings();
 		ImGui::EndTabItem();
@@ -1284,8 +1268,6 @@ void Upscaling::SaveSettings(json& o_json)
 	// Persist None, not the user's prior method, while OpenComposite owns upscaling.
 	ApplyOpenCompositeUpscalingBlocker(true);
 	o_json = settings;
-	const auto rr = RayRegeneration::GetSettings();
-	o_json["FSRRayRegeneration"] = { { "resolutionMode", rr.resolutionMode }, { "checkerboard", rr.checkerboard }, { "enabled", rr.enabled }, { "configuration", RayRegeneration::GetConfiguration().overrides } };
 	// Nest FoveatedRender's settings under a sub-key so they round-trip alongside
 	// Upscaling's own. Subrect controller persistence is owned by FoveatedRender.
 	json foveatedRenderJson;
@@ -1300,19 +1282,9 @@ void Upscaling::SaveSettings(json& o_json)
 	}
 }
 
-void Upscaling::ImportLegacySettings(json& a_root)
+void Upscaling::ImportLegacySettings(json&)
 {
-	auto& upscaling = a_root[GetName()];
-	if (!upscaling.is_object()) upscaling = json::object();
-	auto legacy = a_root.contains("RedstoneGI") ? a_root.at("RedstoneGI") : upscaling.value("redstoneGI", json::object());
-	if (!legacy.is_object()) legacy = json::object();
-	if (auto rr = upscaling.find("FSRRayRegeneration"); rr != upscaling.end() && rr->is_object()) {
-		if (!rr->contains("configuration")) (*rr)["configuration"] = legacy.value("RRConfiguration", json::object());
-		return;
-	}
-	upscaling["FSRRayRegeneration"] = {
-		{ "resolutionMode", legacy.value("ResolutionMode", 1) }, { "checkerboard", legacy.value("RRCheckerboard", true) }, { "enabled", legacy.value("RREnabled", true) }, { "configuration", legacy.value("RRConfiguration", json::object()) }
-	};
+	// RR legacy compatibility is managed by RTComposer.
 }
 
 /** @brief Loads upscaling settings and validates supported options and FPS limits. */
@@ -1332,13 +1304,6 @@ void Upscaling::LoadSettings(json& o_json)
 	// detect absence explicitly so a pre-existing config still runs the migration.
 	const bool hadFsr4SchemaVersion = o_json.contains("fsr4RuntimeSelectionSchemaVersion");
 	settings = o_json;
-	if (const auto rr = o_json.find("FSRRayRegeneration"); rr != o_json.end() && rr->is_object()) {
-		RayRegeneration::Configure(rr->value("resolutionMode", 1u), rr->value("checkerboard", true), rr->value("enabled", true));
-		globals::features::redstoneGI.GetDenoiser().SetConfiguration(rr->value("configuration", json::object()));
-	} else {
-		RayRegeneration::Configure(1, true, true);
-		globals::features::redstoneGI.GetDenoiser().SetConfiguration(json::object());
-	}
 	settings.neuralRenderingTuning.Sanitize();
 	settings.neuralRenderingContexts.Sanitize();
 	neuralRendering.ResetHistory();

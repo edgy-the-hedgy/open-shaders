@@ -42,6 +42,7 @@
 #include "Features/DX12NativeScene/DX12NativeScene.h"
 #include "Features/RTDirectLighting/RTDirectLighting.h"
 #include "Features/RTIndirectLighting/RTIndirectLighting.h"
+#include "Features/RTComposer/RTComposer.h"
 #include "Features/ScreenSpaceShadows.h"
 #include "Features/ScreenshotFeature.h"
 #include "Features/Skin.h"
@@ -292,6 +293,7 @@ namespace
 			&globals::features::dx12NativeScene,
 			&globals::features::rtDirectLighting,
 			&globals::features::rtIndirectLighting,
+			&globals::features::rtComposer,
 			&globals::features::renderDoc,
 			&globals::features::remoteControl,
 			&globals::features::csEditor,
