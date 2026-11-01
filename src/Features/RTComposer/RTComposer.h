@@ -13,6 +13,7 @@ struct RTComposer final : Feature
         CompositorMode mode = CompositorMode::ShadowOnly;
         float shadowInfluence = 1.0f;
         float rtDirectContribution = 0.0f;
+        float giContribution = 1.0f; // Hybrid-only native GI blend, independent of direct
         float shadowThreshold = 0.25f;
     } composition;
     enum class EffectiveMode : uint32_t { Legacy = 0, ShadowOnly = 1, HybridShadowed = 2 };
