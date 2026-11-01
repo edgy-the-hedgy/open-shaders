@@ -262,7 +262,7 @@ void RTComposer::DrawSettings()
             OnCompositionPolicyChanged();
         if (ImGui::Checkbox("Preview raw native Hybrid-Shadowed (diagnostic, no RR)", &composition.previewNativeRaw))
             OnCompositionPolicyChanged();
-        ImGui::TextWrapped("Native GI/AO and DX12 composition are diagnostic until independent RR histories and the final output handoff are validated. This session-only preview writes the DX12 scene through a minimal DX11 copy shader; invalid frames fall back to Shadow Only.");
+        ImGui::TextWrapped("Native GI/AO and DX12 composition are diagnostic until independent RR histories and the final output handoff are validated. This session-only preview displays the raw DX12 scene through one minimal DX11 copy pass; invalid frames fall back to Shadow Only.");
         const auto trace = globals::features::dx12NativeScene.Tracer().GetDiagnostics();
         ImGui::Text("DX12 input bridge dispatches: %llu",
             static_cast<unsigned long long>(trace.value("hybridInputDispatches", uint64_t{ 0 })));
@@ -276,6 +276,12 @@ void RTComposer::DrawSettings()
             static_cast<unsigned long long>(trace.value("nativeHybridGIDispatches", uint64_t{ 0 })),
             static_cast<unsigned long long>(trace.value("nativeHybridAODispatches", uint64_t{ 0 })),
             static_cast<unsigned long long>(trace.value("nativeHybridCompositionDispatches", uint64_t{ 0 })));
+        ImGui::Text("Native diagnostic scene exports: %llu",
+            static_cast<unsigned long long>(trace.value("nativeHybridPreviewSubmissions", uint64_t{ 0 })));
+        const auto giFailure = trace.value("nativeHybridGIFailure", std::string{});
+        const auto previewFailure = trace.value("nativeHybridPreviewFailure", std::string{});
+        if (!giFailure.empty()) ImGui::TextWrapped("Native GI/AO: %s", giFailure.c_str());
+        if (!previewFailure.empty()) ImGui::TextWrapped("DX11 output handoff: %s", previewFailure.c_str());
         const auto compositionFailure = trace.value("nativeHybridCompositionFailure", std::string{});
         if (!compositionFailure.empty()) ImGui::TextWrapped("DX12 native composition: %s", compositionFailure.c_str());
         const auto inputFailure = trace.value("hybridInputFailure", std::string{});
