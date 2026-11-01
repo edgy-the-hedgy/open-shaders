@@ -1,4 +1,5 @@
 #pragma once
+#include "Features/DX12NativeScene/HybridSamplingPolicy.h"
 #include "Features/OverlayFeature.h"
 #include "Buffer.h"
 #include "RuntimeDenoiser.h"
@@ -272,7 +273,8 @@ public:
 		uint geometryPadding[3]{};
 	};
 	STATIC_ASSERT_ALIGNAS_16(RGICB);
-    RGICB GetNativeGISettings(std::array<uint32_t, 2> nativeSize, uint32_t frameNumber) const;
+    RGICB GetNativeGISettings(std::array<uint32_t, 2> nativeSize, uint32_t frameNumber,
+        const DX12Native::HybridSamplingLayout& sampling) const;
 private:
 	RedstoneDenoiser denoiser;
 	eastl::unique_ptr<Texture2D> texRRSpecularInput = nullptr;
