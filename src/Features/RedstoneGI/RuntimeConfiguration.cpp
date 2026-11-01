@@ -31,11 +31,12 @@ json RedstoneDenoiser::GetConfiguration() const
     json overrides = json::object(), defaults = json::object();
     constexpr std::array familyNames{ "diffuse", "specular", "ao" };
     json families = json::object();
-    const bool nativeDefaultsSelected =
-        !configurationDefaultsReady && nativeHybridConfigurationDefaultsReady[0];
-    const bool defaultsReady = configurationDefaultsReady || nativeDefaultsSelected;
-    const char* source = configurationDefaultsReady ? "legacy" :
-        nativeDefaultsSelected ? "native-diffuse" : "unavailable";
+    // Prefer the native diffuse context as the UI's reference whenever
+    // it exists; still expose actual per-family defaults independently.
+    const bool nativeDefaultsSelected = nativeHybridConfigurationDefaultsReady[0];
+    const bool defaultsReady = nativeDefaultsSelected || configurationDefaultsReady;
+    const char* source = nativeDefaultsSelected ? "native-diffuse" :
+        configurationDefaultsReady ? "legacy" : "unavailable";
     for (size_t family = 0; family < nativeHybridContexts.size(); ++family) {
         json familyDefaults = json::object();
         for (size_t i = 0; i < configurationOverrides.size(); ++i) {
@@ -321,7 +322,7 @@ void RedstoneDenoiser::DrawConfigurationSettings()
         ImGui::EndDisabled();
         if (ready) {
             const float providerDefault = defaults.at(name).get<float>();
-            ImGui::Text("SDK default: %.6g | effective: %.6g",
+            ImGui::Text("SDK reference default: %.6g | selected: %.6g",
                 providerDefault, overridden ? selected.at(name).get<float>() : providerDefault);
             if (families.at("diffuse").at("defaultsReady").get<bool>() &&
                 families.at("specular").at("defaultsReady").get<bool>() &&
