@@ -223,13 +223,34 @@ float4 EvaluateDirectLighting(uint instance, uint primitive, float2 barycentric,
 		DirectNormalRoughness[pixel] = float4(oct * 0.5 + 0.5, material.roughness, 0);
 		DirectSpecularAlbedo[pixel] = float4(specularAlbedo, emission.b);
 		DirectDiffuseAlbedo[pixel] = float4(diffuseAlbedo, 1);
-		if (IndirectRayCount != 0 && BakedRoomCode(instance, position) == uint(receiver.w)) {
-			float4 indirectDiffuse, indirectSpecular;
-			if (EvaluateIndirectLighting(material, position, -direction, geometricNormal, footprint, pixel, indirectDiffuse, indirectSpecular)) {
-				IndirectDiffuse[pixel] = indirectDiffuse;
-				IndirectSpecular[pixel] = indirectSpecular;
-			}
-		}
+
 	}
 	return float4(result, DirectRadianceTag);
+}
+
+// Independent RT-exclusive indirect shader pass. It shares the current native
+// scene/receiver resources but never writes or composites direct radiance.
+void EvaluateIndirectForSurface(uint instance, uint primitive, float2 barycentric, float3x4 objectToWorld,
+    float3x4 worldToObject, float3 direction, float distance, float4 receiver, float footprint, uint2 pixel)
+{
+    if (IndirectRayCount == 0u) return;
+    MaterialRecord record = Materials[Surfaces[instance].material.x];
+    if ((record.flags.x & 3) != 3 || record.flags.w != 0) return;
+    if (abs(distance - length(receiver.xyz)) > max(5.0, distance * ReceiverRelativeTolerance)) return;
+    EvaluatedSourceMaterial material;
+    if (!LoadSourceMaterial(instance, primitive, barycentric, objectToWorld, worldToObject, footprint, material)) return;
+    TriangleSurface surface;
+    if (!LoadTriangle(instance, primitive, barycentric, surface)) return;
+    const float3 edge0 = mul((float3x3)objectToWorld, surface.position1 - surface.position0);
+    const float3 edge1 = mul((float3x3)objectToWorld, surface.position2 - surface.position0);
+    const float3 geometricNormal = normalize(cross(edge0, edge1));
+    if (!all(isfinite(geometricNormal))) return;
+    const float3 position = CameraOrigin + direction * distance;
+    if (BakedRoomCode(instance, position) != uint(receiver.w)) return;
+    float4 indirectDiffuse, indirectSpecular;
+    if (EvaluateIndirectLighting(material, position, -direction, geometricNormal,
+        footprint, pixel, indirectDiffuse, indirectSpecular)) {
+        IndirectDiffuse[pixel] = indirectDiffuse;
+        IndirectSpecular[pixel] = indirectSpecular;
+    }
 }

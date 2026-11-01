@@ -174,6 +174,7 @@ namespace DX12Native
 		std::string lightSelectionFailure;
 		uint64_t unavailableLightFrames = 0;
 		uint64_t directSubmissions = 0, sceneCompositeSubmissions = 0;
+		uint64_t directTraceDispatches = 0, indirectTraceDispatches = 0;
 		uint32_t sceneCompositeFrame = 0;
 		std::string failure;
 	};

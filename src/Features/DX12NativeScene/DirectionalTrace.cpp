@@ -404,6 +404,22 @@ namespace DX12Native
 		for (const auto& signal : a_frame.directSignals) if (signal) begin.push_back(CD3DX12_RESOURCE_BARRIER::Transition(signal->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
 		commands->ResourceBarrier(uint32_t(begin.size()), begin.data());
 		commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
+		++directTraceDispatches;
+		if (a_frame.indirectRays != 0) {
+			// Dedicated indirect dispatch; the same retained scene and light snapshot
+			// are consumed, while only indirect signal UAVs are written.
+			// UAV ordering: the direct pass initialized these signal resources.
+			std::array<D3D12_RESOURCE_BARRIER, 2> independentSignals{
+				CD3DX12_RESOURCE_BARRIER::UAV(a_frame.directSignals[5]->resource.get()),
+				CD3DX12_RESOURCE_BARRIER::UAV(a_frame.directSignals[6]->resource.get())
+			};
+			commands->ResourceBarrier(uint32_t(independentSignals.size()), independentSignals.data());
+			Constants indirectConstants = constants;
+			indirectConstants.signalPadding[0] = 1u;
+			commands->SetComputeRoot32BitConstants(5, 28, &indirectConstants, 0);
+			commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
+			++indirectTraceDispatches;
+		}
 		const auto ordered = CD3DX12_RESOURCE_BARRIER::UAV(a_frame.output->resource.get());
 		commands->ResourceBarrier(1, &ordered);
 		std::vector<D3D12_RESOURCE_BARRIER> end{
@@ -730,7 +746,7 @@ namespace DX12Native
 			{ "failure", failure }, { "minimumDistance", kRayMinimum }, { "maximumDistance", kRayMaximum }, { "angularRadius", localLightMode ? 0.0f : kSunAngularRadius },
 			{ "lightMode", localLightMode ? "prepared-static" : "directional" },
 			{ "allPreparedLights", allPreparedLights }, { "requestedLightCount", requestedLightCount }, { "maximumDirectLights", kMaximumDirectLights }, { "lightSelectionFailure", lightSelectionFailure },
-			{ "directSubmissions", directSubmissions }, { "sceneCompositeSubmissions", sceneCompositeSubmissions }, { "sceneCompositeFrame", sceneCompositeFrame },
+			{ "directSubmissions", directSubmissions }, { "directTraceDispatches", directTraceDispatches }, { "indirectTraceDispatches", indirectTraceDispatches }, { "sceneCompositeSubmissions", sceneCompositeSubmissions }, { "sceneCompositeFrame", sceneCompositeFrame },
 			{ "directScope", "selected light or complete bounded prepared point-light set; supported depth-matched PBR surfaces; per-light diffuse/specular, emission once; no native CPU bypass" },
 			{ "sourceLightCount", sourceLightCount }, { "sourceLightFrame", sourceLightFrame }, { "unavailableLightFrames", unavailableLightFrames },
 			{ "bindingCreations", bindingCreations }, { "bindingDeferrals", bindingDeferrals }, { "cachedSceneBindings", bool(cachedBindings) },

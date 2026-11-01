@@ -28,7 +28,8 @@ cbuffer Trace : register(b0)
 	uint3 Padding;
 	float4 LightingStrengths;
 	uint ExportDirectSignals;
-	uint3 SignalPadding;
+	uint TracePass;  // 0: direct, 1: RT-exclusive indirect
+	uint2 SignalPadding;
 	uint IndirectRayCount;
 	uint BakedRoomCount;
 	uint BakedRoomsKnown;
@@ -52,7 +53,7 @@ uint Hash(uint value)
 void main(uint3 id : SV_DispatchThreadID)
 {
 	if (any(id.xy >= Size)) return;
-	if (ExportDirectSignals != 0) {
+	if (ExportDirectSignals != 0 && TracePass == 0) {
 		DirectDiffuse[id.xy] = 0;
 		DirectSpecular[id.xy] = 0;
 		DirectNormalRoughness[id.xy] = 0;
@@ -86,6 +87,13 @@ void main(uint3 id : SV_DispatchThreadID)
 		float spread = adjacent.w != 0 ? length(normalize(adjacent.xyz) - primary.Direction) : 2.0 / max(Size.x, Size.y);
 		float footprint = max(spread, 1e-6) * surfaceQuery.CommittedRayT();
 		if (Padding.y >= DirectDiffuseView) {
+			if (TracePass == 1u) {
+				EvaluateIndirectForSurface(surfaceQuery.CommittedInstanceID(), surfaceQuery.CommittedPrimitiveIndex(),
+					surfaceQuery.CommittedTriangleBarycentrics(), surfaceQuery.CommittedObjectToWorld3x4(),
+					surfaceQuery.CommittedWorldToObject3x4(), primary.Direction, surfaceQuery.CommittedRayT(),
+					receiver, footprint, id.xy);
+				return;
+			}
 			Shadow[id.xy] = EvaluateDirectLighting(surfaceQuery.CommittedInstanceID(), surfaceQuery.CommittedPrimitiveIndex(), surfaceQuery.CommittedTriangleBarycentrics(),
 				surfaceQuery.CommittedObjectToWorld3x4(), surfaceQuery.CommittedWorldToObject3x4(), primary.Direction, surfaceQuery.CommittedRayT(), receiver, footprint, Padding.y, id.xy);
 			return;
