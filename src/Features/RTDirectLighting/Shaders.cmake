@@ -49,12 +49,13 @@ if(REDSTONE_DXC)
             "${CMAKE_CURRENT_SOURCE_DIR}/features/RedstoneGI/Shaders/RedstoneGI/Sampling.hlsli"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/RedstoneGI/Shaders/RedstoneGI/SpecularWeights.hlsli"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/RedstoneGI/Shaders/RedstoneGI/common.hlsli"
+            "${CMAKE_CURRENT_SOURCE_DIR}/features/RedstoneGI/Shaders/RedstoneGI/NativeGICompat.hlsli"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/RedstoneGI/Shaders/RedstoneGI/OcclusionSettings.hlsli"
         VERBATIM)
     set(_rt_hybrid_1 "${REDSTONE_DXIL_DIRECTORY}/hybridAO.dxil")
     add_custom_command(OUTPUT "${_rt_hybrid_1}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${REDSTONE_DXIL_DIRECTORY}"
-        COMMAND "${REDSTONE_DXC}" -T cs_6_5 -E main -HV 2021 -O3 -Ges 
+        COMMAND "${REDSTONE_DXC}" -T cs_6_5 -E main -HV 2021 -O3 -Ges -D DX12_HYBRID_GI=1
             -I "${CMAKE_CURRENT_SOURCE_DIR}/package/Shaders"
             -I "${CMAKE_CURRENT_SOURCE_DIR}/features/RedstoneGI/Shaders"
             -Fo "${_rt_hybrid_1}"
@@ -63,6 +64,7 @@ if(REDSTONE_DXC)
             "${CMAKE_CURRENT_SOURCE_DIR}/features/RedstoneGI/Shaders/RedstoneGI/Sampling.hlsli"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/RedstoneGI/Shaders/RedstoneGI/SpecularWeights.hlsli"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/RedstoneGI/Shaders/RedstoneGI/common.hlsli"
+            "${CMAKE_CURRENT_SOURCE_DIR}/features/RedstoneGI/Shaders/RedstoneGI/NativeGICompat.hlsli"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/RedstoneGI/Shaders/RedstoneGI/OcclusionSettings.hlsli"
         VERBATIM)
     # Deliberately opt-in until DX12 native estimator resource bindings exist:

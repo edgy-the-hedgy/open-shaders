@@ -81,7 +81,16 @@ Surface BuildSurface(uint2 pixel, float depth, float3 normal)
 	result.viewPixelY = ScreenToViewPosition(result.uv - float2(0, RCP_OUT_FRAME_DIM.y), depth) - result.position;
 	result.normalView = dot(normal, result.view);
 	uint2 noisePixel = pixel % 128u + uint2(0, (FrameIndex % 64u) * 128u);
+#if defined(DX12_HYBRID_GI)
+    // DX12 diagnostic noise: deterministic decorrelation without transferring
+    // DX11's fast_2uges.dds. The GI integration equations are unchanged.
+    uint h = (pixel.x + 1u) * 0x9e3779b9u ^ (pixel.y + 1u) * 0x85ebca6bu ^ (FrameIndex + 1u) * 0xc2b2ae35u;
+    h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15; h *= 0x846ca68bu; h ^= h >> 16;
+    uint h2 = h * 1664525u + 1013904223u;
+    result.noise = float2(float(h & 0x00ffffffu), float(h2 & 0x00ffffffu)) / 16777216.0;
+#else
 	result.noise = srcNoise.Load(int3(noisePixel, 0));
+#endif
 	float viewPixelWidth = depth * NDCToViewMul.x * RCP_OUT_FRAME_DIM.x;
 	result.screenRadius = max(MinScreenRadius, EffectRadius / max(viewPixelWidth, 1e-6));
 	result.minimumSample = 1.3 / result.screenRadius;

@@ -1,9 +1,13 @@
 #ifndef REDSTONE_GI_COMMON
 #define REDSTONE_GI_COMMON
 #include "Common/Math.hlsli"
+#if defined(DX12_HYBRID_GI)
+#include "RedstoneGI/NativeGICompat.hlsli"
+#else
 #include "Common/SharedData.hlsli"
 #include "Common/FrameBuffer.hlsli"
 #include "Common/VR.hlsli"
+#endif
 
 cbuffer RedstoneGISettings : register(b1)
 {
