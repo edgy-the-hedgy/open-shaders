@@ -110,13 +110,19 @@ json RTComposer::GetDiagnostics()
     const auto& tracer = globals::features::dx12NativeScene.Tracer();
     return {
         { "enabled", composition.enabled },
-        { "requestedMode", composition.mode == CompositorMode::ShadowOnly ? "shadow-only" : "hybrid-shadowed" },
+        { "requestedMode", ModeName(composition.mode) },
+        { "requestedTierReady", GetTierPolicy(composition.mode).ready },
+        { "firstBounceSurvival", GetTierPolicy(composition.mode).firstBounceSurvival },
+        { "specularBounceFraction", GetTierPolicy(composition.mode).specularBounceFraction },
+        { "secondBounceSurvival", GetTierPolicy(composition.mode).secondBounceSurvival },
         { "effectiveMode", effective == EffectiveMode::Legacy ? "legacy" :
             effective == EffectiveMode::ShadowOnly ? "shadow-only" : "hybrid-shadowed" },
         { "hybridDX12Ready", DX12HybridReady() },
         { "hybridFallbackReason", composition.enabled &&
             composition.mode == CompositorMode::HybridShadowed && !DX12HybridReady() ?
-            "DX12 HybridGI unavailable; Shadow Only fallback selected" : "" },
+            "DX12 HybridGI unavailable; Shadow Only fallback selected" :
+            (composition.enabled && !GetTierPolicy(composition.mode).ready ?
+            "Selected transport tier not implemented: safe Shadow Only fallback" : "") },
         { "indirectRestriction", BlocksRTIndirect() ? "disabled-by-compositor-policy" : "" },
         { "rtExclusiveAllowed", !BlocksRTIndirect() },
         { "dx11HybridAllowed", false },
@@ -277,13 +283,14 @@ void RTComposer::LoadSettings(json& value)
         CompositionSettings next{};
         next.enabled = it->value("enabled", false);
         const auto mode = it->value("mode", 0u);
-        next.mode = mode == 1u ? CompositorMode::HybridShadowed : CompositorMode::ShadowOnly;
+        next.mode = static_cast<CompositorMode>(std::min(mode, 5u));
         auto bounded = [&](const char* name, float fallback) {
             const float x = it->value(name, fallback);
             return std::isfinite(x) ? std::clamp(x, 0.0f, 1.0f) : fallback;
         };
-        next.shadowInfluence = bounded("shadowInfluence", 1.0f);
-        next.rtDirectContribution = bounded("rtDirectContribution", 0.0f);
+        next.shadowInfluence = bounded("shadowInfluence", 0.8f);
+        next.rtDirectContribution = bounded("rtDirectContribution",
+            GetTierPolicy(next.mode).directContribution);
         next.giContribution = bounded("giContribution", 1.0f);
         next.shadowThreshold = bounded("shadowThreshold", 0.25f);
         const uint32_t oldSampling = std::min(it->value("samplingMode", migratedSampling), 3u);
@@ -355,17 +362,38 @@ void RTComposer::DrawSettings()
     const auto previousPolicy = std::pair{ composition.enabled, composition.mode };
     ImGui::Checkbox("Enable RT shadow composition", &composition.enabled);
     int compositorMode = static_cast<int>(composition.mode);
-    if (ImGui::Combo("Compositor mode", &compositorMode, "Shadow Only\0Hybrid-Shadowed\0"))
-        composition.mode = compositorMode == 1 ? CompositorMode::HybridShadowed : CompositorMode::ShadowOnly;
+    if (ImGui::Combo("Compositor mode", &compositorMode,
+        "Shadow Only\0Hybrid-Shadowed\0RT-exclusive Tier I (pending)\0RT-exclusive Tier II (pending)\0RT-Enhanced (pending)\0FSR-REDSTONE (pending)\0")) {
+        composition.mode = static_cast<CompositorMode>(compositorMode);
+        const auto preset = GetTierPolicy(composition.mode);
+        composition.shadowInfluence = preset.shadowInfluence;
+        composition.rtDirectContribution = preset.directContribution;
+        composition.directCheckerboard = preset.directTraceMode == 5u;
+        composition.hybridResolution = preset.hybridResolution;
+        composition.hybridCheckerboard = preset.hybridCheckerboard;
+        ApplySamplingPolicy(composition.directCheckerboard);
+    }
+    if (!GetTierPolicy(composition.mode).ready)
+        ImGui::TextWrapped("This tier is specified but its DX12 bounce transport and RR signal packing are NOT available yet. The effective renderer is Shadow Only; no unsupported mode is dispatched.");
+    if (composition.mode == CompositorMode::FSRRedstone)
+        ImGui::TextWrapped("FSR-REDSTONE: intended for high-end latest-generation AMD GPUs. FSR Radiance Cache is deferred.");
     if (previousPolicy != std::pair{ composition.enabled, composition.mode }) OnCompositionPolicyChanged();
-    ImGui::SliderFloat("Shadow influence", &composition.shadowInfluence, 0.0f, 1.0f, "%.2f");
-    ImGui::SliderFloat("RT direct contribution", &composition.rtDirectContribution, 0.0f, 1.0f, "%.2f");
+    if (composition.mode != CompositorMode::ShadowOnly && composition.mode != CompositorMode::HybridShadowed)
+        ImGui::SliderFloat("Shadow influence (future tier)", &composition.shadowInfluence, 0.0f, 1.0f, "%.2f");
+    else ImGui::Text("Shadow influence: %.2f (tier preset)", GetTierPolicy(composition.mode).shadowInfluence);
+    if (composition.mode != CompositorMode::ShadowOnly && composition.mode != CompositorMode::HybridShadowed)
+        ImGui::SliderFloat("RT direct/raster blend (future tier)", &composition.rtDirectContribution, 0.0f, 1.0f, "%.2f");
+    else ImGui::Text("Direct composition blend: %.2f (tier preset)", GetTierPolicy(composition.mode).directContribution);
     ImGui::SeparatorText("Independent native sampling");
-    if (ImGui::Checkbox("Direct lighting: native checkerboard (50%)", &composition.directCheckerboard)) {
+    ImGui::BeginDisabled(composition.enabled);
+    if (ImGui::Checkbox("Legacy direct: native checkerboard (50%)", &composition.directCheckerboard)) {
         ApplySamplingPolicy(composition.directCheckerboard);
         OnCompositionPolicyChanged();
     }
-    ImGui::TextWrapped("Direct DXR and direct RR use a native logical grid. Native checkerboard halves the traced pixels while keeping a native-resolution RR output.");
+    ImGui::EndDisabled();
+    ImGui::Text("Tier direct/shadow sampling: %s", GetTierPolicy(composition.mode).directTraceMode == 7u ?
+        "quarter-density (25% pixels), no checkerboard" : "native checkerboard (50% pixels)");
+    ImGui::TextWrapped("The legacy direct sampling setting is only editable when the RT Composer is disabled.");
     int giResolution = int(composition.hybridResolution);
     bool giChanged = ImGui::Combo("Hybrid GI resolution (SSGI sizes)", &giResolution,
         "Full (100% W/H)\0Half (50% W/H)\0Quarter (25% W/H)\0");
@@ -468,7 +496,7 @@ void RTComposer::DrawSettings()
     }
     if (composition.enabled) {
         const bool ssgiAvailable = globals::features::screenSpaceGI.loaded && globals::features::screenSpaceGI.settings.Enabled;
-        ImGui::TextWrapped("RT-exclusive GI and DX11 RedstoneGI unavailable: disabled by RT Composer mode.");
+        ImGui::TextWrapped("Legacy DX11 HybridGI remains disabled. RT-exclusive transport tiers await a DX12 production compositor.");
         if (!ssgiAvailable) ImGui::TextWrapped("No active indirect-lighting provider. RT shadows and optional direct radiance remain available.");
     }
     ImGui::TextWrapped("Compositor controls are opt-in. Existing lighting and RR behavior remains unchanged while disabled.");
@@ -505,8 +533,14 @@ void RTComposer::RegisterUxActions()
             if (args.contains("enabled")) policy.enabled = args.at("enabled").get<bool>();
             if (args.contains("mode")) {
                 const auto mode = args.at("mode").get<uint32_t>();
-                if (mode > 1u) throw std::invalid_argument("Unknown RT compositor mode");
-                policy.mode = mode == 1u ? CompositorMode::HybridShadowed : CompositorMode::ShadowOnly;
+                if (mode > 5u) throw std::invalid_argument("Unknown RT compositor mode");
+                policy.mode = static_cast<CompositorMode>(mode);
+                const auto preset = GetTierPolicy(policy.mode);
+                policy.shadowInfluence = preset.shadowInfluence;
+                policy.rtDirectContribution = preset.directContribution;
+                policy.directCheckerboard = preset.directTraceMode == 5u;
+                policy.hybridResolution = preset.hybridResolution;
+                policy.hybridCheckerboard = preset.hybridCheckerboard;
             }
             auto setUnit = [&](const char* key, float& target) {
                 if (!args.contains(key)) return;
