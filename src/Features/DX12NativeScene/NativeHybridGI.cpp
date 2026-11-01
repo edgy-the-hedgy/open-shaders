@@ -77,7 +77,8 @@ namespace DX12Native
     }
 
     uint64_t NativeHybridGI::EstimateBytes(ID3D12Device* device, uint32_t width, uint32_t height,
-        const HybridSamplingLayout& sampling)
+        const HybridSamplingLayout& sampling,
+        const std::array<bool, 3>& postBlurEnabled)
     {
         if (!device || !width || !height) return UINT64_MAX;
         uint64_t total = kUploadBytes;
@@ -108,6 +109,7 @@ namespace DX12Native
         for (uint32_t i = 0; i < 4; ++i) {
             const DXGI_FORMAT format = i < 2 ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8_UNORM;
             for (uint32_t kind = 0; kind < 3; ++kind) {
+                if (kind == 2u && !postBlurEnabled[std::min(i, 2u)]) continue;
                 const uint32_t w = kind == 0 ? sampling.logical[0] : width;
                 const uint32_t h = kind == 0 ? sampling.logical[1] : height;
                 const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(format, w, h, 1, 1, 1, 0,
@@ -745,6 +747,14 @@ namespace DX12Native
                 std::array<winrt::com_ptr<ID3D12Resource>*, 3> targets{
                     &frame.rrOutputs[i], &frame.nativeFiltered[i], &frame.nativeBlurred[i] };
                 for (uint32_t kind = 0; kind < targets.size(); ++kind) {
+                    // Optional blur scratch is released on the retired frame
+                    // slot when the control is off. It is not a permanent
+                    // four-signal native-resolution allocation.
+                    if (kind == 2u &&
+                        !policy.reconstruction[std::min(i, 2u)].blurEnabled) {
+                        *targets[kind] = nullptr;
+                        continue;
+                    }
                     if (*targets[kind]) continue;
                     const auto size = kind == 0 ? logical : native;
                     const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(
