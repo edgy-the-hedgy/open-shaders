@@ -16,6 +16,47 @@
 namespace
 {
     constexpr std::array kDirectKeys{ "UseDirectRayRegeneration", "DirectRRResolution", "RRMaterialIsolation", "RRGlossyRoughness" };
+    constexpr std::array kHybridFamilies{ "diffuse", "specular", "ao" };
+    using HybridFilters = std::array<RTComposer::SignalReconstructionSettings, 3>;
+    json SaveHybridFilters(const HybridFilters& filters)
+    {
+        json result = json::object();
+        for (size_t i = 0; i < filters.size(); ++i) {
+            const auto& s = filters[i];
+            result[kHybridFamilies[i]] = {
+                { "filterEnabled", s.filterEnabled },
+                { "filterRadius", s.filterRadius }, { "filterStrength", s.filterStrength },
+                { "depthSensitivity", s.depthSensitivity },
+                { "normalSensitivity", s.normalSensitivity },
+                { "roughnessSensitivity", s.roughnessSensitivity },
+                { "blurEnabled", s.blurEnabled },
+                { "blurRadius", s.blurRadius }, { "blurStrength", s.blurStrength }
+            };
+        }
+        return result;
+    }
+    void LoadHybridFilters(const json& from, HybridFilters& filters)
+    {
+        if (!from.is_object()) return;
+        for (size_t i = 0; i < filters.size(); ++i) {
+            auto it = from.find(kHybridFamilies[i]);
+            if (it == from.end() || !it->is_object()) continue;
+            auto& s = filters[i];
+            auto bounded = [&](const char* key, float fallback, float low, float high) {
+                const float x = it->value(key, fallback);
+                return std::isfinite(x) ? std::clamp(x, low, high) : fallback;
+            };
+            s.filterEnabled = it->value("filterEnabled", s.filterEnabled);
+            s.filterRadius = bounded("filterRadius", s.filterRadius, 0.5f, 4.0f);
+            s.filterStrength = bounded("filterStrength", s.filterStrength, 0.0f, 1.0f);
+            s.depthSensitivity = bounded("depthSensitivity", s.depthSensitivity, 1.0f, 256.0f);
+            s.normalSensitivity = bounded("normalSensitivity", s.normalSensitivity, 1.0f, 128.0f);
+            s.roughnessSensitivity = bounded("roughnessSensitivity", s.roughnessSensitivity, 0.0f, 64.0f);
+            s.blurEnabled = it->value("blurEnabled", s.blurEnabled);
+            s.blurRadius = bounded("blurRadius", s.blurRadius, 0.5f, 3.0f);
+            s.blurStrength = bounded("blurStrength", s.blurStrength, 0.0f, 1.0f);
+        }
+    }
 
     void CopyMissing(json& destination, const json& source, const char* field)
     {
@@ -62,6 +103,7 @@ json RTComposer::GetDiagnostics()
         { "directContribution", composition.rtDirectContribution },
         { "giContribution", composition.giContribution },
         { "nativeRawPreviewRequested", composition.previewNativeRaw },
+        { "hybridSamplingMode", static_cast<uint32_t>(composition.samplingMode) },
         { "shadowThreshold", composition.shadowThreshold },
         { "rtIndirectTraceDispatchesCumulative", tracer.GetDiagnostics().value("indirectTraceDispatches", uint64_t{ 0 }) }
     };
@@ -177,7 +219,9 @@ void RTComposer::SaveSettings(json& value)
             { "shadowInfluence", composition.shadowInfluence },
             { "rtDirectContribution", composition.rtDirectContribution },
             { "giContribution", composition.giContribution },
-            { "shadowThreshold", composition.shadowThreshold }
+            { "shadowThreshold", composition.shadowThreshold },
+            { "samplingMode", static_cast<uint32_t>(composition.samplingMode) },
+            { "reconstruction", SaveHybridFilters(composition.reconstruction) }
         } }
     };
 }
@@ -200,6 +244,10 @@ void RTComposer::LoadSettings(json& value)
         next.rtDirectContribution = bounded("rtDirectContribution", 0.0f);
         next.giContribution = bounded("giContribution", 1.0f);
         next.shadowThreshold = bounded("shadowThreshold", 0.25f);
+        const uint32_t sampling = it->value("samplingMode", 0u);
+        next.samplingMode = static_cast<DX12Native::HybridSamplingMode>(std::min(sampling, 3u));
+        if (auto filters = it->find("reconstruction"); filters != it->end())
+            LoadHybridFilters(*filters, next.reconstruction);
         composition = next;
     } else composition = {};
     if (beforePolicy != std::pair{ composition.enabled, composition.mode }) OnCompositionPolicyChanged();
@@ -258,6 +306,35 @@ void RTComposer::DrawSettings()
     ImGui::SliderFloat("RT direct contribution", &composition.rtDirectContribution, 0.0f, 1.0f, "%.2f");
     if (composition.mode == CompositorMode::HybridShadowed) {
         ImGui::SliderFloat("Native GI contribution", &composition.giContribution, 0.0f, 1.0f, "%.2f");
+        int hybridSampling = static_cast<int>(composition.samplingMode);
+        if (ImGui::Combo("Native hybrid sampling", &hybridSampling,
+                "Native (100%)\0Native checkerboard (50%)\0Quarter (25%)\0Quarter checkerboard (12.5%)\0")) {
+            composition.samplingMode = static_cast<DX12Native::HybridSamplingMode>(hybridSampling);
+            OnCompositionPolicyChanged();
+        }
+        ImGui::TextWrapped("Quarter is one sample per 2x2 block; its checkerboard phase alternates by logical block. The native RR behavior is unchanged in this stage.");
+        ImGui::SeparatorText("Post-RR spatial reconstruction (staged)");
+        ImGui::TextWrapped("Saved controls for future native RR output; raw diagnostic mode does not apply these filters.");
+        constexpr std::array familyNames{ "Indirect diffuse", "Indirect specular", "Ambient/specular AO" };
+        for (size_t family = 0; family < composition.reconstruction.size(); ++family) {
+            ImGui::PushID(static_cast<int>(family));
+            auto& settings = composition.reconstruction[family];
+            if (ImGui::TreeNode(familyNames[family])) {
+                bool changed = false;
+                changed |= ImGui::Checkbox("Edge-aware filter", &settings.filterEnabled);
+                changed |= ImGui::SliderFloat("Filter radius", &settings.filterRadius, 0.5f, 4.0f, "%.1f px");
+                changed |= ImGui::SliderFloat("Filter strength", &settings.filterStrength, 0.0f, 1.0f);
+                changed |= ImGui::SliderFloat("Depth sensitivity", &settings.depthSensitivity, 1.0f, 256.0f);
+                changed |= ImGui::SliderFloat("Normal sensitivity", &settings.normalSensitivity, 1.0f, 128.0f);
+                changed |= ImGui::SliderFloat("Roughness sensitivity", &settings.roughnessSensitivity, 0.0f, 64.0f);
+                changed |= ImGui::Checkbox("Post-filter blur", &settings.blurEnabled);
+                changed |= ImGui::SliderFloat("Blur radius", &settings.blurRadius, 0.5f, 3.0f, "%.1f px");
+                changed |= ImGui::SliderFloat("Blur strength", &settings.blurStrength, 0.0f, 1.0f);
+                if (changed) OnCompositionPolicyChanged();
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+        }
         if (ImGui::SliderFloat("GI skip visibility threshold", &composition.shadowThreshold, 0.0f, 1.0f, "%.2f"))
             OnCompositionPolicyChanged();
         if (ImGui::Checkbox("Preview raw native Hybrid-Shadowed (diagnostic, no RR)", &composition.previewNativeRaw))
