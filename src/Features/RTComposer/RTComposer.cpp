@@ -23,7 +23,6 @@ namespace
         RayRegeneration::Configure(DX12Native::RRLogicalReduction(mode),
             DX12Native::RRCheckerboard(mode), rr.enabled);
         globals::features::rtDirectLighting.settings.DirectRRResolution = 3u;
-        globals::features::dx12NativeScene.Tracer().Reset();
     }
 
     using HybridFilters = std::array<RTComposer::SignalReconstructionSettings, 3>;
@@ -238,6 +237,7 @@ void RTComposer::LoadSettings(json& value)
 {
     if (!value.is_object()) return;
     const auto beforePolicy = std::pair{ composition.enabled, composition.mode };
+    const auto beforeSampling = composition.samplingMode;
     // Older profiles used three independent resolution settings. Migrate
     // once into one canonical four-mode policy; never revive parallel
     // DirectRR, RT-exclusive or Hybrid GI resolution controls.
@@ -272,9 +272,11 @@ void RTComposer::LoadSettings(json& value)
         composition = {};
         composition.samplingMode = static_cast<DX12Native::HybridSamplingMode>(migratedSampling);
     }
-    if (beforePolicy != std::pair{ composition.enabled, composition.mode }) OnCompositionPolicyChanged();
+    if (beforePolicy != std::pair{ composition.enabled, composition.mode } ||
+        beforeSampling != composition.samplingMode) OnCompositionPolicyChanged();
     const bool enabledRR = legacyRR.is_object() ?
         legacyRR.value("enabled", currentRR.enabled) : currentRR.enabled;
+    ApplyUnifiedSampling(composition.samplingMode);
     RayRegeneration::Configure(DX12Native::RRLogicalReduction(composition.samplingMode),
         DX12Native::RRCheckerboard(composition.samplingMode), enabledRR);
     if (legacyRR.is_object()) {
