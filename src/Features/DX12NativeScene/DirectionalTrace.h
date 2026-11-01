@@ -75,6 +75,9 @@ namespace DX12Native
         struct NativeGIOutputsPublication
         {
             std::array<ID3D12Resource*, NativeHybridGI::kOutputs> outputs{};
+            // Optional DX12-composed final scene. Valid only for the same frame/fence.
+            ID3D12Resource* composedScene = nullptr;
+            bool composedValid = false;
             ID3D12Fence* completionFence = nullptr;
             uint64_t completionValue = 0;
             std::array<uint32_t, 2> size{};
