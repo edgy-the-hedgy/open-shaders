@@ -11,6 +11,81 @@
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(DX12NativeScene::Settings, AcquireScene, UsePreparedScene, PreviewPreparedScene, UsePreparedMaterials, PreparedMaterialView, MaterialTextureBudgetMB, DirectLightingBudgetMB, PreviewLight, PreviewAllLights, PreviewDirectStrength, PreviewDiffuseStrength, PreviewSpecularStrength, PreviewEmissionStrength, NodesPerFrame, MaxInstances, BufferBudgetMB)
 
+namespace
+{
+    constexpr uint64_t kMiB = 1024ull * 1024ull;
+}
+
+uint64_t DX12NativeScene::GetLightingBudgetBytes() const
+{
+    // Account for every resource in the GPU's LOCAL segment, including
+    // output/display, render, logical RR, packed ray and SDK allocations.
+    // Never infer VRAM headroom from the render resolution alone.
+    auto backend = Feature::FindGraphicsBackend();
+    lightingMemoryInfoValid = false;
+    const uint64_t requested =
+        uint64_t(settings.DirectLightingBudgetMB) * kMiB;
+    const uint64_t fallback = settings.DirectLightingBudgetMB ?
+        requested : 1024ull * kMiB;
+    if (!backend || !backend->d3d12Device) {
+        lastEffectiveLightingBudgetBytes = fallback;
+        return fallback;
+    }
+    const LUID luid = backend->d3d12Device->GetAdapterLuid();
+    if (!lightingBudgetAdapter ||
+        lightingBudgetAdapterLuid.LowPart != luid.LowPart ||
+        lightingBudgetAdapterLuid.HighPart != luid.HighPart) {
+        lightingBudgetAdapter = nullptr;
+        winrt::com_ptr<IDXGIFactory4> factory;
+        if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(factory.put())))) {
+            if (SUCCEEDED(factory->EnumAdapterByLuid(
+                luid, IID_PPV_ARGS(lightingBudgetAdapter.put()))))
+                lightingBudgetAdapterLuid = luid;
+        }
+    }
+    if (!lightingBudgetAdapter ||
+        FAILED(lightingBudgetAdapter->QueryVideoMemoryInfo(
+            0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &lastLightingMemoryInfo)) ||
+        lastLightingMemoryInfo.Budget == 0) {
+        lastEffectiveLightingBudgetBytes = fallback;
+        return fallback;
+    }
+    lightingMemoryInfoValid = true;
+
+    // The DXGI budget already includes game/UI/upscaler/RR SDK resources.
+    // Add the tracer's currently retained allocations to the available
+    // headroom, because Dispatch() compares required + retained against the
+    // returned total. Do not count those same resources a second time.
+    const auto& info = lastLightingMemoryInfo;
+    const uint64_t reserve = std::max(256ull * kMiB,
+        std::min(1024ull * kMiB, info.Budget / 16ull));
+    const uint64_t headroom = info.Budget > info.CurrentUsage ?
+        info.Budget - info.CurrentUsage : 0ull;
+    const uint64_t usable = headroom > reserve ? headroom - reserve : 0ull;
+    const uint64_t tracked = preparedTrace.TrackedResidentBytes();
+    const uint64_t safeBudget = tracked > UINT64_MAX - usable ?
+        UINT64_MAX : tracked + usable;
+    lastEffectiveLightingBudgetBytes = settings.DirectLightingBudgetMB ?
+        std::min(requested, safeBudget) : safeBudget;
+    return lastEffectiveLightingBudgetBytes;
+}
+
+json DX12NativeScene::GetLightingBudgetDiagnostics() const
+{
+    const auto& info = lastLightingMemoryInfo;
+    return {
+        { "auto", settings.DirectLightingBudgetMB == 0u },
+        { "manualLimitMiB", settings.DirectLightingBudgetMB },
+        { "effectiveBytes", lastEffectiveLightingBudgetBytes },
+        { "osMemoryAvailable", lightingMemoryInfoValid },
+        { "localBudgetBytes", lightingMemoryInfoValid ? info.Budget : uint64_t{0} },
+        { "localUsageBytes", lightingMemoryInfoValid ? info.CurrentUsage : uint64_t{0} },
+        { "localHeadroomBytes", lightingMemoryInfoValid && info.Budget > info.CurrentUsage ?
+            info.Budget - info.CurrentUsage : uint64_t{0} },
+        { "trackedTraceBytes", preparedTrace.TrackedResidentBytes() }
+    };
+}
+
 std::pair<std::string, std::vector<std::string>> DX12NativeScene::GetFeatureSummary()
 {
 	return { "Native DX12 scene preparation, materials, acceleration structures and SCM observation diagnostics.", {} };
