@@ -1,0 +1,91 @@
+// Optional SECOND post-RR pass, operating only on already reconstructed
+// native-resolution signals. Independent settings for diffuse/specular/AO.
+Texture2D<float4> NativeFiltered : register(t0);
+Texture2D<float> NativeLinearDepth : register(t1);
+Texture2D<float4> NativeNormalRoughness : register(t2);
+Texture2D<uint> NativeEligibility : register(t3);
+RWTexture2D<float4> NativeOutput : register(u0);
+
+cbuffer PostRRBlurSettings : register(b0)
+{
+    uint2 FrameSize;
+    uint SignalFamily;
+    uint BlurEnabled;
+    float BlurRadius;
+    float BlurStrength;
+    float DepthSensitivity;
+    float NormalSensitivity;
+    float RoughnessSensitivity;
+    float3 Padding;
+};
+
+float3 DecodeOct(float2 packed)
+{
+    const float2 f = packed * 2.0 - 1.0;
+    float3 n = float3(f, 1.0 - abs(f.x) - abs(f.y));
+    const float t = saturate(-n.z);
+    n.xy += float2(n.x >= 0.0 ? -t : t, n.y >= 0.0 ? -t : t);
+    return normalize(n);
+}
+
+float4 NeutralSignal()
+{
+    return SignalFamily == 2u ? float4(1.0, 1.0, 1.0, 1.0) : 0.0;
+}
+
+[numthreads(8, 8, 1)]
+void main(uint2 pixel : SV_DispatchThreadID)
+{
+    if (any(pixel >= FrameSize)) return;
+    const uint eligibility = NativeEligibility.Load(int3(pixel, 0));
+    if ((SignalFamily != 2u && eligibility != 1u) ||
+        (SignalFamily == 2u && eligibility == 2u)) {
+        NativeOutput[pixel] = NeutralSignal();
+        return;
+    }
+    const float4 source = NativeFiltered.Load(int3(pixel, 0));
+    const float4 baseline = all(isfinite(source)) ? source : NeutralSignal();
+    if (BlurEnabled == 0u || BlurStrength <= 0.0) {
+        NativeOutput[pixel] = baseline;
+        return;
+    }
+    const float depth = NativeLinearDepth.Load(int3(pixel, 0));
+    const float4 nr = NativeNormalRoughness.Load(int3(pixel, 0));
+    if (!isfinite(depth) || depth <= 0.0 || !all(isfinite(nr))) {
+        NativeOutput[pixel] = baseline;
+        return;
+    }
+
+    const float3 normal = DecodeOct(nr.xy);
+    const int radius = min(3, max(1, int(ceil(BlurRadius))));
+    float4 accumulated = 0.0;
+    float weightSum = 0.0;
+    [loop] for (int y = -radius; y <= radius; ++y) {
+        [loop] for (int x = -radius; x <= radius; ++x) {
+            const int2 sample = int2(pixel) + int2(x, y);
+            if (any(sample < 0) || any(sample >= int2(FrameSize))) continue;
+            const float2 delta = float2(x, y);
+            if (dot(delta, delta) > BlurRadius * BlurRadius) continue;
+            const uint neighborEligibility = NativeEligibility.Load(int3(sample, 0));
+            if ((SignalFamily != 2u && neighborEligibility != 1u) ||
+                (SignalFamily == 2u && neighborEligibility == 2u)) continue;
+            const float neighborDepth = NativeLinearDepth.Load(int3(sample, 0));
+            const float4 neighborNR = NativeNormalRoughness.Load(int3(sample, 0));
+            if (!isfinite(neighborDepth) || neighborDepth <= 0.0 ||
+                !all(isfinite(neighborNR))) continue;
+            const float relativeDepth = abs(neighborDepth - depth) / max(abs(depth), 0.001);
+            const float normalAgreement = saturate(dot(normal, DecodeOct(neighborNR.xy)));
+            if (relativeDepth > 0.02 || normalAgreement < 0.5) continue;
+            const float weight = exp2(-dot(delta, delta) / max(0.25, BlurRadius * BlurRadius)) *
+                exp2(-DepthSensitivity * relativeDepth) *
+                pow(normalAgreement, NormalSensitivity) *
+                exp2(-RoughnessSensitivity * abs(neighborNR.z - nr.z));
+            const float4 value = NativeFiltered.Load(int3(sample, 0));
+            if (!all(isfinite(value))) continue;
+            accumulated += weight * value;
+            weightSum += weight;
+        }
+    }
+    NativeOutput[pixel] = lerp(baseline,
+        weightSum > 1e-6 ? accumulated / weightSum : baseline, saturate(BlurStrength));
+}
