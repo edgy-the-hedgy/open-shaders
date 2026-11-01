@@ -554,7 +554,7 @@ namespace DX12Native
             frame.nativeGIFrame = frame.number;
             // Native RR guides are GPU-only and allocated at the *logical*
             // RR grid. They are not sent through the legacy DX11 denoiser.
-            nativeHybridGI->RecordRRGuides(
+            const bool guidesReady = nativeHybridGI->RecordRRGuides(
                 backend.d3d12Device.get(), frame.commands.get(),
                 frame.nativeGI, uint32_t(&frame - frames.data()),
                 frame.hybridLinearDepth.get(),
@@ -562,6 +562,23 @@ namespace DX12Native
                 frame.hybridInputs[5]->resource.get(),
                 frame.hybridInputs[3]->resource.get(),
                 frame.hybridInputs[4]->resource.get());
+            // Reuse only a consecutive frame from the same scene generation
+            // with the same stable logical sampling layout. GPU queue order
+            // establishes the prior-frame guide-write/this-frame-read order.
+            const NativeHybridGI::FrameOutputs* previous = nullptr;
+            for (const auto& candidate : frames) {
+                if (&candidate == &frame || !candidate.nativeGI.rrGuidesValid ||
+                    !candidate.nativeGI.valid || candidate.generation != frame.generation ||
+                    candidate.number + 1u != frame.number ||
+                    candidate.nativeGI.sampling.logical != sampling.logical ||
+                    candidate.nativeGI.sampling.effective != sampling.effective) continue;
+                previous = &candidate.nativeGI;
+                break;
+            }
+            if (guidesReady)
+                nativeHybridGI->RecordHistoryValidation(
+                    backend.d3d12Device.get(), frame.commands.get(), frame.nativeGI,
+                    previous, uint32_t(&frame - frames.data()));
             // The production compositor remains closed. This is an
             // opt-in diagnostics path on an otherwise Shadow Only frame.
             bool rrSucceeded = false;
@@ -1328,6 +1345,8 @@ namespace DX12Native
             { "nativeHybridEligibilityDispatches", nativeHybridGI ? nativeHybridGI->EligibilityDispatches() : uint64_t{0} },
             { "nativeHybridRRGuideDispatches", nativeHybridGI ? nativeHybridGI->GuideDispatches() : uint64_t{0} },
             { "nativeHybridRRGuideFailure", nativeHybridGI ? nativeHybridGI->GuideFailure() : std::string{} },
+            { "nativeHybridHistoryValidationDispatches", nativeHybridGI ? nativeHybridGI->HistoryValidationDispatches() : uint64_t{0} },
+            { "nativeHybridHistoryFailure", nativeHybridGI ? nativeHybridGI->HistoryFailure() : std::string{} },
             { "nativeHybridLogicalGrid", sampling.logical },
             { "nativeHybridPackedGrid", sampling.packed },
             { "nativeHybridTracedPixels", sampling.tracedPixels },
