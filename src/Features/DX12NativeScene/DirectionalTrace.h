@@ -98,6 +98,9 @@ namespace DX12Native
 		void MarkPreviewDrawSubmitted() { if (Preview()) ++previewDrawSubmissions; }
 		/** @brief Reports raw traversal and preview evidence without claiming RR or replacement coverage. */
 		json GetDiagnostics() const;
+        // Existing trace-owned allocations, excluding separate material pools.
+        // Auto-budget adds only LOCAL DXGI headroom to this retained amount.
+        uint64_t TrackedResidentBytes() const { return ResidentBytes(); }
 		/** @brief Draws prepared RR context diagnostics and current input/output buffers. */
 		void DrawRayRegenerationSettings(bool a_dxrIndirect);
 		/** @brief Presents an explicitly selected prepared-signal RR debug overlay. */
