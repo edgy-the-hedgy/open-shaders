@@ -4,6 +4,20 @@
 // Owns UI, settings and control directives; GPU work remains with existing producers.
 struct RTComposer final : Feature
 {
+    // Saved, independent composition policy. Disabled on migration to keep
+    // every previously configured direct/SSGI/Hybrid path unchanged.
+    enum class CompositorMode : uint32_t { ShadowOnly = 0, HybridShadowed = 1 };
+    struct CompositionSettings
+    {
+        bool enabled = false;
+        CompositorMode mode = CompositorMode::ShadowOnly;
+        float shadowInfluence = 1.0f;
+        float rtDirectContribution = 0.0f;
+        float shadowThreshold = 0.25f;
+    } composition;
+    bool ShadowOnlyActive() const { return composition.enabled && composition.mode == CompositorMode::ShadowOnly; }
+    // Hybrid-Shadowed remains inactive until its DX12 GI producer is implemented.
+    bool DX12HybridActive() const { return false; }
     std::string GetName() override { return "RTComposer"; }
     std::string GetShortName() override { return "RTComposer"; }
     std::string GetDisplayName() override { return "RT Composer"; }

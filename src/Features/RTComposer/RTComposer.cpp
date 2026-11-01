@@ -131,6 +131,13 @@ void RTComposer::SaveSettings(json& value)
             { "DirectRRResolution", direct.DirectRRResolution },
             { "RRMaterialIsolation", direct.RRMaterialIsolation },
             { "RRGlossyRoughness", direct.RRGlossyRoughness }
+        } },
+        { "Composition", {
+            { "enabled", composition.enabled },
+            { "mode", static_cast<uint32_t>(composition.mode) },
+            { "shadowInfluence", composition.shadowInfluence },
+            { "rtDirectContribution", composition.rtDirectContribution },
+            { "shadowThreshold", composition.shadowThreshold }
         } }
     };
 }
@@ -138,6 +145,21 @@ void RTComposer::SaveSettings(json& value)
 void RTComposer::LoadSettings(json& value)
 {
     if (!value.is_object()) return;
+    // Each setting is optional: old profiles retain the disabled legacy path.
+    if (auto it = value.find("Composition"); it != value.end() && it->is_object()) {
+        CompositionSettings next{};
+        next.enabled = it->value("enabled", false);
+        const auto mode = it->value("mode", 0u);
+        next.mode = mode == 1u ? CompositorMode::HybridShadowed : CompositorMode::ShadowOnly;
+        auto bounded = [&](const char* name, float fallback) {
+            const float x = it->value(name, fallback);
+            return std::isfinite(x) ? std::clamp(x, 0.0f, 1.0f) : fallback;
+        };
+        next.shadowInfluence = bounded("shadowInfluence", 1.0f);
+        next.rtDirectContribution = bounded("rtDirectContribution", 0.0f);
+        next.shadowThreshold = bounded("shadowThreshold", 0.25f);
+        composition = next;
+    } else composition = {};
     if (auto it = value.find("FSRRayRegeneration"); it != value.end() && it->is_object()) {
         const auto prior = RayRegeneration::GetSettings();
         RayRegeneration::Configure(it->value("resolutionMode", prior.resolutionMode),
@@ -163,6 +185,7 @@ void RTComposer::LoadSettings(json& value)
 
 void RTComposer::RestoreDefaultSettings()
 {
+    composition = {};
     RayRegeneration::Configure(1u, true, true);
     globals::features::redstoneGI.GetDenoiser().SetConfiguration(json::object());
     auto& direct = globals::features::rtDirectLighting.settings;
@@ -179,6 +202,20 @@ void RTComposer::DrawSettings()
         return;
     }
     ImGui::PushID("RTComposer");
+    ImGui::SeparatorText("Compositor");
+    ImGui::Checkbox("Enable RT shadow composition", &composition.enabled);
+    int compositorMode = static_cast<int>(composition.mode);
+    if (ImGui::Combo("Compositor mode", &compositorMode, "Shadow Only\0Hybrid-Shadowed\0"))
+        composition.mode = compositorMode == 1 ? CompositorMode::HybridShadowed : CompositorMode::ShadowOnly;
+    ImGui::SliderFloat("Shadow influence", &composition.shadowInfluence, 0.0f, 1.0f, "%.2f");
+    ImGui::SliderFloat("RT direct contribution", &composition.rtDirectContribution, 0.0f, 1.0f, "%.2f");
+    if (composition.mode == CompositorMode::HybridShadowed) {
+        ImGui::SliderFloat("GI skip visibility threshold", &composition.shadowThreshold, 0.0f, 1.0f, "%.2f");
+        ImGui::TextWrapped("DX12 HybridGI is not yet available. This mode is stored but does not change the active renderer.");
+    } else {
+        ImGui::TextWrapped("Shadow Only preserves existing DX11 SSGI and masks the final raster image. Invalid visibility remains neutral.");
+    }
+    ImGui::TextWrapped("Compositor controls are opt-in. Existing lighting and RR behavior remains unchanged while disabled.");
     ImGui::SeparatorText("FSR Ray Regeneration");
     const auto old = RayRegeneration::GetSettings();
     bool enabled = old.enabled, checkerboard = old.checkerboard;
@@ -208,6 +245,26 @@ void RTComposer::DrawSettings()
 void RTComposer::RegisterUxActions()
 {
     auto& registry = Util::DevBenchUx::Registry::GetSingleton();
+    registry.RegisterCommand(GetShortName(), "setComposition",
+        "Set independent shadow compositor mode and influence; Hybrid-Shadowed remains gated until DX12 GI is ready.",
+        +[](Feature* self, const json& args) {
+            auto& policy = static_cast<RTComposer*>(self)->composition;
+            if (args.contains("enabled")) policy.enabled = args.at("enabled").get<bool>();
+            if (args.contains("mode")) {
+                const auto mode = args.at("mode").get<uint32_t>();
+                if (mode > 1u) throw std::invalid_argument("Unknown RT compositor mode");
+                policy.mode = mode == 1u ? CompositorMode::HybridShadowed : CompositorMode::ShadowOnly;
+            }
+            auto setUnit = [&](const char* key, float& target) {
+                if (!args.contains(key)) return;
+                const auto value = args.at(key).get<float>();
+                if (!std::isfinite(value)) throw std::invalid_argument("Composition value must be finite");
+                target = std::clamp(value, 0.0f, 1.0f);
+            };
+            setUnit("shadowInfluence", policy.shadowInfluence);
+            setUnit("rtDirectContribution", policy.rtDirectContribution);
+            setUnit("shadowThreshold", policy.shadowThreshold);
+        });
     registry.RegisterCommand(GetShortName(), "setRayRegeneration",
         "Set shared RR controls; saved under RTComposer.FSRRayRegeneration.",
         +[](Feature*, const json& args) {
