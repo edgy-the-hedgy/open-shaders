@@ -1,5 +1,6 @@
 #include "RedstoneGI.h"
 #include "Features/RTIndirectLighting/RTIndirectLighting.h"
+#include "Features/RTComposer/RTComposer.h"
 #include "Deferred.h"
 #include "Utils/UI.h"
 #include "Utils/Game.h"
@@ -29,7 +30,8 @@ void RedstoneGI::OnWorldRenderBegin()
 
 int RedstoneGI::GetIndirectLightingPriority() const
 {
-	return globals::features::rtIndirectLighting.loaded && selected && resourcesReady && !switchFailed && IsRuntimeReady() ? 100 : -1;
+	return !globals::features::rtComposer.BlocksRTIndirect() &&
+        globals::features::rtIndirectLighting.loaded && selected && resourcesReady && !switchFailed && IsRuntimeReady() ? 100 : -1;
 }
 
 void RedstoneGI::OnIndirectLightingSelection(bool a_selected)
@@ -52,6 +54,9 @@ void RedstoneGI::OnIndirectLightingSelection(bool a_selected)
 
 void RedstoneGI::DrawRendererSettings()
 {
+    const bool blocked = globals::features::rtComposer.BlocksRTIndirect();
+    if (blocked) ImGui::TextWrapped("DX11 HybridGI unavailable under RT Composer. SSGI is the only permitted legacy GI provider.");
+    ImGui::BeginDisabled(blocked);
 	ImGui::TextUnformatted("GI Method");
 	if (ImGui::RadioButton("SSGI", !selected)) selected = false;
 	ImGui::SameLine();
@@ -65,6 +70,7 @@ void RedstoneGI::DrawRendererSettings()
 		ImGui::TextWrapped("RGI requires a supported non-VR FSR Frame Generation session and ready shaders/resources. Available native lighting providers remain usable.");
 	else if (switchFailed)
 		ImGui::TextWrapped("RGI compositor failed. Reload shaders to retry. Available native lighting providers remain usable.");
+    ImGui::EndDisabled();
 }
 
 void RedstoneGI::DrawOverlay()

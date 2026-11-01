@@ -15,9 +15,25 @@ struct RTComposer final : Feature
         float rtDirectContribution = 0.0f;
         float shadowThreshold = 0.25f;
     } composition;
-    bool ShadowOnlyActive() const { return composition.enabled && composition.mode == CompositorMode::ShadowOnly; }
-    // Hybrid-Shadowed remains inactive until its DX12 GI producer is implemented.
-    bool DX12HybridActive() const { return false; }
+    enum class EffectiveMode : uint32_t { Legacy = 0, ShadowOnly = 1, HybridShadowed = 2 };
+    // The saved mode and the actually dispatched mode are intentionally distinct:
+    // until the native DX12 GI pipeline is ready, Hybrid-Shadowed degrades to
+    // Shadow Only rather than activating the legacy DX11 HybridGI estimator.
+    EffectiveMode ResolveEffectiveMode() const
+    {
+        if (!composition.enabled) return EffectiveMode::Legacy;
+        if (composition.mode == CompositorMode::HybridShadowed && DX12HybridReady())
+            return EffectiveMode::HybridShadowed;
+        return EffectiveMode::ShadowOnly;
+    }
+    bool BlocksRTIndirect() const { return composition.enabled; }
+    bool ShadowOnlyActive() const { return ResolveEffectiveMode() == EffectiveMode::ShadowOnly; }
+    bool DX12HybridActive() const { return ResolveEffectiveMode() == EffectiveMode::HybridShadowed; }
+    // Future Stage 5 implementation will replace this readiness gate with
+    // verified live DX12 estimator/denoiser/composer availability.
+    bool DX12HybridReady() const { return false; }
+    void OnCompositionPolicyChanged();
+    json GetDiagnostics() override;
     std::string GetName() override { return "RTComposer"; }
     std::string GetShortName() override { return "RTComposer"; }
     std::string GetDisplayName() override { return "RT Composer"; }

@@ -4,6 +4,7 @@
 #include "Features/RedstoneGI/RedstoneGI.h"
 #include "Features/RTDirectLighting/RTDirectLighting.h"
 #include "Features/RTIndirectLighting/RTIndirectLighting.h"
+#include "Features/ScreenSpaceGI.h"
 #include "Globals.h"
 #include "Utils/DevBenchUx.h"
 #include "Utils/RayRegenerationSettings.h"
@@ -25,7 +26,43 @@ namespace
 
 std::pair<std::string, std::vector<std::string>> RTComposer::GetFeatureSummary()
 {
-    return { "Central Ray Regeneration controls and diagnostics for the existing direct, indirect and Hybrid pipelines.", {} };
+    return { "Central Ray Regeneration and mutually exclusive RT shadow composition; Shadow Only permits baseline SSGI, never RT GI.", {} };
+}
+void RTComposer::OnCompositionPolicyChanged()
+{
+    // Saved RT-exclusive/Hybrid settings are not mutated. Incompatible GPU
+    // history is discarded when the effective compositor selection changes.
+    globals::features::redstoneGI.ResetRuntimeHistory();
+    globals::features::screenSpaceGI.QueueHistoryReset();
+    globals::features::dx12NativeScene.Tracer().Reset();
+}
+json RTComposer::GetDiagnostics()
+{
+    const auto effective = ResolveEffectiveMode();
+    const bool ssgiAvailable = globals::features::screenSpaceGI.loaded &&
+        globals::features::screenSpaceGI.settings.Enabled;
+    const auto& tracer = globals::features::dx12NativeScene.Tracer();
+    return {
+        { "enabled", composition.enabled },
+        { "requestedMode", composition.mode == CompositorMode::ShadowOnly ? "shadow-only" : "hybrid-shadowed" },
+        { "effectiveMode", effective == EffectiveMode::Legacy ? "legacy" :
+            effective == EffectiveMode::ShadowOnly ? "shadow-only" : "hybrid-shadowed" },
+        { "hybridDX12Ready", DX12HybridReady() },
+        { "hybridFallbackReason", composition.enabled &&
+            composition.mode == CompositorMode::HybridShadowed && !DX12HybridReady() ?
+            "DX12 HybridGI unavailable; Shadow Only fallback selected" : "" },
+        { "indirectRestriction", BlocksRTIndirect() ? "disabled-by-compositor-policy" : "" },
+        { "rtExclusiveAllowed", !BlocksRTIndirect() },
+        { "dx11HybridAllowed", !BlocksRTIndirect() },
+        { "ssgiAvailable", ssgiAvailable },
+        { "giProviderStatus", effective != EffectiveMode::Legacy ?
+            (ssgiAvailable && effective == EffectiveMode::ShadowOnly ? "baseline-ssgi" :
+             effective == EffectiveMode::ShadowOnly ? "no-active-indirect-provider" : "dx12-hybrid") : "legacy" },
+        { "shadowInfluence", composition.shadowInfluence },
+        { "directContribution", composition.rtDirectContribution },
+        { "shadowThreshold", composition.shadowThreshold },
+        { "rtIndirectTraceDispatchesCumulative", tracer.GetDiagnostics().value("indirectTraceDispatches", uint64_t{ 0 }) }
+    };
 }
 
 void RTComposer::MigrateLegacySettings(json& root)
@@ -145,6 +182,7 @@ void RTComposer::SaveSettings(json& value)
 void RTComposer::LoadSettings(json& value)
 {
     if (!value.is_object()) return;
+    const auto beforePolicy = std::pair{ composition.enabled, composition.mode };
     // Each setting is optional: old profiles retain the disabled legacy path.
     if (auto it = value.find("Composition"); it != value.end() && it->is_object()) {
         CompositionSettings next{};
@@ -160,6 +198,7 @@ void RTComposer::LoadSettings(json& value)
         next.shadowThreshold = bounded("shadowThreshold", 0.25f);
         composition = next;
     } else composition = {};
+    if (beforePolicy != std::pair{ composition.enabled, composition.mode }) OnCompositionPolicyChanged();
     if (auto it = value.find("FSRRayRegeneration"); it != value.end() && it->is_object()) {
         const auto prior = RayRegeneration::GetSettings();
         RayRegeneration::Configure(it->value("resolutionMode", prior.resolutionMode),
@@ -185,7 +224,9 @@ void RTComposer::LoadSettings(json& value)
 
 void RTComposer::RestoreDefaultSettings()
 {
+    const auto beforePolicy = std::pair{ composition.enabled, composition.mode };
     composition = {};
+    if (beforePolicy != std::pair{ composition.enabled, composition.mode }) OnCompositionPolicyChanged();
     RayRegeneration::Configure(1u, true, true);
     globals::features::redstoneGI.GetDenoiser().SetConfiguration(json::object());
     auto& direct = globals::features::rtDirectLighting.settings;
@@ -203,17 +244,24 @@ void RTComposer::DrawSettings()
     }
     ImGui::PushID("RTComposer");
     ImGui::SeparatorText("Compositor");
+    const auto previousPolicy = std::pair{ composition.enabled, composition.mode };
     ImGui::Checkbox("Enable RT shadow composition", &composition.enabled);
     int compositorMode = static_cast<int>(composition.mode);
     if (ImGui::Combo("Compositor mode", &compositorMode, "Shadow Only\0Hybrid-Shadowed\0"))
         composition.mode = compositorMode == 1 ? CompositorMode::HybridShadowed : CompositorMode::ShadowOnly;
+    if (previousPolicy != std::pair{ composition.enabled, composition.mode }) OnCompositionPolicyChanged();
     ImGui::SliderFloat("Shadow influence", &composition.shadowInfluence, 0.0f, 1.0f, "%.2f");
     ImGui::SliderFloat("RT direct contribution", &composition.rtDirectContribution, 0.0f, 1.0f, "%.2f");
     if (composition.mode == CompositorMode::HybridShadowed) {
         ImGui::SliderFloat("GI skip visibility threshold", &composition.shadowThreshold, 0.0f, 1.0f, "%.2f");
-        ImGui::TextWrapped("DX12 HybridGI is not yet available. This mode is stored but does not change the active renderer.");
+        ImGui::TextWrapped("DX12 HybridGI is not yet available. Shadow Only/SSGI fallback is active; RT-exclusive and DX11 HybridGI are blocked.");
     } else {
         ImGui::TextWrapped("Shadow Only preserves existing DX11 SSGI and masks the final raster image. Invalid visibility remains neutral.");
+    }
+    if (composition.enabled) {
+        const bool ssgiAvailable = globals::features::screenSpaceGI.loaded && globals::features::screenSpaceGI.settings.Enabled;
+        ImGui::TextWrapped("RT-exclusive GI and DX11 RedstoneGI unavailable: disabled by RT Composer mode.");
+        if (!ssgiAvailable) ImGui::TextWrapped("No active indirect-lighting provider. RT shadows and optional direct radiance remain available.");
     }
     ImGui::TextWrapped("Compositor controls are opt-in. Existing lighting and RR behavior remains unchanged while disabled.");
     ImGui::SeparatorText("FSR Ray Regeneration");
@@ -248,7 +296,9 @@ void RTComposer::RegisterUxActions()
     registry.RegisterCommand(GetShortName(), "setComposition",
         "Set independent shadow compositor mode and influence; Hybrid-Shadowed remains gated until DX12 GI is ready.",
         +[](Feature* self, const json& args) {
-            auto& policy = static_cast<RTComposer*>(self)->composition;
+            auto& composer = *static_cast<RTComposer*>(self);
+            auto& policy = composer.composition;
+            const auto beforePolicy = std::pair{ policy.enabled, policy.mode };
             if (args.contains("enabled")) policy.enabled = args.at("enabled").get<bool>();
             if (args.contains("mode")) {
                 const auto mode = args.at("mode").get<uint32_t>();
@@ -264,6 +314,7 @@ void RTComposer::RegisterUxActions()
             setUnit("shadowInfluence", policy.shadowInfluence);
             setUnit("rtDirectContribution", policy.rtDirectContribution);
             setUnit("shadowThreshold", policy.shadowThreshold);
+            if (beforePolicy != std::pair{ policy.enabled, policy.mode }) composer.OnCompositionPolicyChanged();
         });
     registry.RegisterCommand(GetShortName(), "setRayRegeneration",
         "Set shared RR controls; saved under RTComposer.FSRRayRegeneration.",

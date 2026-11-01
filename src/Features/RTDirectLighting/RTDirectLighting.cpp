@@ -2,6 +2,7 @@
 #include "Globals.h"
 #include "Features/DX12NativeScene/DX12NativeScene.h"
 #include "Features/RedstoneGI/RedstoneGI.h"
+#include "Features/RTComposer/RTComposer.h"
 #include "Features/RTIndirectLighting/RTIndirectLighting.h"
 #include "Features/LightLimitFix.h"
 #include "Deferred.h"
@@ -247,8 +248,9 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
 		DX12Native::DirectionalTrace::kCombinedDirectView, target, identity[0], identity[1], metadata,
 		settings.UseAllPreparedLights ? std::span<const std::array<uint32_t, 2>>(snapshot->lightReferences) : std::span<const std::array<uint32_t, 2>>{},
 		settings.UseAllPreparedLights, { settings.DirectStrength, settings.DiffuseStrength, settings.SpecularStrength, settings.EmissionStrength },
-		gi.loaded && gi.settings.ConnectHybrid && !rtExclusive, gi.settings.IndirectStrength, settings.UseDirectRayRegeneration,
-		rtExclusive ? gi.settings.IndirectRays : 0u, snapshot->roomReferences, settings.RedstoneBlend, settings.NormalInfluence,
+		!globals::features::rtComposer.BlocksRTIndirect() &&
+            gi.loaded && gi.settings.ConnectHybrid && !rtExclusive, gi.settings.IndirectStrength, settings.UseDirectRayRegeneration,
+		!globals::features::rtComposer.BlocksRTIndirect() && rtExclusive ? gi.settings.IndirectRays : 0u, snapshot->roomReferences, settings.RedstoneBlend, settings.NormalInfluence,
 		settings.UseAllPreparedLights ? std::span<const DX12Native::PreparedPointLight>(snapshot->cell->nativeLights) :
 			std::span<const DX12Native::PreparedPointLight>(snapshot->cell->nativeLights).subspan(settings.SelectedDirectLight, 1),
 		settings.DirectTraceResolution, gi.settings.RTTraceResolution, settings.DirectRRResolution,

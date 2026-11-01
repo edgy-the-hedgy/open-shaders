@@ -2,6 +2,7 @@
 #include "Globals.h"
 #include "Features/RTDirectLighting/RTDirectLighting.h"
 #include "Features/RedstoneGI/RedstoneGI.h"
+#include "Features/RTComposer/RTComposer.h"
 #include "Features/DX12NativeScene/DX12NativeScene.h"
 #include "Utils/DevBenchUx.h"
 #include <cmath>
@@ -61,7 +62,7 @@ void RTIndirectLighting::RestoreDefaultSettings()
 bool RTIndirectLighting::UsesRTExclusive() const
 {
 	const auto& direct = globals::features::rtDirectLighting;
-	return loaded && settings.UseRTExclusive && !globals::game::isVR &&
+	return loaded && !globals::features::rtComposer.BlocksRTIndirect() && settings.UseRTExclusive && !globals::game::isVR &&
 		direct.loaded && direct.settings.UsePreparedDirectLighting;
 }
 
@@ -88,6 +89,9 @@ void RTIndirectLighting::SelectRTExclusive()
 
 void RTIndirectLighting::DrawSettings()
 {
+    const bool blocked = globals::features::rtComposer.BlocksRTIndirect();
+    if (blocked) ImGui::TextWrapped("Unavailable in RT Composer mode: RT-exclusive GI and DX11 HybridGI are disabled. Saved selections are retained; baseline SSGI is the permitted provider.");
+    ImGui::BeginDisabled(blocked);
 	ImGui::TextUnformatted("How would you like your GI to be rendered?");
 	ImGui::BeginDisabled(globals::game::isVR || !globals::features::rtDirectLighting.loaded);
 	if (ImGui::RadioButton("RT-exclusive", settings.UseRTExclusive)) SelectRTExclusive();
@@ -131,6 +135,7 @@ void RTIndirectLighting::DrawSettings()
 		}
 		globals::features::redstoneGI.DrawSettings();
 	}
+    ImGui::EndDisabled();
 }
 
 
@@ -197,6 +202,9 @@ json RTIndirectLighting::GetDiagnostics()
 	const auto& direct = globals::features::rtDirectLighting;
 	return { { "mode", settings.UseRTExclusive ? "rt-exclusive" : "hybrid" }, { "unifiedDebugView", debugView },
 		{ "rtExclusiveActive", UsesRTExclusive() },
+        { "indirectDisabledByComposer", globals::features::rtComposer.BlocksRTIndirect() },
+        { "indirectAvailability", globals::features::rtComposer.BlocksRTIndirect() ? "disabled-by-compositor-policy" : "available" },
+        { "effectiveRTIndirectRays", UsesRTExclusive() ? settings.IndirectRays : 0u },
 		{ "rtDirectRequired", settings.UseRTExclusive },
 		{ "rtDirectEnabled", direct.loaded && direct.settings.UsePreparedDirectLighting },
 		{ "indirectRays", settings.IndirectRays }, { "indirectStrength", settings.IndirectStrength },
