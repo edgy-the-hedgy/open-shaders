@@ -34,8 +34,32 @@ cbuffer LightingComposite : register(b0)
 	float RedstoneBlend;
 	uint ShadowOnlyEnabled;
 	float ShadowInfluence;
-	float DirectContributionPadding;
+	float ShadowAuraRadius;
 };
+
+// An intentionally non-surface-aware dilation: source samples must be
+// confirmed shadowed, but the destination pixel may have invalid geometry,
+// no receiver, or no shadow coverage of its own.
+void ApplyShadowAura(uint2 pixel, uint2 extent)
+{
+    if (ShadowOnlyEnabled == 0u) return;
+    const int radius = clamp(int(ShadowAuraRadius + 0.5), 0, 3);
+    float visibility = 1.0f;
+    [loop] for (int dy = -radius; dy <= radius; ++dy) {
+        [loop] for (int dx = -radius; dx <= radius; ++dx) {
+            const int2 neighbor = int2(pixel) + int2(dx, dy);
+            if (any(neighbor < 0) || any(neighbor >= int2(extent))) continue;
+            const float2 mask = ShadowMaskExport.Load(int3(neighbor, 0)).rg;
+            if (all(isfinite(mask)) && mask.y >= 0.5f)
+                visibility = min(visibility, saturate(mask.x));
+        }
+    }
+    if (visibility >= 1.0f) return;
+    const float4 original = SceneColor[pixel];
+    const float attenuation = lerp(1.0f, visibility, saturate(ShadowInfluence));
+    const float3 linearColor = Color::SceneGammaToLinear(original.rgb);
+    SceneColor[pixel] = float4(Color::SceneLinearToGamma(linearColor * attenuation), original.a);
+}
 
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID)
@@ -46,20 +70,17 @@ void main(uint3 id : SV_DispatchThreadID)
 	uint targetWidth, targetHeight;
 	SceneColor.GetDimensions(targetWidth, targetHeight);
 	if (id.x >= targetWidth || id.y >= targetHeight) return;
-	// Shadow Only acts after baseline SSGI and raster composition. GI generation
-	// is untouched; this attenuates final raster color only.
-	if (ShadowOnlyEnabled != 0u) {
-		const float2 mask = ShadowMaskExport.Load(int3(id.xy, 0)).rg;
-		if (mask.y >= 0.5f && all(isfinite(mask))) {
-			const float4 original = SceneColor[id.xy];
-			const float factor = lerp(1.0f, saturate(mask.x), saturate(ShadowInfluence));
-			const float3 linearColor = Color::SceneGammaToLinear(original.rgb);
-			SceneColor[id.xy] = float4(Color::SceneLinearToGamma(linearColor * factor), original.a);
-		}
-	}
-	if (RedstoneBlend <= 0.0f) return;
+    // Shadow aura executes LAST, even for invalid direct receivers or a
+    // disabled direct blend. It may overwrite originally invalid mask targets.
+    if (RedstoneBlend <= 0.0f) {
+        ApplyShadowAura(id.xy, uint2(width, height));
+        return;
+    }
 	float4 lighting = DirectLighting.Load(int3(id.xy, 0));
-	if (lighting.w != DirectRadianceTag || !all(isfinite(lighting.rgb))) return;
+    if (lighting.w != DirectRadianceTag || !all(isfinite(lighting.rgb))) {
+        ApplyShadowAura(id.xy, uint2(width, height));
+        return;
+    }
 	uint rrFlags = UseDirectRR;
 	uint2 rrPixel = 0;
 	if (rrFlags != 0) {
@@ -102,9 +123,13 @@ void main(uint3 id : SV_DispatchThreadID)
 		SampleRedstone(id.xy, normal, 1 - nr.z, diffuse, specular, visibility);
 		working += (diffuse + specular) * IndirectStrength;
 	}
-	if (!all(isfinite(working))) return;
+    if (!all(isfinite(working))) {
+        ApplyShadowAura(id.xy, uint2(width, height));
+        return;
+    }
 	if (RedstoneBlend >= 1.0f) {
         SceneColor[id.xy] = float4(Color::SceneLinearToGamma(working), 1.0f);
+        ApplyShadowAura(id.xy, uint2(width, height));
         return;
     }
 
@@ -113,4 +138,5 @@ void main(uint3 id : SV_DispatchThreadID)
     float3 blendedLinear = lerp(rasterLinear, working, saturate(RedstoneBlend));
 
     SceneColor[id.xy] = float4(Color::SceneLinearToGamma(blendedLinear), raster.a);
+    ApplyShadowAura(id.xy, uint2(width, height));
 }

@@ -539,7 +539,8 @@ namespace DX12Native
             const auto projection = globals::game::frameBufferCached.GetCameraProj();
             const bool reverseDepth = projection._33 * projection._43 < 0.0f;
             const float4 cameraData = Util::GetCameraData();
-            uint32_t constants[8]{ frame.size[0], frame.size[1], 0u, reverseDepth ? 1u : 0u };
+            uint32_t constants[8]{ frame.size[0], frame.size[1], 0u,
+                (reverseDepth ? 1u : 0u) | (composer.IsFixedPreset() ? 2u : 0u) };
             std::memcpy(&constants[2], &influence, sizeof(float));
             std::memcpy(&constants[4], &cameraData, sizeof(cameraData));
             static_assert(sizeof(cameraData) == sizeof(uint32_t) * 4);
@@ -970,7 +971,8 @@ namespace DX12Native
 		lightingCompositeSettings->Update(Settings{ useIndirect ? 1u : 0u, rrFlags, a_frame.indirectStrength,
 			a_frame.indirectRays != 0 ? 1u : 0u,
 			a_frame.rasterBlend * (shadowOnly ? directBlend : 1.0f),
-			shadowOnly ? 1u : 0u, shadowOnly ? shadowStrength : 0.0f, 0.0f });
+			shadowOnly ? 1u : 0u, shadowOnly ? shadowStrength : 0.0f,
+            shadowOnly && composer.IsFixedPreset() ? 3.0f : 0.0f });
 		auto* cb = lightingCompositeSettings->CB();
 		context->CSSetConstantBuffers(0, 1, &cb);
 		const auto& targets = globals::game::renderer->GetRuntimeData().renderTargets;

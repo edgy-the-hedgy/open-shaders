@@ -10,6 +10,7 @@ Texture2D<float> SpecularAO : register(t5);
 Texture2D<uint> ReceiverEligibility : register(t6);
 Texture2D<float4> DiffuseAlbedo : register(t7);
 Texture2D<float4> SpecularAlbedo : register(t8);
+Texture2D<float2> NativeShadowMask : register(t9);
 RWTexture2D<float4> ComposedScene : register(u0);
 
 cbuffer NativeHybridComposition : register(b13)
@@ -19,8 +20,24 @@ cbuffer NativeHybridComposition : register(b13)
     float GIContribution;
     uint NativeLinearLighting;
     uint NativeEnableACEScg; // reserved for a full gamut-correct scene handoff
+    uint ShadowAuraRadius; // fixed Hybrid-Shadowed = 3, Custom = 0
 };
 
+float ExpandedDirectShadowVisibility(uint2 pixel)
+{
+    const int radius = min(int(ShadowAuraRadius), 3);
+    float visibility = 1.0;
+    [loop] for (int dy = -radius; dy <= radius; ++dy) {
+        [loop] for (int dx = -radius; dx <= radius; ++dx) {
+            const int2 neighbor = int2(pixel) + int2(dx, dy);
+            if (any(neighbor < 0) || any(neighbor >= int2(FrameSize))) continue;
+            const float2 mask = NativeShadowMask.Load(int3(neighbor, 0));
+            if (all(isfinite(mask)) && mask.y >= 0.5)
+                visibility = min(visibility, saturate(mask.x));
+        }
+    }
+    return visibility;
+}
 [numthreads(8, 8, 1)]
 void main(uint2 pixel : SV_DispatchThreadID)
 {
@@ -32,8 +49,15 @@ void main(uint2 pixel : SV_DispatchThreadID)
     // Matches RTDirectLighting/directContract.hlsli::DirectRadianceTag.
     // Unsupported or invalid direct receivers retain the shadowed raster.
     const float4 direct = NativeDirect.Load(int3(pixel, 0));
-    if (direct.a == 4.0 && all(isfinite(direct.rgb)) && all(direct.rgb >= 0.0))
-        linearColor = lerp(linearColor, direct.rgb, saturate(DirectBlend));
+    if (direct.a == 4.0 && all(isfinite(direct.rgb)) && all(direct.rgb >= 0.0)) {
+        float3 directRadiance = direct.rgb;
+        if (ShadowAuraRadius != 0u) {
+            const float visibility = ExpandedDirectShadowVisibility(pixel);
+            const float attenuation = lerp(1.0, visibility, 0.9);
+            directRadiance *= attenuation;
+        }
+        linearColor = lerp(linearColor, directRadiance, saturate(DirectBlend));
+    }
 
     // 0: intentional shadow-controlled GI skip; 1: GI evaluated;
     // 2: invalid receiver. No indirect history may resurrect 0 or 2.
