@@ -60,6 +60,7 @@ json RTComposer::GetDiagnostics()
              effective == EffectiveMode::ShadowOnly ? "no-active-indirect-provider" : "dx12-hybrid") : "legacy" },
         { "shadowInfluence", composition.shadowInfluence },
         { "directContribution", composition.rtDirectContribution },
+        { "giContribution", composition.giContribution },
         { "shadowThreshold", composition.shadowThreshold },
         { "rtIndirectTraceDispatchesCumulative", tracer.GetDiagnostics().value("indirectTraceDispatches", uint64_t{ 0 }) }
     };
@@ -174,6 +175,7 @@ void RTComposer::SaveSettings(json& value)
             { "mode", static_cast<uint32_t>(composition.mode) },
             { "shadowInfluence", composition.shadowInfluence },
             { "rtDirectContribution", composition.rtDirectContribution },
+            { "giContribution", composition.giContribution },
             { "shadowThreshold", composition.shadowThreshold }
         } }
     };
@@ -195,6 +197,7 @@ void RTComposer::LoadSettings(json& value)
         };
         next.shadowInfluence = bounded("shadowInfluence", 1.0f);
         next.rtDirectContribution = bounded("rtDirectContribution", 0.0f);
+        next.giContribution = bounded("giContribution", 1.0f);
         next.shadowThreshold = bounded("shadowThreshold", 0.25f);
         composition = next;
     } else composition = {};
@@ -253,8 +256,10 @@ void RTComposer::DrawSettings()
     ImGui::SliderFloat("Shadow influence", &composition.shadowInfluence, 0.0f, 1.0f, "%.2f");
     ImGui::SliderFloat("RT direct contribution", &composition.rtDirectContribution, 0.0f, 1.0f, "%.2f");
     if (composition.mode == CompositorMode::HybridShadowed) {
-        ImGui::SliderFloat("GI skip visibility threshold", &composition.shadowThreshold, 0.0f, 1.0f, "%.2f");
-        ImGui::TextWrapped("DX12 HybridGI is not yet available. Shadow Only/SSGI fallback is active; RT-exclusive and DX11 HybridGI are blocked.");
+        ImGui::SliderFloat("Native GI contribution", &composition.giContribution, 0.0f, 1.0f, "%.2f");
+        if (ImGui::SliderFloat("GI skip visibility threshold", &composition.shadowThreshold, 0.0f, 1.0f, "%.2f"))
+            OnCompositionPolicyChanged();
+        ImGui::TextWrapped("Native GI/AO and DX12 composition are diagnostic until the independent RR histories and final output handoff are validated. Shadow Only/SSGI fallback remains active.");
         const auto trace = globals::features::dx12NativeScene.Tracer().GetDiagnostics();
         ImGui::Text("DX12 input bridge dispatches: %llu",
             static_cast<unsigned long long>(trace.value("hybridInputDispatches", uint64_t{ 0 })));
@@ -264,6 +269,12 @@ void RTComposer::DrawSettings()
             double(trace.value("hybridInputLastBytes", uint64_t{ 0 })) / (1024.0 * 1024.0));
         ImGui::Text("Bridge budget deferrals: %llu",
             static_cast<unsigned long long>(trace.value("hybridInputBudgetDeferrals", uint64_t{ 0 })));
+        ImGui::Text("Native GI/AO dispatches: %llu / %llu | DX12 composed scenes: %llu",
+            static_cast<unsigned long long>(trace.value("nativeHybridGIDispatches", uint64_t{ 0 })),
+            static_cast<unsigned long long>(trace.value("nativeHybridAODispatches", uint64_t{ 0 })),
+            static_cast<unsigned long long>(trace.value("nativeHybridCompositionDispatches", uint64_t{ 0 })));
+        const auto compositionFailure = trace.value("nativeHybridCompositionFailure", std::string{});
+        if (!compositionFailure.empty()) ImGui::TextWrapped("DX12 native composition: %s", compositionFailure.c_str());
         const auto inputFailure = trace.value("hybridInputFailure", std::string{});
         const auto sourceFailure = trace.value("hybridShadowedSourceFailure", std::string{});
         if (!inputFailure.empty()) ImGui::TextWrapped("DX12 bridge: %s", inputFailure.c_str());
