@@ -7,7 +7,7 @@
 #include "Utils/DevBenchUx.h"
 #include <cmath>
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTIndirectLighting::Settings, UseRTExclusive, IndirectRays, IndirectStrength, ConnectHybrid, RTTraceResolution, HybridResolution)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTIndirectLighting::Settings, UseRTExclusive, IndirectRays, IndirectStrength, ConnectHybrid)
 
 std::pair<std::string, std::vector<std::string>> RTIndirectLighting::GetFeatureSummary()
 {
@@ -217,7 +217,8 @@ void RTIndirectLighting::RegisterUxActions()
 			} else if (producer == "hybrid" || producer == "raymarched") gi.SelectHybrid();
 			else throw std::invalid_argument("Producer must be rt-exclusive or hybrid");
 			if (args.contains("rays")) gi.settings.IndirectRays = std::clamp(args.at("rays").get<uint32_t>(), 1u, 8u);
-			if (args.contains("traceResolution")) gi.settings.RTTraceResolution = std::min(args.at("traceResolution").get<uint32_t>(), 4u);
+			if (args.contains("traceResolution"))
+                throw std::invalid_argument("Independent RT-exclusive resolution is retired. Use RTComposer setRayRegeneration samplingMode=0..3.");
 			globals::features::dx12NativeScene.Tracer().Reset();
 		});
 	FEATURE_COMMAND("setLightingSampling", "Adjust existing Hybrid GI slice counts.",
