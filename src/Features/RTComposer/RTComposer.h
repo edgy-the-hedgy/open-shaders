@@ -32,9 +32,9 @@ struct RTComposer final : Feature
     {
         switch (mode) {
         case CompositorMode::ShadowOnly:
-            return { 7u, .8f, .25f, false, false, false, false, 2u, false, 0.f, 0.f, 0.f, true };
+            return { 7u, .9f, .05f, false, false, false, false, 2u, false, 0.f, 0.f, 0.f, true };
         case CompositorMode::HybridShadowed:
-            return { 7u, .8f, .5f, false, false, true, true, 2u, false, 0.f, 0.f, 0.f, true };
+            return { 7u, .9f, .3f, false, false, true, true, 2u, false, 0.f, 0.f, 0.f, true };
         case CompositorMode::RTExclusiveI:
             return { 7u, .8f, .5f, false, true, false, false, 2u, false, .5f, 0.f, 0.f, false };
         case CompositorMode::RTExclusiveII:
@@ -145,7 +145,9 @@ struct RTComposer final : Feature
 };
 
 static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::ShadowOnly).directTraceMode == 7u);
-static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed).shadowInfluence == .8f);
+static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed).shadowInfluence == .9f);
+static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::ShadowOnly).directContribution == .05f);
+static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed).directContribution == .3f);
 static_assert(!RTComposer::GetTierPolicy(RTComposer::CompositorMode::ShadowOnly).directRR);
 static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed).hybridResolution == 2u);
 static_assert(!RTComposer::GetTierPolicy(RTComposer::CompositorMode::FSRRedstone).ready);

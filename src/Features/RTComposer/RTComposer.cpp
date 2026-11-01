@@ -80,9 +80,9 @@ const char* RTComposer::DirectTierDescription(CompositorMode mode)
 {
     switch (mode) {
     case CompositorMode::ShadowOnly:
-        return "Quarter-density (1/4 native pixels), surface-aware shadow-mask resolve; 0.8 shadow influence, 0.25 raster/RT blend. Direct diffuse only, no specular and no direct RR.";
+        return "Quarter-density (1/4 native pixels), surface-aware shadow-mask resolve plus 3px forced shadow aura; 0.9 shadow influence, 0.05 RT/raster blend. Direct diffuse only, no specular and no direct RR.";
     case CompositorMode::HybridShadowed:
-        return "Quarter-density direct/shadow DXR; shadow influence 0.8, raster/RT direct blend 0.5. Direct diffuse only, direct RR off; native DX12 HybridGI handles indirect/AO RR.";
+        return "Quarter-density direct/shadow DXR plus 3px forced shadow aura; shadow influence 0.9, RT/raster direct blend 0.3. Direct diffuse only, direct RR off; native DX12 HybridGI handles indirect/AO RR.";
     case CompositorMode::RTExclusiveI:
         return "PENDING: quarter-density direct/shadows, diffuse only, 50% first-bounce survival, diffuse-only RR. The live renderer safely falls back to Shadow Only.";
     case CompositorMode::RTExclusiveII:
