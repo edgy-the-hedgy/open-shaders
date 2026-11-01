@@ -92,7 +92,7 @@ json RTDirectLighting::GetDiagnostics()
 		{ "pointLightFalloffFraction", settings.PointLightFalloffFraction },
 		{ "pointLightFalloffExponent", settings.PointLightFalloffExponent },
 		{ "stochasticSampling", settings.StochasticSampling }, { "emitterRadiusMultiplier", settings.EmitterRadiusMultiplier },
-		{ "directTraceResolutionMode", settings.DirectTraceResolution },
+		{ "directTraceResolutionMode", DX12Native::NativeTraceShaderMode(globals::features::rtComposer.composition.samplingMode) },
 		{ "nativeFeatureLoaded", native.loaded }, { "preparedSceneEnabled", native.settings.UsePreparedScene },
 		{ "preparedMaterialsEnabled", native.settings.UsePreparedMaterials }, { "preparedScenePublished", scenePublished },
 		{ "preparedScene", prepared }, { "trace", trace } };
