@@ -57,12 +57,22 @@ public:
 
 private:
 	bool ApplyConfiguration(bool& a_resetHistory);
+    /** Applies the eight shared SDK keys to all three native contexts. */
+    bool ApplyNativeHybridConfiguration(bool& a_resetHistory);
 	mutable std::mutex configurationMutex;
 	std::array<std::optional<float>, 8> configurationOverrides{};
 	std::array<float, 8> configurationDefaults{};
 	bool configurationDefaultsReady = false;
 	bool configurationDirty = true;
 	uint64_t sharedConfigurationRevision = UINT64_MAX;
+    // Native contexts can report distinct AMD provider defaults. Never use
+    // the legacy context's defaults as fabricated native configuration.
+    std::array<std::array<float, 8>, 3> nativeHybridConfigurationDefaults{};
+    std::array<bool, 3> nativeHybridConfigurationDefaultsReady{};
+    std::array<bool, 3> nativeHybridConfigurationApplied{};
+    uint64_t nativeHybridAppliedConfigurationRevision = UINT64_MAX;
+    uint64_t nativeHybridConfigurationApplications = 0;
+    std::string nativeHybridConfigurationFailure;
 	void ResetRayRegeneration();
 	bool EnsureRuntimeUpscalerInterop();
 	struct RuntimeCommandContext
