@@ -12,6 +12,7 @@
 #include <fstream>
 #include <bit>
 #include <BS_thread_pool.hpp>
+#include <Windows.h>
 
 namespace DX12Native
 {
@@ -41,21 +42,54 @@ namespace DX12Native
 
 	DirectionalTrace::~DirectionalTrace()
 	{
-		const auto done = completion.fence12 ? completion.fence12->GetCompletedValue() : 0;
-		const auto retired = producer.fence12 ? producer.fence12->GetCompletedValue() : 0;
-		bool inFlight = false;
-		for (auto& frame : frames) {
-			if (!frame.submitted || (frame.fence && frame.fence <= done && (!frame.retirement || frame.retirement <= retired))) continue;
-			inFlight = true;
-			(void)new Frame(std::move(frame));
-		}
-		if (inFlight) {
-            // Native HybridGI descriptor heaps and PSOs can still be referenced
-            // by the in-flight queue; preserve ownership on device teardown.
+        // A destroyed tracer can still have submitted DX12/DX11 commands.
+        // First make a bounded attempt to retire those submissions and
+        // release their extensive native/RR allocations instead of
+        // intentionally leaking every in-flight frame and its descriptor heaps.
+        uint64_t lastCompletion = 0, lastProducer = 0;
+        for (const auto& frame : frames) {
+            if (!frame.submitted) continue;
+            lastCompletion = std::max(lastCompletion, frame.fence);
+            lastProducer = std::max(lastProducer, frame.retirement);
+        }
+        const auto wait = [](ID3D12Fence* fence, uint64_t target) {
+            if (target == 0) return true;
+            if (!fence) return false;
+            if (fence->GetCompletedValue() >= target) return true;
+            HANDLE ready = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+            if (!ready) return false;
+            const HRESULT hr = fence->SetEventOnCompletion(target, ready);
+            const DWORD status = SUCCEEDED(hr) ?
+                WaitForSingleObject(ready, 500) : WAIT_FAILED;
+            CloseHandle(ready);
+            return status == WAIT_OBJECT_0 && fence->GetCompletedValue() >= target;
+        };
+        const bool drained =
+            wait(completion.fence12.get(), lastCompletion) &&
+            wait(producer.fence12.get(), lastProducer);
+        if (drained) return; // ordinary RAII releases every resource safely.
+
+        // Never free GPU resources the queue may still reference. Device
+        // failure/timeout remains the only exceptional lifetime quarantine.
+        const uint64_t done = completion.fence12 ?
+            completion.fence12->GetCompletedValue() : 0;
+        const uint64_t retired = producer.fence12 ?
+            producer.fence12->GetCompletedValue() : 0;
+        bool inFlight = false;
+        for (auto& frame : frames) {
+            if (!frame.submitted || (frame.fence && frame.fence <= done &&
+                (!frame.retirement || frame.retirement <= retired))) continue;
+            inFlight = true;
+            (void)new Frame(std::move(frame));
+        }
+        if (inFlight) {
             (void)nativeHybridGI.release();
-			(void)producer.fence11.detach(); (void)producer.fence12.detach();
-			(void)completion.fence11.detach(); (void)completion.fence12.detach();
-		}
+            (void)producer.fence11.detach();
+            (void)producer.fence12.detach();
+            (void)completion.fence11.detach();
+            (void)completion.fence12.detach();
+            logger::warn("[NativeDX12] GPU retirement timed out; quarantined in-flight resources for safety");
+        }
 	}
 
 	void DirectionalTrace::Reset(bool a_releaseBindings)
