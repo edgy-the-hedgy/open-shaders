@@ -34,69 +34,110 @@ cbuffer LightingComposite : register(b0)
 	float3 Padding;
 };
 
+// Direct lighting is a replaceable baseline; GI is an additive independent
+// contribution. Never substitute the GI-only sum for an incomplete raster pixel.
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID)
 {
-	uint width, height;
-	DirectLighting.GetDimensions(width, height);
-	if (id.x >= width || id.y >= height) return;
-	uint targetWidth, targetHeight;
-	SceneColor.GetDimensions(targetWidth, targetHeight);
-	if (id.x >= targetWidth || id.y >= targetHeight) return;
-	if (RedstoneBlend <= 0.0f) return;
-	float4 lighting = DirectLighting.Load(int3(id.xy, 0));
-	if (lighting.w != DirectRadianceTag || !all(isfinite(lighting.rgb))) return;
-	uint rrFlags = UseDirectRR;
-	uint2 rrPixel = 0;
-	if (rrFlags != 0) {
-		uint rrWidth, rrHeight; RRDepth.GetDimensions(rrWidth, rrHeight);
-		rrPixel = min(uint2((float2(id.xy) + 0.5) * uint2(rrWidth, rrHeight) / uint2(width, height)), uint2(rrWidth, rrHeight) - 1);
-		float depth = mul(FrameBuffer::CameraView[0], float4(NativeReceivers.Load(int3(id.xy, 0)).xyz, 1)).z;
-		float4 guide = RRNormalRoughness.Load(int3(rrPixel, 0));
-		float4 sourceGuide = RawNormalRoughness.Load(int3(id.xy, 0));
-		if (abs(RRDepth.Load(int3(rrPixel, 0)) - depth) > max(0.5, abs(depth) * 0.02) ||
-			dot(GBuffer::DecodeNormal(guide.xy), GBuffer::DecodeNormal(sourceGuide.xy)) < 0.9 || abs(guide.z - sourceGuide.z) > 0.1) rrFlags = 0;
-	}
-	if ((rrFlags & 1u) != 0) {
-		float3 filteredDiffuse = FilteredDirectDiffuse.Load(int3(rrPixel, 0)).rgb;
-		float3 filteredSpecular = FilteredDirectSpecular.Load(int3(rrPixel, 0)).rgb;
-		if (all(isfinite(filteredDiffuse)) && all(isfinite(filteredSpecular)) && all(filteredDiffuse >= 0) && all(filteredSpecular >= 0))
-			{
-                const float3 emission = float3(RawDirectDiffuse.Load(int3(id.xy, 0)).a,
-                    RawDirectSpecular.Load(int3(id.xy, 0)).a, RawDirectSpecularAlbedo.Load(int3(id.xy, 0)).a);
-                const float3 diffuseAlbedo = RawDirectDiffuseAlbedo.Load(int3(id.xy, 0)).rgb;
-                const float3 specularAlbedo = RawDirectSpecularAlbedo.Load(int3(id.xy, 0)).rgb;
-                lighting.rgb = emission + filteredDiffuse * diffuseAlbedo + filteredSpecular * specularAlbedo;
-            }
-	}
-	if (UseDXRIndirect != 0) {
-		float4 diffuse = RawIndirectDiffuse.Load(int3(id.xy, 0)), specular = RawIndirectSpecular.Load(int3(id.xy, 0));
-		if (diffuse.a >= -1 && specular.a >= -1) {
-			float3 d = (rrFlags & 2u) != 0 ? FilteredIndirectDiffuse.Load(int3(rrPixel, 0)).rgb : diffuse.rgb;
-			float3 s = (rrFlags & 2u) != 0 ? FilteredIndirectSpecular.Load(int3(rrPixel, 0)).rgb : specular.rgb;
-			d = all(isfinite(d)) && all(d >= 0) ? d : diffuse.rgb;
-			s = all(isfinite(s)) && all(s >= 0) ? s : specular.rgb;
-			lighting.rgb += (d + s) * IndirectStrength;
-		}
-	}
-	float3 working = ENABLE_LL ? Color::GamutTransform(lighting.rgb) : lighting.rgb;
-	if (UseIndirect != 0) {
-		float4 nr = NativeNormalRoughness.Load(int3(id.xy, 0));
-		float3 normal = normalize(mul((float3x3)FrameBuffer::CameraViewInverse[0], GBuffer::DecodeNormal(nr.xy)));
-		float3 diffuse, specular;
-		float2 visibility;
-		SampleRedstone(id.xy, normal, 1 - nr.z, diffuse, specular, visibility);
-		working += (diffuse + specular) * IndirectStrength;
-	}
-	if (!all(isfinite(working))) return;
-	if (RedstoneBlend >= 1.0f) {
-        SceneColor[id.xy] = float4(Color::SceneLinearToGamma(working), 1.0f);
-        return;
+    uint width, height;
+    DirectLighting.GetDimensions(width, height);
+    if (id.x >= width || id.y >= height) return;
+    uint targetWidth, targetHeight;
+    SceneColor.GetDimensions(targetWidth, targetHeight);
+    if (id.x >= targetWidth || id.y >= targetHeight || RedstoneBlend <= 0.0f) return;
+
+    const float4 rawDirect = DirectLighting.Load(int3(id.xy, 0));
+    const bool directValid = rawDirect.w == DirectRadianceTag &&
+        all(isfinite(rawDirect.rgb)) && all(rawDirect.rgb >= 0.0f);
+    const float4 rawIndirectD = UseDXRIndirect != 0 ?
+        RawIndirectDiffuse.Load(int3(id.xy, 0)) : float4(0, 0, 0, -2);
+    const float4 rawIndirectS = UseDXRIndirect != 0 ?
+        RawIndirectSpecular.Load(int3(id.xy, 0)) : float4(0, 0, 0, -2);
+    const bool giValid = UseDXRIndirect != 0 &&
+        rawIndirectD.a >= -1.0f && rawIndirectS.a >= -1.0f &&
+        all(isfinite(rawIndirectD)) && all(isfinite(rawIndirectS)) &&
+        all(rawIndirectD.rgb >= 0.0f) && all(rawIndirectS.rgb >= 0.0f);
+    if (!directValid && !giValid && UseIndirect == 0u) return;
+
+    uint rrFlags = UseDirectRR;
+    uint2 rrPixel = 0;
+    if (rrFlags != 0u) {
+        uint rrWidth, rrHeight;
+        RRDepth.GetDimensions(rrWidth, rrHeight);
+        if (rrWidth == 0u || rrHeight == 0u) {
+            rrFlags = 0u;
+        } else {
+            rrPixel = min(id.xy, uint2(rrWidth, rrHeight) - 1u);
+            const float4 receiver = NativeReceivers.Load(int3(id.xy, 0));
+            const float depth = mul(FrameBuffer::CameraView[0], float4(receiver.xyz, 1)).z;
+            const float4 guide = RRNormalRoughness.Load(int3(rrPixel, 0));
+            const float4 sourceGuide = RawNormalRoughness.Load(int3(id.xy, 0));
+            if (receiver.w == 0 || !all(isfinite(receiver)) ||
+                !isfinite(depth) || !isfinite(RRDepth.Load(int3(rrPixel, 0))) ||
+                abs(RRDepth.Load(int3(rrPixel, 0)) - depth) > max(0.5f, abs(depth) * 0.02f) ||
+                !all(isfinite(guide)) || !all(isfinite(sourceGuide)) ||
+                dot(GBuffer::DecodeNormal(guide.xy), GBuffer::DecodeNormal(sourceGuide.xy)) < 0.9f ||
+                abs(guide.z - sourceGuide.z) > 0.1f)
+                rrFlags = 0u;
+        }
     }
 
-    float4 raster = SceneColor[id.xy];
-    float3 rasterLinear = Color::SceneGammaToLinear(raster.rgb);
-    float3 blendedLinear = lerp(rasterLinear, working, saturate(RedstoneBlend));
+    float3 directRGB = directValid ? rawDirect.rgb : 0.0f;
+    if (directValid && (rrFlags & 1u) != 0u) {
+        const float3 filteredDiffuse = FilteredDirectDiffuse.Load(int3(rrPixel, 0)).rgb;
+        const float3 filteredSpecular = FilteredDirectSpecular.Load(int3(rrPixel, 0)).rgb;
+        if (all(isfinite(filteredDiffuse)) && all(isfinite(filteredSpecular)) &&
+            all(filteredDiffuse >= 0.0f) && all(filteredSpecular >= 0.0f)) {
+            const float3 emission = float3(
+                RawDirectDiffuse.Load(int3(id.xy, 0)).a,
+                RawDirectSpecular.Load(int3(id.xy, 0)).a,
+                RawDirectSpecularAlbedo.Load(int3(id.xy, 0)).a);
+            const float3 diffuseAlbedo = RawDirectDiffuseAlbedo.Load(int3(id.xy, 0)).rgb;
+            const float3 specularAlbedo = RawDirectSpecularAlbedo.Load(int3(id.xy, 0)).rgb;
+            if (all(isfinite(emission)) && all(isfinite(diffuseAlbedo)) &&
+                all(isfinite(specularAlbedo)))
+                directRGB = emission + filteredDiffuse * diffuseAlbedo + filteredSpecular * specularAlbedo;
+        }
+    }
 
-    SceneColor[id.xy] = float4(Color::SceneLinearToGamma(blendedLinear), raster.a);
+    // RR and raw GI validity are independent of the direct radiance tag.
+    float3 indirectRGB = 0.0f;
+    if (giValid) {
+        float3 diffuse = rawIndirectD.rgb;
+        float3 specular = rawIndirectS.rgb;
+        if ((rrFlags & 2u) != 0u) {
+            const float3 filteredD = FilteredIndirectDiffuse.Load(int3(rrPixel, 0)).rgb;
+            const float3 filteredS = FilteredIndirectSpecular.Load(int3(rrPixel, 0)).rgb;
+            if (all(isfinite(filteredD)) && all(isfinite(filteredS)) &&
+                all(filteredD >= 0.0f) && all(filteredS >= 0.0f)) {
+                diffuse = filteredD;
+                specular = filteredS;
+            }
+        }
+        indirectRGB = (diffuse + specular) * IndirectStrength;
+    }
+
+    const float4 raster = SceneColor[id.xy];
+    const float3 rasterLinear = Color::SceneGammaToLinear(raster.rgb);
+    // With no native direct light, preserve the entire raster baseline and
+    // add only valid native GI. This avoids discarding raster direct lighting.
+    float3 working = directValid ?
+        (ENABLE_LL ? Color::GamutTransform(directRGB) : directRGB) : rasterLinear;
+    working += indirectRGB;
+
+    if (UseIndirect != 0u) {
+        const float4 nr = NativeNormalRoughness.Load(int3(id.xy, 0));
+        const float3 normal = normalize(mul((float3x3)FrameBuffer::CameraViewInverse[0],
+            GBuffer::DecodeNormal(nr.xy)));
+        float3 diffuse, specular;
+        float2 visibility;
+        SampleRedstone(id.xy, normal, 1.0f - nr.z, diffuse, specular, visibility);
+        working += (diffuse + specular) * IndirectStrength;
+    }
+    if (!all(isfinite(working))) return;
+
+    // If direct is valid this retains the original direct-replacement blend.
+    // Otherwise it blends only additive indirect on top of existing raster.
+    const float3 result = lerp(rasterLinear, working, saturate(RedstoneBlend));
+    SceneColor[id.xy] = float4(Color::SceneLinearToGamma(result), raster.a);
 }

@@ -300,5 +300,27 @@ void EvaluateIndirectForSurface(uint instance, uint primitive, float2 barycentri
         footprint, pixel, indirectDiffuse, indirectSpecular)) {
         IndirectDiffuse[pixel] = indirectDiffuse;
         IndirectSpecular[pixel] = indirectSpecular;
+        // GI may be valid with no direct light (missing/unsupported emitter)
+        // or when only the GI mask sampled this pixel. Publish its own
+        // surface guides without overwriting emission from valid direct.
+        if (Shadow[pixel].w != DirectRadianceTag && ExportDirectSignals != 0u) {
+            const float3 shadingNormal = (DirectNormalMode & 3u) == 1u ? geometricNormal : material.normal;
+            const float3 n = normalize(shadingNormal);
+            const float NdotV = saturate(abs(dot(n, normalize(-direction))));
+            const float2 envBRDF = BRDF::EnvBRDF(material.roughness, NdotV);
+            const float3 specularAlbedo = saturate(material.f0 * envBRDF.x + envBRDF.y);
+            float3 octN = n / max(abs(n.x) + abs(n.y) + abs(n.z), 1e-6);
+            float2 oct = octN.xy;
+            if (octN.z < 0)
+                oct = (1 - abs(oct.yx)) * float2(oct.x >= 0 ? 1 : -1, oct.y >= 0 ? 1 : -1);
+            uint surfaceClass = 0u;
+            if ((DirectNormalMode & 0x80000000u) != 0u) {
+                const float threshold = float((DirectNormalMode >> 8u) & 0xffffu) / 65535.0f;
+                surfaceClass = material.metallic >= 0.8f ? 2u : material.roughness < threshold ? 1u : 0u;
+            }
+            DirectNormalRoughness[pixel] = float4(oct * 0.5f + 0.5f, material.roughness, float(surfaceClass));
+            DirectSpecularAlbedo[pixel] = float4(specularAlbedo, 0.0f);
+            DirectDiffuseAlbedo[pixel] = float4(saturate((1.0f - material.metallic) * material.baseColor), 1.0f);
+        }
     }
 }

@@ -21,15 +21,25 @@ void main(uint3 id : SV_DispatchThreadID)
 {
 	if (any(id.xy >= RRSize)) return;
 	uint2 pixel = min(uint2((float2(id.xy) + 0.5) * NativeSize / RRSize), NativeSize - 1);
-	bool valid = Lighting.Load(int3(pixel, 0)).w == DirectRadianceTag;
-	PackedNormal[id.xy] = valid ? NormalRoughness.Load(int3(pixel, 0)) : 0;
-	PackedSpecularAlbedo[id.xy] = valid ? SpecularAlbedo.Load(int3(pixel, 0)) : 0;
-	PackedDiffuseAlbedo[id.xy] = valid ? DiffuseAlbedo.Load(int3(pixel, 0)) : 0;
+	const float4 direct = Lighting.Load(int3(pixel, 0));
+	const float4 indirectDiffuse = IndirectDiffuse.Load(int3(pixel, 0));
+	const float4 indirectSpecular = IndirectSpecular.Load(int3(pixel, 0));
+	const bool directValid = direct.w == DirectRadianceTag && all(isfinite(direct.rgb)) && all(direct.rgb >= 0);
+	const bool indirectValid = indirectDiffuse.a >= -1.0f && indirectSpecular.a >= -1.0f &&
+		all(isfinite(indirectDiffuse)) && all(isfinite(indirectSpecular)) &&
+		all(indirectDiffuse.rgb >= 0) && all(indirectSpecular.rgb >= 0);
+	const float4 normalRoughness = NormalRoughness.Load(int3(pixel, 0));
+	const bool guideValid = (directValid || indirectValid) && all(isfinite(normalRoughness)) &&
+		any(normalRoughness.xy != 0.0f);
+	PackedNormal[id.xy] = guideValid ? normalRoughness : 0;
+	PackedSpecularAlbedo[id.xy] = guideValid ? SpecularAlbedo.Load(int3(pixel, 0)) : 0;
+	PackedDiffuseAlbedo[id.xy] = guideValid ? DiffuseAlbedo.Load(int3(pixel, 0)) : 0;
 	if (Checkerboard != 0 && ((id.x + id.y) & 1u) != Phase) return;
 	uint2 destination = uint2(Checkerboard != 0 ? id.x / 2 : id.x, id.y);
-	PackedDirectDiffuse[destination] = valid ? DirectDiffuse.Load(int3(pixel, 0)) : 0;
-	PackedDirectSpecular[destination] = valid ? DirectSpecular.Load(int3(pixel, 0)) : 0;
-	float4 indirectDiffuse = IndirectDiffuse.Load(int3(pixel, 0)), indirectSpecular = IndirectSpecular.Load(int3(pixel, 0));
-	PackedIndirectDiffuse[destination] = valid && indirectDiffuse.a >= -1 ? indirectDiffuse : float4(0, 0, 0, -1);
-	PackedIndirectSpecular[destination] = valid && indirectSpecular.a >= -1 ? indirectSpecular : float4(0, 0, 0, -1);
+	PackedDirectDiffuse[destination] = directValid && guideValid ? DirectDiffuse.Load(int3(pixel, 0)) : 0;
+	PackedDirectSpecular[destination] = directValid && guideValid ? DirectSpecular.Load(int3(pixel, 0)) : 0;
+	// An absent GI sample is not a zero-radiance ray. Preserve invalidity
+	// explicitly; sparse RR must not be presented as native checkerboard.
+	PackedIndirectDiffuse[destination] = indirectValid && guideValid ? indirectDiffuse : float4(0, 0, 0, -2);
+	PackedIndirectSpecular[destination] = indirectValid && guideValid ? indirectSpecular : float4(0, 0, 0, -2);
 }

@@ -18,10 +18,12 @@ void main(uint3 id : SV_DispatchThreadID)
 	LinearDepth.GetDimensions(width, height);
 	if (id.x >= width || id.y >= height) return;
 	uint2 pixel = min(uint2((float2(id.xy) + 0.5) * NativeSize / RRSize), NativeSize - 1);
-	float4 lighting = Lighting.Load(int3(pixel, 0));
-	float3 relative = Receivers.Load(int3(pixel, 0)).xyz;
+	float4 receiver = Receivers.Load(int3(pixel, 0));
+	float3 relative = receiver.xyz;
 	float4 view = mul(FrameBuffer::CameraView[0], float4(relative, 1));
-	bool valid = lighting.w == DirectRadianceTag && all(isfinite(view)) && view.z > 0;
+	// RR guides describe a receiver, not whether direct lighting succeeded.
+	// Independent GI must retain depth/motion even when direct radiance is invalid.
+	bool valid = receiver.w != 0 && all(isfinite(receiver)) && all(isfinite(view)) && view.z > 0;
 	LinearDepth[id.xy] = valid ? view.z : 0;
 	float2 motion = NativeMotion.Load(int3(pixel, 0)).xy;
 	bool nativeMotionValid = all(isfinite(motion));
