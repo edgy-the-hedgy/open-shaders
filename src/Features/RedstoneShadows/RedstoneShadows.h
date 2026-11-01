@@ -31,7 +31,6 @@ struct RedstoneShadows final : OverlayFeature
 		float SpecularStrength = 1.0f;
 		float EmissionStrength = 1.0f;
 		float IndirectStrength = 1.0f;
-		float RedstoneBlend = 1.0f;
 		uint32_t PreparedMaterialView = 0;
 		uint32_t MaterialTextureBudgetMB = 512;
 		uint32_t DirectLightingBudgetMB = 256;
