@@ -134,7 +134,12 @@ float4 EstimateSpecular(Surface surface, float roughness, bool traceRadiance)
 	 diffuse = EstimateDiffuse(surface);
 	}
 	{
-	 float3 diffuseFactor = Color::IrradianceToLinear(srcDiffuseAlbedo.Load(int3(surfacePixel, 0)) / Color::PBRLightingScale);
+	 #if defined(DX12_HYBRID_GI)
+    const float pbrScale = Color::NativePBRLightingScale();
+#else
+    const float pbrScale = Color::PBRLightingScale;
+#endif
+    float3 diffuseFactor = Color::IrradianceToLinear(srcDiffuseAlbedo.Load(int3(surfacePixel, 0)) / pbrScale);
 	 float3 specularFactor = srcSpecularAlbedo.Load(int3(surfacePixel, 0));
 	 diffuse.rgb *= diffuseFactor;
 	 specular.rgb *= specularFactor;

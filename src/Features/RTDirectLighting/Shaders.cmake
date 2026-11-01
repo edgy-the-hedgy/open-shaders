@@ -50,6 +50,7 @@ if(REDSTONE_DXC)
             "${CMAKE_CURRENT_SOURCE_DIR}/features/RedstoneGI/Shaders/RedstoneGI/SpecularWeights.hlsli"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/RedstoneGI/Shaders/RedstoneGI/common.hlsli"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/RedstoneGI/Shaders/RedstoneGI/NativeGICompat.hlsli"
+            "${CMAKE_CURRENT_SOURCE_DIR}/features/RedstoneGI/Shaders/RedstoneGI/NativeGBuffer.hlsli"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/RedstoneGI/Shaders/RedstoneGI/OcclusionSettings.hlsli"
         VERBATIM)
     set(_rt_hybrid_1 "${REDSTONE_DXIL_DIRECTORY}/hybridAO.dxil")
@@ -65,6 +66,7 @@ if(REDSTONE_DXC)
             "${CMAKE_CURRENT_SOURCE_DIR}/features/RedstoneGI/Shaders/RedstoneGI/SpecularWeights.hlsli"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/RedstoneGI/Shaders/RedstoneGI/common.hlsli"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/RedstoneGI/Shaders/RedstoneGI/NativeGICompat.hlsli"
+            "${CMAKE_CURRENT_SOURCE_DIR}/features/RedstoneGI/Shaders/RedstoneGI/NativeGBuffer.hlsli"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/RedstoneGI/Shaders/RedstoneGI/OcclusionSettings.hlsli"
         VERBATIM)
     # Deliberately opt-in until DX12 native estimator resource bindings exist:
