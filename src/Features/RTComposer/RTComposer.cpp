@@ -343,7 +343,7 @@ void RTComposer::DrawSettings()
             composition.samplingMode != DX12Native::HybridSamplingMode::Native)
             ImGui::TextWrapped("Raw preview is available only at full native density. Reduced-density samples still dispatch for diagnostics, but cannot be displayed as finished lighting before RR and post-RR reconstruction; Shadow Only stays active.");
         else
-            ImGui::TextWrapped("Native GI/AO composition is diagnostic until independent RR histories and the final output handoff are validated.");
+            ImGui::TextWrapped("Native GI/AO composition and GPU RR guides are diagnostic. RR provider dispatch, selective history rejection and post-RR reconstruction are still gated.");
         const auto trace = globals::features::dx12NativeScene.Tracer().GetDiagnostics();
         ImGui::Text("DX12 input bridge dispatches: %llu",
             static_cast<unsigned long long>(trace.value("hybridInputDispatches", uint64_t{ 0 })));
@@ -359,6 +359,11 @@ void RTComposer::DrawSettings()
             static_cast<unsigned long long>(trace.value("nativeHybridCompositionDispatches", uint64_t{ 0 })));
         ImGui::Text("Full-native eligibility dispatches: %llu",
             static_cast<unsigned long long>(trace.value("nativeHybridEligibilityDispatches", uint64_t{ 0 })));
+        ImGui::Text("Native GPU-only RR guide dispatches: %llu",
+            static_cast<unsigned long long>(trace.value("nativeHybridRRGuideDispatches", uint64_t{ 0 })));
+        const auto guideFailure = trace.value("nativeHybridRRGuideFailure", std::string{});
+        if (!guideFailure.empty())
+            ImGui::TextWrapped("Native RR guide preparation: %s", guideFailure.c_str());
         const auto logical = trace.value("nativeHybridLogicalGrid", std::array<uint32_t, 2>{});
         const auto packed = trace.value("nativeHybridPackedGrid", std::array<uint32_t, 2>{});
         ImGui::Text("Hybrid RR grid: %u x %u | trace storage: %u x %u",
