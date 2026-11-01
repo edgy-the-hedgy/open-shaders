@@ -150,7 +150,7 @@ void RedstoneGI::RegisterUxActions()
 				redstone->SetRROutputOnly(true);
 		});
 	FEATURE_COMMAND("setRedstoneCheckerboard",
-		"Set RR checkerboard sampling for the active Redstone session and reset its history. Saved by the normal settings Save action; baseline SSGI is unchanged. Params: enabled (boolean, required).",
+		"Set native HybridGI checkerboard sampling independently from direct DXR. Saved by the normal settings Save action; baseline SSGI is unchanged. Params: enabled (boolean, required).",
 		[](Feature* a_self, const json& a_args) {
 			auto* redstone = static_cast<RedstoneGI*>(a_self);
 			redstone->SetRRCheckerboard(a_args.at("enabled").get<bool>());

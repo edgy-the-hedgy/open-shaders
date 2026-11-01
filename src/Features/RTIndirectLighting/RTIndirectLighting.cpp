@@ -110,7 +110,7 @@ void RTIndirectLighting::DrawSettings()
 			settings.IndirectRays = uint32_t(rays);
 			globals::features::dx12NativeScene.Tracer().Reset();
 		}
-		ImGui::TextWrapped("RT-exclusive indirect uses the shared four-mode trace policy in RT Composer; its own resolution selector is retired.");
+		ImGui::TextWrapped("RT-exclusive indirect traces at native resolution or native checkerboard, matching direct lighting. Its independent resolution selector is retired.");
 		ImGui::SliderFloat("Indirect intensity", &settings.IndirectStrength, 0.0f, 8.0f, "%.2fx");
 		const auto trace = globals::features::dx12NativeScene.Tracer().GetDiagnostics();
 		if (!trace.value("bakedRoomsKnown", false))

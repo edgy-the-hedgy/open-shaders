@@ -78,7 +78,7 @@ namespace
 
 std::pair<std::string, std::vector<std::string>> RTComposer::GetFeatureSummary()
 {
-    return { "DX12 Hybrid-Shadowed production composition and dedicated Shadow Only raster-mask fallback, with unified RT sampling and Ray Regeneration.", {} };
+    return { "DX12 Hybrid-Shadowed production composition and dedicated Shadow Only raster-mask fallback, with separate native-direct and SSGI-sized HybridGI sampling and Ray Regeneration.", {} };
 }
 
 bool RTComposer::DX12HybridReady() const
@@ -132,6 +132,7 @@ json RTComposer::GetDiagnostics()
         { "hybridResolution", composition.hybridResolution },
         { "hybridCheckerboard", composition.hybridCheckerboard },
         { "hybridSamplingMode", composition.hybridResolution },
+        { "hybridSpatialScale", 1u << composition.hybridResolution },
         { "shadowThreshold", composition.shadowThreshold },
         { "rtIndirectTraceDispatchesCumulative", tracer.GetDiagnostics().value("indirectTraceDispatches", uint64_t{ 0 }) }
     };
@@ -260,9 +261,9 @@ void RTComposer::LoadSettings(json& value)
     if (!value.is_object()) return;
     const auto beforePolicy = std::pair{ composition.enabled, composition.mode };
     const auto beforeSampling = std::tuple{ composition.directCheckerboard, composition.hybridResolution, composition.hybridCheckerboard };
-    // Older profiles used three independent resolution settings. Migrate
-    // once into one canonical four-mode policy; never revive parallel
-    // DirectRR, RT-exclusive or Hybrid GI resolution controls.
+    // Migrate older shared four-mode settings to two independent policies:
+    // direct native checkerboard and SSGI-sized HybridGI with checkerboard.
+    // Do not revive retired direct/RR/RT-exclusive resolution selectors.
     const auto legacyRR = value.value("FSRRayRegeneration", json::object());
     const auto currentRR = RayRegeneration::GetSettings();
     const uint32_t legacyReduction = legacyRR.is_object() ?
@@ -329,8 +330,11 @@ void RTComposer::LoadSettings(json& value)
 void RTComposer::RestoreDefaultSettings()
 {
     const auto beforePolicy = std::pair{ composition.enabled, composition.mode };
+    const auto beforeSampling = std::tuple{ composition.directCheckerboard, composition.hybridResolution, composition.hybridCheckerboard };
     composition = {};
-    if (beforePolicy != std::pair{ composition.enabled, composition.mode }) OnCompositionPolicyChanged();
+    if (beforePolicy != std::pair{ composition.enabled, composition.mode } ||
+        beforeSampling != std::tuple{ composition.directCheckerboard, composition.hybridResolution, composition.hybridCheckerboard })
+        OnCompositionPolicyChanged();
     RayRegeneration::Configure(0u, false, true);
     globals::features::redstoneGI.GetDenoiser().SetConfiguration(json::object());
     auto& direct = globals::features::rtDirectLighting.settings;
@@ -443,7 +447,7 @@ void RTComposer::DrawSettings()
         const auto packed = trace.value("nativeHybridPackedGrid", std::array<uint32_t, 2>{});
         ImGui::Text("Hybrid RR grid: %u x %u | trace storage: %u x %u",
             logical[0], logical[1], packed[0], packed[1]);
-        ImGui::Text("Active traced pixels: %llu | 2x2 phase: %u | checkerboard origin: %u",
+        ImGui::Text("Active traced pixels: %llu | sampling phase: %u | checkerboard origin: %u",
             static_cast<unsigned long long>(trace.value("nativeHybridTracedPixels", uint64_t{0})),
             trace.value("nativeHybridSamplePhase", 0u),
             trace.value("nativeHybridCheckerboardOrigin", 0u));

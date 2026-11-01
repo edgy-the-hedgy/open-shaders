@@ -185,8 +185,8 @@ const void* RedstoneGI::GetBootValue(std::string_view) const
 
 void RedstoneGI::SetRRCheckerboard(bool a_enabled)
 {
-    // Compatibility API: checkerboard is no longer an independent RR
-    // setting. Route requests through the single compositor sampling mode.
+    // Compatibility API: configure only native HybridGI checkerboarding.
+    // Direct checkerboard and RR logical resolution remain independent.
     auto& composer = globals::features::rtComposer;
     const bool changed = composer.composition.hybridCheckerboard != a_enabled;
     composer.composition.hybridCheckerboard = a_enabled;
