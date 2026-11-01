@@ -9,6 +9,7 @@
 #include "Utils/RayRegenerationSettings.h"
 
 #include <fstream>
+#include <bit>
 #include <BS_thread_pool.hpp>
 
 namespace DX12Native
@@ -300,7 +301,7 @@ namespace DX12Native
 		if (!depth) throw std::runtime_error("Native receiver depth unavailable");
 		auto* gridBuffer = a_frame.grid.get();
 		auto* cameraBuffer = a_frame.camera.get();
-		ID3D11ShaderResourceView* inputs[]{ depth, a_lights.records, a_roomMetadata };
+		ID3D11ShaderResourceView* inputs[]{ depth, nullptr, a_roomMetadata };
 		ID3D11UnorderedAccessView* outputs[]{ a_frame.receivers->uav, a_frame.light->uav };
 		context->CSSetShaderResources(0, 3, inputs);
 		context->CSSetUnorderedAccessViews(0, 2, outputs, nullptr);
@@ -557,19 +558,18 @@ namespace DX12Native
 	}
 
 
-	void DirectionalTrace::Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight, const LightLimitFixData::LightView& a_lights, uint32_t a_materialView, ID3D11UnorderedAccessView* a_sceneTarget, uint32_t a_lightReference, uint32_t a_lightBase, ID3D11ShaderResourceView* a_roomMetadata, std::span<const std::array<uint32_t, 2>> a_lightIdentities, bool a_allPreparedLights, float4 a_strengths, bool a_useIndirect, float a_indirectStrength, bool a_useDirectRR, uint32_t a_indirectRays, std::span<const uint32_t> a_roomReferences, float a_rasterBlend, uint32_t a_normalMode)
+	void DirectionalTrace::Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight, const LightLimitFixData::LightView& a_lights, uint32_t a_materialView, ID3D11UnorderedAccessView* a_sceneTarget, uint32_t a_lightReference, uint32_t a_lightBase, ID3D11ShaderResourceView* a_roomMetadata, std::span<const std::array<uint32_t, 2>> a_lightIdentities, bool a_allPreparedLights, float4 a_strengths, bool a_useIndirect, float a_indirectStrength, bool a_useDirectRR, uint32_t a_indirectRays, std::span<const uint32_t> a_roomReferences, float a_rasterBlend, uint32_t a_normalMode, std::span<const PreparedPointLight> a_preparedLights)
 	{
 		CS_GPU_PASS("RTDirectLighting::DirectionalDispatch");
 		const bool direct = a_materialView >= kFirstDirectView;
 		lightSelectionFailure.clear();
-		if (a_allPreparedLights && (!direct || a_lightIdentities.empty() || a_lightIdentities.size() > kMaximumDirectLights)) {
+		if (a_allPreparedLights && (!direct || a_preparedLights.empty() || a_preparedLights.size() > kMaximumDirectLights)) {
 			lightSelectionFailure = "All-prepared-light mode requires 1..32 prepared lights and a direct-light view";
 			previewValid = false;
 			return;
 		}
 		if (a_sceneTarget && (a_materialView != kCombinedDirectView || (sceneCompositeSubmissions && sceneCompositeFrame == a_frame))) return;
-		const bool validLights = a_lights.records && a_lights.count && a_lights.count <= LightLimitFixData::kMaximumLights && a_lights.frame == a_frame &&
-			std::all_of(a_lights.eyeOrigin.begin(), a_lights.eyeOrigin.end(), [](float value) { return std::isfinite(value); });
+		const bool validLights = a_lights.frame == a_frame && a_lights.roomGeneration != 0;
 		const auto lights = validLights ? a_lights : LightLimitFixData::LightView{};
 		if (a_localLight && (!a_materialView || direct) && !validLights) ++unavailableLightFrames;
 		if (!pipeline || !failure.empty() || !a_scene || a_scene->instances.empty() || a_scene->instances.size() > kMaximumInstances || !a_nativeSize[0] || !a_nativeSize[1]) return;
@@ -613,7 +613,7 @@ namespace DX12Native
 			if (directRR) {
 				++directRRBudgetDeferrals;
 				Dispatch(a_scene, a_nativeSize, a_lightDirection, a_frame, a_budgetBytes, a_localLight, a_lights, a_materialView, a_sceneTarget,
-					a_lightReference, a_lightBase, a_roomMetadata, a_lightIdentities, a_allPreparedLights, a_strengths, a_useIndirect, a_indirectStrength, false, a_indirectRays, a_roomReferences, a_rasterBlend, a_normalMode);
+					a_lightReference, a_lightBase, a_roomMetadata, a_lightIdentities, a_allPreparedLights, a_strengths, a_useIndirect, a_indirectStrength, false, a_indirectRays, a_roomReferences, a_rasterBlend, a_normalMode, a_preparedLights);
 			} else ++budgetDeferrals;
 			return;
 		}
@@ -658,6 +658,8 @@ namespace DX12Native
 			available->useDirectRR = directRR;
 			available->rasterBlend = a_rasterBlend;
 			available->normalMode = std::min(a_normalMode, 2u);
+			available->preparedLights = a_allPreparedLights ? std::vector<PreparedPointLight>(a_preparedLights.begin(), a_preparedLights.end()) :
+				std::vector<PreparedPointLight>{ a_preparedLights.empty() ? PreparedPointLight{} : a_preparedLights.front() };
 			if (a_allPreparedLights) available->lightIdentities.assign(a_lightIdentities.begin(), a_lightIdentities.end());
 			else available->lightIdentities = { { a_lightReference, a_lightBase } };
 			available->bytes = textureBytes * 2 + lightBytes + signalBytes + kFrameOverheadBytes;
@@ -677,19 +679,33 @@ namespace DX12Native
 			desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
 			desc.Width = kLightSnapshotWidth; desc.Height = 2;
 			if (!available->light) available->light = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RTDirectLighting::EvaluatedLightSnapshot");
+			// Upload immutable prepared lights to the existing GPU snapshot layout.
+			// D3D11 receiver preparation only stamps per-pixel depth and room mappings.
+			std::array<std::array<float, 4>, kLightSnapshotWidth * 2> snapshot{};
+			for (size_t lightIndex = 0; lightIndex < available->preparedLights.size() && lightIndex < kMaximumDirectLights; ++lightIndex) {
+				const auto& item = available->preparedLights[lightIndex];
+				auto* record = snapshot.data() + lightIndex * kLightSnapshotTexels;
+				record[1] = { item.radius, item.radius > 0 ? 1.0f / item.radius : 0.0f, item.radius * 0.1f, item.sourceRadius };
+				record[2] = { item.position.x, item.position.y, item.position.z, 1 };
+				record[5] = { 0, item.supported ? 0.0f : 7.0f, item.supported ? 1.0f : 0.0f, 0 };
+				record[6] = { 0, 0, 0, item.supported ? 1.0f : 0.0f };
+				record[7] = { item.radiance.x, item.radiance.y, item.radiance.z, item.supported ? 1.0f : 0.0f };
+			}
+			backend.d3d11Context->UpdateSubresource(available->light->resource11, 0, nullptr,
+				snapshot.data(), kLightSnapshotWidth * sizeof(snapshot[0]), 0);
 			PrepareReceivers(*available, a_nativeSize, lights, a_roomMetadata);
 			Record(*available, a_lightDirection, a_localLight);
 			if (direct) ++directSubmissions;
 			if (a_sceneTarget) CompositeScene(*available, a_sceneTarget);
 			localLightMode = a_localLight;
-			sourceLightCount = lights.count;
-			sourceLightFrame = lights.frame;
+			sourceLightCount = uint32_t(available->preparedLights.size());
+			sourceLightFrame = a_frame;
 			sourceReference = a_lightReference;
 			sourceBase = a_lightBase;
 			sourceRoomGeneration = lights.roomGeneration;
 			sourceRoomMetadata = a_roomMetadata != nullptr;
 			allPreparedLights = a_allPreparedLights;
-			requestedLightCount = uint32_t(available->lightIdentities.size());
+			requestedLightCount = uint32_t(available->preparedLights.size());
 		} catch (const std::exception& error) {
 			failure = error.what(); previewValid = false;
 			if (!available->submitted) *available = {};
@@ -712,7 +728,7 @@ namespace DX12Native
 			{ "residentBytes", ResidentBytes() + MaterialResidentBytes() }, { "traceResidentBytes", ResidentBytes() },
 			{ "materialView", previewMaterialView }, { "budgetDeferrals", budgetDeferrals }, { "busyFrames", busyFrames },
 			{ "failure", failure }, { "minimumDistance", kRayMinimum }, { "maximumDistance", kRayMaximum }, { "angularRadius", localLightMode ? 0.0f : kSunAngularRadius },
-			{ "lightMode", localLightMode ? "evaluated-local" : "directional" },
+			{ "lightMode", localLightMode ? "prepared-static" : "directional" },
 			{ "allPreparedLights", allPreparedLights }, { "requestedLightCount", requestedLightCount }, { "maximumDirectLights", kMaximumDirectLights }, { "lightSelectionFailure", lightSelectionFailure },
 			{ "directSubmissions", directSubmissions }, { "sceneCompositeSubmissions", sceneCompositeSubmissions }, { "sceneCompositeFrame", sceneCompositeFrame },
 			{ "directScope", "selected light or complete bounded prepared point-light set; supported depth-matched PBR surfaces; per-light diffuse/specular, emission once; no native CPU bypass" },
@@ -724,7 +740,7 @@ namespace DX12Native
 			{ "readySourceMaterials", materials ? materials->readyMaterials : 0 }, { "rejectedSourceMaterials", materials ? materials->rejectedMaterials : 0 },
 			{ "materialFailure", materials ? materials->failure : "" }, { "materialCompatibilityValidated", false },
 			{ "sourceReference", sourceReference }, { "sourceBase", sourceBase }, { "sourceRoomGeneration", sourceRoomGeneration }, { "sourceRoomMetadata", sourceRoomMetadata },
-			{ "lightMatch", "exact placed-reference and base identity; exactly one supported live record required" },
+			{ "lightMatch", "prepared static baseline; unsupported overrides/PortalStrict or live changes fall back to raster" },
 			{ "radianceProduced", false }, { "shadowMapInputs", false },
 			{ "blockerDistance", "nearest accepted triangle along the sampled unit direction; exposed sentinel 65504" },
 			{ "coverageValid", false }, { "sceneLightingConsumed", false }, { "rrSubmitted", false }

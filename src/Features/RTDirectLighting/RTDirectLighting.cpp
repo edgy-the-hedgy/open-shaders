@@ -114,7 +114,7 @@ void RTDirectLighting::DrawDirectLightingSettings()
     }
     const auto selectionFailure = globals::features::dx12NativeScene.Tracer().GetDiagnostics().value("lightSelectionFailure", std::string{});
     if (!selectionFailure.empty()) ImGui::TextWrapped("Light set unavailable: %s", selectionFailure.c_str());
-    ImGui::TextWrapped("Visibility and direct-light previews require a live matching placed-reference/base light. PortalStrict uses the native receiver-room mask; unsupported materials and saved/moved objects are not validated.");
+    ImGui::TextWrapped("Static prepared-light baseline is independent of LLF radiance. Animated lights, PortalStrict and reference overrides are not yet supported and preserve raster fallback. The 32-light trace limit remains.");
 }
 
 
@@ -147,6 +147,7 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
 	auto backend = Feature::FindGraphicsBackend();
 	auto& tracer = native.Tracer();
 	if (!backend || !tracer.Initialize(*backend)) return;
+	// LLF is retained only for the existing opaque-room generation/stamp, not for lighting.
 	const auto lights = globals::features::lightLimitFix.GetLightView(frame);
 	const float3 light = settings.SelectedDirectLight < snapshot->cell->lights.size() ? snapshot->cell->lights[settings.SelectedDirectLight] : float3{};
 	const auto identity = settings.SelectedDirectLight < snapshot->lightReferences.size() ? snapshot->lightReferences[settings.SelectedDirectLight] : std::array<uint32_t, 2>{};
@@ -158,7 +159,9 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
 		settings.UseAllPreparedLights ? std::span<const std::array<uint32_t, 2>>(snapshot->lightReferences) : std::span<const std::array<uint32_t, 2>>{},
 		settings.UseAllPreparedLights, { settings.DirectStrength, settings.DiffuseStrength, settings.SpecularStrength, settings.EmissionStrength },
 		gi.loaded && gi.settings.ConnectHybrid && !rtExclusive, gi.settings.IndirectStrength, settings.UseDirectRayRegeneration,
-		rtExclusive ? gi.settings.IndirectRays : 0u, snapshot->roomReferences, settings.RedstoneBlend, settings.NormalInfluence);
+		rtExclusive ? gi.settings.IndirectRays : 0u, snapshot->roomReferences, settings.RedstoneBlend, settings.NormalInfluence,
+		settings.UseAllPreparedLights ? std::span<const DX12Native::PreparedPointLight>(snapshot->cell->nativeLights) :
+			std::span<const DX12Native::PreparedPointLight>(snapshot->cell->nativeLights).subspan(settings.SelectedDirectLight, 1));
 	lastFrame = frame;
 }
 

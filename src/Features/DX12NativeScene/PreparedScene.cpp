@@ -6,6 +6,7 @@
 #include <cstring>
 #include <span>
 #include <fstream>
+#include <cmath>
 
 namespace DX12Native
 {
@@ -246,6 +247,31 @@ namespace DX12Native
 				if (position.size() != 3 || !std::ranges::all_of(position, [](float v) { return std::isfinite(v); })) continue;
 				result->lights.push_back({ position[0], position[1], position[2] });
 				result->lightDefinitions.push_back(light);
+				PreparedPointLight native{};
+				native.position = { position[0], position[1], position[2] };
+				// Raw plugin baseline, never a promise of current dynamic light state.
+				try {
+					const auto& data = light.at("baseline");
+					const auto rgb = data.at("color").get<std::vector<int>>();
+					const auto flags = data.value("flags", std::string{});
+					const float radius = data.at("radius").get<float>();
+					const float fade = data.value("fadeValue", 1.0f);
+					const bool unsupported = light.value("hasReferenceOverrides", true) ||
+						flags.find("PortalStrict") != std::string::npos || flags.find("Spot") != std::string::npos ||
+						flags.find("Particle") != std::string::npos || flags.find("Disabled") != std::string::npos;
+					if (!unsupported && rgb.size() == 3 && std::isfinite(radius) && std::isfinite(fade) &&
+						radius > 0 && fade > 0 && radius <= 60000.0f &&
+						std::ranges::all_of(rgb, [](int c) { return c >= 0 && c <= 255; })) {
+						const auto srgb = [](float v) { return v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f); };
+						const float scale = fade * radius * radius;
+						native.radiance = { srgb(float(rgb[0]) / 255.0f) * scale,
+							srgb(float(rgb[1]) / 255.0f) * scale, srgb(float(rgb[2]) / 255.0f) * scale };
+						native.radius = radius;
+						native.sourceRadius = std::max(0.5f, radius * 0.025f);
+						native.supported = true;
+					}
+				} catch (const json::exception&) { /* Leave unsupported; raster fallback. */ }
+				result->nativeLights.push_back(native);
 			}
 			result->snapshot = std::move(snapshot);
 			return result;

@@ -124,6 +124,7 @@ void DX12NativeScene::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target,
 	if (!all && (!view || view >= DX12Native::DirectionalTrace::kFirstDirectView) && settings.PreviewLight >= state->cell->lights.size()) return;
 	const auto backend = Feature::FindGraphicsBackend();
 	if (!backend || !preparedTrace.Initialize(*backend)) return;
+	// Opaque receiver-room metadata still uses the existing LLF room generation.
 	const auto lights = globals::features::lightLimitFix.GetLightView(frame);
 	const float3 light = settings.PreviewLight < state->cell->lights.size() ? state->cell->lights[settings.PreviewLight] : float3{};
 	const auto identity = settings.PreviewLight < state->lightReferences.size() ? state->lightReferences[settings.PreviewLight] : std::array<uint32_t, 2>{};
@@ -134,6 +135,10 @@ void DX12NativeScene::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target,
 		view, nullptr, identity[0], identity[1], metadata,
 		all ? std::span<const std::array<uint32_t, 2>>(state->lightReferences) : std::span<const std::array<uint32_t, 2>>{},
 		all, { settings.PreviewDirectStrength, settings.PreviewDiffuseStrength, settings.PreviewSpecularStrength, settings.PreviewEmissionStrength },
-		false, 1.0f, false, 0u, state->roomReferences, 1.0f);
+		false, 1.0f, false, 0u, state->roomReferences, 1.0f, 2u,
+		all ? std::span<const DX12Native::PreparedPointLight>(state->cell->nativeLights) :
+			(settings.PreviewLight < state->cell->nativeLights.size() ?
+				std::span<const DX12Native::PreparedPointLight>(state->cell->nativeLights).subspan(settings.PreviewLight, 1) :
+				std::span<const DX12Native::PreparedPointLight>{}));
 	preparedTraceFrame = frame;
 }

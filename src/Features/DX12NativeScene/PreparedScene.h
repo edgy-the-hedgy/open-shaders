@@ -6,6 +6,15 @@
 
 namespace DX12Native
 {
+	/** @brief Validated static source data. Runtime/animated light handling is deferred. */
+	struct PreparedPointLight
+	{
+		float3 position{};
+		float3 radiance{};
+		float radius = 0;
+		float sourceRadius = 0;
+		bool supported = false;
+	};
 	/** @brief Owns offline geometry and baseline lights independently of engine pointers. */
 	struct PreparedCell
 	{
@@ -13,6 +22,7 @@ namespace DX12Native
 		AccelerationScene::GeometryMap geometries;
 		std::vector<float3> lights;
 		std::vector<json> lightDefinitions;
+		std::vector<PreparedPointLight> nativeLights;
 		std::vector<json> roomDefinitions;
 		std::string digest;
 		uint64_t bytes = 0;
