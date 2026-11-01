@@ -339,7 +339,11 @@ void RTComposer::DrawSettings()
             OnCompositionPolicyChanged();
         if (ImGui::Checkbox("Preview raw native Hybrid-Shadowed (diagnostic, no RR)", &composition.previewNativeRaw))
             OnCompositionPolicyChanged();
-        ImGui::TextWrapped("Native GI/AO and DX12 composition are diagnostic until independent RR histories and the final output handoff are validated. This session-only preview displays the raw DX12 scene through one minimal DX11 copy pass; invalid frames fall back to Shadow Only.");
+        if (composition.previewNativeRaw &&
+            composition.samplingMode != DX12Native::HybridSamplingMode::Native)
+            ImGui::TextWrapped("Raw preview is available only at full native density. Reduced-density samples still dispatch for diagnostics, but cannot be displayed as finished lighting before RR and post-RR reconstruction; Shadow Only stays active.");
+        else
+            ImGui::TextWrapped("Native GI/AO composition is diagnostic until independent RR histories and the final output handoff are validated.");
         const auto trace = globals::features::dx12NativeScene.Tracer().GetDiagnostics();
         ImGui::Text("DX12 input bridge dispatches: %llu",
             static_cast<unsigned long long>(trace.value("hybridInputDispatches", uint64_t{ 0 })));
@@ -353,6 +357,16 @@ void RTComposer::DrawSettings()
             static_cast<unsigned long long>(trace.value("nativeHybridGIDispatches", uint64_t{ 0 })),
             static_cast<unsigned long long>(trace.value("nativeHybridAODispatches", uint64_t{ 0 })),
             static_cast<unsigned long long>(trace.value("nativeHybridCompositionDispatches", uint64_t{ 0 })));
+        ImGui::Text("Full-native eligibility dispatches: %llu",
+            static_cast<unsigned long long>(trace.value("nativeHybridEligibilityDispatches", uint64_t{ 0 })));
+        const auto logical = trace.value("nativeHybridLogicalGrid", std::array<uint32_t, 2>{});
+        const auto packed = trace.value("nativeHybridPackedGrid", std::array<uint32_t, 2>{});
+        ImGui::Text("Hybrid RR grid: %u x %u | trace storage: %u x %u",
+            logical[0], logical[1], packed[0], packed[1]);
+        ImGui::Text("Active traced pixels: %llu | 2x2 phase: %u | checkerboard origin: %u",
+            static_cast<unsigned long long>(trace.value("nativeHybridTracedPixels", uint64_t{0})),
+            trace.value("nativeHybridSamplePhase", 0u),
+            trace.value("nativeHybridCheckerboardOrigin", 0u));
         ImGui::Text("Native diagnostic scene exports: %llu",
             static_cast<unsigned long long>(trace.value("nativeHybridPreviewSubmissions", uint64_t{ 0 })));
         const auto giFailure = trace.value("nativeHybridGIFailure", std::string{});
