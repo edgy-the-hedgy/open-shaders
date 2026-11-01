@@ -64,8 +64,22 @@ void RTDirectLighting::ClearShaderCache()
 }
 json RTDirectLighting::GetDiagnostics()
 {
+	const auto& native = globals::features::dx12NativeScene;
+	const auto prepared = native.GetPreparedDiagnostics();
+	const auto trace = native.Tracer().GetDiagnostics();
+	const bool scenePublished = bool(native.GetPublishedScene());
+	const bool nativeReady = native.loaded && native.settings.UsePreparedScene && native.settings.UsePreparedMaterials;
+	const std::string status = !loaded ? "feature-not-loaded" : !settings.UsePreparedDirectLighting ? "disabled" :
+		!native.loaded ? "native-feature-not-loaded" : !nativeReady ? "prepared-scene-not-enabled" :
+		!scenePublished ? "prepared-scene-not-published" :
+		!trace.value("lightSelectionFailure", std::string{}).empty() ? "light-selection-rejected" :
+		!trace.value("failure", std::string{}).empty() ? "trace-failed" :
+		trace.value("sceneCompositeSubmissions", uint64_t{ 0 }) == 0 ? "no-scene-composite-yet" : "composite-dispatched-radiance-unverified";
 	return { { "directLightingEnabled", settings.UsePreparedDirectLighting }, { "selectedDirectLight", settings.SelectedDirectLight },
-		{ "rasterRTBlend", settings.RedstoneBlend }, { "trace", globals::features::dx12NativeScene.Tracer().GetDiagnostics() } };
+		{ "rasterRTBlend", settings.RedstoneBlend }, { "activationStatus", status },
+		{ "nativeFeatureLoaded", native.loaded }, { "preparedSceneEnabled", native.settings.UsePreparedScene },
+		{ "preparedMaterialsEnabled", native.settings.UsePreparedMaterials }, { "preparedScenePublished", scenePublished },
+		{ "preparedScene", prepared }, { "trace", trace } };
 }
 
 void RTDirectLighting::DrawDirectLightingSettings()
@@ -122,7 +136,15 @@ void RTDirectLighting::DrawDirectLightingSettings()
 
     if (settings.UsePreparedDirectLighting) {
         ImGui::TextWrapped("Requires prepared geometry and material maps. Supported depth-matched opaque pixels receive direct diffuse/specular and emission; others retain raster output. Missing or unsupported lights keep native output. Unlisted direct lights remain absent at full RT blend; connected indirect lighting is selected separately. Native shadow production remains active.");
-        const auto trace = globals::features::dx12NativeScene.Tracer().GetDiagnostics();
+        const auto diagnostics = GetDiagnostics();
+        const auto& trace = diagnostics.at("trace");
+        ImGui::Text("Activation: %s", diagnostics.value("activationStatus", std::string{}).c_str());
+        ImGui::Text("Prepared scene: %s | material maps: %s | published: %s",
+            diagnostics.value("preparedSceneEnabled", false) ? "enabled" : "off",
+            diagnostics.value("preparedMaterialsEnabled", false) ? "enabled" : "off",
+            diagnostics.value("preparedScenePublished", false) ? "yes" : "no");
+        ImGui::Text("Native direct dispatches: %llu | RR dispatches: %llu",
+            trace.value("directTraceDispatches", 0ull), trace.value("directRRDispatches", 0ull));
         ImGui::Text("Submitted light count: %u | limit: %u", trace.value("requestedLightCount", 0u), DX12Native::DirectionalTrace::kMaximumDirectLights);
         ImGui::Text("Scene submissions: %llu | last frame: %u | budget deferrals: %llu | busy frames: %llu",
             trace.value("sceneCompositeSubmissions", 0ull), trace.value("sceneCompositeFrame", 0u), trace.value("budgetDeferrals", 0ull), trace.value("busyFrames", 0ull));
