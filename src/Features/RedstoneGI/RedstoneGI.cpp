@@ -354,7 +354,7 @@ RedstoneGI::RGICB RedstoneGI::GetNativeGISettings(std::array<uint32_t, 2> native
     // exact layout of the legacy DX11 constant buffer.
     data.geometryPadding[0] = sampling.representativePhase;
     data.geometryPadding[1] = sampling.quarter ? 1u : 0u;
-    data.MinScreenRadius = settings.MinScreenRadius * size.x;
+    data.MinScreenRadius = settings.MinScreenRadius * grid.x;
     data.EffectRadius = std::max(1.0f, settings.GIRadius);
     data.GIRadius = settings.GIRadius / data.EffectRadius;
     data.SpecularRoughnessFloor = specularRoughnessFloor;
