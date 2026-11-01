@@ -1,4 +1,5 @@
 #include "RedstoneGI.h"
+#include "Features/RTIndirectLighting/RTIndirectLighting.h"
 #include "Deferred.h"
 #include "Utils/UI.h"
 #include "Utils/Game.h"
@@ -28,7 +29,7 @@ void RedstoneGI::OnWorldRenderBegin()
 
 int RedstoneGI::GetIndirectLightingPriority() const
 {
-	return selected && resourcesReady && !switchFailed && IsRuntimeReady() ? 100 : -1;
+	return globals::features::rtIndirectLighting.loaded && selected && resourcesReady && !switchFailed && IsRuntimeReady() ? 100 : -1;
 }
 
 void RedstoneGI::OnIndirectLightingSelection(bool a_selected)
