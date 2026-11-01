@@ -54,8 +54,16 @@ float EstimateOcclusion(Surface surface, float roughness, bool specular)
  float visibility = total > 0 ? saturate(1 - blocked / total) : 1;
  return lerp(visibility, 1.0, GetDepthFade(surface.depth));
 }
-[numthreads(8,8,1)] void main(uint2 pixel : SV_DispatchThreadID)
+[numthreads(8,8,1)] void main(uint2 packedPixel : SV_DispatchThreadID)
 {
+#if defined(DX12_HYBRID_GI)
+ // Same checkerboard packing as indirect GI, with no discarded inactive lanes.
+ const uint2 pixel = RRCheckerboardEnabled != 0u ?
+    uint2(packedPixel.x * 2u + ((packedPixel.y + RRCheckerboardOrigin) & 1u),
+          packedPixel.y) : packedPixel;
+#else
+ const uint2 pixel = packedPixel;
+#endif
  if (any(pixel >= uint2(OUT_FRAME_DIM))) return;
  if (RRCheckerboardEnabled && ((pixel.x + pixel.y) & 1u) != RRCheckerboardOrigin) return;
  float diffuse = 1, specular = 1;
