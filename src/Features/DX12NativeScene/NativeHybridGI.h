@@ -47,7 +47,8 @@ namespace DX12Native
         };
         static bool ShadersAvailable();
         static uint64_t EstimateBytes(ID3D12Device* device, uint32_t width, uint32_t height,
-            const HybridSamplingLayout& sampling);
+            const HybridSamplingLayout& sampling,
+            const std::array<bool, 3>& postBlurEnabled);
         bool Record(ID3D12Device* device, ID3D12GraphicsCommandList* list,
             FrameOutputs& frame, uint32_t slot, uint32_t frameNumber,
             const std::array<uint32_t, 2>& size,
