@@ -45,16 +45,15 @@ void RTIndirectLighting::LoadSettings(json& value)
 		// Keep an old RT-exclusive selection valid after migration.
 		globals::features::rtDirectLighting.settings.UsePreparedDirectLighting = true;
 		globals::features::dx12NativeScene.RequestPreparedScene();
-	} else {
-		globals::features::redstoneGI.SelectRenderer(true);
 	}
+	// Hybrid retains the previously saved screen-space GI selection on load.
+	// Explicitly choosing Hybrid in the UI or DevBench selects the RGI backend.
 }
 
 void RTIndirectLighting::SaveSettings(json& value) { value = settings; }
 void RTIndirectLighting::RestoreDefaultSettings()
 {
 	settings = {};
-	globals::features::redstoneGI.SelectRenderer(true);
 }
 
 bool RTIndirectLighting::UsesRTExclusive() const
