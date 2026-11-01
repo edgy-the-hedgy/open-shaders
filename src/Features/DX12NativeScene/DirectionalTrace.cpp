@@ -559,6 +559,7 @@ namespace DX12Native
                     backend.d3d11Device.get(), frame.commands.get(), frame.nativeGI,
                     uint32_t(&frame - frames.data()), frame.size,
                     frame.hybridShadowedSource.get(), frame.output->resource.get(),
+                    frame.hybridInputs[3]->resource.get(), frame.hybridInputs[4]->resource.get(),
                     frame.rasterBlend * composition.rtDirectContribution,
                     composition.giContribution);
         }
