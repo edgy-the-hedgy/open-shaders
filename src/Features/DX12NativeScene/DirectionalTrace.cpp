@@ -1278,6 +1278,7 @@ namespace DX12Native
             { "hybridShadowedSourceDispatches", hybridSourceDispatches },
             { "nativeHybridGIDispatches", nativeHybridGI ? nativeHybridGI->GIDispatches() : uint64_t{0} },
             { "nativeHybridAODispatches", nativeHybridGI ? nativeHybridGI->AODispatches() : uint64_t{0} },
+            { "nativeHybridEligibilityDispatches", nativeHybridGI ? nativeHybridGI->EligibilityDispatches() : uint64_t{0} },
             { "nativeHybridGIFailure", nativeHybridGI ? nativeHybridGI->Failure() : std::string{} },
             { "nativeHybridCompositionDispatches", nativeHybridGI ? nativeHybridGI->CompositionDispatches() : uint64_t{0} },
             { "nativeHybridCompositionFailure", nativeHybridGI ? nativeHybridGI->CompositionFailure() : std::string{} },
