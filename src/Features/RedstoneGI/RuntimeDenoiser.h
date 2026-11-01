@@ -41,6 +41,8 @@ public:
     const std::string& NativeHybridFailure() const { return nativeHybridFailure; }
     uint64_t NativeHybridDispatches() const { return nativeHybridDispatches; }
     uint64_t NativeHybridResets() const { return nativeHybridResets; }
+    /** @brief Safely retire only the native SDK contexts, preserving legacy RR. */
+    bool RetireNativeHybridContexts();
 	json GetRayRegenerationDiagnostics() const;
 	/** @brief Returns saved overrides and provider defaults for the seven SDK configuration keys. */
 	json GetConfiguration() const;
