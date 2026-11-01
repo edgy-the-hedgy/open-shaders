@@ -110,14 +110,7 @@ void RTIndirectLighting::DrawSettings()
 			settings.IndirectRays = uint32_t(rays);
 			globals::features::dx12NativeScene.Tracer().Reset();
 		}
-		int resolution = 0;
-		for (int option = 0; option < int(DX12Native::DirectionalTrace::kTraceResolutionMenuOrder.size()); ++option)
-			if (DX12Native::DirectionalTrace::kTraceResolutionMenuOrder[option] == settings.RTTraceResolution) resolution = option;
-		if (ImGui::Combo("RT-exclusive indirect trace resolution", &resolution, DX12Native::DirectionalTrace::kTraceResolutionMenuLabels)) {
-			settings.RTTraceResolution = DX12Native::DirectionalTrace::kTraceResolutionMenuOrder[resolution];
-			globals::features::dx12NativeScene.Tracer().Reset();
-		}
-		ImGui::TextWrapped("Independent from direct trace resolution and RR. Sparse RTGI samples resolve only to compatible receiver surfaces.");
+		ImGui::TextWrapped("RT-exclusive indirect uses the shared four-mode trace policy in RT Composer; its own resolution selector is retired.");
 		ImGui::SliderFloat("Indirect intensity", &settings.IndirectStrength, 0.0f, 8.0f, "%.2fx");
 		const auto trace = globals::features::dx12NativeScene.Tracer().GetDiagnostics();
 		if (!trace.value("bakedRoomsKnown", false))
@@ -125,9 +118,7 @@ void RTIndirectLighting::DrawSettings()
 		const auto failure = trace.value("failure", std::string{});
 		if (!failure.empty()) ImGui::TextWrapped("RT-exclusive lighting unavailable: %s", failure.c_str());
 	} else {
-		int hybridResolution = static_cast<int>(settings.HybridResolution);
-		if (ImGui::Combo("Hybrid GI / AO processing resolution", &hybridResolution, "Full\0Half\0Quarter\0Use shared RR setting (legacy)\0"))
-			settings.HybridResolution = uint32_t(hybridResolution);
+		ImGui::TextWrapped("Hybrid GI/AO uses the same producer-derived resolution and checkerboard policy selected in RT Composer.");
 		ImGui::TextWrapped("Hybrid uses raymarched indirect diffuse/specular and occlusion with the raster baseline, optionally combined with RT Direct Lighting.");
 		if (globals::features::rtDirectLighting.loaded && globals::features::rtDirectLighting.settings.UsePreparedDirectLighting) {
 			ImGui::Checkbox("Connect Hybrid GI to prepared direct lighting", &settings.ConnectHybrid);
