@@ -6,7 +6,7 @@
 #include "Utils/DevBenchUx.h"
 #include <cmath>
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTIndirectLighting::Settings, UseRTExclusive, IndirectRays, IndirectStrength, ConnectHybrid)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTIndirectLighting::Settings, UseRTExclusive, IndirectRays, IndirectStrength, ConnectHybrid, RTTraceResolution, HybridResolution)
 
 std::pair<std::string, std::vector<std::string>> RTIndirectLighting::GetFeatureSummary()
 {
@@ -39,6 +39,8 @@ void RTIndirectLighting::LoadSettings(json& value)
 {
 	Settings selected = value;
 	selected.IndirectRays = std::clamp(selected.IndirectRays, 1u, 8u);
+	selected.RTTraceResolution = std::min(selected.RTTraceResolution, 2u);
+	selected.HybridResolution = std::min(selected.HybridResolution, 3u);
 	selected.IndirectStrength = std::isfinite(selected.IndirectStrength) ? std::clamp(selected.IndirectStrength, 0.0f, 8.0f) : 1.0f;
 	settings = selected;
 	if (settings.UseRTExclusive) {
@@ -104,6 +106,11 @@ void RTIndirectLighting::DrawSettings()
 			settings.IndirectRays = uint32_t(rays);
 			globals::features::dx12NativeScene.Tracer().Reset();
 		}
+		int resolution = static_cast<int>(settings.RTTraceResolution);
+		if (ImGui::Combo("RT-exclusive indirect trace resolution", &resolution, "Full\0Half\0Quarter\0")) {
+			settings.RTTraceResolution = uint32_t(resolution);
+			globals::features::dx12NativeScene.Tracer().Reset();
+		}
 		ImGui::SliderFloat("Indirect intensity", &settings.IndirectStrength, 0.0f, 8.0f, "%.2fx");
 		const auto trace = globals::features::dx12NativeScene.Tracer().GetDiagnostics();
 		if (!trace.value("bakedRoomsKnown", false))
@@ -111,6 +118,9 @@ void RTIndirectLighting::DrawSettings()
 		const auto failure = trace.value("failure", std::string{});
 		if (!failure.empty()) ImGui::TextWrapped("RT-exclusive lighting unavailable: %s", failure.c_str());
 	} else {
+		int hybridResolution = static_cast<int>(settings.HybridResolution);
+		if (ImGui::Combo("Hybrid GI / AO processing resolution", &hybridResolution, "Full\0Half\0Quarter\0Use shared RR setting (legacy)\0"))
+			settings.HybridResolution = uint32_t(hybridResolution);
 		ImGui::TextWrapped("Hybrid uses raymarched indirect diffuse/specular and occlusion with the raster baseline, optionally combined with RT Direct Lighting.");
 		if (globals::features::rtDirectLighting.loaded && globals::features::rtDirectLighting.settings.UsePreparedDirectLighting) {
 			ImGui::Checkbox("Connect Hybrid GI to prepared direct lighting", &settings.ConnectHybrid);

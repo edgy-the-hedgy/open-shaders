@@ -143,14 +143,14 @@ bool EvaluatePointLight(
 
 
     const float3 incidentRadiance = radiance.rgb * attenuation;
-    if (DirectNormalMode == 0u) {
+    if ((DirectNormalMode & 3u) == 0u) {
         diffuse = (1.0 - material.metallic) * material.baseColor *
             BRDF::Diffuse_Lambert() * incidentRadiance;
         specular = 0;
         return true;
     }
 
-    const float3 n = normalize(DirectNormalMode == 1u ? geometricNormal : material.normal);
+    const float3 n = normalize((DirectNormalMode & 3u) == 1u ? geometricNormal : material.normal);
     const float3 v = normalize(viewDirection);
     if (!all(isfinite(n)) || !all(isfinite(v))) {
         unavailable = Unavailable(InvalidSurface);
@@ -208,7 +208,7 @@ float4 EvaluateDirectLighting(uint instance, uint primitive, float2 barycentric,
 		// The SDK expects demodulated first-bounce radiance. Albedo remains
 		// separately available for RR and is applied once, after reconstruction.
 		const float3 diffuseAlbedo = saturate((1.0 - material.metallic) * material.baseColor);
-		const float3 shadingNormal = DirectNormalMode == 1u ? geometricNormal : material.normal;
+		const float3 shadingNormal = (DirectNormalMode & 3u) == 1u ? geometricNormal : material.normal;
 		const float NdotV = saturate(abs(dot(normalize(shadingNormal), normalize(-direction))));
 		const float2 envBRDF = BRDF::EnvBRDF(material.roughness, NdotV);
 		const float3 specularAlbedo = saturate(material.f0 * envBRDF.x + envBRDF.y);
@@ -220,7 +220,12 @@ float4 EvaluateDirectLighting(uint instance, uint primitive, float2 barycentric,
 		// RR ignores these alpha lanes, so raw emission can survive composition without subtracting rounded radiance.
 		DirectDiffuse[pixel] = float4(unmodulatedDiffuse, emission.r);
 		DirectSpecular[pixel] = float4(unmodulatedSpecular, emission.g);
-		DirectNormalRoughness[pixel] = float4(oct * 0.5 + 0.5, material.roughness, 0);
+		uint surfaceClass = 0;
+		if ((DirectNormalMode & 0x80000000u) != 0u) {
+			const float threshold = float((DirectNormalMode >> 8u) & 0xffffu) / 65535.0f;
+			surfaceClass = material.metallic >= 0.8f ? 2u : material.roughness < threshold ? 1u : 0u;
+		}
+		DirectNormalRoughness[pixel] = float4(oct * 0.5 + 0.5, material.roughness, float(surfaceClass));
 		DirectSpecularAlbedo[pixel] = float4(specularAlbedo, emission.b);
 		DirectDiffuseAlbedo[pixel] = float4(diffuseAlbedo, 1);
 

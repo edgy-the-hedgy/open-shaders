@@ -1,4 +1,5 @@
 #include "RedstoneGI.h"
+#include "Features/RTIndirectLighting/RTIndirectLighting.h"
 #include "Deferred.h"
 #include "GpuPass.h"
 #include "RuntimeDenoiser.h"
@@ -446,9 +447,16 @@ void RedstoneGI::DrawGI()
 	const auto rrPolicy = RayRegeneration::GetSettings();
 	if (rrPolicyRevision != rrPolicy.revision) {
 		rrPolicyRevision = rrPolicy.revision;
-		rrResolutionMode = rrPolicy.resolutionMode;
+		rrResolutionMode = globals::features::rtIndirectLighting.settings.HybridResolution == 3u ? rrPolicy.resolutionMode : globals::features::rtIndirectLighting.settings.HybridResolution;
 		rrCheckerboardEnabled = rrPolicy.checkerboard;
 		rrEnabled = rrPolicy.enabled;
+		recompileFlag = true;
+		ResetRuntimeHistory();
+	}
+	const uint32_t requestedGIResolution = globals::features::rtIndirectLighting.settings.HybridResolution == 3u ?
+		rrPolicy.resolutionMode : globals::features::rtIndirectLighting.settings.HybridResolution;
+	if (rrResolutionMode != requestedGIResolution) {
+		rrResolutionMode = requestedGIResolution;
 		recompileFlag = true;
 		ResetRuntimeHistory();
 	}

@@ -16,7 +16,7 @@ namespace DX12Native
 			if (!prepareDirectGuides) prepareDirectGuides.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\RTDirectLighting\\prepareDirectGuides.cs.hlsl", {}, "cs_5_0")));
 			if (!packRRSignals) packRRSignals.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\RTDirectLighting\\packRRSignals.cs.hlsl", {}, "cs_5_0")));
 			if (!prepareDirectGuides || !packRRSignals) return 0;
-			const std::array<uint32_t, 2> size{ std::max(1u, a_frame.size[0] >> policy.resolutionMode), std::max(1u, a_frame.size[1] >> policy.resolutionMode) };
+			const std::array<uint32_t, 2> size{ std::max(1u, a_frame.size[0] >> a_frame.directRRResolutionMode), std::max(1u, a_frame.size[1] >> a_frame.directRRResolutionMode) };
 			const bool checkerboard = policy.checkerboard && size[0] >= 2 && (size[0] & 1u) == 0;
 			if (directRRSize != size || directRRCheckerboard != checkerboard || !directRRTextures[0]) {
 				std::array<std::unique_ptr<Texture2D>, 13> textures;
@@ -67,7 +67,7 @@ namespace DX12Native
 			context->CSSetShaderResources(0, 8, clearedInputs);
 			context->CSSetUnorderedAccessViews(0, 7, clearedOutputs, nullptr);
 			directRRPhase = phase; rrPackFrame = a_frame.number;
-			const bool reset = directRRGeneration != a_frame.generation || directRRFrame + 1u != a_frame.number || directRRPolicyRevision != policy.revision || directRRIndirectRays != a_frame.indirectRays || directRRNormalMode != a_frame.normalMode ||
+			const bool reset = directRRGeneration != a_frame.generation || directRRFrame + 1u != a_frame.number || directRRPolicyRevision != policy.revision || directRRIndirectRays != a_frame.indirectRays || directRRNormalMode != a_frame.normalMode || directRRMaterialPolicy != a_frame.rrMaterialPolicy ||
 				std::memcmp(&directRRStrengths, &a_frame.strengths, sizeof(float4)) != 0 || directRRIdentities != a_frame.lightIdentities;
 			auto dispatch = [&](RedstoneDenoiser& denoiser, bool direct) {
 				if (!denoiser.Initialize(backend)) return false;
@@ -77,7 +77,7 @@ namespace DX12Native
 			if (a_frame.indirectRays && dispatch(indirectDenoiser, false)) flags |= 2u;
 			if (flags) {
 				directRRGeneration = flags == (a_frame.indirectRays ? 3u : 1u) ? a_frame.generation : UINT64_MAX;
-				directRRFrame = a_frame.number; directRRPolicyRevision = policy.revision; directRRIndirectRays = a_frame.indirectRays; directRRNormalMode = a_frame.normalMode;
+				directRRFrame = a_frame.number; directRRPolicyRevision = policy.revision; directRRIndirectRays = a_frame.indirectRays; directRRNormalMode = a_frame.normalMode; directRRMaterialPolicy = a_frame.rrMaterialPolicy;
 				directRRStrengths = a_frame.strengths; directRRIdentities = a_frame.lightIdentities;
 				++directRRDispatches;
 			}

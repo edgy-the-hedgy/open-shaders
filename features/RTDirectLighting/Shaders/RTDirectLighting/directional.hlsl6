@@ -29,7 +29,8 @@ cbuffer Trace : register(b0)
 	float4 LightingStrengths;
 	uint ExportDirectSignals;
 	uint TracePass;  // 0: direct, 1: RT-exclusive indirect
-	uint2 SignalPadding;
+	uint DirectTraceStride;
+	uint IndirectTraceStride;
 	uint IndirectRayCount;
 	uint BakedRoomCount;
 	uint BakedRoomsKnown;
@@ -53,6 +54,41 @@ uint Hash(uint value)
 void main(uint3 id : SV_DispatchThreadID)
 {
 	if (any(id.xy >= Size)) return;
+	// Separate resolve kernel: copy only from a traced anchor on the same
+	// receiver surface. Mismatched depth/room retains raster fallback.
+	if (TracePass >= 2u) {
+		const bool direct = TracePass == 2u;
+		const uint stride = direct ? DirectTraceStride : IndirectTraceStride;
+		if (stride <= 1u) return;
+		const uint2 sourcePixel = (id.xy / stride) * stride;
+		if (all(sourcePixel == id.xy)) return;
+		const float4 receiver = Receivers.Load(int3(id.xy, 0));
+		const float4 anchor = Receivers.Load(int3(sourcePixel, 0));
+		const float delta = length(receiver.xyz - anchor.xyz);
+		const bool compatible = receiver.w != 0 && anchor.w == receiver.w &&
+			all(isfinite(receiver)) && all(isfinite(anchor)) &&
+			delta <= max(0.5, length(receiver.xyz) * 0.005);
+		if (!compatible) return;
+		if (direct) {
+			const float4 raw = Shadow[sourcePixel];
+			if (raw.w != DirectRadianceTag) return;
+			Shadow[id.xy] = raw;
+			if (ExportDirectSignals != 0) {
+				DirectDiffuse[id.xy] = DirectDiffuse[sourcePixel];
+				DirectSpecular[id.xy] = DirectSpecular[sourcePixel];
+				DirectNormalRoughness[id.xy] = DirectNormalRoughness[sourcePixel];
+				DirectSpecularAlbedo[id.xy] = DirectSpecularAlbedo[sourcePixel];
+				DirectDiffuseAlbedo[id.xy] = DirectDiffuseAlbedo[sourcePixel];
+			}
+		} else {
+			const float4 diffuse = IndirectDiffuse[sourcePixel];
+			const float4 specular = IndirectSpecular[sourcePixel];
+			if (diffuse.a < -1.0 || specular.a < -1.0) return;
+			IndirectDiffuse[id.xy] = diffuse;
+			IndirectSpecular[id.xy] = specular;
+		}
+		return;
+	}
 	if (ExportDirectSignals != 0 && TracePass == 0) {
 		DirectDiffuse[id.xy] = 0;
 		DirectSpecular[id.xy] = 0;
@@ -61,6 +97,11 @@ void main(uint3 id : SV_DispatchThreadID)
 		DirectDiffuseAlbedo[id.xy] = 0;
 		IndirectDiffuse[id.xy] = float4(0, 0, 0, -2);
 		IndirectSpecular[id.xy] = float4(0, 0, 0, -2);
+	}
+	const uint stride = TracePass == 1u ? IndirectTraceStride : DirectTraceStride;
+	if (stride > 1u && ((id.x % stride) != 0u || (id.y % stride) != 0u)) {
+		if (TracePass == 0u) Shadow[id.xy] = Unavailable(MismatchedDepth);
+		return;
 	}
 	float4 receiver = Receivers.Load(int3(id.xy, 0));
 	if (receiver.w == 0 || !all(isfinite(receiver))) {

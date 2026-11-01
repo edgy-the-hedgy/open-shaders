@@ -10,7 +10,7 @@
 #include "Utils/DevBenchUx.h"
 #include "Util.h"
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTDirectLighting::Settings, RedstoneBlend, UsePreparedDirectLighting, UseAllPreparedLights, UseDirectRayRegeneration, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, SelectedDirectLight, NormalInfluence)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTDirectLighting::Settings, RedstoneBlend, UsePreparedDirectLighting, UseAllPreparedLights, UseDirectRayRegeneration, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, SelectedDirectLight, NormalInfluence, DirectTraceResolution, DirectRRResolution, RRMaterialIsolation, RRGlossyRoughness)
 
 std::pair<std::string, std::vector<std::string>> RTDirectLighting::GetFeatureSummary()
 {
@@ -33,6 +33,9 @@ void RTDirectLighting::LoadSettings(json& value)
 	Settings selected = value;
 	selected.SelectedDirectLight = std::min(selected.SelectedDirectLight, 255u);
 	selected.NormalInfluence = std::min(selected.NormalInfluence, 2u);
+	selected.DirectTraceResolution = std::min(selected.DirectTraceResolution, 1u);
+	selected.DirectRRResolution = std::min(selected.DirectRRResolution, 2u);
+	selected.RRGlossyRoughness = std::isfinite(selected.RRGlossyRoughness) ? std::clamp(selected.RRGlossyRoughness, 0.04f, 1.0f) : 0.2f;
 	selected.RedstoneBlend = std::isfinite(selected.RedstoneBlend) ? std::clamp(selected.RedstoneBlend, 0.0f, 1.0f) : 1.0f;
 	for (auto* v : { &selected.DirectStrength, &selected.DiffuseStrength, &selected.SpecularStrength,
 			&selected.EmissionStrength })
@@ -78,6 +81,16 @@ void RTDirectLighting::DrawDirectLightingSettings()
         globals::features::dx12NativeScene.Tracer().Reset();
     }
     ImGui::TextWrapped("Geometry mode ignores normal maps. Full material mode uses loaded shading normals. Legacy flat retains the old response with zero direct specular.");
+    int traceRes = static_cast<int>(settings.DirectTraceResolution);
+    if (ImGui::Combo("Direct trace resolution", &traceRes, "Full\0Half (depth-aware resolve)\0")) {
+        settings.DirectTraceResolution = uint32_t(traceRes);
+        globals::features::dx12NativeScene.Tracer().Reset();
+    }
+    int rrRes = static_cast<int>(settings.DirectRRResolution);
+    if (ImGui::Combo("Direct RR resolution", &rrRes, "Full\0Half\0Quarter\0")) {
+        settings.DirectRRResolution = uint32_t(rrRes);
+        globals::features::dx12NativeScene.Tracer().Reset();
+    }
     ImGui::SliderFloat("Raster / RT blend", &settings.RedstoneBlend, 0.0f, 1.0f, "%.2f");
     ImGui::SliderFloat("Direct lighting strength", &settings.DirectStrength, 0.0f, 8.0f, "%.2fx");
     if (ImGui::Checkbox("All prepared cell lights (direct only)", &settings.UseAllPreparedLights)) globals::features::dx12NativeScene.Tracer().Reset();
@@ -121,6 +134,11 @@ void RTDirectLighting::DrawDirectLightingSettings()
 void RTDirectLighting::DrawRayRegenerationSettings()
 {
 	ImGui::Checkbox("Reconstruct prepared lighting", &settings.UseDirectRayRegeneration);
+	if (ImGui::Checkbox("Separate RR history by material type", &settings.RRMaterialIsolation))
+		globals::features::dx12NativeScene.Tracer().Reset();
+	if (settings.RRMaterialIsolation && ImGui::SliderFloat("Glossy material roughness threshold", &settings.RRGlossyRoughness, 0.04f, 1.0f, "%.2f"))
+		globals::features::dx12NativeScene.Tracer().Reset();
+	ImGui::TextWrapped("RR classes: 0 ordinary opaque, 1 glossy, 2 metallic, 3 reserved.");
 	const bool wasDebugging = globals::features::dx12NativeScene.Tracer().IsRRDebugVisible();
 	globals::features::dx12NativeScene.Tracer().DrawRayRegenerationSettings(globals::features::rtIndirectLighting.UsesRTExclusive());
 	if (!wasDebugging && globals::features::dx12NativeScene.Tracer().IsRRDebugVisible()) {
@@ -161,7 +179,9 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
 		gi.loaded && gi.settings.ConnectHybrid && !rtExclusive, gi.settings.IndirectStrength, settings.UseDirectRayRegeneration,
 		rtExclusive ? gi.settings.IndirectRays : 0u, snapshot->roomReferences, settings.RedstoneBlend, settings.NormalInfluence,
 		settings.UseAllPreparedLights ? std::span<const DX12Native::PreparedPointLight>(snapshot->cell->nativeLights) :
-			std::span<const DX12Native::PreparedPointLight>(snapshot->cell->nativeLights).subspan(settings.SelectedDirectLight, 1));
+			std::span<const DX12Native::PreparedPointLight>(snapshot->cell->nativeLights).subspan(settings.SelectedDirectLight, 1),
+		settings.DirectTraceResolution, gi.settings.RTTraceResolution, settings.DirectRRResolution,
+		settings.RRMaterialIsolation, settings.RRGlossyRoughness);
 	lastFrame = frame;
 }
 
@@ -176,6 +196,10 @@ void RTDirectLighting::RegisterUxActions()
 			if (d.settings.UsePreparedDirectLighting) n.RequestPreparedScene();
 			if (args.contains("allLights")) d.settings.UseAllPreparedLights = args.at("allLights").get<bool>();
 			if (args.contains("normalMode")) d.settings.NormalInfluence = std::min(args.at("normalMode").get<uint32_t>(), 2u);
+			if (args.contains("traceResolution")) d.settings.DirectTraceResolution = std::min(args.at("traceResolution").get<uint32_t>(), 1u);
+			if (args.contains("rrResolution")) d.settings.DirectRRResolution = std::min(args.at("rrResolution").get<uint32_t>(), 2u);
+			if (args.contains("rrMaterialIsolation")) d.settings.RRMaterialIsolation = args.at("rrMaterialIsolation").get<bool>();
+			if (args.contains("rrGlossyRoughness")) d.settings.RRGlossyRoughness = std::clamp(args.at("rrGlossyRoughness").get<float>(), 0.04f, 1.0f);
 			if (args.contains("indirect")) globals::features::rtIndirectLighting.settings.ConnectHybrid = args.at("indirect").get<bool>();
 			if (args.contains("rr")) d.settings.UseDirectRayRegeneration = args.at("rr").get<bool>();
 			if (args.contains("bufferBudgetMB")) n.settings.DirectLightingBudgetMB = std::clamp(args.at("bufferBudgetMB").get<uint32_t>(), 64u, 1024u);

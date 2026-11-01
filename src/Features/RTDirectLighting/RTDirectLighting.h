@@ -15,6 +15,10 @@ struct RTDirectLighting final : OverlayFeature
 		float SpecularStrength = 1.0f;
 		float EmissionStrength = 1.0f;
 		uint32_t SelectedDirectLight = 0;
+		uint32_t DirectTraceResolution = 0;  // 0=full, 1=half linear
+		bool RRMaterialIsolation = false;
+		float RRGlossyRoughness = 0.2f;
+		uint32_t DirectRRResolution = 0;  // independent RR processing resolution
 		uint32_t NormalInfluence = 2;  // 0=legacy flat, 1=geometric, 2=full material/True PBR
 	} settings;
 	std::string GetName() override { return "RTDirectLighting"; }

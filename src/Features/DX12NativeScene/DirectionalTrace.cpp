@@ -393,7 +393,7 @@ namespace DX12Native
 			uint32_t indirect[4]{};
 		};
 		const auto& origin = globals::game::frameBufferCached.GetCameraPosAdjust();
-		const Constants constants{ a_frame.size[0], a_frame.size[1], a_frame.number, uint32_t(a_frame.scene->bottoms.size()), a_direction, kRayMaximum, { origin.x, origin.y, origin.z }, kRayMinimum, a_localLight ? 0.0f : kSunAngularRadius, { a_localLight ? 1u : 0u, a_frame.materialView, a_frame.allPreparedLights ? uint32_t(a_frame.lightIdentities.size()) : 0u }, a_frame.strengths, (a_frame.useDirectRR || a_frame.indirectRays) ? 1u : 0u, {}, { a_frame.indirectRays, a_frame.bindings->materials->roomCount, a_frame.bindings->materials->roomsKnown ? 1u : 0u, a_frame.normalMode } };
+		const Constants constants{ a_frame.size[0], a_frame.size[1], a_frame.number, uint32_t(a_frame.scene->bottoms.size()), a_direction, kRayMaximum, { origin.x, origin.y, origin.z }, kRayMinimum, a_localLight ? 0.0f : kSunAngularRadius, { a_localLight ? 1u : 0u, a_frame.materialView, a_frame.allPreparedLights ? uint32_t(a_frame.lightIdentities.size()) : 0u }, a_frame.strengths, (a_frame.useDirectRR || a_frame.indirectRays) ? 1u : 0u, { 0u, a_frame.directStride, a_frame.indirectStride }, { a_frame.indirectRays, a_frame.bindings->materials->roomCount, a_frame.bindings->materials->roomsKnown ? 1u : 0u, a_frame.normalMode | a_frame.rrMaterialPolicy } };
 		static_assert(sizeof(Constants) == 28 * sizeof(uint32_t));
 		commands->SetComputeRoot32BitConstants(5, 28, &constants, 0);
 		std::vector<D3D12_RESOURCE_BARRIER> begin{
@@ -405,6 +405,18 @@ namespace DX12Native
 		commands->ResourceBarrier(uint32_t(begin.size()), begin.data());
 		commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 		++directTraceDispatches;
+		if (a_frame.directStride > 1u) {
+			std::vector<D3D12_RESOURCE_BARRIER> barriers{
+				CD3DX12_RESOURCE_BARRIER::UAV(a_frame.output->resource.get())
+			};
+			for (uint32_t i = 0; i < 5; ++i)
+				if (a_frame.directSignals[i]) barriers.push_back(CD3DX12_RESOURCE_BARRIER::UAV(a_frame.directSignals[i]->resource.get()));
+			commands->ResourceBarrier(uint32_t(barriers.size()), barriers.data());
+			Constants resolve = constants;
+			resolve.signalPadding[0] = 2u;
+			commands->SetComputeRoot32BitConstants(5, 28, &resolve, 0);
+			commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
+		}
 		if (a_frame.indirectRays != 0) {
 			// Dedicated indirect dispatch; the same retained scene and light snapshot
 			// are consumed, while only indirect signal UAVs are written.
@@ -419,6 +431,16 @@ namespace DX12Native
 			commands->SetComputeRoot32BitConstants(5, 28, &indirectConstants, 0);
 			commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 			++indirectTraceDispatches;
+			if (a_frame.indirectStride > 1u) {
+				std::array<D3D12_RESOURCE_BARRIER, 2> resolveOrder{
+					CD3DX12_RESOURCE_BARRIER::UAV(a_frame.directSignals[5]->resource.get()),
+					CD3DX12_RESOURCE_BARRIER::UAV(a_frame.directSignals[6]->resource.get())
+				};
+				commands->ResourceBarrier(uint32_t(resolveOrder.size()), resolveOrder.data());
+				indirectConstants.signalPadding[0] = 3u;
+				commands->SetComputeRoot32BitConstants(5, 28, &indirectConstants, 0);
+				commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
+			}
 		}
 		const auto ordered = CD3DX12_RESOURCE_BARRIER::UAV(a_frame.output->resource.get());
 		commands->ResourceBarrier(1, &ordered);
@@ -574,7 +596,7 @@ namespace DX12Native
 	}
 
 
-	void DirectionalTrace::Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight, const LightLimitFixData::LightView& a_lights, uint32_t a_materialView, ID3D11UnorderedAccessView* a_sceneTarget, uint32_t a_lightReference, uint32_t a_lightBase, ID3D11ShaderResourceView* a_roomMetadata, std::span<const std::array<uint32_t, 2>> a_lightIdentities, bool a_allPreparedLights, float4 a_strengths, bool a_useIndirect, float a_indirectStrength, bool a_useDirectRR, uint32_t a_indirectRays, std::span<const uint32_t> a_roomReferences, float a_rasterBlend, uint32_t a_normalMode, std::span<const PreparedPointLight> a_preparedLights)
+	void DirectionalTrace::Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight, const LightLimitFixData::LightView& a_lights, uint32_t a_materialView, ID3D11UnorderedAccessView* a_sceneTarget, uint32_t a_lightReference, uint32_t a_lightBase, ID3D11ShaderResourceView* a_roomMetadata, std::span<const std::array<uint32_t, 2>> a_lightIdentities, bool a_allPreparedLights, float4 a_strengths, bool a_useIndirect, float a_indirectStrength, bool a_useDirectRR, uint32_t a_indirectRays, std::span<const uint32_t> a_roomReferences, float a_rasterBlend, uint32_t a_normalMode, std::span<const PreparedPointLight> a_preparedLights, uint32_t a_directResolutionMode, uint32_t a_indirectResolutionMode, uint32_t a_directRRResolutionMode, bool a_rrMaterialIsolation, float a_rrGlossyRoughness)
 	{
 		CS_GPU_PASS("RTDirectLighting::DirectionalDispatch");
 		const bool direct = a_materialView >= kFirstDirectView;
@@ -622,14 +644,14 @@ namespace DX12Native
 		const auto nextPreviewBytes = backend.d3d12Device->GetResourceAllocationInfo(0, 1, &previewDesc).SizeInBytes;
 		if (textureBytes == UINT64_MAX || lightBytes == UINT64_MAX || nextPreviewBytes == UINT64_MAX) { failure = "Directional texture allocation unsupported"; return; }
 		const uint64_t signalBytes = (directRR || a_indirectRays) ? nextPreviewBytes * kDirectSignalCount : 0;
-		const uint64_t rrInteropReserve = directRR ? uint64_t(std::max(1u, size[0] >> RayRegeneration::GetSettings().resolutionMode)) * std::max(1u, size[1] >> RayRegeneration::GetSettings().resolutionMode) * 256 + kFrameOverheadBytes : 0;
+		const uint64_t rrInteropReserve = directRR ? uint64_t(std::max(1u, size[0] >> std::min(a_directRRResolutionMode, 2u))) * std::max(1u, size[1] >> std::min(a_directRRResolutionMode, 2u)) * 256 + kFrameOverheadBytes : 0;
 		const uint64_t required = (reuse ? 0 : textureBytes * 2 + lightBytes + signalBytes + kFrameOverheadBytes) + (a_sceneTarget ? 0 : nextPreviewBytes) + bindingBytes + rrInteropReserve;
 		const uint64_t retainedBytes = ResidentBytes() - (reuse ? 0 : available->bytes);
 		if (required > a_budgetBytes || retainedBytes > a_budgetBytes - required) {
 			if (directRR) {
 				++directRRBudgetDeferrals;
 				Dispatch(a_scene, a_nativeSize, a_lightDirection, a_frame, a_budgetBytes, a_localLight, a_lights, a_materialView, a_sceneTarget,
-					a_lightReference, a_lightBase, a_roomMetadata, a_lightIdentities, a_allPreparedLights, a_strengths, a_useIndirect, a_indirectStrength, false, a_indirectRays, a_roomReferences, a_rasterBlend, a_normalMode, a_preparedLights);
+					a_lightReference, a_lightBase, a_roomMetadata, a_lightIdentities, a_allPreparedLights, a_strengths, a_useIndirect, a_indirectStrength, false, a_indirectRays, a_roomReferences, a_rasterBlend, a_normalMode, a_preparedLights, a_directResolutionMode, a_indirectResolutionMode, a_directRRResolutionMode, a_rrMaterialIsolation, a_rrGlossyRoughness);
 			} else ++budgetDeferrals;
 			return;
 		}
@@ -674,6 +696,11 @@ namespace DX12Native
 			available->useDirectRR = directRR;
 			available->rasterBlend = a_rasterBlend;
 			available->normalMode = std::min(a_normalMode, 2u);
+			available->directStride = 1u << std::min(a_directResolutionMode, 1u);
+			available->indirectStride = 1u << std::min(a_indirectResolutionMode, 2u);
+			available->directRRResolutionMode = std::min(a_directRRResolutionMode, 2u);
+			available->rrMaterialPolicy = a_rrMaterialIsolation ? (0x80000000u |
+				(uint32_t(std::clamp(a_rrGlossyRoughness, 0.04f, 1.0f) * 65535.0f) << 8u)) : 0u;
 			available->preparedLights = a_allPreparedLights ? std::vector<PreparedPointLight>(a_preparedLights.begin(), a_preparedLights.end()) :
 				std::vector<PreparedPointLight>{ a_preparedLights.empty() ? PreparedPointLight{} : a_preparedLights.front() };
 			if (a_allPreparedLights) available->lightIdentities.assign(a_lightIdentities.begin(), a_lightIdentities.end());

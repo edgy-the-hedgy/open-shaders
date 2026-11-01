@@ -29,7 +29,7 @@ namespace DX12Native
 		/** @brief Retires frames and consumes completed raw output without CPU waits. */
 		void Retire();
 		/** @brief Traces selected-light visibility or a bounded prepared light set against a retained TLAS. */
-		void Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight = false, const LightLimitFixData::LightView& a_lights = {}, uint32_t a_materialView = 0, ID3D11UnorderedAccessView* a_sceneTarget = nullptr, uint32_t a_lightReference = 0, uint32_t a_lightBase = 0, ID3D11ShaderResourceView* a_roomMetadata = nullptr, std::span<const std::array<uint32_t, 2>> a_lightIdentities = {}, bool a_allPreparedLights = false, float4 a_strengths = { 1, 1, 1, 1 }, bool a_useIndirect = true, float a_indirectStrength = 1.0f, bool a_useDirectRR = false, uint32_t a_indirectRays = 0, std::span<const uint32_t> a_roomReferences = {}, float a_rasterBlend = 1.0f, uint32_t a_normalMode = 2u, std::span<const PreparedPointLight> a_preparedLights = {});
+		void Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight = false, const LightLimitFixData::LightView& a_lights = {}, uint32_t a_materialView = 0, ID3D11UnorderedAccessView* a_sceneTarget = nullptr, uint32_t a_lightReference = 0, uint32_t a_lightBase = 0, ID3D11ShaderResourceView* a_roomMetadata = nullptr, std::span<const std::array<uint32_t, 2>> a_lightIdentities = {}, bool a_allPreparedLights = false, float4 a_strengths = { 1, 1, 1, 1 }, bool a_useIndirect = true, float a_indirectStrength = 1.0f, bool a_useDirectRR = false, uint32_t a_indirectRays = 0, std::span<const uint32_t> a_roomReferences = {}, float a_rasterBlend = 1.0f, uint32_t a_normalMode = 2u, std::span<const PreparedPointLight> a_preparedLights = {}, uint32_t a_directResolutionMode = 0u, uint32_t a_indirectResolutionMode = 0u, uint32_t a_directRRResolutionMode = 0u, bool a_rrMaterialIsolation = false, float a_rrGlossyRoughness = 0.2f);
 		/** @brief Returns a raw preview view whose image remains owned by this service. */
 		ID3D11ShaderResourceView* Preview() const { return previewValid && preview ? preview->srv.get() : nullptr; }
 		/** @brief Returns the completed preview dimensions for an undistorted diagnostic image. */
@@ -94,6 +94,7 @@ namespace DX12Native
 			float indirectStrength = 1.0f;
 			float rasterBlend = 1.0f;
 			uint32_t normalMode = 2;
+			uint32_t directStride = 1, indirectStride = 1, directRRResolutionMode = 0, rrMaterialPolicy = 0;
 			uint32_t indirectRays = 0;
 			std::array<uint32_t, 128> roomReferences{};
 			uint64_t fence = 0, retirement = 0, generation = 0, bytes = 0;
@@ -132,6 +133,7 @@ namespace DX12Native
 		uint64_t directRRPolicyRevision = UINT64_MAX;
 		uint32_t directRRIndirectRays = 0;
 		uint32_t directRRNormalMode = UINT32_MAX;
+		uint32_t directRRMaterialPolicy = UINT32_MAX;
 		bool directRRCheckerboard = false;
 		uint32_t directRRPhase = 0;
 		uint32_t rrPackFrame = UINT32_MAX;
