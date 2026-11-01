@@ -528,7 +528,10 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
     const auto& frame = globals::game::frameBufferCached;
     const auto& cur = frame.GetCameraPosAdjust();
     const auto& prev = frame.GetCameraPreviousPosAdjust();
-    const auto jitter = backend.jitter;
+    // Jitter changes each frame. The backend captured at initialisation
+    // cannot be used as the per-dispatch jitter source.
+    const auto currentBackend = Feature::FindGraphicsBackend();
+    const auto jitter = currentBackend ? currentBackend->jitter : backend.jitter;
     const auto renderSize = Util::ConvertToDynamic(globals::state->screenSize);
     auto makeCommon = [&]() {
         ffxDispatchDescDenoiser desc{};
