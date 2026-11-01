@@ -313,8 +313,8 @@ void RTComposer::DrawSettings()
             OnCompositionPolicyChanged();
         }
         ImGui::TextWrapped("Quarter is one sample per 2x2 block; its checkerboard phase alternates by logical block. The native RR behavior is unchanged in this stage.");
-        ImGui::SeparatorText("Post-RR spatial reconstruction (staged)");
-        ImGui::TextWrapped("Saved controls for future native RR output; raw diagnostic mode does not apply these filters.");
+        ImGui::SeparatorText("Post-RR spatial reconstruction");
+        ImGui::TextWrapped("These controls operate only after native FSR RR, and do not affect the raw diagnostic preview.");
         constexpr std::array familyNames{ "Indirect diffuse", "Indirect specular", "Ambient/specular AO" };
         for (size_t family = 0; family < composition.reconstruction.size(); ++family) {
             ImGui::PushID(static_cast<int>(family));
@@ -337,8 +337,16 @@ void RTComposer::DrawSettings()
         }
         if (ImGui::SliderFloat("GI skip visibility threshold", &composition.shadowThreshold, 0.0f, 1.0f, "%.2f"))
             OnCompositionPolicyChanged();
-        if (ImGui::Checkbox("Preview raw native Hybrid-Shadowed (diagnostic, no RR)", &composition.previewNativeRaw))
+        if (ImGui::Checkbox("Preview raw native Hybrid-Shadowed (diagnostic, no RR)", &composition.previewNativeRaw)) {
+            if (composition.previewNativeRaw) composition.previewNativeRR = false;
             OnCompositionPolicyChanged();
+        }
+        if (ImGui::Checkbox("Preview denoised DX12 Hybrid-Shadowed (experimental)",
+                &composition.previewNativeRR)) {
+            if (composition.previewNativeRR) composition.previewNativeRaw = false;
+            OnCompositionPolicyChanged();
+        }
+        ImGui::TextWrapped("RR preview uses three native DX12 RR family histories and the independent post-RR filter and blur settings. Production activation remains gated until this runtime path is validated.");
         if (composition.previewNativeRaw &&
             composition.samplingMode != DX12Native::HybridSamplingMode::Native)
             ImGui::TextWrapped("Raw preview is available only at full native density. Reduced-density samples still dispatch for diagnostics, but cannot be displayed as finished lighting before RR and post-RR reconstruction; Shadow Only stays active.");
@@ -361,6 +369,18 @@ void RTComposer::DrawSettings()
             static_cast<unsigned long long>(trace.value("nativeHybridEligibilityDispatches", uint64_t{ 0 })));
         ImGui::Text("Native GPU-only RR guide dispatches: %llu",
             static_cast<unsigned long long>(trace.value("nativeHybridRRGuideDispatches", uint64_t{ 0 })));
+        ImGui::Text("Native RR frames / resets: %llu / %llu",
+            static_cast<unsigned long long>(trace.value("nativeHybridRRDispatches", uint64_t{0})),
+            static_cast<unsigned long long>(trace.value("nativeHybridRRResets", uint64_t{0})));
+        ImGui::Text("Native post-RR filter / blur dispatches: %llu / %llu",
+            static_cast<unsigned long long>(trace.value("nativeHybridPostDispatches", uint64_t{0})),
+            static_cast<unsigned long long>(trace.value("nativeHybridBlurDispatches", uint64_t{0})));
+        const auto nativeRRFailure = trace.value("nativeHybridRRFailure", std::string{});
+        const auto nativePostFailure = trace.value("nativeHybridPostFailure", std::string{});
+        if (!nativeRRFailure.empty())
+            ImGui::TextWrapped("Native FSR RR: %s", nativeRRFailure.c_str());
+        if (!nativePostFailure.empty())
+            ImGui::TextWrapped("Post-RR reconstruction: %s", nativePostFailure.c_str());
         const auto guideFailure = trace.value("nativeHybridRRGuideFailure", std::string{});
         if (!guideFailure.empty())
             ImGui::TextWrapped("Native RR guide preparation: %s", guideFailure.c_str());
