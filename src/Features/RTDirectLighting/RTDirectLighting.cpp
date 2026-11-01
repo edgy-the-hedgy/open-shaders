@@ -230,7 +230,11 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
 	auto backend = Feature::FindGraphicsBackend();
 	auto& tracer = native.Tracer();
     const auto unifiedSampling = globals::features::rtComposer.composition.samplingMode;
-    const uint32_t unifiedTraceMode = DX12Native::NativeTraceShaderMode(unifiedSampling);
+    // Match the native GI/RR layout's odd-width checkerboard fallback.
+    const auto unifiedLayout = DX12Native::MakeHybridSamplingLayout(
+        unifiedSampling, size, frame);
+    const uint32_t unifiedTraceMode =
+        DX12Native::NativeTraceShaderMode(unifiedLayout.effective);
 	if (!backend || !tracer.Initialize(*backend)) return;
 	// LLF is retained only for the existing opaque-room generation/stamp, not for lighting.
 	const auto lights = globals::features::lightLimitFix.GetLightView(frame);
