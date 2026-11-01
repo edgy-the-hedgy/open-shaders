@@ -28,13 +28,59 @@ json RedstoneDenoiser::GetConfiguration() const
 {
 	std::scoped_lock lock(configurationMutex);
 	const auto& shared = RayRegeneration::GetConfiguration();
-	json overrides = json::object(), defaults = json::object();
-	for (size_t i = 0; i < configurationOverrides.size(); ++i) {
-		const char* name = i < kConfigurationKeys.size() ? kConfigurationKeys[i].name : kBoundsNames[i - kConfigurationKeys.size()];
-		overrides[name] = shared.overrides.contains(name) ? shared.overrides.at(name) : json(nullptr);
-		defaults[name] = configurationDefaultsReady ? json(configurationDefaults[i]) : json(nullptr);
-	}
-	return { { "overrides", overrides }, { "defaults", defaults }, { "defaultsReady", configurationDefaultsReady }, { "pending", configurationDirty || sharedConfigurationRevision != shared.revision } };
+    json overrides = json::object(), defaults = json::object();
+    constexpr std::array familyNames{ "diffuse", "specular", "ao" };
+    json families = json::object();
+    const bool nativeDefaultsSelected =
+        !configurationDefaultsReady && nativeHybridConfigurationDefaultsReady[0];
+    const bool defaultsReady = configurationDefaultsReady || nativeDefaultsSelected;
+    const char* source = configurationDefaultsReady ? "legacy" :
+        nativeDefaultsSelected ? "native-diffuse" : "unavailable";
+    for (size_t family = 0; family < nativeHybridContexts.size(); ++family) {
+        json familyDefaults = json::object();
+        for (size_t i = 0; i < configurationOverrides.size(); ++i) {
+            const char* name = i < kConfigurationKeys.size() ?
+                kConfigurationKeys[i].name : kBoundsNames[i - kConfigurationKeys.size()];
+            familyDefaults[name] = nativeHybridConfigurationDefaultsReady[family] ?
+                json(nativeHybridConfigurationDefaults[family][i]) : json(nullptr);
+        }
+        families[familyNames[family]] = {
+            { "contextCreated", nativeHybridContexts[family] != nullptr },
+            { "defaultsReady", nativeHybridConfigurationDefaultsReady[family] },
+            { "configured", nativeHybridConfigurationApplied[family] &&
+                nativeHybridAppliedConfigurationRevision == shared.revision },
+            { "defaults", std::move(familyDefaults) }
+        };
+    }
+    for (size_t i = 0; i < configurationOverrides.size(); ++i) {
+        const char* name = i < kConfigurationKeys.size() ?
+            kConfigurationKeys[i].name : kBoundsNames[i - kConfigurationKeys.size()];
+        overrides[name] = shared.overrides.contains(name) ?
+            shared.overrides.at(name) : json(nullptr);
+        defaults[name] = defaultsReady ?
+            json(nativeDefaultsSelected ? nativeHybridConfigurationDefaults[0][i] :
+                configurationDefaults[i]) : json(nullptr);
+    }
+    const bool nativePending = nativeHybridContexts[0] &&
+        (nativeHybridAppliedConfigurationRevision != shared.revision ||
+         !std::ranges::all_of(nativeHybridConfigurationApplied,
+            [](bool configured) { return configured; }));
+    return {
+        { "overrides", overrides },
+        { "defaults", defaults },
+        { "defaultsReady", defaultsReady },
+        { "defaultsSource", source },
+        { "pending", configurationDirty || sharedConfigurationRevision != shared.revision || nativePending },
+        { "native", {
+            { "families", families },
+            { "appliedRevision", nativeHybridAppliedConfigurationRevision == UINT64_MAX ?
+                json(nullptr) : json(nativeHybridAppliedConfigurationRevision) },
+            { "requestedRevision", shared.revision },
+            { "pending", bool(nativePending) },
+            { "configurationApplications", nativeHybridConfigurationApplications },
+            { "failure", nativeHybridConfigurationFailure }
+        } }
+    };
 }
 
 void RedstoneDenoiser::SetConfiguration(const json& a_configuration)
