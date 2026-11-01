@@ -30,8 +30,9 @@ void RedstoneGI::OnWorldRenderBegin()
 
 int RedstoneGI::GetIndirectLightingPriority() const
 {
-	return !globals::features::rtComposer.BlocksRTIndirect() &&
-        globals::features::rtIndirectLighting.loaded && selected && resourcesReady && !switchFailed && IsRuntimeReady() ? 100 : -1;
+	// Legacy DX11 HybridGI is retired independently of compositor mode.
+	// Native Hybrid-Shadowed owns the GI/AO/RR producer through the DX12 tracer.
+	return -1;
 }
 
 void RedstoneGI::OnIndirectLightingSelection(bool a_selected)
@@ -159,10 +160,8 @@ void RedstoneGI::RegisterUxActions()
 		[](Feature* a_self, const json& a_args) {
 			auto* redstone = static_cast<RedstoneGI*>(a_self);
 			const auto renderer = a_args.at("renderer").get<std::string>();
-			if (renderer != "ssgi" && renderer != "rgi") throw std::invalid_argument("renderer must be ssgi or rgi");
-			if (renderer == "rgi" && (!redstone->resourcesReady || redstone->switchFailed))
-				throw std::runtime_error("RGI resources or compositor are unavailable");
-			redstone->SelectRenderer(renderer == "rgi");
+			if (renderer != "ssgi") throw std::invalid_argument("Legacy RGI is retired. Use RTComposer Hybrid-Shadowed for native DX12 GI; 'ssgi' remains available.");
+			redstone->SelectRenderer(false);
 		});
 	FEATURE_COMMAND("setRedstoneDenoiserConfiguration",
 		"Set shared SDK 2.3.0 RR configuration overrides for all active RR contexts. Optional params: normalStrength, stabilityBias, maxRadiance, radianceClipStdK, gaussianRelaxation, disocclusionThreshold, debugDepthMin, debugDepthMax (finite numbers or null to restore provider default); reset (boolean) clears all overrides first. Omitted keys remain unchanged. Debug bounds must be nonnegative and ordered and affect only SDK depth visualization. Applies before the next RR dispatch and resets history. Normal Save persists under Upscaling.FSRRayRegeneration.configuration. Read provider defaults, overrides and pending status through getRedstoneStatus.",
@@ -186,10 +185,8 @@ void RedstoneGI::RegisterUxActions()
 				if (a_args.contains(parameter))
 					selected[setting] = std::clamp(a_args.at(parameter).get<int>(), 1, std::string_view(parameter).ends_with("Slices") ? 10 : 20);
 			}
-			if (a_args.contains("resolutionMode")) {
-				const auto rr = RayRegeneration::GetSettings();
-				RayRegeneration::Configure(a_args.at("resolutionMode").get<uint32_t>(), rr.checkerboard, rr.enabled);
-			}
+			if (a_args.contains("resolutionMode"))
+				throw std::invalid_argument("Independent GI resolution is retired. Use RTComposer samplingMode 0..3.");
 			if (a_args.contains("adaptiveSampling")) selected["EnableAdaptiveSampling"] = a_args.at("adaptiveSampling").get<bool>();
 			if (a_args.contains("vanillaSSAO")) selected["EnableVanillaSSAO"] = a_args.at("vanillaSSAO").get<bool>();
 			if (a_args.contains("roughnessFloor")) selected["SpecularRoughnessFloor"] = a_args.at("roughnessFloor").get<float>();
@@ -202,6 +199,8 @@ void RedstoneGI::RegisterUxActions()
 			auto* redstone = static_cast<RedstoneGI*>(a_self);
 			json selected;
 			redstone->SaveRedstoneSettings(selected);
+			if (a_args.contains("resolutionMode") || a_args.contains("checkerboard"))
+				throw std::invalid_argument("Independent GI sampling is retired. Use RTComposer samplingMode 0..3.");
 			if (a_args.contains("rrEnabled")) {
 				const auto rr = RayRegeneration::GetSettings();
 				RayRegeneration::Configure(rr.resolutionMode, rr.checkerboard, a_args.at("rrEnabled").get<bool>());

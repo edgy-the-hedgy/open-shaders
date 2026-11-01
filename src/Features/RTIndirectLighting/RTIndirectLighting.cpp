@@ -75,7 +75,7 @@ void RTIndirectLighting::SelectHybrid()
 {
 	if (settings.UseRTExclusive) globals::features::dx12NativeScene.Tracer().Reset();
 	settings.UseRTExclusive = false;
-	globals::features::redstoneGI.SelectRenderer(true);
+	globals::features::redstoneGI.SelectRenderer(false); // legacy DX11 HybridGI remains disabled
 }
 
 void RTIndirectLighting::SelectRTExclusive()
