@@ -1,5 +1,7 @@
 #pragma once
 #include "Feature.h"
+#include "Features/DX12NativeScene/HybridSamplingPolicy.h"
+#include <array>
 
 // Owns UI, settings and control directives; GPU work remains with existing producers.
 struct RTComposer final : Feature
@@ -7,6 +9,20 @@ struct RTComposer final : Feature
     // Saved, independent composition policy. Disabled on migration to keep
     // every previously configured direct/SSGI/Hybrid path unchanged.
     enum class CompositorMode : uint32_t { ShadowOnly = 0, HybridShadowed = 1 };
+    // Post-RR-only controls. Filtering never modifies the traced signal or
+    // the input sent into Ray Regeneration.
+    struct SignalReconstructionSettings
+    {
+        bool filterEnabled = true;
+        float filterRadius = 1.5f;
+        float filterStrength = 1.0f;
+        float depthSensitivity = 128.0f;
+        float normalSensitivity = 32.0f;
+        float roughnessSensitivity = 8.0f;
+        bool blurEnabled = false;
+        float blurRadius = 1.0f;
+        float blurStrength = 0.25f;
+    };
     struct CompositionSettings
     {
         bool enabled = false;
@@ -15,6 +31,9 @@ struct RTComposer final : Feature
         float rtDirectContribution = 0.0f;
         float giContribution = 1.0f; // Hybrid-only native GI blend, independent of direct
         float shadowThreshold = 0.25f;
+        DX12Native::HybridSamplingMode samplingMode = DX12Native::HybridSamplingMode::Native;
+        // Separate settings for diffuse, specular and AO, respectively.
+        std::array<SignalReconstructionSettings, 3> reconstruction{};
         // Session-only diagnostic override; never persisted or treated as RR-ready.
         bool previewNativeRaw = false;
     } composition;
