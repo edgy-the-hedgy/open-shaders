@@ -45,7 +45,11 @@ void main(uint3 id : SV_DispatchThreadID)
     if (id.x >= width || id.y >= height) return;
     uint targetWidth, targetHeight;
     SceneColor.GetDimensions(targetWidth, targetHeight);
-    if (id.x >= targetWidth || id.y >= targetHeight || RedstoneBlend <= 0.0f) return;
+    if (id.x >= targetWidth || id.y >= targetHeight) return;
+    // Strict RT-only never inherits raster, even when the legacy blend
+    // slider is zero. Raster rendering is still allowed for HUD/UI passes.
+    const bool strictRTOnly = UseRasterFallback == 0u;
+    if (!strictRTOnly && RedstoneBlend <= 0.0f) return;
 
     const float4 rawDirect = DirectLighting.Load(int3(id.xy, 0));
     const bool directRaw = rawDirect.w == DirectRadianceTag;
@@ -64,8 +68,8 @@ void main(uint3 id : SV_DispatchThreadID)
     // With spatial reconstruction disabled, unsampled RT pixels must
     // never silently inherit raster unless fallback was explicitly enabled.
     // Still allow GI to contribute even when direct lighting is unavailable.
-    if (!directValid && !giValid && UseIndirect == 0u) {
-        if (UseRasterFallback == 0u)
+    if (!directValid && !giValid && (strictRTOnly || UseIndirect == 0u)) {
+        if (strictRTOnly)
             SceneColor[id.xy] = float4(0.0f, 0.0f, 0.0f, SceneColor[id.xy].a);
         return;
     }
@@ -138,7 +142,9 @@ void main(uint3 id : SV_DispatchThreadID)
         (ENABLE_LL ? Color::GamutTransform(directRGB) : directRGB) : missingDirectBase;
     working += indirectRGB;
 
-    if (UseIndirect != 0u) {
+    // Hybrid screen-space GI is not a native traced signal. Exclude it
+    // from strict isolation so only native direct and RT-exclusive GI show.
+    if (!strictRTOnly && UseIndirect != 0u) {
         const float4 nr = NativeNormalRoughness.Load(int3(id.xy, 0));
         const float3 normal = normalize(mul((float3x3)FrameBuffer::CameraViewInverse[0],
             GBuffer::DecodeNormal(nr.xy)));
@@ -153,10 +159,9 @@ void main(uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    // For missing direct RT with fallback disabled, do not reintroduce raster
-    // via the blend's lower endpoint. Valid GI can still light that pixel.
-    const float3 blendBase = !directValid && !rasterFallback ?
-        float3(0.0f, 0.0f, 0.0f) : rasterLinear;
-    const float3 result = lerp(blendBase, working, saturate(RedstoneBlend));
+    // The strict path is a true native-only image (no SceneColor RGB and
+    // no raster blending). With fallback enabled, preserve normal blending.
+    const float3 result = strictRTOnly ? working :
+        lerp(rasterLinear, working, saturate(RedstoneBlend));
     SceneColor[id.xy] = float4(Color::SceneLinearToGamma(result), raster.a);
 }

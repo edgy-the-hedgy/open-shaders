@@ -21,7 +21,7 @@ struct RTDirectLighting final : OverlayFeature
 		// Combined temporal sparse sampling and finite-emitter visibility (optional experimental path).
 		bool StochasticSampling = false;
 		bool SpatialReconstruction = false; // Sparse pixel reconstruction is opt-in.
-		bool RasterFallback = true;         // Independent safety baseline for missing native direct.
+		bool RasterFallback = false;        // Temporary strict RT-only test default. UI can reenable raster.
 		float EmitterRadiusMultiplier = 1.0f;
 		uint32_t SelectedDirectLight = 0;
 		uint32_t DirectTraceResolution = 0; // legacy JSON migration input only
@@ -57,4 +57,6 @@ struct RTDirectLighting final : OverlayFeature
 	void RegisterUxActions() override;
 private:
 	std::optional<uint32_t> lastFrame;
+	std::optional<uint32_t> lastIsolationClearFrame;
+	uint64_t rasterIsolationClears = 0;
 };

@@ -51,6 +51,7 @@ void RTDirectLighting::LoadSettings(json& value)
 	if (settings.UsePreparedDirectLighting)
 		globals::features::dx12NativeScene.RequestPreparedScene();
 	lastFrame.reset();
+	lastIsolationClearFrame.reset();
 }
 void RTDirectLighting::SaveSettings(json& value)
 {
@@ -58,20 +59,22 @@ void RTDirectLighting::SaveSettings(json& value)
 	value.erase("DirectTraceResolution");
 	value.erase("DirectRRResolution");
 }
-void RTDirectLighting::RestoreDefaultSettings() { settings = {}; lastFrame.reset(); }
+void RTDirectLighting::RestoreDefaultSettings() { settings = {}; lastFrame.reset(); lastIsolationClearFrame.reset(); }
 void RTDirectLighting::DrawSettings() { DrawDirectLightingSettings(); }
 void RTDirectLighting::ClearRRDebugOverlay() { globals::features::dx12NativeScene.Tracer().ClearRRDebugOverlay(); }
 void RTDirectLighting::DrawOverlay() { if (IsOverlayVisible()) globals::features::dx12NativeScene.Tracer().DrawRRDebugOverlay(); }
 bool RTDirectLighting::IsOverlayVisible() const { return globals::features::dx12NativeScene.loaded && globals::features::dx12NativeScene.Tracer().IsRRDebugVisible() && !globals::features::rtIndirectLighting.DebugAtlasActive() && !globals::game::isVR; }
-void RTDirectLighting::OnSceneTransitionReset(bool) { lastFrame.reset(); }
+void RTDirectLighting::OnSceneTransitionReset(bool) { lastFrame.reset(); lastIsolationClearFrame.reset(); }
 void RTDirectLighting::OnRuntimeDisabled()
 {
 	lastFrame.reset();
+	lastIsolationClearFrame.reset();
 	globals::features::dx12NativeScene.Tracer().ClearRRDebugOverlay();
 }
 void RTDirectLighting::ClearShaderCache()
 {
 	lastFrame.reset();
+	lastIsolationClearFrame.reset();
 	globals::features::dx12NativeScene.Tracer().ReloadShaders();
 }
 json RTDirectLighting::GetDiagnostics()
@@ -89,6 +92,8 @@ json RTDirectLighting::GetDiagnostics()
 		trace.value("sceneCompositeSubmissions", uint64_t{ 0 }) == 0 ? "no-scene-composite-yet" : "composite-dispatched-radiance-unverified";
 	return { { "directLightingEnabled", settings.UsePreparedDirectLighting }, { "selectedDirectLight", settings.SelectedDirectLight },
 		{ "rasterRTBlend", settings.RedstoneBlend }, { "activationStatus", status },
+		{ "strictRTOnly", !settings.RasterFallback }, { "rasterIsolationClears", rasterIsolationClears },
+		{ "rasterIsolationClearFrame", lastIsolationClearFrame.value_or(UINT32_MAX) },
 		{ "pointLightRadiusMultiplier", settings.PointLightRadiusMultiplier },
 		{ "pointLightFalloffFraction", settings.PointLightFalloffFraction },
 		{ "pointLightFalloffExponent", settings.PointLightFalloffExponent },
@@ -124,10 +129,16 @@ void RTDirectLighting::DrawDirectLightingSettings()
         globals::features::dx12NativeScene.Tracer().Reset();
     }
     ImGui::TextWrapped("Percentage of native pixels traced each frame. Full is deterministic; partial patterns rotate only when stochastic sampling is enabled.");
-    ImGui::SliderFloat("Raster / RT blend", &settings.RedstoneBlend, 0.0f, 1.0f, "%.2f");
-    if (ImGui::Checkbox("Raster fallback for missing RT samples", &settings.RasterFallback))
+    if (settings.RasterFallback)
+        ImGui::SliderFloat("Raster / RT blend", &settings.RedstoneBlend, 0.0f, 1.0f, "%.2f");
+    else
+        ImGui::TextWrapped("RT-only test: raster blending is bypassed (100%% native contribution).");
+    if (ImGui::Checkbox("Raster fallback for missing RT samples", &settings.RasterFallback)) {
+        lastFrame.reset();
+        lastIsolationClearFrame.reset();
         globals::features::dx12NativeScene.Tracer().Reset();
-    ImGui::TextWrapped("On: missing native direct samples retain raster lighting. Off: missing native direct starts from black; valid RT GI still adds independently. With no valid RT contribution, the pixel is black at any nonzero RT blend. A zero RT blend explicitly selects raster.");
+    }
+    ImGui::TextWrapped("Off: strict RT-only diagnostic. The main scene target is cleared to black before tracing, including frames without prepared geometry. Valid RT direct/GI remain visible, missing pixels are black; the HUD/UI and auxiliary depth/motion buffers are not cleared.");
     ImGui::SliderFloat("Direct lighting strength", &settings.DirectStrength, 0.0f, 8.0f, "%.2fx");
 
     ImGui::SeparatorText("Point-light reach / falloff (live tuning)");
@@ -143,7 +154,7 @@ void RTDirectLighting::DrawDirectLightingSettings()
     ImGui::SeparatorText("Spatial reconstruction (experimental)");
     if (ImGui::Checkbox("Spatial reconstruction", &settings.SpatialReconstruction))
         globals::features::dx12NativeScene.Tracer().Reset();
-    ImGui::TextWrapped("On: spatially fill compatible sparse receivers. Off (default): preserve unsampled pixels as missing. The separate raster fallback setting determines whether those pixels show raster or black.");
+    ImGui::TextWrapped("On: spatially fill compatible sparse receivers. Off (default): unsampled pixels remain missing. Raster fallback Off forces a black base so missing RT pixels cannot reveal raster.");
     ImGui::SeparatorText("Stochastic RT sampling (experimental)");
     if (ImGui::Checkbox("Stochastic sampling (temporal grid + soft shadows)", &settings.StochasticSampling))
         globals::features::dx12NativeScene.Tracer().Reset();
@@ -230,16 +241,28 @@ void RTDirectLighting::DrawRayRegenerationSettings()
 void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target, const std::array<uint32_t, 2>& size)
 {
 	CS_GPU_PASS("RTDirectLighting::PreparedLighting");
-	if (!loaded || !WantsComposite() || !target || !globals::features::dx12NativeScene.loaded ||
-		!globals::features::dx12NativeScene.settings.UsePreparedMaterials || globals::game::isVR || globals::state->isMapMenuOpen) return;
+	if (!loaded || !WantsComposite() || !target || globals::game::isVR || globals::state->isMapMenuOpen) return;
 	if (target != Util::AsReal(globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].UAV) ||
 		(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections))) return;
+	const auto frame = globals::game::graphicsState->GetFrameCount();
+	// Strict RT-only diagnostic: zero the incoming raster scene *before* all
+	// prepared-scene, budget, and DXR early-outs. Otherwise no-scene frames
+	// silently preserve the original raster image, obscuring coverage tests.
+	// This targets only MAIN at the deferred-lighting hook, not UI/HUD,
+	// motion, depth, history, or other render-target resources.
+	if (!settings.RasterFallback && (!lastIsolationClearFrame || *lastIsolationClearFrame != frame)) {
+		const float black[]{ 0.0f, 0.0f, 0.0f, 1.0f };
+		globals::d3d::context->ClearUnorderedAccessViewFloat(target, black);
+		lastIsolationClearFrame = frame;
+		++rasterIsolationClears;
+	}
+	if (!globals::features::dx12NativeScene.loaded ||
+		!globals::features::dx12NativeScene.settings.UsePreparedMaterials) return;
 	auto& native = globals::features::dx12NativeScene;
 	auto& gi = globals::features::rtIndirectLighting;
 	const bool rtExclusive = gi.UsesRTExclusive();
 	auto snapshot = native.GetPublishedScene();
 	if (!snapshot) return;
-	const auto frame = globals::game::graphicsState->GetFrameCount();
 	if (lastFrame && *lastFrame == frame) return;
 	if (!settings.UseAllPreparedLights && settings.SelectedDirectLight >= snapshot->cell->lights.size()) return;
 	auto backend = Feature::FindGraphicsBackend();
