@@ -24,6 +24,23 @@ public:
 	bool Initialize(const GraphicsBackend& a_backend);
 	~RedstoneDenoiser();
 	bool CanDispatchRayRegeneration() const { return featureRayRegeneration && !rayRegenerationFailureLatched; }
+    struct NativeHybridResources
+    {
+        // Layout: 0 diffuse, 1 specular, 2 AO, 3 specular occlusion.
+        std::array<ID3D12Resource*, 4> inputs{}, outputs{};
+        // Depth, motion, normal/roughness, diffuse albedo, specular albedo.
+        std::array<ID3D12Resource*, 5> guides{};
+        std::array<uint32_t, 2> nativeSize{}, logicalSize{};
+        uint32_t frame = 0, checkerboardOrigin = 0;
+        bool checkerboard = false, resetHistory = false;
+    };
+    // Records GPU-native RR into the caller's already-open DX12 command list.
+    // Does not submit, signal fences, copy to DX11, or read back to CPU.
+    bool DispatchNativeHybridRR(ID3D12GraphicsCommandList* list,
+        const NativeHybridResources& resources);
+    const std::string& NativeHybridFailure() const { return nativeHybridFailure; }
+    uint64_t NativeHybridDispatches() const { return nativeHybridDispatches; }
+    uint64_t NativeHybridResets() const { return nativeHybridResets; }
 	json GetRayRegenerationDiagnostics() const;
 	/** @brief Returns saved overrides and provider defaults for the seven SDK configuration keys. */
 	json GetConfiguration() const;
@@ -66,6 +83,13 @@ private:
 	bool featureRayRegeneration = false;
 	bool rayRegenerationFailureLatched = false;
 	ffxContext rayRegenerationContext = nullptr;
+    std::array<ffxContext, 3> nativeHybridContexts{};
+    std::array<uint32_t, 2> nativeHybridExtent{};
+    bool nativeHybridCheckerboard = false;
+    uint32_t nativeHybridLastFrame = UINT32_MAX;
+    uint64_t nativeHybridDispatches = 0, nativeHybridResets = 0;
+    bool nativeHybridFailed = false;
+    std::string nativeHybridFailure;
 	uint64_t rayRegenerationSuccessfulDispatches = 0;
 	uint64_t rayRegenerationFailedDispatches = 0;
 	uint64_t rayRegenerationHistoryResets = 0;
