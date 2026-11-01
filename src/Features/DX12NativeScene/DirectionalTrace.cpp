@@ -1066,9 +1066,12 @@ namespace DX12Native
         const uint64_t linearDepthBytes = wantHybridInputs ?
             backend.d3d12Device->GetResourceAllocationInfo(0, 1, &linearDepthDesc).SizeInBytes : 0;
         uint64_t hybridBytes = wantHybridInputs ? nextPreviewBytes * kHybridInputCount + textureBytes + linearDepthBytes : 0;
+        const auto& recon = globals::features::rtComposer.composition.reconstruction;
+        const std::array<bool, 3> optionalBlur{
+            recon[0].blurEnabled, recon[1].blurEnabled, recon[2].blurEnabled };
         uint64_t nativeGIBytes = wantNativeGI ?
             NativeHybridGI::EstimateBytes(backend.d3d12Device.get(), size[0], size[1],
-                hybridSampling) : 0;
+                hybridSampling, optionalBlur) : 0;
         if (nativeGIBytes == UINT64_MAX) {
             // Unsupported optional diagnostic allocation must not block shadows.
             wantNativeGI = false;
