@@ -2,6 +2,7 @@
 #include "Utils/RayRegenerationSettings.h"
 #include "Features/RedstoneGI/RedstoneGI.h"
 #include "Features/RTDirectLighting/RTDirectLighting.h"
+#include "Features/RTIndirectLighting/RTIndirectLighting.h"
 #include "GpuPass.h"
 
 #include "../I18n/I18n.h"
@@ -773,7 +774,7 @@ void Upscaling::DrawSettings()
 		ImGui::TextWrapped("FSR Ray Regeneration reconstructs direct and indirect RT signals on a shared grid. Indirect producer selection and ray counts remain separate; Normal Save persists these controls here.");
 		ImGui::SeparatorText("RT lighting reconstruction");
 		globals::features::rtDirectLighting.DrawRayRegenerationSettings();
-		if (!globals::features::rtDirectLighting.UsesDXRIndirect()) {
+		if (!globals::features::rtIndirectLighting.UsesRTExclusive()) {
 			ImGui::SeparatorText("Screen-space indirect");
 			globals::features::redstoneGI.DrawRayRegenerationSettings();
 		}

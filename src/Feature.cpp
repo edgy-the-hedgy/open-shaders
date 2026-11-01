@@ -41,6 +41,7 @@
 #include "Features/RedstoneGI/RedstoneGI.h"
 #include "Features/DX12NativeScene/DX12NativeScene.h"
 #include "Features/RTDirectLighting/RTDirectLighting.h"
+#include "Features/RTIndirectLighting/RTIndirectLighting.h"
 #include "Features/ScreenSpaceShadows.h"
 #include "Features/ScreenshotFeature.h"
 #include "Features/Skin.h"
@@ -290,6 +291,7 @@ namespace
 			&globals::features::redstoneGI,
 			&globals::features::dx12NativeScene,
 			&globals::features::rtDirectLighting,
+			&globals::features::rtIndirectLighting,
 			&globals::features::renderDoc,
 			&globals::features::remoteControl,
 			&globals::features::csEditor,

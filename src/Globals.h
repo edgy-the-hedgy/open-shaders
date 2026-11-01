@@ -30,6 +30,7 @@ struct ScreenSpaceGI;
 struct RedstoneGI;
 struct DX12NativeScene;
 struct RTDirectLighting;
+struct RTIndirectLighting;
 struct ScreenSpaceShadows;
 struct Skylighting;
 struct TerrainVariation;
@@ -139,6 +140,7 @@ namespace globals
 		extern RedstoneGI redstoneGI;
 		extern DX12NativeScene dx12NativeScene;
 		extern RTDirectLighting rtDirectLighting;
+		extern RTIndirectLighting rtIndirectLighting;
 		extern ScreenSpaceShadows screenSpaceShadows;
 		extern Skylighting skylighting;
 		extern TerrainVariation terrainVariation;

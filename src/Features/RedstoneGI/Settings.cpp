@@ -1,7 +1,7 @@
 #include "RedstoneGI.h"
 #include "RuntimeDenoiser.h"
 #include "Globals.h"
-#include "Features/RTDirectLighting/RTDirectLighting.h"
+#include "Features/RTIndirectLighting/RTIndirectLighting.h"
 #include "Utils/UI.h"
 
 namespace
@@ -254,12 +254,14 @@ void RedstoneGI::DrawAmbientOcclusionSettings()
 
 void RedstoneGI::DrawSettings()
 {
-	globals::features::rtDirectLighting.DrawIndirectLightingSettings();
-	if (globals::features::rtDirectLighting.UsesDXRIndirect() && !globals::game::isVR) return;
-	// Hybrid keeps the current raymarched RGI implementation; preserve its
-	// session-availability diagnostics without presenting a third GI mode.
-	DrawRendererSettings();
-	if (!selected) return;
+	// This is the Hybrid backend's controls, presented by RTIndirectLighting.
+	// The two-mode method selector is owned solely by RTIndirectLighting.
+	if (!selected) {
+		ImGui::TextWrapped("Hybrid raymarched GI is not selected.");
+		return;
+	}
+	if (!resourcesReady || switchFailed)
+		ImGui::TextWrapped("Hybrid raymarched GI resources or composite are unavailable; the existing provider fallback remains active.");
 	ImGui::SeparatorText("Screen-space indirect lighting");
 	ImGui::SliderFloat(T("feature.upscaling.redstone.contribution", "RGI Contribution (EV)"), &rgiContributionEV, kContributionMinEV, kContributionMaxEV, "%.1f", ImGuiSliderFlags_AlwaysClamp);
 	recompileFlag |= ImGui::Checkbox(T("feature.upscaling.redstone.adaptive", "Adaptive Sampling"), &settings.EnableAdaptiveSampling);

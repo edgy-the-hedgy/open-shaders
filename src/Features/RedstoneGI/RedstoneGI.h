@@ -42,6 +42,7 @@ struct RedstoneGI final : OverlayFeature
 	std::string GetName() override { return "RedstoneGI"; }
 	std::string GetFeatureModLink() override { return {}; }
 	bool UsesMainSettings() const override { return true; }
+	bool IsInMenu() const override { return false; }
 	bool IsAlwaysEnabled() const override { return true; }
 	std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
 	{

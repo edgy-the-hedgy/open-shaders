@@ -503,7 +503,10 @@ namespace
 		const bool legacy = requestedShortName == "RedstoneShadows";
 		const bool nativeCommand = commandName == "setPreparedMaterials" || commandName == "setPreparedScene" ||
 			commandName == "setSceneAcquisition" || commandName == "resetShadowScene" || commandName == "shadowStatus";
-		const std::string shortName = legacy ? (nativeCommand ? "DX12NativeScene" : "RTDirectLighting") : requestedShortName;
+		const bool indirectCommand = commandName == "setIndirectProducer" || commandName == "setLightingSampling";
+		const bool previousDirectIndirectCommand = requestedShortName == "RTDirectLighting" && indirectCommand;
+		const std::string shortName = legacy || previousDirectIndirectCommand ?
+			(nativeCommand ? "DX12NativeScene" : indirectCommand ? "RTIndirectLighting" : "RTDirectLighting") : requestedShortName;
 
 		if (legacy && (action == "listCommands" || action == "listQueries")) {
 			auto& registry = Util::DevBenchUx::Registry::GetSingleton();
@@ -511,6 +514,16 @@ namespace
 			json values = commands ? registry.ListCommands("DX12NativeScene") : registry.ListQueries("DX12NativeScene");
 			const auto other = commands ? registry.ListCommands("RTDirectLighting") : registry.ListQueries("RTDirectLighting");
 			for (const auto& entry : other) values.push_back(entry);
+			const auto indirect = commands ? registry.ListCommands("RTIndirectLighting") : registry.ListQueries("RTIndirectLighting");
+			for (const auto& entry : indirect) values.push_back(entry);
+			return json{ { "shortName", requestedShortName }, { commands ? "commands" : "queries", std::move(values) } };
+		}
+		if (requestedShortName == "RTDirectLighting" && (action == "listCommands" || action == "listQueries")) {
+			auto& registry = Util::DevBenchUx::Registry::GetSingleton();
+			const bool commands = action == "listCommands";
+			json values = commands ? registry.ListCommands("RTDirectLighting") : registry.ListQueries("RTDirectLighting");
+			const auto indirect = commands ? registry.ListCommands("RTIndirectLighting") : registry.ListQueries("RTIndirectLighting");
+			for (const auto& entry : indirect) values.push_back(entry);
 			return json{ { "shortName", requestedShortName }, { commands ? "commands" : "queries", std::move(values) } };
 		}
 		if (action == "listCommands" || action == "listQueries") {

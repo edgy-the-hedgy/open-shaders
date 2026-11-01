@@ -41,6 +41,7 @@
 #include "Features/RedstoneGI/RedstoneGI.h"
 #include "Features/DX12NativeScene/DX12NativeScene.h"
 #include "Features/RTDirectLighting/RTDirectLighting.h"
+#include "Features/RTIndirectLighting/RTIndirectLighting.h"
 #include "Features/ScreenSpaceShadows.h"
 #include "Features/ScreenshotFeature.h"
 #include "Features/Skin.h"
@@ -104,6 +105,7 @@ namespace globals
 		RedstoneGI redstoneGI{};
 		DX12NativeScene dx12NativeScene{};
 		RTDirectLighting rtDirectLighting{};
+		RTIndirectLighting rtIndirectLighting{};
 		ScreenSpaceShadows screenSpaceShadows{};
 		Skylighting skylighting{};
 		TerrainVariation terrainVariation{};

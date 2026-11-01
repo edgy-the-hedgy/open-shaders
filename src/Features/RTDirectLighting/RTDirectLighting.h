@@ -9,15 +9,11 @@ struct RTDirectLighting final : OverlayFeature
 		float RedstoneBlend = 1.0f;
 		bool UsePreparedDirectLighting = false;
 		bool UseAllPreparedLights = true;
-		bool ConnectIndirectLighting = true;
 		bool UseDirectRayRegeneration = true;
-		bool UseDXRIndirect = false;
-		uint32_t IndirectRays = 1;
 		float DirectStrength = 1.0f;
 		float DiffuseStrength = 1.0f;
 		float SpecularStrength = 1.0f;
 		float EmissionStrength = 1.0f;
-		float IndirectStrength = 1.0f;
 		uint32_t SelectedDirectLight = 0;
 	} settings;
 	std::string GetName() override { return "RTDirectLighting"; }
@@ -33,7 +29,6 @@ struct RTDirectLighting final : OverlayFeature
 	void RestoreDefaultSettings() override;
 	void DrawSettings() override;
 	void DrawDirectLightingSettings();
-	void DrawIndirectLightingSettings();
 	void DrawRayRegenerationSettings();
 	void ClearRRDebugOverlay();
 	void DrawOverlay() override;
@@ -42,8 +37,6 @@ struct RTDirectLighting final : OverlayFeature
 	void OnSceneTransitionReset(bool) override;
 	void OnRuntimeDisabled() override;
 	void ClearShaderCache() override;
-	int GetIndirectLightingPriority() const override;
-	bool UsesDXRIndirect() const { return settings.UsePreparedDirectLighting && settings.UseDXRIndirect; }
 	bool WantsComposite() const { return settings.UsePreparedDirectLighting; }
 	json GetDiagnostics() override;
 	void RegisterUxActions() override;
