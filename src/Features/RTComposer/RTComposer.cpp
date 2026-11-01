@@ -212,13 +212,12 @@ void RTComposer::SaveSettings(json& value)
     value = {
         { "FSRRayRegeneration", {
             { "enabled", policy.enabled },
-            { "checkerboard", policy.checkerboard },
-            { "resolutionMode", policy.resolutionMode },
+            { "checkerboard", DX12Native::RRCheckerboard(composition.samplingMode) },
+            { "resolutionMode", DX12Native::RRLogicalReduction(composition.samplingMode) },
             { "configuration", RayRegeneration::GetConfiguration().overrides }
         } },
         { "DirectRR", {
             { "UseDirectRayRegeneration", direct.UseDirectRayRegeneration },
-            { "DirectRRResolution", direct.DirectRRResolution },
             { "RRMaterialIsolation", direct.RRMaterialIsolation },
             { "RRGlossyRoughness", direct.RRGlossyRoughness }
         } },
@@ -288,7 +287,7 @@ void RTComposer::LoadSettings(json& value)
         const auto beforeIsolation = direct.RRMaterialIsolation;
         const auto beforeRoughness = direct.RRGlossyRoughness;
         direct.UseDirectRayRegeneration = it->value("UseDirectRayRegeneration", direct.UseDirectRayRegeneration);
-        direct.DirectRRResolution = std::min(it->value("DirectRRResolution", direct.DirectRRResolution), 3u);
+        direct.DirectRRResolution = 3u; // persisted legacy resolution is not authoritative
         direct.RRMaterialIsolation = it->value("RRMaterialIsolation", direct.RRMaterialIsolation);
         const auto roughness = it->value("RRGlossyRoughness", direct.RRGlossyRoughness);
         direct.RRGlossyRoughness = std::isfinite(roughness) ? std::clamp(roughness, 0.04f, 1.0f) : 0.2f;
@@ -303,7 +302,7 @@ void RTComposer::RestoreDefaultSettings()
     const auto beforePolicy = std::pair{ composition.enabled, composition.mode };
     composition = {};
     if (beforePolicy != std::pair{ composition.enabled, composition.mode }) OnCompositionPolicyChanged();
-    RayRegeneration::Configure(1u, true, true);
+    RayRegeneration::Configure(0u, false, true);
     globals::features::redstoneGI.GetDenoiser().SetConfiguration(json::object());
     auto& direct = globals::features::rtDirectLighting.settings;
     direct.UseDirectRayRegeneration = true;
