@@ -150,10 +150,15 @@ float4 EstimateSpecular(Surface surface, float roughness, bool traceRadiance)
 #else
     const float pbrScale = Color::PBRLightingScale;
 #endif
+#if !defined(DX12_HYBRID_GI)
     float3 diffuseFactor = Color::IrradianceToLinear(srcDiffuseAlbedo.Load(int3(surfacePixel, 0)) / pbrScale);
 	 float3 specularFactor = srcSpecularAlbedo.Load(int3(surfacePixel, 0));
 	 diffuse.rgb *= diffuseFactor;
 	 specular.rgb *= specularFactor;
+#else
+    // AMD RR consumes unmodulated irradiance and specular radiance. Apply
+    // first-bounce albedos only after reconstruction in native composition.
+#endif
 	 uint2 signalPixel = uint2(RRCheckerboardEnabled ? pixel.x >> 1u : pixel.x, pixel.y);
 	 outDiffuse[signalPixel] = all(isfinite(diffuse)) ? diffuse : float4(0,0,0,-1);
 	 outSpecular[signalPixel] = all(isfinite(specular)) ? specular : float4(0,0,0,-1);
