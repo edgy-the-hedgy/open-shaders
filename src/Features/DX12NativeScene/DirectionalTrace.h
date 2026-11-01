@@ -63,6 +63,7 @@ namespace DX12Native
         HybridInputsPublication GetHybridInputs(uint32_t a_frame) const;
         struct ShadowedSourcePublication {
             ID3D12Resource* scene = nullptr;
+            ID3D12Resource* linearDepth = nullptr;
             ID3D12Fence* completionFence = nullptr;
             uint64_t completionValue = 0;
             std::array<uint32_t, 2> size{};
@@ -125,6 +126,7 @@ namespace DX12Native
             std::array<std::unique_ptr<WrappedResource>, kHybridInputCount> hybridInputs;
             bool hybridInputsReady = false;
             winrt::com_ptr<ID3D12Resource> hybridShadowedSource;
+            winrt::com_ptr<ID3D12Resource> hybridLinearDepth;
             bool hybridShadowedSourceReady = false;
 			std::array<std::unique_ptr<WrappedResource>, kDirectSignalCount> directSignals;
 			winrt::com_ptr<ID3D12RootSignature> root;

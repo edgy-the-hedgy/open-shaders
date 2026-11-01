@@ -1,11 +1,14 @@
 // Stage 4B: shadows applied to a DX12-native scene input, separate from game raster.
 Texture2D<float4> RasterScene : register(t0);
 Texture2D<float2> Visibility : register(t1);
+Texture2D<float4> RawDepth : register(t2);
 RWTexture2D<float4> OutShadowedScene : register(u0);
+RWTexture2D<float> OutLinearDepth : register(u1);
 cbuffer HybridSourceSettings : register(b0) {
     uint2 FrameSize;
     float ShadowInfluence;
-    uint Reserved;
+    uint ReverseZ;
+    float4 CameraData;
 };
 [numthreads(8, 8, 1)]
 void main(uint2 pixel : SV_DispatchThreadID)
@@ -20,4 +23,13 @@ void main(uint2 pixel : SV_DispatchThreadID)
     const float3 encoded = sign(shadowed) * pow(abs(shadowed), 1.0 / 1.6);
     OutShadowedScene[pixel] = all(isfinite(encoded)) ?
         float4(encoded, source.a) : float4(0, 0, 0, source.a);
+    // Exact RedstoneGI::ScreenToViewDepth equation, using the same
+    // Util::GetCameraData values supplied to the DX11 SharedData cbuffer.
+    const float raw = RawDepth.Load(int3(pixel, 0)).x;
+    const float standard = ReverseZ != 0u ? 1.0 - raw : raw;
+    const float divisor = CameraData.x - standard * CameraData.z;
+    const float depth = CameraData.w / divisor;
+    const bool farPlane = ReverseZ != 0u ? raw <= 0.0 : raw >= 1.0;
+    OutLinearDepth[pixel] = !farPlane && isfinite(depth) && depth > 0 &&
+        abs(divisor) > 1e-8 ? depth : 0.0;
 }

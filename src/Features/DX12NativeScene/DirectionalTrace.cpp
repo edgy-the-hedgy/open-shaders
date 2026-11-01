@@ -402,7 +402,8 @@ namespace DX12Native
     {
         frame.hybridShadowedSourceReady = false;
         if (!frame.hybridInputsReady || !frame.hybridInputs[0] ||
-            !frame.shadowMask || !frame.hybridShadowedSource) return;
+            !frame.hybridInputs[1] || !frame.shadowMask ||
+            !frame.hybridShadowedSource || !frame.hybridLinearDepth) return;
         try {
             if (!hybridSourcePipeline) {
                 std::ifstream file("Data/Shaders/RTDirectLighting/hybridShadowSource.dxil",
@@ -416,15 +417,15 @@ namespace DX12Native
                 if (!file.read(code.data(), std::streamsize(code.size())))
                     throw std::runtime_error("Cannot read hybrid source DXIL");
                 D3D12_DESCRIPTOR_RANGE ranges[2]{};
-                ranges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0, 0, 0 };
-                ranges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 0 };
+                ranges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0, 0, 0 };
+                ranges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 2, 0, 0, 0 };
                 D3D12_ROOT_PARAMETER params[3]{};
                 params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
                 params[0].DescriptorTable = { 1, &ranges[0] };
                 params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
                 params[1].DescriptorTable = { 1, &ranges[1] };
                 params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-                params[2].Constants = { 0, 0, 4 };
+                params[2].Constants = { 0, 0, 8 };
                 const D3D12_ROOT_SIGNATURE_DESC rs{ 3, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE };
                 winrt::com_ptr<ID3DBlob> serialized, errors;
                 DX::ThrowIfFailed(D3D12SerializeRootSignature(&rs, D3D_ROOT_SIGNATURE_VERSION_1,
@@ -438,7 +439,7 @@ namespace DX12Native
                 DX::ThrowIfFailed(backend.d3d12Device->CreateComputePipelineState(
                     &ps, IID_PPV_ARGS(hybridSourcePipeline.put())));
                 const D3D12_DESCRIPTOR_HEAP_DESC heap{
-                    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 3u * uint32_t(frames.size()),
+                    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 5u * uint32_t(frames.size()),
                     D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0
                 };
                 DX::ThrowIfFailed(backend.d3d12Device->CreateDescriptorHeap(
@@ -448,7 +449,7 @@ namespace DX12Native
             const UINT step = backend.d3d12Device->GetDescriptorHandleIncrementSize(
                 D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
             auto cpu = hybridSourceHeap->GetCPUDescriptorHandleForHeapStart();
-            cpu.ptr += uint64_t(3 * index) * step;
+            cpu.ptr += uint64_t(5 * index) * step;
             D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
             srv.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
             srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -459,17 +460,27 @@ namespace DX12Native
             srv.Format = DXGI_FORMAT_R16G16_FLOAT;
             backend.d3d12Device->CreateShaderResourceView(frame.shadowMask.get(), &srv, cpu);
             cpu.ptr += step;
+            srv.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+            backend.d3d12Device->CreateShaderResourceView(frame.hybridInputs[1]->resource.get(), &srv, cpu);
+            cpu.ptr += step;
             D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
             uav.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
             uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
             backend.d3d12Device->CreateUnorderedAccessView(frame.hybridShadowedSource.get(), nullptr, &uav, cpu);
+            cpu.ptr += step;
+            uav.Format = DXGI_FORMAT_R32_FLOAT;
+            backend.d3d12Device->CreateUnorderedAccessView(frame.hybridLinearDepth.get(), nullptr, &uav, cpu);
             auto* commands = frame.commands.get();
-            const std::array<D3D12_RESOURCE_BARRIER, 3> begin{
+            const std::array<D3D12_RESOURCE_BARRIER, 5> begin{
                 CD3DX12_RESOURCE_BARRIER::Transition(frame.hybridInputs[0]->resource.get(),
                     D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
                 CD3DX12_RESOURCE_BARRIER::Transition(frame.shadowMask.get(),
                     D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
                 CD3DX12_RESOURCE_BARRIER::Transition(frame.hybridShadowedSource.get(),
+                    D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+                CD3DX12_RESOURCE_BARRIER::Transition(frame.hybridInputs[1]->resource.get(),
+                    D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+                CD3DX12_RESOURCE_BARRIER::Transition(frame.hybridLinearDepth.get(),
                     D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
             };
             commands->ResourceBarrier(uint32_t(begin.size()), begin.data());
@@ -478,21 +489,30 @@ namespace DX12Native
             ID3D12DescriptorHeap* heaps[]{ hybridSourceHeap.get() };
             commands->SetDescriptorHeaps(1, heaps);
             auto gpu = hybridSourceHeap->GetGPUDescriptorHandleForHeapStart();
-            gpu.ptr += uint64_t(3 * index) * step;
+            gpu.ptr += uint64_t(5 * index) * step;
             commands->SetComputeRootDescriptorTable(0, gpu);
-            gpu.ptr += 2 * step;
+            gpu.ptr += 3 * step;
             commands->SetComputeRootDescriptorTable(1, gpu);
             const float influence = globals::features::rtComposer.composition.shadowInfluence;
-            uint32_t constants[4]{ frame.size[0], frame.size[1], 0u, 0u };
+            const auto projection = globals::game::frameBufferCached.GetCameraProj();
+            const bool reverseDepth = projection._33 * projection._43 < 0.0f;
+            const float4 cameraData = Util::GetCameraData();
+            uint32_t constants[8]{ frame.size[0], frame.size[1], 0u, reverseDepth ? 1u : 0u };
             std::memcpy(&constants[2], &influence, sizeof(float));
-            commands->SetComputeRoot32BitConstants(2, 4, constants, 0);
+            std::memcpy(&constants[4], &cameraData, sizeof(cameraData));
+            static_assert(sizeof(cameraData) == sizeof(uint32_t) * 4);
+            commands->SetComputeRoot32BitConstants(2, 8, constants, 0);
             commands->Dispatch((frame.size[0] + 7u) / 8u, (frame.size[1] + 7u) / 8u, 1);
-            const std::array<D3D12_RESOURCE_BARRIER, 3> end{
+            const std::array<D3D12_RESOURCE_BARRIER, 5> end{
                 CD3DX12_RESOURCE_BARRIER::Transition(frame.hybridInputs[0]->resource.get(),
                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
                 CD3DX12_RESOURCE_BARRIER::Transition(frame.shadowMask.get(),
                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
                 CD3DX12_RESOURCE_BARRIER::Transition(frame.hybridShadowedSource.get(),
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON),
+                CD3DX12_RESOURCE_BARRIER::Transition(frame.hybridInputs[1]->resource.get(),
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
+                CD3DX12_RESOURCE_BARRIER::Transition(frame.hybridLinearDepth.get(),
                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON)
             };
             commands->ResourceBarrier(uint32_t(end.size()), end.data());
@@ -870,7 +890,7 @@ namespace DX12Native
 			bool(available->shadowMask) == bool(a_sceneTarget) &&
 			bool(available->shadowMaskExport) == wantExport &&
             bool(available->hybridInputs[0]) == wantHybridInputs &&
-            (!wantHybridInputs || available->hybridShadowedSource) &&
+            (!wantHybridInputs || (available->hybridShadowedSource && available->hybridLinearDepth)) &&
             (!a_sceneTarget || available->visibilityBits);
 		constexpr uint64_t kFrameOverheadBytes = 1024 * 1024;
 		const auto textureDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32G32B32A32_FLOAT, size[0], size[1], 1, 1, 1, 0,
@@ -890,7 +910,11 @@ namespace DX12Native
 		const uint64_t visibilityBytes = a_sceneTarget ? backend.d3d12Device->GetResourceAllocationInfo(0, 1, &visibilityDesc).SizeInBytes : 0;
 		const uint64_t maskBytes = a_sceneTarget ? backend.d3d12Device->GetResourceAllocationInfo(0, 1, &maskDesc).SizeInBytes : 0;
 		const uint64_t exportBytes = wantExport ? nextPreviewBytes : 0;
-        uint64_t hybridBytes = wantHybridInputs ? nextPreviewBytes * kHybridInputCount + textureBytes : 0;
+        const auto linearDepthDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32_FLOAT, size[0], size[1], 1, 1, 1, 0,
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+        const uint64_t linearDepthBytes = wantHybridInputs ?
+            backend.d3d12Device->GetResourceAllocationInfo(0, 1, &linearDepthDesc).SizeInBytes : 0;
+        uint64_t hybridBytes = wantHybridInputs ? nextPreviewBytes * kHybridInputCount + textureBytes + linearDepthBytes : 0;
 		if (textureBytes == UINT64_MAX || lightBytes == UINT64_MAX || nextPreviewBytes == UINT64_MAX ||
 			visibilityBytes == UINT64_MAX || maskBytes == UINT64_MAX) { failure = "Directional texture allocation unsupported"; return; }
 		const uint64_t signalBytes = (directRR || a_indirectRays) ? nextPreviewBytes * kDirectSignalCount : 0;
@@ -914,6 +938,7 @@ namespace DX12Native
                 bool(available->shadowMask) == bool(a_sceneTarget) &&
                 bool(available->shadowMaskExport) == wantExport &&
                 !available->hybridInputs[0] && !available->hybridShadowedSource &&
+                !available->hybridLinearDepth &&
                 (!a_sceneTarget || available->visibilityBits);
             required = calculateRequired();
             retainedBytes = ResidentBytes() - (reuse ? 0 : available->bytes);
@@ -1001,6 +1026,12 @@ namespace DX12Native
                         nullptr, IID_PPV_ARGS(available->hybridShadowedSource.put())));
                     available->hybridShadowedSource->SetName(L"RTComposer::HybridShadowedSource");
                 }
+                if (!available->hybridLinearDepth) {
+                    DX::ThrowIfFailed(backend.d3d12Device->CreateCommittedResource(
+                        &heap, D3D12_HEAP_FLAG_NONE, &linearDepthDesc, D3D12_RESOURCE_STATE_COMMON,
+                        nullptr, IID_PPV_ARGS(available->hybridLinearDepth.put())));
+                    available->hybridLinearDepth->SetName(L"RTComposer::HybridLinearDepth");
+                }
                 static constexpr std::array names{
                     "RTComposer::HybridScene", "RTComposer::HybridDepth",
                     "RTComposer::HybridNormalRoughness", "RTComposer::HybridAlbedo",
@@ -1083,7 +1114,8 @@ namespace DX12Native
         for (const auto& frame : frames)
             if (frame.submitted && frame.hybridShadowedSourceReady && frame.number == frameNumber &&
                 frame.generation == generation && frame.fence && completion.fence12)
-                return { frame.hybridShadowedSource.get(), completion.fence12.get(), frame.fence, frame.size };
+                return { frame.hybridShadowedSource.get(), frame.hybridLinearDepth.get(),
+                    completion.fence12.get(), frame.fence, frame.size };
         return {};
     }
 
@@ -1139,7 +1171,7 @@ namespace DX12Native
             { "hybridShadowedSourceDispatches", hybridSourceDispatches },
             { "hybridShadowedSourceLastFrame", hybridSourceLastFrame },
             { "hybridShadowedSourceFailure", hybridSourceFailure },
-            { "hybridShadowedSourceStage", "4B-diagnostic; mask applied to DX12-native raster source" },
+            { "hybridShadowedSourceStage", "5A-preparation; DX12-native shadowed scene and linear view depth" },
             { "hybridInputLastFrame", hybridInputLastFrame },
             { "hybridInputLastBytes", hybridInputLastBytes },
             { "hybridInputBudgetDeferrals", hybridInputBudgetDeferrals },
