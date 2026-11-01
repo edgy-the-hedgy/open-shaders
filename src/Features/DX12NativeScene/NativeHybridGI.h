@@ -42,7 +42,8 @@ namespace DX12Native
         bool RecordComposition(ID3D12Device* device, ID3D11Device5* device11,
             ID3D12GraphicsCommandList* list, FrameOutputs& frame, uint32_t slot,
             const std::array<uint32_t, 2>& size, ID3D12Resource* shadowedSource,
-            ID3D12Resource* nativeDirect, float directBlend, float giContribution);
+            ID3D12Resource* nativeDirect, ID3D12Resource* diffuseAlbedo,
+            ID3D12Resource* specularAlbedo, float directBlend, float giContribution);
         const std::string& Failure() const { return failure; }
         const std::string& CompositionFailure() const { return compositionFailure; }
         uint64_t CompositionDispatches() const { return compositionDispatches; }
