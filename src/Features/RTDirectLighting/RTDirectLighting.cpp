@@ -115,14 +115,7 @@ void RTDirectLighting::DrawDirectLightingSettings()
         globals::features::dx12NativeScene.Tracer().Reset();
     }
     ImGui::TextWrapped("Geometry mode ignores normal maps. Full material mode uses loaded shading normals. Legacy flat retains the old response with zero direct specular.");
-    int traceRes = 0;
-    for (int option = 0; option < int(DX12Native::DirectionalTrace::kTraceResolutionMenuOrder.size()); ++option)
-        if (DX12Native::DirectionalTrace::kTraceResolutionMenuOrder[option] == settings.DirectTraceResolution) traceRes = option;
-    if (ImGui::Combo("Direct trace resolution", &traceRes, DX12Native::DirectionalTrace::kTraceResolutionMenuLabels)) {
-        settings.DirectTraceResolution = DX12Native::DirectionalTrace::kTraceResolutionMenuOrder[traceRes];
-        globals::features::dx12NativeScene.Tracer().Reset();
-    }
-    ImGui::TextWrapped("Trace density per axis; 2/3 and 1/3 use a depth-aware sparse resolve. This is independent of RR resolution.");
+    ImGui::TextWrapped("Direct trace density and RR input dimensions follow the universal four-mode sampling setting in RT Composer.");
 
     ImGui::SliderFloat("Raster / RT blend", &settings.RedstoneBlend, 0.0f, 1.0f, "%.2f");
     ImGui::SliderFloat("Direct lighting strength", &settings.DirectStrength, 0.0f, 8.0f, "%.2fx");
@@ -236,6 +229,8 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
 	if (!settings.UseAllPreparedLights && settings.SelectedDirectLight >= snapshot->cell->lights.size()) return;
 	auto backend = Feature::FindGraphicsBackend();
 	auto& tracer = native.Tracer();
+    const auto unifiedSampling = globals::features::rtComposer.composition.samplingMode;
+    const uint32_t unifiedTraceMode = DX12Native::NativeTraceShaderMode(unifiedSampling);
 	if (!backend || !tracer.Initialize(*backend)) return;
 	// LLF is retained only for the existing opaque-room generation/stamp, not for lighting.
 	const auto lights = globals::features::lightLimitFix.GetLightView(frame);
@@ -253,7 +248,7 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
 		!globals::features::rtComposer.BlocksRTIndirect() && rtExclusive ? gi.settings.IndirectRays : 0u, snapshot->roomReferences, settings.RedstoneBlend, settings.NormalInfluence,
 		settings.UseAllPreparedLights ? std::span<const DX12Native::PreparedPointLight>(snapshot->cell->nativeLights) :
 			std::span<const DX12Native::PreparedPointLight>(snapshot->cell->nativeLights).subspan(settings.SelectedDirectLight, 1),
-		settings.DirectTraceResolution, gi.settings.RTTraceResolution, settings.DirectRRResolution,
+		unifiedTraceMode, unifiedTraceMode, 3u, // trace/denoise follow one canonical policy
 		settings.RRMaterialIsolation, settings.RRGlossyRoughness,
 		{ settings.PointLightRadiusMultiplier, settings.PointLightFalloffFraction, settings.PointLightFalloffExponent, 0.0f },
 		{ settings.StochasticSampling ? 1.0f : 0.0f, settings.EmitterRadiusMultiplier, 0.0f, 0.0f });
