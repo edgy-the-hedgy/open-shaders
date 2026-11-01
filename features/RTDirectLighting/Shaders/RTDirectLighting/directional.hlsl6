@@ -111,8 +111,11 @@ void main(uint3 id : SV_DispatchThreadID)
 		IndirectDiffuse[id.xy] = float4(0, 0, 0, -2);
 		IndirectSpecular[id.xy] = float4(0, 0, 0, -2);
 	}
-	const uint mode = TracePass == 1u ? IndirectTraceMode : DirectTraceMode;
-	if (!RTSample_IsSampled(id.xy, RTPhase(mode, TracePass == 1u), mode)) {
+	if (TracePass == 1u) return; // Retired duplicate GI primary dispatch.
+	const bool directSampled = RTSample_IsSampled(id.xy, RTPhase(DirectTraceMode, false), DirectTraceMode);
+	const bool giSampled = TracePass == 0u && Padding.y >= DirectDiffuseView &&
+		IndirectRayCount != 0u && RTSample_IsSampled(id.xy, RTPhase(IndirectTraceMode, true), IndirectTraceMode);
+	if (!directSampled && !giSampled) {
 		if (TracePass == 0u) Shadow[id.xy] = Unavailable(MismatchedDepth);
 		return;
 	}
@@ -144,15 +147,48 @@ void main(uint3 id : SV_DispatchThreadID)
 		float spread = adjacent.w != 0 ? length(normalize(adjacent.xyz) - primary.Direction) : 2.0 / max(Size.x, Size.y);
 		float footprint = max(spread, 1e-6) * surfaceQuery.CommittedRayT();
 		if (Padding.y >= DirectDiffuseView) {
-			if (TracePass == 1u) {
-				EvaluateIndirectForSurface(surfaceQuery.CommittedInstanceID(), surfaceQuery.CommittedPrimitiveIndex(),
-					surfaceQuery.CommittedTriangleBarycentrics(), surfaceQuery.CommittedObjectToWorld3x4(),
-					surfaceQuery.CommittedWorldToObject3x4(), primary.Direction, surfaceQuery.CommittedRayT(),
-					receiver, footprint, id.xy);
+			// One primary hit feeds both lighting families. Load source PBR
+			// material and geometric normal once, then branch by independent mask.
+			const uint instance = surfaceQuery.CommittedInstanceID();
+			const uint primitive = surfaceQuery.CommittedPrimitiveIndex();
+			const float distance = surfaceQuery.CommittedRayT();
+			MaterialRecord record = Materials[Surfaces[instance].material.x];
+			if ((record.flags.x & 3u) != 3u || record.flags.w != 0u) {
+				Shadow[id.xy] = Unavailable(UnsupportedMaterial);
 				return;
 			}
-			Shadow[id.xy] = EvaluateDirectLighting(surfaceQuery.CommittedInstanceID(), surfaceQuery.CommittedPrimitiveIndex(), surfaceQuery.CommittedTriangleBarycentrics(),
-				surfaceQuery.CommittedObjectToWorld3x4(), surfaceQuery.CommittedWorldToObject3x4(), primary.Direction, surfaceQuery.CommittedRayT(), receiver, footprint, Padding.y, id.xy);
+			if (abs(distance - length(receiver.xyz)) > max(5.0f, distance * ReceiverRelativeTolerance)) {
+				Shadow[id.xy] = Unavailable(MismatchedDepth);
+				return;
+			}
+			EvaluatedSourceMaterial material;
+			if (!LoadSourceMaterial(instance, primitive, surfaceQuery.CommittedTriangleBarycentrics(),
+				surfaceQuery.CommittedObjectToWorld3x4(), surfaceQuery.CommittedWorldToObject3x4(),
+				footprint, material)) {
+				Shadow[id.xy] = Unavailable(InvalidSurface);
+				return;
+			}
+			TriangleSurface surface;
+			if (!LoadTriangle(instance, primitive, surfaceQuery.CommittedTriangleBarycentrics(), surface)) {
+				Shadow[id.xy] = Unavailable(InvalidSurface);
+				return;
+			}
+			const float3x3 transform = (float3x3)surfaceQuery.CommittedObjectToWorld3x4();
+			const float3 geometricNormal = normalize(cross(
+				mul(transform, surface.position1 - surface.position0),
+				mul(transform, surface.position2 - surface.position0)));
+			if (!all(isfinite(geometricNormal))) {
+				Shadow[id.xy] = Unavailable(InvalidSurface);
+				return;
+			}
+			if (directSampled)
+				Shadow[id.xy] = EvaluatePreparedDirect(material, CameraOrigin + primary.Direction * distance,
+					geometricNormal, primary.Direction, receiver, Padding.y, id.xy);
+			else
+				Shadow[id.xy] = Unavailable(MismatchedDepth);
+			if (giSampled)
+				EvaluatePreparedIndirect(material, CameraOrigin + primary.Direction * distance,
+					primary.Direction, geometricNormal, receiver, footprint, id.xy);
 			return;
 		}
 		Shadow[id.xy] = EvaluateMaterial(surfaceQuery.CommittedInstanceID(), surfaceQuery.CommittedPrimitiveIndex(), surfaceQuery.CommittedTriangleBarycentrics(),

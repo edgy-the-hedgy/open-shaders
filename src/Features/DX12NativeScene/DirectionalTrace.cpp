@@ -427,20 +427,16 @@ namespace DX12Native
 			commands->SetComputeRoot32BitConstants(5, 36, &resolve, 0);
 			commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 		}
-		if (a_frame.indirectRays != 0) {
-			// Dedicated indirect dispatch; the same retained scene and light snapshot
-			// are consumed, while only indirect signal UAVs are written.
-			// UAV ordering: the direct pass initialized these signal resources.
-			std::array<D3D12_RESOURCE_BARRIER, 2> independentSignals{
+		// The primary compute dispatch above already evaluated direct and GI
+		// using the union of masks; no second camera-to-scene query is issued.
+		if (a_frame.indirectRays != 0u) {
+			++fusedPrimaryWithGIDispatches;
+			// Independent GI resolve operates only on native GI outputs.
+			std::array<D3D12_RESOURCE_BARRIER, 2> giUavOrder{
 				CD3DX12_RESOURCE_BARRIER::UAV(a_frame.directSignals[5]->resource.get()),
 				CD3DX12_RESOURCE_BARRIER::UAV(a_frame.directSignals[6]->resource.get())
 			};
-			commands->ResourceBarrier(uint32_t(independentSignals.size()), independentSignals.data());
-			Constants indirectConstants = constants;
-			indirectConstants.signalPadding[0] = 1u;
-			commands->SetComputeRoot32BitConstants(5, 36, &indirectConstants, 0);
-			commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
-			++indirectTraceDispatches;
+			commands->ResourceBarrier(uint32_t(giUavOrder.size()), giUavOrder.data());
 			if (a_frame.indirectTraceMode != 0u && a_frame.stochasticParameters.w >= 0.5f) {
 				std::array<D3D12_RESOURCE_BARRIER, 2> resolveOrder{
 					CD3DX12_RESOURCE_BARRIER::UAV(a_frame.directSignals[5]->resource.get()),
@@ -823,6 +819,8 @@ namespace DX12Native
 			{ "lightMode", localLightMode ? "prepared-static" : "directional" },
 			{ "allPreparedLights", allPreparedLights }, { "requestedLightCount", requestedLightCount }, { "maximumDirectLights", kMaximumDirectLights }, { "lightSelectionFailure", lightSelectionFailure },
 			{ "directSubmissions", directSubmissions }, { "directTraceDispatches", directTraceDispatches }, { "indirectTraceDispatches", indirectTraceDispatches },
+			{ "fusedPrimaryWithGIDispatches", fusedPrimaryWithGIDispatches },
+			{ "primaryQueryCountVerified", false },
 			{ "directSpatialResolveSubmissions", directSpatialResolveSubmissions }, { "indirectSpatialResolveSubmissions", indirectSpatialResolveSubmissions },
 			{ "directSamplingMode", latestDirectSampleMode }, { "indirectSamplingMode", latestIndirectSampleMode },
 			{ "directSamplingPhase", latestDirectSamplePhase }, { "indirectSamplingPhase", latestIndirectSamplePhase },

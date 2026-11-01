@@ -208,23 +208,12 @@ bool EvaluatePointLight(
     return true;
 }
 
-float4 EvaluateDirectLighting(uint instance, uint primitive, float2 barycentric, float3x4 objectToWorld,
-	float3x4 worldToObject, float3 direction, float distance, float4 receiver, float footprint, uint mode, uint2 pixel)
+// The fused primary path invokes this with one shared material evaluation.
+float4 EvaluatePreparedDirect(EvaluatedSourceMaterial material, float3 position,
+	float3 geometricNormal, float3 direction, float4 receiver, uint mode, uint2 pixel)
 {
-	MaterialRecord record = Materials[Surfaces[instance].material.x];
-	if ((record.flags.x & 3) != 3 || record.flags.w != 0) return Unavailable(UnsupportedMaterial);
-	if (abs(distance - length(receiver.xyz)) > max(5.0f, distance * ReceiverRelativeTolerance)) return Unavailable(MismatchedDepth);
-	EvaluatedSourceMaterial material;
-	if (!LoadSourceMaterial(instance, primitive, barycentric, objectToWorld, worldToObject, footprint, material)) return Unavailable(InvalidSurface);
-	TriangleSurface surface;
-	if (!LoadTriangle(instance, primitive, barycentric, surface)) return Unavailable(InvalidSurface);
-	float3 edge0 = mul((float3x3)objectToWorld, surface.position1 - surface.position0);
-	float3 edge1 = mul((float3x3)objectToWorld, surface.position2 - surface.position0);
-	float3 geometricNormal = normalize(cross(edge0, edge1));
-	if (!all(isfinite(geometricNormal))) return Unavailable(InvalidSurface);
 	uint lightCount = Padding.z != 0 ? Padding.z : 1;
 	if (lightCount > MaximumDirectLights) return Unavailable(InvalidSurface);
-	float3 position = CameraOrigin + direction * distance;
 	float3 diffuseSum = 0, specularSum = 0;
 	uint eligibleLightCount = 0;
 	[loop] for (uint lightIndex = 0; lightIndex < lightCount; ++lightIndex) {
@@ -276,24 +265,32 @@ float4 EvaluateDirectLighting(uint instance, uint primitive, float2 barycentric,
 	return float4(result, DirectRadianceTag);
 }
 
+float4 EvaluateDirectLighting(uint instance, uint primitive, float2 barycentric, float3x4 objectToWorld,
+	float3x4 worldToObject, float3 direction, float distance, float4 receiver, float footprint, uint mode, uint2 pixel)
+{
+	MaterialRecord record = Materials[Surfaces[instance].material.x];
+	if ((record.flags.x & 3) != 3 || record.flags.w != 0) return Unavailable(UnsupportedMaterial);
+	if (abs(distance - length(receiver.xyz)) > max(5.0f, distance * ReceiverRelativeTolerance)) return Unavailable(MismatchedDepth);
+	EvaluatedSourceMaterial material;
+	if (!LoadSourceMaterial(instance, primitive, barycentric, objectToWorld, worldToObject, footprint, material)) return Unavailable(InvalidSurface);
+	TriangleSurface surface;
+	if (!LoadTriangle(instance, primitive, barycentric, surface)) return Unavailable(InvalidSurface);
+	float3 edge0 = mul((float3x3)objectToWorld, surface.position1 - surface.position0);
+	float3 edge1 = mul((float3x3)objectToWorld, surface.position2 - surface.position0);
+	float3 geometricNormal = normalize(cross(edge0, edge1));
+	if (!all(isfinite(geometricNormal))) return Unavailable(InvalidSurface);
+	return EvaluatePreparedDirect(material, CameraOrigin + direction * distance,
+		geometricNormal, direction, receiver, mode, pixel);
+}
+
 // Independent RT-exclusive indirect shader pass. It shares the current native
 // scene/receiver resources but never writes or composites direct radiance.
-void EvaluateIndirectForSurface(uint instance, uint primitive, float2 barycentric, float3x4 objectToWorld,
-    float3x4 worldToObject, float3 direction, float distance, float4 receiver, float footprint, uint2 pixel)
+// GI validity is independent of the direct-light result; no second
+// camera-to-scene query or first-hit material evaluation is permitted here.
+void EvaluatePreparedIndirect(EvaluatedSourceMaterial material, float3 position,
+    float3 direction, float3 geometricNormal, float4 receiver,
+    float footprint, uint2 pixel)
 {
-    if (IndirectRayCount == 0u) return;
-    MaterialRecord record = Materials[Surfaces[instance].material.x];
-    if ((record.flags.x & 3) != 3 || record.flags.w != 0) return;
-    if (abs(distance - length(receiver.xyz)) > max(5.0, distance * ReceiverRelativeTolerance)) return;
-    EvaluatedSourceMaterial material;
-    if (!LoadSourceMaterial(instance, primitive, barycentric, objectToWorld, worldToObject, footprint, material)) return;
-    TriangleSurface surface;
-    if (!LoadTriangle(instance, primitive, barycentric, surface)) return;
-    const float3 edge0 = mul((float3x3)objectToWorld, surface.position1 - surface.position0);
-    const float3 edge1 = mul((float3x3)objectToWorld, surface.position2 - surface.position0);
-    const float3 geometricNormal = normalize(cross(edge0, edge1));
-    if (!all(isfinite(geometricNormal))) return;
-    const float3 position = CameraOrigin + direction * distance;
     if (BakedRoomCode(instance, position) != uint(receiver.w)) return;
     float4 indirectDiffuse, indirectSpecular;
     if (EvaluateIndirectLighting(material, position, -direction, geometricNormal,
@@ -323,4 +320,23 @@ void EvaluateIndirectForSurface(uint instance, uint primitive, float2 barycentri
             DirectDiffuseAlbedo[pixel] = float4(saturate((1.0f - material.metallic) * material.baseColor), 1.0f);
         }
     }
+}
+
+void EvaluateIndirectForSurface(uint instance, uint primitive, float2 barycentric, float3x4 objectToWorld,
+    float3x4 worldToObject, float3 direction, float distance, float4 receiver, float footprint, uint2 pixel)
+{
+    if (IndirectRayCount == 0u) return;
+    MaterialRecord record = Materials[Surfaces[instance].material.x];
+    if ((record.flags.x & 3) != 3 || record.flags.w != 0) return;
+    if (abs(distance - length(receiver.xyz)) > max(5.0, distance * ReceiverRelativeTolerance)) return;
+    EvaluatedSourceMaterial material;
+    if (!LoadSourceMaterial(instance, primitive, barycentric, objectToWorld, worldToObject, footprint, material)) return;
+    TriangleSurface surface;
+    if (!LoadTriangle(instance, primitive, barycentric, surface)) return;
+    const float3 edge0 = mul((float3x3)objectToWorld, surface.position1 - surface.position0);
+    const float3 edge1 = mul((float3x3)objectToWorld, surface.position2 - surface.position0);
+    const float3 geometricNormal = normalize(cross(edge0, edge1));
+    if (!all(isfinite(geometricNormal))) return;
+    EvaluatePreparedIndirect(material, CameraOrigin + direction * distance,
+        direction, geometricNormal, receiver, footprint, pixel);
 }
