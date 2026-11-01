@@ -47,6 +47,19 @@ namespace DX12Native
 		};
 		/** @brief Returns a current, generation-matched mask without consuming it on D3D11. */
 		ShadowMaskPublication GetShadowMask(uint32_t a_frame) const;
+        // Stage 4A: GPU-only, frame-fence-gated DX11->DX12 input transport.
+        // Channels: scene color, depth, normal/roughness, albedo, reflectance,
+        // motion vectors. Each resource is RGBA16F for DX11 shared UAV support.
+        static constexpr uint32_t kHybridInputCount = 6;
+        struct HybridInputsPublication
+        {
+            std::array<ID3D12Resource*, kHybridInputCount> inputs{};
+            ID3D12Fence* completionFence = nullptr;
+            uint64_t completionValue = 0;
+            std::array<uint32_t, 2> size{};
+            explicit operator bool() const { return inputs[0] && completionFence && completionValue; }
+        };
+        HybridInputsPublication GetHybridInputs(uint32_t a_frame) const;
 		/** @brief Returns a raw preview view whose image remains owned by this service. */
 		ID3D11ShaderResourceView* Preview() const { return previewValid && preview ? preview->srv.get() : nullptr; }
 		/** @brief Returns the completed preview dimensions for an undistorted diagnostic image. */
@@ -100,6 +113,8 @@ namespace DX12Native
 			winrt::com_ptr<ID3D12Resource> visibilityBits, shadowMask;
 			// DX11-visible transfer only for final Shadow Only composition.
 			std::unique_ptr<WrappedResource> shadowMaskExport;
+            std::array<std::unique_ptr<WrappedResource>, kHybridInputCount> hybridInputs;
+            bool hybridInputsReady = false;
 			std::array<std::unique_ptr<WrappedResource>, kDirectSignalCount> directSignals;
 			winrt::com_ptr<ID3D12RootSignature> root;
 			winrt::com_ptr<ID3D12PipelineState> pipeline;
@@ -138,6 +153,7 @@ namespace DX12Native
 		static std::shared_ptr<const Bindings> CreateBindings(const GraphicsBackend& a_backend, std::shared_ptr<const TopLevel> a_scene);
 		static uint64_t BindingBytes(const GraphicsBackend& a_backend, const TopLevel& a_scene);
 		void PrepareReceivers(Frame& a_frame, const std::array<uint32_t, 2>& a_nativeSize, const LightLimitFixData::LightView& a_lights, ID3D11ShaderResourceView* a_roomMetadata);
+        void PrepareHybridInputs(Frame& a_frame);
 		void Record(Frame& a_frame, const float3& a_direction, bool a_localLight);
 		void Consume(Frame& a_frame);
 		void CompositeScene(Frame& a_frame, ID3D11UnorderedAccessView* a_target);
@@ -149,6 +165,7 @@ namespace DX12Native
 		GraphicsBackend backend;
 		SharedFence producer, completion;
 		winrt::com_ptr<ID3D11ComputeShader> prepare, display, composite;
+        winrt::com_ptr<ID3D11ComputeShader> prepareHybrid;
 		winrt::com_ptr<ID3D11ComputeShader> prepareDirectGuides;
 		winrt::com_ptr<ID3D11ComputeShader> packRRSignals;
 		std::unique_ptr<ConstantBuffer> rrGridSettings;
@@ -206,6 +223,9 @@ namespace DX12Native
 		uint64_t directSubmissions = 0, sceneCompositeSubmissions = 0;
 		uint64_t directTraceDispatches = 0, indirectTraceDispatches = 0;
 		uint64_t shadowMaskTraceDispatches = 0, shadowMaskResolveDispatches = 0;
+        uint64_t hybridInputDispatches = 0, hybridInputBudgetDeferrals = 0, hybridInputLastBytes = 0;
+        uint32_t hybridInputLastFrame = 0;
+        std::string hybridInputFailure;
 		uint32_t sceneCompositeFrame = 0;
 		std::string failure;
 	};

@@ -253,6 +253,73 @@ namespace DX12Native
 		return result;
 	}
 
+
+    void DirectionalTrace::PrepareHybridInputs(Frame& a_frame)
+    {
+        // Captures the raster scene strictly for diagnostic DX12 consumption.
+        // Never overwrites the game's color or changes the active SSGI path.
+        a_frame.hybridInputsReady = false;
+        if (!prepareHybrid) {
+            prepareHybrid.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(
+                L"Data\\Shaders\\RTDirectLighting\\prepareHybridInputs.cs.hlsl", {}, "cs_5_0")));
+            if (!prepareHybrid) {
+                hybridInputFailure = "Hybrid capture shader unavailable";
+                return;
+            }
+        }
+        auto* context = backend.d3d11Context.get();
+        const auto& targets = globals::game::renderer->GetRuntimeData().renderTargets;
+        const std::array<ID3D11ShaderResourceView*, kHybridInputCount> sources{
+            Util::AsReal(targets[RE::RENDER_TARGETS::kMAIN].SRV),
+            Util::GetCurrentSceneDepthSRV(),
+            Util::AsReal(targets[NORMALROUGHNESS].SRV),
+            Util::AsReal(targets[ALBEDO].SRV),
+            Util::AsReal(targets[REFLECTANCE].SRV),
+            Util::AsReal(targets[RE::RENDER_TARGETS::kMOTION_VECTOR].SRV)
+        };
+        if (std::ranges::any_of(sources, [](auto* value) { return !value; })) {
+            hybridInputFailure = "Raster color/depth/material/motion SRV unavailable";
+            return;
+        }
+        std::array<ID3D11UnorderedAccessView*, kHybridInputCount> outputs{};
+        for (size_t i = 0; i < kHybridInputCount; ++i)
+            outputs[i] = a_frame.hybridInputs[i] ? a_frame.hybridInputs[i]->uav : nullptr;
+        if (std::ranges::any_of(outputs, [](auto* value) { return !value; })) {
+            hybridInputFailure = "Hybrid capture UAV unavailable";
+            return;
+        }
+        winrt::com_ptr<ID3D11ComputeShader> oldShader;
+        std::array<winrt::com_ptr<ID3D11ShaderResourceView>, kHybridInputCount> oldSRVs;
+        std::array<winrt::com_ptr<ID3D11UnorderedAccessView>, kHybridInputCount> oldUAVs;
+        context->CSGetShader(oldShader.put(), nullptr, nullptr);
+        for (uint32_t i = 0; i < kHybridInputCount; ++i) {
+            context->CSGetShaderResources(i, 1, oldSRVs[i].put());
+            context->CSGetUnorderedAccessViews(i, 1, oldUAVs[i].put());
+        }
+        // The deferred renderer may still have kMAIN bound as u0. Explicitly
+        // release its UAV binding before sampling the very same texture as t0.
+        ID3D11UnorderedAccessView* clearUAVs[kHybridInputCount]{};
+        context->CSSetUnorderedAccessViews(0, kHybridInputCount, clearUAVs, nullptr);
+        context->CSSetShaderResources(0, kHybridInputCount, sources.data());
+        context->CSSetUnorderedAccessViews(0, kHybridInputCount, outputs.data(), nullptr);
+        context->CSSetShader(prepareHybrid.get(), nullptr, 0);
+        context->Dispatch((a_frame.size[0] + 7u) / 8u, (a_frame.size[1] + 7u) / 8u, 1);
+        ID3D11ShaderResourceView* clearSRVs[kHybridInputCount]{};
+        context->CSSetShaderResources(0, kHybridInputCount, clearSRVs);
+        context->CSSetUnorderedAccessViews(0, kHybridInputCount, clearUAVs, nullptr);
+        for (uint32_t i = 0; i < kHybridInputCount; ++i) {
+            auto* uav = oldUAVs[i].get();
+            auto* srv = oldSRVs[i].get();
+            context->CSSetUnorderedAccessViews(i, 1, &uav, nullptr);
+            context->CSSetShaderResources(i, 1, &srv);
+        }
+        context->CSSetShader(oldShader.get(), nullptr, 0);
+        a_frame.hybridInputsReady = true;
+        hybridInputFailure.clear();
+        hybridInputLastFrame = a_frame.number;
+        ++hybridInputDispatches;
+    }
+
 	void DirectionalTrace::PrepareReceivers(Frame& a_frame, const std::array<uint32_t, 2>& a_nativeSize, const LightLimitFixData::LightView& a_lights, ID3D11ShaderResourceView* a_roomMetadata)
 	{
 		CS_GPU_PASS("RTDirectLighting::PrepareReceivers");
@@ -322,6 +389,8 @@ namespace DX12Native
 		ID3D11Buffer* priorShared[]{ oldShared.get(), oldFeatures.get() };
 		context->CSSetConstantBuffers(5, 2, priorShared);
 		context->CSSetShader(shader.get(), nullptr, 0);
+		if (a_frame.hybridInputs[0]) PrepareHybridInputs(a_frame);
+		// The one existing producer fence covers receiver and Hybrid input writes.
 		const auto produced = producer.Next();
 		DX::ThrowIfFailed(context->Signal(producer.fence11.get(), produced));
 		context->Flush();
@@ -682,9 +751,16 @@ namespace DX12Native
 		const uint32_t effectiveRRMode = a_directRRResolutionMode == 3u ? rrPolicy.resolutionMode : std::min(a_directRRResolutionMode, 2u);
 		const bool directRR = a_sceneTarget && a_useDirectRR && rrPolicy.enabled;
 		const bool wantExport = a_sceneTarget && globals::features::rtComposer.ShadowOnlyActive();
-		const bool reuse = available->size == size && available->useDirectRR == directRR && available->indirectRays == a_indirectRays && available->receivers && available->output && available->light &&
+        // A requested Hybrid-Shadowed mode exercises the bridge diagnostically
+        // while Stage 4/5 readiness remains false and Shadow Only is active.
+        bool wantHybridInputs = a_sceneTarget &&
+            globals::features::rtComposer.composition.enabled &&
+            globals::features::rtComposer.composition.mode == RTComposer::CompositorMode::HybridShadowed;
+		bool reuse = available->size == size && available->useDirectRR == directRR && available->indirectRays == a_indirectRays && available->receivers && available->output && available->light &&
 			bool(available->shadowMask) == bool(a_sceneTarget) &&
-			bool(available->shadowMaskExport) == wantExport && (!a_sceneTarget || available->visibilityBits);
+			bool(available->shadowMaskExport) == wantExport &&
+            bool(available->hybridInputs[0]) == wantHybridInputs &&
+            (!a_sceneTarget || available->visibilityBits);
 		constexpr uint64_t kFrameOverheadBytes = 1024 * 1024;
 		const auto textureDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32G32B32A32_FLOAT, size[0], size[1], 1, 1, 1, 0,
 			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS);
@@ -703,13 +779,35 @@ namespace DX12Native
 		const uint64_t visibilityBytes = a_sceneTarget ? backend.d3d12Device->GetResourceAllocationInfo(0, 1, &visibilityDesc).SizeInBytes : 0;
 		const uint64_t maskBytes = a_sceneTarget ? backend.d3d12Device->GetResourceAllocationInfo(0, 1, &maskDesc).SizeInBytes : 0;
 		const uint64_t exportBytes = wantExport ? nextPreviewBytes : 0;
+        uint64_t hybridBytes = wantHybridInputs ? nextPreviewBytes * kHybridInputCount : 0;
 		if (textureBytes == UINT64_MAX || lightBytes == UINT64_MAX || nextPreviewBytes == UINT64_MAX ||
 			visibilityBytes == UINT64_MAX || maskBytes == UINT64_MAX) { failure = "Directional texture allocation unsupported"; return; }
 		const uint64_t signalBytes = (directRR || a_indirectRays) ? nextPreviewBytes * kDirectSignalCount : 0;
 		const uint64_t rrInteropReserve = directRR ? uint64_t(std::max(1u, size[0] >> effectiveRRMode)) * std::max(1u, size[1] >> effectiveRRMode) * 256 + kFrameOverheadBytes : 0;
-		const uint64_t required = (reuse ? 0 : textureBytes * 2 + lightBytes + signalBytes + visibilityBytes + maskBytes + exportBytes + kFrameOverheadBytes) + (a_sceneTarget ? 0 : nextPreviewBytes) + bindingBytes + rrInteropReserve;
-		const uint64_t retainedBytes = ResidentBytes() - (reuse ? 0 : available->bytes);
-		if (required > a_budgetBytes || retainedBytes > a_budgetBytes - required) {
+		auto calculateRequired = [&] {
+            return (reuse ? uint64_t{ 0 } : textureBytes * 2 + lightBytes + signalBytes + visibilityBytes + maskBytes + exportBytes + hybridBytes + kFrameOverheadBytes) +
+                (a_sceneTarget ? uint64_t{ 0 } : nextPreviewBytes) + bindingBytes + rrInteropReserve;
+        };
+        uint64_t required = calculateRequired();
+        uint64_t retainedBytes = ResidentBytes() - (reuse ? 0 : available->bytes);
+        auto overBudget = [&] { return required > a_budgetBytes || retainedBytes > a_budgetBytes - required; };
+        if (wantHybridInputs && overBudget()) {
+            // The diagnostic bridge must NEVER displace functional RT shadows.
+            ++hybridInputBudgetDeferrals;
+            hybridInputFailure = "Hybrid capture exceeds native lighting budget; skipped";
+            wantHybridInputs = false;
+            hybridBytes = 0;
+            reuse = available->size == size && available->useDirectRR == directRR &&
+                available->indirectRays == a_indirectRays && available->receivers &&
+                available->output && available->light &&
+                bool(available->shadowMask) == bool(a_sceneTarget) &&
+                bool(available->shadowMaskExport) == wantExport &&
+                !available->hybridInputs[0] &&
+                (!a_sceneTarget || available->visibilityBits);
+            required = calculateRequired();
+            retainedBytes = ResidentBytes() - (reuse ? 0 : available->bytes);
+        }
+		if (overBudget()) {
 			if (directRR) {
 				++directRRBudgetDeferrals;
 				Dispatch(a_scene, a_nativeSize, a_lightDirection, a_frame, a_budgetBytes, a_localLight, a_lights, a_materialView, a_sceneTarget,
@@ -773,7 +871,7 @@ namespace DX12Native
 				std::vector<PreparedPointLight>{ a_preparedLights.empty() ? PreparedPointLight{} : a_preparedLights.front() };
 			if (a_allPreparedLights) available->lightIdentities.assign(a_lightIdentities.begin(), a_lightIdentities.end());
 			else available->lightIdentities = { { a_lightReference, a_lightBase } };
-			available->bytes = textureBytes * 2 + lightBytes + signalBytes + visibilityBytes + maskBytes + exportBytes + kFrameOverheadBytes;
+			available->bytes = textureBytes * 2 + lightBytes + signalBytes + visibilityBytes + maskBytes + exportBytes + hybridBytes + kFrameOverheadBytes;
 			D3D11_TEXTURE2D_DESC desc{};
 			desc.Width = size[0]; desc.Height = size[1];
 			desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
@@ -781,6 +879,20 @@ namespace DX12Native
 			desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
 			if (!available->receivers) available->receivers = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RTDirectLighting::Receivers");
 			if (!available->output) available->output = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RTDirectLighting::BlockerDistance");
+			if (wantHybridInputs) {
+                static constexpr std::array names{
+                    "RTComposer::HybridScene", "RTComposer::HybridDepth",
+                    "RTComposer::HybridNormalRoughness", "RTComposer::HybridAlbedo",
+                    "RTComposer::HybridReflectance", "RTComposer::HybridMotion"
+                };
+                desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+                for (uint32_t i = 0; i < kHybridInputCount; ++i)
+                    if (!available->hybridInputs[i])
+                        available->hybridInputs[i] = std::make_unique<WrappedResource>(
+                            desc, backend.d3d11Device.get(), backend.d3d12Device.get(), names[i]);
+                desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+                hybridInputLastBytes = hybridBytes;
+            }
 			if (a_sceneTarget) {
 				const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
 				if (!available->visibilityBits) {
@@ -843,6 +955,22 @@ namespace DX12Native
 		}
 	}
 
+	DirectionalTrace::HybridInputsPublication DirectionalTrace::GetHybridInputs(uint32_t frameNumber) const
+    {
+        for (const auto& frame : frames) {
+            if (!frame.submitted || !frame.hybridInputsReady || frame.number != frameNumber ||
+                frame.generation != generation || !frame.fence || !completion.fence12) continue;
+            HybridInputsPublication publication{};
+            for (uint32_t i = 0; i < kHybridInputCount; ++i)
+                publication.inputs[i] = frame.hybridInputs[i] ? frame.hybridInputs[i]->resource.get() : nullptr;
+            publication.completionFence = completion.fence12.get();
+            publication.completionValue = frame.fence;
+            publication.size = frame.size;
+            return publication;
+        }
+        return {};
+    }
+
 	DirectionalTrace::ShadowMaskPublication DirectionalTrace::GetShadowMask(uint32_t a_frame) const
 	{
 		for (const auto& frame : frames) {
@@ -875,6 +1003,12 @@ namespace DX12Native
 			{ "allPreparedLights", allPreparedLights }, { "requestedLightCount", requestedLightCount }, { "maximumDirectLights", kMaximumDirectLights }, { "lightSelectionFailure", lightSelectionFailure },
 			{ "directSubmissions", directSubmissions }, { "directTraceDispatches", directTraceDispatches }, { "indirectTraceDispatches", indirectTraceDispatches },
 			{ "shadowMaskTraceDispatches", shadowMaskTraceDispatches }, { "shadowMaskResolveDispatches", shadowMaskResolveDispatches },
+            { "hybridInputDispatches", hybridInputDispatches },
+            { "hybridInputLastFrame", hybridInputLastFrame },
+            { "hybridInputLastBytes", hybridInputLastBytes },
+            { "hybridInputBudgetDeferrals", hybridInputBudgetDeferrals },
+            { "hybridInputFailure", hybridInputFailure },
+            { "hybridInputStage", "4A-diagnostic; DX11 capture / DX12 shared inputs / one producer fence; no GI consumption" },
 			{ "shadowMaskFormat", "R16G16_FLOAT (visibility, confidence)" }, { "perLightVisibilityFormat", "R32G32_UINT (visible, valid bitsets)" }, { "sceneCompositeSubmissions", sceneCompositeSubmissions }, { "sceneCompositeFrame", sceneCompositeFrame },
 			{ "directScope", "selected light or complete bounded prepared point-light set; supported depth-matched PBR surfaces; per-light diffuse/specular, emission once; no native CPU bypass" },
 			{ "sourceLightCount", sourceLightCount }, { "sourceLightFrame", sourceLightFrame }, { "unavailableLightFrames", unavailableLightFrames },
