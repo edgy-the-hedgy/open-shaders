@@ -7,6 +7,7 @@
 #include "Features/DX12NativeScene/PreparedScene.h"
 #include "Features/DX12NativeScene/DirectionalTrace.h"
 #include <atomic>
+#include <mutex>
 #include <dxgi1_4.h>
 
 /** @brief Independently owns Redstone shadow acquisition, settings and diagnostics. */
@@ -74,6 +75,7 @@ struct DX12NativeScene final : OverlayFeature
 	/** @brief Draws acquisition controls and explicit production/fallback status. */
     // Query the adapter associated with the active DX12 device, not the
     // primary display adapter. Cached to avoid factory enumeration per frame.
+    mutable std::mutex lightingBudgetMutex;
     mutable winrt::com_ptr<IDXGIAdapter3> lightingBudgetAdapter;
     mutable LUID lightingBudgetAdapterLuid{};
     mutable DXGI_QUERY_VIDEO_MEMORY_INFO lastLightingMemoryInfo{};
