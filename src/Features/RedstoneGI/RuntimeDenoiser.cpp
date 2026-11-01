@@ -416,6 +416,50 @@ bool RedstoneDenoiser::DispatchRayRegeneration(ID3D11Texture2D* signal, ID3D11Te
 }
 
 /** @brief Native Hybrid-Shadowed RR: three isolated contexts, no DX11 interop. */
+/** @brief Retires only native RR contexts after their DX12 queue work,
+ * preserving the legacy denoiser and its resources. This is an occasional
+ * mode-change/disable operation, never a per-frame GPU stall. */
+bool RedstoneDenoiser::RetireNativeHybridContexts()
+{
+    if (std::ranges::all_of(nativeHybridContexts, [](ffxContext ctx) { return ctx == nullptr; }))
+        return true;
+    if (!backend.commandQueue || !runtimeFence.fence12 || !denoiserFunctions.DestroyContext) {
+        nativeHybridFailure = "Native RR context retirement unavailable (queue/fence/SDK)";
+        return false;
+    }
+    try {
+        const uint64_t retiring = runtimeFence.Next();
+        DX::ThrowIfFailed(backend.commandQueue->Signal(runtimeFence.fence12.get(), retiring));
+        if (!WaitForRuntimeD3D12Fence(retiring)) {
+            nativeHybridFailure = "Native RR context retirement timed out; contexts kept alive";
+            return false;
+        }
+        for (auto& context : nativeHybridContexts) {
+            if (!context) continue;
+            if (denoiserFunctions.DestroyContext(&context, nullptr) != FFX_API_RETURN_OK) {
+                nativeHybridFailure = "Native RR provider refused context destruction";
+                return false;
+            }
+            context = nullptr;
+        }
+        nativeHybridExtent = {};
+        nativeHybridCheckerboard = false;
+        nativeHybridLastFrame = UINT32_MAX;
+        nativeHybridFailed = false;
+        nativeHybridFailure.clear();
+        nativeHybridConfigurationDefaultsReady.fill(false);
+        nativeHybridConfigurationApplied.fill(false);
+        nativeHybridAppliedConfigurationRevision = UINT64_MAX;
+        nativeHybridBlockedConfigurationRevision = UINT64_MAX;
+        nativeHybridConfigurationFailure.clear();
+        return true;
+    } catch (const std::exception& error) {
+        nativeHybridFailure =
+            std::string("Native RR context retirement failed: ") + error.what();
+        return false;
+    }
+}
+
 bool RedstoneDenoiser::DispatchNativeHybridRR(
     ID3D12GraphicsCommandList* list, const NativeHybridResources& resources)
 {
@@ -467,15 +511,9 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
         nativeHybridCheckerboard != resources.checkerboard;
     if (changed && (nativeHybridContexts[0] || nativeHybridContexts[1] ||
                     nativeHybridContexts[2])) {
-        // Context shader tables and temporal buffers depend on checkerboard
-        // and capacity. The shared retirement path waits for all prior queue
-        // work before destroying any native context; resize is uncommon.
-        ResetRayRegeneration();
-        if (nativeHybridContexts[0] || nativeHybridContexts[1] ||
-            nativeHybridContexts[2] || rayRegenerationFailureLatched) {
-            nativeHybridFailure = "Native RR context retirement failed";
-            return false;
-        }
+        // Contexts depend on checkerboard and logical capacity, not solely
+        // screen size. Retire ONLY native contexts; legacy RR is unaffected.
+        if (!RetireNativeHybridContexts()) return false;
     }
     const bool fresh = !nativeHybridContexts[0];
     if (fresh) {
