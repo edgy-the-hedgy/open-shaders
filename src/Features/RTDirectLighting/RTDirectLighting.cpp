@@ -41,6 +41,8 @@ void RTDirectLighting::LoadSettings(json& value)
 			&selected.EmissionStrength })
 		*v = std::isfinite(*v) ? std::clamp(*v, 0.0f, 8.0f) : 1.0f;
 	settings = selected;
+	if (settings.UsePreparedDirectLighting)
+		globals::features::dx12NativeScene.RequestPreparedScene();
 	lastFrame.reset();
 }
 void RTDirectLighting::SaveSettings(json& value) { value = settings; }
@@ -69,7 +71,9 @@ json RTDirectLighting::GetDiagnostics()
 void RTDirectLighting::DrawDirectLightingSettings()
 {
     if (ImGui::Checkbox("RT direct lighting", &settings.UsePreparedDirectLighting)) {
-        if (!settings.UsePreparedDirectLighting)
+        if (settings.UsePreparedDirectLighting)
+            globals::features::dx12NativeScene.RequestPreparedScene();
+        else
             globals::features::rtIndirectLighting.SelectHybrid();
         globals::features::dx12NativeScene.Tracer().Reset();
     }
