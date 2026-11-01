@@ -22,6 +22,12 @@ namespace DX12Native
             std::array<winrt::com_ptr<ID3D12Resource>, kOutputs> textures{};
             winrt::com_ptr<ID3D12Resource> constants;
             HybridSamplingLayout sampling{};
+            // Logical-grid RR guides: depth, motion, normal/roughness,
+            // linear diffuse albedo and specular albedo. GPU-resident only.
+            static constexpr uint32_t kGuideCount = 5;
+            std::array<winrt::com_ptr<ID3D12Resource>, kGuideCount> rrGuides{};
+            std::array<uint32_t, 2> rrGuideSize{};
+            bool rrGuidesValid = false;
             // DX12-produced final color; the sole eventual DX11 export product.
             std::unique_ptr<WrappedResource> composedScene;
             bool valid = false;
@@ -38,6 +44,15 @@ namespace DX12Native
             ID3D12Resource* linearRadiance, ID3D12Resource* albedo,
             ID3D12Resource* reflectance, ID3D12Resource* shadowMask,
             const RedstoneGI& settings, float shadowInfluence, float skipThreshold);
+        // Prepare full logical-grid RR guides from exact representative native
+        // pixels, without pre-RR spatial filtering or CPU readback.
+        bool RecordRRGuides(ID3D12Device* device, ID3D12GraphicsCommandList* list,
+            FrameOutputs& frame, uint32_t slot,
+            ID3D12Resource* linearDepth, ID3D12Resource* normalRough,
+            ID3D12Resource* motion, ID3D12Resource* diffuseAlbedo,
+            ID3D12Resource* specularAlbedo);
+        const std::string& GuideFailure() const { return guideFailure; }
+        uint64_t GuideDispatches() const { return guideDispatches; }
         // Records only when GI and AO were produced for this frame. No CPU readback.
         bool RecordComposition(ID3D12Device* device, ID3D11Device5* device11,
             ID3D12GraphicsCommandList* list, FrameOutputs& frame, uint32_t slot,
@@ -55,11 +70,14 @@ namespace DX12Native
         winrt::com_ptr<ID3D12RootSignature> root;
         std::array<winrt::com_ptr<ID3D12PipelineState>, 2> pipelines;
         winrt::com_ptr<ID3D12PipelineState> eligibilityPipeline;
+        winrt::com_ptr<ID3D12RootSignature> guideRoot;
+        winrt::com_ptr<ID3D12PipelineState> guidePipeline;
+        winrt::com_ptr<ID3D12DescriptorHeap> guideDescriptors;
         winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
         winrt::com_ptr<ID3D12PipelineState> compositionPipeline;
         winrt::com_ptr<ID3D12DescriptorHeap> compositionDescriptors;
-        std::string failure, compositionFailure;
+        std::string failure, compositionFailure, guideFailure;
         uint64_t giDispatches = 0, aoDispatches = 0, compositionDispatches = 0,
-            eligibilityDispatches = 0;
+            eligibilityDispatches = 0, guideDispatches = 0;
     };
 }
