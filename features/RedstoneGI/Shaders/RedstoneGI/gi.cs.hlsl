@@ -103,23 +103,28 @@ float4 EstimateSpecular(Surface surface, float roughness, bool traceRadiance)
 	if (any(pixel >= uint2(OUT_FRAME_DIM))) return;
 	if (RRCheckerboardEnabled && ((pixel.x + pixel.y) & 1u) != RRCheckerboardOrigin) return;
 	uint2 surfacePixel = SelectSurfacePixel(srcWorkingDepth, pixel);
+	float depth = srcWorkingDepth.Load(int3(surfacePixel, 0));
 #if defined(DX12_HYBRID_GI)
+    const float4 receiverNormal = srcNormalRoughness.Load(int3(surfacePixel, 0));
+    const bool receiverValid = isfinite(depth) && depth > FP_Z && depth < DepthFadeRange.y &&
+        all(isfinite(receiverNormal));
     const float2 mask = srcShadowMask.Load(int3(surfacePixel, 0));
+    const bool maskValid = all(isfinite(mask)) && mask.y >= 0.5;
     const float effectiveVisibility = 1.0 -
-        saturate(HybridShadowInfluence) * (1.0 - (mask.y >= 0.5 && all(isfinite(mask)) ? saturate(mask.x) : 1.0));
-    const bool suppressRays = mask.y >= 0.5 && all(isfinite(mask)) &&
+        saturate(HybridShadowInfluence) * (1.0 - (maskValid ? saturate(mask.x) : 1.0));
+    const bool suppressRays = receiverValid && maskValid &&
         effectiveVisibility < saturate(HybridSkipThreshold);
     const uint2 eligibilityPixel = uint2(RRCheckerboardEnabled ? pixel.x >> 1u : pixel.x, pixel.y);
-    // 0 = intentional skip; 1 = rays eligible. The eventual RR integration
-    // must not treat 0 as an unobserved pixel requiring historical reconstruction.
-    outReceiverEligibility[eligibilityPixel] = suppressRays ? 0u : 1u;
-    if (suppressRays) {
+    // Explicit native receiver contract: 0 = intentionally skipped,
+    // 1 = evaluated by GI, 2 = invalid geometry/depth. Neither 0 nor 2
+    // represents an unobserved checkerboard sample eligible for RR history.
+    outReceiverEligibility[eligibilityPixel] = !receiverValid ? 2u : (suppressRays ? 0u : 1u);
+    if (!receiverValid || suppressRays) {
         outDiffuse[eligibilityPixel] = float4(0, 0, 0, -1);
         outSpecular[eligibilityPixel] = float4(0, 0, 0, -1);
         return;
     }
 #endif
-	float depth = srcWorkingDepth.Load(int3(surfacePixel, 0));
 	float4 diffuse = float4(0,0,0,-1);
 	float4 specular = float4(0,0,0,-1);
 	float4 nr = srcNormalRoughness.Load(int3(surfacePixel, 0));
