@@ -14,7 +14,7 @@ namespace DX12Native
 {
     namespace
     {
-        constexpr uint32_t kPerPass = 11; // t0..t7 then u0..u2
+        constexpr uint32_t kPerPass = 12; // t0..t8 then u0..u2
         constexpr uint32_t kPerFrame = kPerPass * 2;
         constexpr uint64_t kUploadBytes = 4096;
         constexpr uint64_t kGISettingsOffset = 0;
@@ -23,7 +23,7 @@ namespace DX12Native
         constexpr uint64_t kCameraOffset = 1280;
         constexpr uint64_t kMaskOffset = 2048;
         constexpr uint64_t kCompositionOffset = 2304;
-        constexpr uint32_t kCompositionDescriptorsPerFrame = 11;
+        constexpr uint32_t kCompositionDescriptorsPerFrame = 12;
         struct NativeLightingCB
         {
             float4 camera;
@@ -38,6 +38,7 @@ namespace DX12Native
         {
             uint32_t width, height;
             float directBlend, giContribution;
+            uint32_t enableLinearLighting, enableACEScg;
         };
         DXGI_FORMAT OutputFormat(uint32_t index)
         {
@@ -101,7 +102,7 @@ namespace DX12Native
             auto aoCode = ReadDXIL("Data/Shaders/RTDirectLighting/hybridAO.dxil");
             auto eligibilityCode = ReadDXIL("Data/Shaders/RTDirectLighting/hybridEligibility.dxil");
             D3D12_DESCRIPTOR_RANGE ranges[2]{};
-            ranges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 8, 0, 0, 0 };
+            ranges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 9, 0, 0, 0 };
             ranges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 3, 0, 0, 0 };
             D3D12_ROOT_PARAMETER params[7]{};
             for (uint32_t i = 0; i < 2; ++i) {
@@ -220,12 +221,12 @@ namespace DX12Native
             frame.constants->Unmap(0, nullptr);
 
             const UINT step = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-            const auto sources = std::array<ID3D12Resource*, 8>{ linearDepth, normalRough,
-                linearRadiance, nullptr, nullptr, albedo, reflectance, shadowMask };
-            const auto formats = std::array<DXGI_FORMAT, 8>{
+            const auto sources = std::array<ID3D12Resource*, 9>{ linearDepth, normalRough,
+                linearRadiance, nullptr, nullptr, albedo, reflectance, shadowMask, nullptr };
+            const auto formats = std::array<DXGI_FORMAT, 9>{
                 DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
                 DXGI_FORMAT_R16G16_FLOAT, DXGI_FORMAT_R16G16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
-                DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16_FLOAT };
+                DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT };
             const std::array<uint32_t, 3> giUAV{ 0u, 1u, 2u };
             const std::array<uint32_t, 3> aoUAV{ 3u, 4u, 2u };
             for (uint32_t pass = 0; pass < 2; ++pass) {
@@ -274,7 +275,7 @@ namespace DX12Native
                 auto gpu = descriptors->GetGPUDescriptorHandleForHeapStart();
                 gpu.ptr += uint64_t(slot * kPerFrame + pass * kPerPass) * step;
                 list->SetComputeRootDescriptorTable(0, gpu);
-                gpu.ptr += 8 * step;
+                gpu.ptr += 9 * step;
                 list->SetComputeRootDescriptorTable(1, gpu);
                 list->Dispatch((sampling.packed[0] + 7u) / 8u,
                     (sampling.packed[1] + 7u) / 8u, 1);
@@ -288,7 +289,7 @@ namespace DX12Native
             auto eligibilityGPU = descriptors->GetGPUDescriptorHandleForHeapStart();
             eligibilityGPU.ptr += uint64_t(slot * kPerFrame) * step;
             list->SetComputeRootDescriptorTable(0, eligibilityGPU);
-            eligibilityGPU.ptr += 8u * step;
+            eligibilityGPU.ptr += 9u * step;
             list->SetComputeRootDescriptorTable(1, eligibilityGPU);
             list->Dispatch((size[0] + 7u) / 8u, (size[1] + 7u) / 8u, 1);
             ++eligibilityDispatches;
@@ -313,11 +314,12 @@ namespace DX12Native
     bool NativeHybridGI::RecordComposition(ID3D12Device* device, ID3D11Device5* device11,
         ID3D12GraphicsCommandList* list, FrameOutputs& frame, uint32_t slot,
         const std::array<uint32_t, 2>& size, ID3D12Resource* shadowedSource,
-        ID3D12Resource* nativeDirect, float directBlend, float giContribution)
+        ID3D12Resource* nativeDirect, ID3D12Resource* diffuseAlbedo,
+        ID3D12Resource* specularAlbedo, float directBlend, float giContribution)
     {
         frame.composedValid = false;
         if (!frame.valid || !device || !device11 || !list || !shadowedSource ||
-            !nativeDirect || slot >= 2 || !size[0] || !size[1]) {
+            !nativeDirect || !diffuseAlbedo || !specularAlbedo || slot >= 2 || !size[0] || !size[1]) {
             compositionFailure = "Missing valid GI/AO, source, or DX12 composition resources";
             return false;
         }
@@ -353,8 +355,10 @@ namespace DX12Native
 
             const NativeCompositionCB constants{ size[0], size[1],
                 std::isfinite(directBlend) ? std::clamp(directBlend, 0.0f, 1.0f) : 0.0f,
-                std::isfinite(giContribution) ? std::clamp(giContribution, 0.0f, 1.0f) : 0.0f };
-            static_assert(sizeof(constants) == 16);
+                std::isfinite(giContribution) ? std::clamp(giContribution, 0.0f, 1.0f) : 0.0f,
+                uint32_t(globals::features::linearLighting.IsLinearLightingActive()),
+                uint32_t(globals::features::linearLighting.settings.enableACEScg) };
+            static_assert(sizeof(constants) == 24);
             static_assert(kCompositionOffset + sizeof(constants) <= kUploadBytes);
             uint8_t* mapped = nullptr;
             const D3D12_RANGE noRead{ 0, 0 };
@@ -362,16 +366,18 @@ namespace DX12Native
             std::memcpy(mapped + kCompositionOffset, &constants, sizeof(constants));
             frame.constants->Unmap(0, nullptr);
 
-            const std::array<ID3D12Resource*, 7> reads{
+            const std::array<ID3D12Resource*, 9> reads{
                 shadowedSource, nativeDirect, frame.textures[Diffuse].get(),
                 frame.textures[Specular].get(), frame.textures[DiffuseAO].get(),
-                frame.textures[SpecularAO].get(), frame.textures[Eligibility].get()
+                frame.textures[SpecularAO].get(), frame.textures[Eligibility].get(),
+                diffuseAlbedo, specularAlbedo
             };
-            const std::array<DXGI_FORMAT, 8> formats{
+            const std::array<DXGI_FORMAT, 9> formats{
                 DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT,
                 DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
                 DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8_UNORM,
-                DXGI_FORMAT_R32_UINT, DXGI_FORMAT_R32_UINT
+                DXGI_FORMAT_R32_UINT, DXGI_FORMAT_R16G16B16A16_FLOAT,
+                DXGI_FORMAT_R16G16B16A16_FLOAT
             };
             const UINT step = device->GetDescriptorHandleIncrementSize(
                 D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -397,8 +403,8 @@ namespace DX12Native
                 cpu.ptr += step;
             }
 
-            std::array<D3D12_RESOURCE_BARRIER, 8> begin{};
-            std::array<D3D12_RESOURCE_BARRIER, 8> end{};
+            std::array<D3D12_RESOURCE_BARRIER, 10> begin{};
+            std::array<D3D12_RESOURCE_BARRIER, 10> end{};
             for (uint32_t i = 0; i < reads.size(); ++i) {
                 begin[i] = CD3DX12_RESOURCE_BARRIER::Transition(reads[i],
                     D3D12_RESOURCE_STATE_COMMON,
@@ -407,10 +413,10 @@ namespace DX12Native
                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                     D3D12_RESOURCE_STATE_COMMON);
             }
-            begin[7] = CD3DX12_RESOURCE_BARRIER::Transition(
+            begin[9] = CD3DX12_RESOURCE_BARRIER::Transition(
                 frame.composedScene->resource.get(), D3D12_RESOURCE_STATE_COMMON,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            end[7] = CD3DX12_RESOURCE_BARRIER::Transition(
+            end[9] = CD3DX12_RESOURCE_BARRIER::Transition(
                 frame.composedScene->resource.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_COMMON);
             list->ResourceBarrier(UINT(begin.size()), begin.data());
@@ -421,7 +427,7 @@ namespace DX12Native
             auto gpu = compositionDescriptors->GetGPUDescriptorHandleForHeapStart();
             gpu.ptr += uint64_t(slot * kCompositionDescriptorsPerFrame) * step;
             list->SetComputeRootDescriptorTable(0, gpu);
-            gpu.ptr += 8 * step;
+            gpu.ptr += 9 * step;
             list->SetComputeRootDescriptorTable(1, gpu);
             list->SetComputeRootConstantBufferView(6,
                 frame.constants->GetGPUVirtualAddress() + kCompositionOffset);
