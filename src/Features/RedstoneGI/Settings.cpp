@@ -188,15 +188,9 @@ void RedstoneGI::SetRRCheckerboard(bool a_enabled)
     // Compatibility API: checkerboard is no longer an independent RR
     // setting. Route requests through the single compositor sampling mode.
     auto& composer = globals::features::rtComposer;
-    const auto oldMode = composer.composition.samplingMode;
-    const bool quarter = DX12Native::RRLogicalReduction(oldMode) != 0u;
-    const auto nextMode = static_cast<DX12Native::HybridSamplingMode>(
-        quarter ? (a_enabled ? 3u : 2u) : (a_enabled ? 1u : 0u));
-    const auto rr = RayRegeneration::GetSettings();
-    composer.composition.samplingMode = nextMode;
-    RayRegeneration::Configure(DX12Native::RRLogicalReduction(nextMode),
-        DX12Native::RRCheckerboard(nextMode), rr.enabled);
-    if (nextMode != oldMode) composer.OnCompositionPolicyChanged();
+    const bool changed = composer.composition.hybridCheckerboard != a_enabled;
+    composer.composition.hybridCheckerboard = a_enabled;
+    if (changed) composer.OnCompositionPolicyChanged();
 }
 
 void RedstoneGI::DrawRayRegenerationSettings()

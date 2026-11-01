@@ -13,17 +13,19 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <tuple>
 
 namespace
 {
     constexpr std::array kDirectKeys{ "UseDirectRayRegeneration", "DirectRRResolution", "RRMaterialIsolation", "RRGlossyRoughness" };
     constexpr std::array kHybridFamilies{ "diffuse", "specular", "ao" };
-    void ApplyUnifiedSampling(DX12Native::HybridSamplingMode mode)
+    void ApplySamplingPolicy(bool directCheckerboard)
     {
+        // SDK-wide compatibility only serves direct RR. The native GI
+        // denoiser receives its own logical dimensions and packed signals.
         const auto rr = RayRegeneration::GetSettings();
-        RayRegeneration::Configure(DX12Native::RRLogicalReduction(mode),
-            DX12Native::RRCheckerboard(mode), rr.enabled);
-        globals::features::rtDirectLighting.settings.DirectRRResolution = 3u;
+        RayRegeneration::Configure(0u, directCheckerboard, rr.enabled);
+        globals::features::rtDirectLighting.settings.DirectRRResolution = 0u;
     }
 
     using HybridFilters = std::array<RTComposer::SignalReconstructionSettings, 3>;
@@ -126,7 +128,10 @@ json RTComposer::GetDiagnostics()
         { "directContribution", composition.rtDirectContribution },
         { "giContribution", composition.giContribution },
         { "nativeProductionRequested", composition.enabled && composition.mode == CompositorMode::HybridShadowed },
-        { "hybridSamplingMode", static_cast<uint32_t>(composition.samplingMode) },
+        { "directCheckerboard", composition.directCheckerboard },
+        { "hybridResolution", composition.hybridResolution },
+        { "hybridCheckerboard", composition.hybridCheckerboard },
+        { "hybridSamplingMode", composition.hybridResolution },
         { "shadowThreshold", composition.shadowThreshold },
         { "rtIndirectTraceDispatchesCumulative", tracer.GetDiagnostics().value("indirectTraceDispatches", uint64_t{ 0 }) }
     };
@@ -226,8 +231,8 @@ void RTComposer::SaveSettings(json& value)
     value = {
         { "FSRRayRegeneration", {
             { "enabled", policy.enabled },
-            { "checkerboard", DX12Native::RRCheckerboard(composition.samplingMode) },
-            { "resolutionMode", DX12Native::RRLogicalReduction(composition.samplingMode) },
+            { "checkerboard", composition.directCheckerboard },
+            { "resolutionMode", 0u },
             { "configuration", RayRegeneration::GetConfiguration().overrides }
         } },
         { "DirectRR", {
@@ -242,7 +247,9 @@ void RTComposer::SaveSettings(json& value)
             { "rtDirectContribution", composition.rtDirectContribution },
             { "giContribution", composition.giContribution },
             { "shadowThreshold", composition.shadowThreshold },
-            { "samplingMode", static_cast<uint32_t>(composition.samplingMode) },
+            { "directCheckerboard", composition.directCheckerboard },
+            { "hybridResolution", composition.hybridResolution },
+            { "hybridCheckerboard", composition.hybridCheckerboard },
             { "reconstruction", SaveHybridFilters(composition.reconstruction) }
         } }
     };
@@ -252,7 +259,7 @@ void RTComposer::LoadSettings(json& value)
 {
     if (!value.is_object()) return;
     const auto beforePolicy = std::pair{ composition.enabled, composition.mode };
-    const auto beforeSampling = composition.samplingMode;
+    const auto beforeSampling = std::tuple{ composition.directCheckerboard, composition.hybridResolution, composition.hybridCheckerboard };
     // Older profiles used three independent resolution settings. Migrate
     // once into one canonical four-mode policy; never revive parallel
     // DirectRR, RT-exclusive or Hybrid GI resolution controls.
@@ -278,22 +285,27 @@ void RTComposer::LoadSettings(json& value)
         next.rtDirectContribution = bounded("rtDirectContribution", 0.0f);
         next.giContribution = bounded("giContribution", 1.0f);
         next.shadowThreshold = bounded("shadowThreshold", 0.25f);
-        const uint32_t sampling = it->value("samplingMode", migratedSampling);
-        next.samplingMode = static_cast<DX12Native::HybridSamplingMode>(std::min(sampling, 3u));
+        const uint32_t oldSampling = std::min(it->value("samplingMode", migratedSampling), 3u);
+        next.directCheckerboard = it->value("directCheckerboard", (oldSampling & 1u) != 0u);
+        next.hybridResolution = std::min(it->value("hybridResolution",
+            oldSampling >= 2u ? 1u : 0u), 2u);
+        next.hybridCheckerboard = it->value("hybridCheckerboard", (oldSampling & 1u) != 0u);
         if (auto filters = it->find("reconstruction"); filters != it->end())
             LoadHybridFilters(*filters, next.reconstruction);
         composition = next;
     } else {
         composition = {};
-        composition.samplingMode = static_cast<DX12Native::HybridSamplingMode>(migratedSampling);
+        composition.directCheckerboard = (migratedSampling & 1u) != 0u;
+        composition.hybridResolution = migratedSampling >= 2u ? 1u : 0u;
+        composition.hybridCheckerboard = composition.directCheckerboard;
     }
     if (beforePolicy != std::pair{ composition.enabled, composition.mode } ||
-        beforeSampling != composition.samplingMode) OnCompositionPolicyChanged();
+        beforeSampling != std::tuple{ composition.directCheckerboard, composition.hybridResolution, composition.hybridCheckerboard })
+        OnCompositionPolicyChanged();
     const bool enabledRR = legacyRR.is_object() ?
         legacyRR.value("enabled", currentRR.enabled) : currentRR.enabled;
-    ApplyUnifiedSampling(composition.samplingMode);
-    RayRegeneration::Configure(DX12Native::RRLogicalReduction(composition.samplingMode),
-        DX12Native::RRCheckerboard(composition.samplingMode), enabledRR);
+    ApplySamplingPolicy(composition.directCheckerboard);
+    RayRegeneration::Configure(0u, composition.directCheckerboard, enabledRR);
     if (legacyRR.is_object()) {
         if (auto cfg = legacyRR.find("configuration"); cfg != legacyRR.end() && cfg->is_object())
             globals::features::redstoneGI.GetDenoiser().SetConfiguration(*cfg);
@@ -304,7 +316,7 @@ void RTComposer::LoadSettings(json& value)
         const auto beforeIsolation = direct.RRMaterialIsolation;
         const auto beforeRoughness = direct.RRGlossyRoughness;
         direct.UseDirectRayRegeneration = it->value("UseDirectRayRegeneration", direct.UseDirectRayRegeneration);
-        direct.DirectRRResolution = 3u; // persisted legacy resolution is not authoritative
+        direct.DirectRRResolution = 0u; // persisted legacy resolution is not authoritative
         direct.RRMaterialIsolation = it->value("RRMaterialIsolation", direct.RRMaterialIsolation);
         const auto roughness = it->value("RRGlossyRoughness", direct.RRGlossyRoughness);
         direct.RRGlossyRoughness = std::isfinite(roughness) ? std::clamp(roughness, 0.04f, 1.0f) : 0.2f;
@@ -323,7 +335,7 @@ void RTComposer::RestoreDefaultSettings()
     globals::features::redstoneGI.GetDenoiser().SetConfiguration(json::object());
     auto& direct = globals::features::rtDirectLighting.settings;
     direct.UseDirectRayRegeneration = true;
-    direct.DirectRRResolution = 3u;
+    direct.DirectRRResolution = 0u;
     direct.RRMaterialIsolation = false;
     direct.RRGlossyRoughness = 0.2f;
 }
@@ -344,15 +356,19 @@ void RTComposer::DrawSettings()
     if (previousPolicy != std::pair{ composition.enabled, composition.mode }) OnCompositionPolicyChanged();
     ImGui::SliderFloat("Shadow influence", &composition.shadowInfluence, 0.0f, 1.0f, "%.2f");
     ImGui::SliderFloat("RT direct contribution", &composition.rtDirectContribution, 0.0f, 1.0f, "%.2f");
-    ImGui::SeparatorText("Universal RT sampling");
-    int modeChoice = static_cast<int>(composition.samplingMode);
-    if (ImGui::Combo("Ray tracing / RR sampling density", &modeChoice,
-        "Native (100%)\0Native checkerboard (50%)\0Quarter (25%)\0Quarter checkerboard (12.5%)\0")) {
-        composition.samplingMode = static_cast<DX12Native::HybridSamplingMode>(modeChoice);
-        ApplyUnifiedSampling(composition.samplingMode);
+    ImGui::SeparatorText("Independent native sampling");
+    if (ImGui::Checkbox("Direct lighting: native checkerboard (50%)", &composition.directCheckerboard)) {
+        ApplySamplingPolicy(composition.directCheckerboard);
         OnCompositionPolicyChanged();
     }
-    ImGui::TextWrapped("One grid for native direct, indirect, GI/AO and each corresponding RR input. Quarter = one traced pixel per 2x2; checkerboard halves the active sample count again. Native depth and eligibility remain full-resolution.");
+    ImGui::TextWrapped("Direct DXR and direct RR use a native logical grid. Native checkerboard halves the traced pixels while keeping a native-resolution RR output.");
+    int giResolution = int(composition.hybridResolution);
+    bool giChanged = ImGui::Combo("Hybrid GI resolution (SSGI sizes)", &giResolution,
+        "Full (100% W/H)\0Half (50% W/H)\0Quarter (25% W/H)\0");
+    if (giChanged) composition.hybridResolution = uint32_t(giResolution);
+    giChanged |= ImGui::Checkbox("Hybrid GI checkerboard", &composition.hybridCheckerboard);
+    if (giChanged) OnCompositionPolicyChanged();
+    ImGui::TextWrapped("Hybrid GI/AO use SSGI full, half and quarter dimensions (100%, 25%, 6.25% pixels); optional checkerboarding halves them again. Native RR resolves the logical grid; DX12 spatial reconstruction upsamples its outputs to native scene resolution.");
     if (composition.mode == CompositorMode::HybridShadowed) {
         ImGui::SliderFloat("Native GI contribution", &composition.giContribution, 0.0f, 1.0f, "%.2f");
         ImGui::SeparatorText("Post-RR spatial reconstruction");
@@ -456,12 +472,11 @@ void RTComposer::DrawSettings()
     const auto old = RayRegeneration::GetSettings();
     bool enabled = old.enabled;
     if (ImGui::Checkbox("Enable FSR Ray Regeneration", &enabled)) {
-        RayRegeneration::Configure(DX12Native::RRLogicalReduction(composition.samplingMode),
-            DX12Native::RRCheckerboard(composition.samplingMode), enabled);
+        RayRegeneration::Configure(0u, composition.directCheckerboard, enabled);
         if (!enabled)
             (void)globals::features::redstoneGI.GetDenoiser().RetireNativeHybridContexts();
     }
-    ImGui::TextWrapped("RR render size and checkerboard packing derive exclusively from the universal RT sampling selector above; no separate resolution controls.");
+    ImGui::TextWrapped("Direct RR always uses native logical dimensions; native HybridGI RR uses the independent SSGI-sized logical grid. Both feed native-resolution scene composition.");
     ImGui::SeparatorText("Direct Lighting RR");
     globals::features::rtDirectLighting.DrawRayRegenerationSettings();
     ImGui::SeparatorText("RR Signals and Diagnostics");
@@ -477,12 +492,12 @@ void RTComposer::RegisterUxActions()
 {
     auto& registry = Util::DevBenchUx::Registry::GetSingleton();
     registry.RegisterCommand(GetShortName(), "setComposition",
-        "Set Shadow Only or production DX12 Hybrid-Shadowed mode and unified sampling.",
+        "Set Shadow Only or DX12 Hybrid-Shadowed and independent direct/HybridGI sampling.",
         +[](Feature* self, const json& args) {
             auto& composer = *static_cast<RTComposer*>(self);
             auto& policy = composer.composition;
             const auto beforePolicy = std::pair{ policy.enabled, policy.mode };
-            const auto beforeSampling = policy.samplingMode;
+            const auto beforeSampling = std::tuple{ policy.directCheckerboard, policy.hybridResolution, policy.hybridCheckerboard };
             if (args.contains("enabled")) policy.enabled = args.at("enabled").get<bool>();
             if (args.contains("mode")) {
                 const auto mode = args.at("mode").get<uint32_t>();
@@ -499,36 +514,46 @@ void RTComposer::RegisterUxActions()
             setUnit("rtDirectContribution", policy.rtDirectContribution);
             setUnit("shadowThreshold", policy.shadowThreshold);
             setUnit("giContribution", policy.giContribution);
-            if (args.contains("samplingMode")) {
-                const uint32_t mode = args.at("samplingMode").get<uint32_t>();
-                if (mode > 3u) throw std::invalid_argument("Unknown universal sampling mode");
-                policy.samplingMode = static_cast<DX12Native::HybridSamplingMode>(mode);
-                ApplyUnifiedSampling(policy.samplingMode);
+            if (args.contains("samplingMode"))
+                throw std::invalid_argument("Old samplingMode retired. Use directCheckerboard, hybridResolution, hybridCheckerboard.");
+            if (args.contains("directCheckerboard"))
+                policy.directCheckerboard = args.at("directCheckerboard").get<bool>();
+            if (args.contains("hybridResolution")) {
+                const uint32_t mode = args.at("hybridResolution").get<uint32_t>();
+                if (mode > 2u) throw std::invalid_argument("Hybrid GI resolution must be 0 full, 1 half or 2 quarter");
+                policy.hybridResolution = mode;
             }
+            if (args.contains("hybridCheckerboard"))
+                policy.hybridCheckerboard = args.at("hybridCheckerboard").get<bool>();
+            if (beforeSampling != std::tuple{ policy.directCheckerboard, policy.hybridResolution, policy.hybridCheckerboard })
+                ApplySamplingPolicy(policy.directCheckerboard);
             if (beforePolicy != std::pair{ policy.enabled, policy.mode } ||
-                beforeSampling != policy.samplingMode)
+                beforeSampling != std::tuple{ policy.directCheckerboard, policy.hybridResolution, policy.hybridCheckerboard })
                 composer.OnCompositionPolicyChanged();
         });
     registry.RegisterCommand(GetShortName(), "setRayRegeneration",
-        "Set the universal samplingMode (0=native, 1=native checkerboard, 2=quarter, 3=quarter checkerboard) and RR enablement.",
+        "Configure directCheckerboard, hybridResolution (0 full, 1 half, 2 quarter), hybridCheckerboard, and RR enablement.",
         +[](Feature* self, const json& args) {
             auto& composer = *static_cast<RTComposer*>(self);
-            if (args.contains("resolutionMode") || args.contains("checkerboard"))
-                throw std::invalid_argument("Separate RR resolution and checkerboard are retired. Use samplingMode 0..3.");
+            if (args.contains("resolutionMode") || args.contains("checkerboard") ||
+                args.contains("samplingMode"))
+                throw std::invalid_argument("Old RR resolution controls retired. Use directCheckerboard, hybridResolution and hybridCheckerboard.");
             const auto oldRR = RayRegeneration::GetSettings();
-            const auto previous = composer.composition.samplingMode;
-            if (args.contains("samplingMode")) {
-                const uint32_t mode = args.at("samplingMode").get<uint32_t>();
-                if (mode > 3u) throw std::invalid_argument("Unknown universal sampling mode");
-                composer.composition.samplingMode =
-                    static_cast<DX12Native::HybridSamplingMode>(mode);
+            auto& policy = composer.composition;
+            const auto previous = std::tuple{ policy.directCheckerboard, policy.hybridResolution, policy.hybridCheckerboard };
+            if (args.contains("directCheckerboard"))
+                policy.directCheckerboard = args.at("directCheckerboard").get<bool>();
+            if (args.contains("hybridResolution")) {
+                const uint32_t mode = args.at("hybridResolution").get<uint32_t>();
+                if (mode > 2u) throw std::invalid_argument("Hybrid GI resolution must be 0 full, 1 half or 2 quarter");
+                policy.hybridResolution = mode;
             }
-            ApplyUnifiedSampling(composer.composition.samplingMode);
-            RayRegeneration::Configure(
-                DX12Native::RRLogicalReduction(composer.composition.samplingMode),
-                DX12Native::RRCheckerboard(composer.composition.samplingMode),
+            if (args.contains("hybridCheckerboard"))
+                policy.hybridCheckerboard = args.at("hybridCheckerboard").get<bool>();
+            ApplySamplingPolicy(policy.directCheckerboard);
+            RayRegeneration::Configure(0u, policy.directCheckerboard,
                 args.value("enabled", oldRR.enabled));
-            if (previous != composer.composition.samplingMode)
+            if (previous != std::tuple{ policy.directCheckerboard, policy.hybridResolution, policy.hybridCheckerboard })
                 composer.OnCompositionPolicyChanged();
         });
 }

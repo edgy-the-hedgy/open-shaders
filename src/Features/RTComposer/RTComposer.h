@@ -31,7 +31,9 @@ struct RTComposer final : Feature
         float rtDirectContribution = 0.0f;
         float giContribution = 1.0f; // Hybrid-only native GI blend, independent of direct
         float shadowThreshold = 0.25f;
-        DX12Native::HybridSamplingMode samplingMode = DX12Native::HybridSamplingMode::Native;
+        bool directCheckerboard = false;
+        uint32_t hybridResolution = 1u; // SSGI 0 full, 1 half, 2 quarter width and height
+        bool hybridCheckerboard = false;
         // Separate settings for diffuse, specular and AO, respectively.
         std::array<SignalReconstructionSettings, 3> reconstruction{};
     } composition;
