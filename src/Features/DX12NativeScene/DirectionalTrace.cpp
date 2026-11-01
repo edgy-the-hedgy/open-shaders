@@ -50,6 +50,9 @@ namespace DX12Native
 			(void)new Frame(std::move(frame));
 		}
 		if (inFlight) {
+            // Native HybridGI descriptor heaps and PSOs can still be referenced
+            // by the in-flight queue; preserve ownership on device teardown.
+            (void)nativeHybridGI.release();
 			(void)producer.fence11.detach(); (void)producer.fence12.detach();
 			(void)completion.fence11.detach(); (void)completion.fence12.detach();
 		}
@@ -526,6 +529,25 @@ namespace DX12Native
         }
     }
 
+    void DirectionalTrace::RecordNativeHybridGI(Frame& frame)
+    {
+        frame.nativeGI.valid = false;
+        if (!frame.nativeGIRequested || !frame.hybridShadowedSourceReady ||
+            !frame.hybridLinearDepth || !frame.hybridShadowedSource || !frame.shadowMask ||
+            !frame.hybridInputs[2] || !frame.hybridInputs[3] || !frame.hybridInputs[4]) return;
+        if (!nativeHybridGI) nativeHybridGI = std::make_unique<NativeHybridGI>();
+        if (nativeHybridGI->Record(backend.d3d12Device.get(), frame.commands.get(),
+                frame.nativeGI, uint32_t(&frame - frames.data()), frame.number, frame.size,
+                frame.hybridLinearDepth.get(), frame.hybridInputs[2]->resource.get(),
+                frame.hybridShadowedSource.get(), frame.hybridInputs[3]->resource.get(),
+                frame.hybridInputs[4]->resource.get(), frame.shadowMask.get(),
+                globals::features::redstoneGI,
+                globals::features::rtComposer.composition.shadowInfluence,
+                globals::features::rtComposer.composition.shadowThreshold)) {
+            frame.nativeGIFrame = frame.number;
+        }
+    }
+
 	void DirectionalTrace::Record(Frame& a_frame, const float3& a_direction, bool a_localLight)
 	{
 		CS_GPU_PASS("RTDirectLighting::DirectionalTraversal");
@@ -690,7 +712,10 @@ namespace DX12Native
 		if (a_frame.shadowMask) end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_frame.shadowMask.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON));
 		if (a_frame.shadowMaskExport) end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_frame.shadowMaskExport->resource.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON));
 		commands->ResourceBarrier(uint32_t(end.size()), end.data());
-        if (a_frame.hybridInputsReady) RecordHybridShadowedSource(a_frame);
+        if (a_frame.hybridInputsReady) {
+            RecordHybridShadowedSource(a_frame);
+            RecordNativeHybridGI(a_frame);
+        }
 		DX::ThrowIfFailed(commands->Close());
 		ID3D12CommandList* lists[]{ commands };
 		backend.commandQueue->ExecuteCommandLists(1, lists);
@@ -886,11 +911,14 @@ namespace DX12Native
         bool wantHybridInputs = a_sceneTarget &&
             globals::features::rtComposer.composition.enabled &&
             globals::features::rtComposer.composition.mode == RTComposer::CompositorMode::HybridShadowed;
+        bool wantNativeGI = wantHybridInputs && NativeHybridGI::ShadersAvailable();
 		bool reuse = available->size == size && available->useDirectRR == directRR && available->indirectRays == a_indirectRays && available->receivers && available->output && available->light &&
 			bool(available->shadowMask) == bool(a_sceneTarget) &&
 			bool(available->shadowMaskExport) == wantExport &&
             bool(available->hybridInputs[0]) == wantHybridInputs &&
             (!wantHybridInputs || (available->hybridShadowedSource && available->hybridLinearDepth)) &&
+            bool(available->nativeGI.textures[0]) == wantNativeGI &&
+            (!wantNativeGI || available->nativeGI.constants) &&
             (!a_sceneTarget || available->visibilityBits);
 		constexpr uint64_t kFrameOverheadBytes = 1024 * 1024;
 		const auto textureDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32G32B32A32_FLOAT, size[0], size[1], 1, 1, 1, 0,
@@ -915,12 +943,19 @@ namespace DX12Native
         const uint64_t linearDepthBytes = wantHybridInputs ?
             backend.d3d12Device->GetResourceAllocationInfo(0, 1, &linearDepthDesc).SizeInBytes : 0;
         uint64_t hybridBytes = wantHybridInputs ? nextPreviewBytes * kHybridInputCount + textureBytes + linearDepthBytes : 0;
+        uint64_t nativeGIBytes = wantNativeGI ?
+            NativeHybridGI::EstimateBytes(backend.d3d12Device.get(), size[0], size[1]) : 0;
+        if (nativeGIBytes == UINT64_MAX) {
+            // Unsupported optional diagnostic allocation must not block shadows.
+            wantNativeGI = false;
+            nativeGIBytes = 0;
+        }
 		if (textureBytes == UINT64_MAX || lightBytes == UINT64_MAX || nextPreviewBytes == UINT64_MAX ||
 			visibilityBytes == UINT64_MAX || maskBytes == UINT64_MAX) { failure = "Directional texture allocation unsupported"; return; }
 		const uint64_t signalBytes = (directRR || a_indirectRays) ? nextPreviewBytes * kDirectSignalCount : 0;
 		const uint64_t rrInteropReserve = directRR ? uint64_t(std::max(1u, size[0] >> effectiveRRMode)) * std::max(1u, size[1] >> effectiveRRMode) * 256 + kFrameOverheadBytes : 0;
 		auto calculateRequired = [&] {
-            return (reuse ? uint64_t{ 0 } : textureBytes * 2 + lightBytes + signalBytes + visibilityBytes + maskBytes + exportBytes + hybridBytes + kFrameOverheadBytes) +
+            return (reuse ? uint64_t{ 0 } : textureBytes * 2 + lightBytes + signalBytes + visibilityBytes + maskBytes + exportBytes + hybridBytes + nativeGIBytes + kFrameOverheadBytes) +
                 (a_sceneTarget ? uint64_t{ 0 } : nextPreviewBytes) + bindingBytes + rrInteropReserve;
         };
         uint64_t required = calculateRequired();
@@ -931,14 +966,15 @@ namespace DX12Native
             ++hybridInputBudgetDeferrals;
             hybridInputFailure = "Hybrid capture exceeds native lighting budget; skipped";
             wantHybridInputs = false;
-            hybridBytes = 0;
+            wantNativeGI = false;
+            hybridBytes = nativeGIBytes = 0;
             reuse = available->size == size && available->useDirectRR == directRR &&
                 available->indirectRays == a_indirectRays && available->receivers &&
                 available->output && available->light &&
                 bool(available->shadowMask) == bool(a_sceneTarget) &&
                 bool(available->shadowMaskExport) == wantExport &&
                 !available->hybridInputs[0] && !available->hybridShadowedSource &&
-                !available->hybridLinearDepth &&
+                !available->hybridLinearDepth && !available->nativeGI.textures[0] &&
                 (!a_sceneTarget || available->visibilityBits);
             required = calculateRequired();
             retainedBytes = ResidentBytes() - (reuse ? 0 : available->bytes);
@@ -978,6 +1014,8 @@ namespace DX12Native
 			available->scene = std::move(a_scene);
 			available->size = size;
 			available->number = a_frame;
+            available->nativeGIRequested = wantNativeGI;
+            available->nativeGI.valid = false;
 			available->materialView = std::min(a_materialView, kCombinedDirectView);
 			available->generation = generation;
 			available->lightReference = a_lightReference;
@@ -1007,7 +1045,7 @@ namespace DX12Native
 				std::vector<PreparedPointLight>{ a_preparedLights.empty() ? PreparedPointLight{} : a_preparedLights.front() };
 			if (a_allPreparedLights) available->lightIdentities.assign(a_lightIdentities.begin(), a_lightIdentities.end());
 			else available->lightIdentities = { { a_lightReference, a_lightBase } };
-			available->bytes = textureBytes * 2 + lightBytes + signalBytes + visibilityBytes + maskBytes + exportBytes + hybridBytes + kFrameOverheadBytes;
+			available->bytes = textureBytes * 2 + lightBytes + signalBytes + visibilityBytes + maskBytes + exportBytes + hybridBytes + nativeGIBytes + kFrameOverheadBytes;
 			D3D11_TEXTURE2D_DESC desc{};
 			desc.Width = size[0]; desc.Height = size[1];
 			desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
@@ -1109,6 +1147,22 @@ namespace DX12Native
 		}
 	}
 
+    DirectionalTrace::NativeGIOutputsPublication DirectionalTrace::GetNativeGIOutputs(uint32_t frameNumber) const
+    {
+        for (const auto& frame : frames) {
+            if (!frame.submitted || !frame.nativeGI.valid || frame.nativeGIFrame != frameNumber ||
+                frame.generation != generation || !frame.fence || !completion.fence12) continue;
+            NativeGIOutputsPublication result{};
+            for (uint32_t i = 0; i < NativeHybridGI::kOutputs; ++i)
+                result.outputs[i] = frame.nativeGI.textures[i].get();
+            result.completionFence = completion.fence12.get();
+            result.completionValue = frame.fence;
+            result.size = frame.size;
+            return result;
+        }
+        return {};
+    }
+
 	DirectionalTrace::ShadowedSourcePublication DirectionalTrace::GetShadowedSource(uint32_t frameNumber) const
     {
         for (const auto& frame : frames)
@@ -1169,6 +1223,10 @@ namespace DX12Native
 			{ "shadowMaskTraceDispatches", shadowMaskTraceDispatches }, { "shadowMaskResolveDispatches", shadowMaskResolveDispatches },
             { "hybridInputDispatches", hybridInputDispatches },
             { "hybridShadowedSourceDispatches", hybridSourceDispatches },
+            { "nativeHybridGIDispatches", nativeHybridGI ? nativeHybridGI->GIDispatches() : uint64_t{0} },
+            { "nativeHybridAODispatches", nativeHybridGI ? nativeHybridGI->AODispatches() : uint64_t{0} },
+            { "nativeHybridGIFailure", nativeHybridGI ? nativeHybridGI->Failure() : std::string{} },
+            { "nativeHybridGIStatus", "5A diagnostic GI/AO, GPU-resident; not consumed by compositor or RR" },
             { "hybridShadowedSourceLastFrame", hybridSourceLastFrame },
             { "hybridShadowedSourceFailure", hybridSourceFailure },
             { "hybridShadowedSourceStage", "5A-preparation; native shadowed linear radiance and linear view depth" },

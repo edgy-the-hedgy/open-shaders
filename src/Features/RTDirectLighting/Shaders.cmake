@@ -72,9 +72,9 @@ if(REDSTONE_DXC)
     # RedstoneGI estimator and AO shader for Shader Model 6.5.
     add_custom_target(RTComposerHybridDXIL DEPENDS "${_rt_hybrid_0}" "${_rt_hybrid_1}")
     add_custom_target(RTDirectLightingDXIL DEPENDS
-        "${_redstone_directional}" "${_hybrid_source}")
+        "${_redstone_directional}" "${_hybrid_source}" "${_rt_hybrid_0}" "${_rt_hybrid_1}")
     add_dependencies(${PROJECT_NAME} RTDirectLightingDXIL)
-    list(APPEND REDSTONE_DXIL_FILES "${_redstone_directional}" "${_hybrid_source}")
+    list(APPEND REDSTONE_DXIL_FILES "${_redstone_directional}" "${_hybrid_source}" "${_rt_hybrid_0}" "${_rt_hybrid_1}")
     register_feature_payload(RTDirectLighting FILES ${REDSTONE_DXIL_FILES} DESTINATION "Shaders/RTDirectLighting")
     list(APPEND REDSTONE_DXIL_CORE_COMMANDS
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/Core/Shaders/RTDirectLighting"

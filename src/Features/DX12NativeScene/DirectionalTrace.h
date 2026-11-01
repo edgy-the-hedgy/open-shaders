@@ -6,6 +6,7 @@
 #include "MaterialResources.h"
 #include "PreparedScene.h"
 #include "Features/RedstoneGI/RuntimeDenoiser.h"
+#include "NativeHybridGI.h"
 #include <atomic>
 #include <span>
 
@@ -71,6 +72,15 @@ namespace DX12Native
             explicit operator bool() const { return scene && completionFence && completionValue; }
         };
         ShadowedSourcePublication GetShadowedSource(uint32_t a_frame) const;
+        struct NativeGIOutputsPublication
+        {
+            std::array<ID3D12Resource*, NativeHybridGI::kOutputs> outputs{};
+            ID3D12Fence* completionFence = nullptr;
+            uint64_t completionValue = 0;
+            std::array<uint32_t, 2> size{};
+            explicit operator bool() const { return outputs[0] && outputs[1] && completionFence && completionValue; }
+        };
+        NativeGIOutputsPublication GetNativeGIOutputs(uint32_t a_frame) const;
 		/** @brief Returns a raw preview view whose image remains owned by this service. */
 		ID3D11ShaderResourceView* Preview() const { return previewValid && preview ? preview->srv.get() : nullptr; }
 		/** @brief Returns the completed preview dimensions for an undistorted diagnostic image. */
@@ -129,6 +139,9 @@ namespace DX12Native
             winrt::com_ptr<ID3D12Resource> hybridShadowedSource;
             winrt::com_ptr<ID3D12Resource> hybridLinearDepth;
             bool hybridShadowedSourceReady = false;
+            NativeHybridGI::FrameOutputs nativeGI;
+            bool nativeGIRequested = false;
+            uint32_t nativeGIFrame = 0;
 			std::array<std::unique_ptr<WrappedResource>, kDirectSignalCount> directSignals;
 			winrt::com_ptr<ID3D12RootSignature> root;
 			winrt::com_ptr<ID3D12PipelineState> pipeline;
@@ -169,6 +182,7 @@ namespace DX12Native
 		void PrepareReceivers(Frame& a_frame, const std::array<uint32_t, 2>& a_nativeSize, const LightLimitFixData::LightView& a_lights, ID3D11ShaderResourceView* a_roomMetadata);
         void PrepareHybridInputs(Frame& a_frame);
         void RecordHybridShadowedSource(Frame& a_frame);
+        void RecordNativeHybridGI(Frame& a_frame);
 		void Record(Frame& a_frame, const float3& a_direction, bool a_localLight);
 		void Consume(Frame& a_frame);
 		void CompositeScene(Frame& a_frame, ID3D11UnorderedAccessView* a_target);
@@ -184,6 +198,7 @@ namespace DX12Native
         winrt::com_ptr<ID3D12RootSignature> hybridSourceRoot;
         winrt::com_ptr<ID3D12PipelineState> hybridSourcePipeline;
         winrt::com_ptr<ID3D12DescriptorHeap> hybridSourceHeap;
+        std::unique_ptr<NativeHybridGI> nativeHybridGI;
 		winrt::com_ptr<ID3D11ComputeShader> prepareDirectGuides;
 		winrt::com_ptr<ID3D11ComputeShader> packRRSignals;
 		std::unique_ptr<ConstantBuffer> rrGridSettings;
