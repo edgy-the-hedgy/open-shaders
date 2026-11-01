@@ -1264,6 +1264,13 @@ namespace DX12Native
 	json DirectionalTrace::GetDiagnostics() const
 	{
 		const auto materials = cachedBindings ? cachedBindings->materials : nullptr;
+        const Frame* currentHybrid = nullptr;
+        for (const auto& frame : frames)
+            if (frame.submitted && frame.nativeGI.valid &&
+                frame.generation == generation && (!currentHybrid ||
+                frame.number > currentHybrid->number)) currentHybrid = &frame;
+        const HybridSamplingLayout sampling = currentHybrid ?
+            currentHybrid->nativeGI.sampling : HybridSamplingLayout{};
 		return {
 			{ "submissions", submissions }, { "completions", completions }, { "previewDrawSubmissions", previewDrawSubmissions },
 			{ "directRRDispatches", directRRDispatches }, { "directRRFrame", directRRFrame }, { "directRRBudgetDeferrals", directRRBudgetDeferrals },
@@ -1286,12 +1293,18 @@ namespace DX12Native
             { "nativeHybridGIDispatches", nativeHybridGI ? nativeHybridGI->GIDispatches() : uint64_t{0} },
             { "nativeHybridAODispatches", nativeHybridGI ? nativeHybridGI->AODispatches() : uint64_t{0} },
             { "nativeHybridEligibilityDispatches", nativeHybridGI ? nativeHybridGI->EligibilityDispatches() : uint64_t{0} },
+            { "nativeHybridLogicalGrid", sampling.logical },
+            { "nativeHybridPackedGrid", sampling.packed },
+            { "nativeHybridTracedPixels", sampling.tracedPixels },
+            { "nativeHybridSamplePhase", sampling.representativePhase },
+            { "nativeHybridCheckerboardOrigin", sampling.checkerboardOrigin },
+            { "nativeHybridEffectiveSamplingMode", static_cast<uint32_t>(sampling.effective) },
             { "nativeHybridGIFailure", nativeHybridGI ? nativeHybridGI->Failure() : std::string{} },
             { "nativeHybridCompositionDispatches", nativeHybridGI ? nativeHybridGI->CompositionDispatches() : uint64_t{0} },
             { "nativeHybridCompositionFailure", nativeHybridGI ? nativeHybridGI->CompositionFailure() : std::string{} },
             { "nativeHybridPreviewSubmissions", nativeHybridPreviewSubmissions },
             { "nativeHybridPreviewFailure", nativeHybridPreviewFailure },
-            { "nativeHybridGIStatus", "5B diagnostic GI/AO + DX12 composition; not yet presented or denoised by native RR" },
+            { "nativeHybridGIStatus", "Native sampled GI/AO, full-native eligibility; raw composition only at native density; RR/upscaler staged" },
             { "hybridShadowedSourceLastFrame", hybridSourceLastFrame },
             { "hybridShadowedSourceFailure", hybridSourceFailure },
             { "hybridShadowedSourceStage", "5A-preparation; native shadowed linear radiance and linear view depth" },
