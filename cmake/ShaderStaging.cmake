@@ -125,6 +125,7 @@ add_custom_command(
         ${STREAMLINE_RUNTIME_DX12_FILES}
         ${_package_shaders}
         ${_all_feature_shader_files}
+        ${CMAKE_SOURCE_DIR}/cmake/ShaderStaging.cmake
         ${CMAKE_SOURCE_DIR}/cmake/CleanupStaleEntries.cmake
         ${CMAKE_SOURCE_DIR}/cmake/PreservedRuntimePaths.cmake
     COMMENT "Copying changed shaders into AIO/Shaders"
