@@ -10,7 +10,7 @@
 #include "Utils/DevBenchUx.h"
 #include "Util.h"
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTDirectLighting::Settings, RedstoneBlend, UsePreparedDirectLighting, UseAllPreparedLights, UseDirectRayRegeneration, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, SelectedDirectLight, NormalInfluence, DirectTraceResolution, DirectRRResolution, RRMaterialIsolation, RRGlossyRoughness, PointLightRadiusMultiplier, PointLightFalloffFraction, PointLightFalloffExponent, StochasticSampling, EmitterRadiusMultiplier, SpatialReconstruction)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTDirectLighting::Settings, RedstoneBlend, UsePreparedDirectLighting, UseAllPreparedLights, UseDirectRayRegeneration, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, SelectedDirectLight, NormalInfluence, DirectTraceResolution, DirectSamplingMode, DirectRRResolution, RRMaterialIsolation, RRGlossyRoughness, PointLightRadiusMultiplier, PointLightFalloffFraction, PointLightFalloffExponent, StochasticSampling, EmitterRadiusMultiplier, SpatialReconstruction)
 
 std::pair<std::string, std::vector<std::string>> RTDirectLighting::GetFeatureSummary()
 {
@@ -33,6 +33,9 @@ void RTDirectLighting::LoadSettings(json& value)
 	Settings selected = value;
 	selected.SelectedDirectLight = std::min(selected.SelectedDirectLight, 255u);
 	selected.NormalInfluence = std::min(selected.NormalInfluence, 2u);
+	selected.DirectSamplingMode = value.contains("DirectSamplingMode") ?
+		std::min(selected.DirectSamplingMode, 7u) :
+		uint32_t(DX12Native::RTSampling::MigrateLegacy(value.value("DirectTraceResolution", 0u)));
 	selected.DirectTraceResolution = std::min(selected.DirectTraceResolution, 4u);
 	selected.DirectRRResolution = std::min(selected.DirectRRResolution, 3u);
 	selected.RRGlossyRoughness = std::isfinite(selected.RRGlossyRoughness) ? std::clamp(selected.RRGlossyRoughness, 0.04f, 1.0f) : 0.2f;
@@ -49,7 +52,12 @@ void RTDirectLighting::LoadSettings(json& value)
 		globals::features::dx12NativeScene.RequestPreparedScene();
 	lastFrame.reset();
 }
-void RTDirectLighting::SaveSettings(json& value) { value = settings; }
+void RTDirectLighting::SaveSettings(json& value)
+{
+	value = settings;
+	value.erase("DirectTraceResolution");
+	value.erase("DirectRRResolution");
+}
 void RTDirectLighting::RestoreDefaultSettings() { settings = {}; lastFrame.reset(); }
 void RTDirectLighting::DrawSettings() { DrawDirectLightingSettings(); }
 void RTDirectLighting::ClearRRDebugOverlay() { globals::features::dx12NativeScene.Tracer().ClearRRDebugOverlay(); }
@@ -85,7 +93,7 @@ json RTDirectLighting::GetDiagnostics()
 		{ "pointLightFalloffFraction", settings.PointLightFalloffFraction },
 		{ "pointLightFalloffExponent", settings.PointLightFalloffExponent },
 		{ "stochasticSampling", settings.StochasticSampling }, { "spatialReconstruction", settings.SpatialReconstruction }, { "emitterRadiusMultiplier", settings.EmitterRadiusMultiplier },
-		{ "directTraceResolutionMode", settings.DirectTraceResolution },
+		{ "directSamplingMode", settings.DirectSamplingMode },
 		{ "nativeFeatureLoaded", native.loaded }, { "preparedSceneEnabled", native.settings.UsePreparedScene },
 		{ "preparedMaterialsEnabled", native.settings.UsePreparedMaterials }, { "preparedScenePublished", scenePublished },
 		{ "preparedScene", prepared }, { "trace", trace } };
@@ -110,12 +118,12 @@ void RTDirectLighting::DrawDirectLightingSettings()
     ImGui::TextWrapped("Geometry mode ignores normal maps. Full material mode uses loaded shading normals. Legacy flat retains the old response with zero direct specular.");
     int traceRes = 0;
     for (int option = 0; option < int(DX12Native::DirectionalTrace::kTraceResolutionMenuOrder.size()); ++option)
-        if (DX12Native::DirectionalTrace::kTraceResolutionMenuOrder[option] == settings.DirectTraceResolution) traceRes = option;
-    if (ImGui::Combo("Direct trace resolution", &traceRes, DX12Native::DirectionalTrace::kTraceResolutionMenuLabels)) {
-        settings.DirectTraceResolution = DX12Native::DirectionalTrace::kTraceResolutionMenuOrder[traceRes];
+        if (DX12Native::DirectionalTrace::kTraceResolutionMenuOrder[option] == settings.DirectSamplingMode) traceRes = option;
+    if (ImGui::Combo("Direct pixels traced per frame", &traceRes, DX12Native::DirectionalTrace::kTraceResolutionMenuLabels)) {
+        settings.DirectSamplingMode = DX12Native::DirectionalTrace::kTraceResolutionMenuOrder[traceRes];
         globals::features::dx12NativeScene.Tracer().Reset();
     }
-    ImGui::TextWrapped("Trace density per axis; 2/3 and 1/3 use a depth-aware sparse resolve. This is independent of RR resolution.");
+    ImGui::TextWrapped("Percentage of native pixels traced each frame. Full is deterministic; partial patterns rotate only when stochastic sampling is enabled.");
     int rrRes = static_cast<int>(settings.DirectRRResolution);
     if (ImGui::Combo("Direct RR resolution", &rrRes, "Full\0Half\0Quarter\0Use shared RR setting (legacy)\0")) {
         settings.DirectRRResolution = uint32_t(rrRes);
@@ -254,7 +262,7 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
 		rtExclusive && gi.settings.RTBounces != 0u ? gi.settings.IndirectRays : 0u, snapshot->roomReferences, settings.RedstoneBlend, settings.NormalInfluence,
 		settings.UseAllPreparedLights ? std::span<const DX12Native::PreparedPointLight>(snapshot->cell->nativeLights) :
 			std::span<const DX12Native::PreparedPointLight>(snapshot->cell->nativeLights).subspan(settings.SelectedDirectLight, 1),
-		settings.DirectTraceResolution, gi.settings.RTTraceResolution, settings.DirectRRResolution,
+		settings.DirectSamplingMode, gi.settings.RTSamplingMode, settings.DirectRRResolution,
 		settings.RRMaterialIsolation, settings.RRGlossyRoughness,
 		{ settings.PointLightRadiusMultiplier, settings.PointLightFalloffFraction, settings.PointLightFalloffExponent, 0.0f },
 		{ settings.StochasticSampling ? 1.0f : 0.0f, settings.EmitterRadiusMultiplier,
@@ -275,7 +283,8 @@ void RTDirectLighting::RegisterUxActions()
 			if (args.contains("allLights")) d.settings.UseAllPreparedLights = args.at("allLights").get<bool>();
 			if (args.contains("spatialReconstruction")) d.settings.SpatialReconstruction = args.at("spatialReconstruction").get<bool>();
 			if (args.contains("normalMode")) d.settings.NormalInfluence = std::min(args.at("normalMode").get<uint32_t>(), 2u);
-			if (args.contains("traceResolution")) d.settings.DirectTraceResolution = std::min(args.at("traceResolution").get<uint32_t>(), 4u);
+			if (args.contains("samplingMode")) d.settings.DirectSamplingMode = std::min(args.at("samplingMode").get<uint32_t>(), 7u);
+			if (args.contains("traceResolution")) d.settings.DirectSamplingMode = uint32_t(DX12Native::RTSampling::MigrateLegacy(args.at("traceResolution").get<uint32_t>()));
 			if (args.contains("rrResolution")) d.settings.DirectRRResolution = std::min(args.at("rrResolution").get<uint32_t>(), 3u);
 			if (args.contains("rrMaterialIsolation")) d.settings.RRMaterialIsolation = args.at("rrMaterialIsolation").get<bool>();
 			if (args.contains("rrGlossyRoughness")) d.settings.RRGlossyRoughness = std::clamp(args.at("rrGlossyRoughness").get<float>(), 0.04f, 1.0f);

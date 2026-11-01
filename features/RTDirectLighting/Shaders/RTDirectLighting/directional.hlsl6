@@ -42,6 +42,7 @@ cbuffer Trace : register(b0)
 #include "materials.hlsli"
 #include "directLighting.hlsli"
 #include "indirectLighting.hlsli"
+#include "rtSamplingPolicy.hlsli"
 
 uint Hash(uint value)
 {
@@ -52,45 +53,12 @@ uint Hash(uint value)
 	return value ^ (value >> 16);
 }
 
-// The fixed mode is preserved for A/B comparisons. In stochastic mode each
-// tile receives a deterministic hash offset in a balanced temporal phase
-// cycle. Every location is eventually sampled without changing ray density.
-uint TraceTileSpan(uint mode)
+// The CPU scheduler packs explicit direct/GI phases into the unused
+// PointLightFalloff.w lane; the light falloff function reads xyz only.
+uint RTPhase(uint mode, bool indirect)
 {
-	return mode == 1u ? 2u : mode == 2u ? 4u : 3u;
-}
-
-uint NearestSample(uint coordinate, uint first, uint second)
-{
-	return abs(int(coordinate) - int(first)) <= abs(int(coordinate) - int(second)) ? first : second;
-}
-
-uint2 TraceAnchor(uint2 pixel, uint mode, uint passSalt)
-{
-	if (mode == 0u) return pixel;
-	if (DirectStochastic.x >= 0.5f) {
-		const uint tileSpan = TraceTileSpan(mode);
-		const uint2 tile = pixel / tileSpan;
-		const uint2 local = pixel % tileSpan;
-		const uint phases = tileSpan * tileSpan;
-		const uint seed = Hash(tile.x * 0x9e3779b9u ^ tile.y * 0x85ebca6bu ^ passSalt);
-		const uint phase = (FrameIndex + seed % phases) % phases;
-		const uint2 first = uint2(phase % tileSpan, phase / tileSpan);
-		if (mode == 3u) {
-			const uint2 second = (first + 2u) % 3u;
-			return tile * tileSpan + uint2(
-				NearestSample(local.x, first.x, second.x),
-				NearestSample(local.y, first.y, second.y));
-		}
-		return tile * tileSpan + first;
-	}
-
-	if (mode == 1u) return (pixel / 2u) * 2u;
-	if (mode == 2u) return (pixel / 4u) * 4u;
-	if (mode == 3u) return pixel - uint2((pixel.x % 3u) == 1u ? 1u : 0u,
-		(pixel.y % 3u) == 1u ? 1u : 0u);
-	if (mode == 4u) return (pixel / 3u) * 3u;
-	return pixel;
+    const uint packedPhases = uint(PointLightFalloff.w);
+    return indirect ? (packedPhases >> 8u) & 255u : packedPhases & 255u;
 }
 
 [numthreads(8, 8, 1)]
@@ -103,7 +71,9 @@ void main(uint3 id : SV_DispatchThreadID)
 		const bool direct = TracePass == 2u;
 		const uint mode = direct ? DirectTraceMode : IndirectTraceMode;
 		if (mode == 0u) return;
-		const uint2 sourcePixel = TraceAnchor(id.xy, mode, TracePass == 1u || TracePass == 3u ? 0x51b349d5u : 0u);
+		const RTSample_Anchor anchorResult = RTSample_GetTraceAnchor(id.xy, Size, RTPhase(mode, !direct), mode);
+		if (anchorResult.valid == 0u) return;
+		const uint2 sourcePixel = anchorResult.pixel;
 		if (all(sourcePixel == id.xy)) return;
 		const float4 receiver = Receivers.Load(int3(id.xy, 0));
 		const float4 anchor = Receivers.Load(int3(sourcePixel, 0));
@@ -142,7 +112,7 @@ void main(uint3 id : SV_DispatchThreadID)
 		IndirectSpecular[id.xy] = float4(0, 0, 0, -2);
 	}
 	const uint mode = TracePass == 1u ? IndirectTraceMode : DirectTraceMode;
-	if (any(TraceAnchor(id.xy, mode, TracePass == 1u || TracePass == 3u ? 0x51b349d5u : 0u) != id.xy)) {
+	if (!RTSample_IsSampled(id.xy, RTPhase(mode, TracePass == 1u), mode)) {
 		if (TracePass == 0u) Shadow[id.xy] = Unavailable(MismatchedDepth);
 		return;
 	}

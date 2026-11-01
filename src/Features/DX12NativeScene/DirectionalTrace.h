@@ -5,6 +5,7 @@
 #include "Features/LightLimitFix/LightView.h"
 #include "MaterialResources.h"
 #include "PreparedScene.h"
+#include "RTSamplingPolicy.h"
 #include "Features/RedstoneGI/RuntimeDenoiser.h"
 #include <atomic>
 #include <span>
@@ -18,10 +19,10 @@ namespace DX12Native
 		static constexpr uint32_t kFirstDirectView = 10;
 		static constexpr uint32_t kCombinedDirectView = 12;
 		static constexpr uint32_t kMaximumDirectLights = 32;
-		// Persisted sampling modes: 0=full, 1=half, 2=quarter, 3=two-thirds, 4=one-third.
-		// The menu lists them by decreasing quality without renumbering saved settings.
-		static constexpr std::array<uint32_t, 5> kTraceResolutionMenuOrder{ 0u, 3u, 1u, 4u, 2u };
-		static constexpr const char* kTraceResolutionMenuLabels = "Full\0Two-thirds\0Half\0One-third\0Quarter\0";
+		// New authoritative per-FRAME pixel coverage (not linear render resolution).
+		// Legacy numeric settings migrate separately to these indices.
+		static constexpr std::array<uint32_t, 8> kTraceResolutionMenuOrder{ 0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u };
+		static constexpr const char* kTraceResolutionMenuLabels = "Full (100%)\0" "75%\0" "66.67%\0" "50% checkerboard\0" "44.44%\0" "25%\0" "11.11%\0" "6.25%\0";
 		/** @brief Loads packaged DXIL using the existing device; compiles only native receiver/preview passes. */
 		bool Initialize(const GraphicsBackend& a_backend);
 		/** @brief Preserves in-flight ray resources during early teardown. */
@@ -102,6 +103,7 @@ namespace DX12Native
 			float rasterBlend = 1.0f;
 			uint32_t normalMode = 2;
 			uint32_t directTraceMode = 0, indirectTraceMode = 0, directRRResolutionMode = 0, rrMaterialPolicy = 0;
+			uint32_t directSamplePhase = 0, indirectSamplePhase = 0;
 			uint32_t indirectRays = 0;
 			std::array<uint32_t, 128> roomReferences{};
 			uint64_t fence = 0, retirement = 0, generation = 0, bytes = 0;
@@ -188,6 +190,11 @@ namespace DX12Native
 		uint64_t directTraceDispatches = 0, indirectTraceDispatches = 0;
 		uint64_t directSpatialResolveSubmissions = 0, indirectSpatialResolveSubmissions = 0;
 		uint32_t sceneCompositeFrame = 0;
+		uint32_t lastSamplingGameFrame = UINT32_MAX;
+		uint64_t samplingFrameSequence = 0;
+		uint32_t latestDirectSampleMode = 0, latestIndirectSampleMode = 0;
+		uint32_t latestDirectSamplePhase = 0, latestIndirectSamplePhase = 0;
+		std::array<uint32_t, 2> latestTraceSize{};
 		std::string failure;
 	};
 }

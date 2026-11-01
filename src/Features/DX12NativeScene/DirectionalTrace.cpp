@@ -7,6 +7,7 @@
 #include "Features/RedstoneGI/RedstoneGI.h"
 #include "Deferred.h"
 #include "Utils/RayRegenerationSettings.h"
+#include "RTSamplingPolicy.h"
 
 #include <fstream>
 #include <bit>
@@ -395,7 +396,13 @@ namespace DX12Native
 			float4 stochasticParameters;
 		};
 		const auto& origin = globals::game::frameBufferCached.GetCameraPosAdjust();
-		const Constants constants{ a_frame.size[0], a_frame.size[1], a_frame.number, uint32_t(a_frame.scene->bottoms.size()), a_direction, kRayMaximum, { origin.x, origin.y, origin.z }, kRayMinimum, a_localLight ? 0.0f : kSunAngularRadius, { a_localLight ? 1u : 0u, a_frame.materialView, a_frame.allPreparedLights ? uint32_t(a_frame.lightIdentities.size()) : 0u }, a_frame.strengths, (a_frame.useDirectRR || a_frame.indirectRays) ? 1u : 0u, { 0u, a_frame.directTraceMode, a_frame.indirectTraceMode }, { a_frame.indirectRays, a_frame.bindings->materials->roomCount, a_frame.bindings->materials->roomsKnown ? 1u : 0u, a_frame.normalMode | a_frame.rrMaterialPolicy }, a_frame.falloffParameters, a_frame.stochasticParameters };
+		float4 packedFalloff = a_frame.falloffParameters;
+		// HLSL receives the independent phases in reserved falloff.w, which
+		// remains unused by inverse-square attenuation. No root layout change.
+		packedFalloff.w = float((a_frame.directSamplePhase & 255u) | ((a_frame.indirectSamplePhase & 255u) << 8u));
+		float4 directStochastic = a_frame.stochasticParameters;
+		if (a_frame.directTraceMode == 0u) directStochastic.x = 0.0f;
+		const Constants constants{ a_frame.size[0], a_frame.size[1], a_frame.number, uint32_t(a_frame.scene->bottoms.size()), a_direction, kRayMaximum, { origin.x, origin.y, origin.z }, kRayMinimum, a_localLight ? 0.0f : kSunAngularRadius, { a_localLight ? 1u : 0u, a_frame.materialView, a_frame.allPreparedLights ? uint32_t(a_frame.lightIdentities.size()) : 0u }, a_frame.strengths, (a_frame.useDirectRR || a_frame.indirectRays) ? 1u : 0u, { 0u, a_frame.directTraceMode, a_frame.indirectTraceMode }, { a_frame.indirectRays, a_frame.bindings->materials->roomCount, a_frame.bindings->materials->roomsKnown ? 1u : 0u, a_frame.normalMode | a_frame.rrMaterialPolicy }, packedFalloff, directStochastic };
 		static_assert(sizeof(Constants) == 36 * sizeof(uint32_t));
 		commands->SetComputeRoot32BitConstants(5, 36, &constants, 0);
 		std::vector<D3D12_RESOURCE_BARRIER> begin{
@@ -710,8 +717,22 @@ namespace DX12Native
 			available->useDirectRR = directRR;
 			available->rasterBlend = a_rasterBlend;
 			available->normalMode = std::min(a_normalMode, 2u);
-			available->directTraceMode = std::min(a_directResolutionMode, 4u);
-			available->indirectTraceMode = std::min(a_indirectResolutionMode, 4u);
+			available->directTraceMode = std::min(a_directResolutionMode, 7u);
+			available->indirectTraceMode = std::min(a_indirectResolutionMode, 7u);
+			// An independent 64-bit sampling sequence prevents bad 3/9 phase
+			// cycles across the game's uint32 frame-index wraparound.
+			if (lastSamplingGameFrame != a_frame) {
+				if (lastSamplingGameFrame != UINT32_MAX) ++samplingFrameSequence;
+				lastSamplingGameFrame = a_frame;
+			}
+			const bool temporal = a_stochasticParameters.x >= 0.5f;
+			available->directSamplePhase = RTSampling::GetPhase(samplingFrameSequence, RTSampling::ClampMode(available->directTraceMode), temporal);
+			available->indirectSamplePhase = RTSampling::GetPhase(samplingFrameSequence, RTSampling::ClampMode(available->indirectTraceMode), temporal);
+			latestDirectSampleMode = available->directTraceMode;
+			latestIndirectSampleMode = available->indirectTraceMode;
+			latestDirectSamplePhase = available->directSamplePhase;
+			latestIndirectSamplePhase = available->indirectSamplePhase;
+			latestTraceSize = size;
 			available->directRRResolutionMode = effectiveRRMode;
 			available->rrMaterialPolicy = a_rrMaterialIsolation ? (0x80000000u |
 				(uint32_t(std::clamp(a_rrGlossyRoughness, 0.04f, 1.0f) * 65535.0f) << 8u)) : 0u;
@@ -788,7 +809,12 @@ namespace DX12Native
 			{ "lightMode", localLightMode ? "prepared-static" : "directional" },
 			{ "allPreparedLights", allPreparedLights }, { "requestedLightCount", requestedLightCount }, { "maximumDirectLights", kMaximumDirectLights }, { "lightSelectionFailure", lightSelectionFailure },
 			{ "directSubmissions", directSubmissions }, { "directTraceDispatches", directTraceDispatches }, { "indirectTraceDispatches", indirectTraceDispatches },
-			{ "directSpatialResolveSubmissions", directSpatialResolveSubmissions }, { "indirectSpatialResolveSubmissions", indirectSpatialResolveSubmissions }, { "sceneCompositeSubmissions", sceneCompositeSubmissions }, { "sceneCompositeFrame", sceneCompositeFrame },
+			{ "directSpatialResolveSubmissions", directSpatialResolveSubmissions }, { "indirectSpatialResolveSubmissions", indirectSpatialResolveSubmissions },
+			{ "directSamplingMode", latestDirectSampleMode }, { "indirectSamplingMode", latestIndirectSampleMode },
+			{ "directSamplingPhase", latestDirectSamplePhase }, { "indirectSamplingPhase", latestIndirectSamplePhase },
+			{ "scheduledDirectPixels", RTSampling::GetExpectedSampleCount({ latestTraceSize[0], latestTraceSize[1] }, latestDirectSamplePhase, RTSampling::ClampMode(latestDirectSampleMode)) },
+			{ "scheduledIndirectPixels", RTSampling::GetExpectedSampleCount({ latestTraceSize[0], latestTraceSize[1] }, latestIndirectSamplePhase, RTSampling::ClampMode(latestIndirectSampleMode)) },
+			{ "samplingCountProvenance", "CPU reference prediction, not a GPU counter" }, { "sceneCompositeSubmissions", sceneCompositeSubmissions }, { "sceneCompositeFrame", sceneCompositeFrame },
 			{ "directScope", "selected light or complete bounded prepared point-light set; supported depth-matched PBR surfaces; per-light diffuse/specular, emission once; no native CPU bypass" },
 			{ "sourceLightCount", sourceLightCount }, { "sourceLightFrame", sourceLightFrame }, { "unavailableLightFrames", unavailableLightFrames },
 			{ "bindingCreations", bindingCreations }, { "bindingDeferrals", bindingDeferrals }, { "cachedSceneBindings", bool(cachedBindings) },

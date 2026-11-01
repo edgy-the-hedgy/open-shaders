@@ -6,7 +6,7 @@
 #include "Utils/DevBenchUx.h"
 #include <cmath>
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTIndirectLighting::Settings, UseRTExclusive, IndirectRays, RTBounces, IndirectStrength, ConnectHybrid, RTTraceResolution, HybridResolution)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTIndirectLighting::Settings, UseRTExclusive, IndirectRays, RTBounces, IndirectStrength, ConnectHybrid, RTTraceResolution, RTSamplingMode, HybridResolution)
 
 std::pair<std::string, std::vector<std::string>> RTIndirectLighting::GetFeatureSummary()
 {
@@ -40,6 +40,9 @@ void RTIndirectLighting::LoadSettings(json& value)
 	Settings selected = value;
 	selected.IndirectRays = std::clamp(selected.IndirectRays, 1u, 8u);
 	selected.RTBounces = std::min(selected.RTBounces, 2u);
+	selected.RTSamplingMode = value.contains("RTSamplingMode") ?
+		std::min(selected.RTSamplingMode, 7u) :
+		uint32_t(DX12Native::RTSampling::MigrateLegacy(value.value("RTTraceResolution", 0u)));
 	selected.RTTraceResolution = std::min(selected.RTTraceResolution, 4u);
 	selected.HybridResolution = std::min(selected.HybridResolution, 3u);
 	selected.IndirectStrength = std::isfinite(selected.IndirectStrength) ? std::clamp(selected.IndirectStrength, 0.0f, 8.0f) : 1.0f;
@@ -53,7 +56,11 @@ void RTIndirectLighting::LoadSettings(json& value)
 	// Explicitly choosing Hybrid in the UI or DevBench selects the RGI backend.
 }
 
-void RTIndirectLighting::SaveSettings(json& value) { value = settings; }
+void RTIndirectLighting::SaveSettings(json& value)
+{
+	value = settings;
+	value.erase("RTTraceResolution");
+}
 void RTIndirectLighting::RestoreDefaultSettings()
 {
 	settings = {};
@@ -114,12 +121,12 @@ void RTIndirectLighting::DrawSettings()
 		}
 		int resolution = 0;
 		for (int option = 0; option < int(DX12Native::DirectionalTrace::kTraceResolutionMenuOrder.size()); ++option)
-			if (DX12Native::DirectionalTrace::kTraceResolutionMenuOrder[option] == settings.RTTraceResolution) resolution = option;
-		if (ImGui::Combo("RT-exclusive indirect trace resolution", &resolution, DX12Native::DirectionalTrace::kTraceResolutionMenuLabels)) {
-			settings.RTTraceResolution = DX12Native::DirectionalTrace::kTraceResolutionMenuOrder[resolution];
+			if (DX12Native::DirectionalTrace::kTraceResolutionMenuOrder[option] == settings.RTSamplingMode) resolution = option;
+		if (ImGui::Combo("RT-exclusive GI pixels traced per frame", &resolution, DX12Native::DirectionalTrace::kTraceResolutionMenuLabels)) {
+			settings.RTSamplingMode = DX12Native::DirectionalTrace::kTraceResolutionMenuOrder[resolution];
 			globals::features::dx12NativeScene.Tracer().Reset();
 		}
-		ImGui::TextWrapped("Independent from direct trace resolution and RR. Sparse RTGI samples resolve only to compatible receiver surfaces.");
+		ImGui::TextWrapped("Independent GI pixel coverage; sampled pixels are distinct from spatial reconstruction and RR.");
 		ImGui::SliderFloat("Indirect intensity", &settings.IndirectStrength, 0.0f, 8.0f, "%.2fx");
 		const auto trace = globals::features::dx12NativeScene.Tracer().GetDiagnostics();
 		if (!trace.value("bakedRoomsKnown", false))
@@ -206,7 +213,7 @@ json RTIndirectLighting::GetDiagnostics()
 		{ "rtDirectRequired", settings.UseRTExclusive },
 		{ "rtDirectEnabled", direct.loaded && direct.settings.UsePreparedDirectLighting },
 		{ "indirectRays", settings.IndirectRays }, { "rtBounces", settings.RTBounces }, { "indirectStrength", settings.IndirectStrength },
-		{ "rtTraceResolutionMode", settings.RTTraceResolution },
+		{ "rtSamplingMode", settings.RTSamplingMode },
 		{ "connectHybrid", settings.ConnectHybrid },
 		{ "trace", globals::features::dx12NativeScene.Tracer().GetDiagnostics() } };
 }
@@ -225,7 +232,8 @@ void RTIndirectLighting::RegisterUxActions()
 			else throw std::invalid_argument("Producer must be rt-exclusive or hybrid");
 			if (args.contains("rays")) gi.settings.IndirectRays = std::clamp(args.at("rays").get<uint32_t>(), 1u, 8u);
 			if (args.contains("bounces")) gi.settings.RTBounces = std::min(args.at("bounces").get<uint32_t>(), 2u);
-			if (args.contains("traceResolution")) gi.settings.RTTraceResolution = std::min(args.at("traceResolution").get<uint32_t>(), 4u);
+			if (args.contains("samplingMode")) gi.settings.RTSamplingMode = std::min(args.at("samplingMode").get<uint32_t>(), 7u);
+			if (args.contains("traceResolution")) gi.settings.RTSamplingMode = uint32_t(DX12Native::RTSampling::MigrateLegacy(args.at("traceResolution").get<uint32_t>()));
 			globals::features::dx12NativeScene.Tracer().Reset();
 		});
 	FEATURE_COMMAND("setLightingSampling", "Adjust existing Hybrid GI slice counts.",
