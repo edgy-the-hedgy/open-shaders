@@ -18,6 +18,7 @@ namespace
 
 uint64_t DX12NativeScene::GetLightingBudgetBytes() const
 {
+    std::scoped_lock lock(lightingBudgetMutex);
     // Account for every resource in the GPU's LOCAL segment, including
     // output/display, render, logical RR, packed ray and SDK allocations.
     // Never infer VRAM headroom from the render resolution alone.
@@ -72,6 +73,7 @@ uint64_t DX12NativeScene::GetLightingBudgetBytes() const
 
 json DX12NativeScene::GetLightingBudgetDiagnostics() const
 {
+    std::scoped_lock lock(lightingBudgetMutex);
     const auto& info = lastLightingMemoryInfo;
     return {
         { "auto", settings.DirectLightingBudgetMB == 0u },
@@ -363,8 +365,10 @@ void DX12NativeScene::DrawNativeSceneSettings()
                 64, int(kMaxLightingBudgetMiB)))
             settings.DirectLightingBudgetMB = uint32_t(lightingBudget);
     }
-    const uint64_t effective = GetLightingBudgetBytes();
+    // UI reads the last render-thread DXGI query; do not query/modify the
+    // adapter on the UI thread just to draw a diagnostics window.
     const auto memory = GetLightingBudgetDiagnostics();
+    const uint64_t effective = memory.value("effectiveBytes", uint64_t{0});
     ImGui::Text("Effective trace-owned memory budget: %.1f MiB",
         double(effective) / (1024.0 * 1024.0));
     if (memory.value("osMemoryAvailable", false)) {
