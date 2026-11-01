@@ -1,0 +1,110 @@
+// DX12 post-RR ONLY: reconstruct native-resolution indirect/AO from the
+// producer's logical RR output. Never filter signals BEFORE Ray Regeneration.
+// The spatial weights are normalized: no 2x or 4x radiance multiplication.
+Texture2D<float4> ReconstructedRRSignal : register(t0);
+Texture2D<float> NativeLinearDepth : register(t1);
+Texture2D<float4> NativeNormalRoughness : register(t2);
+Texture2D<uint> NativeEligibility : register(t3);
+RWTexture2D<float4> NativeOutput : register(u0);
+
+cbuffer PostRRSettings : register(b0)
+{
+    uint2 FullSize;
+    uint2 RRSize;
+    uint SignalFamily;     // 0 diffuse, 1 specular, 2 AO
+    uint FilterEnabled;
+    uint QuarterSampling;
+    uint RepresentativePhase;
+    float FilterRadius;
+    float FilterStrength;
+    float DepthSensitivity;
+    float NormalSensitivity;
+    float RoughnessSensitivity;
+    float3 Padding;
+};
+
+float3 DecodeOct(float2 packed)
+{
+    const float2 f = packed * 2.0 - 1.0;
+    float3 n = float3(f, 1.0 - abs(f.x) - abs(f.y));
+    const float t = saturate(-n.z);
+    n.xy += float2(n.x >= 0.0 ? -t : t, n.y >= 0.0 ? -t : t);
+    return normalize(n);
+}
+
+uint2 Representative(uint2 sample)
+{
+    if (QuarterSampling == 0u) return min(sample, FullSize - 1u);
+    const uint2 phase = uint2(RepresentativePhase & 1u, (RepresentativePhase >> 1u) & 1u);
+    return min(sample * 2u + phase, FullSize - 1u);
+}
+
+float4 NeutralSignal()
+{
+    return SignalFamily == 2u ? float4(1.0, 1.0, 1.0, 1.0) : 0.0;
+}
+
+[numthreads(8, 8, 1)]
+void main(uint2 pixel : SV_DispatchThreadID)
+{
+    if (any(pixel >= FullSize) || any(RRSize == 0u)) return;
+    const uint eligibility = NativeEligibility.Load(int3(pixel, 0));
+    if ((SignalFamily != 2u && eligibility != 1u) ||
+        (SignalFamily == 2u && eligibility == 2u)) {
+        NativeOutput[pixel] = NeutralSignal();
+        return;
+    }
+
+    const float depth = NativeLinearDepth.Load(int3(pixel, 0));
+    const float4 nr = NativeNormalRoughness.Load(int3(pixel, 0));
+    if (!isfinite(depth) || depth <= 0.0 || !all(isfinite(nr))) {
+        NativeOutput[pixel] = NeutralSignal();
+        return;
+    }
+
+    const float2 position = (float2(pixel) + 0.5) * float2(RRSize) / float2(FullSize) - 0.5;
+    const int2 nearest = clamp(int2(round(position)), int2(0, 0), int2(RRSize) - 1);
+    const float4 nearestSignal = ReconstructedRRSignal.Load(int3(nearest, 0));
+    if (FilterEnabled == 0u || FilterStrength <= 0.0) {
+        NativeOutput[pixel] = all(isfinite(nearestSignal)) ? nearestSignal : NeutralSignal();
+        return;
+    }
+
+    const float3 normal = DecodeOct(nr.xy);
+    const int radius = min(4, max(1, int(ceil(FilterRadius))));
+    float4 accumulated = 0.0;
+    float weightSum = 0.0;
+    const int2 base = int2(floor(position + 0.5));
+    [loop] for (int y = -radius; y <= radius; ++y) {
+        [loop] for (int x = -radius; x <= radius; ++x) {
+            const int2 sample = base + int2(x, y);
+            if (any(sample < 0) || any(sample >= int2(RRSize))) continue;
+            const float2 distance = float2(sample) - position;
+            if (dot(distance, distance) > FilterRadius * FilterRadius) continue;
+            const uint2 guidePixel = Representative(uint2(sample));
+            const float candidateDepth = NativeLinearDepth.Load(int3(guidePixel, 0));
+            const float4 candidateNR = NativeNormalRoughness.Load(int3(guidePixel, 0));
+            if (!isfinite(candidateDepth) || candidateDepth <= 0.0 ||
+                !all(isfinite(candidateNR))) continue;
+
+            const float relativeDepth = abs(candidateDepth - depth) / max(abs(depth), 0.001);
+            const float normalAgreement = saturate(dot(normal, DecodeOct(candidateNR.xy)));
+            const float roughnessDifference = abs(candidateNR.z - nr.z);
+            // Same-surface constraint: sharp discontinuities never borrow
+            // radiation from neighboring objects, even when blur is enabled.
+            if (relativeDepth > 0.02 || normalAgreement < 0.5) continue;
+            const float weight = exp2(-dot(distance, distance) / max(0.25, FilterRadius * FilterRadius)) *
+                exp2(-DepthSensitivity * relativeDepth) *
+                pow(normalAgreement, NormalSensitivity) *
+                exp2(-RoughnessSensitivity * roughnessDifference);
+            const float4 radiance = ReconstructedRRSignal.Load(int3(sample, 0));
+            if (!all(isfinite(radiance))) continue;
+            accumulated += weight * radiance;
+            weightSum += weight;
+        }
+    }
+    const float4 filtered = weightSum > 1e-6 ? accumulated / weightSum :
+        (all(isfinite(nearestSignal)) ? nearestSignal : NeutralSignal());
+    const float4 baseline = all(isfinite(nearestSignal)) ? nearestSignal : NeutralSignal();
+    NativeOutput[pixel] = lerp(baseline, filtered, saturate(FilterStrength));
+}
