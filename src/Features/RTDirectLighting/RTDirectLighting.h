@@ -43,8 +43,8 @@ struct RTDirectLighting final : OverlayFeature
 	void OnRuntimeDisabled() override;
 	void ClearShaderCache() override;
 	int GetIndirectLightingPriority() const override;
-	bool UsesDXRIndirect() const { return settings.UseDXRIndirect; }
-	bool WantsComposite() const { return settings.UsePreparedDirectLighting || settings.UseDXRIndirect; }
+	bool UsesDXRIndirect() const { return settings.UsePreparedDirectLighting && settings.UseDXRIndirect; }
+	bool WantsComposite() const { return settings.UsePreparedDirectLighting; }
 	json GetDiagnostics() override;
 	void RegisterUxActions() override;
 private:

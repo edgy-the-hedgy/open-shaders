@@ -32,6 +32,9 @@ void RTDirectLighting::LoadSettings(json& value)
 {
 	Settings selected = value;
 	selected.IndirectRays = std::clamp(selected.IndirectRays, 1u, 8u);
+	// RT-exclusive GI always includes the native RT direct pass.
+	// Preserve the selected GI mode when importing legacy settings.
+	if (selected.UseDXRIndirect) selected.UsePreparedDirectLighting = true;
 	selected.SelectedDirectLight = std::min(selected.SelectedDirectLight, 255u);
 	selected.RedstoneBlend = std::isfinite(selected.RedstoneBlend) ? std::clamp(selected.RedstoneBlend, 0.0f, 1.0f) : 1.0f;
 	for (auto* v : { &selected.DirectStrength, &selected.DiffuseStrength, &selected.SpecularStrength,
@@ -43,7 +46,7 @@ void RTDirectLighting::LoadSettings(json& value)
 void RTDirectLighting::SaveSettings(json& value) { value = settings; }
 void RTDirectLighting::RestoreDefaultSettings() { settings = {}; lastFrame.reset(); }
 void RTDirectLighting::DrawSettings() { DrawDirectLightingSettings(); }
-int RTDirectLighting::GetIndirectLightingPriority() const { return loaded && settings.UseDXRIndirect && !globals::game::isVR ? 200 : -1; }
+int RTDirectLighting::GetIndirectLightingPriority() const { return loaded && UsesDXRIndirect() && !globals::game::isVR ? 200 : -1; }
 void RTDirectLighting::ClearRRDebugOverlay() { globals::features::dx12NativeScene.Tracer().ClearRRDebugOverlay(); }
 void RTDirectLighting::DrawOverlay() { if (IsOverlayVisible()) globals::features::dx12NativeScene.Tracer().DrawRRDebugOverlay(); }
 bool RTDirectLighting::IsOverlayVisible() const { return globals::features::dx12NativeScene.loaded && globals::features::dx12NativeScene.Tracer().IsRRDebugVisible() && !globals::game::isVR; }
@@ -67,7 +70,15 @@ json RTDirectLighting::GetDiagnostics()
 
 void RTDirectLighting::DrawDirectLightingSettings()
 {
-    if (ImGui::Checkbox("RT direct lighting", &settings.UsePreparedDirectLighting)) globals::features::dx12NativeScene.Tracer().Reset();
+    if (ImGui::Checkbox("RT direct lighting", &settings.UsePreparedDirectLighting)) {
+        if (!settings.UsePreparedDirectLighting && settings.UseDXRIndirect) {
+            // Direct lighting is mandatory for RT-exclusive GI: disabling direct
+            // reverts the GI mode to Hybrid rather than dispatching indirect alone.
+            settings.UseDXRIndirect = false;
+            globals::features::redstoneGI.SelectRenderer(true);
+        }
+        globals::features::dx12NativeScene.Tracer().Reset();
+    }
 
     ImGui::SeparatorText("Direct lighting");
     ImGui::SliderFloat("Raster / RT blend", &settings.RedstoneBlend, 0.0f, 1.0f, "%.2f");
@@ -114,32 +125,44 @@ void RTDirectLighting::DrawDirectLightingSettings()
 
 void RTDirectLighting::DrawIndirectLightingSettings()
 {
-	const bool dxr = settings.UseDXRIndirect && !globals::game::isVR;
-	if (ImGui::RadioButton("Raymarched indirect", !dxr)) {
+	ImGui::TextUnformatted("How would you like your GI to be rendered?");
+	const bool exclusive = UsesDXRIndirect() && !globals::game::isVR;
+	ImGui::BeginDisabled(globals::game::isVR || !loaded);
+	if (ImGui::RadioButton("RT-exclusive", exclusive)) {
+		settings.UsePreparedDirectLighting = true;
+		settings.UseDXRIndirect = true;
+		globals::features::dx12NativeScene.RequestPreparedScene();
+		globals::features::dx12NativeScene.Tracer().Reset();
+	}
+	ImGui::EndDisabled();
+	ImGui::SameLine();
+	if (ImGui::RadioButton("Hybrid", !exclusive)) {
 		settings.UseDXRIndirect = false;
 		globals::features::redstoneGI.SelectRenderer(true);
 		globals::features::dx12NativeScene.Tracer().Reset();
 	}
-	ImGui::SameLine();
-	ImGui::BeginDisabled(globals::game::isVR);
-	if (ImGui::RadioButton("DXR indirect", dxr)) {
-		settings.UseDXRIndirect = true;
-		globals::features::dx12NativeScene.RequestPreparedScene();
-	}
-	ImGui::EndDisabled();
-	if (dxr) {
-		ImGui::SeparatorText("DXR indirect lighting");
+	if (globals::game::isVR) ImGui::TextWrapped("RT-exclusive GI is unavailable in VR.");
+	else if (!loaded) ImGui::TextWrapped("Enable RT Direct Lighting to use RT-exclusive GI.");
+	if (exclusive) {
+		ImGui::TextWrapped("RT-exclusive uses the prepared native scene for indirect diffuse and specular lighting. RT Direct Lighting stays enabled and both contributions use one combined trace.");
+		ImGui::SeparatorText("RT-exclusive GI settings");
 		int rays = int(settings.IndirectRays);
-		if (ImGui::SliderInt("Indirect rays per pixel", &rays, 1, 8)) { settings.IndirectRays = uint32_t(rays); globals::features::dx12NativeScene.Tracer().Reset(); }
+		if (ImGui::SliderInt("Indirect rays per pixel", &rays, 1, 8)) {
+			settings.IndirectRays = uint32_t(rays);
+			globals::features::dx12NativeScene.Tracer().Reset();
+		}
 		ImGui::SliderFloat("Indirect intensity", &settings.IndirectStrength, 0.0f, 8.0f, "%.2fx");
-		ImGui::TextWrapped("One-bounce diffuse and specular lighting from prepared geometry. More rays increase sampling work; intensity is independent. Raymarched indirect is inactive.");
 		const auto trace = globals::features::dx12NativeScene.Tracer().GetDiagnostics();
-		if (!trace.value("bakedRoomsKnown", false)) ImGui::TextWrapped("Prepared room data is not ready. Regenerate the current cell cache if it predates room metadata.");
+		if (!trace.value("bakedRoomsKnown", false))
+			ImGui::TextWrapped("Prepared room metadata is not ready. Regenerate the cell cache if needed.");
 		const auto failure = trace.value("failure", std::string{});
-		if (!failure.empty()) ImGui::TextWrapped("DXR lighting unavailable: %s", failure.c_str());
-	} else if (settings.UsePreparedDirectLighting) {
-		ImGui::Checkbox("Connect raymarched indirect to prepared lighting", &settings.ConnectIndirectLighting);
-		ImGui::SliderFloat("Prepared indirect intensity", &settings.IndirectStrength, 0.0f, 8.0f, "%.2fx");
+		if (!failure.empty()) ImGui::TextWrapped("RT-exclusive lighting unavailable: %s", failure.c_str());
+	} else {
+		ImGui::TextWrapped("Hybrid uses raymarched indirect lighting alongside the existing raster scene and optional RT direct lighting.");
+		if (settings.UsePreparedDirectLighting) {
+			ImGui::Checkbox("Connect hybrid GI to prepared direct lighting", &settings.ConnectIndirectLighting);
+			ImGui::SliderFloat("Prepared indirect intensity", &settings.IndirectStrength, 0.0f, 8.0f, "%.2fx");
+		}
 	}
 }
 
@@ -147,7 +170,7 @@ void RTDirectLighting::DrawRayRegenerationSettings()
 {
 	ImGui::Checkbox("Reconstruct prepared lighting", &settings.UseDirectRayRegeneration);
 	const bool wasDebugging = globals::features::dx12NativeScene.Tracer().IsRRDebugVisible();
-	globals::features::dx12NativeScene.Tracer().DrawRayRegenerationSettings(settings.UseDXRIndirect && !globals::game::isVR);
+	globals::features::dx12NativeScene.Tracer().DrawRayRegenerationSettings(UsesDXRIndirect() && !globals::game::isVR);
 	if (!wasDebugging && globals::features::dx12NativeScene.Tracer().IsRRDebugVisible()) {
 		globals::features::redstoneGI.SetRROutputOnly(false);
 		globals::features::redstoneGI.SetRRInputsOnly(false);
@@ -192,6 +215,10 @@ void RTDirectLighting::RegisterUxActions()
 			auto& d = *static_cast<RTDirectLighting*>(self);
 			auto& n = globals::features::dx12NativeScene;
 			d.settings.UsePreparedDirectLighting = args.at("enabled").get<bool>();
+			if (!d.settings.UsePreparedDirectLighting && d.settings.UseDXRIndirect) {
+				d.settings.UseDXRIndirect = false;
+				globals::features::redstoneGI.SelectRenderer(true);
+			}
 			if (d.settings.UsePreparedDirectLighting) n.RequestPreparedScene();
 			if (args.contains("allLights")) d.settings.UseAllPreparedLights = args.at("allLights").get<bool>();
 			if (args.contains("indirect")) d.settings.ConnectIndirectLighting = args.at("indirect").get<bool>();
@@ -211,12 +238,14 @@ void RTDirectLighting::RegisterUxActions()
 			apply("emission", s.EmissionStrength);
 			apply("indirect", s.IndirectStrength);
 		});
-	FEATURE_COMMAND("setIndirectProducer", "Select existing raymarched/DXR indirect producer and ray count.",
+	FEATURE_COMMAND("setIndirectProducer", "Select Hybrid or RT-exclusive GI (also accepts raymarched/dxr legacy aliases).",
 		[](Feature* self, const json& args) {
 			auto& d = *static_cast<RTDirectLighting*>(self);
 			const auto producer = args.at("producer").get<std::string>();
-			if (producer != "dxr" && producer != "raymarched") throw std::invalid_argument("Producer must be dxr or raymarched");
-			d.settings.UseDXRIndirect = producer == "dxr";
+			if (producer != "dxr" && producer != "raymarched" && producer != "rt-exclusive" && producer != "hybrid")
+				throw std::invalid_argument("Producer must be rt-exclusive or hybrid");
+			d.settings.UseDXRIndirect = producer == "dxr" || producer == "rt-exclusive";
+			if (d.settings.UseDXRIndirect) d.settings.UsePreparedDirectLighting = true;
 			d.settings.IndirectRays = std::clamp(args.value("rays", d.settings.IndirectRays), 1u, 8u);
 			if (d.settings.UseDXRIndirect) globals::features::dx12NativeScene.RequestPreparedScene();
 			else globals::features::redstoneGI.SelectRenderer(true);

@@ -256,6 +256,8 @@ void RedstoneGI::DrawSettings()
 {
 	globals::features::rtDirectLighting.DrawIndirectLightingSettings();
 	if (globals::features::rtDirectLighting.UsesDXRIndirect() && !globals::game::isVR) return;
+	// Hybrid keeps the current raymarched RGI implementation; preserve its
+	// session-availability diagnostics without presenting a third GI mode.
 	DrawRendererSettings();
 	if (!selected) return;
 	ImGui::SeparatorText("Screen-space indirect lighting");

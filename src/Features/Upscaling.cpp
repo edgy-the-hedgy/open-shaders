@@ -771,7 +771,7 @@ void Upscaling::DrawSettings()
 		changed |= ImGui::Checkbox("Checkerboard RR inputs", &policy.checkerboard);
 		if (changed) RayRegeneration::Configure(uint32_t(resolution), policy.checkerboard, policy.enabled);
 		ImGui::TextWrapped("FSR Ray Regeneration reconstructs direct and indirect RT signals on a shared grid. Indirect producer selection and ray counts remain separate; Normal Save persists these controls here.");
-		ImGui::SeparatorText("RT direct / DXR indirect");
+		ImGui::SeparatorText("RT lighting reconstruction");
 		globals::features::rtDirectLighting.DrawRayRegenerationSettings();
 		if (!globals::features::rtDirectLighting.UsesDXRIndirect()) {
 			ImGui::SeparatorText("Screen-space indirect");
