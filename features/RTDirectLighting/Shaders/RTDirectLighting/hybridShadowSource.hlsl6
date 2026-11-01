@@ -1,0 +1,23 @@
+// Stage 4B: shadows applied to a DX12-native scene input, separate from game raster.
+Texture2D<float4> RasterScene : register(t0);
+Texture2D<float2> Visibility : register(t1);
+RWTexture2D<float4> OutShadowedScene : register(u0);
+cbuffer HybridSourceSettings : register(b0) {
+    uint2 FrameSize;
+    float ShadowInfluence;
+    uint Reserved;
+};
+[numthreads(8, 8, 1)]
+void main(uint2 pixel : SV_DispatchThreadID)
+{
+    if (any(pixel >= FrameSize)) return;
+    const float4 source = RasterScene.Load(int3(pixel, 0));
+    const float2 mask = Visibility.Load(int3(pixel, 0));
+    const float visibility = mask.y >= 0.5 && all(isfinite(mask)) ? saturate(mask.x) : 1.0;
+    const float attenuation = lerp(1.0, visibility, saturate(ShadowInfluence));
+    const float3 linearColor = sign(source.rgb) * pow(abs(source.rgb), 1.6);
+    const float3 shadowed = linearColor * attenuation;
+    const float3 encoded = sign(shadowed) * pow(abs(shadowed), 1.0 / 1.6);
+    OutShadowedScene[pixel] = all(isfinite(encoded)) ?
+        float4(encoded, source.a) : float4(0, 0, 0, source.a);
+}

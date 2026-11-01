@@ -60,6 +60,14 @@ namespace DX12Native
             explicit operator bool() const { return inputs[0] && completionFence && completionValue; }
         };
         HybridInputsPublication GetHybridInputs(uint32_t a_frame) const;
+        struct ShadowedSourcePublication {
+            ID3D12Resource* scene = nullptr;
+            ID3D12Fence* completionFence = nullptr;
+            uint64_t completionValue = 0;
+            std::array<uint32_t, 2> size{};
+            explicit operator bool() const { return scene && completionFence && completionValue; }
+        };
+        ShadowedSourcePublication GetShadowedSource(uint32_t a_frame) const;
 		/** @brief Returns a raw preview view whose image remains owned by this service. */
 		ID3D11ShaderResourceView* Preview() const { return previewValid && preview ? preview->srv.get() : nullptr; }
 		/** @brief Returns the completed preview dimensions for an undistorted diagnostic image. */
@@ -115,6 +123,8 @@ namespace DX12Native
 			std::unique_ptr<WrappedResource> shadowMaskExport;
             std::array<std::unique_ptr<WrappedResource>, kHybridInputCount> hybridInputs;
             bool hybridInputsReady = false;
+            winrt::com_ptr<ID3D12Resource> hybridShadowedSource;
+            bool hybridShadowedSourceReady = false;
 			std::array<std::unique_ptr<WrappedResource>, kDirectSignalCount> directSignals;
 			winrt::com_ptr<ID3D12RootSignature> root;
 			winrt::com_ptr<ID3D12PipelineState> pipeline;
@@ -154,6 +164,7 @@ namespace DX12Native
 		static uint64_t BindingBytes(const GraphicsBackend& a_backend, const TopLevel& a_scene);
 		void PrepareReceivers(Frame& a_frame, const std::array<uint32_t, 2>& a_nativeSize, const LightLimitFixData::LightView& a_lights, ID3D11ShaderResourceView* a_roomMetadata);
         void PrepareHybridInputs(Frame& a_frame);
+        void RecordHybridShadowedSource(Frame& a_frame);
 		void Record(Frame& a_frame, const float3& a_direction, bool a_localLight);
 		void Consume(Frame& a_frame);
 		void CompositeScene(Frame& a_frame, ID3D11UnorderedAccessView* a_target);
@@ -166,6 +177,9 @@ namespace DX12Native
 		SharedFence producer, completion;
 		winrt::com_ptr<ID3D11ComputeShader> prepare, display, composite;
         winrt::com_ptr<ID3D11ComputeShader> prepareHybrid;
+        winrt::com_ptr<ID3D12RootSignature> hybridSourceRoot;
+        winrt::com_ptr<ID3D12PipelineState> hybridSourcePipeline;
+        winrt::com_ptr<ID3D12DescriptorHeap> hybridSourceHeap;
 		winrt::com_ptr<ID3D11ComputeShader> prepareDirectGuides;
 		winrt::com_ptr<ID3D11ComputeShader> packRRSignals;
 		std::unique_ptr<ConstantBuffer> rrGridSettings;
@@ -226,6 +240,9 @@ namespace DX12Native
         uint64_t hybridInputDispatches = 0, hybridInputBudgetDeferrals = 0, hybridInputLastBytes = 0;
         uint32_t hybridInputLastFrame = 0;
         std::string hybridInputFailure;
+        uint64_t hybridSourceDispatches = 0;
+        uint32_t hybridSourceLastFrame = 0;
+        std::string hybridSourceFailure;
 		uint32_t sceneCompositeFrame = 0;
 		std::string failure;
 	};

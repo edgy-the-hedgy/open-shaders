@@ -29,9 +29,17 @@ if(REDSTONE_DXC)
             "${CMAKE_CURRENT_SOURCE_DIR}/package/Shaders/Common/BRDF.hlsli"
             "${CMAKE_CURRENT_SOURCE_DIR}/package/Shaders/Common/Math.hlsli"
         VERBATIM)
-    add_custom_target(RTDirectLightingDXIL DEPENDS "${_redstone_directional}")
+    set(_hybrid_source "${REDSTONE_DXIL_DIRECTORY}/hybridShadowSource.dxil")
+    add_custom_command(OUTPUT "${_hybrid_source}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${REDSTONE_DXIL_DIRECTORY}"
+        COMMAND "${REDSTONE_DXC}" -T cs_6_5 -E main -HV 2021 -O3 -Ges
+            -Fo "${_hybrid_source}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/features/RTDirectLighting/Shaders/RTDirectLighting/hybridShadowSource.hlsl6"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/features/RTDirectLighting/Shaders/RTDirectLighting/hybridShadowSource.hlsl6"
+        VERBATIM)
+    add_custom_target(RTDirectLightingDXIL DEPENDS "${_redstone_directional}" "${_hybrid_source}")
     add_dependencies(${PROJECT_NAME} RTDirectLightingDXIL)
-    list(APPEND REDSTONE_DXIL_FILES "${_redstone_directional}")
+    list(APPEND REDSTONE_DXIL_FILES "${_redstone_directional}" "${_hybrid_source}")
     register_feature_payload(RTDirectLighting FILES ${REDSTONE_DXIL_FILES} DESTINATION "Shaders/RTDirectLighting")
     list(APPEND REDSTONE_DXIL_CORE_COMMANDS
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/Core/Shaders/RTDirectLighting"
