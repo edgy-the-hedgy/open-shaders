@@ -357,10 +357,10 @@ namespace DX12Native
 			cpu.ptr += step;
 		}
 		output.Format = DXGI_FORMAT_R32G32_UINT;
-		backend.d3d12Device->CreateUnorderedAccessView(a_frame.visibilityBits ? a_frame.visibilityBits->resource.get() : nullptr, nullptr, &output, cpu);
+		backend.d3d12Device->CreateUnorderedAccessView(a_frame.visibilityBits ? a_frame.visibilityBits.get() : nullptr, nullptr, &output, cpu);
 		cpu.ptr += step;
 		output.Format = DXGI_FORMAT_R16G16_FLOAT;
-		backend.d3d12Device->CreateUnorderedAccessView(a_frame.shadowMask ? a_frame.shadowMask->resource.get() : nullptr, nullptr, &output, cpu);
+		backend.d3d12Device->CreateUnorderedAccessView(a_frame.shadowMask ? a_frame.shadowMask.get() : nullptr, nullptr, &output, cpu);
 		cpu.ptr += step;
 		backend.d3d12Device->CreateShaderResourceView(a_frame.light->resource.get(), &receiver, cpu);
 		ID3D12DescriptorHeap* heaps[]{ a_frame.bindings->heap.get() };
@@ -411,8 +411,8 @@ namespace DX12Native
 			CD3DX12_RESOURCE_BARRIER::Transition(a_frame.output->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
 		};
 		for (const auto& signal : a_frame.directSignals) if (signal) begin.push_back(CD3DX12_RESOURCE_BARRIER::Transition(signal->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
-		if (a_frame.visibilityBits) begin.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_frame.visibilityBits->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
-		if (a_frame.shadowMask) begin.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_frame.shadowMask->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
+		if (a_frame.visibilityBits) begin.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_frame.visibilityBits.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
+		if (a_frame.shadowMask) begin.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_frame.shadowMask.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
 		commands->ResourceBarrier(uint32_t(begin.size()), begin.data());
 		if (a_frame.shadowMask && a_frame.visibilityBits) {
 			Constants maskPass = constants;
@@ -421,8 +421,8 @@ namespace DX12Native
 			commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 			++shadowMaskTraceDispatches;
 			std::array<D3D12_RESOURCE_BARRIER, 2> maskBarriers{
-				CD3DX12_RESOURCE_BARRIER::UAV(a_frame.visibilityBits->resource.get()),
-				CD3DX12_RESOURCE_BARRIER::UAV(a_frame.shadowMask->resource.get())
+				CD3DX12_RESOURCE_BARRIER::UAV(a_frame.visibilityBits.get()),
+				CD3DX12_RESOURCE_BARRIER::UAV(a_frame.shadowMask.get())
 			};
 			commands->ResourceBarrier(uint32_t(maskBarriers.size()), maskBarriers.data());
 			if (a_frame.directTraceMode != 0u) {
@@ -481,8 +481,8 @@ namespace DX12Native
 			CD3DX12_RESOURCE_BARRIER::Transition(a_frame.output->resource.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON)
 		};
 		for (const auto& signal : a_frame.directSignals) if (signal) end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(signal->resource.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON));
-		if (a_frame.visibilityBits) end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_frame.visibilityBits->resource.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON));
-		if (a_frame.shadowMask) end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_frame.shadowMask->resource.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON));
+		if (a_frame.visibilityBits) end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_frame.visibilityBits.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON));
+		if (a_frame.shadowMask) end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_frame.shadowMask.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON));
 		commands->ResourceBarrier(uint32_t(end.size()), end.data());
 		DX::ThrowIfFailed(commands->Close());
 		ID3D12CommandList* lists[]{ commands };
@@ -678,10 +678,12 @@ namespace DX12Native
 			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS);
 		const auto lightBytes = backend.d3d12Device->GetResourceAllocationInfo(0, 1, &lightDesc).SizeInBytes;
 		const auto nextPreviewBytes = backend.d3d12Device->GetResourceAllocationInfo(0, 1, &previewDesc).SizeInBytes;
+		// Visibility and shadow mask are produced/consumed on the same DX12 queue.
+		// Do not request D3D11 sharing or simultaneous-access flags for these UAVs.
 		const auto visibilityDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32G32_UINT, size[0], size[1], 1, 1, 1, 0,
-			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS);
+			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 		const auto maskDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R16G16_FLOAT, size[0], size[1], 1, 1, 1, 0,
-			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS);
+			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 		const uint64_t visibilityBytes = a_sceneTarget ? backend.d3d12Device->GetResourceAllocationInfo(0, 1, &visibilityDesc).SizeInBytes : 0;
 		const uint64_t maskBytes = a_sceneTarget ? backend.d3d12Device->GetResourceAllocationInfo(0, 1, &maskDesc).SizeInBytes : 0;
 		if (textureBytes == UINT64_MAX || lightBytes == UINT64_MAX || nextPreviewBytes == UINT64_MAX ||
@@ -763,11 +765,19 @@ namespace DX12Native
 			if (!available->receivers) available->receivers = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RTDirectLighting::Receivers");
 			if (!available->output) available->output = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RTDirectLighting::BlockerDistance");
 			if (a_sceneTarget) {
-				desc.Format = DXGI_FORMAT_R32G32_UINT;
-				if (!available->visibilityBits) available->visibilityBits = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RTDirectLighting::PerLightVisibility");
-				desc.Format = DXGI_FORMAT_R16G16_FLOAT;
-				if (!available->shadowMask) available->shadowMask = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RTDirectLighting::WeightedShadowMask");
-				desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+				const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+				if (!available->visibilityBits) {
+					DX::ThrowIfFailed(backend.d3d12Device->CreateCommittedResource(
+						&heap, D3D12_HEAP_FLAG_NONE, &visibilityDesc, D3D12_RESOURCE_STATE_COMMON,
+						nullptr, IID_PPV_ARGS(available->visibilityBits.put())));
+					available->visibilityBits->SetName(L"RTDirectLighting::PerLightVisibility");
+				}
+				if (!available->shadowMask) {
+					DX::ThrowIfFailed(backend.d3d12Device->CreateCommittedResource(
+						&heap, D3D12_HEAP_FLAG_NONE, &maskDesc, D3D12_RESOURCE_STATE_COMMON,
+						nullptr, IID_PPV_ARGS(available->shadowMask.put())));
+					available->shadowMask->SetName(L"RTDirectLighting::WeightedShadowMask");
+				}
 			}
 			if (directRR || a_indirectRays) {
 				desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -816,7 +826,7 @@ namespace DX12Native
 		for (const auto& frame : frames) {
 			if (frame.submitted && frame.number == a_frame && frame.generation == generation &&
 				frame.fence && frame.shadowMask && frame.visibilityBits && completion.fence12) {
-				return { frame.shadowMask->resource.get(), frame.visibilityBits->resource.get(),
+				return { frame.shadowMask.get(), frame.visibilityBits.get(),
 					completion.fence12.get(), frame.fence, frame.size };
 			}
 		}

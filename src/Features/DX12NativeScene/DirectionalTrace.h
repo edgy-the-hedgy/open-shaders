@@ -95,8 +95,9 @@ namespace DX12Native
 			std::shared_ptr<const TopLevel> scene;
 			std::shared_ptr<const Bindings> bindings;
 			std::unique_ptr<WrappedResource> receivers, output, light;
-			// Per-light bitsets (R32G32_UINT: visible, valid) and weighted visibility (R16G16_FLOAT: visibility, confidence).
-			std::unique_ptr<WrappedResource> visibilityBits, shadowMask;
+			// DX12-only UAVs: no DX11 sharing, CPU readback, or intermediate handoff.
+			// R32G32_UINT: visible/valid per-light bitsets; R16G16_FLOAT: visibility/confidence.
+			winrt::com_ptr<ID3D12Resource> visibilityBits, shadowMask;
 			std::array<std::unique_ptr<WrappedResource>, kDirectSignalCount> directSignals;
 			winrt::com_ptr<ID3D12RootSignature> root;
 			winrt::com_ptr<ID3D12PipelineState> pipeline;
