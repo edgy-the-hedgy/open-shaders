@@ -83,8 +83,10 @@ namespace DX12Native
         bool RecordComposition(ID3D12Device* device, ID3D11Device5* device11,
             ID3D12GraphicsCommandList* list, FrameOutputs& frame, uint32_t slot,
             const std::array<uint32_t, 2>& size, ID3D12Resource* shadowedSource,
-            ID3D12Resource* nativeDirect, ID3D12Resource* diffuseAlbedo,
-            ID3D12Resource* specularAlbedo, float directBlend, float giContribution);
+            ID3D12Resource* nativeDirect, ID3D12Resource* nativeShadowMask,
+            ID3D12Resource* diffuseAlbedo, ID3D12Resource* specularAlbedo,
+            float directBlend, float giContribution, uint32_t shadowAuraRadius,
+            float shadowAuraInfluence);
         const std::string& Failure() const { return failure; }
         const std::string& CompositionFailure() const { return compositionFailure; }
         uint64_t CompositionDispatches() const { return compositionDispatches; }
@@ -112,6 +114,7 @@ namespace DX12Native
         uint32_t historyScale = 1u;
         winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
         winrt::com_ptr<ID3D12PipelineState> compositionPipeline;
+        winrt::com_ptr<ID3D12RootSignature> compositionRoot; // 10 SRVs, 3 UAVs, CBV b13
         winrt::com_ptr<ID3D12DescriptorHeap> compositionDescriptors;
         winrt::com_ptr<ID3D12RootSignature> postRoot;
         std::array<winrt::com_ptr<ID3D12PipelineState>, 2> postPipelines;

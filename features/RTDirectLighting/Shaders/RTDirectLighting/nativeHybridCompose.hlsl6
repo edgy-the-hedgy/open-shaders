@@ -21,6 +21,7 @@ cbuffer NativeHybridComposition : register(b13)
     uint NativeLinearLighting;
     uint NativeEnableACEScg; // reserved for a full gamut-correct scene handoff
     uint ShadowAuraRadius; // fixed Hybrid-Shadowed = 3, Custom = 0
+    float ShadowAuraInfluence;
 };
 
 float ExpandedDirectShadowVisibility(uint2 pixel)
@@ -53,7 +54,7 @@ void main(uint2 pixel : SV_DispatchThreadID)
         float3 directRadiance = direct.rgb;
         if (ShadowAuraRadius != 0u) {
             const float visibility = ExpandedDirectShadowVisibility(pixel);
-            const float attenuation = lerp(1.0, visibility, 0.9);
+            const float attenuation = lerp(1.0, visibility, saturate(ShadowAuraInfluence));
             directRadiance *= attenuation;
         }
         linearColor = lerp(linearColor, directRadiance, saturate(DirectBlend));

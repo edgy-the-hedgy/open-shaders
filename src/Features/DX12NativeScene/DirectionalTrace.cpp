@@ -640,11 +640,14 @@ namespace DX12Native
                     backend.d3d11Device.get(), frame.commands.get(), frame.nativeGI,
                     uint32_t(&frame - frames.data()), frame.size,
                     frame.hybridShadowedSource.get(), frame.output->resource.get(),
-                    frame.hybridInputs[3]->resource.get(), frame.hybridInputs[4]->resource.get(),
+                    frame.shadowMask.get(), frame.hybridInputs[3]->resource.get(),
+                    frame.hybridInputs[4]->resource.get(),
                     frame.rasterBlend * (globals::features::rtComposer.IsFixedPreset() ?
                         RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed).directContribution :
                         composition.rtDirectContribution),
-                    composer.IsFixedPreset() ? 1.0f : composition.giContribution);
+                    composer.IsFixedPreset() ? 1.0f : composition.giContribution,
+                    composer.IsFixedPreset() ? 3u : 0u,
+                    composer.IsFixedPreset() ? tier.shadowInfluence : composition.shadowInfluence);
         }
     }
 
