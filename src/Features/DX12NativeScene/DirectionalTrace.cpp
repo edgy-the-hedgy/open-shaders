@@ -532,6 +532,7 @@ namespace DX12Native
     void DirectionalTrace::RecordNativeHybridGI(Frame& frame)
     {
         frame.nativeGI.valid = false;
+        frame.nativeGI.composedValid = false;
         if (!frame.nativeGIRequested || !frame.hybridShadowedSourceReady ||
             !frame.hybridLinearDepth || !frame.hybridShadowedSource || !frame.shadowMask ||
             !frame.hybridInputs[2] || !frame.hybridInputs[3] || !frame.hybridInputs[4]) return;
@@ -545,6 +546,15 @@ namespace DX12Native
                 globals::features::rtComposer.composition.shadowInfluence,
                 globals::features::rtComposer.composition.shadowThreshold)) {
             frame.nativeGIFrame = frame.number;
+            // Full DX12 composition is produced on the same queue, after
+            // native GI/AO. Only this completed scene may be exported to DX11.
+            const auto& composition = globals::features::rtComposer.composition;
+            nativeHybridGI->RecordComposition(backend.d3d12Device.get(),
+                backend.d3d11Device.get(), frame.commands.get(), frame.nativeGI,
+                uint32_t(&frame - frames.data()), frame.size,
+                frame.hybridShadowedSource.get(), frame.output->resource.get(),
+                frame.rasterBlend * composition.rtDirectContribution,
+                composition.giContribution);
         }
     }
 
@@ -1226,7 +1236,9 @@ namespace DX12Native
             { "nativeHybridGIDispatches", nativeHybridGI ? nativeHybridGI->GIDispatches() : uint64_t{0} },
             { "nativeHybridAODispatches", nativeHybridGI ? nativeHybridGI->AODispatches() : uint64_t{0} },
             { "nativeHybridGIFailure", nativeHybridGI ? nativeHybridGI->Failure() : std::string{} },
-            { "nativeHybridGIStatus", "5A diagnostic GI/AO, GPU-resident; not consumed by compositor or RR" },
+            { "nativeHybridCompositionDispatches", nativeHybridGI ? nativeHybridGI->CompositionDispatches() : uint64_t{0} },
+            { "nativeHybridCompositionFailure", nativeHybridGI ? nativeHybridGI->CompositionFailure() : std::string{} },
+            { "nativeHybridGIStatus", "5B diagnostic GI/AO + DX12 composition; not yet presented or denoised by native RR" },
             { "hybridShadowedSourceLastFrame", hybridSourceLastFrame },
             { "hybridShadowedSourceFailure", hybridSourceFailure },
             { "hybridShadowedSourceStage", "5A-preparation; native shadowed linear radiance and linear view depth" },
