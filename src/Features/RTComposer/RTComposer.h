@@ -15,6 +15,8 @@ struct RTComposer final : Feature
         float rtDirectContribution = 0.0f;
         float giContribution = 1.0f; // Hybrid-only native GI blend, independent of direct
         float shadowThreshold = 0.25f;
+        // Session-only diagnostic override; never persisted or treated as RR-ready.
+        bool previewNativeRaw = false;
     } composition;
     enum class EffectiveMode : uint32_t { Legacy = 0, ShadowOnly = 1, HybridShadowed = 2 };
     // The saved mode and the actually dispatched mode are intentionally distinct:
