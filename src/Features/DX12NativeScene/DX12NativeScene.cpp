@@ -118,7 +118,7 @@ void DX12NativeScene::LoadSettings(json& value)
 	selected.PreviewLight = std::min(selected.PreviewLight, 255u);
 	selected.PreparedMaterialView = std::min(selected.PreparedMaterialView, DX12Native::DirectionalTrace::kCombinedDirectView);
 	selected.MaterialTextureBudgetMB = std::clamp(selected.MaterialTextureBudgetMB, 64u, 1024u);
-	selected.DirectLightingBudgetMB = std::clamp(selected.DirectLightingBudgetMB, 64u, 1024u);
+	selected.DirectLightingBudgetMB = std::min(selected.DirectLightingBudgetMB, kMaxLightingBudgetMiB);
 	for (auto* v : { &selected.PreviewDirectStrength, &selected.PreviewDiffuseStrength,
 			&selected.PreviewSpecularStrength, &selected.PreviewEmissionStrength })
 		*v = std::isfinite(*v) ? std::clamp(*v, 0.0f, 8.0f) : 1.0f;
@@ -354,10 +354,26 @@ void DX12NativeScene::DrawNativeSceneSettings()
         settings.MaterialTextureBudgetMB = uint32_t(materialBudget);
         resetRequested = true;
     }
-    int lightingBudget = int(settings.DirectLightingBudgetMB);
-    if (ImGui::SliderInt("Prepared lighting buffer budget (MiB)", &lightingBudget, 64, 1024))
-        settings.DirectLightingBudgetMB = uint32_t(lightingBudget);
-    ImGui::TextWrapped("The prepared lighting budget also covers reconstruction buffers; insufficient capacity falls back to raw signals. Provider-internal allocations are additional.");
+    bool autoLightingBudget = settings.DirectLightingBudgetMB == 0u;
+    if (ImGui::Checkbox("Automatic lighting VRAM budget (DXGI local memory)", &autoLightingBudget))
+        settings.DirectLightingBudgetMB = autoLightingBudget ? 0u : 1024u;
+    if (!autoLightingBudget) {
+        int lightingBudget = int(settings.DirectLightingBudgetMB);
+        if (ImGui::SliderInt("Manual lighting memory limit (MiB)", &lightingBudget,
+                64, int(kMaxLightingBudgetMiB)))
+            settings.DirectLightingBudgetMB = uint32_t(lightingBudget);
+    }
+    const uint64_t effective = GetLightingBudgetBytes();
+    const auto memory = GetLightingBudgetDiagnostics();
+    ImGui::Text("Effective trace-owned memory budget: %.1f MiB",
+        double(effective) / (1024.0 * 1024.0));
+    if (memory.value("osMemoryAvailable", false)) {
+        ImGui::Text("DXGI local budget / usage / headroom: %.0f / %.0f / %.0f MiB",
+            double(memory.value("localBudgetBytes", uint64_t{0})) / (1024.0 * 1024.0),
+            double(memory.value("localUsageBytes", uint64_t{0})) / (1024.0 * 1024.0),
+            double(memory.value("localHeadroomBytes", uint64_t{0})) / (1024.0 * 1024.0));
+    } else ImGui::TextWrapped("DXGI budget query unavailable: falling back to a conservative limit.");
+    ImGui::TextWrapped("Budget includes the entire native/display pipeline; actual GPU headroom is used rather than render-only dimensions. AMD RR provider allocations are accounted for by DXGI usage after creation.");
 
     if (ImGui::Checkbox("Observe SCM shadow casters", &settings.AcquireScene)) resetRequested = true;
     ImGui::TextWrapped("Observes one SCM local-light slot when updated. Native shadows remain active.");
