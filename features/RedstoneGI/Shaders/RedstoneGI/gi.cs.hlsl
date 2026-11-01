@@ -98,8 +98,16 @@ float4 EstimateSpecular(Surface surface, float roughness, bool traceRadiance)
 	float fade = 1.0 - GetDepthFade(surface.depth);
 	return float4(lobeWeight > 0 ? max(0, radiance * fade / lobeWeight) : 0, hitWeight > 0 ? hitDistance / hitWeight : -1.0);
 }
-[numthreads(8,8,1)] void main(uint2 pixel : SV_DispatchThreadID)
+[numthreads(8,8,1)] void main(uint2 packedPixel : SV_DispatchThreadID)
 {
+#if defined(DX12_HYBRID_GI)
+    // Dispatch only packed active pixels: no inactive checkerboard threads.
+    const uint2 pixel = RRCheckerboardEnabled != 0u ?
+        uint2(packedPixel.x * 2u + ((packedPixel.y + RRCheckerboardOrigin) & 1u),
+              packedPixel.y) : packedPixel;
+#else
+    const uint2 pixel = packedPixel;
+#endif
 	if (any(pixel >= uint2(OUT_FRAME_DIM))) return;
 	if (RRCheckerboardEnabled && ((pixel.x + pixel.y) & 1u) != RRCheckerboardOrigin) return;
 	uint2 surfacePixel = SelectSurfacePixel(srcWorkingDepth, pixel);
