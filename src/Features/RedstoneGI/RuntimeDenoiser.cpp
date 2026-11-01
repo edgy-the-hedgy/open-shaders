@@ -115,6 +115,7 @@ void RedstoneDenoiser::ResetRayRegeneration()
     nativeHybridConfigurationDefaultsReady.fill(false);
     nativeHybridConfigurationApplied.fill(false);
     nativeHybridAppliedConfigurationRevision = UINT64_MAX;
+    nativeHybridBlockedConfigurationRevision = UINT64_MAX;
     nativeHybridConfigurationFailure.clear();
 	{
 		std::scoped_lock lock(configurationMutex);
@@ -427,6 +428,14 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
         nativeHybridFailure = "Native FSR RR provider or logical signal layout unavailable";
         return false;
     }
+    // SDK key rejection must not permanently disable experimentation:
+    // do not repeat the same rejected configuration every frame, but allow
+    // an edited override (new revision) to retry the family Configure chain.
+    if (nativeHybridBlockedConfigurationRevision ==
+        RayRegeneration::GetConfiguration().revision) {
+        nativeHybridFailure = nativeHybridConfigurationFailure;
+        return false;
+    }
     const uint32_t packedWidth = resources.checkerboard ? logical[0] / 2u : logical[0];
     auto validate = [](ID3D12Resource* texture, uint32_t width, uint32_t height,
         DXGI_FORMAT format) {
@@ -515,11 +524,13 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
     bool configReset = reset;
     if (!ApplyNativeHybridConfiguration(configReset)) {
         nativeHybridFailure = nativeHybridConfigurationFailure;
-        // Prevent partially configured contexts from dispatching; retain
-        // Shadow Only fallback and report the exact SDK key/reason.
-        nativeHybridFailed = true;
+        // A rejected SDK configuration is not a crashed provider. Block
+        // this revision until the user changes a tuning value.
+        nativeHybridBlockedConfigurationRevision =
+            RayRegeneration::GetConfiguration().revision;
         return false;
     }
+    nativeHybridBlockedConfigurationRevision = UINT64_MAX;
 
     std::vector<D3D12_RESOURCE_BARRIER> begin, end;
     for (auto* input : resources.inputs) {
