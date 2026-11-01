@@ -10,7 +10,7 @@
 #include "Utils/DevBenchUx.h"
 #include "Util.h"
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTDirectLighting::Settings, RedstoneBlend, UsePreparedDirectLighting, UseAllPreparedLights, UseDirectRayRegeneration, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, SelectedDirectLight)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTDirectLighting::Settings, RedstoneBlend, UsePreparedDirectLighting, UseAllPreparedLights, UseDirectRayRegeneration, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, SelectedDirectLight, NormalInfluence)
 
 std::pair<std::string, std::vector<std::string>> RTDirectLighting::GetFeatureSummary()
 {
@@ -32,6 +32,7 @@ void RTDirectLighting::LoadSettings(json& value)
 {
 	Settings selected = value;
 	selected.SelectedDirectLight = std::min(selected.SelectedDirectLight, 255u);
+	selected.NormalInfluence = std::min(selected.NormalInfluence, 2u);
 	selected.RedstoneBlend = std::isfinite(selected.RedstoneBlend) ? std::clamp(selected.RedstoneBlend, 0.0f, 1.0f) : 1.0f;
 	for (auto* v : { &selected.DirectStrength, &selected.DiffuseStrength, &selected.SpecularStrength,
 			&selected.EmissionStrength })
@@ -71,6 +72,12 @@ void RTDirectLighting::DrawDirectLightingSettings()
     }
 
     ImGui::SeparatorText("Direct lighting");
+    int normalMode = static_cast<int>(settings.NormalInfluence);
+    if (ImGui::Combo("Normal influence", &normalMode, "Legacy flat (compatibility)\0Geometry normals\0Full material normals (True PBR)\0")) {
+        settings.NormalInfluence = static_cast<uint32_t>(normalMode);
+        globals::features::dx12NativeScene.Tracer().Reset();
+    }
+    ImGui::TextWrapped("Geometry mode ignores normal maps. Full material mode uses loaded shading normals. Legacy flat retains the old response with zero direct specular.");
     ImGui::SliderFloat("Raster / RT blend", &settings.RedstoneBlend, 0.0f, 1.0f, "%.2f");
     ImGui::SliderFloat("Direct lighting strength", &settings.DirectStrength, 0.0f, 8.0f, "%.2fx");
     if (ImGui::Checkbox("All prepared cell lights (direct only)", &settings.UseAllPreparedLights)) globals::features::dx12NativeScene.Tracer().Reset();
@@ -151,7 +158,7 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
 		settings.UseAllPreparedLights ? std::span<const std::array<uint32_t, 2>>(snapshot->lightReferences) : std::span<const std::array<uint32_t, 2>>{},
 		settings.UseAllPreparedLights, { settings.DirectStrength, settings.DiffuseStrength, settings.SpecularStrength, settings.EmissionStrength },
 		gi.loaded && gi.settings.ConnectHybrid && !rtExclusive, gi.settings.IndirectStrength, settings.UseDirectRayRegeneration,
-		rtExclusive ? gi.settings.IndirectRays : 0u, snapshot->roomReferences, settings.RedstoneBlend);
+		rtExclusive ? gi.settings.IndirectRays : 0u, snapshot->roomReferences, settings.RedstoneBlend, settings.NormalInfluence);
 	lastFrame = frame;
 }
 
@@ -165,6 +172,7 @@ void RTDirectLighting::RegisterUxActions()
 			if (!d.settings.UsePreparedDirectLighting) globals::features::rtIndirectLighting.SelectHybrid();
 			if (d.settings.UsePreparedDirectLighting) n.RequestPreparedScene();
 			if (args.contains("allLights")) d.settings.UseAllPreparedLights = args.at("allLights").get<bool>();
+			if (args.contains("normalMode")) d.settings.NormalInfluence = std::min(args.at("normalMode").get<uint32_t>(), 2u);
 			if (args.contains("indirect")) globals::features::rtIndirectLighting.settings.ConnectHybrid = args.at("indirect").get<bool>();
 			if (args.contains("rr")) d.settings.UseDirectRayRegeneration = args.at("rr").get<bool>();
 			if (args.contains("bufferBudgetMB")) n.settings.DirectLightingBudgetMB = std::clamp(args.at("bufferBudgetMB").get<uint32_t>(), 64u, 1024u);

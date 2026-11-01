@@ -67,7 +67,7 @@ namespace DX12Native
 			context->CSSetShaderResources(0, 8, clearedInputs);
 			context->CSSetUnorderedAccessViews(0, 7, clearedOutputs, nullptr);
 			directRRPhase = phase; rrPackFrame = a_frame.number;
-			const bool reset = directRRGeneration != a_frame.generation || directRRFrame + 1u != a_frame.number || directRRPolicyRevision != policy.revision || directRRIndirectRays != a_frame.indirectRays ||
+			const bool reset = directRRGeneration != a_frame.generation || directRRFrame + 1u != a_frame.number || directRRPolicyRevision != policy.revision || directRRIndirectRays != a_frame.indirectRays || directRRNormalMode != a_frame.normalMode ||
 				std::memcmp(&directRRStrengths, &a_frame.strengths, sizeof(float4)) != 0 || directRRIdentities != a_frame.lightIdentities;
 			auto dispatch = [&](RedstoneDenoiser& denoiser, bool direct) {
 				if (!denoiser.Initialize(backend)) return false;
@@ -77,7 +77,7 @@ namespace DX12Native
 			if (a_frame.indirectRays && dispatch(indirectDenoiser, false)) flags |= 2u;
 			if (flags) {
 				directRRGeneration = flags == (a_frame.indirectRays ? 3u : 1u) ? a_frame.generation : UINT64_MAX;
-				directRRFrame = a_frame.number; directRRPolicyRevision = policy.revision; directRRIndirectRays = a_frame.indirectRays;
+				directRRFrame = a_frame.number; directRRPolicyRevision = policy.revision; directRRIndirectRays = a_frame.indirectRays; directRRNormalMode = a_frame.normalMode;
 				directRRStrengths = a_frame.strengths; directRRIdentities = a_frame.lightIdentities;
 				++directRRDispatches;
 			}

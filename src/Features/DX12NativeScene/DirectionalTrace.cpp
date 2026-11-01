@@ -392,7 +392,7 @@ namespace DX12Native
 			uint32_t indirect[4]{};
 		};
 		const auto& origin = globals::game::frameBufferCached.GetCameraPosAdjust();
-		const Constants constants{ a_frame.size[0], a_frame.size[1], a_frame.number, uint32_t(a_frame.scene->bottoms.size()), a_direction, kRayMaximum, { origin.x, origin.y, origin.z }, kRayMinimum, a_localLight ? 0.0f : kSunAngularRadius, { a_localLight ? 1u : 0u, a_frame.materialView, a_frame.allPreparedLights ? uint32_t(a_frame.lightIdentities.size()) : 0u }, a_frame.strengths, (a_frame.useDirectRR || a_frame.indirectRays) ? 1u : 0u, {}, { a_frame.indirectRays, a_frame.bindings->materials->roomCount, a_frame.bindings->materials->roomsKnown ? 1u : 0u, 0 } };
+		const Constants constants{ a_frame.size[0], a_frame.size[1], a_frame.number, uint32_t(a_frame.scene->bottoms.size()), a_direction, kRayMaximum, { origin.x, origin.y, origin.z }, kRayMinimum, a_localLight ? 0.0f : kSunAngularRadius, { a_localLight ? 1u : 0u, a_frame.materialView, a_frame.allPreparedLights ? uint32_t(a_frame.lightIdentities.size()) : 0u }, a_frame.strengths, (a_frame.useDirectRR || a_frame.indirectRays) ? 1u : 0u, {}, { a_frame.indirectRays, a_frame.bindings->materials->roomCount, a_frame.bindings->materials->roomsKnown ? 1u : 0u, a_frame.normalMode } };
 		static_assert(sizeof(Constants) == 28 * sizeof(uint32_t));
 		commands->SetComputeRoot32BitConstants(5, 28, &constants, 0);
 		std::vector<D3D12_RESOURCE_BARRIER> begin{
@@ -493,7 +493,7 @@ namespace DX12Native
 		struct Settings { uint32_t indirect, directRR; float indirectStrength; uint32_t useDXRIndirect; float redstoneBlend; float padding[3]{}; };
 		if (!lightingCompositeSettings) lightingCompositeSettings = std::make_unique<ConstantBuffer>(ConstantBufferDesc<Settings>(), "RTDirectLighting::LightingComposite CB");
 		winrt::com_ptr<ID3D11ComputeShader> shader;
-		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 15> inputs;
+		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 16> inputs;
 		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 6> indirectInputs;
 		std::array<winrt::com_ptr<ID3D11UnorderedAccessView>, 7> outputs;
 		winrt::com_ptr<ID3D11Buffer> shared, features, settings, camera;
@@ -527,8 +527,9 @@ namespace DX12Native
 			a_frame.indirectRays ? a_frame.directSignals[5]->srv : nullptr, a_frame.indirectRays ? a_frame.directSignals[6]->srv : nullptr,
 			(rrFlags & 2u) ? directRRTextures[4]->srv.get() : nullptr, (rrFlags & 2u) ? directRRTextures[5]->srv.get() : nullptr,
 			rrFlags ? directRRTextures[0]->srv.get() : nullptr, rrFlags ? directRRTextures[10]->srv.get() : nullptr, a_frame.receivers->srv,
-			rrFlags ? a_frame.directSignals[2]->srv : nullptr };
-		context->CSSetShaderResources(0, 15, reads);
+			rrFlags ? a_frame.directSignals[2]->srv : nullptr,
+			directRR ? a_frame.directSignals[4]->srv : nullptr };
+		context->CSSetShaderResources(0, 16, reads);
 		context->CSSetUnorderedAccessViews(0, 1, &a_target, nullptr);
 		context->CSSetShader(composite.get(), nullptr, 0);
 		context->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
@@ -556,7 +557,7 @@ namespace DX12Native
 	}
 
 
-	void DirectionalTrace::Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight, const LightLimitFixData::LightView& a_lights, uint32_t a_materialView, ID3D11UnorderedAccessView* a_sceneTarget, uint32_t a_lightReference, uint32_t a_lightBase, ID3D11ShaderResourceView* a_roomMetadata, std::span<const std::array<uint32_t, 2>> a_lightIdentities, bool a_allPreparedLights, float4 a_strengths, bool a_useIndirect, float a_indirectStrength, bool a_useDirectRR, uint32_t a_indirectRays, std::span<const uint32_t> a_roomReferences, float a_rasterBlend)
+	void DirectionalTrace::Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight, const LightLimitFixData::LightView& a_lights, uint32_t a_materialView, ID3D11UnorderedAccessView* a_sceneTarget, uint32_t a_lightReference, uint32_t a_lightBase, ID3D11ShaderResourceView* a_roomMetadata, std::span<const std::array<uint32_t, 2>> a_lightIdentities, bool a_allPreparedLights, float4 a_strengths, bool a_useIndirect, float a_indirectStrength, bool a_useDirectRR, uint32_t a_indirectRays, std::span<const uint32_t> a_roomReferences, float a_rasterBlend, uint32_t a_normalMode)
 	{
 		CS_GPU_PASS("RTDirectLighting::DirectionalDispatch");
 		const bool direct = a_materialView >= kFirstDirectView;
@@ -612,7 +613,7 @@ namespace DX12Native
 			if (directRR) {
 				++directRRBudgetDeferrals;
 				Dispatch(a_scene, a_nativeSize, a_lightDirection, a_frame, a_budgetBytes, a_localLight, a_lights, a_materialView, a_sceneTarget,
-					a_lightReference, a_lightBase, a_roomMetadata, a_lightIdentities, a_allPreparedLights, a_strengths, a_useIndirect, a_indirectStrength, false, a_indirectRays, a_roomReferences, a_rasterBlend);
+					a_lightReference, a_lightBase, a_roomMetadata, a_lightIdentities, a_allPreparedLights, a_strengths, a_useIndirect, a_indirectStrength, false, a_indirectRays, a_roomReferences, a_rasterBlend, a_normalMode);
 			} else ++budgetDeferrals;
 			return;
 		}
@@ -656,6 +657,7 @@ namespace DX12Native
 			available->indirectStrength = a_indirectStrength;
 			available->useDirectRR = directRR;
 			available->rasterBlend = a_rasterBlend;
+			available->normalMode = std::min(a_normalMode, 2u);
 			if (a_allPreparedLights) available->lightIdentities.assign(a_lightIdentities.begin(), a_lightIdentities.end());
 			else available->lightIdentities = { { a_lightReference, a_lightBase } };
 			available->bytes = textureBytes * 2 + lightBytes + signalBytes + kFrameOverheadBytes;

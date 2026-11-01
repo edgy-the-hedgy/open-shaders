@@ -32,7 +32,7 @@ cbuffer Trace : register(b0)
 	uint IndirectRayCount;
 	uint BakedRoomCount;
 	uint BakedRoomsKnown;
-	uint IndirectPadding;
+	uint DirectNormalMode;
 };
 
 #include "materials.hlsli"

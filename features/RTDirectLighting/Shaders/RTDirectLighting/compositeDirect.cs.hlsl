@@ -22,6 +22,7 @@ Texture2D<float> RRDepth : register(t11);
 Texture2D<float4> RRNormalRoughness : register(t12);
 Texture2D<float4> NativeReceivers : register(t13);
 Texture2D<float4> RawNormalRoughness : register(t14);
+Texture2D<float4> RawDirectDiffuseAlbedo : register(t15);
 RWTexture2D<float4> SceneColor : register(u0);
 cbuffer LightingComposite : register(b0)
 {
@@ -60,7 +61,13 @@ void main(uint3 id : SV_DispatchThreadID)
 		float3 filteredDiffuse = FilteredDirectDiffuse.Load(int3(rrPixel, 0)).rgb;
 		float3 filteredSpecular = FilteredDirectSpecular.Load(int3(rrPixel, 0)).rgb;
 		if (all(isfinite(filteredDiffuse)) && all(isfinite(filteredSpecular)) && all(filteredDiffuse >= 0) && all(filteredSpecular >= 0))
-			lighting.rgb = float3(RawDirectDiffuse.Load(int3(id.xy, 0)).a, RawDirectSpecular.Load(int3(id.xy, 0)).a, RawDirectSpecularAlbedo.Load(int3(id.xy, 0)).a) + filteredDiffuse + filteredSpecular;
+			{
+                const float3 emission = float3(RawDirectDiffuse.Load(int3(id.xy, 0)).a,
+                    RawDirectSpecular.Load(int3(id.xy, 0)).a, RawDirectSpecularAlbedo.Load(int3(id.xy, 0)).a);
+                const float3 diffuseAlbedo = RawDirectDiffuseAlbedo.Load(int3(id.xy, 0)).rgb;
+                const float3 specularAlbedo = RawDirectSpecularAlbedo.Load(int3(id.xy, 0)).rgb;
+                lighting.rgb = emission + filteredDiffuse * diffuseAlbedo + filteredSpecular * specularAlbedo;
+            }
 	}
 	if (UseDXRIndirect != 0) {
 		float4 diffuse = RawIndirectDiffuse.Load(int3(id.xy, 0)), specular = RawIndirectSpecular.Load(int3(id.xy, 0));
