@@ -13,6 +13,7 @@
 #include <fstream>
 #include <unordered_set>
 #include <cctype>
+#include <cmath>
 
 namespace
 {
@@ -126,7 +127,17 @@ std::optional<DX12NativeScene::PublishedScene> DX12NativeScene::GetPublishedScen
 	const auto* current = globals::game::player ? globals::game::player->GetParentCell() : nullptr;
 	if (!current || current->GetFormID() != preparedCellID)
 		return std::nullopt;
-	return PublishedScene{ std::move(cell), std::move(accelerationScene), preparedLightReferences, preparedRoomReferences, preparedCellID, preparedRevision };
+	PublishedScene result{ std::move(cell), std::move(accelerationScene), preparedLightReferences, preparedRoomReferences, preparedCellID, preparedRevision };
+	if (auto* player = globals::game::player; player && player->GetParentCell() == current) {
+		const auto position = player->GetPosition();
+		if (std::isfinite(position.x) && std::isfinite(position.y) && std::isfinite(position.z))
+			result.character = PublishedScene::CharacterRegistration{
+				player->GetFormID(), preparedCellID,
+				runtimeWorldspaceID.load(std::memory_order_relaxed),
+				{ position.x, position.y, position.z }, false
+			};
+	}
+	return result;
 }
 
 void DX12NativeScene::RequestPreparedScene()
@@ -156,7 +167,7 @@ void DX12NativeScene::ResetPreparedScene()
 	preparedPackageRoot.clear();
 	publishedPackageDirectory.clear();
 	cachedRevision = 0;
-	upgradeManifestTime = {};
+	publishedManifestTime = upgradeManifestTime = {};
 	upgradeFailure.clear();
 	lastUpgradePollFrame = 0;
 	preparedTrace.Reset(true);
@@ -223,6 +234,9 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t a_frame, uint64_t a_budgetBy
 		std::error_code error;
 		const auto directory = std::filesystem::exists(q0 / "cell-layout.json", error) ? q0 : root;
 		publishedPackageDirectory = directory;
+		std::error_code stampError;
+		publishedManifestTime = std::filesystem::last_write_time(directory / "cell-layout.json", stampError);
+		if (stampError) publishedManifestTime = {};
 		preparedScene.Request(*backend, directory, key, preparedRevision, a_budgetBytes, materialBudget, 0);
 	}
 	if (!preparedSubmitted) {
@@ -245,13 +259,18 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t a_frame, uint64_t a_budgetBy
 
 	// Independent candidate: Q0 continues to render while Q1/Q2 file decoding,
 	// upload and fenced BLAS/TLAS building take place on the workers.
-	if (publishedStage >= 2) return;
-	const auto targetStage = publishedStage + 1;
-	const auto candidateDirectory = root / std::format("q{}", targetStage);
-	const auto manifest = candidateDirectory / "cell-layout.json";
-	// Do not query the filesystem on every rendered frame.
+	// Check for a replacement at this stage first; otherwise request the next
+	// tier. Both paths build independently of the active TLAS.
 	if (!upgradeScene.Requested() && a_frame - lastUpgradePollFrame < 120) return;
+	if (!upgradeScene.Requested()) lastUpgradePollFrame = a_frame;
 	std::error_code error;
+	const auto currentTime = std::filesystem::last_write_time(publishedPackageDirectory / "cell-layout.json", error);
+	const bool sameStageRefresh = !error && currentTime != publishedManifestTime;
+	error.clear();
+	if (publishedStage >= 2 && !sameStageRefresh) return;
+	const auto targetStage = sameStageRefresh ? publishedStage : publishedStage + 1;
+	const auto candidateDirectory = sameStageRefresh ? publishedPackageDirectory : root / std::format("q{}", targetStage);
+	const auto manifest = candidateDirectory / "cell-layout.json";
 	const bool exists = std::filesystem::exists(manifest, error);
 	if (error || !exists) {
 		if (!upgradeScene.Requested()) lastUpgradePollFrame = a_frame;
@@ -260,6 +279,7 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t a_frame, uint64_t a_budgetBy
 	const auto modified = std::filesystem::last_write_time(manifest, error);
 	if (error) return;
 	if (upgradeScene.Requested()) {
+		if (upgradeStage != targetStage) return;
 		if (modified != upgradeManifestTime && !upgradeSubmitted &&
 			!upgradeScene.GetDiagnostics().value("loading", false)) {
 			upgradeScene.Reset();
@@ -298,6 +318,7 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t a_frame, uint64_t a_budgetBy
 		preparedRevision = upgradeRevision;
 		publishedStage = upgradeStage;
 		publishedPackageDirectory = candidateDirectory;
+		publishedManifestTime = upgradeManifestTime;
 		upgradeScene.Reset();
 		upgradeAcceleration.Reset();
 		upgradeSubmitted = false;

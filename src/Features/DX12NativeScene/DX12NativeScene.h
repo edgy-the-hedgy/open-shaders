@@ -55,12 +55,19 @@ struct DX12NativeScene final : OverlayFeature
 	/** @brief Retained completed native-scene publication, with no borrowed scene pointers. */
 	struct PublishedScene
 	{
+		struct CharacterRegistration
+		{
+			uint32_t formID = 0, cellID = 0, worldspaceID = 0;
+			float3 position{};
+			bool skinnedGeometryResident = false; // No player/NPC BLAS until live skinning is implemented.
+		};
 		std::shared_ptr<const DX12Native::PreparedCell> cell;
 		std::shared_ptr<const DX12Native::TopLevel> acceleration;
 		std::vector<std::array<uint32_t, 2>> lightReferences;
 		std::array<uint32_t, 128> roomReferences{};
 		uint32_t cellID = 0;
 		uint64_t revision = 0;
+		std::optional<CharacterRegistration> character;
 	};
 	/** @brief Returns the current cell's completed scene, or no scene if disabled/stale. */
 	std::optional<PublishedScene> GetPublishedScene() const;
@@ -132,7 +139,7 @@ private:
 	bool upgradeSubmitted = false;
 	std::filesystem::path preparedPackageRoot, publishedPackageDirectory;
 	uint64_t cachedRevision = 0;
-	std::filesystem::file_time_type upgradeManifestTime{};
+	std::filesystem::file_time_type publishedManifestTime{}, upgradeManifestTime{};
 	std::string upgradeFailure;
 	uint32_t lastUpgradePollFrame = 0;
 	// Read on the existing native-scene render-thread handoff, never on UI thread.

@@ -328,6 +328,8 @@ json DX12NativeScene::GetDiagnostics()
             { "worldspaceFormID", runtimeWorldspaceID.load(std::memory_order_relaxed) },
             { "characterFormID", runtimeCharacterID.load(std::memory_order_relaxed) },
             { "exteriorCell", runtimeExterior.load(std::memory_order_relaxed) },
+            { "characterIdentityRegistered", runtimeCharacterID.load(std::memory_order_relaxed) != 0 &&
+                runtimeCellID.load(std::memory_order_relaxed) != 0 },
             { "characterGeometryRegistered", false },
             { "worldspaceGeometryCoverage", false },
             { "activeCacheStage", 0 }

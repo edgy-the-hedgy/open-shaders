@@ -44,6 +44,39 @@ another deployed environment or output location. Cell identity is
 `hex-local-id:PluginName.esm` representation. Default target is the user-confirmed
 Unslaad guest room, `Unslaad.esm:04FD2B` / `zzzCrbKedamaHouse`.
 
+## Runtime scene revisions (incremental implementation)
+
+Accepted scene packages are retained in a versioned directory after their
+TLAS has completed, under
+`Data/SKSE/Plugins/CommunityShaders/RedstoneScene/runtime-cache/cells/<plugin>/<cell>/qN/revisions/<layoutDigest>/`.
+`qN/active.json` points to the most recent accepted revision. Its publication
+is an atomic replacement; previous revisions are intentionally left in place
+until garbage collection is implemented. The cache writer executes on a
+separate thread, verifies source SHA-256, and hardlinks immutable blobs when
+possible. An incomplete revision cannot replace `active.json`.
+
+The native runtime begins with the Q0 cell package (or legacy cell layout),
+then looks for `q1/cell-layout.json`, then `q2/cell-layout.json`. Each
+candidate is decoded and its BLAS/TLAS built independently. The current scene
+stays published until the new scene is complete and its worker fence retires.
+Changes to the current stage's package can also trigger a same-tier hot reload.
+Failures leave the old scene available. Existing Q1/Q2 package files are
+**inputs**; this does not compile new NIFs in the Skyrim process.
+
+Published scene consumers receive a live player identity, cell/worldspace
+identity and position if available. This is scene-registration metadata, not
+skinned-mesh upload: the player is **not** yet ray-intersectable in the
+prepared TLAS. Likewise, detecting an exterior worldspace is not equivalent
+to streaming its meshes. Persistent `active.json` is a recovery index; the
+runtime does not yet rehydrate it automatically, because input-mod fingerprint
+validation and cache eviction must precede that.
+
+**Current limitations:** static interior geometry only; no native worldspace
+NIF discovery, mesh deformation, runtime-generated Q1/Q2 assets, cache eviction,
+full combined Q0+Q1 VRAM budgeting or automatic reuse of persisted revisions.
+The new background upgrade path can temporarily hold two sets of geometry
+and acceleration structures in VRAM.
+
 ## Q0 baseline and progressive native-scene migration
 
 The default build and stage entry points now operate on **Q0 only**. The Q0-only
