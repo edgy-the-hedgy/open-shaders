@@ -653,7 +653,7 @@ namespace DX12Native
             backend.d3d12Device->CreateShaderResourceView(frame.hybridInputs[0]->resource.get(), &srv, cpu);
             cpu.ptr += step;
             srv.Format = DXGI_FORMAT_R16G16_FLOAT;
-            backend.d3d12Device->CreateShaderResourceView(frame.shadowMask.get(), &srv, cpu);
+            backend.d3d12Device->CreateShaderResourceView(EffectiveShadowMask(frame), &srv, cpu);
             cpu.ptr += step;
             srv.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
             backend.d3d12Device->CreateShaderResourceView(frame.hybridInputs[1]->resource.get(), &srv, cpu);
@@ -669,7 +669,7 @@ namespace DX12Native
             const std::array<D3D12_RESOURCE_BARRIER, 5> begin{
                 CD3DX12_RESOURCE_BARRIER::Transition(frame.hybridInputs[0]->resource.get(),
                     D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-                CD3DX12_RESOURCE_BARRIER::Transition(frame.shadowMask.get(),
+                CD3DX12_RESOURCE_BARRIER::Transition(EffectiveShadowMask(frame),
                     D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
                 CD3DX12_RESOURCE_BARRIER::Transition(frame.hybridShadowedSource.get(),
                     D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
@@ -705,7 +705,7 @@ namespace DX12Native
             const std::array<D3D12_RESOURCE_BARRIER, 5> end{
                 CD3DX12_RESOURCE_BARRIER::Transition(frame.hybridInputs[0]->resource.get(),
                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
-                CD3DX12_RESOURCE_BARRIER::Transition(frame.shadowMask.get(),
+                CD3DX12_RESOURCE_BARRIER::Transition(EffectiveShadowMask(frame),
                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
                 CD3DX12_RESOURCE_BARRIER::Transition(frame.hybridShadowedSource.get(),
                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON),
@@ -745,7 +745,7 @@ namespace DX12Native
                 frame.nativeGI, uint32_t(&frame - frames.data()), frame.number, frame.size,
                 sampling, frame.hybridLinearDepth.get(), frame.hybridInputs[2]->resource.get(),
                 frame.hybridShadowedSource.get(), frame.hybridInputs[3]->resource.get(),
-                frame.hybridInputs[4]->resource.get(), frame.shadowMask.get(),
+                frame.hybridInputs[4]->resource.get(), EffectiveShadowMask(frame),
                 globals::features::redstoneGI,
                 composer.IsFixedPreset() ? tier.shadowInfluence : composition.shadowInfluence,
                 composer.IsFixedPreset() ? 0.25f : composition.shadowThreshold)) {
@@ -796,7 +796,7 @@ namespace DX12Native
                     backend.d3d11Device.get(), frame.commands.get(), frame.nativeGI,
                     uint32_t(&frame - frames.data()), frame.size,
                     frame.hybridShadowedSource.get(), frame.output->resource.get(),
-                    frame.shadowMask.get(), frame.hybridLinearDepth.get(),
+                    EffectiveShadowMask(frame), frame.hybridLinearDepth.get(),
                     frame.hybridInputs[3]->resource.get(),
                     frame.hybridInputs[4]->resource.get(),
                     frame.rasterBlend * (globals::features::rtComposer.IsFixedPreset() ?
@@ -972,6 +972,9 @@ namespace DX12Native
 		if (a_frame.shadowMask) end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_frame.shadowMask.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON));
 		if (a_frame.shadowMaskExport) end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_frame.shadowMaskExport->resource.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON));
 		commands->ResourceBarrier(uint32_t(end.size()), end.data());
+        // Shared low-tier shadow mask temporal resolve MUST run before either
+        // DX11 Shadow Only export consumption or DX12 Hybrid source/GI.
+        RecordShadowTemporal(a_frame);
         if (a_frame.hybridInputsReady) {
             RecordHybridShadowedSource(a_frame);
             RecordNativeHybridGI(a_frame);
@@ -1577,7 +1580,7 @@ namespace DX12Native
 		for (const auto& frame : frames) {
 			if (frame.submitted && frame.number == a_frame && frame.generation == generation &&
 				frame.fence && frame.shadowMask && frame.visibilityBits && completion.fence12) {
-				return { frame.shadowMask.get(), frame.visibilityBits.get(),
+				return { EffectiveShadowMask(frame), frame.visibilityBits.get(),
 					completion.fence12.get(), frame.fence, frame.size };
 			}
 		}
@@ -1610,7 +1613,12 @@ namespace DX12Native
 			{ "lightMode", localLightMode ? "prepared-static" : "directional" },
 			{ "allPreparedLights", allPreparedLights }, { "requestedLightCount", requestedLightCount }, { "maximumDirectLights", kMaximumDirectLights }, { "lightSelectionFailure", lightSelectionFailure },
 			{ "directSubmissions", directSubmissions }, { "directTraceDispatches", directTraceDispatches }, { "indirectTraceDispatches", indirectTraceDispatches },
-			{ "shadowMaskTraceDispatches", shadowMaskTraceDispatches }, { "shadowMaskResolveDispatches", shadowMaskResolveDispatches },
+			{ "shadowMaskTraceDispatches", shadowMaskTraceDispatches },
+            { "shadowMaskResolveDispatches", shadowMaskResolveDispatches },
+            { "shadowTemporalDispatches", shadowTemporalDispatches },
+            { "shadowTemporalReprojections", shadowTemporalReprojections },
+            { "shadowTemporalHistoryWeight", 0.70f },
+            { "shadowTemporalFailure", shadowTemporalFailure },
             { "hybridInputDispatches", hybridInputDispatches },
             { "hybridShadowedSourceDispatches", hybridSourceDispatches },
             { "nativeHybridGIDispatches", nativeHybridGI ? nativeHybridGI->GIDispatches() : uint64_t{0} },
