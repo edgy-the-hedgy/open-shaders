@@ -240,6 +240,7 @@ namespace DX12Native
         const RedstoneGI& settings, float shadowInfluence, float skipThreshold)
     {
         frame.valid = false;
+        frame.advancedTransportTier = 0u;
         if (slot >= 2 || !list || !linearDepth || !normalRough || !linearRadiance ||
             !albedo || !reflectance || !shadowMask || !sampling.packed[0] ||
             !sampling.packed[1] || !Initialize(device)) return false;
@@ -395,6 +396,7 @@ namespace DX12Native
     {
         frame.valid = frame.rrValid = frame.postValid = frame.composedValid = false;
         frame.rrGuidesValid = frame.rrHistoryValid = false;
+        frame.advancedTransportTier = 0u;
         if (!device || !list || slot >= 2u || tier < 2u || tier > 5u ||
             !rawDiffuse || !rawSpecular || !receivers || !linearDepth ||
             !nativeSize[0] || !nativeSize[1]) {
@@ -444,6 +446,7 @@ namespace DX12Native
                     &desc, IID_PPV_ARGS(advancedPackDescriptors.put())));
             }
             frame.sampling = layout;
+            frame.advancedTransportTier = tier;
             if (!frame.constants) {
                 const auto desc = CD3DX12_RESOURCE_DESC::Buffer(kUploadBytes);
                 const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
@@ -959,6 +962,7 @@ namespace DX12Native
             if (frame.rrHistoryValid && frame.rrValidatedMotion)
                 resources.guides[1] = frame.rrValidatedMotion.get();
             resources.resetHistory = !frame.rrHistoryValid;
+            resources.skipOcclusion = frame.advancedTransportTier != 0u;
             resources.nativeSize = native;
             resources.logicalSize = logical;
             resources.frame = frameNumber;
@@ -1092,6 +1096,13 @@ namespace DX12Native
             list->SetDescriptorHeaps(1, heaps);
             list->SetComputeRootSignature(postRoot.get());
             for (uint32_t signal = 0; signal < 4; ++signal) {
+                if (frame.advancedTransportTier != 0u && signal >= 2u) {
+                    // AO/SO are deterministic neutral placeholders for the
+                    // exclusive transport pass; do not denoise or blur them.
+                    frame.nativeFinal[signal] = frame.textures[
+                        signal == 2u ? DiffuseAO : SpecularAO].get();
+                    continue;
+                }
                 const auto& settings = policy.reconstruction[std::min(signal, 2u)];
                 const uint32_t passes = settings.blurEnabled ? 2u : 1u;
                 for (uint32_t pass = 0; pass < passes; ++pass) {

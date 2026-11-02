@@ -636,6 +636,9 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
     };
 
     for (uint32_t family = 0; family < 3; ++family) {
+        // Neutral AO and specular occlusion are deterministic in the
+        // RT-exclusive preparator. Keep the real two stochastic RR families.
+        if (family == 2u && resources.skipOcclusion) continue;
         auto common = makeCommon();
         ffxDispatchDescDenoiserIndirectDiffuse diffuse{};
         ffxDispatchDescDenoiserIndirectSpecular specular{};

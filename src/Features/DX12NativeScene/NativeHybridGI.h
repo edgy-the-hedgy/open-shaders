@@ -39,6 +39,7 @@ namespace DX12Native
             std::array<winrt::com_ptr<ID3D12Resource>, kSignals> nativeBlurred{};
             std::array<ID3D12Resource*, kSignals> nativeFinal{};
             std::array<uint32_t, 2> rrOutputSize{}, postNativeSize{};
+            uint32_t advancedTransportTier = 0u;
             bool rrValid = false, postValid = false;
             // DX12-produced final color; the sole eventual DX11 export product.
             std::unique_ptr<WrappedResource> composedScene;

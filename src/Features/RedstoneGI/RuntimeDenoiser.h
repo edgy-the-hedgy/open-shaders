@@ -33,6 +33,7 @@ public:
         std::array<uint32_t, 2> nativeSize{}, logicalSize{};
         uint32_t frame = 0, checkerboardOrigin = 0;
         bool checkerboard = false, resetHistory = false;
+        bool skipOcclusion = false; // deterministic AO/SO are not submitted to FSR-RR
     };
     // Records GPU-native RR into the caller's already-open DX12 command list.
     // Does not submit, signal fences, copy to DX11, or read back to CPU.
