@@ -167,9 +167,13 @@ void main(uint3 id : SV_DispatchThreadID)
 		} else {
 			const float4 diffuse = IndirectDiffuse[sourcePixel];
 			const float4 specular = IndirectSpecular[sourcePixel];
-			if (diffuse.a < -1.0 || specular.a < -1.0) return;
-			IndirectDiffuse[id.xy] = diffuse;
-			IndirectSpecular[id.xy] = specular;
+            // Each stochastic lobe has independent sample validity.
+            // Tier I never samples specular; Tier II/Enhanced/FSR split per ray.
+            // An unsampled family cannot veto a valid sample from the other.
+            if (diffuse.a >= -1.0 && all(isfinite(diffuse)))
+                IndirectDiffuse[id.xy] = diffuse;
+            if (specular.a >= -1.0 && all(isfinite(specular)))
+                IndirectSpecular[id.xy] = specular;
 		}
 		return;
 	}

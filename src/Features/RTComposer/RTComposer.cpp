@@ -176,6 +176,8 @@ json RTComposer::GetDiagnostics()
             static_cast<uint32_t>(composition.mode) : 0u) },
         { "stagedTransportDispatchEnabled", AdvancedTransportDiagnosticActive() },
         { "advancedTransportDiagnosticRequested", composition.diagnoseAdvancedTransport },
+        { "advancedTransportDispatches", tracer.GetDiagnostics().value(
+            "advancedTransportDispatches", uint64_t{0}) },
         { "advancedTransportPublication",
             globals::game::graphicsState && tracer.GetTransportSignals(
                 globals::game::graphicsState->GetFrameCount()) ? "gpu-fence-gated" : "not-published" },
@@ -488,6 +490,9 @@ void RTComposer::DrawSettings()
             if (ImGui::Checkbox("Diagnostic only: dispatch advanced DXR transport (GPU cost)", &composition.diagnoseAdvancedTransport))
                 OnCompositionPolicyChanged();
             ImGui::TextWrapped("Does not enable advanced scene composition, sparse-family RR, or FSR-RC. DX12 indirect signals remain GPU-only and are not blended into the live Shadow Only output.");
+            const auto tracerStatus = globals::features::dx12NativeScene.Tracer().GetDiagnostics();
+            ImGui::Text("Advanced GPU transport dispatches: %llu",
+                static_cast<unsigned long long>(tracerStatus.value("advancedTransportDispatches", uint64_t{0})));
         }
         if (composition.mode == CompositorMode::ShadowOnly || composition.mode == CompositorMode::HybridShadowed) {
             const auto preset = GetTierPolicy(composition.mode);

@@ -965,7 +965,10 @@ namespace DX12Native
 			++indirectTraceDispatches;
             if (a_frame.transportTier >= 2u && a_frame.transportTier <= 5u)
                 ++advancedTransportDispatches;
-			if (a_frame.indirectTraceMode != 0u) {
+			// Advanced stochastic families are deliberately sparse. Their RR
+            // contexts must see the original validity masks, not a spatially
+            // expanded nearest-anchor signal before temporal reconstruction.
+            if (a_frame.indirectTraceMode != 0u && a_frame.transportTier == 0u) {
 				std::array<D3D12_RESOURCE_BARRIER, 2> resolveOrder{
 					CD3DX12_RESOURCE_BARRIER::UAV(a_frame.directSignals[5]->resource.get()),
 					CD3DX12_RESOURCE_BARRIER::UAV(a_frame.directSignals[6]->resource.get())
