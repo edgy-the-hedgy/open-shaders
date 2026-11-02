@@ -453,6 +453,146 @@ namespace DX12Native
 	}
 
 
+
+    void DirectionalTrace::RecordShadowTemporal(Frame& frame)
+    {
+        frame.shadowTemporalValid = false;
+        if (!frame.shadowTemporalEnabled || !frame.shadowTemporal ||
+            !frame.shadowMask || !frame.shadowMotion || !frame.receivers) return;
+        // Only the previous consecutive frame in this compositor generation
+        // is eligible. The existing direct queue serializes producer and
+        // temporal commands. No CPU wait or readback is introduced.
+        const Frame* prior = nullptr;
+        if (frame.shadowMotionCaptured)
+            for (const auto& candidate : frames)
+                if (&candidate != &frame && candidate.shadowTemporalValid &&
+                    candidate.shadowTemporal && candidate.receivers &&
+                    candidate.generation == frame.generation &&
+                    candidate.number + 1u == frame.number &&
+                    candidate.size == frame.size) prior = &candidate;
+        try {
+            if (!shadowTemporalPipeline) {
+                std::ifstream file("Data/Shaders/RTDirectLighting/shadowTemporal.dxil",
+                    std::ios::binary | std::ios::ate);
+                if (!file) throw std::runtime_error("shadowTemporal.dxil not deployed");
+                const auto bytes = file.tellg();
+                if (bytes <= 0 || bytes > 16 * 1024 * 1024)
+                    throw std::runtime_error("Invalid shadow temporal DXIL");
+                std::vector<char> code(static_cast<size_t>(bytes));
+                file.seekg(0);
+                if (!file.read(code.data(), std::streamsize(code.size())))
+                    throw std::runtime_error("Cannot load shadow temporal DXIL");
+                D3D12_DESCRIPTOR_RANGE ranges[2]{};
+                ranges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 5, 0, 0, 0 };
+                ranges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 2, 0, 0, 0 };
+                D3D12_ROOT_PARAMETER params[3]{};
+                params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+                params[0].DescriptorTable = { 1, &ranges[0] };
+                params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+                params[1].DescriptorTable = { 1, &ranges[1] };
+                params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+                params[2].Constants = { 0, 0, 6 };
+                const D3D12_ROOT_SIGNATURE_DESC signature{
+                    3, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE
+                };
+                winrt::com_ptr<ID3DBlob> serialized, errors;
+                DX::ThrowIfFailed(D3D12SerializeRootSignature(&signature,
+                    D3D_ROOT_SIGNATURE_VERSION_1, serialized.put(), errors.put()));
+                DX::ThrowIfFailed(backend.d3d12Device->CreateRootSignature(
+                    0, serialized->GetBufferPointer(), serialized->GetBufferSize(),
+                    IID_PPV_ARGS(shadowTemporalRoot.put())));
+                D3D12_COMPUTE_PIPELINE_STATE_DESC ps{};
+                ps.pRootSignature = shadowTemporalRoot.get();
+                ps.CS = { code.data(), code.size() };
+                DX::ThrowIfFailed(backend.d3d12Device->CreateComputePipelineState(
+                    &ps, IID_PPV_ARGS(shadowTemporalPipeline.put())));
+            }
+            if (!frame.shadowTemporalHeap) {
+                const D3D12_DESCRIPTOR_HEAP_DESC desc{
+                    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 7,
+                    D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0
+                };
+                DX::ThrowIfFailed(backend.d3d12Device->CreateDescriptorHeap(
+                    &desc, IID_PPV_ARGS(frame.shadowTemporalHeap.put())));
+            }
+            auto cpu = frame.shadowTemporalHeap->GetCPUDescriptorHandleForHeapStart();
+            const UINT step = backend.d3d12Device->GetDescriptorHandleIncrementSize(
+                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            auto addSRV = [&](ID3D12Resource* resource, DXGI_FORMAT format) {
+                D3D12_SHADER_RESOURCE_VIEW_DESC view{};
+                view.Format = format;
+                view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                view.Texture2D.MipLevels = 1;
+                backend.d3d12Device->CreateShaderResourceView(resource, &view, cpu);
+                cpu.ptr += step;
+            };
+            addSRV(frame.shadowMask.get(), DXGI_FORMAT_R16G16_FLOAT);
+            addSRV(prior ? prior->shadowTemporal.get() : nullptr, DXGI_FORMAT_R16G16_FLOAT);
+            addSRV(frame.receivers->resource.get(), DXGI_FORMAT_R32G32B32A32_FLOAT);
+            addSRV(prior ? prior->receivers->resource.get() : nullptr, DXGI_FORMAT_R32G32B32A32_FLOAT);
+            addSRV(frame.shadowMotion->resource.get(), DXGI_FORMAT_R16G16B16A16_FLOAT);
+            D3D12_UNORDERED_ACCESS_VIEW_DESC output{};
+            output.Format = DXGI_FORMAT_R16G16_FLOAT;
+            output.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+            backend.d3d12Device->CreateUnorderedAccessView(
+                frame.shadowTemporal.get(), nullptr, &output, cpu);
+            cpu.ptr += step;
+            output.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            backend.d3d12Device->CreateUnorderedAccessView(
+                frame.shadowMaskExport ? frame.shadowMaskExport->resource.get() : nullptr,
+                nullptr, &output, cpu);
+
+            std::vector<D3D12_RESOURCE_BARRIER> begin, end;
+            auto transition = [&](ID3D12Resource* res, D3D12_RESOURCE_STATES usage) {
+                if (!res) return;
+                begin.push_back(CD3DX12_RESOURCE_BARRIER::Transition(res,
+                    D3D12_RESOURCE_STATE_COMMON, usage));
+                end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(res,
+                    usage, D3D12_RESOURCE_STATE_COMMON));
+            };
+            transition(frame.shadowMask.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            if (prior) transition(prior->shadowTemporal.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            transition(frame.receivers->resource.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            if (prior) transition(prior->receivers->resource.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            transition(frame.shadowMotion->resource.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            transition(frame.shadowTemporal.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            if (frame.shadowMaskExport)
+                transition(frame.shadowMaskExport->resource.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            auto* commands = frame.commands.get();
+            commands->ResourceBarrier(uint32_t(begin.size()), begin.data());
+            commands->SetPipelineState(shadowTemporalPipeline.get());
+            commands->SetComputeRootSignature(shadowTemporalRoot.get());
+            ID3D12DescriptorHeap* heaps[]{ frame.shadowTemporalHeap.get() };
+            commands->SetDescriptorHeaps(1, heaps);
+            auto gpu = frame.shadowTemporalHeap->GetGPUDescriptorHandleForHeapStart();
+            commands->SetComputeRootDescriptorTable(0, gpu);
+            gpu.ptr += 5u * step;
+            commands->SetComputeRootDescriptorTable(1, gpu);
+            struct Parameters {
+                uint32_t width, height, historyAvailable, exportEnabled;
+                float historyWeight, depthTolerance;
+            };
+            const Parameters parameters{ frame.size[0], frame.size[1],
+                prior != nullptr ? 1u : 0u,
+                frame.shadowMaskExport ? 1u : 0u, 0.70f, 0.018f };
+            static_assert(sizeof(Parameters) == sizeof(uint32_t) * 6);
+            commands->SetComputeRoot32BitConstants(2, 6, &parameters, 0);
+            commands->Dispatch((frame.size[0] + 7u) / 8u,
+                (frame.size[1] + 7u) / 8u, 1u);
+            commands->ResourceBarrier(uint32_t(end.size()), end.data());
+            frame.shadowTemporalValid = true;
+            ++shadowTemporalDispatches;
+            if (prior) ++shadowTemporalReprojections;
+            shadowTemporalFailure.clear();
+        }
+        catch (const std::exception& error) {
+            // The old mask and DX11 export are still valid. Do not turn a
+            // denoiser error into a failure of the production shadow path.
+            shadowTemporalFailure = error.what();
+        }
+    }
+
     void DirectionalTrace::RecordHybridShadowedSource(Frame& frame)
     {
         frame.hybridShadowedSourceReady = false;
