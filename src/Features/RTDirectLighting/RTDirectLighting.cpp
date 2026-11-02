@@ -303,7 +303,8 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
 		settings.RRMaterialIsolation, settings.RRGlossyRoughness,
 		{ settings.PointLightRadiusMultiplier, settings.PointLightFalloffFraction,
             settings.PointLightFalloffExponent, float(requestedTransportTier) },
-		{ settings.StochasticSampling ? 1.0f : 0.0f, effectiveEmitterRadius, 0.0f, 0.0f });
+		{ settings.StochasticSampling ? 1.0f : 0.0f, effectiveEmitterRadius,
+            0.0f, lowTierShadow ? 1.0f : 0.0f });
 	lastFrame = frame;
 }
 

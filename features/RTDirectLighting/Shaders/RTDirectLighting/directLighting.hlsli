@@ -219,8 +219,13 @@ void EvaluateShadowMaskForSurface(uint instance, uint primitive, float2 barycent
     float3x4 worldToObject, float3 direction, float distance, float4 receiver, float footprint, uint2 pixel)
 {
     MaterialRecord record = Materials[Surfaces[instance].material.x];
+    // The Shadow Only / Hybrid-Shadowed mask admits near-edge receiver
+    // mismatches with a 25% larger tolerance. Material, room and geometry
+    // validation are not relaxed; direct radiance itself is unchanged.
+    const float shadowTolerance = DirectStochastic.w >= 0.5f ? 1.25f : 1.0f;
     if ((record.flags.x & 3u) != 3u || record.flags.w != 0u ||
-        abs(distance - length(receiver.xyz)) > max(5.0f, distance * ReceiverRelativeTolerance)) return;
+        abs(distance - length(receiver.xyz)) >
+            max(5.0f, distance * ReceiverRelativeTolerance) * shadowTolerance) return;
     EvaluatedSourceMaterial material;
     TriangleSurface triSurface;
     if (!LoadSourceMaterial(instance, primitive, barycentric, objectToWorld, worldToObject, footprint, material) ||

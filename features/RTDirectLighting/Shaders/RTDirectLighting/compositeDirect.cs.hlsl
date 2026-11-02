@@ -65,10 +65,10 @@ float ContactShadowVisibility(uint2 pixel, uint2 extent)
             const float neighborDepth = abs(mul(FrameBuffer::CameraView[0],
                 float4(neighbor.xyz, 1.0f)).z);
             if (!isfinite(neighborDepth) ||
-                abs(neighborDepth - depth) > max(0.05f, depth * 0.01f)) continue;
+                abs(neighborDepth - depth) > max(0.06f, depth * 0.0125f)) continue;
             const float2 neighborNormal = NativeNormalRoughness.Load(int3(tap, 0)).xy;
             if (!all(isfinite(neighborNormal)) ||
-                dot(normal, GBuffer::DecodeNormal(neighborNormal)) < 0.85f) continue;
+                dot(normal, GBuffer::DecodeNormal(neighborNormal)) < 0.82f) continue;
             const float weight = (dx == 0 || dy == 0) ? 2.0f : 1.0f;
             total += weight * saturate(neighborMask.x);
             weights += weight;
