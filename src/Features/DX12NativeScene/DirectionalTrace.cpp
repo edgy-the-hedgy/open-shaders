@@ -963,6 +963,8 @@ namespace DX12Native
 			commands->SetComputeRoot32BitConstants(5, 36, &indirectConstants, 0);
 			commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 			++indirectTraceDispatches;
+            if (a_frame.transportTier >= 2u && a_frame.transportTier <= 5u)
+                ++advancedTransportDispatches;
 			if (a_frame.indirectTraceMode != 0u) {
 				std::array<D3D12_RESOURCE_BARRIER, 2> resolveOrder{
 					CD3DX12_RESOURCE_BARRIER::UAV(a_frame.directSignals[5]->resource.get()),
@@ -1137,6 +1139,10 @@ namespace DX12Native
 		const uint32_t rrFlags = DenoiseDirect(a_frame);
 		PrepareRRPreview(a_frame, rrFlags);
 		const bool directRR = (rrFlags & 1u) != 0;
+        // Advanced preset transport is diagnostic until native sparse RR and
+        // composition exist; do not leak its raw radiance to the DX11 compositor.
+        const bool composeDXRIndirect = a_frame.indirectRays != 0u &&
+            a_frame.transportTier == 0u;
 		auto& indirect = globals::features::redstoneGI;
 		const bool useIndirect = a_frame.useIndirect && indirect.HasCurrentIndirectLighting();
 		if (useIndirect) indirect.BindCompositeResources();
@@ -1146,7 +1152,7 @@ namespace DX12Native
         const float directBlend = composer.IsFixedPreset() ? shadowTier.directContribution : composer.composition.rtDirectContribution;
         const float shadowStrength = composer.IsFixedPreset() ? shadowTier.shadowInfluence : composer.composition.shadowInfluence;
 		lightingCompositeSettings->Update(Settings{ useIndirect ? 1u : 0u, rrFlags, a_frame.indirectStrength,
-			a_frame.indirectRays != 0 ? 1u : 0u,
+			composeDXRIndirect ? 1u : 0u,
 			a_frame.rasterBlend * (shadowOnly ? directBlend : 1.0f),
 			shadowOnly ? 1u : 0u, shadowOnly ? shadowStrength : 0.0f,
             shadowOnly && composer.IsFixedPreset() ? 1.0f : 0.0f });
@@ -1156,7 +1162,7 @@ namespace DX12Native
 		ID3D11ShaderResourceView* reads[]{ a_frame.output->srv, Util::AsReal(targets[NORMALROUGHNESS].SRV),
 			directRR ? a_frame.directSignals[0]->srv : nullptr, directRR ? a_frame.directSignals[1]->srv : nullptr,
 			directRR ? directRRTextures[2]->srv.get() : nullptr, directRR ? directRRTextures[3]->srv.get() : nullptr, directRR ? a_frame.directSignals[3]->srv : nullptr,
-			a_frame.indirectRays ? a_frame.directSignals[5]->srv : nullptr, a_frame.indirectRays ? a_frame.directSignals[6]->srv : nullptr,
+			composeDXRIndirect ? a_frame.directSignals[5]->srv : nullptr, composeDXRIndirect ? a_frame.directSignals[6]->srv : nullptr,
 			(rrFlags & 2u) ? directRRTextures[4]->srv.get() : nullptr, (rrFlags & 2u) ? directRRTextures[5]->srv.get() : nullptr,
 			rrFlags ? directRRTextures[0]->srv.get() : nullptr, rrFlags ? directRRTextures[10]->srv.get() : nullptr, a_frame.receivers->srv,
 			rrFlags ? a_frame.directSignals[2]->srv : nullptr,
@@ -1352,6 +1358,25 @@ namespace DX12Native
             retainedBytes = ResidentBytes() - (reuse ? 0 : available->bytes);
         }
 		if (overBudget()) {
+            // A diagnostic must not consume the last VRAM needed by the
+            // functioning Shadow Only tier. Retry with its original trace
+            // schedule and no diagnostic transport, preserving raster output.
+            if (a_indirectRays != 0u && a_falloffParameters.w >= 2.0f &&
+                a_falloffParameters.w <= 5.0f) {
+                ++budgetDeferrals;
+                auto normalFalloff = a_falloffParameters;
+                normalFalloff.w = 0.0f;
+                Dispatch(a_scene, a_nativeSize, a_lightDirection, a_frame, a_budgetBytes,
+                    a_localLight, a_lights, a_materialView, a_sceneTarget,
+                    a_lightReference, a_lightBase, a_roomMetadata, a_lightIdentities,
+                    a_allPreparedLights, a_strengths, a_useIndirect, a_indirectStrength,
+                    a_useDirectRR, 0u, a_roomReferences, a_rasterBlend,
+                    a_normalMode, a_preparedLights, a_directResolutionMode,
+                    a_directResolutionMode, a_directRRResolutionMode,
+                    a_rrMaterialIsolation, a_rrGlossyRoughness, normalFalloff,
+                    a_stochasticParameters);
+                return;
+            }
 			if (directRR) {
 				++directRRBudgetDeferrals;
 				Dispatch(a_scene, a_nativeSize, a_lightDirection, a_frame, a_budgetBytes, a_localLight, a_lights, a_materialView, a_sceneTarget,
@@ -1409,6 +1434,10 @@ namespace DX12Native
 				std::isfinite(a_stochasticParameters.y) ? std::clamp(a_stochasticParameters.y, 0.0f, 8.0f) : 1.0f, 0.0f, 0.0f };
 			available->useIndirect = a_useIndirect && a_indirectRays == 0;
 			available->indirectRays = std::min(a_indirectRays, 8u);
+            available->transportTier = available->indirectRays != 0u &&
+                available->falloffParameters.w >= 2.0f &&
+                available->falloffParameters.w <= 5.0f ?
+                uint32_t(available->falloffParameters.w) : 0u;
 			available->roomReferences.fill(0);
 			std::copy_n(a_roomReferences.begin(), std::min(a_roomReferences.size(), available->roomReferences.size()), available->roomReferences.begin());
 			available->indirectStrength = a_indirectStrength;
@@ -1540,6 +1569,25 @@ namespace DX12Native
 		}
 	}
 
+    DirectionalTrace::TransportSignalsPublication DirectionalTrace::GetTransportSignals(uint32_t frameNumber) const
+    {
+        // A publication is never a scene-composition permission. The alpha
+        // sentinel is independent for each family: -2 unsampled, -1 miss.
+        // The owning frame and the completion fence must outlive consumers.
+        for (const auto& frame : frames) {
+            if (!frame.submitted || frame.number != frameNumber ||
+                frame.generation != generation || !frame.fence ||
+                !completion.fence12 || frame.transportTier < 2u ||
+                frame.transportTier > 5u || frame.indirectRays == 0u ||
+                !frame.directSignals[5] || !frame.directSignals[6]) continue;
+            return { frame.directSignals[5]->resource.get(),
+                frame.directSignals[6]->resource.get(),
+                completion.fence12.get(), frame.fence, frame.number,
+                frame.transportTier, frame.indirectTraceMode, frame.size };
+        }
+        return {};
+    }
+
     DirectionalTrace::NativeGIOutputsPublication DirectionalTrace::GetNativeGIOutputs(uint32_t frameNumber) const
     {
         for (const auto& frame : frames) {
@@ -1637,6 +1685,8 @@ namespace DX12Native
 			{ "lightMode", localLightMode ? "prepared-static" : "directional" },
 			{ "allPreparedLights", allPreparedLights }, { "requestedLightCount", requestedLightCount }, { "maximumDirectLights", kMaximumDirectLights }, { "lightSelectionFailure", lightSelectionFailure },
 			{ "directSubmissions", directSubmissions }, { "directTraceDispatches", directTraceDispatches }, { "indirectTraceDispatches", indirectTraceDispatches },
+            { "advancedTransportDispatches", advancedTransportDispatches },
+            { "advancedTransportSignalValidity", "independent diffuse/specular alpha: -2 unsampled, -1 sampled miss, >=0 sampled hit; fence-owned GPU-only" },
 			{ "shadowMaskTraceDispatches", shadowMaskTraceDispatches },
             { "shadowMaskResolveDispatches", shadowMaskResolveDispatches },
             { "shadowTemporalDispatches", shadowTemporalDispatches },

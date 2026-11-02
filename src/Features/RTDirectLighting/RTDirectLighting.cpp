@@ -272,13 +272,15 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
     const uint32_t directTraceMode = tieredDirect ? activeTier.directTraceMode :
         DX12Native::NativeTraceShaderMode(directLayout.effective);
     const bool directRR = !tieredDirect && settings.UseDirectRayRegeneration;
-    // Shader transport ABI only. The four upper presets are still NOT
-    // dispatched until the native DX12 compositor and sparse RR contracts
-    // can consume the emitted diffuse/specular families safely.
-    const uint32_t requestedTransportTier = composer.TierControlsLocked() &&
-        composer.composition.mode >= RTComposer::CompositorMode::RTExclusiveI &&
-        composer.composition.mode <= RTComposer::CompositorMode::FSRRedstone ?
+    // GPU-only test of the selected advanced transport contract. The live
+    // low-tier shadow/direct result is never replaced by these sparse signals.
+    const bool transportDiagnostic = composer.AdvancedTransportDiagnosticActive();
+    const auto contract = RTComposer::GetTierExecutionContract(composer.composition.mode);
+    const uint32_t requestedTransportTier = transportDiagnostic ?
         static_cast<uint32_t>(composer.composition.mode) : 0u;
+    const uint32_t indirectTraceMode = transportDiagnostic ?
+        contract.indirectTraceMode : directTraceMode;
+    const uint32_t transportRays = transportDiagnostic ? contract.indirectCandidateRays : 0u;
     const float4 strengths{ settings.DirectStrength, settings.DiffuseStrength,
         tieredDirect ? 0.0f : settings.SpecularStrength, settings.EmissionStrength };
     // Both live low-end compositor tiers use half the configured stochastic
@@ -303,10 +305,12 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
 		settings.UseAllPreparedLights, strengths,
 		!globals::features::rtComposer.BlocksRTIndirect() &&
             gi.loaded && gi.settings.ConnectHybrid && !rtExclusive, gi.settings.IndirectStrength, directRR,
-		!globals::features::rtComposer.BlocksRTIndirect() && rtExclusive ? gi.settings.IndirectRays : 0u, snapshot->roomReferences, settings.RedstoneBlend, settings.NormalInfluence,
+		transportDiagnostic ? transportRays :
+            (!globals::features::rtComposer.BlocksRTIndirect() && rtExclusive ? gi.settings.IndirectRays : 0u),
+        snapshot->roomReferences, settings.RedstoneBlend, settings.NormalInfluence,
 		settings.UseAllPreparedLights ? std::span<const DX12Native::PreparedPointLight>(snapshot->cell->nativeLights) :
 			std::span<const DX12Native::PreparedPointLight>(snapshot->cell->nativeLights).subspan(settings.SelectedDirectLight, 1),
-		directTraceMode, directTraceMode, 0u, // direct RR logical grid always native
+		directTraceMode, indirectTraceMode, 0u, // direct RR logical grid always native
 		settings.RRMaterialIsolation, settings.RRGlossyRoughness,
 		{ settings.PointLightRadiusMultiplier, settings.PointLightFalloffFraction,
             settings.PointLightFalloffExponent, float(requestedTransportTier) },

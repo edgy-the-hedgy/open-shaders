@@ -90,6 +90,26 @@ namespace DX12Native
             explicit operator bool() const { return outputs[0] && outputs[1] && completionFence && completionValue; }
         };
         NativeGIOutputsPublication GetNativeGIOutputs(uint32_t a_frame) const;
+        // Non-owning diagnostic transport publication. The -2 alpha sentinel
+        // identifies an UNSAMPLED family; -1 identifies a sampled miss.
+        // Never treat one family's validity as evidence for the other.
+        // Consumers must wait on completionFence and finish before frame retirement.
+        struct TransportSignalsPublication
+        {
+            ID3D12Resource* diffuse = nullptr;
+            ID3D12Resource* specular = nullptr;
+            ID3D12Fence* completionFence = nullptr;
+            uint64_t completionValue = 0;
+            uint32_t frameNumber = 0;
+            uint32_t tier = 0, traceMode = 0;
+            std::array<uint32_t, 2> size{};
+            explicit operator bool() const
+            {
+                return diffuse && specular && completionFence && completionValue &&
+                    tier >= 2u && tier <= 5u;
+            }
+        };
+        TransportSignalsPublication GetTransportSignals(uint32_t a_frame) const;
 		/** @brief Returns a raw preview view whose image remains owned by this service. */
 		ID3D11ShaderResourceView* Preview() const { return previewValid && preview ? preview->srv.get() : nullptr; }
 		/** @brief Returns the completed preview dimensions for an undistorted diagnostic image. */
@@ -187,6 +207,7 @@ namespace DX12Native
 			uint32_t normalMode = 2;
 			uint32_t directTraceMode = 0, indirectTraceMode = 0, directRRResolutionMode = 0, rrMaterialPolicy = 0;
 			uint32_t indirectRays = 0;
+            uint32_t transportTier = 0; // GPU-only compositor transport diagnostic
 			std::array<uint32_t, 128> roomReferences{};
 			uint64_t fence = 0, retirement = 0, generation = 0, bytes = 0;
 			bool submitted = false;
@@ -292,6 +313,7 @@ namespace DX12Native
 		uint64_t unavailableLightFrames = 0;
 		uint64_t directSubmissions = 0, sceneCompositeSubmissions = 0;
 		uint64_t directTraceDispatches = 0, indirectTraceDispatches = 0;
+        uint64_t advancedTransportDispatches = 0;
 		uint64_t shadowMaskTraceDispatches = 0, shadowMaskResolveDispatches = 0;
         uint64_t hybridInputDispatches = 0, hybridInputBudgetDeferrals = 0, hybridInputLastBytes = 0;
         uint32_t hybridInputLastFrame = 0;

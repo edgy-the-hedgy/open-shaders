@@ -120,6 +120,7 @@ struct RTComposer final : Feature
     struct CompositionSettings
     {
         bool enabled = false;
+        bool diagnoseAdvancedTransport = false; // explicit GPU-only trace diagnostic; never authorizes scene composition
         CompositorMode mode = CompositorMode::ShadowOnly;
         bool customHybridShadowed = false; // saved custom backend choice
         float shadowInfluence = 0.8f;
@@ -134,6 +135,11 @@ struct RTComposer final : Feature
     } composition;
     enum class EffectiveMode : uint32_t { Legacy = 0, ShadowOnly = 1, HybridShadowed = 2 };
     bool IsFixedPreset() const { return composition.mode != CompositorMode::Custom; }
+    bool AdvancedTransportDiagnosticActive() const
+    {
+        return composition.enabled && composition.diagnoseAdvancedTransport &&
+            IsAdvancedTransportTier(composition.mode);
+    }
     bool TierControlsLocked() const { return composition.enabled && IsFixedPreset(); }
     bool WantsNativeHybrid() const
     {
