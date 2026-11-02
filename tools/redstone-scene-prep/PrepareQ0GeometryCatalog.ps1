@@ -12,10 +12,11 @@ if (!(Test-Path -LiteralPath (Join-Path $source 'compiled') -PathType Container)
 $project = Join-Path $PSScriptRoot 'RedstoneScenePrep.csproj'
 $artifacts = Join-Path $projectRoot 'build\scene-prep\atlas-artifacts'
 $compiler = Join-Path $artifacts 'bin\RedstoneScenePrep\release\RedstoneScenePrep.dll'
-if (!(Test-Path -LiteralPath $compiler)) {
-    & dotnet build $project -c Release --artifacts-path $artifacts --verbosity minimal
-    if ($LASTEXITCODE -ne 0) { throw 'Failed to build offline geometry-catalog tool.' }
-}
+# The existing DLL may predate --geometry-catalog. Always incrementally
+# rebuild after pulling the new source; dotnet skips unchanged compile work.
+& dotnet build $project -c Release --artifacts-path $artifacts --verbosity minimal
+if ($LASTEXITCODE -ne 0) { throw 'Failed to build offline geometry-catalog tool.' }
+if (!(Test-Path -LiteralPath $compiler)) { throw "Missing compiled geometry-catalog tool: $compiler" }
 & dotnet $compiler --geometry-catalog $source
 if ($LASTEXITCODE -ne 0) { throw 'Failed to generate the Q0 geometry catalogue.' }
 if ($Deploy) {
