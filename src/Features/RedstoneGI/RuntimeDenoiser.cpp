@@ -444,6 +444,7 @@ bool RedstoneDenoiser::RetireNativeHybridContexts()
         }
         nativeHybridExtent = {};
         nativeHybridCheckerboard = false;
+        nativeHybridActiveFamilies = 3u;
         nativeHybridLastFrame = UINT32_MAX;
         nativeHybridFailed = false;
         nativeHybridFailure.clear();
@@ -480,6 +481,7 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
         nativeHybridFailure = nativeHybridConfigurationFailure;
         return false;
     }
+    const uint32_t familyCount = resources.skipOcclusion ? 2u : 3u;
     const uint32_t packedWidth = resources.checkerboard ? logical[0] / 2u : logical[0];
     auto validate = [](ID3D12Resource* texture, uint32_t width, uint32_t height,
         DXGI_FORMAT format) {
@@ -493,7 +495,7 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
     constexpr std::array<DXGI_FORMAT, 4> formats{
         DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
         DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8_UNORM };
-    for (uint32_t i = 0; i < 4; ++i) {
+    for (uint32_t i = 0; i < (resources.skipOcclusion ? 2u : 4u); ++i) {
         if (!validate(resources.inputs[i], packedWidth, logical[1], formats[i]) ||
             !validate(resources.outputs[i], logical[0], logical[1], formats[i])) {
             nativeHybridFailure = "Native RR signal input/output dimensions or format mismatch";
@@ -508,7 +510,8 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
         }
     }
     const bool changed = nativeHybridExtent != logical ||
-        nativeHybridCheckerboard != resources.checkerboard;
+        nativeHybridCheckerboard != resources.checkerboard ||
+        nativeHybridActiveFamilies != familyCount;
     if (changed && (nativeHybridContexts[0] || nativeHybridContexts[1] ||
                     nativeHybridContexts[2])) {
         // Contexts depend on checkerboard and logical capacity, not solely
@@ -521,7 +524,7 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
             FFX_DENOISER_SIGNAL_INDIRECT_DIFFUSE,
             FFX_DENOISER_SIGNAL_INDIRECT_SPECULAR,
             FFX_DENOISER_SIGNAL_AMBIENT_OCCLUSION | FFX_DENOISER_SIGNAL_SPECULAR_OCCLUSION };
-        for (uint32_t family = 0; family < familyFlags.size(); ++family) {
+        for (uint32_t family = 0; family < familyCount; ++family) {
             ffxCreateContextDescDenoiser create{};
             create.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_DENOISER;
             create.version = FFX_DENOISER_VERSION;
@@ -546,6 +549,7 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
         }
         nativeHybridExtent = logical;
         nativeHybridCheckerboard = resources.checkerboard;
+        nativeHybridActiveFamilies = familyCount;
     }
     const bool reset = fresh || changed || resources.resetHistory ||
         nativeHybridLastFrame == UINT32_MAX ||
@@ -575,7 +579,8 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
     nativeHybridBlockedConfigurationRevision = UINT64_MAX;
 
     std::vector<D3D12_RESOURCE_BARRIER> begin, end;
-    for (auto* input : resources.inputs) {
+    for (uint32_t i = 0; i < (resources.skipOcclusion ? 2u : 4u); ++i) {
+        auto* input = resources.inputs[i];
         begin.push_back(CD3DX12_RESOURCE_BARRIER::Transition(input,
             D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
         end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(input,
@@ -587,7 +592,8 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
         end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(guide,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON));
     }
-    for (auto* output : resources.outputs) {
+    for (uint32_t i = 0; i < (resources.skipOcclusion ? 2u : 4u); ++i) {
+        auto* output = resources.outputs[i];
         begin.push_back(CD3DX12_RESOURCE_BARRIER::Transition(output,
             D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
         end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(output,
@@ -635,10 +641,7 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
         signal.checkerboardOrigin = resources.checkerboard ? resources.checkerboardOrigin & 1u : 0u;
     };
 
-    for (uint32_t family = 0; family < 3; ++family) {
-        // Neutral AO and specular occlusion are deterministic in the
-        // RT-exclusive preparator. Keep the real two stochastic RR families.
-        if (family == 2u && resources.skipOcclusion) continue;
+    for (uint32_t family = 0; family < familyCount; ++family) {
         auto common = makeCommon();
         ffxDispatchDescDenoiserIndirectDiffuse diffuse{};
         ffxDispatchDescDenoiserIndirectSpecular specular{};

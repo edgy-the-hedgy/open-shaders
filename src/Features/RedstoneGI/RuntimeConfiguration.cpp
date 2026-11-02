@@ -1,6 +1,7 @@
 #include "RuntimeDenoiser.h"
 #include "Utils/RayRegenerationSettings.h"
 #include "Utils/UI.h"
+#include <algorithm>
 
 namespace
 {
@@ -64,7 +65,8 @@ json RedstoneDenoiser::GetConfiguration() const
     }
     const bool nativePending = nativeHybridContexts[0] &&
         (nativeHybridAppliedConfigurationRevision != shared.revision ||
-         !std::ranges::all_of(nativeHybridConfigurationApplied,
+         !std::all_of(nativeHybridConfigurationApplied.begin(),
+            nativeHybridConfigurationApplied.begin() + nativeHybridActiveFamilies,
             [](bool configured) { return configured; }));
     // The legacy bridge may not be instantiated at all while testing the
     // native Hybrid path. Do not report its unapplied dirty bit as though
@@ -84,6 +86,7 @@ json RedstoneDenoiser::GetConfiguration() const
                 json(nullptr) : json(nativeHybridAppliedConfigurationRevision) },
             { "requestedRevision", shared.revision },
             { "pending", bool(nativePending) },
+            { "activeFamilyCount", nativeHybridActiveFamilies },
             { "configurationApplications", nativeHybridConfigurationApplications },
             { "failure", nativeHybridConfigurationFailure }
         } }
@@ -178,7 +181,9 @@ bool RedstoneDenoiser::ApplyNativeHybridConfiguration(bool& a_resetHistory)
     const bool revisionChanged =
         nativeHybridAppliedConfigurationRevision != shared.revision;
     if (!revisionChanged &&
-        std::ranges::all_of(nativeHybridConfigurationApplied, [](bool applied) { return applied; }))
+        std::all_of(nativeHybridConfigurationApplied.begin(),
+            nativeHybridConfigurationApplied.begin() + nativeHybridActiveFamilies,
+            [](bool applied) { return applied; }))
         return true;
 
     if (!denoiserFunctions.Query || !denoiserFunctions.Configure) {
@@ -187,7 +192,7 @@ bool RedstoneDenoiser::ApplyNativeHybridConfiguration(bool& a_resetHistory)
     }
 
     constexpr std::array familyNames{ "indirect diffuse", "indirect specular", "AO" };
-    for (size_t family = 0; family < nativeHybridContexts.size(); ++family) {
+    for (size_t family = 0; family < nativeHybridActiveFamilies; ++family) {
         auto* context = &nativeHybridContexts[family];
         if (!*context) {
             nativeHybridConfigurationFailure =
@@ -272,8 +277,8 @@ bool RedstoneDenoiser::ApplyNativeHybridConfiguration(bool& a_resetHistory)
     nativeHybridAppliedConfigurationRevision = shared.revision;
     nativeHybridConfigurationFailure.clear();
     a_resetHistory = true; // SDK parameters changed: reset all affected histories
-    logger::info("[RayRegeneration] Native RR configuration revision {} applied to diffuse, specular and AO contexts",
-        nativeHybridAppliedConfigurationRevision);
+    logger::info("[RayRegeneration] Native RR configuration revision {} applied to {} active families",
+        nativeHybridAppliedConfigurationRevision, nativeHybridActiveFamilies);
     return true;
 }
 
@@ -301,6 +306,8 @@ void RedstoneDenoiser::DrawConfigurationSettings()
             static_cast<unsigned long long>(native.value("requestedRevision", uint64_t{0})));
     if (native.at("pending").get<bool>())
         ImGui::TextUnformatted("Native configuration changes pending SDK application.");
+    ImGui::Text("Native RR context families: %u",
+        native.value("activeFamilyCount", 3u));
     const auto failure = native.value("failure", std::string{});
     if (!failure.empty()) ImGui::TextWrapped("Native RR configure failure: %s", failure.c_str());
     ImGui::TextWrapped("All three native contexts receive the shared overrides. With Override off, each context uses its own queried AMD defaults.");

@@ -73,6 +73,7 @@ private:
     std::array<std::array<float, 8>, 3> nativeHybridConfigurationDefaults{};
     std::array<bool, 3> nativeHybridConfigurationDefaultsReady{};
     std::array<bool, 3> nativeHybridConfigurationApplied{};
+    uint32_t nativeHybridActiveFamilies = 3u; // 2 diffuse/specular, 3 includes stochastic AO/SO
     uint64_t nativeHybridAppliedConfigurationRevision = UINT64_MAX;
     // SDK Query/Configure errors only block the rejected revision, allowing
     // the user to correct a value without reloading the renderer.
