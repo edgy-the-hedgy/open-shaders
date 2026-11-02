@@ -46,6 +46,7 @@ namespace DX12Native
             uint32_t enableLinearLighting, enableACEScg;
             uint32_t shadowEdgeFilterEnabled;
             float shadowInfluence;
+            uint32_t advancedTransportTier;
         };
         DXGI_FORMAT OutputFormat(uint32_t index)
         {
@@ -1135,7 +1136,7 @@ namespace DX12Native
         ID3D12Resource* nativeDirect, ID3D12Resource* nativeShadowMask,
         ID3D12Resource* nativeLinearDepth, ID3D12Resource* diffuseAlbedo, ID3D12Resource* specularAlbedo,
         float directBlend, float giContribution, uint32_t shadowEdgeFilterEnabled,
-        float shadowInfluence)
+        float shadowInfluence, uint32_t advancedTier)
     {
         frame.composedValid = false;
         if (!frame.valid || !device || !device11 || !list || !shadowedSource ||
@@ -1147,7 +1148,8 @@ namespace DX12Native
             return false;
         }
         try {
-            if (!root) throw std::runtime_error("Native GI root signature unavailable");
+            // The advanced transporter has its own input PSO and can reuse
+            // the composition backend without recording raster HybridGI.
             // Do not change the 9-SRV root shared by GI/AO/eligibility.
             // Composition consumes native visibility and depth for contact edge AA,
             // without modifying the root shared by GI/AO/eligibility.
@@ -1204,8 +1206,9 @@ namespace DX12Native
                 uint32_t(globals::features::linearLighting.IsLinearLightingActive()),
                 uint32_t(globals::features::linearLighting.settings.enableACEScg),
                 std::min(shadowEdgeFilterEnabled, 1u),
-                std::isfinite(shadowInfluence) ? std::clamp(shadowInfluence, 0.0f, 1.0f) : 0.0f };
-            static_assert(sizeof(constants) == 32);
+                std::isfinite(shadowInfluence) ? std::clamp(shadowInfluence, 0.0f, 1.0f) : 0.0f,
+                advancedTier >= 2u && advancedTier <= 5u ? advancedTier : 0u };
+            static_assert(sizeof(constants) == 36);
             static_assert(kCompositionOffset + sizeof(constants) <= kUploadBytes);
             uint8_t* mapped = nullptr;
             const D3D12_RANGE noRead{ 0, 0 };

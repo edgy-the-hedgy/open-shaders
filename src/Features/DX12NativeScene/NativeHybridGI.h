@@ -98,7 +98,7 @@ namespace DX12Native
             ID3D12Resource* nativeDirect, ID3D12Resource* nativeShadowMask,
             ID3D12Resource* nativeLinearDepth, ID3D12Resource* diffuseAlbedo, ID3D12Resource* specularAlbedo,
             float directBlend, float giContribution, uint32_t shadowEdgeFilterEnabled,
-            float shadowInfluence);
+            float shadowInfluence, uint32_t advancedTier = 0u);
         const std::string& Failure() const { return failure; }
         const std::string& CompositionFailure() const { return compositionFailure; }
         uint64_t CompositionDispatches() const { return compositionDispatches; }

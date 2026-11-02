@@ -23,6 +23,7 @@ cbuffer NativeHybridComposition : register(b13)
     uint NativeEnableACEScg; // reserved for a full gamut-correct scene handoff
     uint ShadowEdgeFilterEnabled; // fixed Hybrid-Shadowed only
     float ShadowInfluence;
+    uint AdvancedTransportTier; // 2..5: pre-multiplied RT transport, no first-bounce albedo
 };
 
 // Reuse the source pass's native depth/visibility semantics for direct blend.
@@ -78,8 +79,10 @@ void main(uint2 pixel : SV_DispatchThreadID)
     {
         const float4 diffuse = IndirectDiffuse.Load(int3(pixel, 0));
         const float4 specular = IndirectSpecular.Load(int3(pixel, 0));
-        const float aoDiffuse = DiffuseAO.Load(int3(pixel, 0));
-        const float aoSpecular = SpecularAO.Load(int3(pixel, 0));
+        const float aoDiffuse = AdvancedTransportTier != 0u ? 1.0 :
+            DiffuseAO.Load(int3(pixel, 0));
+        const float aoSpecular = AdvancedTransportTier != 0u ? 1.0 :
+            SpecularAO.Load(int3(pixel, 0));
         if (all(isfinite(diffuse)) && all(isfinite(specular)) &&
             isfinite(aoDiffuse) && isfinite(aoSpecular))
         {
@@ -90,16 +93,26 @@ void main(uint2 pixel : SV_DispatchThreadID)
             const float3 specularFactor = max(0.0, SpecularAlbedo.Load(int3(pixel, 0)).rgb);
             // Input to RR contains NO first-bounce albedo. Modulate exactly
             // once here, after RR and optional post-RR spatial reconstruction.
-            if (all(isfinite(diffuseFactor)) && all(isfinite(specularFactor)))
-                linearColor += saturate(GIContribution) *
-                    (max(0.0, diffuse.rgb) * diffuseFactor * saturate(aoDiffuse) +
-                     max(0.0, specular.rgb) * specularFactor * saturate(aoSpecular));
+            if (all(isfinite(diffuseFactor)) && all(isfinite(specularFactor))) {
+                // The RT-exclusive shader already multiplied throughput by
+                // its sampled BRDF. Do not apply first-bounce albedo twice.
+                if (AdvancedTransportTier != 0u)
+                    linearColor += saturate(GIContribution) *
+                        (max(0.0, diffuse.rgb) + max(0.0, specular.rgb));
+                else
+                    linearColor += saturate(GIContribution) *
+                        (max(0.0, diffuse.rgb) * diffuseFactor * saturate(aoDiffuse) +
+                         max(0.0, specular.rgb) * specularFactor * saturate(aoSpecular));
+            }
         }
     }
 
     // The game still presents a gamma-domain scene at this stage.
     // Keep the DX12 composition linear and encode exactly once for export.
-    const float3 encoded = pow(max(0.0, linearColor), 1.0 / 1.6);
+    // Enhanced modes need a linear intermediate for the second HybridGI pass.
+    // Exclusive tiers are final presentation output and encode here.
+    const float3 encoded = AdvancedTransportTier >= 4u ?
+        max(0.0, linearColor) : pow(max(0.0, linearColor), 1.0 / 1.6);
     ComposedScene[pixel] = float4(all(isfinite(encoded)) ? encoded : 0.0,
         isfinite(shadowed.a) ? shadowed.a : 1.0);
 }
