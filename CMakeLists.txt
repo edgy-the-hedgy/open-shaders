@@ -676,6 +676,63 @@ string(TIMESTAMP UTC_NOW "%Y-%m-%dT%H-%MZ" UTC)
 # Set AIO directory path used by multiple targets below
 set(AIO_DIR "${CMAKE_CURRENT_BINARY_DIR}/aio")
 
+# The guest-room builder runs in-process through hostfxr; ship its managed
+# dependencies beside the plugin rather than spawning the standalone CLI.
+if(WIN32)
+    find_program(NATIVE_SCENE_DOTNET dotnet)
+    if(NATIVE_SCENE_DOTNET)
+        set(NATIVE_SCENE_PREP_SOURCE "${CMAKE_SOURCE_DIR}/tools/redstone-scene-prep")
+        set(NATIVE_SCENE_PREP_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/native-scene-prep")
+        file(GLOB NATIVE_SCENE_PREP_INPUTS CONFIGURE_DEPENDS
+            "${NATIVE_SCENE_PREP_SOURCE}/*.cs"
+            "${NATIVE_SCENE_PREP_SOURCE}/*.csproj"
+            "${NATIVE_SCENE_PREP_SOURCE}/packages.lock.json"
+            "${NATIVE_SCENE_PREP_SOURCE}/LayoutPreview.html"
+        )
+        add_custom_command(
+            OUTPUT "${NATIVE_SCENE_PREP_OUTPUT}/RedstoneScenePrep.dll"
+            COMMAND "${NATIVE_SCENE_DOTNET}" publish
+                "${NATIVE_SCENE_PREP_SOURCE}/RedstoneScenePrep.csproj"
+                --configuration Release --no-self-contained
+                --artifacts-path "${CMAKE_CURRENT_BINARY_DIR}/native-scene-prep-artifacts"
+                --output "${NATIVE_SCENE_PREP_OUTPUT}"
+                -p:RestoreLockedMode=true
+            DEPENDS ${NATIVE_SCENE_PREP_INPUTS}
+            COMMENT "Publishing in-process guest-room preparation component"
+            VERBATIM
+        )
+        add_custom_target(NativeScenePrep DEPENDS "${NATIVE_SCENE_PREP_OUTPUT}/RedstoneScenePrep.dll")
+        add_dependencies(${PROJECT_NAME} NativeScenePrep)
+        add_custom_command(
+            TARGET ${PROJECT_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "${AIO_DIR}/SKSE/Plugins/CommunityShaders/NativeScenePrep"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${NATIVE_SCENE_PREP_OUTPUT}"
+                "${AIO_DIR}/SKSE/Plugins/CommunityShaders/NativeScenePrep"
+            COMMENT "Staging managed native-scene preparation payload"
+            VERBATIM
+        )
+        if(AUTO_PLUGIN_DEPLOYMENT)
+            foreach(NATIVE_SCENE_DEPLOY_TARGET $ENV{CommunityShadersOutputDir})
+                add_custom_command(
+                    TARGET ${PROJECT_NAME} POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E make_directory
+                        "${NATIVE_SCENE_DEPLOY_TARGET}/SKSE/Plugins/CommunityShaders/NativeScenePrep"
+                    COMMAND ${CMAKE_COMMAND} -E copy_directory
+                        "${NATIVE_SCENE_PREP_OUTPUT}"
+                        "${NATIVE_SCENE_DEPLOY_TARGET}/SKSE/Plugins/CommunityShaders/NativeScenePrep"
+                    COMMENT "Deploying in-process native-scene preparation payload"
+                    VERBATIM
+                )
+            endforeach()
+        endif()
+    else()
+        message(WARNING "dotnet SDK not found: guest-room preparation payload cannot be built or deployed")
+    endif()
+endif()
+
+
 # feature_in_aio(): TRUE if the feature ships in the AIO (CORE, or its `.ini`
 # sets autoupload/aio truthy). Shared with the standalone partition emitter and
 # the CI consistency guard so all three agree on what the AIO contains.
@@ -820,6 +877,11 @@ install(
 "
 )
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION SKSE/Plugins COMPONENT SKSE)
+if(NATIVE_SCENE_DOTNET)
+    install(DIRECTORY "${NATIVE_SCENE_PREP_OUTPUT}/"
+        DESTINATION "SKSE/Plugins/CommunityShaders/NativeScenePrep"
+        COMPONENT SKSE)
+endif()
 install(
     FILES $<TARGET_PDB_FILE:${PROJECT_NAME}>
     DESTINATION SKSE/Plugins

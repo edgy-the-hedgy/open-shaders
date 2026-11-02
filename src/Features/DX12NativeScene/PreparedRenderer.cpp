@@ -59,6 +59,10 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t, uint64_t a_budgetBytes)
 		resetRequested = false;
 	}
 	if (!active) return;
+    const auto* owner = cell->GetFile(0);
+    const bool guestRoom = owner && cell->GetLocalFormID() == 0x04FD2Bu &&
+        _stricmp(owner->GetFilename(), "Unslaad.esm") == 0;
+    if (guestRoom && settings.AutoPrepareGuestRoom && !scenePreparation.CanLoad()) return;
 	if (preparedSubmitted) return;
 	if (preparedScene.Requested() && !preparedScene.GetCell()) return;
 	const auto backend = Feature::FindGraphicsBackend();

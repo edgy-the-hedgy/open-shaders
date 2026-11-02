@@ -44,6 +44,45 @@ another deployed environment or output location. Cell identity is
 `hex-local-id:PluginName.esm` representation. Default target is the user-confirmed
 Unslaad guest room, `Unslaad.esm:04FD2B` / `zzzCrbKedamaHouse`.
 
+## In-process DX12 native-scene preparation (Unslaad guest room only)
+
+The DX12 Native Scene feature now owns an automatic CPU preparation worker for
+`Unslaad.esm:04FD2B`. Entering the room checks the installed prepared package and
+its on-disk source fingerprints, and rebuilds it when absent, stale or at the
+wrong preparation quality. It uses the **same managed Mutagen/Nifly compiler
+inside the Skyrim process**, hosted via `hostfxr`; no PowerShell launcher or
+external preparation process is invoked. The prepared output is assembled
+outside Data, its geometry/shading/DDS hashes are checked, and the replacement
+cache is staged and swapped only after successful generation. An existing cache
+remains the fallback if an attempted rebuild fails. GPU upload and BLAS/TLAS
+publication continue through the existing asynchronous DX12 scene loader.
+
+In **DX12 Native Scene > Guest-room preparation**, choose:
+
+- **Geometry and lights**: rigid static geometry, light and room definitions;
+  skip material descriptions, shading uploads and texture sources.
+- **Shading and materials**: retain surface normals, tangents and material
+  descriptions, but no DDS source textures.
+- **Full textures and PBR**: preserve the previous complete source package,
+  including DDS textures; unresolved sources reject a replacement rather than
+  replacing a working cache with incomplete output.
+
+The `configureGuestRoomPreparation` devbench action accepts `enabled`,
+`quality` (0–2) and `rebuild`. The `shadowStatus` response includes
+`guestRoomPreparation` diagnostics. Preparation does not require a working
+FSR-FG/RR/DXR session, though rendering the resulting native scene still
+depends on the existing backend eligibility. Rebuilds are serialized and do
+not touch the render thread's CPU/GPU fence waits.
+
+For Windows builds with the `.NET 10 SDK` installed, CMake publishes and
+deploys the managed payload under
+`Data/SKSE/Plugins/CommunityShaders/NativeScenePrep/` with the native plugin.
+Running it requires the **.NET 10 x64 runtime** installed on the machine.
+Absent hosting dependencies are reported in the native-scene UI rather than
+attempting to spawn an external process. The earlier standalone CLI remains
+available for debugging and independently preparing other test cells; no
+automatic preparation was added for the chapel or other interiors.
+
 ## Inputs and boundaries
 
 The builder also exports `roomSchemaVersion: 1`, stable per-reference room links,

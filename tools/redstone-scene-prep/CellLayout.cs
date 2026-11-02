@@ -109,7 +109,7 @@ internal static class CellLayout
         {
             hash = instance.GeometrySha256, blob = Convert.ToBase64String(File.ReadAllBytes(Path.Combine(output, instance.GeometryFile)))
         }).ToArray();
-        var template = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "LayoutPreview.html"));
+        var template = File.ReadAllText(Path.Combine(Path.GetDirectoryName(typeof(CellLayout).Assembly.Location)!, "LayoutPreview.html"));
         var payload = JsonSerializer.Serialize(new { layout, meshes }, options);
         File.WriteAllText(Path.Combine(output, "cell-preview.html"), template.Replace("/*SCENE_DATA*/null", payload));
         return new(placedReferences, instances.Count, instances.Sum(instance => (long)instance.IndexCount / 3),

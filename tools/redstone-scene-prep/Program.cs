@@ -8,6 +8,14 @@ using Mutagen.Bethesda.Plugins.Order;
 using Mutagen.Bethesda.Plugins.Cache;
 using Mutagen.Bethesda.Skyrim;
 
+return ScenePreparation.Run(args);
+
+internal static class ScenePreparation
+{
+    internal static string LastFailure = "";
+
+    internal static int Run(string[] args, int quality = 2)
+    {
 if (args.Length != 4)
 {
     Console.Error.WriteLine("Usage: RedstoneScenePrep <Data directory> <plugin:local-cell-id> <output directory> <deployed Plugins.txt>");
@@ -16,6 +24,8 @@ if (args.Length != 4)
 
 try
 {
+    LastFailure = "";
+    if (quality is < 0 or > 2) throw new ArgumentOutOfRangeException(nameof(quality));
     var data = Path.GetFullPath(args[0]);
     var output = Path.GetFullPath(args[2]);
     if (output.Equals(data, StringComparison.OrdinalIgnoreCase) || output.StartsWith(data + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
@@ -121,6 +131,15 @@ try
         foreach (var path in paths) pgAssets.Add(pg.Read(path));
     var compiler = new MeshCompiler(output, options);
     var compiledAssets = pgAssets.Where(asset => staticPaths.Contains(asset.Path)).Select(compiler.Compile).ToArray();
+    if (quality == 0)
+        compiledAssets = compiledAssets.Select(asset => asset with
+        {
+            Shapes = asset.Shapes.Select(shape => shape with
+            {
+                ShadingStatus = "absent:preparation-quality", ShadingFile = null,
+                ShadingSha256 = null, TangentStatus = "absent:preparation-quality", Material = null
+            }).ToArray()
+        }).ToArray();
     var compiledShapes = compiledAssets.SelectMany(asset => asset.Shapes).Where(shape => shape.Status == "compiled").ToArray();
     File.WriteAllText(Path.Combine(output, "cell-meshes.json"), JsonSerializer.Serialize(new
     {
@@ -138,7 +157,12 @@ try
         assets = pgAssets.Select(asset => new { asset.Path, asset.Status, asset.Sha256 })
     }))).ToLowerInvariant();
     var layout = CellLayout.Write(output, target.FormKey.ToString(), target.EditorID, inputDigest, rows, compiledAssets, options);
-    TextureSources.Write(data, output, listings, options);
+    if (quality == 2) TextureSources.Write(data, output, listings, options);
+    else File.WriteAllText(Path.Combine(output, "cell-textures.json"), JsonSerializer.Serialize(new
+    {
+        schemaVersion = 1, cell = target.FormKey.ToString(), layoutDigest = layout.Digest,
+        textures = Array.Empty<object>()
+    }, options));
     File.WriteAllText(Path.Combine(output, "cell-records.json"), JsonSerializer.Serialize(new
     {
         schemaVersion = 1, tool = "RedstoneScenePrep", recordReader = "Mutagen.Bethesda.Skyrim/0.54.4",
@@ -176,6 +200,10 @@ try
 }
 catch (Exception error)
 {
+    LastFailure = error.ToString();
     Console.Error.WriteLine(error);
     return 1;
+}
+
+    }
 }
