@@ -14,9 +14,33 @@
 #include <unordered_set>
 #include <cctype>
 #include <cmath>
+#include <mutex>
 
 namespace
 {
+	struct CacheWriteStatus
+	{
+		std::atomic<uint64_t> queued{ 0 }, published{ 0 }, failed{ 0 };
+		std::mutex mutex;
+		std::string lastError;
+	};
+
+	CacheWriteStatus& CacheStatus()
+	{
+		// Deliberately process-lifetime: detached cache tasks can outlive
+		// the feature object during Skyrim shutdown.
+		static auto* status = new CacheWriteStatus;
+		return *status;
+	}
+
+	void CacheWriteFailure(std::string reason)
+	{
+		auto& status = CacheStatus();
+		status.failed.fetch_add(1, std::memory_order_relaxed);
+		std::lock_guard lock(status.mutex);
+		status.lastError = std::move(reason);
+	}
+
 	// Missing texture manifests have an empty stamp; source and candidate
 	// revisions must agree on both the geometry and material manifests.
 	std::filesystem::file_time_type TextureStamp(const std::filesystem::path& directory)
@@ -31,6 +55,8 @@ namespace
 	void CacheAcceptedScene(std::filesystem::path a_source, std::string a_plugin, uint32_t a_local,
 		std::string a_cell, uint32_t a_stage, std::string a_layoutDigest, uint32_t a_worldspace)
 	{
+		CacheStatus().queued.fetch_add(1, std::memory_order_relaxed);
+		try {
 		static BS::thread_pool<> pool{ 1 };
 		pool.detach_task([source = std::move(a_source), plugin = std::move(a_plugin),
 			local = a_local, cell = std::move(a_cell), stage = a_stage,
@@ -41,23 +67,25 @@ namespace
 				if (plugin.empty() || plugin.find("..") != std::string::npos ||
 					!std::ranges::all_of(plugin, [](unsigned char c) {
 						return std::isalnum(c) || c == '.' || c == '_' || c == '-';
-					})) return;
+					})) throw std::runtime_error("Cache plugin name invalid");
 				const auto base = std::filesystem::path("Data/SKSE/Plugins/CommunityShaders/RedstoneScene/runtime-cache/cells") /
 					plugin / std::format("{:06X}", local) / std::format("q{}", stage);
 				const auto manifestPath = source / "cell-layout.json";
-				if (std::filesystem::file_size(manifestPath) > 16ull * 1024 * 1024) return;
+				if (std::filesystem::file_size(manifestPath) > 16ull * 1024 * 1024)
+					throw std::runtime_error("Cache source manifest exceeds 16 MiB");
 				std::ifstream manifestFile(manifestPath);
 				const auto layout = json::parse(manifestFile);
 				if (layout.at("layoutDigest").get<std::string>() != digest ||
 					layout.at("cell").get<std::string>() != cell ||
-					!layout.at("instances").is_array()) return;
+					!layout.at("instances").is_array())
+					throw std::runtime_error("Cache source layout identity mismatch");
 				const auto sourceHash = Util::FileDigest::Sha256FileHex(manifestPath);
-				if (!sourceHash) return;
+				if (!sourceHash) throw std::runtime_error("Cache source manifest hash unavailable");
 				const auto textures = source / "cell-textures.json";
 				std::string textureHash = "none";
 				if (std::filesystem::exists(textures)) {
 					const auto hash = Util::FileDigest::Sha256FileHex(textures);
-					if (!hash) return;
+					if (!hash) throw std::runtime_error("Cache texture manifest hash unavailable");
 					textureHash = *hash;
 				}
 				// Content-address all source manifests, not just cell placement.
@@ -140,12 +168,31 @@ namespace
 				if (!MoveFileExW(stagedPointer.c_str(), (base / "active.json").c_str(),
 					MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
 					throw std::runtime_error("Failed to publish scene cache pointer");
-			} catch (const std::exception&) {
+				CacheStatus().published.fetch_add(1, std::memory_order_relaxed);
+			} catch (const std::exception& error) {
 				// Cache writes are optional and must never interrupt native rendering.
 				// A failed write cannot replace active.json with a partial revision.
-			}
+				CacheWriteFailure(error.what());
+			} catch (...) { CacheWriteFailure("Unknown cache-write failure"); }
 		});
+		} catch (const std::exception& error) {
+			CacheWriteFailure(std::string("Cache worker dispatch: ") + error.what());
+		} catch (...) { CacheWriteFailure("Unknown cache-worker dispatch failure"); }
 	}
+}
+
+json DX12NativeScene::GetCacheWriteDiagnostics() const
+{
+	auto& status = CacheStatus();
+	std::string lastError;
+	{
+		std::lock_guard lock(status.mutex);
+		lastError = status.lastError;
+	}
+	return { { "queued", status.queued.load(std::memory_order_relaxed) },
+		{ "published", status.published.load(std::memory_order_relaxed) },
+		{ "failed", status.failed.load(std::memory_order_relaxed) },
+		{ "lastError", lastError } };
 }
 
 std::optional<DX12NativeScene::PublishedScene> DX12NativeScene::GetPublishedScene() const

@@ -158,6 +158,7 @@ private:
 	void AdvancePreparedScene(uint32_t a_frame, uint64_t a_budgetBytes);
 	/** @brief Invalidates prepared publication and retains in-flight work for nonblocking retirement. */
 	void ResetPreparedScene();
+	json GetCacheWriteDiagnostics() const;
 	static constexpr uint32_t kBackendRetryFrames = 60;
 	DX12Native::Scene scene;
 	DX12Native::GeometryBridge geometryBridge;

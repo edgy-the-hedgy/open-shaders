@@ -335,6 +335,7 @@ json DX12NativeScene::GetDiagnostics()
             { "activeCacheStage", 0 }
         } },
 		{ "preparedAcceleration", preparedAcceleration.GetDiagnostics() }, { "preparedTrace", traceStatus },
+		{ "runtimeCacheWrites", GetCacheWriteDiagnostics() },
         { "progressiveUpgrade", {
             { "publishedStage", publishedStage }, { "candidateStage", upgradeScene.Requested() ? upgradeStage : 0u },
             { "candidateLoading", upgradeScene.GetDiagnostics().value("loading", false) },
@@ -375,6 +376,12 @@ void DX12NativeScene::DrawNativeSceneSettings()
         ImGui::TextWrapped("Legacy settings enable only part of the native scene. Changing the unified toggle will enable or disable geometry and materials together.");
 
     ImGui::SeparatorText("Native scene cache");
+    const auto cacheWrites = GetCacheWriteDiagnostics();
+    ImGui::Text("Scene cache writes: %llu published, %llu failed, %llu queued",
+        cacheWrites.value("published", 0ull), cacheWrites.value("failed", 0ull),
+        cacheWrites.value("queued", 0ull));
+    if (const auto failure = cacheWrites.value("lastError", std::string{}); !failure.empty())
+        ImGui::TextWrapped("Cache write: %s", failure.c_str());
     ImGui::Text("Published quality: Q%u | upgrade: %s", publishedStage,
         upgradeScene.Requested() ? std::format("Q{}", upgradeStage).c_str() : "idle");
     if (!upgradeFailure.empty()) ImGui::TextWrapped("Upgrade failure: %s", upgradeFailure.c_str());
