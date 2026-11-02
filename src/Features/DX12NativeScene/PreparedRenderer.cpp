@@ -35,7 +35,6 @@ namespace
 					})) return;
 				const auto base = std::filesystem::path("Data/SKSE/Plugins/CommunityShaders/RedstoneScene/runtime-cache/cells") /
 					plugin / std::format("{:06X}", local) / std::format("q{}", stage);
-				const auto revision = base / "revisions" / digest;
 				const auto manifestPath = source / "cell-layout.json";
 				if (std::filesystem::file_size(manifestPath) > 16ull * 1024 * 1024) return;
 				std::ifstream manifestFile(manifestPath);
@@ -45,6 +44,16 @@ namespace
 					!layout.at("instances").is_array()) return;
 				const auto sourceHash = Util::FileDigest::Sha256FileHex(manifestPath);
 				if (!sourceHash) return;
+				const auto textures = source / "cell-textures.json";
+				std::string textureHash = "none";
+				if (std::filesystem::exists(textures)) {
+					const auto hash = Util::FileDigest::Sha256FileHex(textures);
+					if (!hash) return;
+					textureHash = *hash;
+				}
+				// Content-address all source manifests, not just cell placement.
+				// An updated DDS manifest must never mutate a prior live revision.
+				const auto revision = base / "revisions" / digest / *sourceHash / textureHash;
 				std::filesystem::create_directories(revision);
 				const auto atlas = std::filesystem::path("Data/SKSE/Plugins/CommunityShaders/RedstoneScene/atlas") /
 					std::format("q{}", stage);
@@ -85,8 +94,7 @@ namespace
 						install("shading", shading, ".rsga");
 					}
 				}
-				const auto textures = source / "cell-textures.json";
-				if (std::filesystem::exists(textures)) {
+				if (textureHash != "none") {
 					std::ifstream textureFile(textures);
 					const auto textureLayout = json::parse(textureFile);
 					if (textureLayout.at("schemaVersion").get<uint32_t>() != 1 ||
@@ -109,9 +117,10 @@ namespace
 				if (!MoveFileExW(stagedManifest.c_str(), (revision / "cell-layout.json").c_str(),
 					MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
 					throw std::runtime_error("Failed to commit scene manifest");
-				const json pointer{ { "schemaVersion", 1 }, { "stage", stage }, { "cell", cell },
+				const json pointer{ { "schemaVersion", 2 }, { "stage", stage }, { "cell", cell },
 					{ "worldspaceFormID", worldspace }, { "layoutDigest", digest },
 					{ "sourceDirectory", source.string() }, { "sourceSha256", *sourceHash },
+					{ "textureSha256", textureHash },
 					{ "revisionDirectory", revision.string() } };
 				const auto stagedPointer = base / "active.json.part";
 				{

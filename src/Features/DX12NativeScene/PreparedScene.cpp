@@ -158,17 +158,36 @@ namespace DX12Native
                                 std::ifstream in(pointerFile);
                                 const auto pointer = json::parse(in);
                                 const auto digest = pointer.at("layoutDigest").get<std::string>();
-                                const auto revisionDir = cacheRoot / "revisions" / digest;
-                                if (pointer.at("schemaVersion").get<int>() == 1 &&
+                                const auto expected = pointer.at("sourceSha256").get<std::string>();
+                                const auto textureHash = pointer.at("textureSha256").get<std::string>();
+                                // Only schema 2 is immutable across geometry and material changes.
+                                // Older schema 1 cache pointers are safely ignored.
+                                if (pointer.at("schemaVersion").get<int>() == 2 &&
                                     pointer.at("stage").get<uint32_t>() == a_quality &&
                                     pointer.at("cell").get<std::string>() == a_cell &&
-                                    IsDigest(digest) &&
+                                    IsDigest(digest) && IsDigest(expected) &&
+                                    (textureHash == "none" || IsDigest(textureHash)) &&
                                     std::filesystem::path(pointer.at("sourceDirectory").get<std::string>())
                                         .lexically_normal() == a_directory.lexically_normal()) {
+                                    const auto revisionDir = cacheRoot / "revisions" / digest / expected / textureHash;
                                     const auto origin = Util::FileDigest::Sha256FileHex(a_directory / "cell-layout.json");
                                     const auto cached = Util::FileDigest::Sha256FileHex(revisionDir / "cell-layout.json");
-                                    const auto expected = pointer.at("sourceSha256").get<std::string>();
-                                    if (origin && cached &&
+                                    bool texturesMatch = false;
+                                    const auto sourceTextures = a_directory / "cell-textures.json";
+                                    const auto cachedTextures = revisionDir / "cell-textures.json";
+                                    if (textureHash == "none") {
+                                        std::error_code sourceError, cachedError;
+                                        texturesMatch = !std::filesystem::exists(sourceTextures, sourceError) &&
+                                            !std::filesystem::exists(cachedTextures, cachedError) &&
+                                            !sourceError && !cachedError;
+                                    } else {
+                                        const auto source = Util::FileDigest::Sha256FileHex(sourceTextures);
+                                        const auto copy = Util::FileDigest::Sha256FileHex(cachedTextures);
+                                        texturesMatch = source && copy &&
+                                            _stricmp(source->c_str(), textureHash.c_str()) == 0 &&
+                                            _stricmp(copy->c_str(), textureHash.c_str()) == 0;
+                                    }
+                                    if (texturesMatch && origin && cached &&
                                         _stricmp(origin->c_str(), expected.c_str()) == 0 &&
                                         _stricmp(cached->c_str(), expected.c_str()) == 0) {
                                         selectedDirectory = revisionDir;

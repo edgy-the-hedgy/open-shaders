@@ -49,6 +49,12 @@ Unslaad guest room, `Unslaad.esm:04FD2B` / `zzzCrbKedamaHouse`.
 Accepted scene packages are retained in a versioned directory after their
 TLAS has completed, under
 `Data/SKSE/Plugins/CommunityShaders/RedstoneScene/runtime-cache/cells/<plugin>/<cell>/qN/revisions/<layoutDigest>/`.
+For cache schema 2, each revision's directory is additionally keyed by
+the SHA-256 of the source cell-layout manifest and the cell-textures manifest
+(or `none` when no texture manifest exists), preventing texture-only changes
+from overwriting an existing revision. Legacy cache-schema-1 pointers are
+ignored and safely rebuilt from the source package.
+
 `qN/active.json` points to the most recent accepted revision. Its publication
 is an atomic replacement; previous revisions are intentionally left in place
 until garbage collection is implemented. The cache writer executes on a
@@ -68,8 +74,7 @@ identity and position if available. This is scene-registration metadata, not
 skinned-mesh upload: the player is **not** yet ray-intersectable in the
 prepared TLAS. Likewise, detecting an exterior worldspace is not equivalent
 to streaming its meshes. Persistent `active.json` is a recovery index; the
-runtime checks its source-manifest SHA-256 and can reuse the immutable
-revision if the source is unchanged. Corrupt cache metadata or missing cached
+runtime checks both the source geometry-manifest SHA-256 and the texture-manifest SHA-256 before using an immutable revision. Corrupt cache metadata or missing cached
 assets trigger a fallback to the source prepared package. This checks the
 source manifest, NOT the full active mod/load-order fingerprint: the cache
 must not be treated as proof that dynamic actor state or plugin overrides
