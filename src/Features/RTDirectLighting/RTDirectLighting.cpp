@@ -274,6 +274,14 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
         static_cast<uint32_t>(composer.composition.mode) : 0u;
     const float4 strengths{ settings.DirectStrength, settings.DiffuseStrength,
         tieredDirect ? 0.0f : settings.SpecularStrength, settings.EmissionStrength };
+    // Both live low-end compositor tiers use half the configured stochastic
+    // emitter disk radius. The traced quarter-density grid and ray count are
+    // unchanged; Custom and non-compositor renderers keep their saved radius.
+    const bool lowTierShadow = composer.composition.enabled &&
+        (composer.composition.mode == RTComposer::CompositorMode::ShadowOnly ||
+         composer.composition.mode == RTComposer::CompositorMode::HybridShadowed);
+    const float effectiveEmitterRadius = settings.EmitterRadiusMultiplier *
+        (lowTierShadow ? 0.5f : 1.0f);
 	if (!backend || !tracer.Initialize(*backend)) return;
 	// LLF is retained only for the existing opaque-room generation/stamp, not for lighting.
 	const auto lights = globals::features::lightLimitFix.GetLightView(frame);
@@ -295,7 +303,7 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
 		settings.RRMaterialIsolation, settings.RRGlossyRoughness,
 		{ settings.PointLightRadiusMultiplier, settings.PointLightFalloffFraction,
             settings.PointLightFalloffExponent, float(requestedTransportTier) },
-		{ settings.StochasticSampling ? 1.0f : 0.0f, settings.EmitterRadiusMultiplier, 0.0f, 0.0f });
+		{ settings.StochasticSampling ? 1.0f : 0.0f, effectiveEmitterRadius, 0.0f, 0.0f });
 	lastFrame = frame;
 }
 

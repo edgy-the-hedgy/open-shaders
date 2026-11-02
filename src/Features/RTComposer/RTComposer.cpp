@@ -211,6 +211,9 @@ json RTComposer::GetDiagnostics()
         { "effectiveDirectRREnabled", effective == EffectiveMode::Legacy &&
             globals::features::rtDirectLighting.settings.UseDirectRayRegeneration &&
             RayRegeneration::GetSettings().enabled },
+        { "lowTierStochasticRadiusMultiplier", composition.enabled &&
+            (composition.mode == CompositorMode::ShadowOnly ||
+             composition.mode == CompositorMode::HybridShadowed) ? 0.5f : 1.0f },
         { "giContribution", composition.giContribution },
         { "nativeProductionRequested", composition.enabled && WantsNativeHybrid() },
         { "directCheckerboard", composition.directCheckerboard },
