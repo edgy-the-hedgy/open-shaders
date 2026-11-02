@@ -148,6 +148,7 @@ json RTComposer::GetDiagnostics()
     const bool ssgiAvailable = globals::features::screenSpaceGI.loaded &&
         globals::features::screenSpaceGI.settings.Enabled;
     const auto& tracer = globals::features::dx12NativeScene.Tracer();
+    const auto planned = GetTierExecutionContract(composition.mode);
     return {
         { "enabled", composition.enabled },
         { "requestedMode", ModeName(composition.mode) },
@@ -157,11 +158,27 @@ json RTComposer::GetDiagnostics()
         { "firstBounceSurvival", GetTierPolicy(composition.mode).firstBounceSurvival },
         { "specularBounceFraction", GetTierPolicy(composition.mode).specularBounceFraction },
         { "secondBounceSurvival", GetTierPolicy(composition.mode).secondBounceSurvival },
+        { "requestedAdvancedTierExecution", {
+            { "directTraceMode", planned.directTraceMode },
+            { "indirectTraceMode", planned.indirectTraceMode },
+            { "indirectCandidateRaysPerAnchor", planned.indirectCandidateRays },
+            { "rrSignalFamilyMask", planned.rrSignalFamilies },
+            { "postCompositeHybridResolution", planned.hybridResolution },
+            { "postCompositeHybridCheckerboard", planned.hybridCheckerboard },
+            { "needsNativeComposition", planned.requiresNativeComposition },
+            { "needsSparseFamilyValidity", planned.requiresPerFamilyValidity },
+            { "needsPostCompositeHybridGI", planned.needsPostCompositeHybrid },
+            { "needsSecondBounce", planned.needsSecondBounce }
+        } },
         { "stagedTransportShaderTierID", composition.enabled && GetTierPolicy(composition.mode).ready ?
             0u : (composition.enabled && composition.mode >= CompositorMode::RTExclusiveI &&
             composition.mode <= CompositorMode::FSRRedstone ?
             static_cast<uint32_t>(composition.mode) : 0u) },
         { "stagedTransportDispatchEnabled", false },
+        { "advancedTierContractReady", !IsAdvancedTransportTier(composition.mode) },
+        { "advancedTierBlockingInterfaces",
+            IsAdvancedTransportTier(composition.mode) ?
+            "native indirect DX12 composition, sparse RR family validity/history, and post-compose GI for enhanced tiers" : "" },
         { "transportIntegrationStatus",
             "DXR shader estimator staged; DX12 scene compositor and per-family RR validity unfinished" },
         { "effectiveMode", effective == EffectiveMode::Legacy ? "legacy" :

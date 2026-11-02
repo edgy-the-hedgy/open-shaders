@@ -48,6 +48,48 @@ struct RTComposer final : Feature
         }
         return GetTierPolicy(CompositorMode::ShadowOnly);
     }
+    // This is a requirements contract, NOT a readiness or dispatch flag.
+    // Keeping the four advanced tiers explicit prevents accidental use of
+    // inherited Custom sampling, and avoids claiming an HLSL shader alone
+    // constitutes a finished DX12/RR production path.
+    struct TierExecutionContract
+    {
+        uint32_t directTraceMode = 0u;
+        uint32_t indirectTraceMode = 0u;
+        uint32_t indirectCandidateRays = 0u; // before Russian roulette
+        uint32_t rrSignalFamilies = 0u; // 1=indirect diffuse, 2=indirect specular, 4=AO/SO
+        uint32_t hybridResolution = 0u; // SSGI 0 full, 1 half, 2 quarter W/H
+        bool hybridCheckerboard = false;
+        bool requiresNativeComposition = false;
+        bool requiresPerFamilyValidity = false;
+        bool needsPostCompositeHybrid = false;
+        bool needsSecondBounce = false;
+    };
+    static constexpr TierExecutionContract GetTierExecutionContract(CompositorMode mode)
+    {
+        const auto tier = GetTierPolicy(mode);
+        switch (mode) {
+        case CompositorMode::RTExclusiveI:
+            // One candidate ray per traced 2x2 anchor; 50% survives.
+            return { 7u, 7u, 1u, 1u, 0u, false, true, true, false, false };
+        case CompositorMode::RTExclusiveII:
+            return { 7u, 7u, 1u, 3u, 0u, false, true, true, false, false };
+        case CompositorMode::RTEnhanced:
+            // Direct/indirect: native checkerboard. Follow-up HybridGI:
+            // quarter width AND height, itself checkerboarded.
+            return { 5u, 5u, 1u, 7u, 2u, true, true, true, true, false };
+        case CompositorMode::FSRRedstone:
+            return { 5u, 5u, 1u, 7u, 2u, true, true, true, true, true };
+        default:
+            // The existing two low tiers and Custom keep their live paths.
+            return { tier.directTraceMode, 0u, 0u, 0u, tier.hybridResolution,
+                tier.hybridCheckerboard, false, false, false, false };
+        }
+    }
+    static constexpr bool IsAdvancedTransportTier(CompositorMode mode)
+    {
+        return mode >= CompositorMode::RTExclusiveI && mode <= CompositorMode::FSRRedstone;
+    }
     static constexpr const char* ModeName(CompositorMode mode)
     {
         switch (mode) {
@@ -151,6 +193,14 @@ static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadow
 static_assert(!RTComposer::GetTierPolicy(RTComposer::CompositorMode::ShadowOnly).directRR);
 static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed).hybridResolution == 2u);
 static_assert(!RTComposer::GetTierPolicy(RTComposer::CompositorMode::FSRRedstone).ready);
+static_assert(RTComposer::GetTierExecutionContract(RTComposer::CompositorMode::RTExclusiveI).directTraceMode == 7u);
+static_assert(RTComposer::GetTierExecutionContract(RTComposer::CompositorMode::RTExclusiveI).rrSignalFamilies == 1u);
+static_assert(RTComposer::GetTierExecutionContract(RTComposer::CompositorMode::RTExclusiveII).rrSignalFamilies == 3u);
+static_assert(RTComposer::GetTierExecutionContract(RTComposer::CompositorMode::RTEnhanced).directTraceMode == 5u);
+static_assert(RTComposer::GetTierExecutionContract(RTComposer::CompositorMode::RTEnhanced).hybridCheckerboard);
+static_assert(RTComposer::GetTierExecutionContract(RTComposer::CompositorMode::FSRRedstone).needsSecondBounce);
+static_assert(!RTComposer::GetTierExecutionContract(RTComposer::CompositorMode::ShadowOnly).requiresNativeComposition);
+static_assert(!RTComposer::GetTierExecutionContract(RTComposer::CompositorMode::Custom).requiresPerFamilyValidity);
 static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::RTExclusiveI).firstBounceSurvival == 0.5f);
 static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::RTExclusiveI).specularBounceFraction == 0.0f);
 static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::RTExclusiveII).firstBounceSurvival == 0.5f);
