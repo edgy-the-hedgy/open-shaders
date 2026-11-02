@@ -98,7 +98,10 @@ namespace DX12Native
 		previewValid = false;
 		rrDebugPreviewValid = false;
 		lightSelectionFailure.clear();
-		for (auto& frame : frames) if (!frame.submitted) frame = {};
+        for (auto& frame : frames) {
+            frame.shadowTemporalValid = false; // never reuse histories across reset
+            if (!frame.submitted) frame = {};
+        }
 		if (a_releaseBindings) cachedBindings.reset();
 	}
 
@@ -116,6 +119,9 @@ namespace DX12Native
 		packRRSignals = nullptr;
 		rrDebugShader = nullptr;
 		rrDebugFailed = false;
+        shadowTemporalPipeline = nullptr;
+        shadowTemporalRoot = nullptr;
+        shadowTemporalFailure.clear();
 		failure.clear();
 	}
 
@@ -1035,7 +1041,10 @@ namespace DX12Native
 		if (a_nativeSize[0] > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION || a_nativeSize[1] > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
 			!std::isfinite(a_lightDirection.x) || !std::isfinite(a_lightDirection.y) || !std::isfinite(a_lightDirection.z)) return;
 		Frame* available = nullptr;
-		for (auto& frame : frames) if (!frame.scene) { available = &frame; break; }
+        // Alternate retired slots to keep previous GPU history resident.
+        for (auto& frame : frames)
+            if (!frame.scene && (!available || frame.number < available->number))
+                available = &frame;
 		if (!available) { ++busyFrames; return; }
 		if ((!cachedBindings || cachedBindings->scene != a_scene) && std::ranges::any_of(frames, [&](const Frame& frame) {
 			return frame.bindings && frame.scene != a_scene && frame.bindings->materials && frame.bindings->materials->bytes;
@@ -1056,6 +1065,10 @@ namespace DX12Native
 		const uint32_t effectiveRRMode = a_directRRResolutionMode == 3u ? rrPolicy.resolutionMode : std::min(a_directRRResolutionMode, 2u);
 		const bool directRR = a_sceneTarget && a_useDirectRR && rrPolicy.enabled;
 		const bool wantExport = a_sceneTarget && globals::features::rtComposer.ShadowOnlyActive();
+        bool wantShadowTemporal = a_sceneTarget &&
+            globals::features::rtComposer.TierControlsLocked() &&
+            (globals::features::rtComposer.composition.mode == RTComposer::CompositorMode::ShadowOnly ||
+             globals::features::rtComposer.composition.mode == RTComposer::CompositorMode::HybridShadowed);
         // Acquire DX11 inputs only when production native Hybrid-Shadowed is
         // eligible; Shadow Only is the sole DX11 scene-composition mode.
         bool wantHybridInputs = a_sceneTarget &&
@@ -1072,6 +1085,8 @@ namespace DX12Native
 			bool(available->shadowMask) == bool(a_sceneTarget) &&
 			bool(available->shadowMaskExport) == wantExport &&
             bool(available->hybridInputs[0]) == wantHybridInputs &&
+            bool(available->shadowTemporal) == wantShadowTemporal &&
+            bool(available->shadowMotion) == wantShadowTemporal &&
             (!wantHybridInputs || (available->hybridShadowedSource && available->hybridLinearDepth)) &&
             bool(available->nativeGI.textures[0]) == wantNativeGI &&
             (!wantNativeGI || available->nativeGI.constants) &&
@@ -1094,6 +1109,7 @@ namespace DX12Native
 		const uint64_t visibilityBytes = a_sceneTarget ? backend.d3d12Device->GetResourceAllocationInfo(0, 1, &visibilityDesc).SizeInBytes : 0;
 		const uint64_t maskBytes = a_sceneTarget ? backend.d3d12Device->GetResourceAllocationInfo(0, 1, &maskDesc).SizeInBytes : 0;
 		const uint64_t exportBytes = wantExport ? nextPreviewBytes : 0;
+        uint64_t temporalBytes = wantShadowTemporal ? maskBytes + nextPreviewBytes : 0;
         const auto linearDepthDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32_FLOAT, size[0], size[1], 1, 1, 1, 0,
             D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
         const uint64_t linearDepthBytes = wantHybridInputs ?
@@ -1117,7 +1133,7 @@ namespace DX12Native
 		const uint64_t signalBytes = (directRR || a_indirectRays) ? nextPreviewBytes * kDirectSignalCount : 0;
 		const uint64_t rrInteropReserve = directRR ? uint64_t(std::max(1u, size[0] >> effectiveRRMode)) * std::max(1u, size[1] >> effectiveRRMode) * 256 + kFrameOverheadBytes : 0;
 		auto calculateRequired = [&] {
-            return (reuse ? uint64_t{ 0 } : textureBytes * 2 + lightBytes + signalBytes + visibilityBytes + maskBytes + exportBytes + hybridBytes + nativeGIBytes + kFrameOverheadBytes) +
+            return (reuse ? uint64_t{ 0 } : textureBytes * 2 + lightBytes + signalBytes + visibilityBytes + maskBytes + exportBytes + temporalBytes + hybridBytes + nativeGIBytes + kFrameOverheadBytes) +
                 (a_sceneTarget ? uint64_t{ 0 } : nextPreviewBytes) + bindingBytes + rrInteropReserve;
         };
         uint64_t required = calculateRequired();
@@ -1137,6 +1153,24 @@ namespace DX12Native
                 bool(available->shadowMaskExport) == wantExport &&
                 !available->hybridInputs[0] && !available->hybridShadowedSource &&
                 !available->hybridLinearDepth && !available->nativeGI.textures[0] &&
+                (!a_sceneTarget || available->visibilityBits);
+            required = calculateRequired();
+            retainedBytes = ResidentBytes() - (reuse ? 0 : available->bytes);
+        }
+        if (wantShadowTemporal && overBudget()) {
+            // Denoising is optional: preserve working shadows under VRAM pressure.
+            wantShadowTemporal = false;
+            temporalBytes = 0;
+            reuse = available->size == size && available->useDirectRR == directRR &&
+                available->indirectRays == a_indirectRays && available->receivers &&
+                available->output && available->light &&
+                bool(available->shadowMask) == bool(a_sceneTarget) &&
+                bool(available->shadowMaskExport) == wantExport &&
+                !available->shadowTemporal && !available->shadowMotion &&
+                bool(available->hybridInputs[0]) == wantHybridInputs &&
+                (!wantHybridInputs || (available->hybridShadowedSource && available->hybridLinearDepth)) &&
+                bool(available->nativeGI.textures[0]) == wantNativeGI &&
+                (!wantNativeGI || available->nativeGI.constants) &&
                 (!a_sceneTarget || available->visibilityBits);
             required = calculateRequired();
             retainedBytes = ResidentBytes() - (reuse ? 0 : available->bytes);
@@ -1176,6 +1210,9 @@ namespace DX12Native
 			available->scene = std::move(a_scene);
 			available->size = size;
 			available->number = a_frame;
+            available->shadowTemporalEnabled = wantShadowTemporal;
+            available->shadowTemporalValid = false;
+            available->shadowMotionCaptured = false;
             available->nativeGIRequested = wantNativeGI;
             available->nativeGI.valid = false;
 			available->materialView = std::min(a_materialView, kCombinedDirectView);
@@ -1210,7 +1247,7 @@ namespace DX12Native
 				std::vector<PreparedPointLight>{ a_preparedLights.empty() ? PreparedPointLight{} : a_preparedLights.front() };
 			if (a_allPreparedLights) available->lightIdentities.assign(a_lightIdentities.begin(), a_lightIdentities.end());
 			else available->lightIdentities = { { a_lightReference, a_lightBase } };
-			available->bytes = textureBytes * 2 + lightBytes + signalBytes + visibilityBytes + maskBytes + exportBytes + hybridBytes + nativeGIBytes + kFrameOverheadBytes;
+			available->bytes = textureBytes * 2 + lightBytes + signalBytes + visibilityBytes + maskBytes + exportBytes + temporalBytes + hybridBytes + nativeGIBytes + kFrameOverheadBytes;
 			D3D11_TEXTURE2D_DESC desc{};
 			desc.Width = size[0]; desc.Height = size[1];
 			desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
@@ -1250,6 +1287,14 @@ namespace DX12Native
                 desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
                 hybridInputLastBytes = hybridBytes;
             }
+            if (wantShadowTemporal) {
+                desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+                if (!available->shadowMotion)
+                    available->shadowMotion = std::make_unique<WrappedResource>(
+                        desc, backend.d3d11Device.get(), backend.d3d12Device.get(),
+                        "RTComposer::ShadowTemporalMotion");
+                desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+            }
 			if (a_sceneTarget) {
 				const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
 				if (!available->visibilityBits) {
@@ -1264,6 +1309,12 @@ namespace DX12Native
 						nullptr, IID_PPV_ARGS(available->shadowMask.put())));
 					available->shadowMask->SetName(L"RTDirectLighting::WeightedShadowMask");
 				}
+                if (wantShadowTemporal && !available->shadowTemporal) {
+                    DX::ThrowIfFailed(backend.d3d12Device->CreateCommittedResource(
+                        &heap, D3D12_HEAP_FLAG_NONE, &maskDesc, D3D12_RESOURCE_STATE_COMMON,
+                        nullptr, IID_PPV_ARGS(available->shadowTemporal.put())));
+                    available->shadowTemporal->SetName(L"RTComposer::TemporalShadowMask");
+                }
 				if (wantExport && !available->shadowMaskExport) {
 					desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
 					available->shadowMaskExport = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RTDirectLighting::ShadowMaskDX11Export");

@@ -9,8 +9,10 @@
 Texture2D<float> Depth : register(t0);
 // t1 reserved; native light snapshot is uploaded directly to the shared texture.
 Texture2D<float4> RoomMetadata : register(t2);
+Texture2D<float4> MotionVectors : register(t3);
 RWTexture2D<float4> Receivers : register(u0);
 RWTexture2D<float4> LightSnapshot : register(u1);
+RWTexture2D<float4> ShadowMotion : register(u2);
 cbuffer Grid : register(b0)
 {
 	uint2 Size;
@@ -22,7 +24,8 @@ cbuffer Grid : register(b0)
 	float3 LightEyeOrigin;
 	uint LightCount;
 	uint RequestedLightCount;
-	uint3 RequestedPadding;
+	uint HasShadowMotion;
+    uint2 RequestedPadding;
 	uint4 RequestedIdentities[MaximumDirectLights];
 	uint4 RoomReferences[128];
 };
@@ -51,4 +54,5 @@ void main(uint3 id : SV_DispatchThreadID)
 	valid = valid && all(isfinite(relative));
 	uint room = HasRoomMetadata != 0 ? ReceiverRoom::Decode(RoomMetadata.Load(int3(pixel, 0)), RoomGeneration) : ReceiverRoom::Unknown;
 	Receivers[id.xy] = valid ? float4(relative, float(room)) : 0;
+    if (HasShadowMotion != 0u) ShadowMotion[id.xy] = MotionVectors.Load(int3(pixel, 0));
 }

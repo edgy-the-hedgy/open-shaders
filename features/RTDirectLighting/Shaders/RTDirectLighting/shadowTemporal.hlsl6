@@ -1,0 +1,76 @@
+// Lightweight GPU-only temporal resolve of the weighted direct-shadow mask.
+// Only Shadow Only / Hybrid-Shadowed dispatch this pass. Current and previous
+// native receivers carry room IDs; native engine motion is UV displacement.
+// No RR contexts, CPU readbacks, or raster source changes.
+Texture2D<float2> CurrentMask : register(t0);
+Texture2D<float2> PreviousMask : register(t1);
+Texture2D<float4> CurrentReceivers : register(t2);
+Texture2D<float4> PreviousReceivers : register(t3);
+Texture2D<float4> Motion : register(t4);
+RWTexture2D<float2> FilteredMask : register(u0);
+RWTexture2D<float4> ShadowExport : register(u1);
+cbuffer ShadowTemporalConstants : register(b0)
+{
+    uint2 Size;
+    uint HaveHistory;
+    uint ExportEnabled;
+    float HistoryWeight;
+    float DepthTolerance;
+};
+[numthreads(8, 8, 1)]
+void main(uint2 pixel : SV_DispatchThreadID)
+{
+    if (any(pixel >= Size)) return;
+    const float2 raw = CurrentMask.Load(int3(pixel, 0));
+    const float4 current = CurrentReceivers.Load(int3(pixel, 0));
+    const bool validNow = all(isfinite(raw)) && raw.y >= 0.5 &&
+        all(isfinite(current)) && current.w > 0.0;
+    float2 resolved = validNow ? float2(saturate(raw.x), 1.0) : float2(1.0, 0.0);
+    if (HaveHistory != 0 && all(isfinite(current)) && current.w > 0.0)
+    {
+        const float4 mv = Motion.Load(int3(pixel, 0));
+        // Skyrim's motion.xy points to the previous screen UV, not pixels.
+        if (all(isfinite(mv)) && all(abs(mv.xy) <= 1.0))
+        {
+            const float2 previous = float2(pixel) + mv.xy * float2(Size);
+            const int2 oldPixel = int2(floor(previous + 0.5));
+            if (all(oldPixel >= 0) && all(oldPixel < int2(Size)))
+            {
+                const float4 old = PreviousReceivers.Load(int3(oldPixel, 0));
+                const float2 oldMask = PreviousMask.Load(int3(oldPixel, 0));
+                const float depth = length(current.xyz);
+                const float prevDepth = length(old.xyz);
+                const float predictedDepth = depth + mv.z;
+                const bool compatible = all(isfinite(old)) &&
+                    all(isfinite(oldMask)) && old.w == current.w &&
+                    oldMask.y >= 0.5 && isfinite(predictedDepth) &&
+                    abs(prevDepth - predictedDepth) <=
+                        max(5.0, depth * DepthTolerance);
+                if (compatible)
+                {
+                    if (validNow)
+                    {
+                        // Current evidence wins at silhouette changes. Limit
+                        // accumulated visibility to a small neighborhood of
+                        // the current measurement to prevent long dark trails.
+                        const float history = clamp(oldMask.x,
+                            max(0.0, resolved.x - 0.18),
+                            min(1.0, resolved.x + 0.18));
+                        resolved.x = lerp(resolved.x, history,
+                            saturate(HistoryWeight));
+                    }
+                    else
+                    {
+                        // Bridge a single checkerboard dropout, not an
+                        // indefinitely stale shadow or a missing receiver.
+                        resolved = float2(saturate(oldMask.x),
+                            saturate(oldMask.y) * 0.65);
+                    }
+                }
+            }
+        }
+    }
+    FilteredMask[pixel] = resolved;
+    if (ExportEnabled != 0)
+        ShadowExport[pixel] = float4(resolved, 0.0, 0.0);
+}

@@ -144,6 +144,12 @@ namespace DX12Native
 			// DX12-only UAVs: no DX11 sharing, CPU readback, or intermediate handoff.
 			// R32G32_UINT: visible/valid per-light bitsets; R16G16_FLOAT: visibility/confidence.
 			winrt::com_ptr<ID3D12Resource> visibilityBits, shadowMask;
+            winrt::com_ptr<ID3D12Resource> shadowTemporal;
+            std::unique_ptr<WrappedResource> shadowMotion;
+            winrt::com_ptr<ID3D12DescriptorHeap> shadowTemporalHeap;
+            bool shadowTemporalEnabled = false;
+            bool shadowTemporalValid = false;
+            bool shadowMotionCaptured = false;
 			// DX11-visible transfer only for final Shadow Only composition.
 			std::unique_ptr<WrappedResource> shadowMaskExport;
             std::array<std::unique_ptr<WrappedResource>, kHybridInputCount> hybridInputs;
@@ -194,6 +200,12 @@ namespace DX12Native
 		void PrepareReceivers(Frame& a_frame, const std::array<uint32_t, 2>& a_nativeSize, const LightLimitFixData::LightView& a_lights, ID3D11ShaderResourceView* a_roomMetadata);
         void PrepareHybridInputs(Frame& a_frame);
         void RecordHybridShadowedSource(Frame& a_frame);
+        void RecordShadowTemporal(Frame& a_frame);
+        ID3D12Resource* EffectiveShadowMask(const Frame& frame) const
+        {
+            return frame.shadowTemporalValid && frame.shadowTemporal ?
+                frame.shadowTemporal.get() : frame.shadowMask.get();
+        }
         void RecordNativeHybridGI(Frame& a_frame);
 		void Record(Frame& a_frame, const float3& a_direction, bool a_localLight);
 		void Consume(Frame& a_frame);
@@ -207,6 +219,10 @@ namespace DX12Native
 		SharedFence producer, completion;
 		winrt::com_ptr<ID3D11ComputeShader> prepare, display, composite;
         winrt::com_ptr<ID3D11ComputeShader> prepareHybrid;
+        winrt::com_ptr<ID3D12RootSignature> shadowTemporalRoot;
+        winrt::com_ptr<ID3D12PipelineState> shadowTemporalPipeline;
+        uint64_t shadowTemporalDispatches = 0, shadowTemporalReprojections = 0;
+        std::string shadowTemporalFailure;
         winrt::com_ptr<ID3D11ComputeShader> nativeHybridResolve;
         winrt::com_ptr<ID3D12RootSignature> hybridSourceRoot;
         winrt::com_ptr<ID3D12PipelineState> hybridSourcePipeline;
