@@ -85,6 +85,7 @@ namespace DX12Native
         if (inFlight) {
             (void)nativeHybridGI.release();
             (void)postHybridGI.release();
+            (void)advancedDenoiser.release();
             (void)producer.fence11.detach();
             (void)producer.fence12.detach();
             (void)completion.fence11.detach();
@@ -867,12 +868,14 @@ namespace DX12Native
         nativeHybridGI->RecordHistoryValidation(
             backend.d3d12Device.get(), frame.commands.get(), frame.nativeGI,
             slot, frame.number, frame.generation);
-        if (!advancedDenoiser.Initialize(backend) ||
+        if (!advancedDenoiser)
+            advancedDenoiser = std::make_unique<RedstoneDenoiser>();
+        if (!advancedDenoiser->Initialize(backend) ||
             !nativeHybridGI->RecordPostRR(
                 backend.d3d12Device.get(), frame.commands.get(),
                 frame.nativeGI, slot, frame.number, frame.hybridLinearDepth.get(),
                 frame.hybridInputs[2]->resource.get(), composer.composition,
-                advancedDenoiser)) {
+                *advancedDenoiser)) {
             advancedComposeFailure = nativeHybridGI->PostFailure();
             return; // never publish sparse raw radiance without RR
         }
@@ -1253,6 +1256,7 @@ namespace DX12Native
                 DX::ThrowIfFailed(context->Signal(producer.fence11.get(), a_frame.retirement));
                 ++sceneCompositeSubmissions;
                 ++nativeHybridPreviewSubmissions;
+                if (composer.AdvancedActive()) ++advancedPresentedFrames;
                 sceneCompositeFrame = a_frame.number;
                 return;
             }
@@ -1261,6 +1265,7 @@ namespace DX12Native
             // Never route failed native GI/RR through the legacy DX11 direct or
             // HybridGI composer. The already-composed raster scene stays intact.
             ++nativeHybridFallbackFrames;
+            if (composer.AdvancedActive()) ++advancedRasterFallbackFrames;
             a_frame.retirement = producer.Next();
             DX::ThrowIfFailed(context->Signal(producer.fence11.get(), a_frame.retirement));
             return;
@@ -1876,10 +1881,14 @@ namespace DX12Native
             { "nativeHybridPreviewSubmissions", nativeHybridPreviewSubmissions },
             { "nativeHybridPreviewFailure", nativeHybridPreviewFailure },
             { "nativeHybridGIStatus", "Production DX12 Hybrid-Shadowed; GPU RR or full-native raw, raster preserved on failed frame" },
-            { "advancedRRDispatches", advancedDenoiser.NativeHybridDispatches() },
-            { "advancedRRFailure", advancedDenoiser.NativeHybridFailure() },
+            { "advancedRRDispatches", advancedDenoiser ?
+                advancedDenoiser->NativeHybridDispatches() : uint64_t{0} },
+            { "advancedRRFailure", advancedDenoiser ?
+                advancedDenoiser->NativeHybridFailure() : std::string{} },
             { "advancedComposeSubmissions", advancedComposeSubmissions },
             { "postHybridComposeSubmissions", postHybridComposeSubmissions },
+            { "advancedPresentedFrames", advancedPresentedFrames },
+            { "advancedRasterFallbackFrames", advancedRasterFallbackFrames },
             { "advancedComposeFailure", advancedComposeFailure },
             { "advancedPackDispatches", nativeHybridGI ? nativeHybridGI->AdvancedPackDispatches() : uint64_t{0} },
             { "nativeHybridFallbackFrames", nativeHybridFallbackFrames },

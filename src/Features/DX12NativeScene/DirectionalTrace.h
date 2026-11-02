@@ -257,8 +257,9 @@ namespace DX12Native
         winrt::com_ptr<ID3D12DescriptorHeap> hybridSourceHeap;
         std::unique_ptr<NativeHybridGI> nativeHybridGI;
         std::unique_ptr<NativeHybridGI> postHybridGI;
-        RedstoneDenoiser advancedDenoiser;
+        std::unique_ptr<RedstoneDenoiser> advancedDenoiser; // quarantinable if GPU retirement times out
         uint64_t advancedComposeSubmissions = 0, postHybridComposeSubmissions = 0;
+        uint64_t advancedPresentedFrames = 0, advancedRasterFallbackFrames = 0;
         std::string advancedComposeFailure;
         uint64_t nativeHybridPreviewSubmissions = 0;
         uint64_t nativeHybridFallbackFrames = 0;
