@@ -180,6 +180,7 @@ void DX12NativeScene::ResetPreparedScene()
 	upgradeRevision = 0;
 	upgradeSubmitted = false;
 	preparedPackageRoot.clear();
+	upgradePackageDirectory.clear();
 	publishedPackageDirectory.clear();
 	cachedRevision = 0;
 	publishedManifestTime = upgradeManifestTime = {};
@@ -272,48 +273,65 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t a_frame, uint64_t a_budgetBy
 		}
 	}
 
-	// Independent candidate: Q0 continues to render while Q1/Q2 file decoding,
-	// upload and fenced BLAS/TLAS building take place on the workers.
-	// Check for a replacement at this stage first; otherwise request the next
-	// tier. Both paths build independently of the active TLAS.
-	if (!upgradeScene.Requested() && a_frame - lastUpgradePollFrame < 120) return;
-	if (!upgradeScene.Requested()) lastUpgradePollFrame = a_frame;
-	std::error_code error;
-	const auto currentTime = std::filesystem::last_write_time(publishedPackageDirectory / "cell-layout.json", error);
-	const bool sameStageRefresh = !error && currentTime != publishedManifestTime;
-	error.clear();
-	if (publishedStage >= 2 && !sameStageRefresh) return;
-	const auto targetStage = sameStageRefresh ? publishedStage : publishedStage + 1;
-	const auto candidateDirectory = sameStageRefresh ? publishedPackageDirectory : root / std::format("q{}", targetStage);
-	const auto manifest = candidateDirectory / "cell-layout.json";
-	const bool exists = std::filesystem::exists(manifest, error);
-	if (error || !exists) {
-		if (!upgradeScene.Requested()) lastUpgradePollFrame = a_frame;
-		return;
-	}
-	const auto modified = std::filesystem::last_write_time(manifest, error);
-	if (error) return;
-	if (upgradeScene.Requested()) {
-		if (upgradeStage != targetStage) return;
-		if (modified != upgradeManifestTime && !upgradeSubmitted &&
-			!upgradeScene.GetDiagnostics().value("loading", false)) {
+	// The candidate loader and DXR worker never mutate the published snapshot.
+	// Poll package timestamps at a bounded cadence, but check again at
+	// publication. An overwrite of the current tier supersedes a higher tier.
+	const bool candidateReady = bool(upgradeAcceleration.GetScene());
+	const bool shouldPoll = a_frame - lastUpgradePollFrame >= 60 ||
+		(!upgradeScene.Requested() && lastUpgradePollFrame == 0) || candidateReady;
+	if (shouldPoll) {
+		lastUpgradePollFrame = a_frame;
+		std::error_code error;
+		const auto currentTime = std::filesystem::last_write_time(
+			publishedPackageDirectory / "cell-layout.json", error);
+		const bool sameStageRefresh = !error && currentTime != publishedManifestTime;
+		error.clear();
+		std::filesystem::path desiredDirectory;
+		uint32_t desiredStage = 0;
+		if (sameStageRefresh) {
+			desiredDirectory = publishedPackageDirectory;
+			desiredStage = publishedStage;
+		} else if (publishedStage < 2) {
+			desiredStage = publishedStage + 1;
+			desiredDirectory = root / std::format("q{}", desiredStage);
+		}
+		std::filesystem::file_time_type desiredTime{};
+		if (!desiredDirectory.empty()) {
+			const auto manifest = desiredDirectory / "cell-layout.json";
+			if (std::filesystem::exists(manifest, error) && !error) {
+				desiredTime = std::filesystem::last_write_time(manifest, error);
+				if (error) desiredDirectory.clear();
+			} else desiredDirectory.clear();
+		}
+		if (upgradeScene.Requested() &&
+			(upgradeStage != desiredStage || upgradePackageDirectory != desiredDirectory ||
+				upgradeManifestTime != desiredTime)) {
+			// Superseded loader output must never reach the current publication,
+			// including when the GPU worker was already submitted.
 			upgradeScene.Reset();
 			upgradeAcceleration.Reset();
+			upgradeSubmitted = false;
+			upgradeStage = 0;
+			upgradeRevision = 0;
+			upgradePackageDirectory.clear();
+			upgradeManifestTime = {};
 			upgradeFailure.clear();
 		}
+		if (!upgradeScene.Requested() && !desiredDirectory.empty()) {
+			upgradeStage = desiredStage;
+			upgradeRevision = preparedRevision + 1;
+			upgradePackageDirectory = desiredDirectory;
+			upgradeManifestTime = desiredTime;
+			upgradeScene.Request(*backend, desiredDirectory, key, upgradeRevision,
+				a_budgetBytes, materialBudget, desiredStage);
+		}
 	}
-	if (!upgradeScene.Requested()) {
-		upgradeRevision = preparedRevision + 1;
-		upgradeStage = targetStage;
-		upgradeManifestTime = modified;
-		lastUpgradePollFrame = a_frame;
-		upgradeScene.Request(*backend, candidateDirectory, key, upgradeRevision,
-			a_budgetBytes, materialBudget, upgradeStage);
-	}
+	if (!upgradeScene.Requested()) return;
 	auto candidate = upgradeScene.GetCell();
 	if (!candidate) {
 		const auto diag = upgradeScene.GetDiagnostics();
-		if (!diag.value("loading", false)) upgradeFailure = diag.value("failure", std::string{});
+		if (!diag.value("loading", false))
+			upgradeFailure = diag.value("failure", std::string{});
 		return;
 	}
 	if (!upgradeSubmitted) {
@@ -323,6 +341,21 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t a_frame, uint64_t a_budgetBy
 	upgradeAcceleration.Advance();
 	if (auto readyUpgrade = upgradeAcceleration.GetScene();
 		readyUpgrade && readyUpgrade->scope.scene == upgradeRevision) {
+		std::error_code verificationError;
+		const auto observedTime = std::filesystem::last_write_time(
+			upgradePackageDirectory / "cell-layout.json", verificationError);
+		if (verificationError || observedTime != upgradeManifestTime) {
+			// The disk package changed during GPU construction. Abort and
+			// permit a new candidate without ever replacing the active TLAS.
+			upgradeScene.Reset();
+			upgradeAcceleration.Reset();
+			upgradeSubmitted = false;
+			upgradeStage = 0;
+			upgradeRevision = 0;
+			upgradePackageDirectory.clear();
+			upgradeManifestTime = {};
+			return;
+		}
 		auto [lights, rooms] = references(*candidate);
 		// The published GPU scene is not altered until the new worker reports
 		// its fenced, fully built TLAS. Prior shared owners remain valid.
@@ -332,17 +365,20 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t a_frame, uint64_t a_budgetBy
 		preparedRoomReferences = rooms;
 		preparedRevision = upgradeRevision;
 		publishedStage = upgradeStage;
-		publishedPackageDirectory = candidateDirectory;
+		publishedPackageDirectory = upgradePackageDirectory;
 		publishedManifestTime = upgradeManifestTime;
 		upgradeScene.Reset();
 		upgradeAcceleration.Reset();
 		upgradeSubmitted = false;
 		upgradeRevision = 0;
+		upgradePackageDirectory.clear();
 		upgradeFailure.clear();
 		upgradeManifestTime = {};
 		preparedTrace.Reset(true);
 	} else if (upgradeAcceleration.Finished()) {
 		upgradeFailure = upgradeAcceleration.GetDiagnostics().value("failure", std::string{});
+		if (upgradeFailure.empty())
+			upgradeFailure = "Acceleration candidate finished without a completed TLAS";
 	}
 }
 

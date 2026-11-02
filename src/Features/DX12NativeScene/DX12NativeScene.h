@@ -137,7 +137,7 @@ private:
 	uint32_t publishedStage = 0, upgradeStage = 0;
 	uint64_t upgradeRevision = 0;
 	bool upgradeSubmitted = false;
-	std::filesystem::path preparedPackageRoot, publishedPackageDirectory;
+	std::filesystem::path preparedPackageRoot, publishedPackageDirectory, upgradePackageDirectory;
 	uint64_t cachedRevision = 0;
 	std::filesystem::file_time_type publishedManifestTime{}, upgradeManifestTime{};
 	std::string upgradeFailure;
