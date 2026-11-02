@@ -40,9 +40,9 @@ cbuffer LightingComposite : register(b0)
 // An intentionally non-surface-aware dilation: source samples must be
 // confirmed shadowed, but the destination pixel may have invalid geometry,
 // no receiver, or no shadow coverage of its own.
-void ApplyShadowAura(uint2 pixel, uint2 extent)
+float4 ApplyShadowAura(uint2 pixel, uint2 extent, float4 color)
 {
-    if (ShadowOnlyEnabled == 0u) return;
+    if (ShadowOnlyEnabled == 0u) return color;
     const int radius = clamp(int(ShadowAuraRadius + 0.5), 0, 3);
     float visibility = 1.0f;
     [loop] for (int dy = -radius; dy <= radius; ++dy) {
@@ -54,11 +54,10 @@ void ApplyShadowAura(uint2 pixel, uint2 extent)
                 visibility = min(visibility, saturate(mask.x));
         }
     }
-    if (visibility >= 1.0f) return;
-    const float4 original = SceneColor[pixel];
+    if (visibility >= 1.0f) return color;
     const float attenuation = lerp(1.0f, visibility, saturate(ShadowInfluence));
-    const float3 linearColor = Color::SceneGammaToLinear(original.rgb);
-    SceneColor[pixel] = float4(Color::SceneLinearToGamma(linearColor * attenuation), original.a);
+    const float3 linearColor = Color::SceneGammaToLinear(color.rgb);
+    return float4(Color::SceneLinearToGamma(linearColor * attenuation), color.a);
 }
 
 [numthreads(8, 8, 1)]
@@ -73,12 +72,12 @@ void main(uint3 id : SV_DispatchThreadID)
     // Shadow aura executes LAST, even for invalid direct receivers or a
     // disabled direct blend. It may overwrite originally invalid mask targets.
     if (RedstoneBlend <= 0.0f) {
-        ApplyShadowAura(id.xy, uint2(width, height));
+        SceneColor[id.xy] = ApplyShadowAura(id.xy, uint2(width, height), SceneColor[id.xy]);
         return;
     }
 	float4 lighting = DirectLighting.Load(int3(id.xy, 0));
     if (lighting.w != DirectRadianceTag || !all(isfinite(lighting.rgb))) {
-        ApplyShadowAura(id.xy, uint2(width, height));
+        SceneColor[id.xy] = ApplyShadowAura(id.xy, uint2(width, height), SceneColor[id.xy]);
         return;
     }
 	uint rrFlags = UseDirectRR;
@@ -124,12 +123,12 @@ void main(uint3 id : SV_DispatchThreadID)
 		working += (diffuse + specular) * IndirectStrength;
 	}
     if (!all(isfinite(working))) {
-        ApplyShadowAura(id.xy, uint2(width, height));
+        SceneColor[id.xy] = ApplyShadowAura(id.xy, uint2(width, height), SceneColor[id.xy]);
         return;
     }
 	if (RedstoneBlend >= 1.0f) {
-        SceneColor[id.xy] = float4(Color::SceneLinearToGamma(working), 1.0f);
-        ApplyShadowAura(id.xy, uint2(width, height));
+        const float4 composed = float4(Color::SceneLinearToGamma(working), 1.0f);
+        SceneColor[id.xy] = ApplyShadowAura(id.xy, uint2(width, height), composed);
         return;
     }
 
@@ -137,6 +136,6 @@ void main(uint3 id : SV_DispatchThreadID)
     float3 rasterLinear = Color::SceneGammaToLinear(raster.rgb);
     float3 blendedLinear = lerp(rasterLinear, working, saturate(RedstoneBlend));
 
-    SceneColor[id.xy] = float4(Color::SceneLinearToGamma(blendedLinear), raster.a);
-    ApplyShadowAura(id.xy, uint2(width, height));
+    SceneColor[id.xy] = ApplyShadowAura(id.xy, uint2(width, height),
+        float4(Color::SceneLinearToGamma(blendedLinear), raster.a));
 }
