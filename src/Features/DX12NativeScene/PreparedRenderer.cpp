@@ -59,12 +59,7 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t, uint64_t a_budgetBytes)
 		resetRequested = false;
 	}
 	if (!active) return;
-    const auto* owner = cell->GetFile(0);
-    const auto pluginName = owner ? owner->GetFilename() : std::string_view{};
-    const bool guestRoom = owner && cell->GetLocalFormID() == 0x04FD2Bu &&
-        pluginName.size() == sizeof("Unslaad.esm") - 1 &&
-        _strnicmp(pluginName.data(), "Unslaad.esm", pluginName.size()) == 0;
-    if (guestRoom && settings.AutoPrepareGuestRoom && !scenePreparation.CanLoad()) return;
+	// Preparation is offline-only; no managed runtime worker or readiness gate exists.
 	if (preparedSubmitted) return;
 	if (preparedScene.Requested() && !preparedScene.GetCell()) return;
 	const auto backend = Feature::FindGraphicsBackend();
@@ -74,8 +69,10 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t, uint64_t a_budgetBytes)
 		if (!source) return;
 		const auto local = cell->GetLocalFormID();
 		const auto key = std::format("{:06X}:{}", local, source->GetFilename());
-		const auto directory = std::filesystem::path("Data/SKSE/Plugins/CommunityShaders/RedstoneScene/cells") /
+		const auto baseDirectory = std::filesystem::path("Data/SKSE/Plugins/CommunityShaders/RedstoneScene/cells") /
 			source->GetFilename() / std::format("{:06X}", local);
+		const auto qualityDirectory = baseDirectory / std::format("q{}", std::min(settings.PreparationQuality, 2u));
+		const auto directory = std::filesystem::exists(qualityDirectory / "cell-layout.json") ? qualityDirectory : baseDirectory;
 		preparedScene.Request(*backend, directory, key, preparedRevision, a_budgetBytes,
 			settings.UsePreparedMaterials ? uint64_t(settings.MaterialTextureBudgetMB) * 1024 * 1024 : 0,
                 std::min(settings.PreparationQuality, 2u));
