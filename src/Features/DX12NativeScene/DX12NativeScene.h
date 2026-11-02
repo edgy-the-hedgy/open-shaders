@@ -130,7 +130,8 @@ private:
 	uint32_t publishedStage = 0, upgradeStage = 0;
 	uint64_t upgradeRevision = 0;
 	bool upgradeSubmitted = false;
-	std::filesystem::path preparedPackageRoot;
+	std::filesystem::path preparedPackageRoot, publishedPackageDirectory;
+	uint64_t cachedRevision = 0;
 	std::filesystem::file_time_type upgradeManifestTime{};
 	std::string upgradeFailure;
 	uint32_t lastUpgradePollFrame = 0;

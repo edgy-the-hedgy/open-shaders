@@ -8,6 +8,111 @@
 #include "State.h"
 #include "Util.h"
 #include "Utils/Form.h"
+#include "Utils/FileDigest.h"
+#include <BS_thread_pool.hpp>
+#include <fstream>
+#include <unordered_set>
+#include <cctype>
+
+namespace
+{
+	// Never publish a partially copied package: immutable generations are
+	// committed by a single, atomically replaced active.json pointer.
+	void CacheAcceptedScene(std::filesystem::path a_source, std::string a_plugin, uint32_t a_local,
+		std::string a_cell, uint32_t a_stage, std::string a_layoutDigest, uint32_t a_worldspace)
+	{
+		static BS::thread_pool<> pool{ 1 };
+		pool.detach_task([source = std::move(a_source), plugin = std::move(a_plugin),
+			local = a_local, cell = std::move(a_cell), stage = a_stage,
+			digest = std::move(a_layoutDigest), worldspace = a_worldspace] {
+			try {
+				// Paths are formed solely from a resolved plugin filename and a
+				// hex local form ID. Reject traversal and arbitrary separators.
+				if (plugin.empty() || plugin.find("..") != std::string::npos ||
+					!std::ranges::all_of(plugin, [](unsigned char c) {
+						return std::isalnum(c) || c == '.' || c == '_' || c == '-';
+					})) return;
+				const auto base = std::filesystem::path("Data/SKSE/Plugins/CommunityShaders/RedstoneScene/runtime-cache/cells") /
+					plugin / std::format("{:06X}", local) / std::format("q{}", stage);
+				const auto revision = base / "revisions" / digest;
+				const auto manifestPath = source / "cell-layout.json";
+				if (std::filesystem::file_size(manifestPath) > 16ull * 1024 * 1024) return;
+				std::ifstream manifestFile(manifestPath);
+				const auto layout = json::parse(manifestFile);
+				if (layout.at("layoutDigest").get<std::string>() != digest ||
+					layout.at("cell").get<std::string>() != cell ||
+					!layout.at("instances").is_array()) return;
+				const auto sourceHash = Util::FileDigest::Sha256FileHex(manifestPath);
+				if (!sourceHash) return;
+				std::filesystem::create_directories(revision);
+				const auto atlas = std::filesystem::path("Data/SKSE/Plugins/CommunityShaders/RedstoneScene/atlas") /
+					std::format("q{}", stage);
+				std::unordered_set<std::string> seen;
+				const auto install = [&](const std::string& folder, const std::string& hash, const std::string& extension) {
+					if (hash.size() != 64 || !std::ranges::all_of(hash, [](unsigned char c) {
+						return c >= '0' && c <= '9' || c >= 'a' && c <= 'f';
+					})) throw std::runtime_error("Invalid cache asset digest");
+					const auto fileName = hash + extension;
+					if (!seen.insert(folder + "/" + fileName).second) return;
+					auto input = source / folder / fileName;
+					if (!std::filesystem::exists(input)) input = atlas / folder / fileName;
+					const auto actual = Util::FileDigest::Sha256FileHex(input);
+					if (!actual || _stricmp(actual->c_str(), hash.c_str()) != 0)
+						throw std::runtime_error("Cache source digest mismatch");
+					const auto outputDirectory = revision / folder;
+					std::filesystem::create_directories(outputDirectory);
+					const auto output = outputDirectory / fileName;
+					if (const auto prior = Util::FileDigest::Sha256FileHex(output);
+						prior && _stricmp(prior->c_str(), hash.c_str()) == 0) return;
+					const auto temporary = output.wstring() + L".part";
+					std::error_code ignored;
+					std::filesystem::remove(temporary, ignored);
+					std::filesystem::create_hard_link(input, temporary, ignored);
+					if (ignored) std::filesystem::copy_file(input, temporary, std::filesystem::copy_options::overwrite_existing);
+					if (!MoveFileExW(temporary.c_str(), output.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+						throw std::runtime_error("Failed to commit cache asset");
+				};
+				for (const auto& row : layout.at("instances")) {
+					const auto geometry = row.at("geometrySha256").get<std::string>();
+					if (row.at("geometryFile").get<std::string>() != "geometry/" + geometry + ".rsgm")
+						throw std::runtime_error("Cache geometry manifest mismatch");
+					install("geometry", geometry, ".rsgm");
+					if (row.value("shadingStatus", std::string{}) == "compiled") {
+						const auto shading = row.at("shadingSha256").get<std::string>();
+						if (row.at("shadingFile").get<std::string>() != "shading/" + shading + ".rsga")
+							throw std::runtime_error("Cache shading manifest mismatch");
+						install("shading", shading, ".rsga");
+					}
+				}
+				const auto textures = source / "cell-textures.json";
+				if (std::filesystem::exists(textures))
+					std::filesystem::copy_file(textures, revision / "cell-textures.json", std::filesystem::copy_options::overwrite_existing);
+				const auto content = manifestPath;
+				const auto stagedManifest = revision / "cell-layout.json.part";
+				std::filesystem::copy_file(content, stagedManifest, std::filesystem::copy_options::overwrite_existing);
+				if (!MoveFileExW(stagedManifest.c_str(), (revision / "cell-layout.json").c_str(),
+					MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+					throw std::runtime_error("Failed to commit scene manifest");
+				const json pointer{ { "schemaVersion", 1 }, { "stage", stage }, { "cell", cell },
+					{ "worldspaceFormID", worldspace }, { "layoutDigest", digest },
+					{ "sourceDirectory", source.string() }, { "sourceSha256", *sourceHash },
+					{ "revisionDirectory", revision.string() } };
+				const auto stagedPointer = base / "active.json.part";
+				{
+					std::ofstream out(stagedPointer, std::ios::binary | std::ios::trunc);
+					out << pointer.dump(2);
+					if (!out) throw std::runtime_error("Failed to write scene cache pointer");
+				}
+				if (!MoveFileExW(stagedPointer.c_str(), (base / "active.json").c_str(),
+					MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+					throw std::runtime_error("Failed to publish scene cache pointer");
+			} catch (const std::exception&) {
+				// Cache writes are optional and must never interrupt native rendering.
+				// A failed write cannot replace active.json with a partial revision.
+			}
+		});
+	}
+}
 
 std::optional<DX12NativeScene::PublishedScene> DX12NativeScene::GetPublishedScene() const
 {
@@ -49,6 +154,8 @@ void DX12NativeScene::ResetPreparedScene()
 	upgradeRevision = 0;
 	upgradeSubmitted = false;
 	preparedPackageRoot.clear();
+	publishedPackageDirectory.clear();
+	cachedRevision = 0;
 	upgradeManifestTime = {};
 	upgradeFailure.clear();
 	lastUpgradePollFrame = 0;
@@ -115,6 +222,7 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t a_frame, uint64_t a_budgetBy
 		const auto q0 = root / "q0";
 		std::error_code error;
 		const auto directory = std::filesystem::exists(q0 / "cell-layout.json", error) ? q0 : root;
+		publishedPackageDirectory = directory;
 		preparedScene.Request(*backend, directory, key, preparedRevision, a_budgetBytes, materialBudget, 0);
 	}
 	if (!preparedSubmitted) {
@@ -127,6 +235,13 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t a_frame, uint64_t a_budgetBy
 		}
 	}
 	if (!preparedSubmitted || !preparedAcceleration.GetScene()) return;
+	if (cachedRevision != preparedRevision && !publishedPackageDirectory.empty()) {
+		if (auto validated = preparedScene.GetCell()) {
+			cachedRevision = preparedRevision;
+			CacheAcceptedScene(publishedPackageDirectory, std::string(source->GetFilename()), local, key,
+				publishedStage, validated->digest, runtimeWorldspaceID.load(std::memory_order_relaxed));
+		}
+	}
 
 	// Independent candidate: Q0 continues to render while Q1/Q2 file decoding,
 	// upload and fenced BLAS/TLAS building take place on the workers.
@@ -182,6 +297,7 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t a_frame, uint64_t a_budgetBy
 		preparedRoomReferences = rooms;
 		preparedRevision = upgradeRevision;
 		publishedStage = upgradeStage;
+		publishedPackageDirectory = candidateDirectory;
 		upgradeScene.Reset();
 		upgradeAcceleration.Reset();
 		upgradeSubmitted = false;
