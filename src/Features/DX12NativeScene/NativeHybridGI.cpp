@@ -963,6 +963,7 @@ namespace DX12Native
                 resources.guides[1] = frame.rrValidatedMotion.get();
             resources.resetHistory = !frame.rrHistoryValid;
             resources.skipOcclusion = frame.advancedTransportTier != 0u;
+            resources.diffuseOnly = frame.advancedTransportTier == 2u;
             resources.nativeSize = native;
             resources.logicalSize = logical;
             resources.frame = frameNumber;
@@ -1096,10 +1097,13 @@ namespace DX12Native
             list->SetDescriptorHeaps(1, heaps);
             list->SetComputeRootSignature(postRoot.get());
             for (uint32_t signal = 0; signal < 4; ++signal) {
-                if (frame.advancedTransportTier != 0u && signal >= 2u) {
-                    // AO/SO are deterministic neutral placeholders for the
-                    // exclusive transport pass; do not denoise or blur them.
+                if (frame.advancedTransportTier != 0u &&
+                    (signal >= 2u || (frame.advancedTransportTier == 2u && signal == 1u))) {
+                    // Tier I has no specular samples; all advanced tiers
+                    // have deterministic neutral AO/SO. No RR or post-filter
+                    // is recorded for these inactive families.
                     frame.nativeFinal[signal] = frame.textures[
+                        signal == 1u ? Specular :
                         signal == 2u ? DiffuseAO : SpecularAO].get();
                     continue;
                 }

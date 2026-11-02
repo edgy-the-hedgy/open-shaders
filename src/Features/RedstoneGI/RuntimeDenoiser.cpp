@@ -481,7 +481,9 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
         nativeHybridFailure = nativeHybridConfigurationFailure;
         return false;
     }
-    const uint32_t familyCount = resources.skipOcclusion ? 2u : 3u;
+    const uint32_t familyCount = resources.diffuseOnly ? 1u :
+        resources.skipOcclusion ? 2u : 3u;
+    const uint32_t signalCount = familyCount == 3u ? 4u : familyCount;
     const uint32_t packedWidth = resources.checkerboard ? logical[0] / 2u : logical[0];
     auto validate = [](ID3D12Resource* texture, uint32_t width, uint32_t height,
         DXGI_FORMAT format) {
@@ -495,7 +497,7 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
     constexpr std::array<DXGI_FORMAT, 4> formats{
         DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
         DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8_UNORM };
-    for (uint32_t i = 0; i < (resources.skipOcclusion ? 2u : 4u); ++i) {
+    for (uint32_t i = 0; i < signalCount; ++i) {
         if (!validate(resources.inputs[i], packedWidth, logical[1], formats[i]) ||
             !validate(resources.outputs[i], logical[0], logical[1], formats[i])) {
             nativeHybridFailure = "Native RR signal input/output dimensions or format mismatch";
@@ -579,7 +581,7 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
     nativeHybridBlockedConfigurationRevision = UINT64_MAX;
 
     std::vector<D3D12_RESOURCE_BARRIER> begin, end;
-    for (uint32_t i = 0; i < (resources.skipOcclusion ? 2u : 4u); ++i) {
+    for (uint32_t i = 0; i < signalCount; ++i) {
         auto* input = resources.inputs[i];
         begin.push_back(CD3DX12_RESOURCE_BARRIER::Transition(input,
             D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
@@ -592,7 +594,7 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
         end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(guide,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON));
     }
-    for (uint32_t i = 0; i < (resources.skipOcclusion ? 2u : 4u); ++i) {
+    for (uint32_t i = 0; i < signalCount; ++i) {
         auto* output = resources.outputs[i];
         begin.push_back(CD3DX12_RESOURCE_BARRIER::Transition(output,
             D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));

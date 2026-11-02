@@ -78,7 +78,11 @@ void main(uint2 pixel : SV_DispatchThreadID)
     if (ReceiverEligibility.Load(int3(pixel, 0)) == 1u)
     {
         const float4 diffuse = IndirectDiffuse.Load(int3(pixel, 0));
-        const float4 specular = IndirectSpecular.Load(int3(pixel, 0));
+        // Tier I has no specular sample or RR context. Do not even read
+        // the packed fallback texture outside its logical extent.
+        const float4 specular = AdvancedTransportTier == 2u ?
+            float4(0.0, 0.0, 0.0, 0.0) :
+            IndirectSpecular.Load(int3(pixel, 0));
         const float aoDiffuse = AdvancedTransportTier != 0u ? 1.0 :
             DiffuseAO.Load(int3(pixel, 0));
         const float aoSpecular = AdvancedTransportTier != 0u ? 1.0 :
