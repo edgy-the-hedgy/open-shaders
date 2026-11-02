@@ -125,16 +125,68 @@ namespace DX12Native
 		}
 
 		std::shared_ptr<const PreparedCell> Load(const GraphicsBackend& a_backend, const std::filesystem::path& a_directory,
-			const std::string& a_cell, uint64_t a_epoch, uint64_t a_budget, uint64_t a_materialBudget, uint32_t a_quality)
+			const std::string& a_cell, uint64_t a_epoch, uint64_t a_budget, uint64_t a_materialBudget,
+            uint32_t a_quality, bool a_allowRuntimeCache = true)
 		{
+            bool usedRuntimeCache = false;
+            try {
 			const auto atlasDirectory = std::filesystem::path("Data/SKSE/Plugins/CommunityShaders/RedstoneScene/atlas") /
                 std::format("q{}", std::min(a_quality, 2u));
-            // Prefer the validated cell-local blob. If absent, load the same SHA-256-addressed asset from the shared atlas.
+            // Use a cached revision only while the original prepared manifest
+            // still has the same SHA-256. Never trust active.json by itself.
+            auto selectedDirectory = a_directory;
+            if (a_allowRuntimeCache) {
+                try {
+                    const auto separator = a_cell.find(':');
+                    if (separator != std::string::npos) {
+                        const auto plugin = a_cell.substr(separator + 1);
+                        const auto cellNumber = a_cell.substr(0, separator);
+                        if (!plugin.empty() && plugin.find("..") == std::string::npos &&
+                            std::ranges::all_of(plugin, [](unsigned char c) {
+                                return std::isalnum(c) || c == '.' || c == '_' || c == '-';
+                            }) &&
+                            !cellNumber.empty() && std::ranges::all_of(cellNumber, [](unsigned char c) {
+                                return std::isxdigit(c) != 0;
+                            })) {
+                            const auto cacheRoot = std::filesystem::path(
+                                "Data/SKSE/Plugins/CommunityShaders/RedstoneScene/runtime-cache/cells") /
+                                plugin / cellNumber / std::format("q{}", a_quality);
+                            const auto pointerFile = cacheRoot / "active.json";
+                            std::error_code error;
+                            if (std::filesystem::exists(pointerFile, error) &&
+                                std::filesystem::file_size(pointerFile, error) <= 64 * 1024 && !error) {
+                                std::ifstream in(pointerFile);
+                                const auto pointer = json::parse(in);
+                                const auto digest = pointer.at("layoutDigest").get<std::string>();
+                                const auto revisionDir = cacheRoot / "revisions" / digest;
+                                if (pointer.at("schemaVersion").get<int>() == 1 &&
+                                    pointer.at("stage").get<uint32_t>() == a_quality &&
+                                    pointer.at("cell").get<std::string>() == a_cell &&
+                                    IsDigest(digest) &&
+                                    std::filesystem::path(pointer.at("sourceDirectory").get<std::string>())
+                                        .lexically_normal() == a_directory.lexically_normal()) {
+                                    const auto origin = Util::FileDigest::Sha256FileHex(a_directory / "cell-layout.json");
+                                    const auto cached = Util::FileDigest::Sha256FileHex(revisionDir / "cell-layout.json");
+                                    const auto expected = pointer.at("sourceSha256").get<std::string>();
+                                    if (origin && cached &&
+                                        _stricmp(origin->c_str(), expected.c_str()) == 0 &&
+                                        _stricmp(cached->c_str(), expected.c_str()) == 0) {
+                                        selectedDirectory = revisionDir;
+                                        usedRuntimeCache = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (const std::exception&) { /* Invalid cache index: load the source package. */ }
+            }
             const auto assetPath = [&](const char* folder, const std::string& name) {
-                const auto local = a_directory / folder / name;
-                return std::filesystem::exists(local) ? local : atlasDirectory / folder / name;
+                const auto selected = selectedDirectory / folder / name;
+                if (std::filesystem::exists(selected)) return selected;
+                const auto original = a_directory / folder / name;
+                return std::filesystem::exists(original) ? original : atlasDirectory / folder / name;
             };
-			const auto manifestPath = a_directory / "cell-layout.json";
+			const auto manifestPath = selectedDirectory / "cell-layout.json";
 			if (std::filesystem::file_size(manifestPath) > kMaximumManifestBytes) throw std::runtime_error("Prepared manifest exceeds limit");
 			std::ifstream file(manifestPath);
 			const auto manifest = json::parse(file);
@@ -143,6 +195,7 @@ namespace DX12Native
 			const auto& rows = manifest.at("instances");
 			if (!rows.is_array() || rows.empty() || rows.size() > kMaximumInstances) throw std::runtime_error("Prepared instance count invalid");
 			auto result = std::make_shared<PreparedCell>();
+            result->fromRuntimeCache = usedRuntimeCache;
 			result->digest = manifest.at("layoutDigest").get<std::string>();
 			if (!IsDigest(result->digest)) throw std::runtime_error("Prepared layout digest invalid");
 			auto snapshot = std::make_shared<Snapshot>();
@@ -158,7 +211,7 @@ namespace DX12Native
 				rooms = std::make_shared<const json>(definitions);
 				for (const auto& room : definitions) result->roomDefinitions.push_back(room);
 			}
-			if (a_materialBudget) snapshot->materialSource = std::make_shared<const MaterialSource>(a_directory, atlasDirectory, a_cell, result->digest, a_materialBudget, rooms);
+			if (a_materialBudget) snapshot->materialSource = std::make_shared<const MaterialSource>(selectedDirectory, atlasDirectory, a_cell, result->digest, a_materialBudget, rooms);
 			std::unordered_map<std::string, std::shared_ptr<const Geometry>> geometries;
 			std::unordered_map<std::string, std::shared_ptr<const VertexAttributes>> shadingCache;
 			std::unordered_map<std::string, std::string> shadingFailures;
@@ -292,6 +345,14 @@ namespace DX12Native
 			}
 			result->snapshot = std::move(snapshot);
 			return result;
+            } catch (const std::exception&) {
+                // A damaged cached revision must never prevent loading the
+                // validated original package, even when an active pointer exists.
+                if (usedRuntimeCache)
+                    return Load(a_backend, a_directory, a_cell, a_epoch, a_budget, a_materialBudget,
+                        a_quality, false);
+                throw;
+            }
 		}
 	}
 
@@ -363,6 +424,8 @@ namespace DX12Native
 			{ "instances", cell ? cell->snapshot->instances.size() : 0 }, { "maskedInstances", cell ? cell->maskedInstances : 0 },
 			{ "shadedInstances", cell ? cell->shadedInstances : 0 },
 			{ "tangentInstances", cell ? cell->tangentInstances : 0 },
-			{ "layoutDigest", cell ? cell->digest : "" }, { "runtimeCoverageValid", false }, { "pluginStateValidated", false } };
+			{ "layoutDigest", cell ? cell->digest : "" },
+            { "loadedFromRuntimeCache", cell ? cell->fromRuntimeCache : false },
+            { "runtimeCoverageValid", false }, { "pluginStateValidated", false } };
 	}
 }

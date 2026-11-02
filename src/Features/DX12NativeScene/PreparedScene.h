@@ -31,6 +31,7 @@ namespace DX12Native
 		uint32_t maskedInstances = 0;
 		uint32_t shadedInstances = 0;
 		uint32_t tangentInstances = 0;
+		bool fromRuntimeCache = false;
 	};
 
 	/** @brief Loads one bounded package on an owned worker without D3D11 capture. */

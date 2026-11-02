@@ -68,12 +68,16 @@ identity and position if available. This is scene-registration metadata, not
 skinned-mesh upload: the player is **not** yet ray-intersectable in the
 prepared TLAS. Likewise, detecting an exterior worldspace is not equivalent
 to streaming its meshes. Persistent `active.json` is a recovery index; the
-runtime does not yet rehydrate it automatically, because input-mod fingerprint
-validation and cache eviction must precede that.
+runtime checks its source-manifest SHA-256 and can reuse the immutable
+revision if the source is unchanged. Corrupt cache metadata or missing cached
+assets trigger a fallback to the source prepared package. This checks the
+source manifest, NOT the full active mod/load-order fingerprint: the cache
+must not be treated as proof that dynamic actor state or plugin overrides
+are current. Automatic eviction remains deferred.
 
 **Current limitations:** static interior geometry only; no native worldspace
 NIF discovery, mesh deformation, runtime-generated Q1/Q2 assets, cache eviction,
-full combined Q0+Q1 VRAM budgeting or automatic reuse of persisted revisions.
+full combined Q0+Q1 VRAM budgeting or verified live plugin-state reconstruction.
 The new background upgrade path can temporarily hold two sets of geometry
 and acceleration structures in VRAM.
 
