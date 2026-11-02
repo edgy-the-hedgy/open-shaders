@@ -14,7 +14,7 @@ struct RTComposer final : Feature
     };
     struct TierPolicy
     {
-        uint32_t directTraceMode; // DXR mode 7 = quarter pixels, 5 = native checkerboard
+        uint32_t directTraceMode; // DXR 6=quarter checkerboard (12.5%), 7=quarter (25%), 5=native checkerboard
         float shadowInfluence;
         float directContribution; // fraction of raster/direct composition, NOT radiance
         bool directSpecular;
@@ -32,9 +32,9 @@ struct RTComposer final : Feature
     {
         switch (mode) {
         case CompositorMode::ShadowOnly:
-            return { 7u, .9f, .05f, false, false, false, false, 2u, false, 0.f, 0.f, 0.f, true };
+            return { 6u, .9f, .05f, false, false, false, false, 2u, false, 0.f, 0.f, 0.f, true };
         case CompositorMode::HybridShadowed:
-            return { 7u, .9f, .3f, false, false, true, true, 2u, false, 0.f, 0.f, 0.f, true };
+            return { 6u, .9f, .3f, false, false, true, true, 2u, false, 0.f, 0.f, 0.f, true };
         case CompositorMode::RTExclusiveI:
             return { 7u, .8f, .5f, false, true, false, false, 2u, false, .5f, 0.f, 0.f, false };
         case CompositorMode::RTExclusiveII:
@@ -186,7 +186,8 @@ struct RTComposer final : Feature
     static void MigrateChangedLegacySettings(const json& before, json& after);
 };
 
-static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::ShadowOnly).directTraceMode == 7u);
+static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::ShadowOnly).directTraceMode == 6u);
+static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed).directTraceMode == 6u);
 static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed).shadowInfluence == .9f);
 static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::ShadowOnly).directContribution == .05f);
 static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed).directContribution == .3f);

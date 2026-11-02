@@ -70,6 +70,23 @@ bool TracePreparedPointVisibility(uint lightIndex, float3 position, float3 light
             target += spread * (cos(angle) * tangent + sin(angle) * bitangent);
         }
     }
+    if (DirectStochastic.w >= 0.5f) {
+        // Very small deterministic light-source motion FOR SHADOW RAYS ONLY.
+        // It must not modify the physical light position, attenuation, cutoff,
+        // radiance or room eligibility. The oscillation is continuous in time
+        // and phase-shifted by source light; no random per-frame popping.
+        const float amplitude = min(sourceRadius * 0.0075f,
+            lightDistance * 0.0005f);
+        if (amplitude > 0.0f) {
+            const float3 tangent = normalize(cross(abs(l.z) < 0.9f ?
+                float3(0, 0, 1) : float3(0, 1, 0), l));
+            const float3 bitangent = cross(l, tangent);
+            const float phase = float(FrameIndex) * 0.025f +
+                float(lightIndex) * 2.39996323f;
+            target += amplitude * (sin(phase) * tangent +
+                cos(phase * 0.733f) * bitangent);
+        }
+    }
     // Offset toward the light instead of the surface normal; the ray terminates
     // at the sampled emitter point, not behind it.
     float3 origin = position + l * MinimumDistance;
@@ -220,9 +237,9 @@ void EvaluateShadowMaskForSurface(uint instance, uint primitive, float2 barycent
 {
     MaterialRecord record = Materials[Surfaces[instance].material.x];
     // The Shadow Only / Hybrid-Shadowed mask admits near-edge receiver
-    // mismatches with a 25% larger tolerance. Material, room and geometry
+    // mismatches with a 50% larger tolerance. Material, room and geometry
     // validation are not relaxed; direct radiance itself is unchanged.
-    const float shadowTolerance = DirectStochastic.w >= 0.5f ? 1.25f : 1.0f;
+    const float shadowTolerance = DirectStochastic.w >= 0.5f ? 1.5f : 1.0f;
     if ((record.flags.x & 3u) != 3u || record.flags.w != 0u ||
         abs(distance - length(receiver.xyz)) >
             max(5.0f, distance * ReceiverRelativeTolerance) * shadowTolerance) return;

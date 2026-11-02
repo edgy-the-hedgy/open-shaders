@@ -80,9 +80,9 @@ const char* RTComposer::DirectTierDescription(CompositorMode mode)
 {
     switch (mode) {
     case CompositorMode::ShadowOnly:
-        return "Quarter-density (1/4 native pixels), surface-aware shadow-mask resolve with depth/normal-aware contact-edge AA; 0.9 shadow influence, 0.05 RT/raster blend. Direct diffuse only, no specular and no direct RR.";
+        return "Quarter checkerboard (1/8 native pixels each frame), depth/normal-aware contact-edge AA with slightly relaxed edge checks, tiny smoothly oscillating shadow-ray emitter; 0.9 shadow influence, 0.05 RT/raster blend. Direct diffuse only; no specular or direct RR.";
     case CompositorMode::HybridShadowed:
-        return "Quarter-density direct/shadow DXR with depth-aware contact-edge AA; shadow influence 0.9, RT/raster direct blend 0.3. Direct diffuse only, direct RR off; native DX12 HybridGI handles indirect/AO RR.";
+        return "Quarter-checkerboard direct/shadow DXR (12.5% pixels each frame), relaxed depth-aware contact AA, tiny smoothly oscillating shadow-ray emitter; 0.9 shadow influence, RT/raster direct blend 0.3. Diffuse-only direct, no direct RR. Native DX12 HybridGI retains its independent resolution and indirect/AO RR.";
     case CompositorMode::RTExclusiveI:
         return "PENDING: quarter-density direct/shadows, diffuse only, 50% first-bounce survival, diffuse-only RR. The live renderer safely falls back to Shadow Only.";
     case CompositorMode::RTExclusiveII:
@@ -214,6 +214,10 @@ json RTComposer::GetDiagnostics()
         { "lowTierStochasticRadiusMultiplier", composition.enabled &&
             (composition.mode == CompositorMode::ShadowOnly ||
              composition.mode == CompositorMode::HybridShadowed) ? 0.5f : 1.0f },
+        { "lowTierShadowEmitterOscillation", composition.enabled &&
+            (composition.mode == CompositorMode::ShadowOnly ||
+             composition.mode == CompositorMode::HybridShadowed) },
+        { "lowTierShadowEmitterOscillationRadiusFraction", 0.0075f },
         { "giContribution", composition.giContribution },
         { "nativeProductionRequested", composition.enabled && WantsNativeHybrid() },
         { "directCheckerboard", composition.directCheckerboard },

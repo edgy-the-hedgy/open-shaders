@@ -92,7 +92,13 @@ json RTDirectLighting::GetDiagnostics()
 		{ "pointLightFalloffFraction", settings.PointLightFalloffFraction },
 		{ "pointLightFalloffExponent", settings.PointLightFalloffExponent },
 		{ "stochasticSampling", settings.StochasticSampling }, { "emitterRadiusMultiplier", settings.EmitterRadiusMultiplier },
-		{ "directTraceResolutionMode", (globals::features::rtComposer.composition.directCheckerboard ? 5u : 0u) },
+		{ "directTraceResolutionMode",
+            globals::features::rtComposer.TierControlsLocked() ?
+                RTComposer::GetTierPolicy(globals::features::rtComposer.ResolveEffectiveMode() ==
+                    RTComposer::EffectiveMode::HybridShadowed ?
+                    RTComposer::CompositorMode::HybridShadowed :
+                    RTComposer::CompositorMode::ShadowOnly).directTraceMode :
+                (globals::features::rtComposer.composition.directCheckerboard ? 5u : 0u) },
 		{ "nativeFeatureLoaded", native.loaded }, { "preparedSceneEnabled", native.settings.UsePreparedScene },
 		{ "preparedMaterialsEnabled", native.settings.UsePreparedMaterials }, { "preparedScenePublished", scenePublished },
 		{ "preparedScene", prepared }, { "trace", trace } };
@@ -251,7 +257,8 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
 	if (!settings.UseAllPreparedLights && settings.SelectedDirectLight >= snapshot->cell->lights.size()) return;
 	auto backend = Feature::FindGraphicsBackend();
 	auto& tracer = native.Tracer();
-    // Composer Shadow Only/Hybrid-Shadowed: quarter-density (one 2x2 anchor).
+    // Composer Shadow Only/Hybrid-Shadowed: quarter-checkerboard mode 6
+    // (one traced 2x2 anchor in half the logical checkerboard tiles).
     // Direct RR preferences remain persisted but do not dispatch in these tiers.
     const auto& composer = globals::features::rtComposer;
     const auto effectiveMode = composer.ResolveEffectiveMode();
@@ -275,8 +282,8 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
     const float4 strengths{ settings.DirectStrength, settings.DiffuseStrength,
         tieredDirect ? 0.0f : settings.SpecularStrength, settings.EmissionStrength };
     // Both live low-end compositor tiers use half the configured stochastic
-    // emitter disk radius. The traced quarter-density grid and ray count are
-    // unchanged; Custom and non-compositor renderers keep their saved radius.
+    // disk radius and a tiny smooth shadow-ray emitter oscillation. Moving
+    // into quarter checkerboard halves active 2x2 tiles; Custom is unchanged.
     const bool lowTierShadow = composer.composition.enabled &&
         (composer.composition.mode == RTComposer::CompositorMode::ShadowOnly ||
          composer.composition.mode == RTComposer::CompositorMode::HybridShadowed);

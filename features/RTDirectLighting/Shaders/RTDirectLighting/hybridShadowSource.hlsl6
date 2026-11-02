@@ -39,7 +39,7 @@ float ContactShadowVisibility(uint2 pixel, float depth)
             if (!all(isfinite(neighborMask)) || neighborMask.y < 0.5f) continue;
             const float neighborDepth = LinearViewDepth(uint2(tap));
             if (neighborDepth <= 0.0f ||
-                abs(neighborDepth - depth) > max(0.06f, depth * 0.0125f)) continue;
+                abs(neighborDepth - depth) > max(0.072f, depth * 0.015f)) continue;
             const float weight = (dx == 0 || dy == 0) ? 2.0f : 1.0f;
             total += weight * saturate(neighborMask.x);
             weights += weight;

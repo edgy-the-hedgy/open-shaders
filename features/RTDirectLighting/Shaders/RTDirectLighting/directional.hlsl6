@@ -140,11 +140,11 @@ void main(uint3 id : SV_DispatchThreadID)
 		const float4 receiver = Receivers.Load(int3(id.xy, 0));
 		const float4 anchor = Receivers.Load(int3(sourcePixel, 0));
 		const float delta = length(receiver.xyz - anchor.xyz);
-        // Only mask resolve in the two fixed low tiers is 25% more
-        // permissive. Direct radiance and indirect history still require
+        // Only mask resolve in the two fixed low tiers is 50% more
+        // permissive than baseline. Direct radiance and indirect history still require
         // their original same-surface tests; room identity is never relaxed.
         const float maskRelax = maskResolve && DirectStochastic.w >= 0.5f ?
-            1.25f : 1.0f;
+            1.5f : 1.0f;
 		const bool compatible = receiver.w != 0 && anchor.w == receiver.w &&
 			all(isfinite(receiver)) && all(isfinite(anchor)) &&
 			delta <= max(0.5f, length(receiver.xyz) * 0.005f) * maskRelax;
