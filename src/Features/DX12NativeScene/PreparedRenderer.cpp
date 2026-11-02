@@ -17,6 +17,15 @@
 
 namespace
 {
+	// Missing texture manifests have an empty stamp; source and candidate
+	// revisions must agree on both the geometry and material manifests.
+	std::filesystem::file_time_type TextureStamp(const std::filesystem::path& directory)
+	{
+		std::error_code error;
+		const auto stamp = std::filesystem::last_write_time(directory / "cell-textures.json", error);
+		return error ? std::filesystem::file_time_type{} : stamp;
+	}
+
 	// Never publish a partially copied package: immutable generations are
 	// committed by a single, atomically replaced active.json pointer.
 	void CacheAcceptedScene(std::filesystem::path a_source, std::string a_plugin, uint32_t a_local,
@@ -193,6 +202,7 @@ void DX12NativeScene::ResetPreparedScene()
 	publishedPackageDirectory.clear();
 	cachedRevision = 0;
 	publishedManifestTime = upgradeManifestTime = {};
+	publishedTextureTime = upgradeTextureTime = {};
 	upgradeFailure.clear();
 	lastUpgradePollFrame = 0;
 	preparedTrace.Reset(true);
@@ -262,6 +272,7 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t a_frame, uint64_t a_budgetBy
 		std::error_code stampError;
 		publishedManifestTime = std::filesystem::last_write_time(directory / "cell-layout.json", stampError);
 		if (stampError) publishedManifestTime = {};
+		publishedTextureTime = TextureStamp(directory);
 		preparedScene.Request(*backend, directory, key, preparedRevision, a_budgetBytes, materialBudget, 0);
 	}
 	if (!preparedSubmitted) {
@@ -293,7 +304,9 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t a_frame, uint64_t a_budgetBy
 		std::error_code error;
 		const auto currentTime = std::filesystem::last_write_time(
 			publishedPackageDirectory / "cell-layout.json", error);
-		const bool sameStageRefresh = !error && currentTime != publishedManifestTime;
+		const auto currentTextureTime = TextureStamp(publishedPackageDirectory);
+		const bool sameStageRefresh = !error &&
+			(currentTime != publishedManifestTime || currentTextureTime != publishedTextureTime);
 		error.clear();
 		std::filesystem::path desiredDirectory;
 		uint32_t desiredStage = 0;
@@ -304,17 +317,18 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t a_frame, uint64_t a_budgetBy
 			desiredStage = publishedStage + 1;
 			desiredDirectory = root / std::format("q{}", desiredStage);
 		}
-		std::filesystem::file_time_type desiredTime{};
+		std::filesystem::file_time_type desiredTime{}, desiredTextureTime{};
 		if (!desiredDirectory.empty()) {
 			const auto manifest = desiredDirectory / "cell-layout.json";
 			if (std::filesystem::exists(manifest, error) && !error) {
 				desiredTime = std::filesystem::last_write_time(manifest, error);
 				if (error) desiredDirectory.clear();
+				else desiredTextureTime = TextureStamp(desiredDirectory);
 			} else desiredDirectory.clear();
 		}
 		if (upgradeScene.Requested() &&
 			(upgradeStage != desiredStage || upgradePackageDirectory != desiredDirectory ||
-				upgradeManifestTime != desiredTime)) {
+				upgradeManifestTime != desiredTime || upgradeTextureTime != desiredTextureTime)) {
 			// Superseded loader output must never reach the current publication,
 			// including when the GPU worker was already submitted.
 			upgradeScene.Reset();
@@ -324,6 +338,7 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t a_frame, uint64_t a_budgetBy
 			upgradeRevision = 0;
 			upgradePackageDirectory.clear();
 			upgradeManifestTime = {};
+			upgradeTextureTime = {};
 			upgradeFailure.clear();
 		}
 		if (!upgradeScene.Requested() && !desiredDirectory.empty()) {
@@ -331,6 +346,7 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t a_frame, uint64_t a_budgetBy
 			upgradeRevision = preparedRevision + 1;
 			upgradePackageDirectory = desiredDirectory;
 			upgradeManifestTime = desiredTime;
+			upgradeTextureTime = desiredTextureTime;
 			upgradeScene.Request(*backend, desiredDirectory, key, upgradeRevision,
 				a_budgetBytes, materialBudget, desiredStage);
 		}
@@ -353,7 +369,8 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t a_frame, uint64_t a_budgetBy
 		std::error_code verificationError;
 		const auto observedTime = std::filesystem::last_write_time(
 			upgradePackageDirectory / "cell-layout.json", verificationError);
-		if (verificationError || observedTime != upgradeManifestTime) {
+		if (verificationError || observedTime != upgradeManifestTime ||
+			TextureStamp(upgradePackageDirectory) != upgradeTextureTime) {
 			// The disk package changed during GPU construction. Abort and
 			// permit a new candidate without ever replacing the active TLAS.
 			upgradeScene.Reset();
@@ -363,6 +380,7 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t a_frame, uint64_t a_budgetBy
 			upgradeRevision = 0;
 			upgradePackageDirectory.clear();
 			upgradeManifestTime = {};
+			upgradeTextureTime = {};
 			return;
 		}
 		auto [lights, rooms] = references(*candidate);
@@ -376,6 +394,7 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t a_frame, uint64_t a_budgetBy
 		publishedStage = upgradeStage;
 		publishedPackageDirectory = upgradePackageDirectory;
 		publishedManifestTime = upgradeManifestTime;
+		publishedTextureTime = upgradeTextureTime;
 		upgradeScene.Reset();
 		upgradeAcceleration.Reset();
 		upgradeSubmitted = false;
@@ -383,6 +402,7 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t a_frame, uint64_t a_budgetBy
 		upgradePackageDirectory.clear();
 		upgradeFailure.clear();
 		upgradeManifestTime = {};
+		upgradeTextureTime = {};
 		preparedTrace.Reset(true);
 	} else if (upgradeAcceleration.Finished()) {
 		upgradeFailure = upgradeAcceleration.GetDiagnostics().value("failure", std::string{});

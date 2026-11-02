@@ -140,6 +140,7 @@ private:
 	std::filesystem::path preparedPackageRoot, publishedPackageDirectory, upgradePackageDirectory;
 	uint64_t cachedRevision = 0;
 	std::filesystem::file_time_type publishedManifestTime{}, upgradeManifestTime{};
+	std::filesystem::file_time_type publishedTextureTime{}, upgradeTextureTime{};
 	std::string upgradeFailure;
 	uint32_t lastUpgradePollFrame = 0;
 	// Read on the existing native-scene render-thread handoff, never on UI thread.
