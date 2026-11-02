@@ -469,7 +469,10 @@ namespace DX12Native
                     candidate.shadowTemporal && candidate.receivers &&
                     candidate.generation == frame.generation &&
                     candidate.number + 1u == frame.number &&
-                    candidate.size == frame.size) prior = &candidate;
+                    candidate.size == frame.size &&
+                    candidate.lightIdentities == frame.lightIdentities &&
+                    candidate.roomReferences == frame.roomReferences)
+                    prior = &candidate;
         try {
             if (!shadowTemporalPipeline) {
                 std::ifstream file("Data/Shaders/RTDirectLighting/shadowTemporal.dxil",
