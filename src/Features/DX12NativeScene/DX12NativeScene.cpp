@@ -333,6 +333,13 @@ json DX12NativeScene::GetDiagnostics()
             { "activeCacheStage", 0 }
         } },
 		{ "preparedAcceleration", preparedAcceleration.GetDiagnostics() }, { "preparedTrace", traceStatus },
+        { "progressiveUpgrade", {
+            { "publishedStage", publishedStage }, { "candidateStage", upgradeScene.Requested() ? upgradeStage : 0u },
+            { "candidateLoading", upgradeScene.GetDiagnostics().value("loading", false) },
+            { "candidateBuilt", bool(upgradeAcceleration.GetScene()) },
+            { "candidateFailure", upgradeFailure },
+            { "candidateAcceleration", upgradeAcceleration.GetDiagnostics() }
+        } },
 		{ "scene", scene.GetDiagnostics() },
 		{ "observation", CasterObservation::Diagnostics() }, { "acquisitionActive", acquisitionActive },
 		{ "lastRenderThreadCPUms", lastCPUms }, { "discardedBatches", discardedBatches },
@@ -366,6 +373,9 @@ void DX12NativeScene::DrawNativeSceneSettings()
         ImGui::TextWrapped("Legacy settings enable only part of the native scene. Changing the unified toggle will enable or disable geometry and materials together.");
 
     ImGui::SeparatorText("Native scene cache");
+    ImGui::Text("Published quality: Q%u | upgrade: %s", publishedStage,
+        upgradeScene.Requested() ? std::format("Q{}", upgradeStage).c_str() : "idle");
+    if (!upgradeFailure.empty()) ImGui::TextWrapped("Upgrade failure: %s", upgradeFailure.c_str());
     ImGui::TextWrapped("Q0 is the compact base geometry cache. Shader/material augmentation (Q1/Q2) will be generated progressively at runtime; separate offline quality atlases are retired.");
     ImGui::TextWrapped("Worldspace and player form identities are observed, but exterior geometry discovery and animated character BLAS registration are not yet implemented.");
     ImGui::SeparatorText("Budgets");

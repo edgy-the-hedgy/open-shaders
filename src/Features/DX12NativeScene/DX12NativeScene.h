@@ -123,7 +123,17 @@ private:
 	void DrawNativeSceneSettings();
 	DX12Native::PreparedScene preparedScene;
 	DX12Native::AccelerationWorker preparedAcceleration;
+	// Candidate is built concurrently and never replaces the published scene until its TLAS is ready.
+	DX12Native::PreparedScene upgradeScene;
+	DX12Native::AccelerationWorker upgradeAcceleration;
 	DX12Native::DirectionalTrace preparedTrace;
+	uint32_t publishedStage = 0, upgradeStage = 0;
+	uint64_t upgradeRevision = 0;
+	bool upgradeSubmitted = false;
+	std::filesystem::path preparedPackageRoot;
+	std::filesystem::file_time_type upgradeManifestTime{};
+	std::string upgradeFailure;
+	uint32_t lastUpgradePollFrame = 0;
 	// Read on the existing native-scene render-thread handoff, never on UI thread.
 	// These are identities only: character mesh/skinning registration is a later stage.
 	std::atomic<uint32_t> runtimeCellID{ 0 }, runtimeWorldspaceID{ 0 }, runtimeCharacterID{ 0 };

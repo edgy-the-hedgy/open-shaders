@@ -43,15 +43,25 @@ void DX12NativeScene::ResetPreparedScene()
 	preparedRoomReferences.fill(0);
 	preparedScene.Reset();
 	preparedAcceleration.Reset();
+	upgradeScene.Reset();
+	upgradeAcceleration.Reset();
+	publishedStage = upgradeStage = 0;
+	upgradeRevision = 0;
+	upgradeSubmitted = false;
+	preparedPackageRoot.clear();
+	upgradeManifestTime = {};
+	upgradeFailure.clear();
+	lastUpgradePollFrame = 0;
 	preparedTrace.Reset(true);
 }
 
-void DX12NativeScene::AdvancePreparedScene(uint32_t, uint64_t a_budgetBytes)
+void DX12NativeScene::AdvancePreparedScene(uint32_t a_frame, uint64_t a_budgetBytes)
 {
 	CS_GPU_PASS("DX12NativeScene::PreparedSceneProgress");
 	auto* cell = globals::game::player ? globals::game::player->GetParentCell() : nullptr;
 	const auto cellID = cell ? cell->GetFormID() : 0;
-	const bool active = ready && !transitionOpen && !globals::game::isVR && !globals::state->isMapMenuOpen && cell && cell->IsInteriorCell();
+	const bool active = ready && !transitionOpen && !globals::game::isVR &&
+		!globals::state->isMapMenuOpen && cell && cell->IsInteriorCell();
 	if (resetRequested || cellID != preparedCellID || active != preparedActive) {
 		ResetPreparedScene();
 		preparedCellID = cellID;
@@ -59,52 +69,129 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t, uint64_t a_budgetBytes)
 		resetRequested = false;
 	}
 	if (!active) return;
-	// Preparation is offline-only; no managed runtime worker or readiness gate exists.
-	if (preparedSubmitted) return;
-	if (preparedScene.Requested() && !preparedScene.GetCell()) return;
+	preparedAcceleration.Advance();
+	upgradeAcceleration.Advance();
 	const auto backend = Feature::FindGraphicsBackend();
 	if (!backend || !backend->commandQueue) return;
+	const auto* source = cell->GetFile(0);
+	if (!source) return;
+	const auto local = cell->GetLocalFormID();
+	const auto key = std::format("{:06X}:{}", local, source->GetFilename());
+	const auto root = std::filesystem::path("Data/SKSE/Plugins/CommunityShaders/RedstoneScene/cells") /
+		source->GetFilename() / std::format("{:06X}", local);
+	if (preparedPackageRoot.empty()) preparedPackageRoot = root;
+	const auto materialBudget = settings.UsePreparedMaterials ? uint64_t(settings.MaterialTextureBudgetMB) * 1024 * 1024 : 0;
+
+	const auto references = [&](const DX12Native::PreparedCell& prepared) {
+		auto resolve = [](const json& object, const char* field) {
+			const auto entry = object.find(field);
+			if (entry == object.end() || !entry->is_string()) return 0u;
+			const auto& name = entry->get_ref<const std::string&>();
+			const auto separator = name.find(':');
+			return separator == std::string::npos ? 0u :
+				Util::SpidToFormId("0x" + name.substr(0, separator) + "~" + name.substr(separator + 1));
+		};
+		std::vector<std::array<uint32_t, 2>> lights;
+		std::array<uint32_t, 128> rooms{};
+		for (const auto& definition : prepared.lightDefinitions) {
+			std::array<uint32_t, 2> identity{};
+			const auto referenceID = resolve(definition, "referenceKey");
+			const auto baseline = definition.find("baseline");
+			const auto baseID = baseline != definition.end() && baseline->is_object() ? resolve(*baseline, "baseKey") : 0u;
+			if (auto* reference = RE::TESForm::LookupByID<RE::TESObjectREFR>(referenceID)) {
+				const auto* base = reference->GetObjectReference();
+				if (base && baseID && base->GetFormID() == baseID &&
+					base->GetFormType() == RE::FormType::Light && reference->GetParentCell() == cell)
+					identity = { referenceID, baseID };
+			}
+			lights.push_back(identity);
+		}
+		for (uint32_t room = 0; room < prepared.roomDefinitions.size() && room < rooms.size(); ++room)
+			rooms[room] = resolve(prepared.roomDefinitions[room], "referenceKey");
+		return std::pair{ std::move(lights), rooms };
+	};
+
 	if (!preparedScene.Requested()) {
-		const auto* source = cell->GetFile(0);
-		if (!source) return;
-		const auto local = cell->GetLocalFormID();
-		const auto key = std::format("{:06X}:{}", local, source->GetFilename());
-		const auto baseDirectory = std::filesystem::path("Data/SKSE/Plugins/CommunityShaders/RedstoneScene/cells") /
-			source->GetFilename() / std::format("{:06X}", local);
-		const auto qualityDirectory = baseDirectory / std::format("q{}", std::min(settings.PreparationQuality, 2u));
-		const auto directory = std::filesystem::exists(qualityDirectory / "cell-layout.json") ? qualityDirectory : baseDirectory;
-		preparedScene.Request(*backend, directory, key, preparedRevision, a_budgetBytes,
-			settings.UsePreparedMaterials ? uint64_t(settings.MaterialTextureBudgetMB) * 1024 * 1024 : 0,
-                std::min(settings.PreparationQuality, 2u));
+		const auto q0 = root / "q0";
+		std::error_code error;
+		const auto directory = std::filesystem::exists(q0 / "cell-layout.json", error) ? q0 : root;
+		preparedScene.Request(*backend, directory, key, preparedRevision, a_budgetBytes, materialBudget, 0);
 	}
 	if (!preparedSubmitted) {
 		if (auto prepared = preparedScene.GetCell()) {
-			auto resolve = [](const json& object, const char* field) {
-				const auto entry = object.find(field);
-				if (entry == object.end() || !entry->is_string()) return 0u;
-				const auto& key = entry->get_ref<const std::string&>();
-				const auto separator = key.find(':');
-				return separator == std::string::npos ? 0u : Util::SpidToFormId("0x" + key.substr(0, separator) + "~" + key.substr(separator + 1));
-			};
-			for (const auto& definition : prepared->lightDefinitions) {
-				std::array<uint32_t, 2> identity{};
-				const auto referenceID = resolve(definition, "referenceKey");
-				const auto baseline = definition.find("baseline");
-				const auto baseID = baseline != definition.end() && baseline->is_object() ? resolve(*baseline, "baseKey") : 0u;
-				if (auto* reference = RE::TESForm::LookupByID<RE::TESObjectREFR>(referenceID)) {
-					const auto* base = reference->GetObjectReference();
-					if (base && baseID && base->GetFormID() == baseID && base->GetFormType() == RE::FormType::Light && reference->GetParentCell() == cell)
-						identity = { referenceID, baseID };
-				}
-				preparedLightReferences.push_back(identity);
-			}
-			for (uint32_t room = 0; room < prepared->roomDefinitions.size(); ++room)
-				preparedRoomReferences[room] = resolve(prepared->roomDefinitions[room], "referenceKey");
+			auto [lights, rooms] = references(*prepared);
+			preparedLightReferences = std::move(lights);
+			preparedRoomReferences = rooms;
 			preparedAcceleration.Start(*backend, prepared->snapshot, prepared->geometries, a_budgetBytes);
 			preparedSubmitted = true;
 		}
 	}
-	preparedAcceleration.Advance();
+	if (!preparedSubmitted || !preparedAcceleration.GetScene()) return;
+
+	// Independent candidate: Q0 continues to render while Q1/Q2 file decoding,
+	// upload and fenced BLAS/TLAS building take place on the workers.
+	if (publishedStage >= 2) return;
+	const auto targetStage = publishedStage + 1;
+	const auto candidateDirectory = root / std::format("q{}", targetStage);
+	const auto manifest = candidateDirectory / "cell-layout.json";
+	// Do not query the filesystem on every rendered frame.
+	if (!upgradeScene.Requested() && a_frame - lastUpgradePollFrame < 120) return;
+	std::error_code error;
+	const bool exists = std::filesystem::exists(manifest, error);
+	if (error || !exists) {
+		if (!upgradeScene.Requested()) lastUpgradePollFrame = a_frame;
+		return;
+	}
+	const auto modified = std::filesystem::last_write_time(manifest, error);
+	if (error) return;
+	if (upgradeScene.Requested()) {
+		if (modified != upgradeManifestTime && !upgradeSubmitted &&
+			!upgradeScene.GetDiagnostics().value("loading", false)) {
+			upgradeScene.Reset();
+			upgradeAcceleration.Reset();
+			upgradeFailure.clear();
+		}
+	}
+	if (!upgradeScene.Requested()) {
+		upgradeRevision = preparedRevision + 1;
+		upgradeStage = targetStage;
+		upgradeManifestTime = modified;
+		lastUpgradePollFrame = a_frame;
+		upgradeScene.Request(*backend, candidateDirectory, key, upgradeRevision,
+			a_budgetBytes, materialBudget, upgradeStage);
+	}
+	auto candidate = upgradeScene.GetCell();
+	if (!candidate) {
+		const auto diag = upgradeScene.GetDiagnostics();
+		if (!diag.value("loading", false)) upgradeFailure = diag.value("failure", std::string{});
+		return;
+	}
+	if (!upgradeSubmitted) {
+		upgradeAcceleration.Start(*backend, candidate->snapshot, candidate->geometries, a_budgetBytes);
+		upgradeSubmitted = true;
+	}
+	upgradeAcceleration.Advance();
+	if (auto readyUpgrade = upgradeAcceleration.GetScene();
+		readyUpgrade && readyUpgrade->scope.scene == upgradeRevision) {
+		auto [lights, rooms] = references(*candidate);
+		// The published GPU scene is not altered until the new worker reports
+		// its fenced, fully built TLAS. Prior shared owners remain valid.
+		std::swap(preparedScene, upgradeScene);
+		std::swap(preparedAcceleration, upgradeAcceleration);
+		preparedLightReferences = std::move(lights);
+		preparedRoomReferences = rooms;
+		preparedRevision = upgradeRevision;
+		publishedStage = upgradeStage;
+		upgradeScene.Reset();
+		upgradeAcceleration.Reset();
+		upgradeSubmitted = false;
+		upgradeRevision = 0;
+		upgradeFailure.clear();
+		upgradeManifestTime = {};
+		preparedTrace.Reset(true);
+	} else if (upgradeAcceleration.Finished()) {
+		upgradeFailure = upgradeAcceleration.GetDiagnostics().value("failure", std::string{});
+	}
 }
 
 bool DX12NativeScene::WantsOpaqueRoomMetadata() const
