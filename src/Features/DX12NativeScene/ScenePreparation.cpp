@@ -1,6 +1,7 @@
 #include "ScenePreparation.h"
 
 #include <Windows.h>
+#include <BS_thread_pool.hpp>
 #include <algorithm>
 #include <array>
 #include <filesystem>

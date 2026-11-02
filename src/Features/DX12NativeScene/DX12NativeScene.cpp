@@ -168,8 +168,10 @@ void DX12NativeScene::EarlyPrepass()
 	const auto frame = globals::game::graphicsState->GetFrameCount();
     const auto* currentCell = globals::game::player ? globals::game::player->GetParentCell() : nullptr;
     const auto* origin = currentCell ? currentCell->GetFile(0) : nullptr;
+    const auto pluginName = origin ? origin->GetFilename() : std::string_view{};
     const bool guestRoom = currentCell && currentCell->IsInteriorCell() && origin &&
-        currentCell->GetLocalFormID() == 0x04FD2Bu && _stricmp(origin->GetFilename(), "Unslaad.esm") == 0;
+        currentCell->GetLocalFormID() == 0x04FD2Bu && pluginName.size() == sizeof("Unslaad.esm") - 1 &&
+        _strnicmp(pluginName.data(), "Unslaad.esm", pluginName.size()) == 0;
     scenePreparation.Advance(guestRoom && !transitionOpen, settings.AutoPrepareGuestRoom && !globals::game::isVR,
         settings.PreparationQuality);
     const auto preparation = scenePreparation.GetStatus();

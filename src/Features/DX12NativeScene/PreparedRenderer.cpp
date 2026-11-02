@@ -60,8 +60,10 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t, uint64_t a_budgetBytes)
 	}
 	if (!active) return;
     const auto* owner = cell->GetFile(0);
+    const auto pluginName = owner ? owner->GetFilename() : std::string_view{};
     const bool guestRoom = owner && cell->GetLocalFormID() == 0x04FD2Bu &&
-        _stricmp(owner->GetFilename(), "Unslaad.esm") == 0;
+        pluginName.size() == sizeof("Unslaad.esm") - 1 &&
+        _strnicmp(pluginName.data(), "Unslaad.esm", pluginName.size()) == 0;
     if (guestRoom && settings.AutoPrepareGuestRoom && !scenePreparation.CanLoad()) return;
 	if (preparedSubmitted) return;
 	if (preparedScene.Requested() && !preparedScene.GetCell()) return;
