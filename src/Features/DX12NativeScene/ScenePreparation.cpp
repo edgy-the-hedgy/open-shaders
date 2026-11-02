@@ -87,26 +87,25 @@ namespace
             L"Skyrim Special Edition" / L"Plugins.txt").wstring();
 
         const auto hostPath = FindHostFxr();
-        const auto module = LoadLibraryW(hostPath.c_str());
+        // The CLR hosting libraries must stay loaded for the process lifetime.
+        // Microsoft documents that FreeLibrary on any loaded .NET native library is undefined behavior.
+        static const auto module = LoadLibraryW(hostPath.c_str());
         if (!module) throw std::runtime_error("Could not load hostfxr");
         const auto initialize = reinterpret_cast<InitializeHost>(GetProcAddress(module, "hostfxr_initialize_for_runtime_config"));
         const auto getDelegate = reinterpret_cast<GetDelegate>(GetProcAddress(module, "hostfxr_get_runtime_delegate"));
         const auto close = reinterpret_cast<CloseHost>(GetProcAddress(module, "hostfxr_close"));
         if (!initialize || !getDelegate || !close) {
-            FreeLibrary(module);
             throw std::runtime_error("hostfxr API unavailable");
         }
         void* context = nullptr;
         void* loader = nullptr;
         const auto initialized = initialize(runtimeConfig.c_str(), nullptr, &context);
         if (initialized < 0 || !context) {
-            FreeLibrary(module);
             throw std::runtime_error("Could not initialize the .NET 10 scene preparation runtime");
         }
         const auto delegateResult = getDelegate(context, 3, &loader);
         close(context);
         if (delegateResult < 0 || !loader) {
-            FreeLibrary(module);
             throw std::runtime_error("Could not acquire .NET assembly loader");
         }
         void* entry = nullptr;
@@ -114,14 +113,12 @@ namespace
         const auto loadResult = load(assembly.c_str(), L"RuntimePreparationBridge, RedstoneScenePrep",
             L"Prepare", reinterpret_cast<const wchar_t*>(static_cast<intptr_t>(-1)), nullptr, &entry);
         if (loadResult < 0 || !entry) {
-            FreeLibrary(module);
             throw std::runtime_error("Could not resolve managed preparation entry point");
         }
         std::array<wchar_t, 1024> details{};
         Request request{ data.c_str(), plugins.c_str(), cache.c_str(), details.data(),
             int32_t(details.size()), int32_t(quality), force ? 1 : 0 };
         const auto result = reinterpret_cast<PrepareEntry>(entry)(&request, sizeof(request));
-        FreeLibrary(module);
         if (result < 0) {
             failure = std::filesystem::path(details.data()).string();
             if (failure.empty()) failure = "Managed scene preparation failed";
