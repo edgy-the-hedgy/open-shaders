@@ -21,10 +21,17 @@ try {
     & dotnet build $projectFile --no-restore --artifacts-path $artifacts -c Release --verbosity minimal
     if ($LASTEXITCODE -ne 0) { throw 'Atlas compiler build failed.' }
     $compiler = Join-Path $artifacts 'bin\RedstoneScenePrep\release\RedstoneScenePrep.dll'
-    foreach ($level in ($QualityLevels | Select-Object -Unique)) {
-        Write-Output "Preparing universal asset atlas quality q$level..."
-        & dotnet $compiler --atlas $DataDirectory $AtlasOutputRoot $level $PluginsFile
-        if ($LASTEXITCODE -ne 0) { throw "Atlas compilation for quality q$level failed." }
+    $levels = @($QualityLevels | Sort-Object -Unique)
+    if ($levels.Count -eq 3 -and $levels[0] -eq 0 -and $levels[1] -eq 1 -and $levels[2] -eq 2) {
+        Write-Output 'Using one-pass universal atlas build for q0, q1 and q2...'
+        & dotnet $compiler --atlas-batch $DataDirectory $AtlasOutputRoot $PluginsFile
+        if ($LASTEXITCODE -ne 0) { throw 'One-pass atlas compilation failed; check the logged per-asset failures.' }
+    } else {
+        foreach ($level in $levels) {
+            Write-Output "Preparing universal asset atlas quality q$level..."
+            & dotnet $compiler --atlas $DataDirectory $AtlasOutputRoot $level $PluginsFile
+            if ($LASTEXITCODE -ne 0) { throw "Atlas compilation for quality q$level failed." }
+        }
     }
     Write-Output "Offline atlas generated at $AtlasOutputRoot. Run StagePreparedAtlas.ps1 after closing Skyrim."
 } finally {

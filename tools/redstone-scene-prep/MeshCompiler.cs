@@ -27,30 +27,116 @@ internal sealed class MeshCompiler
     private readonly string compilerKey;
     private readonly int quality;
     private readonly string? atlasDirectory;
+    private readonly string sourceRoot;
+    private readonly bool displacementInputsEnabled;
+    private readonly HashSet<string> copiedHashes = new(StringComparer.Ordinal);
+    // SHA-check each immutable content-addressed blob once per compilation run.
+    private readonly HashSet<string> verifiedCachedFiles = new(StringComparer.OrdinalIgnoreCase);
 
-    public MeshCompiler(string outputDirectory, JsonSerializerOptions jsonOptions, int preparationQuality = 2, string? sharedAtlas = null)
+    public MeshCompiler(string outputDirectory, JsonSerializerOptions jsonOptions, int preparationQuality = 2, string? sharedAtlas = null, string? sharedSources = null)
     {
         if (preparationQuality is < 0 or > 2) throw new ArgumentOutOfRangeException(nameof(preparationQuality));
         quality = preparationQuality;
+        displacementInputsEnabled = quality == 2 &&
+            ((int.TryParse(Environment.GetEnvironmentVariable("REDSTONE_DXR_HEIGHT_ENABLED"), out var h) && h != 0) ||
+             (int.TryParse(Environment.GetEnvironmentVariable("REDSTONE_DXR_NORMAL_ENABLED"), out var n) && n != 0));
         atlasDirectory = sharedAtlas;
+        sourceRoot = sharedSources ?? outputDirectory;
         output = outputDirectory;
         options = jsonOptions;
-        var executable = File.ReadAllBytes(typeof(MeshCompiler).Assembly.Location);
-        compilerKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("rigid-opaque-v1/Nifly-1.1.0/" + Convert.ToHexString(SHA256.HashData(executable))))).ToLowerInvariant();
-            // Include settings in the compiler cache key so changed test depth recompiles meshes.
-            compilerKey = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
-                compilerKey + "/quality=" + quality + "/DXRHEIGHT-v1/" + string.Join("/", new[] {
-                    "REDSTONE_DXR_HEIGHT_ENABLED", "REDSTONE_DXR_HEIGHT_SCALE", "REDSTONE_DXR_AO_SCALE",
-                    "REDSTONE_DXR_SUBDIV", "REDSTONE_DXR_TRI_CAP", "REDSTONE_DXR_HEIGHT_REF",
-                    "REDSTONE_DXR_HEIGHT_TARGET", "REDSTONE_DXR_FLIP_V", "REDSTONE_DXR_NORMAL_ENABLED", "REDSTONE_DXR_NORMAL_MICRO_SCALE", "REDSTONE_DXR_NORMAL_GRID", "REDSTONE_DXR_NORMAL_FLIP_Y"
-                }.Select(k => Environment.GetEnvironmentVariable(k) ?? ""))))).ToLowerInvariant();
+        // Mesh products are governed by a semantic cache schema, not the .NET
+        // assembly hash: unrelated CLI and UI edits must not invalidate every NIF.
+        // Bump this when shape classification/serialization/displacement changes.
+        const string meshSchema = "rigid-opaque-atlas-v2/Nifly-1.1.0";
+        var variant = quality == 2
+            ? string.Join("/", new[] {
+                "REDSTONE_DXR_HEIGHT_ENABLED", "REDSTONE_DXR_HEIGHT_SCALE", "REDSTONE_DXR_AO_SCALE",
+                "REDSTONE_DXR_SUBDIV", "REDSTONE_DXR_TRI_CAP", "REDSTONE_DXR_HEIGHT_REF",
+                "REDSTONE_DXR_HEIGHT_TARGET", "REDSTONE_DXR_FLIP_V", "REDSTONE_DXR_NORMAL_ENABLED",
+                "REDSTONE_DXR_NORMAL_MICRO_SCALE", "REDSTONE_DXR_NORMAL_GRID", "REDSTONE_DXR_NORMAL_FLIP_Y"
+            }.Select(k => Environment.GetEnvironmentVariable(k) ?? ""))
+            : "no-displacement";
+        compilerKey = Convert.ToHexString(SHA256.HashData(
+            Encoding.UTF8.GetBytes(meshSchema + "/quality=" + quality + "/" + variant))).ToLowerInvariant();
+    }
+
+    // q1 provides the canonical, undisplaced source mesh. Reusing it prevents
+    // q0/q2 from reparsing the exact same NIF when the output is equivalent.
+    public bool NeedsOwnQ2Compile(CompiledNif baseline)
+    {
+        if (quality != 2) return false;
+        if (!displacementInputsEnabled) return false;
+        var target = (Environment.GetEnvironmentVariable("REDSTONE_DXR_HEIGHT_TARGET")
+            ?? @"pbr\dlc01\dungeons\castle").Replace('/', '\\');
+        return baseline.Shapes.Any(shape => shape.Material is { Textures.Length: > 0 } material &&
+            shape.ShadingStatus == "compiled" && shape.TangentStatus == "compiled:source-basis" &&
+            material.Textures[0].Replace('/', '\\').Contains(target, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public CompiledNif DeriveFrom(CompiledNif baseline, string baselineRoot)
+    {
+        if (quality == 2 && NeedsOwnQ2Compile(baseline))
+            throw new InvalidOperationException("Displaced source must compile its own q2 geometry.");
+        var shapes = baseline.Shapes.Select(shape => quality == 0
+            ? shape with {
+                ShadingStatus = "absent:quality", ShadingFile = null, ShadingSha256 = null,
+                TangentStatus = "absent:quality", Material = null
+              }
+            : shape).ToArray();
+        var result = baseline with { CompilerKey = compilerKey, CacheHit = true, Shapes = shapes };
+        if (string.IsNullOrEmpty(result.SourceSha256)) return result;
+        foreach (var shape in shapes)
+        {
+            if (shape.GeometryFile != null)
+                CopyVerifiedBlob(baselineRoot, shape.GeometryFile, shape.GeometrySha256, "geometry", ".rsgm");
+            if (shape.ShadingStatus == "compiled")
+                CopyVerifiedBlob(baselineRoot, shape.ShadingFile, shape.ShadingSha256, "shading", ".rsga");
+        }
+        var cache = Path.Combine(output, "compiled", compilerKey, baseline.SourceSha256 + ".json");
+        Directory.CreateDirectory(Path.GetDirectoryName(cache)!);
+        File.WriteAllText(cache + ".tmp", JsonSerializer.Serialize(result, options));
+        File.Move(cache + ".tmp", cache, true);
+        return result;
+    }
+
+    private void CopyVerifiedBlob(string fromRoot, string? relative, string? hash, string folder, string extension)
+    {
+        if (hash == null || relative != folder + "/" + hash + extension ||
+            hash.Length != 64 || !hash.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f'))
+            throw new InvalidDataException("Invalid shared atlas hash/path.");
+        var input = Path.Combine(fromRoot, folder, hash + extension);
+        var outputFile = Path.Combine(output, folder, hash + extension);
+        if (!copiedHashes.Add(outputFile)) return;
+        try
+        {
+            // A content address is never trusted without verifying the actual payload.
+            using (var stream = File.OpenRead(input))
+                if (!Convert.ToHexString(SHA256.HashData(stream)).Equals(hash, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("Atlas shared source digest mismatch.");
+            if (File.Exists(outputFile))
+            {
+                using var existing = File.OpenRead(outputFile);
+                if (Convert.ToHexString(SHA256.HashData(existing)).Equals(hash, StringComparison.OrdinalIgnoreCase))
+                    return;
+            }
+            Directory.CreateDirectory(Path.GetDirectoryName(outputFile)!);
+            File.Copy(input, outputFile + ".tmp", true);
+            File.Move(outputFile + ".tmp", outputFile, true);
+        }
+        catch
+        {
+            copiedHashes.Remove(outputFile);
+            throw;
+        }
     }
 
     public CompiledNif Compile(PgAsset asset)
     {
         if (asset.CachedSource == null || asset.Sha256 == null) return new(asset.Path, "", compilerKey, asset.Status, false, 0, []);
         var cacheFile = Path.Combine(output, "compiled", compilerKey, asset.Sha256 + ".json");
-        if (File.Exists(cacheFile))
+        // External height/normal DDS can change without modifying the NIF.
+        // Until their hashes are part of the cache key, never reuse potentially stale displaced geometry.
+        if (!displacementInputsEnabled && File.Exists(cacheFile))
         {
             try
             {
@@ -66,7 +152,7 @@ internal sealed class MeshCompiler
         CompiledNif result;
         try
         {
-            var source = Path.Combine(output, asset.CachedSource);
+            var source = Path.Combine(sourceRoot, asset.CachedSource);
             if (!Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(source))).Equals(asset.Sha256, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("Cached NIF source hash mismatch.");
             var file = new NifFile();
@@ -147,7 +233,7 @@ internal sealed class MeshCompiler
         if (shape.GeometrySha256 == null || shape.GeometrySha256.Length != 64 || !shape.GeometrySha256.All(Uri.IsHexDigit) ||
             shape.GeometryFile != $"geometry/{shape.GeometrySha256}.rsgm") return false;
         var path = Path.Combine(output, shape.GeometryFile);
-        return File.Exists(path) && Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))).Equals(shape.GeometrySha256, StringComparison.OrdinalIgnoreCase);
+        return VerifyCachedPayload(path, shape.GeometrySha256);
     }
 
     private bool VerifyShading(CompiledShape shape)
@@ -156,7 +242,18 @@ internal sealed class MeshCompiler
         var hash = shape.ShadingSha256;
         if (hash == null || hash.Length != 64 || !hash.All(Uri.IsHexDigit) || shape.ShadingFile != $"shading/{hash}.rsga") return false;
         var path = Path.Combine(output, shape.ShadingFile);
-        return File.Exists(path) && Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))).Equals(hash, StringComparison.OrdinalIgnoreCase);
+        return VerifyCachedPayload(path, hash);
+    }
+
+    private bool VerifyCachedPayload(string path, string expectedHash)
+    {
+        if (verifiedCachedFiles.Contains(path)) return true;
+        if (!File.Exists(path)) return false;
+        using var input = File.OpenRead(path);
+        if (!Convert.ToHexString(SHA256.HashData(input)).Equals(expectedHash, StringComparison.OrdinalIgnoreCase))
+            return false;
+        verifiedCachedFiles.Add(path);
+        return true;
     }
 
     private CompiledShape CompileShape(NifFile file, INiShape shape, NifTransforms transforms)

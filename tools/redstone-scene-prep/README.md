@@ -57,7 +57,35 @@ Run both commands with Skyrim closed:
     & .\tools\redstone-scene-prep\StagePreparedAtlas.ps1 -AtlasSourceRoot '.\build\scene-prep\atlas' -DataDirectory 'D:\SteamLibrary\steamapps\common\Skyrim Special Edition\Data'
 
 The new offline CLI command is: RedstoneScenePrep --atlas DATA OUTPUT_ROOT
-QUALITY PLUGINS_TXT (QUALITY = 0, 1 or 2). It traverses all PGPatcher-verified
+QUALITY PLUGINS_TXT (QUALITY = 0, 1 or 2).
+
+### Atlas build performance (incremental)
+
+The default `BuildAtlas.ps1` workflow now uses a **single** `--atlas-batch`
+invocation for q0, q1 and q2. Each PGPatcher source NIF is read and hashed
+once, compiled into an undisplaced q1 baseline, and reused for q0 and for q2
+unless q2's configured displacement target requires a separate compilation.
+This does not imply that q2 displacement is enabled by default.
+
+The mesh cache now uses an explicitly versioned **semantic compiler key**
+instead of the entire .NET assembly SHA. This prevents unrelated changes to
+the CLI or UI from invalidating all compiled NIFs. **Bump meshSchema** in
+`MeshCompiler.cs` whenever the geometry, shading, material classification or
+binary output semantics change. Existing per-NIF blob hashes remain validated;
+within one compilation run a verified immutable blob is not rehashed for
+every distinct NIF that shares it. When experimental DXR displacement is enabled,
+q2 deliberately recompiles targeted meshes instead of reusing their per-NIF
+compile cache because referenced DDS content changes are not yet included in
+that cache key.
+
+The first run after this cache-key migration must rebuild the old entries;
+later runs should reuse them if the source SHA and compile parameters match.
+For a single tier, `BuildAtlas.ps1 -QualityLevels @(1)` still calls the
+original `--atlas` path. The new batch path has time/progress reports so
+you can distinguish NIF processing from the (potentially lengthy) q2 DDS
+archive scan. All execution remains outside Skyrim.
+
+ It traverses all PGPatcher-verified
 NIFs and deployment-linked generated duplicate NIFs, not only one cell. It
 does NOT process arbitrary unpatched/BSA-only meshes, moving runtime state,
 or deformable/skinned geometry. Assets are SHA-256-addressed and grouped by
