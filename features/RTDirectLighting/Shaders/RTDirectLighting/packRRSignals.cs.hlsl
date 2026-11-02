@@ -30,6 +30,11 @@ void main(uint3 id : SV_DispatchThreadID)
 	PackedDirectDiffuse[destination] = valid ? DirectDiffuse.Load(int3(pixel, 0)) : 0;
 	PackedDirectSpecular[destination] = valid ? DirectSpecular.Load(int3(pixel, 0)) : 0;
 	float4 indirectDiffuse = IndirectDiffuse.Load(int3(pixel, 0)), indirectSpecular = IndirectSpecular.Load(int3(pixel, 0));
-	PackedIndirectDiffuse[destination] = valid && indirectDiffuse.a >= -1 ? indirectDiffuse : float4(0, 0, 0, -1);
-	PackedIndirectSpecular[destination] = valid && indirectSpecular.a >= -1 ? indirectSpecular : float4(0, 0, 0, -1);
+    // Separate diffuse/specular temporal histories must not receive fabricated
+    // radiance from the other sampled lobe. A -2 source alpha means the family
+    // was not traced; encode its zero-radiance invalid SDK input as -1.
+    PackedIndirectDiffuse[destination] = valid && indirectDiffuse.a >= -1 ?
+        indirectDiffuse : float4(0, 0, 0, -1);
+    PackedIndirectSpecular[destination] = valid && indirectSpecular.a >= -1 ?
+        indirectSpecular : float4(0, 0, 0, -1);
 }

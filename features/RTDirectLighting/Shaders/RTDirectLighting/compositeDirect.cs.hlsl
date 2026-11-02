@@ -105,13 +105,22 @@ void main(uint3 id : SV_DispatchThreadID)
 	}
 	if (UseDXRIndirect != 0) {
 		float4 diffuse = RawIndirectDiffuse.Load(int3(id.xy, 0)), specular = RawIndirectSpecular.Load(int3(id.xy, 0));
-		if (diffuse.a >= -1 && specular.a >= -1) {
-			float3 d = (rrFlags & 2u) != 0 ? FilteredIndirectDiffuse.Load(int3(rrPixel, 0)).rgb : diffuse.rgb;
-			float3 s = (rrFlags & 2u) != 0 ? FilteredIndirectSpecular.Load(int3(rrPixel, 0)).rgb : specular.rgb;
-			d = all(isfinite(d)) && all(d >= 0) ? d : diffuse.rgb;
-			s = all(isfinite(s)) && all(s >= 0) ? s : specular.rgb;
-			lighting.rgb += (d + s) * IndirectStrength;
-		}
+        // Stochastic per-ray lobe selection may leave just one family sampled.
+        // Preserve that family's radiance instead of requiring both -2 validity
+        // tags to be present. Unsampled families contribute zero, never stale RR.
+        const bool validD = diffuse.a >= -1.0 && all(isfinite(diffuse.rgb));
+        const bool validS = specular.a >= -1.0 && all(isfinite(specular.rgb));
+        if (validD || validS) {
+            float3 d = validD ? diffuse.rgb : 0.0;
+            float3 s = validS ? specular.rgb : 0.0;
+            if ((rrFlags & 2u) != 0) {
+                const float3 denoisedD = FilteredIndirectDiffuse.Load(int3(rrPixel, 0)).rgb;
+                const float3 denoisedS = FilteredIndirectSpecular.Load(int3(rrPixel, 0)).rgb;
+                if (validD && all(isfinite(denoisedD)) && all(denoisedD >= 0.0)) d = denoisedD;
+                if (validS && all(isfinite(denoisedS)) && all(denoisedS >= 0.0)) s = denoisedS;
+            }
+            lighting.rgb += (d + s) * IndirectStrength;
+        }
 	}
 	float3 working = ENABLE_LL ? Color::GamutTransform(lighting.rgb) : lighting.rgb;
 	if (UseIndirect != 0) {
