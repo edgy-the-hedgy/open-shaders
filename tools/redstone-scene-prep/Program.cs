@@ -8,7 +8,8 @@ using Mutagen.Bethesda.Plugins.Order;
 using Mutagen.Bethesda.Plugins.Cache;
 using Mutagen.Bethesda.Skyrim;
 
-return args.Length > 0 && args[0] == "--atlas-batch" ? AtlasBuilder.RunBatch(args) :
+return args.Length > 0 && args[0] == "--geometry-catalog" ? AtlasBuilder.WriteQ0GeometryCatalog(args) :
+    return args.Length > 0 && args[0] == "--atlas-batch" ? AtlasBuilder.RunBatch(args) :
     args.Length > 0 && args[0] == "--atlas" ? AtlasBuilder.Run(args) :
     args.Length == 5 ? ScenePreparation.Run(args[..4], int.Parse(args[4], System.Globalization.CultureInfo.InvariantCulture)) :
     ScenePreparation.Run(args);

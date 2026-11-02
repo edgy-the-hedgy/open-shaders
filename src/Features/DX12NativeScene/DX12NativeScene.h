@@ -5,6 +5,7 @@
 #include "Features/DX12NativeScene/GeometryBridge.h"
 #include "Features/DX12NativeScene/AccelerationScene.h"
 #include "Features/DX12NativeScene/PreparedScene.h"
+#include "Features/DX12NativeScene/RuntimeGeometryGenerator.h"
 #include "Features/DX12NativeScene/DirectionalTrace.h"
 #include <atomic>
 #include <mutex>
@@ -128,6 +129,7 @@ struct DX12NativeScene final : OverlayFeature
 
 private:
 	void DrawNativeSceneSettings();
+	DX12Native::RuntimeGeometryGenerator geometryGenerator;
 	DX12Native::PreparedScene preparedScene;
 	DX12Native::AccelerationWorker preparedAcceleration;
 	// Candidate is built concurrently and never replaces the published scene until its TLAS is ready.

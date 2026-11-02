@@ -85,7 +85,7 @@ foreach ($quality in @($QualityLevels | Sort-Object -Unique)) {
             }
         }
     }
-    foreach ($manifest in @('atlas-index.json', 'atlas-textures.json')) {
+    foreach ($manifest in @('atlas-index.json', 'atlas-textures.json', 'geometry-catalog.json')) {
         $from = Join-Path $source $manifest
         if (Test-Path -LiteralPath $from) {
             Copy-Item -LiteralPath $from -Destination (Join-Path $destination $manifest) -Force

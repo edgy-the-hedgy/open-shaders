@@ -44,6 +44,52 @@ another deployed environment or output location. Cell identity is
 `hex-local-id:PluginName.esm` representation. Default target is the user-confirmed
 Unslaad guest room, `Unslaad.esm:04FD2B` / `zzzCrbKedamaHouse`.
 
+## Runtime Q0 geometry generation — native static-reference assembly
+
+The native generator can now assemble a **real Q0 geometry package** for an
+attached interior or exterior cell that has no prepared package. It matches
+currently enabled, undeleted **STAT** references to verified NIF shape
+geometry in the installed Q0 atlas. It copies their reference positions,
+rotations and scales only during the existing native-scene callback. The
+worker then composes the existing NIF shape-to-model matrices into
+shape-to-cell matrices, computes instance bounds, and writes the normal
+renderer-schema \`cell-layout.json\` atomically. The existing DX12
+PreparedScene loader verifies RSGM SHA-256, uploads geometry, and builds
+BLAS/TLAS with the unchanged acceleration worker.
+
+Generate the lightweight catalogue from an already-built **Q0 cache**
+without scanning NIFs again; close Skyrim before deploying it:
+
+\`\`\`powershell
+cd D:\pcmaster\openshadersfsrredstone
+git pull --ff-only
+& .\tools\redstone-scene-prep\PrepareQ0GeometryCatalog.ps1 -Deploy
+\`\`\`
+
+New Q0 atlas builds also create \`geometry-catalog.json\`. The standard
+\`StagePreparedAtlas.ps1\` now copies it along with the existing index.
+Only the Q0 catalogue and precompiled Q0 RSGM blobs are required; neither
+Q1/Q2 atlas generation nor the managed runtime is invoked by Skyrim.
+
+Generated cell manifests live in
+\`RedstoneScene/runtime-generated/cells/<plugin>/<local-cell>/q0/\`. The
+loader prioritizes a pre-existing offline package and falls back to this
+native-generated package when no offline layout exists. Each generated Q0
+manifest is source-digest-addressed, checked for changed placements and
+atomically replaced; the existing same-tier candidate builder and cache
+revision mechanism handles safe GPU publication.
+
+**Current strict limitations:** capture is bounded to 2,048 eligible static
+references and at most 96 unique geometry blobs with conservative raw-byte
+budgets; geometry must exist in the installed verified PGPatcher atlas.
+The generator does not load .NIF files, discover unsupported BSA-only
+meshes, reconstruct animated NPC/player geometry, collect all exterior
+neighbor cells, model alpha/cutout materials or synthesize Q1/Q2 textures.
+Outdoor coverage is **only the active attached cell**, not the entire
+worldspace. Runtime coverage is deliberately marked incomplete. Reference
+enumeration occurs once per 180 frames, not once per render draw. Cache
+products must be considered hints until full live-state validation exists.
+
 ## Runtime scene revisions (incremental implementation)
 
 Accepted scene packages are retained in a versioned directory after their

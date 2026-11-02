@@ -168,6 +168,84 @@ internal static class AtlasBuilder
         }
     }
 
+
+    // Compact, runtime-readable lookup: only the rigid intersection geometry
+    // and its local transform/bounds; no PBR DDS or q1/q2 build products.
+    internal static int WriteQ0GeometryCatalog(string[] args)
+    {
+        if (args.Length != 2)
+        {
+            Console.Error.WriteLine("Usage: RedstoneScenePrep --geometry-catalog <existing q0 atlas directory>");
+            return 2;
+        }
+        try
+        {
+            var output = Path.GetFullPath(args[1]);
+            var compiled = Path.Combine(output, "compiled");
+            if (!Directory.Exists(compiled)) throw new DirectoryNotFoundException(compiled);
+            var indexFile = Path.Combine(output, "atlas-index.json");
+            using var index = JsonDocument.Parse(File.ReadAllText(indexFile));
+            if (index.RootElement.GetProperty("schemaVersion").GetInt32() != 1 ||
+                index.RootElement.GetProperty("quality").GetInt32() != 0)
+                throw new InvalidDataException("Q0 atlas index/schema mismatch.");
+            var live = new Dictionary<string, (string Sha, string Key)>(StringComparer.OrdinalIgnoreCase);
+            foreach (var asset in index.RootElement.GetProperty("assets").EnumerateArray())
+            {
+                if (asset.GetProperty("status").GetString() != "classified") continue;
+                var path = asset.GetProperty("sourcePath").GetString();
+                var sha = asset.GetProperty("sourceSha256").GetString();
+                var key = asset.GetProperty("compilerKey").GetString();
+                if (path != null && sha is { Length: 64 } && key is { Length: 64 })
+                    live[path] = (sha, key);
+            }
+            var options = new JsonSerializerOptions { WriteIndented = false, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+            var models = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+            var inspected = 0;
+            foreach (var filename in Directory.EnumerateFiles(compiled, "*.json", SearchOption.AllDirectories))
+            {
+                CompiledNif? nif;
+                try { nif = JsonSerializer.Deserialize<CompiledNif>(File.ReadAllText(filename), options); }
+                catch (JsonException) { continue; }
+                if (nif == null || nif.Status != "classified" || string.IsNullOrWhiteSpace(nif.SourcePath))
+                    continue;
+                // Prevent stale compiler schemas or superseded mod sources
+                // from leaking into the runtime-resolved geometry catalogue.
+                if (!live.TryGetValue(nif.SourcePath, out var current) ||
+                    current.Sha != nif.SourceSha256 || current.Key != nif.CompilerKey)
+                    continue;
+                var shapes = nif.Shapes.Where(shape =>
+                    shape.Status == "compiled" && shape.OpaqueOccluderCandidate &&
+                    shape.ShapeToModel is { Length: 12 } && shape.LocalBounds is { Length: 6 } &&
+                    shape.GeometrySha256 is { Length: 64 } && shape.GeometryFile != null && shape.IndexCount >= 3)
+                    .Select(shape => new {
+                        shape.GeometrySha256, shape.GeometryFile, shape.ShapeToModel,
+                        shape.LocalBounds, shape.IndexCount, shape.BlockIndex
+                    }).ToArray();
+                if (shapes.Length == 0) continue;
+                var model = nif.SourcePath.Replace('/', '\\').ToLowerInvariant();
+                if (!model.StartsWith("meshes\\", StringComparison.Ordinal)) model = "meshes\\" + model;
+                models[model] = new { sourceSha256 = nif.SourceSha256, shapes };
+                ++inspected;
+            }
+            var catalog = new {
+                schemaVersion = 1, kind = "native-runtime-q0-geometry",
+                inputScope = "verified static PGPatcher meshes; no skinned/animated/alpha geometry",
+                models
+            };
+            Directory.CreateDirectory(output);
+            var staging = Path.Combine(output, "geometry-catalog.json.tmp");
+            File.WriteAllText(staging, JsonSerializer.Serialize(catalog, options));
+            File.Move(staging, Path.Combine(output, "geometry-catalog.json"), true);
+            Console.WriteLine($"Q0 geometry catalogue: {models.Count} models, {inspected} compatible NIF records.");
+            return 0;
+        }
+        catch (Exception error)
+        {
+            Console.Error.WriteLine(error);
+            return 1;
+        }
+    }
+
     private static int FinishLevel(string data, string output, string pluginsPath,
         JsonSerializerOptions options, int quality, IReadOnlyCollection<CompiledNif> assets, List<object> failures)
     {
@@ -207,6 +285,11 @@ internal static class AtlasBuilder
         var tmp = Path.Combine(output, "atlas-index.json.tmp");
         File.WriteAllText(tmp, JsonSerializer.Serialize(index, options));
         File.Move(tmp, Path.Combine(output, "atlas-index.json"), true);
+        if (quality == 0)
+        {
+            var status = WriteQ0GeometryCatalog(["--geometry-catalog", output]);
+            if (status != 0) return status;
+        }
         Console.WriteLine($"Atlas q{quality} ready: {assets.Count} indexed NIFs; {failures.Count} source errors; digest {digest}.");
         return failures.Count == 0 ? 0 : 3;
     }

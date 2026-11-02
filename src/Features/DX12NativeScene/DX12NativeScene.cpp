@@ -322,7 +322,7 @@ json DX12NativeScene::GetDiagnostics()
 	return {
 		{ "dxrCapable", dxrCapable }, { "rrEligible", rrEligible }, { "resourcesReady", ready },
 		{ "acquisitionEnabled", settings.AcquireScene }, { "unavailable", unavailable },
-		{ "preparedSceneEnabled", settings.UsePreparedScene }, { "preparedScene", preparedScene.GetDiagnostics() },
+		{ "preparedSceneEnabled", settings.UsePreparedScene }, { "preparedScene", preparedScene.GetDiagnostics() }, { "geometryGenerator", geometryGenerator.GetDiagnostics() },
         { "runtimeScope", {
             { "cellFormID", runtimeCellID.load(std::memory_order_relaxed) },
             { "worldspaceFormID", runtimeWorldspaceID.load(std::memory_order_relaxed) },
@@ -386,7 +386,7 @@ void DX12NativeScene::DrawNativeSceneSettings()
         upgradeScene.Requested() ? std::format("Q{}", upgradeStage).c_str() : "idle");
     if (!upgradeFailure.empty()) ImGui::TextWrapped("Upgrade failure: %s", upgradeFailure.c_str());
     ImGui::TextWrapped("Q0 is the compact base geometry cache. Shader/material augmentation (Q1/Q2) will be generated progressively at runtime; separate offline quality atlases are retired.");
-    ImGui::TextWrapped("Worldspace and player form identities are observed, but exterior geometry discovery and animated character BLAS registration are not yet implemented.");
+    ImGui::TextWrapped("Attached interior/exterior cells without a prepared package generate Q0 static instances from the installed atlas. Discovery is bounded and omits unsupported or animated geometry.");
     ImGui::SeparatorText("Budgets");
     int instances = int(settings.MaxInstances), geometryBudget = int(settings.BufferBudgetMB);
     bool geometryChanged = ImGui::SliderInt("Maximum admitted instances", &instances, 1, int(CasterObservation::kCapacity));

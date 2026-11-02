@@ -237,6 +237,7 @@ void DX12NativeScene::ResetPreparedScene()
 	preparedTraceFrame.reset();
 	preparedLightReferences.clear();
 	preparedRoomReferences.fill(0);
+	geometryGenerator.Reset();
 	preparedScene.Reset();
 	preparedAcceleration.Reset();
 	upgradeScene.Reset();
@@ -261,7 +262,7 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t a_frame, uint64_t a_budgetBy
 	auto* cell = globals::game::player ? globals::game::player->GetParentCell() : nullptr;
 	const auto cellID = cell ? cell->GetFormID() : 0;
 	const bool active = ready && !transitionOpen && !globals::game::isVR &&
-		!globals::state->isMapMenuOpen && cell && cell->IsInteriorCell();
+		!globals::state->isMapMenuOpen && cell && (cell->IsInteriorCell() || cell->IsExteriorCell());
 	if (resetRequested || cellID != preparedCellID || active != preparedActive) {
 		ResetPreparedScene();
 		preparedCellID = cellID;
@@ -313,8 +314,21 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t a_frame, uint64_t a_budgetBy
 
 	if (!preparedScene.Requested()) {
 		const auto q0 = root / "q0";
+		const auto generatedRoot = std::filesystem::path(
+			"Data/SKSE/Plugins/CommunityShaders/RedstoneScene/runtime-generated/cells") /
+			source->GetFilename() / std::format("{:06X}", local);
+		const auto generatedQ0 = generatedRoot / "q0";
 		std::error_code error;
-		const auto directory = std::filesystem::exists(q0 / "cell-layout.json", error) ? q0 : root;
+		const bool offlineQ0 = std::filesystem::exists(q0 / "cell-layout.json", error);
+		error.clear();
+		const bool legacy = std::filesystem::exists(root / "cell-layout.json", error);
+		if (!offlineQ0 && !legacy)
+			geometryGenerator.Advance(cell, generatedRoot, key,
+				runtimeWorldspaceID.load(std::memory_order_relaxed), a_frame, a_budgetBytes);
+		error.clear();
+		const bool generated = std::filesystem::exists(generatedQ0 / "cell-layout.json", error);
+		if (!offlineQ0 && !legacy && !generated) return;
+		const auto directory = offlineQ0 ? q0 : legacy ? root : generatedQ0;
 		publishedPackageDirectory = directory;
 		std::error_code stampError;
 		publishedManifestTime = std::filesystem::last_write_time(directory / "cell-layout.json", stampError);
@@ -331,6 +345,9 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t a_frame, uint64_t a_budgetBy
 			preparedSubmitted = true;
 		}
 	}
+	if (publishedPackageDirectory.string().find("runtime-generated") != std::string::npos)
+		geometryGenerator.Advance(cell, publishedPackageDirectory.parent_path(), key,
+			runtimeWorldspaceID.load(std::memory_order_relaxed), a_frame, a_budgetBytes);
 	if (!preparedSubmitted || !preparedAcceleration.GetScene()) return;
 	if (cachedRevision != preparedRevision && !publishedPackageDirectory.empty()) {
 		if (auto validated = preparedScene.GetCell()) {
