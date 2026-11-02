@@ -181,6 +181,10 @@ json RTComposer::GetDiagnostics()
         { "advancedTransportDiagnosticRequested", composition.diagnoseAdvancedTransport },
         { "advancedTransportDispatches", tracer.GetDiagnostics().value(
             "advancedTransportDispatches", uint64_t{0}) },
+        { "advancedPresentedFrames", tracer.GetDiagnostics().value(
+            "advancedPresentedFrames", uint64_t{0}) },
+        { "advancedRasterFallbackFrames", tracer.GetDiagnostics().value(
+            "advancedRasterFallbackFrames", uint64_t{0}) },
         { "advancedTransportPublication",
             globals::game::graphicsState && tracer.GetTransportSignals(
                 globals::game::graphicsState->GetFrameCount()) ? "gpu-fence-gated" : "not-published" },
@@ -211,11 +215,9 @@ json RTComposer::GetDiagnostics()
              effective == EffectiveMode::RTExclusive ? "dx12-rt-exclusive" :
              effective == EffectiveMode::RTEnhanced ? "dx12-post-composite-hybrid" :
              "dx12-hybrid") : "legacy" },
-        { "shadowInfluence", composition.enabled && IsFixedPreset() &&
-            composition.mode <= CompositorMode::HybridShadowed ?
+        { "shadowInfluence", composition.enabled && IsFixedPreset() ?
             GetTierPolicy(composition.mode).shadowInfluence : composition.shadowInfluence },
-        { "directContribution", composition.enabled && IsFixedPreset() &&
-            composition.mode <= CompositorMode::HybridShadowed ?
+        { "directContribution", composition.enabled && IsFixedPreset() ?
             GetTierPolicy(composition.mode).directContribution : composition.rtDirectContribution },
         { "effectiveShadowTraceMode", GetTierPolicy(
             effective == EffectiveMode::RTExclusive || effective == EffectiveMode::RTEnhanced ?
@@ -508,6 +510,9 @@ void RTComposer::DrawSettings()
                 static_cast<unsigned long long>(tracerStatus.value("advancedComposeSubmissions", uint64_t{0})));
             ImGui::Text("Post-composite HybridGI: %llu",
                 static_cast<unsigned long long>(tracerStatus.value("postHybridComposeSubmissions", uint64_t{0})));
+            ImGui::Text("Advanced output: %llu presented / %llu raster fallbacks",
+                static_cast<unsigned long long>(tracerStatus.value("advancedPresentedFrames", uint64_t{0})),
+                static_cast<unsigned long long>(tracerStatus.value("advancedRasterFallbackFrames", uint64_t{0})));
             if (const auto failure = tracerStatus.value("advancedComposeFailure", std::string{}); !failure.empty())
                 ImGui::TextWrapped("Advanced native frame fallback: %s", failure.c_str());
         }
