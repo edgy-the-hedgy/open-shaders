@@ -29,8 +29,10 @@ internal static class AtlasBuilder
             var options = new JsonSerializerOptions { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
             Directory.CreateDirectory(output);
 
-            using var pg = new PgAssets(data, output);
-            var compiler = new MeshCompiler(output, options, quality);
+            // A Q0-only build uses deployed NIFs as validated source inputs.
+            // Keep the copy-based mode for historical multi-tier tooling.
+            using var pg = new PgAssets(data, output, cacheNifSources: false);
+            var compiler = new MeshCompiler(output, options, quality, sharedSources: data);
             var names = pg.EligibleModels().Distinct(StringComparer.OrdinalIgnoreCase)
                 .Order(StringComparer.OrdinalIgnoreCase).ToArray();
             var assets = new List<CompiledNif>(names.Length);

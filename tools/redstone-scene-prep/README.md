@@ -46,7 +46,11 @@ Unslaad guest room, `Unslaad.esm:04FD2B` / `zzzCrbKedamaHouse`.
 
 ## Q0 baseline and progressive native-scene migration
 
-The default build and stage entry points now operate on **Q0 only**. Legacy
+The default build and stage entry points now operate on **Q0 only**. The Q0-only
+compiler reads CRC/SHA-validated deployed NIFs directly, so it no longer
+writes an additional 22k-file `source-cache` duplicate. The original deployed
+file is revalidated before NIF parsing, protecting against mid-build changes.
+Older pre-existing `q0/source-cache` files are not deleted automatically. Legacy
 `-QualityLevels` remains accepted for migrations, but separately generated
 Q1/Q2 atlases are not part of the new default architecture. Existing Q0
 geometry and RSGM/RSGA schemas are backward compatible.

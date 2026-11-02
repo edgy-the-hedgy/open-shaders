@@ -9,16 +9,18 @@ internal sealed class PgAssets : IDisposable
 {
     private readonly string data;
     private readonly string output;
+    private readonly bool cacheNifSources;
     private readonly JsonDocument diff;
     private readonly JsonDocument deployment;
     private readonly Dictionary<string, JsonElement> patches;
     private readonly Dictionary<string, string> sources;
     private readonly string? pgPackage;
 
-    public PgAssets(string dataDirectory, string outputDirectory)
+    public PgAssets(string dataDirectory, string outputDirectory, bool cacheNifSources = true)
     {
         data = dataDirectory;
         output = outputDirectory;
+        this.cacheNifSources = cacheNifSources;
         diff = JsonDocument.Parse(File.ReadAllText(System.IO.Path.Combine(data, "ParallaxGen_Diff.json")));
         deployment = JsonDocument.Parse(File.ReadAllText(System.IO.Path.Combine(data, "vortex.deployment.json")));
         patches = diff.RootElement.EnumerateObject().ToDictionary(p => Normalize(p.Name), p => p.Value, StringComparer.OrdinalIgnoreCase);
@@ -73,6 +75,11 @@ internal sealed class PgAssets : IDisposable
         if (expected.HasValue && actual != expected)
             return new(path, "pg-patched-crc-mismatch", source, expected, actual, null, null, false);
         var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        // Q0 can parse the source NIF directly after CRC/SHA validation.
+        // Do not make a second full copy of every deployed mesh.
+        if (!cacheNifSources)
+            return new(path, tracked ? "pg-patched-crc-verified" : "pg-generated-deployment-linked",
+                source, expected, actual, hash, path, false);
         var relative = $"source-cache/{hash}.nif";
         var cached = System.IO.Path.Combine(output, relative);
         var hit = File.Exists(cached) && Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(cached))).Equals(hash, StringComparison.OrdinalIgnoreCase);
