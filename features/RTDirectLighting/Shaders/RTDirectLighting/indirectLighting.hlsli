@@ -293,10 +293,15 @@ bool EvaluateTierIndirectLighting(EvaluatedSourceMaterial material, float3 posit
         if (TierRandom(seed ^ 0xd254a349u) >= survival) continue;
         float3 rayDirection, throughput;
         bool choseSpecular;
-        if (!SampleTierScatter(material, viewDirection, geometricNormal,
-            seed ^ 0x05d526c9u, specProb, rayDirection, throughput, choseSpecular)) continue;
+        const bool scattered = SampleTierScatter(material, viewDirection,
+            geometricNormal, seed ^ 0x05d526c9u, specProb,
+            rayDirection, throughput, choseSpecular);
+        // A rejected GGX hemisphere direction is still a valid zero-valued
+        // sample of its selected family. Otherwise sparse RR sees artificial
+        // missing samples and learns an incorrect distribution near edges.
         if (choseSpecular) ++attemptsSpecular;
         else ++attemptsDiffuse;
+        if (!scattered) continue;
         float3 incoming; float distance;
         if (!SecondaryRadiance(position + outward * MinimumDistance, rayDirection,
             footprint, pixel, sampleIndex, tier, incoming, distance)) return false;
