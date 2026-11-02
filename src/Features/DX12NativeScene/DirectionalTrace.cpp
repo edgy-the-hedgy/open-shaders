@@ -384,11 +384,17 @@ namespace DX12Native
 			uint32_t lightReference, lightBase, roomGeneration, roomMetadata;
 			std::array<float, 3> eyeOrigin;
 			uint32_t lightCount;
-			uint32_t requestedLightCount, padding[3]{};
+			uint32_t requestedLightCount, hasShadowMotion, padding[2]{};
 			std::array<std::array<uint32_t, 4>, kMaximumDirectLights> identities{};
 			std::array<std::array<uint32_t, 4>, 128> rooms{};
 		};
 		Grid grid{ a_frame.size[0], a_frame.size[1], a_nativeSize[0], a_nativeSize[1], a_frame.lightReference, a_frame.lightBase, a_lights.roomGeneration, a_roomMetadata ? 1u : 0u, a_lights.eyeOrigin, a_lights.count, uint32_t(a_frame.lightIdentities.size()) };
+        auto* engineMotion = Util::AsReal(
+            globals::game::renderer->GetRuntimeData().renderTargets[
+                RE::RENDER_TARGETS::kMOTION_VECTOR].SRV);
+        a_frame.shadowMotionCaptured = a_frame.shadowTemporalEnabled &&
+            a_frame.shadowMotion && engineMotion;
+        grid.hasShadowMotion = a_frame.shadowMotionCaptured ? 1u : 0u;
 		for (size_t index = 0; index < a_frame.lightIdentities.size(); ++index)
 			grid.identities[index] = { a_frame.lightIdentities[index][0], a_frame.lightIdentities[index][1], 0, 0 };
 		for (uint32_t room = 0; room < grid.rooms.size(); ++room) grid.rooms[room] = { a_frame.roomReferences[room], a_lights.roomReferences[room], 0, 0 };
@@ -396,16 +402,18 @@ namespace DX12Native
 		create(&grid, sizeof(grid), a_frame.grid, "RTDirectLighting::ReceiverGrid CB");
 		create(&globals::game::frameBufferCached.nonVR, sizeof(globals::FrameBuffer), a_frame.camera, "RTDirectLighting::ReceiverCamera CB");
 		winrt::com_ptr<ID3D11ComputeShader> shader;
-		winrt::com_ptr<ID3D11ShaderResourceView> input, lightInput, roomInput;
-		winrt::com_ptr<ID3D11UnorderedAccessView> output, lightOutput;
+		winrt::com_ptr<ID3D11ShaderResourceView> input, lightInput, roomInput, oldMotionInput;
+		winrt::com_ptr<ID3D11UnorderedAccessView> output, lightOutput, oldMotionOutput;
 		winrt::com_ptr<ID3D11Buffer> oldGrid, oldCamera, oldShared, oldFeatures;
 		auto* context = backend.d3d11Context.get();
 		context->CSGetShader(shader.put(), nullptr, nullptr);
 		context->CSGetShaderResources(0, 1, input.put());
 		context->CSGetShaderResources(1, 1, lightInput.put());
 		context->CSGetShaderResources(2, 1, roomInput.put());
+        context->CSGetShaderResources(3, 1, oldMotionInput.put());
 		context->CSGetUnorderedAccessViews(0, 1, output.put());
 		context->CSGetUnorderedAccessViews(1, 1, lightOutput.put());
+        context->CSGetUnorderedAccessViews(2, 1, oldMotionOutput.put());
 		context->CSGetConstantBuffers(0, 1, oldGrid.put());
 		context->CSGetConstantBuffers(12, 1, oldCamera.put());
 		context->CSGetConstantBuffers(5, 1, oldShared.put());
@@ -414,21 +422,23 @@ namespace DX12Native
 		if (!depth) throw std::runtime_error("Native receiver depth unavailable");
 		auto* gridBuffer = a_frame.grid.get();
 		auto* cameraBuffer = a_frame.camera.get();
-		ID3D11ShaderResourceView* inputs[]{ depth, nullptr, a_roomMetadata };
-		ID3D11UnorderedAccessView* outputs[]{ a_frame.receivers->uav, a_frame.light->uav };
-		context->CSSetShaderResources(0, 3, inputs);
-		context->CSSetUnorderedAccessViews(0, 2, outputs, nullptr);
+		ID3D11ShaderResourceView* inputs[]{ depth, nullptr, a_roomMetadata,
+            a_frame.shadowMotionCaptured ? engineMotion : nullptr };
+		ID3D11UnorderedAccessView* outputs[]{ a_frame.receivers->uav, a_frame.light->uav,
+            a_frame.shadowMotionCaptured ? a_frame.shadowMotion->uav : nullptr };
+		context->CSSetShaderResources(0, 4, inputs);
+		context->CSSetUnorderedAccessViews(0, 3, outputs, nullptr);
 		context->CSSetConstantBuffers(0, 1, &gridBuffer);
 		context->CSSetConstantBuffers(12, 1, &cameraBuffer);
 		globals::state->BindSharedDataCS(context);
 		context->CSSetShader(prepare.get(), nullptr, 0);
 		a_frame.submitted = true;
 		context->Dispatch((std::max({ a_frame.size[0], uint32_t(a_frame.lightIdentities.size()), 128u }) + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
-		ID3D11UnorderedAccessView* priorOutputs[]{ output.get(), lightOutput.get() };
-		ID3D11ShaderResourceView* priorInputs[]{ input.get(), lightInput.get(), roomInput.get() };
+		ID3D11UnorderedAccessView* priorOutputs[]{ output.get(), lightOutput.get(), oldMotionOutput.get() };
+		ID3D11ShaderResourceView* priorInputs[]{ input.get(), lightInput.get(), roomInput.get(), oldMotionInput.get() };
 		gridBuffer = oldGrid.get(); cameraBuffer = oldCamera.get();
-		context->CSSetUnorderedAccessViews(0, 2, priorOutputs, nullptr);
-		context->CSSetShaderResources(0, 3, priorInputs);
+		context->CSSetUnorderedAccessViews(0, 3, priorOutputs, nullptr);
+		context->CSSetShaderResources(0, 4, priorInputs);
 		context->CSSetConstantBuffers(0, 1, &gridBuffer);
 		context->CSSetConstantBuffers(12, 1, &cameraBuffer);
 		ID3D11Buffer* priorShared[]{ oldShared.get(), oldFeatures.get() };
