@@ -36,6 +36,21 @@ internal sealed class PgAssets : IDisposable
         return normalized;
     }
 
+    // Effective PGPatcher-produced NIFs, including generated duplicate meshes.
+    // This intentionally excludes unverified arbitrary loose/BSA geometry.
+    public IEnumerable<string> EligibleModels()
+    {
+        foreach (var path in patches.Keys)
+            if (path.StartsWith("meshes\\", StringComparison.Ordinal) &&
+                path.EndsWith(".nif", StringComparison.Ordinal))
+                yield return path;
+        foreach (var path in sources.Keys)
+            if (path.StartsWith("meshes\\_pgpatcher_dups\\", StringComparison.Ordinal) &&
+                path.EndsWith(".nif", StringComparison.Ordinal) &&
+                pgPackage != null && string.Equals(sources[path], pgPackage, StringComparison.OrdinalIgnoreCase))
+                yield return path;
+    }
+
     public PgAsset Read(string model)
     {
         var path = Normalize(model);

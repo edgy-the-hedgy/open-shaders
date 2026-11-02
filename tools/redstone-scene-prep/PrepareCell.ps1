@@ -2,7 +2,8 @@ param(
     [string]$DataDirectory = 'D:\SteamLibrary\steamapps\common\Skyrim Special Edition\Data',
     [string]$Cell = 'Unslaad.esm:04FD2B',
     [string]$PluginsFile = (Join-Path $env:USERPROFILE 'AppData\Local\Skyrim Special Edition\Plugins.txt'),
-    [string]$OutputDirectory
+    [string]$OutputDirectory,
+    [ValidateRange(0, 2)][int]$Quality = 2
 )
 
 $ErrorActionPreference = 'Stop'
@@ -20,7 +21,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Standalone preparation tool dependency restore failed.' }
     & dotnet build $projectFile --no-restore --artifacts-path $artifacts -c Release --verbosity minimal
     if ($LASTEXITCODE -ne 0) { throw 'Standalone preparation tool build failed.' }
-    & dotnet (Join-Path $artifacts 'bin\RedstoneScenePrep\release\RedstoneScenePrep.dll') $DataDirectory $Cell $OutputDirectory $PluginsFile
+    & dotnet (Join-Path $artifacts 'bin\RedstoneScenePrep\release\RedstoneScenePrep.dll') $DataDirectory $Cell $OutputDirectory $PluginsFile $Quality
     if ($LASTEXITCODE -ne 0) { throw 'Cell preparation failed; inspect the error above.' }
 } finally {
     $env:DOTNET_CLI_HOME = $previousCliHome

@@ -125,8 +125,15 @@ namespace DX12Native
 		}
 
 		std::shared_ptr<const PreparedCell> Load(const GraphicsBackend& a_backend, const std::filesystem::path& a_directory,
-			const std::string& a_cell, uint64_t a_epoch, uint64_t a_budget, uint64_t a_materialBudget)
+			const std::string& a_cell, uint64_t a_epoch, uint64_t a_budget, uint64_t a_materialBudget, uint32_t a_quality)
 		{
+			const auto atlasDirectory = std::filesystem::path("Data/SKSE/Plugins/CommunityShaders/RedstoneScene/atlas") /
+                std::format("q{}", std::min(a_quality, 2u));
+            // Prefer the validated cell-local blob. If absent, load the same SHA-256-addressed asset from the shared atlas.
+            const auto assetPath = [&](const char* folder, const std::string& name) {
+                const auto local = a_directory / folder / name;
+                return std::filesystem::exists(local) ? local : atlasDirectory / folder / name;
+            };
 			const auto manifestPath = a_directory / "cell-layout.json";
 			if (std::filesystem::file_size(manifestPath) > kMaximumManifestBytes) throw std::runtime_error("Prepared manifest exceeds limit");
 			std::ifstream file(manifestPath);
@@ -151,7 +158,7 @@ namespace DX12Native
 				rooms = std::make_shared<const json>(definitions);
 				for (const auto& room : definitions) result->roomDefinitions.push_back(room);
 			}
-			if (a_materialBudget) snapshot->materialSource = std::make_shared<const MaterialSource>(a_directory, a_cell, result->digest, a_materialBudget, rooms);
+			if (a_materialBudget) snapshot->materialSource = std::make_shared<const MaterialSource>(a_directory, atlasDirectory, a_cell, result->digest, a_materialBudget, rooms);
 			std::unordered_map<std::string, std::shared_ptr<const Geometry>> geometries;
 			std::unordered_map<std::string, std::shared_ptr<const VertexAttributes>> shadingCache;
 			std::unordered_map<std::string, std::string> shadingFailures;
@@ -165,7 +172,7 @@ namespace DX12Native
 				auto found = geometries.find(hash);
 				if (found == geometries.end()) {
 					if (result->bytes >= a_budget) throw std::runtime_error("Prepared package budget exhausted");
-					const auto bytes = ReadMesh(a_directory / "geometry" / (hash + ".rsgm"), hash, a_budget - result->bytes);
+					const auto bytes = ReadMesh(assetPath("geometry", hash + ".rsgm"), hash, a_budget - result->bytes);
 					auto geometry = Upload(a_backend, bytes, a_budget - result->bytes);
 					result->bytes += geometry->allocationBytes;
 					result->geometries.emplace(geometry->source.get(), geometry);
@@ -218,7 +225,7 @@ namespace DX12Native
 					if (IsDigest(shadingHash) && shadingFile == "shading/" + shadingHash + ".rsga") {
 						if (!shadingCache.contains(shadingHash) && !shadingFailures.contains(shadingHash)) {
 							try {
-								const auto bytes = ReadMesh(a_directory / "shading" / (shadingHash + ".rsga"), shadingHash, a_budget - result->bytes);
+								const auto bytes = ReadMesh(assetPath("shading", shadingHash + ".rsga"), shadingHash, a_budget - result->bytes);
 								auto shading = UploadShading(a_backend, bytes, instance.mesh->vertexCount, a_budget - result->bytes);
 								result->bytes += shading->allocationBytes;
 								shadingCache.emplace(shadingHash, std::move(shading));
@@ -302,17 +309,17 @@ namespace DX12Native
 		requested = false;
 	}
 
-	void PreparedScene::Request(const GraphicsBackend& a_backend, std::filesystem::path a_directory, std::string a_cell, uint64_t a_epoch, uint64_t a_budget, uint64_t a_materialBudget)
+	void PreparedScene::Request(const GraphicsBackend& a_backend, std::filesystem::path a_directory, std::string a_cell, uint64_t a_epoch, uint64_t a_budget, uint64_t a_materialBudget, uint32_t a_quality)
 	{
 		if (!state) state = std::make_shared<State>();
 		if (requested || state->busy.exchange(true, std::memory_order_acq_rel)) return;
 		try {
 			static BS::thread_pool<> pool{ 1 };
 			pool.detach_task([owned = state, backend = a_backend, directory = std::move(a_directory), cell = std::move(a_cell),
-				epoch = a_epoch, budget = a_budget, materialBudget = a_materialBudget, request = revision] {
+				epoch = a_epoch, budget = a_budget, materialBudget = a_materialBudget, quality = a_quality, request = revision] {
 				std::shared_ptr<const PreparedCell> loaded;
 				std::string failure;
-				try { loaded = Load(backend, directory, cell, epoch, budget, materialBudget); }
+				try { loaded = Load(backend, directory, cell, epoch, budget, materialBudget, quality); }
 				catch (const std::exception& error) { failure = error.what(); }
 				owned->cell = std::move(loaded);
 				owned->failure = std::move(failure);

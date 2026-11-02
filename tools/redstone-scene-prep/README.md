@@ -1,6 +1,6 @@
 # Redstone cell source preparation
 
-Standalone, read-only preparation of one interior's source inputs and rigid opaque meshes. It reads the
+Offline preparation of reusable NIF assets and cell-specific rigid opaque placements. It reads the
 deployed PGPatcher output; it does not run PGPatcher or repeat its mesh/material
 conflict resolution. It is not connected to ShaderCache or rendering yet.
 
@@ -44,44 +44,55 @@ another deployed environment or output location. Cell identity is
 `hex-local-id:PluginName.esm` representation. Default target is the user-confirmed
 Unslaad guest room, `Unslaad.esm:04FD2B` / `zzzCrbKedamaHouse`.
 
-## In-process DX12 native-scene preparation (Unslaad guest room only)
+## Universal asset atlas — offline compiler and native DX12 loader
 
-The DX12 Native Scene feature now owns an automatic CPU preparation worker for
-`Unslaad.esm:04FD2B`. Entering the room checks the installed prepared package and
-its on-disk source fingerprints, and rebuilds it when absent, stale or at the
-wrong preparation quality. It uses the **same managed Mutagen/Nifly compiler
-inside the Skyrim process**, hosted via `hostfxr`; no PowerShell launcher or
-external preparation process is invoked. The prepared output is assembled
-outside Data, its geometry/shading/DDS hashes are checked, and the replacement
-cache is staged and swapped only after successful generation. An existing cache
-remains the fallback if an attempted rebuild fails. GPU upload and BLAS/TLAS
-publication continue through the existing asynchronous DX12 scene loader.
+In-process hostfxr/.NET scene preparation has been retired following runtime crashes.
+Skyrim does not launch dotnet or any managed preparator. The .NET 10 SDK is
+needed **only for the offline compiler**, not for game runtime.
 
-In **DX12 Native Scene > Guest-room preparation**, choose:
+Generate and deploy the quality-specific atlas with Windows PowerShell 5.1.
+Run both commands with Skyrim closed:
 
-- **Geometry and lights**: rigid static geometry, light and room definitions;
-  skip material descriptions, shading uploads and texture sources.
-- **Shading and materials**: retain surface normals, tangents and material
-  descriptions, but no DDS source textures.
-- **Full textures and PBR**: preserve the previous complete source package,
-  including DDS textures; unresolved sources reject a replacement rather than
-  replacing a working cache with incomplete output.
+    & .\tools\redstone-scene-prep\BuildAtlas.ps1 -DataDirectory 'D:\SteamLibrary\steamapps\common\Skyrim Special Edition\Data'
+    & .\tools\redstone-scene-prep\StagePreparedAtlas.ps1 -AtlasSourceRoot '.\build\scene-prep\atlas' -DataDirectory 'D:\SteamLibrary\steamapps\common\Skyrim Special Edition\Data'
 
-The `configureGuestRoomPreparation` devbench action accepts `enabled`,
-`quality` (0–2) and `rebuild`. The `shadowStatus` response includes
-`guestRoomPreparation` diagnostics. Preparation does not require a working
-FSR-FG/RR/DXR session, though rendering the resulting native scene still
-depends on the existing backend eligibility. Rebuilds are serialized and do
-not touch the render thread's CPU/GPU fence waits.
+The new offline CLI command is: RedstoneScenePrep --atlas DATA OUTPUT_ROOT
+QUALITY PLUGINS_TXT (QUALITY = 0, 1 or 2). It traverses all PGPatcher-verified
+NIFs and deployment-linked generated duplicate NIFs, not only one cell. It
+does NOT process arbitrary unpatched/BSA-only meshes, moving runtime state,
+or deformable/skinned geometry. Assets are SHA-256-addressed and grouped by
+quality under RedstoneScene/atlas/q0, q1 and q2:
 
-For Windows builds with the `.NET 10 SDK` installed, CMake publishes and
-deploys the managed payload under
-`Data/SKSE/Plugins/CommunityShaders/NativeScenePrep/` with the native plugin.
-Running it requires the **.NET 10 x64 runtime** installed on the machine.
-Absent hosting dependencies are reported in the native-scene UI rather than
-attempting to spawn an external process. The earlier standalone CLI remains
-available for debugging and independently preparing other test cells; no
-automatic preparation was added for the chapel or other interiors.
+- **q0 Base geometry:** reusable triangle blobs; no shading/material sidecars.
+- **q1 Shading and material metadata:** vertex attributes and NIF material
+  metadata; experimental displacement is not compiled.
+- **q2 Full PBR/displacement:** adds cached DDS source data and uses the
+  experimental height/normal microgeometry code when explicitly configured.
+
+The catalogue includes atlas-index.json and a per-source NIF compile cache
+in compiled/<compiler-key>/<NIF-source-hash>.json. Cell preparation reuses
+these entries when compatible with the source content and compiler parameters.
+
+For example, prepare the guest room at q1 into a separate output directory:
+
+    & .\tools\redstone-scene-prep\PrepareCell.ps1 -Quality 1 -OutputDirectory 'D:\pcmaster\openshadersfsrredstone\build\scene-prep\cells\guestroom-q1'
+
+Install each cell quality using StagePreparedCell.ps1 with -Quality 1,
+-QualityDirectory, -UseAtlas and -OutputRoot set to the actual Skyrim Data
+directory. Install the atlas first. Use distinct per-tier cell output
+directories to avoid overwriting a different quality's cell-layout.json.
+
+The native DX12 loader chooses cells/<plugin>/<local-cell-id>/qN if its
+manifest exists, or the legacy root cell package as fallback. Missing
+geometry, shading and DDS blobs resolve from the atlas of the *same* quality.
+The original SHA-256 verification applies to global blobs before GPU upload.
+No entire atlas is uploaded to VRAM at once, and GPU BLAS/TLAS are still
+built by the existing DXR path.
+
+**Not included yet:** loading-screen blocking, early destination-cell
+detection, global asset residency/LRU, general non-PG mesh coverage, dynamic
+reference state, skinned/deforming geometry, prebuilt GPU BLAS serialization.
+The native runtime does not compile NIFs.
 
 ## Inputs and boundaries
 

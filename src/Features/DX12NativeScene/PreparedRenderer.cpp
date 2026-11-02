@@ -77,7 +77,8 @@ void DX12NativeScene::AdvancePreparedScene(uint32_t, uint64_t a_budgetBytes)
 		const auto directory = std::filesystem::path("Data/SKSE/Plugins/CommunityShaders/RedstoneScene/cells") /
 			source->GetFilename() / std::format("{:06X}", local);
 		preparedScene.Request(*backend, directory, key, preparedRevision, a_budgetBytes,
-			settings.UsePreparedMaterials ? uint64_t(settings.MaterialTextureBudgetMB) * 1024 * 1024 : 0);
+			settings.UsePreparedMaterials ? uint64_t(settings.MaterialTextureBudgetMB) * 1024 * 1024 : 0,
+                std::min(settings.PreparationQuality, 2u));
 	}
 	if (!preparedSubmitted) {
 		if (auto prepared = preparedScene.GetCell()) {

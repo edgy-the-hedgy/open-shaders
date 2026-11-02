@@ -23,6 +23,22 @@ internal static class TextureSources
         var materials = layout.RootElement.GetProperty("instances").EnumerateArray()
             .Where(row => row.GetProperty("material").ValueKind == JsonValueKind.Object)
             .Select(row => row.GetProperty("material").GetProperty("textures").EnumerateArray().Select(value => value.GetString()).ToArray()).ToArray();
+        WriteSources(data, output, plugins, options, materials, layout.RootElement.GetProperty("cell").GetString()!,
+            layout.RootElement.GetProperty("layoutDigest").GetString()!, "cell-textures.json", MaximumCellBytes);
+    }
+
+    public static void WriteAtlas(string data, string output, ModKey[] plugins, JsonSerializerOptions options,
+        IReadOnlyCollection<CompiledNif> assets, string atlasDigest)
+    {
+        var materials = assets.SelectMany(asset => asset.Shapes)
+            .Where(shape => shape.Material != null).Select(shape => shape.Material!.Textures).ToArray();
+        WriteSources(data, output, plugins, options, materials, "atlas", atlasDigest,
+            "atlas-textures.json", 16L * 1024 * 1024 * 1024);
+    }
+
+    private static void WriteSources(string data, string output, ModKey[] plugins, JsonSerializerOptions options,
+        string?[][] materials, string identity, string digest, string manifestName, long byteBudget)
+    {
         var referencedPaths = materials.SelectMany(textures => textures)
             .Where(path => !string.IsNullOrWhiteSpace(path))
             .Select(path => PgAssets.Normalize(path!)).Select(path => path.StartsWith("textures\\", StringComparison.Ordinal) ? path : "textures\\" + path)
@@ -90,7 +106,7 @@ internal static class TextureSources
                     bytes = sources[0].File.GetBytes();
                     source = "archive:" + sources[0].Archive;
                 }
-                if (bytes.Length > MaximumTextureBytes || total > MaximumCellBytes - bytes.Length) throw new InvalidDataException("Texture source budget exceeded.");
+                if (bytes.Length > MaximumTextureBytes || total > byteBudget - bytes.Length) throw new InvalidDataException("Texture source budget exceeded.");
                 var item = Cache(output, path, source, bytes);
                 results.Add(item);
                 total += bytes.Length;
@@ -99,8 +115,8 @@ internal static class TextureSources
         }
         var manifest = new
         {
-            schemaVersion = 1, cell = layout.RootElement.GetProperty("cell").GetString(),
-            layoutDigest = layout.RootElement.GetProperty("layoutDigest").GetString(),
+            schemaVersion = 1, cell = identity,
+            layoutDigest = digest,
             runtimeCoverageValid = false, interpretation = "source DDS bytes only; map semantics and material readiness are separate",
             resolution = "explicit loose override or unique modeled active archive; ambiguous archive winners rejected",
             iniSources = iniPaths.Select(path => new { path, sha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))).ToLowerInvariant() }),
@@ -108,8 +124,8 @@ internal static class TextureSources
             parallaxSources = parallaxSources.Where(source => results.Any(texture => texture.Path == source.parallax && texture.Status == "cached")),
             textureDigest = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(results, options))).ToLowerInvariant()
         };
-        File.WriteAllText(System.IO.Path.Combine(output, "cell-textures.json.tmp"), JsonSerializer.Serialize(manifest, options));
-        File.Move(System.IO.Path.Combine(output, "cell-textures.json.tmp"), System.IO.Path.Combine(output, "cell-textures.json"), true);
+        File.WriteAllText(System.IO.Path.Combine(output, manifestName + ".tmp"), JsonSerializer.Serialize(manifest, options));
+        File.Move(System.IO.Path.Combine(output, manifestName + ".tmp"), System.IO.Path.Combine(output, manifestName), true);
         Console.WriteLine($"Texture sources: {results.Count(item => item.Status == "cached")} cached / {results.Count}; {total} source bytes.");
     }
 

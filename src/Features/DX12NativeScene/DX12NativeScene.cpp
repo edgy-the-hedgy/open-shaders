@@ -166,19 +166,6 @@ void DX12NativeScene::EarlyPrepass()
 		lastCPUms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
 	});
 	const auto frame = globals::game::graphicsState->GetFrameCount();
-    const auto* currentCell = globals::game::player ? globals::game::player->GetParentCell() : nullptr;
-    const auto* origin = currentCell ? currentCell->GetFile(0) : nullptr;
-    const auto pluginName = origin ? origin->GetFilename() : std::string_view{};
-    const bool guestRoom = currentCell && currentCell->IsInteriorCell() && origin &&
-        currentCell->GetLocalFormID() == 0x04FD2Bu && pluginName.size() == sizeof("Unslaad.esm") - 1 &&
-        _strnicmp(pluginName.data(), "Unslaad.esm", pluginName.size()) == 0;
-    scenePreparation.Advance(guestRoom && !transitionOpen, settings.AutoPrepareGuestRoom && !globals::game::isVR,
-        settings.PreparationQuality);
-    const auto preparation = scenePreparation.GetStatus();
-    if (preparation.generation != preparationGeneration) {
-        preparationGeneration = preparation.generation;
-        resetRequested = true;
-    }
 	if (!ready && (settings.AcquireScene || settings.UsePreparedScene) && frame % kBackendRetryFrames == 0) SetupResources();
 	if (previousFrame && (frame < *previousFrame || frame - *previousFrame > 1)) resetRequested = true;
 	previousFrame = frame;
@@ -323,12 +310,6 @@ json DX12NativeScene::GetDiagnostics()
 		{ "dxrCapable", dxrCapable }, { "rrEligible", rrEligible }, { "resourcesReady", ready },
 		{ "acquisitionEnabled", settings.AcquireScene }, { "unavailable", unavailable },
 		{ "preparedSceneEnabled", settings.UsePreparedScene }, { "preparedScene", preparedScene.GetDiagnostics() },
-        { "guestRoomPreparation", [&] {
-            const auto status = scenePreparation.GetStatus();
-            return json{ { "busy", status.busy }, { "attempted", status.attempted },
-                { "succeeded", status.succeeded }, { "quality", status.quality },
-                { "generation", status.generation }, { "failure", status.failure } };
-        }() },
 		{ "preparedAcceleration", preparedAcceleration.GetDiagnostics() }, { "preparedTrace", traceStatus },
 		{ "scene", scene.GetDiagnostics() },
 		{ "observation", CasterObservation::Diagnostics() }, { "acquisitionActive", acquisitionActive },
@@ -362,20 +343,15 @@ void DX12NativeScene::DrawNativeSceneSettings()
     if (settings.UsePreparedScene != settings.UsePreparedMaterials)
         ImGui::TextWrapped("Legacy settings enable only part of the native scene. Changing the unified toggle will enable or disable geometry and materials together.");
 
-    ImGui::SeparatorText("Guest-room preparation");
-    ImGui::Checkbox("Prepare Unslaad guest room on entry", &settings.AutoPrepareGuestRoom);
-    int preparationQuality = int(settings.PreparationQuality);
-    if (ImGui::Combo("Scene preparation quality", &preparationQuality,
-        "Geometry and lights\\0Shading and materials\\0Full textures and PBR\\0"))
-        settings.PreparationQuality = uint32_t(preparationQuality);
-    if (ImGui::Button("Rebuild guest-room scene")) scenePreparation.RequestRebuild();
-    const auto preparation = scenePreparation.GetStatus();
-    const auto preparationStage = preparation.busy ? "Preparing" : !preparation.attempted ? "Idle" :
-        preparation.succeeded ? "Ready" : "Failed (existing cache fallback)";
-    ImGui::Text("Preparation: %s | quality %u | revision %llu", preparationStage,
-        preparation.quality + 1, static_cast<unsigned long long>(preparation.generation));
-    if (!preparation.failure.empty()) ImGui::TextWrapped("%s", preparation.failure.c_str());
-    ImGui::TextWrapped("Requires the bundled .NET 10 runtime component and installed .NET 10 x64. Only Unslaad.esm:04FD2B is rebuilt automatically.");
+    ImGui::SeparatorText("Prepared asset atlas");
+    int quality = int(settings.PreparationQuality);
+    if (ImGui::Combo("Atlas asset quality", &quality,
+        "Base geometry\0Shading and materials\0Full PBR / displacement\0")) {
+        settings.PreparationQuality = uint32_t(quality);
+        resetRequested = true;
+    }
+    ImGui::TextWrapped("Scene assets must be prepared offline. The native DX12 loader uses the shared, SHA-256-addressed atlas when cell-local blobs are absent. No .NET runtime is loaded inside Skyrim.");
+    ImGui::TextWrapped("Loading-screen extension and live dynamic geometry are deferred until native cell-state verification.");
 
     ImGui::SeparatorText("Budgets");
     int instances = int(settings.MaxInstances), geometryBudget = int(settings.BufferBudgetMB);
@@ -465,12 +441,16 @@ void DX12NativeScene::DrawNativeSceneSettings()
 
 void DX12NativeScene::RegisterUxActions()
 {
-	FEATURE_COMMAND("configureGuestRoomPreparation", "Set guest-room automatic preparation and data quality, or request an in-process rebuild.",
+	FEATURE_COMMAND("configureGuestRoomPreparation", "Set the offline-prepared asset quality; no in-process preparation is executed.",
         [](Feature* self, const json& args) {
             auto& n = *static_cast<DX12NativeScene*>(self);
-            if (args.contains("enabled")) n.settings.AutoPrepareGuestRoom = args.at("enabled").get<bool>();
-            if (args.contains("quality")) n.settings.PreparationQuality = std::min(args.at("quality").get<uint32_t>(), 2u);
-            if (args.value("rebuild", false)) n.scenePreparation.RequestRebuild();
+            if (args.contains("quality")) {
+                const auto quality = std::min(args.at("quality").get<uint32_t>(), 2u);
+                if (n.settings.PreparationQuality != quality) {
+                    n.settings.PreparationQuality = quality;
+                    n.resetRequested = true;
+                }
+            }
         });
 	FEATURE_COMMAND("setPreparedMaterials", "Configure prepared material maps and diagnostic views.",
 		[](Feature* self, const json& args) {

@@ -5,7 +5,6 @@
 #include "Features/DX12NativeScene/GeometryBridge.h"
 #include "Features/DX12NativeScene/AccelerationScene.h"
 #include "Features/DX12NativeScene/PreparedScene.h"
-#include "Features/DX12NativeScene/ScenePreparation.h"
 #include "Features/DX12NativeScene/DirectionalTrace.h"
 #include <atomic>
 #include <mutex>
@@ -20,7 +19,7 @@ struct DX12NativeScene final : OverlayFeature
 		//peace and love, egdy
 		bool AcquireScene = false;
 		bool UsePreparedScene = false;
-		bool AutoPrepareGuestRoom = true;
+		bool AutoPrepareGuestRoom = false; // legacy setting; offline atlas preparation only
 		uint32_t PreparationQuality = 2;
 		bool PreviewPreparedScene = false;
 		bool UsePreparedMaterials = false;
@@ -122,8 +121,6 @@ struct DX12NativeScene final : OverlayFeature
 
 private:
 	void DrawNativeSceneSettings();
-	NativeScenePreparation scenePreparation;
-	uint64_t preparationGeneration = 0;
 	DX12Native::PreparedScene preparedScene;
 	DX12Native::AccelerationWorker preparedAcceleration;
 	DX12Native::DirectionalTrace preparedTrace;

@@ -8,7 +8,9 @@ using Mutagen.Bethesda.Plugins.Order;
 using Mutagen.Bethesda.Plugins.Cache;
 using Mutagen.Bethesda.Skyrim;
 
-return ScenePreparation.Run(args);
+return args.Length > 0 && args[0] == "--atlas" ? AtlasBuilder.Run(args) :
+    args.Length == 5 ? ScenePreparation.Run(args[..4], int.Parse(args[4], System.Globalization.CultureInfo.InvariantCulture)) :
+    ScenePreparation.Run(args);
 
 internal static class ScenePreparation
 {
@@ -129,17 +131,9 @@ try
     var pgAssets = new List<PgAsset>();
     using (var pg = new PgAssets(data, output))
         foreach (var path in paths) pgAssets.Add(pg.Read(path));
-    var compiler = new MeshCompiler(output, options);
+    var atlas = Path.Combine(data, "SKSE", "Plugins", "CommunityShaders", "RedstoneScene", "atlas", "q" + quality);
+    var compiler = new MeshCompiler(output, options, quality, Directory.Exists(atlas) ? atlas : null);
     var compiledAssets = pgAssets.Where(asset => staticPaths.Contains(asset.Path)).Select(compiler.Compile).ToArray();
-    if (quality == 0)
-        compiledAssets = compiledAssets.Select(asset => asset with
-        {
-            Shapes = asset.Shapes.Select(shape => shape with
-            {
-                ShadingStatus = "absent:preparation-quality", ShadingFile = null,
-                ShadingSha256 = null, TangentStatus = "absent:preparation-quality", Material = null
-            }).ToArray()
-        }).ToArray();
     var compiledShapes = compiledAssets.SelectMany(asset => asset.Shapes).Where(shape => shape.Status == "compiled").ToArray();
     File.WriteAllText(Path.Combine(output, "cell-meshes.json"), JsonSerializer.Serialize(new
     {

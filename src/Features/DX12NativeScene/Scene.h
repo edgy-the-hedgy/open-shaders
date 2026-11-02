@@ -18,6 +18,7 @@ namespace DX12Native
 	struct MaterialSource
 	{
 		std::filesystem::path directory;
+        std::filesystem::path atlasDirectory; // shared offline asset store; only accessed on loader workers
 		std::string cell, layoutDigest;
 		uint64_t budget = 0;
 		std::shared_ptr<const json> rooms;

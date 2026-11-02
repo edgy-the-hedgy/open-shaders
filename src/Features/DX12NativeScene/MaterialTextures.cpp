@@ -22,11 +22,12 @@ namespace DX12Native
 			DirectX::ScratchImage image;
 		};
 
-		std::vector<uint8_t> ReadTexture(const std::filesystem::path& a_directory, const std::string& a_hash)
+		std::vector<uint8_t> ReadTexture(const std::filesystem::path& a_directory, const std::filesystem::path& a_atlasDirectory, const std::string& a_hash)
 		{
 			if (a_hash.size() != 64 || !std::ranges::all_of(a_hash, [](unsigned char c) { return std::isxdigit(c) != 0; }))
 				throw std::runtime_error("Invalid material texture digest");
-			const auto path = a_directory / "textures" / (a_hash + ".dds");
+			const auto localPath = a_directory / "textures" / (a_hash + ".dds");
+            const auto path = std::filesystem::exists(localPath) ? localPath : a_atlasDirectory / "textures" / (a_hash + ".dds");
 			const auto file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
 			if (file == INVALID_HANDLE_VALUE) throw std::runtime_error("Material texture unavailable");
 			const SKSE::stl::scope_exit close([&]() noexcept { CloseHandle(file); });
@@ -160,7 +161,7 @@ namespace DX12Native
 			if (!texture) {
 				texture = std::make_unique<Texture>();
 				texture->hash = hash;
-				const auto bytes = ReadTexture(a_source.directory, hash);
+				const auto bytes = ReadTexture(a_source.directory, a_source.atlasDirectory, hash);
 				if (sourceBytes > a_source.budget || bytes.size() > a_source.budget - sourceBytes) throw std::runtime_error("DDS source budget exceeded");
 				sourceBytes += bytes.size();
 				DirectX::TexMetadata metadata{};

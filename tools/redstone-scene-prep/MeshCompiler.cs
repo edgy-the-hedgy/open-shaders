@@ -25,16 +25,21 @@ internal sealed class MeshCompiler
     private readonly string output;
     private readonly JsonSerializerOptions options;
     private readonly string compilerKey;
+    private readonly int quality;
+    private readonly string? atlasDirectory;
 
-    public MeshCompiler(string outputDirectory, JsonSerializerOptions jsonOptions)
+    public MeshCompiler(string outputDirectory, JsonSerializerOptions jsonOptions, int preparationQuality = 2, string? sharedAtlas = null)
     {
+        if (preparationQuality is < 0 or > 2) throw new ArgumentOutOfRangeException(nameof(preparationQuality));
+        quality = preparationQuality;
+        atlasDirectory = sharedAtlas;
         output = outputDirectory;
         options = jsonOptions;
         var executable = File.ReadAllBytes(typeof(MeshCompiler).Assembly.Location);
         compilerKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("rigid-opaque-v1/Nifly-1.1.0/" + Convert.ToHexString(SHA256.HashData(executable))))).ToLowerInvariant();
             // Include settings in the compiler cache key so changed test depth recompiles meshes.
             compilerKey = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
-                compilerKey + "/DXRHEIGHT-v1/" + string.Join("/", new[] {
+                compilerKey + "/quality=" + quality + "/DXRHEIGHT-v1/" + string.Join("/", new[] {
                     "REDSTONE_DXR_HEIGHT_ENABLED", "REDSTONE_DXR_HEIGHT_SCALE", "REDSTONE_DXR_AO_SCALE",
                     "REDSTONE_DXR_SUBDIV", "REDSTONE_DXR_TRI_CAP", "REDSTONE_DXR_HEIGHT_REF",
                     "REDSTONE_DXR_HEIGHT_TARGET", "REDSTONE_DXR_FLIP_V", "REDSTONE_DXR_NORMAL_ENABLED", "REDSTONE_DXR_NORMAL_MICRO_SCALE", "REDSTONE_DXR_NORMAL_GRID", "REDSTONE_DXR_NORMAL_FLIP_Y"
@@ -56,6 +61,8 @@ internal sealed class MeshCompiler
             }
             catch (JsonException) { }
         }
+        if (atlasDirectory != null && TryImportFromAtlas(asset, cacheFile, out var imported))
+            return imported!;
         CompiledNif result;
         try
         {
@@ -78,6 +85,61 @@ internal sealed class MeshCompiler
         File.WriteAllText(cacheFile + ".tmp", JsonSerializer.Serialize(result, options));
         File.Move(cacheFile + ".tmp", cacheFile, true);
         return result;
+    }
+
+    private bool TryImportFromAtlas(PgAsset asset, string cacheFile, out CompiledNif? result)
+    {
+        result = null;
+        if (atlasDirectory == null) return false;
+        var atlasCache = Path.Combine(atlasDirectory, "compiled", compilerKey, asset.Sha256! + ".json");
+        if (!File.Exists(atlasCache)) return false;
+        try
+        {
+            var cached = JsonSerializer.Deserialize<CompiledNif>(File.ReadAllText(atlasCache), options);
+            if (cached == null || cached.SourceSha256 != asset.Sha256 || cached.CompilerKey != compilerKey)
+                return false;
+            // Validate the atlas before publishing cell-local links. Never trust a manifest path.
+            foreach (var shape in cached.Shapes)
+            {
+                if (shape.GeometryFile != null && !ImportPayload(shape.GeometryFile, shape.GeometrySha256, ".rsgm", "geometry"))
+                    return false;
+                if (shape.ShadingStatus == "compiled" &&
+                    !ImportPayload(shape.ShadingFile, shape.ShadingSha256, ".rsga", "shading"))
+                    return false;
+            }
+            Directory.CreateDirectory(Path.GetDirectoryName(cacheFile)!);
+            File.WriteAllText(cacheFile + ".tmp", JsonSerializer.Serialize(cached, options));
+            File.Move(cacheFile + ".tmp", cacheFile, true);
+            result = cached with { SourcePath = asset.Path, CacheHit = true };
+            return true;
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            Console.Error.WriteLine("[atlas] Cache fallback: " + error.Message);
+            return false;
+        }
+    }
+
+    private bool ImportPayload(string? relative, string? hash, string extension, string folder)
+    {
+        if (relative == null || hash == null || hash.Length != 64 ||
+            !hash.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f') ||
+            relative != folder + "/" + hash + extension) return false;
+        var source = Path.Combine(atlasDirectory!, folder, hash + extension);
+        using (var file = File.OpenRead(source))
+            if (!Convert.ToHexString(SHA256.HashData(file)).Equals(hash, StringComparison.OrdinalIgnoreCase))
+                return false;
+        var destination = Path.Combine(output, folder, hash + extension);
+        if (File.Exists(destination))
+        {
+            using var existing = File.OpenRead(destination);
+            if (Convert.ToHexString(SHA256.HashData(existing)).Equals(hash, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+        File.Copy(source, destination + ".tmp", true);
+        File.Move(destination + ".tmp", destination, true);
+        return true;
     }
 
     private bool VerifyGeometry(CompiledShape shape)
@@ -142,11 +204,14 @@ internal sealed class MeshCompiler
             var vertices = ((BSTriShape)shape).VertexPositions;
             var triangles = shape.Triangles;
             var blob = GeometryBlob.Write(output, vertices, triangles);
-            var shading = ShadingBlob.Write(output, (BSTriShape)shape);
-            var quick = DxrHeightQuick.Apply(output, material, blob, shading, vertices.Count, checked(triangles.Count * 3));
+            var shading = quality == 0 ? new ShadingAttributes("absent:quality") : ShadingBlob.Write(output, (BSTriShape)shape);
+            var quick = quality == 2
+                ? DxrHeightQuick.Apply(output, material, blob, shading, vertices.Count, checked(triangles.Count * 3))
+                : new DxrHeightQuick.Result(blob.Path, blob.Sha256, blob.Bounds, vertices.Count,
+                    checked(triangles.Count * 3), shading.Status, shading.File, shading.Sha256, shading.TangentStatus);
             return new(index, name, type, previewOnly ? "preview-only:" + reason : "compiled",
                 quick.GeometryFile, quick.GeometrySha, quick.VertexCount, quick.IndexCount, transform.Matrix,
-                quick.Bounds, material, !previewOnly, quick.ShadingStatus, quick.ShadingFile, quick.ShadingSha, quick.TangentStatus);
+                quick.Bounds, quality == 0 ? null : material, !previewOnly, quick.ShadingStatus, quick.ShadingFile, quick.ShadingSha, quick.TangentStatus);
         }
         catch (InvalidDataException error)
         {

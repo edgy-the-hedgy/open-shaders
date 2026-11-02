@@ -38,7 +38,7 @@ namespace DX12Native
 	{
 	public:
 		/** @brief Starts one file/decode/upload task using copied identity and backend data. */
-		void Request(const GraphicsBackend& a_backend, std::filesystem::path a_directory, std::string a_cell, uint64_t a_epoch, uint64_t a_budget, uint64_t a_materialBudget = 0);
+		void Request(const GraphicsBackend& a_backend, std::filesystem::path a_directory, std::string a_cell, uint64_t a_epoch, uint64_t a_budget, uint64_t a_materialBudget = 0, uint32_t a_quality = 2);
 		/** @brief Cancels publication without joining the loader. */
 		void Reset();
 		/** @brief Reports whether this revision already attempted a package load. */
