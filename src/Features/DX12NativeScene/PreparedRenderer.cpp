@@ -86,8 +86,23 @@ namespace
 					}
 				}
 				const auto textures = source / "cell-textures.json";
-				if (std::filesystem::exists(textures))
-					std::filesystem::copy_file(textures, revision / "cell-textures.json", std::filesystem::copy_options::overwrite_existing);
+				if (std::filesystem::exists(textures)) {
+					std::ifstream textureFile(textures);
+					const auto textureLayout = json::parse(textureFile);
+					if (textureLayout.at("schemaVersion").get<uint32_t>() != 1 ||
+						textureLayout.at("cell").get<std::string>() != cell ||
+						textureLayout.at("layoutDigest").get<std::string>() != digest)
+						throw std::runtime_error("Cached texture manifest scope mismatch");
+					for (const auto& entry : textureLayout.at("textures")) {
+						if (entry.at("status").get<std::string>() != "cached") continue;
+						const auto hash = entry.at("sha256").get<std::string>();
+						if (entry.at("file").get<std::string>() != "textures/" + hash + ".dds")
+							throw std::runtime_error("Cached DDS manifest path mismatch");
+						install("textures", hash, ".dds");
+					}
+					std::filesystem::copy_file(textures, revision / "cell-textures.json",
+						std::filesystem::copy_options::overwrite_existing);
+				}
 				const auto content = manifestPath;
 				const auto stagedManifest = revision / "cell-layout.json.part";
 				std::filesystem::copy_file(content, stagedManifest, std::filesystem::copy_options::overwrite_existing);
