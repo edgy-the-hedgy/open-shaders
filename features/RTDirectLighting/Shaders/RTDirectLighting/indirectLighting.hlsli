@@ -251,12 +251,14 @@ bool SecondaryRadiance(float3 origin, float3 direction, float footprint,
                 const uint lightCount2 = max(lightCount, 1u);
                 const uint selectedLight = IndirectHash(seed ^ 0x8a452739u) % lightCount2;
                 float3 terminal;
-                if (!TraceTerminalDiffuse(position + outward * MinimumDistance,
+                if (TraceTerminalDiffuse(position + outward * MinimumDistance,
                     bounceDirection, footprint, selectedLight, lightCount2,
-                    pixel, sampleIndex, terminal)) return false;
-                // Preserve the first-hit emission/direct term separately.
-                // The additional segment is weighted by reciprocal survival.
-                radiance += terminal * throughput * (1.0 / 0.25);
+                    pixel, sampleIndex, terminal)) {
+                    // Secondary-hit emission and direct light are already
+                    // accumulated. An unsupported terminal must never erase
+                    // that valid first-hit energy.
+                    radiance += terminal * throughput * (1.0 / 0.25);
+                }
             }
         }
     }
