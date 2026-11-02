@@ -1,0 +1,66 @@
+// GPU-only transport bridge. Each lobe keeps its own sample validity:
+// alpha=-2 unsampled, alpha=-1 sampled miss, alpha>=0 sampled hit.
+// No spatial reconstruction precedes the FSR Ray Regeneration contexts.
+Texture2D<float4> RawDiffuse : register(t0);
+Texture2D<float4> RawSpecular : register(t1);
+Texture2D<float4> Receivers : register(t2);
+Texture2D<float> LinearDepth : register(t3);
+RWTexture2D<float4> PackedDiffuse : register(u0);
+RWTexture2D<float4> PackedSpecular : register(u1);
+RWTexture2D<float> NeutralDiffuseAO : register(u2);
+RWTexture2D<float> NeutralSpecularAO : register(u3);
+RWTexture2D<uint> ReceiverEligibility : register(u4);
+
+cbuffer AdvancedPackParams : register(b0)
+{
+    uint2 NativeSize;
+    uint2 LogicalSize;
+    uint Tier;
+    uint FrameIndex;
+    uint2 PackedSize;
+};
+
+float4 VerifiedSignal(float4 signal)
+{
+    if (!all(isfinite(signal)) || signal.a < -2.0 ||
+        any(signal.rgb < 0.0))
+        return float4(0.0, 0.0, 0.0, -2.0);
+    // Never fabricate a sample in a different lobe. FSR-RR receives
+    // the original hit-distance/miss marker and the original radiance.
+    return signal;
+}
+
+[numthreads(8, 8, 1)]
+void main(uint2 id : SV_DispatchThreadID)
+{
+    if (any(id >= NativeSize)) return;
+    const float4 receiver = Receivers.Load(int3(id, 0));
+    const float depth = LinearDepth.Load(int3(id, 0));
+    ReceiverEligibility[id] =
+        all(isfinite(receiver)) && receiver.w != 0.0 &&
+        isfinite(depth) && depth > 0.0 ? 1u : 2u;
+
+    // Only one thread writes each packed logical sample.
+    if (any(id >= PackedSize)) return;
+    uint2 source = id;
+    if (Tier == 2u || Tier == 3u) {
+        const uint phase = FrameIndex & 3u;
+        source = min(id * 2u + uint2(phase & 1u, (phase >> 1u) & 1u),
+            NativeSize - 1u);
+    } else if (Tier == 4u || Tier == 5u) {
+        source = min(uint2(id.x * 2u + ((id.y + FrameIndex) & 1u), id.y),
+            NativeSize - 1u);
+    }
+    const float4 d = RawDiffuse.Load(int3(source, 0));
+    const float4 s = RawSpecular.Load(int3(source, 0));
+    const float4 srcReceiver = Receivers.Load(int3(source, 0));
+    const bool validReceiver = all(isfinite(srcReceiver)) && srcReceiver.w != 0.0;
+    PackedDiffuse[id] = validReceiver ? VerifiedSignal(d) :
+        float4(0.0, 0.0, 0.0, -2.0);
+    PackedSpecular[id] = validReceiver ? VerifiedSignal(s) :
+        float4(0.0, 0.0, 0.0, -2.0);
+    // RT-exclusive transport deliberately does not apply SSGI AO. Neutral
+    // occlusion is a valid deterministic value, not a stochastic signal.
+    NeutralDiffuseAO[id] = 1.0;
+    NeutralSpecularAO[id] = 1.0;
+}

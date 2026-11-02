@@ -57,6 +57,18 @@ namespace DX12Native
             ID3D12Resource* linearRadiance, ID3D12Resource* albedo,
             ID3D12Resource* reflectance, ID3D12Resource* shadowMask,
             const RedstoneGI& settings, float shadowInfluence, float skipThreshold);
+        // Convert tier 2..5 DXR sparse diffuse/specular into independently
+        // tagged logical-grid RR inputs. AO/SO are deterministic neutral
+        // placeholders; RT-exclusive transport does not inherit raster SSGI.
+        // This does NOT spatially fill unsampled lobes before the RR dispatch.
+        bool RecordAdvancedTransport(ID3D12Device* device,
+            ID3D12GraphicsCommandList* list, FrameOutputs& frame,
+            uint32_t slot, uint32_t frameNumber,
+            std::array<uint32_t, 2> nativeSize, uint32_t transportTier,
+            ID3D12Resource* rawDiffuse, ID3D12Resource* rawSpecular,
+            ID3D12Resource* receivers, ID3D12Resource* linearDepth);
+        const std::string& AdvancedFailure() const { return advancedFailure; }
+        uint64_t AdvancedPackDispatches() const { return advancedPackDispatches; }
         // Prepare full logical-grid RR guides from exact representative native
         // pixels, without pre-RR spatial filtering or CPU readback.
         bool RecordRRGuides(ID3D12Device* device, ID3D12GraphicsCommandList* list,
@@ -98,6 +110,9 @@ namespace DX12Native
         winrt::com_ptr<ID3D12RootSignature> root;
         std::array<winrt::com_ptr<ID3D12PipelineState>, 2> pipelines;
         winrt::com_ptr<ID3D12PipelineState> eligibilityPipeline;
+        winrt::com_ptr<ID3D12RootSignature> advancedPackRoot;
+        winrt::com_ptr<ID3D12PipelineState> advancedPackPipeline;
+        winrt::com_ptr<ID3D12DescriptorHeap> advancedPackDescriptors;
         winrt::com_ptr<ID3D12RootSignature> guideRoot;
         winrt::com_ptr<ID3D12PipelineState> guidePipeline;
         winrt::com_ptr<ID3D12DescriptorHeap> guideDescriptors;
@@ -119,7 +134,8 @@ namespace DX12Native
         winrt::com_ptr<ID3D12RootSignature> postRoot;
         std::array<winrt::com_ptr<ID3D12PipelineState>, 2> postPipelines;
         winrt::com_ptr<ID3D12DescriptorHeap> postDescriptors;
-        std::string failure, compositionFailure, guideFailure, postFailure, historyFailure;
+        std::string failure, compositionFailure, guideFailure, postFailure, historyFailure, advancedFailure;
+        uint64_t advancedPackDispatches = 0;
         uint64_t giDispatches = 0, aoDispatches = 0, compositionDispatches = 0,
             eligibilityDispatches = 0, guideDispatches = 0,
             postDispatches = 0, blurDispatches = 0,

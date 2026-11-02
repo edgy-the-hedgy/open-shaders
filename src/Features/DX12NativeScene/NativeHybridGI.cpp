@@ -370,6 +370,167 @@ namespace DX12Native
     }
 
 
+    bool NativeHybridGI::RecordAdvancedTransport(ID3D12Device* device,
+        ID3D12GraphicsCommandList* list, FrameOutputs& frame,
+        uint32_t slot, uint32_t frameNumber,
+        std::array<uint32_t, 2> nativeSize, uint32_t tier,
+        ID3D12Resource* rawDiffuse, ID3D12Resource* rawSpecular,
+        ID3D12Resource* receivers, ID3D12Resource* linearDepth)
+    {
+        frame.valid = frame.rrValid = frame.postValid = frame.composedValid = false;
+        frame.rrGuidesValid = frame.rrHistoryValid = false;
+        if (!device || !list || slot >= 2u || tier < 2u || tier > 5u ||
+            !rawDiffuse || !rawSpecular || !receivers || !linearDepth ||
+            !nativeSize[0] || !nativeSize[1]) {
+            advancedFailure = "Missing advanced transport resources";
+            return false;
+        }
+        // Checkerboard RR requires an even horizontal logical extent.
+        // Never silently treat a half-traced frame as full-native on odd sizes.
+        const auto layout = MakeHybridSamplingLayout(
+            tier < 4u ? 1u : 0u, tier >= 4u, nativeSize, frameNumber);
+        if (tier >= 4u && !layout.checkerboard) {
+            advancedFailure = "Advanced native checkerboard requires even horizontal extent";
+            return false;
+        }
+        try {
+            if (!advancedPackPipeline || !advancedPackRoot || !advancedPackDescriptors) {
+                advancedPackPipeline = nullptr;
+                advancedPackRoot = nullptr;
+                advancedPackDescriptors = nullptr;
+                auto code = ReadDXIL("Data/Shaders/RTDirectLighting/nativeAdvancedPack.dxil");
+                D3D12_DESCRIPTOR_RANGE ranges[2]{};
+                ranges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0, 0, 0 };
+                ranges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 5, 0, 0, 0 };
+                D3D12_ROOT_PARAMETER params[3]{};
+                for (uint32_t i = 0; i < 2u; ++i) {
+                    params[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+                    params[i].DescriptorTable = { 1u, &ranges[i] };
+                }
+                params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+                params[2].Constants = { 0u, 0u, 8u };
+                const D3D12_ROOT_SIGNATURE_DESC rootDesc{ 3u, params, 0u,
+                    nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE };
+                winrt::com_ptr<ID3DBlob> serialized, errors;
+                DX::ThrowIfFailed(D3D12SerializeRootSignature(&rootDesc,
+                    D3D_ROOT_SIGNATURE_VERSION_1, serialized.put(), errors.put()));
+                DX::ThrowIfFailed(device->CreateRootSignature(0, serialized->GetBufferPointer(),
+                    serialized->GetBufferSize(), IID_PPV_ARGS(advancedPackRoot.put())));
+                D3D12_COMPUTE_PIPELINE_STATE_DESC state{};
+                state.pRootSignature = advancedPackRoot.get();
+                state.CS = { code.data(), code.size() };
+                DX::ThrowIfFailed(device->CreateComputePipelineState(
+                    &state, IID_PPV_ARGS(advancedPackPipeline.put())));
+                const D3D12_DESCRIPTOR_HEAP_DESC desc{
+                    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 9u * 2u,
+                    D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0u };
+                DX::ThrowIfFailed(device->CreateDescriptorHeap(
+                    &desc, IID_PPV_ARGS(advancedPackDescriptors.put())));
+            }
+            frame.sampling = layout;
+            if (!frame.constants) {
+                const auto desc = CD3DX12_RESOURCE_DESC::Buffer(kUploadBytes);
+                const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+                DX::ThrowIfFailed(device->CreateCommittedResource(&heap,
+                    D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_GENERIC_READ,
+                    nullptr, IID_PPV_ARGS(frame.constants.put())));
+            }
+            const auto& camera = globals::game::frameBufferCached.nonVR;
+            if (sizeof(camera) > kMaskOffset - kCameraOffset)
+                throw std::runtime_error("Advanced transport camera constants exceeded");
+            uint8_t* mapped = nullptr;
+            const D3D12_RANGE noRead{ 0, 0 };
+            DX::ThrowIfFailed(frame.constants->Map(0, &noRead,
+                reinterpret_cast<void**>(&mapped)));
+            std::memcpy(mapped + kCameraOffset, &camera, sizeof(camera));
+            frame.constants->Unmap(0, nullptr);
+
+            for (uint32_t i = 0; i < kOutputs; ++i) {
+                const auto extent = i == Eligibility ? nativeSize : layout.packed;
+                const auto format = OutputFormat(i);
+                if (frame.textures[i]) {
+                    const auto desc = frame.textures[i]->GetDesc();
+                    if (desc.Format == format && desc.Width == extent[0] &&
+                        desc.Height == extent[1]) continue;
+                    frame.textures[i] = nullptr;
+                }
+                const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(format,
+                    extent[0], extent[1], 1, 1, 1, 0,
+                    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+                const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+                DX::ThrowIfFailed(device->CreateCommittedResource(&heap,
+                    D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON,
+                    nullptr, IID_PPV_ARGS(frame.textures[i].put())));
+            }
+            const std::array<ID3D12Resource*, 4> reads{
+                rawDiffuse, rawSpecular, receivers, linearDepth };
+            const std::array<DXGI_FORMAT, 4> formats{
+                DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
+                DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32_FLOAT };
+            const std::array<uint32_t, 5> outputs{
+                Diffuse, Specular, DiffuseAO, SpecularAO, Eligibility };
+            const UINT step = device->GetDescriptorHandleIncrementSize(
+                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            auto cpu = advancedPackDescriptors->GetCPUDescriptorHandleForHeapStart();
+            cpu.ptr += uint64_t(slot * 9u) * step;
+            D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+            srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srv.Texture2D.MipLevels = 1;
+            for (uint32_t i = 0; i < reads.size(); ++i) {
+                srv.Format = formats[i];
+                device->CreateShaderResourceView(reads[i], &srv, cpu);
+                cpu.ptr += step;
+            }
+            D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+            uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+            for (uint32_t i = 0; i < outputs.size(); ++i) {
+                uav.Format = OutputFormat(outputs[i]);
+                device->CreateUnorderedAccessView(frame.textures[outputs[i]].get(),
+                    nullptr, &uav, cpu);
+                cpu.ptr += step;
+            }
+            std::vector<D3D12_RESOURCE_BARRIER> begin, end;
+            for (auto* read : reads) {
+                begin.push_back(CD3DX12_RESOURCE_BARRIER::Transition(read,
+                    D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
+                end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(read,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON));
+            }
+            for (const auto& output : frame.textures) {
+                begin.push_back(CD3DX12_RESOURCE_BARRIER::Transition(output.get(),
+                    D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
+                end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(output.get(),
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON));
+            }
+            list->ResourceBarrier(UINT(begin.size()), begin.data());
+            ID3D12DescriptorHeap* heaps[]{ advancedPackDescriptors.get() };
+            list->SetDescriptorHeaps(1, heaps);
+            list->SetPipelineState(advancedPackPipeline.get());
+            list->SetComputeRootSignature(advancedPackRoot.get());
+            auto gpu = advancedPackDescriptors->GetGPUDescriptorHandleForHeapStart();
+            gpu.ptr += uint64_t(slot * 9u) * step;
+            list->SetComputeRootDescriptorTable(0, gpu);
+            gpu.ptr += 4u * step;
+            list->SetComputeRootDescriptorTable(1, gpu);
+            const uint32_t constants[8]{
+                nativeSize[0], nativeSize[1], layout.logical[0], layout.logical[1],
+                tier, frameNumber, layout.packed[0], layout.packed[1] };
+            list->SetComputeRoot32BitConstants(2, 8u, constants, 0u);
+            list->Dispatch((nativeSize[0] + 7u) / 8u,
+                (nativeSize[1] + 7u) / 8u, 1u);
+            list->ResourceBarrier(UINT(end.size()), end.data());
+            ++advancedPackDispatches;
+            frame.valid = true;
+            advancedFailure.clear();
+            return true;
+        } catch (const std::exception& error) {
+            advancedFailure = error.what();
+            frame.valid = false;
+            return false;
+        }
+    }
+
     bool NativeHybridGI::RecordRRGuides(ID3D12Device* device,
         ID3D12GraphicsCommandList* list, FrameOutputs& frame, uint32_t slot,
         ID3D12Resource* linearDepth, ID3D12Resource* normalRough,
