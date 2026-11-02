@@ -84,13 +84,13 @@ const char* RTComposer::DirectTierDescription(CompositorMode mode)
     case CompositorMode::HybridShadowed:
         return "Quarter-checkerboard direct/shadow DXR (12.5% pixels each frame), lightweight temporal shadow denoising plus contact-edge AA; tiny oscillating shadow emitter; 0.9 shadow influence, RT/raster direct blend 0.3. Diffuse-only direct with no direct FSR-RR; native HybridGI retains its separate indirect/AO RR.";
     case CompositorMode::RTExclusiveI:
-        return "PENDING: quarter-density direct/shadows, diffuse only, 50% first-bounce survival, diffuse-only RR. The live renderer safely falls back to Shadow Only.";
+        return "Quarter-density DXR direct/shadow and diffuse-only indirect transport with 50% survival; native FSR-RR and DX12 final composition. Failed frames keep raster.";
     case CompositorMode::RTExclusiveII:
-        return "PENDING: quarter-density direct/shadows, 50% first-bounce survival, 50/50 diffuse/specular branch split. The live renderer falls back to Shadow Only.";
+        return "Quarter-density DXR direct/shadow and 50% indirect survival with per-ray diffuse/GGX selection; family-specific native FSR-RR.";
     case CompositorMode::RTEnhanced:
-        return "PENDING: native checkerboard, 50/50 diffuse/specular first-bounce split, 50% indirect survival and lowest-quality checkerboard HybridGI. The live renderer falls back to Shadow Only.";
+        return "Native checkerboard RT, 50% indirect survival; first native composition feeds quarter-size checkerboard HybridGI with separate RR histories.";
     case CompositorMode::FSRRedstone:
-        return "PENDING: native checkerboard diffuse/specular split, 66% first-bounce survival, and 25% second-bounce continuation. High-end recent AMD GPU recommended; FSR-RC is deferred.";
+        return "Native checkerboard RT with 66% first-bounce survival and 25% second continuation; post-composite HybridGI. Radiance Cache deferred.";
     case CompositorMode::Custom:
         return "Custom: editable direct, shadow, material and RR options; separate SSGI-sized HybridGI resolution.";
     }
@@ -104,13 +104,13 @@ const char* RTComposer::IndirectTierDescription(CompositorMode mode)
     case CompositorMode::HybridShadowed:
         return "Native DX12 HybridGI: quarter width/height by default (6.25% pixels), checkerboard off. Indirect diffuse/specular, AO and specular occlusion use RR and native DX12 reconstruction.";
     case CompositorMode::RTExclusiveI:
-        return "PENDING production: diffuse-only indirect bounce from 50% surviving rays. GPU-only transport diagnostics can be enabled; sparse-family RR and native scene composition are not connected.";
+        return "Diffuse-only stochastic transport packed for native RR and composed in DX12. Invalid frames retain the raster scene.";
     case CompositorMode::RTExclusiveII:
-        return "PENDING production: 50% indirect survival and 50/50 diffuse/specular split. GPU-only transport diagnostics are available; native sparse RR/compose is unfinished.";
+        return "50% survival; independently valid diffuse/specular families pass through native RR into DX12 final composition.";
     case CompositorMode::RTEnhanced:
-        return "PENDING production: 50% survival, native composition then quarter-size checkerboard HybridGI. GPU-only transport diagnostic available; final native composer not connected.";
+        return "50% RT first-bounce survival, linear native scene composition and quarter-size checkerboard follow-up HybridGI.";
     case CompositorMode::FSRRedstone:
-        return "PENDING production: 66% first survival and 25% second continuation. GPU-only transport diagnostic available; sparse RR, native compose and FSR-RC remain unimplemented.";
+        return "66% first and 25% second-bounce continuation, native RR and post-composite HybridGI; FSR-RC deferred.";
     case CompositorMode::Custom:
         return "Custom: select Shadow Only or DX12 Hybrid-Shadowed in RT Composer; edit indirect and AO sampling, reconstruction and RR settings.";
     }
@@ -118,7 +118,7 @@ const char* RTComposer::IndirectTierDescription(CompositorMode mode)
 }
 std::pair<std::string, std::vector<std::string>> RTComposer::GetFeatureSummary()
 {
-    return { "Six locked compositor tiers and a persistent Custom profile, with mode-specific direct/indirect settings panels; native DX12 HybridGI and RR remain available in supported modes.", {} };
+    return { "Six compositor tiers, including native DX12 RT-exclusive transport, family-specific FSR-RR and enhanced post-composite HybridGI; unsupported frames retain raster.", {} };
 }
 
 bool RTComposer::DX12HybridReady() const
@@ -127,7 +127,10 @@ bool RTComposer::DX12HybridReady() const
     const auto& native = globals::features::dx12NativeScene;
     return !globals::game::isVR && direct.loaded && direct.settings.UsePreparedDirectLighting &&
         native.loaded && native.settings.UsePreparedScene && native.settings.UsePreparedMaterials &&
-        bool(native.GetPublishedScene()) && DX12Native::NativeHybridGI::ShadersAvailable();
+        bool(native.GetPublishedScene()) &&
+        DX12Native::NativeHybridGI::ShadersAvailable() &&
+        (!IsAdvancedTransportTier(composition.mode) ||
+            DX12Native::NativeHybridGI::AdvancedShadersAvailable());
 }
 void RTComposer::OnCompositionPolicyChanged()
 {
@@ -174,21 +177,24 @@ json RTComposer::GetDiagnostics()
             0u : (composition.enabled && composition.mode >= CompositorMode::RTExclusiveI &&
             composition.mode <= CompositorMode::FSRRedstone ?
             static_cast<uint32_t>(composition.mode) : 0u) },
-        { "stagedTransportDispatchEnabled", AdvancedTransportDiagnosticActive() },
+        { "stagedTransportDispatchEnabled", AdvancedTransportDiagnosticActive() || AdvancedActive() },
         { "advancedTransportDiagnosticRequested", composition.diagnoseAdvancedTransport },
         { "advancedTransportDispatches", tracer.GetDiagnostics().value(
             "advancedTransportDispatches", uint64_t{0}) },
         { "advancedTransportPublication",
             globals::game::graphicsState && tracer.GetTransportSignals(
                 globals::game::graphicsState->GetFrameCount()) ? "gpu-fence-gated" : "not-published" },
-        { "advancedTierContractReady", !IsAdvancedTransportTier(composition.mode) },
+        { "advancedTierContractReady", !IsAdvancedTransportTier(composition.mode) ||
+            (GetTierPolicy(composition.mode).ready && DX12HybridReady()) },
         { "advancedTierBlockingInterfaces",
-            IsAdvancedTransportTier(composition.mode) ?
-            "native indirect DX12 composition, sparse RR family validity/history, and post-compose GI for enhanced tiers" : "" },
+            IsAdvancedTransportTier(composition.mode) && !DX12HybridReady() ?
+            "native scene or packaged DX12 transport, RR and GI shaders unavailable" : "" },
         { "transportIntegrationStatus",
-            "GPU-only advanced transport diagnostic wired; production DX12 scene composition and per-family RR validity/history unfinished" },
+            "Native DX12 RT transport, FSR-RR and post-composite HybridGI scheduled; only completed GPU scenes are presented" },
         { "effectiveMode", effective == EffectiveMode::Legacy ? "legacy" :
-            effective == EffectiveMode::ShadowOnly ? "shadow-only" : "hybrid-shadowed" },
+            effective == EffectiveMode::ShadowOnly ? "shadow-only" :
+            effective == EffectiveMode::HybridShadowed ? "hybrid-shadowed" :
+            effective == EffectiveMode::RTExclusive ? "rt-exclusive" : "rt-enhanced" },
         { "hybridDX12Ready", DX12HybridReady() },
         { "hybridFallbackReason", composition.enabled &&
             WantsNativeHybrid() && !DX12HybridReady() ?
@@ -201,7 +207,10 @@ json RTComposer::GetDiagnostics()
         { "ssgiAvailable", ssgiAvailable },
         { "giProviderStatus", effective != EffectiveMode::Legacy ?
             (ssgiAvailable && effective == EffectiveMode::ShadowOnly ? "baseline-ssgi" :
-             effective == EffectiveMode::ShadowOnly ? "no-active-indirect-provider" : "dx12-hybrid") : "legacy" },
+             effective == EffectiveMode::ShadowOnly ? "no-active-indirect-provider" :
+             effective == EffectiveMode::RTExclusive ? "dx12-rt-exclusive" :
+             effective == EffectiveMode::RTEnhanced ? "dx12-post-composite-hybrid" :
+             "dx12-hybrid") : "legacy" },
         { "shadowInfluence", composition.enabled && IsFixedPreset() &&
             composition.mode <= CompositorMode::HybridShadowed ?
             GetTierPolicy(composition.mode).shadowInfluence : composition.shadowInfluence },
@@ -209,6 +218,8 @@ json RTComposer::GetDiagnostics()
             composition.mode <= CompositorMode::HybridShadowed ?
             GetTierPolicy(composition.mode).directContribution : composition.rtDirectContribution },
         { "effectiveShadowTraceMode", GetTierPolicy(
+            effective == EffectiveMode::RTExclusive || effective == EffectiveMode::RTEnhanced ?
+                composition.mode :
             effective == EffectiveMode::HybridShadowed ?
                 CompositorMode::HybridShadowed : CompositorMode::ShadowOnly).directTraceMode },
         { "shadowContactFilterRadiusPixels", composition.enabled && IsFixedPreset() ? 1u : 0u },
@@ -234,9 +245,9 @@ json RTComposer::GetDiagnostics()
         { "hybridResolution", composition.hybridResolution },
         { "hybridCheckerboard", composition.hybridCheckerboard },
         { "effectiveHybridResolution", composition.enabled && IsFixedPreset() && WantsNativeHybrid() ?
-            GetTierPolicy(CompositorMode::HybridShadowed).hybridResolution : composition.hybridResolution },
+            GetTierPolicy(AdvancedActive() ? composition.mode : CompositorMode::HybridShadowed).hybridResolution : composition.hybridResolution },
         { "effectiveHybridCheckerboard", composition.enabled && IsFixedPreset() && WantsNativeHybrid() ?
-            GetTierPolicy(CompositorMode::HybridShadowed).hybridCheckerboard : composition.hybridCheckerboard },
+            GetTierPolicy(AdvancedActive() ? composition.mode : CompositorMode::HybridShadowed).hybridCheckerboard : composition.hybridCheckerboard },
         { "hybridSamplingMode", composition.hybridResolution },
         { "hybridSpatialScale", 1u << composition.hybridResolution },
         { "shadowThreshold", composition.shadowThreshold },
@@ -471,7 +482,7 @@ void RTComposer::DrawSettings()
     ImGui::Checkbox("Enable RT shadow composition", &composition.enabled);
     int compositorMode = static_cast<int>(composition.mode);
     if (ImGui::Combo("Compositor mode", &compositorMode,
-        "Shadow Only\0Hybrid-Shadowed\0RT-exclusive Tier I (pending)\0RT-exclusive Tier II (pending)\0RT-Enhanced (pending)\0FSR-REDSTONE (pending)\0Custom\0")) {
+        "Shadow Only\0Hybrid-Shadowed\0RT-exclusive Tier I\0RT-exclusive Tier II\0RT-Enhanced\0FSR-REDSTONE\0Custom\0")) {
         // Never copy fixed-tier values into the saved Custom settings.
         composition.mode = static_cast<CompositorMode>(compositorMode);
     }
@@ -487,12 +498,18 @@ void RTComposer::DrawSettings()
         if (composition.mode == CompositorMode::FSRRedstone)
             ImGui::TextWrapped("High-end latest-generation AMD GPU recommended. FSR Radiance Cache integration is deferred.");
         if (IsAdvancedTransportTier(composition.mode)) {
-            if (ImGui::Checkbox("Diagnostic only: dispatch advanced DXR transport (GPU cost)", &composition.diagnoseAdvancedTransport))
+            ImGui::TextWrapped("Native DX12 RT transport, family-specific FSR-RR and composition are selected when the prepared scene and bytecode are available. Failed RR/composition frames leave raster untouched.");
+            if (ImGui::Checkbox("Publish GPU diagnostic transport signal views", &composition.diagnoseAdvancedTransport))
                 OnCompositionPolicyChanged();
-            ImGui::TextWrapped("Does not enable advanced scene composition, sparse-family RR, or FSR-RC. DX12 indirect signals remain GPU-only and are not blended into the live Shadow Only output.");
             const auto tracerStatus = globals::features::dx12NativeScene.Tracer().GetDiagnostics();
-            ImGui::Text("Advanced GPU transport dispatches: %llu",
-                static_cast<unsigned long long>(tracerStatus.value("advancedTransportDispatches", uint64_t{0})));
+            ImGui::Text("Advanced trace dispatches: %llu | native RR: %llu | final compositions: %llu",
+                static_cast<unsigned long long>(tracerStatus.value("advancedTransportDispatches", uint64_t{0})),
+                static_cast<unsigned long long>(tracerStatus.value("advancedRRDispatches", uint64_t{0})),
+                static_cast<unsigned long long>(tracerStatus.value("advancedComposeSubmissions", uint64_t{0})));
+            ImGui::Text("Post-composite HybridGI: %llu",
+                static_cast<unsigned long long>(tracerStatus.value("postHybridComposeSubmissions", uint64_t{0})));
+            if (const auto failure = tracerStatus.value("advancedComposeFailure", std::string{}); !failure.empty())
+                ImGui::TextWrapped("Advanced native frame fallback: %s", failure.c_str());
         }
         if (composition.mode == CompositorMode::ShadowOnly || composition.mode == CompositorMode::HybridShadowed) {
             const auto preset = GetTierPolicy(composition.mode);

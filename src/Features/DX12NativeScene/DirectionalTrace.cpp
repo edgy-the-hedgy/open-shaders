@@ -84,6 +84,7 @@ namespace DX12Native
         }
         if (inFlight) {
             (void)nativeHybridGI.release();
+            (void)postHybridGI.release();
             (void)producer.fence11.detach();
             (void)producer.fence12.detach();
             (void)completion.fence11.detach();
@@ -704,7 +705,8 @@ namespace DX12Native
             commands->SetComputeRootDescriptorTable(1, gpu);
             const auto& composer = globals::features::rtComposer;
             const float influence = composer.IsFixedPreset() ?
-                RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed).shadowInfluence :
+                RTComposer::GetTierPolicy(composer.AdvancedActive() ?
+                    composer.composition.mode : RTComposer::CompositorMode::HybridShadowed).shadowInfluence :
                 composer.composition.shadowInfluence;
             const auto projection = globals::game::frameBufferCached.GetCameraProj();
             const bool reverseDepth = projection._33 * projection._43 < 0.0f;
@@ -741,6 +743,10 @@ namespace DX12Native
 
     void DirectionalTrace::RecordNativeHybridGI(Frame& frame)
     {
+        if (globals::features::rtComposer.AdvancedActive()) {
+            RecordAdvancedTransport(frame);
+            return;
+        }
         frame.nativeGI.valid = false;
         frame.nativeGI.composedValid = false;
         if (!frame.nativeGIRequested || !frame.hybridShadowedSourceReady ||
@@ -820,6 +826,125 @@ namespace DX12Native
                     composer.IsFixedPreset() ? 1u : 0u,
                     composer.IsFixedPreset() ? tier.shadowInfluence : composition.shadowInfluence);
         }
+    }
+
+    void DirectionalTrace::RecordAdvancedTransport(Frame& frame)
+    {
+        frame.nativeGI.valid = frame.nativeGI.composedValid = false;
+        frame.postHybridGI.valid = frame.postHybridGI.composedValid = false;
+        advancedComposeFailure.clear();
+        if (!frame.nativeGIRequested || !frame.hybridShadowedSourceReady ||
+            !frame.hybridLinearDepth || !frame.hybridShadowedSource ||
+            !frame.hybridInputs[2] || !frame.hybridInputs[3] ||
+            !frame.hybridInputs[4] || !frame.hybridInputs[5] ||
+            !frame.directSignals[5] || !frame.directSignals[6] ||
+            frame.transportTier < 2u || frame.transportTier > 5u) return;
+
+        if (!nativeHybridGI) nativeHybridGI = std::make_unique<NativeHybridGI>();
+        const auto& composer = globals::features::rtComposer;
+        const auto policy = RTComposer::GetTierPolicy(composer.composition.mode);
+        const uint32_t slot = uint32_t(&frame - frames.data());
+        if (!nativeHybridGI->RecordAdvancedTransport(
+                backend.d3d12Device.get(), frame.commands.get(), frame.nativeGI,
+                slot, frame.number, frame.size, frame.transportTier,
+                frame.directSignals[5]->resource.get(),
+                frame.directSignals[6]->resource.get(),
+                frame.receivers->resource.get(), frame.hybridLinearDepth.get())) {
+            advancedComposeFailure = nativeHybridGI->AdvancedFailure();
+            return;
+        }
+        frame.nativeGIFrame = frame.number;
+        if (!nativeHybridGI->RecordRRGuides(
+                backend.d3d12Device.get(), frame.commands.get(), frame.nativeGI,
+                slot, frame.hybridLinearDepth.get(),
+                frame.hybridInputs[2]->resource.get(),
+                frame.hybridInputs[5]->resource.get(),
+                frame.hybridInputs[3]->resource.get(),
+                frame.hybridInputs[4]->resource.get())) {
+            advancedComposeFailure = nativeHybridGI->GuideFailure();
+            return;
+        }
+        nativeHybridGI->RecordHistoryValidation(
+            backend.d3d12Device.get(), frame.commands.get(), frame.nativeGI,
+            slot, frame.number, frame.generation);
+        if (!advancedDenoiser.Initialize(backend) ||
+            !nativeHybridGI->RecordPostRR(
+                backend.d3d12Device.get(), frame.commands.get(),
+                frame.nativeGI, slot, frame.number, frame.hybridLinearDepth.get(),
+                frame.hybridInputs[2]->resource.get(), composer.composition,
+                advancedDenoiser)) {
+            advancedComposeFailure = nativeHybridGI->PostFailure();
+            return; // never publish sparse raw radiance without RR
+        }
+        if (!nativeHybridGI->RecordComposition(
+                backend.d3d12Device.get(), backend.d3d11Device.get(),
+                frame.commands.get(), frame.nativeGI, slot, frame.size,
+                frame.hybridShadowedSource.get(), frame.output->resource.get(),
+                EffectiveShadowMask(frame), frame.hybridLinearDepth.get(),
+                frame.hybridInputs[3]->resource.get(),
+                frame.hybridInputs[4]->resource.get(),
+                frame.rasterBlend * policy.directContribution, 1.0f, 0u,
+                policy.shadowInfluence, frame.transportTier)) {
+            advancedComposeFailure = nativeHybridGI->CompositionFailure();
+            return;
+        }
+        ++advancedComposeSubmissions;
+
+        if (frame.transportTier < 4u) return;
+        // Enhanced tiers: follow the already composed linear RT scene with a
+        // SEPARATE quarter-size checkerboard HybridGI. Never feed the original
+        // raster into this second pass and never gamma-encode the input twice.
+        if (!postHybridGI) postHybridGI = std::make_unique<NativeHybridGI>();
+        const auto sampling = MakeHybridSamplingLayout(2u, true, frame.size, frame.number);
+        if (!sampling.checkerboard ||
+            !postHybridGI->Record(backend.d3d12Device.get(),
+                frame.commands.get(), frame.postHybridGI, slot, frame.number,
+                frame.size, sampling, frame.hybridLinearDepth.get(),
+                frame.hybridInputs[2]->resource.get(),
+                frame.nativeGI.composedScene->resource.get(),
+                frame.hybridInputs[3]->resource.get(),
+                frame.hybridInputs[4]->resource.get(),
+                EffectiveShadowMask(frame), globals::features::redstoneGI,
+                policy.shadowInfluence, composer.composition.shadowThreshold)) {
+            advancedComposeFailure = postHybridGI->Failure();
+            return;
+        }
+        if (!postHybridGI->RecordRRGuides(
+                backend.d3d12Device.get(), frame.commands.get(),
+                frame.postHybridGI, slot, frame.hybridLinearDepth.get(),
+                frame.hybridInputs[2]->resource.get(),
+                frame.hybridInputs[5]->resource.get(),
+                frame.hybridInputs[3]->resource.get(),
+                frame.hybridInputs[4]->resource.get())) {
+            advancedComposeFailure = postHybridGI->GuideFailure();
+            return;
+        }
+        postHybridGI->RecordHistoryValidation(
+            backend.d3d12Device.get(), frame.commands.get(), frame.postHybridGI,
+            slot, frame.number, frame.generation);
+        auto& postDenoiser = globals::features::redstoneGI.GetDenoiser();
+        if (!postDenoiser.Initialize(backend) ||
+            !postHybridGI->RecordPostRR(
+                backend.d3d12Device.get(), frame.commands.get(),
+                frame.postHybridGI, slot, frame.number, frame.hybridLinearDepth.get(),
+                frame.hybridInputs[2]->resource.get(), composer.composition,
+                postDenoiser)) {
+            advancedComposeFailure = postHybridGI->PostFailure();
+            return;
+        }
+        if (!postHybridGI->RecordComposition(
+                backend.d3d12Device.get(), backend.d3d11Device.get(),
+                frame.commands.get(), frame.postHybridGI, slot, frame.size,
+                frame.nativeGI.composedScene->resource.get(),
+                frame.output->resource.get(), EffectiveShadowMask(frame),
+                frame.hybridLinearDepth.get(),
+                frame.hybridInputs[3]->resource.get(),
+                frame.hybridInputs[4]->resource.get(),
+                0.0f, 1.0f, 0u, policy.shadowInfluence)) {
+            advancedComposeFailure = postHybridGI->CompositionFailure();
+            return;
+        }
+        ++postHybridComposeSubmissions;
     }
 
 	void DirectionalTrace::Record(Frame& a_frame, const float3& a_direction, bool a_localLight)
@@ -1094,9 +1219,13 @@ namespace DX12Native
 		context->CSGetConstantBuffers(6, 1, features.put());
 		context->CSGetConstantBuffers(12, 1, camera.put());
 		DX::ThrowIfFailed(context->Wait(completion.fence11.get(), a_frame.fence));
-        const bool nativeHybridActive = globals::features::rtComposer.DX12HybridActive();
-        if (nativeHybridActive && a_frame.nativeGI.composedValid &&
-            a_frame.nativeGI.composedScene) {
+        const auto& composer = globals::features::rtComposer;
+        const bool nativeHybridActive = composer.DX12HybridActive();
+        const auto* finalNative = composer.AdvancedActive() &&
+            composer.composition.mode >= RTComposer::CompositorMode::RTEnhanced ?
+            &a_frame.postHybridGI : &a_frame.nativeGI;
+        if (nativeHybridActive && finalNative->composedValid &&
+            finalNative->composedScene) {
             if (!nativeHybridResolve && nativeHybridPreviewFailure.empty()) {
                 try {
                     nativeHybridResolve.attach(static_cast<ID3D11ComputeShader*>(
@@ -1109,7 +1238,7 @@ namespace DX12Native
                 }
             }
             if (nativeHybridResolve) {
-                auto* nativeOutput = a_frame.nativeGI.composedScene->srv;
+                auto* nativeOutput = finalNative->composedScene->srv;
                 context->CSSetShaderResources(0, 1, &nativeOutput);
                 context->CSSetUnorderedAccessViews(0, 1, &a_target, nullptr);
                 context->CSSetShader(nativeHybridResolve.get(), nullptr, 0);
@@ -1149,7 +1278,6 @@ namespace DX12Native
 		auto& indirect = globals::features::redstoneGI;
 		const bool useIndirect = a_frame.useIndirect && indirect.HasCurrentIndirectLighting();
 		if (useIndirect) indirect.BindCompositeResources();
-		const auto& composer = globals::features::rtComposer;
 		const bool shadowOnly = composer.ShadowOnlyActive() && a_frame.shadowMaskExport;
         const auto shadowTier = RTComposer::GetTierPolicy(RTComposer::CompositorMode::ShadowOnly);
         const float directBlend = composer.IsFixedPreset() ? shadowTier.directContribution : composer.composition.rtDirectContribution;
@@ -1261,10 +1389,16 @@ namespace DX12Native
         bool wantNativeGI = wantHybridInputs && NativeHybridGI::ShadersAvailable();
         const auto& composer = globals::features::rtComposer;
         const auto& composition = composer.composition;
-        const auto fixed = RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed);
+        const auto fixed = RTComposer::GetTierPolicy(
+            composer.AdvancedActive() ? composer.composition.mode :
+                RTComposer::CompositorMode::HybridShadowed);
         const auto hybridSampling = MakeHybridSamplingLayout(
-            composer.IsFixedPreset() ? fixed.hybridResolution : composition.hybridResolution,
-            composer.IsFixedPreset() ? fixed.hybridCheckerboard : composition.hybridCheckerboard,
+            composer.AdvancedActive() ?
+                (composer.composition.mode <= RTComposer::CompositorMode::RTExclusiveII ? 1u : 0u) :
+                (composer.IsFixedPreset() ? fixed.hybridResolution : composition.hybridResolution),
+            composer.AdvancedActive() ?
+                (composer.composition.mode >= RTComposer::CompositorMode::RTEnhanced) :
+                (composer.IsFixedPreset() ? fixed.hybridCheckerboard : composition.hybridCheckerboard),
             size, a_frame);
 		bool reuse = available->size == size && available->useDirectRR == directRR && available->indirectRays == a_indirectRays && available->receivers && available->output && available->light &&
 			bool(available->shadowMask) == bool(a_sceneTarget) &&
@@ -1274,6 +1408,7 @@ namespace DX12Native
             bool(available->shadowMotion) == wantShadowTemporal &&
             (!wantHybridInputs || (available->hybridShadowedSource && available->hybridLinearDepth)) &&
             bool(available->nativeGI.textures[0]) == wantNativeGI &&
+            bool(available->postHybridGI.textures[0]) == wantPostHybrid &&
             (!wantNativeGI || available->nativeGI.constants) &&
             (!a_sceneTarget || available->visibilityBits);
 		constexpr uint64_t kFrameOverheadBytes = 1024 * 1024;
@@ -1308,10 +1443,23 @@ namespace DX12Native
         uint64_t nativeGIBytes = wantNativeGI ?
             NativeHybridGI::EstimateBytes(backend.d3d12Device.get(), size[0], size[1],
                 hybridSampling, optionalBlur) : 0;
+        bool wantPostHybrid = wantNativeGI && composer.AdvancedActive() &&
+            composer.composition.mode >= RTComposer::CompositorMode::RTEnhanced;
+        if (wantPostHybrid && nativeGIBytes != UINT64_MAX) {
+            const auto postSampling = MakeHybridSamplingLayout(2u, true, size, a_frame);
+            const auto additional = postSampling.checkerboard ?
+                NativeHybridGI::EstimateBytes(backend.d3d12Device.get(), size[0],
+                    size[1], postSampling, optionalBlur) : UINT64_MAX;
+            nativeGIBytes = additional == UINT64_MAX ||
+                nativeGIBytes > UINT64_MAX - additional ?
+                UINT64_MAX : nativeGIBytes + additional;
+        }
         if (nativeGIBytes == UINT64_MAX) {
-            // Unsupported optional diagnostic allocation must not block shadows.
+            // Unsupported optional native dispatch must not block shadows.
             wantNativeGI = false;
-            nativeGIBytes = 0;
+            wantPostHybrid = false;
+            wantHybridInputs = false;
+            hybridBytes = nativeGIBytes = 0;
         }
 		if (textureBytes == UINT64_MAX || lightBytes == UINT64_MAX || nextPreviewBytes == UINT64_MAX ||
 			visibilityBytes == UINT64_MAX || maskBytes == UINT64_MAX) { failure = "Directional texture allocation unsupported"; return; }
@@ -1330,6 +1478,7 @@ namespace DX12Native
             hybridInputFailure = "Hybrid capture exceeds native lighting budget; skipped";
             wantHybridInputs = false;
             wantNativeGI = false;
+            wantPostHybrid = false;
             hybridBytes = nativeGIBytes = 0;
             reuse = available->size == size && available->useDirectRR == directRR &&
                 available->indirectRays == a_indirectRays && available->receivers &&
@@ -1355,6 +1504,7 @@ namespace DX12Native
                 bool(available->hybridInputs[0]) == wantHybridInputs &&
                 (!wantHybridInputs || (available->hybridShadowedSource && available->hybridLinearDepth)) &&
                 bool(available->nativeGI.textures[0]) == wantNativeGI &&
+                bool(available->postHybridGI.textures[0]) == wantPostHybrid &&
                 (!wantNativeGI || available->nativeGI.constants) &&
                 (!a_sceneTarget || available->visibilityBits);
             required = calculateRequired();
@@ -1596,26 +1746,28 @@ namespace DX12Native
         for (const auto& frame : frames) {
             if (!frame.submitted || !frame.nativeGI.valid || frame.nativeGIFrame != frameNumber ||
                 frame.generation != generation || !frame.fence || !completion.fence12) continue;
+            const auto& final = frame.transportTier >= 4u ? frame.postHybridGI : frame.nativeGI;
+            if (!final.valid) continue;
             NativeGIOutputsPublication result{};
             for (uint32_t i = 0; i < NativeHybridGI::kOutputs; ++i)
-                result.outputs[i] = frame.nativeGI.textures[i].get();
-            result.sampling = frame.nativeGI.sampling;
-            result.rrGuidesValid = frame.nativeGI.rrGuidesValid;
-            result.rrValid = frame.nativeGI.rrValid;
-            result.postValid = frame.nativeGI.postValid;
+                result.outputs[i] = final.textures[i].get();
+            result.sampling = final.sampling;
+            result.rrGuidesValid = final.rrGuidesValid;
+            result.rrValid = final.rrValid;
+            result.postValid = final.postValid;
             if (result.rrValid)
                 for (uint32_t i = 0; i < result.rrOutputs.size(); ++i)
-                    result.rrOutputs[i] = frame.nativeGI.rrOutputs[i].get();
+                    result.rrOutputs[i] = final.rrOutputs[i].get();
             if (result.postValid)
                 for (uint32_t i = 0; i < result.reconstructed.size(); ++i)
-                    result.reconstructed[i] = frame.nativeGI.nativeFinal[i];
+                    result.reconstructed[i] = final.nativeFinal[i];
             if (result.rrGuidesValid)
                 for (uint32_t i = 0; i < result.rrGuides.size(); ++i)
-                    result.rrGuides[i] = frame.nativeGI.rrGuides[i].get();
-            result.composedValid = frame.nativeGI.composedValid &&
-                bool(frame.nativeGI.composedScene);
+                    result.rrGuides[i] = final.rrGuides[i].get();
+            result.composedValid = final.composedValid &&
+                bool(final.composedScene);
             result.composedScene = result.composedValid ?
-                frame.nativeGI.composedScene->resource.get() : nullptr;
+                final.composedScene->resource.get() : nullptr;
             result.completionFence = completion.fence12.get();
             result.completionValue = frame.fence;
             result.size = frame.size;
@@ -1724,6 +1876,12 @@ namespace DX12Native
             { "nativeHybridPreviewSubmissions", nativeHybridPreviewSubmissions },
             { "nativeHybridPreviewFailure", nativeHybridPreviewFailure },
             { "nativeHybridGIStatus", "Production DX12 Hybrid-Shadowed; GPU RR or full-native raw, raster preserved on failed frame" },
+            { "advancedRRDispatches", advancedDenoiser.NativeHybridDispatches() },
+            { "advancedRRFailure", advancedDenoiser.NativeHybridFailure() },
+            { "advancedComposeSubmissions", advancedComposeSubmissions },
+            { "postHybridComposeSubmissions", postHybridComposeSubmissions },
+            { "advancedComposeFailure", advancedComposeFailure },
+            { "advancedPackDispatches", nativeHybridGI ? nativeHybridGI->AdvancedPackDispatches() : uint64_t{0} },
             { "nativeHybridFallbackFrames", nativeHybridFallbackFrames },
             { "hybridShadowedSourceLastFrame", hybridSourceLastFrame },
             { "hybridShadowedSourceFailure", hybridSourceFailure },

@@ -46,6 +46,7 @@ namespace DX12Native
             bool composedValid = false;
         };
         static bool ShadersAvailable();
+        static bool AdvancedShadersAvailable();
         static uint64_t EstimateBytes(ID3D12Device* device, uint32_t width, uint32_t height,
             const HybridSamplingLayout& sampling,
             const std::array<bool, 3>& postBlurEnabled);

@@ -36,22 +36,21 @@ struct RTComposer final : Feature
         case CompositorMode::HybridShadowed:
             return { 6u, .9f, .3f, false, false, true, true, 2u, false, 0.f, 0.f, 0.f, true };
         case CompositorMode::RTExclusiveI:
-            return { 7u, .8f, .5f, false, true, false, false, 2u, false, .5f, 0.f, 0.f, false };
+            return { 7u, .8f, .5f, false, true, false, false, 2u, false, .5f, 0.f, 0.f, true };
         case CompositorMode::RTExclusiveII:
-            return { 7u, .8f, .5f, false, true, false, false, 2u, false, .5f, .5f, 0.f, false };
+            return { 7u, .8f, .5f, false, true, false, false, 2u, false, .5f, .5f, 0.f, true };
         case CompositorMode::RTEnhanced:
-            return { 5u, .8f, .5f, true, true, true, true, 2u, true, .5f, .5f, 0.f, false };
+            return { 5u, .8f, .5f, true, true, true, true, 2u, true, .5f, .5f, 0.f, true };
         case CompositorMode::FSRRedstone:
-            return { 5u, .8f, .5f, true, true, true, true, 2u, true, .66f, .5f, .25f, false };
+            return { 5u, .8f, .5f, true, true, true, true, 2u, true, .66f, .5f, .25f, true };
         case CompositorMode::Custom:
             return { 0u, 0.f, 0.f, true, true, false, false, 0u, false, 0.f, 0.f, 0.f, true };
         }
         return GetTierPolicy(CompositorMode::ShadowOnly);
     }
-    // This is a requirements contract, NOT a readiness or dispatch flag.
-    // Keeping the four advanced tiers explicit prevents accidental use of
-    // inherited Custom sampling, and avoids claiming an HLSL shader alone
-    // constitutes a finished DX12/RR production path.
+    // This is the dispatch contract for the native RT/RR pipeline.
+    // Never inherit Custom sampling for fixed upper tiers; the DX12 compositor
+    // publishes only a completed RR+GI generation with valid resource fences.
     struct TierExecutionContract
     {
         uint32_t directTraceMode = 0u;
@@ -133,7 +132,10 @@ struct RTComposer final : Feature
         // Separate settings for diffuse, specular and AO, respectively.
         std::array<SignalReconstructionSettings, 3> reconstruction{};
     } composition;
-    enum class EffectiveMode : uint32_t { Legacy = 0, ShadowOnly = 1, HybridShadowed = 2 };
+    enum class EffectiveMode : uint32_t {
+        Legacy = 0, ShadowOnly = 1, HybridShadowed = 2,
+        RTExclusive = 3, RTEnhanced = 4
+    };
     bool IsFixedPreset() const { return composition.mode != CompositorMode::Custom; }
     bool AdvancedTransportDiagnosticActive() const
     {
@@ -144,16 +146,20 @@ struct RTComposer final : Feature
     bool WantsNativeHybrid() const
     {
         return composition.mode == CompositorMode::HybridShadowed ||
+            (IsAdvancedTransportTier(composition.mode) && GetTierPolicy(composition.mode).ready) ||
             (composition.mode == CompositorMode::Custom && composition.customHybridShadowed);
     }
     static const char* DirectTierDescription(CompositorMode mode);
     static const char* IndirectTierDescription(CompositorMode mode);
-    // Never expose unimplemented RT-exclusive / enhanced transport as a live
-    // production path. Their selected presets remain visible in diagnostics,
-    // but the effective renderer falls back to the supported Shadow Only mode.
+    // Advanced modes require a completed scene and packaged DX12/RR shaders.
+    // On missing prerequisites the working Shadow Only image stays intact.
     EffectiveMode ResolveEffectiveMode() const
     {
         if (!composition.enabled) return EffectiveMode::Legacy;
+        if (IsAdvancedTransportTier(composition.mode) &&
+            GetTierPolicy(composition.mode).ready && DX12HybridReady())
+            return composition.mode <= CompositorMode::RTExclusiveII ?
+                EffectiveMode::RTExclusive : EffectiveMode::RTEnhanced;
         if (WantsNativeHybrid() && DX12HybridReady())
             return EffectiveMode::HybridShadowed;
         return EffectiveMode::ShadowOnly;
@@ -167,7 +173,17 @@ struct RTComposer final : Feature
             !(composition.mode == CompositorMode::Custom && !composition.customHybridShadowed);
     }
     bool ShadowOnlyActive() const { return ResolveEffectiveMode() == EffectiveMode::ShadowOnly; }
-    bool DX12HybridActive() const { return ResolveEffectiveMode() == EffectiveMode::HybridShadowed; }
+    bool DX12HybridActive() const
+    {
+        const auto mode = ResolveEffectiveMode();
+        return mode == EffectiveMode::HybridShadowed ||
+            mode == EffectiveMode::RTExclusive || mode == EffectiveMode::RTEnhanced;
+    }
+    bool AdvancedActive() const
+    {
+        const auto mode = ResolveEffectiveMode();
+        return mode == EffectiveMode::RTExclusive || mode == EffectiveMode::RTEnhanced;
+    }
     // The native producer is eligible when its shaders and retained scene are ready.
     // Per-frame RR/compose failures fail open to unchanged raster, never DX11 HybridGI.
     bool DX12HybridReady() const;
@@ -199,7 +215,7 @@ static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::ShadowOnly).
 static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed).directContribution == .3f);
 static_assert(!RTComposer::GetTierPolicy(RTComposer::CompositorMode::ShadowOnly).directRR);
 static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed).hybridResolution == 2u);
-static_assert(!RTComposer::GetTierPolicy(RTComposer::CompositorMode::FSRRedstone).ready);
+static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::FSRRedstone).ready);
 static_assert(RTComposer::GetTierExecutionContract(RTComposer::CompositorMode::RTExclusiveI).directTraceMode == 7u);
 static_assert(RTComposer::GetTierExecutionContract(RTComposer::CompositorMode::RTExclusiveI).rrSignalFamilies == 1u);
 static_assert(RTComposer::GetTierExecutionContract(RTComposer::CompositorMode::RTExclusiveII).rrSignalFamilies == 3u);

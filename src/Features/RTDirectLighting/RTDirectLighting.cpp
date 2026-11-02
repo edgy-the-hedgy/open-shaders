@@ -264,6 +264,7 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
     const auto effectiveMode = composer.ResolveEffectiveMode();
     const bool tieredDirect = composer.TierControlsLocked();
     const auto activeTier = RTComposer::GetTierPolicy(
+        composer.AdvancedActive() ? composer.composition.mode :
         effectiveMode == RTComposer::EffectiveMode::HybridShadowed ?
             RTComposer::CompositorMode::HybridShadowed :
             RTComposer::CompositorMode::ShadowOnly);
@@ -274,7 +275,8 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
     const bool directRR = !tieredDirect && settings.UseDirectRayRegeneration;
     // GPU-only test of the selected advanced transport contract. The live
     // low-tier shadow/direct result is never replaced by these sparse signals.
-    const bool transportDiagnostic = composer.AdvancedTransportDiagnosticActive();
+    const bool transportDiagnostic = composer.AdvancedTransportDiagnosticActive() ||
+        composer.AdvancedActive();
     const auto contract = RTComposer::GetTierExecutionContract(composer.composition.mode);
     const uint32_t requestedTransportTier = transportDiagnostic ?
         static_cast<uint32_t>(composer.composition.mode) : 0u;
@@ -282,7 +284,8 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
         contract.indirectTraceMode : directTraceMode;
     const uint32_t transportRays = transportDiagnostic ? contract.indirectCandidateRays : 0u;
     const float4 strengths{ settings.DirectStrength, settings.DiffuseStrength,
-        tieredDirect ? 0.0f : settings.SpecularStrength, settings.EmissionStrength };
+        tieredDirect && !activeTier.directSpecular ? 0.0f : settings.SpecularStrength,
+        settings.EmissionStrength };
     // Both live low-end compositor tiers use half the configured stochastic
     // disk radius and a tiny smooth shadow-ray emitter oscillation. Moving
     // into quarter checkerboard halves active 2x2 tiles; Custom is unchanged.

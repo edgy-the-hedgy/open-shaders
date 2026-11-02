@@ -79,6 +79,21 @@ namespace DX12Native
         return bool(gi) && bool(ao) && bool(eligibility);
     }
 
+    bool NativeHybridGI::AdvancedShadersAvailable()
+    {
+        for (const char* path : {
+            "Data/Shaders/RTDirectLighting/nativeAdvancedPack.dxil",
+            "Data/Shaders/RTDirectLighting/nativeHybridRRGuides.dxil",
+            "Data/Shaders/RTDirectLighting/nativeHybridRRHistory.dxil",
+            "Data/Shaders/RTDirectLighting/hybridPostRRReconstruct.dxil",
+            "Data/Shaders/RTDirectLighting/hybridPostRRBlur.dxil",
+            "Data/Shaders/RTDirectLighting/nativeHybridCompose.dxil" }) {
+            std::ifstream file(path, std::ios::binary);
+            if (!file) return false;
+        }
+        return true;
+    }
+
     uint64_t NativeHybridGI::EstimateBytes(ID3D12Device* device, uint32_t width, uint32_t height,
         const HybridSamplingLayout& sampling,
         const std::array<bool, 3>& postBlurEnabled)

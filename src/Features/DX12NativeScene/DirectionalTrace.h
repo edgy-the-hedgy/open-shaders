@@ -183,6 +183,7 @@ namespace DX12Native
             winrt::com_ptr<ID3D12Resource> hybridLinearDepth;
             bool hybridShadowedSourceReady = false;
             NativeHybridGI::FrameOutputs nativeGI;
+            NativeHybridGI::FrameOutputs postHybridGI; // enhanced tiers: second raster HybridGI over precomposed RT
             bool nativeGIRequested = false;
             uint32_t nativeGIFrame = 0;
 			std::array<std::unique_ptr<WrappedResource>, kDirectSignalCount> directSignals;
@@ -233,6 +234,7 @@ namespace DX12Native
                 frame.shadowTemporal.get() : frame.shadowMask.get();
         }
         void RecordNativeHybridGI(Frame& a_frame);
+        void RecordAdvancedTransport(Frame& a_frame);
 		void Record(Frame& a_frame, const float3& a_direction, bool a_localLight);
 		void Consume(Frame& a_frame);
 		void CompositeScene(Frame& a_frame, ID3D11UnorderedAccessView* a_target);
@@ -254,6 +256,10 @@ namespace DX12Native
         winrt::com_ptr<ID3D12PipelineState> hybridSourcePipeline;
         winrt::com_ptr<ID3D12DescriptorHeap> hybridSourceHeap;
         std::unique_ptr<NativeHybridGI> nativeHybridGI;
+        std::unique_ptr<NativeHybridGI> postHybridGI;
+        RedstoneDenoiser advancedDenoiser;
+        uint64_t advancedComposeSubmissions = 0, postHybridComposeSubmissions = 0;
+        std::string advancedComposeFailure;
         uint64_t nativeHybridPreviewSubmissions = 0;
         uint64_t nativeHybridFallbackFrames = 0;
         std::string nativeHybridPreviewFailure;
