@@ -69,7 +69,7 @@ internal sealed class MeshCompiler
         var target = (Environment.GetEnvironmentVariable("REDSTONE_DXR_HEIGHT_TARGET")
             ?? @"pbr\dlc01\dungeons\castle").Replace('/', '\\');
         return baseline.Shapes.Any(shape => shape.Material is { Textures.Length: > 0 } material &&
-            shape.ShadingStatus == "compiled" && shape.TangentStatus == "compiled:source-basis" &&
+            !string.IsNullOrWhiteSpace(material.Textures[0]) && shape.ShadingStatus == "compiled" && shape.TangentStatus == "compiled:source-basis" &&
             material.Textures[0].Replace('/', '\\').Contains(target, StringComparison.OrdinalIgnoreCase));
     }
 
