@@ -34,26 +34,53 @@ cbuffer LightingComposite : register(b0)
 	float RedstoneBlend;
 	uint ShadowOnlyEnabled;
 	float ShadowInfluence;
-	float ShadowAuraRadius;
+	float ShadowEdgeFilterEnabled;
 };
 
-// An intentionally non-surface-aware dilation: source samples must be
-// confirmed shadowed, but the destination pixel may have invalid geometry,
-// no receiver, or no shadow coverage of its own.
-float4 ApplyShadowAura(uint2 pixel, uint2 extent, float4 color)
+// Valid-receiver-only, center-weighted shadow edge AA; never expand shadows
+// onto invalid geometry. Reject taps across depth, normal and room boundaries.
+float ContactShadowVisibility(uint2 pixel, uint2 extent)
 {
-    if (ShadowOnlyEnabled == 0u) return color;
-    const int radius = clamp(int(ShadowAuraRadius + 0.5), 0, 3);
-    float visibility = 1.0f;
-    [loop] for (int dy = -radius; dy <= radius; ++dy) {
-        [loop] for (int dx = -radius; dx <= radius; ++dx) {
-            const int2 neighbor = int2(pixel) + int2(dx, dy);
-            if (any(neighbor < 0) || any(neighbor >= int2(extent))) continue;
-            const float2 mask = ShadowMaskExport.Load(int3(neighbor, 0)).rg;
-            if (all(isfinite(mask)) && mask.y >= 0.5f)
-                visibility = min(visibility, saturate(mask.x));
+    const float2 mask = ShadowMaskExport.Load(int3(pixel, 0)).rg;
+    if (!all(isfinite(mask)) || mask.y < 0.5f) return 1.0f;
+    const float center = saturate(mask.x);
+    if (ShadowEdgeFilterEnabled < 0.5f) return center; // Custom unchanged
+    const float4 receiver = NativeReceivers.Load(int3(pixel, 0));
+    if (!all(isfinite(receiver)) || receiver.w == 0.0f) return 1.0f;
+    const float depth = abs(mul(FrameBuffer::CameraView[0], float4(receiver.xyz, 1.0f)).z);
+    if (!isfinite(depth) || depth <= 0.0f) return 1.0f;
+    const float2 normalXY = NativeNormalRoughness.Load(int3(pixel, 0)).xy;
+    if (!all(isfinite(normalXY))) return center;
+    const float3 normal = GBuffer::DecodeNormal(normalXY);
+    float total = 4.0f * center, weights = 4.0f;
+    [unroll] for (int dy = -1; dy <= 1; ++dy) {
+        [unroll] for (int dx = -1; dx <= 1; ++dx) {
+            if (dx == 0 && dy == 0) continue;
+            const int2 tap = int2(pixel) + int2(dx, dy);
+            if (any(tap < 0) || any(tap >= int2(extent))) continue;
+            const float2 neighborMask = ShadowMaskExport.Load(int3(tap, 0)).rg;
+            const float4 neighbor = NativeReceivers.Load(int3(tap, 0));
+            if (!all(isfinite(neighborMask)) || neighborMask.y < 0.5f ||
+                !all(isfinite(neighbor)) || neighbor.w != receiver.w) continue;
+            const float neighborDepth = abs(mul(FrameBuffer::CameraView[0],
+                float4(neighbor.xyz, 1.0f)).z);
+            if (!isfinite(neighborDepth) ||
+                abs(neighborDepth - depth) > max(0.05f, depth * 0.01f)) continue;
+            const float2 neighborNormal = NativeNormalRoughness.Load(int3(tap, 0)).xy;
+            if (!all(isfinite(neighborNormal)) ||
+                dot(normal, GBuffer::DecodeNormal(neighborNormal)) < 0.85f) continue;
+            const float weight = (dx == 0 || dy == 0) ? 2.0f : 1.0f;
+            total += weight * saturate(neighborMask.x);
+            weights += weight;
         }
     }
+    return lerp(center, total / weights, 0.65f);
+}
+
+float4 ApplyContactShadow(uint2 pixel, uint2 extent, float4 color)
+{
+    if (ShadowOnlyEnabled == 0u) return color;
+    const float visibility = ContactShadowVisibility(pixel, extent);
     if (visibility >= 1.0f) return color;
     const float attenuation = lerp(1.0f, visibility, saturate(ShadowInfluence));
     const float3 linearColor = Color::SceneGammaToLinear(color.rgb);
@@ -69,15 +96,14 @@ void main(uint3 id : SV_DispatchThreadID)
 	uint targetWidth, targetHeight;
 	SceneColor.GetDimensions(targetWidth, targetHeight);
 	if (id.x >= targetWidth || id.y >= targetHeight) return;
-    // Shadow aura executes LAST, even for invalid direct receivers or a
-    // disabled direct blend. It may overwrite originally invalid mask targets.
+    // Apply at the final color once, but only for this pixel's valid receiver.
     if (RedstoneBlend <= 0.0f) {
-        SceneColor[id.xy] = ApplyShadowAura(id.xy, uint2(width, height), SceneColor[id.xy]);
+        SceneColor[id.xy] = ApplyContactShadow(id.xy, uint2(width, height), SceneColor[id.xy]);
         return;
     }
 	float4 lighting = DirectLighting.Load(int3(id.xy, 0));
     if (lighting.w != DirectRadianceTag || !all(isfinite(lighting.rgb))) {
-        SceneColor[id.xy] = ApplyShadowAura(id.xy, uint2(width, height), SceneColor[id.xy]);
+        SceneColor[id.xy] = ApplyContactShadow(id.xy, uint2(width, height), SceneColor[id.xy]);
         return;
     }
 	uint rrFlags = UseDirectRR;
@@ -132,12 +158,12 @@ void main(uint3 id : SV_DispatchThreadID)
 		working += (diffuse + specular) * IndirectStrength;
 	}
     if (!all(isfinite(working))) {
-        SceneColor[id.xy] = ApplyShadowAura(id.xy, uint2(width, height), SceneColor[id.xy]);
+        SceneColor[id.xy] = ApplyContactShadow(id.xy, uint2(width, height), SceneColor[id.xy]);
         return;
     }
 	if (RedstoneBlend >= 1.0f) {
         const float4 composed = float4(Color::SceneLinearToGamma(working), 1.0f);
-        SceneColor[id.xy] = ApplyShadowAura(id.xy, uint2(width, height), composed);
+        SceneColor[id.xy] = ApplyContactShadow(id.xy, uint2(width, height), composed);
         return;
     }
 
@@ -145,6 +171,6 @@ void main(uint3 id : SV_DispatchThreadID)
     float3 rasterLinear = Color::SceneGammaToLinear(raster.rgb);
     float3 blendedLinear = lerp(rasterLinear, working, saturate(RedstoneBlend));
 
-    SceneColor[id.xy] = ApplyShadowAura(id.xy, uint2(width, height),
+    SceneColor[id.xy] = ApplyContactShadow(id.xy, uint2(width, height),
         float4(Color::SceneLinearToGamma(blendedLinear), raster.a));
 }

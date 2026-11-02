@@ -11,6 +11,7 @@ Texture2D<uint> ReceiverEligibility : register(t6);
 Texture2D<float4> DiffuseAlbedo : register(t7);
 Texture2D<float4> SpecularAlbedo : register(t8);
 Texture2D<float2> NativeShadowMask : register(t9);
+Texture2D<float> NativeLinearDepth : register(t10);
 RWTexture2D<float4> ComposedScene : register(u0);
 
 cbuffer NativeHybridComposition : register(b13)
@@ -20,24 +21,35 @@ cbuffer NativeHybridComposition : register(b13)
     float GIContribution;
     uint NativeLinearLighting;
     uint NativeEnableACEScg; // reserved for a full gamut-correct scene handoff
-    uint ShadowAuraRadius; // fixed Hybrid-Shadowed = 3, Custom = 0
-    float ShadowAuraInfluence;
+    uint ShadowEdgeFilterEnabled; // fixed Hybrid-Shadowed only
+    float ShadowInfluence;
 };
 
-float ExpandedDirectShadowVisibility(uint2 pixel)
+// Reuse the source pass's native depth/visibility semantics for direct blend.
+float ContactShadowVisibility(uint2 pixel)
 {
-    const int radius = min(int(ShadowAuraRadius), 3);
-    float visibility = 1.0;
-    [loop] for (int dy = -radius; dy <= radius; ++dy) {
-        [loop] for (int dx = -radius; dx <= radius; ++dx) {
-            const int2 neighbor = int2(pixel) + int2(dx, dy);
-            if (any(neighbor < 0) || any(neighbor >= int2(FrameSize))) continue;
-            const float2 mask = NativeShadowMask.Load(int3(neighbor, 0));
-            if (all(isfinite(mask)) && mask.y >= 0.5)
-                visibility = min(visibility, saturate(mask.x));
+    const float2 mask = NativeShadowMask.Load(int3(pixel, 0));
+    if (!all(isfinite(mask)) || mask.y < 0.5f) return 1.0f;
+    const float center = saturate(mask.x);
+    const float depth = NativeLinearDepth.Load(int3(pixel, 0));
+    if (!isfinite(depth) || depth <= 0.0f) return 1.0f;
+    float total = 4.0f * center, weights = 4.0f;
+    [unroll] for (int dy = -1; dy <= 1; ++dy) {
+        [unroll] for (int dx = -1; dx <= 1; ++dx) {
+            if (dx == 0 && dy == 0) continue;
+            const int2 tap = int2(pixel) + int2(dx, dy);
+            if (any(tap < 0) || any(tap >= int2(FrameSize))) continue;
+            const float2 neighborMask = NativeShadowMask.Load(int3(tap, 0));
+            const float neighborDepth = NativeLinearDepth.Load(int3(tap, 0));
+            if (!all(isfinite(neighborMask)) || neighborMask.y < 0.5f ||
+                !isfinite(neighborDepth) || neighborDepth <= 0.0f ||
+                abs(neighborDepth - depth) > max(0.05f, depth * 0.01f)) continue;
+            const float weight = (dx == 0 || dy == 0) ? 2.0f : 1.0f;
+            total += weight * saturate(neighborMask.x);
+            weights += weight;
         }
     }
-    return visibility;
+    return lerp(center, total / weights, 0.65f);
 }
 [numthreads(8, 8, 1)]
 void main(uint2 pixel : SV_DispatchThreadID)
@@ -52,9 +64,9 @@ void main(uint2 pixel : SV_DispatchThreadID)
     const float4 direct = NativeDirect.Load(int3(pixel, 0));
     if (direct.a == 4.0 && all(isfinite(direct.rgb)) && all(direct.rgb >= 0.0)) {
         float3 directRadiance = direct.rgb;
-        if (ShadowAuraRadius != 0u) {
-            const float visibility = ExpandedDirectShadowVisibility(pixel);
-            const float attenuation = lerp(1.0, visibility, saturate(ShadowAuraInfluence));
+        if (ShadowEdgeFilterEnabled != 0u) {
+            const float visibility = ContactShadowVisibility(pixel);
+            const float attenuation = lerp(1.0, visibility, saturate(ShadowInfluence));
             directRadiance *= attenuation;
         }
         linearColor = lerp(linearColor, directRadiance, saturate(DirectBlend));

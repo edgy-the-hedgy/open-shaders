@@ -84,9 +84,9 @@ namespace DX12Native
             ID3D12GraphicsCommandList* list, FrameOutputs& frame, uint32_t slot,
             const std::array<uint32_t, 2>& size, ID3D12Resource* shadowedSource,
             ID3D12Resource* nativeDirect, ID3D12Resource* nativeShadowMask,
-            ID3D12Resource* diffuseAlbedo, ID3D12Resource* specularAlbedo,
-            float directBlend, float giContribution, uint32_t shadowAuraRadius,
-            float shadowAuraInfluence);
+            ID3D12Resource* nativeLinearDepth, ID3D12Resource* diffuseAlbedo, ID3D12Resource* specularAlbedo,
+            float directBlend, float giContribution, uint32_t shadowEdgeFilterEnabled,
+            float shadowInfluence);
         const std::string& Failure() const { return failure; }
         const std::string& CompositionFailure() const { return compositionFailure; }
         uint64_t CompositionDispatches() const { return compositionDispatches; }

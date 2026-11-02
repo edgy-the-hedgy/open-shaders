@@ -28,7 +28,7 @@ namespace DX12Native
         constexpr uint32_t kPostPerPass = 5;
         constexpr uint32_t kPostPerFrame = kPostPerPass * 4 * 2;
         constexpr uint32_t kRRGuideDescriptorsPerFrame = 10;
-        constexpr uint32_t kCompositionDescriptorsPerFrame = 13; // 10 SRVs (incl shadow visibility) + 3 UAVs
+        constexpr uint32_t kCompositionDescriptorsPerFrame = 14; // 11 SRVs (mask + depth) + 3 UAVs
         struct NativeLightingCB
         {
             float4 camera;
@@ -44,8 +44,8 @@ namespace DX12Native
             uint32_t width, height;
             float directBlend, giContribution;
             uint32_t enableLinearLighting, enableACEScg;
-            uint32_t shadowAuraRadius;
-            float shadowAuraInfluence;
+            uint32_t shadowEdgeFilterEnabled;
+            float shadowInfluence;
         };
         DXGI_FORMAT OutputFormat(uint32_t index)
         {
@@ -972,13 +972,14 @@ namespace DX12Native
         ID3D12GraphicsCommandList* list, FrameOutputs& frame, uint32_t slot,
         const std::array<uint32_t, 2>& size, ID3D12Resource* shadowedSource,
         ID3D12Resource* nativeDirect, ID3D12Resource* nativeShadowMask,
-        ID3D12Resource* diffuseAlbedo, ID3D12Resource* specularAlbedo,
-        float directBlend, float giContribution, uint32_t shadowAuraRadius,
-        float shadowAuraInfluence)
+        ID3D12Resource* nativeLinearDepth, ID3D12Resource* diffuseAlbedo, ID3D12Resource* specularAlbedo,
+        float directBlend, float giContribution, uint32_t shadowEdgeFilterEnabled,
+        float shadowInfluence)
     {
         frame.composedValid = false;
         if (!frame.valid || !device || !device11 || !list || !shadowedSource ||
-            !nativeDirect || !nativeShadowMask || !diffuseAlbedo || !specularAlbedo ||
+            !nativeDirect || !nativeShadowMask || !nativeLinearDepth ||
+            !diffuseAlbedo || !specularAlbedo ||
             slot >= 2 || !size[0] || !size[1] ||
             (!frame.postValid && frame.sampling.effective != HybridSamplingMode::Native)) {
             compositionFailure = "Missing valid GI/AO, source, or DX12 composition resources";
@@ -987,11 +988,11 @@ namespace DX12Native
         try {
             if (!root) throw std::runtime_error("Native GI root signature unavailable");
             // Do not change the 9-SRV root shared by GI/AO/eligibility.
-            // Composition needs one extra t9 input to enforce the shadow aura
-            // on direct light AFTER its native DX12 blend.
+            // Composition consumes native visibility and depth for contact edge AA,
+            // without modifying the root shared by GI/AO/eligibility.
             if (!compositionRoot) {
                 D3D12_DESCRIPTOR_RANGE ranges[2]{};
-                ranges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 10, 0, 0, 0 };
+                ranges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 11, 0, 0, 0 };
                 ranges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 3, 0, 0, 0 };
                 D3D12_ROOT_PARAMETER params[3]{};
                 params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -1041,8 +1042,8 @@ namespace DX12Native
                 std::isfinite(giContribution) ? std::clamp(giContribution, 0.0f, 1.0f) : 0.0f,
                 uint32_t(globals::features::linearLighting.IsLinearLightingActive()),
                 uint32_t(globals::features::linearLighting.settings.enableACEScg),
-                std::min(shadowAuraRadius, 3u),
-                std::isfinite(shadowAuraInfluence) ? std::clamp(shadowAuraInfluence, 0.0f, 1.0f) : 0.0f };
+                std::min(shadowEdgeFilterEnabled, 1u),
+                std::isfinite(shadowInfluence) ? std::clamp(shadowInfluence, 0.0f, 1.0f) : 0.0f };
             static_assert(sizeof(constants) == 32);
             static_assert(kCompositionOffset + sizeof(constants) <= kUploadBytes);
             uint8_t* mapped = nullptr;
@@ -1054,21 +1055,22 @@ namespace DX12Native
             // Native post-RR outputs are full resolution. Sparse inputs must NEVER
             // be bound as if they were full-native textures.
             const bool reconstructed = frame.postValid;
-            const std::array<ID3D12Resource*, 10> reads{
+            const std::array<ID3D12Resource*, 11> reads{
                 shadowedSource, nativeDirect,
                 reconstructed ? frame.nativeFinal[0] : frame.textures[Diffuse].get(),
                 reconstructed ? frame.nativeFinal[1] : frame.textures[Specular].get(),
                 reconstructed ? frame.nativeFinal[2] : frame.textures[DiffuseAO].get(),
                 reconstructed ? frame.nativeFinal[3] : frame.textures[SpecularAO].get(),
                 frame.textures[Eligibility].get(),
-                diffuseAlbedo, specularAlbedo, nativeShadowMask
+                diffuseAlbedo, specularAlbedo, nativeShadowMask, nativeLinearDepth
             };
-            const std::array<DXGI_FORMAT, 10> formats{
+            const std::array<DXGI_FORMAT, 11> formats{
                 DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT,
                 DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
                 DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8_UNORM,
                 DXGI_FORMAT_R32_UINT, DXGI_FORMAT_R16G16B16A16_FLOAT,
-                DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16_FLOAT
+                DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16_FLOAT,
+                DXGI_FORMAT_R32_FLOAT
             };
             const UINT step = device->GetDescriptorHandleIncrementSize(
                 D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -1094,8 +1096,8 @@ namespace DX12Native
                 cpu.ptr += step;
             }
 
-            std::array<D3D12_RESOURCE_BARRIER, 11> begin{};
-            std::array<D3D12_RESOURCE_BARRIER, 11> end{};
+            std::array<D3D12_RESOURCE_BARRIER, 12> begin{};
+            std::array<D3D12_RESOURCE_BARRIER, 12> end{};
             for (uint32_t i = 0; i < reads.size(); ++i) {
                 begin[i] = CD3DX12_RESOURCE_BARRIER::Transition(reads[i],
                     D3D12_RESOURCE_STATE_COMMON,
@@ -1104,10 +1106,10 @@ namespace DX12Native
                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                     D3D12_RESOURCE_STATE_COMMON);
             }
-            begin[10] = CD3DX12_RESOURCE_BARRIER::Transition(
+            begin[11] = CD3DX12_RESOURCE_BARRIER::Transition(
                 frame.composedScene->resource.get(), D3D12_RESOURCE_STATE_COMMON,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            end[10] = CD3DX12_RESOURCE_BARRIER::Transition(
+            end[11] = CD3DX12_RESOURCE_BARRIER::Transition(
                 frame.composedScene->resource.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_COMMON);
             list->ResourceBarrier(UINT(begin.size()), begin.data());
@@ -1118,7 +1120,7 @@ namespace DX12Native
             auto gpu = compositionDescriptors->GetGPUDescriptorHandleForHeapStart();
             gpu.ptr += uint64_t(slot * kCompositionDescriptorsPerFrame) * step;
             list->SetComputeRootDescriptorTable(0, gpu);
-            gpu.ptr += 10 * step;
+            gpu.ptr += 11 * step;
             list->SetComputeRootDescriptorTable(1, gpu);
             list->SetComputeRootConstantBufferView(2,
                 frame.constants->GetGPUVirtualAddress() + kCompositionOffset);

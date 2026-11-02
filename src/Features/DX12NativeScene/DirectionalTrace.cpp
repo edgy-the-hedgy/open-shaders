@@ -640,13 +640,14 @@ namespace DX12Native
                     backend.d3d11Device.get(), frame.commands.get(), frame.nativeGI,
                     uint32_t(&frame - frames.data()), frame.size,
                     frame.hybridShadowedSource.get(), frame.output->resource.get(),
-                    frame.shadowMask.get(), frame.hybridInputs[3]->resource.get(),
+                    frame.shadowMask.get(), frame.hybridLinearDepth.get(),
+                    frame.hybridInputs[3]->resource.get(),
                     frame.hybridInputs[4]->resource.get(),
                     frame.rasterBlend * (globals::features::rtComposer.IsFixedPreset() ?
                         RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed).directContribution :
                         composition.rtDirectContribution),
                     composer.IsFixedPreset() ? 1.0f : composition.giContribution,
-                    composer.IsFixedPreset() ? 3u : 0u,
+                    composer.IsFixedPreset() ? 1u : 0u,
                     composer.IsFixedPreset() ? tier.shadowInfluence : composition.shadowInfluence);
         }
     }
@@ -897,7 +898,7 @@ namespace DX12Native
 	{
 		CS_GPU_PASS("RTDirectLighting::DirectSceneComposite");
 		auto* context = backend.d3d11Context.get();
-		struct Settings { uint32_t indirect, directRR; float indirectStrength; uint32_t useDXRIndirect; float redstoneBlend; uint32_t shadowOnly; float shadowInfluence; float directContribution; };
+		struct Settings { uint32_t indirect, directRR; float indirectStrength; uint32_t useDXRIndirect; float redstoneBlend; uint32_t shadowOnly; float shadowInfluence; float shadowEdgeFilterEnabled; };
 		if (!lightingCompositeSettings) lightingCompositeSettings = std::make_unique<ConstantBuffer>(ConstantBufferDesc<Settings>(), "RTDirectLighting::LightingComposite CB");
 		winrt::com_ptr<ID3D11ComputeShader> shader;
 		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 17> inputs;
@@ -975,7 +976,7 @@ namespace DX12Native
 			a_frame.indirectRays != 0 ? 1u : 0u,
 			a_frame.rasterBlend * (shadowOnly ? directBlend : 1.0f),
 			shadowOnly ? 1u : 0u, shadowOnly ? shadowStrength : 0.0f,
-            shadowOnly && composer.IsFixedPreset() ? 3.0f : 0.0f });
+            shadowOnly && composer.IsFixedPreset() ? 1.0f : 0.0f });
 		auto* cb = lightingCompositeSettings->CB();
 		context->CSSetConstantBuffers(0, 1, &cb);
 		const auto& targets = globals::game::renderer->GetRuntimeData().renderTargets;

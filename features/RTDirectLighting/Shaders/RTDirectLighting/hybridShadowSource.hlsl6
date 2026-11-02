@@ -10,29 +10,50 @@ cbuffer HybridSourceSettings : register(b0) {
     uint ReverseZ;
     float4 CameraData;
 };
-// Full-native 3px Chebyshev dilation of trusted shadow sources only.
- // Receiver/depth validity at the destination is explicitly ignored.
-float ExpandedShadowVisibility(uint2 pixel)
+// ReverseZ: bit 0 selects reverse projection, bit 1 enables fixed-tier AA.
+float LinearViewDepth(uint2 pixel)
 {
-    const int radius = (ReverseZ & 2u) != 0u ? 3 : 0;
-    float visibility = 1.0;
-    [loop] for (int dy = -radius; dy <= radius; ++dy) {
-        [loop] for (int dx = -radius; dx <= radius; ++dx) {
-            const int2 neighbor = int2(pixel) + int2(dx, dy);
-            if (any(neighbor < 0) || any(neighbor >= int2(FrameSize))) continue;
-            const float2 mask = Visibility.Load(int3(neighbor, 0));
-            if (all(isfinite(mask)) && mask.y >= 0.5)
-                visibility = min(visibility, saturate(mask.x));
+    const float raw = RawDepth.Load(int3(pixel, 0)).x;
+    const bool farPlane = (ReverseZ & 1u) != 0u ? raw <= 0.0f : raw >= 1.0f;
+    const float standard = (ReverseZ & 1u) != 0u ? 1.0f - raw : raw;
+    const float divisor = CameraData.x - standard * CameraData.z;
+    if (!isfinite(raw) || farPlane || abs(divisor) <= 1e-8f) return 0.0f;
+    const float depth = CameraData.w / divisor;
+    return isfinite(depth) && depth > 0.0f ? depth : 0.0f;
+}
+
+float ContactShadowVisibility(uint2 pixel, float depth)
+{
+    const float2 mask = Visibility.Load(int3(pixel, 0));
+    if (!all(isfinite(mask)) || mask.y < 0.5f) return 1.0f;
+    const float center = saturate(mask.x);
+    if ((ReverseZ & 2u) == 0u) return center; // Custom unchanged
+    if (depth <= 0.0f) return 1.0f;
+    float total = 4.0f * center, weights = 4.0f;
+    [unroll] for (int dy = -1; dy <= 1; ++dy) {
+        [unroll] for (int dx = -1; dx <= 1; ++dx) {
+            if (dx == 0 && dy == 0) continue;
+            const int2 tap = int2(pixel) + int2(dx, dy);
+            if (any(tap < 0) || any(tap >= int2(FrameSize))) continue;
+            const float2 neighborMask = Visibility.Load(int3(tap, 0));
+            if (!all(isfinite(neighborMask)) || neighborMask.y < 0.5f) continue;
+            const float neighborDepth = LinearViewDepth(uint2(tap));
+            if (neighborDepth <= 0.0f ||
+                abs(neighborDepth - depth) > max(0.05f, depth * 0.01f)) continue;
+            const float weight = (dx == 0 || dy == 0) ? 2.0f : 1.0f;
+            total += weight * saturate(neighborMask.x);
+            weights += weight;
         }
     }
-    return visibility;
+    return lerp(center, total / weights, 0.65f);
 }
 [numthreads(8, 8, 1)]
 void main(uint2 pixel : SV_DispatchThreadID)
 {
     if (any(pixel >= FrameSize)) return;
     const float4 source = RasterScene.Load(int3(pixel, 0));
-    const float visibility = ExpandedShadowVisibility(pixel);
+    const float depth = LinearViewDepth(pixel);
+    const float visibility = ContactShadowVisibility(pixel, depth);
     const float attenuation = lerp(1.0, visibility, saturate(ShadowInfluence));
     const float3 linearColor = sign(source.rgb) * pow(abs(source.rgb), 1.6);
     const float3 shadowedLinearRadiance = max(0.0, linearColor * attenuation);
@@ -41,13 +62,6 @@ void main(uint2 pixel : SV_DispatchThreadID)
     // opaque composer, so no inverse conversion is required for GI.
     OutShadowedScene[pixel] = all(isfinite(shadowedLinearRadiance)) ?
         float4(shadowedLinearRadiance, source.a) : float4(0, 0, 0, source.a);
-    // Exact RedstoneGI::ScreenToViewDepth equation, using the same
-    // Util::GetCameraData values supplied to the DX11 SharedData cbuffer.
-    const float raw = RawDepth.Load(int3(pixel, 0)).x;
-    const float standard = (ReverseZ & 1u) != 0u ? 1.0 - raw : raw;
-    const float divisor = CameraData.x - standard * CameraData.z;
-    const float depth = CameraData.w / divisor;
-    const bool farPlane = (ReverseZ & 1u) != 0u ? raw <= 0.0 : raw >= 1.0;
-    OutLinearDepth[pixel] = !farPlane && isfinite(depth) && depth > 0 &&
-        abs(divisor) > 1e-8 ? depth : 0.0;
+    // Native GI/RR consumes the same decoded depth as the contact filter.
+    OutLinearDepth[pixel] = depth;
 }
