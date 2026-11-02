@@ -8,6 +8,7 @@
 #include <Windows.h>
 #include <unordered_set>
 #include <cmath>
+#include <limits>
 #include <algorithm>
 #include <cctype>
 #include <fstream>
@@ -64,7 +65,10 @@ namespace DX12Native
 		std::array<float, 6> Bounds(const std::array<float, 6>& a_local,
 			const std::array<float, 12>& a_matrix)
 		{
-			std::array<float, 6> bounds{ INFINITY, INFINITY, INFINITY, -INFINITY, -INFINITY, -INFINITY };
+			// Use the representable IEEE-754 infinity directly. The INFINITY macro
+			// can expand into overflowing constant arithmetic under MSVC /WX.
+			const float infinity = std::numeric_limits<float>::infinity();
+			std::array<float, 6> bounds{ infinity, infinity, infinity, -infinity, -infinity, -infinity };
 			for (uint32_t corner = 0; corner < 8; ++corner) {
 				const float xyz[]{
 					a_local[corner & 1 ? 3 : 0], a_local[corner & 2 ? 4 : 1],
