@@ -457,6 +457,7 @@ namespace DX12Native
     void DirectionalTrace::RecordShadowTemporal(Frame& frame)
     {
         frame.shadowTemporalValid = false;
+        frame.shadowHistorySourceSlot = -1;
         if (!frame.shadowTemporalEnabled || !frame.shadowTemporal ||
             !frame.shadowMask || !frame.shadowMotion || !frame.receivers) return;
         // Only the previous consecutive frame in this compositor generation
@@ -585,6 +586,7 @@ namespace DX12Native
                 (frame.size[1] + 7u) / 8u, 1u);
             commands->ResourceBarrier(uint32_t(end.size()), end.data());
             frame.shadowTemporalValid = true;
+            frame.shadowHistorySourceSlot = prior ? int32_t(prior - frames.data()) : -1;
             ++shadowTemporalDispatches;
             if (prior) ++shadowTemporalReprojections;
             shadowTemporalFailure.clear();
@@ -1197,10 +1199,19 @@ namespace DX12Native
 		if (a_nativeSize[0] > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION || a_nativeSize[1] > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
 			!std::isfinite(a_lightDirection.x) || !std::isfinite(a_lightDirection.y) || !std::isfinite(a_lightDirection.z)) return;
 		Frame* available = nullptr;
-        // Alternate retired slots to keep previous GPU history resident.
-        for (auto& frame : frames)
-            if (!frame.scene && (!available || frame.number < available->number))
+        // Alternate retired slots, but never overwrite a history producer
+        // while the other frame's queued DX12 pass still reads its textures.
+        for (auto& frame : frames) {
+            if (frame.scene) continue;
+            const auto index = int32_t(&frame - frames.data());
+            const bool referenced = std::ranges::any_of(frames, [&](const Frame& other) {
+                return &other != &frame && other.submitted &&
+                    other.shadowHistorySourceSlot == index;
+            });
+            if (referenced) continue;
+            if (!available || frame.number < available->number)
                 available = &frame;
+        }
 		if (!available) { ++busyFrames; return; }
 		if ((!cachedBindings || cachedBindings->scene != a_scene) && std::ranges::any_of(frames, [&](const Frame& frame) {
 			return frame.bindings && frame.scene != a_scene && frame.bindings->materials && frame.bindings->materials->bytes;
@@ -1369,6 +1380,7 @@ namespace DX12Native
             available->shadowTemporalEnabled = wantShadowTemporal;
             available->shadowTemporalValid = false;
             available->shadowMotionCaptured = false;
+            available->shadowHistorySourceSlot = -1;
             available->nativeGIRequested = wantNativeGI;
             available->nativeGI.valid = false;
 			available->materialView = std::min(a_materialView, kCombinedDirectView);

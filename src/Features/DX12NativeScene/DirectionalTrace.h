@@ -150,6 +150,7 @@ namespace DX12Native
             bool shadowTemporalEnabled = false;
             bool shadowTemporalValid = false;
             bool shadowMotionCaptured = false;
+            int32_t shadowHistorySourceSlot = -1; // protects prior resource lifetime until consumer retires
 			// DX11-visible transfer only for final Shadow Only composition.
 			std::unique_ptr<WrappedResource> shadowMaskExport;
             std::array<std::unique_ptr<WrappedResource>, kHybridInputCount> hybridInputs;
