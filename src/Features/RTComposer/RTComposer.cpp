@@ -137,8 +137,11 @@ void RTComposer::OnCompositionPolicyChanged()
     // On leaving native Hybrid-Shadowed, release AMD's private RR histories
     // after queue retirement. Do not keep three contexts consuming VRAM
     // throughout Shadow Only or when the compositor is disabled.
-    if (!composition.enabled || !WantsNativeHybrid())
+    if (!composition.enabled || !WantsNativeHybrid() ||
+        composition.mode == CompositorMode::RTExclusiveI ||
+        composition.mode == CompositorMode::RTExclusiveII)
         (void)globals::features::redstoneGI.GetDenoiser().RetireNativeHybridContexts();
+    (void)globals::features::dx12NativeScene.Tracer().RetireAdvancedRRContexts();
     // Saved RT-exclusive/Hybrid settings are not mutated. Incompatible GPU
     // history is discarded when the effective compositor selection changes.
     globals::features::redstoneGI.ResetRuntimeHistory();

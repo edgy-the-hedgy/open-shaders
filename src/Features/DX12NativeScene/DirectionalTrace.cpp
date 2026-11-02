@@ -114,6 +114,14 @@ namespace DX12Native
 		if (a_releaseBindings) cachedBindings.reset();
 	}
 
+    bool DirectionalTrace::RetireAdvancedRRContexts()
+    {
+        // AMD SDK context destruction is guarded by the denoiser's queue
+        // fence. On timeout the context remains alive for later retirement.
+        return !advancedDenoiser ||
+            advancedDenoiser->RetireNativeHybridContexts();
+    }
+
 	void DirectionalTrace::ReloadShaders()
 	{
 		Reset();
