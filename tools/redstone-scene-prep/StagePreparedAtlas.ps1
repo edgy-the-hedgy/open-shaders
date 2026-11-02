@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory)][string]$AtlasSourceRoot,
     [string]$DataDirectory = 'D:\SteamLibrary\steamapps\common\Skyrim Special Edition\Data',
-    [ValidateRange(0, 2)][int[]]$QualityLevels = @(0, 1, 2)
+    [ValidateRange(0, 2)][int[]]$QualityLevels = @(0, 1)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,6 +23,9 @@ foreach ($quality in @($QualityLevels | Sort-Object -Unique)) {
     }
 
     $destination = Join-Path $targetRoot "q$quality"
+    $linked = 0
+    $copied = 0
+    $unchanged = 0
     $null = New-Item -Path $destination -ItemType Directory -Force
     foreach ($folder in @('geometry', 'shading', 'textures')) {
         $sourceFolder = Join-Path $source $folder
@@ -43,11 +46,24 @@ foreach ($quality in @($QualityLevels | Sort-Object -Unique)) {
             if ($actual -cne $hash) { throw "Atlas payload hash mismatch: $($asset.FullName)" }
             if (Test-Path -LiteralPath $target) {
                 $installed = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant()
-                if ($installed -ceq $hash) { continue }
+                if ($installed -ceq $hash) { ++$unchanged; continue }
             }
-            $temporary = $target + '.part'
-            Copy-Item -LiteralPath $asset.FullName -Destination $temporary -Force
-            Move-Item -LiteralPath $temporary -Destination $target -Force
+            # The atlas store is content-addressed and immutable. When build
+            # output and the game are on one NTFS volume, hardlinks avoid a
+            # second full copy. Deleting either link leaves the other intact.
+            $temporary = $target + '.' + [guid]::NewGuid().ToString('N') + '.part'
+            try {
+                try {
+                    $null = New-Item -ItemType HardLink -Path $temporary -Target $asset.FullName -ErrorAction Stop
+                    ++$linked
+                } catch {
+                    Copy-Item -LiteralPath $asset.FullName -Destination $temporary -ErrorAction Stop
+                    ++$copied
+                }
+                Move-Item -LiteralPath $temporary -Destination $target -Force
+            } finally {
+                if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+            }
         }
     }
 
@@ -74,5 +90,5 @@ foreach ($quality in @($QualityLevels | Sort-Object -Unique)) {
             Copy-Item -LiteralPath $from -Destination (Join-Path $destination $manifest) -Force
         }
     }
-    Write-Output "Installed verified atlas q$quality -> $destination"
+    Write-Output "Installed verified atlas q$quality -> $destination; hardlinked: $linked, copied: $copied, unchanged: $unchanged"
 }

@@ -2,7 +2,7 @@ param(
     [string]$DataDirectory = 'D:\SteamLibrary\steamapps\common\Skyrim Special Edition\Data',
     [string]$PluginsFile = (Join-Path $env:LOCALAPPDATA 'Skyrim Special Edition\Plugins.txt'),
     [string]$AtlasOutputRoot,
-    [ValidateRange(0, 2)][int[]]$QualityLevels = @(0, 1, 2)
+    [ValidateRange(0, 2)][int[]]$QualityLevels = @(0, 1)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -22,9 +22,11 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Atlas compiler build failed.' }
     $compiler = Join-Path $artifacts 'bin\RedstoneScenePrep\release\RedstoneScenePrep.dll'
     $levels = @($QualityLevels | Sort-Object -Unique)
-    if ($levels.Count -eq 3 -and $levels[0] -eq 0 -and $levels[1] -eq 1 -and $levels[2] -eq 2) {
-        Write-Output 'Using one-pass universal atlas build for q0, q1 and q2...'
-        & dotnet $compiler --atlas-batch $DataDirectory $AtlasOutputRoot $PluginsFile
+    if (($levels.Count -eq 2 -or $levels.Count -eq 3) -and
+        $levels[0] -eq 0 -and $levels[1] -eq 1 -and
+        ($levels.Count -eq 2 -or $levels[2] -eq 2)) {
+        Write-Output "Using one-pass universal atlas build for q$($levels -join ', q')..."
+        & dotnet $compiler --atlas-batch $DataDirectory $AtlasOutputRoot $PluginsFile ($levels -join ',')
         if ($LASTEXITCODE -ne 0) { throw 'One-pass atlas compilation failed; check the logged per-asset failures.' }
     } else {
         foreach ($level in $levels) {

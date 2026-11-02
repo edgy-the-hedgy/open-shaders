@@ -93,6 +93,22 @@ internal sealed class MeshCompiler
                 CopyVerifiedBlob(baselineRoot, shape.ShadingFile, shape.ShadingSha256, "shading", ".rsga");
         }
         var cache = Path.Combine(output, "compiled", compilerKey, baseline.SourceSha256 + ".json");
+        if (File.Exists(cache))
+        {
+            try
+            {
+                var prior = JsonSerializer.Deserialize<CompiledNif>(File.ReadAllText(cache), options);
+                if (prior != null && prior.CompilerKey == compilerKey &&
+                    prior.SourceSha256 == result.SourceSha256 && prior.Shapes != null &&
+                    prior.Shapes.Length == shapes.Length &&
+                    prior.Shapes.Zip(shapes).All(pair =>
+                        pair.First.GeometrySha256 == pair.Second.GeometrySha256 &&
+                        pair.First.ShadingSha256 == pair.Second.ShadingSha256 &&
+                        pair.First.BlockIndex == pair.Second.BlockIndex))
+                    return result;
+            }
+            catch (JsonException) { /* Rebuild an invalid cache record. */ }
+        }
         Directory.CreateDirectory(Path.GetDirectoryName(cache)!);
         File.WriteAllText(cache + ".tmp", JsonSerializer.Serialize(result, options));
         File.Move(cache + ".tmp", cache, true);
@@ -120,8 +136,21 @@ internal sealed class MeshCompiler
                     return;
             }
             Directory.CreateDirectory(Path.GetDirectoryName(outputFile)!);
-            File.Copy(input, outputFile + ".tmp", true);
-            File.Move(outputFile + ".tmp", outputFile, true);
+            // Immutable, content-addressed blobs can share NTFS storage.
+            // A hardlink avoids reading/writing the same geometry again for q0.
+            // Create a new name and atomically publish it; never edit either link in place.
+            var staging = outputFile + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                try { File.CreateHardLink(staging, input); }
+                catch (IOException) { File.Copy(input, staging); } // different volume / unsupported FS
+                catch (PlatformNotSupportedException) { File.Copy(input, staging); }
+                File.Move(staging, outputFile, true);
+            }
+            finally
+            {
+                if (File.Exists(staging)) File.Delete(staging);
+            }
         }
         catch
         {

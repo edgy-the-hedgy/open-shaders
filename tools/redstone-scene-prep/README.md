@@ -61,11 +61,12 @@ QUALITY PLUGINS_TXT (QUALITY = 0, 1 or 2).
 
 ### Atlas build performance (incremental)
 
-The default `BuildAtlas.ps1` workflow now uses a **single** `--atlas-batch`
-invocation for q0, q1 and q2. Each PGPatcher source NIF is read and hashed
-once, compiled into an undisplaced q1 baseline, and reused for q0 and for q2
-unless q2's configured displacement target requires a separate compilation.
-This does not imply that q2 displacement is enabled by default.
+The default `BuildAtlas.ps1` workflow now builds **q0 and q1 only**,
+using one `--atlas-batch` pass for both. Each PGPatcher source NIF is read
+and hashed once and compiled into a q1 baseline; q0 reuses its geometry
+instead of running a second NIF scan. Use `-QualityLevels 0,1,2` explicitly
+to include the deferred, high-storage q2 tier. This does not imply q2
+displacement is enabled by default.
 
 The mesh cache now uses an explicitly versioned **semantic compiler key**
 instead of the entire .NET assembly SHA. This prevents unrelated changes to
@@ -78,12 +79,15 @@ q2 deliberately recompiles targeted meshes instead of reusing their per-NIF
 compile cache because referenced DDS content changes are not yet included in
 that cache key.
 
-The first run after this cache-key migration must rebuild the old entries;
-later runs should reuse them if the source SHA and compile parameters match.
-For a single tier, `BuildAtlas.ps1 -QualityLevels @(1)` still calls the
-original `--atlas` path. The new batch path has time/progress reports so
-you can distinguish NIF processing from the (potentially lengthy) q2 DDS
-archive scan. All execution remains outside Skyrim.
+The first run after the compiler-key migration must rebuild old entries;
+later runs reuse them if the source SHA and compile parameters match.
+For a single tier, `BuildAtlas.ps1 -QualityLevels 1` still calls the
+original `--atlas` path. The q0/q1 batch prints source verification,
+q1 compilation/cache and q0 derivation times independently so further
+bottlenecks can be measured. Q0 and Q1 geometry is shared via hardlinks
+on compatible NTFS volumes (copy fallback elsewhere); both names refer to
+immutable SHA-256-addressed data. The staging script also prefers hardlinks
+for verified atlas blobs. All execution remains outside Skyrim.
 
  It traverses all PGPatcher-verified
 NIFs and deployment-linked generated duplicate NIFs, not only one cell. It

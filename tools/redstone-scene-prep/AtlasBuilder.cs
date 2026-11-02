@@ -65,9 +65,9 @@ internal static class AtlasBuilder
     // q0 and un-displaced q2 reuse q1's verified geometry/sidecars.
     internal static int RunBatch(string[] args)
     {
-        if (args.Length != 4)
+        if (args.Length is not (4 or 5) || (args.Length == 5 && args[4] is not ("0,1" or "0,1,2")))
         {
-            Console.Error.WriteLine("Usage: RedstoneScenePrep --atlas-batch <Data directory> <output root> <Plugins.txt>");
+            Console.Error.WriteLine("Usage: RedstoneScenePrep --atlas-batch <Data directory> <output root> <Plugins.txt> [0,1|0,1,2]");
             return 2;
         }
         try
@@ -75,6 +75,8 @@ internal static class AtlasBuilder
             var data = Path.GetFullPath(args[1]);
             var root = Path.GetFullPath(args[2]);
             var plugins = Path.GetFullPath(args[3]);
+            var includeQ2 = args.Length == 4 || args[4] == "0,1,2";
+            var tiers = includeQ2 ? new[] { 0, 1, 2 } : new[] { 0, 1 };
             if (root.Equals(data, StringComparison.OrdinalIgnoreCase) ||
                 root.StartsWith(data + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
                 throw new ArgumentException("Atlas output must be outside Skyrim Data.");
@@ -82,59 +84,79 @@ internal static class AtlasBuilder
             var q1 = Path.Combine(root, "q1");
             var q0 = Path.Combine(root, "q0");
             var q2 = Path.Combine(root, "q2");
-            foreach (var dir in new[] { q0, q1, q2 }) Directory.CreateDirectory(dir);
+            foreach (var quality in tiers) Directory.CreateDirectory(Path.Combine(root, "q" + quality));
             using var pg = new PgAssets(data, q1);
             var normal = new MeshCompiler(q1, options, 1);
             var minimal = new MeshCompiler(q0, options, 0);
-            var maximum = new MeshCompiler(q2, options, 2, sharedSources: q1);
+            var maximum = includeQ2 ? new MeshCompiler(q2, options, 2, sharedSources: q1) : null;
             var names = pg.EligibleModels().Distinct(StringComparer.OrdinalIgnoreCase)
                 .Order(StringComparer.OrdinalIgnoreCase).ToArray();
-            var all = new[] {
-                new List<CompiledNif>(names.Length), new List<CompiledNif>(names.Length),
-                new List<CompiledNif>(names.Length)
-            };
+            var all = tiers.ToDictionary(quality => quality, quality => new List<CompiledNif>(names.Length));
             var failures = new List<object>();
             var reused = 0;
             var compiledQ2 = 0;
             var watch = System.Diagnostics.Stopwatch.StartNew();
-            Console.WriteLine($"Atlas batch: {names.Length} candidates, three tiers, shared NIF acquisition.");
+            Console.WriteLine($"Atlas batch: {names.Length} candidates, q0/q1{(includeQ2 ? "/q2" : "")}, shared NIF acquisition.");
+            var processed = 0;
+            var cacheHits = 0;
+            long acquireTicks = 0, compileTicks = 0, deriveTicks = 0;
             foreach (var name in names)
             {
                 try
                 {
+                    var timer = System.Diagnostics.Stopwatch.GetTimestamp();
                     var source = pg.Read(name);
+                    acquireTicks += System.Diagnostics.Stopwatch.GetTimestamp() - timer;
+                    timer = System.Diagnostics.Stopwatch.GetTimestamp();
                     var baseline = normal.Compile(source);
+                    compileTicks += System.Diagnostics.Stopwatch.GetTimestamp() - timer;
+                    if (baseline.CacheHit) ++cacheHits;
+                    timer = System.Diagnostics.Stopwatch.GetTimestamp();
+                    var basic = minimal.DeriveFrom(baseline, q1);
+                    deriveTicks += System.Diagnostics.Stopwatch.GetTimestamp() - timer;
+                    CompiledNif? full = null;
+                    if (maximum != null)
+                    {
+                        if (maximum.NeedsOwnQ2Compile(baseline))
+                        {
+                            full = maximum.Compile(source);
+                            ++compiledQ2;
+                        }
+                        else
+                        {
+                            full = maximum.DeriveFrom(baseline, q1);
+                            ++reused;
+                        }
+                    }
+                    // Do not publish a partial NIF entry in only some tiers.
                     all[1].Add(baseline);
-                    all[0].Add(minimal.DeriveFrom(baseline, q1));
-                    if (maximum.NeedsOwnQ2Compile(baseline))
-                    {
-                        all[2].Add(maximum.Compile(source));
-                        ++compiledQ2;
-                    }
-                    else
-                    {
-                        all[2].Add(maximum.DeriveFrom(baseline, q1));
-                        ++reused;
-                    }
+                    all[0].Add(basic);
+                    if (full != null) all[2].Add(full);
                 }
                 catch (Exception error) when (error is not OutOfMemoryException)
                 {
                     failures.Add(new { path = name, reason = error.Message });
                     Console.Error.WriteLine($"[atlas] {name}: {error.Message}");
                 }
-                var count = all[1].Count + failures.Count;
-                if (count % 100 == 0 || count == names.Length)
-                    Console.WriteLine($"Atlas progress {count}/{names.Length} in {watch.Elapsed:g}; q2 reused {reused}, recompiled {compiledQ2}.");
+                ++processed;
+                if (processed % 100 == 0 || processed == names.Length)
+                    Console.WriteLine($"Atlas progress {processed}/{names.Length} in {watch.Elapsed:g}" +
+                        (includeQ2 ? $"; q2 reused {reused}, recompiled {compiledQ2}" : "") + ".");
             }
 
             int result = 0;
-            for (var quality = 0; quality < 3; ++quality)
+            foreach (var quality in tiers)
             {
                 var output = Path.Combine(root, "q" + quality);
                 var status = FinishLevel(data, output, plugins, options, quality, all[quality], failures);
                 if (status != 0) result = status;
             }
-            Console.WriteLine($"Atlas three-tier total: {watch.Elapsed:g}; q2 reused {reused}, recompiled {compiledQ2}.");
+            static TimeSpan Duration(long ticks) => TimeSpan.FromSeconds(
+                double(ticks) / System.Diagnostics.Stopwatch.Frequency);
+            Console.WriteLine($"Atlas tiers {string.Join(",", tiers)} finished in {watch.Elapsed:g}; " +
+                $"source verification {Duration(acquireTicks):g}, q1 mesh stage {Duration(compileTicks):g}, " +
+                $"q0 derivation {Duration(deriveTicks):g}, q1 cache hits {cacheHits}/{processed}." +
+                (includeQ2 ? $" q2 reused {reused}, recompiled {compiledQ2}." : ""));
             return result;
         }
         catch (Exception error)
