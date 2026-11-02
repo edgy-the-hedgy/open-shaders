@@ -100,7 +100,14 @@ namespace DX12Native
 		lightSelectionFailure.clear();
         for (auto& frame : frames) {
             frame.shadowTemporalValid = false; // never reuse histories across reset
-            if (!frame.submitted) frame = {};
+            // An old producer can still be referenced by an in-flight
+            // temporal pass even after its own DX11/DX12 work has retired.
+            const auto index = int32_t(&frame - frames.data());
+            const bool referenced = std::ranges::any_of(frames, [&](const Frame& other) {
+                return &other != &frame && other.submitted &&
+                    other.shadowHistorySourceSlot == index;
+            });
+            if (!frame.submitted && !referenced) frame = {};
         }
 		if (a_releaseBindings) cachedBindings.reset();
 	}
@@ -563,6 +570,8 @@ namespace DX12Native
             transition(frame.shadowTemporal.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             if (frame.shadowMaskExport)
                 transition(frame.shadowMaskExport->resource.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            frame.shadowTemporalRootRef = shadowTemporalRoot;
+            frame.shadowTemporalPipelineRef = shadowTemporalPipeline;
             auto* commands = frame.commands.get();
             commands->ResourceBarrier(uint32_t(begin.size()), begin.data());
             commands->SetPipelineState(shadowTemporalPipeline.get());

@@ -147,6 +147,10 @@ namespace DX12Native
             winrt::com_ptr<ID3D12Resource> shadowTemporal;
             std::unique_ptr<WrappedResource> shadowMotion;
             winrt::com_ptr<ID3D12DescriptorHeap> shadowTemporalHeap;
+            // Keep D3D12 state objects alive until this frame's commands retire,
+            // including shader reloads while an old frame is still executing.
+            winrt::com_ptr<ID3D12RootSignature> shadowTemporalRootRef;
+            winrt::com_ptr<ID3D12PipelineState> shadowTemporalPipelineRef;
             bool shadowTemporalEnabled = false;
             bool shadowTemporalValid = false;
             bool shadowMotionCaptured = false;
