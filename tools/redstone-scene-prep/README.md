@@ -44,6 +44,48 @@ another deployed environment or output location. Cell identity is
 `hex-local-id:PluginName.esm` representation. Default target is the user-confirmed
 Unslaad guest room, `Unslaad.esm:04FD2B` / `zzzCrbKedamaHouse`.
 
+## Q0 baseline and progressive native-scene migration
+
+The default build and stage entry points now operate on **Q0 only**. Legacy
+`-QualityLevels` remains accepted for migrations, but separately generated
+Q1/Q2 atlases are not part of the new default architecture. Existing Q0
+geometry and RSGM/RSGA schemas are backward compatible.
+
+Prepare a Q0-only geometry atlas (offline and outside the game):
+
+    & .\tools\redstone-scene-prep\BuildAtlas.ps1 -QualityLevels 0
+
+Stage and optionally compress the Q0 atlas while Skyrim is closed:
+
+    & .\tools\redstone-scene-prep\StagePreparedAtlas.ps1 -AtlasSourceRoot '.\build\scene-prep\atlas' -QualityLevels 0 -CompressQ0
+
+Or compress an existing Q0 atlas without regenerating its sources:
+
+    & .\tools\redstone-scene-prep\CompressQ0Atlas.ps1 -AtlasRoot '.\build\scene-prep\atlas' -IncludeSourceCache
+
+Compression uses Windows NTFS Compact XPRESS8K, retaining byte-identical
+logical RSGM files and their SHA-256 names. The existing DX12 hash verifier
+and geometry reader require no changes. Use XPRESS4K to favor read latency,
+XPRESS16K/LZX to favor disk space; gains are hardware/content dependent.
+This is **disk/cache compression only**; GPU-uploaded position and index data,
+BLAS footprints and VRAM residency are unchanged. Compression can take time
+on large atlases; it is not performed each time a cell loads.
+
+The DX12 feature now records active cell/worldspace/player form IDs from the
+existing frame handoff and invalidates scope when the identity changes.
+These IDs are the foundation for future cell/worldspace and dynamic-actor
+registration; no additional engine traversal or draw interception is added.
+
+The following work is **not yet implemented** and must not be inferred from
+the Q0 changes: native discovery of arbitrary exterior meshes, persistence of
+newly assembled runtime cell geometry, asynchronous hot-swapping or disk
+overwrite of scene generations, player/NPC skinned geometry in the TLAS,
+runtime-produced Q1 shading and Q2 material overlays. The intended migration
+is one immutable Q0 geometry catalogue, then incremental Q1/Q2 **overlays**
+published only after the new snapshot's GPU fence completes; the current
+published snapshot remains available until then. Dynamic actor poses are
+live data and must never be reused from a static scene cache.
+
 ## Universal asset atlas — offline compiler and native DX12 loader
 
 In-process hostfxr/.NET scene preparation has been retired following runtime crashes.
@@ -61,11 +103,11 @@ QUALITY PLUGINS_TXT (QUALITY = 0, 1 or 2).
 
 ### Atlas build performance (incremental)
 
-The default `BuildAtlas.ps1` workflow now builds **q0 and q1 only**,
-using one `--atlas-batch` pass for both. Each PGPatcher source NIF is read
+A legacy compatibility option builds **q0 and q1** using one `--atlas-batch`
+pass for both. The default workflow now builds Q0 alone, without q1 preprocessing. Each PGPatcher source NIF is read
 and hashed once and compiled into a q1 baseline; q0 reuses its geometry
-instead of running a second NIF scan. Use `-QualityLevels 0,1,2` explicitly
-to include the deferred, high-storage q2 tier. This does not imply q2
+instead of running a second NIF scan. Use `-QualityLevels 0,1` for a legacy two-tier build or
+`-QualityLevels 0,1,2` for the deferred high-storage q2 tier. This does not imply q2
 displacement is enabled by default.
 
 The mesh cache now uses an explicitly versioned **semantic compiler key**

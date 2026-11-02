@@ -2,7 +2,7 @@ param(
     [string]$DataDirectory = 'D:\SteamLibrary\steamapps\common\Skyrim Special Edition\Data',
     [string]$PluginsFile = (Join-Path $env:LOCALAPPDATA 'Skyrim Special Edition\Plugins.txt'),
     [string]$AtlasOutputRoot,
-    [ValidateRange(0, 2)][int[]]$QualityLevels = @(0, 1)
+    [ValidateRange(0, 2)][int[]]$QualityLevels = @(0)
 )
 
 $ErrorActionPreference = 'Stop'

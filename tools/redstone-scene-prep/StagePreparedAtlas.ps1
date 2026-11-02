@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory)][string]$AtlasSourceRoot,
     [string]$DataDirectory = 'D:\SteamLibrary\steamapps\common\Skyrim Special Edition\Data',
-    [ValidateRange(0, 2)][int[]]$QualityLevels = @(0, 1)
+    [ValidateRange(0, 2)][int[]]$QualityLevels = @(0),
+    [switch]$CompressQ0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -91,4 +92,8 @@ foreach ($quality in @($QualityLevels | Sort-Object -Unique)) {
         }
     }
     Write-Output "Installed verified atlas q$quality -> $destination; hardlinked: $linked, copied: $copied, unchanged: $unchanged"
+}
+
+if ($CompressQ0 -and (@($QualityLevels) -contains 0)) {
+    & (Join-Path $PSScriptRoot 'CompressQ0Atlas.ps1') -AtlasRoot $targetRoot
 }

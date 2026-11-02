@@ -20,7 +20,7 @@ struct DX12NativeScene final : OverlayFeature
 		bool AcquireScene = false;
 		bool UsePreparedScene = false;
 		bool AutoPrepareGuestRoom = false; // legacy setting; offline atlas preparation only
-		uint32_t PreparationQuality = 2;
+		uint32_t PreparationQuality = 0; // Q0 base cache; higher detail is runtime progression, not offline tiers.
 		bool PreviewPreparedScene = false;
 		bool UsePreparedMaterials = false;
 		uint32_t PreparedMaterialView = 0;
@@ -124,6 +124,10 @@ private:
 	DX12Native::PreparedScene preparedScene;
 	DX12Native::AccelerationWorker preparedAcceleration;
 	DX12Native::DirectionalTrace preparedTrace;
+	// Read on the existing native-scene render-thread handoff, never on UI thread.
+	// These are identities only: character mesh/skinning registration is a later stage.
+	std::atomic<uint32_t> runtimeCellID{ 0 }, runtimeWorldspaceID{ 0 }, runtimeCharacterID{ 0 };
+	std::atomic<bool> runtimeExterior{ false };
 	uint32_t preparedCellID = 0;
 	uint64_t preparedRevision = 1;
 	bool preparedSubmitted = false;

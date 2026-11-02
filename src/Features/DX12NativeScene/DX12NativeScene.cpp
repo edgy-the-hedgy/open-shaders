@@ -114,7 +114,7 @@ void DX12NativeScene::ImportLegacySettings(json& root)
 void DX12NativeScene::LoadSettings(json& value)
 {
 	Settings selected = value;
-	selected.PreparationQuality = std::min(selected.PreparationQuality, 2u);
+	selected.PreparationQuality = 0; // migrate legacy Q1/Q2 atlas selection to Q0 baseline
 	selected.NodesPerFrame = std::clamp(selected.NodesPerFrame, 64u, 8192u);
 	selected.MaxInstances = std::clamp(selected.MaxInstances, 1u, CasterObservation::kCapacity);
 	selected.BufferBudgetMB = std::clamp(selected.BufferBudgetMB, 16u, 512u);
@@ -166,6 +166,19 @@ void DX12NativeScene::EarlyPrepass()
 		lastCPUms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
 	});
 	const auto frame = globals::game::graphicsState->GetFrameCount();
+    // Snapshot stable form identities on the renderer's existing handoff.
+    // No new draw interception, actor traversal, or mesh capture is performed.
+    const auto* player = globals::game::player;
+    const auto* currentCell = player ? player->GetParentCell() : nullptr;
+    const auto* currentWorld = player ? player->GetWorldspace() : nullptr;
+    const auto observedCell = currentCell ? currentCell->GetFormID() : 0u;
+    const auto observedWorld = currentWorld ? currentWorld->GetFormID() : 0u;
+    const auto observedCharacter = player ? player->GetFormID() : 0u;
+    const bool cellChanged = runtimeCellID.exchange(observedCell, std::memory_order_relaxed) != observedCell;
+    const bool worldChanged = runtimeWorldspaceID.exchange(observedWorld, std::memory_order_relaxed) != observedWorld;
+    const bool characterChanged = runtimeCharacterID.exchange(observedCharacter, std::memory_order_relaxed) != observedCharacter;
+    if (cellChanged || worldChanged || characterChanged) resetRequested = true;
+    runtimeExterior.store(currentCell && currentCell->IsExteriorCell(), std::memory_order_relaxed);
 	if (!ready && (settings.AcquireScene || settings.UsePreparedScene) && frame % kBackendRetryFrames == 0) SetupResources();
 	if (previousFrame && (frame < *previousFrame || frame - *previousFrame > 1)) resetRequested = true;
 	previousFrame = frame;
@@ -310,6 +323,15 @@ json DX12NativeScene::GetDiagnostics()
 		{ "dxrCapable", dxrCapable }, { "rrEligible", rrEligible }, { "resourcesReady", ready },
 		{ "acquisitionEnabled", settings.AcquireScene }, { "unavailable", unavailable },
 		{ "preparedSceneEnabled", settings.UsePreparedScene }, { "preparedScene", preparedScene.GetDiagnostics() },
+        { "runtimeScope", {
+            { "cellFormID", runtimeCellID.load(std::memory_order_relaxed) },
+            { "worldspaceFormID", runtimeWorldspaceID.load(std::memory_order_relaxed) },
+            { "characterFormID", runtimeCharacterID.load(std::memory_order_relaxed) },
+            { "exteriorCell", runtimeExterior.load(std::memory_order_relaxed) },
+            { "characterGeometryRegistered", false },
+            { "worldspaceGeometryCoverage", false },
+            { "activeCacheStage", 0 }
+        } },
 		{ "preparedAcceleration", preparedAcceleration.GetDiagnostics() }, { "preparedTrace", traceStatus },
 		{ "scene", scene.GetDiagnostics() },
 		{ "observation", CasterObservation::Diagnostics() }, { "acquisitionActive", acquisitionActive },
@@ -343,16 +365,9 @@ void DX12NativeScene::DrawNativeSceneSettings()
     if (settings.UsePreparedScene != settings.UsePreparedMaterials)
         ImGui::TextWrapped("Legacy settings enable only part of the native scene. Changing the unified toggle will enable or disable geometry and materials together.");
 
-    ImGui::SeparatorText("Prepared asset atlas");
-    int quality = int(settings.PreparationQuality);
-    if (ImGui::Combo("Atlas asset quality", &quality,
-        "Base geometry\0Shading and materials\0Full PBR / displacement\0")) {
-        settings.PreparationQuality = uint32_t(quality);
-        resetRequested = true;
-    }
-    ImGui::TextWrapped("Scene assets must be prepared offline. The native DX12 loader uses the shared, SHA-256-addressed atlas when cell-local blobs are absent. No .NET runtime is loaded inside Skyrim.");
-    ImGui::TextWrapped("Loading-screen extension and live dynamic geometry are deferred until native cell-state verification.");
-
+    ImGui::SeparatorText("Native scene cache");
+    ImGui::TextWrapped("Q0 is the compact base geometry cache. Shader/material augmentation (Q1/Q2) will be generated progressively at runtime; separate offline quality atlases are retired.");
+    ImGui::TextWrapped("Worldspace and player form identities are observed, but exterior geometry discovery and animated character BLAS registration are not yet implemented.");
     ImGui::SeparatorText("Budgets");
     int instances = int(settings.MaxInstances), geometryBudget = int(settings.BufferBudgetMB);
     bool geometryChanged = ImGui::SliderInt("Maximum admitted instances", &instances, 1, int(CasterObservation::kCapacity));
@@ -445,7 +460,7 @@ void DX12NativeScene::RegisterUxActions()
         [](Feature* self, const json& args) {
             auto& n = *static_cast<DX12NativeScene*>(self);
             if (args.contains("quality")) {
-                const auto quality = std::min(args.at("quality").get<uint32_t>(), 2u);
+                const auto quality = 0u; // legacy command: Q0 baseline only
                 if (n.settings.PreparationQuality != quality) {
                     n.settings.PreparationQuality = quality;
                     n.resetRequested = true;
