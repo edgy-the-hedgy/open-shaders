@@ -213,7 +213,7 @@ bool SecondaryRadiance(float3 origin, float3 direction, float footprint,
 		float3 diffuse, specular;
 		float4 unavailable;
 		if (!EvaluatePointLight(light, material, position, -direction, geometricNormal, room, pixel, sampleIndex + 1u, diffuse, specular, unavailable)) return false;
-		radiance += diffuse + specular;
+		radiance += diffuse + (transportTier == 2u ? 0.0 : specular);
 	}
 #if REDSTONE_IL_SECOND_BOUNCE
     // The legacy Custom path retains its previous unconditional second ray.

@@ -1186,7 +1186,10 @@ namespace DX12Native
 			available->falloffParameters = {
 				std::isfinite(a_falloffParameters.x) ? std::clamp(a_falloffParameters.x, 0.1f, 64.0f) : 1.0f,
 				std::isfinite(a_falloffParameters.y) ? std::clamp(a_falloffParameters.y, 0.02f, 1.0f) : 0.1f,
-				std::isfinite(a_falloffParameters.z) ? std::clamp(a_falloffParameters.z, 0.25f, 4.0f) : 1.0f, 0.0f };
+				std::isfinite(a_falloffParameters.z) ? std::clamp(a_falloffParameters.z, 0.25f, 4.0f) : 1.0f,
+                // Reserved in DXR light attenuation; used solely as a
+                // staged indirect-transport tier ID. No RootSig ABI growth.
+                std::isfinite(a_falloffParameters.w) ? std::clamp(a_falloffParameters.w, 0.0f, 5.0f) : 0.0f };
 			available->stochasticParameters = { a_stochasticParameters.x >= 0.5f ? 1.0f : 0.0f,
 				std::isfinite(a_stochasticParameters.y) ? std::clamp(a_stochasticParameters.y, 0.0f, 8.0f) : 1.0f, 0.0f, 0.0f };
 			available->useIndirect = a_useIndirect && a_indirectRays == 0;

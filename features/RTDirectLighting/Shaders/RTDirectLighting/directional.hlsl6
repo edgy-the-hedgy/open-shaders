@@ -40,7 +40,7 @@ cbuffer Trace : register(b0)
 	uint BakedRoomCount;
 	uint BakedRoomsKnown;
 	uint DirectNormalMode;
-	float4 PointLightFalloff;  // effective-radius scale, transition fraction, cutoff curve exponent, reserved
+	float4 PointLightFalloff;  // effective-radius scale, transition fraction, cutoff curve exponent, staged transport tier ID
 	float4 DirectStochastic;  // enabled, emitter radius multiplier, visibility cache enabled, reserved
 };
 

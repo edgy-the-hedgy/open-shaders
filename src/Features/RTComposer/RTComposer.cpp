@@ -157,6 +157,13 @@ json RTComposer::GetDiagnostics()
         { "firstBounceSurvival", GetTierPolicy(composition.mode).firstBounceSurvival },
         { "specularBounceFraction", GetTierPolicy(composition.mode).specularBounceFraction },
         { "secondBounceSurvival", GetTierPolicy(composition.mode).secondBounceSurvival },
+        { "stagedTransportShaderTierID", composition.enabled && GetTierPolicy(composition.mode).ready ?
+            0u : (composition.enabled && composition.mode >= CompositorMode::RTExclusiveI &&
+            composition.mode <= CompositorMode::FSRRedstone ?
+            static_cast<uint32_t>(composition.mode) : 0u) },
+        { "stagedTransportDispatchEnabled", false },
+        { "transportIntegrationStatus",
+            "DXR shader estimator staged; DX12 scene compositor and per-family RR validity unfinished" },
         { "effectiveMode", effective == EffectiveMode::Legacy ? "legacy" :
             effective == EffectiveMode::ShadowOnly ? "shadow-only" : "hybrid-shadowed" },
         { "hybridDX12Ready", DX12HybridReady() },

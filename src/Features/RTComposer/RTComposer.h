@@ -151,3 +151,10 @@ static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadow
 static_assert(!RTComposer::GetTierPolicy(RTComposer::CompositorMode::ShadowOnly).directRR);
 static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed).hybridResolution == 2u);
 static_assert(!RTComposer::GetTierPolicy(RTComposer::CompositorMode::FSRRedstone).ready);
+static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::RTExclusiveI).firstBounceSurvival == 0.5f);
+static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::RTExclusiveI).specularBounceFraction == 0.0f);
+static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::RTExclusiveII).firstBounceSurvival == 0.5f);
+static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::RTExclusiveII).specularBounceFraction == 0.5f);
+static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::RTEnhanced).directTraceMode == 5u);
+static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::FSRRedstone).firstBounceSurvival == 0.66f);
+static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::FSRRedstone).secondBounceSurvival == 0.25f);
