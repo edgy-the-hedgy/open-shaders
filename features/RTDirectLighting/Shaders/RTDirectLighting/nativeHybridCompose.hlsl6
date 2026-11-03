@@ -25,6 +25,9 @@ cbuffer NativeHybridComposition : register(b13)
     float ShadowInfluence;
     uint AdvancedTransportTier; // 2..5: pre-multiplied RT transport, no first-bounce albedo
     uint NativeValidityMask; // diffuse=1, specular=2; negative alpha means no sample
+    uint SceneSignalMask; // 1 direct, 2 indirect diffuse, 4 indirect specular, 8 sampled AO
+    float ContactAAWeight;
+    float ContactAADepthTolerance;
 };
 
 // Reuse the source pass's native depth/visibility semantics for direct blend.
@@ -45,13 +48,13 @@ float ContactShadowVisibility(uint2 pixel)
             const float neighborDepth = NativeLinearDepth.Load(int3(tap, 0));
             if (!all(isfinite(neighborMask)) || neighborMask.y < 0.5f ||
                 !isfinite(neighborDepth) || neighborDepth <= 0.0f ||
-                abs(neighborDepth - depth) > max(0.072f, depth * 0.015f)) continue;
+                abs(neighborDepth - depth) > max(0.072f, depth * ContactAADepthTolerance)) continue;
             const float weight = (dx == 0 || dy == 0) ? 2.0f : 1.0f;
             total += weight * saturate(neighborMask.x);
             weights += weight;
         }
     }
-    return lerp(center, total / weights, 0.65f);
+    return lerp(center, total / weights, saturate(ContactAAWeight));
 }
 [numthreads(8, 8, 1)]
 void main(uint2 pixel : SV_DispatchThreadID)
@@ -64,7 +67,8 @@ void main(uint2 pixel : SV_DispatchThreadID)
     // Matches RTDirectLighting/directContract.hlsli::DirectRadianceTag.
     // Unsupported or invalid direct receivers retain the shadowed raster.
     const float4 direct = NativeDirect.Load(int3(pixel, 0));
-    if (direct.a == 4.0 && all(isfinite(direct.rgb)) && all(direct.rgb >= 0.0)) {
+    if ((SceneSignalMask & 1u) != 0u && direct.a == 4.0 &&
+        all(isfinite(direct.rgb)) && all(direct.rgb >= 0.0)) {
         float3 directRadiance = direct.rgb;
         if (ShadowEdgeFilterEnabled != 0u) {
             const float visibility = ContactShadowVisibility(pixel);
@@ -97,25 +101,29 @@ void main(uint2 pixel : SV_DispatchThreadID)
             ((NativeValidityMask & 2u) == 0u || specular.a >= 0.0);
         if (AdvancedTransportTier != 0u) {
             // RT-exclusive transport is already BRDF weighted.
-            if (validDiffuse)
+            if (validDiffuse && (SceneSignalMask & 2u) != 0u)
                 linearColor += saturate(GIContribution) * max(0.0, diffuse.rgb);
-            if (validSpecular)
+            if (validSpecular && (SceneSignalMask & 4u) != 0u)
                 linearColor += saturate(GIContribution) * max(0.0, specular.rgb);
         } else {
             const float pbrScale = NativeLinearLighting != 0u ? 1.0 : 0.65;
-            if (validDiffuse && isfinite(aoDiffuse)) {
+            if (validDiffuse && (SceneSignalMask & 2u) != 0u &&
+                isfinite(aoDiffuse)) {
                 const float3 rawAlbedo = DiffuseAlbedo.Load(int3(pixel, 0)).rgb / pbrScale;
                 const float3 factor = NativeLinearLighting != 0u ?
                     max(0.0, rawAlbedo) : pow(abs(rawAlbedo), 1.6);
                 if (all(isfinite(factor)))
                     linearColor += saturate(GIContribution) *
-                        max(0.0, diffuse.rgb) * factor * saturate(aoDiffuse);
+                        max(0.0, diffuse.rgb) * factor *
+                        (((SceneSignalMask & 8u) != 0u) ? saturate(aoDiffuse) : 1.0);
             }
-            if (validSpecular && isfinite(aoSpecular)) {
+            if (validSpecular && (SceneSignalMask & 4u) != 0u &&
+                isfinite(aoSpecular)) {
                 const float3 factor = max(0.0, SpecularAlbedo.Load(int3(pixel, 0)).rgb);
                 if (all(isfinite(factor)))
                     linearColor += saturate(GIContribution) *
-                        max(0.0, specular.rgb) * factor * saturate(aoSpecular);
+                        max(0.0, specular.rgb) * factor *
+                        (((SceneSignalMask & 8u) != 0u) ? saturate(aoSpecular) : 1.0);
             }
         }
     }

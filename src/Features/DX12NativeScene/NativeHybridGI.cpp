@@ -54,6 +54,8 @@ namespace DX12Native
             float shadowInfluence;
             uint32_t advancedTransportTier;
             uint32_t nativeValidityMask;
+            uint32_t sceneSignalMask;
+            float contactAAWeight, contactAADepthTolerance;
         };
         DXGI_FORMAT OutputFormat(uint32_t index)
         {
@@ -1675,16 +1677,33 @@ namespace DX12Native
                     desc, device11, device, "RTComposer::NativeHybridComposedScene");
             }
 
+            const auto& composer = globals::features::rtComposer;
+            const auto& dev = composer.EffectiveDeveloperControls();
+            const bool overrideBlend = composer.DeveloperSceneOverride();
+            const float effectiveDirect = overrideBlend && directBlend > 0.f ?
+                dev.sceneDirectBlend : directBlend;
+            const float effectiveGI = overrideBlend ?
+                dev.sceneGIContribution : giContribution;
+            const float effectiveShadow = overrideBlend ?
+                dev.sceneShadowInfluence : shadowInfluence;
+            const uint32_t sceneMask = composer.advancedDeveloperMode ?
+                (dev.showDirect ? 1u : 0u) |
+                (dev.showDiffuse ? 2u : 0u) |
+                (dev.showSpecular ? 4u : 0u) |
+                (dev.useAO ? 8u : 0u) : 15u;
             const NativeCompositionCB constants{ size[0], size[1],
-                std::isfinite(directBlend) ? std::clamp(directBlend, 0.0f, 1.0f) : 0.0f,
-                std::isfinite(giContribution) ? std::clamp(giContribution, 0.0f, 1.0f) : 0.0f,
+                std::isfinite(effectiveDirect) ? std::clamp(effectiveDirect, 0.0f, 1.0f) : 0.0f,
+                std::isfinite(effectiveGI) ? std::clamp(effectiveGI, 0.0f, 1.0f) : 0.0f,
                 uint32_t(globals::features::linearLighting.IsLinearLightingActive()),
                 uint32_t(globals::features::linearLighting.settings.enableACEScg),
-                std::min(shadowEdgeFilterEnabled, 1u),
-                std::isfinite(shadowInfluence) ? std::clamp(shadowInfluence, 0.0f, 1.0f) : 0.0f,
+                uint32_t(shadowEdgeFilterEnabled != 0u &&
+                    (!composer.advancedDeveloperMode || dev.shadowContactAAEnabled)),
+                std::isfinite(effectiveShadow) ? std::clamp(effectiveShadow, 0.0f, 1.0f) : 0.0f,
                 advancedTier >= 2u && advancedTier <= 5u ? advancedTier : 0u,
-                frame.nativeValidityMask };
-            static_assert(sizeof(constants) == 40);
+                frame.nativeValidityMask,
+                sceneMask,
+                dev.shadowContactAAWeight, dev.shadowContactAADepthTolerance };
+            static_assert(sizeof(constants) == 52);
             static_assert(kCompositionOffset + sizeof(constants) <= kUploadBytes);
             uint8_t* mapped = nullptr;
             const D3D12_RANGE noRead{ 0, 0 };
