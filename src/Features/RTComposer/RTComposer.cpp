@@ -275,6 +275,40 @@ json RTComposer::GetDiagnostics()
         { "developerPostHybridGIEnabled", !advancedDeveloperMode || developer.showPostHybridGI },
         { "developerPostHybridGIContribution",
             advancedDeveloperMode ? developer.scenePostGIContribution : 1.f },
+        { "developerEffectiveSettings", {
+            { "spatialDepthTolerance", EffectiveDeveloperControls().spatialDepthTolerance },
+            { "spatialNormalThreshold", EffectiveDeveloperControls().spatialNormalThreshold },
+            { "spatialRoughnessTolerance", EffectiveDeveloperControls().spatialRoughnessTolerance },
+            { "spatialDistanceFalloff", EffectiveDeveloperControls().spatialDistanceFalloff },
+            { "spatialDepthFalloff", EffectiveDeveloperControls().spatialDepthFalloff },
+            { "spatialRoughnessFalloff", EffectiveDeveloperControls().spatialRoughnessFalloff },
+            { "spatialNormalPower", EffectiveDeveloperControls().spatialNormalPower },
+            { "historyDepthTolerance", EffectiveDeveloperControls().historyDepthTolerance },
+            { "historyNormalThreshold", EffectiveDeveloperControls().historyNormalThreshold },
+            { "historyRoughnessTolerance", EffectiveDeveloperControls().historyRoughnessTolerance },
+            { "sceneBlendOverridden", DeveloperSceneOverride() },
+            { "directBlend", DeveloperSceneOverride() ? developer.sceneDirectBlend :
+                (IsFixedPreset() ? GetTierPolicy(composition.mode).directContribution :
+                    composition.rtDirectContribution) },
+            { "giContribution", DeveloperSceneOverride() ?
+                developer.sceneGIContribution : (IsFixedPreset() ? 1.f : composition.giContribution) },
+            { "shadowInfluence", DeveloperSceneOverride() ?
+                developer.sceneShadowInfluence : (IsFixedPreset() ?
+                    GetTierPolicy(composition.mode).shadowInfluence : composition.shadowInfluence) },
+            { "postHybridGIEnabled", !advancedDeveloperMode || developer.showPostHybridGI },
+            { "postHybridGIContribution", advancedDeveloperMode ?
+                developer.scenePostGIContribution : 1.f },
+            { "shadowTemporalEnabled", !advancedDeveloperMode ||
+                !developer.overrideShadowTemporal || developer.shadowTemporalEnabled },
+            { "shadowTemporalWeight", advancedDeveloperMode && developer.overrideShadowTemporal ?
+                developer.shadowTemporalWeight : .70f },
+            { "shadowTemporalDepthTolerance", advancedDeveloperMode && developer.overrideShadowTemporal ?
+                developer.shadowTemporalDepthTolerance : .018f },
+            { "contactAAEnabled", !advancedDeveloperMode || developer.shadowContactAAEnabled },
+            { "contactAAWeight", EffectiveDeveloperControls().shadowContactAAWeight },
+            { "contactAADepthTolerance", EffectiveDeveloperControls().shadowContactAADepthTolerance },
+            { "postFilters", SaveHybridFilters(EffectiveReconstructionPolicy().reconstruction) }
+        } },
         { "developerOverridesSessionOnly", true },
         { "developerSpatialEnabled", {
             EffectiveDeveloperControls().signals[0].spatialEnabled,
@@ -741,6 +775,27 @@ void RTComposer::DrawSettings()
     if (advancedDeveloperMode != priorDeveloperMode ||
         !(developer == priorDeveloperSettings))
         ++developerRevision;
+    if (advancedDeveloperMode && WantsNativeHybrid()) {
+        const auto trace = globals::features::dx12NativeScene.Tracer().GetDiagnostics();
+        ImGui::SeparatorText("Developer runtime readout");
+        const auto firstProvider = trace.value("nativeHybridReconstructionProvider", std::string{"not recorded"});
+        const auto postProvider = trace.value("postHybridReconstructionProvider", std::string{"not recorded"});
+        ImGui::Text("First reconstruction: %s", firstProvider.c_str());
+        ImGui::Text("Post-Hybrid reconstruction: %s", postProvider.c_str());
+        ImGui::Text("Native spatial / temporal dispatches: %llu / %llu",
+            static_cast<unsigned long long>(trace.value("nativeHybridReconstructionDispatches", uint64_t{0})),
+            static_cast<unsigned long long>(trace.value("nativeHybridTemporalDispatches", uint64_t{0})));
+        ImGui::Text("First AMD / native family mask: 0x%X / 0x%X",
+            trace.value("firstPassRecordedRRFamilyMask", 0u),
+            trace.value("firstPassRecordedNativeFamilyMask", 0u));
+        ImGui::Text("Post AMD / native family mask: 0x%X / 0x%X",
+            trace.value("postHybridRecordedRRFamilyMask", 0u),
+            trace.value("postHybridRecordedNativeFamilyMask", 0u));
+        ImGui::TextWrapped("Counts and masks describe CPU-recorded GPU work, not confirmed completed presentation.");
+        const auto failure = trace.value("nativeHybridTemporalFailure", std::string{});
+        if (!failure.empty())
+            ImGui::TextWrapped("Native temporal: %s", failure.c_str());
+    }
 
     if (IsFixedPreset()) {
         ImGui::TextWrapped("Fixed tier: lighting and sampling tuning are locked; RR requests remain individually editable.");
