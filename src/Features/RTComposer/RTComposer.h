@@ -218,6 +218,9 @@ struct RTComposer final : Feature
     // Per-frame RR/compose failures fail open to unchanged raster, never DX11 HybridGI.
     bool DX12HybridReady() const;
     void OnCompositionPolicyChanged();
+    // RR provider changes must not reset the renderer's lighting transport.
+    void OnReconstructionPolicyChanged(CompositorMode mode, uint32_t family,
+        bool enabled);
     json GetDiagnostics() override;
     std::string GetName() override { return "RTComposer"; }
     std::string GetShortName() override { return "RTComposer"; }
