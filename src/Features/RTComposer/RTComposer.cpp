@@ -129,11 +129,10 @@ bool RTComposer::DX12HybridReady() const
         native.loaded && native.settings.UsePreparedScene && native.settings.UsePreparedMaterials &&
         bool(native.GetPublishedScene()) &&
         DX12Native::NativeHybridGI::ShadersAvailable() &&
-        // Fixed native modes require the GPU RR guide/history/post shaders.
-        // Custom retains the full-native raw fallback when RR is disabled.
+        // Native reconstruction shaders are prerequisites; AMD RR availability
+        // is explicitly NOT a condition of native DX12 lighting readiness.
         (!IsFixedPreset() || composition.mode == CompositorMode::ShadowOnly ||
-            (composition.useFSRRayRegeneration &&
-             DX12Native::NativeHybridGI::AdvancedShadersAvailable()));
+            DX12Native::NativeHybridGI::AdvancedShadersAvailable());
 }
 void RTComposer::OnCompositionPolicyChanged()
 {
@@ -199,7 +198,7 @@ json RTComposer::GetDiagnostics()
             (GetTierPolicy(composition.mode).ready && DX12HybridReady()) },
         { "advancedTierBlockingInterfaces",
             IsAdvancedTransportTier(composition.mode) && !DX12HybridReady() ?
-            "native scene or packaged DX12 transport, RR and GI shaders unavailable" : "" },
+            "native scene or packaged DX12 transport/GI/reconstruction shaders unavailable" : "" },
         { "transportIntegrationStatus",
             "Native DX12 RT transport, FSR-RR and post-composite HybridGI scheduled; only completed GPU scenes are presented" },
         { "effectiveMode", effective == EffectiveMode::Legacy ? "legacy" :

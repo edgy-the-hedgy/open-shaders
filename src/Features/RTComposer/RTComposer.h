@@ -186,8 +186,6 @@ struct RTComposer final : Feature
         if (!composition.enabled) return EffectiveMode::Legacy;
         // Persist requested FSR-REDSTONE settings, but never activate its deferred transport.
         if (composition.mode == CompositorMode::FSRRedstone) return EffectiveMode::ShadowOnly;
-        if (IsFixedPreset() && composition.mode != CompositorMode::ShadowOnly &&
-            !composition.useFSRRayRegeneration) return EffectiveMode::ShadowOnly;
         if (IsAdvancedTransportTier(composition.mode) &&
             GetTierPolicy(composition.mode).ready && DX12HybridReady())
             return composition.mode <= CompositorMode::RTExclusiveII ?

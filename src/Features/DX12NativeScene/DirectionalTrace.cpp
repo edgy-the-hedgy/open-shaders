@@ -797,30 +797,32 @@ namespace DX12Native
                     uint32_t(&frame - frames.data()), frame.number, frame.generation);
             // Native Hybrid-Shadowed is a production path. The completed DX12
             // scene is the only product returned to D3D11, not legacy GI signals.
-            bool rrSucceeded = false;
-            // Fixed Hybrid-Shadowed requires indirect/AO RR regardless of
-            // the saved Custom RR toggle. Leave user preferences untouched.
+            // Native DX12 HybridGI keeps its shadow-adjusted producer
+            // regardless of the reconstruction provider selected for its signals.
             const bool rrRequested = composer.DX12HybridActive() &&
-                (composer.IsFixedPreset() || RayRegeneration::GetSettings().enabled);
-            if (rrRequested && frame.nativeGI.rrGuidesValid) {
-                auto& denoiser = globals::features::redstoneGI.GetDenoiser();
-                if (denoiser.Initialize(backend))
-                {
-                    auto activeReconstruction = composition;
-                    if (composer.IsFixedPreset())
-                        activeReconstruction.reconstruction = {};
-                    rrSucceeded = nativeHybridGI->RecordPostRR(
-                        backend.d3d12Device.get(), frame.commands.get(),
-                        frame.nativeGI, uint32_t(&frame - frames.data()),
-                        frame.number, frame.hybridLinearDepth.get(),
-                        frame.hybridInputs[2]->resource.get(), activeReconstruction, denoiser);
-                }
+                (composer.IsFixedPreset() ?
+                    composition.fixedRR.Get(composition.mode, 2u) :
+                    (composition.useFSRRayRegeneration &&
+                     RayRegeneration::GetSettings().enabled));
+            RedstoneDenoiser* provider = nullptr;
+            if (rrRequested) {
+                auto& candidate = globals::features::redstoneGI.GetDenoiser();
+                if (candidate.Initialize(backend)) provider = &candidate;
             }
-            // Full-native raw composition remains valid without RR or if RR
-            // rejects this frame. Sparse signals must never be composed raw.
-            const bool rawNative = !rrSucceeded &&
+            auto activeReconstruction = composition;
+            if (composer.IsFixedPreset()) activeReconstruction.reconstruction = {};
+            const bool reconstructed = guidesReady &&
+                nativeHybridGI->RecordPostRR(
+                    backend.d3d12Device.get(), frame.commands.get(),
+                    frame.nativeGI, uint32_t(&frame - frames.data()),
+                    frame.number, frame.hybridLinearDepth.get(),
+                    frame.hybridInputs[2]->resource.get(), activeReconstruction,
+                    provider, rrRequested);
+            // A genuine full-native producer can compose its raw signals if
+            // a reconstruction shader is unavailable; sparse signals cannot.
+            const bool rawNative = !reconstructed &&
                 sampling.effective == HybridSamplingMode::Native;
-            if (rrSucceeded || rawNative)
+            if (reconstructed || rawNative)
                 nativeHybridGI->RecordComposition(backend.d3d12Device.get(),
                     backend.d3d11Device.get(), frame.commands.get(), frame.nativeGI,
                     uint32_t(&frame - frames.data()), frame.size,
@@ -880,19 +882,25 @@ namespace DX12Native
         nativeHybridGI->RecordHistoryValidation(
             backend.d3d12Device.get(), frame.commands.get(), frame.nativeGI,
             slot, frame.number, frame.generation);
-        if (!advancedDenoiser)
-            advancedDenoiser = std::make_unique<RedstoneDenoiser>();
-        if (!advancedDenoiser->Initialize(backend)) {
-            advancedComposeFailure = "First-pass native FSR-RR provider initialization failed";
-            return;
+        // First-pass Indirect RR is optional, with a native DX12 fallback.
+        const bool indirectRR = composer.IsFixedPreset() ?
+            composer.composition.fixedRR.Get(composer.composition.mode, 1u) :
+            (composer.composition.useFSRRayRegeneration &&
+             RayRegeneration::GetSettings().enabled);
+        RedstoneDenoiser* firstProvider = nullptr;
+        if (indirectRR) {
+            if (!advancedDenoiser)
+                advancedDenoiser = std::make_unique<RedstoneDenoiser>();
+            if (advancedDenoiser->Initialize(backend))
+                firstProvider = advancedDenoiser.get();
         }
         if (!nativeHybridGI->RecordPostRR(
                 backend.d3d12Device.get(), frame.commands.get(),
                 frame.nativeGI, slot, frame.number, frame.hybridLinearDepth.get(),
                 frame.hybridInputs[2]->resource.get(), activeReconstruction,
-                *advancedDenoiser)) {
+                firstProvider, indirectRR)) {
             advancedComposeFailure = nativeHybridGI->PostFailure();
-            return; // never publish sparse raw radiance without RR
+            return;
         }
         if (!nativeHybridGI->RecordComposition(
                 backend.d3d12Device.get(), backend.d3d11Device.get(),
@@ -940,16 +948,19 @@ namespace DX12Native
         postHybridGI->RecordHistoryValidation(
             backend.d3d12Device.get(), frame.commands.get(), frame.postHybridGI,
             slot, frame.number, frame.generation);
-        auto& postDenoiser = globals::features::redstoneGI.GetDenoiser();
-        if (!postDenoiser.Initialize(backend)) {
-            advancedComposeFailure = "Post-composite HybridGI FSR-RR provider initialization failed";
-            return;
+        // Post-composite HybridGI RR is a separate reconstruction request.
+        const bool hybridRR = composer.composition.fixedRR.Get(
+            composer.composition.mode, 2u);
+        RedstoneDenoiser* postProvider = nullptr;
+        if (hybridRR) {
+            auto& candidate = globals::features::redstoneGI.GetDenoiser();
+            if (candidate.Initialize(backend)) postProvider = &candidate;
         }
         if (!postHybridGI->RecordPostRR(
                 backend.d3d12Device.get(), frame.commands.get(),
                 frame.postHybridGI, slot, frame.number, frame.hybridLinearDepth.get(),
                 frame.hybridInputs[2]->resource.get(), activeReconstruction,
-                postDenoiser)) {
+                postProvider, hybridRR)) {
             advancedComposeFailure = postHybridGI->PostFailure();
             return;
         }
@@ -1879,6 +1890,14 @@ namespace DX12Native
             { "nativeHybridAODispatches", nativeHybridGI ? nativeHybridGI->AODispatches() : uint64_t{0} },
             { "nativeHybridEligibilityDispatches", nativeHybridGI ? nativeHybridGI->EligibilityDispatches() : uint64_t{0} },
             { "nativeHybridRRGuideDispatches", nativeHybridGI ? nativeHybridGI->GuideDispatches() : uint64_t{0} },
+            { "nativeHybridReconstructionDispatches", nativeHybridGI ?
+                nativeHybridGI->NativeReconstructionDispatches() : uint64_t{0} },
+            { "nativeHybridReconstructionProvider", nativeHybridGI ?
+                nativeHybridGI->ReconstructionProvider() : std::string{} },
+            { "nativeHybridReconstructionFallbackReason", nativeHybridGI ?
+                nativeHybridGI->ReconstructionFallbackReason() : std::string{} },
+            { "postHybridReconstructionProvider", postHybridGI ?
+                postHybridGI->ReconstructionProvider() : std::string{} },
             { "nativeHybridRRGuideFailure", nativeHybridGI ? nativeHybridGI->GuideFailure() : std::string{} },
             { "nativeHybridHistoryValidationDispatches", nativeHybridGI ? nativeHybridGI->HistoryValidationDispatches() : uint64_t{0} },
             { "nativeHybridHistoryFailure", nativeHybridGI ? nativeHybridGI->HistoryFailure() : std::string{} },
