@@ -146,6 +146,23 @@ namespace DX12Native
                 total += bytes;
             }
         }
+        // Two persistent logical history banks are needed for temporal
+        // fallback, independent of the AMD SDK output buffers. Count both
+        // banks conservatively even when a signal currently opts into RR.
+        for (uint32_t bank = 0; bank < 2u; ++bank) {
+            for (uint32_t signal = 0; signal < FrameOutputs::kSignals; ++signal) {
+                const DXGI_FORMAT format = signal < 2u ?
+                    DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8_UNORM;
+                const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(format,
+                    sampling.logical[0], sampling.logical[1], 1, 1, 1, 0,
+                    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+                const auto bytes = device->GetResourceAllocationInfo(
+                    0, 1, &desc).SizeInBytes;
+                if (bytes == UINT64_MAX || UINT64_MAX - total < bytes)
+                    return UINT64_MAX;
+                total += bytes;
+            }
+        }
         // Persistent logical depth and normal snapshots survive recycled
         // frame slots and are updated with ordered GPU-only copies.
         for (uint32_t i = 0; i < 2; ++i) {
@@ -1111,11 +1128,30 @@ namespace DX12Native
             }
             const auto logical = frame.sampling.logical;
             if (nativeHistorySize != logical) {
-                // Keep previous GPU allocations alive until this feature
-                // instance retires, avoiding a cross-frame use-after-free.
+                // Enforce a hard cap on quarantined history generations.
+                // When exceeded, keep the correct spatial reconstruction
+                // rather than allocating unbounded VRAM or releasing an
+                // in-flight command-list resource.
+                size_t retiring = 0u;
+                for (const auto& bank : nativeTemporalHistory)
+                    for (const auto& resource : bank)
+                        if (resource) ++retiring;
+                constexpr size_t kMaxRetiredNativeHistoryTextures = 16u;
+                if (retiredNativeHistory.size() + retiring >
+                    kMaxRetiredNativeHistoryTextures) {
+                    temporalFailure = "History resize budget exhausted; safe spatial reconstruction retained";
+                    return true;
+                }
                 for (auto& bank : nativeTemporalHistory)
                     for (auto& resource : bank) {
-                        if (resource) retiredNativeHistory.push_back(std::move(resource));
+                        if (!resource) continue;
+                        const auto desc = resource->GetDesc();
+                        const auto bytes = device->GetResourceAllocationInfo(
+                            0, 1, &desc).SizeInBytes;
+                        if (bytes != UINT64_MAX &&
+                            retiredNativeHistoryBytes <= UINT64_MAX - bytes)
+                            retiredNativeHistoryBytes += bytes;
+                        retiredNativeHistory.push_back(std::move(resource));
                     }
                 nativeHistorySize = logical;
                 nativeHistoryLastFrame.fill(UINT32_MAX);
@@ -1231,8 +1267,10 @@ namespace DX12Native
                 nativeHistoryLastFrame[signal] = frameNumber;
                 ++nativeTemporalDispatches;
             }
+            temporalFailure.clear();
             return true;
         } catch (const std::exception& error) {
+            temporalFailure = error.what();
             postFailure = std::string("Native temporal reconstruction: ") + error.what();
             return false;
         }

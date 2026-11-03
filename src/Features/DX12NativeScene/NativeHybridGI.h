@@ -100,6 +100,8 @@ namespace DX12Native
         uint64_t NativeReconstructionDispatches() const { return nativeReconstructionDispatches; }
         uint64_t NativeTemporalDispatches() const { return nativeTemporalDispatches; }
         size_t RetainedNativeHistoryResources() const { return retiredNativeHistory.size(); }
+        uint64_t RetainedNativeHistoryBytes() const { return retiredNativeHistoryBytes; }
+        const std::string& TemporalFailure() const { return temporalFailure; }
         const std::string& ReconstructionProvider() const { return reconstructionProvider; }
         const std::string& ReconstructionFallbackReason() const { return reconstructionFallbackReason; }
         const std::string& PostFailure() const { return postFailure; }
@@ -168,6 +170,8 @@ namespace DX12Native
         // Previous allocations cannot be destroyed while a queued DX12 frame
         // may still reference them. Retain until the owning instance retires.
         std::vector<winrt::com_ptr<ID3D12Resource>> retiredNativeHistory;
+        uint64_t retiredNativeHistoryBytes = 0;
+        std::string temporalFailure;
         winrt::com_ptr<ID3D12RootSignature> postRoot;
         std::array<winrt::com_ptr<ID3D12PipelineState>, 2> postPipelines;
         winrt::com_ptr<ID3D12DescriptorHeap> postDescriptors;

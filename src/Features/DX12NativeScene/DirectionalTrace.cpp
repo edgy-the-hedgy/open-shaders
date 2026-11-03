@@ -1892,6 +1892,20 @@ namespace DX12Native
             { "nativeHybridRRGuideDispatches", nativeHybridGI ? nativeHybridGI->GuideDispatches() : uint64_t{0} },
             { "nativeHybridReconstructionDispatches", nativeHybridGI ?
                 nativeHybridGI->NativeReconstructionDispatches() : uint64_t{0} },
+            { "nativeHybridTemporalDispatches", nativeHybridGI ?
+                nativeHybridGI->NativeTemporalDispatches() : uint64_t{0} },
+            { "nativeHybridTemporalFailure", nativeHybridGI ?
+                nativeHybridGI->TemporalFailure() : std::string{} },
+            { "nativeHybridRetainedHistoryResources", nativeHybridGI ?
+                nativeHybridGI->RetainedNativeHistoryResources() : size_t{0} },
+            { "nativeHybridRetainedHistoryBytes", nativeHybridGI ?
+                nativeHybridGI->RetainedNativeHistoryBytes() : uint64_t{0} },
+            { "postHybridTemporalDispatches", postHybridGI ?
+                postHybridGI->NativeTemporalDispatches() : uint64_t{0} },
+            { "postHybridTemporalFailure", postHybridGI ?
+                postHybridGI->TemporalFailure() : std::string{} },
+            { "postHybridRetainedHistoryBytes", postHybridGI ?
+                postHybridGI->RetainedNativeHistoryBytes() : uint64_t{0} },
             { "nativeHybridReconstructionProvider", nativeHybridGI ?
                 nativeHybridGI->ReconstructionProvider() : std::string{} },
             { "nativeHybridReconstructionFallbackReason", nativeHybridGI ?
