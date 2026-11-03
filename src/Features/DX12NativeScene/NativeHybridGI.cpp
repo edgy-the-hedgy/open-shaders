@@ -765,7 +765,7 @@ namespace DX12Native
                     params[i].DescriptorTable = { 1, &ranges[i] };
                 }
                 params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-                params[2].Constants = { 0, 0, 4 };
+                params[2].Constants = { 0, 0, 8 };
                 const D3D12_ROOT_SIGNATURE_DESC rs{
                     3, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE };
                 winrt::com_ptr<ID3DBlob> serialized, errors;
@@ -878,12 +878,16 @@ namespace DX12Native
             list->SetComputeRootDescriptorTable(0, gpu);
             gpu.ptr += 5u * step;
             list->SetComputeRootDescriptorTable(1, gpu);
+            const auto& developer = globals::features::rtComposer.EffectiveDeveloperControls();
             struct HistoryConstants {
                 uint32_t width, height;
-                float depthTolerance, normalThreshold;
-            } constants{ size[0], size[1], 0.02f, 0.5f };
-            static_assert(sizeof(constants) == 16);
-            list->SetComputeRoot32BitConstants(2, 4, &constants, 0);
+                float depthTolerance, normalThreshold, roughnessThreshold;
+                float padding[3]{};
+            } constants{ size[0], size[1],
+                developer.historyDepthTolerance, developer.historyNormalThreshold,
+                developer.historyRoughnessTolerance };
+            static_assert(sizeof(constants) == 32);
+            list->SetComputeRoot32BitConstants(2, 8, &constants, 0);
             list->Dispatch((size[0] + 7u) / 8u, (size[1] + 7u) / 8u, 1);
             list->ResourceBarrier(UINT(end.size()), end.data());
             current.rrHistoryValid = true;

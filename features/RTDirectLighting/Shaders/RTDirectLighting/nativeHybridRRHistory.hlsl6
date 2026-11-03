@@ -14,6 +14,8 @@ cbuffer NativeRRHistoryPolicy : register(b0)
     uint2 LogicalSize;
     float DepthTolerance;
     float NormalThreshold;
+    float RoughnessThreshold;
+    float3 Reserved;
 };
 
 float3 DecodeNormal(float2 p)
@@ -55,7 +57,7 @@ void main(uint2 pixel : SV_DispatchThreadID)
             all(isfinite(oldNormal)) &&
             relativeDifference <= DepthTolerance &&
             dot(DecodeNormal(normal.xy), DecodeNormal(oldNormal.xy)) >= NormalThreshold &&
-            abs(normal.z - oldNormal.z) <= 0.25;
+            abs(normal.z - oldNormal.z) <= RoughnessThreshold;
     }
     // An out-of-frame reprojection is a per-pixel RR history rejection,
     // not a global reset of all otherwise stable quarter-resolution cells.
