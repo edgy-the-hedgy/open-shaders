@@ -24,6 +24,7 @@ cbuffer NativeHybridComposition : register(b13)
     uint ShadowEdgeFilterEnabled; // fixed Hybrid-Shadowed only
     float ShadowInfluence;
     uint AdvancedTransportTier; // 2..5: pre-multiplied RT transport, no first-bounce albedo
+    uint NativeValidityMask; // diffuse=1, specular=2; negative alpha means no sample
 };
 
 // Reuse the source pass's native depth/visibility semantics for direct blend.
@@ -87,26 +88,34 @@ void main(uint2 pixel : SV_DispatchThreadID)
             DiffuseAO.Load(int3(pixel, 0));
         const float aoSpecular = AdvancedTransportTier != 0u ? 1.0 :
             SpecularAO.Load(int3(pixel, 0));
-        if (all(isfinite(diffuse)) && all(isfinite(specular)) &&
-            isfinite(aoDiffuse) && isfinite(aoSpecular))
-        {
+        // Each native radiance lobe can be independently valid. Do not
+        // invent energy from a missing lobe or suppress a valid sibling.
+        const bool validDiffuse = all(isfinite(diffuse.rgb)) &&
+            ((NativeValidityMask & 1u) == 0u || diffuse.a >= 0.0);
+        const bool validSpecular = AdvancedTransportTier != 2u &&
+            all(isfinite(specular.rgb)) &&
+            ((NativeValidityMask & 2u) == 0u || specular.a >= 0.0);
+        if (AdvancedTransportTier != 0u) {
+            // RT-exclusive transport is already BRDF weighted.
+            if (validDiffuse)
+                linearColor += saturate(GIContribution) * max(0.0, diffuse.rgb);
+            if (validSpecular)
+                linearColor += saturate(GIContribution) * max(0.0, specular.rgb);
+        } else {
             const float pbrScale = NativeLinearLighting != 0u ? 1.0 : 0.65;
-            const float3 diffuseFactor = NativeLinearLighting != 0u ?
-                max(0.0, DiffuseAlbedo.Load(int3(pixel, 0)).rgb / pbrScale) :
-                pow(abs(DiffuseAlbedo.Load(int3(pixel, 0)).rgb / pbrScale), 1.6);
-            const float3 specularFactor = max(0.0, SpecularAlbedo.Load(int3(pixel, 0)).rgb);
-            // Input to RR contains NO first-bounce albedo. Modulate exactly
-            // once here, after RR and optional post-RR spatial reconstruction.
-            if (all(isfinite(diffuseFactor)) && all(isfinite(specularFactor))) {
-                // The RT-exclusive shader already multiplied throughput by
-                // its sampled BRDF. Do not apply first-bounce albedo twice.
-                if (AdvancedTransportTier != 0u)
+            if (validDiffuse && isfinite(aoDiffuse)) {
+                const float3 rawAlbedo = DiffuseAlbedo.Load(int3(pixel, 0)).rgb / pbrScale;
+                const float3 factor = NativeLinearLighting != 0u ?
+                    max(0.0, rawAlbedo) : pow(abs(rawAlbedo), 1.6);
+                if (all(isfinite(factor)))
                     linearColor += saturate(GIContribution) *
-                        (max(0.0, diffuse.rgb) + max(0.0, specular.rgb));
-                else
+                        max(0.0, diffuse.rgb) * factor * saturate(aoDiffuse);
+            }
+            if (validSpecular && isfinite(aoSpecular)) {
+                const float3 factor = max(0.0, SpecularAlbedo.Load(int3(pixel, 0)).rgb);
+                if (all(isfinite(factor)))
                     linearColor += saturate(GIContribution) *
-                        (max(0.0, diffuse.rgb) * diffuseFactor * saturate(aoDiffuse) +
-                         max(0.0, specular.rgb) * specularFactor * saturate(aoSpecular));
+                        max(0.0, specular.rgb) * factor * saturate(aoSpecular);
             }
         }
     }

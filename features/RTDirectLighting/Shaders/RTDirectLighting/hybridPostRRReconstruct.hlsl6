@@ -20,7 +20,8 @@ cbuffer PostRRSettings : register(b0)
     float DepthSensitivity;
     float NormalSensitivity;
     float RoughnessSensitivity;
-    float3 Padding;
+    uint NativeProvider; // alpha=-2 marks an unreconstructable native radiance sample
+    float2 Padding;
 };
 
 float3 DecodeOct(float2 packed)
@@ -42,7 +43,13 @@ uint2 Representative(uint2 sample)
 
 float4 NeutralSignal()
 {
-    return SignalFamily == 2u ? float4(1.0, 1.0, 1.0, 1.0) : 0.0;
+    if (SignalFamily == 2u) return float4(1.0, 1.0, 1.0, 1.0);
+    return NativeProvider != 0u ? float4(0.0, 0.0, 0.0, -2.0) : 0.0;
+}
+bool Usable(float4 signal)
+{
+    return all(isfinite(signal)) &&
+        (NativeProvider == 0u || SignalFamily == 2u || signal.a >= 0.0);
 }
 
 [numthreads(8, 8, 1)]
@@ -67,7 +74,7 @@ void main(uint2 pixel : SV_DispatchThreadID)
     const int2 nearest = clamp(int2(round(position)), int2(0, 0), int2(RRSize) - 1);
     const float4 nearestSignal = ReconstructedRRSignal.Load(int3(nearest, 0));
     if (FilterEnabled == 0u || FilterStrength <= 0.0) {
-        NativeOutput[pixel] = all(isfinite(nearestSignal)) ? nearestSignal : NeutralSignal();
+        NativeOutput[pixel] = Usable(nearestSignal) ? nearestSignal : NeutralSignal();
         return;
     }
 
@@ -99,13 +106,16 @@ void main(uint2 pixel : SV_DispatchThreadID)
                 pow(normalAgreement, NormalSensitivity) *
                 exp2(-RoughnessSensitivity * roughnessDifference);
             const float4 radiance = ReconstructedRRSignal.Load(int3(sample, 0));
-            if (!all(isfinite(radiance))) continue;
+            if (!Usable(radiance)) continue;
             accumulated += weight * radiance;
             weightSum += weight;
         }
     }
-    const float4 filtered = weightSum > 1e-6 ? accumulated / weightSum :
-        (all(isfinite(nearestSignal)) ? nearestSignal : NeutralSignal());
-    const float4 baseline = all(isfinite(nearestSignal)) ? nearestSignal : NeutralSignal();
-    NativeOutput[pixel] = lerp(baseline, filtered, saturate(FilterStrength));
+    const bool nearestValid = Usable(nearestSignal);
+    const float4 baseline = nearestValid ? nearestSignal : NeutralSignal();
+    const float4 filtered = weightSum > 1e-6 ? accumulated / weightSum : baseline;
+    // Do not dilute reconstructed energy with untraced zeroes.
+    NativeOutput[pixel] = NativeProvider != 0u && !nearestValid ?
+        (weightSum > 1e-6 ? filtered : NeutralSignal()) :
+        lerp(baseline, filtered, saturate(FilterStrength));
 }

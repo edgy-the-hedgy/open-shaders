@@ -41,6 +41,8 @@ namespace DX12Native
             std::array<uint32_t, 2> rrOutputSize{}, postNativeSize{};
             uint32_t advancedTransportTier = 0u;
             bool rrValid = false, postValid = false;
+            // Native radiance carries alpha=-2 when no valid sample was found.
+            uint32_t nativeValidityMask = 0u;
             // DX12-produced final color; the sole eventual DX11 export product.
             std::unique_ptr<WrappedResource> composedScene;
             bool valid = false;

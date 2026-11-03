@@ -50,6 +50,7 @@ namespace DX12Native
             uint32_t shadowEdgeFilterEnabled;
             float shadowInfluence;
             uint32_t advancedTransportTier;
+            uint32_t nativeValidityMask;
         };
         DXGI_FORMAT OutputFormat(uint32_t index)
         {
@@ -1063,6 +1064,7 @@ namespace DX12Native
         RedstoneDenoiser* denoiser, bool requestRR)
     {
         frame.rrValid = frame.postValid = false;
+        frame.nativeValidityMask = 0u;
         reconstructionProvider = "none";
         reconstructionFallbackReason.clear();
         frame.nativeFinal.fill(nullptr);
@@ -1136,6 +1138,8 @@ namespace DX12Native
                 if (!RecordNativeReconstruction(device, list, frame, slot))
                     return false;
                 reconstructionProvider = "native-dx12";
+                frame.nativeValidityMask =
+                    frame.advancedTransportTier == 2u ? 1u : 3u;
             } else {
                 reconstructionProvider = "fsr-rr";
             }
@@ -1186,7 +1190,8 @@ namespace DX12Native
                 uint32_t width, height, logicalWidth, logicalHeight;
                 uint32_t family, filter, sampleScale, phase;
                 float radius, strength, depth, normal, roughness;
-                float padding[3]{};
+                uint32_t nativeProvider = 0u;
+                float padding[2]{};
             };
             struct alignas(16) BlurCB {
                 uint32_t width, height, family, enabled;
@@ -1210,7 +1215,8 @@ namespace DX12Native
                     frame.sampling.representativePhase,
                     settings.filterRadius, settings.filterStrength,
                     settings.depthSensitivity, settings.normalSensitivity,
-                    settings.roughnessSensitivity };
+                    settings.roughnessSensitivity,
+                    frame.nativeValidityMask != 0u ? 1u : 0u };
                 const BlurCB blur{
                     native[0], native[1], family, uint32_t(settings.blurEnabled),
                     settings.blurRadius, settings.blurStrength,
@@ -1402,8 +1408,9 @@ namespace DX12Native
                 uint32_t(globals::features::linearLighting.settings.enableACEScg),
                 std::min(shadowEdgeFilterEnabled, 1u),
                 std::isfinite(shadowInfluence) ? std::clamp(shadowInfluence, 0.0f, 1.0f) : 0.0f,
-                advancedTier >= 2u && advancedTier <= 5u ? advancedTier : 0u };
-            static_assert(sizeof(constants) == 36);
+                advancedTier >= 2u && advancedTier <= 5u ? advancedTier : 0u,
+                frame.nativeValidityMask };
+            static_assert(sizeof(constants) == 40);
             static_assert(kCompositionOffset + sizeof(constants) <= kUploadBytes);
             uint8_t* mapped = nullptr;
             const D3D12_RANGE noRead{ 0, 0 };
