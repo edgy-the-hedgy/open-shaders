@@ -979,9 +979,12 @@ namespace DX12Native
                 uint32_t nativeWidth, nativeHeight, logicalWidth, logicalHeight;
                 uint32_t packedWidth, packedHeight, family, advancedTier;
                 uint32_t checkerboard, checkerboardOrigin, scale, phase;
-                uint32_t radius, reserved[3]{};
+                uint32_t radius, spatialEnabled, reservedU[2]{};
+                float depthTolerance, normalThreshold, roughnessTolerance;
+                float distanceFalloff, depthFalloff, roughnessFalloff;
+                float normalExponent, reservedF = 0.f;
             };
-            static_assert(sizeof(Constants) == 64);
+            static_assert(sizeof(Constants) == 96);
             static_assert(kNativeReconstructionOffset + 4u * 256u <= kUploadBytes);
             uint8_t* mapped = nullptr;
             const D3D12_RANGE noRead{ 0, 0 };
@@ -989,7 +992,9 @@ namespace DX12Native
                 reinterpret_cast<void**>(&mapped)));
             const auto logical = frame.sampling.logical;
             const auto native = frame.sampling.native;
+            const auto& developer = globals::features::rtComposer.EffectiveDeveloperControls();
             for (uint32_t signal = 0; signal < 4u; ++signal) {
+                const auto& controls = developer.signals[std::min(signal, 2u)];
                 const Constants constants{
                     native[0], native[1], logical[0], logical[1],
                     frame.sampling.packed[0], frame.sampling.packed[1],
@@ -997,7 +1002,15 @@ namespace DX12Native
                     uint32_t(frame.sampling.checkerboard),
                     frame.sampling.checkerboardOrigin,
                     frame.sampling.spatialScale, frame.sampling.representativePhase,
-                    signal < 2u ? 4u : 2u };
+                    uint32_t(std::clamp(controls.spatialRadius, 0, 4)),
+                    uint32_t(controls.spatialEnabled), {0u, 0u},
+                    developer.spatialDepthTolerance,
+                    developer.spatialNormalThreshold,
+                    developer.spatialRoughnessTolerance,
+                    developer.spatialDistanceFalloff,
+                    developer.spatialDepthFalloff,
+                    developer.spatialRoughnessFalloff,
+                    developer.spatialNormalPower };
                 std::memcpy(mapped + kNativeReconstructionOffset + signal * 256,
                     &constants, sizeof(constants));
             }

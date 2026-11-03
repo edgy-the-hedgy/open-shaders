@@ -20,7 +20,16 @@ cbuffer NativeReconstruction : register(b0)
     uint SampleScale;
     uint RepresentativePhase;
     uint SpatialRadius;
-    uint Reserved;
+    uint SpatialEnabled;
+    uint2 ReservedU;
+    float DepthTolerance;
+    float NormalThreshold;
+    float RoughnessTolerance;
+    float DistanceFalloff;
+    float DepthFalloff;
+    float RoughnessFalloff;
+    float NormalExponent;
+    float ReservedF;
 };
 
 float3 DecodeOct(float2 packed)
@@ -98,10 +107,15 @@ void main(uint2 logical : SV_DispatchThreadID)
         return;
     }
 
+    if (SpatialEnabled == 0u || SpatialRadius == 0u) {
+        // Only actually measured hits/misses survive a diagnostic bypass.
+        ReconstructedSignal[logical] = neutral;
+        return;
+    }
     const float3 normal = DecodeOct(centerNR.xy);
     float4 sum = 0;
     float total = 0;
-    const int radius = min(4, int(max(1u, SpatialRadius)));
+    const int radius = min(4, int(SpatialRadius));
     [loop] for (int dy = -radius; dy <= radius; ++dy) {
         [loop] for (int dx = -radius; dx <= radius; ++dx) {
             const int2 candidate = int2(logical) + int2(dx, dy);
@@ -115,11 +129,12 @@ void main(uint2 logical : SV_DispatchThreadID)
             const float relativeDepth = abs(depth - centerDepth) / max(centerDepth, 0.001);
             const float alignment = saturate(dot(normal, DecodeOct(nr.xy)));
             const float roughnessDelta = abs(centerNR.z - nr.z);
-            if (relativeDepth > 0.02 || alignment < 0.75 ||
-                roughnessDelta > 0.35) continue;
+            if (relativeDepth > DepthTolerance || alignment < NormalThreshold ||
+                roughnessDelta > RoughnessTolerance) continue;
             const float dist2 = float(dx * dx + dy * dy);
-            const float w = exp2(-dist2 * 0.45 - relativeDepth * 48.0 -
-                roughnessDelta * 12.0) * pow(alignment, 16.0);
+            const float w = exp2(-dist2 * DistanceFalloff -
+                relativeDepth * DepthFalloff -
+                roughnessDelta * RoughnessFalloff) * pow(alignment, NormalExponent);
             sum += w * signal;
             total += w;
         }
