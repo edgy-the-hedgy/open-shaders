@@ -1,0 +1,131 @@
+// Native DX12 reconstruction provider: no AMD FSR RR context or CPU readback.
+// Gathers only physically sampled, same-surface radiance on the logical grid.
+// The packed checkerboard mapping is the inverse of the GI/advanced pack shaders.
+// A missed ray is a VALID zero-radiance sample, never a missing pixel.
+Texture2D<float4> PackedRawSignal : register(t0);
+Texture2D<float> LogicalDepth : register(t1);
+Texture2D<float4> LogicalNormalRoughness : register(t2);
+Texture2D<uint> NativeEligibility : register(t3);
+RWTexture2D<float4> ReconstructedSignal : register(u0);
+
+cbuffer NativeReconstruction : register(b0)
+{
+    uint2 NativeSize;
+    uint2 LogicalSize;
+    uint2 PackedSize;
+    uint SignalFamily;       // 0 diffuse, 1 specular, 2 AO or SO
+    uint AdvancedTier;       // 0 native HybridGI, 2..5 RT transport
+    uint Checkerboard;
+    uint CheckerboardOrigin;
+    uint SampleScale;
+    uint RepresentativePhase;
+    uint SpatialRadius;
+    uint Reserved;
+};
+
+float3 DecodeOct(float2 packed)
+{
+    const float2 f = packed * 2.0 - 1.0;
+    float3 n = float3(f, 1.0 - abs(f.x) - abs(f.y));
+    const float t = saturate(-n.z);
+    n.xy += float2(n.x >= 0.0 ? -t : t, n.y >= 0.0 ? -t : t);
+    return normalize(n);
+}
+
+uint2 Representative(uint2 logical)
+{
+    if (SampleScale <= 1u) return min(logical, NativeSize - 1u);
+    const uint2 phase = uint2(RepresentativePhase % SampleScale,
+        RepresentativePhase / SampleScale);
+    return min(logical * SampleScale + phase, NativeSize - 1u);
+}
+
+bool Sampled(uint2 logical)
+{
+    return Checkerboard == 0u ||
+        (((logical.x + logical.y) & 1u) == (CheckerboardOrigin & 1u));
+}
+
+bool Eligible(uint2 logical)
+{
+    const uint state = NativeEligibility.Load(int3(Representative(logical), 0));
+    return SignalFamily == 2u ? state != 2u : state == 1u;
+}
+
+bool ReadValidSample(uint2 logical, out float4 value)
+{
+    value = 0.0;
+    if (!Sampled(logical) || !Eligible(logical)) return false;
+    const uint2 packed = uint2(Checkerboard != 0u ? logical.x >> 1u : logical.x, logical.y);
+    if (any(packed >= PackedSize)) return false;
+    const float4 raw = PackedRawSignal.Load(int3(packed, 0));
+    if (!all(isfinite(raw))) return false;
+    if (SignalFamily == 2u) {
+        value = float4(saturate(raw.x), saturate(raw.x),
+            saturate(raw.x), 1.0);
+        return true;
+    }
+    if (any(raw.rgb < 0.0)) return false;
+    // Advanced pack: -1 is UNSAMPLED; 65504 is a genuine traced miss.
+    // Screen-space HybridGI: -1 is a genuine sampled miss.
+    if (AdvancedTier != 0u && raw.a < 0.0) return false;
+    if (AdvancedTier == 0u && raw.a < -1.0) return false;
+    value = float4(raw.rgb, 1.0);
+    return true;
+}
+
+[numthreads(8, 8, 1)]
+void main(uint2 logical : SV_DispatchThreadID)
+{
+    if (any(logical >= LogicalSize)) return;
+    const float4 neutral = SignalFamily == 2u ? float4(1, 1, 1, 1) :
+        float4(0, 0, 0, -2.0);
+    if (!Eligible(logical)) {
+        ReconstructedSignal[logical] = neutral;
+        return;
+    }
+    const float centerDepth = LogicalDepth.Load(int3(logical, 0));
+    const float4 centerNR = LogicalNormalRoughness.Load(int3(logical, 0));
+    if (!isfinite(centerDepth) || centerDepth <= 0.0 || !all(isfinite(centerNR))) {
+        ReconstructedSignal[logical] = neutral;
+        return;
+    }
+    // Full-native, non-checkerboard inputs are already fully sampled.
+    // Preserve them without any stochastic radiance multiplier or blur.
+    float4 center;
+    if (Sampled(logical) && ReadValidSample(logical, center)) {
+        ReconstructedSignal[logical] = center;
+        return;
+    }
+
+    const float3 normal = DecodeOct(centerNR.xy);
+    float4 sum = 0;
+    float total = 0;
+    const int radius = min(4, int(max(1u, SpatialRadius)));
+    [loop] for (int dy = -radius; dy <= radius; ++dy) {
+        [loop] for (int dx = -radius; dx <= radius; ++dx) {
+            const int2 candidate = int2(logical) + int2(dx, dy);
+            if (any(candidate < 0) || any(candidate >= int2(LogicalSize))) continue;
+            const uint2 pos = uint2(candidate);
+            float4 signal;
+            if (!ReadValidSample(pos, signal)) continue;
+            const float depth = LogicalDepth.Load(int3(pos, 0));
+            const float4 nr = LogicalNormalRoughness.Load(int3(pos, 0));
+            if (!isfinite(depth) || depth <= 0.0 || !all(isfinite(nr))) continue;
+            const float relativeDepth = abs(depth - centerDepth) / max(centerDepth, 0.001);
+            const float alignment = saturate(dot(normal, DecodeOct(nr.xy)));
+            const float roughnessDelta = abs(centerNR.z - nr.z);
+            if (relativeDepth > 0.02 || alignment < 0.75 ||
+                roughnessDelta > 0.35) continue;
+            const float dist2 = float(dx * dx + dy * dy);
+            const float w = exp2(-dist2 * 0.45 - relativeDepth * 48.0 -
+                roughnessDelta * 12.0) * pow(alignment, 16.0);
+            sum += w * signal;
+            total += w;
+        }
+    }
+    // No valid same-surface sample: retain the explicit unsampled sentinel.
+    // Never invent lighting by interpreting the missing value as a measured hit.
+    ReconstructedSignal[logical] = total > 1e-6 ?
+        float4(sum.rgb / total, 1.0) : neutral;
+}

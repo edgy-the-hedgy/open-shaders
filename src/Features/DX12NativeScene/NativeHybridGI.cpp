@@ -87,6 +87,7 @@ namespace DX12Native
             "Data/Shaders/RTDirectLighting/nativeHybridRRHistory.dxil",
             "Data/Shaders/RTDirectLighting/hybridPostRRReconstruct.dxil",
             "Data/Shaders/RTDirectLighting/hybridPostRRBlur.dxil",
+            "Data/Shaders/RTDirectLighting/hybridNativeReconstruct.dxil",
             "Data/Shaders/RTDirectLighting/nativeHybridCompose.dxil" }) {
             std::ifstream file(path, std::ios::binary);
             if (!file) return false;
