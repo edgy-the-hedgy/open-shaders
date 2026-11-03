@@ -80,7 +80,7 @@ const char* RTComposer::DirectTierDescription(CompositorMode mode)
 {
     switch (mode) {
     case CompositorMode::ShadowOnly:
-        return "Quarter checkerboard (1/8 native pixels each frame), lightweight motion/depth/room-aware temporal shadow filtering and contact-edge AA, tiny oscillating shadow emitter; 0.9 shadow influence, 0.05 RT/raster blend. Direct diffuse only; no specular or FSR-RR.";
+        return "Quarter checkerboard (1/8 native pixels per frame), temporal shadows/contact AA and tiny emitter oscillation; 0.9 shadow influence, 0.05 RT/raster blend. Diffuse-only direct FSR-RR runs when enabled; failed RR retains raw shadows.";
     case CompositorMode::HybridShadowed:
         return "Quarter-checkerboard direct/shadow DXR (12.5% pixels each frame), lightweight temporal shadow denoising plus contact-edge AA; tiny oscillating shadow emitter; 0.9 shadow influence, RT/raster direct blend 0.3. Diffuse-only direct with no direct FSR-RR; native HybridGI retains its separate indirect/AO RR.";
     case CompositorMode::RTExclusiveI:
@@ -129,15 +129,19 @@ bool RTComposer::DX12HybridReady() const
         native.loaded && native.settings.UsePreparedScene && native.settings.UsePreparedMaterials &&
         bool(native.GetPublishedScene()) &&
         DX12Native::NativeHybridGI::ShadersAvailable() &&
-        (!IsAdvancedTransportTier(composition.mode) ||
-            DX12Native::NativeHybridGI::AdvancedShadersAvailable());
+        // Fixed native modes require the GPU RR guide/history/post shaders.
+        // Custom retains the full-native raw fallback when RR is disabled.
+        (!IsFixedPreset() || composition.mode == CompositorMode::ShadowOnly ||
+            (composition.useFSRRayRegeneration &&
+             DX12Native::NativeHybridGI::AdvancedShadersAvailable()));
 }
 void RTComposer::OnCompositionPolicyChanged()
 {
     // On leaving native Hybrid-Shadowed, release AMD's private RR histories
     // after queue retirement. Do not keep three contexts consuming VRAM
     // throughout Shadow Only or when the compositor is disabled.
-    if (!composition.enabled || !WantsNativeHybrid() ||
+    if (!composition.enabled || !composition.useFSRRayRegeneration ||
+        !WantsNativeHybrid() ||
         composition.mode == CompositorMode::RTExclusiveI ||
         composition.mode == CompositorMode::RTExclusiveII)
         (void)globals::features::redstoneGI.GetDenoiser().RetireNativeHybridContexts();
@@ -234,9 +238,13 @@ json RTComposer::GetDiagnostics()
             (composition.mode == CompositorMode::ShadowOnly ||
              composition.mode == CompositorMode::HybridShadowed) },
         { "shadowTemporalHistoryWeight", 0.70f },
-        { "effectiveDirectRREnabled", effective == EffectiveMode::Legacy &&
-            globals::features::rtDirectLighting.settings.UseDirectRayRegeneration &&
-            RayRegeneration::GetSettings().enabled },
+        { "compositorFSRRayRegenerationEnabled", composition.useFSRRayRegeneration },
+        { "effectiveDirectRREnabled",
+            (composition.enabled && composition.mode == CompositorMode::ShadowOnly &&
+             composition.useFSRRayRegeneration) ||
+            (effective == EffectiveMode::Legacy &&
+             globals::features::rtDirectLighting.settings.UseDirectRayRegeneration &&
+             RayRegeneration::GetSettings().enabled) },
         { "lowTierStochasticRadiusMultiplier", composition.enabled &&
             (composition.mode == CompositorMode::ShadowOnly ||
              composition.mode == CompositorMode::HybridShadowed) ? 0.5f : 1.0f },
@@ -365,6 +373,7 @@ void RTComposer::SaveSettings(json& value)
         } },
         { "Composition", {
             { "enabled", composition.enabled },
+            { "useFSRRayRegeneration", composition.useFSRRayRegeneration },
             { "diagnoseAdvancedTransport", composition.diagnoseAdvancedTransport },
             { "mode", static_cast<uint32_t>(composition.mode) },
             { "customHybridShadowed", composition.customHybridShadowed },
@@ -385,6 +394,7 @@ void RTComposer::LoadSettings(json& value)
     if (!value.is_object()) return;
     const auto beforePolicy = std::pair{ composition.enabled, composition.mode };
     const bool beforeTransportDiagnostic = composition.diagnoseAdvancedTransport;
+    const bool beforeCompositorRR = composition.useFSRRayRegeneration;
     const auto beforeSampling = std::tuple{ composition.directCheckerboard, composition.hybridResolution, composition.hybridCheckerboard, composition.customHybridShadowed };
     // Migrate older shared four-mode settings to two independent policies:
     // direct native checkerboard and SSGI-sized HybridGI with checkerboard.
@@ -401,6 +411,7 @@ void RTComposer::LoadSettings(json& value)
     if (auto it = value.find("Composition"); it != value.end() && it->is_object()) {
         CompositionSettings next{};
         next.enabled = it->value("enabled", false);
+        next.useFSRRayRegeneration = it->value("useFSRRayRegeneration", true);
         next.diagnoseAdvancedTransport = it->value("diagnoseAdvancedTransport", false);
         const auto mode = it->value("mode", 0u);
         next.mode = static_cast<CompositorMode>(std::min(mode, 6u));
@@ -430,6 +441,7 @@ void RTComposer::LoadSettings(json& value)
     }
     if (beforePolicy != std::pair{ composition.enabled, composition.mode } ||
         beforeTransportDiagnostic != composition.diagnoseAdvancedTransport ||
+        beforeCompositorRR != composition.useFSRRayRegeneration ||
         beforeSampling != std::tuple{ composition.directCheckerboard, composition.hybridResolution, composition.hybridCheckerboard, composition.customHybridShadowed })
         OnCompositionPolicyChanged();
     const bool enabledRR = legacyRR.is_object() ?
@@ -460,10 +472,12 @@ void RTComposer::RestoreDefaultSettings()
 {
     const auto beforePolicy = std::pair{ composition.enabled, composition.mode };
     const bool beforeTransportDiagnostic = composition.diagnoseAdvancedTransport;
+    const bool beforeCompositorRR = composition.useFSRRayRegeneration;
     const auto beforeSampling = std::tuple{ composition.directCheckerboard, composition.hybridResolution, composition.hybridCheckerboard, composition.customHybridShadowed };
     composition = {};
     if (beforePolicy != std::pair{ composition.enabled, composition.mode } ||
         beforeTransportDiagnostic != composition.diagnoseAdvancedTransport ||
+        beforeCompositorRR != composition.useFSRRayRegeneration ||
         beforeSampling != std::tuple{ composition.directCheckerboard, composition.hybridResolution, composition.hybridCheckerboard, composition.customHybridShadowed })
         OnCompositionPolicyChanged();
     RayRegeneration::Configure(0u, false, true);
@@ -485,6 +499,9 @@ void RTComposer::DrawSettings()
     ImGui::SeparatorText("Compositor");
     const auto previousPolicy = std::pair{ composition.enabled, composition.mode };
     ImGui::Checkbox("Enable RT shadow composition", &composition.enabled);
+    if (ImGui::Checkbox("FSR Ray Regeneration (compositor)", &composition.useFSRRayRegeneration))
+        OnCompositionPolicyChanged();
+    ImGui::TextWrapped("Shadow Only: direct RR. Hybrid-Shadowed: native indirect/AO RR. RT-exclusive and enhanced: native indirect RR plus post-HybridGI RR where applicable. Disabling RR retains safe Shadow Only fallback for fixed sparse modes.");
     int compositorMode = static_cast<int>(composition.mode);
     if (ImGui::Combo("Compositor mode", &compositorMode,
         "Shadow Only\0Hybrid-Shadowed\0RT-exclusive Tier I\0RT-exclusive Tier II\0RT-Enhanced\0FSR-REDSTONE\0Custom\0")) {
@@ -518,6 +535,13 @@ void RTComposer::DrawSettings()
                 static_cast<unsigned long long>(tracerStatus.value("advancedRasterFallbackFrames", uint64_t{0})));
             if (const auto failure = tracerStatus.value("advancedComposeFailure", std::string{}); !failure.empty())
                 ImGui::TextWrapped("Advanced native frame fallback: %s", failure.c_str());
+        }
+        if (composition.mode == CompositorMode::ShadowOnly && composition.useFSRRayRegeneration) {
+            const auto tracerStatus = globals::features::dx12NativeScene.Tracer().GetDiagnostics();
+            const auto directRR = tracerStatus.value("directRR", json::object());
+            ImGui::Text("Shadow Only direct FSR-RR: %llu successful / %llu failed",
+                static_cast<unsigned long long>(directRR.value("successfulDispatches", uint64_t{0})),
+                static_cast<unsigned long long>(directRR.value("failedDispatches", uint64_t{0})));
         }
         if (composition.mode == CompositorMode::ShadowOnly || composition.mode == CompositorMode::HybridShadowed) {
             const auto preset = GetTierPolicy(composition.mode);
@@ -678,7 +702,7 @@ void RTComposer::RegisterUxActions()
                     if (args.contains(key))
                         throw std::invalid_argument("Fixed compositor tier settings are locked; select Custom (mode 6) to tune.");
             const auto previous = std::tuple{ policy.enabled, policy.mode,
-                policy.diagnoseAdvancedTransport,
+                policy.diagnoseAdvancedTransport, policy.useFSRRayRegeneration,
                 policy.customHybridShadowed, policy.directCheckerboard,
                 policy.hybridResolution, policy.hybridCheckerboard };
             // Validate everything before mutating policy to avoid partial updates.
@@ -699,7 +723,9 @@ void RTComposer::RegisterUxActions()
             const bool customHybrid = args.value("customHybridShadowed", policy.customHybridShadowed);
             const bool enabled = args.value("enabled", policy.enabled);
             const bool transportDiagnostic = args.value("diagnoseAdvancedTransport", policy.diagnoseAdvancedTransport);
+            const bool compositorRR = args.value("useFSRRayRegeneration", policy.useFSRRayRegeneration);
             policy.mode = static_cast<CompositorMode>(requested);
+            policy.useFSRRayRegeneration = compositorRR;
             policy.diagnoseAdvancedTransport = transportDiagnostic;
             policy.enabled = enabled;
             if (policy.mode == CompositorMode::Custom) {
@@ -713,7 +739,7 @@ void RTComposer::RegisterUxActions()
                 policy.customHybridShadowed = customHybrid;
             }
             if (previous != std::tuple{ policy.enabled, policy.mode,
-                policy.diagnoseAdvancedTransport,
+                policy.diagnoseAdvancedTransport, policy.useFSRRayRegeneration,
                 policy.customHybridShadowed, policy.directCheckerboard,
                 policy.hybridResolution, policy.hybridCheckerboard }) {
                 if (policy.mode == CompositorMode::Custom)

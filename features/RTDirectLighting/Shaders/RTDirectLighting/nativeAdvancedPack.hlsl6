@@ -25,8 +25,15 @@ float4 VerifiedSignal(float4 signal)
     if (!all(isfinite(signal)) || signal.a < -2.0 ||
         any(signal.rgb < 0.0))
         return float4(0.0, 0.0, 0.0, -2.0);
-    // Never fabricate a sample in a different lobe. FSR-RR receives
-    // the original hit-distance/miss marker and the original radiance.
+    // The internal transport uses -2 for an unsampled family and -1 for
+    // a traced miss. AMD RR instead requires any ACTIVE indirect signal to
+    // carry a NONNEGATIVE hit distance; a miss is a far/infinite ray.
+    // Preserve internal sentinels in the raw diagnostic textures and
+    // translate only at the SDK input boundary.
+    if (signal.a == -2.0)
+        return float4(0.0, 0.0, 0.0, -1.0);
+    if (signal.a == -1.0)
+        return float4(signal.rgb, 65504.0);
     return signal;
 }
 

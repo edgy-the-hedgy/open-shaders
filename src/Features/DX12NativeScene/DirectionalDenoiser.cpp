@@ -10,7 +10,12 @@ namespace DX12Native
 	uint32_t DirectionalTrace::DenoiseDirect(Frame& a_frame)
 	{
 		const auto policy = RayRegeneration::GetSettings();
-		if (!a_frame.useDirectRR || !policy.enabled) return 0;
+        // Fixed Shadow Only RR is independent of saved Custom RR preferences.
+        const auto& composer = globals::features::rtComposer;
+        const bool fixedShadowRR = composer.composition.enabled &&
+            composer.composition.mode == RTComposer::CompositorMode::ShadowOnly &&
+            composer.composition.useFSRRayRegeneration;
+        if (!a_frame.useDirectRR || (!policy.enabled && !fixedShadowRR)) return 0;
 		CS_GPU_PASS("RTDirectLighting::PrepareLightingRR");
 		try {
 			if (!prepareDirectGuides) prepareDirectGuides.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\RTDirectLighting\\prepareDirectGuides.cs.hlsl", {}, "cs_5_0")));

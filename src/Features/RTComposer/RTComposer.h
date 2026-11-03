@@ -32,7 +32,7 @@ struct RTComposer final : Feature
     {
         switch (mode) {
         case CompositorMode::ShadowOnly:
-            return { 6u, .9f, .05f, false, false, false, false, 2u, false, 0.f, 0.f, 0.f, true };
+            return { 6u, .9f, .05f, false, true, false, false, 2u, false, 0.f, 0.f, 0.f, true };
         case CompositorMode::HybridShadowed:
             return { 6u, .9f, .3f, false, false, true, true, 2u, false, 0.f, 0.f, 0.f, true };
         case CompositorMode::RTExclusiveI:
@@ -119,6 +119,9 @@ struct RTComposer final : Feature
     struct CompositionSettings
     {
         bool enabled = false;
+        // Compositor-owned RR switch. Fixed native sparse tiers require RR;
+        // when disabled, preserve the low shadow-only fallback.
+        bool useFSRRayRegeneration = true;
         bool diagnoseAdvancedTransport = false; // explicit GPU-only trace diagnostic; never authorizes scene composition
         CompositorMode mode = CompositorMode::ShadowOnly;
         bool customHybridShadowed = false; // saved custom backend choice
@@ -156,6 +159,8 @@ struct RTComposer final : Feature
     EffectiveMode ResolveEffectiveMode() const
     {
         if (!composition.enabled) return EffectiveMode::Legacy;
+        if (IsFixedPreset() && composition.mode != CompositorMode::ShadowOnly &&
+            !composition.useFSRRayRegeneration) return EffectiveMode::ShadowOnly;
         if (IsAdvancedTransportTier(composition.mode) &&
             GetTierPolicy(composition.mode).ready && DX12HybridReady())
             return composition.mode <= CompositorMode::RTExclusiveII ?
@@ -213,7 +218,7 @@ static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadow
 static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed).shadowInfluence == .9f);
 static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::ShadowOnly).directContribution == .05f);
 static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed).directContribution == .3f);
-static_assert(!RTComposer::GetTierPolicy(RTComposer::CompositorMode::ShadowOnly).directRR);
+static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::ShadowOnly).directRR);
 static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed).hybridResolution == 2u);
 static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::FSRRedstone).ready);
 static_assert(RTComposer::GetTierExecutionContract(RTComposer::CompositorMode::RTExclusiveI).directTraceMode == 7u);

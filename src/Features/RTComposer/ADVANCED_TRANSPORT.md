@@ -17,6 +17,37 @@ composition** is ready. The RT-first composition is produced in linear color
 for Enhanced and FSR-REDSTONE, followed by the separate HybridGI pass and
 one final gamma encode for the DX11 presentation handoff.
 
+## FSR Ray Regeneration selection (RT Composer)
+
+The RT Composer owns an explicit `useFSRRayRegeneration` setting, enabled
+by default and editable even while a fixed tier is locked. The setting
+does not overwrite the saved legacy/Custom `FSRRayRegeneration.enabled`
+preference. A mode change or RR toggle invalidates scene/RR history.
+
+- **Shadow Only** requests the established direct diffuse/specular SDK
+  context through the existing D3D11-to-DX12 RR bridge. The fixed tier
+  has diffuse-only direct lighting: its specular signal carries no useful
+  radiance. The compositor retains the original shadow/raster output if
+  direct RR cannot dispatch. Direct radiance is resolved at native size
+  before this legacy RR pass, rather than supplying sparse native RR input.
+- **Hybrid-Shadowed** uses native DX12 RR for indirect diffuse, indirect
+  specular and AO/specular occlusion. It never feeds direct shadow masks
+  into an RR radiance signal.
+- **RT-exclusive I / II** keep one/two native indirect RR families,
+  respectively; no post-composite HybridGI runs.
+- **RT-Enhanced / FSR-REDSTONE** keep first-pass native indirect RR plus
+  separate post-composite HybridGI RR with diffuse/specular/AO families.
+- Turning off the compositor RR switch retains **Shadow Only** fallback
+  for fixed modes that require native RR; sparse raw indirect samples
+  are never published as if they had been denoised.
+- The advanced packer translates internal `-1` *traced miss* to a
+  nonnegative far hit distance for AMD, retaining negative alpha only for
+  truly unsampled families. Raw transport diagnostics keep their original
+  internal markers.
+- Native direct diffuse/specular RR, dominant-light visibility RR, and
+  FSR Radiance Cache remain separate future integrations. A compositor
+  mode name does not imply all seven AMD signals are present.
+
 ## GPU ordering
 
 1. DX11 produces the existing scene, depth, normal/roughness, material,

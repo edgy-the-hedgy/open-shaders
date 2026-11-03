@@ -852,6 +852,10 @@ namespace DX12Native
         if (!nativeHybridGI) nativeHybridGI = std::make_unique<NativeHybridGI>();
         const auto& composer = globals::features::rtComposer;
         const auto policy = RTComposer::GetTierPolicy(composer.composition.mode);
+        // Fixed RR modes must never silently inherit Custom filter and blur
+        // overrides, which affect both quality and memory requirements.
+        auto activeReconstruction = composer.composition;
+        if (composer.IsFixedPreset()) activeReconstruction.reconstruction = {};
         const uint32_t slot = uint32_t(&frame - frames.data());
         if (!nativeHybridGI->RecordAdvancedTransport(
                 backend.d3d12Device.get(), frame.commands.get(), frame.nativeGI,
@@ -878,11 +882,14 @@ namespace DX12Native
             slot, frame.number, frame.generation);
         if (!advancedDenoiser)
             advancedDenoiser = std::make_unique<RedstoneDenoiser>();
-        if (!advancedDenoiser->Initialize(backend) ||
-            !nativeHybridGI->RecordPostRR(
+        if (!advancedDenoiser->Initialize(backend)) {
+            advancedComposeFailure = "First-pass native FSR-RR provider initialization failed";
+            return;
+        }
+        if (!nativeHybridGI->RecordPostRR(
                 backend.d3d12Device.get(), frame.commands.get(),
                 frame.nativeGI, slot, frame.number, frame.hybridLinearDepth.get(),
-                frame.hybridInputs[2]->resource.get(), composer.composition,
+                frame.hybridInputs[2]->resource.get(), activeReconstruction,
                 *advancedDenoiser)) {
             advancedComposeFailure = nativeHybridGI->PostFailure();
             return; // never publish sparse raw radiance without RR
@@ -934,11 +941,14 @@ namespace DX12Native
             backend.d3d12Device.get(), frame.commands.get(), frame.postHybridGI,
             slot, frame.number, frame.generation);
         auto& postDenoiser = globals::features::redstoneGI.GetDenoiser();
-        if (!postDenoiser.Initialize(backend) ||
-            !postHybridGI->RecordPostRR(
+        if (!postDenoiser.Initialize(backend)) {
+            advancedComposeFailure = "Post-composite HybridGI FSR-RR provider initialization failed";
+            return;
+        }
+        if (!postHybridGI->RecordPostRR(
                 backend.d3d12Device.get(), frame.commands.get(),
                 frame.postHybridGI, slot, frame.number, frame.hybridLinearDepth.get(),
-                frame.hybridInputs[2]->resource.get(), composer.composition,
+                frame.hybridInputs[2]->resource.get(), activeReconstruction,
                 postDenoiser)) {
             advancedComposeFailure = postHybridGI->PostFailure();
             return;
