@@ -1144,6 +1144,18 @@ namespace DX12Native
                     &heap, IID_PPV_ARGS(temporalDescriptors.put())));
             }
             const auto logical = frame.sampling.logical;
+            const auto& developer = globals::features::rtComposer.EffectiveDeveloperControls();
+            bool anyTemporal = false;
+            for (uint32_t signal = 0; signal < 4u; ++signal) {
+                const uint32_t family = std::min(signal, 2u);
+                if ((fallbackFamilyMask & (1u << family)) == 0u) continue;
+                if (developer.signals[family].temporalEnabled) anyTemporal = true;
+                else nativeHistoryLastFrame[signal] = UINT32_MAX;
+            }
+            if (!anyTemporal) {
+                temporalFailure.clear();
+                return true; // use spatial result without any GPU history pass
+            }
             if (nativeHistorySize != logical) {
                 // Enforce a hard cap on quarantined history generations.
                 // When exceeded, keep the correct spatial reconstruction
@@ -1190,7 +1202,8 @@ namespace DX12Native
                 reinterpret_cast<void**>(&mapped)));
             for (uint32_t signal = 0; signal < 4u; ++signal) {
                 const uint32_t family = std::min(signal, 2u);
-                if ((fallbackFamilyMask & (1u << family)) == 0u) continue;
+                if ((fallbackFamilyMask & (1u << family)) == 0u ||
+                    !developer.signals[family].temporalEnabled) continue;
                 const DXGI_FORMAT format = signal < 2u ?
                     DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8_UNORM;
                 const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(format,
@@ -1208,7 +1221,8 @@ namespace DX12Native
                 const Constants constants{ logical[0], logical[1],
                     frame.sampling.native[0], frame.sampling.native[1], family,
                     frame.sampling.spatialScale, frame.sampling.representativePhase,
-                    uint32_t(historyAvailable), 0.75f };
+                    uint32_t(historyAvailable),
+                    developer.signals[family].historyWeight };
                 std::memcpy(mapped + kNativeTemporalOffset + signal * 256u,
                     &constants, sizeof(constants));
             }
@@ -1226,7 +1240,8 @@ namespace DX12Native
                 frame.rrValidatedMotion.get() : frame.rrGuides[1].get();
             for (uint32_t signal = 0; signal < 4u; ++signal) {
                 const uint32_t family = std::min(signal, 2u);
-                if ((fallbackFamilyMask & (1u << family)) == 0u) continue;
+                if ((fallbackFamilyMask & (1u << family)) == 0u ||
+                    !developer.signals[family].temporalEnabled) continue;
                 const DXGI_FORMAT format = signal < 2u ?
                     DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8_UNORM;
                 const std::array<ID3D12Resource*, 4> inputs{
@@ -1466,13 +1481,13 @@ namespace DX12Native
                     settings.filterRadius, settings.filterStrength,
                     settings.depthSensitivity, settings.normalSensitivity,
                     settings.roughnessSensitivity,
-                    frame.nativeValidityMask != 0u ? 1u : 0u };
+                    (frame.nativeValidityMask & (1u << family)) != 0u ? 1u : 0u };
                 const BlurCB blur{
                     native[0], native[1], family, uint32_t(settings.blurEnabled),
                     settings.blurRadius, settings.blurStrength,
                     settings.depthSensitivity, settings.normalSensitivity,
                     settings.roughnessSensitivity,
-                    frame.nativeValidityMask != 0u ? 1u : 0u };
+                    (frame.nativeValidityMask & (1u << family)) != 0u ? 1u : 0u };
                 std::memcpy(mapped + kPostOffset + (signal * 2) * 256,
                     &reconstruct, sizeof(reconstruct));
                 std::memcpy(mapped + kPostOffset + (signal * 2 + 1) * 256,
