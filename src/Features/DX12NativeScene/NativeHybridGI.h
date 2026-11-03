@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 struct RedstoneGI;
 class RedstoneDenoiser;
@@ -38,6 +39,9 @@ namespace DX12Native
             std::array<winrt::com_ptr<ID3D12Resource>, kSignals> nativeFiltered{};
             std::array<winrt::com_ptr<ID3D12Resource>, kSignals> nativeBlurred{};
             std::array<ID3D12Resource*, kSignals> nativeFinal{};
+            // Temporal native resolve is a separate logical-resolution source;
+            // AMD RR output retains its own texture and resource ownership.
+            std::array<ID3D12Resource*, kSignals> nativeTemporalFinal{};
             std::array<uint32_t, 2> rrOutputSize{}, postNativeSize{};
             uint32_t advancedTransportTier = 0u;
             bool rrValid = false, postValid = false;
@@ -94,6 +98,8 @@ namespace DX12Native
             const RTComposer::CompositionSettings& policy,
             RedstoneDenoiser* denoiser, bool requestRR);
         uint64_t NativeReconstructionDispatches() const { return nativeReconstructionDispatches; }
+        uint64_t NativeTemporalDispatches() const { return nativeTemporalDispatches; }
+        size_t RetainedNativeHistoryResources() const { return retiredNativeHistory.size(); }
         const std::string& ReconstructionProvider() const { return reconstructionProvider; }
         const std::string& ReconstructionFallbackReason() const { return reconstructionFallbackReason; }
         const std::string& PostFailure() const { return postFailure; }
@@ -118,6 +124,9 @@ namespace DX12Native
         bool RecordNativeReconstruction(ID3D12Device* device,
             ID3D12GraphicsCommandList* list, FrameOutputs& frame, uint32_t slot,
             uint32_t fallbackFamilyMask);
+        bool RecordNativeTemporal(ID3D12Device* device,
+            ID3D12GraphicsCommandList* list, FrameOutputs& frame,
+            uint32_t slot, uint32_t frameNumber, uint32_t fallbackFamilyMask);
         winrt::com_ptr<ID3D12RootSignature> root;
         std::array<winrt::com_ptr<ID3D12PipelineState>, 2> pipelines;
         winrt::com_ptr<ID3D12PipelineState> eligibilityPipeline;
@@ -145,12 +154,26 @@ namespace DX12Native
         winrt::com_ptr<ID3D12RootSignature> nativeReconstructionRoot;
         winrt::com_ptr<ID3D12PipelineState> nativeReconstructionPipeline;
         winrt::com_ptr<ID3D12DescriptorHeap> nativeReconstructionDescriptors;
+        winrt::com_ptr<ID3D12RootSignature> temporalRoot;
+        winrt::com_ptr<ID3D12PipelineState> temporalPipeline;
+        winrt::com_ptr<ID3D12DescriptorHeap> temporalDescriptors;
+        // Ping-pong history per native signal, not per AMD SDK context.
+        // The first-pass and post-composite NativeHybridGI instances own their
+        // histories independently; saved CPU state never reads radiance.
+        std::array<std::array<winrt::com_ptr<ID3D12Resource>,
+            FrameOutputs::kSignals>, 2> nativeTemporalHistory{};
+        std::array<uint32_t, FrameOutputs::kSignals> nativeHistoryLastFrame{
+            UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX };
+        std::array<uint32_t, 2> nativeHistorySize{};
+        // Previous allocations cannot be destroyed while a queued DX12 frame
+        // may still reference them. Retain until the owning instance retires.
+        std::vector<winrt::com_ptr<ID3D12Resource>> retiredNativeHistory;
         winrt::com_ptr<ID3D12RootSignature> postRoot;
         std::array<winrt::com_ptr<ID3D12PipelineState>, 2> postPipelines;
         winrt::com_ptr<ID3D12DescriptorHeap> postDescriptors;
         std::string failure, compositionFailure, guideFailure, postFailure, historyFailure, advancedFailure;
         std::string reconstructionProvider, reconstructionFallbackReason;
-        uint64_t nativeReconstructionDispatches = 0;
+        uint64_t nativeReconstructionDispatches = 0, nativeTemporalDispatches = 0;
         uint64_t advancedPackDispatches = 0;
         uint64_t giDispatches = 0, aoDispatches = 0, compositionDispatches = 0,
             eligibilityDispatches = 0, guideDispatches = 0,

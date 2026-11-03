@@ -26,6 +26,9 @@ namespace DX12Native
         constexpr uint64_t kRRGuideOffset = 2560;
         constexpr uint64_t kPostOffset = 2816;
         constexpr uint64_t kNativeReconstructionOffset = 5120;
+        constexpr uint64_t kNativeTemporalOffset = 6144;
+        constexpr uint32_t kNativeTemporalDescriptorsPerSignal = 5u;
+        constexpr uint32_t kNativeTemporalDescriptorsPerFrame = 4u * kNativeTemporalDescriptorsPerSignal;
         constexpr uint32_t kNativeDescriptorsPerSignal = 5u;
         constexpr uint32_t kNativeDescriptorsPerFrame = 4u * kNativeDescriptorsPerSignal;
         constexpr uint32_t kPostPerPass = 5;
@@ -1059,6 +1062,182 @@ namespace DX12Native
         }
     }
 
+
+    bool NativeHybridGI::RecordNativeTemporal(ID3D12Device* device,
+        ID3D12GraphicsCommandList* list, FrameOutputs& frame,
+        uint32_t slot, uint32_t frameNumber, uint32_t fallbackFamilyMask)
+    {
+        if (!device || !list || slot >= 2u || !frame.constants ||
+            !frame.rrGuidesValid || !frame.textures[Eligibility]) {
+            postFailure = "Native temporal reconstruction missing current GPU guides";
+            return false;
+        }
+        try {
+            if (!temporalRoot || !temporalPipeline || !temporalDescriptors) {
+                temporalRoot = nullptr;
+                temporalPipeline = nullptr;
+                temporalDescriptors = nullptr;
+                const auto code = ReadDXIL(
+                    "Data/Shaders/RTDirectLighting/hybridNativeTemporal.dxil");
+                D3D12_DESCRIPTOR_RANGE ranges[2]{};
+                ranges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0, 0, 0 };
+                ranges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 0 };
+                D3D12_ROOT_PARAMETER params[3]{};
+                for (uint32_t i = 0; i < 2u; ++i) {
+                    params[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+                    params[i].DescriptorTable = { 1, &ranges[i] };
+                }
+                params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+                params[2].Descriptor = { 0, 0 };
+                const D3D12_ROOT_SIGNATURE_DESC desc{
+                    3, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE };
+                winrt::com_ptr<ID3DBlob> serialized, errors;
+                DX::ThrowIfFailed(D3D12SerializeRootSignature(&desc,
+                    D3D_ROOT_SIGNATURE_VERSION_1, serialized.put(), errors.put()));
+                DX::ThrowIfFailed(device->CreateRootSignature(0,
+                    serialized->GetBufferPointer(), serialized->GetBufferSize(),
+                    IID_PPV_ARGS(temporalRoot.put())));
+                D3D12_COMPUTE_PIPELINE_STATE_DESC state{};
+                state.pRootSignature = temporalRoot.get();
+                state.CS = { code.data(), code.size() };
+                DX::ThrowIfFailed(device->CreateComputePipelineState(
+                    &state, IID_PPV_ARGS(temporalPipeline.put())));
+                const D3D12_DESCRIPTOR_HEAP_DESC heap{
+                    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+                    kNativeTemporalDescriptorsPerFrame * 2u,
+                    D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
+                DX::ThrowIfFailed(device->CreateDescriptorHeap(
+                    &heap, IID_PPV_ARGS(temporalDescriptors.put())));
+            }
+            const auto logical = frame.sampling.logical;
+            if (nativeHistorySize != logical) {
+                // Keep previous GPU allocations alive until this feature
+                // instance retires, avoiding a cross-frame use-after-free.
+                for (auto& bank : nativeTemporalHistory)
+                    for (auto& resource : bank) {
+                        if (resource) retiredNativeHistory.push_back(std::move(resource));
+                    }
+                nativeHistorySize = logical;
+                nativeHistoryLastFrame.fill(UINT32_MAX);
+            }
+            const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+            const uint32_t currentBank = frameNumber & 1u;
+            const uint32_t previousBank = currentBank ^ 1u;
+            struct alignas(16) Constants {
+                uint32_t logicalWidth, logicalHeight, nativeWidth, nativeHeight;
+                uint32_t signalFamily, scale, phase, historyAvailable;
+                float blend;
+                float padding[3]{};
+            };
+            static_assert(sizeof(Constants) == 48);
+            static_assert(kNativeTemporalOffset + 4u * 256u <= kUploadBytes);
+            uint8_t* mapped = nullptr;
+            const D3D12_RANGE noRead{ 0, 0 };
+            DX::ThrowIfFailed(frame.constants->Map(0, &noRead,
+                reinterpret_cast<void**>(&mapped)));
+            for (uint32_t signal = 0; signal < 4u; ++signal) {
+                const uint32_t family = std::min(signal, 2u);
+                if ((fallbackFamilyMask & (1u << family)) == 0u) continue;
+                const DXGI_FORMAT format = signal < 2u ?
+                    DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8_UNORM;
+                const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(format,
+                    logical[0], logical[1], 1, 1, 1, 0,
+                    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+                for (auto& bank : nativeTemporalHistory) {
+                    if (bank[signal]) continue;
+                    DX::ThrowIfFailed(device->CreateCommittedResource(&heap,
+                        D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON,
+                        nullptr, IID_PPV_ARGS(bank[signal].put())));
+                }
+                const bool historyAvailable = frame.rrHistoryValid &&
+                    nativeHistoryLastFrame[signal] != UINT32_MAX &&
+                    nativeHistoryLastFrame[signal] + 1u == frameNumber;
+                const Constants constants{ logical[0], logical[1],
+                    frame.sampling.native[0], frame.sampling.native[1], family,
+                    frame.sampling.spatialScale, frame.sampling.representativePhase,
+                    uint32_t(historyAvailable), 0.75f };
+                std::memcpy(mapped + kNativeTemporalOffset + signal * 256u,
+                    &constants, sizeof(constants));
+            }
+            frame.constants->Unmap(0, nullptr);
+
+            const UINT step = device->GetDescriptorHandleIncrementSize(
+                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+            srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srv.Texture2D.MipLevels = 1;
+            D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+            uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+            const auto motion = frame.rrValidatedMotion ?
+                frame.rrValidatedMotion.get() : frame.rrGuides[1].get();
+            for (uint32_t signal = 0; signal < 4u; ++signal) {
+                const uint32_t family = std::min(signal, 2u);
+                if ((fallbackFamilyMask & (1u << family)) == 0u) continue;
+                const DXGI_FORMAT format = signal < 2u ?
+                    DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8_UNORM;
+                const std::array<ID3D12Resource*, 4> inputs{
+                    frame.rrOutputs[signal].get(),
+                    nativeTemporalHistory[previousBank][signal].get(),
+                    motion, frame.textures[Eligibility].get() };
+                const std::array<DXGI_FORMAT, 4> formats{
+                    format, format, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R32_UINT };
+                auto cpu = temporalDescriptors->GetCPUDescriptorHandleForHeapStart();
+                cpu.ptr += uint64_t(slot * kNativeTemporalDescriptorsPerFrame +
+                    signal * kNativeTemporalDescriptorsPerSignal) * step;
+                for (uint32_t i = 0; i < inputs.size(); ++i) {
+                    srv.Format = formats[i];
+                    device->CreateShaderResourceView(inputs[i], &srv, cpu);
+                    cpu.ptr += step;
+                }
+                uav.Format = format;
+                device->CreateUnorderedAccessView(
+                    nativeTemporalHistory[currentBank][signal].get(),
+                    nullptr, &uav, cpu);
+                std::array<D3D12_RESOURCE_BARRIER, 5> begin{}, end{};
+                for (uint32_t i = 0; i < inputs.size(); ++i) {
+                    begin[i] = CD3DX12_RESOURCE_BARRIER::Transition(inputs[i],
+                        D3D12_RESOURCE_STATE_COMMON,
+                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                    end[i] = CD3DX12_RESOURCE_BARRIER::Transition(inputs[i],
+                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                        D3D12_RESOURCE_STATE_COMMON);
+                }
+                begin[4] = CD3DX12_RESOURCE_BARRIER::Transition(
+                    nativeTemporalHistory[currentBank][signal].get(),
+                    D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                end[4] = CD3DX12_RESOURCE_BARRIER::Transition(
+                    nativeTemporalHistory[currentBank][signal].get(),
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+                list->ResourceBarrier(UINT(begin.size()), begin.data());
+                ID3D12DescriptorHeap* heaps[]{ temporalDescriptors.get() };
+                list->SetDescriptorHeaps(1, heaps);
+                list->SetComputeRootSignature(temporalRoot.get());
+                list->SetPipelineState(temporalPipeline.get());
+                auto gpu = temporalDescriptors->GetGPUDescriptorHandleForHeapStart();
+                gpu.ptr += uint64_t(slot * kNativeTemporalDescriptorsPerFrame +
+                    signal * kNativeTemporalDescriptorsPerSignal) * step;
+                list->SetComputeRootDescriptorTable(0, gpu);
+                gpu.ptr += 4u * step;
+                list->SetComputeRootDescriptorTable(1, gpu);
+                list->SetComputeRootConstantBufferView(2,
+                    frame.constants->GetGPUVirtualAddress() +
+                    kNativeTemporalOffset + signal * 256u);
+                list->Dispatch((logical[0] + 7u) / 8u,
+                    (logical[1] + 7u) / 8u, 1u);
+                list->ResourceBarrier(UINT(end.size()), end.data());
+                frame.nativeTemporalFinal[signal] =
+                    nativeTemporalHistory[currentBank][signal].get();
+                nativeHistoryLastFrame[signal] = frameNumber;
+                ++nativeTemporalDispatches;
+            }
+            return true;
+        } catch (const std::exception& error) {
+            postFailure = std::string("Native temporal reconstruction: ") + error.what();
+            return false;
+        }
+    }
+
     bool NativeHybridGI::RecordPostRR(ID3D12Device* device,
         ID3D12GraphicsCommandList* list, FrameOutputs& frame, uint32_t slot,
         uint32_t frameNumber, ID3D12Resource* nativeDepth,
@@ -1071,6 +1250,7 @@ namespace DX12Native
         reconstructionProvider = "none";
         reconstructionFallbackReason.clear();
         frame.nativeFinal.fill(nullptr);
+        frame.nativeTemporalFinal.fill(nullptr);
         if (!device || !list || !frame.valid || !frame.rrGuidesValid ||
             !nativeDepth || !nativeNormal || !frame.textures[Eligibility] ||
             !frame.constants || slot >= 2) {
@@ -1148,6 +1328,9 @@ namespace DX12Native
                         "FSR RR provider unavailable") : "FSR RR disabled by policy";
                 if (!RecordNativeReconstruction(device, list, frame, slot,
                         frame.nativeFamilyFallbackMask))
+                    return false;
+                if (!RecordNativeTemporal(device, list, frame, slot,
+                        frameNumber, frame.nativeFamilyFallbackMask))
                     return false;
                 frame.nativeValidityMask = frame.nativeFamilyFallbackMask & 3u;
             }
@@ -1256,7 +1439,9 @@ namespace DX12Native
                 for (uint32_t pass = 0; pass < 2; ++pass) {
                     const std::array<ID3D12Resource*, 4> inputs{
                         pass ? frame.nativeFiltered[signal].get() :
-                            frame.rrOutputs[signal].get(),
+                            (frame.nativeTemporalFinal[signal] ?
+                                frame.nativeTemporalFinal[signal] :
+                                frame.rrOutputs[signal].get()),
                         nativeDepth, nativeNormal, frame.textures[Eligibility].get()
                     };
                     const std::array<DXGI_FORMAT, 4> formats{
@@ -1295,7 +1480,10 @@ namespace DX12Native
                 const uint32_t passes = settings.blurEnabled ? 2u : 1u;
                 for (uint32_t pass = 0; pass < passes; ++pass) {
                     ID3D12Resource* input = pass ?
-                        frame.nativeFiltered[signal].get() : frame.rrOutputs[signal].get();
+                        frame.nativeFiltered[signal].get() :
+                        (frame.nativeTemporalFinal[signal] ?
+                            frame.nativeTemporalFinal[signal] :
+                            frame.rrOutputs[signal].get());
                     ID3D12Resource* output = pass ?
                         frame.nativeBlurred[signal].get() : frame.nativeFiltered[signal].get();
                     std::array<ID3D12Resource*, 4> reads{
