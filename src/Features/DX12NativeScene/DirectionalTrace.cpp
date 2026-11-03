@@ -1402,6 +1402,10 @@ namespace DX12Native
         bool wantNativeGI = wantHybridInputs && NativeHybridGI::ShadersAvailable();
         const auto& composer = globals::features::rtComposer;
         const auto& composition = composer.composition;
+        // Compute the intended second-pass resource requirement before
+        // frame-reuse checks; later VRAM fallback can disable it.
+        bool wantPostHybrid = wantNativeGI && composer.AdvancedActive() &&
+            composition.mode >= RTComposer::CompositorMode::RTEnhanced;
         const auto fixed = RTComposer::GetTierPolicy(
             composer.AdvancedActive() ? composer.composition.mode :
                 RTComposer::CompositorMode::HybridShadowed);
@@ -1456,8 +1460,6 @@ namespace DX12Native
         uint64_t nativeGIBytes = wantNativeGI ?
             NativeHybridGI::EstimateBytes(backend.d3d12Device.get(), size[0], size[1],
                 hybridSampling, optionalBlur) : 0;
-        bool wantPostHybrid = wantNativeGI && composer.AdvancedActive() &&
-            composer.composition.mode >= RTComposer::CompositorMode::RTEnhanced;
         if (wantPostHybrid && nativeGIBytes != UINT64_MAX) {
             const auto postSampling = MakeHybridSamplingLayout(2u, true, size, a_frame);
             const auto additional = postSampling.checkerboard ?
