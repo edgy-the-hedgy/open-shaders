@@ -809,8 +809,7 @@ namespace DX12Native
                 auto& candidate = globals::features::redstoneGI.GetDenoiser();
                 if (candidate.Initialize(backend)) provider = &candidate;
             }
-            auto activeReconstruction = composition;
-            if (composer.IsFixedPreset()) activeReconstruction.reconstruction = {};
+            auto activeReconstruction = composer.EffectiveReconstructionPolicy();
             const bool reconstructed = guidesReady &&
                 nativeHybridGI->RecordPostRR(
                     backend.d3d12Device.get(), frame.commands.get(),
@@ -856,8 +855,7 @@ namespace DX12Native
         const auto policy = RTComposer::GetTierPolicy(composer.composition.mode);
         // Fixed RR modes must never silently inherit Custom filter and blur
         // overrides, which affect both quality and memory requirements.
-        auto activeReconstruction = composer.composition;
-        if (composer.IsFixedPreset()) activeReconstruction.reconstruction = {};
+        auto activeReconstruction = composer.EffectiveReconstructionPolicy();
         const uint32_t slot = uint32_t(&frame - frames.data());
         if (!nativeHybridGI->RecordAdvancedTransport(
                 backend.d3d12Device.get(), frame.commands.get(), frame.nativeGI,
@@ -1473,11 +1471,13 @@ namespace DX12Native
         const uint64_t linearDepthBytes = wantHybridInputs ?
             backend.d3d12Device->GetResourceAllocationInfo(0, 1, &linearDepthDesc).SizeInBytes : 0;
         uint64_t hybridBytes = wantHybridInputs ? nextPreviewBytes * kHybridInputCount + textureBytes + linearDepthBytes : 0;
-        const auto& recon = globals::features::rtComposer.composition.reconstruction;
+        // Developer overrides may enable optional blur in fixed tiers.
+        // Budget exactly the same effective settings used by GPU dispatch.
+        const auto reconPolicy = composer.EffectiveReconstructionPolicy();
+        const auto& recon = reconPolicy.reconstruction;
         const std::array<bool, 3> optionalBlur{
-            !composer.IsFixedPreset() && recon[0].blurEnabled,
-            !composer.IsFixedPreset() && recon[1].blurEnabled,
-            !composer.IsFixedPreset() && recon[2].blurEnabled };
+            recon[0].blurEnabled, recon[1].blurEnabled,
+            recon[2].blurEnabled };
         uint64_t nativeGIBytes = wantNativeGI ?
             NativeHybridGI::EstimateBytes(backend.d3d12Device.get(), size[0], size[1],
                 hybridSampling, optionalBlur) : 0;
