@@ -1146,11 +1146,16 @@ namespace DX12Native
                     &heap, IID_PPV_ARGS(temporalDescriptors.put())));
             }
             const auto logical = frame.sampling.logical;
-            const auto& developer = globals::features::rtComposer.EffectiveDeveloperControls();
+            const auto& composer = globals::features::rtComposer;
+            const auto& developer = composer.EffectiveDeveloperControls();
             bool anyTemporal = false;
             for (uint32_t signal = 0; signal < 4u; ++signal) {
                 const uint32_t family = std::min(signal, 2u);
                 if ((fallbackFamilyMask & (1u << family)) == 0u) continue;
+                if (nativeHistoryDeveloperRevision[signal] != composer.developerRevision) {
+                    nativeHistoryLastFrame[signal] = UINT32_MAX;
+                    nativeHistoryDeveloperRevision[signal] = composer.developerRevision;
+                }
                 if (developer.signals[family].temporalEnabled) anyTemporal = true;
                 else nativeHistoryLastFrame[signal] = UINT32_MAX;
             }

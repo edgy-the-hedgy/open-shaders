@@ -115,6 +115,7 @@ struct RTComposer final : Feature
         bool blurEnabled = false;
         float blurRadius = 1.0f;
         float blurStrength = 0.25f;
+        bool operator==(const SignalReconstructionSettings&) const = default;
     };
     // Fixed-tier RR requests are persistent policy, not a lighting-readiness signal.
     // Slots are Shadow Only, Hybrid-Shadowed, RT-exclusive I/II, RT-Enhanced.
@@ -169,6 +170,7 @@ struct RTComposer final : Feature
         int spatialRadius = 4; // logical pixels (AO is 2 by default)
         bool temporalEnabled = true;
         float historyWeight = .75f;
+        bool operator==(const DeveloperSignal&) const = default;
     };
     struct DeveloperControls
     {
@@ -198,9 +200,11 @@ struct RTComposer final : Feature
         float shadowContactAAWeight = .65f;
         float shadowContactAADepthTolerance = .015f;
         DeveloperControls() { signals[2].spatialRadius = 2; }
+        bool operator==(const DeveloperControls&) const = default;
     };
     bool advancedDeveloperMode = false; // session-only: never saved in JSON
     DeveloperControls developer{};
+    uint64_t developerRevision = 0u;
     static const DeveloperControls& StrictDeveloperControls()
     {
         static const DeveloperControls strict{};

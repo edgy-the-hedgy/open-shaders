@@ -271,6 +271,7 @@ json RTComposer::GetDiagnostics()
             { "hybrid", composition.fixedRR.Get(composition.mode, 2u) }
         } },
         { "advancedDeveloperMode", advancedDeveloperMode },
+        { "developerReconstructionRevision", developerRevision },
         { "developerOverridesSessionOnly", true },
         { "developerSpatialEnabled", {
             EffectiveDeveloperControls().signals[0].spatialEnabled,
@@ -621,6 +622,8 @@ void RTComposer::DrawSettings()
         OnCompositionPolicyChanged();
 
     ImGui::SeparatorText("Developer testing");
+    const auto priorDeveloperSettings = developer;
+    const bool priorDeveloperMode = advancedDeveloperMode;
     ImGui::Checkbox("Advanced developer mode (session only)", &advancedDeveloperMode);
     ImGui::TextWrapped(advancedDeveloperMode ?
         "Developer overrides are ACTIVE. All changes are temporary and do not modify fixed preset values, tracing eligibility, geometry, or saved settings." :
@@ -665,7 +668,9 @@ void RTComposer::DrawSettings()
         }
         if (ImGui::TreeNode("Post-reconstruction filter / blur")) {
             if (ImGui::Checkbox("Override post-filter presets", &developer.overridePost))
-                developer.post = composition.reconstruction;
+                developer.post = IsFixedPreset() ?
+                    std::array<SignalReconstructionSettings, 3>{} :
+                    composition.reconstruction;
             if (developer.overridePost) {
                 constexpr std::array names{ "Diffuse", "Specular", "AO / Specular AO" };
                 for (int family = 0; family < 3; ++family) {
@@ -721,6 +726,9 @@ void RTComposer::DrawSettings()
             ImGui::TreePop();
         }
     }
+    if (advancedDeveloperMode != priorDeveloperMode ||
+        !(developer == priorDeveloperSettings))
+        ++developerRevision;
 
     if (IsFixedPreset()) {
         ImGui::TextWrapped("Fixed tier: lighting and sampling tuning are locked; RR requests remain individually editable.");

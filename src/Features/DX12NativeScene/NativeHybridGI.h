@@ -169,6 +169,7 @@ namespace DX12Native
             FrameOutputs::kSignals>, 2> nativeTemporalHistory{};
         std::array<uint32_t, FrameOutputs::kSignals> nativeHistoryLastFrame{
             UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX };
+        std::array<uint64_t, FrameOutputs::kSignals> nativeHistoryDeveloperRevision{};
         std::array<uint32_t, 2> nativeHistorySize{};
         // Previous allocations cannot be destroyed while a queued DX12 frame
         // may still reference them. Retain until the owning instance retires.
