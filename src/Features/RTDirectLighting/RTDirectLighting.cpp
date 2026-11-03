@@ -272,13 +272,10 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
         composer.composition.directCheckerboard, size, frame);
     const uint32_t directTraceMode = tieredDirect ? activeTier.directTraceMode :
         DX12Native::NativeTraceShaderMode(directLayout.effective);
-    // Shadow Only is the fixed tier that still composites through the DX11
-    // direct-lighting path. Its existing direct FSR-RR receives resolved,
-    // full-native signals; other fixed tiers use their DX12 indirect RR path.
-    const bool directRR = tieredDirect ?
-        (composer.composition.mode == RTComposer::CompositorMode::ShadowOnly &&
-         composer.composition.useFSRRayRegeneration) :
-        settings.UseDirectRayRegeneration;
+    // Fixed presets never dispatch the legacy DX11-associated Direct RR bridge.
+    // Native DX12 Direct RR will be routed independently after its provider is ready.
+    // Custom/legacy direct RR settings remain preserved.
+    const bool directRR = tieredDirect ? false : settings.UseDirectRayRegeneration;
     // GPU-only test of the selected advanced transport contract. The live
     // low-tier shadow/direct result is never replaced by these sparse signals.
     const bool transportDiagnostic = composer.AdvancedTransportDiagnosticActive() ||

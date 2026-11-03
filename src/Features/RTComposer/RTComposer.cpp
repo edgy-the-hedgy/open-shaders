@@ -80,7 +80,7 @@ const char* RTComposer::DirectTierDescription(CompositorMode mode)
 {
     switch (mode) {
     case CompositorMode::ShadowOnly:
-        return "Quarter checkerboard (1/8 native pixels per frame), temporal shadows/contact AA and tiny emitter oscillation; 0.9 shadow influence, 0.05 RT/raster blend. Diffuse-only direct FSR-RR runs when enabled; failed RR retains raw shadows.";
+        return "Quarter checkerboard (1/8 native pixels per frame), temporal shadows/contact AA and tiny emitter oscillation; 0.9 shadow influence, 0.05 RT/raster blend. No FSR-RR is dispatched in this mode; the separate temporal shadow denoiser stays active.";
     case CompositorMode::HybridShadowed:
         return "Quarter-checkerboard direct/shadow DXR (12.5% pixels each frame), lightweight temporal shadow denoising plus contact-edge AA; tiny oscillating shadow emitter; 0.9 shadow influence, RT/raster direct blend 0.3. Diffuse-only direct with no direct FSR-RR; native HybridGI retains its separate indirect/AO RR.";
     case CompositorMode::RTExclusiveI:
@@ -90,7 +90,7 @@ const char* RTComposer::DirectTierDescription(CompositorMode mode)
     case CompositorMode::RTEnhanced:
         return "Native checkerboard RT, 50% indirect survival; first native composition feeds quarter-size checkerboard HybridGI with separate RR histories.";
     case CompositorMode::FSRRedstone:
-        return "Native checkerboard RT with 66% first-bounce survival and 25% second continuation; post-composite HybridGI. Radiance Cache deferred.";
+        return "Unavailable in this phase. Saved configuration is retained; runtime uses an explicitly reported Shadow Only fallback. Radiance Cache deferred.";
     case CompositorMode::Custom:
         return "Custom: editable direct, shadow, material and RR options; separate SSGI-sized HybridGI resolution.";
     }
@@ -501,12 +501,23 @@ void RTComposer::DrawSettings()
     ImGui::Checkbox("Enable RT shadow composition", &composition.enabled);
     if (ImGui::Checkbox("FSR Ray Regeneration (compositor)", &composition.useFSRRayRegeneration))
         OnCompositionPolicyChanged();
-    ImGui::TextWrapped("Shadow Only: direct RR. Hybrid-Shadowed: native indirect/AO RR. RT-exclusive and enhanced: native indirect RR plus post-HybridGI RR where applicable. Disabling RR retains safe Shadow Only fallback for fixed sparse modes.");
+    ImGui::TextWrapped("Shadow Only never uses FSR-RR. Native Direct/Indirect/HybridGI reconstruction will be independently selectable after its implementation stages.");
     int compositorMode = static_cast<int>(composition.mode);
-    if (ImGui::Combo("Compositor mode", &compositorMode,
-        "Shadow Only\0Hybrid-Shadowed\0RT-exclusive Tier I\0RT-exclusive Tier II\0RT-Enhanced\0FSR-REDSTONE\0Custom\0")) {
-        // Never copy fixed-tier values into the saved Custom settings.
-        composition.mode = static_cast<CompositorMode>(compositorMode);
+    if (ImGui::BeginCombo("Compositor mode",
+        std::array{ "Shadow Only", "Hybrid-Shadowed", "RT-exclusive Tier I",
+            "RT-exclusive Tier II", "RT-Enhanced", "FSR-REDSTONE (unavailable)",
+            "Custom" }[compositorMode])) {
+        constexpr std::array labels{ "Shadow Only", "Hybrid-Shadowed", "RT-exclusive Tier I",
+            "RT-exclusive Tier II", "RT-Enhanced", "FSR-REDSTONE (unavailable)", "Custom" };
+        for (int i = 0; i < static_cast<int>(labels.size()); ++i) {
+            if (ImGui::Selectable(labels[i], i == compositorMode,
+                    i == static_cast<int>(CompositorMode::FSRRedstone) ?
+                        ImGuiSelectableFlags_Disabled : ImGuiSelectableFlags_None)) {
+                // Fixed-tier selection never modifies saved Custom settings.
+                composition.mode = static_cast<CompositorMode>(i);
+            }
+        }
+        ImGui::EndCombo();
     }
     if (previousPolicy != std::pair{ composition.enabled, composition.mode })
         OnCompositionPolicyChanged();
@@ -518,7 +529,7 @@ void RTComposer::DrawSettings()
         if (!GetTierPolicy(composition.mode).ready)
             ImGui::TextWrapped("Production composition is pending: the effective renderer stays Shadow Only. The diagnostic trace below can exercise transport without changing scene composition.");
         if (composition.mode == CompositorMode::FSRRedstone)
-            ImGui::TextWrapped("High-end latest-generation AMD GPU recommended. FSR Radiance Cache integration is deferred.");
+            ImGui::TextWrapped("FSR-REDSTONE unavailable. Its saved request remains intact; Shadow Only is the explicit runtime fallback. Radiance Cache is deferred.");
         if (IsAdvancedTransportTier(composition.mode)) {
             ImGui::TextWrapped("Native DX12 RT transport, family-specific FSR-RR and composition are selected when the prepared scene and bytecode are available. Failed RR/composition frames leave raster untouched.");
             if (ImGui::Checkbox("Publish GPU diagnostic transport signal views", &composition.diagnoseAdvancedTransport))
@@ -535,13 +546,6 @@ void RTComposer::DrawSettings()
                 static_cast<unsigned long long>(tracerStatus.value("advancedRasterFallbackFrames", uint64_t{0})));
             if (const auto failure = tracerStatus.value("advancedComposeFailure", std::string{}); !failure.empty())
                 ImGui::TextWrapped("Advanced native frame fallback: %s", failure.c_str());
-        }
-        if (composition.mode == CompositorMode::ShadowOnly && composition.useFSRRayRegeneration) {
-            const auto tracerStatus = globals::features::dx12NativeScene.Tracer().GetDiagnostics();
-            const auto directRR = tracerStatus.value("directRR", json::object());
-            ImGui::Text("Shadow Only direct FSR-RR: %llu successful / %llu failed",
-                static_cast<unsigned long long>(directRR.value("successfulDispatches", uint64_t{0})),
-                static_cast<unsigned long long>(directRR.value("failedDispatches", uint64_t{0})));
         }
         if (composition.mode == CompositorMode::ShadowOnly || composition.mode == CompositorMode::HybridShadowed) {
             const auto preset = GetTierPolicy(composition.mode);
@@ -692,6 +696,8 @@ void RTComposer::RegisterUxActions()
             uint32_t requested = static_cast<uint32_t>(policy.mode);
             if (args.contains("mode")) requested = args.at("mode").get<uint32_t>();
             if (requested > 6u) throw std::invalid_argument("Unknown RT compositor mode");
+            if (requested == static_cast<uint32_t>(CompositorMode::FSRRedstone))
+                throw std::invalid_argument("FSR-REDSTONE unavailable: saved settings remain preserved; runtime uses Shadow Only");
             if (args.contains("samplingMode"))
                 throw std::invalid_argument("Old samplingMode retired. Use Custom directCheckerboard and HybridGI controls.");
             constexpr std::array tunable{ "shadowInfluence", "rtDirectContribution",
