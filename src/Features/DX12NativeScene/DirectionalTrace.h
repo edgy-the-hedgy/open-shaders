@@ -188,6 +188,7 @@ namespace DX12Native
             NativeHybridGI::FrameOutputs postHybridGI; // enhanced tiers: second raster HybridGI over precomposed RT
             bool nativeGIRequested = false;
             uint32_t nativeGIFrame = 0;
+            uint32_t reconstructionBlurMask = 0u;
 			std::array<std::unique_ptr<WrappedResource>, kDirectSignalCount> directSignals;
 			winrt::com_ptr<ID3D12RootSignature> root;
 			winrt::com_ptr<ID3D12PipelineState> pipeline;

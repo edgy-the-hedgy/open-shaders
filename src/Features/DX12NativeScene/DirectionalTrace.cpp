@@ -1457,7 +1457,16 @@ namespace DX12Native
                 (composer.composition.mode >= RTComposer::CompositorMode::RTEnhanced) :
                 (composer.IsFixedPreset() ? fixed.hybridCheckerboard : composition.hybridCheckerboard),
             size, a_frame);
-		bool reuse = available->size == size && available->useDirectRR == directRR && available->indirectRays == a_indirectRays && available->receivers && available->output && available->light &&
+        const auto effectiveRecon = composer.EffectiveReconstructionPolicy().reconstruction;
+        const std::array<bool, 3> optionalBlur{
+            effectiveRecon[0].blurEnabled, effectiveRecon[1].blurEnabled,
+            effectiveRecon[2].blurEnabled };
+        const uint32_t requestedBlurMask = uint32_t(optionalBlur[0]) |
+            (uint32_t(optionalBlur[1]) << 1u) |
+            (uint32_t(optionalBlur[2]) << 2u);
+		bool reuse = available->size == size &&
+            available->reconstructionBlurMask == requestedBlurMask &&
+            available->useDirectRR == directRR && available->indirectRays == a_indirectRays && available->receivers && available->output && available->light &&
 			bool(available->shadowMask) == bool(a_sceneTarget) &&
 			bool(available->shadowMaskExport) == wantExport &&
             bool(available->hybridInputs[0]) == wantHybridInputs &&
@@ -1492,13 +1501,7 @@ namespace DX12Native
         const uint64_t linearDepthBytes = wantHybridInputs ?
             backend.d3d12Device->GetResourceAllocationInfo(0, 1, &linearDepthDesc).SizeInBytes : 0;
         uint64_t hybridBytes = wantHybridInputs ? nextPreviewBytes * kHybridInputCount + textureBytes + linearDepthBytes : 0;
-        // Developer overrides may enable optional blur in fixed tiers.
-        // Budget exactly the same effective settings used by GPU dispatch.
-        const auto reconPolicy = composer.EffectiveReconstructionPolicy();
-        const auto& recon = reconPolicy.reconstruction;
-        const std::array<bool, 3> optionalBlur{
-            recon[0].blurEnabled, recon[1].blurEnabled,
-            recon[2].blurEnabled };
+        // Optional blur is already resolved for frame-reuse and budget checks.
         uint64_t nativeGIBytes = wantNativeGI ?
             NativeHybridGI::EstimateBytes(backend.d3d12Device.get(), size[0], size[1],
                 hybridSampling, optionalBlur) : 0;
@@ -1550,7 +1553,9 @@ namespace DX12Native
             wantNativeGI = false;
             wantPostHybrid = false;
             hybridBytes = nativeGIBytes = 0;
-            reuse = available->size == size && available->useDirectRR == directRR &&
+            reuse = available->size == size &&
+            available->reconstructionBlurMask == requestedBlurMask &&
+            available->useDirectRR == directRR &&
                 available->indirectRays == a_indirectRays && available->receivers &&
                 available->output && available->light &&
                 bool(available->shadowMask) == bool(a_sceneTarget) &&
@@ -1565,7 +1570,9 @@ namespace DX12Native
             // Denoising is optional: preserve working shadows under VRAM pressure.
             wantShadowTemporal = false;
             temporalBytes = 0;
-            reuse = available->size == size && available->useDirectRR == directRR &&
+            reuse = available->size == size &&
+            available->reconstructionBlurMask == requestedBlurMask &&
+            available->useDirectRR == directRR &&
                 available->indirectRays == a_indirectRays && available->receivers &&
                 available->output && available->light &&
                 bool(available->shadowMask) == bool(a_sceneTarget) &&
@@ -1639,6 +1646,7 @@ namespace DX12Native
             available->shadowMotionCaptured = false;
             available->shadowHistorySourceSlot = -1;
             available->nativeGIRequested = wantNativeGI;
+            available->reconstructionBlurMask = requestedBlurMask;
             available->nativeGI.valid = false;
 			available->materialView = std::min(a_materialView, kCombinedDirectView);
 			available->generation = generation;
