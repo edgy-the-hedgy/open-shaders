@@ -16,7 +16,8 @@ cbuffer PostRRBlurSettings : register(b0)
     float DepthSensitivity;
     float NormalSensitivity;
     float RoughnessSensitivity;
-    float3 Padding;
+    uint NativeProvider;
+    float2 Padding;
 };
 
 float3 DecodeOct(float2 packed)
@@ -30,7 +31,13 @@ float3 DecodeOct(float2 packed)
 
 float4 NeutralSignal()
 {
-    return SignalFamily == 2u ? float4(1.0, 1.0, 1.0, 1.0) : 0.0;
+    if (SignalFamily == 2u) return float4(1.0, 1.0, 1.0, 1.0);
+    return NativeProvider != 0u ? float4(0.0, 0.0, 0.0, -2.0) : 0.0;
+}
+bool Usable(float4 signal)
+{
+    return all(isfinite(signal)) &&
+        (NativeProvider == 0u || SignalFamily == 2u || signal.a >= 0.0);
 }
 
 [numthreads(8, 8, 1)]
@@ -44,7 +51,8 @@ void main(uint2 pixel : SV_DispatchThreadID)
         return;
     }
     const float4 source = NativeFiltered.Load(int3(pixel, 0));
-    const float4 baseline = all(isfinite(source)) ? source : NeutralSignal();
+    const bool sourceValid = Usable(source);
+    const float4 baseline = sourceValid ? source : NeutralSignal();
     if (BlurEnabled == 0u || BlurStrength <= 0.0) {
         NativeOutput[pixel] = baseline;
         return;
@@ -81,11 +89,15 @@ void main(uint2 pixel : SV_DispatchThreadID)
                 pow(normalAgreement, NormalSensitivity) *
                 exp2(-RoughnessSensitivity * abs(neighborNR.z - nr.z));
             const float4 value = NativeFiltered.Load(int3(sample, 0));
-            if (!all(isfinite(value))) continue;
+            if (!Usable(value)) continue;
             accumulated += weight * value;
             weightSum += weight;
         }
     }
-    NativeOutput[pixel] = lerp(baseline,
-        weightSum > 1e-6 ? accumulated / weightSum : baseline, saturate(BlurStrength));
+    const float4 filtered = weightSum > 1e-6 ? accumulated / weightSum : baseline;
+    // Invalid native samples cannot dilute valid radiance. Recover only
+    // from supported same-surface neighbors and preserve missing markers.
+    NativeOutput[pixel] = NativeProvider != 0u && !sourceValid ?
+        (weightSum > 1e-6 ? filtered : NeutralSignal()) :
+        lerp(baseline, filtered, saturate(BlurStrength));
 }

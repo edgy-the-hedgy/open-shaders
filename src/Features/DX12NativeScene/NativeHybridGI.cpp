@@ -1196,7 +1196,8 @@ namespace DX12Native
             struct alignas(16) BlurCB {
                 uint32_t width, height, family, enabled;
                 float radius, strength, depth, normal, roughness;
-                float padding[3]{};
+                uint32_t nativeProvider = 0u;
+                float padding[2]{};
             };
             static_assert(sizeof(ReconstructCB) == 64);
             static_assert(sizeof(BlurCB) == 48);
@@ -1221,7 +1222,8 @@ namespace DX12Native
                     native[0], native[1], family, uint32_t(settings.blurEnabled),
                     settings.blurRadius, settings.blurStrength,
                     settings.depthSensitivity, settings.normalSensitivity,
-                    settings.roughnessSensitivity };
+                    settings.roughnessSensitivity,
+                    frame.nativeValidityMask != 0u ? 1u : 0u };
                 std::memcpy(mapped + kPostOffset + (signal * 2) * 256,
                     &reconstruct, sizeof(reconstruct));
                 std::memcpy(mapped + kPostOffset + (signal * 2 + 1) * 256,
