@@ -272,6 +272,9 @@ json RTComposer::GetDiagnostics()
         } },
         { "advancedDeveloperMode", advancedDeveloperMode },
         { "developerReconstructionRevision", developerRevision },
+        { "developerPostHybridGIEnabled", !advancedDeveloperMode || developer.showPostHybridGI },
+        { "developerPostHybridGIContribution",
+            advancedDeveloperMode ? developer.scenePostGIContribution : 1.f },
         { "developerOverridesSessionOnly", true },
         { "developerSpatialEnabled", {
             EffectiveDeveloperControls().signals[0].spatialEnabled,
@@ -565,6 +568,12 @@ void RTComposer::RestoreDefaultSettings()
     const auto oldFixedRR = composition.fixedRR.modes;
     const auto beforeSampling = std::tuple{ composition.directCheckerboard, composition.hybridResolution, composition.hybridCheckerboard, composition.customHybridShadowed };
     composition = {};
+    // A normal Reset Defaults must always restore strict-mode behavior.
+    if (advancedDeveloperMode || !(developer == DeveloperControls{})) {
+        advancedDeveloperMode = false;
+        developer = DeveloperControls{};
+        ++developerRevision;
+    }
     if (beforePolicy != std::pair{ composition.enabled, composition.mode } ||
         beforeTransportDiagnostic != composition.diagnoseAdvancedTransport ||
         (beforeCompositorRR != composition.useFSRRayRegeneration &&
@@ -698,6 +707,9 @@ void RTComposer::DrawSettings()
             ImGui::Checkbox("Include indirect diffuse", &developer.showDiffuse);
             ImGui::Checkbox("Include indirect specular", &developer.showSpecular);
             ImGui::Checkbox("Apply sampled AO", &developer.useAO);
+            ImGui::Checkbox("Include RT-Enhanced post-composite HybridGI", &developer.showPostHybridGI);
+            ImGui::SliderFloat("RT-Enhanced post-composite GI contribution",
+                &developer.scenePostGIContribution, 0.f, 1.f, "%.2f");
             if (ImGui::Checkbox("Override scene blend values", &developer.overrideSceneBlend) &&
                 developer.overrideSceneBlend) {
                 const auto tier = GetTierPolicy(composition.mode);

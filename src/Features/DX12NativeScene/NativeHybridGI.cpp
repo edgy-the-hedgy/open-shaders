@@ -1687,8 +1687,15 @@ namespace DX12Native
             const bool overrideBlend = composer.DeveloperSceneOverride();
             const float effectiveDirect = overrideBlend && directBlend > 0.f ?
                 dev.sceneDirectBlend : directBlend;
-            const float effectiveGI = overrideBlend ?
-                dev.sceneGIContribution : giContribution;
+            // The second RT-Enhanced HybridGI composition is distinguishable
+            // by its zero direct blend and non-advanced pass. The first RT
+            // composed scene remains the actual second-pass source.
+            const bool postEnhanced = composer.AdvancedActive() &&
+                advancedTier == 0u && frame.advancedTransportTier == 0u &&
+                directBlend == 0.f;
+            const float effectiveGI = postEnhanced && composer.advancedDeveloperMode ?
+                (dev.showPostHybridGI ? dev.scenePostGIContribution : 0.f) :
+                (overrideBlend ? dev.sceneGIContribution : giContribution);
             const float effectiveShadow = overrideBlend ?
                 dev.sceneShadowInfluence : shadowInfluence;
             const uint32_t sceneMask = composer.advancedDeveloperMode ?

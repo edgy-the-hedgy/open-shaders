@@ -108,7 +108,7 @@ void main(uint2 pixel : SV_DispatchThreadID)
         } else {
             const float pbrScale = NativeLinearLighting != 0u ? 1.0 : 0.65;
             if (validDiffuse && (SceneSignalMask & 2u) != 0u &&
-                isfinite(aoDiffuse)) {
+                ((SceneSignalMask & 8u) == 0u || isfinite(aoDiffuse))) {
                 const float3 rawAlbedo = DiffuseAlbedo.Load(int3(pixel, 0)).rgb / pbrScale;
                 const float3 factor = NativeLinearLighting != 0u ?
                     max(0.0, rawAlbedo) : pow(abs(rawAlbedo), 1.6);
@@ -118,7 +118,7 @@ void main(uint2 pixel : SV_DispatchThreadID)
                         (((SceneSignalMask & 8u) != 0u) ? saturate(aoDiffuse) : 1.0);
             }
             if (validSpecular && (SceneSignalMask & 4u) != 0u &&
-                isfinite(aoSpecular)) {
+                ((SceneSignalMask & 8u) == 0u || isfinite(aoSpecular))) {
                 const float3 factor = max(0.0, SpecularAlbedo.Load(int3(pixel, 0)).rgb);
                 if (all(isfinite(factor)))
                     linearColor += saturate(GIContribution) *

@@ -190,6 +190,8 @@ struct RTComposer final : Feature
         bool overrideSceneBlend = false;
         float sceneDirectBlend = .3f;
         float sceneGIContribution = 1.f;
+        float scenePostGIContribution = 1.f; // RT-Enhanced second HybridGI only
+        bool showPostHybridGI = true;
         float sceneShadowInfluence = .9f;
         bool showDirect = true, showDiffuse = true, showSpecular = true, useAO = true;
         bool overrideShadowTemporal = false;
