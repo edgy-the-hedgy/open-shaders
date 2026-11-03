@@ -43,6 +43,10 @@ public:
     const std::string& NativeHybridFailure() const { return nativeHybridFailure; }
     uint64_t NativeHybridDispatches() const { return nativeHybridDispatches; }
     uint64_t NativeHybridResets() const { return nativeHybridResets; }
+    // A successful AMD context is usable even if a sibling context failed.
+    // Bit 0 diffuse, bit 1 specular, bit 2 combined AO/SO.
+    uint32_t NativeHybridSuccessfulFamilyMask() const { return nativeHybridSuccessfulFamilyMask; }
+    uint32_t NativeHybridFailedFamilyMask() const { return nativeHybridFailedFamilyMask; }
     /** @brief Safely retire only the native SDK contexts, preserving legacy RR. */
     bool RetireNativeHybridContexts();
 	json GetRayRegenerationDiagnostics() const;
@@ -107,6 +111,8 @@ private:
     uint32_t nativeHybridLastFrame = UINT32_MAX;
     uint64_t nativeHybridDispatches = 0, nativeHybridResets = 0;
     bool nativeHybridFailed = false;
+    uint32_t nativeHybridSuccessfulFamilyMask = 0u;
+    uint32_t nativeHybridFailedFamilyMask = 0u;
     std::string nativeHybridFailure;
 	uint64_t rayRegenerationSuccessfulDispatches = 0;
 	uint64_t rayRegenerationFailedDispatches = 0;

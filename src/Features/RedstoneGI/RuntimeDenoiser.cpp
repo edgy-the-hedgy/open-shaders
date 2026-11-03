@@ -111,6 +111,8 @@ void RedstoneDenoiser::ResetRayRegeneration()
     nativeHybridCheckerboard = false;
     nativeHybridLastFrame = UINT32_MAX;
     nativeHybridFailed = false;
+    nativeHybridSuccessfulFamilyMask = 0u;
+    nativeHybridFailedFamilyMask = 0u;
     nativeHybridFailure.clear();
     nativeHybridConfigurationDefaultsReady.fill(false);
     nativeHybridConfigurationApplied.fill(false);
@@ -447,6 +449,8 @@ bool RedstoneDenoiser::RetireNativeHybridContexts()
         nativeHybridActiveFamilies = 3u;
         nativeHybridLastFrame = UINT32_MAX;
         nativeHybridFailed = false;
+        nativeHybridSuccessfulFamilyMask = 0u;
+        nativeHybridFailedFamilyMask = 0u;
         nativeHybridFailure.clear();
         nativeHybridConfigurationDefaultsReady.fill(false);
         nativeHybridConfigurationApplied.fill(false);
@@ -464,6 +468,8 @@ bool RedstoneDenoiser::RetireNativeHybridContexts()
 bool RedstoneDenoiser::DispatchNativeHybridRR(
     ID3D12GraphicsCommandList* list, const NativeHybridResources& resources)
 {
+    // Never carry a successful result into another frame.
+    nativeHybridSuccessfulFamilyMask = 0u;
     const auto& logical = resources.logicalSize;
     if (!list || !CanDispatchRayRegeneration() || !denoiserModule ||
         !denoiserFunctions.CreateContext || !denoiserFunctions.DestroyContext ||
@@ -665,24 +671,30 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
             common.header.pNext = &ao.header;
             ao.header.pNext = &so.header;
         }
+        // A failed family does not invalidate successful sibling contexts.
+        // Reset only the failed family's temporal history on its next retry.
+        if ((nativeHybridFailedFamilyMask & (1u << family)) != 0u)
+            common.flags |= FFX_DENOISER_DISPATCH_RESET;
         bool faulted = false;
         const auto result = DispatchDenoiserProtected(denoiserFunctions,
             &nativeHybridContexts[family], &common.header, faulted);
         if (faulted || result != FFX_API_RETURN_OK) {
-            nativeHybridFailed = true;
+            nativeHybridFailedFamilyMask |= 1u << family;
             nativeHybridFailure = faulted ?
-                "Native FSR RR provider exception" : "Native FSR RR provider rejected dispatch";
-            // Keep declared resource states balanced on the caller command
-            // list even when a family provider rejects its dispatch. The
-            // partly written signal is NOT eligible for publication.
-            list->ResourceBarrier(UINT(end.size()), end.data());
-            return false;
+                "Native FSR RR family provider exception; independent native fallback required" :
+                "Native FSR RR family provider rejected dispatch; independent native fallback required";
+            // Never publish the provider's partial writes for this family.
+            continue;
         }
+        nativeHybridSuccessfulFamilyMask |= 1u << family;
+        nativeHybridFailedFamilyMask &= ~(1u << family);
     }
     list->ResourceBarrier(UINT(end.size()), end.data());
     nativeHybridLastFrame = resources.frame;
-    ++nativeHybridDispatches;
+    if (nativeHybridSuccessfulFamilyMask) ++nativeHybridDispatches;
     if (configReset) ++nativeHybridResets;
-    nativeHybridFailure.clear();
-    return true;
+    const uint32_t requestedMask = (1u << familyCount) - 1u;
+    const bool complete = (nativeHybridSuccessfulFamilyMask & requestedMask) == requestedMask;
+    if (complete) nativeHybridFailure.clear();
+    return complete;
 }

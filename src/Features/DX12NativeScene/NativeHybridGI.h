@@ -43,6 +43,7 @@ namespace DX12Native
             bool rrValid = false, postValid = false;
             // Native radiance carries alpha=-2 when no valid sample was found.
             uint32_t nativeValidityMask = 0u;
+            uint32_t rrFamilySuccessMask = 0u, nativeFamilyFallbackMask = 0u;
             // DX12-produced final color; the sole eventual DX11 export product.
             std::unique_ptr<WrappedResource> composedScene;
             bool valid = false;
@@ -115,7 +116,8 @@ namespace DX12Native
     private:
         bool Initialize(ID3D12Device* device);
         bool RecordNativeReconstruction(ID3D12Device* device,
-            ID3D12GraphicsCommandList* list, FrameOutputs& frame, uint32_t slot);
+            ID3D12GraphicsCommandList* list, FrameOutputs& frame, uint32_t slot,
+            uint32_t fallbackFamilyMask);
         winrt::com_ptr<ID3D12RootSignature> root;
         std::array<winrt::com_ptr<ID3D12PipelineState>, 2> pipelines;
         winrt::com_ptr<ID3D12PipelineState> eligibilityPipeline;

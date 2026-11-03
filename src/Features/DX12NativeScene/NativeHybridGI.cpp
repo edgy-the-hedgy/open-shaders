@@ -907,7 +907,8 @@ namespace DX12Native
 
 
     bool NativeHybridGI::RecordNativeReconstruction(ID3D12Device* device,
-        ID3D12GraphicsCommandList* list, FrameOutputs& frame, uint32_t slot)
+        ID3D12GraphicsCommandList* list, FrameOutputs& frame, uint32_t slot,
+        uint32_t fallbackFamilyMask)
     {
         if (!device || !list || slot >= 2u || !frame.constants ||
             !frame.rrGuides[0] || !frame.rrGuides[2] ||
@@ -1011,10 +1012,10 @@ namespace DX12Native
                 uav.Format = format;
                 device->CreateUnorderedAccessView(frame.rrOutputs[signal].get(),
                     nullptr, &uav, cpu);
-                // Inactive deterministic RT-exclusive lobes have no provider.
-                if (frame.advancedTransportTier != 0u &&
-                    (signal >= 2u ||
-                     (frame.advancedTransportTier == 2u && signal == 1u)))
+                // Unrequested families retain their successful AMD RR outputs.
+                // AO and SO share the same SDK context and fallback atomically.
+                const uint32_t family = std::min(signal, 2u);
+                if ((fallbackFamilyMask & (1u << family)) == 0u)
                     continue;
                 std::array<D3D12_RESOURCE_BARRIER, 5> begin{}, end{};
                 for (uint32_t i = 0; i < inputs.size(); ++i) {
@@ -1065,6 +1066,7 @@ namespace DX12Native
     {
         frame.rrValid = frame.postValid = false;
         frame.nativeValidityMask = 0u;
+        frame.rrFamilySuccessMask = frame.nativeFamilyFallbackMask = 0u;
         reconstructionProvider = "none";
         reconstructionFallbackReason.clear();
         frame.nativeFinal.fill(nullptr);
@@ -1129,20 +1131,28 @@ namespace DX12Native
             resources.frame = frameNumber;
             resources.checkerboard = frame.sampling.checkerboard;
             resources.checkerboardOrigin = frame.sampling.checkerboardOrigin;
-            frame.rrValid = requestRR && denoiser &&
-                denoiser->DispatchNativeHybridRR(list, resources);
-            if (!frame.rrValid) {
+            const uint32_t activeMask = frame.advancedTransportTier == 2u ? 1u :
+                frame.advancedTransportTier != 0u ? 3u : 7u;
+            if (requestRR && denoiser) {
+                (void)denoiser->DispatchNativeHybridRR(list, resources);
+                frame.rrFamilySuccessMask =
+                    denoiser->NativeHybridSuccessfulFamilyMask() & activeMask;
+            }
+            frame.nativeFamilyFallbackMask =
+                activeMask & ~frame.rrFamilySuccessMask;
+            frame.rrValid = frame.rrFamilySuccessMask == activeMask;
+            if (frame.nativeFamilyFallbackMask != 0u) {
                 reconstructionFallbackReason = requestRR ?
                     (denoiser ? denoiser->NativeHybridFailure() :
                         "FSR RR provider unavailable") : "FSR RR disabled by policy";
-                if (!RecordNativeReconstruction(device, list, frame, slot))
+                if (!RecordNativeReconstruction(device, list, frame, slot,
+                        frame.nativeFamilyFallbackMask))
                     return false;
-                reconstructionProvider = "native-dx12";
-                frame.nativeValidityMask =
-                    frame.advancedTransportTier == 2u ? 1u : 3u;
-            } else {
-                reconstructionProvider = "fsr-rr";
+                frame.nativeValidityMask = frame.nativeFamilyFallbackMask & 3u;
             }
+            reconstructionProvider = frame.rrValid ? "fsr-rr" :
+                frame.rrFamilySuccessMask ? "mixed-fsr-rr-native-dx12" :
+                "native-dx12";
 
             if (!postRoot || !postPipelines[0] || !postPipelines[1] || !postDescriptors) {
                 postRoot = nullptr; postPipelines[0] = nullptr;
