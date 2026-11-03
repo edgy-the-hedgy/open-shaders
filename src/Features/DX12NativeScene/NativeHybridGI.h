@@ -99,6 +99,9 @@ namespace DX12Native
             RedstoneDenoiser* denoiser, bool requestRR);
         uint64_t NativeReconstructionDispatches() const { return nativeReconstructionDispatches; }
         uint64_t NativeTemporalDispatches() const { return nativeTemporalDispatches; }
+        uint32_t LastRecordedRRFamilyMask() const { return lastRecordedRRFamilyMask; }
+        uint32_t LastRecordedNativeFamilyMask() const { return lastRecordedNativeFamilyMask; }
+        uint32_t LastRecordedReconstructionFrame() const { return lastRecordedReconstructionFrame; }
         size_t RetainedNativeHistoryResources() const { return retiredNativeHistory.size(); }
         uint64_t RetainedNativeHistoryBytes() const { return retiredNativeHistoryBytes; }
         const std::string& TemporalFailure() const { return temporalFailure; }
@@ -178,6 +181,9 @@ namespace DX12Native
         std::string failure, compositionFailure, guideFailure, postFailure, historyFailure, advancedFailure;
         std::string reconstructionProvider, reconstructionFallbackReason;
         uint64_t nativeReconstructionDispatches = 0, nativeTemporalDispatches = 0;
+        uint32_t lastRecordedRRFamilyMask = 0u;
+        uint32_t lastRecordedNativeFamilyMask = 0u;
+        uint32_t lastRecordedReconstructionFrame = UINT32_MAX;
         uint64_t advancedPackDispatches = 0;
         uint64_t giDispatches = 0, aoDispatches = 0, compositionDispatches = 0,
             eligibilityDispatches = 0, guideDispatches = 0,

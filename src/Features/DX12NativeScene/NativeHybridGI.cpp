@@ -1560,6 +1560,9 @@ namespace DX12Native
                     frame.nativeFiltered[signal].get();
             }
             frame.postValid = true;
+            lastRecordedRRFamilyMask = frame.rrFamilySuccessMask;
+            lastRecordedNativeFamilyMask = frame.nativeFamilyFallbackMask;
+            lastRecordedReconstructionFrame = frameNumber;
             postFailure.clear();
             return true;
         } catch (const std::exception& error) {

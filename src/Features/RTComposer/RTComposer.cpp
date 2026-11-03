@@ -547,8 +547,13 @@ void RTComposer::RestoreDefaultSettings()
          composition.mode == CompositorMode::Custom) ||
         beforeSampling != std::tuple{ composition.directCheckerboard, composition.hybridResolution, composition.hybridCheckerboard, composition.customHybridShadowed })
         OnCompositionPolicyChanged();
-    else if (oldFixedRR != composition.fixedRR.modes)
-        OnReconstructionPolicyChanged(composition.mode, 2u, false);
+    else if (oldFixedRR != composition.fixedRR.modes) {
+        const uint32_t mode = static_cast<uint32_t>(composition.mode);
+        if (mode < composition.fixedRR.modes.size())
+            for (uint32_t family = 0u; family < 3u; ++family)
+                if (oldFixedRR[mode][family])
+                    OnReconstructionPolicyChanged(composition.mode, family, false);
+    }
     RayRegeneration::Configure(0u, false, true);
     globals::features::redstoneGI.GetDenoiser().SetConfiguration(json::object());
     auto& direct = globals::features::rtDirectLighting.settings;

@@ -1894,6 +1894,18 @@ namespace DX12Native
                 nativeHybridGI->NativeReconstructionDispatches() : uint64_t{0} },
             { "nativeHybridTemporalDispatches", nativeHybridGI ?
                 nativeHybridGI->NativeTemporalDispatches() : uint64_t{0} },
+            { "firstPassRecordedRRFamilyMask", nativeHybridGI ?
+                nativeHybridGI->LastRecordedRRFamilyMask() : 0u },
+            { "firstPassRecordedNativeFamilyMask", nativeHybridGI ?
+                nativeHybridGI->LastRecordedNativeFamilyMask() : 0u },
+            { "firstPassRecordedReconstructionFrame", nativeHybridGI ?
+                nativeHybridGI->LastRecordedReconstructionFrame() : UINT32_MAX },
+            { "postHybridRecordedRRFamilyMask", postHybridGI ?
+                postHybridGI->LastRecordedRRFamilyMask() : 0u },
+            { "postHybridRecordedNativeFamilyMask", postHybridGI ?
+                postHybridGI->LastRecordedNativeFamilyMask() : 0u },
+            { "postHybridRecordedReconstructionFrame", postHybridGI ?
+                postHybridGI->LastRecordedReconstructionFrame() : UINT32_MAX },
             { "nativeHybridTemporalFailure", nativeHybridGI ?
                 nativeHybridGI->TemporalFailure() : std::string{} },
             { "nativeHybridRetainedHistoryResources", nativeHybridGI ?

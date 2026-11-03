@@ -123,12 +123,12 @@ struct RTComposer final : Feature
     struct FixedRRRequests
     {
         std::array<std::array<bool, 3>, 5> modes{};
-        bool Get(CompositorMode mode, uint32_t family) const
+        constexpr bool Get(CompositorMode mode, uint32_t family) const
         {
             const auto index = static_cast<uint32_t>(mode);
             return index < modes.size() && family < 3u && modes[index][family];
         }
-        bool Set(CompositorMode mode, uint32_t family, bool enabled)
+        constexpr bool Set(CompositorMode mode, uint32_t family, bool enabled)
         {
             const auto index = static_cast<uint32_t>(mode);
             if (index >= modes.size() || family >= 3u) return false;
@@ -264,3 +264,26 @@ static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::RTExclusiveI
 static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::RTEnhanced).directTraceMode == 5u);
 static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::FSRRedstone).firstBounceSurvival == 0.66f);
 static_assert(RTComposer::GetTierPolicy(RTComposer::CompositorMode::FSRRedstone).secondBounceSurvival == 0.25f);
+
+static_assert([] {
+    RTComposer::FixedRRRequests rr{};
+    using Mode = RTComposer::CompositorMode;
+    // New fixed requests are entirely disabled; shadow-only/deferred refuse RR.
+    if (rr.Get(Mode::RTEnhanced, 0u) || rr.Get(Mode::HybridShadowed, 2u) ||
+        rr.Set(Mode::ShadowOnly, 0u, true) ||
+        rr.Set(Mode::FSRRedstone, 1u, true)) return false;
+    // Hybrid-Shadowed can reconstruct HybridGI only.
+    if (!rr.Set(Mode::HybridShadowed, 2u, true) ||
+        rr.Set(Mode::HybridShadowed, 1u, true) ||
+        !rr.Get(Mode::HybridShadowed, 2u)) return false;
+    // Tier I and Tier II can request direct/indirect independently.
+    if (!rr.Set(Mode::RTExclusiveI, 0u, true) ||
+        !rr.Set(Mode::RTExclusiveII, 1u, true) ||
+        rr.Set(Mode::RTExclusiveI, 2u, true)) return false;
+    // RT-Enhanced accepts three independent policies.
+    if (!rr.Set(Mode::RTEnhanced, 0u, true) ||
+        !rr.Set(Mode::RTEnhanced, 1u, true) ||
+        !rr.Set(Mode::RTEnhanced, 2u, true)) return false;
+    return rr.Get(Mode::RTEnhanced, 0u) &&
+        rr.Get(Mode::RTEnhanced, 1u) && rr.Get(Mode::RTEnhanced, 2u);
+}(), "RT Composer fixed RR selection and migration defaults must remain independent");
