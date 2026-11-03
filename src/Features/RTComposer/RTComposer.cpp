@@ -270,6 +270,29 @@ json RTComposer::GetDiagnostics()
             { "indirect", composition.fixedRR.Get(composition.mode, 1u) },
             { "hybrid", composition.fixedRR.Get(composition.mode, 2u) }
         } },
+        { "advancedDeveloperMode", advancedDeveloperMode },
+        { "developerOverridesSessionOnly", true },
+        { "developerSpatialEnabled", {
+            EffectiveDeveloperControls().signals[0].spatialEnabled,
+            EffectiveDeveloperControls().signals[1].spatialEnabled,
+            EffectiveDeveloperControls().signals[2].spatialEnabled } },
+        { "developerSpatialRadius", {
+            EffectiveDeveloperControls().signals[0].spatialRadius,
+            EffectiveDeveloperControls().signals[1].spatialRadius,
+            EffectiveDeveloperControls().signals[2].spatialRadius } },
+        { "developerTemporalEnabled", {
+            EffectiveDeveloperControls().signals[0].temporalEnabled,
+            EffectiveDeveloperControls().signals[1].temporalEnabled,
+            EffectiveDeveloperControls().signals[2].temporalEnabled } },
+        { "developerHistoryWeight", {
+            EffectiveDeveloperControls().signals[0].historyWeight,
+            EffectiveDeveloperControls().signals[1].historyWeight,
+            EffectiveDeveloperControls().signals[2].historyWeight } },
+        { "developerSceneMask", advancedDeveloperMode ? (
+            (developer.showDirect ? 1u : 0u) |
+            (developer.showDiffuse ? 2u : 0u) |
+            (developer.showSpecular ? 4u : 0u) |
+            (developer.useAO ? 8u : 0u)) : 15u },
         { "fixedRRProviderWired", false }, // native Direct RR remains deferred
         { "fixedRRProviderStatus", {
             { "direct", "pending-native-dx12-provider" },
@@ -596,6 +619,108 @@ void RTComposer::DrawSettings()
     }
     if (previousPolicy != std::pair{ composition.enabled, composition.mode })
         OnCompositionPolicyChanged();
+
+    ImGui::SeparatorText("Developer testing");
+    ImGui::Checkbox("Advanced developer mode (session only)", &advancedDeveloperMode);
+    ImGui::TextWrapped(advancedDeveloperMode ?
+        "Developer overrides are ACTIVE. All changes are temporary and do not modify fixed preset values, tracing eligibility, geometry, or saved settings." :
+        "Strict compositor policies are ACTIVE. Developer settings are ignored until enabled.");
+    if (advancedDeveloperMode) {
+        if (ImGui::Button("Reset developer test parameters"))
+            developer = DeveloperControls{};
+        if (ImGui::TreeNode("Native spatial reconstruction")) {
+            constexpr std::array names{ "Diffuse", "Specular", "AO / Specular AO" };
+            for (int family = 0; family < 3; ++family) {
+                ImGui::PushID(family);
+                ImGui::TextUnformatted(names[family]);
+                ImGui::Checkbox("Spatial reconstruction", &developer.signals[family].spatialEnabled);
+                ImGui::SliderInt("Spatial radius (logical pixels)", &developer.signals[family].spatialRadius, 0, 4);
+                ImGui::PopID();
+            }
+            ImGui::SliderFloat("Spatial relative depth tolerance", &developer.spatialDepthTolerance, .001f, .1f, "%.4f");
+            ImGui::SliderFloat("Spatial minimum normal dot", &developer.spatialNormalThreshold, 0.f, 1.f, "%.3f");
+            ImGui::SliderFloat("Spatial roughness difference max", &developer.spatialRoughnessTolerance, 0.f, 1.f, "%.3f");
+            ImGui::SliderFloat("Spatial distance falloff", &developer.spatialDistanceFalloff, 0.f, 2.f);
+            ImGui::SliderFloat("Spatial depth falloff", &developer.spatialDepthFalloff, 0.f, 128.f);
+            ImGui::SliderFloat("Spatial roughness falloff", &developer.spatialRoughnessFalloff, 0.f, 64.f);
+            ImGui::SliderFloat("Spatial normal exponent", &developer.spatialNormalPower, 0.f, 64.f);
+            ImGui::TextWrapped("Disabling spatial recovery preserves actual traced hits and misses, but leaves untraced pixels invalid rather than inventing lighting.");
+            ImGui::TreePop();
+        }
+        if (ImGui::TreeNode("Native temporal reconstruction")) {
+            constexpr std::array names{ "Diffuse", "Specular", "AO / Specular AO" };
+            for (int family = 0; family < 3; ++family) {
+                ImGui::PushID(10 + family);
+                ImGui::TextUnformatted(names[family]);
+                ImGui::Checkbox("Temporal history", &developer.signals[family].temporalEnabled);
+                ImGui::SliderFloat("Previous frame contribution", &developer.signals[family].historyWeight, 0.f, 1.f, "%.2f");
+                ImGui::PopID();
+            }
+            ImGui::SeparatorText("Temporal same-surface rejection");
+            ImGui::SliderFloat("History relative depth tolerance", &developer.historyDepthTolerance, .001f, .1f, "%.4f");
+            ImGui::SliderFloat("History minimum normal dot", &developer.historyNormalThreshold, 0.f, 1.f, "%.3f");
+            ImGui::SliderFloat("History roughness difference max", &developer.historyRoughnessTolerance, 0.f, 1.f, "%.3f");
+            ImGui::TextWrapped("Previous-frame geometry/motion checks remain mandatory, even in developer mode.");
+            ImGui::TreePop();
+        }
+        if (ImGui::TreeNode("Post-reconstruction filter / blur")) {
+            if (ImGui::Checkbox("Override post-filter presets", &developer.overridePost))
+                developer.post = composition.reconstruction;
+            if (developer.overridePost) {
+                constexpr std::array names{ "Diffuse", "Specular", "AO / Specular AO" };
+                for (int family = 0; family < 3; ++family) {
+                    ImGui::PushID(30 + family);
+                    if (ImGui::TreeNode(names[family])) {
+                        auto& p = developer.post[family];
+                        ImGui::Checkbox("Edge-aware filter", &p.filterEnabled);
+                        ImGui::SliderFloat("Filter radius (native pixels)", &p.filterRadius, .5f, 4.f);
+                        ImGui::SliderFloat("Filter strength", &p.filterStrength, 0.f, 1.f);
+                        ImGui::SliderFloat("Depth sensitivity", &p.depthSensitivity, 1.f, 256.f);
+                        ImGui::SliderFloat("Normal sensitivity", &p.normalSensitivity, 1.f, 128.f);
+                        ImGui::SliderFloat("Roughness sensitivity", &p.roughnessSensitivity, 0.f, 64.f);
+                        ImGui::Checkbox("Post-filter blur", &p.blurEnabled);
+                        ImGui::SliderFloat("Blur radius", &p.blurRadius, .5f, 3.f);
+                        ImGui::SliderFloat("Blur strength", &p.blurStrength, 0.f, 1.f);
+                        ImGui::TreePop();
+                    }
+                    ImGui::PopID();
+                }
+            }
+            ImGui::TreePop();
+        }
+        if (ImGui::TreeNode("DX12 scene composition")) {
+            ImGui::Checkbox("Include native direct", &developer.showDirect);
+            ImGui::Checkbox("Include indirect diffuse", &developer.showDiffuse);
+            ImGui::Checkbox("Include indirect specular", &developer.showSpecular);
+            ImGui::Checkbox("Apply sampled AO", &developer.useAO);
+            if (ImGui::Checkbox("Override scene blend values", &developer.overrideSceneBlend) &&
+                developer.overrideSceneBlend) {
+                const auto tier = GetTierPolicy(composition.mode);
+                developer.sceneDirectBlend = IsFixedPreset() ? tier.directContribution : composition.rtDirectContribution;
+                developer.sceneGIContribution = IsFixedPreset() ? 1.f : composition.giContribution;
+                developer.sceneShadowInfluence = IsFixedPreset() ? tier.shadowInfluence : composition.shadowInfluence;
+            }
+            if (developer.overrideSceneBlend) {
+                ImGui::SliderFloat("Direct / raster blend", &developer.sceneDirectBlend, 0.f, 1.f, "%.2f");
+                ImGui::SliderFloat("Indirect GI contribution", &developer.sceneGIContribution, 0.f, 1.f, "%.2f");
+                ImGui::SliderFloat("Shadow influence", &developer.sceneShadowInfluence, 0.f, 1.f, "%.2f");
+            }
+            ImGui::TextWrapped("These toggles affect only final DX12 lighting composition, not the prepared scene, rays, transport or HybridGI source selection.");
+            ImGui::TreePop();
+        }
+        if (ImGui::TreeNode("Low-tier temporal/contact shadows")) {
+            ImGui::Checkbox("Override shadow temporal settings", &developer.overrideShadowTemporal);
+            if (developer.overrideShadowTemporal) {
+                ImGui::Checkbox("Temporal shadow reconstruction", &developer.shadowTemporalEnabled);
+                ImGui::SliderFloat("Shadow history contribution", &developer.shadowTemporalWeight, 0.f, 1.f, "%.2f");
+                ImGui::SliderFloat("Shadow history relative depth tolerance", &developer.shadowTemporalDepthTolerance, .001f, .1f, "%.4f");
+            }
+            ImGui::Checkbox("Contact-shadow edge AA", &developer.shadowContactAAEnabled);
+            ImGui::SliderFloat("Contact-shadow AA blend", &developer.shadowContactAAWeight, 0.f, 1.f);
+            ImGui::SliderFloat("Contact-shadow AA depth tolerance", &developer.shadowContactAADepthTolerance, .001f, .1f, "%.4f");
+            ImGui::TreePop();
+        }
+    }
 
     if (IsFixedPreset()) {
         ImGui::TextWrapped("Fixed tier: lighting and sampling tuning are locked; RR requests remain individually editable.");

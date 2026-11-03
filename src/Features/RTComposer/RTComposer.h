@@ -160,6 +160,69 @@ struct RTComposer final : Feature
         // Separate settings for diffuse, specular and AO, respectively.
         std::array<SignalReconstructionSettings, 3> reconstruction{};
     } composition;
+    // Runtime-only reconstruction laboratory. Never persisted or copied into
+    // fixed-tier settings. Disabling the master switch restores strict runtime
+    // behavior without changing the selected compositor mode.
+    struct DeveloperSignal
+    {
+        bool spatialEnabled = true;
+        int spatialRadius = 4; // logical pixels (AO is 2 by default)
+        bool temporalEnabled = true;
+        float historyWeight = .75f;
+    };
+    struct DeveloperControls
+    {
+        std::array<DeveloperSignal, 3> signals{};
+        float spatialDepthTolerance = .02f;
+        float spatialNormalThreshold = .75f;
+        float spatialRoughnessTolerance = .35f;
+        float spatialDistanceFalloff = .45f;
+        float spatialDepthFalloff = 48.f;
+        float spatialRoughnessFalloff = 12.f;
+        float spatialNormalPower = 16.f;
+        float historyDepthTolerance = .02f;
+        float historyNormalThreshold = .5f;
+        float historyRoughnessTolerance = .25f;
+        bool overridePost = false;
+        std::array<SignalReconstructionSettings, 3> post{};
+        bool overrideSceneBlend = false;
+        float sceneDirectBlend = .3f;
+        float sceneGIContribution = 1.f;
+        float sceneShadowInfluence = .9f;
+        bool showDirect = true, showDiffuse = true, showSpecular = true, useAO = true;
+        bool overrideShadowTemporal = false;
+        bool shadowTemporalEnabled = true;
+        float shadowTemporalWeight = .70f;
+        float shadowTemporalDepthTolerance = .018f;
+        bool shadowContactAAEnabled = true;
+        float shadowContactAAWeight = .65f;
+        float shadowContactAADepthTolerance = .015f;
+        DeveloperControls() { signals[2].spatialRadius = 2; }
+    };
+    bool advancedDeveloperMode = false; // session-only: never saved in JSON
+    DeveloperControls developer{};
+    static const DeveloperControls& StrictDeveloperControls()
+    {
+        static const DeveloperControls strict{};
+        return strict;
+    }
+    const DeveloperControls& EffectiveDeveloperControls() const
+    {
+        return advancedDeveloperMode ? developer : StrictDeveloperControls();
+    }
+    CompositionSettings EffectiveReconstructionPolicy() const
+    {
+        auto result = composition;
+        if (advancedDeveloperMode && developer.overridePost)
+            result.reconstruction = developer.post;
+        else if (IsFixedPreset())
+            result.reconstruction = {};
+        return result;
+    }
+    bool DeveloperSceneOverride() const
+    {
+        return advancedDeveloperMode && developer.overrideSceneBlend;
+    }
     enum class EffectiveMode : uint32_t {
         Legacy = 0, ShadowOnly = 1, HybridShadowed = 2,
         RTExclusive = 3, RTEnhanced = 4
