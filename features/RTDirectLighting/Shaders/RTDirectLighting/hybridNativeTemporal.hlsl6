@@ -1,0 +1,86 @@
+// Native temporal reconstruction of already spatially reconstructed signals.
+// Uses the independently validated same-surface motion from
+// nativeHybridRRHistory.dxil. No AMD context and no CPU/GPU readback.
+// A current invalid receiver can NEVER borrow previous-frame radiance.
+Texture2D<float4> CurrentSpatial : register(t0);
+Texture2D<float4> PreviousReconstruction : register(t1);
+Texture2D<float4> ValidatedMotion : register(t2);
+Texture2D<uint> NativeEligibility : register(t3);
+RWTexture2D<float4> CurrentHistory : register(u0);
+
+cbuffer NativeTemporalPolicy : register(b0)
+{
+    uint2 LogicalSize;
+    uint2 NativeSize;
+    uint SignalFamily; // 0 diffuse, 1 specular, 2 AO/SO
+    uint SampleScale;
+    uint RepresentativePhase;
+    uint HistoryAvailable;
+    float HistoryBlend;
+    float3 Padding;
+};
+
+uint2 Representative(uint2 logical)
+{
+    if (SampleScale <= 1u) return min(logical, NativeSize - 1u);
+    const uint2 phase = uint2(RepresentativePhase % SampleScale,
+        RepresentativePhase / SampleScale);
+    return min(logical * SampleScale + phase, NativeSize - 1u);
+}
+
+bool HasSignal(float4 value)
+{
+    return all(isfinite(value)) && (SignalFamily == 2u ||
+        (value.a >= 0.0 && all(value.rgb >= 0.0)));
+}
+
+float4 Neutral()
+{
+    return SignalFamily == 2u ? float4(1, 1, 1, 1) :
+        float4(0, 0, 0, -2);
+}
+
+[numthreads(8, 8, 1)]
+void main(uint2 pixel : SV_DispatchThreadID)
+{
+    if (any(pixel >= LogicalSize)) return;
+    const uint eligible = NativeEligibility.Load(int3(Representative(pixel), 0));
+    const bool validReceiver = SignalFamily == 2u ? eligible != 2u : eligible == 1u;
+    if (!validReceiver) {
+        CurrentHistory[pixel] = Neutral();
+        return;
+    }
+    const float4 current = CurrentSpatial.Load(int3(pixel, 0));
+    const bool validCurrent = HasSignal(current);
+    if (HistoryAvailable == 0u) {
+        CurrentHistory[pixel] = validCurrent ? current : Neutral();
+        return;
+    }
+    const float4 motion = ValidatedMotion.Load(int3(pixel, 0));
+    if (!all(isfinite(motion)) || motion.w < 0.5) {
+        CurrentHistory[pixel] = validCurrent ? current : Neutral();
+        return;
+    }
+    const float2 previousPosition = float2(pixel) + motion.xy * float2(LogicalSize);
+    if (any(previousPosition < 0.0) || any(previousPosition >= float2(LogicalSize))) {
+        CurrentHistory[pixel] = validCurrent ? current : Neutral();
+        return;
+    }
+    const int2 previousPixel = clamp(int2(round(previousPosition)),
+        int2(0, 0), int2(LogicalSize) - 1);
+    const float4 previous = PreviousReconstruction.Load(int3(previousPixel, 0));
+    if (!HasSignal(previous)) {
+        CurrentHistory[pixel] = validCurrent ? current : Neutral();
+        return;
+    }
+    // The history reprojection shader already rejected disoccluded or
+    // geometrically unrelated receivers. Do not use stale invalid history.
+    float4 reconstructed = validCurrent ?
+        lerp(current, previous, saturate(HistoryBlend)) : previous;
+    if (SignalFamily == 2u)
+        reconstructed = float4(saturate(reconstructed.x),
+            saturate(reconstructed.x), saturate(reconstructed.x), 1);
+    else
+        reconstructed = float4(max(reconstructed.rgb, 0.0), 1);
+    CurrentHistory[pixel] = reconstructed;
+}
