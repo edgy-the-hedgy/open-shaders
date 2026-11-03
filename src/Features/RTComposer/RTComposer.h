@@ -116,9 +116,34 @@ struct RTComposer final : Feature
         float blurRadius = 1.0f;
         float blurStrength = 0.25f;
     };
+    // Fixed-tier RR requests are persistent policy, not a lighting-readiness signal.
+    // Slots are Shadow Only, Hybrid-Shadowed, RT-exclusive I/II, RT-Enhanced.
+    // Family slots: direct radiance, first-pass indirect, post-composite HybridGI.
+    // FSR-REDSTONE remains deferred and has no active reconstruction policy.
+    struct FixedRRRequests
+    {
+        std::array<std::array<bool, 3>, 5> modes{};
+        bool Get(CompositorMode mode, uint32_t family) const
+        {
+            const auto index = static_cast<uint32_t>(mode);
+            return index < modes.size() && family < 3u && modes[index][family];
+        }
+        bool Set(CompositorMode mode, uint32_t family, bool enabled)
+        {
+            const auto index = static_cast<uint32_t>(mode);
+            if (index >= modes.size() || family >= 3u) return false;
+            const bool supported = (index == 1u && family == 2u) ||
+                ((index == 2u || index == 3u) && family < 2u) ||
+                (index == 4u);
+            if (!supported) return false;
+            modes[index][family] = enabled;
+            return true;
+        }
+    };
     struct CompositionSettings
     {
         bool enabled = false;
+        FixedRRRequests fixedRR{};
         // Compositor-owned RR switch. Fixed native sparse tiers require RR;
         // when disabled, preserve the low shadow-only fallback.
         bool useFSRRayRegeneration = true;

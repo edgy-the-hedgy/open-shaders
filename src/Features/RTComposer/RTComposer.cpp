@@ -239,6 +239,12 @@ json RTComposer::GetDiagnostics()
              composition.mode == CompositorMode::HybridShadowed) },
         { "shadowTemporalHistoryWeight", 0.70f },
         { "compositorFSRRayRegenerationEnabled", composition.useFSRRayRegeneration },
+        { "fixedRRRequested", {
+            { "direct", composition.fixedRR.Get(composition.mode, 0u) },
+            { "indirect", composition.fixedRR.Get(composition.mode, 1u) },
+            { "hybrid", composition.fixedRR.Get(composition.mode, 2u) }
+        } },
+        { "fixedRRProviderWired", false },
         { "effectiveDirectRREnabled",
             (composition.enabled && composition.mode == CompositorMode::ShadowOnly &&
              composition.useFSRRayRegeneration) ||
@@ -374,6 +380,7 @@ void RTComposer::SaveSettings(json& value)
         { "Composition", {
             { "enabled", composition.enabled },
             { "useFSRRayRegeneration", composition.useFSRRayRegeneration },
+            { "fixedRRRequests", composition.fixedRR.modes },
             { "diagnoseAdvancedTransport", composition.diagnoseAdvancedTransport },
             { "mode", static_cast<uint32_t>(composition.mode) },
             { "customHybridShadowed", composition.customHybridShadowed },
@@ -412,6 +419,18 @@ void RTComposer::LoadSettings(json& value)
         CompositionSettings next{};
         next.enabled = it->value("enabled", false);
         next.useFSRRayRegeneration = it->value("useFSRRayRegeneration", true);
+        // Do not migrate the legacy universal RR switch into fixed-mode requests.
+        // New requests default OFF, including when a prior universal value was true.
+        if (auto saved = it->find("fixedRRRequests"); saved != it->end() && saved->is_array()) {
+            for (size_t modeIndex = 0; modeIndex < std::min(saved->size(), next.fixedRR.modes.size()); ++modeIndex) {
+                if (!(*saved)[modeIndex].is_array()) continue;
+                for (uint32_t family = 0; family < 3u && family < (*saved)[modeIndex].size(); ++family) {
+                    if ((*saved)[modeIndex][family].is_boolean())
+                        (void)next.fixedRR.Set(static_cast<CompositorMode>(modeIndex),
+                            family, (*saved)[modeIndex][family].get<bool>());
+                }
+            }
+        }
         next.diagnoseAdvancedTransport = it->value("diagnoseAdvancedTransport", false);
         const auto mode = it->value("mode", 0u);
         next.mode = static_cast<CompositorMode>(std::min(mode, 6u));
@@ -499,9 +518,10 @@ void RTComposer::DrawSettings()
     ImGui::SeparatorText("Compositor");
     const auto previousPolicy = std::pair{ composition.enabled, composition.mode };
     ImGui::Checkbox("Enable RT shadow composition", &composition.enabled);
-    if (ImGui::Checkbox("FSR Ray Regeneration (compositor)", &composition.useFSRRayRegeneration))
-        OnCompositionPolicyChanged();
-    ImGui::TextWrapped("Shadow Only never uses FSR-RR. Native Direct/Indirect/HybridGI reconstruction will be independently selectable after its implementation stages.");
+    // Legacy RR remains a Custom/legacy preference, independent of fixed-tier policies.
+    if (composition.mode == CompositorMode::Custom)
+        ImGui::Checkbox("Custom legacy FSR Ray Regeneration", &composition.useFSRRayRegeneration);
+    ImGui::TextWrapped("Shadow Only never uses FSR-RR. Fixed-mode RR requests are independent; providers activate only after native fallback wiring and validation.");
     int compositorMode = static_cast<int>(composition.mode);
     if (ImGui::BeginCombo("Compositor mode",
         std::array{ "Shadow Only", "Hybrid-Shadowed", "RT-exclusive Tier I",
@@ -523,7 +543,24 @@ void RTComposer::DrawSettings()
         OnCompositionPolicyChanged();
 
     if (IsFixedPreset()) {
-        ImGui::TextWrapped("Fixed tier: compositor tuning is locked. Select Custom to edit direct, shadow, indirect, reconstruction or RR settings. Legacy feature settings remain editable while the compositor is disabled.");
+        ImGui::TextWrapped("Fixed tier: lighting and sampling tuning are locked; RR requests remain individually editable.");
+        constexpr std::array rrLabels{ "Direct FSR Ray Regeneration",
+            "Indirect FSR Ray Regeneration", "HybridGI FSR Ray Regeneration" };
+        const auto selectedMode = composition.mode;
+        if (selectedMode != CompositorMode::ShadowOnly &&
+            selectedMode != CompositorMode::FSRRedstone) {
+            ImGui::SeparatorText("Independent RR requests");
+            for (uint32_t family = 0u; family < rrLabels.size(); ++family) {
+                const uint32_t index = static_cast<uint32_t>(selectedMode);
+                const bool supported = (index == 1u && family == 2u) ||
+                    ((index == 2u || index == 3u) && family < 2u) || index == 4u;
+                if (!supported) continue;
+                bool requested = composition.fixedRR.Get(selectedMode, family);
+                if (ImGui::Checkbox(rrLabels[family], &requested))
+                    (void)composition.fixedRR.Set(selectedMode, family, requested);
+            }
+            ImGui::TextWrapped("Policy requests are saved independently. RR provider activation is not wired yet; runtime dispatch continues to follow the existing safe path.");
+        }
         ImGui::TextWrapped("Direct: %s", DirectTierDescription(composition.mode));
         ImGui::TextWrapped("Indirect: %s", IndirectTierDescription(composition.mode));
         if (!GetTierPolicy(composition.mode).ready)
@@ -696,6 +733,10 @@ void RTComposer::RegisterUxActions()
             uint32_t requested = static_cast<uint32_t>(policy.mode);
             if (args.contains("mode")) requested = args.at("mode").get<uint32_t>();
             if (requested > 6u) throw std::invalid_argument("Unknown RT compositor mode");
+            // Fixed RR policy is managed by setFixedRR, never by the legacy global setting.
+            if (requested != static_cast<uint32_t>(CompositorMode::Custom) &&
+                args.contains("useFSRRayRegeneration"))
+                throw std::invalid_argument("Fixed RR must use setFixedRR with a signal family");
             if (requested == static_cast<uint32_t>(CompositorMode::FSRRedstone))
                 throw std::invalid_argument("FSR-REDSTONE unavailable: saved settings remain preserved; runtime uses Shadow Only");
             if (args.contains("samplingMode"))
@@ -752,6 +793,23 @@ void RTComposer::RegisterUxActions()
                     ApplySamplingPolicy(policy.directCheckerboard);
                 composer.OnCompositionPolicyChanged();
             }
+        });
+    registry.RegisterCommand(GetShortName(), "setFixedRR",
+        "Save a fixed-tier reconstruction request (family: direct, indirect or hybrid). Does not change tracing.",
+        +[](Feature* self, const json& args) {
+            auto& composer = *static_cast<RTComposer*>(self);
+            const uint32_t modeValue = args.at("mode").get<uint32_t>();
+            if (modeValue > 4u)
+                throw std::invalid_argument("Fixed RR request requires an available fixed compositor tier (0..4)");
+            const auto mode = static_cast<CompositorMode>(modeValue);
+            const std::string familyName = args.at("family").get<std::string>();
+            const uint32_t family = familyName == "direct" ? 0u :
+                familyName == "indirect" ? 1u :
+                familyName == "hybrid" ? 2u : 3u;
+            const bool enabled = args.at("enabled").get<bool>();
+            if (!composer.composition.fixedRR.Set(mode, family, enabled))
+                throw std::invalid_argument("This RR signal family is unavailable in the requested tier");
+            // No tracer, scene, sampling or light snapshot reset for RR policy changes.
         });
     registry.RegisterCommand(GetShortName(), "setRayRegeneration",
         "Configure directCheckerboard, hybridResolution (0 full, 1 half, 2 quarter), hybridCheckerboard, and RR enablement.",
