@@ -596,9 +596,15 @@ namespace DX12Native
                 uint32_t width, height, historyAvailable, exportEnabled;
                 float historyWeight, depthTolerance;
             };
+            const auto& composer = globals::features::rtComposer;
+            const auto& dev = composer.EffectiveDeveloperControls();
+            const bool overrideShadow = composer.advancedDeveloperMode &&
+                dev.overrideShadowTemporal;
             const Parameters parameters{ frame.size[0], frame.size[1],
                 prior != nullptr ? 1u : 0u,
-                frame.shadowMaskExport ? 1u : 0u, 0.70f, 0.018f };
+                frame.shadowMaskExport ? 1u : 0u,
+                overrideShadow ? dev.shadowTemporalWeight : 0.70f,
+                overrideShadow ? dev.shadowTemporalDepthTolerance : 0.018f };
             static_assert(sizeof(Parameters) == sizeof(uint32_t) * 6);
             commands->SetComputeRoot32BitConstants(2, 6, &parameters, 0);
             commands->Dispatch((frame.size[0] + 7u) / 8u,
@@ -1231,7 +1237,11 @@ namespace DX12Native
 	{
 		CS_GPU_PASS("RTDirectLighting::DirectSceneComposite");
 		auto* context = backend.d3d11Context.get();
-		struct Settings { uint32_t indirect, directRR; float indirectStrength; uint32_t useDXRIndirect; float redstoneBlend; uint32_t shadowOnly; float shadowInfluence; float shadowEdgeFilterEnabled; };
+		struct Settings {
+            uint32_t indirect, directRR; float indirectStrength; uint32_t useDXRIndirect;
+            float redstoneBlend; uint32_t shadowOnly; float shadowInfluence;
+            float shadowEdgeFilterEnabled; float contactAAWeight, contactAADepthTolerance;
+        };
 		if (!lightingCompositeSettings) lightingCompositeSettings = std::make_unique<ConstantBuffer>(ConstantBufferDesc<Settings>(), "RTDirectLighting::LightingComposite CB");
 		winrt::com_ptr<ID3D11ComputeShader> shader;
 		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 17> inputs;
@@ -1312,13 +1322,20 @@ namespace DX12Native
 		if (useIndirect) indirect.BindCompositeResources();
 		const bool shadowOnly = composer.ShadowOnlyActive() && a_frame.shadowMaskExport;
         const auto shadowTier = RTComposer::GetTierPolicy(RTComposer::CompositorMode::ShadowOnly);
-        const float directBlend = composer.IsFixedPreset() ? shadowTier.directContribution : composer.composition.rtDirectContribution;
-        const float shadowStrength = composer.IsFixedPreset() ? shadowTier.shadowInfluence : composer.composition.shadowInfluence;
+        const auto& dev = composer.EffectiveDeveloperControls();
+        const float directBlend = composer.DeveloperSceneOverride() ?
+            dev.sceneDirectBlend : (composer.IsFixedPreset() ?
+                shadowTier.directContribution : composer.composition.rtDirectContribution);
+        const float shadowStrength = composer.DeveloperSceneOverride() ?
+            dev.sceneShadowInfluence : (composer.IsFixedPreset() ?
+                shadowTier.shadowInfluence : composer.composition.shadowInfluence);
 		lightingCompositeSettings->Update(Settings{ useIndirect ? 1u : 0u, rrFlags, a_frame.indirectStrength,
 			composeDXRIndirect ? 1u : 0u,
 			a_frame.rasterBlend * (shadowOnly ? directBlend : 1.0f),
 			shadowOnly ? 1u : 0u, shadowOnly ? shadowStrength : 0.0f,
-            shadowOnly && composer.IsFixedPreset() ? 1.0f : 0.0f });
+            shadowOnly && composer.IsFixedPreset() &&
+                (!composer.advancedDeveloperMode || dev.shadowContactAAEnabled) ? 1.0f : 0.0f,
+            dev.shadowContactAAWeight, dev.shadowContactAADepthTolerance });
 		auto* cb = lightingCompositeSettings->CB();
 		context->CSSetConstantBuffers(0, 1, &cb);
 		const auto& targets = globals::game::renderer->GetRuntimeData().renderTargets;
@@ -1410,10 +1427,14 @@ namespace DX12Native
 		const uint32_t effectiveRRMode = a_directRRResolutionMode == 3u ? rrPolicy.resolutionMode : std::min(a_directRRResolutionMode, 2u);
 		const bool directRR = a_sceneTarget && a_useDirectRR && rrPolicy.enabled;
 		const bool wantExport = a_sceneTarget && globals::features::rtComposer.ShadowOnlyActive();
+        const auto& shadowComposer = globals::features::rtComposer;
+        const auto& shadowDev = shadowComposer.EffectiveDeveloperControls();
         bool wantShadowTemporal = a_sceneTarget &&
-            globals::features::rtComposer.TierControlsLocked() &&
-            (globals::features::rtComposer.composition.mode == RTComposer::CompositorMode::ShadowOnly ||
-             globals::features::rtComposer.composition.mode == RTComposer::CompositorMode::HybridShadowed);
+            shadowComposer.TierControlsLocked() &&
+            (shadowComposer.composition.mode == RTComposer::CompositorMode::ShadowOnly ||
+             shadowComposer.composition.mode == RTComposer::CompositorMode::HybridShadowed) &&
+            (!shadowComposer.advancedDeveloperMode ||
+             !shadowDev.overrideShadowTemporal || shadowDev.shadowTemporalEnabled);
         // Acquire DX11 inputs only when production native Hybrid-Shadowed is
         // eligible; Shadow Only is the sole DX11 scene-composition mode.
         bool wantHybridInputs = a_sceneTarget &&

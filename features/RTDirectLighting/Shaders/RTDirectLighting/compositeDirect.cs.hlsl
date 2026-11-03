@@ -35,6 +35,8 @@ cbuffer LightingComposite : register(b0)
 	uint ShadowOnlyEnabled;
 	float ShadowInfluence;
 	float ShadowEdgeFilterEnabled;
+    float ContactAAWeight;
+    float ContactAADepthTolerance;
 };
 
 // Valid-receiver-only, center-weighted shadow edge AA; never expand shadows
@@ -65,7 +67,7 @@ float ContactShadowVisibility(uint2 pixel, uint2 extent)
             const float neighborDepth = abs(mul(FrameBuffer::CameraView[0],
                 float4(neighbor.xyz, 1.0f)).z);
             if (!isfinite(neighborDepth) ||
-                abs(neighborDepth - depth) > max(0.072f, depth * 0.015f)) continue;
+                abs(neighborDepth - depth) > max(0.072f, depth * ContactAADepthTolerance)) continue;
             const float2 neighborNormal = NativeNormalRoughness.Load(int3(tap, 0)).xy;
             if (!all(isfinite(neighborNormal)) ||
                 dot(normal, GBuffer::DecodeNormal(neighborNormal)) < 0.80f) continue;
@@ -74,7 +76,7 @@ float ContactShadowVisibility(uint2 pixel, uint2 extent)
             weights += weight;
         }
     }
-    return lerp(center, total / weights, 0.65f);
+    return lerp(center, total / weights, saturate(ContactAAWeight));
 }
 
 float4 ApplyContactShadow(uint2 pixel, uint2 extent, float4 color)
