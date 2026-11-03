@@ -526,39 +526,41 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
         // screen size. Retire ONLY native contexts; legacy RR is unaffected.
         if (!RetireNativeHybridContexts()) return false;
     }
-    const bool fresh = !nativeHybridContexts[0];
-    if (fresh) {
-        constexpr std::array<uint32_t, 3> familyFlags{
-            FFX_DENOISER_SIGNAL_INDIRECT_DIFFUSE,
-            FFX_DENOISER_SIGNAL_INDIRECT_SPECULAR,
-            FFX_DENOISER_SIGNAL_AMBIENT_OCCLUSION | FFX_DENOISER_SIGNAL_SPECULAR_OCCLUSION };
-        for (uint32_t family = 0; family < familyCount; ++family) {
-            ffxCreateContextDescDenoiser create{};
-            create.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_DENOISER;
-            create.version = FFX_DENOISER_VERSION;
-            // Native RR contexts operate at the producer's LOGICAL resolution.
-            // Native pixel dimensions belong to guides/composition only.
-            // Allocating quarter-mode RR at full native size needlessly
-            // reserves up to 4x the per-context resolution footprint.
-            create.maxRenderSize = { logical[0], logical[1] };
-            create.signalFlags = familyFlags[family];
-            create.checkerboardSignalFlags =
-                resources.checkerboard ? familyFlags[family] : 0u;
-            ffx::CreateBackendDX12Desc backendDesc{};
-            backendDesc.device = backend.d3d12Device.get();
-            create.header.pNext = &backendDesc.header;
-            if (denoiserFunctions.CreateContext(&nativeHybridContexts[family],
-                &create.header, nullptr) != FFX_API_RETURN_OK ||
-                !nativeHybridContexts[family]) {
-                nativeHybridFailure = "Native FSR RR family context creation failed";
-                nativeHybridFailed = true;
-                return false;
-            }
+    const bool fresh = nativeHybridLastFrame == UINT32_MAX;
+    uint32_t newlyCreatedMask = 0u;
+    constexpr std::array<uint32_t, 3> familyFlags{
+        FFX_DENOISER_SIGNAL_INDIRECT_DIFFUSE,
+        FFX_DENOISER_SIGNAL_INDIRECT_SPECULAR,
+        FFX_DENOISER_SIGNAL_AMBIENT_OCCLUSION | FFX_DENOISER_SIGNAL_SPECULAR_OCCLUSION };
+    for (uint32_t family = 0; family < familyCount; ++family) {
+        if (nativeHybridContexts[family]) continue;
+        ffxCreateContextDescDenoiser create{};
+        create.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_DENOISER;
+        create.version = FFX_DENOISER_VERSION;
+        create.maxRenderSize = { logical[0], logical[1] };
+        create.signalFlags = familyFlags[family];
+        create.checkerboardSignalFlags =
+            resources.checkerboard ? familyFlags[family] : 0u;
+        ffx::CreateBackendDX12Desc backendDesc{};
+        backendDesc.device = backend.d3d12Device.get();
+        create.header.pNext = &backendDesc.header;
+        if (denoiserFunctions.CreateContext(&nativeHybridContexts[family],
+            &create.header, nullptr) != FFX_API_RETURN_OK ||
+            !nativeHybridContexts[family]) {
+            nativeHybridFailure =
+                "Native FSR RR family context creation failed; native fallback for this family";
+            nativeHybridFailedFamilyMask |= 1u << family;
+            // Other successfully created contexts remain usable. Retry the
+            // missing family later without destroying unrelated AMD history.
+            continue;
         }
-        nativeHybridExtent = logical;
-        nativeHybridCheckerboard = resources.checkerboard;
-        nativeHybridActiveFamilies = familyCount;
+        newlyCreatedMask |= 1u << family;
+        nativeHybridConfigurationApplied[family] = false;
+        nativeHybridConfigurationDefaultsReady[family] = false;
     }
+    nativeHybridExtent = logical;
+    nativeHybridCheckerboard = resources.checkerboard;
+    nativeHybridActiveFamilies = familyCount;
     const bool reset = fresh || changed || resources.resetHistory ||
         nativeHybridLastFrame == UINT32_MAX ||
         (resources.frame != nativeHybridLastFrame + 1u);
@@ -650,6 +652,7 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
     };
 
     for (uint32_t family = 0; family < familyCount; ++family) {
+        if (!nativeHybridContexts[family]) continue;
         auto common = makeCommon();
         ffxDispatchDescDenoiserIndirectDiffuse diffuse{};
         ffxDispatchDescDenoiserIndirectSpecular specular{};
@@ -673,7 +676,8 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
         }
         // A failed family does not invalidate successful sibling contexts.
         // Reset only the failed family's temporal history on its next retry.
-        if ((nativeHybridFailedFamilyMask & (1u << family)) != 0u)
+        if (((nativeHybridFailedFamilyMask | newlyCreatedMask) &
+            (1u << family)) != 0u)
             common.flags |= FFX_DENOISER_DISPATCH_RESET;
         bool faulted = false;
         const auto result = DispatchDenoiserProtected(denoiserFunctions,

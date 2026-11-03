@@ -195,9 +195,10 @@ bool RedstoneDenoiser::ApplyNativeHybridConfiguration(bool& a_resetHistory)
     for (size_t family = 0; family < nativeHybridActiveFamilies; ++family) {
         auto* context = &nativeHybridContexts[family];
         if (!*context) {
-            nativeHybridConfigurationFailure =
-                std::string("Native RR configuration context missing: ") + familyNames[family];
-            return false;
+            // Missing SDK family contexts are handled by native reconstruction.
+            // Do not reject configuration of other independently usable families.
+            nativeHybridConfigurationApplied[family] = false;
+            continue;
         }
 
         auto& defaults = nativeHybridConfigurationDefaults[family];
