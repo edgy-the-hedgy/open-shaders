@@ -1481,11 +1481,24 @@ namespace DX12Native
         uint64_t nativeGIBytes = wantNativeGI ?
             NativeHybridGI::EstimateBytes(backend.d3d12Device.get(), size[0], size[1],
                 hybridSampling, optionalBlur) : 0;
+        // Historical allocations from earlier logical grids are still GPU
+        // resident until the NativeHybridGI owner retires. Include them in
+        // the conservative budget instead of counting only active textures.
+        if (wantNativeGI && nativeGIBytes != UINT64_MAX && nativeHybridGI) {
+            const uint64_t retained = nativeHybridGI->RetainedNativeHistoryBytes();
+            nativeGIBytes = retained > UINT64_MAX - nativeGIBytes ?
+                UINT64_MAX : nativeGIBytes + retained;
+        }
         if (wantPostHybrid && nativeGIBytes != UINT64_MAX) {
             const auto postSampling = MakeHybridSamplingLayout(2u, true, size, a_frame);
-            const auto additional = postSampling.checkerboard ?
+            uint64_t additional = postSampling.checkerboard ?
                 NativeHybridGI::EstimateBytes(backend.d3d12Device.get(), size[0],
                     size[1], postSampling, optionalBlur) : UINT64_MAX;
+            if (additional != UINT64_MAX && postHybridGI) {
+                const uint64_t retained = postHybridGI->RetainedNativeHistoryBytes();
+                additional = retained > UINT64_MAX - additional ?
+                    UINT64_MAX : additional + retained;
+            }
             nativeGIBytes = additional == UINT64_MAX ||
                 nativeGIBytes > UINT64_MAX - additional ?
                 UINT64_MAX : nativeGIBytes + additional;
