@@ -132,9 +132,13 @@ void main(uint2 logical : SV_DispatchThreadID)
             if (relativeDepth > DepthTolerance || alignment < NormalThreshold ||
                 roughnessDelta > RoughnessTolerance) continue;
             const float dist2 = float(dx * dx + dy * dy);
+            // Developer mode allows a zero exponent and zero normal threshold.
+            // Avoid undefined pow(0, 0) and keep the spatial test deterministic.
+            const float angularWeight = NormalExponent <= 0.0 ?
+                1.0 : pow(max(alignment, 1e-6), NormalExponent);
             const float w = exp2(-dist2 * DistanceFalloff -
                 relativeDepth * DepthFalloff -
-                roughnessDelta * RoughnessFalloff) * pow(alignment, NormalExponent);
+                roughnessDelta * RoughnessFalloff) * angularWeight;
             sum += w * signal;
             total += w;
         }
