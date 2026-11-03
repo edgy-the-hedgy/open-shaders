@@ -25,6 +25,9 @@ namespace DX12Native
         constexpr uint64_t kCompositionOffset = 2304;
         constexpr uint64_t kRRGuideOffset = 2560;
         constexpr uint64_t kPostOffset = 2816;
+        constexpr uint64_t kNativeReconstructionOffset = 5120;
+        constexpr uint32_t kNativeDescriptorsPerSignal = 5u;
+        constexpr uint32_t kNativeDescriptorsPerFrame = 4u * kNativeDescriptorsPerSignal;
         constexpr uint32_t kPostPerPass = 5;
         constexpr uint32_t kPostPerFrame = kPostPerPass * 4 * 2;
         constexpr uint32_t kRRGuideDescriptorsPerFrame = 10;
@@ -901,13 +904,167 @@ namespace DX12Native
         }
     }
 
+
+    bool NativeHybridGI::RecordNativeReconstruction(ID3D12Device* device,
+        ID3D12GraphicsCommandList* list, FrameOutputs& frame, uint32_t slot)
+    {
+        if (!device || !list || slot >= 2u || !frame.constants ||
+            !frame.rrGuides[0] || !frame.rrGuides[2] ||
+            !frame.textures[Eligibility]) {
+            postFailure = "Native reconstruction missing GPU guides";
+            return false;
+        }
+        try {
+            if (!nativeReconstructionRoot || !nativeReconstructionPipeline ||
+                !nativeReconstructionDescriptors) {
+                nativeReconstructionRoot = nullptr;
+                nativeReconstructionPipeline = nullptr;
+                nativeReconstructionDescriptors = nullptr;
+                const auto code = ReadDXIL(
+                    "Data/Shaders/RTDirectLighting/hybridNativeReconstruct.dxil");
+                D3D12_DESCRIPTOR_RANGE ranges[2]{};
+                ranges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0, 0, 0 };
+                ranges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 0 };
+                D3D12_ROOT_PARAMETER params[3]{};
+                for (uint32_t i = 0; i < 2; ++i) {
+                    params[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+                    params[i].DescriptorTable = { 1, &ranges[i] };
+                }
+                params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+                params[2].Descriptor = { 0, 0 };
+                const D3D12_ROOT_SIGNATURE_DESC desc{
+                    3, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE };
+                winrt::com_ptr<ID3DBlob> serialized, errors;
+                DX::ThrowIfFailed(D3D12SerializeRootSignature(&desc,
+                    D3D_ROOT_SIGNATURE_VERSION_1, serialized.put(), errors.put()));
+                DX::ThrowIfFailed(device->CreateRootSignature(0,
+                    serialized->GetBufferPointer(), serialized->GetBufferSize(),
+                    IID_PPV_ARGS(nativeReconstructionRoot.put())));
+                D3D12_COMPUTE_PIPELINE_STATE_DESC state{};
+                state.pRootSignature = nativeReconstructionRoot.get();
+                state.CS = { code.data(), code.size() };
+                DX::ThrowIfFailed(device->CreateComputePipelineState(
+                    &state, IID_PPV_ARGS(nativeReconstructionPipeline.put())));
+                const D3D12_DESCRIPTOR_HEAP_DESC heap{
+                    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+                    kNativeDescriptorsPerFrame * 2u,
+                    D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0u };
+                DX::ThrowIfFailed(device->CreateDescriptorHeap(
+                    &heap, IID_PPV_ARGS(nativeReconstructionDescriptors.put())));
+            }
+            struct alignas(16) Constants {
+                uint32_t nativeWidth, nativeHeight, logicalWidth, logicalHeight;
+                uint32_t packedWidth, packedHeight, family, advancedTier;
+                uint32_t checkerboard, checkerboardOrigin, scale, phase;
+                uint32_t radius, reserved[3]{};
+            };
+            static_assert(sizeof(Constants) == 64);
+            static_assert(kNativeReconstructionOffset + 4u * 256u <= kUploadBytes);
+            uint8_t* mapped = nullptr;
+            const D3D12_RANGE noRead{ 0, 0 };
+            DX::ThrowIfFailed(frame.constants->Map(0, &noRead,
+                reinterpret_cast<void**>(&mapped)));
+            const auto logical = frame.sampling.logical;
+            const auto native = frame.sampling.native;
+            for (uint32_t signal = 0; signal < 4u; ++signal) {
+                const Constants constants{
+                    native[0], native[1], logical[0], logical[1],
+                    frame.sampling.packed[0], frame.sampling.packed[1],
+                    std::min(signal, 2u), frame.advancedTransportTier,
+                    uint32_t(frame.sampling.checkerboard),
+                    frame.sampling.checkerboardOrigin,
+                    frame.sampling.spatialScale, frame.sampling.representativePhase,
+                    signal < 2u ? 4u : 2u };
+                std::memcpy(mapped + kNativeReconstructionOffset + signal * 256,
+                    &constants, sizeof(constants));
+            }
+            frame.constants->Unmap(0, nullptr);
+            const UINT step = device->GetDescriptorHandleIncrementSize(
+                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+            srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srv.Texture2D.MipLevels = 1;
+            D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+            uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+            for (uint32_t signal = 0; signal < 4u; ++signal) {
+                const DXGI_FORMAT format = signal < 2u ?
+                    DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8_UNORM;
+                const uint32_t inputIndex = signal == 0u ? Diffuse :
+                    signal == 1u ? Specular :
+                    signal == 2u ? DiffuseAO : SpecularAO;
+                const std::array<ID3D12Resource*, 4> inputs{
+                    frame.textures[inputIndex].get(), frame.rrGuides[0].get(),
+                    frame.rrGuides[2].get(), frame.textures[Eligibility].get() };
+                const std::array<DXGI_FORMAT, 4> formats{
+                    format, DXGI_FORMAT_R32_FLOAT,
+                    DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R32_UINT };
+                auto cpu = nativeReconstructionDescriptors->GetCPUDescriptorHandleForHeapStart();
+                cpu.ptr += uint64_t(slot * kNativeDescriptorsPerFrame +
+                    signal * kNativeDescriptorsPerSignal) * step;
+                for (uint32_t i = 0; i < inputs.size(); ++i) {
+                    srv.Format = formats[i];
+                    device->CreateShaderResourceView(inputs[i], &srv, cpu);
+                    cpu.ptr += step;
+                }
+                uav.Format = format;
+                device->CreateUnorderedAccessView(frame.rrOutputs[signal].get(),
+                    nullptr, &uav, cpu);
+                // Inactive deterministic RT-exclusive lobes have no provider.
+                if (frame.advancedTransportTier != 0u &&
+                    (signal >= 2u ||
+                     (frame.advancedTransportTier == 2u && signal == 1u)))
+                    continue;
+                std::array<D3D12_RESOURCE_BARRIER, 5> begin{}, end{};
+                for (uint32_t i = 0; i < inputs.size(); ++i) {
+                    begin[i] = CD3DX12_RESOURCE_BARRIER::Transition(inputs[i],
+                        D3D12_RESOURCE_STATE_COMMON,
+                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                    end[i] = CD3DX12_RESOURCE_BARRIER::Transition(inputs[i],
+                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                        D3D12_RESOURCE_STATE_COMMON);
+                }
+                begin[4] = CD3DX12_RESOURCE_BARRIER::Transition(
+                    frame.rrOutputs[signal].get(), D3D12_RESOURCE_STATE_COMMON,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                end[4] = CD3DX12_RESOURCE_BARRIER::Transition(
+                    frame.rrOutputs[signal].get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_COMMON);
+                list->ResourceBarrier(UINT(begin.size()), begin.data());
+                ID3D12DescriptorHeap* heaps[]{ nativeReconstructionDescriptors.get() };
+                list->SetDescriptorHeaps(1, heaps);
+                list->SetComputeRootSignature(nativeReconstructionRoot.get());
+                list->SetPipelineState(nativeReconstructionPipeline.get());
+                auto gpu = nativeReconstructionDescriptors->GetGPUDescriptorHandleForHeapStart();
+                gpu.ptr += uint64_t(slot * kNativeDescriptorsPerFrame +
+                    signal * kNativeDescriptorsPerSignal) * step;
+                list->SetComputeRootDescriptorTable(0, gpu);
+                gpu.ptr += 4u * step;
+                list->SetComputeRootDescriptorTable(1, gpu);
+                list->SetComputeRootConstantBufferView(2,
+                    frame.constants->GetGPUVirtualAddress() +
+                    kNativeReconstructionOffset + signal * 256u);
+                list->Dispatch((logical[0] + 7u) / 8u,
+                    (logical[1] + 7u) / 8u, 1u);
+                list->ResourceBarrier(UINT(end.size()), end.data());
+                ++nativeReconstructionDispatches;
+            }
+            return true;
+        } catch (const std::exception& error) {
+            postFailure = std::string("Native reconstruction: ") + error.what();
+            return false;
+        }
+    }
+
     bool NativeHybridGI::RecordPostRR(ID3D12Device* device,
         ID3D12GraphicsCommandList* list, FrameOutputs& frame, uint32_t slot,
         uint32_t frameNumber, ID3D12Resource* nativeDepth,
         ID3D12Resource* nativeNormal, const RTComposer::CompositionSettings& policy,
-        RedstoneDenoiser& denoiser)
+        RedstoneDenoiser* denoiser, bool requestRR)
     {
         frame.rrValid = frame.postValid = false;
+        reconstructionProvider = "none";
+        reconstructionFallbackReason.clear();
         frame.nativeFinal.fill(nullptr);
         if (!device || !list || !frame.valid || !frame.rrGuidesValid ||
             !nativeDepth || !nativeNormal || !frame.textures[Eligibility] ||
@@ -970,11 +1127,18 @@ namespace DX12Native
             resources.frame = frameNumber;
             resources.checkerboard = frame.sampling.checkerboard;
             resources.checkerboardOrigin = frame.sampling.checkerboardOrigin;
-            if (!denoiser.DispatchNativeHybridRR(list, resources)) {
-                postFailure = denoiser.NativeHybridFailure();
-                return false;
+            frame.rrValid = requestRR && denoiser &&
+                denoiser->DispatchNativeHybridRR(list, resources);
+            if (!frame.rrValid) {
+                reconstructionFallbackReason = requestRR ?
+                    (denoiser ? denoiser->NativeHybridFailure() :
+                        "FSR RR provider unavailable") : "FSR RR disabled by policy";
+                if (!RecordNativeReconstruction(device, list, frame, slot))
+                    return false;
+                reconstructionProvider = "native-dx12";
+            } else {
+                reconstructionProvider = "fsr-rr";
             }
-            frame.rrValid = true;
 
             if (!postRoot || !postPipelines[0] || !postPipelines[1] || !postDescriptors) {
                 postRoot = nullptr; postPipelines[0] = nullptr;

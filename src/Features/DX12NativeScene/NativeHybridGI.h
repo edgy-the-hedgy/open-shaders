@@ -89,7 +89,10 @@ namespace DX12Native
             FrameOutputs& frame, uint32_t slot, uint32_t frameNumber,
             ID3D12Resource* nativeDepth, ID3D12Resource* nativeNormal,
             const RTComposer::CompositionSettings& policy,
-            RedstoneDenoiser& denoiser);
+            RedstoneDenoiser* denoiser, bool requestRR);
+        uint64_t NativeReconstructionDispatches() const { return nativeReconstructionDispatches; }
+        const std::string& ReconstructionProvider() const { return reconstructionProvider; }
+        const std::string& ReconstructionFallbackReason() const { return reconstructionFallbackReason; }
         const std::string& PostFailure() const { return postFailure; }
         uint64_t PostDispatches() const { return postDispatches; }
         uint64_t BlurDispatches() const { return blurDispatches; }
@@ -109,6 +112,8 @@ namespace DX12Native
         uint64_t EligibilityDispatches() const { return eligibilityDispatches; }
     private:
         bool Initialize(ID3D12Device* device);
+        bool RecordNativeReconstruction(ID3D12Device* device,
+            ID3D12GraphicsCommandList* list, FrameOutputs& frame, uint32_t slot);
         winrt::com_ptr<ID3D12RootSignature> root;
         std::array<winrt::com_ptr<ID3D12PipelineState>, 2> pipelines;
         winrt::com_ptr<ID3D12PipelineState> eligibilityPipeline;
@@ -133,10 +138,15 @@ namespace DX12Native
         winrt::com_ptr<ID3D12PipelineState> compositionPipeline;
         winrt::com_ptr<ID3D12RootSignature> compositionRoot; // 10 SRVs, 3 UAVs, CBV b13
         winrt::com_ptr<ID3D12DescriptorHeap> compositionDescriptors;
+        winrt::com_ptr<ID3D12RootSignature> nativeReconstructionRoot;
+        winrt::com_ptr<ID3D12PipelineState> nativeReconstructionPipeline;
+        winrt::com_ptr<ID3D12DescriptorHeap> nativeReconstructionDescriptors;
         winrt::com_ptr<ID3D12RootSignature> postRoot;
         std::array<winrt::com_ptr<ID3D12PipelineState>, 2> postPipelines;
         winrt::com_ptr<ID3D12DescriptorHeap> postDescriptors;
         std::string failure, compositionFailure, guideFailure, postFailure, historyFailure, advancedFailure;
+        std::string reconstructionProvider, reconstructionFallbackReason;
+        uint64_t nativeReconstructionDispatches = 0;
         uint64_t advancedPackDispatches = 0;
         uint64_t giDispatches = 0, aoDispatches = 0, compositionDispatches = 0,
             eligibilityDispatches = 0, guideDispatches = 0,
