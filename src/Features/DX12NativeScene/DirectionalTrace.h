@@ -24,7 +24,7 @@ namespace DX12Native
 		static constexpr std::array<uint32_t, 5> kTraceResolutionMenuOrder{ 0u, 3u, 1u, 4u, 2u };
 		static constexpr const char* kTraceResolutionMenuLabels = "Full\0Two-thirds\0Half\0One-third\0Quarter\0";
 		/** @brief Loads packaged DXIL using the existing device; compiles only native receiver/preview passes. */
-		bool Initialize(const GraphicsBackend& a_backend);
+		bool Initialize(const GraphicsBackend& a_backend, bool a_fsrHybridOnly = false);
 		/** @brief Preserves in-flight ray resources during early teardown. */
 		~DirectionalTrace();
 		/** @brief Invalidates publication while pending frames retire by fence. */
@@ -37,6 +37,9 @@ namespace DX12Native
         bool RetireAdvancedRRContexts();
 		/** @brief Traces selected-light visibility or a bounded prepared light set against a retained TLAS. */
 		void Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight = false, const LightLimitFixData::LightView& a_lights = {}, uint32_t a_materialView = 0, ID3D11UnorderedAccessView* a_sceneTarget = nullptr, uint32_t a_lightReference = 0, uint32_t a_lightBase = 0, ID3D11ShaderResourceView* a_roomMetadata = nullptr, std::span<const std::array<uint32_t, 2>> a_lightIdentities = {}, bool a_allPreparedLights = false, float4 a_strengths = { 1, 1, 1, 1 }, bool a_useIndirect = true, float a_indirectStrength = 1.0f, bool a_useDirectRR = false, uint32_t a_indirectRays = 0, std::span<const uint32_t> a_roomReferences = {}, float a_rasterBlend = 1.0f, uint32_t a_normalMode = 2u, std::span<const PreparedPointLight> a_preparedLights = {}, uint32_t a_directResolutionMode = 0u, uint32_t a_indirectResolutionMode = 0u, uint32_t a_directRRResolutionMode = 3u, bool a_rrMaterialIsolation = false, float a_rrGlossyRoughness = 0.2f, float4 a_falloffParameters = { 1.0f, 0.1f, 1.0f, 0.0f }, float4 a_stochasticParameters = { 0.0f, 1.0f, 0.0f, 0.0f });
+        /** @brief Runs raster-sourced FSR HybridGI in the existing tracer frame/queue without DXR Direct traversal. */
+        void DispatchFSRIndependentRaster(ID3D11UnorderedAccessView* a_sceneTarget,
+            const std::array<uint32_t, 2>& a_size, uint32_t a_frame);
 		/** @brief Non-owning, fence-gated DX12 mask publication. Consumers must wait on completionFence/value
 		 * and use the resources before the owning frame is retired; no CPU readback is involved. */
 		struct ShadowMaskPublication
@@ -183,7 +186,7 @@ namespace DX12Native
             winrt::com_ptr<ID3D12DescriptorHeap> nativeDirectPackDescriptors;
             winrt::com_ptr<ID3D12RootSignature> nativeDirectPackRootRef;
             winrt::com_ptr<ID3D12PipelineState> nativeDirectPackPipelineRef;
-            bool fsrIndependent = false, fsrDepthReady = false;
+            bool fsrIndependent = false, fsrDepthReady = false, fsrHybridOnly = false;
             bool nativeDirectRRRequested = false, nativeDirectPackValid = false;
             bool nativeDirectRRReady = false;
             uint32_t nativeDirectRRSuccessMask = 0u;
