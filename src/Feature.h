@@ -367,6 +367,8 @@ public:
 
 	/** @brief Per-frame work executed before Prepass, earliest per-frame hook. */
 	virtual void EarlyPrepass() {}
+	/** @brief Runs before the engine shadow-map renderer, without requiring raster shadow completion. */
+	virtual void OnBeforeShadowMapRendering() {}
 
 	/** @brief Runs immediately before the engine polls physical input devices. */
 	virtual void OnBeforeInputPoll() {}

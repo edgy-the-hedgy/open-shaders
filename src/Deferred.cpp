@@ -898,6 +898,7 @@ ID3D11ComputeShader* Deferred::GetComputeMainCompositeInterior()
 
 void Deferred::Hooks::Main_RenderShadowMaps::thunk()
 {
+	Feature::ForEachLoadedFeature("OnBeforeShadowMapRendering", [](Feature* feature) { feature->OnBeforeShadowMapRendering(); });
 	func();
 	globals::deferred->EarlyPrepasses();
 };

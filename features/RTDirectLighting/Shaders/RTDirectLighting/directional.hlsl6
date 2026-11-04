@@ -43,6 +43,7 @@ cbuffer Trace : register(b0)
 #include "directLighting.hlsli"
 #include "indirectLighting.hlsli"
 #include "Common/NativeTraceSampling.hlsli"
+#include "nativeShadowTrace.hlsli"
 
 uint Hash(uint value)
 {
@@ -98,6 +99,7 @@ uint2 TraceAnchor(uint2 pixel, uint mode, uint passSalt)
 void main(uint3 id : SV_DispatchThreadID)
 {
 	if (any(id.xy >= Size)) return;
+	if (TracePass == NativeShadowTracePass) { TraceNativeShadow(id.xy); return; }
 	// Separate resolve kernel: copy only from a traced anchor on the same
 	// receiver surface. Mismatched depth/room retains raster fallback.
 	if (TracePass >= 2u) {

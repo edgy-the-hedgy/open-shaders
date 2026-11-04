@@ -45,6 +45,7 @@ void DX12NativeScene::ResetPreparedScene()
 	preparedScene.Reset();
 	preparedAcceleration.Reset();
 	preparedTrace.Reset(true);
+	nativeShadowTrace.Reset(true);
 }
 
 void DX12NativeScene::AdvancePreparedScene(uint32_t, uint64_t a_budgetBytes)

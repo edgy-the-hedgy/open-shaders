@@ -189,6 +189,8 @@ namespace globals
 
 		D3D11_MAPPED_SUBRESOURCE* mappedFrameBuffer = nullptr;
 		FrameBufferCache frameBufferCached{};
+		uint32_t frameBufferCachedFrame = 0;
+		bool frameBufferCachedValid = false;
 
 		int32_t* frameCounter = nullptr;
 		int* viewWidth = nullptr;
@@ -337,6 +339,8 @@ namespace globals
 			frameBufferCached.nonVR = frameBuffer;
 		}
 		mappedFrameBuffer = nullptr;
+		frameBufferCachedValid = graphicsState && globals::state && !(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections));
+		if (frameBufferCachedValid) frameBufferCachedFrame = graphicsState->GetFrameCount();
 	}
 
 	/**

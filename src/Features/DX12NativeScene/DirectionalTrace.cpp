@@ -1,3 +1,4 @@
+#include "../../../package/Shaders/Common/NativeShadowMask.hlsli"
 #include "Features/RTDirectLighting/RTDirectLighting.h"
 #include "DirectionalTrace.h"
 
@@ -16,10 +17,11 @@
 
 namespace DX12Native
 {
-	bool DirectionalTrace::Initialize(const GraphicsBackend& a_backend)
+	bool DirectionalTrace::Initialize(const GraphicsBackend& a_backend, bool a_shadowMask)
 	{
 		if (!failure.empty()) return false;
-		if (pipeline && prepare && display) return true;
+		if (pipeline && (a_shadowMask ? bool(prepareShadow) : bool(prepare && display))) return true;
+        shadowService = a_shadowMask;
 		if (!completion.fence12) backend = a_backend;
 		try {
 			D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
@@ -33,9 +35,14 @@ namespace DX12Native
 				completion.Create(backend.d3d12Device.get(), backend.d3d11Device.get(), "RTDirectLighting::TraceCompletion");
 			}
 			CreatePipeline();
+            if (a_shadowMask) {
+                prepareShadow.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\RTDirectLighting\\prepareShadowRays.cs.hlsl",{},"cs_5_0")));
+                if (!prepareShadow) throw std::runtime_error("Native RT shadow camera-ray shader unavailable");
+            } else {
 			prepare.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\RTDirectLighting\\prepareReceivers.cs.hlsl", {}, "cs_5_0")));
 			display.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\RTDirectLighting\\previewDirectional.cs.hlsl", {}, "cs_5_0")));
 			if (!prepare || !display) throw std::runtime_error("Directional receiver/preview shader unavailable");
+            }
 			return true;
 		} catch (const std::exception& error) { failure = error.what(); return false; }
 	}
@@ -63,7 +70,10 @@ namespace DX12Native
 		previewValid = false;
 		rrDebugPreviewValid = false;
 		lightSelectionFailure.clear();
-		for (auto& frame : frames) if (!frame.submitted) frame = {};
+		for (auto& frame : frames) {
+			if (frame.shadowMask) frame.awaitingScene = false;
+			if (!frame.submitted) frame = {};
+		}
 		if (a_releaseBindings) cachedBindings.reset();
 	}
 
@@ -72,7 +82,7 @@ namespace DX12Native
 		Reset();
 		pipeline = nullptr;
 		root = nullptr;
-		prepare = nullptr;
+		prepare = nullptr; prepareShadow = nullptr;
 		display = nullptr;
 		composite = nullptr;
 		prepareDirectGuides = nullptr;
@@ -303,8 +313,8 @@ namespace DX12Native
 		context->CSGetConstantBuffers(12, 1, oldCamera.put());
 		context->CSGetConstantBuffers(5, 1, oldShared.put());
 		context->CSGetConstantBuffers(6, 1, oldFeatures.put());
-		auto* depth = Util::GetCurrentSceneDepthSRV();
-		if (!depth) throw std::runtime_error("Native receiver depth unavailable");
+		auto* depth = a_frame.shadowMask ? nullptr : Util::GetCurrentSceneDepthSRV();
+		if (!a_frame.shadowMask && !depth) throw std::runtime_error("Native receiver depth unavailable");
 		auto* gridBuffer = a_frame.grid.get();
 		auto* cameraBuffer = a_frame.camera.get();
 		auto* motion = Util::AsReal(globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGET::kMOTION_VECTOR].SRV);
@@ -316,7 +326,7 @@ namespace DX12Native
 		context->CSSetConstantBuffers(0, 1, &gridBuffer);
 		context->CSSetConstantBuffers(12, 1, &cameraBuffer);
 		globals::state->BindSharedDataCS(context);
-		context->CSSetShader(prepare.get(), nullptr, 0);
+		context->CSSetShader(a_frame.shadowMask ? prepareShadow.get() : prepare.get(), nullptr, 0);
 		a_frame.submitted = true;
 		context->Dispatch((std::max({ a_frame.size[0], uint32_t(a_frame.lightIdentities.size()), 128u }) + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 		ID3D11UnorderedAccessView* priorOutputs[]{ output.get(), lightOutput.get(), motionOutput.get() };
@@ -403,9 +413,16 @@ namespace DX12Native
 			float4 falloffParameters;
 			float4 stochasticParameters;
 		};
-		const auto& origin = globals::game::frameBufferCached.GetCameraPosAdjust();
-		const Constants constants{ a_frame.size[0], a_frame.size[1], a_frame.number, uint32_t(a_frame.scene->bottoms.size()), a_direction, kRayMaximum, { origin.x, origin.y, origin.z }, kRayMinimum, a_localLight ? 0.0f : kSunAngularRadius, { a_localLight ? 1u : 0u, a_frame.materialView, a_frame.allPreparedLights ? uint32_t(a_frame.lightIdentities.size()) : 0u }, a_frame.strengths, a_frame.materialView >= kFirstDirectView ? 1u : 0u, { 0u, a_frame.directTraceMode, a_frame.indirectTraceMode }, { a_frame.indirectRays, a_frame.bindings->materials->roomCount, a_frame.bindings->materials->roomsKnown ? 1u : 0u, a_frame.normalMode | a_frame.rrMaterialPolicy }, a_frame.falloffParameters, a_frame.stochasticParameters };
-		static_assert(sizeof(Constants) == 36 * sizeof(uint32_t));
+		auto origin = globals::game::frameBufferCached.GetCameraPosAdjust();
+		if (a_frame.shadowMask) {
+			const auto& inverseView = globals::game::frameBufferCached.GetCameraViewInverse();
+			origin.x += inverseView._14;
+			origin.y += inverseView._24;
+			origin.z += inverseView._34;
+		}
+		const Constants constants{ a_frame.size[0], a_frame.size[1], a_frame.number, uint32_t(a_frame.scene->bottoms.size()), a_direction, kRayMaximum, { origin.x, origin.y, origin.z }, kRayMinimum, a_frame.shadowMask || a_localLight ? 0.0f : kSunAngularRadius, { a_localLight ? 1u : 0u, a_frame.materialView, a_frame.allPreparedLights ? uint32_t(a_frame.lightIdentities.size()) : 0u }, a_frame.strengths, a_frame.materialView >= kFirstDirectView ? 1u : 0u, { a_frame.shadowMask ? NativeShadowTracePass : 0u, a_frame.directTraceMode, a_frame.indirectTraceMode }, { a_frame.indirectRays, a_frame.bindings->materials->roomCount, a_frame.bindings->materials->roomsKnown ? 1u : 0u, a_frame.normalMode | a_frame.rrMaterialPolicy }, a_frame.falloffParameters, a_frame.stochasticParameters };
+		a_frame.traceLight = a_direction; a_frame.traceOrigin = {origin.x,origin.y,origin.z};
+        static_assert(sizeof(Constants) == 36 * sizeof(uint32_t));
 		commands->SetComputeRoot32BitConstants(5, 36, &constants, 0);
 		std::vector<D3D12_RESOURCE_BARRIER> begin{
 			CD3DX12_RESOURCE_BARRIER::Transition(a_frame.light->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
@@ -456,8 +473,7 @@ namespace DX12Native
 		commands->ResourceBarrier(uint32_t(end.size()), end.data());
 		if (constants.exportSignals) CaptureRawSignals(a_frame, 0, 5);
 		if (a_frame.indirectRays != 0) CaptureRawSignals(a_frame, 5, 2);
-		RecordNativeLightingRR(a_frame);
-		RecordNativeComposition(a_frame);
+		if (!a_frame.shadowMask) { RecordNativeLightingRR(a_frame); RecordNativeComposition(a_frame); }
 		DX::ThrowIfFailed(commands->Close());
 		ID3D12CommandList* lists[]{ commands };
 		backend.commandQueue->ExecuteCommandLists(1, lists);
@@ -524,9 +540,10 @@ namespace DX12Native
 			for (auto& frame : frames) {
 				if (!frame.submitted || !frame.fence || frame.fence > done || frame.awaitingScene ||
                     (frame.sceneConsumer && frame.sceneConsumer->GetCompletedValue() < frame.sceneConsumerValue)) continue;
-				if (!frame.retirement && frame.generation == generation && display) { Consume(frame); ++completions; }
+				if (!frame.shadowMask && !frame.retirement && frame.generation == generation && display) { Consume(frame); ++completions; }
 				if (frame.retirement && frame.retirement > retired) continue;
 				if (frame.generation != generation) { frame = {}; continue; }
+				if (frame.shadowMask) ++completions;
 				frame.scene.reset();
 				frame.bindings.reset();
 				frame.submitted = false;
@@ -535,6 +552,13 @@ namespace DX12Native
 		} catch (const std::exception& error) { failure = error.what(); previewValid = false; }
 	}
 
+    std::optional<DirectionalTrace::ShadowMaskOutput> DirectionalTrace::GetShadowMaskOutput(uint32_t frameNumber) const
+    {
+        for (const auto& frame : frames) if (frame.shadowMask && frame.awaitingScene && frame.fence && frame.number==frameNumber && frame.generation==generation)
+            return ShadowMaskOutput{NativeSceneOutput{frame.output->resource.get(),frame.receivers->resource.get(),completion.fence12.get(),frame.fence},
+                frame.scene,frame.size,frame.traceOrigin,frame.traceLight,frame.number};
+        return std::nullopt;
+    }
     std::optional<NativeSceneOutput> DirectionalTrace::GetSceneOutput(uint32_t frameNumber) const
     {
         for (const auto& frame : frames) if (frame.awaitingScene && frame.composedValid && frame.number == frameNumber && frame.generation == generation)
@@ -560,10 +584,10 @@ namespace DX12Native
         sceneCompositeFrame = frame.number;
     }
 
-	void DirectionalTrace::Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight, const LightLimitFixData::LightView& a_lights, uint32_t a_materialView, ID3D11UnorderedAccessView* a_sceneTarget, uint32_t a_lightReference, uint32_t a_lightBase, ID3D11ShaderResourceView* a_roomMetadata, std::span<const std::array<uint32_t, 2>> a_lightIdentities, bool a_allPreparedLights, float4 a_strengths, bool a_useIndirect, float a_indirectStrength, bool a_useDirectRR, uint32_t a_indirectRays, std::span<const uint32_t> a_roomReferences, float a_rasterBlend, uint32_t a_normalMode, std::span<const PreparedPointLight> a_preparedLights, uint32_t a_directResolutionMode, uint32_t a_indirectResolutionMode, uint32_t a_directRRResolutionMode, bool a_rrMaterialIsolation, float a_rrGlossyRoughness, float4 a_falloffParameters, float4 a_stochasticParameters)
+	void DirectionalTrace::Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight, const LightLimitFixData::LightView& a_lights, uint32_t a_materialView, ID3D11UnorderedAccessView* a_sceneTarget, uint32_t a_lightReference, uint32_t a_lightBase, ID3D11ShaderResourceView* a_roomMetadata, std::span<const std::array<uint32_t, 2>> a_lightIdentities, bool a_allPreparedLights, float4 a_strengths, bool a_useIndirect, float a_indirectStrength, bool a_useDirectRR, uint32_t a_indirectRays, std::span<const uint32_t> a_roomReferences, float a_rasterBlend, uint32_t a_normalMode, std::span<const PreparedPointLight> a_preparedLights, uint32_t a_directResolutionMode, uint32_t a_indirectResolutionMode, uint32_t a_directRRResolutionMode, bool a_rrMaterialIsolation, float a_rrGlossyRoughness, float4 a_falloffParameters, float4 a_stochasticParameters, bool a_shadowMask)
 	{
 		CS_GPU_PASS("RTDirectLighting::DirectionalDispatch");
-		const bool direct = a_materialView >= kFirstDirectView;
+		const bool direct = !a_shadowMask && a_materialView >= kFirstDirectView;
 		lightSelectionFailure.clear();
 		if (a_allPreparedLights && (!direct || a_preparedLights.empty() || a_preparedLights.size() > kMaximumDirectLights)) {
 			lightSelectionFailure = "All-prepared-light mode requires 1..32 prepared lights and a direct-light view";
@@ -594,7 +618,7 @@ namespace DX12Native
 		if (cachedBindings && cachedBindings->scene != a_scene) cachedBindings.reset();
 		const auto bindingBytes = cachedBindings ? 0 : BindingBytes(backend, *a_scene);
 		if (bindingBytes == UINT64_MAX) { failure = "Directional binding allocation unsupported"; return; }
-		const std::array<uint32_t, 2> size = a_sceneTarget ? a_nativeSize : std::array<uint32_t, 2>{ (a_nativeSize[0] + kGridDivisor - 1) / kGridDivisor, (a_nativeSize[1] + kGridDivisor - 1) / kGridDivisor };
+		const std::array<uint32_t, 2> size = a_sceneTarget || a_shadowMask ? a_nativeSize : std::array<uint32_t, 2>{ (a_nativeSize[0] + kGridDivisor - 1) / kGridDivisor, (a_nativeSize[1] + kGridDivisor - 1) / kGridDivisor };
 		const auto rrPolicy = RayRegeneration::GetSettings();
 		const uint32_t effectiveRRMode = a_directRRResolutionMode == 3u ? rrPolicy.resolutionMode : std::min(a_directRRResolutionMode, 2u);
 		const bool directRR = a_sceneTarget && a_useDirectRR && rrPolicy.enabled;
@@ -646,6 +670,7 @@ namespace DX12Native
 			available->size = size;
 			available->number = a_frame;
 			available->materialView = std::min(a_materialView, kCombinedDirectView);
+            available->shadowMask = a_shadowMask;
 			available->generation = generation;
 			available->lightReference = a_lightReference;
 			available->lightBase = a_lightBase;
@@ -685,8 +710,8 @@ namespace DX12Native
 			desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
 			desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
 			desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-			if (!available->receivers) available->receivers = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RTDirectLighting::Receivers");
-			if (!available->output) available->output = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RTDirectLighting::BlockerDistance");
+			if (!available->receivers) available->receivers = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), a_shadowMask ? "DX12native-shadowmask::CameraRays" : "RTDirectLighting::Receivers");
+			if (!available->output) available->output = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), a_shadowMask ? "DX12native-shadowmask" : "RTDirectLighting::BlockerDistance");
 			if (direct) {
 				desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
 				static constexpr std::array names{ "RTDirectLighting::DirectDiffuse", "RTDirectLighting::DirectSpecular", "RTDirectLighting::DirectNormalRoughness", "RTDirectLighting::DirectSpecularAlbedo", "RTDirectLighting::DirectDiffuseAlbedo", "RTDirectLighting::IndirectDiffuse", "RTDirectLighting::IndirectSpecular" };
@@ -720,6 +745,7 @@ namespace DX12Native
 			Record(*available, a_lightDirection, a_localLight);
 			if (direct) ++directSubmissions;
 			if (a_sceneTarget) OfferSceneOutput(*available);
+            if (a_shadowMask) available->awaitingScene = true;
 			localLightMode = a_localLight;
 			sourceLightCount = uint32_t(available->preparedLights.size());
 			sourceLightFrame = a_frame;
@@ -747,7 +773,7 @@ namespace DX12Native
 			{ "directRR", directDenoiser.GetRayRegenerationDiagnostics() }, { "dxrIndirectRR", indirectDenoiser.GetRayRegenerationDiagnostics() },
 			{ "rrSize", directRRSize }, { "rrCheckerboard", directRRCheckerboard }, { "bakedRoomCount", materials ? materials->roomCount : 0 }, { "bakedRoomsKnown", materials && materials->roomsKnown }, { "indirectCompositeSubmissions", indirectCompositeSubmissions },
 			{ "previewValid", previewValid }, { "previewFrame", previewFrame }, { "previewSize", previewSize },
-			{ "receiverStage", "opaque world lighting complete; before first-person camera rebasing" },
+			{ "receiverStage", shadowService ? "early prepared-scene camera rays; no raster receivers" : "opaque world lighting complete; before first-person camera rebasing" },
 			{ "previewUnavailableLegend", "red: receiver; blue: ray miss; orange: unsupported material; magenta: no reference match/material unavailable; yellow: depth mismatch; cyan: unknown room; gray: room exclusion; dark purple: no table; brown: unresolved reference; pink: ambiguous reference; violet: unsupported light; white: invalid data" },
 			{ "residentBytes", ResidentBytes() + MaterialResidentBytes() }, { "traceResidentBytes", ResidentBytes() },
 			{ "materialView", previewMaterialView }, { "budgetDeferrals", budgetDeferrals }, { "busyFrames", busyFrames },

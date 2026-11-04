@@ -10,7 +10,7 @@
 #include "Util.h"
 #include <chrono>
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(DX12NativeScene::Settings, AcquireScene, UsePreparedScene, PreviewPreparedScene, UsePreparedMaterials, PreparedMaterialView, MaterialTextureBudgetMB, DirectLightingBudgetMB, SceneCompositionBudgetMB, PreviewLight, PreviewAllLights, PreviewDirectStrength, PreviewDiffuseStrength, PreviewSpecularStrength, PreviewEmissionStrength, NodesPerFrame, MaxInstances, BufferBudgetMB)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(DX12NativeScene::Settings, AcquireScene, UsePreparedScene, PreviewPreparedScene, UsePreparedMaterials, PreparedMaterialView, MaterialTextureBudgetMB, DirectLightingBudgetMB, SceneCompositionBudgetMB, NativeShadowMask, ShadowMaskBudgetMB, PreviewLight, PreviewAllLights, PreviewDirectStrength, PreviewDiffuseStrength, PreviewSpecularStrength, PreviewEmissionStrength, NodesPerFrame, MaxInstances, BufferBudgetMB)
 
 std::pair<std::string, std::vector<std::string>> DX12NativeScene::GetFeatureSummary()
 {
@@ -46,11 +46,14 @@ void DX12NativeScene::LoadSettings(json& value)
 	selected.MaterialTextureBudgetMB = std::clamp(selected.MaterialTextureBudgetMB, 64u, 1024u);
 	selected.DirectLightingBudgetMB = std::clamp(selected.DirectLightingBudgetMB, 64u, 1024u);
     selected.SceneCompositionBudgetMB = std::clamp(selected.SceneCompositionBudgetMB,64u,4096u);
+    selected.ShadowMaskBudgetMB = std::clamp(selected.ShadowMaskBudgetMB,64u,4096u);
 	for (auto* v : { &selected.PreviewDirectStrength, &selected.PreviewDiffuseStrength,
 			&selected.PreviewSpecularStrength, &selected.PreviewEmissionStrength })
 		*v = std::isfinite(*v) ? std::clamp(*v, 0.0f, 8.0f) : 1.0f;
 	if (selected.UsePreparedScene != settings.UsePreparedScene) ready = false;
 	settings = selected;
+	if (settings.NativeShadowMask) RequestPreparedScene();
+	else nativeShadowTrace.Reset();
 	resetRequested = true;
 }
 void DX12NativeScene::SaveSettings(json& value) { value = settings; }
@@ -74,8 +77,8 @@ void DX12NativeScene::SetupResources()
 	dxrCapable = SUCCEEDED(backend->d3d12Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options, sizeof(options))) &&
 		options.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1;
 	rrEligible = backend->fsrFrameGeneration && backend->rayRegenerationHardware && !globals::game::isVR;
-	if (!rrEligible || !dxrCapable) {
-		unavailable = !rrEligible ? "Requires the existing eligible non-VR FSR-FG session" : "DXR 1.1 unsupported by the current device";
+	if (!dxrCapable) {
+		unavailable = "DXR 1.1 unsupported by the current device";
 		return;
 	}
 	ready = settings.UsePreparedScene || scene.Initialize();
@@ -105,6 +108,7 @@ void DX12NativeScene::EarlyPrepass()
 		geometryBridge.Advance(nullptr, budget);
 		scene.RetireCopies();
 		AdvancePreparedScene(frame, budget);
+        DispatchNativeShadowMask("early-prepass");
 		return;
 	}
 	std::optional<GraphicsBackend> backend;
@@ -205,6 +209,7 @@ void DX12NativeScene::AdvanceAcquisition(const GraphicsBackend& a_backend, uint6
 void DX12NativeScene::OnSceneTransitionReset(bool a_open)
 {
 	nativeHybrid.Reset();
+    nativeShadowTrace.Reset();
 	transitionOpen = a_open;
 	resetRequested = true;
 }
@@ -212,6 +217,7 @@ void DX12NativeScene::OnSceneTransitionReset(bool a_open)
 void DX12NativeScene::OnRuntimeDisabled()
 {
 	nativeHybrid.Reset();
+    nativeShadowTrace.Reset();
 	ResetPreparedScene();
 	preparedAcceleration.Advance();
 	preparedTrace.Retire();
@@ -231,6 +237,10 @@ json DX12NativeScene::GetDiagnostics()
 {
 	auto accelerationStatus = acceleration.GetDiagnostics();
 	const auto traceStatus = preparedTrace.GetDiagnostics();
+	const auto shadowStatus = nativeShadowTrace.GetDiagnostics();
+	json shadowProducer = json::object();
+	for (const auto* key : { "submissions", "completions", "residentBytes", "budgetDeferrals", "busyFrames", "failure", "bindingsLoading", "bindingDeferrals", "materialFailure", "minimumDistance", "maximumDistance" })
+		shadowProducer[key] = shadowStatus.at(key);
 	const auto* snapshot = scene.GetSnapshot();
 	if (!acquisitionActive || !snapshot || accelerationStatus.value("sourceBatch", uint64_t{ 0 }) != snapshot->scope.batch)
 		accelerationStatus["publicationMatchesBatch"] = false;
@@ -238,6 +248,9 @@ json DX12NativeScene::GetDiagnostics()
 		{ "dxrCapable", dxrCapable }, { "rrEligible", rrEligible }, { "resourcesReady", ready },
 		{ "nativeHybrid", nativeHybrid.GetDiagnostics() },
         { "nativeFinalScene", nativeComposition.GetDiagnostics() },
+        { "DX12native-shadowmask", {{"enabled",settings.NativeShadowMask},{"availableForComposition",GetNativeShadowMask(globals::game::graphicsState->GetFrameCount()).has_value()},
+            {"dispatchStage",shadowMaskStage},{"unavailableReason",shadowMaskUnavailable},{"producer",shadowProducer},
+            {"rasterInputs",false},{"rrRequired",false},{"appliedToImage",false},{"coverageScope","prepared scene only; not complete dynamic world coverage"}} },
 		{ "overlappingIndirectRequests", globals::features::redstoneGI.settings.NativeHybrid &&
 			(globals::features::rtIndirectLighting.UsesRTExclusive() || globals::features::redstoneGI.IsActive()) },
 		{ "acquisitionEnabled", settings.AcquireScene }, { "unavailable", unavailable },
@@ -292,6 +305,13 @@ void DX12NativeScene::DrawNativeSceneSettings()
     int lightingBudget = int(settings.DirectLightingBudgetMB);
     if (ImGui::SliderInt("Prepared lighting buffer budget (MiB)", &lightingBudget, 64, 1024))
         settings.DirectLightingBudgetMB = uint32_t(lightingBudget);
+    if (ImGui::Checkbox("Early RT shadow mask",&settings.NativeShadowMask)) {
+        if (settings.NativeShadowMask) RequestPreparedScene(); else nativeShadowTrace.Reset();
+    }
+    int shadowBudget=int(settings.ShadowMaskBudgetMB);
+    if (ImGui::SliderInt("RT shadow-mask budget (MiB)",&shadowBudget,64,4096)) settings.ShadowMaskBudgetMB=uint32_t(shadowBudget);
+    ImGui::TextWrapped("Creates DX12native-shadowmask from prepared-scene camera and light rays, before opaque colour. The mask is exposed for later composition and does not modify the image yet.");
+    if (!shadowMaskUnavailable.empty()) ImGui::TextWrapped("RT shadow mask: %s",shadowMaskUnavailable.c_str());
     int sceneBudget = int(settings.SceneCompositionBudgetMB);
     if (ImGui::SliderInt("Final native scene budget (MiB)", &sceneBudget, 64, 4096))
         settings.SceneCompositionBudgetMB = uint32_t(sceneBudget);
@@ -348,6 +368,15 @@ void DX12NativeScene::DrawNativeSceneSettings()
 
 void DX12NativeScene::RegisterUxActions()
 {
+    FEATURE_COMMAND("setNativeShadowMask", "Enable the independent early DX12 RT shadow-mask producer. Params: enabled (required boolean), budgetMB (optional integer 64..4096). Enabling requests prepared geometry. Output DX12native-shadowmask is visibility, validity, receiver ray distance and instance+1; camera rays and a completion fence are exposed for a future compositor. No raster depth/shadow input, RR requirement or image application.",
+        [](Feature* self,const json& args) {
+            auto& native=*static_cast<DX12NativeScene*>(self);
+            native.settings.NativeShadowMask=args.at("enabled").get<bool>();
+            if (args.contains("budgetMB")) native.settings.ShadowMaskBudgetMB=std::clamp(args.at("budgetMB").get<uint32_t>(),64u,4096u);
+            if (native.settings.NativeShadowMask) native.RequestPreparedScene();
+            else native.nativeShadowTrace.Reset();
+        });
+
 	FEATURE_COMMAND("setNativeSceneBudget", "Set the final DX12 scene handoff/composition memory budget. Params: budgetMB (required integer, 64..4096). Does not change producer or RR requests; allocation failure preserves the DX11 raster scene.",
 		[](Feature* self, const json& args) {
 			static_cast<DX12NativeScene*>(self)->settings.SceneCompositionBudgetMB = std::clamp(args.at("budgetMB").get<uint32_t>(), 64u, 4096u);

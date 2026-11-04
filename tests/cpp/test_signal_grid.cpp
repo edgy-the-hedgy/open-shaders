@@ -4,6 +4,7 @@
 #include "../../package/Shaders/Common/NativeSignalSemantics.hlsli"
 #include "../../package/Shaders/Common/NativeSceneComposition.hlsli"
 #include "Features/DX12NativeScene/NativeSceneOwnership.h"
+#include "../../package/Shaders/Common/NativeShadowMask.hlsli"
 #include <limits>
 #include <set>
 #include <fstream>
@@ -234,4 +235,23 @@ TEST_CASE("Native scene allocation estimates cannot wrap the budget", "[NativeSc
     REQUIRE_FALSE(NativeSceneBudgetAdd(required,UINT64_MAX,2,UINT64_MAX));
     REQUIRE(required==0);
     REQUIRE_FALSE(NativeSceneBudgetAdd(required,1,0,20));
+}
+
+TEST_CASE("Prepared RT shadow-mask contract separates visibility and coverage", "[NativeShadow]")
+{
+    for (bool receiver:{false,true}) for (bool geometry:{false,true}) for (bool blocked:{false,true}) {
+        const bool valid=NativeShadowValid(receiver,geometry,10.0f);
+        REQUIRE(valid==(receiver&&geometry));
+        REQUIRE(NativeShadowVisibility(valid,blocked)==(valid&&blocked ? 0.0f : 1.0f));
+    }
+    REQUIRE_FALSE(NativeShadowValid(true,true,0));
+    REQUIRE_FALSE(NativeShadowValid(true,true,std::numeric_limits<float>::quiet_NaN()));
+    REQUIRE_FALSE(NativeShadowValid(true,true,std::numeric_limits<float>::infinity()));
+    REQUIRE_FALSE(NativeShadowValid(true,true,60001));
+    for (uint32_t size:{1u,31u,32u,1919u}) for (uint32_t pixel=0;pixel<size;++pixel) {
+        const float coordinate=NativeShadowClip(pixel,size);
+        REQUIRE(coordinate>-1.0f);
+        REQUIRE(coordinate<1.0f);
+        REQUIRE(std::abs(coordinate+NativeShadowClip(size-1-pixel,size))<1e-5f);
+    }
 }

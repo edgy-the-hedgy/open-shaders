@@ -332,6 +332,9 @@ namespace globals
 
 		extern D3D11_MAPPED_SUBRESOURCE* mappedFrameBuffer;
 		extern FrameBufferCache frameBufferCached;
+		/** @brief Identifies the render frame owning the cached non-reflection camera snapshot. */
+		extern uint32_t frameBufferCachedFrame;
+		extern bool frameBufferCachedValid;
 
 		extern int32_t* frameCounter;
 		extern int* viewWidth;

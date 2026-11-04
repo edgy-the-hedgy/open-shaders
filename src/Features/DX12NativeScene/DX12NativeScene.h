@@ -25,6 +25,8 @@ struct DX12NativeScene final : OverlayFeature
 		uint32_t MaterialTextureBudgetMB = 512;
 		uint32_t DirectLightingBudgetMB = 256;
 		uint32_t SceneCompositionBudgetMB = 256;
+		bool NativeShadowMask = false;
+		uint32_t ShadowMaskBudgetMB = 512;
 		uint32_t PreviewLight = 0;
 		bool PreviewAllLights = true;
 		float PreviewDirectStrength = 1.0f;
@@ -85,6 +87,16 @@ struct DX12NativeScene final : OverlayFeature
 	void SetupResources() override;
 	/** @brief Advances owned scene acquisition without changing shadow ownership. */
 	void EarlyPrepass() override;
+	/** @brief Attempts prepared-scene shadow tracing before raster shadow maps execute. */
+	void OnBeforeShadowMapRendering() override { DispatchNativeShadowMask("before-raster-shadowmaps"); }
+	/** @brief Retries when the main world camera is ready, before opaque colour rendering. */
+	void OnWorldRenderBegin() override { DispatchNativeShadowMask("world-render-begin"); }
+	/** @brief Retries before opaque draws without using their depth or G-buffer data. */
+	void Prepass() override { DispatchNativeShadowMask("before-opaque-colour"); }
+	/** @brief Borrows this frame's DX12native-shadowmask and its GPU completion point. */
+	std::optional<DX12Native::DirectionalTrace::ShadowMaskOutput> GetNativeShadowMask(uint32_t frame) const;
+	/** @brief Retains borrowed mask resources through a future composition consumer. */
+	void ReleaseNativeShadowMask(uint32_t frame, ID3D12Fence* consumer = nullptr, uint64_t value = 0);
 	/** @brief Traces previews or direct scene lighting with the opaque world camera and matching depth. */
 	void OnAfterDeferredLighting(ID3D11UnorderedAccessView* a_target, const std::array<uint32_t, 2>& a_size) override;
 	/** @brief Records independent raster-sourced GI after all direct feature callbacks. */
@@ -103,7 +115,7 @@ struct DX12NativeScene final : OverlayFeature
 	/** @brief Invalidates scene identity after loading a save. */
 	void GameLoaded() override { resetRequested = true; }
 	/** @brief Invalidates scene snapshots when shader-side deformation may change. */
-	void ClearShaderCache() override { resetRequested = true; geometryBridge.ReloadShader(); preparedTrace.ReloadShaders(); nativeHybrid.ReloadShaders(); nativeComposition.Reload(); }
+	void ClearShaderCache() override { resetRequested = true; geometryBridge.ReloadShader(); preparedTrace.ReloadShaders(); nativeShadowTrace.ReloadShaders(); nativeHybrid.ReloadShaders(); nativeComposition.Reload(); }
 	/** @brief Reports unavailable directional flags for the local-light observation scope. */
 	json GetRuntimeFlags() override;
 	bool SetRuntimeFlag(std::string_view a_name, bool a_value) override;
@@ -114,9 +126,12 @@ struct DX12NativeScene final : OverlayFeature
 
 private:
 	void DrawNativeSceneSettings();
+	void DispatchNativeShadowMask(const char* stage);
 	DX12Native::PreparedScene preparedScene;
 	DX12Native::AccelerationWorker preparedAcceleration;
 	DX12Native::DirectionalTrace preparedTrace;
+	DX12Native::DirectionalTrace nativeShadowTrace;
+	std::string shadowMaskUnavailable, shadowMaskStage;
 	DX12Native::NativeHybridGI nativeHybrid;
 	DX12Native::NativeSceneComposition nativeComposition;
 	uint32_t preparedCellID = 0;

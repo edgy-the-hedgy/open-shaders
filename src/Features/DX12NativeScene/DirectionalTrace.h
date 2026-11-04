@@ -20,12 +20,21 @@ namespace DX12Native
 		static constexpr uint32_t kFirstDirectView = 10;
 		static constexpr uint32_t kCombinedDirectView = 12;
 		static constexpr uint32_t kMaximumDirectLights = 32;
+		/** @brief Retains the scene identity and exact camera/light metadata of a borrowed RT mask. */
+		struct ShadowMaskOutput
+		{
+			NativeSceneOutput gpu;
+			std::shared_ptr<const TopLevel> scene;
+			std::array<uint32_t, 2> size;
+			float3 cameraOrigin, lightDirection;
+			uint32_t frame;
+		};
 		// Persisted sampling modes: 0=full, 1=half, 2=quarter, 3=two-thirds, 4=one-third.
 		// The menu lists them by decreasing quality without renumbering saved settings.
 		static constexpr std::array<uint32_t, 5> kTraceResolutionMenuOrder{ 0u, 3u, 1u, 4u, 2u };
 		static constexpr const char* kTraceResolutionMenuLabels = "Full\0Two-thirds\0Half\0One-third\0Quarter\0";
 		/** @brief Loads packaged DXIL using the existing device; compiles only native receiver/preview passes. */
-		bool Initialize(const GraphicsBackend& a_backend);
+		bool Initialize(const GraphicsBackend& a_backend, bool a_shadowMask = false);
 		/** @brief Preserves in-flight ray resources during early teardown. */
 		~DirectionalTrace();
 		/** @brief Invalidates publication while pending frames retire by fence. */
@@ -35,7 +44,7 @@ namespace DX12Native
 		/** @brief Retires frames and consumes completed raw output without CPU waits. */
 		void Retire();
 		/** @brief Traces selected-light visibility or a bounded prepared light set against a retained TLAS. */
-		void Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight = false, const LightLimitFixData::LightView& a_lights = {}, uint32_t a_materialView = 0, ID3D11UnorderedAccessView* a_sceneTarget = nullptr, uint32_t a_lightReference = 0, uint32_t a_lightBase = 0, ID3D11ShaderResourceView* a_roomMetadata = nullptr, std::span<const std::array<uint32_t, 2>> a_lightIdentities = {}, bool a_allPreparedLights = false, float4 a_strengths = { 1, 1, 1, 1 }, bool a_useIndirect = true, float a_indirectStrength = 1.0f, bool a_useDirectRR = false, uint32_t a_indirectRays = 0, std::span<const uint32_t> a_roomReferences = {}, float a_rasterBlend = 1.0f, uint32_t a_normalMode = 2u, std::span<const PreparedPointLight> a_preparedLights = {}, uint32_t a_directResolutionMode = 0u, uint32_t a_indirectResolutionMode = 0u, uint32_t a_directRRResolutionMode = 3u, bool a_rrMaterialIsolation = false, float a_rrGlossyRoughness = 0.2f, float4 a_falloffParameters = { 1.0f, 0.1f, 1.0f, 0.0f }, float4 a_stochasticParameters = { 0.0f, 1.0f, 0.0f, 0.0f });
+		void Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight = false, const LightLimitFixData::LightView& a_lights = {}, uint32_t a_materialView = 0, ID3D11UnorderedAccessView* a_sceneTarget = nullptr, uint32_t a_lightReference = 0, uint32_t a_lightBase = 0, ID3D11ShaderResourceView* a_roomMetadata = nullptr, std::span<const std::array<uint32_t, 2>> a_lightIdentities = {}, bool a_allPreparedLights = false, float4 a_strengths = { 1, 1, 1, 1 }, bool a_useIndirect = true, float a_indirectStrength = 1.0f, bool a_useDirectRR = false, uint32_t a_indirectRays = 0, std::span<const uint32_t> a_roomReferences = {}, float a_rasterBlend = 1.0f, uint32_t a_normalMode = 2u, std::span<const PreparedPointLight> a_preparedLights = {}, uint32_t a_directResolutionMode = 0u, uint32_t a_indirectResolutionMode = 0u, uint32_t a_directRRResolutionMode = 3u, bool a_rrMaterialIsolation = false, float a_rrGlossyRoughness = 0.2f, float4 a_falloffParameters = { 1.0f, 0.1f, 1.0f, 0.0f }, float4 a_stochasticParameters = { 0.0f, 1.0f, 0.0f, 0.0f }, bool a_shadowMask = false);
 		/** @brief Returns a raw preview view whose image remains owned by this service. */
 		ID3D11ShaderResourceView* Preview() const { return previewValid && preview ? preview->srv.get() : nullptr; }
 		/** @brief Returns the completed preview dimensions for an undistorted diagnostic image. */
@@ -46,6 +55,10 @@ namespace DX12Native
 		json GetDiagnostics() const;
 		/** @brief Borrows current-frame display-ready contributions for final DX12 composition. */
 		std::optional<NativeSceneOutput> GetSceneOutput(uint32_t frameNumber) const;
+        /** @brief Borrows visibility/validity/distance/instance data and camera rays for later composition. */
+        std::optional<ShadowMaskOutput> GetShadowMaskOutput(uint32_t frameNumber) const;
+        /** @brief Releases only offers from older frames before polling completion. */
+        void DiscardSceneOutputsBefore(uint32_t frameNumber) { for (auto& frame : frames) if (frame.number != frameNumber) frame.awaitingScene = false; }
 		/** @brief Retains this frame through the submitted final scene consumer, or releases an unused output. */
 		void ReleaseSceneOutput(uint32_t frameNumber, ID3D12Fence* fence = nullptr, uint64_t value = 0);
 		/** @brief Releases unconsumed offers before the next frame begins. */
@@ -98,7 +111,7 @@ namespace DX12Native
 			std::array<std::unique_ptr<WrappedResource>, 2> composed;
 			winrt::com_ptr<ID3D12Resource> nativeCamera;
 			bool publishToScene = false, composedValid = false;
-			bool awaitingScene = false;
+			bool awaitingScene = false, shadowMask = false;
 			winrt::com_ptr<ID3D12Fence> sceneConsumer;
 			uint64_t sceneConsumerValue = 0;
 			uint64_t budgetBytes = 0;
@@ -119,6 +132,7 @@ namespace DX12Native
 		std::vector<PreparedPointLight> preparedLights;
 			bool allPreparedLights = false;
 			float4 strengths{ 1, 1, 1, 1 };
+			float3 traceLight{}, traceOrigin{};
 			float4 falloffParameters{ 1.0f, 0.1f, 1.0f, 0.0f };
 			float4 stochasticParameters{ 0.0f, 1.0f, 0.0f, 0.0f };
 			bool useIndirect = true, useDirectRR = false;
@@ -155,7 +169,8 @@ namespace DX12Native
 		uint64_t MaterialResidentBytes() const;
 		GraphicsBackend backend;
 		SharedFence producer, completion;
-		winrt::com_ptr<ID3D11ComputeShader> prepare, display, composite;
+		winrt::com_ptr<ID3D11ComputeShader> prepare, display, composite, prepareShadow;
+        bool shadowService = false;
 		winrt::com_ptr<ID3D11ComputeShader> prepareDirectGuides;
 		winrt::com_ptr<ID3D11ComputeShader> packRRSignals;
 		std::unique_ptr<ConstantBuffer> rrGridSettings;
