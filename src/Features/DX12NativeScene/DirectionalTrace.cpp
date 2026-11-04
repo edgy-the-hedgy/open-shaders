@@ -1288,6 +1288,7 @@ namespace DX12Native
     {
         frame.nativeGI.valid = frame.nativeGI.rrValid = false;
         frame.nativeGI.postValid = frame.nativeGI.composedValid = false;
+        frame.nativeGI.rrFamilySuccessMask = 0u;
         if (!frame.fsrIndependent || !frame.nativeGIRequested ||
             !frame.fsrDepthReady || !frame.hybridInputsReady ||
             !frame.hybridInputs[0] || !frame.hybridInputs[2] ||
@@ -1322,6 +1323,10 @@ namespace DX12Native
                 return false;
             }
             frame.nativeGIFrame = frame.number;
+            // AMD is an optional consumer of raw GI/AO, not a requirement for
+            // producing or displaying the underlying lighting signals.
+            if (!globals::features::rtComposer.composition.useFSRRayRegeneration)
+                return true;
             if (!fsrIndependentGI->RecordRRGuides(device, list, frame.nativeGI,
                     slot, frame.hybridLinearDepth.get(),
                     frame.hybridInputs[2]->resource.get(),
@@ -1330,7 +1335,7 @@ namespace DX12Native
                     frame.hybridInputs[4]->resource.get())) {
                 fsrIndependentGIFailure = fsrIndependentGI->GuideFailure();
                 ++fsrIndependentGIFailures;
-                return false;
+                return true; // raw GI remains available
             }
             // No RecordHistoryValidation, RecordPostRR, native spatial,
             // temporal reconstruction, post-RR blur or legacy fallback.
@@ -1339,7 +1344,7 @@ namespace DX12Native
             if (!fsrHybridRRDenoiser->InitializeNative(backend)) {
                 fsrIndependentGIFailure = "Independent AMD HybridGI RR unavailable";
                 ++fsrIndependentGIFailures;
-                return false;
+                return true; // raw GI remains available
             }
             auto& outputs = frame.nativeGI;
             if (outputs.rrOutputSize != sampling.logical) {
@@ -1379,10 +1384,12 @@ namespace DX12Native
             outputs.rrValid = fsrHybridRRDenoiser->DispatchNativeHybridRR(list, resources);
             outputs.rrFamilySuccessMask =
                 fsrHybridRRDenoiser->NativeHybridSuccessfulFamilyMask();
-            if (!outputs.rrValid || (outputs.rrFamilySuccessMask & 7u) != 7u) {
+            if (!outputs.rrValid) {
+                // Successful sibling RR families are still composable;
+                // missing families use their original raw GPU signals.
                 fsrIndependentGIFailure = fsrHybridRRDenoiser->NativeHybridFailure();
                 ++fsrIndependentGIFailures;
-                return false;
+                return true;
             }
             fsrIndependentGIFailure.clear();
             ++fsrIndependentGISuccesses;
@@ -1398,8 +1405,7 @@ namespace DX12Native
     bool DirectionalTrace::RecordFSRIndependentComposition(Frame& frame)
     {
         frame.fsrIndependentComposed = false;
-        if (!frame.fsrIndependent || !frame.nativeGI.valid || !frame.nativeGI.rrValid ||
-            (frame.nativeGI.rrFamilySuccessMask & 7u) != 7u ||
+        if (!frame.fsrIndependent || !frame.nativeGI.valid ||
             !frame.hybridInputsReady || !frame.hybridLinearDepth ||
             !frame.hybridInputs[0] || !frame.hybridInputs[2] ||
             !frame.hybridInputs[3] || !frame.hybridInputs[4])
@@ -1428,7 +1434,7 @@ namespace DX12Native
                     params[i].DescriptorTable = { 1, &ranges[i] };
                 }
                 params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-                params[2].Constants = { 0, 0, 8u };
+                params[2].Constants = { 0, 0, 12u };
                 const D3D12_ROOT_SIGNATURE_DESC signature{
                     3, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE };
                 winrt::com_ptr<ID3DBlob> serialized, errors;
@@ -1461,31 +1467,47 @@ namespace DX12Native
                     &desc, IID_PPV_ARGS(frame.fsrIndependentComposeDescriptors.put())));
             }
             const auto& gi = frame.nativeGI;
-            for (const auto& resource : gi.rrOutputs)
-                if (!resource) return false;
+            if (!gi.textures[NativeHybridGI::Diffuse] ||
+                !gi.textures[NativeHybridGI::Specular] ||
+                !gi.textures[NativeHybridGI::DiffuseAO] ||
+                !gi.textures[NativeHybridGI::SpecularAO]) return false;
             // Null Direct SRVs read as zero. HybridGI thus works without a
             // prepared DXR scene, while complete Direct RR is still composed
             // from its original signals when that producer is available.
-            const bool directReady = frame.nativeDirectRRReady &&
-                frame.nativeDirectRRSuccessMask == 3u &&
-                frame.output && frame.receivers &&
+            const bool directAvailable = frame.output &&
                 frame.directSignals[0] && frame.directSignals[1] &&
-                frame.directSignals[3] && frame.directSignals[4] &&
-                frame.nativeDirectRROutputs[0] && frame.nativeDirectRROutputs[1];
+                frame.directSignals[3] && frame.directSignals[4];
+            uint32_t directRRMask = frame.nativeDirectRRSuccessMask & 3u;
+            if (!frame.nativeDirectRROutputs[0]) directRRMask &= ~1u;
+            if (!frame.nativeDirectRROutputs[1]) directRRMask &= ~2u;
+            uint32_t hybridRRMask = gi.rrFamilySuccessMask & 7u;
+            if (!gi.rrOutputs[0]) hybridRRMask &= ~1u;
+            if (!gi.rrOutputs[1]) hybridRRMask &= ~2u;
+            if (!gi.rrOutputs[2] || !gi.rrOutputs[3]) hybridRRMask &= ~4u;
             const std::array<ID3D12Resource*, 17> inputs{
                 frame.hybridInputs[0]->resource.get(),
-                directReady ? frame.output->resource.get() : nullptr,
-                directReady ? frame.nativeDirectRROutputs[0].get() : nullptr,
-                directReady ? frame.nativeDirectRROutputs[1].get() : nullptr,
-                directReady ? frame.directSignals[4]->resource.get() : nullptr,
-                directReady ? frame.directSignals[3]->resource.get() : nullptr,
-                gi.rrOutputs[0].get(), gi.rrOutputs[1].get(),
-                gi.rrOutputs[2].get(), gi.rrOutputs[3].get(),
-                frame.hybridInputs[3]->resource.get(), frame.hybridInputs[4]->resource.get(),
-                frame.hybridLinearDepth.get(), frame.hybridInputs[2]->resource.get(),
-                directReady ? frame.receivers->resource.get() : nullptr,
-                directReady ? frame.directSignals[0]->resource.get() : nullptr,
-                directReady ? frame.directSignals[1]->resource.get() : nullptr
+                directAvailable ? frame.output->resource.get() : nullptr,
+                directAvailable && (directRRMask & 1u) ?
+                    frame.nativeDirectRROutputs[0].get() : nullptr,
+                directAvailable && (directRRMask & 2u) ?
+                    frame.nativeDirectRROutputs[1].get() : nullptr,
+                directAvailable ? frame.directSignals[4]->resource.get() : nullptr,
+                directAvailable ? frame.directSignals[3]->resource.get() : nullptr,
+                (hybridRRMask & 1u) ? gi.rrOutputs[0].get() :
+                    gi.textures[NativeHybridGI::Diffuse].get(),
+                (hybridRRMask & 2u) ? gi.rrOutputs[1].get() :
+                    gi.textures[NativeHybridGI::Specular].get(),
+                (hybridRRMask & 4u) ? gi.rrOutputs[2].get() :
+                    gi.textures[NativeHybridGI::DiffuseAO].get(),
+                (hybridRRMask & 4u) ? gi.rrOutputs[3].get() :
+                    gi.textures[NativeHybridGI::SpecularAO].get(),
+                frame.hybridInputs[3]->resource.get(),
+                frame.hybridInputs[4]->resource.get(),
+                frame.hybridLinearDepth.get(),
+                frame.hybridInputs[2]->resource.get(),
+                directAvailable && frame.receivers ? frame.receivers->resource.get() : nullptr,
+                directAvailable ? frame.directSignals[0]->resource.get() : nullptr,
+                directAvailable ? frame.directSignals[1]->resource.get() : nullptr
             };
             const std::array<DXGI_FORMAT, 17> formats{
                 DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT,
@@ -1541,13 +1563,16 @@ namespace DX12Native
             list->SetComputeRootDescriptorTable(1, gpu);
             const auto& policy = globals::features::rtComposer.composition.fsrHybrid;
             const auto logical = gi.sampling.logical;
-            const uint32_t constants[8]{
+            const uint32_t constants[12]{
                 frame.size[0], frame.size[1], logical[0], logical[1],
                 frame.number,
                 uint32_t(globals::features::linearLighting.IsLinearLightingActive()),
                 std::bit_cast<uint32_t>(policy.rasterDirectBlend),
-                std::bit_cast<uint32_t>(policy.contribution) };
-            list->SetComputeRoot32BitConstants(2, 8, constants, 0);
+                std::bit_cast<uint32_t>(policy.contribution),
+                directAvailable ? directRRMask : 0u, hybridRRMask,
+                uint32_t(gi.sampling.checkerboard) |
+                    ((gi.sampling.checkerboardOrigin & 1u) << 1u), 0u };
+            list->SetComputeRoot32BitConstants(2, 12, constants, 0);
             list->Dispatch((frame.size[0] + 7u) / 8u,
                 (frame.size[1] + 7u) / 8u, 1u);
             list->ResourceBarrier(UINT(after.size()), after.data());
@@ -1832,7 +1857,7 @@ namespace DX12Native
         if (a_frame.fsrHybridOnly) {
             // Direct ray traversal, its signal packing, and its RR processing
             // are unchanged and never executed in the GI-only case.
-            if (a_frame.nativeGI.rrValid)
+            if (a_frame.nativeGI.valid)
                 (void)RecordFSRIndependentComposition(a_frame);
             DX::ThrowIfFailed(a_frame.commands->Close());
             ID3D12CommandList* lists[]{ a_frame.commands.get() };
@@ -2012,8 +2037,12 @@ namespace DX12Native
         // Shared low-tier shadow mask temporal resolve MUST run before either
         // DX11 Shadow Only export consumption or DX12 Hybrid source/GI.
         if (a_frame.fsrIndependent) {
+            // Preserve original Direct signal production/packing regardless
+            // of GI status. RR is optional; raw Direct remains composable.
             if (a_frame.fsrDepthReady && a_frame.nativeDirectRRRequested &&
-                RecordNativeDirectRR(a_frame) && a_frame.nativeGI.rrValid)
+                globals::features::rtComposer.composition.useFSRRayRegeneration)
+                (void)RecordNativeDirectRR(a_frame);
+            if (a_frame.nativeGI.valid)
                 (void)RecordFSRIndependentComposition(a_frame);
         } else {
             RecordShadowTemporal(a_frame);
@@ -2134,7 +2163,7 @@ namespace DX12Native
         // scene image; its raw signals and SDK contexts never go via DX11.
         const bool fsrReady = composer.FSRIndependentActive() &&
             a_frame.fsrIndependent && a_frame.fsrIndependentComposed &&
-            a_frame.nativeGI.rrValid && a_frame.fsrIndependentScene;
+            a_frame.fsrIndependentScene;
         const bool nativeDirectPreview = composer.NativeDirectRRPreviewActive() &&
             a_frame.nativeDirectRRComposed && a_frame.nativeDirectRRReady &&
             a_frame.nativeDirectRRSuccessMask == 3u &&
