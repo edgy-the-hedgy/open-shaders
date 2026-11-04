@@ -11,7 +11,7 @@
 #include "Utils/DevBenchUx.h"
 #include "Util.h"
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTDirectLighting::Settings, RedstoneBlend, UsePreparedDirectLighting, UseAllPreparedLights, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, SelectedDirectLight, NormalInfluence, PointLightRadiusMultiplier, PointLightFalloffFraction, PointLightFalloffExponent, StochasticSampling, EmitterRadiusMultiplier)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTDirectLighting::Settings, RedstoneBlend, UsePreparedDirectLighting, UseAllPreparedLights, UseDirectRayRegeneration, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, SelectedDirectLight, NormalInfluence, PointLightRadiusMultiplier, PointLightFalloffFraction, PointLightFalloffExponent, StochasticSampling, EmitterRadiusMultiplier, RRMaterialIsolation, RRGlossyRoughness, DirectRRResolution, DirectTraceResolution)
 
 std::pair<std::string, std::vector<std::string>> RTDirectLighting::GetFeatureSummary()
 {
@@ -31,7 +31,7 @@ void RTDirectLighting::ImportLegacySettings(json& root)
 }
 void RTDirectLighting::LoadSettings(json& value)
 {
-	// RTComposer owns RR persistence; keep live state if old RR keys are absent.
+	// Direct RR controls and material policies are persisted by their producer.
 	const Settings current = settings;
 	Settings selected = value;
 	selected.UseDirectRayRegeneration = value.value("UseDirectRayRegeneration", current.UseDirectRayRegeneration);
@@ -58,7 +58,12 @@ void RTDirectLighting::LoadSettings(json& value)
 }
 void RTDirectLighting::SaveSettings(json& value) { value = settings; }
 void RTDirectLighting::RestoreDefaultSettings() { settings = {}; lastFrame.reset(); }
-void RTDirectLighting::DrawSettings() { DrawDirectLightingSettings(); }
+void RTDirectLighting::DrawSettings()
+{
+    DrawDirectLightingSettings();
+    ImGui::SeparatorText("Direct Ray Regeneration");
+    DrawRayRegenerationSettings();
+}
 void RTDirectLighting::ClearRRDebugOverlay() { globals::features::dx12NativeScene.Tracer().ClearRRDebugOverlay(); }
 void RTDirectLighting::DrawOverlay() { if (IsOverlayVisible()) globals::features::dx12NativeScene.Tracer().DrawRRDebugOverlay(); }
 bool RTDirectLighting::IsOverlayVisible() const { return globals::features::dx12NativeScene.loaded && globals::features::dx12NativeScene.Tracer().IsRRDebugVisible() && !globals::features::rtIndirectLighting.DebugAtlasActive() && !globals::game::isVR; }
