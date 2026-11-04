@@ -1678,11 +1678,18 @@ namespace DX12Native
 		DX::ThrowIfFailed(context->Wait(completion.fence11.get(), a_frame.fence));
         const auto& composer = globals::features::rtComposer;
         const bool nativeHybridActive = composer.DX12HybridActive();
+        // A complete DX12 Direct RR preview can replace ONLY the final
+        // scene image; its raw signals and SDK contexts never go via DX11.
+        const bool nativeDirectPreview = composer.NativeDirectRRPreviewActive() &&
+            a_frame.nativeDirectRRComposed && a_frame.nativeDirectRRReady &&
+            a_frame.nativeDirectRRSuccessMask == 3u &&
+            a_frame.nativeDirectRRScene;
         const auto* finalNative = composer.AdvancedActive() &&
             composer.composition.mode >= RTComposer::CompositorMode::RTEnhanced ?
             &a_frame.postHybridGI : &a_frame.nativeGI;
-        if (nativeHybridActive && finalNative->composedValid &&
-            finalNative->composedScene) {
+        if (nativeDirectPreview ||
+            (nativeHybridActive && finalNative->composedValid &&
+             finalNative->composedScene)) {
             if (!nativeHybridResolve && nativeHybridPreviewFailure.empty()) {
                 try {
                     nativeHybridResolve.attach(static_cast<ID3D11ComputeShader*>(
@@ -1695,7 +1702,9 @@ namespace DX12Native
                 }
             }
             if (nativeHybridResolve) {
-                auto* nativeOutput = finalNative->composedScene->srv;
+                auto* nativeOutput = nativeDirectPreview ?
+                    a_frame.nativeDirectRRScene->srv :
+                    finalNative->composedScene->srv;
                 context->CSSetShaderResources(0, 1, &nativeOutput);
                 context->CSSetUnorderedAccessViews(0, 1, &a_target, nullptr);
                 context->CSSetShader(nativeHybridResolve.get(), nullptr, 0);
@@ -1710,6 +1719,7 @@ namespace DX12Native
                 DX::ThrowIfFailed(context->Signal(producer.fence11.get(), a_frame.retirement));
                 ++sceneCompositeSubmissions;
                 ++nativeHybridPreviewSubmissions;
+                if (nativeDirectPreview) ++nativeDirectRRPresentedFrames;
                 if (composer.AdvancedActive()) ++advancedPresentedFrames;
                 sceneCompositeFrame = a_frame.number;
                 return;
