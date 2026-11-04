@@ -109,6 +109,7 @@ void RedstoneDenoiser::ResetRayRegeneration()
     }
     nativeHybridExtent = {};
     nativeHybridCheckerboard = false;
+    nativeHybridDirectFamilies = false;
     nativeHybridLastFrame = UINT32_MAX;
     nativeHybridFailed = false;
     nativeHybridSuccessfulFamilyMask = 0u;

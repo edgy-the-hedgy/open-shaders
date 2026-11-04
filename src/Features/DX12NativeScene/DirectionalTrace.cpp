@@ -1862,6 +1862,11 @@ namespace DX12Native
 		const auto& composer = globals::features::rtComposer;
         bool nativeDirectTest = a_sceneTarget && composer.NativeDirectRRDiagnosticActive() &&
             size[0] >= 2u && (size[0] & 1u) == 0u && size[1] != 0u;
+        // Disabled direct RR does not retain dedicated AMD contexts indefinitely.
+        // The provider's own queue fence prevents retiring in-flight dispatches.
+        if (!nativeDirectTest && nativeDirectRRDenoiser &&
+            nativeDirectRRDenoiser->RetireNativeHybridContexts())
+            nativeDirectRRDenoiser.reset();
         const auto rrPolicy = RayRegeneration::GetSettings();
 		const uint32_t effectiveRRMode = a_directRRResolutionMode == 3u ? rrPolicy.resolutionMode : std::min(a_directRRResolutionMode, 2u);
 		const bool directRR = a_sceneTarget && a_useDirectRR && rrPolicy.enabled;
@@ -1984,7 +1989,7 @@ namespace DX12Native
         }
 		if (textureBytes == UINT64_MAX || lightBytes == UINT64_MAX || nextPreviewBytes == UINT64_MAX ||
 			visibilityBytes == UINT64_MAX || maskBytes == UINT64_MAX) { failure = "Directional texture allocation unsupported"; return; }
-		const uint64_t signalBytes = (directRR || a_indirectRays || nativeDirectTest) ? nextPreviewBytes * kDirectSignalCount : 0;
+		uint64_t signalBytes = (directRR || a_indirectRays || nativeDirectTest) ? nextPreviewBytes * kDirectSignalCount : 0;
 		const uint64_t rrInteropReserve = directRR ? uint64_t(std::max(1u, size[0] >> effectiveRRMode)) * std::max(1u, size[1] >> effectiveRRMode) * 256 + kFrameOverheadBytes : 0;
 		auto calculateRequired = [&] {
             return (reuse ? uint64_t{ 0 } : textureBytes * 2 + lightBytes + signalBytes + visibilityBytes + maskBytes + exportBytes + temporalBytes + hybridBytes + nativeGIBytes + nativeDirectBytes + kFrameOverheadBytes) +
@@ -2002,6 +2007,8 @@ namespace DX12Native
             wantPostHybrid = false;
             nativeDirectTest = false;
             nativeDirectBytes = 0u;
+            signalBytes = (directRR || a_indirectRays) ?
+                nextPreviewBytes * kDirectSignalCount : 0u;
             hybridBytes = nativeGIBytes = 0;
             reuse = available->size == size &&
             available->reconstructionBlurMask == requestedBlurMask &&
