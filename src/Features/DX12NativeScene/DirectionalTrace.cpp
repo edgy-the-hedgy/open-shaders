@@ -2368,6 +2368,27 @@ namespace DX12Native
                 producer.fence12.get(), produced));
             available->submitted = true;
             Record(*available, {}, false);
+            // Count actual frame-owned resources rather than charging FSR
+            // for Open RT's unused temporal/history/blur scratch budget.
+            uint64_t resident = 1024ull * 1024ull;
+            auto account = [&](ID3D12Resource* resource) {
+                if (!resource) return;
+                const auto desc = resource->GetDesc();
+                const auto bytes = backend.d3d12Device->GetResourceAllocationInfo(
+                    0, 1, &desc).SizeInBytes;
+                if (bytes != UINT64_MAX)
+                    resident = bytes > UINT64_MAX - resident ?
+                        UINT64_MAX : resident + bytes;
+            };
+            for (const auto& source : available->hybridInputs)
+                if (source) account(source->resource.get());
+            account(available->hybridLinearDepth.get());
+            for (const auto& raw : available->nativeGI.textures) account(raw.get());
+            for (const auto& guide : available->nativeGI.rrGuides) account(guide.get());
+            for (const auto& output : available->nativeGI.rrOutputs) account(output.get());
+            if (available->fsrIndependentScene)
+                account(available->fsrIndependentScene->resource.get());
+            available->bytes = resident;
             CompositeScene(*available, a_sceneTarget);
         } catch (const std::exception& error) {
             fsrIndependentGIFailure = error.what();
