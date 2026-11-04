@@ -186,6 +186,11 @@ namespace DX12Native
             uint32_t nativeDirectRRSuccessMask = 0u;
             NativeHybridGI::FrameOutputs nativeDirectGuides;
             std::array<winrt::com_ptr<ID3D12Resource>, 2> nativeDirectRROutputs{};
+            std::unique_ptr<WrappedResource> nativeDirectRRScene;
+            winrt::com_ptr<ID3D12DescriptorHeap> nativeDirectRRComposeDescriptors;
+            winrt::com_ptr<ID3D12RootSignature> nativeDirectRRComposeRootRef;
+            winrt::com_ptr<ID3D12PipelineState> nativeDirectRRComposePipelineRef;
+            bool nativeDirectRRComposed = false;
             std::array<std::unique_ptr<WrappedResource>, kHybridInputCount> hybridInputs;
             bool hybridInputsReady = false;
             winrt::com_ptr<ID3D12Resource> hybridShadowedSource;
@@ -245,6 +250,7 @@ namespace DX12Native
         }
         bool RecordNativeDirectRRPack(Frame& a_frame);
         bool RecordNativeDirectRR(Frame& a_frame);
+        bool RecordNativeDirectRRComposition(Frame& a_frame);
         void RecordNativeHybridGI(Frame& a_frame);
         void RecordAdvancedTransport(Frame& a_frame);
 		void Record(Frame& a_frame, const float3& a_direction, bool a_localLight);
@@ -273,6 +279,10 @@ namespace DX12Native
         std::string nativeDirectPackFailure;
         std::unique_ptr<NativeHybridGI> nativeDirectGuideBuilder;
         std::unique_ptr<RedstoneDenoiser> nativeDirectRRDenoiser;
+        winrt::com_ptr<ID3D12RootSignature> nativeDirectRRComposeRoot;
+        winrt::com_ptr<ID3D12PipelineState> nativeDirectRRComposePipeline;
+        uint64_t nativeDirectRRComposeDispatches = 0, nativeDirectRRPresentedFrames = 0;
+        std::string nativeDirectRRComposeFailure;
         uint64_t nativeDirectRRSuccessfulFrames = 0, nativeDirectRRFailedFrames = 0;
         std::string nativeDirectRRFailure;
         std::unique_ptr<NativeHybridGI> nativeHybridGI;

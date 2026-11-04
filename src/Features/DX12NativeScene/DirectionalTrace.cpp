@@ -132,6 +132,9 @@ namespace DX12Native
 		composite = nullptr;
         nativeHybridResolve = nullptr;
         nativeHybridPreviewFailure.clear();
+        nativeDirectRRComposePipeline = nullptr;
+        nativeDirectRRComposeRoot = nullptr;
+        nativeDirectRRComposeFailure.clear();
 		prepareDirectGuides = nullptr;
 		packRRSignals = nullptr;
 		rrDebugShader = nullptr;
@@ -999,6 +1002,147 @@ namespace DX12Native
         }
     }
 
+
+    bool DirectionalTrace::RecordNativeDirectRRComposition(Frame& frame)
+    {
+        frame.nativeDirectRRComposed = false;
+        const auto& composer = globals::features::rtComposer;
+        if (!composer.NativeDirectRRPreviewActive() || !frame.nativeDirectRRReady ||
+            !frame.hybridShadowedSource || !frame.output ||
+            !frame.directSignals[0] || !frame.directSignals[1] ||
+            !frame.directSignals[3] || !frame.directSignals[4] ||
+            !frame.nativeDirectRROutputs[0] || !frame.nativeDirectRROutputs[1]) {
+            nativeDirectRRComposeFailure = "Native Direct RR preview inputs are unavailable";
+            return false;
+        }
+        try {
+            auto* device = backend.d3d12Device.get();
+            auto* list = frame.commands.get();
+            if (!nativeDirectRRComposeRoot || !nativeDirectRRComposePipeline) {
+                std::ifstream file(
+                    "Data/Shaders/RTDirectLighting/nativeDirectRRCompose.dxil",
+                    std::ios::binary | std::ios::ate);
+                if (!file) throw std::runtime_error("Native Direct RR composition DXIL missing");
+                const auto byteSize = file.tellg();
+                if (byteSize <= 0 || byteSize > 16 * 1024 * 1024)
+                    throw std::runtime_error("Invalid native Direct RR composition DXIL");
+                std::vector<char> code(static_cast<size_t>(byteSize));
+                file.seekg(0);
+                if (!file.read(code.data(), std::streamsize(code.size())))
+                    throw std::runtime_error("Cannot read native Direct RR composition DXIL");
+                D3D12_DESCRIPTOR_RANGE ranges[2]{};
+                ranges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 8, 0, 0, 0 };
+                ranges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 0 };
+                D3D12_ROOT_PARAMETER params[3]{};
+                for (uint32_t i = 0; i < 2u; ++i) {
+                    params[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+                    params[i].DescriptorTable = { 1, &ranges[i] };
+                }
+                params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+                params[2].Constants = { 0, 0, 4 };
+                const D3D12_ROOT_SIGNATURE_DESC signature{
+                    3, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE };
+                winrt::com_ptr<ID3DBlob> serialized, errors;
+                DX::ThrowIfFailed(D3D12SerializeRootSignature(&signature,
+                    D3D_ROOT_SIGNATURE_VERSION_1, serialized.put(), errors.put()));
+                DX::ThrowIfFailed(device->CreateRootSignature(0,
+                    serialized->GetBufferPointer(), serialized->GetBufferSize(),
+                    IID_PPV_ARGS(nativeDirectRRComposeRoot.put())));
+                D3D12_COMPUTE_PIPELINE_STATE_DESC state{};
+                state.pRootSignature = nativeDirectRRComposeRoot.get();
+                state.CS = { code.data(), code.size() };
+                DX::ThrowIfFailed(device->CreateComputePipelineState(
+                    &state, IID_PPV_ARGS(nativeDirectRRComposePipeline.put())));
+            }
+            if (!frame.nativeDirectRRScene) {
+                D3D11_TEXTURE2D_DESC desc{};
+                desc.Width = frame.size[0]; desc.Height = frame.size[1];
+                desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
+                desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+                desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+                frame.nativeDirectRRScene = std::make_unique<WrappedResource>(desc,
+                    backend.d3d11Device.get(), device,
+                    "RTComposer::NativeDirectRRComposedScene");
+            }
+            if (!frame.nativeDirectRRComposeDescriptors) {
+                const D3D12_DESCRIPTOR_HEAP_DESC heapDesc{
+                    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 9u,
+                    D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
+                DX::ThrowIfFailed(device->CreateDescriptorHeap(&heapDesc,
+                    IID_PPV_ARGS(frame.nativeDirectRRComposeDescriptors.put())));
+            }
+            const std::array<ID3D12Resource*, 8> reads{
+                frame.hybridShadowedSource.get(),
+                frame.nativeDirectRROutputs[0].get(),
+                frame.nativeDirectRROutputs[1].get(),
+                frame.directSignals[4]->resource.get(),
+                frame.directSignals[3]->resource.get(),
+                frame.output->resource.get(),
+                frame.directSignals[0]->resource.get(),
+                frame.directSignals[1]->resource.get()
+            };
+            const UINT step = device->GetDescriptorHandleIncrementSize(
+                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            auto cpu = frame.nativeDirectRRComposeDescriptors->GetCPUDescriptorHandleForHeapStart();
+            D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+            srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srv.Texture2D.MipLevels = 1;
+            for (uint32_t i = 0; i < reads.size(); ++i) {
+                srv.Format = i == 5u ? DXGI_FORMAT_R32G32B32A32_FLOAT :
+                    DXGI_FORMAT_R16G16B16A16_FLOAT;
+                device->CreateShaderResourceView(reads[i], &srv, cpu);
+                cpu.ptr += step;
+            }
+            D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+            uav.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+            device->CreateUnorderedAccessView(
+                frame.nativeDirectRRScene->resource.get(), nullptr, &uav, cpu);
+            std::array<D3D12_RESOURCE_BARRIER, 9> before{}, after{};
+            for (uint32_t i = 0; i < reads.size(); ++i) {
+                before[i] = CD3DX12_RESOURCE_BARRIER::Transition(reads[i],
+                    D3D12_RESOURCE_STATE_COMMON,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                after[i] = CD3DX12_RESOURCE_BARRIER::Transition(reads[i],
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_COMMON);
+            }
+            before[8] = CD3DX12_RESOURCE_BARRIER::Transition(
+                frame.nativeDirectRRScene->resource.get(),
+                D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            after[8] = CD3DX12_RESOURCE_BARRIER::Transition(
+                frame.nativeDirectRRScene->resource.get(),
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+            list->ResourceBarrier(UINT(before.size()), before.data());
+            ID3D12DescriptorHeap* heaps[]{ frame.nativeDirectRRComposeDescriptors.get() };
+            list->SetDescriptorHeaps(1, heaps);
+            list->SetComputeRootSignature(nativeDirectRRComposeRoot.get());
+            list->SetPipelineState(nativeDirectRRComposePipeline.get());
+            auto gpu = frame.nativeDirectRRComposeDescriptors->GetGPUDescriptorHandleForHeapStart();
+            list->SetComputeRootDescriptorTable(0, gpu);
+            gpu.ptr += uint64_t(8u) * step;
+            list->SetComputeRootDescriptorTable(1, gpu);
+            const float blend = std::clamp(composer.developer.nativeDirectRRPreviewBlend, 0.f, 1.f);
+            const uint32_t constants[4]{
+                frame.size[0], frame.size[1], std::bit_cast<uint32_t>(blend), 0u };
+            list->SetComputeRoot32BitConstants(2, 4, constants, 0);
+            list->Dispatch((frame.size[0] + 7u) / 8u,
+                (frame.size[1] + 7u) / 8u, 1u);
+            list->ResourceBarrier(UINT(after.size()), after.data());
+            frame.nativeDirectRRComposeRootRef = nativeDirectRRComposeRoot;
+            frame.nativeDirectRRComposePipelineRef = nativeDirectRRComposePipeline;
+            frame.nativeDirectRRComposed = true;
+            ++nativeDirectRRComposeDispatches;
+            nativeDirectRRComposeFailure.clear();
+            return true;
+        } catch (const std::exception& error) {
+            nativeDirectRRComposeFailure =
+                std::string("Native Direct RR preview: ") + error.what();
+            return false;
+        }
+    }
+
     void DirectionalTrace::RecordNativeHybridGI(Frame& frame)
     {
         if (globals::features::rtComposer.AdvancedActive()) {
@@ -1425,8 +1569,11 @@ namespace DX12Native
         RecordShadowTemporal(a_frame);
         if (a_frame.hybridInputsReady) {
             RecordHybridShadowedSource(a_frame);
-            if (a_frame.nativeDirectRRRequested)
-                (void)RecordNativeDirectRR(a_frame);
+            if (a_frame.nativeDirectRRRequested) {
+                if (RecordNativeDirectRR(a_frame) &&
+                    globals::features::rtComposer.NativeDirectRRPreviewActive())
+                    (void)RecordNativeDirectRRComposition(a_frame);
+            }
             RecordNativeHybridGI(a_frame);
         }
 		DX::ThrowIfFailed(commands->Close());
@@ -1935,6 +2082,7 @@ namespace DX12Native
             available->nativeDirectRRRequested = nativeDirectTest;
             available->nativeDirectPackValid = false;
             available->nativeDirectRRReady = false;
+            available->nativeDirectRRComposed = false;
             available->nativeDirectRRSuccessMask = 0u;
             available->reconstructionBlurMask = requestedBlurMask;
             available->nativeGI.valid = false;
@@ -2199,6 +2347,9 @@ namespace DX12Native
             { "nativeDirectRRSuccessfulFrames", nativeDirectRRSuccessfulFrames },
             { "nativeDirectRRFailedFrames", nativeDirectRRFailedFrames },
             { "nativeDirectRRFailure", nativeDirectRRFailure },
+            { "nativeDirectRRComposeDispatches", nativeDirectRRComposeDispatches },
+            { "nativeDirectRRComposeFailure", nativeDirectRRComposeFailure },
+            { "nativeDirectRRPresentedFrames", nativeDirectRRPresentedFrames },
             { "nativeDirectRRLastReady", std::ranges::any_of(frames,
                 [](const Frame& frame) { return frame.nativeDirectRRReady; }) },
             { "nativeDirectPackFailure", nativeDirectPackFailure },
