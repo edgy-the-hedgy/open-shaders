@@ -275,7 +275,9 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
     // Fixed presets never dispatch the legacy DX11-associated Direct RR bridge.
     // Native DX12 Direct RR will be routed independently after its provider is ready.
     // Custom/legacy direct RR settings remain preserved.
-    const bool directRR = tieredDirect ? false : settings.UseDirectRayRegeneration;
+    const bool directRR = tieredDirect ? false :
+        (settings.UseDirectRayRegeneration &&
+         !(composer.composition.enabled && composer.IsOpenRT()));
     // GPU-only test of the selected advanced transport contract. The live
     // low-tier shadow/direct result is never replaced by these sparse signals.
     const bool transportDiagnostic = composer.AdvancedTransportDiagnosticActive() ||

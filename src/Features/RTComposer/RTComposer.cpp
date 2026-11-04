@@ -879,7 +879,7 @@ void RTComposer::DrawSettings()
         if (selectedMode != CompositorMode::ShadowOnly &&
             selectedMode != CompositorMode::FSRRedstone) {
             ImGui::SeparatorText("Independent RR requests");
-            for (uint32_t family = 0u; family < rrLabels.size(); ++family) {
+            for (uint32_t family = 0u; family < rrLabels.size() && IsFSRRenderer(); ++family) {
                 const uint32_t index = static_cast<uint32_t>(selectedMode);
                 const bool supported = (index == 1u && family == 2u) ||
                     ((index == 2u || index == 3u) && family < 2u) || index == 4u;
@@ -921,7 +921,9 @@ void RTComposer::DrawSettings()
         }
     } else {
         ImGui::TextWrapped("Custom profile: these controls are persistent and are not overwritten by switching to a fixed tier.");
-        if (ImGui::Checkbox("Custom: use native DX12 Hybrid-Shadowed GI", &composition.customHybridShadowed))
+        if (IsOpenRT())
+            ImGui::TextWrapped("Open RT Custom does not provide HybridGI or FSR-RR; the previous Custom HybridGI setting is retained for migration but not executed.");
+        else if (ImGui::Checkbox("Custom: use native DX12 Hybrid-Shadowed GI", &composition.customHybridShadowed))
             OnCompositionPolicyChanged();
         if (ImGui::SliderFloat("Custom shadow influence", &composition.shadowInfluence, 0.0f, 1.0f, "%.2f"))
             OnCompositionPolicyChanged();
@@ -930,13 +932,14 @@ void RTComposer::DrawSettings()
             ApplySamplingPolicy(composition.directCheckerboard);
             OnCompositionPolicyChanged();
         }
-        int giResolution = int(composition.hybridResolution);
-        bool giChanged = ImGui::Combo("Custom HybridGI resolution (SSGI sizes)", &giResolution,
-            "Full (100% W/H)\0Half (50% W/H)\0Quarter (25% W/H)\0");
-        if (giChanged) composition.hybridResolution = uint32_t(giResolution);
-        giChanged |= ImGui::Checkbox("Custom HybridGI checkerboard", &composition.hybridCheckerboard);
-        if (giChanged) OnCompositionPolicyChanged();
-        ImGui::TextWrapped("HybridGI RR operates on its selected logical grid and reconstructs native-resolution output on the DX12 compositor.");
+        if (!IsOpenRT()) {
+            int giResolution = int(composition.hybridResolution);
+            bool giChanged = ImGui::Combo("Custom HybridGI resolution (SSGI sizes)", &giResolution,
+                "Full (100% W/H)\0Half (50% W/H)\0Quarter (25% W/H)\0");
+            if (giChanged) composition.hybridResolution = uint32_t(giResolution);
+            giChanged |= ImGui::Checkbox("Custom HybridGI checkerboard", &composition.hybridCheckerboard);
+            if (giChanged) OnCompositionPolicyChanged();
+        }
     }
 
     if (WantsNativeHybrid()) {
@@ -1029,8 +1032,10 @@ void RTComposer::DrawSettings()
     } else {
         ImGui::TextWrapped("Shadow Only uses the raster scene and baseline SSGI where enabled. Unknown shadow visibility stays neutral.");
     }
-    if (composition.enabled && IsFixedPreset()) {
-        ImGui::TextWrapped("This is a fixed profile. Direct and indirect settings sections are read-only; Custom unlocks their controls.");
+    if (composition.enabled && IsOpenRT()) {
+        ImGui::TextWrapped("FSR-RR controls are unavailable in Open RT; native reconstruction is authoritative.");
+    } else if (composition.enabled && IsFixedPreset()) {
+        ImGui::TextWrapped("This is a fixed profile. Direct and indirect settings sections are read-only.");
     } else {
         ImGui::SeparatorText("FSR Ray Regeneration");
         const auto old = RayRegeneration::GetSettings();

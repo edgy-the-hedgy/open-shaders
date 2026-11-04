@@ -816,7 +816,8 @@ namespace DX12Native
             // scene is the only product returned to D3D11, not legacy GI signals.
             // Native DX12 HybridGI keeps its shadow-adjusted producer
             // regardless of the reconstruction provider selected for its signals.
-            const bool rrRequested = composer.DX12HybridActive() &&
+            const bool rrRequested = composer.IsFSRRenderer() &&
+                composer.DX12HybridActive() &&
                 (composer.IsFixedPreset() ?
                     composition.fixedRR.Get(composition.mode, 2u) :
                     (composition.useFSRRayRegeneration &&
@@ -898,10 +899,11 @@ namespace DX12Native
             backend.d3d12Device.get(), frame.commands.get(), frame.nativeGI,
             slot, frame.number, frame.generation);
         // First-pass Indirect RR is optional, with a native DX12 fallback.
-        const bool indirectRR = composer.IsFixedPreset() ?
-            composer.composition.fixedRR.Get(composer.composition.mode, 1u) :
-            (composer.composition.useFSRRayRegeneration &&
-             RayRegeneration::GetSettings().enabled);
+        const bool indirectRR = composer.IsFSRRenderer() &&
+            (composer.IsFixedPreset() ?
+                composer.composition.fixedRR.Get(composer.composition.mode, 1u) :
+                (composer.composition.useFSRRayRegeneration &&
+                 RayRegeneration::GetSettings().enabled));
         RedstoneDenoiser* firstProvider = nullptr;
         if (indirectRR) {
             if (!advancedDenoiser)
@@ -964,8 +966,8 @@ namespace DX12Native
             backend.d3d12Device.get(), frame.commands.get(), frame.postHybridGI,
             slot, frame.number, frame.generation);
         // Post-composite HybridGI RR is a separate reconstruction request.
-        const bool hybridRR = composer.composition.fixedRR.Get(
-            composer.composition.mode, 2u);
+        const bool hybridRR = composer.IsFSRRenderer() &&
+            composer.composition.fixedRR.Get(composer.composition.mode, 2u);
         RedstoneDenoiser* postProvider = nullptr;
         if (hybridRR) {
             auto& candidate = globals::features::redstoneGI.GetDenoiser();
