@@ -22,6 +22,7 @@ cbuffer Composition : register(b0)
     float IndirectStrength;
     uint IndirectEnabled;
     uint DirectTraceMode;
+    uint IndirectTraceMode;
 };
 uint2 LogicalPixel(uint2 pixel, uint2 logicalSize)
 {
@@ -73,6 +74,26 @@ float3 DirectDisplay(uint2 pixel, out bool validD, out bool validS, out uint2 ma
     }
     return diffuse + specular + emission;
 }
+void IndirectDisplay(uint2 pixel, out float3 diffuse, out float3 specular, out bool validD, out bool validS)
+{
+    float4 ownD = RawIndirectDiffuse[pixel], ownS = RawIndirectSpecular[pixel];
+    validD = all(isfinite(ownD)) && ownD.a >= -1;
+    validS = all(isfinite(ownS)) && ownS.a >= -1;
+    diffuse = validD ? ownD.rgb : 0; specular = validS ? ownS.rgb : 0;
+    if ((validD && validS) || IndirectTraceMode == 0u) return;
+    float bestD = validD ? 0 : 1e30, bestS = validS ? 0 : 1e30;
+    int radius = int(NativeDisplayRadius(IndirectTraceMode));
+    for (int y = -radius; y <= radius; ++y) for (int x = -radius; x <= radius; ++x) {
+        int2 candidate = int2(pixel) + int2(x, y);
+        if (any(candidate < 0) || any(candidate >= int2(NativeSize))) continue;
+        uint2 source = uint2(candidate);
+        if (!DisplayReceiver(pixel, source)) continue;
+        float distance = float(x*x + y*y);
+        float4 d = RawIndirectDiffuse[source], s = RawIndirectSpecular[source];
+        if (distance < bestD && all(isfinite(d)) && d.a >= -1) { diffuse = d.rgb; validD = true; bestD = distance; }
+        if (distance < bestS && all(isfinite(s)) && s.a >= -1) { specular = s.rgb; validS = true; bestS = distance; }
+    }
+}
 [numthreads(8,8,1)] void main(uint2 pixel : SV_DispatchThreadID)
 {
     if (any(pixel >= NativeSize)) return;
@@ -97,13 +118,13 @@ float3 DirectDisplay(uint2 pixel, out bool validD, out bool validS, out uint2 ma
     float3 indirect = 0;
     bool indirectValid = false;
     if (IndirectEnabled) {
-        float4 rawD = RawIndirectDiffuse[pixel], rawS = RawIndirectSpecular[pixel];
-        bool validID = all(isfinite(rawD)) && rawD.a >= -1;
-        bool validIS = all(isfinite(rawS)) && rawS.a >= -1;
-        float3 indirectD = validID ? rawD.rgb : 0, indirectS = validIS ? rawS.rgb : 0;
+        float3 indirectD, indirectS;
+        bool validID, validIS;
+        IndirectDisplay(pixel, indirectD, indirectS, validID, validIS);
         if (IndirectMask && receiver) {
             uint2 logical = LogicalPixel(pixel, IndirectLogical);
-            if (ExactReceiver(pixel, logical, IndirectLogical) && abs(IndirectDepth[logical] - depth) <= max(0.5, abs(depth) * 0.005)) {
+            uint2 representative = ((logical * 2u + 1u) * NativeSize) / (IndirectLogical * 2u);
+            if (DisplayReceiver(pixel, representative) && abs(IndirectDepth[logical] - depth) <= max(0.5, abs(depth) * 0.005)) {
                 float4 rrD = RRIndirectDiffuse[logical], rrS = RRIndirectSpecular[logical];
                 if ((IndirectMask & 1u) && ValidRR(rrD)) { indirectD = rrD.rgb * da.rgb; validID = true; }
                 if ((IndirectMask & 2u) && ValidRR(rrS)) { indirectS = rrS.rgb * sa.rgb; validIS = true; }

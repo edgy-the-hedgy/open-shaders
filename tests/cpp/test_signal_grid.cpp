@@ -110,4 +110,3 @@ TEST_CASE("Display reconstruction uses independent surface-safe selection", "[Si
     REQUIRE_FALSE(NativeDisplayUseRR(1, 0, false, true));
     REQUIRE_FALSE(NativeDisplayUseRR(1, 0, true, false));
 }
-
