@@ -217,12 +217,23 @@ json RTComposer::GetDiagnostics()
         { "nativeDirectRRPreviewRequested", NativeDirectRRPreviewActive() },
         { "nativeDirectRRPreviewBlend",
             NativeDirectRRPreviewActive() ? developer.nativeDirectRRPreviewBlend : 0.0f },
-        { "fsrNativeDirectRRContextsReady", false },
+        { "fsrNativeDirectRRContextsWired", true },
+        { "fsrNativeDirectRRContextsValidated", false },
+        { "fsrDirectRRPreviewShaderPackaged", true },
+        { "fsrDirectRRPreviewDispatchWired", NativeDirectRRPreviewActive() },
+        { "fsrDirectRRRecordedFrames", tracer.GetDiagnostics().value(
+            "nativeDirectRRSuccessfulFrames", uint64_t{0}) },
+        { "fsrDirectRRPreviewPresentedFrames", tracer.GetDiagnostics().value(
+            "nativeDirectRRPresentedFrames", uint64_t{0}) },
+        { "fsrDirectRRLastFailure", tracer.GetDiagnostics().value(
+            "nativeDirectRRFailure", std::string{}) },
+        { "fsrDirectRRPreviewLastFailure", tracer.GetDiagnostics().value(
+            "nativeDirectRRComposeFailure", std::string{}) },
         { "fsrEnhancedSecondBounceWired", false },
         { "fsrHybridIndependentDispatchWired", false },
         { "fsrBlockingReason", IsFSRRenderer() &&
             !LegacyHybridPrototypeActive() ?
-            "Native direct raw checkerboard scheduling, AMD direct RR contexts and final composition are not wired; safe Shadow Only remains authoritative" :
+            "Direct RR preview is developer-only; independent HybridGI RR and RT-Enhanced two-bounce transport are not production-ready" :
             "" },
         { "requestedMode", IsOpenRT() ? ModeName(composition.mode) :
             FSRModeName(composition.fsrRRMode) },
@@ -798,7 +809,7 @@ void RTComposer::DrawSettings()
             }
             ImGui::EndCombo();
         }
-        ImGui::TextWrapped("FSR-RR native Direct/Indirect transport is still under construction. The raw Direct checkerboard pack shader is packaged, but is not dispatched or handed to AMD yet. The new Direct RR contexts, two-bounce transport and final composition are pending. Selected requests remain saved; safe Shadow Only is active.");
+        ImGui::TextWrapped("Native Direct Diffuse/Specular FSR-RR dispatch and DX12 composition are connected as developer diagnostics. Enable Advanced Developer Mode for the optional Direct preview. Production Hybrid-Illumination still requires independent HybridGI RR integration; RT-Enhanced still requires two-bounce path tracing. Ordinary selection keeps Shadow Only.");
         if (composition.fsrRRMode == FSRRRMode::HybridIllumination) {
             ImGui::SeparatorText("HybridGI baseline settings (FSR-specific)");
             int res = static_cast<int>(composition.fsrHybrid.resolution);
