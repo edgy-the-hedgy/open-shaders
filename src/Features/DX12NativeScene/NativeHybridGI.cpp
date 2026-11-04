@@ -38,7 +38,7 @@ namespace DX12Native
         struct NativeLightingCB
         {
             float4 camera;
-            uint32_t linear, aces, padding[2]{};
+            uint32_t linear, aces, rasterEncoded, padding = 0u;
         };
         struct NativeMaskCB
         {
@@ -265,7 +265,8 @@ namespace DX12Native
         const HybridSamplingLayout& sampling, ID3D12Resource* linearDepth,
         ID3D12Resource* normalRough, ID3D12Resource* linearRadiance,
         ID3D12Resource* albedo, ID3D12Resource* reflectance, ID3D12Resource* shadowMask,
-        const RedstoneGI& settings, float shadowInfluence, float skipThreshold)
+        const RedstoneGI& settings, float shadowInfluence, float skipThreshold,
+        bool rasterEncodedSource)
     {
         frame.valid = false;
         frame.advancedTransportTier = 0u;
@@ -303,7 +304,10 @@ namespace DX12Native
             auto nativeAO = settings.GetNativeOcclusionSettings();
             const NativeLightingCB light{ Util::GetCameraData(),
                 uint32_t(globals::features::linearLighting.IsLinearLightingActive()),
-                globals::features::linearLighting.settings.enableACEScg };
+                globals::features::linearLighting.settings.enableACEScg,
+                uint32_t(rasterEncodedSource) };
+            static_assert(sizeof(NativeLightingCB) == 32,
+                "HybridGI lighting cbuffer layout changed");
             const NativeMaskCB mask{ shadowInfluence, skipThreshold, 18.0f,
                 nativeGI.DepthFadeRange.y };
             const auto& camera = globals::game::frameBufferCached.nonVR;

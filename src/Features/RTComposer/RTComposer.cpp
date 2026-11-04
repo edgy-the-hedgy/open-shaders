@@ -272,10 +272,18 @@ json RTComposer::GetDiagnostics()
         } },
         { "advancedDeveloperMode", advancedDeveloperMode },
         { "developerReconstructionRevision", developerRevision },
+        { "hybridGISceneSourceRequested",
+            UseRasterHybridGISource() ? "raster-baseline" : "native-shadowed" },
+        { "hybridGISceneSourceLastRecorded", tracer.GetDiagnostics().value(
+            "hybridGIInputScene", std::string{"not-recorded"}) },
+        { "hybridGISceneSourceLastRecordedFrame", tracer.GetDiagnostics().value(
+            "hybridGIInputSceneFrame", uint32_t{0}) },
         { "developerPostHybridGIEnabled", !advancedDeveloperMode || developer.showPostHybridGI },
         { "developerPostHybridGIContribution",
             advancedDeveloperMode ? developer.scenePostGIContribution : 1.f },
         { "developerEffectiveSettings", {
+            { "hybridGISceneSource",
+                UseRasterHybridGISource() ? "raster-baseline" : "native-shadowed" },
             { "spatialDepthTolerance", EffectiveDeveloperControls().spatialDepthTolerance },
             { "spatialNormalThreshold", EffectiveDeveloperControls().spatialNormalThreshold },
             { "spatialRoughnessTolerance", EffectiveDeveloperControls().spatialRoughnessTolerance },
@@ -674,6 +682,17 @@ void RTComposer::DrawSettings()
     if (advancedDeveloperMode) {
         if (ImGui::Button("Reset developer test parameters"))
             developer = DeveloperControls{};
+        if (WantsNativeHybrid() &&
+            (composition.mode == CompositorMode::HybridShadowed ||
+             composition.mode == CompositorMode::Custom)) {
+            ImGui::SeparatorText("HybridGI input scene");
+            ImGui::Checkbox("Use Raster Baseline instead of Native Shadowed",
+                &developer.hybridGIRasterBaseline);
+            ImGui::TextWrapped("Raster Baseline reads the captured raster scene; Native Shadowed reads DX12 shadow-adjusted linear radiance. Final composition remains shadowed in both cases. This is a source-quality A/B switch; the existing source/depth preparation remains scheduled.");
+            const auto trace = globals::features::dx12NativeScene.Tracer().GetDiagnostics();
+            const auto recorded = trace.value("hybridGIInputScene", std::string{"not-recorded"});
+            ImGui::Text("Last GI source recorded: %s", recorded.c_str());
+        }
         if (ImGui::TreeNode("Native spatial reconstruction")) {
             constexpr std::array names{ "Diffuse", "Specular", "AO / Specular AO" };
             for (int family = 0; family < 3; ++family) {

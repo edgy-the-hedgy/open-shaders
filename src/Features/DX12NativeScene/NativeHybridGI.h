@@ -65,7 +65,8 @@ namespace DX12Native
             ID3D12Resource* linearDepth, ID3D12Resource* normalRough,
             ID3D12Resource* linearRadiance, ID3D12Resource* albedo,
             ID3D12Resource* reflectance, ID3D12Resource* shadowMask,
-            const RedstoneGI& settings, float shadowInfluence, float skipThreshold);
+            const RedstoneGI& settings, float shadowInfluence,
+            float skipThreshold, bool rasterEncodedSource = false);
         // Convert tier 2..5 DXR sparse diffuse/specular into independently
         // tagged logical-grid RR inputs. AO/SO are deterministic neutral
         // placeholders; RT-exclusive transport does not inherit raster SSGI.

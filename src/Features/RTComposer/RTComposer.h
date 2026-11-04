@@ -192,6 +192,8 @@ struct RTComposer final : Feature
         float sceneGIContribution = 1.f;
         float scenePostGIContribution = 1.f; // RT-Enhanced second HybridGI only
         bool showPostHybridGI = true;
+        // Temporary A/B selector; strict presets still use native-shadowed GI.
+        bool hybridGIRasterBaseline = false;
         float sceneShadowInfluence = .9f;
         bool showDirect = true, showDiffuse = true, showSpecular = true, useAO = true;
         bool overrideShadowTemporal = false;
@@ -215,6 +217,10 @@ struct RTComposer final : Feature
     const DeveloperControls& EffectiveDeveloperControls() const
     {
         return advancedDeveloperMode ? developer : StrictDeveloperControls();
+    }
+    bool UseRasterHybridGISource() const
+    {
+        return advancedDeveloperMode && developer.hybridGIRasterBaseline;
     }
     CompositionSettings EffectiveReconstructionPolicy() const
     {

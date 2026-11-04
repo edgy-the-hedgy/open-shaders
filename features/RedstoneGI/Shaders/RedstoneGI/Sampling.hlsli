@@ -174,6 +174,10 @@ float3 SampleEmission(SurfaceSample surfaceSample)
     // DX12 source radiance is full-native; signalPixel is only the logical
     // receiver index. Sampling it here would read the wrong 2x2 block.
     float3 radiance = srcRadiance.Load(int3(surfaceSample.nativePixel, 0));
+    // Only the raster-capture source requires the same transfer function
+    // as hybridShadowSource; native-shadowed radiance is already linear.
+    if (NativeRasterSourceEncoded != 0u)
+        radiance = sign(radiance) * pow(abs(radiance), 1.6);
 #else
 	float3 radiance = srcRadiance.Load(int3(surfaceSample.signalPixel, 0));
 #endif

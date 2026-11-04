@@ -329,6 +329,8 @@ namespace DX12Native
         uint32_t hybridInputLastFrame = 0;
         std::string hybridInputFailure;
         uint64_t hybridSourceDispatches = 0;
+        std::string hybridGIInputScene = "not-recorded";
+        uint32_t hybridGIInputSceneFrame = 0;
         uint32_t hybridSourceLastFrame = 0;
         std::string hybridSourceFailure;
 		uint32_t sceneCompositeFrame = 0;

@@ -14,7 +14,8 @@ cbuffer NativeLighting : register(b5)
     float4 NativeCameraData;
     uint NativeEnableLinearLighting;
     uint NativeEnableACEScg;
-    uint2 NativeLightingPadding;
+    uint NativeRasterSourceEncoded;
+    uint NativeLightingPadding;
 }
 namespace Color
 {

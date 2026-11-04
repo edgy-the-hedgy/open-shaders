@@ -766,12 +766,19 @@ namespace DX12Native
         frame.nativeGI.composedValid = false;
         if (!frame.nativeGIRequested || !frame.hybridShadowedSourceReady ||
             !frame.hybridLinearDepth || !frame.hybridShadowedSource || !frame.shadowMask ||
+            !frame.hybridInputs[0] ||
             !frame.hybridInputs[2] || !frame.hybridInputs[3] || !frame.hybridInputs[4] ||
             !frame.hybridInputs[5]) return;
         if (!nativeHybridGI) nativeHybridGI = std::make_unique<NativeHybridGI>();
         const auto& composer = globals::features::rtComposer;
         const auto& composition = composer.composition;
         const auto tier = RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed);
+        const bool rasterScene = composer.UseRasterHybridGISource();
+        // Change only the raw scene radiance sampled by HybridGI.
+        // The separate shadowed scene still supplies final composition.
+        ID3D12Resource* hybridRadiance = rasterScene ?
+            frame.hybridInputs[0]->resource.get() :
+            frame.hybridShadowedSource.get();
         const auto sampling = MakeHybridSamplingLayout(
             composer.IsFixedPreset() ? tier.hybridResolution : composition.hybridResolution,
             composer.IsFixedPreset() ? tier.hybridCheckerboard : composition.hybridCheckerboard,
@@ -779,12 +786,15 @@ namespace DX12Native
         if (nativeHybridGI->Record(backend.d3d12Device.get(), frame.commands.get(),
                 frame.nativeGI, uint32_t(&frame - frames.data()), frame.number, frame.size,
                 sampling, frame.hybridLinearDepth.get(), frame.hybridInputs[2]->resource.get(),
-                frame.hybridShadowedSource.get(), frame.hybridInputs[3]->resource.get(),
+                hybridRadiance, frame.hybridInputs[3]->resource.get(),
                 frame.hybridInputs[4]->resource.get(), EffectiveShadowMask(frame),
                 globals::features::redstoneGI,
                 composer.IsFixedPreset() ? tier.shadowInfluence : composition.shadowInfluence,
-                composer.IsFixedPreset() ? 0.25f : composition.shadowThreshold)) {
+                composer.IsFixedPreset() ? 0.25f : composition.shadowThreshold,
+                rasterScene)) {
             frame.nativeGIFrame = frame.number;
+            hybridGIInputScene = rasterScene ? "raster-baseline" : "native-shadowed";
+            hybridGIInputSceneFrame = frame.number;
             // Native RR guides are GPU-only and allocated at the *logical*
             // RR grid. They are not sent through the legacy DX11 denoiser.
             const bool guidesReady = nativeHybridGI->RecordRRGuides(
@@ -800,7 +810,8 @@ namespace DX12Native
             if (guidesReady)
                 nativeHybridGI->RecordHistoryValidation(
                     backend.d3d12Device.get(), frame.commands.get(), frame.nativeGI,
-                    uint32_t(&frame - frames.data()), frame.number, frame.generation);
+                    uint32_t(&frame - frames.data()), frame.number,
+                    frame.generation ^ (composer.developerRevision * 0x9e3779b97f4a7c15ULL));
             // Native Hybrid-Shadowed is a production path. The completed DX12
             // scene is the only product returned to D3D11, not legacy GI signals.
             // Native DX12 HybridGI keeps its shadow-adjusted producer
@@ -1930,6 +1941,8 @@ namespace DX12Native
             { "hybridShadowedSourceDispatches", hybridSourceDispatches },
             { "nativeHybridGIDispatches", nativeHybridGI ? nativeHybridGI->GIDispatches() : uint64_t{0} },
             { "nativeHybridAODispatches", nativeHybridGI ? nativeHybridGI->AODispatches() : uint64_t{0} },
+            { "hybridGIInputScene", hybridGIInputScene },
+            { "hybridGIInputSceneFrame", hybridGIInputSceneFrame },
             { "nativeHybridEligibilityDispatches", nativeHybridGI ? nativeHybridGI->EligibilityDispatches() : uint64_t{0} },
             { "nativeHybridRRGuideDispatches", nativeHybridGI ? nativeHybridGI->GuideDispatches() : uint64_t{0} },
             { "nativeHybridReconstructionDispatches", nativeHybridGI ?
