@@ -213,7 +213,7 @@ json RTComposer::GetDiagnostics()
         } },
         { "fsrLegacyHybridPrototype", LegacyHybridPrototypeActive() },
         { "fsrDirectRawPackShaderPackaged", true },
-        { "fsrDirectRawPackDispatchWired", false },
+        { "fsrDirectRawPackDispatchWired", NativeDirectRRDiagnosticActive() },
         { "fsrNativeDirectRRContextsReady", false },
         { "fsrEnhancedSecondBounceWired", false },
         { "fsrHybridIndependentDispatchWired", false },
@@ -835,6 +835,11 @@ void RTComposer::DrawSettings()
             ImGui::Checkbox("Enable legacy HybridGI prototype (not RR-only)",
                 &developer.legacyHybridGIPrototype);
             ImGui::TextWrapped("Research only: this uses the old DX12 Hybrid-Shadowed path and native RR fallback, not the new raw Direct Diffuse/Specular RR pipeline.");
+            if (!developer.legacyHybridGIPrototype) {
+                ImGui::Checkbox("Native Direct FSR-RR diagnostic (GPU-only, not presented)",
+                    &developer.nativeDirectRRDiagnostic);
+                ImGui::TextWrapped("Traces native checkerboard Direct rays and packs untouched diffuse/specular anchor radiance. The final scene remains Shadow Only until native RR composition is validated. Even render width required.");
+            }
         }
         if (ImGui::Button("Reset developer test parameters"))
             developer = DeveloperControls{};

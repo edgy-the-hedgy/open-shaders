@@ -1230,7 +1230,8 @@ namespace DX12Native
 			float4 stochasticParameters;
 		};
 		const auto& origin = globals::game::frameBufferCached.GetCameraPosAdjust();
-		const Constants constants{ a_frame.size[0], a_frame.size[1], a_frame.number, uint32_t(a_frame.scene->bottoms.size()), a_direction, kRayMaximum, { origin.x, origin.y, origin.z }, kRayMinimum, a_localLight ? 0.0f : kSunAngularRadius, { a_localLight ? 1u : 0u, a_frame.materialView, a_frame.allPreparedLights ? uint32_t(a_frame.lightIdentities.size()) : 0u }, a_frame.strengths, (a_frame.useDirectRR || a_frame.indirectRays) ? 1u : 0u, { 0u, a_frame.directTraceMode, a_frame.indirectTraceMode }, { a_frame.indirectRays, a_frame.bindings->materials->roomCount, a_frame.bindings->materials->roomsKnown ? 1u : 0u, a_frame.normalMode | a_frame.rrMaterialPolicy }, a_frame.falloffParameters, { a_frame.stochasticParameters.x, a_frame.stochasticParameters.y,
+		const Constants constants{ a_frame.size[0], a_frame.size[1], a_frame.number, uint32_t(a_frame.scene->bottoms.size()), a_direction, kRayMaximum, { origin.x, origin.y, origin.z }, kRayMinimum, a_localLight ? 0.0f : kSunAngularRadius, { a_localLight ? 1u : 0u, a_frame.materialView, a_frame.allPreparedLights ? uint32_t(a_frame.lightIdentities.size()) : 0u }, a_frame.strengths, (a_frame.useDirectRR || a_frame.indirectRays ||
+            a_frame.nativeDirectRRRequested) ? 1u : 0u, { 0u, a_frame.directTraceMode, a_frame.indirectTraceMode }, { a_frame.indirectRays, a_frame.bindings->materials->roomCount, a_frame.bindings->materials->roomsKnown ? 1u : 0u, a_frame.normalMode | a_frame.rrMaterialPolicy }, a_frame.falloffParameters, { a_frame.stochasticParameters.x, a_frame.stochasticParameters.y,
 				a_frame.shadowMask ? 1.0f : 0.0f, a_frame.stochasticParameters.w } };
 		static_assert(sizeof(Constants) == 36 * sizeof(uint32_t));
 		commands->SetComputeRoot32BitConstants(5, 36, &constants, 0);
@@ -1596,7 +1597,10 @@ namespace DX12Native
 		const auto bindingBytes = cachedBindings ? 0 : BindingBytes(backend, *a_scene);
 		if (bindingBytes == UINT64_MAX) { failure = "Directional binding allocation unsupported"; return; }
 		const std::array<uint32_t, 2> size = a_sceneTarget ? a_nativeSize : std::array<uint32_t, 2>{ (a_nativeSize[0] + kGridDivisor - 1) / kGridDivisor, (a_nativeSize[1] + kGridDivisor - 1) / kGridDivisor };
-		const auto rrPolicy = RayRegeneration::GetSettings();
+		const auto& composer = globals::features::rtComposer;
+        bool nativeDirectTest = a_sceneTarget && composer.NativeDirectRRDiagnosticActive() &&
+            size[0] >= 2u && (size[0] & 1u) == 0u && size[1] != 0u;
+        const auto rrPolicy = RayRegeneration::GetSettings();
 		const uint32_t effectiveRRMode = a_directRRResolutionMode == 3u ? rrPolicy.resolutionMode : std::min(a_directRRResolutionMode, 2u);
 		const bool directRR = a_sceneTarget && a_useDirectRR && rrPolicy.enabled;
 		const bool wantExport = a_sceneTarget && globals::features::rtComposer.ShadowOnlyActive();
@@ -1611,9 +1615,9 @@ namespace DX12Native
         // Acquire DX11 inputs only when production native Hybrid-Shadowed is
         // eligible; Shadow Only is the sole DX11 scene-composition mode.
         bool wantHybridInputs = a_sceneTarget &&
-            globals::features::rtComposer.DX12HybridActive();
-        bool wantNativeGI = wantHybridInputs && NativeHybridGI::ShadersAvailable();
-        const auto& composer = globals::features::rtComposer;
+            (composer.DX12HybridActive() || nativeDirectTest);
+        bool wantNativeGI = a_sceneTarget && composer.DX12HybridActive() &&
+            NativeHybridGI::ShadersAvailable();
         const auto& composition = composer.composition;
         // Compute the intended second-pass resource requirement before
         // frame-reuse checks; later VRAM fallback can disable it.
@@ -1643,7 +1647,8 @@ namespace DX12Native
             (uint32_t(optionalBlur[2]) << 2u);
 		bool reuse = available->size == size &&
             available->reconstructionBlurMask == requestedBlurMask &&
-            available->useDirectRR == directRR && available->indirectRays == a_indirectRays && available->receivers && available->output && available->light &&
+            available->useDirectRR == directRR &&
+            available->nativeDirectRRRequested == nativeDirectTest && available->indirectRays == a_indirectRays && available->receivers && available->output && available->light &&
 			bool(available->shadowMask) == bool(a_sceneTarget) &&
 			bool(available->shadowMaskExport) == wantExport &&
             bool(available->hybridInputs[0]) == wantHybridInputs &&
@@ -1678,6 +1683,10 @@ namespace DX12Native
         const uint64_t linearDepthBytes = wantHybridInputs ?
             backend.d3d12Device->GetResourceAllocationInfo(0, 1, &linearDepthDesc).SizeInBytes : 0;
         uint64_t hybridBytes = wantHybridInputs ? nextPreviewBytes * kHybridInputCount + textureBytes + linearDepthBytes : 0;
+        // Conservative DX12 reserve for half-width raw checkerboard, five
+        // full-native material/motion guides and two AMD output textures.
+        uint64_t nativeDirectBytes = nativeDirectTest ?
+            nextPreviewBytes * 10u + kFrameOverheadBytes : 0u;
         // Optional blur is already resolved for frame-reuse and budget checks.
         uint64_t nativeGIBytes = wantNativeGI ?
             NativeHybridGI::EstimateBytes(backend.d3d12Device.get(), size[0], size[1],
@@ -1713,10 +1722,10 @@ namespace DX12Native
         }
 		if (textureBytes == UINT64_MAX || lightBytes == UINT64_MAX || nextPreviewBytes == UINT64_MAX ||
 			visibilityBytes == UINT64_MAX || maskBytes == UINT64_MAX) { failure = "Directional texture allocation unsupported"; return; }
-		const uint64_t signalBytes = (directRR || a_indirectRays) ? nextPreviewBytes * kDirectSignalCount : 0;
+		const uint64_t signalBytes = (directRR || a_indirectRays || nativeDirectTest) ? nextPreviewBytes * kDirectSignalCount : 0;
 		const uint64_t rrInteropReserve = directRR ? uint64_t(std::max(1u, size[0] >> effectiveRRMode)) * std::max(1u, size[1] >> effectiveRRMode) * 256 + kFrameOverheadBytes : 0;
 		auto calculateRequired = [&] {
-            return (reuse ? uint64_t{ 0 } : textureBytes * 2 + lightBytes + signalBytes + visibilityBytes + maskBytes + exportBytes + temporalBytes + hybridBytes + nativeGIBytes + kFrameOverheadBytes) +
+            return (reuse ? uint64_t{ 0 } : textureBytes * 2 + lightBytes + signalBytes + visibilityBytes + maskBytes + exportBytes + temporalBytes + hybridBytes + nativeGIBytes + nativeDirectBytes + kFrameOverheadBytes) +
                 (a_sceneTarget ? uint64_t{ 0 } : nextPreviewBytes) + bindingBytes + rrInteropReserve;
         };
         uint64_t required = calculateRequired();
@@ -1729,10 +1738,13 @@ namespace DX12Native
             wantHybridInputs = false;
             wantNativeGI = false;
             wantPostHybrid = false;
+            nativeDirectTest = false;
+            nativeDirectBytes = 0u;
             hybridBytes = nativeGIBytes = 0;
             reuse = available->size == size &&
             available->reconstructionBlurMask == requestedBlurMask &&
             available->useDirectRR == directRR &&
+            available->nativeDirectRRRequested == nativeDirectTest &&
                 available->indirectRays == a_indirectRays && available->receivers &&
                 available->output && available->light &&
                 bool(available->shadowMask) == bool(a_sceneTarget) &&
@@ -1750,6 +1762,7 @@ namespace DX12Native
             reuse = available->size == size &&
             available->reconstructionBlurMask == requestedBlurMask &&
             available->useDirectRR == directRR &&
+            available->nativeDirectRRRequested == nativeDirectTest &&
                 available->indirectRays == a_indirectRays && available->receivers &&
                 available->output && available->light &&
                 bool(available->shadowMask) == bool(a_sceneTarget) &&
@@ -1823,6 +1836,8 @@ namespace DX12Native
             available->shadowMotionCaptured = false;
             available->shadowHistorySourceSlot = -1;
             available->nativeGIRequested = wantNativeGI;
+            available->nativeDirectRRRequested = nativeDirectTest;
+            available->nativeDirectPackValid = false;
             available->reconstructionBlurMask = requestedBlurMask;
             available->nativeGI.valid = false;
 			available->materialView = std::min(a_materialView, kCombinedDirectView);
@@ -1852,7 +1867,8 @@ namespace DX12Native
 			available->useDirectRR = directRR;
 			available->rasterBlend = a_rasterBlend;
 			available->normalMode = std::min(a_normalMode, 2u);
-			available->directTraceMode = std::min(a_directResolutionMode, 7u);
+			available->directTraceMode = nativeDirectTest ? 5u :
+                std::min(a_directResolutionMode, 7u);
 			available->indirectTraceMode = std::min(a_indirectResolutionMode, 7u);
 			available->directRRResolutionMode = effectiveRRMode;
 			available->rrMaterialPolicy = a_rrMaterialIsolation ? (0x80000000u |
@@ -1861,7 +1877,7 @@ namespace DX12Native
 				std::vector<PreparedPointLight>{ a_preparedLights.empty() ? PreparedPointLight{} : a_preparedLights.front() };
 			if (a_allPreparedLights) available->lightIdentities.assign(a_lightIdentities.begin(), a_lightIdentities.end());
 			else available->lightIdentities = { { a_lightReference, a_lightBase } };
-			available->bytes = textureBytes * 2 + lightBytes + signalBytes + visibilityBytes + maskBytes + exportBytes + temporalBytes + hybridBytes + nativeGIBytes + kFrameOverheadBytes;
+			available->bytes = textureBytes * 2 + lightBytes + signalBytes + visibilityBytes + maskBytes + exportBytes + temporalBytes + hybridBytes + nativeGIBytes + nativeDirectBytes + kFrameOverheadBytes;
 			D3D11_TEXTURE2D_DESC desc{};
 			desc.Width = size[0]; desc.Height = size[1];
 			desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
@@ -1935,7 +1951,7 @@ namespace DX12Native
 					desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
 				}
 			}
-			if (directRR || a_indirectRays) {
+			if (directRR || a_indirectRays || nativeDirectTest) {
 				desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
 				static constexpr std::array names{ "RTDirectLighting::DirectDiffuse", "RTDirectLighting::DirectSpecular", "RTDirectLighting::DirectNormalRoughness", "RTDirectLighting::DirectSpecularAlbedo", "RTDirectLighting::DirectDiffuseAlbedo", "RTDirectLighting::IndirectDiffuse", "RTDirectLighting::IndirectSpecular" };
 				for (uint32_t i = 0; i < kDirectSignalCount; ++i)

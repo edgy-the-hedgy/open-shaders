@@ -266,6 +266,7 @@ struct RTComposer final : Feature
         // Temporary A/B selector; strict presets still use native-shadowed GI.
         bool hybridGIRasterBaseline = false;
         bool legacyHybridGIPrototype = false; // explicitly non-production test
+        bool nativeDirectRRDiagnostic = false; // opt-in GPU pack / AMD dispatch test
         float sceneShadowInfluence = .9f;
         bool showDirect = true, showDiffuse = true, showSpecular = true, useAO = true;
         bool overrideShadowTemporal = false;
@@ -286,6 +287,13 @@ struct RTComposer final : Feature
         return composition.rendererFamily == RendererFamily::OpenRT;
     }
     bool IsFSRRenderer() const { return !IsOpenRT(); }
+    bool NativeDirectRRDiagnosticActive() const
+    {
+        return composition.enabled && IsFSRRenderer() &&
+            composition.fsrRRMode == FSRRRMode::HybridIllumination &&
+            advancedDeveloperMode && developer.nativeDirectRRDiagnostic &&
+            !developer.legacyHybridGIPrototype;
+    }
     bool LegacyHybridPrototypeActive() const
     {
         return composition.enabled && IsFSRRenderer() &&
