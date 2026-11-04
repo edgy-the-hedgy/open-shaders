@@ -1,5 +1,7 @@
 # Native renderer corrections
 
+Historical report. The current shared source and final DX12 composition are documented in [Shared native scene pipeline](native-scene-pipeline.md).
+
 Starting revision: `74e8407e16d61a49fd38394e61925e9b319d0a67`, branch `comparison/pre-rtcomposer`.
 This report supersedes the earlier representative-only publication limitation. Runtime and visual acceptance are reserved for the owner; none is claimed here.
 

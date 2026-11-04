@@ -1,5 +1,7 @@
 # Native Hybrid GI/AO and native AMD RR delivery
 
+Historical report. The current shared source and final DX12 composition are documented in [Shared native scene pipeline](native-scene-pipeline.md).
+
 ## Delivery and evidence boundary
 
 Branch: `comparison/pre-rtcomposer`. Starting revision: `350b998477ab3377a2fbf84d0756f164650c2913`.
