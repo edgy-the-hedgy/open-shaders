@@ -26,6 +26,10 @@ cbuffer FSRIndependentComposition : register(b0)
     uint LinearLighting;
     float DirectBlend;
     float GIContribution;
+    uint DirectRRMask;
+    uint HybridRRMask;
+    uint CheckerboardPolicy;
+    uint Reserved;
 };
 [numthreads(8,8,1)]
 void main(uint2 pixel : SV_DispatchThreadID)
@@ -35,61 +39,77 @@ void main(uint2 pixel : SV_DispatchThreadID)
     const float3 baseline = all(isfinite(raster.rgb)) ?
         max(raster.rgb, 0.0) : 0.0;
     float3 color = LinearLighting != 0u ? baseline : pow(baseline, 1.6);
-    // For checkerboard reconstruction only the actual sampled anchor
-    // establishes receiver eligibility. This never touches RR inputs.
+    // Direct RR outputs are full-native. An unavailable family uses only
+    // its actual traced checkerboard anchor, without inventing coverage.
     const uint2 anchor = uint2(min((pixel.x & ~1u) +
         ((pixel.y + FrameIndex) & 1u), FrameSize.x - 1u), pixel.y);
     const float4 tagged = TaggedDirect.Load(int3(anchor, 0));
-    const float4 receiver = Receivers.Load(int3(pixel, 0));
-    const float4 anchorReceiver = Receivers.Load(int3(anchor, 0));
-    const float depth = LinearDepth.Load(int3(pixel, 0));
-    const float anchorDepth = LinearDepth.Load(int3(anchor, 0));
-    const float4 nr = RasterNormalRoughness.Load(int3(pixel, 0));
-    const float4 anchorNR = RasterNormalRoughness.Load(int3(anchor, 0));
-    const bool sameSurface = receiver.w != 0.0 && receiver.w == anchorReceiver.w &&
-        all(isfinite(receiver)) && all(isfinite(anchorReceiver)) &&
-        isfinite(depth) && isfinite(anchorDepth) && depth > 0.0 && anchorDepth > 0.0 &&
-        abs(depth - anchorDepth) <= max(0.5, depth * 0.005) &&
-        all(isfinite(nr)) && all(isfinite(anchorNR)) &&
-        length(nr.xy - anchorNR.xy) <= 0.15;
-    if (sameSurface && tagged.a == 4.0 && all(isfinite(tagged))) {
-        const float4 d = DirectDiffuseRR.Load(int3(pixel, 0));
-        const float4 s = DirectSpecularRR.Load(int3(pixel, 0));
-        const float4 albedoD = DirectDiffuseAlbedo.Load(int3(anchor, 0));
-        const float4 albedoS = DirectSpecularAlbedo.Load(int3(anchor, 0));
-        const float4 rawD = RawDirectDiffuse.Load(int3(anchor, 0));
-        const float4 rawS = RawDirectSpecular.Load(int3(anchor, 0));
-        if (all(isfinite(d)) && all(isfinite(s)) &&
-            all(isfinite(albedoD)) && all(isfinite(albedoS)) &&
-            all(isfinite(rawD)) && all(isfinite(rawS)) &&
-            all(d.rgb >= 0.0) && all(s.rgb >= 0.0)) {
-            const float3 emission = max(float3(rawD.a, rawS.a, albedoS.a), 0.0);
-            const float3 directLighting = max(d.rgb, 0.0) * max(albedoD.rgb, 0.0) +
-                max(s.rgb, 0.0) * max(albedoS.rgb, 0.0) + emission;
-            if (all(isfinite(directLighting)))
-                color = lerp(color, directLighting, saturate(DirectBlend));
-        }
+    const bool traced = tagged.a == 4.0 && all(isfinite(tagged));
+    const bool rawHere = traced && all(pixel == anchor);
+    const float4 rawD = RawDirectDiffuse.Load(int3(anchor, 0));
+    const float4 rawS = RawDirectSpecular.Load(int3(anchor, 0));
+    const float4 albedoD = DirectDiffuseAlbedo.Load(int3(anchor, 0));
+    const float4 albedoS = DirectSpecularAlbedo.Load(int3(anchor, 0));
+    const float4 d = (DirectRRMask & 1u) != 0u ?
+        DirectDiffuseRR.Load(int3(pixel, 0)) :
+        (rawHere ? rawD : float4(0, 0, 0, -1));
+    const float4 s = (DirectRRMask & 2u) != 0u ?
+        DirectSpecularRR.Load(int3(pixel, 0)) :
+        (rawHere ? rawS : float4(0, 0, 0, -1));
+    const bool validD = all(isfinite(d)) && all(d.rgb >= 0.0) &&
+        ((DirectRRMask & 1u) != 0u || rawHere);
+    const bool validS = all(isfinite(s)) && all(s.rgb >= 0.0) &&
+        ((DirectRRMask & 2u) != 0u || rawHere);
+    if ((validD || validS) && all(isfinite(albedoD)) && all(isfinite(albedoS))) {
+        const float3 emission = traced && all(isfinite(rawD)) &&
+            all(isfinite(rawS)) && isfinite(albedoS.a) ?
+            max(float3(rawD.a, rawS.a, albedoS.a), 0.0) : 0.0;
+        const float3 directLighting =
+            (validD ? max(d.rgb, 0.0) * max(albedoD.rgb, 0.0) : 0.0) +
+            (validS ? max(s.rgb, 0.0) * max(albedoS.rgb, 0.0) : 0.0) +
+            emission;
+        if (all(isfinite(directLighting)))
+            color = lerp(color, directLighting, saturate(DirectBlend));
     }
-    // Nearest logical-grid lookup is for final output sizing only.
-    // There is no post-RR spatial or temporal reconstruction.
+
+    // Raw HybridGI uses its actual packed signal grid. Only vendor-produced
+    // RR outputs cover unsampled checkerboard lanes. No native spatial or
+    // temporal reconstruction, history test, or post-RR rejection is applied.
     if (GISize.x != 0u && GISize.y != 0u) {
         const uint2 logical = min(
             uint2((float2(pixel) + 0.5) * float2(GISize) / float2(FrameSize)),
             GISize - 1u);
-        const float4 giD = IndirectDiffuseRR.Load(int3(logical, 0));
-        const float4 giS = IndirectSpecularRR.Load(int3(logical, 0));
-        const float aoD = DiffuseAORR.Load(int3(logical, 0));
-        const float aoS = SpecularAORR.Load(int3(logical, 0));
+        const bool checkerboard = (CheckerboardPolicy & 1u) != 0u;
+        const bool sampled = !checkerboard ||
+            ((logical.x + logical.y) & 1u) == ((CheckerboardPolicy >> 1u) & 1u);
+        const uint2 packed = uint2(checkerboard ? logical.x >> 1u : logical.x, logical.y);
+        const bool rrD = (HybridRRMask & 1u) != 0u;
+        const bool rrS = (HybridRRMask & 2u) != 0u;
+        const bool rrAO = (HybridRRMask & 4u) != 0u;
+        const float4 giD = rrD ?
+            IndirectDiffuseRR.Load(int3(logical, 0)) :
+            (sampled ? IndirectDiffuseRR.Load(int3(packed, 0)) : float4(0, 0, 0, -1));
+        const float4 giS = rrS ?
+            IndirectSpecularRR.Load(int3(logical, 0)) :
+            (sampled ? IndirectSpecularRR.Load(int3(packed, 0)) : float4(0, 0, 0, -1));
+        const float aoD = rrAO ?
+            DiffuseAORR.Load(int3(logical, 0)) :
+            (sampled ? DiffuseAORR.Load(int3(packed, 0)) : 1.0);
+        const float aoS = rrAO ?
+            SpecularAORR.Load(int3(logical, 0)) :
+            (sampled ? SpecularAORR.Load(int3(packed, 0)) : 1.0);
         const float4 albedo = RasterAlbedo.Load(int3(pixel, 0));
         const float4 reflectance = RasterReflectance.Load(int3(pixel, 0));
         const float pbrScale = LinearLighting != 0u ? 1.0 : 0.65;
         const float3 rawAlbedo = max(albedo.rgb / pbrScale, 0.0);
         const float3 diffuseFactor = LinearLighting != 0u ?
             rawAlbedo : pow(rawAlbedo, 1.6);
-        if (all(isfinite(giD)) && all(isfinite(albedo)) && isfinite(aoD))
+        if ((rrD || (sampled && giD.a >= 0.0)) &&
+            all(isfinite(giD)) && all(isfinite(albedo)) && isfinite(aoD))
             color += max(giD.rgb, 0.0) * diffuseFactor *
                 saturate(aoD) * saturate(GIContribution);
-        if (all(isfinite(giS)) && all(isfinite(reflectance)) && isfinite(aoS))
+        if ((rrS || (sampled && giS.a >= 0.0)) &&
+            all(isfinite(giS)) && all(isfinite(reflectance)) && isfinite(aoS))
             color += max(giS.rgb, 0.0) * max(reflectance.rgb, 0.0) *
                 saturate(aoS) * saturate(GIContribution);
     }
