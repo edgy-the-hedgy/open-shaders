@@ -1,4 +1,5 @@
 #include "Common/FrameBuffer.hlsli"
+#include "Common/NativeDisplaySampling.hlsli"
 Texture2D<float4> RawDiffuse : register(t0);
 Texture2D<float4> RawSpecular : register(t1);
 Texture2D<float4> SpecularAlbedo : register(t2);
@@ -20,6 +21,7 @@ cbuffer Composition : register(b0)
     uint DirectMask, IndirectMask;
     float IndirectStrength;
     uint IndirectEnabled;
+    uint DirectTraceMode;
 };
 uint2 LogicalPixel(uint2 pixel, uint2 logicalSize)
 {
@@ -30,22 +32,65 @@ bool ExactReceiver(uint2 pixel, uint2 logical, uint2 logicalSize)
     return all(pixel == ((logical * 2u + 1u) * NativeSize) / (logicalSize * 2u));
 }
 bool ValidRR(float4 value) { return all(isfinite(value)) && value.a >= 0 && all(value.rgb >= 0); }
+bool DisplayReceiver(uint2 pixel, uint2 source)
+{
+    float4 receiver = Receivers[pixel], sample = Receivers[source];
+    float3 delta = receiver.xyz - sample.xyz;
+    return all(isfinite(receiver)) && all(isfinite(sample)) &&
+        NativeDisplaySurface(receiver.w, sample.w, dot(delta, delta), dot(receiver.xyz, receiver.xyz));
+}
+float3 DirectDisplay(uint2 pixel, out bool validD, out bool validS, out uint2 materialPixel, out float3 diffuse, out float3 specular)
+{
+    validD = validS = false;
+    materialPixel = pixel;
+    diffuse = specular = 0;
+    float3 emission = 0;
+    float bestD = 1e30, bestS = 1e30, bestMaterial = 1e30;
+    int radius = int(NativeDisplayRadius(DirectTraceMode));
+    float4 ownD = RawDiffuse[pixel], ownS = RawSpecular[pixel];
+    float4 ownDA = DiffuseAlbedo[pixel], ownSA = SpecularAlbedo[pixel];
+    if (DisplayReceiver(pixel, pixel) && ownDA.a > 0.5 && all(isfinite(ownDA)) && all(isfinite(ownSA)) &&
+        all(isfinite(ownD)) && all(isfinite(ownS))) {
+        validD = validS = true;
+        diffuse = ownD.rgb * ownDA.rgb; specular = ownS.rgb * ownSA.rgb;
+        return diffuse + specular + float3(ownD.a, ownS.a, ownSA.a);
+    }
+    for (int y = -radius; y <= radius; ++y) for (int x = -radius; x <= radius; ++x) {
+        int2 candidate = int2(pixel) + int2(x, y);
+        if (any(candidate < 0) || any(candidate >= int2(NativeSize))) continue;
+        uint2 source = uint2(candidate);
+        if (!DisplayReceiver(pixel, source)) continue;
+        float4 da = DiffuseAlbedo[source], sa = SpecularAlbedo[source];
+        if (da.a <= 0.5 || !all(isfinite(da)) || !all(isfinite(sa))) continue;
+        float distance = float(x*x + y*y);
+        float4 d = RawDiffuse[source], s = RawSpecular[source];
+        if (distance < bestD && all(isfinite(d))) { diffuse = d.rgb * da.rgb; validD = true; bestD = distance; }
+        if (distance < bestS && all(isfinite(s))) { specular = s.rgb * sa.rgb; validS = true; bestS = distance; }
+        if (distance < bestMaterial) {
+            materialPixel = source; bestMaterial = distance;
+            emission = float3(isfinite(d.a) ? d.a : 0, isfinite(s.a) ? s.a : 0, sa.a);
+        }
+    }
+    return diffuse + specular + emission;
+}
 [numthreads(8,8,1)] void main(uint2 pixel : SV_DispatchThreadID)
 {
     if (any(pixel >= NativeSize)) return;
-    float4 d = RawDiffuse[pixel], s = RawSpecular[pixel];
-    float4 da = DiffuseAlbedo[pixel], sa = SpecularAlbedo[pixel];
+    bool validD, validS;
+    uint2 materialPixel;
+    float3 fallbackD, fallbackS;
+    float3 direct = DirectDisplay(pixel, validD, validS, materialPixel, fallbackD, fallbackS);
+    float4 d = RawDiffuse[materialPixel], s = RawSpecular[materialPixel];
+    float4 da = DiffuseAlbedo[materialPixel], sa = SpecularAlbedo[materialPixel];
     bool receiver = da.a > 0.5 && all(isfinite(da)) && all(isfinite(sa));
-    bool validD = receiver && all(isfinite(d)), validS = receiver && all(isfinite(s));
-    float3 direct = (validD ? d.rgb * da.rgb : 0) + (validS ? s.rgb * sa.rgb : 0);
-    if (receiver) direct += float3(isfinite(d.a) ? d.a : 0, isfinite(s.a) ? s.a : 0, sa.a);
     float depth = mul(FrameBuffer::CameraView[0], float4(Receivers[pixel].xyz, 1)).z;
     if (DirectMask && receiver) {
         uint2 logical = LogicalPixel(pixel, DirectLogical);
-        if (ExactReceiver(pixel, logical, DirectLogical) && abs(DirectDepth[logical] - depth) <= max(0.5, abs(depth) * 0.005)) {
+        uint2 representative = ((logical * 2u + 1u) * NativeSize) / (DirectLogical * 2u);
+        if (DisplayReceiver(pixel, representative) && abs(DirectDepth[logical] - depth) <= max(0.5, abs(depth) * 0.005)) {
             float4 rrD = RRDiffuse[logical], rrS = RRSpecular[logical];
-            if ((DirectMask & 1u) && ValidRR(rrD)) { direct += rrD.rgb * da.rgb - (validD ? d.rgb * da.rgb : 0); validD = true; }
-            if ((DirectMask & 2u) && ValidRR(rrS)) { direct += rrS.rgb * sa.rgb - (validS ? s.rgb * sa.rgb : 0); validS = true; }
+            if ((DirectMask & 1u) && ValidRR(rrD)) { direct += rrD.rgb * da.rgb - fallbackD; validD = true; }
+            if ((DirectMask & 2u) && ValidRR(rrS)) { direct += rrS.rgb * sa.rgb - fallbackS; validS = true; }
         }
     }
     DirectOutput[pixel] = float4(min(max(direct, 0), 65504.0), (validD || validS) && all(isfinite(direct)) ? 1 : 0);

@@ -1,5 +1,6 @@
 #include "Features/DX12NativeScene/SignalGrid.h"
 #include <catch2/catch_test_macros.hpp>
+#include "../../package/Shaders/Common/NativeDisplaySampling.hlsli"
 #include <set>
 #include <fstream>
 
@@ -95,3 +96,18 @@ TEST_CASE("RR compatibility uses the producer's actual trace coordinates", "[Sig
                     }
     REQUIRE(report.good());
 }
+
+TEST_CASE("Display reconstruction uses independent surface-safe selection", "[SignalGrid][Display]")
+{
+    REQUIRE(NativeDisplayRadius(0) == 0);
+    REQUIRE(NativeDisplayRadius(2) == 4);
+    REQUIRE(NativeDisplaySurface(7, 7, 0.2f, 100));
+    REQUIRE_FALSE(NativeDisplaySurface(7, 8, 0.0f, 100));
+    REQUIRE_FALSE(NativeDisplaySurface(0, 0, 0.0f, 100));
+    REQUIRE_FALSE(NativeDisplaySurface(7, 7, 0.3f, 100));
+    REQUIRE(NativeDisplayUseRR(1, 0, true, true));
+    REQUIRE_FALSE(NativeDisplayUseRR(1, 1, true, true));
+    REQUIRE_FALSE(NativeDisplayUseRR(1, 0, false, true));
+    REQUIRE_FALSE(NativeDisplayUseRR(1, 0, true, false));
+}
+

@@ -30,7 +30,7 @@ namespace DX12Native
             const auto& indirect = frame.nativeIndirectRR;
             const std::array<uint32_t, 16> constants{ frame.size[0], frame.size[1], direct.grid.logical[0], direct.grid.logical[1],
                 indirect.grid.logical[0], indirect.grid.logical[1], direct.recordedMask, indirect.recordedMask,
-                std::bit_cast<uint32_t>(frame.indirectStrength), uint32_t(frame.indirectRays != 0u) };
+                std::bit_cast<uint32_t>(frame.indirectStrength), uint32_t(frame.indirectRays != 0u), frame.directTraceMode };
             const std::array reads{ frame.rawSignals[0].get(), frame.rawSignals[1].get(), frame.rawSignals[3].get(),
                 frame.rawSignals[4].get(), frame.rawSignals[5].get(), frame.rawSignals[6].get(),
                 direct.outputs[0].get(), direct.outputs[1].get(), indirect.outputs[0].get(), indirect.outputs[1].get(),
