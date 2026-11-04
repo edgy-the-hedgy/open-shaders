@@ -1,0 +1,26 @@
+// Copy the native raster depth to RR's linear depth guide.
+// Does not read Direct, shadow masks, or temporal history.
+Texture2D<float4> RawDepth : register(t0);
+RWTexture2D<float> LinearDepth : register(u0);
+cbuffer RasterDepthPolicy : register(b0)
+{
+    uint2 FrameSize;
+    uint ReverseZ;
+    uint Reserved;
+    float4 CameraData;
+};
+[numthreads(8, 8, 1)]
+void main(uint2 pixel : SV_DispatchThreadID)
+{
+    if (any(pixel >= FrameSize)) return;
+    const float raw = RawDepth.Load(int3(pixel, 0)).x;
+    const bool farPlane = ReverseZ != 0u ? raw <= 0.0f : raw >= 1.0f;
+    const float standard = ReverseZ != 0u ? 1.0f - raw : raw;
+    const float divisor = CameraData.x - standard * CameraData.z;
+    if (!isfinite(raw) || farPlane || abs(divisor) <= 1e-8f) {
+        LinearDepth[pixel] = 0.0f;
+        return;
+    }
+    const float depth = CameraData.w / divisor;
+    LinearDepth[pixel] = isfinite(depth) && depth > 0.0f ? depth : 0.0f;
+}

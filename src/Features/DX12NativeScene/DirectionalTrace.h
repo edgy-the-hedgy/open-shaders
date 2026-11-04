@@ -183,7 +183,7 @@ namespace DX12Native
             winrt::com_ptr<ID3D12DescriptorHeap> nativeDirectPackDescriptors;
             winrt::com_ptr<ID3D12RootSignature> nativeDirectPackRootRef;
             winrt::com_ptr<ID3D12PipelineState> nativeDirectPackPipelineRef;
-            bool fsrIndependent = false;
+            bool fsrIndependent = false, fsrDepthReady = false;
             bool nativeDirectRRRequested = false, nativeDirectPackValid = false;
             bool nativeDirectRRReady = false;
             uint32_t nativeDirectRRSuccessMask = 0u;
@@ -198,6 +198,9 @@ namespace DX12Native
             bool hybridInputsReady = false;
             winrt::com_ptr<ID3D12Resource> hybridShadowedSource;
             winrt::com_ptr<ID3D12Resource> hybridLinearDepth;
+            winrt::com_ptr<ID3D12DescriptorHeap> fsrDepthDescriptors;
+            winrt::com_ptr<ID3D12RootSignature> fsrDepthRootRef;
+            winrt::com_ptr<ID3D12PipelineState> fsrDepthPipelineRef;
             bool hybridShadowedSourceReady = false;
             NativeHybridGI::FrameOutputs nativeGI;
             NativeHybridGI::FrameOutputs postHybridGI; // enhanced tiers: second raster HybridGI over precomposed RT
@@ -245,6 +248,7 @@ namespace DX12Native
 		void PrepareReceivers(Frame& a_frame, const std::array<uint32_t, 2>& a_nativeSize, const LightLimitFixData::LightView& a_lights, ID3D11ShaderResourceView* a_roomMetadata);
         void PrepareHybridInputs(Frame& a_frame);
         void RecordHybridShadowedSource(Frame& a_frame);
+        bool RecordFSRRasterDepth(Frame& a_frame);
         void RecordShadowTemporal(Frame& a_frame);
         ID3D12Resource* EffectiveShadowMask(const Frame& frame) const
         {
@@ -273,6 +277,8 @@ namespace DX12Native
         uint64_t shadowTemporalDispatches = 0, shadowTemporalReprojections = 0;
         std::string shadowTemporalFailure;
         winrt::com_ptr<ID3D11ComputeShader> nativeHybridResolve;
+        winrt::com_ptr<ID3D12RootSignature> fsrDepthRoot;
+        winrt::com_ptr<ID3D12PipelineState> fsrDepthPipeline;
         winrt::com_ptr<ID3D12RootSignature> hybridSourceRoot;
         winrt::com_ptr<ID3D12PipelineState> hybridSourcePipeline;
         winrt::com_ptr<ID3D12DescriptorHeap> hybridSourceHeap;

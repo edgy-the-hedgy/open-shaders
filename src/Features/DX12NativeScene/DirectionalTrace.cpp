@@ -142,7 +142,9 @@ namespace DX12Native
         nativeDirectPackPipeline = nullptr;
         nativeDirectPackRoot = nullptr;
         nativeDirectPackFailure.clear();
-		prepareDirectGuides = nullptr;
+        fsrDepthRoot = nullptr;
+        fsrDepthPipeline = nullptr;
+        prepareDirectGuides = nullptr;
 		packRRSignals = nullptr;
 		rrDebugShader = nullptr;
 		rrDebugFailed = false;
@@ -770,6 +772,109 @@ namespace DX12Native
     }
 
 
+    bool DirectionalTrace::RecordFSRRasterDepth(Frame& frame)
+    {
+        frame.fsrDepthReady = false;
+        if (!frame.fsrIndependent || !frame.hybridInputsReady ||
+            !frame.hybridInputs[1] || !frame.hybridLinearDepth) return false;
+        try {
+            auto* device = backend.d3d12Device.get();
+            if (!fsrDepthRoot || !fsrDepthPipeline) {
+                std::ifstream file("Data/Shaders/RTDirectLighting/fsrRasterDepth.dxil",
+                    std::ios::binary | std::ios::ate);
+                if (!file) throw std::runtime_error("FSR raster-depth DXIL missing");
+                const auto length = file.tellg();
+                if (length <= 0 || length > 16 * 1024 * 1024)
+                    throw std::runtime_error("Invalid FSR raster-depth DXIL");
+                std::vector<char> shader(static_cast<size_t>(length));
+                file.seekg(0);
+                if (!file.read(shader.data(), std::streamsize(shader.size())))
+                    throw std::runtime_error("Cannot read FSR raster-depth DXIL");
+                D3D12_DESCRIPTOR_RANGE ranges[2]{};
+                ranges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, 0 };
+                ranges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 0 };
+                D3D12_ROOT_PARAMETER params[3]{};
+                for (uint32_t i = 0; i < 2; ++i) {
+                    params[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+                    params[i].DescriptorTable = { 1, &ranges[i] };
+                }
+                params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+                params[2].Constants = { 0, 0, 8 };
+                const D3D12_ROOT_SIGNATURE_DESC signature{
+                    3, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE };
+                winrt::com_ptr<ID3DBlob> blob, errors;
+                DX::ThrowIfFailed(D3D12SerializeRootSignature(&signature,
+                    D3D_ROOT_SIGNATURE_VERSION_1, blob.put(), errors.put()));
+                DX::ThrowIfFailed(device->CreateRootSignature(
+                    0, blob->GetBufferPointer(), blob->GetBufferSize(),
+                    IID_PPV_ARGS(fsrDepthRoot.put())));
+                D3D12_COMPUTE_PIPELINE_STATE_DESC desc{};
+                desc.pRootSignature = fsrDepthRoot.get();
+                desc.CS = { shader.data(), shader.size() };
+                DX::ThrowIfFailed(device->CreateComputePipelineState(
+                    &desc, IID_PPV_ARGS(fsrDepthPipeline.put())));
+            }
+            if (!frame.fsrDepthDescriptors) {
+                const D3D12_DESCRIPTOR_HEAP_DESC heap{
+                    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 2u,
+                    D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
+                DX::ThrowIfFailed(device->CreateDescriptorHeap(
+                    &heap, IID_PPV_ARGS(frame.fsrDepthDescriptors.put())));
+            }
+            const UINT step = device->GetDescriptorHandleIncrementSize(
+                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            auto cpu = frame.fsrDepthDescriptors->GetCPUDescriptorHandleForHeapStart();
+            D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+            srv.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+            srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srv.Texture2D.MipLevels = 1;
+            device->CreateShaderResourceView(frame.hybridInputs[1]->resource.get(), &srv, cpu);
+            cpu.ptr += step;
+            D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+            uav.Format = DXGI_FORMAT_R32_FLOAT;
+            uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+            device->CreateUnorderedAccessView(frame.hybridLinearDepth.get(), nullptr, &uav, cpu);
+            auto* list = frame.commands.get();
+            const std::array<D3D12_RESOURCE_BARRIER, 2> before{
+                CD3DX12_RESOURCE_BARRIER::Transition(frame.hybridInputs[1]->resource.get(),
+                    D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+                CD3DX12_RESOURCE_BARRIER::Transition(frame.hybridLinearDepth.get(),
+                    D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS) };
+            list->ResourceBarrier(UINT(before.size()), before.data());
+            list->SetComputeRootSignature(fsrDepthRoot.get());
+            list->SetPipelineState(fsrDepthPipeline.get());
+            ID3D12DescriptorHeap* heaps[]{ frame.fsrDepthDescriptors.get() };
+            list->SetDescriptorHeaps(1, heaps);
+            auto gpu = frame.fsrDepthDescriptors->GetGPUDescriptorHandleForHeapStart();
+            list->SetComputeRootDescriptorTable(0, gpu);
+            gpu.ptr += step;
+            list->SetComputeRootDescriptorTable(1, gpu);
+            const auto projection = globals::game::frameBufferCached.GetCameraProj();
+            const bool reverseDepth = projection._33 * projection._43 < 0.0f;
+            const float4 camera = Util::GetCameraData();
+            uint32_t constants[8]{ frame.size[0], frame.size[1],
+                reverseDepth ? 1u : 0u, 0u };
+            std::memcpy(&constants[4], &camera, sizeof(camera));
+            list->SetComputeRoot32BitConstants(2, 8, constants, 0);
+            list->Dispatch((frame.size[0] + 7u) / 8u,
+                (frame.size[1] + 7u) / 8u, 1u);
+            const std::array<D3D12_RESOURCE_BARRIER, 2> after{
+                CD3DX12_RESOURCE_BARRIER::Transition(frame.hybridInputs[1]->resource.get(),
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
+                CD3DX12_RESOURCE_BARRIER::Transition(frame.hybridLinearDepth.get(),
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON) };
+            list->ResourceBarrier(UINT(after.size()), after.data());
+            frame.fsrDepthRootRef = fsrDepthRoot;
+            frame.fsrDepthPipelineRef = fsrDepthPipeline;
+            frame.fsrDepthReady = true;
+            return true;
+        } catch (const std::exception& error) {
+            hybridInputFailure = std::string("FSR raster depth: ") + error.what();
+            return false;
+        }
+    }
+
     bool DirectionalTrace::RecordNativeDirectRRPack(Frame& frame)
     {
         frame.nativeDirectPackValid = false;
@@ -923,7 +1028,8 @@ namespace DX12Native
         frame.nativeDirectRRReady = false;
         frame.nativeDirectRRSuccessMask = 0u;
         if (!frame.nativeDirectRRRequested || !frame.nativeDirectPackValid ||
-            !frame.hybridShadowedSourceReady || !frame.hybridLinearDepth ||
+            !(frame.fsrIndependent ? frame.fsrDepthReady : frame.hybridShadowedSourceReady) ||
+            !frame.hybridLinearDepth ||
             !frame.hybridInputsReady || !frame.hybridInputs[5]) {
             nativeDirectRRFailure = "Native Direct RR raw input or guides unavailable";
             ++nativeDirectRRFailedFrames;
@@ -1580,7 +1686,11 @@ namespace DX12Native
 		commands->ResourceBarrier(uint32_t(end.size()), end.data());
         // Shared low-tier shadow mask temporal resolve MUST run before either
         // DX11 Shadow Only export consumption or DX12 Hybrid source/GI.
-        if (!a_frame.fsrIndependent) {
+        if (a_frame.fsrIndependent) {
+            if (a_frame.hybridInputsReady && RecordFSRRasterDepth(a_frame) &&
+                a_frame.nativeDirectRRRequested)
+                (void)RecordNativeDirectRR(a_frame);
+        } else {
             RecordShadowTemporal(a_frame);
             if (a_frame.hybridInputsReady) {
                 RecordHybridShadowedSource(a_frame);
