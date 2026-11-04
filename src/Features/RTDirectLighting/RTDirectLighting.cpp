@@ -11,7 +11,7 @@
 #include "Utils/DevBenchUx.h"
 #include "Util.h"
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTDirectLighting::Settings, RedstoneBlend, UsePreparedDirectLighting, UseAllPreparedLights, UseDirectRayRegeneration, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, SelectedDirectLight, NormalInfluence, PointLightRadiusMultiplier, PointLightFalloffFraction, PointLightFalloffExponent, StochasticSampling, EmitterRadiusMultiplier, RRMaterialIsolation, RRGlossyRoughness, DirectRRResolution, DirectTraceResolution, FSREarlyShadowMask, FSRDirectBlend, FSRClampRadiance, FSRRadianceClamp)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTDirectLighting::Settings, RedstoneBlend, UsePreparedDirectLighting, UseAllPreparedLights, UseDirectRayRegeneration, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, SelectedDirectLight, NormalInfluence, PointLightRadiusMultiplier, PointLightFalloffFraction, PointLightFalloffExponent, StochasticSampling, EmitterRadiusMultiplier, RRMaterialIsolation, RRGlossyRoughness, DirectRRResolution, DirectTraceResolution, FSREarlyShadowMask, FSRDirectBlend, FSRClampRadiance, FSRRadianceClamp, ShadowContactAA, ShadowInfluence)
 
 std::pair<std::string, std::vector<std::string>> RTDirectLighting::GetFeatureSummary()
 {
@@ -70,6 +70,8 @@ void RTDirectLighting::LoadSettings(json& value)
 	selected.RedstoneBlend = std::isfinite(selected.RedstoneBlend) ? std::clamp(selected.RedstoneBlend, 0.0f, 1.0f) : 1.0f;
     selected.FSRDirectBlend = std::isfinite(selected.FSRDirectBlend) ?
         std::clamp(selected.FSRDirectBlend, 0.0f, 1.0f) : 1.0f;
+    selected.ShadowInfluence = std::isfinite(selected.ShadowInfluence) ?
+        std::clamp(selected.ShadowInfluence, 0.0f, 1.0f) : 0.9f;
     selected.FSRRadianceClamp = std::isfinite(selected.FSRRadianceClamp) ?
         std::clamp(selected.FSRRadianceClamp, 1.0f, 65504.0f) : 16384.0f;
 	selected.PointLightRadiusMultiplier = std::isfinite(selected.PointLightRadiusMultiplier) ? std::clamp(selected.PointLightRadiusMultiplier, 0.1f, 64.0f) : 1.0f;
@@ -159,6 +161,8 @@ void RTDirectLighting::DrawDirectLightingSettings()
     ImGui::SliderFloat("Raster / RT blend", &settings.RedstoneBlend, 0.0f, 1.0f, "%.2f");
     ImGui::SeparatorText("Direct signal composition");
     ImGui::Checkbox("Capture early visibility mask", &settings.FSREarlyShadowMask);
+    ImGui::Checkbox("Contact-like shadow AA", &settings.ShadowContactAA);
+    ImGui::SliderFloat("Raster shadow influence", &settings.ShadowInfluence, 0.0f, 1.0f);
     ImGui::SliderFloat("Raster / RT Direct contribution", &settings.FSRDirectBlend, 0.0f, 1.0f);
     ImGui::Checkbox("Clamp raw Direct radiance (FSR)", &settings.FSRClampRadiance);
     if (settings.FSRClampRadiance)

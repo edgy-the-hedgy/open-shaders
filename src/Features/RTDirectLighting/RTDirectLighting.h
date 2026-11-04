@@ -28,6 +28,8 @@ struct RTDirectLighting final : OverlayFeature
 		uint32_t DirectRRResolution = 3;  // 3 inherits existing shared RR resolution
         // Direct producer-owned FSR signal conditioning and composition.
         bool FSREarlyShadowMask = false;
+        bool ShadowContactAA = true;
+        float ShadowInfluence = 0.9f; // raster visibility attenuation, not RT radiance
         float FSRDirectBlend = 1.0f;
         bool FSRClampRadiance = false;
         float FSRRadianceClamp = 16384.0f;

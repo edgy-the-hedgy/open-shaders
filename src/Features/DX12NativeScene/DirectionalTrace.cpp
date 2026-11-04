@@ -753,19 +753,13 @@ namespace DX12Native
             commands->SetComputeRootDescriptorTable(0, gpu);
             gpu.ptr += 3 * step;
             commands->SetComputeRootDescriptorTable(1, gpu);
-            const auto& composer = globals::features::rtComposer;
-            const float influence = composer.LegacyHybridPrototypeActive() ?
-                composer.composition.fsrHybrid.shadowInfluence :
-                (composer.IsFixedPreset() ?
-                    RTComposer::GetTierPolicy(composer.AdvancedActive() ?
-                        composer.composition.mode :
-                        RTComposer::CompositorMode::HybridShadowed).shadowInfluence :
-                    composer.composition.shadowInfluence);
+            const auto& shadows = globals::features::rtDirectLighting.settings;
+            const float influence = shadows.ShadowInfluence;
             const auto projection = globals::game::frameBufferCached.GetCameraProj();
             const bool reverseDepth = projection._33 * projection._43 < 0.0f;
             const float4 cameraData = Util::GetCameraData();
             uint32_t constants[8]{ frame.size[0], frame.size[1], 0u,
-                (reverseDepth ? 1u : 0u) | (composer.IsFixedPreset() ? 2u : 0u) };
+                (reverseDepth ? 1u : 0u) | (shadows.ShadowContactAA ? 2u : 0u) };
             std::memcpy(&constants[2], &influence, sizeof(float));
             std::memcpy(&constants[4], &cameraData, sizeof(cameraData));
             static_assert(sizeof(cameraData) == sizeof(uint32_t) * 4);
