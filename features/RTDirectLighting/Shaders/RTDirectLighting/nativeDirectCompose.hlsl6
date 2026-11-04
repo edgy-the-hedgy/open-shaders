@@ -47,7 +47,7 @@ float3 DirectDisplay(uint2 pixel, out bool validD, out bool validS, out uint2 ma
     diffuse = specular = 0;
     float3 emission = 0;
     float bestD = 1e30, bestS = 1e30, bestMaterial = 1e30;
-    int radius = int(NativeDisplayRadius(DirectTraceMode));
+    int radius = int(NativeDisplaySearchRadius(DirectTraceMode, pixel.x, pixel.y, NativeSize.x, NativeSize.y));
     float4 ownD = RawDiffuse[pixel], ownS = RawSpecular[pixel];
     float4 ownDA = DiffuseAlbedo[pixel], ownSA = SpecularAlbedo[pixel];
     if (DisplayReceiver(pixel, pixel) && ownDA.a > 0.5 && all(isfinite(ownDA)) && all(isfinite(ownSA)) &&
@@ -82,7 +82,7 @@ void IndirectDisplay(uint2 pixel, out float3 diffuse, out float3 specular, out b
     diffuse = validD ? ownD.rgb : 0; specular = validS ? ownS.rgb : 0;
     if ((validD && validS) || IndirectTraceMode == 0u) return;
     float bestD = validD ? 0 : 1e30, bestS = validS ? 0 : 1e30;
-    int radius = int(NativeDisplayRadius(IndirectTraceMode));
+    int radius = int(NativeDisplaySearchRadius(IndirectTraceMode, pixel.x, pixel.y, NativeSize.x, NativeSize.y));
     for (int y = -radius; y <= radius; ++y) for (int x = -radius; x <= radius; ++x) {
         int2 candidate = int2(pixel) + int2(x, y);
         if (any(candidate < 0) || any(candidate >= int2(NativeSize))) continue;

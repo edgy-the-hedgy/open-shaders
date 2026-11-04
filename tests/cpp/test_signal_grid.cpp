@@ -147,3 +147,27 @@ TEST_CASE("Hybrid display covers native receivers without promoting raw samples"
                     }
                 }
 }
+
+TEST_CASE("Sparse display footprints cover only genuine producer candidates", "[SignalGrid][Display]")
+{
+    for (uint32_t mode=0; mode<5; ++mode)
+        for (bool stochastic : {false,true})
+            for (uint32_t frame=0; frame<18; ++frame)
+                for (uint32_t py=0; py<17; ++py) for (uint32_t px=0; px<31; ++px) {
+                    const int radius=int(NativeDisplaySearchRadius(mode,px,py,31,17));
+                    bool fullTile=false;
+                    for (int y=-radius;y<=radius;++y) for (int x=-radius;x<=radius;++x) {
+                        const int sx=int(px)+x, sy=int(py)+y;
+                        if (sx<0 || sy<0 || sx>=31 || sy>=17) continue;
+                        const bool actual=NativeTraceSample(uint32_t(sx),uint32_t(sy),mode,stochastic,frame,0);
+                        fullTile |= actual;
+                    }
+                    REQUIRE(fullTile);
+                    if (mode==0) REQUIRE(radius==0);
+                }
+    for (uint32_t mask=0; mask<4; ++mask) {
+        REQUIRE(NativeDisplayUseRR(mask,0,true,true)==bool(mask&1u));
+        REQUIRE(NativeDisplayUseRR(mask,1,true,true)==bool(mask&2u));
+        REQUIRE_FALSE(NativeDisplayUseRR(mask,0,false,true));
+    }
+}

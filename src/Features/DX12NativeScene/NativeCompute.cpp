@@ -94,6 +94,10 @@ namespace DX12Native
     {
         CS_GPU_PASS("DX12NativeScene::NativeCompute");
         if (!pipeline || slot >= 2 || reads.size() > 14 || writes.size() > 8 || constants.size() > 24) throw std::runtime_error("Invalid native pass bindings");
+        std::set<ID3D12Resource*> outputs;
+        for (auto* resource : writes) if (resource &&
+            (!outputs.insert(resource).second || std::ranges::find(reads, resource) != reads.end()))
+            throw std::runtime_error("Native display/preparation output aliases an input or another output");
         const auto step = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         auto cpu = descriptors->GetCPUDescriptorHandleForHeapStart();
         cpu.ptr += uint64_t(slot * 22u) * step;

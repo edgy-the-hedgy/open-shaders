@@ -78,7 +78,7 @@ namespace DX12Native
 		rrDebugShader = nullptr;
 		rrDebugFailed = false;
 		failure.clear();
-		nativeComposition.Reset(); nativeDirectPreparation.Reload(); nativeIndirectPreparation.Reload();
+		nativeComposition.Reset(); nativeDirectPreparation.Reload(); nativeIndirectPreparation.Reload(); nativePublication.Reload();
 		directDenoiser.RetireNative(); indirectDenoiser.RetireNative();
 	}
 
@@ -414,7 +414,6 @@ namespace DX12Native
 		commands->ResourceBarrier(uint32_t(begin.size()), begin.data());
 		commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 		++directTraceDispatches;
-		if (constants.exportSignals) CaptureRawSignals(a_frame, 0, 5);
 		if (a_frame.directTraceMode != 0u) {
 			std::vector<D3D12_RESOURCE_BARRIER> barriers{
 				CD3DX12_RESOURCE_BARRIER::UAV(a_frame.output->resource.get())
@@ -442,7 +441,6 @@ namespace DX12Native
 			commands->SetComputeRoot32BitConstants(5, 36, &indirectConstants, 0);
 			commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 			++indirectTraceDispatches;
-			CaptureRawSignals(a_frame, 5, 2);
 
 		}
 		const auto ordered = CD3DX12_RESOURCE_BARRIER::UAV(a_frame.output->resource.get());
@@ -454,6 +452,8 @@ namespace DX12Native
 		};
 		for (const auto& signal : a_frame.directSignals) if (signal) end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(signal->resource.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON));
 		commands->ResourceBarrier(uint32_t(end.size()), end.data());
+		if (constants.exportSignals) CaptureRawSignals(a_frame, 0, 5);
+		if (a_frame.indirectRays != 0) CaptureRawSignals(a_frame, 5, 2);
 		RecordNativeLightingRR(a_frame);
 		RecordNativeComposition(a_frame);
 		DX::ThrowIfFailed(commands->Close());

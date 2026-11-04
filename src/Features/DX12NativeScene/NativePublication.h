@@ -13,6 +13,8 @@ namespace DX12Native
             ID3D11ShaderResourceView* first, ID3D11ShaderResourceView* second,
             std::array<uint32_t, 2> size, bool direct, float blend,
             ID3D11Buffer* camera = nullptr, bool legacyIndirect = false, float indirectStrength = 1.0f);
+        /** @brief Reloads publication bytecode; DX11 retains previously recorded commands. */
+        void Reload() { shader = nullptr; }
     private:
         winrt::com_ptr<ID3D11ComputeShader> shader;
         std::unique_ptr<ConstantBuffer> settings;

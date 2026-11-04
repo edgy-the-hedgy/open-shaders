@@ -17,6 +17,11 @@ DISPLAY_CONSTEXPR uint NativeDisplayLogical(uint pixel, uint nativeSize, uint lo
 {
     return pixel * logicalSize / nativeSize;
 }
+DISPLAY_CONSTEXPR uint NativeDisplaySearchRadius(uint mode, uint x, uint y, uint width, uint height)
+{
+    const uint radius = NativeDisplayRadius(mode);
+    return x < radius || y < radius || x + radius >= width || y + radius >= height ? radius * 2u : radius;
+}
 DISPLAY_CONSTEXPR uint NativeDisplayReceiver(uint logical, uint nativeSize, uint logicalSize)
 {
     return ((logical * 2u + 1u) * nativeSize) / (logicalSize * 2u);

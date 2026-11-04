@@ -13,7 +13,7 @@ namespace DX12Native
     {
         Reset(); prepareInputs = nullptr; captureSource = nullptr; sourceFrame = UINT32_MAX; root = nullptr; descriptors = nullptr;
         for (auto& value : pipelines) value = nullptr;
-        signalPreparation.Reload(); composition.Reset(); failure.clear();
+        signalPreparation.Reload(); composition.Reset(); publication.Reload(); failure.clear();
     }
     void NativeHybridGI::Reset()
     {
@@ -100,8 +100,8 @@ namespace DX12Native
 			context->CSSetConstantBuffers(13, 1, &cb);
 			ID3D11ShaderResourceView* reads[]{ diffuse, specular };
 			auto* write = initialRadiance->uav.get();
-			context->CSSetShaderResources(0, 2, reads);
 			context->CSSetUnorderedAccessViews(0, 1, &write, nullptr);
+            context->CSSetShaderResources(0, 2, reads);
 			context->CSSetShader(captureSource.get(), nullptr, 0);
 			context->Dispatch((size[0] + 7u) / 8u, (size[1] + 7u) / 8u, 1);
 			write = nullptr;
