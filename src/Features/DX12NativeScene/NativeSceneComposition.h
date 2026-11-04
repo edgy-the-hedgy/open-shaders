@@ -34,6 +34,10 @@ namespace DX12Native
 		std::optional<NativeSceneOutput> GetSceneInput(uint32_t frameNumber, const std::array<uint32_t, 2>& size) const;
 		/** @brief Reports source, final scene submissions and handoffs separately from visual validation. */
 		json GetDiagnostics() const;
+		/** @brief Returns the current image-layer admission failure without constructing diagnostics. */
+		const std::string& ShadowFailure() const { return shadowFailure; }
+		/** @brief Returns the current final-composition failure without constructing diagnostics. */
+		const std::string& Failure() const { return failure; }
 
 	private:
 		struct Frame

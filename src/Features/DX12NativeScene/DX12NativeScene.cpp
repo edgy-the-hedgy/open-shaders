@@ -253,6 +253,7 @@ json DX12NativeScene::GetDiagnostics()
             {"dispatchStage",shadowMaskStage},{"unavailableReason",shadowMaskUnavailable},{"producer",shadowProducer},
             {"rasterInputs",false},{"rrRequired",false},{"strength",settings.ShadowStrength},{"blend",settings.ShadowBlend},
             {"radiusPixels",settings.ShadowRadius},{"receiverTolerance",settings.ShadowReceiverTolerance},{"preview",settings.ShadowPreview},
+			{"imageLayerStatus",shadowLayerStatus},
             {"imageConsumptionVerified",false},{"coverageScope","prepared scene only; not complete dynamic world coverage"}} },
 		{ "overlappingIndirectRequests", globals::features::redstoneGI.settings.NativeHybrid &&
 			(globals::features::rtIndirectLighting.UsesRTExclusive() || globals::features::redstoneGI.IsActive()) },
@@ -320,6 +321,7 @@ void DX12NativeScene::DrawNativeSceneSettings()
     ImGui::Checkbox("Preview independent shadow mask", &settings.ShadowPreview);
     ImGui::TextWrapped("Independent shadow layer over the final image, including all lighting. Strength or blend 0 preserves the existing image. Radius softens the mask in image space; existing raster shadows remain. Direct illumination and RR settings are independent.");
     if (!shadowMaskUnavailable.empty()) ImGui::TextWrapped("RT shadow mask: %s",shadowMaskUnavailable.c_str());
+	if (!shadowLayerStatus.empty()) ImGui::TextWrapped("Shadow image layer: %s", shadowLayerStatus.c_str());
     int sceneBudget = int(settings.SceneCompositionBudgetMB);
     if (ImGui::SliderInt("Final native scene budget (MiB)", &sceneBudget, 64, 4096))
         settings.SceneCompositionBudgetMB = uint32_t(sceneBudget);

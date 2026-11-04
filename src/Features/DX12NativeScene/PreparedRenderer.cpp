@@ -131,6 +131,9 @@ void DX12NativeScene::OnDeferredLightingComplete(ID3D11UnorderedAccessView* targ
     const auto& hybrid=globals::features::redstoneGI;
     if (!hybrid.loaded || !hybrid.settings.NativeHybrid) nativeHybrid.Reset();
     std::optional<DX12Native::NativeSceneOutput> consumed;
+	const bool shadowRequested = settings.ShadowPreview || (settings.ShadowStrength > 0 && settings.ShadowBlend > 0);
+	shadowLayerStatus = !settings.NativeShadowMask ? "RT mask producer disabled" : !shadowRequested ?
+		"Image layer bypassed: enable preview or raise both strength and blend" : "Waiting for main-world composition";
     if (!transitionOpen && !globals::game::isVR && !globals::state->isMapMenuOpen && target &&
         target==Util::AsReal(globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].UAV) &&
         !(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections))) {
@@ -138,18 +141,40 @@ void DX12NativeScene::OnDeferredLightingComplete(ID3D11UnorderedAccessView* targ
             if (hybrid.loaded && hybrid.settings.NativeHybrid)
                 if (const auto input=nativeComposition.GetSceneInput(frame,size)) nativeHybrid.Dispatch(*graphics,size,frame,hybrid,*input);
 			std::optional<DX12Native::NativeShadowLayer> shadow;
-			if (settings.ShadowPreview || (settings.ShadowStrength > 0 && settings.ShadowBlend > 0))
-				if (const auto mask = GetNativeShadowMask(frame); mask && mask->size == size)
+			if (settings.NativeShadowMask && shadowRequested) {
+				const auto mask = GetNativeShadowMask(frame);
+				if (!mask) {
+					shadowLayerStatus = "No current RT mask: " + shadowMaskUnavailable;
+				} else if (mask->size != size) {
+					shadowLayerStatus = std::format("Mask/composition size mismatch: {}x{} vs {}x{}", mask->size[0], mask->size[1], size[0], size[1]);
+				} else {
 					shadow = DX12Native::NativeShadowLayer{ mask->gpu,
 						{ mask->cameraOrigin.x, mask->cameraOrigin.y, mask->cameraOrigin.z },
 						settings.ShadowStrength, settings.ShadowBlend, settings.ShadowRadius, settings.ShadowReceiverTolerance, settings.ShadowPreview };
+				}
+			}
             consumed=nativeComposition.Present(*graphics,target,size,preparedTrace.GetSceneOutput(frame),
                 nativeHybrid.GetSceneOutput(frame),uint64_t(settings.SceneCompositionBudgetMB)*1024u*1024u,shadow);
+			if (shadow) {
+				const auto& layerFailure = nativeComposition.ShadowFailure();
+				const auto& compositionFailure = nativeComposition.Failure();
+				shadowLayerStatus = !layerFailure.empty() ? layerFailure : !compositionFailure.empty() ? compositionFailure :
+					consumed ? "Shadow layer submitted; GPU pixel coverage not verified" : "No composition submitted: frame slots busy or composition unavailable";
+			}
         }
     }
     preparedTrace.ReleaseSceneOutput(frame,consumed ? consumed->ready : nullptr,consumed ? consumed->value : 0);
     nativeHybrid.ReleaseSceneOutput(frame,consumed ? consumed->ready : nullptr,consumed ? consumed->value : 0);
 	ReleaseNativeShadowMask(frame,consumed ? consumed->ready : nullptr,consumed ? consumed->value : 0);
+	if (settings.NativeShadowMask && shadowRequested && shadowLayerStatus != shadowLayerLoggedStatus &&
+		(shadowLayerLoggedStatus.empty() || frame - shadowLayerLogFrame >= 120u)) {
+		logger::info("[DX12native-shadowmask] {}", shadowLayerStatus);
+		const auto preparation = preparedScene.GetDiagnostics();
+		const auto preparationFailure = preparation.value("failure", std::string{});
+		if (!preparationFailure.empty()) logger::info("[DX12native-shadowmask] Cache unavailable: {}", preparationFailure);
+		shadowLayerLoggedStatus = shadowLayerStatus;
+		shadowLayerLogFrame = frame;
+	}
 }
 
 void DX12NativeScene::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target, const std::array<uint32_t, 2>& size)

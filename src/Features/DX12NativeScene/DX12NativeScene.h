@@ -138,6 +138,8 @@ private:
 	DX12Native::DirectionalTrace preparedTrace;
 	DX12Native::DirectionalTrace nativeShadowTrace;
 	std::string shadowMaskUnavailable, shadowMaskStage;
+	std::string shadowLayerStatus, shadowLayerLoggedStatus;
+	uint32_t shadowLayerLogFrame = 0;
 	DX12Native::NativeHybridGI nativeHybrid;
 	DX12Native::NativeSceneComposition nativeComposition;
 	uint32_t preparedCellID = 0;
