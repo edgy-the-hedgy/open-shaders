@@ -1405,8 +1405,7 @@ namespace DX12Native
     bool DirectionalTrace::RecordFSRIndependentComposition(Frame& frame)
     {
         frame.fsrIndependentComposed = false;
-        if (!frame.fsrIndependent || !frame.nativeGI.valid ||
-            !frame.hybridInputsReady || !frame.hybridLinearDepth ||
+        if (!frame.fsrIndependent || !frame.hybridInputsReady ||
             !frame.hybridInputs[0] || !frame.hybridInputs[2] ||
             !frame.hybridInputs[3] || !frame.hybridInputs[4])
             return false;
@@ -1467,20 +1466,23 @@ namespace DX12Native
                     &desc, IID_PPV_ARGS(frame.fsrIndependentComposeDescriptors.put())));
             }
             const auto& gi = frame.nativeGI;
-            if (!gi.textures[NativeHybridGI::Diffuse] ||
-                !gi.textures[NativeHybridGI::Specular] ||
-                !gi.textures[NativeHybridGI::DiffuseAO] ||
-                !gi.textures[NativeHybridGI::SpecularAO]) return false;
+            const bool hybridAvailable = gi.valid &&
+                gi.textures[NativeHybridGI::Diffuse] &&
+                gi.textures[NativeHybridGI::Specular] &&
+                gi.textures[NativeHybridGI::DiffuseAO] &&
+                gi.textures[NativeHybridGI::SpecularAO];
             // Null Direct SRVs read as zero. HybridGI thus works without a
             // prepared DXR scene, while complete Direct RR is still composed
             // from its original signals when that producer is available.
             const bool directAvailable = frame.output &&
                 frame.directSignals[0] && frame.directSignals[1] &&
                 frame.directSignals[3] && frame.directSignals[4];
+            if (!hybridAvailable && !directAvailable) return false;
             uint32_t directRRMask = frame.nativeDirectRRSuccessMask & 3u;
             if (!frame.nativeDirectRROutputs[0]) directRRMask &= ~1u;
             if (!frame.nativeDirectRROutputs[1]) directRRMask &= ~2u;
-            uint32_t hybridRRMask = gi.rrFamilySuccessMask & 7u;
+            uint32_t hybridRRMask = hybridAvailable ?
+                (gi.rrFamilySuccessMask & 7u) : 0u;
             if (!gi.rrOutputs[0]) hybridRRMask &= ~1u;
             if (!gi.rrOutputs[1]) hybridRRMask &= ~2u;
             if (!gi.rrOutputs[2] || !gi.rrOutputs[3]) hybridRRMask &= ~4u;
@@ -1493,14 +1495,14 @@ namespace DX12Native
                     frame.nativeDirectRROutputs[1].get() : nullptr,
                 directAvailable ? frame.directSignals[4]->resource.get() : nullptr,
                 directAvailable ? frame.directSignals[3]->resource.get() : nullptr,
-                (hybridRRMask & 1u) ? gi.rrOutputs[0].get() :
-                    gi.textures[NativeHybridGI::Diffuse].get(),
-                (hybridRRMask & 2u) ? gi.rrOutputs[1].get() :
-                    gi.textures[NativeHybridGI::Specular].get(),
-                (hybridRRMask & 4u) ? gi.rrOutputs[2].get() :
-                    gi.textures[NativeHybridGI::DiffuseAO].get(),
-                (hybridRRMask & 4u) ? gi.rrOutputs[3].get() :
-                    gi.textures[NativeHybridGI::SpecularAO].get(),
+                !hybridAvailable ? nullptr : (hybridRRMask & 1u) ?
+                    gi.rrOutputs[0].get() : gi.textures[NativeHybridGI::Diffuse].get(),
+                !hybridAvailable ? nullptr : (hybridRRMask & 2u) ?
+                    gi.rrOutputs[1].get() : gi.textures[NativeHybridGI::Specular].get(),
+                !hybridAvailable ? nullptr : (hybridRRMask & 4u) ?
+                    gi.rrOutputs[2].get() : gi.textures[NativeHybridGI::DiffuseAO].get(),
+                !hybridAvailable ? nullptr : (hybridRRMask & 4u) ?
+                    gi.rrOutputs[3].get() : gi.textures[NativeHybridGI::SpecularAO].get(),
                 frame.hybridInputs[3]->resource.get(),
                 frame.hybridInputs[4]->resource.get(),
                 frame.hybridLinearDepth.get(),
@@ -1562,7 +1564,8 @@ namespace DX12Native
             gpu.ptr += 17u * step;
             list->SetComputeRootDescriptorTable(1, gpu);
             const auto& policy = globals::features::rtComposer.composition.fsrHybrid;
-            const auto logical = gi.sampling.logical;
+            const std::array<uint32_t, 2> logical =
+                hybridAvailable ? gi.sampling.logical : std::array<uint32_t, 2>{};
             const uint32_t constants[12]{
                 frame.size[0], frame.size[1], logical[0], logical[1],
                 frame.number,
@@ -1570,8 +1573,8 @@ namespace DX12Native
                 std::bit_cast<uint32_t>(policy.rasterDirectBlend),
                 std::bit_cast<uint32_t>(policy.contribution),
                 directAvailable ? directRRMask : 0u, hybridRRMask,
-                uint32_t(gi.sampling.checkerboard) |
-                    ((gi.sampling.checkerboardOrigin & 1u) << 1u), 0u };
+                hybridAvailable ? (uint32_t(gi.sampling.checkerboard) |
+                    ((gi.sampling.checkerboardOrigin & 1u) << 1u)) : 0u, 0u };
             list->SetComputeRoot32BitConstants(2, 12, constants, 0);
             list->Dispatch((frame.size[0] + 7u) / 8u,
                 (frame.size[1] + 7u) / 8u, 1u);
@@ -2042,8 +2045,7 @@ namespace DX12Native
             if (a_frame.fsrDepthReady && a_frame.nativeDirectRRRequested &&
                 globals::features::rtComposer.composition.useFSRRayRegeneration)
                 (void)RecordNativeDirectRR(a_frame);
-            if (a_frame.nativeGI.valid)
-                (void)RecordFSRIndependentComposition(a_frame);
+            (void)RecordFSRIndependentComposition(a_frame);
         } else {
             RecordShadowTemporal(a_frame);
             if (a_frame.hybridInputsReady) {
