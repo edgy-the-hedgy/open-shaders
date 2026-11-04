@@ -308,8 +308,13 @@ namespace DX12Native
                 uint32_t(rasterEncodedSource) };
             static_assert(sizeof(NativeLightingCB) == 32,
                 "HybridGI lighting cbuffer layout changed");
-            const NativeMaskCB mask{ shadowInfluence, skipThreshold, 18.0f,
-                nativeGI.DepthFadeRange.y };
+            // Raster Baseline must not inherit native-shadow visibility
+            // suppression when determining where GI can accumulate. The
+            // final compositor retains its native-shadowed scene and mask.
+            const NativeMaskCB mask{
+                rasterEncodedSource ? 0.0f : shadowInfluence,
+                rasterEncodedSource ? 0.0f : skipThreshold,
+                18.0f, nativeGI.DepthFadeRange.y };
             const auto& camera = globals::game::frameBufferCached.nonVR;
             if (sizeof(nativeGI) > kAOSettingsOffset ||
                 sizeof(nativeAO) > kLightingOffset - kAOSettingsOffset ||
