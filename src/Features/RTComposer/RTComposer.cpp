@@ -772,10 +772,10 @@ void RTComposer::DrawSettings()
     const auto previousPolicy = std::tuple{ composition.enabled, composition.mode,
         composition.rendererFamily };
     ImGui::Checkbox("Enable RT composition", &composition.enabled);
-    int family = static_cast<int>(composition.rendererFamily);
-    if (ImGui::Combo("Renderer family", &family,
+    int rendererFamilySelection = static_cast<int>(composition.rendererFamily);
+    if (ImGui::Combo("Renderer family", &rendererFamilySelection,
         "Open RT (Built-in Denoising)\0FSR Ray Regeneration\0"))
-        composition.rendererFamily = static_cast<RendererFamily>(family);
+        composition.rendererFamily = static_cast<RendererFamily>(rendererFamilySelection);
     if (IsOpenRT()) {
         int selection = static_cast<int>(composition.openRTMode);
         if (ImGui::Combo("Open RT mode", &selection,
