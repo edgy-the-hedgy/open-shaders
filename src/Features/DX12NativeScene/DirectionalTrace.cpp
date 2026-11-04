@@ -1422,7 +1422,7 @@ namespace DX12Native
                 if (!file.read(code.data(), std::streamsize(code.size())))
                     throw std::runtime_error("Cannot read FSR Independent compositor DXIL");
                 D3D12_DESCRIPTOR_RANGE ranges[2]{};
-                ranges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 17u, 0, 0, 0 };
+                ranges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 18u, 0, 0, 0 };
                 ranges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1u, 0, 0, 0 };
                 D3D12_ROOT_PARAMETER params[3]{};
                 for (uint32_t i = 0; i < 2u; ++i) {
@@ -1430,7 +1430,7 @@ namespace DX12Native
                     params[i].DescriptorTable = { 1, &ranges[i] };
                 }
                 params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-                params[2].Constants = { 0, 0, 12u };
+                params[2].Constants = { 0, 0, 16u };
                 const D3D12_ROOT_SIGNATURE_DESC signature{
                     3, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE };
                 winrt::com_ptr<ID3DBlob> serialized, errors;
@@ -1457,7 +1457,7 @@ namespace DX12Native
             }
             if (!frame.fsrIndependentComposeDescriptors) {
                 const D3D12_DESCRIPTOR_HEAP_DESC desc{
-                    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 18u,
+                    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 19u,
                     D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
                 DX::ThrowIfFailed(device->CreateDescriptorHeap(
                     &desc, IID_PPV_ARGS(frame.fsrIndependentComposeDescriptors.put())));
@@ -1471,6 +1471,7 @@ namespace DX12Native
             // Null Direct SRVs read as zero. HybridGI thus works without a
             // prepared DXR scene, while complete Direct RR is still composed
             // from its original signals when that producer is available.
+            const auto& directPolicy = globals::features::rtDirectLighting.settings;
             const bool directAvailable = frame.output &&
                 frame.directSignals[0] && frame.directSignals[1] &&
                 frame.directSignals[3] && frame.directSignals[4];
@@ -1506,9 +1507,11 @@ namespace DX12Native
                 frame.hybridInputs[2]->resource.get(),
                 directAvailable && frame.receivers ? frame.receivers->resource.get() : nullptr,
                 directAvailable ? frame.directSignals[0]->resource.get() : nullptr,
-                directAvailable ? frame.directSignals[1]->resource.get() : nullptr
+                directAvailable ? frame.directSignals[1]->resource.get() : nullptr,
+                directAvailable && directPolicy.FSREarlyShadowMask && frame.shadowMask ?
+                    frame.shadowMask.get() : nullptr
             };
-            const std::array<DXGI_FORMAT, 17> formats{
+            const std::array<DXGI_FORMAT, 18> formats{
                 DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT,
                 DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
                 DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
@@ -1517,7 +1520,8 @@ namespace DX12Native
                 DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
                 DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
                 DXGI_FORMAT_R32G32B32A32_FLOAT,
-                DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT
+                DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
+                DXGI_FORMAT_R16G16_FLOAT
             };
             std::vector<D3D12_RESOURCE_BARRIER> before, after;
             before.reserve(18);
@@ -1558,13 +1562,12 @@ namespace DX12Native
             list->SetDescriptorHeaps(1, heaps);
             auto gpu = frame.fsrIndependentComposeDescriptors->GetGPUDescriptorHandleForHeapStart();
             list->SetComputeRootDescriptorTable(0, gpu);
-            gpu.ptr += 17u * step;
+            gpu.ptr += 18u * step;
             list->SetComputeRootDescriptorTable(1, gpu);
-            const auto& directPolicy = globals::features::rtDirectLighting.settings;
             const auto& indirectPolicy = globals::features::rtIndirectLighting.settings;
             const std::array<uint32_t, 2> logical =
                 hybridAvailable ? gi.sampling.logical : std::array<uint32_t, 2>{};
-            const uint32_t constants[12]{
+            const uint32_t constants[16]{
                 frame.size[0], frame.size[1], logical[0], logical[1],
                 frame.number,
                 uint32_t(globals::features::linearLighting.IsLinearLightingActive()),
@@ -1572,8 +1575,12 @@ namespace DX12Native
                 std::bit_cast<uint32_t>(indirectPolicy.HybridContribution),
                 directAvailable ? directRRMask : 0u, hybridRRMask,
                 hybridAvailable ? (uint32_t(gi.sampling.checkerboard) |
-                    ((gi.sampling.checkerboardOrigin & 1u) << 1u)) : 0u, 0u };
-            list->SetComputeRoot32BitConstants(2, 12, constants, 0);
+                    ((gi.sampling.checkerboardOrigin & 1u) << 1u)) : 0u, 0u,
+                uint32_t(directAvailable && directPolicy.FSREarlyShadowMask &&
+                    frame.shadowMask && frame.hybridLinearDepth),
+                std::bit_cast<uint32_t>(directPolicy.ShadowInfluence),
+                uint32_t(directPolicy.ShadowContactAA), 0u };
+            list->SetComputeRoot32BitConstants(2, 16, constants, 0);
             list->Dispatch((frame.size[0] + 7u) / 8u,
                 (frame.size[1] + 7u) / 8u, 1u);
             list->ResourceBarrier(UINT(after.size()), after.data());
