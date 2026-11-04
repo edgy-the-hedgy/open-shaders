@@ -65,19 +65,18 @@ void main(uint2 logical : SV_DispatchThreadID)
     RRSpecularAlbedo[logical] = all(isfinite(specularAlbedo)) ?
         float4(specularAlbedo, 1) : 0;
 
-    // The motion must describe the SAME representative surface as depth and
-    // material guides. Verify its geometric reprojection rather than just
-    // treating any finite engine motion vector as a valid temporal match.
+    // AMD RR needs XY previous-UV motion and the signed previous-minus-
+    // current linear Z delta. Construct only that required SDK channel.
+    // Never compare engine motion against our camera reprojection or reject
+    // temporal correspondence in this guide producer.
     const float4 nativeMV = NativeMotion.Load(samplePoint);
-    const float2 motion = nativeMV.xy;
-    bool correspondence = depthValid && all(isfinite(motion));
-    float previousDepthDelta = 0;
-    if (correspondence) {
+    const float2 motion = all(isfinite(nativeMV.xy)) ? nativeMV.xy : float2(0, 0);
+    float previousDepthDelta = 0.0;
+    if (depthValid) {
         const float2 uv = (float2(samplePixel) + 0.5) / float2(NativeSize);
         const float4 clip = float4(uv * float2(2, -2) + float2(-1, 1), 0.5, 1);
         const float4 projectedView = mul(FrameBuffer::CameraProjInverse[0], clip);
-        correspondence = all(isfinite(projectedView)) && abs(projectedView.z) > 1e-6;
-        if (correspondence) {
+        if (all(isfinite(projectedView)) && abs(projectedView.z) > 1e-6) {
             const float3 positionVS = projectedView.xyz * (depth / projectedView.z);
             const float3 relativeWS = mul(FrameBuffer::CameraViewInverse[0],
                 float4(positionVS, 1)).xyz;
@@ -87,26 +86,12 @@ void main(uint2 logical : SV_DispatchThreadID)
             const float4 previousClip = mul(
                 FrameBuffer::CameraPreviousViewProjUnjittered[0],
                 float4(previousRelative, 1));
-            const float4 currentClip = mul(
-                FrameBuffer::CameraProjUnjittered[0],
-                float4(positionVS, 1));
-            correspondence = all(isfinite(previousClip)) &&
-                all(isfinite(currentClip)) &&
-                previousClip.w > 0.0 && currentClip.w > 0.0;
-            if (correspondence) {
-                const float2 expected =
-                    (previousClip.xy / previousClip.w -
-                     currentClip.xy / currentClip.w) * float2(0.5, -0.5);
-                correspondence = all(abs(expected - motion) *
-                    float2(NativeSize) <= 0.5);
-                previousDepthDelta = previousClip.w - depth;
-                correspondence = correspondence && isfinite(previousDepthDelta) &&
-                    abs(previousDepthDelta) < 65504.0;
+            if (all(isfinite(previousClip))) {
+                const float delta = previousClip.w - depth;
+                if (isfinite(delta))
+                    previousDepthDelta = clamp(delta, -65504.0, 65504.0);
             }
         }
     }
-    RRMotion[logical] = depthValid ?
-        float4(all(isfinite(motion)) ? motion : float2(0, 0),
-            correspondence ? previousDepthDelta : 0.0,
-            correspondence ? 1.0 : 0.0) : 0;
+    RRMotion[logical] = float4(motion, previousDepthDelta, 0.0);
 }
