@@ -6,6 +6,8 @@
 #include "State.h"
 #include "Utils/D3D.h"
 #include "Features/RedstoneGI/RedstoneGI.h"
+#include "Features/RTDirectLighting/RTDirectLighting.h"
+#include "Features/RTIndirectLighting/RTIndirectLighting.h"
 #include "Features/RTComposer/RTComposer.h"
 #include "Deferred.h"
 #include "Utils/RayRegenerationSettings.h"
@@ -1295,9 +1297,10 @@ namespace DX12Native
             !frame.hybridInputs[3] || !frame.hybridInputs[4] ||
             !frame.hybridInputs[5]) return false;
         try {
-            const auto& settings = globals::features::rtComposer.composition.fsrHybrid;
+            const auto& settings = globals::features::rtIndirectLighting.settings;
             const auto sampling = MakeHybridSamplingLayout(
-                settings.resolution, settings.checkerboard, frame.size, frame.number);
+                settings.HybridResolution, settings.HybridCheckerboard,
+                frame.size, frame.number);
             if (!sampling.logical[0] || !sampling.logical[1] ||
                 !sampling.packed[0] || !sampling.packed[1] ||
                 (sampling.checkerboard && (sampling.logical[0] & 1u))) {
@@ -1325,7 +1328,7 @@ namespace DX12Native
             frame.nativeGIFrame = frame.number;
             // AMD is an optional consumer of raw GI/AO, not a requirement for
             // producing or displaying the underlying lighting signals.
-            if (!globals::features::rtComposer.composition.useFSRRayRegeneration)
+            if (!settings.UseHybridRayRegeneration)
                 return true;
             if (!fsrIndependentGI->RecordRRGuides(device, list, frame.nativeGI,
                     slot, frame.hybridLinearDepth.get(),
@@ -1563,15 +1566,16 @@ namespace DX12Native
             list->SetComputeRootDescriptorTable(0, gpu);
             gpu.ptr += 17u * step;
             list->SetComputeRootDescriptorTable(1, gpu);
-            const auto& policy = globals::features::rtComposer.composition.fsrHybrid;
+            const auto& directPolicy = globals::features::rtDirectLighting.settings;
+            const auto& indirectPolicy = globals::features::rtIndirectLighting.settings;
             const std::array<uint32_t, 2> logical =
                 hybridAvailable ? gi.sampling.logical : std::array<uint32_t, 2>{};
             const uint32_t constants[12]{
                 frame.size[0], frame.size[1], logical[0], logical[1],
                 frame.number,
                 uint32_t(globals::features::linearLighting.IsLinearLightingActive()),
-                std::bit_cast<uint32_t>(policy.rasterDirectBlend),
-                std::bit_cast<uint32_t>(policy.contribution),
+                std::bit_cast<uint32_t>(directPolicy.FSRDirectBlend),
+                std::bit_cast<uint32_t>(indirectPolicy.HybridContribution),
                 directAvailable ? directRRMask : 0u, hybridRRMask,
                 hybridAvailable ? (uint32_t(gi.sampling.checkerboard) |
                     ((gi.sampling.checkerboardOrigin & 1u) << 1u)) : 0u, 0u };
@@ -2043,7 +2047,7 @@ namespace DX12Native
             // Preserve original Direct signal production/packing regardless
             // of GI status. RR is optional; raw Direct remains composable.
             if (a_frame.fsrDepthReady && a_frame.nativeDirectRRRequested &&
-                globals::features::rtComposer.composition.useFSRRayRegeneration)
+                globals::features::rtDirectLighting.settings.UseDirectRayRegeneration)
                 (void)RecordNativeDirectRR(a_frame);
             (void)RecordFSRIndependentComposition(a_frame);
         } else {
@@ -2461,7 +2465,7 @@ namespace DX12Native
 		const auto& composer = globals::features::rtComposer;
         const bool fsrIndependent = a_sceneTarget && composer.FSRIndependentActive();
         const bool wantEarlyMask = a_sceneTarget &&
-            (!fsrIndependent || composer.composition.fsrHybrid.earlyShadowMask);
+            (!fsrIndependent || globals::features::rtDirectLighting.settings.FSREarlyShadowMask);
         bool nativeDirectTest = a_sceneTarget && composer.NativeDirectRRDiagnosticActive() &&
             size[0] >= 2u && (size[0] & 1u) == 0u && size[1] != 0u;
         // Disabled direct RR does not retain dedicated AMD contexts indefinitely.
@@ -2498,12 +2502,12 @@ namespace DX12Native
                 RTComposer::CompositorMode::HybridShadowed);
         const auto hybridSampling = MakeHybridSamplingLayout(
             (fsrIndependent || composer.LegacyHybridPrototypeActive()) ?
-                composition.fsrHybrid.resolution :
+                globals::features::rtIndirectLighting.settings.HybridResolution :
                 (composer.AdvancedActive() ?
                     (composer.composition.mode <= RTComposer::CompositorMode::RTExclusiveII ? 1u : 0u) :
                     (composer.IsFixedPreset() ? fixed.hybridResolution : composition.hybridResolution)),
             (fsrIndependent || composer.LegacyHybridPrototypeActive()) ?
-                composition.fsrHybrid.checkerboard :
+                globals::features::rtIndirectLighting.settings.HybridCheckerboard :
                 (composer.AdvancedActive() ?
                     (composer.composition.mode >= RTComposer::CompositorMode::RTEnhanced) :
                     (composer.IsFixedPreset() ? fixed.hybridCheckerboard : composition.hybridCheckerboard)),
@@ -2754,10 +2758,10 @@ namespace DX12Native
                 (uint32_t(std::clamp(a_rrGlossyRoughness, 0.04f, 1.0f) * 65535.0f) << 8u)) : 0u;
             if (fsrIndependent) {
                 available->rrMaterialPolicy |= 0x20000000u; // FSR raw signal mode
-                if (composer.composition.fsrHybrid.clampRadiance)
+                if (globals::features::rtDirectLighting.settings.FSRClampRadiance)
                     available->rrMaterialPolicy |= 0x40000000u;
                 available->falloffParameters.w = std::clamp(
-                    composer.composition.fsrHybrid.radianceClamp, 1.0f, 65504.0f);
+                    globals::features::rtDirectLighting.settings.FSRRadianceClamp, 1.0f, 65504.0f);
             }
 			available->preparedLights = a_allPreparedLights ? std::vector<PreparedPointLight>(a_preparedLights.begin(), a_preparedLights.end()) :
 				std::vector<PreparedPointLight>{ a_preparedLights.empty() ? PreparedPointLight{} : a_preparedLights.front() };

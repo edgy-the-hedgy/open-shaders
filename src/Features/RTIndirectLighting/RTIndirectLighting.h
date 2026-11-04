@@ -12,6 +12,8 @@ struct RTIndirectLighting final : Feature
 		bool ConnectHybrid = true;
 		uint32_t HybridResolution = 2; // 0=full, 1=half, 2=quarter in each dimension
         bool HybridCheckerboard = false; // independent of Direct sampling
+        float HybridContribution = 1.0f;
+        bool UseHybridRayRegeneration = true; // RR never gates raw HybridGI
 		uint32_t RTTraceResolution = 0;  // 0=full, 1=half, 2=quarter, 3=two-thirds, 4=one-third (linear sampling)
 	} settings;
 
