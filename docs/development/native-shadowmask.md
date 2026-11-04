@@ -19,7 +19,7 @@ tests. Unsupported intersected geometry invalidates the pixel conservatively.
 This is deterministic hard visibility, with no RR, spatial reconstruction or
 temporal denoising requirement.
 
-## Output and future composition
+## Output and independent composition
 
 The named `DX12native-shadowmask` resource is RGBA32_FLOAT:
 
@@ -40,10 +40,39 @@ before the next frame's producer attempts. The resources remain retained until
 that consumer completes. Unused offers expire on the next frame; retaining the
 returned metadata alone does not extend the borrowed textures' lifetime.
 
-No image compositor consumes the mask yet. Existing Skyrim raster shadows remain
-in the raster source. Later composition must match receivers and apply visibility
-to the appropriate directional lighting term, rather than multiplying the combined
-scene including ambient, emission and other lights.
+The final DX12 compositor can consume the mask as a separately controlled image
+layer. Direct illumination, its raw signals, sampling and RR remain unchanged.
+As explicitly selected by the repository owner, this layer darkens the final
+combined lighting, including ambient, emission and GI. Existing Skyrim raster
+shadows remain in the source; this is an additional artistic layer, not replacement
+or isolation of the directional lighting term.
+
+| Setting | Default | Range / effect |
+| --- | --- | --- |
+| `ShadowStrength` | 0 | 0..1 maximum darkening |
+| `ShadowBlend` | 1 | 0..1 opacity of the image layer |
+| `ShadowRadius` | 0 | 0..32 pixel radius for bounded image-space softening |
+| `ShadowReceiverTolerance` | 2 | 0.1..64 world units for receiver matching |
+| `ShadowPreview` | false | Grayscale filtered visibility; unmatched receivers magenta |
+
+The `setShadowLayer` devbench command accepts optional `strength`, `blend`,
+`radiusPixels`, `receiverTolerance` and `preview` parameters. Enable the producer
+first with `setNativeShadowMask`. Strength or blend zero, with preview off, skips
+the shadow layer entirely and preserves existing composition behavior. The layer
+also works without Direct or Hybrid GI being enabled.
+
+Composition snapshots the current single-sample R32 depth and reconstructs the
+visible world receiver using the current camera. It accepts a mask pixel only
+when that position agrees with the prepared primary-ray hit within the selected
+tolerance. This late check does not feed depth into the independent RT producer.
+Unsupported depth format/dimensions or insufficient depth-snapshot budget skips
+only the layer and records the reason in `nativeFinalScene` diagnostics.
+
+Softening uses at most 25 depth/instance-guided taps. It does not blur validity,
+extend coverage across unknown receivers or change the raw shadow mask. Radius
+is an image-space control, not a physical light size or new soft-shadow ray model.
+`shadowLayerSubmissions` counts submitted composition work, not verified visual
+consumption. Both mask textures remain retained through the composition fence.
 
 ## Scope and validation
 
@@ -62,6 +91,7 @@ coverage, image consumption or performance.
 
 Implementation verification on 2026-11-04: Release `CommunityShaders` and
 `cpp_tests` compiled; FXC camera-ray preparation and DXC native directional shader
-compiled; `CppUtilTests` passed with 571 cases passed, one existing directory
-symlink privilege skip and 394061 successful assertions. No deployment, game
+compiled, including the independent image-layer composition shader;
+`CppUtilTests` passed with 572 cases passed, one existing directory
+symlink privilege skip and 394081 successful assertions. No deployment, game
 launch, GPU capture or runtime acceptance was performed.

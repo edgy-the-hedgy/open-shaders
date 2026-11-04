@@ -2,6 +2,7 @@
 #include "Deferred.h"
 #include "Features/LinearLighting.h"
 #include "Features/RedstoneGI/RedstoneGI.h"
+#include "Features/ReverseZ.h"
 #include "Globals.h"
 #include "GpuPass.h"
 #include "NativeSceneOwnership.h"
@@ -36,7 +37,7 @@ namespace DX12Native
 			if (item)
 				bytes += NativeAllocationBytes(backend.d3d12Device.get(), item->resource.get());
 		for (const auto& item : frames) {
-			for (const auto* texture : { item.input.get(), item.output.get(), item.legacy.get() })
+			for (const auto* texture : { item.input.get(), item.output.get(), item.legacy.get(), item.shadowDepth.get() })
 				bytes += NativeAllocationBytes(backend.d3d12Device.get(), texture ? texture->resource.get() : nullptr);
 			bytes += NativeAllocationBytes(backend.d3d12Device.get(), item.camera.get());
 		}
@@ -66,10 +67,39 @@ namespace DX12Native
 	json NativeSceneComposition::GetDiagnostics() const
 	{
 		return { { "sourceHandoffs", sourceHandoffs }, { "sourceFrame", sourceFrame },
-			{ "selectedLegacyProvider", sourceSelectedProvider }, { "shadowApplication", "already applied by Skyrim raster lighting; no second multiplication" },
+			{ "selectedLegacyProvider", sourceSelectedProvider }, { "shadowApplication", "independent opt-in final-image layer; existing raster shadowing preserved" },
+			{ "shadowLayerSubmissions", shadowSubmissions }, { "shadowLayerUnavailable", shadowFailure },
 			{ "compositionSubmissions", submissions }, { "returnHandoffs", handoffs }, { "busyFrames", busy },
 			{ "failure", failure }, { "source", "current DX11 raster scene, existing shadowing preserved" },
 			{ "compositionBackend", "DX12" }, { "visualConsumptionVerified", false } };
+	}
+	bool NativeSceneComposition::CaptureShadowDepth(Frame& frame, std::array<uint32_t, 2> dimensions, uint64_t budget)
+	{
+		CS_GPU_PASS("DX12NativeScene::ShadowReceiverDepthSnapshot");
+		try {
+			auto* depth = Util::GetCurrentSceneDepthSRV();
+			if (!depth) throw std::runtime_error("Current composition receiver depth unavailable");
+			winrt::com_ptr<ID3D11Resource> source;
+			depth->GetResource(source.put());
+			auto texture = source.as<ID3D11Texture2D>();
+			D3D11_TEXTURE2D_DESC desc{};
+			texture->GetDesc(&desc);
+			if ((desc.Format != DXGI_FORMAT_R32_TYPELESS && desc.Format != DXGI_FORMAT_R32_FLOAT) ||
+				desc.Width != dimensions[0] || desc.Height != dimensions[1] || desc.SampleDesc.Count != 1 || desc.MipLevels != 1 || desc.ArraySize != 1)
+				throw std::runtime_error("Shadow layer requires matching single-sample R32 receiver depth; other lighting remains active");
+			if (!frame.shadowDepth) {
+				const auto bytes = NativeTextureBytes(backend.d3d12Device.get(), dimensions, DXGI_FORMAT_R32_FLOAT);
+				if (!NativeSceneBudgetAllows(ResidentBytes(), bytes, budget))
+					throw std::runtime_error("Shadow receiver depth exceeds scene composition budget");
+				desc.Format = DXGI_FORMAT_R32_FLOAT;
+				desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+				desc.MiscFlags = 0;
+				frame.shadowDepth = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "DX12native-shadowmask::CompositionDepth");
+			}
+			backend.d3d11Context->CopyResource(frame.shadowDepth->resource11, texture.get());
+			shadowFailure.clear();
+			return true;
+		} catch (const std::exception& error) { shadowFailure = error.what(); return false; }
 	}
 	bool NativeSceneComposition::CaptureLegacy(Frame& frame, std::array<uint32_t, 2> size, float strength)
 	{
@@ -135,10 +165,11 @@ namespace DX12Native
 	}
 	std::optional<NativeSceneOutput> NativeSceneComposition::Present(const GraphicsBackend& graphics,
 		ID3D11UnorderedAccessView* target, const std::array<uint32_t, 2>& size,
-		const std::optional<NativeSceneOutput>& direct, const std::optional<NativeSceneOutput>& hybrid, uint64_t budget)
+		const std::optional<NativeSceneOutput>& direct, const std::optional<NativeSceneOutput>& hybrid, uint64_t budget,
+		const std::optional<NativeShadowLayer>& shadow)
 	{
 		CS_GPU_PASS("DX12NativeScene::FinalSceneComposition");
-		if ((!direct && !hybrid) || !target || !graphics.commandQueue || !graphics.d3d12Device)
+		if ((!direct && !hybrid && !shadow) || !target || !graphics.commandQueue || !graphics.d3d12Device)
 			return std::nullopt;
 		Frame* selected = nullptr;
 		try {
@@ -200,6 +231,8 @@ namespace DX12Native
 				frame.legacy = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "DX12NativeScene::LegacyContributionInput");
 			}
 			auto* context = backend.d3d11Context.get();
+			const bool applyShadow = shadow && CaptureShadowDepth(frame, dimensions, budget);
+			if (!direct && !hybrid && !applyShadow) return std::nullopt;
 			bool legacy = false;
 			if (needsLegacy)
 				legacy = CaptureLegacy(frame, size, direct->legacyStrength);
@@ -211,6 +244,7 @@ namespace DX12Native
 			for (const auto* contribution : { direct ? &*direct : nullptr, hybrid ? &*hybrid : nullptr })
 				if (contribution)
 					DX::ThrowIfFailed(backend.commandQueue->Wait(contribution->ready, contribution->value));
+			if (applyShadow) DX::ThrowIfFailed(backend.commandQueue->Wait(shadow->gpu.ready, shadow->gpu.value));
 			DX::ThrowIfFailed(frame.allocator->Reset());
 			DX::ThrowIfFailed(frame.commands->Reset(frame.allocator.get(), nullptr));
 			SnapshotNativeCamera(backend.d3d12Device.get(), frame.camera);
@@ -221,11 +255,17 @@ namespace DX12Native
 			for (auto& barrier : barriers) std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
 			frame.commands->ResourceBarrier(2, barriers.data());
 			const std::array reads{ frame.input->resource.get(), direct ? direct->first : nullptr, direct ? direct->second : nullptr,
-				hybrid ? hybrid->first : nullptr, legacy ? frame.legacy->resource.get() : nullptr };
+				hybrid ? hybrid->first : nullptr, legacy ? frame.legacy->resource.get() : nullptr,
+				applyShadow ? shadow->gpu.first : nullptr, applyShadow ? shadow->gpu.second : nullptr,
+				applyShadow ? frame.shadowDepth->resource.get() : nullptr };
 			const std::array writes{ frame.output->resource.get() };
 			const auto& lighting = globals::features::linearLighting;
-			const std::array<uint32_t, 8> constants{ size[0], size[1], uint32_t(direct.has_value()), uint32_t(hybrid.has_value()),
-				std::bit_cast<uint32_t>(direct ? direct->blend : 0.0f), uint32_t(lighting.IsLinearLightingActive()), uint32_t(lighting.settings.enableACEScg), uint32_t(legacy) };
+			const auto bits = [](float value) { return std::bit_cast<uint32_t>(value); };
+			const std::array<uint32_t, 20> constants{ size[0], size[1], uint32_t(direct.has_value()), uint32_t(hybrid.has_value()),
+				bits(direct ? direct->blend : 0.0f), uint32_t(lighting.IsLinearLightingActive()), uint32_t(lighting.settings.enableACEScg), uint32_t(legacy),
+				uint32_t(applyShadow), uint32_t(applyShadow && shadow->preview), bits(applyShadow ? shadow->strength : 0), bits(applyShadow ? shadow->blend : 0),
+				bits(applyShadow ? shadow->radius : 0), bits(applyShadow ? shadow->tolerance : 0), uint32_t(globals::features::reverseZ.IsActive()), 0,
+				bits(applyShadow ? shadow->origin[0] : 0), bits(applyShadow ? shadow->origin[1] : 0), bits(applyShadow ? shadow->origin[2] : 0), 0 };
 			frame.bindings = composition.RetainBindings();
 			composition.Dispatch(backend.d3d12Device.get(), frame.commands.get(), uint32_t(selected - frames.data()), reads, writes, constants, frame.camera->GetGPUVirtualAddress(), size);
 			DX::ThrowIfFailed(frame.commands->Close());
@@ -234,6 +274,7 @@ namespace DX12Native
 			backend.commandQueue->ExecuteCommandLists(1, lists);
 			DX::ThrowIfFailed(backend.commandQueue->Signal(completion.fence12.get(), frame.fence));
 			++submissions;
+			if (applyShadow) ++shadowSubmissions;
 			DX::ThrowIfFailed(context->Wait(completion.fence11.get(), frame.fence));
 			context->CopyResource(source.get(), frame.output->resource11);
 			frame.retirement = producer.Next();

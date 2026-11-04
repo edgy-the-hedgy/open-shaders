@@ -10,7 +10,7 @@
 #include "Util.h"
 #include <chrono>
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(DX12NativeScene::Settings, AcquireScene, UsePreparedScene, PreviewPreparedScene, UsePreparedMaterials, PreparedMaterialView, MaterialTextureBudgetMB, DirectLightingBudgetMB, SceneCompositionBudgetMB, NativeShadowMask, ShadowMaskBudgetMB, PreviewLight, PreviewAllLights, PreviewDirectStrength, PreviewDiffuseStrength, PreviewSpecularStrength, PreviewEmissionStrength, NodesPerFrame, MaxInstances, BufferBudgetMB)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(DX12NativeScene::Settings, AcquireScene, UsePreparedScene, PreviewPreparedScene, UsePreparedMaterials, PreparedMaterialView, MaterialTextureBudgetMB, DirectLightingBudgetMB, SceneCompositionBudgetMB, NativeShadowMask, ShadowMaskBudgetMB, ShadowStrength, ShadowBlend, ShadowRadius, ShadowReceiverTolerance, ShadowPreview, PreviewLight, PreviewAllLights, PreviewDirectStrength, PreviewDiffuseStrength, PreviewSpecularStrength, PreviewEmissionStrength, NodesPerFrame, MaxInstances, BufferBudgetMB)
 
 std::pair<std::string, std::vector<std::string>> DX12NativeScene::GetFeatureSummary()
 {
@@ -52,6 +52,7 @@ void DX12NativeScene::LoadSettings(json& value)
 		*v = std::isfinite(*v) ? std::clamp(*v, 0.0f, 8.0f) : 1.0f;
 	if (selected.UsePreparedScene != settings.UsePreparedScene) ready = false;
 	settings = selected;
+	SanitizeShadowControls();
 	if (settings.NativeShadowMask) RequestPreparedScene();
 	else nativeShadowTrace.Reset();
 	resetRequested = true;
@@ -250,7 +251,9 @@ json DX12NativeScene::GetDiagnostics()
         { "nativeFinalScene", nativeComposition.GetDiagnostics() },
         { "DX12native-shadowmask", {{"enabled",settings.NativeShadowMask},{"availableForComposition",GetNativeShadowMask(globals::game::graphicsState->GetFrameCount()).has_value()},
             {"dispatchStage",shadowMaskStage},{"unavailableReason",shadowMaskUnavailable},{"producer",shadowProducer},
-            {"rasterInputs",false},{"rrRequired",false},{"appliedToImage",false},{"coverageScope","prepared scene only; not complete dynamic world coverage"}} },
+            {"rasterInputs",false},{"rrRequired",false},{"strength",settings.ShadowStrength},{"blend",settings.ShadowBlend},
+            {"radiusPixels",settings.ShadowRadius},{"receiverTolerance",settings.ShadowReceiverTolerance},{"preview",settings.ShadowPreview},
+            {"imageConsumptionVerified",false},{"coverageScope","prepared scene only; not complete dynamic world coverage"}} },
 		{ "overlappingIndirectRequests", globals::features::redstoneGI.settings.NativeHybrid &&
 			(globals::features::rtIndirectLighting.UsesRTExclusive() || globals::features::redstoneGI.IsActive()) },
 		{ "acquisitionEnabled", settings.AcquireScene }, { "unavailable", unavailable },
@@ -310,7 +313,12 @@ void DX12NativeScene::DrawNativeSceneSettings()
     }
     int shadowBudget=int(settings.ShadowMaskBudgetMB);
     if (ImGui::SliderInt("RT shadow-mask budget (MiB)",&shadowBudget,64,4096)) settings.ShadowMaskBudgetMB=uint32_t(shadowBudget);
-    ImGui::TextWrapped("Creates DX12native-shadowmask from prepared-scene camera and light rays, before opaque colour. The mask is exposed for later composition and does not modify the image yet.");
+    ImGui::SliderFloat("Shadow layer strength", &settings.ShadowStrength, 0.0f, 1.0f);
+    ImGui::SliderFloat("Shadow layer blend", &settings.ShadowBlend, 0.0f, 1.0f);
+    ImGui::SliderFloat("Shadow softening radius (pixels)", &settings.ShadowRadius, 0.0f, 32.0f);
+    ImGui::SliderFloat("Shadow receiver tolerance (world units)", &settings.ShadowReceiverTolerance, 0.1f, 64.0f);
+    ImGui::Checkbox("Preview independent shadow mask", &settings.ShadowPreview);
+    ImGui::TextWrapped("Independent shadow layer over the final image, including all lighting. Strength or blend 0 preserves the existing image. Radius softens the mask in image space; existing raster shadows remain. Direct illumination and RR settings are independent.");
     if (!shadowMaskUnavailable.empty()) ImGui::TextWrapped("RT shadow mask: %s",shadowMaskUnavailable.c_str());
     int sceneBudget = int(settings.SceneCompositionBudgetMB);
     if (ImGui::SliderInt("Final native scene budget (MiB)", &sceneBudget, 64, 4096))
@@ -368,7 +376,17 @@ void DX12NativeScene::DrawNativeSceneSettings()
 
 void DX12NativeScene::RegisterUxActions()
 {
-    FEATURE_COMMAND("setNativeShadowMask", "Enable the independent early DX12 RT shadow-mask producer. Params: enabled (required boolean), budgetMB (optional integer 64..4096). Enabling requests prepared geometry. Output DX12native-shadowmask is visibility, validity, receiver ray distance and instance+1; camera rays and a completion fence are exposed for a future compositor. No raster depth/shadow input, RR requirement or image application.",
+	FEATURE_COMMAND("setShadowLayer", "Configure the independent final-image shadow layer without changing Direct illumination or RR. Optional params: strength and blend (0..1), radiusPixels (0..32 image-space softening), receiverTolerance (0.1..64 world units), preview (boolean). Strength or blend 0 bypasses image influence; preview shows filtered visibility, with unmatched receivers magenta. Requires setNativeShadowMask enabled. Existing raster shadows remain.",
+		[](Feature* self, const json& args) {
+			auto& native = *static_cast<DX12NativeScene*>(self);
+			if (args.contains("strength")) native.settings.ShadowStrength = args.at("strength").get<float>();
+			if (args.contains("blend")) native.settings.ShadowBlend = args.at("blend").get<float>();
+			if (args.contains("radiusPixels")) native.settings.ShadowRadius = args.at("radiusPixels").get<float>();
+			if (args.contains("receiverTolerance")) native.settings.ShadowReceiverTolerance = args.at("receiverTolerance").get<float>();
+			if (args.contains("preview")) native.settings.ShadowPreview = args.at("preview").get<bool>();
+			native.SanitizeShadowControls();
+		});
+    FEATURE_COMMAND("setNativeShadowMask", "Enable the independent early DX12 RT shadow-mask producer. Params: enabled (required boolean), budgetMB (optional integer 64..4096). Enabling requests prepared geometry. Output DX12native-shadowmask is visibility, validity, receiver ray distance and instance+1; camera rays and a completion fence feed the independent setShadowLayer controls. Producer uses no raster depth/shadow input or RR; composition uses current depth only to reject unmatched receivers.",
         [](Feature* self,const json& args) {
             auto& native=*static_cast<DX12NativeScene*>(self);
             native.settings.NativeShadowMask=args.at("enabled").get<bool>();

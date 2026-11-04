@@ -6,6 +6,14 @@
 
 namespace DX12Native
 {
+	/** @brief Borrows independent shadow visibility and its image-layer controls. */
+	struct NativeShadowLayer
+	{
+		NativeSceneOutput gpu;
+		std::array<float, 3> origin{};
+		float strength = 0, blend = 1, radius = 0, tolerance = 2;
+		bool preview = false;
+	};
 	/** @brief Owns the final scene handoff and GPU composition, without selecting producer policy. */
 	class NativeSceneComposition
 	{
@@ -15,7 +23,8 @@ namespace DX12Native
 		/** @brief Composes current contributions once in DX12 and copies the finished scene back to DX11. */
 		std::optional<NativeSceneOutput> Present(const GraphicsBackend& graphics, ID3D11UnorderedAccessView* target,
 			const std::array<uint32_t, 2>& size, const std::optional<NativeSceneOutput>& direct,
-			const std::optional<NativeSceneOutput>& hybrid, uint64_t budget);
+			const std::optional<NativeSceneOutput>& hybrid, uint64_t budget,
+			const std::optional<NativeShadowLayer>& shadow = std::nullopt);
 		/** @brief Invalidates cached shaders while frames retain submitted pipeline ownership. */
 		void Reload();
 		/** @brief Captures already shadowed raster radiance and orders its handoff before native producers. */
@@ -29,7 +38,7 @@ namespace DX12Native
 	private:
 		struct Frame
 		{
-			std::unique_ptr<WrappedResource> input, output, legacy;
+			std::unique_ptr<WrappedResource> input, output, legacy, shadowDepth;
 			winrt::com_ptr<ID3D12CommandAllocator> allocator;
 			winrt::com_ptr<ID3D12GraphicsCommandList> commands;
 			winrt::com_ptr<ID3D12Resource> camera;
@@ -39,6 +48,7 @@ namespace DX12Native
 			uint64_t fence = 0, retirement = 0;
 		};
 		bool CaptureLegacy(Frame& frame, std::array<uint32_t, 2> size, float strength);
+		bool CaptureShadowDepth(Frame& frame, std::array<uint32_t, 2> dimensions, uint64_t budget);
         uint64_t ResidentBytes() const;
         void TrimIdleFrames(Frame* keep = nullptr);
 		std::array<Frame, 2> frames;
@@ -57,5 +67,7 @@ namespace DX12Native
 		uint64_t sourceHandoffs = 0;
 		uint64_t submissions = 0, handoffs = 0, busy = 0;
 		std::string failure;
+		std::string shadowFailure;
+		uint64_t shadowSubmissions = 0;
 	};
 }

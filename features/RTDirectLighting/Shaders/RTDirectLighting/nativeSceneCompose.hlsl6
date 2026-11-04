@@ -1,20 +1,65 @@
 #include "Common/ColorSpaces.hlsli"
 #include "Common/NativeSceneComposition.hlsli"
+#include "Common/NativeShadowMask.hlsli"
+#include "Common/ReverseZ.hlsli"
 Texture2D<float4> Raster : register(t0);
 Texture2D<float4> Direct : register(t1);
 Texture2D<float4> Indirect : register(t2);
 Texture2D<float4> Hybrid : register(t3);
 Texture2D<float4> Legacy : register(t4);
+Texture2D<float4> ShadowMask : register(t5);
+Texture2D<float4> ShadowRays : register(t6);
+Texture2D<float> ReceiverDepth : register(t7);
 RWTexture2D<float4> Scene : register(u0);
-cbuffer Settings : register(b0) { uint2 Size; uint DirectEnabled, HybridEnabled; float Blend; uint LinearLighting, ACEScg, LegacyEnabled; };
+cbuffer Settings : register(b0) {
+    uint2 Size; uint DirectEnabled, HybridEnabled; float Blend; uint LinearLighting, ACEScg, LegacyEnabled;
+    uint ShadowEnabled, ShadowPreview; float ShadowStrength, ShadowBlend;
+    float ShadowRadius, ReceiverTolerance; uint ReverseDepth, ShadowPadding;
+    float3 ShadowOrigin; uint ShadowPadding2;
+};
 bool Valid(float4 value) { return value.a > 0.5 && all(isfinite(value)); }
 float3 Working(float3 value) { return LinearLighting && ACEScg ? sRGBToAP1(value) : value; }
+bool ShadowReceiver(uint2 pixel, float4 mask)
+{
+    float raw = ReceiverDepth[pixel];
+    if (mask.g < 0.5 || !all(isfinite(mask)) || !isfinite(raw) || raw < 0 || raw > 1 ||
+        raw == FrameBuffer::FarPlaneClipZ(1, ReverseDepth != 0)) return false;
+    float2 clip = (float2(pixel) + 0.5) / Size * float2(2,-2) + float2(-1,1);
+    float4 view = mul(FrameBuffer::CameraProjInverse[0], float4(clip,raw,1));
+    if (!all(isfinite(view)) || abs(view.w) < 1e-8) return false;
+    float3 current = mul(FrameBuffer::CameraViewInverse[0],float4(view.xyz/view.w,1)).xyz + FrameBuffer::CameraPosAdjust[0].xyz;
+    float4 ray = ShadowRays[pixel];
+    float3 difference = current - (ShadowOrigin + ray.xyz * mask.b);
+    return ray.w == 1 && NativeShadowReceiverMatches(dot(difference,difference),ReceiverTolerance);
+}
+float FilterShadow(uint2 pixel, float4 centre)
+{
+    if (ShadowRadius <= 0) return saturate(centre.r);
+    float total = 0, weights = 0;
+    [unroll] for (int y=-2;y<=2;++y) [unroll] for (int x=-2;x<=2;++x) {
+        int2 offset = int2(round(float2(x,y)*ShadowRadius*0.5));
+        int2 samplePixel = int2(pixel)+offset;
+        if (any(samplePixel<0) || any(samplePixel>=int2(Size))) continue;
+        float4 sampleMask = ShadowMask[samplePixel];
+        if (sampleMask.a != centre.a || abs(sampleMask.b-centre.b)>ReceiverTolerance || !ShadowReceiver(samplePixel,sampleMask)) continue;
+        float weight = exp(-0.5*float(x*x+y*y));
+        total += saturate(sampleMask.r)*weight; weights += weight;
+    }
+    return weights>0 ? total/weights : saturate(centre.r);
+}
 [numthreads(8,8,1)] void main(uint2 pixel : SV_DispatchThreadID)
 {
     if (any(pixel >= Size)) return;
     float4 raster = Raster[pixel], direct = Direct[pixel], indirect = Indirect[pixel], hybrid = Hybrid[pixel];
     bool d = DirectEnabled && Valid(direct), i = DirectEnabled && Valid(indirect), h = HybridEnabled && Valid(hybrid);
-    if (!d && !i && !h) { Scene[pixel] = raster; return; }
+    bool shadow = ShadowEnabled != 0 && (ShadowPreview != 0 || (ShadowStrength > 0 && ShadowBlend > 0));
+    float4 mask = shadow ? ShadowMask[pixel] : float4(1,0,0,0);
+    bool receiver = shadow && ShadowReceiver(pixel,mask);
+    float visibility = receiver ? FilterShadow(pixel,mask) : 1;
+    if (ShadowEnabled && ShadowPreview) {
+        Scene[pixel] = float4(receiver ? visibility.xxx : float3(1,0,1),raster.a); return;
+    }
+    if (!d && !i && !h && !receiver) { Scene[pixel] = raster; return; }
     const float GameGamma = 1.6;
     float3 base = LinearLighting ? sign(raster.rgb) * pow(abs(raster.rgb), GameGamma) : pow(abs(raster.rgb), GameGamma);
     base = Working(base);
@@ -24,6 +69,7 @@ float3 Working(float3 value) { return LinearLighting && ACEScg ? sRGBToAP1(value
     value.g = NativeSceneChannel(base.g,directRGB.g,indirectRGB.g,hybrid.g,d,i,h,saturate(Blend));
     value.b = NativeSceneChannel(base.b,directRGB.b,indirectRGB.b,hybrid.b,d,i,h,saturate(Blend));
     if (d && LegacyEnabled) value += Legacy[pixel].rgb * saturate(Blend);
+    if (receiver) value *= NativeShadowFactor(visibility,ShadowStrength,ShadowBlend);
     if (LinearLighting && ACEScg) value = AP1TosRGB(value);
     value = LinearLighting ? sign(value) * pow(abs(value), 1.0 / GameGamma) : pow(abs(value), 1.0 / GameGamma);
     Scene[pixel] = all(isfinite(value)) ? float4(value,raster.a) : raster;

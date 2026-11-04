@@ -27,6 +27,11 @@ struct DX12NativeScene final : OverlayFeature
 		uint32_t SceneCompositionBudgetMB = 256;
 		bool NativeShadowMask = false;
 		uint32_t ShadowMaskBudgetMB = 512;
+		float ShadowStrength = 0.0f;
+		float ShadowBlend = 1.0f;
+		float ShadowRadius = 0.0f;
+		float ShadowReceiverTolerance = 2.0f;
+		bool ShadowPreview = false;
 		uint32_t PreviewLight = 0;
 		bool PreviewAllLights = true;
 		float PreviewDirectStrength = 1.0f;
@@ -127,6 +132,7 @@ struct DX12NativeScene final : OverlayFeature
 private:
 	void DrawNativeSceneSettings();
 	void DispatchNativeShadowMask(const char* stage);
+	void SanitizeShadowControls();
 	DX12Native::PreparedScene preparedScene;
 	DX12Native::AccelerationWorker preparedAcceleration;
 	DX12Native::DirectionalTrace preparedTrace;

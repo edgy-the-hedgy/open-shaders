@@ -5,6 +5,17 @@
 #include "Util.h"
 #include <cmath>
 
+void DX12NativeScene::SanitizeShadowControls()
+{
+	const auto clamp = [](float value, float fallback, float minimum, float maximum) {
+		return std::isfinite(value) ? std::clamp(value, minimum, maximum) : fallback;
+	};
+	settings.ShadowStrength = clamp(settings.ShadowStrength, 0, 0, 1);
+	settings.ShadowBlend = clamp(settings.ShadowBlend, 1, 0, 1);
+	settings.ShadowRadius = clamp(settings.ShadowRadius, 0, 0, 32);
+	settings.ShadowReceiverTolerance = clamp(settings.ShadowReceiverTolerance, 2, 0.1f, 64);
+}
+
 void DX12NativeScene::DispatchNativeShadowMask(const char* stage)
 {
 	CS_GPU_PASS("DX12NativeScene::EarlyRTShadowMask");

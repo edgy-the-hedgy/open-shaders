@@ -21,6 +21,14 @@ SHADOW_CONSTEXPR float NativeShadowVisibility(bool valid, bool blocked)
 {
     return valid && blocked ? 0.0f : 1.0f;
 }
+SHADOW_CONSTEXPR float NativeShadowFactor(float visibility, float strength, float blend)
+{
+    return 1.0f - (1.0f - visibility) * strength * blend;
+}
+SHADOW_CONSTEXPR bool NativeShadowReceiverMatches(float errorSquared, float tolerance)
+{
+    return errorSquared >= 0.0f && errorSquared <= tolerance * tolerance;
+}
 #ifdef __cplusplus
 }
 #endif

@@ -137,12 +137,19 @@ void DX12NativeScene::OnDeferredLightingComplete(ID3D11UnorderedAccessView* targ
         if (const auto graphics=Feature::FindGraphicsBackend()) {
             if (hybrid.loaded && hybrid.settings.NativeHybrid)
                 if (const auto input=nativeComposition.GetSceneInput(frame,size)) nativeHybrid.Dispatch(*graphics,size,frame,hybrid,*input);
+			std::optional<DX12Native::NativeShadowLayer> shadow;
+			if (settings.ShadowPreview || (settings.ShadowStrength > 0 && settings.ShadowBlend > 0))
+				if (const auto mask = GetNativeShadowMask(frame); mask && mask->size == size)
+					shadow = DX12Native::NativeShadowLayer{ mask->gpu,
+						{ mask->cameraOrigin.x, mask->cameraOrigin.y, mask->cameraOrigin.z },
+						settings.ShadowStrength, settings.ShadowBlend, settings.ShadowRadius, settings.ShadowReceiverTolerance, settings.ShadowPreview };
             consumed=nativeComposition.Present(*graphics,target,size,preparedTrace.GetSceneOutput(frame),
-                nativeHybrid.GetSceneOutput(frame),uint64_t(settings.SceneCompositionBudgetMB)*1024u*1024u);
+                nativeHybrid.GetSceneOutput(frame),uint64_t(settings.SceneCompositionBudgetMB)*1024u*1024u,shadow);
         }
     }
     preparedTrace.ReleaseSceneOutput(frame,consumed ? consumed->ready : nullptr,consumed ? consumed->value : 0);
     nativeHybrid.ReleaseSceneOutput(frame,consumed ? consumed->ready : nullptr,consumed ? consumed->value : 0);
+	ReleaseNativeShadowMask(frame,consumed ? consumed->ready : nullptr,consumed ? consumed->value : 0);
 }
 
 void DX12NativeScene::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target, const std::array<uint32_t, 2>& size)

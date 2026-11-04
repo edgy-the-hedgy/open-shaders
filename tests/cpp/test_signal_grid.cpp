@@ -255,3 +255,23 @@ TEST_CASE("Prepared RT shadow-mask contract separates visibility and coverage", 
         REQUIRE(std::abs(coordinate+NativeShadowClip(size-1-pixel,size))<1e-5f);
     }
 }
+
+TEST_CASE("Independent shadow image layer preserves bypass and receiver boundaries", "[NativeShadow]")
+{
+    for (float visibility : {0.0f, 0.25f, 1.0f}) {
+        REQUIRE(NativeShadowFactor(visibility,0,1)==1);
+        REQUIRE(NativeShadowFactor(visibility,1,0)==1);
+        REQUIRE(NativeShadowFactor(visibility,1,1)==visibility);
+        REQUIRE(NativeShadowFactor(visibility,0.5f,0.5f)==1-(1-visibility)*0.25f);
+    }
+    REQUIRE(NativeShadowFactor(1,1,1)==1);
+    REQUIRE(NativeShadowReceiverMatches(4,2));
+    REQUIRE_FALSE(NativeShadowReceiverMatches(4.01f,2));
+    REQUIRE_FALSE(NativeShadowReceiverMatches(-1,2));
+    REQUIRE_FALSE(NativeShadowReceiverMatches(std::numeric_limits<float>::quiet_NaN(),2));
+    REQUIRE_FALSE(NativeShadowReceiverMatches(std::numeric_limits<float>::infinity(),2));
+    const float direct = 3, indirect = 2, raster = 1;
+    const float original = NativeSceneChannel(raster,direct,indirect,0,true,true,false,1);
+    REQUIRE(original==5);
+    REQUIRE(original*NativeShadowFactor(0,0.5f,1)==2.5f);
+}
