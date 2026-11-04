@@ -93,6 +93,10 @@ const char* RTComposer::DirectTierDescription(CompositorMode mode)
         return "Unavailable in this phase. Saved configuration is retained; runtime uses an explicitly reported Shadow Only fallback. Radiance Cache deferred.";
     case CompositorMode::Custom:
         return "Custom: editable direct, shadow, material and RR options; separate SSGI-sized HybridGI resolution.";
+    case CompositorMode::FSRHybridIndependent:
+        return "FSR Independent: native checkerboard direct and raster-only GI/AO; no Open RT execution or reconstruction.";
+    case CompositorMode::FSRUnavailable:
+        return "Unavailable FSR workload; no fallback renderer will execute.";
     }
     return "Unknown compositor tier.";
 }
@@ -113,6 +117,10 @@ const char* RTComposer::IndirectTierDescription(CompositorMode mode)
         return "66% first and 25% second-bounce continuation, native RR and post-composite HybridGI; FSR-RC deferred.";
     case CompositorMode::Custom:
         return "Custom: select Shadow Only or DX12 Hybrid-Shadowed in RT Composer; edit indirect and AO sampling, reconstruction and RR settings.";
+    case CompositorMode::FSRHybridIndependent:
+        return "Independent raster-sourced HybridGI/AO, FSR-RR-only reconstruction and optional Direct visibility prepass.";
+    case CompositorMode::FSRUnavailable:
+        return "No Open RT or Shadow Only fallback is permitted.";
     }
     return "Unknown compositor tier.";
 }
@@ -209,7 +217,11 @@ json RTComposer::GetDiagnostics()
             { "checkerboard", composition.fsrHybrid.checkerboard },
             { "contribution", composition.fsrHybrid.contribution },
             { "shadowSkipThreshold", composition.fsrHybrid.shadowSkipThreshold },
-            { "shadowInfluence", composition.fsrHybrid.shadowInfluence }
+            { "shadowInfluence", composition.fsrHybrid.shadowInfluence },
+            { "earlyShadowMask", composition.fsrHybrid.earlyShadowMask },
+            { "rasterDirectBlend", composition.fsrHybrid.rasterDirectBlend },
+            { "clampRadiance", composition.fsrHybrid.clampRadiance },
+            { "radianceClamp", composition.fsrHybrid.radianceClamp }
         } },
         { "fsrLegacyHybridPrototype", LegacyHybridPrototypeActive() },
         { "fsrDirectRawPackShaderPackaged", true },
@@ -566,7 +578,11 @@ void RTComposer::SaveSettings(json& value)
                 { "checkerboard", composition.fsrHybrid.checkerboard },
                 { "contribution", composition.fsrHybrid.contribution },
                 { "shadowSkipThreshold", composition.fsrHybrid.shadowSkipThreshold },
-                { "shadowInfluence", composition.fsrHybrid.shadowInfluence }
+                { "shadowInfluence", composition.fsrHybrid.shadowInfluence },
+                { "earlyShadowMask", composition.fsrHybrid.earlyShadowMask },
+                { "rasterDirectBlend", composition.fsrHybrid.rasterDirectBlend },
+                { "clampRadiance", composition.fsrHybrid.clampRadiance },
+                { "radianceClamp", composition.fsrHybrid.radianceClamp }
             } },
             { "rtEnhanced", {
                 { "firstBounceSurvival", 1.0f },
@@ -616,7 +632,7 @@ void RTComposer::LoadSettings(json& value)
         }
         next.diagnoseAdvancedTransport = it->value("diagnoseAdvancedTransport", false);
         const auto mode = it->value("mode", 0u);
-        next.mode = static_cast<CompositorMode>(std::min(mode, 6u));
+        next.mode = static_cast<CompositorMode>(std::min(mode, 8u));
         if (it->contains("rendererFamily")) {
             next.rendererFamily = it->value("rendererFamily", 0u) == 1u ?
                 RendererFamily::FSRRayRegeneration : RendererFamily::OpenRT;
@@ -690,6 +706,12 @@ void RTComposer::LoadSettings(json& value)
                 boundedFSR("shadowSkipThreshold", .25f);
             composition.fsrHybrid.shadowInfluence =
                 boundedFSR("shadowInfluence", .9f);
+            composition.fsrHybrid.earlyShadowMask = hybrid->value("earlyShadowMask", false);
+            composition.fsrHybrid.rasterDirectBlend = boundedFSR("rasterDirectBlend", 1.0f);
+            composition.fsrHybrid.clampRadiance = hybrid->value("clampRadiance", false);
+            const float clampLimit = hybrid->value("radianceClamp", 16384.0f);
+            composition.fsrHybrid.radianceClamp =
+                std::isfinite(clampLimit) ? std::clamp(clampLimit, 1.0f, 65504.0f) : 16384.0f;
         }
     } else if (composition.rendererFamily == RendererFamily::FSRRayRegeneration &&
         composition.fsrRRMode == FSRRRMode::HybridIllumination) {
@@ -809,7 +831,7 @@ void RTComposer::DrawSettings()
             }
             ImGui::EndCombo();
         }
-        ImGui::TextWrapped("Native Direct Diffuse/Specular FSR-RR dispatch and DX12 composition are connected as developer diagnostics. Enable Advanced Developer Mode for the optional Direct preview. Production Hybrid-Illumination still requires independent HybridGI RR integration; RT-Enhanced still requires two-bounce path tracing. Ordinary selection keeps Shadow Only.");
+        ImGui::TextWrapped("FSR RR runs in its own execution tree: no Open RT reconstruction, legacy Direct composer, or Shadow Only fallback. Unavailable frames preserve the original raster scene.");
         if (composition.fsrRRMode == FSRRRMode::HybridIllumination) {
             ImGui::SeparatorText("HybridGI baseline settings (FSR-specific)");
             int res = static_cast<int>(composition.fsrHybrid.resolution);
@@ -819,13 +841,15 @@ void RTComposer::DrawSettings()
             changed |= ImGui::Checkbox("HybridGI checkerboard", &composition.fsrHybrid.checkerboard);
             changed |= ImGui::SliderFloat("HybridGI contribution",
                 &composition.fsrHybrid.contribution, 0.0f, 1.0f);
-            changed |= ImGui::SliderFloat("HybridGI shadow skip threshold",
-                &composition.fsrHybrid.shadowSkipThreshold, 0.0f, 1.0f);
-            changed |= ImGui::SliderFloat("HybridGI native shadow influence",
-                &composition.fsrHybrid.shadowInfluence, 0.0f, 1.0f);
-            if (changed && LegacyHybridPrototypeActive())
+            changed |= ImGui::Checkbox("Generate early Direct visibility mask (A/B)", &composition.fsrHybrid.earlyShadowMask);
+            changed |= ImGui::SliderFloat("Raster / RT Direct blend", &composition.fsrHybrid.rasterDirectBlend, 0.0f, 1.0f);
+            changed |= ImGui::Checkbox("Clamp raw Direct radiance for RR", &composition.fsrHybrid.clampRadiance);
+            if (composition.fsrHybrid.clampRadiance)
+                changed |= ImGui::SliderFloat("Raw RR radiance ceiling",
+                    &composition.fsrHybrid.radianceClamp, 1.0f, 65504.0f);
+            if (changed && FSRIndependentActive())
                 OnCompositionPolicyChanged();
-            ImGui::TextWrapped("These settings belong to FSR Hybrid-Illumination only. The research prototype can apply them before the final RR-only pipeline becomes available. Shadow suppression threshold applies to Native Shadowed; Raster Baseline intentionally bypasses native shadow gating.");
+            ImGui::TextWrapped("Independent HybridGI uses raster alone and never reads the Direct mask. The optional mask caches Direct visibility; non-finite RR samples are rejected.");
         }
         if (composition.fsrRRMode == FSRRRMode::FSRRedstone)
             ImGui::TextWrapped("FSR-REDSTONE is unavailable.");

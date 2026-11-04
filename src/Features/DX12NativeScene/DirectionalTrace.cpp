@@ -1734,9 +1734,9 @@ namespace DX12Native
                 return;
             }
         }
-        if (nativeHybridActive) {
-            // Never route failed native GI/RR through the legacy DX11 direct or
-            // HybridGI composer. The already-composed raster scene stays intact.
+        if (nativeHybridActive || composer.IsFSRRenderer()) {
+            // FSR failure is raster-only. Never execute Open RT's DX11
+            // Direct composer, denoiser, or Shadow Only fallback.
             ++nativeHybridFallbackFrames;
             if (composer.AdvancedActive()) ++advancedRasterFallbackFrames;
             a_frame.retirement = producer.Next();

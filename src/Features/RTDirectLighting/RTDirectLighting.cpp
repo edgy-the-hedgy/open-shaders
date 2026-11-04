@@ -264,6 +264,8 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
     const auto effectiveMode = composer.ResolveEffectiveMode();
     const bool tieredDirect = composer.TierControlsLocked();
     const auto activeTier = RTComposer::GetTierPolicy(
+        composer.FSRIndependentActive() ?
+            RTComposer::CompositorMode::FSRHybridIndependent :
         composer.AdvancedActive() ? composer.composition.mode :
         effectiveMode == RTComposer::EffectiveMode::HybridShadowed ?
             RTComposer::CompositorMode::HybridShadowed :

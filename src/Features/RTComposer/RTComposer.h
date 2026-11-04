@@ -10,7 +10,8 @@ struct RTComposer final : Feature
     // every previously configured direct/SSGI/Hybrid path unchanged.
     enum class CompositorMode : uint32_t {
         ShadowOnly = 0, HybridShadowed = 1, RTExclusiveI = 2,
-        RTExclusiveII = 3, RTEnhanced = 4, FSRRedstone = 5, Custom = 6
+        RTExclusiveII = 3, RTEnhanced = 4, FSRRedstone = 5, Custom = 6,
+        FSRHybridIndependent = 7, FSRUnavailable = 8
     };
     // User-facing mode IDs are independent of the old transport IDs.
     enum class RendererFamily : uint32_t { OpenRT = 0u, FSRRayRegeneration = 1u };
@@ -27,7 +28,7 @@ struct RTComposer final : Feature
     static constexpr const char* FSRModeName(FSRRRMode mode)
     {
         switch (mode) {
-        case FSRRRMode::HybridIllumination: return "hybrid-illumination";
+        case FSRRRMode::HybridIllumination: return "hybrid-illumination-independent";
         case FSRRRMode::RTEnhanced: return "rt-enhanced";
         case FSRRRMode::FSRRedstone: return "fsr-redstone";
         }
@@ -77,6 +78,10 @@ struct RTComposer final : Feature
         float contribution = 1.0f;
         float shadowSkipThreshold = 0.25f;
         float shadowInfluence = 0.9f;
+        bool earlyShadowMask = false;
+        float rasterDirectBlend = 1.0f;
+        bool clampRadiance = false;
+        float radianceClamp = 16384.0f;
         bool operator==(const FSRHybridSettings&) const = default;
     };
     struct TierPolicy
@@ -112,6 +117,10 @@ struct RTComposer final : Feature
             return { 5u, .8f, .5f, true, true, true, true, 2u, true, .66f, .5f, .25f, false };
         case CompositorMode::Custom:
             return { 0u, 0.f, 0.f, true, true, false, false, 0u, false, 0.f, 0.f, 0.f, true };
+        case CompositorMode::FSRHybridIndependent:
+            return { 5u, 0.f, 1.f, true, true, true, false, 2u, false, 0.f, 0.f, 0.f, false };
+        case CompositorMode::FSRUnavailable:
+            return { 0u, 0.f, 0.f, false, false, false, false, 0u, false, 0.f, 0.f, 0.f, false };
         }
         return GetTierPolicy(CompositorMode::ShadowOnly);
     }
@@ -165,6 +174,8 @@ struct RTComposer final : Feature
         case CompositorMode::RTExclusiveII: return "rt-exclusive-tier-two";
         case CompositorMode::RTEnhanced: return "rt-enhanced";
         case CompositorMode::FSRRedstone: return "fsr-redstone";
+        case CompositorMode::FSRHybridIndependent: return "fsr-hybrid-independent";
+        case CompositorMode::FSRUnavailable: return "fsr-unavailable";
         case CompositorMode::Custom: return "custom";
         }
         return "invalid";
@@ -291,14 +302,14 @@ struct RTComposer final : Feature
     bool IsFSRRenderer() const { return !IsOpenRT(); }
     bool NativeDirectRRDiagnosticActive() const
     {
-        return composition.enabled && IsFSRRenderer() &&
+        return FSRIndependentActive() || (composition.enabled && IsFSRRenderer() &&
             composition.fsrRRMode == FSRRRMode::HybridIllumination &&
             advancedDeveloperMode && developer.nativeDirectRRDiagnostic &&
-            !developer.legacyHybridGIPrototype;
+            !developer.legacyHybridGIPrototype);
     }
     bool NativeDirectRRPreviewActive() const
     {
-        return NativeDirectRRDiagnosticActive() && developer.nativeDirectRRPreview;
+        return !FSRIndependentActive() && NativeDirectRRDiagnosticActive() && developer.nativeDirectRRPreview;
     }
     bool LegacyHybridPrototypeActive() const
     {
@@ -306,12 +317,17 @@ struct RTComposer final : Feature
             composition.fsrRRMode == FSRRRMode::HybridIllumination &&
             advancedDeveloperMode && developer.legacyHybridGIPrototype;
     }
+    bool FSRIndependentActive() const
+    {
+        return composition.enabled && IsFSRRenderer() &&
+            composition.fsrRRMode == FSRRRMode::HybridIllumination;
+    }
     CompositorMode RequestedTransportMode() const
     {
         if (IsOpenRT()) return OpenRTTransport(composition.openRTMode);
-        // New FSR modes must not silently reuse old native reconstruction.
-        return LegacyHybridPrototypeActive() ?
-            CompositorMode::HybridShadowed : CompositorMode::ShadowOnly;
+        // Never route the FSR family through Open RT transport or fallbacks.
+        return FSRIndependentActive() ? CompositorMode::FSRHybridIndependent :
+            CompositorMode::FSRUnavailable;
     }
     bool SynchronizeRendererFamily()
     {
@@ -348,7 +364,8 @@ struct RTComposer final : Feature
     }
     enum class EffectiveMode : uint32_t {
         Legacy = 0, ShadowOnly = 1, HybridShadowed = 2,
-        RTExclusive = 3, RTEnhanced = 4
+        RTExclusive = 3, RTEnhanced = 4,
+        FSRHybridIndependent = 5, FSRUnavailable = 6
     };
     bool IsFixedPreset() const { return composition.mode != CompositorMode::Custom; }
     bool AdvancedTransportDiagnosticActive() const
@@ -359,9 +376,8 @@ struct RTComposer final : Feature
     bool TierControlsLocked() const { return composition.enabled && IsFixedPreset(); }
     bool WantsNativeHybrid() const
     {
-        return LegacyHybridPrototypeActive() ||
-            (IsOpenRT() && IsAdvancedTransportTier(composition.mode) &&
-                GetTierPolicy(composition.mode).ready);
+        return IsOpenRT() && IsAdvancedTransportTier(composition.mode) &&
+            GetTierPolicy(composition.mode).ready;
     }
     static const char* DirectTierDescription(CompositorMode mode);
     static const char* IndirectTierDescription(CompositorMode mode);
@@ -370,8 +386,9 @@ struct RTComposer final : Feature
     EffectiveMode ResolveEffectiveMode() const
     {
         if (!composition.enabled) return EffectiveMode::Legacy;
-        if (IsFSRRenderer() && !LegacyHybridPrototypeActive())
-            return EffectiveMode::ShadowOnly;
+        if (IsFSRRenderer())
+            return FSRIndependentActive() ? EffectiveMode::FSRHybridIndependent :
+                EffectiveMode::FSRUnavailable;
         // Persist requested FSR-REDSTONE settings, but never activate its deferred transport.
         if (composition.mode == CompositorMode::FSRRedstone) return EffectiveMode::ShadowOnly;
         if (IsAdvancedTransportTier(composition.mode) &&
