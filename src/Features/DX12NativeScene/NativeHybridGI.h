@@ -66,7 +66,8 @@ namespace DX12Native
             ID3D12Resource* linearRadiance, ID3D12Resource* albedo,
             ID3D12Resource* reflectance, ID3D12Resource* shadowMask,
             const RedstoneGI& settings, float shadowInfluence,
-            float skipThreshold, bool rasterEncodedSource = false);
+            float skipThreshold, bool rasterEncodedSource = false,
+            bool fsrRawOnly = false);
         // Convert tier 2..5 DXR sparse diffuse/specular into independently
         // tagged logical-grid RR inputs. AO/SO are deterministic neutral
         // placeholders; RT-exclusive transport does not inherit raster SSGI.
@@ -137,7 +138,7 @@ namespace DX12Native
         uint64_t AODispatches() const { return aoDispatches; }
         uint64_t EligibilityDispatches() const { return eligibilityDispatches; }
     private:
-        bool Initialize(ID3D12Device* device);
+        bool Initialize(ID3D12Device* device, bool fsrRawOnly = false);
         bool RecordNativeReconstruction(ID3D12Device* device,
             ID3D12GraphicsCommandList* list, FrameOutputs& frame, uint32_t slot,
             uint32_t fallbackFamilyMask);

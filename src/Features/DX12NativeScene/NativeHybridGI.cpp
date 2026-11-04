@@ -195,14 +195,18 @@ namespace DX12Native
         return total + finalBytes;
     }
 
-    bool NativeHybridGI::Initialize(ID3D12Device* device)
+    bool NativeHybridGI::Initialize(ID3D12Device* device, bool fsrRawOnly)
     {
-        if (pipelines[0] && pipelines[1] && eligibilityPipeline && descriptors && root) return true;
+        if (pipelines[0] && pipelines[1] && (fsrRawOnly || eligibilityPipeline) && descriptors && root) return true;
         try {
-            if (!ShadersAvailable()) throw std::runtime_error("Native GI/AO DXIL not deployed; build RTComposerHybridDXIL");
-            auto giCode = ReadDXIL("Data/Shaders/RTDirectLighting/hybridGI.dxil");
-            auto aoCode = ReadDXIL("Data/Shaders/RTDirectLighting/hybridAO.dxil");
-            auto eligibilityCode = ReadDXIL("Data/Shaders/RTDirectLighting/hybridEligibility.dxil");
+            if (!fsrRawOnly && !ShadersAvailable())
+                throw std::runtime_error("Native GI/AO DXIL not deployed; build RTComposerHybridDXIL");
+            const auto giCode = ReadDXIL(fsrRawOnly ?
+                "Data/Shaders/RTDirectLighting/hybridFSRIndependentGI.dxil" :
+                "Data/Shaders/RTDirectLighting/hybridGI.dxil");
+            const auto aoCode = ReadDXIL("Data/Shaders/RTDirectLighting/hybridAO.dxil");
+            const auto eligibilityCode = fsrRawOnly ? std::vector<char>{} :
+                ReadDXIL("Data/Shaders/RTDirectLighting/hybridEligibility.dxil");
             D3D12_DESCRIPTOR_RANGE ranges[2]{};
             ranges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 9, 0, 0, 0 };
             ranges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 3, 0, 0, 0 };
@@ -237,11 +241,13 @@ namespace DX12Native
                 state.CS = { code.data(), code.size() };
                 DX::ThrowIfFailed(device->CreateComputePipelineState(&state, IID_PPV_ARGS(pipelines[i].put())));
             }
-            D3D12_COMPUTE_PIPELINE_STATE_DESC eligibilityState{};
-            eligibilityState.pRootSignature = root.get();
-            eligibilityState.CS = { eligibilityCode.data(), eligibilityCode.size() };
-            DX::ThrowIfFailed(device->CreateComputePipelineState(
-                &eligibilityState, IID_PPV_ARGS(eligibilityPipeline.put())));
+            if (!fsrRawOnly) {
+                D3D12_COMPUTE_PIPELINE_STATE_DESC eligibilityState{};
+                eligibilityState.pRootSignature = root.get();
+                eligibilityState.CS = { eligibilityCode.data(), eligibilityCode.size() };
+                DX::ThrowIfFailed(device->CreateComputePipelineState(
+                    &eligibilityState, IID_PPV_ARGS(eligibilityPipeline.put())));
+            }
             const D3D12_DESCRIPTOR_HEAP_DESC heap{ D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
                 kPerFrame * 2, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
             DX::ThrowIfFailed(device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(descriptors.put())));
@@ -265,14 +271,13 @@ namespace DX12Native
         const HybridSamplingLayout& sampling, ID3D12Resource* linearDepth,
         ID3D12Resource* normalRough, ID3D12Resource* linearRadiance,
         ID3D12Resource* albedo, ID3D12Resource* reflectance, ID3D12Resource* shadowMask,
-        const RedstoneGI& settings, float shadowInfluence, float skipThreshold,
-        bool rasterEncodedSource)
+        const RedstoneGI& settings, float shadowInfluence, float skipThreshold, bool rasterEncodedSource, bool fsrRawOnly)
     {
         frame.valid = false;
         frame.advancedTransportTier = 0u;
         if (slot >= 2 || !list || !linearDepth || !normalRough || !linearRadiance ||
-            !albedo || !reflectance || !shadowMask || !sampling.packed[0] ||
-            !sampling.packed[1] || !Initialize(device)) return false;
+            !albedo || !reflectance || (!shadowMask && !fsrRawOnly) || !sampling.packed[0] ||
+            !sampling.packed[1] || !Initialize(device, fsrRawOnly)) return false;
         try {
             const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
             // Slots are reused only after their completion fence retires.
@@ -312,8 +317,8 @@ namespace DX12Native
             // suppression when determining where GI can accumulate. The
             // final compositor retains its native-shadowed scene and mask.
             const NativeMaskCB mask{
-                rasterEncodedSource ? 0.0f : shadowInfluence,
-                rasterEncodedSource ? 0.0f : skipThreshold,
+                (fsrRawOnly || rasterEncodedSource) ? 0.0f : shadowInfluence,
+                (fsrRawOnly || rasterEncodedSource) ? 0.0f : skipThreshold,
                 18.0f, nativeGI.DepthFadeRange.y };
             const auto& camera = globals::game::frameBufferCached.nonVR;
             if (sizeof(nativeGI) > kAOSettingsOffset ||
@@ -334,7 +339,8 @@ namespace DX12Native
 
             const UINT step = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
             const auto sources = std::array<ID3D12Resource*, 9>{ linearDepth, normalRough,
-                linearRadiance, nullptr, nullptr, albedo, reflectance, shadowMask, nullptr };
+                linearRadiance, nullptr, nullptr, albedo, reflectance,
+                fsrRawOnly ? nullptr : shadowMask, nullptr };
             const auto formats = std::array<DXGI_FORMAT, 9>{
                 DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
                 DXGI_FORMAT_R16G16_FLOAT, DXGI_FORMAT_R16G16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
@@ -369,7 +375,7 @@ namespace DX12Native
                 if (source) begin.push_back(CD3DX12_RESOURCE_BARRIER::Transition(source,
                     D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
             for (const auto& target : frame.textures)
-                begin.push_back(CD3DX12_RESOURCE_BARRIER::Transition(target.get(),
+                if (target) begin.push_back(CD3DX12_RESOURCE_BARRIER::Transition(target.get(),
                     D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
             list->ResourceBarrier(UINT(begin.size()), begin.data());
 
@@ -394,23 +400,24 @@ namespace DX12Native
                 if (pass == 0) ++giDispatches;
                 else ++aoDispatches;
             }
-            // Full-resolution eligibility is never estimated from quarter- or
-            // checkerboard-traced outputs. It uses native depth, normal and
-            // shadow visibility and remains authoritative after RR/upscaling.
-            list->SetPipelineState(eligibilityPipeline.get());
-            auto eligibilityGPU = descriptors->GetGPUDescriptorHandleForHeapStart();
-            eligibilityGPU.ptr += uint64_t(slot * kPerFrame) * step;
-            list->SetComputeRootDescriptorTable(0, eligibilityGPU);
-            eligibilityGPU.ptr += 9u * step;
-            list->SetComputeRootDescriptorTable(1, eligibilityGPU);
-            list->Dispatch((size[0] + 7u) / 8u, (size[1] + 7u) / 8u, 1);
-            ++eligibilityDispatches;
+            // FSR Independent bypasses the Open RT native-eligibility pass.
+            // GI/AO are raw raster estimates; no shadow coverage suppression.
+            if (!fsrRawOnly) {
+                list->SetPipelineState(eligibilityPipeline.get());
+                auto eligibilityGPU = descriptors->GetGPUDescriptorHandleForHeapStart();
+                eligibilityGPU.ptr += uint64_t(slot * kPerFrame) * step;
+                list->SetComputeRootDescriptorTable(0, eligibilityGPU);
+                eligibilityGPU.ptr += 9u * step;
+                list->SetComputeRootDescriptorTable(1, eligibilityGPU);
+                list->Dispatch((size[0] + 7u) / 8u, (size[1] + 7u) / 8u, 1);
+                ++eligibilityDispatches;
+            }
             std::vector<D3D12_RESOURCE_BARRIER> end;
             for (auto* source : sources)
                 if (source) end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(source,
                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON));
             for (const auto& target : frame.textures)
-                end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(target.get(),
+                if (target) end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(target.get(),
                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON));
             list->ResourceBarrier(UINT(end.size()), end.data());
             frame.valid = true;

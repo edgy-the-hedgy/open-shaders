@@ -54,7 +54,9 @@ float4 EstimateDiffuse(Surface surface)
 	 }
 	}
 	radiance *= (1.0 - GetDepthFade(surface.depth)) / DiffuseSlices;
-	radiance = lerp(Color::RGBToLuminance(radiance).xxx, radiance, GISaturation);
+	#if !defined(FSR_INDEPENDENT_GI)
+    radiance = lerp(Color::RGBToLuminance(radiance).xxx, radiance, GISaturation);
+#endif
 	return float4(max(radiance, 0), hitWeight > 1e-6 ? hitDistance / hitWeight : -1.0);
 }
 #include "RedstoneGI/SpecularWeights.hlsli"
@@ -116,12 +118,16 @@ float4 EstimateSpecular(Surface surface, float roughness, bool traceRadiance)
     const float4 receiverNormal = srcNormalRoughness.Load(int3(surfacePixel, 0));
     const bool receiverValid = isfinite(depth) && depth > FP_Z && depth < DepthFadeRange.y &&
         all(isfinite(receiverNormal));
+    #if defined(FSR_INDEPENDENT_GI)
+    const bool suppressRays = false;
+#else
     const float2 mask = srcShadowMask.Load(int3(surfacePixel, 0));
     const bool maskValid = all(isfinite(mask)) && mask.y >= 0.5;
     const float effectiveVisibility = 1.0 -
         saturate(HybridShadowInfluence) * (1.0 - (maskValid ? saturate(mask.x) : 1.0));
     const bool suppressRays = receiverValid && maskValid &&
         effectiveVisibility < saturate(HybridSkipThreshold);
+#endif
     // Do not write the native mask from the sampled GI grid: quarter and
     // checkerboard GI cannot represent every full-native receiver.
     if (!receiverValid || suppressRays) {
