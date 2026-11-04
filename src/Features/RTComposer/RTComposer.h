@@ -12,6 +12,37 @@ struct RTComposer final : Feature
         ShadowOnly = 0, HybridShadowed = 1, RTExclusiveI = 2,
         RTExclusiveII = 3, RTEnhanced = 4, FSRRedstone = 5, Custom = 6
     };
+    // User-facing mode IDs are independent of the old transport IDs.
+    enum class RendererFamily : uint32_t { OpenRT = 0u, FSRRayRegeneration = 1u };
+    enum class OpenRTMode : uint32_t {
+        ShadowOnly = 0u, RTExclusiveI = 1u, RTExclusiveII = 2u, Custom = 3u
+    };
+    enum class FSRRRMode : uint32_t {
+        HybridIllumination = 0u, RTEnhanced = 1u, FSRRedstone = 2u
+    };
+    static constexpr const char* RendererFamilyName(RendererFamily family)
+    {
+        return family == RendererFamily::OpenRT ? "open-rt" : "fsr-ray-regeneration";
+    }
+    static constexpr const char* FSRModeName(FSRRRMode mode)
+    {
+        switch (mode) {
+        case FSRRRMode::HybridIllumination: return "hybrid-illumination";
+        case FSRRRMode::RTEnhanced: return "rt-enhanced";
+        case FSRRRMode::FSRRedstone: return "fsr-redstone";
+        }
+        return "invalid";
+    }
+    static constexpr CompositorMode OpenRTTransport(OpenRTMode mode)
+    {
+        switch (mode) {
+        case OpenRTMode::ShadowOnly: return CompositorMode::ShadowOnly;
+        case OpenRTMode::RTExclusiveI: return CompositorMode::RTExclusiveI;
+        case OpenRTMode::RTExclusiveII: return CompositorMode::RTExclusiveII;
+        case OpenRTMode::Custom: return CompositorMode::Custom;
+        }
+        return CompositorMode::ShadowOnly;
+    }
     struct TierPolicy
     {
         uint32_t directTraceMode; // DXR 6=quarter checkerboard (12.5%), 7=quarter (25%), 5=native checkerboard
@@ -149,7 +180,10 @@ struct RTComposer final : Feature
         // when disabled, preserve the low shadow-only fallback.
         bool useFSRRayRegeneration = true;
         bool diagnoseAdvancedTransport = false; // explicit GPU-only trace diagnostic; never authorizes scene composition
-        CompositorMode mode = CompositorMode::ShadowOnly;
+        CompositorMode mode = CompositorMode::ShadowOnly; // actual internal execution
+        RendererFamily rendererFamily = RendererFamily::OpenRT;
+        OpenRTMode openRTMode = OpenRTMode::ShadowOnly;
+        FSRRRMode fsrRRMode = FSRRRMode::HybridIllumination;
         bool customHybridShadowed = false; // saved custom backend choice
         float shadowInfluence = 0.8f;
         float rtDirectContribution = 0.25f; // composition blend; tier's direct radiance still distinct
@@ -194,6 +228,7 @@ struct RTComposer final : Feature
         bool showPostHybridGI = true;
         // Temporary A/B selector; strict presets still use native-shadowed GI.
         bool hybridGIRasterBaseline = false;
+        bool legacyHybridGIPrototype = false; // explicitly non-production test
         float sceneShadowInfluence = .9f;
         bool showDirect = true, showDiffuse = true, showSpecular = true, useAO = true;
         bool overrideShadowTemporal = false;
@@ -209,6 +244,31 @@ struct RTComposer final : Feature
     bool advancedDeveloperMode = false; // session-only: never saved in JSON
     DeveloperControls developer{};
     uint64_t developerRevision = 0u;
+    bool IsOpenRT() const
+    {
+        return composition.rendererFamily == RendererFamily::OpenRT;
+    }
+    bool IsFSRRenderer() const { return !IsOpenRT(); }
+    bool LegacyHybridPrototypeActive() const
+    {
+        return composition.enabled && IsFSRRenderer() &&
+            composition.fsrRRMode == FSRRRMode::HybridIllumination &&
+            advancedDeveloperMode && developer.legacyHybridGIPrototype;
+    }
+    CompositorMode RequestedTransportMode() const
+    {
+        if (IsOpenRT()) return OpenRTTransport(composition.openRTMode);
+        // New FSR modes must not silently reuse old native reconstruction.
+        return LegacyHybridPrototypeActive() ?
+            CompositorMode::HybridShadowed : CompositorMode::ShadowOnly;
+    }
+    bool SynchronizeRendererFamily()
+    {
+        const auto requested = RequestedTransportMode();
+        const bool changed = composition.mode != requested;
+        composition.mode = requested;
+        return changed;
+    }
     static const DeveloperControls& StrictDeveloperControls()
     {
         static const DeveloperControls strict{};
@@ -248,9 +308,9 @@ struct RTComposer final : Feature
     bool TierControlsLocked() const { return composition.enabled && IsFixedPreset(); }
     bool WantsNativeHybrid() const
     {
-        return composition.mode == CompositorMode::HybridShadowed ||
-            (IsAdvancedTransportTier(composition.mode) && GetTierPolicy(composition.mode).ready) ||
-            (composition.mode == CompositorMode::Custom && composition.customHybridShadowed);
+        return LegacyHybridPrototypeActive() ||
+            (IsOpenRT() && IsAdvancedTransportTier(composition.mode) &&
+                GetTierPolicy(composition.mode).ready);
     }
     static const char* DirectTierDescription(CompositorMode mode);
     static const char* IndirectTierDescription(CompositorMode mode);
@@ -259,6 +319,8 @@ struct RTComposer final : Feature
     EffectiveMode ResolveEffectiveMode() const
     {
         if (!composition.enabled) return EffectiveMode::Legacy;
+        if (IsFSRRenderer() && !LegacyHybridPrototypeActive())
+            return EffectiveMode::ShadowOnly;
         // Persist requested FSR-REDSTONE settings, but never activate its deferred transport.
         if (composition.mode == CompositorMode::FSRRedstone) return EffectiveMode::ShadowOnly;
         if (IsAdvancedTransportTier(composition.mode) &&
@@ -275,7 +337,7 @@ struct RTComposer final : Feature
     bool BlocksRTIndirect() const
     {
         return composition.enabled &&
-            !(composition.mode == CompositorMode::Custom && !composition.customHybridShadowed);
+            !(composition.mode == CompositorMode::Custom && IsOpenRT());
     }
     bool ShadowOnlyActive() const { return ResolveEffectiveMode() == EffectiveMode::ShadowOnly; }
     bool DX12HybridActive() const

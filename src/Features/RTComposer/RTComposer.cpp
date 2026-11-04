@@ -118,7 +118,7 @@ const char* RTComposer::IndirectTierDescription(CompositorMode mode)
 }
 std::pair<std::string, std::vector<std::string>> RTComposer::GetFeatureSummary()
 {
-    return { "Six compositor tiers, including native DX12 RT-exclusive transport, family-specific FSR-RR and enhanced post-composite HybridGI; unsupported frames retain raster.", {} };
+    return { "Open RT native reconstruction and independently selected FSR Ray Regeneration modes. Unfinished RR modes retain a safe baseline.", {} };
 }
 
 bool RTComposer::DX12HybridReady() const
@@ -155,15 +155,16 @@ void RTComposer::OnCompositionPolicyChanged()
     // This method handles changes to transport or compositor mode, not RR
     // checkbox changes. Retire only providers not requested by the new mode.
     const auto mode = composition.mode;
-    const bool fixedHybridRR = composition.enabled &&
+    const bool prototype = LegacyHybridPrototypeActive();
+    const bool fixedHybridRR = prototype &&
         (mode == CompositorMode::HybridShadowed ||
          mode == CompositorMode::RTEnhanced) &&
         composition.fixedRR.Get(mode, 2u);
-    const bool customHybridRR = composition.enabled &&
+    const bool customHybridRR = prototype &&
         mode == CompositorMode::Custom && composition.customHybridShadowed &&
         composition.useFSRRayRegeneration &&
         RayRegeneration::GetSettings().enabled;
-    const bool indirectRR = composition.enabled &&
+    const bool indirectRR = IsFSRRenderer() && composition.enabled &&
         (mode == CompositorMode::RTExclusiveI ||
          mode == CompositorMode::RTExclusiveII ||
          mode == CompositorMode::RTEnhanced) &&
@@ -187,6 +188,11 @@ json RTComposer::GetDiagnostics()
     const auto planned = GetTierExecutionContract(composition.mode);
     return {
         { "enabled", composition.enabled },
+        { "rendererFamily", RendererFamilyName(composition.rendererFamily) },
+        { "openRTRequestedMode", static_cast<uint32_t>(composition.openRTMode) },
+        { "fsrRRRequestedMode", FSRModeName(composition.fsrRRMode) },
+        { "fsrProductionReady", false },
+        { "fsrLegacyHybridPrototype", LegacyHybridPrototypeActive() },
         { "requestedMode", ModeName(composition.mode) },
         { "requestedTierReady", composition.mode == CompositorMode::Custom || GetTierPolicy(composition.mode).ready },
         { "tierControlsLocked", TierControlsLocked() },
@@ -488,6 +494,9 @@ void RTComposer::SaveSettings(json& value)
             { "fixedRRRequests", composition.fixedRR.modes },
             { "diagnoseAdvancedTransport", composition.diagnoseAdvancedTransport },
             { "mode", static_cast<uint32_t>(composition.mode) },
+            { "rendererFamily", static_cast<uint32_t>(composition.rendererFamily) },
+            { "openRTMode", static_cast<uint32_t>(composition.openRTMode) },
+            { "fsrRRMode", static_cast<uint32_t>(composition.fsrRRMode) },
             { "customHybridShadowed", composition.customHybridShadowed },
             { "shadowInfluence", composition.shadowInfluence },
             { "rtDirectContribution", composition.rtDirectContribution },
@@ -505,6 +514,7 @@ void RTComposer::LoadSettings(json& value)
 {
     if (!value.is_object()) return;
     const auto beforePolicy = std::pair{ composition.enabled, composition.mode };
+    const auto beforeFamily = composition.rendererFamily;
     const bool beforeTransportDiagnostic = composition.diagnoseAdvancedTransport;
     const bool beforeCompositorRR = composition.useFSRRayRegeneration;
     const auto oldFixedRR = composition.fixedRR.modes;
@@ -540,6 +550,35 @@ void RTComposer::LoadSettings(json& value)
         next.diagnoseAdvancedTransport = it->value("diagnoseAdvancedTransport", false);
         const auto mode = it->value("mode", 0u);
         next.mode = static_cast<CompositorMode>(std::min(mode, 6u));
+        if (it->contains("rendererFamily")) {
+            next.rendererFamily = it->value("rendererFamily", 0u) == 1u ?
+                RendererFamily::FSRRayRegeneration : RendererFamily::OpenRT;
+            next.openRTMode = static_cast<OpenRTMode>(
+                std::min(it->value("openRTMode", 0u), 3u));
+            next.fsrRRMode = static_cast<FSRRRMode>(
+                std::min(it->value("fsrRRMode", 0u), 2u));
+        } else {
+            // Legacy selection migration is non-destructive: keep saved
+            // settings but never interpret old RR tiers as completed new RR.
+            switch (next.mode) {
+            case CompositorMode::RTExclusiveI:
+                next.openRTMode = OpenRTMode::RTExclusiveI; break;
+            case CompositorMode::RTExclusiveII:
+                next.openRTMode = OpenRTMode::RTExclusiveII; break;
+            case CompositorMode::Custom:
+                next.openRTMode = OpenRTMode::Custom; break;
+            case CompositorMode::HybridShadowed:
+                next.rendererFamily = RendererFamily::FSRRayRegeneration;
+                next.fsrRRMode = FSRRRMode::HybridIllumination; break;
+            case CompositorMode::RTEnhanced:
+                next.rendererFamily = RendererFamily::FSRRayRegeneration;
+                next.fsrRRMode = FSRRRMode::RTEnhanced; break;
+            case CompositorMode::FSRRedstone:
+                next.rendererFamily = RendererFamily::FSRRayRegeneration;
+                next.fsrRRMode = FSRRRMode::FSRRedstone; break;
+            default: break;
+            }
+        }
         next.customHybridShadowed = it->value("customHybridShadowed", false);
         auto bounded = [&](const char* name, float fallback) {
             const float x = it->value(name, fallback);
@@ -564,7 +603,9 @@ void RTComposer::LoadSettings(json& value)
         composition.hybridResolution = migratedSampling >= 2u ? 1u : 0u;
         composition.hybridCheckerboard = composition.directCheckerboard;
     }
-    if (beforePolicy != std::pair{ composition.enabled, composition.mode } ||
+    SynchronizeRendererFamily();
+    if (beforeFamily != composition.rendererFamily ||
+        beforePolicy != std::pair{ composition.enabled, composition.mode } ||
         beforeTransportDiagnostic != composition.diagnoseAdvancedTransport ||
         (beforeCompositorRR != composition.useFSRRayRegeneration &&
          composition.mode == CompositorMode::Custom) ||
@@ -645,31 +686,32 @@ void RTComposer::DrawSettings()
         return;
     }
     ImGui::PushID("RTComposer");
-    ImGui::SeparatorText("Compositor");
-    const auto previousPolicy = std::pair{ composition.enabled, composition.mode };
-    ImGui::Checkbox("Enable RT shadow composition", &composition.enabled);
-    // Legacy RR remains a Custom/legacy preference, independent of fixed-tier policies.
-    if (composition.mode == CompositorMode::Custom)
-        ImGui::Checkbox("Custom legacy FSR Ray Regeneration", &composition.useFSRRayRegeneration);
-    ImGui::TextWrapped("Shadow Only never uses FSR-RR. Independent Indirect and HybridGI RR requests now select AMD RR where ready, with native DX12 reconstruction otherwise. Direct RR for upper tiers remains pending.");
-    int compositorMode = static_cast<int>(composition.mode);
-    if (ImGui::BeginCombo("Compositor mode",
-        std::array{ "Shadow Only", "Hybrid-Shadowed", "RT-exclusive Tier I",
-            "RT-exclusive Tier II", "RT-Enhanced", "FSR-REDSTONE (unavailable)",
-            "Custom" }[compositorMode])) {
-        constexpr std::array labels{ "Shadow Only", "Hybrid-Shadowed", "RT-exclusive Tier I",
-            "RT-exclusive Tier II", "RT-Enhanced", "FSR-REDSTONE (unavailable)", "Custom" };
-        for (int i = 0; i < static_cast<int>(labels.size()); ++i) {
-            if (ImGui::Selectable(labels[i], i == compositorMode,
-                    i == static_cast<int>(CompositorMode::FSRRedstone) ?
-                        ImGuiSelectableFlags_Disabled : ImGuiSelectableFlags_None)) {
-                // Fixed-tier selection never modifies saved Custom settings.
-                composition.mode = static_cast<CompositorMode>(i);
-            }
-        }
-        ImGui::EndCombo();
+    ImGui::SeparatorText("Renderer architecture");
+    const auto previousPolicy = std::tuple{ composition.enabled, composition.mode,
+        composition.rendererFamily };
+    ImGui::Checkbox("Enable RT composition", &composition.enabled);
+    int family = static_cast<int>(composition.rendererFamily);
+    if (ImGui::Combo("Renderer family", &family,
+        "Open RT (Built-in Denoising)\0FSR Ray Regeneration\0"))
+        composition.rendererFamily = static_cast<RendererFamily>(family);
+    if (IsOpenRT()) {
+        int selection = static_cast<int>(composition.openRTMode);
+        if (ImGui::Combo("Open RT mode", &selection,
+            "Shadow Only\0RT-exclusive Tier I\0RT-exclusive Tier II\0Custom\0"))
+            composition.openRTMode = static_cast<OpenRTMode>(selection);
+        ImGui::TextWrapped("Open RT uses native DX12 reconstruction; no FSR-RR contexts are dispatched by this renderer.");
+    } else {
+        int selection = static_cast<int>(composition.fsrRRMode);
+        if (ImGui::Combo("FSR Ray Regeneration mode", &selection,
+            "Hybrid-Illumination\0RT-Enhanced\0FSR-REDSTONE (unavailable)\0"))
+            composition.fsrRRMode = static_cast<FSRRRMode>(selection);
+        ImGui::TextWrapped("FSR-RR raw Direct and two-bounce transport is under construction. The selected request is saved independently. Production uses safe Shadow Only until these native DX12 RR providers are ready.");
+        if (composition.fsrRRMode == FSRRRMode::FSRRedstone)
+            ImGui::TextWrapped("FSR-REDSTONE is unavailable.");
     }
-    if (previousPolicy != std::pair{ composition.enabled, composition.mode })
+    SynchronizeRendererFamily();
+    if (previousPolicy != std::tuple{ composition.enabled, composition.mode,
+        composition.rendererFamily })
         OnCompositionPolicyChanged();
 
     ImGui::SeparatorText("Developer testing");
@@ -680,6 +722,13 @@ void RTComposer::DrawSettings()
         "Developer overrides are ACTIVE. All changes are temporary and do not modify fixed preset values, tracing eligibility, geometry, or saved settings." :
         "Strict compositor policies are ACTIVE. Developer settings are ignored until enabled.");
     if (advancedDeveloperMode) {
+        if (IsFSRRenderer() &&
+            composition.fsrRRMode == FSRRRMode::HybridIllumination) {
+            ImGui::SeparatorText("HybridGI baseline research");
+            ImGui::Checkbox("Enable legacy HybridGI prototype (not RR-only)",
+                &developer.legacyHybridGIPrototype);
+            ImGui::TextWrapped("Research only: this uses the old DX12 Hybrid-Shadowed path and native RR fallback, not the new raw Direct Diffuse/Specular RR pipeline.");
+        }
         if (ImGui::Button("Reset developer test parameters"))
             developer = DeveloperControls{};
         if (WantsNativeHybrid() &&
@@ -792,8 +841,11 @@ void RTComposer::DrawSettings()
         }
     }
     if (advancedDeveloperMode != priorDeveloperMode ||
-        !(developer == priorDeveloperSettings))
+        !(developer == priorDeveloperSettings)) {
         ++developerRevision;
+        if (SynchronizeRendererFamily())
+            OnCompositionPolicyChanged();
+    }
     if (advancedDeveloperMode && WantsNativeHybrid()) {
         const auto trace = globals::features::dx12NativeScene.Tracer().GetDiagnostics();
         ImGui::SeparatorText("Developer runtime readout");
@@ -817,7 +869,10 @@ void RTComposer::DrawSettings()
     }
 
     if (IsFixedPreset()) {
-        ImGui::TextWrapped("Fixed tier: lighting and sampling tuning are locked; RR requests remain individually editable.");
+        if (IsFSRRenderer() && !LegacyHybridPrototypeActive())
+            ImGui::TextWrapped("FSR-RR renderer is pending. Fixed-tier controls below describe the safe Shadow Only fallback, NOT the requested neural mode.");
+        else
+            ImGui::TextWrapped("Fixed tier: lighting and sampling tuning are locked; RR requests remain individually editable.");
         constexpr std::array rrLabels{ "Direct FSR Ray Regeneration",
             "Indirect FSR Ray Regeneration", "HybridGI FSR Ray Regeneration" };
         const auto selectedMode = composition.mode;
