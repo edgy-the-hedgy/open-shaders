@@ -1521,8 +1521,8 @@ namespace DX12Native
 		}
 		commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 		++directTraceDispatches;
-		if (a_frame.directTraceMode != 0u) {
-			std::vector<D3D12_RESOURCE_BARRIER> barriers{
+		if (a_frame.directTraceMode != 0u && !a_frame.fsrIndependent) {
+            std::vector<D3D12_RESOURCE_BARRIER> barriers{
 				CD3DX12_RESOURCE_BARRIER::UAV(a_frame.output->resource.get())
 			};
 			for (uint32_t i = 0; i < 5; ++i)
@@ -1580,16 +1580,19 @@ namespace DX12Native
 		commands->ResourceBarrier(uint32_t(end.size()), end.data());
         // Shared low-tier shadow mask temporal resolve MUST run before either
         // DX11 Shadow Only export consumption or DX12 Hybrid source/GI.
-        RecordShadowTemporal(a_frame);
-        if (a_frame.hybridInputsReady) {
-            RecordHybridShadowedSource(a_frame);
-            if (a_frame.nativeDirectRRRequested) {
-                if (RecordNativeDirectRR(a_frame) &&
-                    globals::features::rtComposer.NativeDirectRRPreviewActive())
-                    (void)RecordNativeDirectRRComposition(a_frame);
+        if (!a_frame.fsrIndependent) {
+            RecordShadowTemporal(a_frame);
+            if (a_frame.hybridInputsReady) {
+                RecordHybridShadowedSource(a_frame);
+                if (a_frame.nativeDirectRRRequested) {
+                    if (RecordNativeDirectRR(a_frame) &&
+                        globals::features::rtComposer.NativeDirectRRPreviewActive())
+                        (void)RecordNativeDirectRRComposition(a_frame);
+                }
+                RecordNativeHybridGI(a_frame);
             }
-            RecordNativeHybridGI(a_frame);
         }
+        // FSR Independent never invokes Open RT temporal, GI, or composition.
 		DX::ThrowIfFailed(commands->Close());
 		ID3D12CommandList* lists[]{ commands };
 		backend.commandQueue->ExecuteCommandLists(1, lists);
@@ -1865,6 +1868,9 @@ namespace DX12Native
 		if (bindingBytes == UINT64_MAX) { failure = "Directional binding allocation unsupported"; return; }
 		const std::array<uint32_t, 2> size = a_sceneTarget ? a_nativeSize : std::array<uint32_t, 2>{ (a_nativeSize[0] + kGridDivisor - 1) / kGridDivisor, (a_nativeSize[1] + kGridDivisor - 1) / kGridDivisor };
 		const auto& composer = globals::features::rtComposer;
+        const bool fsrIndependent = a_sceneTarget && composer.FSRIndependentActive();
+        const bool wantEarlyMask = a_sceneTarget &&
+            (!fsrIndependent || composer.composition.fsrHybrid.earlyShadowMask);
         bool nativeDirectTest = a_sceneTarget && composer.NativeDirectRRDiagnosticActive() &&
             size[0] >= 2u && (size[0] & 1u) == 0u && size[1] != 0u;
         // Disabled direct RR does not retain dedicated AMD contexts indefinitely.
@@ -1878,7 +1884,7 @@ namespace DX12Native
 		const bool wantExport = a_sceneTarget && globals::features::rtComposer.ShadowOnlyActive();
         const auto& shadowComposer = globals::features::rtComposer;
         const auto& shadowDev = shadowComposer.EffectiveDeveloperControls();
-        bool wantShadowTemporal = a_sceneTarget &&
+        bool wantShadowTemporal = !fsrIndependent && a_sceneTarget &&
             shadowComposer.TierControlsLocked() &&
             (shadowComposer.composition.mode == RTComposer::CompositorMode::ShadowOnly ||
              shadowComposer.composition.mode == RTComposer::CompositorMode::HybridShadowed) &&
@@ -1921,7 +1927,7 @@ namespace DX12Native
             available->reconstructionBlurMask == requestedBlurMask &&
             available->useDirectRR == directRR &&
             available->nativeDirectRRRequested == nativeDirectTest && available->indirectRays == a_indirectRays && available->receivers && available->output && available->light &&
-			bool(available->shadowMask) == bool(a_sceneTarget) &&
+			bool(available->shadowMask) == wantEarlyMask &&
 			bool(available->shadowMaskExport) == wantExport &&
             bool(available->hybridInputs[0]) == wantHybridInputs &&
             bool(available->shadowTemporal) == wantShadowTemporal &&
@@ -1930,7 +1936,7 @@ namespace DX12Native
             bool(available->nativeGI.textures[0]) == wantNativeGI &&
             bool(available->postHybridGI.textures[0]) == wantPostHybrid &&
             (!wantNativeGI || available->nativeGI.constants) &&
-            (!a_sceneTarget || available->visibilityBits);
+            (!wantEarlyMask || available->visibilityBits);
 		constexpr uint64_t kFrameOverheadBytes = 1024 * 1024;
 		const auto textureDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32G32B32A32_FLOAT, size[0], size[1], 1, 1, 1, 0,
 			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS);
@@ -1946,8 +1952,8 @@ namespace DX12Native
 			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 		const auto maskDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R16G16_FLOAT, size[0], size[1], 1, 1, 1, 0,
 			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-		const uint64_t visibilityBytes = a_sceneTarget ? backend.d3d12Device->GetResourceAllocationInfo(0, 1, &visibilityDesc).SizeInBytes : 0;
-		const uint64_t maskBytes = a_sceneTarget ? backend.d3d12Device->GetResourceAllocationInfo(0, 1, &maskDesc).SizeInBytes : 0;
+		const uint64_t visibilityBytes = wantEarlyMask ? backend.d3d12Device->GetResourceAllocationInfo(0, 1, &visibilityDesc).SizeInBytes : 0;
+		const uint64_t maskBytes = wantEarlyMask ? backend.d3d12Device->GetResourceAllocationInfo(0, 1, &maskDesc).SizeInBytes : 0;
 		const uint64_t exportBytes = wantExport ? nextPreviewBytes : 0;
         uint64_t temporalBytes = wantShadowTemporal ? maskBytes + nextPreviewBytes : 0;
         const auto linearDepthDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32_FLOAT, size[0], size[1], 1, 1, 1, 0,
@@ -2021,11 +2027,11 @@ namespace DX12Native
             available->nativeDirectRRRequested == nativeDirectTest &&
                 available->indirectRays == a_indirectRays && available->receivers &&
                 available->output && available->light &&
-                bool(available->shadowMask) == bool(a_sceneTarget) &&
+                bool(available->shadowMask) == wantEarlyMask &&
                 bool(available->shadowMaskExport) == wantExport &&
                 !available->hybridInputs[0] && !available->hybridShadowedSource &&
                 !available->hybridLinearDepth && !available->nativeGI.textures[0] &&
-                (!a_sceneTarget || available->visibilityBits);
+                (!wantEarlyMask || available->visibilityBits);
             required = calculateRequired();
             retainedBytes = ResidentBytes() - (reuse ? 0 : available->bytes);
         }
@@ -2039,7 +2045,7 @@ namespace DX12Native
             available->nativeDirectRRRequested == nativeDirectTest &&
                 available->indirectRays == a_indirectRays && available->receivers &&
                 available->output && available->light &&
-                bool(available->shadowMask) == bool(a_sceneTarget) &&
+                bool(available->shadowMask) == wantEarlyMask &&
                 bool(available->shadowMaskExport) == wantExport &&
                 !available->shadowTemporal && !available->shadowMotion &&
                 bool(available->hybridInputs[0]) == wantHybridInputs &&
@@ -2047,7 +2053,7 @@ namespace DX12Native
                 bool(available->nativeGI.textures[0]) == wantNativeGI &&
                 bool(available->postHybridGI.textures[0]) == wantPostHybrid &&
                 (!wantNativeGI || available->nativeGI.constants) &&
-                (!a_sceneTarget || available->visibilityBits);
+                (!wantEarlyMask || available->visibilityBits);
             required = calculateRequired();
             retainedBytes = ResidentBytes() - (reuse ? 0 : available->bytes);
         }
@@ -2110,6 +2116,7 @@ namespace DX12Native
             available->shadowMotionCaptured = false;
             available->shadowHistorySourceSlot = -1;
             available->nativeGIRequested = wantNativeGI;
+            available->fsrIndependent = fsrIndependent;
             available->nativeDirectRRRequested = nativeDirectTest;
             available->nativeDirectPackValid = false;
             available->nativeDirectRRReady = false;
@@ -2144,12 +2151,19 @@ namespace DX12Native
 			available->useDirectRR = directRR;
 			available->rasterBlend = a_rasterBlend;
 			available->normalMode = std::min(a_normalMode, 2u);
-			available->directTraceMode = nativeDirectTest ? 5u :
+			available->directTraceMode = fsrIndependent ? 5u : nativeDirectTest ? 5u :
                 std::min(a_directResolutionMode, 7u);
 			available->indirectTraceMode = std::min(a_indirectResolutionMode, 7u);
 			available->directRRResolutionMode = effectiveRRMode;
 			available->rrMaterialPolicy = a_rrMaterialIsolation ? (0x80000000u |
-				(uint32_t(std::clamp(a_rrGlossyRoughness, 0.04f, 1.0f) * 65535.0f) << 8u)) : 0u;
+                (uint32_t(std::clamp(a_rrGlossyRoughness, 0.04f, 1.0f) * 65535.0f) << 8u)) : 0u;
+            if (fsrIndependent) {
+                available->rrMaterialPolicy |= 0x20000000u; // FSR raw signal mode
+                if (composer.composition.fsrHybrid.clampRadiance)
+                    available->rrMaterialPolicy |= 0x40000000u;
+                available->falloffParameters.w = std::clamp(
+                    composer.composition.fsrHybrid.radianceClamp, 1.0f, 65504.0f);
+            }
 			available->preparedLights = a_allPreparedLights ? std::vector<PreparedPointLight>(a_preparedLights.begin(), a_preparedLights.end()) :
 				std::vector<PreparedPointLight>{ a_preparedLights.empty() ? PreparedPointLight{} : a_preparedLights.front() };
 			if (a_allPreparedLights) available->lightIdentities.assign(a_lightIdentities.begin(), a_lightIdentities.end());
@@ -2204,13 +2218,13 @@ namespace DX12Native
             }
 			if (a_sceneTarget) {
 				const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
-				if (!available->visibilityBits) {
+				if (wantEarlyMask && !available->visibilityBits) {
 					DX::ThrowIfFailed(backend.d3d12Device->CreateCommittedResource(
 						&heap, D3D12_HEAP_FLAG_NONE, &visibilityDesc, D3D12_RESOURCE_STATE_COMMON,
 						nullptr, IID_PPV_ARGS(available->visibilityBits.put())));
 					available->visibilityBits->SetName(L"RTDirectLighting::PerLightVisibility");
 				}
-				if (!available->shadowMask) {
+				if (wantEarlyMask && !available->shadowMask) {
 					DX::ThrowIfFailed(backend.d3d12Device->CreateCommittedResource(
 						&heap, D3D12_HEAP_FLAG_NONE, &maskDesc, D3D12_RESOURCE_STATE_COMMON,
 						nullptr, IID_PPV_ARGS(available->shadowMask.put())));

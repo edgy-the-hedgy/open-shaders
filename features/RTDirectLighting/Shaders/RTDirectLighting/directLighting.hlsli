@@ -351,7 +351,12 @@ float4 EvaluateDirectLighting(uint instance, uint primitive, float2 barycentric,
 	if (!all(isfinite(result)) || any(result < 0)) return Unavailable(InvalidSurface);
 	if (ExportDirectSignals != 0) {
 		float3 emission = material.emission * LightingStrengths.w;
-		if (any(diffuseSum > MaximumHalfRadiance) || any(specularSum > MaximumHalfRadiance) || any(emission > MaximumHalfRadiance)) return Unavailable(InvalidSurface);
+		const bool fsrRaw = (DirectNormalMode & 0x20000000u) != 0u;
+        const float maxSource = fsrRaw ? 65504.0f : MaximumHalfRadiance;
+        if (!all(isfinite(diffuseSum)) || !all(isfinite(specularSum)) ||
+            !all(isfinite(emission)) || any(diffuseSum > maxSource) ||
+            any(specularSum > maxSource) || any(emission > 65504.0f))
+            return Unavailable(InvalidSurface);
 		// The SDK expects demodulated first-bounce radiance. Albedo remains
 		// separately available for RR and is applied once, after reconstruction.
 		const float3 diffuseAlbedo = saturate((1.0 - material.metallic) * material.baseColor);
@@ -359,8 +364,15 @@ float4 EvaluateDirectLighting(uint instance, uint primitive, float2 barycentric,
 		const float NdotV = saturate(abs(dot(normalize(shadingNormal), normalize(-direction))));
 		const float2 envBRDF = BRDF::EnvBRDF(material.roughness, NdotV);
 		const float3 specularAlbedo = saturate(material.f0 * envBRDF.x + envBRDF.y);
-		const float3 unmodulatedDiffuse = min(diffuseSum / max(diffuseAlbedo, float3(1e-3, 1e-3, 1e-3)), MaximumHalfRadiance);
-		const float3 unmodulatedSpecular = min(specularSum / max(specularAlbedo, float3(1e-3, 1e-3, 1e-3)), MaximumHalfRadiance);
+		const float3 rawDiffuse = diffuseSum / max(diffuseAlbedo, float3(1e-3, 1e-3, 1e-3));
+        const float3 rawSpecular = specularSum / max(specularAlbedo, float3(1e-3, 1e-3, 1e-3));
+        if (!all(isfinite(rawDiffuse)) || !all(isfinite(rawSpecular)))
+            return Unavailable(InvalidSurface);
+        const float ceiling = !fsrRaw ? MaximumHalfRadiance :
+            (DirectNormalMode & 0x40000000u) != 0u ?
+                clamp(PointLightFalloff.w, 1.0f, 65504.0f) : 65504.0f;
+        const float3 unmodulatedDiffuse = min(rawDiffuse, ceiling);
+        const float3 unmodulatedSpecular = min(rawSpecular, ceiling);
 		float3 normalOct = shadingNormal / max(abs(shadingNormal.x) + abs(shadingNormal.y) + abs(shadingNormal.z), 1e-6);
 		float2 oct = normalOct.xy;
 		if (normalOct.z < 0) oct = (1 - abs(oct.yx)) * float2(oct.x >= 0 ? 1 : -1, oct.y >= 0 ? 1 : -1);

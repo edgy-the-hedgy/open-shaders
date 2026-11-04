@@ -183,6 +183,7 @@ namespace DX12Native
             winrt::com_ptr<ID3D12DescriptorHeap> nativeDirectPackDescriptors;
             winrt::com_ptr<ID3D12RootSignature> nativeDirectPackRootRef;
             winrt::com_ptr<ID3D12PipelineState> nativeDirectPackPipelineRef;
+            bool fsrIndependent = false;
             bool nativeDirectRRRequested = false, nativeDirectPackValid = false;
             bool nativeDirectRRReady = false;
             uint32_t nativeDirectRRSuccessMask = 0u;
