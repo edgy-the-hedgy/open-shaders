@@ -446,6 +446,7 @@ bool RedstoneDenoiser::RetireNativeHybridContexts()
         }
         nativeHybridExtent = {};
         nativeHybridCheckerboard = false;
+        nativeHybridDirectFamilies = false;
         nativeHybridActiveFamilies = 3u;
         nativeHybridLastFrame = UINT32_MAX;
         nativeHybridFailed = false;
@@ -487,6 +488,10 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
         nativeHybridFailure = nativeHybridConfigurationFailure;
         return false;
     }
+    if (resources.directFamilies && (!resources.skipOcclusion || resources.diffuseOnly)) {
+        nativeHybridFailure = "Direct FSR RR requires both independent direct radiance families";
+        return false;
+    }
     const uint32_t familyCount = resources.diffuseOnly ? 1u :
         resources.skipOcclusion ? 2u : 3u;
     const uint32_t signalCount = familyCount == 3u ? 4u : familyCount;
@@ -519,6 +524,7 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
     }
     const bool changed = nativeHybridExtent != logical ||
         nativeHybridCheckerboard != resources.checkerboard ||
+        nativeHybridDirectFamilies != resources.directFamilies ||
         nativeHybridActiveFamilies != familyCount;
     if (changed && (nativeHybridContexts[0] || nativeHybridContexts[1] ||
                     nativeHybridContexts[2])) {
@@ -528,9 +534,11 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
     }
     const bool fresh = nativeHybridLastFrame == UINT32_MAX;
     uint32_t newlyCreatedMask = 0u;
-    constexpr std::array<uint32_t, 3> familyFlags{
-        FFX_DENOISER_SIGNAL_INDIRECT_DIFFUSE,
-        FFX_DENOISER_SIGNAL_INDIRECT_SPECULAR,
+    const std::array<uint32_t, 3> familyFlags{
+        resources.directFamilies ? FFX_DENOISER_SIGNAL_DIRECT_DIFFUSE :
+            FFX_DENOISER_SIGNAL_INDIRECT_DIFFUSE,
+        resources.directFamilies ? FFX_DENOISER_SIGNAL_DIRECT_SPECULAR :
+            FFX_DENOISER_SIGNAL_INDIRECT_SPECULAR,
         FFX_DENOISER_SIGNAL_AMBIENT_OCCLUSION | FFX_DENOISER_SIGNAL_SPECULAR_OCCLUSION };
     for (uint32_t family = 0; family < familyCount; ++family) {
         if (nativeHybridContexts[family]) continue;
@@ -560,6 +568,7 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
     }
     nativeHybridExtent = logical;
     nativeHybridCheckerboard = resources.checkerboard;
+    nativeHybridDirectFamilies = resources.directFamilies;
     nativeHybridActiveFamilies = familyCount;
     const bool reset = fresh || changed || resources.resetHistory ||
         nativeHybridLastFrame == UINT32_MAX ||
@@ -656,16 +665,30 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
         auto common = makeCommon();
         ffxDispatchDescDenoiserIndirectDiffuse diffuse{};
         ffxDispatchDescDenoiserIndirectSpecular specular{};
+        ffxDispatchDescDenoiserDirectDiffuse directDiffuse{};
+        ffxDispatchDescDenoiserDirectSpecular directSpecular{};
         ffxDispatchDescDenoiserAmbientOcclusion ao{};
         ffxDispatchDescDenoiserSpecularOcclusion so{};
         if (family == 0) {
-            diffuse.header.type = FFX_API_DISPATCH_DESC_TYPE_DENOISER_INDIRECT_DIFFUSE;
-            setSignal(diffuse.signal, 0);
-            common.header.pNext = &diffuse.header;
+            if (resources.directFamilies) {
+                directDiffuse.header.type = FFX_API_DISPATCH_DESC_TYPE_DENOISER_DIRECT_DIFFUSE;
+                setSignal(directDiffuse.signal, 0);
+                common.header.pNext = &directDiffuse.header;
+            } else {
+                diffuse.header.type = FFX_API_DISPATCH_DESC_TYPE_DENOISER_INDIRECT_DIFFUSE;
+                setSignal(diffuse.signal, 0);
+                common.header.pNext = &diffuse.header;
+            }
         } else if (family == 1) {
-            specular.header.type = FFX_API_DISPATCH_DESC_TYPE_DENOISER_INDIRECT_SPECULAR;
-            setSignal(specular.signal, 1);
-            common.header.pNext = &specular.header;
+            if (resources.directFamilies) {
+                directSpecular.header.type = FFX_API_DISPATCH_DESC_TYPE_DENOISER_DIRECT_SPECULAR;
+                setSignal(directSpecular.signal, 1);
+                common.header.pNext = &directSpecular.header;
+            } else {
+                specular.header.type = FFX_API_DISPATCH_DESC_TYPE_DENOISER_INDIRECT_SPECULAR;
+                setSignal(specular.signal, 1);
+                common.header.pNext = &specular.header;
+            }
         } else {
             ao.header.type = FFX_API_DISPATCH_DESC_TYPE_DENOISER_AMBIENT_OCCLUSION;
             so.header.type = FFX_API_DISPATCH_DESC_TYPE_DENOISER_SPECULAR_OCCLUSION;

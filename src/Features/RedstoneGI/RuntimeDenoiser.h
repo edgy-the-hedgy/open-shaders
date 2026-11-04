@@ -35,6 +35,9 @@ public:
         bool checkerboard = false, resetHistory = false;
         bool skipOcclusion = false; // deterministic AO/SO are not submitted to FSR-RR
         bool diffuseOnly = false; // exclusive Tier I has no specular samples
+        // Uses the same DX12 inputs and guides, but independent AMD signal
+        // types and contexts for Direct Diffuse/Specular (never DX11 bridge).
+        bool directFamilies = false;
     };
     // Records GPU-native RR into the caller's already-open DX12 command list.
     // Does not submit, signal fences, copy to DX11, or read back to CPU.
@@ -108,6 +111,7 @@ private:
     std::array<ffxContext, 3> nativeHybridContexts{};
     std::array<uint32_t, 2> nativeHybridExtent{};
     bool nativeHybridCheckerboard = false;
+    bool nativeHybridDirectFamilies = false;
     uint32_t nativeHybridLastFrame = UINT32_MAX;
     uint64_t nativeHybridDispatches = 0, nativeHybridResets = 0;
     bool nativeHybridFailed = false;
