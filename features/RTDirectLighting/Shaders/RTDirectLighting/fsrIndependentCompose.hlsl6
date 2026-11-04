@@ -1,0 +1,100 @@
+// Dedicated FSR Hybrid Independent DX12 compositor.
+// Reads AMD RR outputs only. No native denoiser, history, or shadow-mask input.
+Texture2D<float4> RasterScene : register(t0);
+Texture2D<float4> TaggedDirect : register(t1);
+Texture2D<float4> DirectDiffuseRR : register(t2);
+Texture2D<float4> DirectSpecularRR : register(t3);
+Texture2D<float4> DirectDiffuseAlbedo : register(t4);
+Texture2D<float4> DirectSpecularAlbedo : register(t5);
+Texture2D<float4> IndirectDiffuseRR : register(t6);
+Texture2D<float4> IndirectSpecularRR : register(t7);
+Texture2D<float> DiffuseAORR : register(t8);
+Texture2D<float> SpecularAORR : register(t9);
+Texture2D<float4> RasterAlbedo : register(t10);
+Texture2D<float4> RasterReflectance : register(t11);
+Texture2D<float> LinearDepth : register(t12);
+Texture2D<float4> RasterNormalRoughness : register(t13);
+Texture2D<float4> Receivers : register(t14);
+Texture2D<float4> RawDirectDiffuse : register(t15);
+Texture2D<float4> RawDirectSpecular : register(t16);
+RWTexture2D<float4> OutScene : register(u0);
+cbuffer FSRIndependentComposition : register(b0)
+{
+    uint2 FrameSize;
+    uint2 GISize;
+    uint FrameIndex;
+    uint LinearLighting;
+    float DirectBlend;
+    float GIContribution;
+};
+[numthreads(8,8,1)]
+void main(uint2 pixel : SV_DispatchThreadID)
+{
+    if (any(pixel >= FrameSize)) return;
+    const float4 raster = RasterScene.Load(int3(pixel, 0));
+    const float3 baseline = all(isfinite(raster.rgb)) ?
+        max(raster.rgb, 0.0) : 0.0;
+    float3 color = LinearLighting != 0u ? baseline : pow(baseline, 1.6);
+    // For checkerboard reconstruction only the actual sampled anchor
+    // establishes receiver eligibility. This never touches RR inputs.
+    const uint2 anchor = uint2(min((pixel.x & ~1u) +
+        ((pixel.y + FrameIndex) & 1u), FrameSize.x - 1u), pixel.y);
+    const float4 tagged = TaggedDirect.Load(int3(anchor, 0));
+    const float4 receiver = Receivers.Load(int3(pixel, 0));
+    const float4 anchorReceiver = Receivers.Load(int3(anchor, 0));
+    const float depth = LinearDepth.Load(int3(pixel, 0));
+    const float anchorDepth = LinearDepth.Load(int3(anchor, 0));
+    const float4 nr = RasterNormalRoughness.Load(int3(pixel, 0));
+    const float4 anchorNR = RasterNormalRoughness.Load(int3(anchor, 0));
+    const bool sameSurface = receiver.w != 0.0 && receiver.w == anchorReceiver.w &&
+        all(isfinite(receiver)) && all(isfinite(anchorReceiver)) &&
+        isfinite(depth) && isfinite(anchorDepth) && depth > 0.0 && anchorDepth > 0.0 &&
+        abs(depth - anchorDepth) <= max(0.5, depth * 0.005) &&
+        all(isfinite(nr)) && all(isfinite(anchorNR)) &&
+        length(nr.xy - anchorNR.xy) <= 0.15;
+    if (sameSurface && tagged.a == 4.0 && all(isfinite(tagged))) {
+        const float4 d = DirectDiffuseRR.Load(int3(pixel, 0));
+        const float4 s = DirectSpecularRR.Load(int3(pixel, 0));
+        const float4 albedoD = DirectDiffuseAlbedo.Load(int3(anchor, 0));
+        const float4 albedoS = DirectSpecularAlbedo.Load(int3(anchor, 0));
+        const float4 rawD = RawDirectDiffuse.Load(int3(anchor, 0));
+        const float4 rawS = RawDirectSpecular.Load(int3(anchor, 0));
+        if (all(isfinite(d)) && all(isfinite(s)) &&
+            all(isfinite(albedoD)) && all(isfinite(albedoS)) &&
+            all(isfinite(rawD)) && all(isfinite(rawS)) &&
+            all(d.rgb >= 0.0) && all(s.rgb >= 0.0)) {
+            const float3 emission = max(float3(rawD.a, rawS.a, albedoS.a), 0.0);
+            const float3 directLighting = max(d.rgb, 0.0) * max(albedoD.rgb, 0.0) +
+                max(s.rgb, 0.0) * max(albedoS.rgb, 0.0) + emission;
+            if (all(isfinite(directLighting)))
+                color = lerp(color, directLighting, saturate(DirectBlend));
+        }
+    }
+    // Nearest logical-grid lookup is for final output sizing only.
+    // There is no post-RR spatial or temporal reconstruction.
+    if (GISize.x != 0u && GISize.y != 0u) {
+        const uint2 logical = min(
+            uint2((float2(pixel) + 0.5) * float2(GISize) / float2(FrameSize)),
+            GISize - 1u);
+        const float4 giD = IndirectDiffuseRR.Load(int3(logical, 0));
+        const float4 giS = IndirectSpecularRR.Load(int3(logical, 0));
+        const float aoD = DiffuseAORR.Load(int3(logical, 0));
+        const float aoS = SpecularAORR.Load(int3(logical, 0));
+        const float4 albedo = RasterAlbedo.Load(int3(pixel, 0));
+        const float4 reflectance = RasterReflectance.Load(int3(pixel, 0));
+        const float pbrScale = LinearLighting != 0u ? 1.0 : 0.65;
+        const float3 rawAlbedo = max(albedo.rgb / pbrScale, 0.0);
+        const float3 diffuseFactor = LinearLighting != 0u ?
+            rawAlbedo : pow(rawAlbedo, 1.6);
+        if (all(isfinite(giD)) && all(isfinite(albedo)) && isfinite(aoD))
+            color += max(giD.rgb, 0.0) * diffuseFactor *
+                saturate(aoD) * saturate(GIContribution);
+        if (all(isfinite(giS)) && all(isfinite(reflectance)) && isfinite(aoS))
+            color += max(giS.rgb, 0.0) * max(reflectance.rgb, 0.0) *
+                saturate(aoS) * saturate(GIContribution);
+    }
+    const float3 encoded = LinearLighting != 0u ?
+        max(color, 0.0) : pow(max(color, 0.0), 1.0 / 1.6);
+    OutScene[pixel] = float4(all(isfinite(encoded)) ? encoded : baseline,
+        isfinite(raster.a) ? raster.a : 1.0);
+}
