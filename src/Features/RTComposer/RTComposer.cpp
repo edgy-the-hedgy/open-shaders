@@ -745,20 +745,8 @@ void RTComposer::LoadSettings(json& value)
         if (auto cfg = legacyRR.find("configuration"); cfg != legacyRR.end() && cfg->is_object())
             globals::features::redstoneGI.GetDenoiser().SetConfiguration(*cfg);
     }
-    if (auto it = value.find("DirectRR"); it != value.end() && it->is_object()) {
-        auto& direct = globals::features::rtDirectLighting.settings;
-        const auto beforeResolution = direct.DirectRRResolution;
-        const auto beforeIsolation = direct.RRMaterialIsolation;
-        const auto beforeRoughness = direct.RRGlossyRoughness;
-        direct.UseDirectRayRegeneration = it->value("UseDirectRayRegeneration", direct.UseDirectRayRegeneration);
-        direct.DirectRRResolution = 0u; // persisted legacy resolution is not authoritative
-        direct.RRMaterialIsolation = it->value("RRMaterialIsolation", direct.RRMaterialIsolation);
-        const auto roughness = it->value("RRGlossyRoughness", direct.RRGlossyRoughness);
-        direct.RRGlossyRoughness = std::isfinite(roughness) ? std::clamp(roughness, 0.04f, 1.0f) : 0.2f;
-        if (beforeResolution != direct.DirectRRResolution || beforeIsolation != direct.RRMaterialIsolation ||
-            beforeRoughness != direct.RRGlossyRoughness)
-            globals::features::dx12NativeScene.Tracer().Reset();
-    }
+    // Direct RR settings are migrated and loaded by RTDirectLighting,
+    // not overridden by a later Composer settings load.
 }
 
 void RTComposer::RestoreDefaultSettings()
@@ -790,11 +778,7 @@ void RTComposer::RestoreDefaultSettings()
     }
     RayRegeneration::Configure(0u, false, true);
     globals::features::redstoneGI.GetDenoiser().SetConfiguration(json::object());
-    auto& direct = globals::features::rtDirectLighting.settings;
-    direct.UseDirectRayRegeneration = true;
-    direct.DirectRRResolution = 0u;
-    direct.RRMaterialIsolation = false;
-    direct.RRGlossyRoughness = 0.2f;
+    // Resetting this legacy UI must never reset Direct's owned RR policy.
 }
 
 void RTComposer::DrawSettings()
@@ -832,27 +816,8 @@ void RTComposer::DrawSettings()
             ImGui::EndCombo();
         }
         ImGui::TextWrapped("FSR HybridGI and Direct signals compose independently; AMD RR is optional. Unavailable RR families use their raw samples, while unsampled pixels retain raster coverage.");
-        if (composition.fsrRRMode == FSRRRMode::HybridIllumination) {
-            ImGui::SeparatorText("HybridGI baseline settings (FSR-specific)");
-            bool changed = ImGui::Checkbox("Enable AMD RR (optional)",
-                &composition.useFSRRayRegeneration);
-            int res = static_cast<int>(composition.fsrHybrid.resolution);
-            changed |= ImGui::Combo("HybridGI logical resolution", &res,
-                "Full\0Half width/height\0Quarter width/height\0");
-            if (changed) composition.fsrHybrid.resolution = uint32_t(res);
-            changed |= ImGui::Checkbox("HybridGI checkerboard", &composition.fsrHybrid.checkerboard);
-            changed |= ImGui::SliderFloat("HybridGI contribution",
-                &composition.fsrHybrid.contribution, 0.0f, 1.0f);
-            changed |= ImGui::Checkbox("Generate early Direct visibility mask (A/B)", &composition.fsrHybrid.earlyShadowMask);
-            changed |= ImGui::SliderFloat("Raster / RT Direct blend", &composition.fsrHybrid.rasterDirectBlend, 0.0f, 1.0f);
-            changed |= ImGui::Checkbox("Clamp raw Direct radiance for RR", &composition.fsrHybrid.clampRadiance);
-            if (composition.fsrHybrid.clampRadiance)
-                changed |= ImGui::SliderFloat("Raw RR radiance ceiling",
-                    &composition.fsrHybrid.radianceClamp, 1.0f, 65504.0f);
-            // FSR inputs and the DX12 queue are already frame-owned. There
-            // is no Open RT reconstruction history to reset for these knobs.
-            ImGui::TextWrapped("HybridGI uses captured raster color without a Direct mask. RR can be disabled without disabling raw diffuse, specular, or occlusion.");
-        }
+        // Lighting and RR knobs belong to their actual producer features.
+        ImGui::TextWrapped("Direct controls are in RT Direct Lighting; HybridGI/AO sampling and reconstruction controls are in RT Indirect Lighting.");
         if (composition.fsrRRMode == FSRRRMode::FSRRedstone)
             ImGui::TextWrapped("FSR-REDSTONE is unavailable.");
     }
