@@ -144,6 +144,8 @@ namespace DX12Native
         nativeDirectPackFailure.clear();
         fsrDepthRoot = nullptr;
         fsrDepthPipeline = nullptr;
+        fsrIndependentComposeRoot = nullptr;
+        fsrIndependentComposePipeline = nullptr;
         prepareDirectGuides = nullptr;
 		packRRSignals = nullptr;
 		rrDebugShader = nullptr;
@@ -1374,6 +1376,160 @@ namespace DX12Native
         }
     }
 
+    bool DirectionalTrace::RecordFSRIndependentComposition(Frame& frame)
+    {
+        frame.fsrIndependentComposed = false;
+        if (!frame.fsrIndependent || !frame.nativeDirectRRReady ||
+            frame.nativeDirectRRSuccessMask != 3u || !frame.nativeGI.rrValid ||
+            (frame.nativeGI.rrFamilySuccessMask & 7u) != 7u ||
+            !frame.hybridInputsReady || !frame.hybridLinearDepth ||
+            !frame.receivers || !frame.output || !frame.directSignals[0] ||
+            !frame.directSignals[1] || !frame.directSignals[3] ||
+            !frame.directSignals[4] || !frame.nativeDirectRROutputs[0] ||
+            !frame.nativeDirectRROutputs[1])
+            return false;
+        try {
+            auto* device = backend.d3d12Device.get();
+            auto* list = frame.commands.get();
+            if (!fsrIndependentComposeRoot || !fsrIndependentComposePipeline) {
+                std::ifstream file(
+                    "Data/Shaders/RTDirectLighting/fsrIndependentCompose.dxil",
+                    std::ios::binary | std::ios::ate);
+                if (!file) throw std::runtime_error("FSR Independent compositor DXIL missing");
+                const auto length = file.tellg();
+                if (length <= 0 || length > 16 * 1024 * 1024)
+                    throw std::runtime_error("Invalid FSR Independent compositor DXIL");
+                std::vector<char> code(static_cast<size_t>(length));
+                file.seekg(0);
+                if (!file.read(code.data(), std::streamsize(code.size())))
+                    throw std::runtime_error("Cannot read FSR Independent compositor DXIL");
+                D3D12_DESCRIPTOR_RANGE ranges[2]{};
+                ranges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 17u, 0, 0, 0 };
+                ranges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1u, 0, 0, 0 };
+                D3D12_ROOT_PARAMETER params[3]{};
+                for (uint32_t i = 0; i < 2u; ++i) {
+                    params[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+                    params[i].DescriptorTable = { 1, &ranges[i] };
+                }
+                params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+                params[2].Constants = { 0, 0, 8u };
+                const D3D12_ROOT_SIGNATURE_DESC signature{
+                    3, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE };
+                winrt::com_ptr<ID3DBlob> serialized, errors;
+                DX::ThrowIfFailed(D3D12SerializeRootSignature(
+                    &signature, D3D_ROOT_SIGNATURE_VERSION_1,
+                    serialized.put(), errors.put()));
+                DX::ThrowIfFailed(device->CreateRootSignature(
+                    0, serialized->GetBufferPointer(), serialized->GetBufferSize(),
+                    IID_PPV_ARGS(fsrIndependentComposeRoot.put())));
+                D3D12_COMPUTE_PIPELINE_STATE_DESC ps{};
+                ps.pRootSignature = fsrIndependentComposeRoot.get();
+                ps.CS = { code.data(), code.size() };
+                DX::ThrowIfFailed(device->CreateComputePipelineState(
+                    &ps, IID_PPV_ARGS(fsrIndependentComposePipeline.put())));
+            }
+            if (!frame.fsrIndependentScene) {
+                D3D11_TEXTURE2D_DESC desc{};
+                desc.Width = frame.size[0]; desc.Height = frame.size[1];
+                desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
+                desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+                desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+                frame.fsrIndependentScene = std::make_unique<WrappedResource>(
+                    desc, backend.d3d11Device.get(), device, "FSR::IndependentScene");
+            }
+            if (!frame.fsrIndependentComposeDescriptors) {
+                const D3D12_DESCRIPTOR_HEAP_DESC desc{
+                    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 18u,
+                    D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
+                DX::ThrowIfFailed(device->CreateDescriptorHeap(
+                    &desc, IID_PPV_ARGS(frame.fsrIndependentComposeDescriptors.put())));
+            }
+            const auto& gi = frame.nativeGI;
+            for (const auto& resource : gi.rrOutputs)
+                if (!resource) return false;
+            const std::array<ID3D12Resource*, 17> inputs{
+                frame.hybridInputs[0]->resource.get(), frame.output->resource.get(),
+                frame.nativeDirectRROutputs[0].get(), frame.nativeDirectRROutputs[1].get(),
+                frame.directSignals[4]->resource.get(), frame.directSignals[3]->resource.get(),
+                gi.rrOutputs[0].get(), gi.rrOutputs[1].get(),
+                gi.rrOutputs[2].get(), gi.rrOutputs[3].get(),
+                frame.hybridInputs[3]->resource.get(), frame.hybridInputs[4]->resource.get(),
+                frame.hybridLinearDepth.get(), frame.hybridInputs[2]->resource.get(),
+                frame.receivers->resource.get(),
+                frame.directSignals[0]->resource.get(), frame.directSignals[1]->resource.get()
+            };
+            const std::array<DXGI_FORMAT, 17> formats{
+                DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT,
+                DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
+                DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
+                DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
+                DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8_UNORM,
+                DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
+                DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
+                DXGI_FORMAT_R32G32B32A32_FLOAT,
+                DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT
+            };
+            std::array<D3D12_RESOURCE_BARRIER, 18> before{}, after{};
+            auto cpu = frame.fsrIndependentComposeDescriptors->GetCPUDescriptorHandleForHeapStart();
+            const UINT step = device->GetDescriptorHandleIncrementSize(
+                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+            srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srv.Texture2D.MipLevels = 1;
+            for (uint32_t i = 0; i < inputs.size(); ++i) {
+                srv.Format = formats[i];
+                device->CreateShaderResourceView(inputs[i], &srv, cpu);
+                cpu.ptr += step;
+                before[i] = CD3DX12_RESOURCE_BARRIER::Transition(inputs[i],
+                    D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                after[i] = CD3DX12_RESOURCE_BARRIER::Transition(inputs[i],
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+            }
+            D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+            uav.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+            device->CreateUnorderedAccessView(
+                frame.fsrIndependentScene->resource.get(), nullptr, &uav, cpu);
+            before[17] = CD3DX12_RESOURCE_BARRIER::Transition(
+                frame.fsrIndependentScene->resource.get(),
+                D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            after[17] = CD3DX12_RESOURCE_BARRIER::Transition(
+                frame.fsrIndependentScene->resource.get(),
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+            list->ResourceBarrier(UINT(before.size()), before.data());
+            list->SetComputeRootSignature(fsrIndependentComposeRoot.get());
+            list->SetPipelineState(fsrIndependentComposePipeline.get());
+            ID3D12DescriptorHeap* heaps[]{ frame.fsrIndependentComposeDescriptors.get() };
+            list->SetDescriptorHeaps(1, heaps);
+            auto gpu = frame.fsrIndependentComposeDescriptors->GetGPUDescriptorHandleForHeapStart();
+            list->SetComputeRootDescriptorTable(0, gpu);
+            gpu.ptr += 17u * step;
+            list->SetComputeRootDescriptorTable(1, gpu);
+            const auto& policy = globals::features::rtComposer.composition.fsrHybrid;
+            const auto logical = gi.sampling.logical;
+            const uint32_t constants[8]{
+                frame.size[0], frame.size[1], logical[0], logical[1],
+                frame.number,
+                uint32_t(globals::features::linearLighting.IsLinearLightingActive()),
+                std::bit_cast<uint32_t>(policy.rasterDirectBlend),
+                std::bit_cast<uint32_t>(policy.contribution) };
+            list->SetComputeRoot32BitConstants(2, 8, constants, 0);
+            list->Dispatch((frame.size[0] + 7u) / 8u,
+                (frame.size[1] + 7u) / 8u, 1u);
+            list->ResourceBarrier(UINT(after.size()), after.data());
+            frame.fsrIndependentComposeRootRef = fsrIndependentComposeRoot;
+            frame.fsrIndependentComposePipelineRef = fsrIndependentComposePipeline;
+            frame.fsrIndependentComposed = true;
+            ++fsrIndependentComposeDispatches;
+            fsrIndependentComposeFailure.clear();
+            return true;
+        } catch (const std::exception& error) {
+            fsrIndependentComposeFailure = error.what();
+            return false;
+        }
+    }
+
     void DirectionalTrace::RecordNativeHybridGI(Frame& frame)
     {
         if (globals::features::rtComposer.AdvancedActive()) {
@@ -1636,6 +1792,8 @@ namespace DX12Native
         if (a_frame.fsrIndependent && a_frame.hybridInputsReady &&
             RecordFSRRasterDepth(a_frame))
             (void)RecordFSRIndependentGI(a_frame);
+        // Early FSR HybridGI used a different PSO. Restore the DXR Direct PSO.
+        a_frame.commands->SetPipelineState(pipeline.get());
         const auto step = backend.d3d12Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         auto cpu = a_frame.bindings->heap->GetCPUDescriptorHandleForHeapStart();
 		cpu.ptr += uint64_t(a_frame.descriptorBase) * step;
@@ -1803,8 +1961,9 @@ namespace DX12Native
         // Shared low-tier shadow mask temporal resolve MUST run before either
         // DX11 Shadow Only export consumption or DX12 Hybrid source/GI.
         if (a_frame.fsrIndependent) {
-            if (a_frame.fsrDepthReady && a_frame.nativeDirectRRRequested)
-                (void)RecordNativeDirectRR(a_frame);
+            if (a_frame.fsrDepthReady && a_frame.nativeDirectRRRequested &&
+                RecordNativeDirectRR(a_frame) && a_frame.nativeGI.rrValid)
+                (void)RecordFSRIndependentComposition(a_frame);
         } else {
             RecordShadowTemporal(a_frame);
             if (a_frame.hybridInputsReady) {
@@ -1922,6 +2081,10 @@ namespace DX12Native
         const bool nativeHybridActive = composer.DX12HybridActive();
         // A complete DX12 Direct RR preview can replace ONLY the final
         // scene image; its raw signals and SDK contexts never go via DX11.
+        const bool fsrReady = composer.FSRIndependentActive() &&
+            a_frame.fsrIndependent && a_frame.fsrIndependentComposed &&
+            a_frame.nativeDirectRRReady && a_frame.nativeGI.rrValid &&
+            a_frame.fsrIndependentScene;
         const bool nativeDirectPreview = composer.NativeDirectRRPreviewActive() &&
             a_frame.nativeDirectRRComposed && a_frame.nativeDirectRRReady &&
             a_frame.nativeDirectRRSuccessMask == 3u &&
@@ -1929,7 +2092,7 @@ namespace DX12Native
         const auto* finalNative = composer.AdvancedActive() &&
             composer.composition.mode >= RTComposer::CompositorMode::RTEnhanced ?
             &a_frame.postHybridGI : &a_frame.nativeGI;
-        if (nativeDirectPreview ||
+        if (fsrReady || nativeDirectPreview ||
             (nativeHybridActive && finalNative->composedValid &&
              finalNative->composedScene)) {
             if (!nativeHybridResolve && nativeHybridPreviewFailure.empty()) {
@@ -1944,8 +2107,8 @@ namespace DX12Native
                 }
             }
             if (nativeHybridResolve) {
-                auto* nativeOutput = nativeDirectPreview ?
-                    a_frame.nativeDirectRRScene->srv :
+                auto* nativeOutput = fsrReady ? a_frame.fsrIndependentScene->srv :
+                    nativeDirectPreview ? a_frame.nativeDirectRRScene->srv :
                     finalNative->composedScene->srv;
                 context->CSSetShaderResources(0, 1, &nativeOutput);
                 context->CSSetUnorderedAccessViews(0, 1, &a_target, nullptr);
@@ -1962,6 +2125,7 @@ namespace DX12Native
                 ++sceneCompositeSubmissions;
                 ++nativeHybridPreviewSubmissions;
                 if (nativeDirectPreview) ++nativeDirectRRPresentedFrames;
+                if (fsrReady) ++fsrIndependentPresentedFrames;
                 if (composer.AdvancedActive()) ++advancedPresentedFrames;
                 sceneCompositeFrame = a_frame.number;
                 return;
@@ -2347,9 +2511,12 @@ namespace DX12Native
             available->nativeDirectPackValid = false;
             available->nativeDirectRRReady = false;
             available->nativeDirectRRComposed = false;
+            available->fsrIndependentComposed = false;
             available->nativeDirectRRSuccessMask = 0u;
             available->reconstructionBlurMask = requestedBlurMask;
             available->nativeGI.valid = false;
+            available->nativeGI.rrValid = false;
+            available->nativeGI.composedValid = false;
 			available->materialView = std::min(a_materialView, kCombinedDirectView);
 			available->generation = generation;
 			available->lightReference = a_lightReference;
