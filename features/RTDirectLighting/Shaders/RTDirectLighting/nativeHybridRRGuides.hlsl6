@@ -44,14 +44,21 @@ void main(uint2 logical : SV_DispatchThreadID)
     const bool depthValid = isfinite(depth) && depth > 0.001 &&
         all(isfinite(nr));
     RRDepth[logical] = depthValid ? depth : 0.0;
-    RRNormalRoughness[logical] = depthValid ? nr : float4(0, 0, 0, 0);
+    // The direct material classification is stored as integer 0..2 in
+    // the raytracer's NR alpha. AMD expects a normalized 0..1 class.
+    const float4 decodedNR = GuideReserved != 0u ?
+        float4(nr.xy, nr.z, saturate(nr.w / 3.0)) : nr;
+    RRNormalRoughness[logical] = depthValid ? decodedNR : float4(0, 0, 0, 0);
 
     // Preserve material and roughness correspondence of the actual traced
     // representative pixel. The FFX NON_GAMMA_ALBEDO flag will be used.
     const float pbrScale = LinearLighting != 0u ? 1.0 : 0.65;
     const float3 nativeDiff = NativeDiffuseAlbedo.Load(samplePoint).rgb / pbrScale;
-    const float3 diffuseAlbedo = LinearLighting != 0u ?
-        max(0.0, nativeDiff) : pow(abs(nativeDiff), 1.6);
+    // DXR Direct exports already-demodulated, linear first-bounce albedos.
+    // Raster HybridGI still follows the original encoded-albedo convention.
+    const float3 diffuseAlbedo = GuideReserved != 0u ?
+        max(0.0, NativeDiffuseAlbedo.Load(samplePoint).rgb) :
+        (LinearLighting != 0u ? max(0.0, nativeDiff) : pow(abs(nativeDiff), 1.6));
     const float3 specularAlbedo = max(0.0, NativeSpecularAlbedo.Load(samplePoint).rgb);
     RRDiffuseAlbedo[logical] = all(isfinite(diffuseAlbedo)) ?
         float4(diffuseAlbedo, 1) : 0;

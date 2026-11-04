@@ -587,11 +587,53 @@ namespace DX12Native
         }
     }
 
+    bool NativeHybridGI::RecordDirectRRGuides(ID3D12Device* device,
+        ID3D12GraphicsCommandList* list, FrameOutputs& frame,
+        uint32_t slot, uint32_t frameNumber,
+        const std::array<uint32_t, 2>& size,
+        ID3D12Resource* linearDepth, ID3D12Resource* normalRough,
+        ID3D12Resource* motion, ID3D12Resource* diffuseAlbedo,
+        ID3D12Resource* specularAlbedo)
+    {
+        if (!device || !list || slot >= 2u || size[0] < 2u ||
+            (size[0] & 1u) || !size[1]) {
+            guideFailure = "Native direct RR requires even full-resolution checkerboard width";
+            return false;
+        }
+        try {
+            frame.sampling = MakeHybridSamplingLayout(0u, true, size, frameNumber);
+            if (!frame.constants) {
+                const auto upload = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+                const auto desc = CD3DX12_RESOURCE_DESC::Buffer(kUploadBytes);
+                DX::ThrowIfFailed(device->CreateCommittedResource(&upload,
+                    D3D12_HEAP_FLAG_NONE, &desc,
+                    D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                    IID_PPV_ARGS(frame.constants.put())));
+            }
+            const auto& camera = globals::game::frameBufferCached.nonVR;
+            static_assert(sizeof(camera) <= kMaskOffset - kCameraOffset);
+            const D3D12_RANGE noRead{ 0, 0 };
+            void* mapped = nullptr;
+            DX::ThrowIfFailed(frame.constants->Map(0, &noRead, &mapped));
+            std::memcpy(static_cast<uint8_t*>(mapped) + kCameraOffset,
+                &camera, sizeof(camera));
+            frame.constants->Unmap(0, nullptr);
+            frame.valid = true;
+            return RecordRRGuides(device, list, frame, slot,
+                linearDepth, normalRough, motion, diffuseAlbedo,
+                specularAlbedo, true);
+        } catch (const std::exception& error) {
+            frame.rrGuidesValid = false;
+            guideFailure = std::string("Direct RR guide staging failed: ") + error.what();
+            return false;
+        }
+    }
+
     bool NativeHybridGI::RecordRRGuides(ID3D12Device* device,
         ID3D12GraphicsCommandList* list, FrameOutputs& frame, uint32_t slot,
         ID3D12Resource* linearDepth, ID3D12Resource* normalRough,
         ID3D12Resource* motion, ID3D12Resource* diffuseAlbedo,
-        ID3D12Resource* specularAlbedo)
+        ID3D12Resource* specularAlbedo, bool directMaterialGuides)
     {
         frame.rrGuidesValid = false;
         if (!frame.valid || !frame.constants || !device || !list || slot >= 2u ||
@@ -670,7 +712,8 @@ namespace DX12Native
                 frame.sampling.native[0], frame.sampling.native[1],
                 size[0], size[1], frame.sampling.representativePhase,
                 uint32_t(frame.sampling.spatialScale),
-                uint32_t(globals::features::linearLighting.IsLinearLightingActive()), 0u };
+                uint32_t(globals::features::linearLighting.IsLinearLightingActive()),
+                directMaterialGuides ? 1u : 0u };
             uint8_t* mapped = nullptr;
             const D3D12_RANGE noRead{ 0, 0 };
             DX::ThrowIfFailed(frame.constants->Map(0, &noRead,

@@ -85,6 +85,17 @@ namespace DX12Native
             FrameOutputs& frame, uint32_t slot,
             ID3D12Resource* linearDepth, ID3D12Resource* normalRough,
             ID3D12Resource* motion, ID3D12Resource* diffuseAlbedo,
+            ID3D12Resource* specularAlbedo,
+            bool directMaterialGuides = false);
+        // Independent full-native direct RR guide preparation: no GI raster
+        // transport, eligibility pass or CPU readback. The caller owns the
+        // frame outputs and the separate guide-builder instance.
+        bool RecordDirectRRGuides(ID3D12Device* device,
+            ID3D12GraphicsCommandList* list, FrameOutputs& frame,
+            uint32_t slot, uint32_t frameNumber,
+            const std::array<uint32_t, 2>& size,
+            ID3D12Resource* linearDepth, ID3D12Resource* normalRough,
+            ID3D12Resource* motion, ID3D12Resource* diffuseAlbedo,
             ID3D12Resource* specularAlbedo);
         const std::string& GuideFailure() const { return guideFailure; }
         uint64_t GuideDispatches() const { return guideDispatches; }
