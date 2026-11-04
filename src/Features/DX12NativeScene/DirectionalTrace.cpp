@@ -434,7 +434,7 @@ namespace DX12Native
 		commands->ResourceBarrier(uint32_t(begin.size()), begin.data());
 		commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 		++directTraceDispatches;
-		if (a_frame.directTraceMode != 0u) {
+		if (!a_frame.shadowMask && a_frame.directTraceMode != 0u) {
 			std::vector<D3D12_RESOURCE_BARRIER> barriers{
 				CD3DX12_RESOURCE_BARRIER::UAV(a_frame.output->resource.get())
 			};
@@ -680,7 +680,8 @@ namespace DX12Native
 			available->falloffParameters = {
 				std::isfinite(a_falloffParameters.x) ? std::clamp(a_falloffParameters.x, 0.1f, 64.0f) : 1.0f,
 				std::isfinite(a_falloffParameters.y) ? std::clamp(a_falloffParameters.y, 0.02f, 1.0f) : 0.1f,
-				std::isfinite(a_falloffParameters.z) ? std::clamp(a_falloffParameters.z, 0.25f, 4.0f) : 1.0f, 0.0f };
+				std::isfinite(a_falloffParameters.z) ? std::clamp(a_falloffParameters.z, 0.25f, 4.0f) : 1.0f,
+				a_shadowMask && a_falloffParameters.w >= 0.5f ? 1.0f : 0.0f };
 			available->stochasticParameters = { a_stochasticParameters.x >= 0.5f ? 1.0f : 0.0f,
 				std::isfinite(a_stochasticParameters.y) ? std::clamp(a_stochasticParameters.y, 0.0f, 8.0f) : 1.0f, 0.0f, 0.0f };
 			available->useIndirect = a_useIndirect && a_indirectRays == 0;

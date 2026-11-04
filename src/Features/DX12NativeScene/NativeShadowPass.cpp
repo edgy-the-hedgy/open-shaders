@@ -17,6 +17,11 @@ void DX12NativeScene::SanitizeShadowControls()
 	settings.ShadowLightIndex = std::min(settings.ShadowLightIndex, 31u);
 	settings.ShadowEmitterRadius = clamp(settings.ShadowEmitterRadius, 1, 0, 8);
 	settings.ShadowHistoryWeight = clamp(settings.ShadowHistoryWeight, 0.70f, 0, 0.95f);
+	settings.ShadowReachMultiplier = clamp(settings.ShadowReachMultiplier, 1, 0.1f, 64);
+	settings.ShadowFalloffFraction = clamp(settings.ShadowFalloffFraction, 0.1f, 0.02f, 1);
+	settings.ShadowFalloffExponent = clamp(settings.ShadowFalloffExponent, 1, 0.25f, 4);
+	settings.ShadowTraceResolution = std::min(settings.ShadowTraceResolution, 4u);
+	settings.ShadowNormalInfluence = std::min(settings.ShadowNormalInfluence, 2u);
 }
 
 void DX12NativeScene::DispatchNativeShadowMask(const char* stage)
@@ -91,8 +96,9 @@ void DX12NativeScene::DispatchNativeShadowMask(const char* stage)
 		return;
 	}
 	nativeShadowTrace.Dispatch(publishedScene->acceleration, size, {}, frame, uint64_t(settings.ShadowMaskBudgetMB) * 1024u * 1024u,
-		true, {}, 0u, nullptr, 0, 0, nullptr, {}, settings.ShadowAllLights, { 1, 1, 1, 1 }, false, 1.0f, false, 0, {}, 1.0f, 2u, selectedLights, 0u, 0u, 3u, false, 0.2f,
-		{ 1, 0.1f, 1, 0 }, { settings.ShadowStochastic ? 1.0f : 0.0f, settings.ShadowEmitterRadius, 0, 0 }, true);
+		true, {}, 0u, nullptr, 0, 0, nullptr, {}, settings.ShadowAllLights, { 1, 1, 1, 1 }, false, 1.0f, false, 0, {}, 1.0f, settings.ShadowNormalInfluence, selectedLights, settings.ShadowTraceResolution, 0u, 3u, false, 0.2f,
+		{ settings.ShadowReachMultiplier, settings.ShadowFalloffFraction, settings.ShadowFalloffExponent, settings.ShadowDistanceFade ? 1.0f : 0.0f },
+		{ settings.ShadowStochastic ? 1.0f : 0.0f, settings.ShadowEmitterRadius, 0, 0 }, true);
 	if (nativeShadowTrace.GetShadowMaskOutput(frame))
 		shadowMaskUnavailable.clear();
 	else {

@@ -5,14 +5,34 @@ Texture2D<float4> CurrentRays : register(t1);
 Texture2D<float4> PreviousMask : register(t2);
 RWTexture2D<float4> Resolved : register(u0);
 cbuffer Settings : register(b0) {
-    uint2 Size; uint HaveHistory, Padding;
+    uint2 Size; uint HaveHistory, TraceResolution;
     float3 Origin; float HistoryWeight;
     float3 PreviousOrigin; float DepthTolerance;
 };
+float4 ResolveCurrent(uint2 pixel)
+{
+    float4 centre = CurrentMask[pixel];
+    if (centre.g != -1 || TraceResolution == 0) return centre;
+    float3 receiver = CurrentRays[pixel].xyz * centre.b;
+    int radius = TraceResolution == 1u ? 1 : TraceResolution == 2u ? 3 : 2;
+    float best = 1e9, visibility = 1;
+    bool found = false;
+    [loop] for (int y=-radius;y<=radius;++y) [loop] for (int x=-radius;x<=radius;++x) {
+        int2 tap = int2(pixel)+int2(x,y);
+        if (any(tap < 0) || any(tap >= int2(Size))) continue;
+        float4 sampleMask = CurrentMask[tap];
+        if (sampleMask.g < 0.5 || sampleMask.a != centre.a || !all(isfinite(sampleMask))) continue;
+        float3 difference = receiver - CurrentRays[tap].xyz * sampleMask.b;
+        if (!NativeShadowReceiverMatches(dot(difference,difference),max(0.5,centre.b*0.005))) continue;
+        float pixelDistance = float(x*x+y*y);
+        if (pixelDistance < best) { best=pixelDistance; visibility=sampleMask.r; found=true; }
+    }
+    return found ? float4(visibility,1,centre.ba) : float4(1,0,0,0);
+}
 [numthreads(8,8,1)] void main(uint2 pixel : SV_DispatchThreadID)
 {
     if (any(pixel >= Size)) return;
-    float4 mask = CurrentMask[pixel];
+    float4 mask = ResolveCurrent(pixel);
     Resolved[pixel] = mask;
     if (!HaveHistory || mask.g < 0.5 || !all(isfinite(mask))) return;
     float3 world = Origin + CurrentRays[pixel].xyz * mask.b;

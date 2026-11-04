@@ -153,9 +153,12 @@ void DX12NativeScene::OnDeferredLightingComplete(ID3D11UnorderedAccessView* targ
 						settings.ShadowStrength, settings.ShadowBlend, settings.ShadowRadius, settings.ShadowReceiverTolerance, settings.ShadowPreview };
 					shadow->temporal = settings.ShadowTemporal;
 					shadow->historyWeight = settings.ShadowHistoryWeight;
+					shadow->traceResolution = settings.ShadowTraceResolution;
 					shadow->sceneRevision = mask->scene->scope.scene;
-					shadow->policy = (uint64_t(std::bit_cast<uint32_t>(settings.ShadowEmitterRadius)) << 32u) |
-						(uint64_t(settings.ShadowStochastic) << 31u) | (uint64_t(settings.ShadowAllLights) << 30u) | settings.ShadowLightIndex;
+					shadow->policy = { std::bit_cast<uint32_t>(settings.ShadowEmitterRadius), std::bit_cast<uint32_t>(settings.ShadowReachMultiplier),
+						std::bit_cast<uint32_t>(settings.ShadowFalloffFraction), std::bit_cast<uint32_t>(settings.ShadowFalloffExponent), settings.ShadowLightIndex,
+						uint32_t(settings.ShadowStochastic) | (uint32_t(settings.ShadowAllLights) << 1u) | (uint32_t(settings.ShadowDistanceFade) << 2u),
+						settings.ShadowTraceResolution, settings.ShadowNormalInfluence };
 				}
 			}
             consumed=nativeComposition.Present(*graphics,target,size,preparedTrace.GetSceneOutput(frame),

@@ -10,7 +10,7 @@
 #include "Util.h"
 #include <chrono>
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(DX12NativeScene::Settings, AcquireScene, UsePreparedScene, PreviewPreparedScene, UsePreparedMaterials, PreparedMaterialView, MaterialTextureBudgetMB, DirectLightingBudgetMB, SceneCompositionBudgetMB, NativeShadowMask, ShadowMaskBudgetMB, ShadowStrength, ShadowBlend, ShadowRadius, ShadowReceiverTolerance, ShadowPreview, ShadowAllLights, ShadowLightIndex, ShadowStochastic, ShadowEmitterRadius, ShadowTemporal, ShadowHistoryWeight, PreviewLight, PreviewAllLights, PreviewDirectStrength, PreviewDiffuseStrength, PreviewSpecularStrength, PreviewEmissionStrength, NodesPerFrame, MaxInstances, BufferBudgetMB)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(DX12NativeScene::Settings, AcquireScene, UsePreparedScene, PreviewPreparedScene, UsePreparedMaterials, PreparedMaterialView, MaterialTextureBudgetMB, DirectLightingBudgetMB, SceneCompositionBudgetMB, NativeShadowMask, ShadowMaskBudgetMB, ShadowStrength, ShadowBlend, ShadowRadius, ShadowReceiverTolerance, ShadowPreview, ShadowAllLights, ShadowLightIndex, ShadowStochastic, ShadowEmitterRadius, ShadowTemporal, ShadowHistoryWeight, ShadowReachMultiplier, ShadowFalloffFraction, ShadowFalloffExponent, ShadowDistanceFade, ShadowTraceResolution, ShadowNormalInfluence, PreviewLight, PreviewAllLights, PreviewDirectStrength, PreviewDiffuseStrength, PreviewSpecularStrength, PreviewEmissionStrength, NodesPerFrame, MaxInstances, BufferBudgetMB)
 
 std::pair<std::string, std::vector<std::string>> DX12NativeScene::GetFeatureSummary()
 {
@@ -256,6 +256,8 @@ json DX12NativeScene::GetDiagnostics()
 			{"lightModel","prepared point lights; luminance/attenuation/facing weighted visibility"},
 			{"allLights",settings.ShadowAllLights},{"lightIndex",settings.ShadowLightIndex},{"stochastic",settings.ShadowStochastic},
 			{"emitterRadiusMultiplier",settings.ShadowEmitterRadius},{"temporal",settings.ShadowTemporal},{"historyWeight",settings.ShadowHistoryWeight},
+			{"reachMultiplier",settings.ShadowReachMultiplier},{"falloffFraction",settings.ShadowFalloffFraction},{"falloffExponent",settings.ShadowFalloffExponent},
+			{"distanceFade",settings.ShadowDistanceFade},{"traceResolutionMode",settings.ShadowTraceResolution},{"normalInfluence",settings.ShadowNormalInfluence},
 			{"imageLayerStatus",shadowLayerStatus},
             {"imageConsumptionVerified",false},{"coverageScope","prepared scene only; not complete dynamic world coverage"}} },
 		{ "overlappingIndirectRequests", globals::features::redstoneGI.settings.NativeHybrid &&
@@ -331,6 +333,26 @@ void DX12NativeScene::DrawNativeSceneSettings()
 	ImGui::SliderFloat("Shadow emitter radius multiplier", &settings.ShadowEmitterRadius, 0.0f, 8.0f);
 	ImGui::Checkbox("Temporal shadow accumulation", &settings.ShadowTemporal);
 	ImGui::SliderFloat("Shadow history weight", &settings.ShadowHistoryWeight, 0.0f, 0.95f);
+	ImGui::SeparatorText("Shadow light reach / falloff");
+	ImGui::SliderFloat("Shadow light reach multiplier", &settings.ShadowReachMultiplier, 0.1f, 64.0f);
+	ImGui::SliderFloat("Shadow fade range fraction", &settings.ShadowFalloffFraction, 0.02f, 1.0f);
+	ImGui::SliderFloat("Shadow falloff curve", &settings.ShadowFalloffExponent, 0.25f, 4.0f);
+	ImGui::Checkbox("Fade shadows near light reach", &settings.ShadowDistanceFade);
+	if (ImGui::Button("Reset shadow reach / falloff")) {
+		settings.ShadowReachMultiplier = 1.0f;
+		settings.ShadowFalloffFraction = 0.1f;
+		settings.ShadowFalloffExponent = 1.0f;
+		settings.ShadowDistanceFade = false;
+	}
+	int shadowResolution = 0;
+	for (int option = 0; option < int(DX12Native::DirectionalTrace::kTraceResolutionMenuOrder.size()); ++option)
+		if (DX12Native::DirectionalTrace::kTraceResolutionMenuOrder[option] == settings.ShadowTraceResolution) shadowResolution = option;
+	if (ImGui::Combo("Shadow visibility trace resolution", &shadowResolution, DX12Native::DirectionalTrace::kTraceResolutionMenuLabels))
+		settings.ShadowTraceResolution = DX12Native::DirectionalTrace::kTraceResolutionMenuOrder[shadowResolution];
+	int shadowNormals = int(settings.ShadowNormalInfluence);
+	if (ImGui::Combo("Shadow normal influence", &shadowNormals, "Legacy flat (compatibility)\0Geometry normals\0Full material normals (True PBR)\0"))
+		settings.ShadowNormalInfluence = uint32_t(shadowNormals);
+	ImGui::TextWrapped("Reach scales prepared light influence. Fade range and curve shape its cutoff; distance fade also fades individual blocked shadows. Trace density controls visibility rays per axis, with full-resolution primary receiver guides and a separate surface-aware image resolve. All controls are independent of Direct lighting.");
 	ImGui::TextWrapped("Prepared point-light visibility is weighted by luminance, attenuation and surface facing. Unsupported lights and receivers stay unavailable. Emitter radius controls traced softness; pixel radius filters the image mask.");
     ImGui::TextWrapped("Independent shadow layer over the final image, including all lighting. Strength or blend 0 preserves the existing image. Radius softens the mask in image space; existing raster shadows remain. Direct illumination and RR settings are independent.");
     if (!shadowMaskUnavailable.empty()) ImGui::TextWrapped("RT shadow mask: %s",shadowMaskUnavailable.c_str());
@@ -391,7 +413,7 @@ void DX12NativeScene::DrawNativeSceneSettings()
 
 void DX12NativeScene::RegisterUxActions()
 {
-	FEATURE_COMMAND("setShadowLayer", "Configure the independent prepared point-light shadow layer without changing Direct illumination or RR. Optional params: strength/blend (0..1), radiusPixels (0..32), receiverTolerance (0.1..64 world units), preview (boolean), allLights (boolean), lightIndex (0..31), stochastic (boolean), emitterRadius (0..8), temporal (boolean), historyWeight (0..0.95). Strength or blend 0 bypasses image influence; preview shows filtered visibility, unmatched receivers magenta. Requires setNativeShadowMask enabled. Existing raster shadows remain.",
+	FEATURE_COMMAND("setShadowLayer", "Configure the independent point-light shadow layer. Optional params: strength/blend (0..1), radiusPixels (0..32), receiverTolerance (0.1..64), preview/allLights/stochastic/temporal/distanceFade (booleans), lightIndex (0..31), emitterRadius (0..8), historyWeight (0..0.95), reachMultiplier (0.1..64), falloffFraction (0.02..1), falloffExponent (0.25..4), traceResolution (0 full,1 half,2 quarter,3 two-thirds,4 one-third per axis), normalInfluence (0 flat,1 geometric,2 material). Sparse visibility is resolved separately from genuine raw samples. Strength or blend 0 bypasses image influence. Requires setNativeShadowMask enabled. Direct illumination, RGB signals and RR settings are independent.",
 		[](Feature* self, const json& args) {
 			auto& native = *static_cast<DX12NativeScene*>(self);
 			if (args.contains("strength")) native.settings.ShadowStrength = args.at("strength").get<float>();
@@ -405,6 +427,12 @@ void DX12NativeScene::RegisterUxActions()
 			if (args.contains("emitterRadius")) native.settings.ShadowEmitterRadius = args.at("emitterRadius").get<float>();
 			if (args.contains("temporal")) native.settings.ShadowTemporal = args.at("temporal").get<bool>();
 			if (args.contains("historyWeight")) native.settings.ShadowHistoryWeight = args.at("historyWeight").get<float>();
+			if (args.contains("reachMultiplier")) native.settings.ShadowReachMultiplier = args.at("reachMultiplier").get<float>();
+			if (args.contains("falloffFraction")) native.settings.ShadowFalloffFraction = args.at("falloffFraction").get<float>();
+			if (args.contains("falloffExponent")) native.settings.ShadowFalloffExponent = args.at("falloffExponent").get<float>();
+			if (args.contains("distanceFade")) native.settings.ShadowDistanceFade = args.at("distanceFade").get<bool>();
+			if (args.contains("traceResolution")) native.settings.ShadowTraceResolution = args.at("traceResolution").get<uint32_t>();
+			if (args.contains("normalInfluence")) native.settings.ShadowNormalInfluence = args.at("normalInfluence").get<uint32_t>();
 			native.SanitizeShadowControls();
 		});
     FEATURE_COMMAND("setNativeShadowMask", "Enable the independent early DX12 RT shadow-mask producer. Params: enabled (required boolean), budgetMB (optional integer 64..4096). Enabling requests prepared geometry. Output DX12native-shadowmask is visibility, validity, receiver ray distance and instance+1; camera rays and a completion fence feed the independent setShadowLayer controls. Producer uses no raster depth/shadow input or RR; composition uses current depth only to reject unmatched receivers.",

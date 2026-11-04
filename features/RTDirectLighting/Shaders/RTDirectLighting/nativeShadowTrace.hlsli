@@ -43,12 +43,14 @@ void TraceNativeShadow(uint2 pixel)
     float3 edge0 = mul((float3x3)surface.CommittedObjectToWorld3x4(),triSurface.position1-triSurface.position0);
     float3 edge1 = mul((float3x3)surface.CommittedObjectToWorld3x4(),triSurface.position2-triSurface.position0);
     uint normalMode = DirectNormalMode & 3u;
-    float3 normal = normalize(normalMode == 1u ? cross(edge0,edge1) : material.normal);
-    if (!all(isfinite(normal))) return;
+    float3 geometryNormal = normalize(cross(edge0,edge1));
+    float3 normal = normalMode == 1u ? geometryNormal : normalize(material.normal);
+    if (!all(isfinite(geometryNormal)) || (normalMode != 0u && !all(isfinite(normal)))) return;
     float3 position = primary.Origin + primary.Direction * distance;
     uint count = Padding.z != 0u ? Padding.z : 1u;
     if (count > MaximumDirectLights) return;
     float totalWeight = 0, visibleWeight = 0;
+    const bool traced = NativeTraceSample(pixel.x,pixel.y,DirectTraceMode,DirectStochastic.x >= 0.5,FrameIndex,0u);
     bool valid = true;
     [loop] for (uint lightIndex=0;lightIndex<count;++lightIndex) {
         uint base = lightIndex * LightSnapshotTexels;
@@ -67,17 +69,19 @@ void TraceNativeShadow(uint2 pixel)
         if (admission == 0) continue;
         float sourceRadius = max(falloff.w,MinimumDistance);
         float fade = saturate((radius-dist)/max(radius*PointLightFalloff.y,MinimumDistance));
-        float attenuation = pow(fade*fade*(3-2*fade),PointLightFalloff.z)/max(dist*dist+sourceRadius*sourceRadius,1e-4);
+        float cutoff = pow(fade*fade*(3-2*fade),PointLightFalloff.z);
+        float attenuation = cutoff/max(dist*dist+sourceRadius*sourceRadius,1e-4);
         float3 direction = delta/dist;
         float facing = normalMode == 0u ? 1 : max(0,dot(normal,direction));
         float weight = NativeShadowLightWeight(dot(max(radiance.rgb,0),float3(0.2126,0.7152,0.0722)),attenuation,facing);
         if (!isfinite(weight)) { valid=false; continue; }
         if (weight <= 0) continue;
+        if (!traced) { totalWeight += weight; continue; }
         bool visible;
         if (!TracePreparedPointVisibility(lightIndex,position,lightPosition,sourceRadius,direction,dist,pixel,0u,true,visible)) { valid=false; continue; }
         totalWeight += weight;
-        if (visible) visibleWeight += weight;
+        visibleWeight += weight * NativeShadowLightVisibility(visible,cutoff,PointLightFalloff.w >= 0.5);
     }
     if (valid && isfinite(totalWeight) && totalWeight > 1e-6)
-        Shadow[pixel]=float4(saturate(NativeShadowWeightedVisibility(visibleWeight,totalWeight)),1,distance,float(instance+1u));
+        Shadow[pixel]=float4(traced ? saturate(NativeShadowWeightedVisibility(visibleWeight,totalWeight)) : 1,NativeShadowSampleState(traced),distance,float(instance+1u));
 }

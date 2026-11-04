@@ -38,6 +38,12 @@ struct DX12NativeScene final : OverlayFeature
 		float ShadowEmitterRadius = 1.0f;
 		bool ShadowTemporal = true;
 		float ShadowHistoryWeight = 0.70f;
+		float ShadowReachMultiplier = 1.0f;
+		float ShadowFalloffFraction = 0.1f;
+		float ShadowFalloffExponent = 1.0f;
+		bool ShadowDistanceFade = false;
+		uint32_t ShadowTraceResolution = 0;
+		uint32_t ShadowNormalInfluence = 2;
 		uint32_t PreviewLight = 0;
 		bool PreviewAllLights = true;
 		float PreviewDirectStrength = 1.0f;

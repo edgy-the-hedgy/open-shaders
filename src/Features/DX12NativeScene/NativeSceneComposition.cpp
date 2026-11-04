@@ -73,7 +73,7 @@ namespace DX12Native
 		return { { "sourceHandoffs", sourceHandoffs }, { "sourceFrame", sourceFrame },
 			{ "selectedLegacyProvider", sourceSelectedProvider }, { "shadowApplication", "independent opt-in final-image layer; existing raster shadowing preserved" },
 			{ "shadowLayerSubmissions", shadowSubmissions }, { "shadowLayerUnavailable", shadowFailure },
-			{ "shadowTemporalSubmissions", shadowTemporalSubmissions }, { "shadowTemporalFailure", shadowTemporalFailure },
+			{ "shadowResolveSubmissions", shadowTemporalSubmissions }, { "shadowResolveFailure", shadowTemporalFailure },
 			{ "compositionSubmissions", submissions }, { "returnHandoffs", handoffs }, { "busyFrames", busy },
 			{ "failure", failure }, { "source", "current DX11 raster scene, existing shadowing preserved" },
 			{ "compositionBackend", "DX12" }, { "visualConsumptionVerified", false } };

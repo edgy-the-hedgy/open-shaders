@@ -35,9 +35,9 @@ The named `DX12native-shadowmask` resource is RGBA32_FLOAT:
 | Channel | Meaning |
 | --- | --- |
 | R | Weighted point-light visibility: 0 blocked, 1 visible; invalid pixels are neutral 1 |
-| G | Validity: 1 usable prepared-scene receiver/visibility, 0 unavailable |
-| B | Primary receiver ray distance; 0 when invalid |
-| A | Prepared TLAS instance index plus one; 0 when invalid |
+| G | 1 genuine current visibility sample; -1 eligible primary receiver with untraced visibility; 0 unavailable |
+| B | Primary receiver ray distance, including eligible untraced visibility pixels; 0 when unavailable |
+| A | Prepared TLAS instance index plus one; 0 when unavailable |
 
 `GetNativeShadowMask(frame)` borrows the current frame's mask, companion camera-ray
 texture, dimensions, exact camera origin, owned prepared light snapshot, retained TLAS and
@@ -69,13 +69,39 @@ or isolation of the directional lighting term.
 | `ShadowEmitterRadius` | 1 | 0..8 emitter radius multiplier, independent of pixel softening |
 | `ShadowTemporal` | true | Accumulate compatible visibility history without RR |
 | `ShadowHistoryWeight` | 0.70 | 0..0.95 history blend with current-evidence clamping |
+| `ShadowReachMultiplier` | 1 | 0.1..64 multiplier of prepared point-light influence radius |
+| `ShadowFalloffFraction` | 0.1 | 0.02..1 fraction of reach used for smooth cutoff |
+| `ShadowFalloffExponent` | 1 | 0.25..4 cutoff curve exponent |
+| `ShadowDistanceFade` | false | Also fade blocked visibility at the light's reach boundary |
+| `ShadowTraceResolution` | 0 | Full / two-thirds / half / one-third / quarter per-axis visibility sampling |
+| `ShadowNormalInfluence` | 2 | 0 flat, 1 geometric, 2 material normals |
 
 The `setShadowLayer` devbench command accepts optional `strength`, `blend`,
 `radiusPixels`, `receiverTolerance`, `preview`, `allLights`, `lightIndex`,
-`stochastic`, `emitterRadius`, `temporal` and `historyWeight` parameters. Enable the producer
+`stochastic`, `emitterRadius`, `temporal`, `historyWeight`, `reachMultiplier`,
+`falloffFraction`, `falloffExponent`, `distanceFade`, `traceResolution` and
+`normalInfluence` parameters. Trace mode IDs match Direct: 0 full, 1 half,
+2 quarter, 3 two-thirds, 4 one-third. Enable the producer
 first with `setNativeShadowMask`. Strength or blend zero, with preview off, skips
 the shadow layer entirely and preserves existing composition behavior. The layer
 also works without Direct or Hybrid GI being enabled.
+
+Reach, falloff, normals, emitter sampling and trace resolution are stored and
+dispatched independently of Direct lighting. A single light's attenuation cancels
+in normalized weighted visibility; enabling distance fade additionally blends its
+blocked visibility toward neutral using the same cutoff curve. This makes fade
+visible even with one selected light. Its default is off to preserve the accepted
+shadow behavior. RGB diffuse/specular/emission strengths and AMD RR controls
+belong to radiance signals, rather than the scalar visibility mask.
+
+Trace resolution controls actual per-light visibility rays, using the same sample
+predicate and phase policy as Direct. Full-resolution primary queries remain as
+receiver guides. Untraced visibility retains G=-1 in the raw mask, never G=1.
+The separate image resolve can fill an eligible untraced receiver only from a
+genuine current sample with matching instance and compatible world position.
+Unsupported/unlit receivers and unmatched silhouettes remain unavailable.
+This resolve runs for sparse modes even with temporal accumulation disabled.
+Raw current samples, resolved image coverage and temporal history remain distinct.
 
 Composition reads the current single-sample depth SRV into an R32 snapshot and reconstructs the
 visible world receiver using the current camera. It accepts a mask pixel only
@@ -89,11 +115,11 @@ only the layer and records the reason in `nativeFinalScene` diagnostics.
 Temporal resolution reprojects the current primary hit through the previous
 camera. It requires consecutive frames, unchanged scene and light policy,
 matching instance identity and compatible world-space receiver positions.
-Visibility history is clamped within 0.18 of current evidence, as in the original
-resolve. Invalid current pixels remain invalid; history never invents coverage.
+Visibility history is clamped within 0.18 of current image evidence, as in the original
+resolve. Invalid current receivers remain invalid; neither resolve rewrites raw trace coverage.
 Two bounded slots retain both history and camera uploads through the GPU consumer
-fence. Budget or pipeline failure falls back to current raw visibility and records
-the temporal failure, without disabling other lighting.
+fence. Budget or pipeline failure falls back to genuine current samples only and records
+`shadowResolveFailure`, without disabling other lighting.
 
 Pixel softening uses at most 25 depth/instance-guided taps. It does not blur validity,
 extend coverage across unknown receivers or change the raw shadow mask. Radius
@@ -123,9 +149,12 @@ and its shadowed-GI input coupling are not reintroduced. Direct illumination reu
 the same visibility helper with its existing sampling parameters and no added
 shadow-only source motion. Its radiance and composition policy remain unchanged.
 
-Verification on 2026-11-04: Release DLL and native DXR/composition/temporal
-shaders compiled. `CppUtilTests` passed with 573 cases passed, one existing
-directory-symlink privilege skip and 394096 successful assertions. These are
-compilation and CPU contract checks; GPU image correctness and performance
-remain for repository-owner runtime validation. No geometry schema change or
-cache regeneration is required.
+Compilation and CPU contract checks do not establish GPU image correctness or
+performance; those remain for repository-owner runtime validation. No geometry
+schema change or cache regeneration is required.
+
+Control-extension verification on 2026-11-04: Release DLL, DXR visibility and
+image-resolve shaders compiled; FXC camera preparation compiled. `CppUtilTests`
+passed with 575 cases passed, one existing directory-symlink privilege skip and
+417316 successful assertions, including fade, independent policy resets and all
+five sparse sampling modes across stochastic phases.

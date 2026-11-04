@@ -296,3 +296,33 @@ TEST_CASE("Local shadow visibility follows contributing light energy", "[NativeS
     REQUIRE_FALSE(NativeShadowHistoryCompatible(11,10,2,2,3,4));
     REQUIRE_FALSE(NativeShadowHistoryCompatible(0,UINT32_MAX,2,2,3,3));
 }
+
+TEST_CASE("Shadow fade preserves visibility and fades blocked contributions", "[NativeShadow]")
+{
+    for (float cutoff : {0.0f,0.25f,0.75f,1.0f}) {
+        REQUIRE(NativeShadowLightVisibility(true,cutoff,true)==1);
+        REQUIRE(NativeShadowLightVisibility(false,cutoff,false)==0);
+        REQUIRE(NativeShadowLightVisibility(false,cutoff,true)==1-cutoff);
+    }
+    const std::array<uint32_t,8> policy{};
+    for (size_t field=0;field<policy.size();++field) {
+        auto changed=policy;
+        changed[field]=1;
+        REQUIRE_FALSE(NativeShadowHistoryCompatible(2,1,3,3,policy,changed));
+    }
+}
+
+TEST_CASE("Sparse shadow validity marks only genuine visibility samples active", "[NativeShadow]")
+{
+    const std::array expected{144u,36u,9u,64u,16u};
+    for (uint32_t mode=0;mode<expected.size();++mode) for (bool stochastic : {false,true}) for (uint32_t phase=0;phase<16;++phase) {
+        uint32_t active=0;
+        for (uint32_t y=0;y<12;++y) for (uint32_t x=0;x<12;++x) {
+            const bool sampled=NativeTraceSample(x,y,mode,stochastic,phase,0);
+            const auto state=NativeShadowSampleState(sampled);
+            REQUIRE((state>0)==sampled);
+            if (state>0) ++active;
+        }
+        REQUIRE(active==expected[mode]);
+    }
+}

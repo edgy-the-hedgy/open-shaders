@@ -15,7 +15,9 @@ namespace DX12Native
 		bool preview = false;
 		bool temporal = true;
 		float historyWeight = 0.70f;
-		uint64_t sceneRevision = 0, policy = 0;
+		uint32_t traceResolution = 0;
+		uint64_t sceneRevision = 0;
+		std::array<uint32_t, 8> policy{};
 	};
 	/** @brief Owns the final scene handoff and GPU composition, without selecting producer policy. */
 	class NativeSceneComposition
@@ -53,7 +55,8 @@ namespace DX12Native
 			std::shared_ptr<const void> shadowBindings;
 			std::array<float, 3> shadowOrigin{};
 			uint32_t shadowFrame = UINT32_MAX;
-			uint64_t shadowRevision = 0, shadowPolicy = 0;
+			uint64_t shadowRevision = 0;
+			std::array<uint32_t, 8> shadowPolicy{};
 			uint64_t shadowConsumer = 0;
 			uint32_t shadowPreviousSlot = 2;
 			std::unique_ptr<ConstantBuffer> legacySettings, legacyCamera;

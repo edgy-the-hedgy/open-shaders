@@ -5,8 +5,9 @@
 namespace DX12Native
 {
 	/** @brief Admits history only from the previous frame with identical scene and shadow policy. */
+	template <class Policy>
 	constexpr bool NativeShadowHistoryCompatible(uint32_t frame, uint32_t previous, uint64_t scene, uint64_t previousScene,
-		uint64_t policy, uint64_t previousPolicy)
+		const Policy& policy, const Policy& previousPolicy)
 	{
 		return frame > previous && frame - previous == 1u && scene == previousScene && policy == previousPolicy;
 	}

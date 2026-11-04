@@ -44,6 +44,14 @@ SHADOW_CONSTEXPR float NativeShadowHistoryValue(float current, float previous, f
     const float clamped = previous < low ? low : previous > high ? high : previous;
     return current + (clamped - current) * weight;
 }
+SHADOW_CONSTEXPR float NativeShadowLightVisibility(bool visible, float cutoff, bool fade)
+{
+    return visible ? 1.0f : fade ? 1.0f - cutoff : 0.0f;
+}
+SHADOW_CONSTEXPR float NativeShadowSampleState(bool traced)
+{
+    return traced ? 1.0f : -1.0f;
+}
 #ifdef __cplusplus
 }
 #endif
