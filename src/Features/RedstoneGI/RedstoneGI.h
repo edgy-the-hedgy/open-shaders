@@ -132,6 +132,9 @@ struct RedstoneGI final : OverlayFeature
 	{
 		bool NativeHybrid = false;
 		uint32_t NativeBudgetMB = 256;
+		bool NativeCheckerboard = false;
+		bool NativeRadianceClamp = false;
+		float NativeRadianceThreshold = 65504.0f;
 		bool EnableVanillaSSAO = false;
 		bool EnableAdaptiveSampling = true;
 		float MinScreenRadius = 0.01f;

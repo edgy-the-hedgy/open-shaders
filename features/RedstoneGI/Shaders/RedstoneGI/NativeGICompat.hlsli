@@ -4,12 +4,13 @@
 #include "Common/GBuffer.hlsli"
 #include "Common/FrameBuffer.hlsli"
 #include "Common/ReverseZ.hlsli"
+#include "RedstoneGI/NativeSignalGrid.hlsli"
 cbuffer NativeLighting : register(b5)
 {
     float4 NativeCameraData;
     uint NativeEnableLinearLighting;
     uint NativeEnableACEScg;
-    uint NativeRasterSourceEncoded;
+    uint NativeAdaptiveSampling;
     uint NativeLightingPadding;
 }
 namespace Color

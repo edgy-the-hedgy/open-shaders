@@ -15,6 +15,7 @@ if(REDSTONE_DXC)
             -Fo "${_redstone_directional}"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/RTDirectLighting/Shaders/RTDirectLighting/directional.hlsl6"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/features/RTDirectLighting/Shaders/RTDirectLighting/directional.hlsl6"
+            "${CMAKE_CURRENT_SOURCE_DIR}/package/Shaders/Common/NativeTraceSampling.hlsli"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/RTDirectLighting/Shaders/RTDirectLighting/materials.hlsli"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/RTDirectLighting/Shaders/RTDirectLighting/directLighting.hlsli"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/RTDirectLighting/Shaders/RTDirectLighting/indirectLighting.hlsli"

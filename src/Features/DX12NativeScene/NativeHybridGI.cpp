@@ -21,10 +21,11 @@ namespace DX12Native
         constexpr uint64_t kAOSettingsOffset = 768;
         constexpr uint64_t kLightingOffset = 1024;
         constexpr uint64_t kCameraOffset = 1280;
+        constexpr uint64_t kSamplingOffset = 2304;
         struct NativeLightingCB
         {
             float4 camera;
-            uint32_t linear, aces, padding[2]{};
+            uint32_t linear, aces, adaptive, padding = 0;
         };
         DXGI_FORMAT OutputFormat(uint32_t index)
         {
@@ -80,12 +81,12 @@ namespace DX12Native
             D3D12_DESCRIPTOR_RANGE ranges[2]{};
             ranges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 7, 0, 0, 0 };
             ranges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 3, 0, 0, 0 };
-            D3D12_ROOT_PARAMETER params[6]{};
+            D3D12_ROOT_PARAMETER params[7]{};
             for (uint32_t i = 0; i < 2; ++i) {
                 params[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
                 params[i].DescriptorTable = { 1, &ranges[i] };
             }
-            constexpr std::array<uint32_t, 4> registers{ 1, 2, 5, 12 };
+            constexpr std::array<uint32_t, 5> registers{ 1, 2, 5, 12, 13 };
             for (uint32_t i = 0; i < registers.size(); ++i) {
                 params[i + 2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
                 params[i + 2].Descriptor = { registers[i], 0 };
@@ -98,7 +99,7 @@ namespace DX12Native
                 samplers[i].MaxLOD = D3D12_FLOAT32_MAX;
                 samplers[i].ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
             }
-            const D3D12_ROOT_SIGNATURE_DESC desc{ 6, params, 2, samplers, D3D12_ROOT_SIGNATURE_FLAG_NONE };
+            const D3D12_ROOT_SIGNATURE_DESC desc{ 7, params, 2, samplers, D3D12_ROOT_SIGNATURE_FLAG_NONE };
             winrt::com_ptr<ID3DBlob> serialized, errors;
             DX::ThrowIfFailed(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1,
                 serialized.put(), errors.put()));
@@ -140,7 +141,7 @@ namespace DX12Native
             const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
             for (uint32_t i = 0; i < kOutputs; ++i) {
                 if (frame.textures[i]) continue;
-                auto desc = CD3DX12_RESOURCE_DESC::Tex2D(OutputFormat(i), size[0], size[1], 1, 1, 1, 0,
+                auto desc = CD3DX12_RESOURCE_DESC::Tex2D(OutputFormat(i), frame.grid.packed[0], frame.grid.packed[1], 1, 1, 1, 0,
                     D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
                 DX::ThrowIfFailed(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
                     D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(frame.textures[i].put())));
@@ -152,15 +153,18 @@ namespace DX12Native
                     D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(frame.constants.put())));
             }
             auto nativeGI = settings.GetNativeGISettings(size, frameNumber);
+            nativeGI.RRCheckerboardEnabled = frame.grid.checkerboard;
+            nativeGI.RRCheckerboardOrigin = frame.grid.origin;
+            nativeGI.MinScreenRadius = settings.settings.MinScreenRadius * float(frame.grid.logical[0]);
             auto nativeAO = settings.GetNativeOcclusionSettings();
             const NativeLightingCB light{ Util::GetCameraData(),
                 uint32_t(globals::features::linearLighting.IsLinearLightingActive()),
-                globals::features::linearLighting.settings.enableACEScg };
+                globals::features::linearLighting.settings.enableACEScg, uint32_t(settings.settings.EnableAdaptiveSampling) };
             const auto& camera = globals::game::frameBufferCached.nonVR;
             if (sizeof(nativeGI) > kAOSettingsOffset ||
                 sizeof(nativeAO) > kLightingOffset - kAOSettingsOffset ||
                 sizeof(light) > kCameraOffset - kLightingOffset ||
-                sizeof(camera) > kUploadBytes - kCameraOffset)
+                sizeof(camera) > kSamplingOffset - kCameraOffset)
                 throw std::runtime_error("Native HybridGI constant-buffer layout exceeded");
             uint8_t* mapped = nullptr;
             const D3D12_RANGE noRead{ 0, 0 };
@@ -169,6 +173,10 @@ namespace DX12Native
             std::memcpy(mapped + kAOSettingsOffset, &nativeAO, sizeof(nativeAO));
             std::memcpy(mapped + kLightingOffset, &light, sizeof(light));
             std::memcpy(mapped + kCameraOffset, &camera, sizeof(camera));
+            struct Sampling { std::array<uint32_t, 2> logical, packed; uint32_t checkerboard, origin, clamp; float threshold; };
+            const Sampling sampling{ frame.grid.logical, frame.grid.packed, uint32_t(frame.grid.checkerboard),
+                frame.grid.origin, uint32_t(settings.settings.NativeRadianceClamp), settings.settings.NativeRadianceThreshold };
+            std::memcpy(mapped + kSamplingOffset, &sampling, sizeof(sampling));
             frame.constants->Unmap(0, nullptr);
 
             const UINT step = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -218,6 +226,7 @@ namespace DX12Native
             list->SetComputeRootConstantBufferView(3, base + kAOSettingsOffset);
             list->SetComputeRootConstantBufferView(4, base + kLightingOffset);
             list->SetComputeRootConstantBufferView(5, base + kCameraOffset);
+            list->SetComputeRootConstantBufferView(6, base + kSamplingOffset);
             for (uint32_t pass = 0; pass < 2; ++pass) {
                 list->SetPipelineState(pipelines[pass].get());
                 auto gpu = descriptors->GetGPUDescriptorHandleForHeapStart();
@@ -225,7 +234,7 @@ namespace DX12Native
                 list->SetComputeRootDescriptorTable(0, gpu);
                 gpu.ptr += 7 * step;
                 list->SetComputeRootDescriptorTable(1, gpu);
-                list->Dispatch((size[0] + 7u) / 8u, (size[1] + 7u) / 8u, 1);
+                list->Dispatch((frame.grid.packed[0] + 7u) / 8u, (frame.grid.packed[1] + 7u) / 8u, 1);
                 if (pass == 0) ++giDispatches;
                 else ++aoDispatches;
             }

@@ -1,9 +1,11 @@
 #include "NativeHybridGI.h"
 #include "Features/RedstoneGI/RedstoneGI.h"
+#include "Features/RTIndirectLighting/RTIndirectLighting.h"
 #include "Deferred.h"
 #include "Globals.h"
 #include "GpuPass.h"
 #include "Util.h"
+#include "State.h"
 
 namespace DX12Native
 {
@@ -29,6 +31,13 @@ namespace DX12Native
     {
         CS_GPU_PASS("RedstoneGI::NativeSnapshot");
         auto* context = backend.d3d11Context.get();
+        std::array<winrt::com_ptr<ID3D11Buffer>, 4> priorBuffers;
+        constexpr std::array slots{ 5u, 6u, 12u, 13u };
+        for (uint32_t i = 0; i < slots.size(); ++i) context->CSGetConstantBuffers(slots[i], 1, priorBuffers[i].put());
+        frame.camera->Update(globals::game::frameBufferCached.nonVR);
+        globals::state->BindSharedDataCS(context);
+        auto* camera = frame.camera->CB();
+        context->CSSetConstantBuffers(12, 1, &camera);
         auto targets = globals::game::renderer->GetRuntimeData().renderTargets;
         ID3D11ShaderResourceView* reads[]{ Util::GetCurrentSceneDepthSRV(),
             Util::AsReal(targets[NORMALROUGHNESS].SRV),
@@ -50,6 +59,10 @@ namespace DX12Native
         context->CSSetUnorderedAccessViews(0, 5, writes, nullptr);
         cb = nullptr;
         context->CSSetConstantBuffers(13, 1, &cb);
+        for (uint32_t i = 0; i < slots.size(); ++i) {
+            auto* prior = priorBuffers[i].get();
+            context->CSSetConstantBuffers(slots[i], 1, &prior);
+        }
     }
 
     void NativeHybridGI::Dispatch(const GraphicsBackend& graphics, const std::array<uint32_t, 2>& size,
@@ -77,7 +90,11 @@ namespace DX12Native
                 if (!prepareInputs) throw std::runtime_error("Native GI snapshot shader unavailable");
             }
             auto& frame = *available;
-            if (frame.size != size) frame = {};
+            const auto requestedResolution = globals::features::rtIndirectLighting.settings.HybridResolution;
+            const auto resolution = requestedResolution == 3u ? RayRegeneration::GetSettings().resolutionMode : requestedResolution;
+            const auto grid = MakeSignalGrid(size, resolution, settings.settings.NativeCheckerboard, frameNumber);
+            if (frame.size != size || frame.outputs.grid.logical != grid.logical || frame.outputs.grid.packed != grid.packed) frame = {};
+            frame.outputs.grid = grid;
             if (!frame.allocator) {
                 const uint64_t budget = uint64_t(settings.settings.NativeBudgetMB) * 1024 * 1024;
                 const uint64_t outputs = EstimateBytes(backend.d3d12Device.get(), size[0], size[1]);
@@ -100,6 +117,7 @@ namespace DX12Native
                     frame.allocator.get(), nullptr, IID_PPV_ARGS(frame.commands.put())));
                 DX::ThrowIfFailed(frame.commands->Close());
                 frame.snapshotSettings = std::make_unique<ConstantBuffer>(ConstantBufferDesc<float4>(), "RedstoneGI::NativeSnapshotSettings");
+                frame.camera = std::make_unique<ConstantBuffer>(ConstantBufferDesc<globals::FrameBuffer>(), "RedstoneGI::NativeCamera");
                 frame.size = size;
             }
             PrepareInputs(frame, settings);
@@ -125,7 +143,11 @@ namespace DX12Native
 
     json NativeHybridGI::GetDiagnostics() const
     {
+        const auto& grid = frames[0].outputs.grid;
         return { { "requests", requests }, { "submissions", submissions }, { "completions", completions },
+            { "nativeSize", grid.native }, { "logicalSize", grid.logical }, { "packedSize", grid.packed },
+            { "checkerboard", grid.checkerboard }, { "origin", grid.origin },
+            { "samplesPerRecordedDispatch", uint64_t(grid.packed[0]) * grid.packed[1] },
             { "giDispatchesRecorded", giDispatches }, { "aoDispatchesRecorded", aoDispatches },
             { "busyFrames", busyFrames }, { "failure", failure }, { "requiresPreparedScene", false },
             { "requiresDirect", false }, { "requiresRR", false }, { "sceneConsumed", false } };

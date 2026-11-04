@@ -56,6 +56,10 @@ float EstimateOcclusion(Surface surface, float roughness, bool specular)
 }
 [numthreads(8,8,1)] void main(uint2 pixel : SV_DispatchThreadID)
 {
+#if defined(DX12_HYBRID_GI)
+ if (any(pixel >= NativePackedSize)) return;
+ pixel = NativeLogicalPixel(pixel);
+#endif
  if (any(pixel >= uint2(OUT_FRAME_DIM))) return;
  if (RRCheckerboardEnabled && ((pixel.x + pixel.y) & 1u) != RRCheckerboardOrigin) return;
  float diffuse = 1, specular = 1;

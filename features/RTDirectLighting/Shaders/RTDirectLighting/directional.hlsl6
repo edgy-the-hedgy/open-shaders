@@ -42,6 +42,7 @@ cbuffer Trace : register(b0)
 #include "materials.hlsli"
 #include "directLighting.hlsli"
 #include "indirectLighting.hlsli"
+#include "Common/NativeTraceSampling.hlsli"
 
 uint Hash(uint value)
 {
@@ -142,7 +143,7 @@ void main(uint3 id : SV_DispatchThreadID)
 		IndirectSpecular[id.xy] = float4(0, 0, 0, -2);
 	}
 	const uint mode = TracePass == 1u ? IndirectTraceMode : DirectTraceMode;
-	if (any(TraceAnchor(id.xy, mode, TracePass == 1u || TracePass == 3u ? 0x51b349d5u : 0u) != id.xy)) {
+	if (!NativeTraceSample(id.x, id.y, mode, DirectStochastic.x >= 0.5f, FrameIndex, TracePass == 1u || TracePass == 3u ? 0x51b349d5u : 0u)) {
 		if (TracePass == 0u) Shadow[id.xy] = Unavailable(MismatchedDepth);
 		return;
 	}

@@ -92,7 +92,10 @@ Surface BuildSurface(uint2 pixel, float depth, float3 normal)
 	result.screenRadius = max(MinScreenRadius, EffectRadius / max(viewPixelWidth, 1e-6));
 	result.minimumSample = 1.3 / result.screenRadius;
 	result.adaptiveScale = 1;
-#ifdef ADAPTIVE_SAMPLING
+#if defined(ADAPTIVE_SAMPLING) || defined(DX12_HYBRID_GI)
+#if defined(DX12_HYBRID_GI)
+	if (NativeAdaptiveSampling != 0u) {
+#endif
 	const int2 offsets[4] = { int2(-1,0), int2(1,0), int2(0,-1), int2(0,1) };
 	float depthVariance = 0;
 	float normalVariance = 0;
@@ -105,6 +108,9 @@ Surface BuildSurface(uint2 pixel, float depth, float3 normal)
 	}
 	float variance = saturate(depthVariance * 6.0 + normalVariance * 2.0);
 	result.adaptiveScale = min(lerp(1.0, 0.45, GetDepthFade(depth)), lerp(0.55, 1.0, variance));
+#if defined(DX12_HYBRID_GI)
+	}
+#endif
 #endif
 	return result;
 }
@@ -167,7 +173,11 @@ float3 SampleEmission(SurfaceSample surfaceSample)
 	float3 normal = GBuffer::DecodeNormal(srcNormalRoughness.Load(int3(surfaceSample.nativePixel, 0)).xy);
 	if (dot(surfaceSample.position, normal) > 0) normal = -normal;
 	float facing = max(0, -dot(normal, surfaceSample.direction));
+#if defined(DX12_HYBRID_GI)
+	float3 radiance = srcRadiance.Load(int3(surfaceSample.nativePixel, 0));
+#else
 	float3 radiance = srcRadiance.Load(int3(surfaceSample.signalPixel, 0));
+#endif
 	return all(isfinite(radiance)) ? max(0, radiance) * facing : 0;
 }
 float DistanceCompensation(float distance)

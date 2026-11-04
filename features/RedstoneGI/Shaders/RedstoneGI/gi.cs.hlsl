@@ -45,7 +45,9 @@ float4 EstimateDiffuse(Surface surface)
 	 }
 	}
 	radiance *= (1.0 - GetDepthFade(surface.depth)) / DiffuseSlices;
+#if !defined(DX12_HYBRID_GI)
 	radiance = lerp(Color::RGBToLuminance(radiance).xxx, radiance, GISaturation);
+#endif
 	return float4(max(radiance, 0), hitWeight > 1e-6 ? hitDistance / hitWeight : -1.0);
 }
 #include "RedstoneGI/SpecularWeights.hlsli"
@@ -91,6 +93,10 @@ float4 EstimateSpecular(Surface surface, float roughness, bool traceRadiance)
 }
 [numthreads(8,8,1)] void main(uint2 pixel : SV_DispatchThreadID)
 {
+#if defined(DX12_HYBRID_GI)
+	if (any(pixel >= NativePackedSize)) return;
+	pixel = NativeLogicalPixel(pixel);
+#endif
 	if (any(pixel >= uint2(OUT_FRAME_DIM))) return;
 	if (RRCheckerboardEnabled && ((pixel.x + pixel.y) & 1u) != RRCheckerboardOrigin) return;
 	uint2 surfacePixel = SelectSurfacePixel(srcWorkingDepth, pixel);
@@ -99,7 +105,7 @@ float4 EstimateSpecular(Surface surface, float roughness, bool traceRadiance)
 	float4 specular = float4(0,0,0,-1);
 	float4 nr = srcNormalRoughness.Load(int3(surfacePixel, 0));
 #if defined(DX12_HYBRID_GI)
-	outReceiverEligibility[pixel] = isfinite(depth) && depth > FP_Z && depth < DepthFadeRange.y && all(isfinite(nr)) ? 1u : 0u;
+	outReceiverEligibility[uint2(RRCheckerboardEnabled ? pixel.x >> 1u : pixel.x, pixel.y)] = isfinite(depth) && depth > FP_Z && depth < DepthFadeRange.y && all(isfinite(nr)) ? 1u : 0u;
 #endif
 	if (isfinite(depth) && depth > FP_Z && depth < DepthFadeRange.y) {
 #ifdef REVERSE_Z
@@ -117,7 +123,12 @@ float4 EstimateSpecular(Surface surface, float roughness, bool traceRadiance)
 	 diffuse.rgb *= diffuseFactor;
 	 specular.rgb *= specularFactor;
 	 uint2 signalPixel = uint2(RRCheckerboardEnabled ? pixel.x >> 1u : pixel.x, pixel.y);
+#if defined(DX12_HYBRID_GI)
+	 outDiffuse[signalPixel] = ValidateNativeRadiance(diffuse);
+	 outSpecular[signalPixel] = ValidateNativeRadiance(specular);
+#else
 	 outDiffuse[signalPixel] = all(isfinite(diffuse)) ? diffuse : float4(0,0,0,-1);
 	 outSpecular[signalPixel] = all(isfinite(specular)) ? specular : float4(0,0,0,-1);
+#endif
 	}
 }

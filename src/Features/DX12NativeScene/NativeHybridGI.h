@@ -2,6 +2,7 @@
 #include "GraphicsInterop.h"
 #include "GraphicsBackend.h"
 #include "Buffer.h"
+#include "SignalGrid.h"
 #include <array>
 #include <cstdint>
 #include <string>
@@ -28,6 +29,7 @@ namespace DX12Native
         {
             std::array<winrt::com_ptr<ID3D12Resource>, kOutputs> textures{};
             winrt::com_ptr<ID3D12Resource> constants;
+            SignalGrid grid;
             bool valid = false;
         };
         /** @brief Checks the two required native estimator binaries. */
@@ -49,6 +51,7 @@ namespace DX12Native
             winrt::com_ptr<ID3D12CommandAllocator> allocator;
             winrt::com_ptr<ID3D12GraphicsCommandList> commands;
             std::unique_ptr<ConstantBuffer> snapshotSettings;
+            std::unique_ptr<ConstantBuffer> camera;
             std::array<uint32_t, 2> size{};
             uint64_t fence = 0;
         };

@@ -246,8 +246,7 @@ float4 EvaluateDirectLighting(uint instance, uint primitive, float2 barycentric,
 	float3 result = mode == DirectDiffuseView ? diffuseSum : mode == DirectSpecularView ? specularSum : diffuseSum + specularSum + material.emission * LightingStrengths.w;
 	if (!all(isfinite(result)) || any(result < 0)) return Unavailable(InvalidSurface);
 	if (ExportDirectSignals != 0) {
-		float3 emission = material.emission * LightingStrengths.w;
-		if (any(diffuseSum > MaximumHalfRadiance) || any(specularSum > MaximumHalfRadiance) || any(emission > MaximumHalfRadiance)) return Unavailable(InvalidSurface);
+		float3 emission = min(material.emission * LightingStrengths.w, MaximumHalfRadiance);
 		// The SDK expects demodulated first-bounce radiance. Albedo remains
 		// separately available for RR and is applied once, after reconstruction.
 		const float3 diffuseAlbedo = saturate((1.0 - material.metallic) * material.baseColor);

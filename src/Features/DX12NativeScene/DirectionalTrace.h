@@ -82,6 +82,7 @@ namespace DX12Native
 			std::shared_ptr<const Bindings> bindings;
 			std::unique_ptr<WrappedResource> receivers, output, light;
 			std::array<std::unique_ptr<WrappedResource>, kDirectSignalCount> directSignals;
+			std::array<winrt::com_ptr<ID3D12Resource>, kDirectSignalCount> rawSignals;
 			winrt::com_ptr<ID3D12RootSignature> root;
 			winrt::com_ptr<ID3D12PipelineState> pipeline;
 			winrt::com_ptr<ID3D12CommandAllocator> allocator;
@@ -120,6 +121,7 @@ namespace DX12Native
 		static uint64_t BindingBytes(const GraphicsBackend& a_backend, const TopLevel& a_scene);
 		void PrepareReceivers(Frame& a_frame, const std::array<uint32_t, 2>& a_nativeSize, const LightLimitFixData::LightView& a_lights, ID3D11ShaderResourceView* a_roomMetadata);
 		void Record(Frame& a_frame, const float3& a_direction, bool a_localLight);
+		void CaptureRawSignals(Frame& a_frame, uint32_t a_first, uint32_t a_count);
 		void Consume(Frame& a_frame);
 		void CompositeScene(Frame& a_frame, ID3D11UnorderedAccessView* a_target);
 		/** @brief Reconstructs the current separated direct signals using matching RT material guides. */
@@ -186,6 +188,7 @@ namespace DX12Native
 		uint64_t unavailableLightFrames = 0;
 		uint64_t directSubmissions = 0, sceneCompositeSubmissions = 0;
 		uint64_t directTraceDispatches = 0, indirectTraceDispatches = 0;
+		uint64_t rawDirectCaptures = 0, rawIndirectCaptures = 0;
 		uint32_t sceneCompositeFrame = 0;
 		std::string failure;
 	};

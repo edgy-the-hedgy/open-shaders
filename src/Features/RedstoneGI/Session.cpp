@@ -106,11 +106,18 @@ json RedstoneGI::GetRedstoneStatus() const
 
 void RedstoneGI::RegisterUxActions()
 {
-	FEATURE_COMMAND("setNativeHybrid", "Enable independent native DX12 GI/AO production. Params: enabled (required boolean), budgetMB (optional 64..4096). No Direct DXR, prepared scene or RR requirement. Does not select or disable other producers; scene consumption is reported separately by DX12NativeScene diagnostics.",
+	FEATURE_COMMAND("setNativeHybrid", "Enable independent native DX12 GI/AO production. Params: enabled (required boolean), budgetMB (optional 64..4096), checkerboard (optional boolean), clampRadiance (optional boolean), radianceThreshold (optional finite 0..65504). No Direct DXR, prepared scene or RR requirement. Hybrid resolution remains owned by RTIndirectLighting. Other producers remain requested; scene consumption is reported separately by DX12NativeScene diagnostics.",
 		[](Feature* self, const json& args) {
 			auto& gi = *static_cast<RedstoneGI*>(self);
 			gi.settings.NativeHybrid = args.at("enabled").get<bool>();
 			if (args.contains("budgetMB")) gi.settings.NativeBudgetMB = std::clamp(args.at("budgetMB").get<uint32_t>(), 64u, 4096u);
+			if (args.contains("checkerboard")) gi.settings.NativeCheckerboard = args.at("checkerboard").get<bool>();
+			if (args.contains("clampRadiance")) gi.settings.NativeRadianceClamp = args.at("clampRadiance").get<bool>();
+			if (args.contains("radianceThreshold")) {
+				const float threshold = args.at("radianceThreshold").get<float>();
+				if (!std::isfinite(threshold)) throw std::invalid_argument("radianceThreshold must be finite");
+				gi.settings.NativeRadianceThreshold = std::clamp(threshold, 0.0f, 65504.0f);
+			}
 		});
 	FEATURE_QUERY("redstoneStatus",
 		"Return cached FSR-Redstone startup gates, independent RGI settings, engine context capacity, active RR dispatch size, independent IL and occlusion RR signals, packed occlusion layout, checkerboard layout and compositor consumption. Runtime flags RROutputOnly and RRInputsOnly select mutually exclusive previews; setRedstoneDebugView selects combined/diffuse/specular/diffuseAO/specularOcclusion/combinedOcclusion/allSignals/geometryDepth and inputs/outputs. Geometry depth shows native working depth with fixed zero white, frame-maximum black and invalid pixels red, independent of RR success. IL previews apply scene gains and display exposure; occlusion previews show raw grayscale visibility without gains. Params: none.",

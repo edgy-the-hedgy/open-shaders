@@ -43,7 +43,13 @@ cbuffer RedstoneGISettings : register(b1)
 SamplerState samplerPointClamp : register(s0);
 SamplerState samplerLinearClamp : register(s1);
 #define FP_Z 18.0
-#ifdef HALF_RES
+#if defined(DX12_HYBRID_GI)
+	#define RES_MIP 0
+	#define READ_DEPTH(tex, px) tex.Load(int3(SelectSurfacePixel(tex, px), 0))
+	#define FULLRES_LOAD(tex, px, uv, samp) tex.SampleLevel(samp, uv, 0)
+	#define OUT_FRAME_DIM float2(NativeLogicalSize)
+	#define RCP_OUT_FRAME_DIM (1.0 / OUT_FRAME_DIM)
+#elif defined(HALF_RES)
 	#define RES_MIP 1
 	#define READ_DEPTH(tex, px) tex.Load(int3(SelectSurfacePixel(tex, px), 0))
 	#define FULLRES_LOAD(tex, px, uv, samp) tex.SampleLevel(samp, uv, 0)

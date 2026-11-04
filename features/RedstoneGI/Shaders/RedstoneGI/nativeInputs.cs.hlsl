@@ -1,3 +1,6 @@
+#ifndef CSHADER
+#define CSHADER
+#endif
 #include "Common/Color.hlsli"
 #include "Common/ReverseZ.hlsli"
 Texture2D<float> SceneDepth : register(t0);

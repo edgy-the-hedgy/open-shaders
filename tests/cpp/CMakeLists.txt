@@ -57,6 +57,7 @@ set(screenshot_test_sources
 )
 
 add_executable(cpp_tests
+    test_signal_grid.cpp
     test_main.cpp
     test_antilag2.cpp
     ${screenshot_test_sources}

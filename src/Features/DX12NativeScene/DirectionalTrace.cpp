@@ -395,7 +395,7 @@ namespace DX12Native
 			float4 stochasticParameters;
 		};
 		const auto& origin = globals::game::frameBufferCached.GetCameraPosAdjust();
-		const Constants constants{ a_frame.size[0], a_frame.size[1], a_frame.number, uint32_t(a_frame.scene->bottoms.size()), a_direction, kRayMaximum, { origin.x, origin.y, origin.z }, kRayMinimum, a_localLight ? 0.0f : kSunAngularRadius, { a_localLight ? 1u : 0u, a_frame.materialView, a_frame.allPreparedLights ? uint32_t(a_frame.lightIdentities.size()) : 0u }, a_frame.strengths, (a_frame.useDirectRR || a_frame.indirectRays) ? 1u : 0u, { 0u, a_frame.directTraceMode, a_frame.indirectTraceMode }, { a_frame.indirectRays, a_frame.bindings->materials->roomCount, a_frame.bindings->materials->roomsKnown ? 1u : 0u, a_frame.normalMode | a_frame.rrMaterialPolicy }, a_frame.falloffParameters, a_frame.stochasticParameters };
+		const Constants constants{ a_frame.size[0], a_frame.size[1], a_frame.number, uint32_t(a_frame.scene->bottoms.size()), a_direction, kRayMaximum, { origin.x, origin.y, origin.z }, kRayMinimum, a_localLight ? 0.0f : kSunAngularRadius, { a_localLight ? 1u : 0u, a_frame.materialView, a_frame.allPreparedLights ? uint32_t(a_frame.lightIdentities.size()) : 0u }, a_frame.strengths, a_frame.materialView >= kFirstDirectView ? 1u : 0u, { 0u, a_frame.directTraceMode, a_frame.indirectTraceMode }, { a_frame.indirectRays, a_frame.bindings->materials->roomCount, a_frame.bindings->materials->roomsKnown ? 1u : 0u, a_frame.normalMode | a_frame.rrMaterialPolicy }, a_frame.falloffParameters, a_frame.stochasticParameters };
 		static_assert(sizeof(Constants) == 36 * sizeof(uint32_t));
 		commands->SetComputeRoot32BitConstants(5, 36, &constants, 0);
 		std::vector<D3D12_RESOURCE_BARRIER> begin{
@@ -407,6 +407,7 @@ namespace DX12Native
 		commands->ResourceBarrier(uint32_t(begin.size()), begin.data());
 		commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 		++directTraceDispatches;
+		if (constants.exportSignals) CaptureRawSignals(a_frame, 0, 5);
 		if (a_frame.directTraceMode != 0u) {
 			std::vector<D3D12_RESOURCE_BARRIER> barriers{
 				CD3DX12_RESOURCE_BARRIER::UAV(a_frame.output->resource.get())
@@ -433,6 +434,7 @@ namespace DX12Native
 			commands->SetComputeRoot32BitConstants(5, 36, &indirectConstants, 0);
 			commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 			++indirectTraceDispatches;
+			CaptureRawSignals(a_frame, 5, 2);
 			if (a_frame.indirectTraceMode != 0u) {
 				std::array<D3D12_RESOURCE_BARRIER, 2> resolveOrder{
 					CD3DX12_RESOURCE_BARRIER::UAV(a_frame.directSignals[5]->resource.get()),
@@ -647,7 +649,7 @@ namespace DX12Native
 		const auto lightBytes = backend.d3d12Device->GetResourceAllocationInfo(0, 1, &lightDesc).SizeInBytes;
 		const auto nextPreviewBytes = backend.d3d12Device->GetResourceAllocationInfo(0, 1, &previewDesc).SizeInBytes;
 		if (textureBytes == UINT64_MAX || lightBytes == UINT64_MAX || nextPreviewBytes == UINT64_MAX) { failure = "Directional texture allocation unsupported"; return; }
-		const uint64_t signalBytes = (directRR || a_indirectRays) ? nextPreviewBytes * kDirectSignalCount : 0;
+		const uint64_t signalBytes = direct ? nextPreviewBytes * (kDirectSignalCount + 5u + (a_indirectRays ? 2u : 0u)) : 0;
 		const uint64_t rrInteropReserve = directRR ? uint64_t(std::max(1u, size[0] >> effectiveRRMode)) * std::max(1u, size[1] >> effectiveRRMode) * 256 + kFrameOverheadBytes : 0;
 		const uint64_t required = (reuse ? 0 : textureBytes * 2 + lightBytes + signalBytes + kFrameOverheadBytes) + (a_sceneTarget ? 0 : nextPreviewBytes) + bindingBytes + rrInteropReserve;
 		const uint64_t retainedBytes = ResidentBytes() - (reuse ? 0 : available->bytes);
@@ -723,7 +725,7 @@ namespace DX12Native
 			desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
 			if (!available->receivers) available->receivers = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RTDirectLighting::Receivers");
 			if (!available->output) available->output = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RTDirectLighting::BlockerDistance");
-			if (directRR || a_indirectRays) {
+			if (direct) {
 				desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
 				static constexpr std::array names{ "RTDirectLighting::DirectDiffuse", "RTDirectLighting::DirectSpecular", "RTDirectLighting::DirectNormalRoughness", "RTDirectLighting::DirectSpecularAlbedo", "RTDirectLighting::DirectDiffuseAlbedo", "RTDirectLighting::IndirectDiffuse", "RTDirectLighting::IndirectSpecular" };
 				for (uint32_t i = 0; i < kDirectSignalCount; ++i)
@@ -784,6 +786,7 @@ namespace DX12Native
 			{ "lightMode", localLightMode ? "prepared-static" : "directional" },
 			{ "allPreparedLights", allPreparedLights }, { "requestedLightCount", requestedLightCount }, { "maximumDirectLights", kMaximumDirectLights }, { "lightSelectionFailure", lightSelectionFailure },
 			{ "directSubmissions", directSubmissions }, { "directTraceDispatches", directTraceDispatches }, { "indirectTraceDispatches", indirectTraceDispatches }, { "sceneCompositeSubmissions", sceneCompositeSubmissions }, { "sceneCompositeFrame", sceneCompositeFrame },
+			{ "rawDirectCaptures", rawDirectCaptures }, { "rawIndirectCaptures", rawIndirectCaptures },
 			{ "directScope", "selected light or complete bounded prepared point-light set; supported depth-matched PBR surfaces; per-light diffuse/specular, emission once; no native CPU bypass" },
 			{ "sourceLightCount", sourceLightCount }, { "sourceLightFrame", sourceLightFrame }, { "unavailableLightFrames", unavailableLightFrames },
 			{ "bindingCreations", bindingCreations }, { "bindingDeferrals", bindingDeferrals }, { "cachedSceneBindings", bool(cachedBindings) },
