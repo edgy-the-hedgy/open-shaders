@@ -212,6 +212,15 @@ json RTComposer::GetDiagnostics()
             { "shadowInfluence", composition.fsrHybrid.shadowInfluence }
         } },
         { "fsrLegacyHybridPrototype", LegacyHybridPrototypeActive() },
+        { "fsrDirectRawPackShaderPackaged", true },
+        { "fsrDirectRawPackDispatchWired", false },
+        { "fsrNativeDirectRRContextsReady", false },
+        { "fsrEnhancedSecondBounceWired", false },
+        { "fsrHybridIndependentDispatchWired", false },
+        { "fsrBlockingReason", IsFSRRenderer() &&
+            !LegacyHybridPrototypeActive() ?
+            "Native direct raw checkerboard scheduling, AMD direct RR contexts and final composition are not wired; safe Shadow Only remains authoritative" :
+            "" },
         { "requestedMode", IsOpenRT() ? ModeName(composition.mode) :
             FSRModeName(composition.fsrRRMode) },
         { "internalExecutionMode", ModeName(composition.mode) },
@@ -786,7 +795,7 @@ void RTComposer::DrawSettings()
             }
             ImGui::EndCombo();
         }
-        ImGui::TextWrapped("FSR-RR raw Direct and two-bounce transport is under construction. The selected request is saved independently. Production uses safe Shadow Only until these native DX12 RR providers are ready.");
+        ImGui::TextWrapped("FSR-RR native Direct/Indirect transport is still under construction. The raw Direct checkerboard pack shader is packaged, but is not dispatched or handed to AMD yet. The new Direct RR contexts, two-bounce transport and final composition are pending. Selected requests remain saved; safe Shadow Only is active.");
         if (composition.fsrRRMode == FSRRRMode::HybridIllumination) {
             ImGui::SeparatorText("HybridGI baseline settings (FSR-specific)");
             int res = static_cast<int>(composition.fsrHybrid.resolution);

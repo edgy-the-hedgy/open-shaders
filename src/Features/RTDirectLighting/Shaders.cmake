@@ -152,7 +152,7 @@ if(REDSTONE_DXC)
             -Fo "${_rt_direct_rr_pack}"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/RTDirectLighting/Shaders/RTDirectLighting/nativeDirectRRPack.hlsl6"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/features/RTDirectLighting/Shaders/RTDirectLighting/nativeDirectRRPack.hlsl6"
-    )
+        VERBATIM)
     set(_rt_advanced_pack "${REDSTONE_DXIL_DIRECTORY}/nativeAdvancedPack.dxil")
     add_custom_command(OUTPUT "${_rt_advanced_pack}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${REDSTONE_DXIL_DIRECTORY}"
