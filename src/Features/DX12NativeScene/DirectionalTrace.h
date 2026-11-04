@@ -26,8 +26,9 @@ namespace DX12Native
 			NativeSceneOutput gpu;
 			std::shared_ptr<const TopLevel> scene;
 			std::array<uint32_t, 2> size;
-			float3 cameraOrigin, lightDirection;
+			float3 cameraOrigin;
 			uint32_t frame;
+			std::vector<PreparedPointLight> lights;
 		};
 		// Persisted sampling modes: 0=full, 1=half, 2=quarter, 3=two-thirds, 4=one-third.
 		// The menu lists them by decreasing quality without renumbering saved settings.
@@ -132,7 +133,7 @@ namespace DX12Native
 		std::vector<PreparedPointLight> preparedLights;
 			bool allPreparedLights = false;
 			float4 strengths{ 1, 1, 1, 1 };
-			float3 traceLight{}, traceOrigin{};
+			float3 traceOrigin{};
 			float4 falloffParameters{ 1.0f, 0.1f, 1.0f, 0.0f };
 			float4 stochasticParameters{ 0.0f, 1.0f, 0.0f, 0.0f };
 			bool useIndirect = true, useDirectRR = false;

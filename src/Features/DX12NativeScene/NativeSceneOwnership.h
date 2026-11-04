@@ -4,6 +4,12 @@
 
 namespace DX12Native
 {
+	/** @brief Admits history only from the previous frame with identical scene and shadow policy. */
+	constexpr bool NativeShadowHistoryCompatible(uint32_t frame, uint32_t previous, uint64_t scene, uint64_t previousScene,
+		uint64_t policy, uint64_t previousPolicy)
+	{
+		return frame > previous && frame - previous == 1u && scene == previousScene && policy == previousPolicy;
+	}
 	/** @brief Requires completion of both queues and all borrowed consumers before slot reuse. */
 	constexpr bool NativeSceneReusable(bool borrowed, uint64_t complete, uint64_t required,
 		uint64_t consumerComplete, uint64_t consumerRequired)

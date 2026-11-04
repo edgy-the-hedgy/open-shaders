@@ -29,6 +29,21 @@ SHADOW_CONSTEXPR bool NativeShadowReceiverMatches(float errorSquared, float tole
 {
     return errorSquared >= 0.0f && errorSquared <= tolerance * tolerance;
 }
+SHADOW_CONSTEXPR float NativeShadowLightWeight(float luminance, float attenuation, float facing)
+{
+    return luminance * attenuation * facing;
+}
+SHADOW_CONSTEXPR float NativeShadowWeightedVisibility(float visibleWeight, float totalWeight)
+{
+    return totalWeight > 1e-6f ? visibleWeight / totalWeight : 1.0f;
+}
+SHADOW_CONSTEXPR float NativeShadowHistoryValue(float current, float previous, float weight)
+{
+    const float low = current > 0.18f ? current - 0.18f : 0.0f;
+    const float high = current < 0.82f ? current + 0.18f : 1.0f;
+    const float clamped = previous < low ? low : previous > high ? high : previous;
+    return current + (clamped - current) * weight;
+}
 #ifdef __cplusplus
 }
 #endif

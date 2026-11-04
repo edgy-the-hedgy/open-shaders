@@ -10,7 +10,7 @@
 #include "Util.h"
 #include <chrono>
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(DX12NativeScene::Settings, AcquireScene, UsePreparedScene, PreviewPreparedScene, UsePreparedMaterials, PreparedMaterialView, MaterialTextureBudgetMB, DirectLightingBudgetMB, SceneCompositionBudgetMB, NativeShadowMask, ShadowMaskBudgetMB, ShadowStrength, ShadowBlend, ShadowRadius, ShadowReceiverTolerance, ShadowPreview, PreviewLight, PreviewAllLights, PreviewDirectStrength, PreviewDiffuseStrength, PreviewSpecularStrength, PreviewEmissionStrength, NodesPerFrame, MaxInstances, BufferBudgetMB)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(DX12NativeScene::Settings, AcquireScene, UsePreparedScene, PreviewPreparedScene, UsePreparedMaterials, PreparedMaterialView, MaterialTextureBudgetMB, DirectLightingBudgetMB, SceneCompositionBudgetMB, NativeShadowMask, ShadowMaskBudgetMB, ShadowStrength, ShadowBlend, ShadowRadius, ShadowReceiverTolerance, ShadowPreview, ShadowAllLights, ShadowLightIndex, ShadowStochastic, ShadowEmitterRadius, ShadowTemporal, ShadowHistoryWeight, PreviewLight, PreviewAllLights, PreviewDirectStrength, PreviewDiffuseStrength, PreviewSpecularStrength, PreviewEmissionStrength, NodesPerFrame, MaxInstances, BufferBudgetMB)
 
 std::pair<std::string, std::vector<std::string>> DX12NativeScene::GetFeatureSummary()
 {
@@ -253,6 +253,9 @@ json DX12NativeScene::GetDiagnostics()
             {"dispatchStage",shadowMaskStage},{"unavailableReason",shadowMaskUnavailable},{"producer",shadowProducer},
             {"rasterInputs",false},{"rrRequired",false},{"strength",settings.ShadowStrength},{"blend",settings.ShadowBlend},
             {"radiusPixels",settings.ShadowRadius},{"receiverTolerance",settings.ShadowReceiverTolerance},{"preview",settings.ShadowPreview},
+			{"lightModel","prepared point lights; luminance/attenuation/facing weighted visibility"},
+			{"allLights",settings.ShadowAllLights},{"lightIndex",settings.ShadowLightIndex},{"stochastic",settings.ShadowStochastic},
+			{"emitterRadiusMultiplier",settings.ShadowEmitterRadius},{"temporal",settings.ShadowTemporal},{"historyWeight",settings.ShadowHistoryWeight},
 			{"imageLayerStatus",shadowLayerStatus},
             {"imageConsumptionVerified",false},{"coverageScope","prepared scene only; not complete dynamic world coverage"}} },
 		{ "overlappingIndirectRequests", globals::features::redstoneGI.settings.NativeHybrid &&
@@ -319,6 +322,16 @@ void DX12NativeScene::DrawNativeSceneSettings()
     ImGui::SliderFloat("Shadow softening radius (pixels)", &settings.ShadowRadius, 0.0f, 32.0f);
     ImGui::SliderFloat("Shadow receiver tolerance (world units)", &settings.ShadowReceiverTolerance, 0.1f, 64.0f);
     ImGui::Checkbox("Preview independent shadow mask", &settings.ShadowPreview);
+	ImGui::Checkbox("Shadow all prepared point lights", &settings.ShadowAllLights);
+	if (!settings.ShadowAllLights) {
+		int shadowLight = int(settings.ShadowLightIndex);
+		if (ImGui::SliderInt("Shadow point light index", &shadowLight, 0, 31)) settings.ShadowLightIndex = uint32_t(shadowLight);
+	}
+	ImGui::Checkbox("Stochastic shadow emitter sampling", &settings.ShadowStochastic);
+	ImGui::SliderFloat("Shadow emitter radius multiplier", &settings.ShadowEmitterRadius, 0.0f, 8.0f);
+	ImGui::Checkbox("Temporal shadow accumulation", &settings.ShadowTemporal);
+	ImGui::SliderFloat("Shadow history weight", &settings.ShadowHistoryWeight, 0.0f, 0.95f);
+	ImGui::TextWrapped("Prepared point-light visibility is weighted by luminance, attenuation and surface facing. Unsupported lights and receivers stay unavailable. Emitter radius controls traced softness; pixel radius filters the image mask.");
     ImGui::TextWrapped("Independent shadow layer over the final image, including all lighting. Strength or blend 0 preserves the existing image. Radius softens the mask in image space; existing raster shadows remain. Direct illumination and RR settings are independent.");
     if (!shadowMaskUnavailable.empty()) ImGui::TextWrapped("RT shadow mask: %s",shadowMaskUnavailable.c_str());
 	if (!shadowLayerStatus.empty()) ImGui::TextWrapped("Shadow image layer: %s", shadowLayerStatus.c_str());
@@ -378,7 +391,7 @@ void DX12NativeScene::DrawNativeSceneSettings()
 
 void DX12NativeScene::RegisterUxActions()
 {
-	FEATURE_COMMAND("setShadowLayer", "Configure the independent final-image shadow layer without changing Direct illumination or RR. Optional params: strength and blend (0..1), radiusPixels (0..32 image-space softening), receiverTolerance (0.1..64 world units), preview (boolean). Strength or blend 0 bypasses image influence; preview shows filtered visibility, with unmatched receivers magenta. Requires setNativeShadowMask enabled. Existing raster shadows remain.",
+	FEATURE_COMMAND("setShadowLayer", "Configure the independent prepared point-light shadow layer without changing Direct illumination or RR. Optional params: strength/blend (0..1), radiusPixels (0..32), receiverTolerance (0.1..64 world units), preview (boolean), allLights (boolean), lightIndex (0..31), stochastic (boolean), emitterRadius (0..8), temporal (boolean), historyWeight (0..0.95). Strength or blend 0 bypasses image influence; preview shows filtered visibility, unmatched receivers magenta. Requires setNativeShadowMask enabled. Existing raster shadows remain.",
 		[](Feature* self, const json& args) {
 			auto& native = *static_cast<DX12NativeScene*>(self);
 			if (args.contains("strength")) native.settings.ShadowStrength = args.at("strength").get<float>();
@@ -386,6 +399,12 @@ void DX12NativeScene::RegisterUxActions()
 			if (args.contains("radiusPixels")) native.settings.ShadowRadius = args.at("radiusPixels").get<float>();
 			if (args.contains("receiverTolerance")) native.settings.ShadowReceiverTolerance = args.at("receiverTolerance").get<float>();
 			if (args.contains("preview")) native.settings.ShadowPreview = args.at("preview").get<bool>();
+			if (args.contains("allLights")) native.settings.ShadowAllLights = args.at("allLights").get<bool>();
+			if (args.contains("lightIndex")) native.settings.ShadowLightIndex = args.at("lightIndex").get<uint32_t>();
+			if (args.contains("stochastic")) native.settings.ShadowStochastic = args.at("stochastic").get<bool>();
+			if (args.contains("emitterRadius")) native.settings.ShadowEmitterRadius = args.at("emitterRadius").get<float>();
+			if (args.contains("temporal")) native.settings.ShadowTemporal = args.at("temporal").get<bool>();
+			if (args.contains("historyWeight")) native.settings.ShadowHistoryWeight = args.at("historyWeight").get<float>();
 			native.SanitizeShadowControls();
 		});
     FEATURE_COMMAND("setNativeShadowMask", "Enable the independent early DX12 RT shadow-mask producer. Params: enabled (required boolean), budgetMB (optional integer 64..4096). Enabling requests prepared geometry. Output DX12native-shadowmask is visibility, validity, receiver ray distance and instance+1; camera rays and a completion fence feed the independent setShadowLayer controls. Producer uses no raster depth/shadow input or RR; composition uses current depth only to reject unmatched receivers.",

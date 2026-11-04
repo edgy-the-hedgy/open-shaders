@@ -420,8 +420,9 @@ namespace DX12Native
 			origin.y += inverseView._24;
 			origin.z += inverseView._34;
 		}
-		const Constants constants{ a_frame.size[0], a_frame.size[1], a_frame.number, uint32_t(a_frame.scene->bottoms.size()), a_direction, kRayMaximum, { origin.x, origin.y, origin.z }, kRayMinimum, a_frame.shadowMask || a_localLight ? 0.0f : kSunAngularRadius, { a_localLight ? 1u : 0u, a_frame.materialView, a_frame.allPreparedLights ? uint32_t(a_frame.lightIdentities.size()) : 0u }, a_frame.strengths, a_frame.materialView >= kFirstDirectView ? 1u : 0u, { a_frame.shadowMask ? NativeShadowTracePass : 0u, a_frame.directTraceMode, a_frame.indirectTraceMode }, { a_frame.indirectRays, a_frame.bindings->materials->roomCount, a_frame.bindings->materials->roomsKnown ? 1u : 0u, a_frame.normalMode | a_frame.rrMaterialPolicy }, a_frame.falloffParameters, a_frame.stochasticParameters };
-		a_frame.traceLight = a_direction; a_frame.traceOrigin = {origin.x,origin.y,origin.z};
+		const auto lightCount = a_frame.shadowMask ? a_frame.preparedLights.size() : a_frame.lightIdentities.size();
+		const Constants constants{ a_frame.size[0], a_frame.size[1], a_frame.number, uint32_t(a_frame.scene->bottoms.size()), a_direction, kRayMaximum, { origin.x, origin.y, origin.z }, kRayMinimum, a_frame.shadowMask || a_localLight ? 0.0f : kSunAngularRadius, { a_localLight ? 1u : 0u, a_frame.materialView, a_frame.allPreparedLights ? uint32_t(lightCount) : 0u }, a_frame.strengths, a_frame.materialView >= kFirstDirectView ? 1u : 0u, { a_frame.shadowMask ? NativeShadowTracePass : 0u, a_frame.directTraceMode, a_frame.indirectTraceMode }, { a_frame.indirectRays, a_frame.bindings->materials->roomCount, a_frame.bindings->materials->roomsKnown ? 1u : 0u, a_frame.normalMode | a_frame.rrMaterialPolicy }, a_frame.falloffParameters, a_frame.stochasticParameters };
+		a_frame.traceOrigin = {origin.x,origin.y,origin.z};
         static_assert(sizeof(Constants) == 36 * sizeof(uint32_t));
 		commands->SetComputeRoot32BitConstants(5, 36, &constants, 0);
 		std::vector<D3D12_RESOURCE_BARRIER> begin{
@@ -556,7 +557,7 @@ namespace DX12Native
     {
         for (const auto& frame : frames) if (frame.shadowMask && frame.awaitingScene && frame.fence && frame.number==frameNumber && frame.generation==generation)
             return ShadowMaskOutput{NativeSceneOutput{frame.output->resource.get(),frame.receivers->resource.get(),completion.fence12.get(),frame.fence},
-                frame.scene,frame.size,frame.traceOrigin,frame.traceLight,frame.number};
+                frame.scene,frame.size,frame.traceOrigin,frame.number,frame.preparedLights};
         return std::nullopt;
     }
     std::optional<NativeSceneOutput> DirectionalTrace::GetSceneOutput(uint32_t frameNumber) const
@@ -589,7 +590,7 @@ namespace DX12Native
 		CS_GPU_PASS("RTDirectLighting::DirectionalDispatch");
 		const bool direct = !a_shadowMask && a_materialView >= kFirstDirectView;
 		lightSelectionFailure.clear();
-		if (a_allPreparedLights && (!direct || a_preparedLights.empty() || a_preparedLights.size() > kMaximumDirectLights)) {
+		if (a_allPreparedLights && ((!direct && !a_shadowMask) || a_preparedLights.empty() || a_preparedLights.size() > kMaximumDirectLights)) {
 			lightSelectionFailure = "All-prepared-light mode requires 1..32 prepared lights and a direct-light view";
 			previewValid = false;
 			return;

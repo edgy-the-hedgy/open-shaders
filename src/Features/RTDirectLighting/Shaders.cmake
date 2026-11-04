@@ -18,6 +18,8 @@ if(REDSTONE_DXC)
             "${CMAKE_CURRENT_SOURCE_DIR}/package/Shaders/Common/NativeTraceSampling.hlsli"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/RTDirectLighting/Shaders/RTDirectLighting/materials.hlsli"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/RTDirectLighting/Shaders/RTDirectLighting/directLighting.hlsli"
+            "${CMAKE_CURRENT_SOURCE_DIR}/features/RTDirectLighting/Shaders/RTDirectLighting/nativeShadowTrace.hlsli"
+            "${CMAKE_CURRENT_SOURCE_DIR}/package/Shaders/Common/NativeShadowMask.hlsli"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/RTDirectLighting/Shaders/RTDirectLighting/indirectLighting.hlsli"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/RTDirectLighting/Shaders/RTDirectLighting/directContract.hlsli"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/Light Limit Fix/Shaders/LightLimitFix/Attenuation.hlsli"
@@ -64,7 +66,7 @@ if(REDSTONE_DXC)
             ${_native_hybrid_dependencies}
         VERBATIM)
     list(APPEND _native_hybrid_files "${_native_signal_preparation}")
-    foreach(_native_composition IN ITEMS nativeDirectCompose nativeHybridCompose nativeSceneCompose)
+    foreach(_native_composition IN ITEMS nativeDirectCompose nativeHybridCompose nativeSceneCompose nativeShadowResolve)
         set(_native_composition_file "${REDSTONE_DXIL_DIRECTORY}/${_native_composition}.dxil")
         add_custom_command(OUTPUT "${_native_composition_file}"
             COMMAND ${CMAKE_COMMAND} -E make_directory "${REDSTONE_DXIL_DIRECTORY}"

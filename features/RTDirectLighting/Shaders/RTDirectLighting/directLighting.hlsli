@@ -47,6 +47,38 @@ bool TraceDirectVisibility(float3 origin, float3 direction, float distance, out 
 	return valid;
 }
 
+bool TracePreparedPointVisibility(uint lightIndex, float3 position, float3 lightPosition,
+    float sourceRadius, float3 l, float lightDistance, uint2 pixel, uint sampleIndex, bool shadowMotion, out bool visible)
+{
+    float3 target = lightPosition;
+    if (DirectStochastic.x >= 0.5f && DirectStochastic.y > 0.0f) {
+        const float emitterRadius = min(sourceRadius * DirectStochastic.y, lightDistance * 0.5f);
+        if (emitterRadius > 0.0f) {
+            const uint seed = DirectVisibilityHash(pixel.x * 0x9e3779b9u ^
+                pixel.y * 0x85ebca6bu ^ FrameIndex * 0xc2b2ae35u ^
+                lightIndex * 0x27d4eb2fu ^ sampleIndex * 0x165667b1u);
+            const uint r0 = DirectVisibilityHash(seed ^ 0x68bc21ebu);
+            const uint r1 = DirectVisibilityHash(seed ^ 0x02e5be93u);
+            const float2 u = (float2(r0 >> 8u, r1 >> 8u) + 0.5f) / 16777216.0f;
+            const float angle = u.y * 6.28318530718f;
+            const float spread = emitterRadius * sqrt(u.x);
+            const float3 tangent = normalize(cross(abs(l.z) < 0.9f ?
+                float3(0, 0, 1) : float3(0, 1, 0), l));
+            const float3 bitangent = cross(l, tangent);
+            target += spread * (cos(angle) * tangent + sin(angle) * bitangent);
+        }
+        if (shadowMotion) {
+            const float amplitude = min(sourceRadius * 0.0075f, lightDistance * 0.0005f);
+            const float3 tangent = normalize(cross(abs(l.z) < 0.9f ? float3(0,0,1) : float3(0,1,0),l));
+            const float phase = float(FrameIndex) * 0.025f + float(lightIndex) * 2.39996323f;
+            target += amplitude * (sin(phase) * tangent + cos(phase * 0.733f) * cross(l,tangent));
+        }
+    }
+    float3 origin = position + l * MinimumDistance;
+    float3 shadowVector = target - origin;
+    return TraceDirectVisibility(origin,normalize(shadowVector),length(shadowVector),visible);
+}
+
 // Normal mode 0 preserves the shipped flat response. Modes 1 and 2 reuse
 // True PBR GGX/Schlick/Smith and Fresnel-weighted diffuse. Ray bias stays unchanged.
 bool EvaluatePointLight(
@@ -135,40 +167,9 @@ bool EvaluatePointLight(
     if (attenuation <= 0)
         return true;
 
-    // Preserve the inverse-square center-light estimator and BRDF direction.
-    // Randomize only visibility across a receiver-facing emitter disk, estimating
-    // a fractional visibility (soft shadow) without random brightness scaling.
-    float3 target = lightPosition;
-    if (DirectStochastic.x >= 0.5f && DirectStochastic.y > 0.0f) {
-        const float emitterRadius = min(sourceRadius * DirectStochastic.y, lightDistance * 0.5f);
-        if (emitterRadius > 0.0f) {
-            const uint seed = DirectVisibilityHash(pixel.x * 0x9e3779b9u ^
-                pixel.y * 0x85ebca6bu ^ FrameIndex * 0xc2b2ae35u ^
-                lightIndex * 0x27d4eb2fu ^ sampleIndex * 0x165667b1u);
-            const uint r0 = DirectVisibilityHash(seed ^ 0x68bc21ebu);
-            const uint r1 = DirectVisibilityHash(seed ^ 0x02e5be93u);
-            const float2 u = (float2(r0 >> 8u, r1 >> 8u) + 0.5f) / 16777216.0f;
-            const float angle = u.y * 6.28318530718f;
-            const float spread = emitterRadius * sqrt(u.x);
-            const float3 tangent = normalize(cross(abs(l.z) < 0.9f ?
-                float3(0, 0, 1) : float3(0, 1, 0), l));
-            const float3 bitangent = cross(l, tangent);
-            target += spread * (cos(angle) * tangent + sin(angle) * bitangent);
-        }
-    }
-    // Offset toward the light instead of the surface normal; the ray terminates
-    // at the sampled emitter point, not behind it.
-    float3 origin = position + l * MinimumDistance;
-    float3 shadowVector = target - origin;
-
     bool visible;
-
-    if (!TraceDirectVisibility(
-        origin,
-        normalize(shadowVector),
-        length(shadowVector),
-        visible))
-    {
+    if (!TracePreparedPointVisibility(lightIndex, position, lightPosition, sourceRadius, l,
+        lightDistance, pixel, sampleIndex, false, visible)) {
         unavailable = Unavailable(InvalidSurface);
         return false;
     }

@@ -275,3 +275,24 @@ TEST_CASE("Independent shadow image layer preserves bypass and receiver boundari
     REQUIRE(original==5);
     REQUIRE(original*NativeShadowFactor(0,0.5f,1)==2.5f);
 }
+
+TEST_CASE("Local shadow visibility follows contributing light energy", "[NativeShadow]")
+{
+    const float bright = NativeShadowLightWeight(4,0.5f,1);
+    const float dim = NativeShadowLightWeight(1,0.5f,1);
+    REQUIRE(NativeShadowWeightedVisibility(bright,bright+dim)==0.8f);
+    REQUIRE(NativeShadowWeightedVisibility(dim,bright+dim)==0.2f);
+    REQUIRE(NativeShadowWeightedVisibility(0,bright+dim)==0);
+    REQUIRE(NativeShadowWeightedVisibility(bright+dim,bright+dim)==1);
+    REQUIRE(NativeShadowWeightedVisibility(0,0)==1);
+    REQUIRE(NativeShadowLightWeight(100,1,0)==0);
+    REQUIRE(NativeShadowLightWeight(100,0,1)==0);
+    REQUIRE(NativeShadowHistoryValue(0,1,0.7f)<0.13f);
+    REQUIRE(NativeShadowHistoryValue(1,0,0.7f)>0.87f);
+    REQUIRE(NativeShadowHistoryValue(0.5f,0.6f,0)==0.5f);
+    REQUIRE(NativeShadowHistoryCompatible(11,10,2,2,3,3));
+    REQUIRE_FALSE(NativeShadowHistoryCompatible(12,10,2,2,3,3));
+    REQUIRE_FALSE(NativeShadowHistoryCompatible(11,10,2,1,3,3));
+    REQUIRE_FALSE(NativeShadowHistoryCompatible(11,10,2,2,3,4));
+    REQUIRE_FALSE(NativeShadowHistoryCompatible(0,UINT32_MAX,2,2,3,3));
+}

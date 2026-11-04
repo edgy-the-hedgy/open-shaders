@@ -14,6 +14,9 @@ void DX12NativeScene::SanitizeShadowControls()
 	settings.ShadowBlend = clamp(settings.ShadowBlend, 1, 0, 1);
 	settings.ShadowRadius = clamp(settings.ShadowRadius, 0, 0, 32);
 	settings.ShadowReceiverTolerance = clamp(settings.ShadowReceiverTolerance, 2, 0.1f, 64);
+	settings.ShadowLightIndex = std::min(settings.ShadowLightIndex, 31u);
+	settings.ShadowEmitterRadius = clamp(settings.ShadowEmitterRadius, 1, 0, 8);
+	settings.ShadowHistoryWeight = clamp(settings.ShadowHistoryWeight, 0.70f, 0, 0.95f);
 }
 
 void DX12NativeScene::DispatchNativeShadowMask(const char* stage)
@@ -40,6 +43,25 @@ void DX12NativeScene::DispatchNativeShadowMask(const char* stage)
 		shadowMaskUnavailable = "Current-frame camera snapshot not ready at this early stage";
 		return;
 	}
+	const auto& projection = globals::game::frameBufferCached.nonVR.CameraProj;
+	if (!std::isfinite(projection._44) || std::abs(projection._44) > 1e-5f) {
+		shadowMaskUnavailable = "Waiting for the main perspective camera; orthographic shadow cameras are not receivers";
+		return;
+	}
+	const auto* worldCamera = RE::Main::WorldRootCamera();
+	if (!worldCamera) { shadowMaskUnavailable = "Main world camera unavailable"; return; }
+	const auto& inverseView = globals::game::frameBufferCached.nonVR.CameraViewInverse;
+	const auto& adjustment = globals::game::frameBufferCached.GetCameraPosAdjust();
+	const auto& worldOrigin = worldCamera->world.translate;
+	const float dx = adjustment.x + inverseView._14 - worldOrigin.x;
+	const float dy = adjustment.y + inverseView._24 - worldOrigin.y;
+	const float dz = adjustment.z + inverseView._34 - worldOrigin.z;
+	constexpr float kCameraOriginToleranceSquared = 0.25f;
+	const float errorSquared = dx*dx + dy*dy + dz*dz;
+	if (!std::isfinite(errorSquared) || errorSquared > kCameraOriginToleranceSquared) {
+		shadowMaskUnavailable = "Cached perspective camera is not the current main world camera; waiting for its upload";
+		return;
+	}
 	const auto publishedScene = GetPublishedScene();
 	if (!publishedScene) {
 		shadowMaskUnavailable = "Current prepared scene/TLAS unavailable";
@@ -50,30 +72,27 @@ void DX12NativeScene::DispatchNativeShadowMask(const char* stage)
 		shadowMaskUnavailable = "Native DX12 backend unavailable";
 		return;
 	}
-	auto* node = globals::game::smState ? globals::game::smState->shadowSceneNode[0] : nullptr;
-	auto* sun = node ? node->GetRuntimeData().sunLight : nullptr;
-	auto* light = sun ? skyrim_cast<RE::NiDirectionalLight*>(sun->light.get()) : nullptr;
-	if (!light) {
-		shadowMaskUnavailable = "Current directional light unavailable";
+	const auto& prepared = publishedScene->cell->nativeLights;
+	if (prepared.empty() || (settings.ShadowAllLights && prepared.size() > 32) ||
+		(!settings.ShadowAllLights && settings.ShadowLightIndex >= prepared.size())) {
+		shadowMaskUnavailable = std::format("Prepared shadow light selection unavailable: {} lights, all={}, selected={}; maximum 32", prepared.size(), settings.ShadowAllLights, settings.ShadowLightIndex);
 		return;
 	}
-	const auto direction = light->GetWorldDirection();
-	const float lengthSquared = direction.x * direction.x + direction.y * direction.y + direction.z * direction.z;
-	if (!std::isfinite(lengthSquared) || lengthSquared <= 1e-8f) {
-		shadowMaskUnavailable = "Invalid directional light snapshot";
+	const auto selectedLights = settings.ShadowAllLights ? std::span<const DX12Native::PreparedPointLight>(prepared) :
+		std::span<const DX12Native::PreparedPointLight>(prepared).subspan(settings.ShadowLightIndex, 1);
+	if (std::ranges::none_of(selectedLights, [](const auto& light) { return light.supported; })) {
+		shadowMaskUnavailable = "No eligible prepared static point lights in the shadow selection";
 		return;
 	}
-	const float inverse = 1.0f / std::sqrt(lengthSquared);
-	const float3 toLight{ -direction.x * inverse, -direction.y * inverse, -direction.z * inverse };
 	const auto dynamicSize = Util::ConvertToDynamic(globals::state->screenSize);
 	const std::array<uint32_t, 2> size{ uint32_t(dynamicSize.x), uint32_t(dynamicSize.y) };
 	if (!nativeShadowTrace.Initialize(*graphics, true)) {
 		shadowMaskUnavailable = nativeShadowTrace.GetDiagnostics().value("failure", std::string("Shadow pipeline unavailable"));
 		return;
 	}
-	nativeShadowTrace.Dispatch(publishedScene->acceleration, size, toLight, frame, uint64_t(settings.ShadowMaskBudgetMB) * 1024u * 1024u,
-		false, {}, 0u, nullptr, 0, 0, nullptr, {}, false, { 1, 1, 1, 1 }, false, 1.0f, false, 0, {}, 1.0f, 2u, {}, 0u, 0u, 3u, false, 0.2f,
-		{ 1, 0.1f, 1, 0 }, { 0, 0, 0, 0 }, true);
+	nativeShadowTrace.Dispatch(publishedScene->acceleration, size, {}, frame, uint64_t(settings.ShadowMaskBudgetMB) * 1024u * 1024u,
+		true, {}, 0u, nullptr, 0, 0, nullptr, {}, settings.ShadowAllLights, { 1, 1, 1, 1 }, false, 1.0f, false, 0, {}, 1.0f, 2u, selectedLights, 0u, 0u, 3u, false, 0.2f,
+		{ 1, 0.1f, 1, 0 }, { settings.ShadowStochastic ? 1.0f : 0.0f, settings.ShadowEmitterRadius, 0, 0 }, true);
 	if (nativeShadowTrace.GetShadowMaskOutput(frame))
 		shadowMaskUnavailable.clear();
 	else {

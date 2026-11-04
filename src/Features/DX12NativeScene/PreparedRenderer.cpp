@@ -151,6 +151,11 @@ void DX12NativeScene::OnDeferredLightingComplete(ID3D11UnorderedAccessView* targ
 					shadow = DX12Native::NativeShadowLayer{ mask->gpu,
 						{ mask->cameraOrigin.x, mask->cameraOrigin.y, mask->cameraOrigin.z },
 						settings.ShadowStrength, settings.ShadowBlend, settings.ShadowRadius, settings.ShadowReceiverTolerance, settings.ShadowPreview };
+					shadow->temporal = settings.ShadowTemporal;
+					shadow->historyWeight = settings.ShadowHistoryWeight;
+					shadow->sceneRevision = mask->scene->scope.scene;
+					shadow->policy = (uint64_t(std::bit_cast<uint32_t>(settings.ShadowEmitterRadius)) << 32u) |
+						(uint64_t(settings.ShadowStochastic) << 31u) | (uint64_t(settings.ShadowAllLights) << 30u) | settings.ShadowLightIndex;
 				}
 			}
             consumed=nativeComposition.Present(*graphics,target,size,preparedTrace.GetSceneOutput(frame),

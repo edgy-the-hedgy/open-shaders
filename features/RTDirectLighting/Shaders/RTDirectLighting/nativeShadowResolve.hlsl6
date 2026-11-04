@@ -1,0 +1,34 @@
+#include "Common/FrameBuffer.hlsli"
+#include "Common/NativeShadowMask.hlsli"
+Texture2D<float4> CurrentMask : register(t0);
+Texture2D<float4> CurrentRays : register(t1);
+Texture2D<float4> PreviousMask : register(t2);
+RWTexture2D<float4> Resolved : register(u0);
+cbuffer Settings : register(b0) {
+    uint2 Size; uint HaveHistory, Padding;
+    float3 Origin; float HistoryWeight;
+    float3 PreviousOrigin; float DepthTolerance;
+};
+[numthreads(8,8,1)] void main(uint2 pixel : SV_DispatchThreadID)
+{
+    if (any(pixel >= Size)) return;
+    float4 mask = CurrentMask[pixel];
+    Resolved[pixel] = mask;
+    if (!HaveHistory || mask.g < 0.5 || !all(isfinite(mask))) return;
+    float3 world = Origin + CurrentRays[pixel].xyz * mask.b;
+    float4 clip = mul(FrameBuffer::CameraViewProj[0],float4(world-FrameBuffer::CameraPosAdjust[0].xyz,1));
+    if (!all(isfinite(clip)) || clip.w <= 1e-8) return;
+    float2 uv = clip.xy / clip.w * float2(0.5,-0.5) + 0.5;
+    if (any(uv < 0) || any(uv >= 1)) return;
+    uint2 oldPixel = uint2(uv * Size);
+    float4 old = PreviousMask[oldPixel];
+    if (old.g < 0.5 || old.a != mask.a || !all(isfinite(old))) return;
+    float2 oldClip = (float2(oldPixel)+0.5)/Size*float2(2,-2)+float2(-1,1);
+    float4 view = mul(FrameBuffer::CameraProjInverse[0],float4(oldClip,0.5,1));
+    if (!all(isfinite(view)) || abs(view.w) < 1e-8) return;
+    float3 direction = normalize(mul((float3x3)FrameBuffer::CameraViewInverse[0],view.xyz/view.w));
+    float3 difference = world - (PreviousOrigin + direction*old.b);
+    if (!NativeShadowReceiverMatches(dot(difference,difference),max(5.0,mask.b*DepthTolerance))) return;
+    mask.r = NativeShadowHistoryValue(mask.r,old.r,HistoryWeight);
+    Resolved[pixel] = mask;
+}

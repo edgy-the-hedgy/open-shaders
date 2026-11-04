@@ -40,6 +40,7 @@ namespace DX12Native
 			for (const auto* texture : { item.input.get(), item.output.get(), item.legacy.get(), item.shadowDepth.get() })
 				bytes += NativeAllocationBytes(backend.d3d12Device.get(), texture ? texture->resource.get() : nullptr);
 			bytes += NativeAllocationBytes(backend.d3d12Device.get(), item.camera.get());
+			bytes += NativeAllocationBytes(backend.d3d12Device.get(), item.shadowHistory.get());
 		}
 		return bytes;
 	}
@@ -47,7 +48,7 @@ namespace DX12Native
 	{
 		const auto done = completion.fence12->GetCompletedValue(), retired = producer.fence12->GetCompletedValue();
 		for (auto& frame : frames)
-			if (&frame != keep && (!frame.fence ||
+			if (&frame != keep && uint32_t(&frame - frames.data()) != shadowHistorySlot && frame.shadowConsumer <= done && (!frame.fence ||
 									  (frame.retirement && NativeSceneReusable(false, done, frame.fence, retired, frame.retirement))))
 				frame = {};
 		for (uint32_t i = 0; i < initialSources.size(); ++i)
@@ -59,6 +60,8 @@ namespace DX12Native
 	void NativeSceneComposition::Reload()
 	{
 		composition.Reset();
+		shadowResolve.Reset();
+		shadowHistorySlot = 2;
 		captureSource = nullptr;
 		captureShadowDepth = nullptr;
 		sourceFrame = UINT32_MAX;
@@ -70,6 +73,7 @@ namespace DX12Native
 		return { { "sourceHandoffs", sourceHandoffs }, { "sourceFrame", sourceFrame },
 			{ "selectedLegacyProvider", sourceSelectedProvider }, { "shadowApplication", "independent opt-in final-image layer; existing raster shadowing preserved" },
 			{ "shadowLayerSubmissions", shadowSubmissions }, { "shadowLayerUnavailable", shadowFailure },
+			{ "shadowTemporalSubmissions", shadowTemporalSubmissions }, { "shadowTemporalFailure", shadowTemporalFailure },
 			{ "compositionSubmissions", submissions }, { "returnHandoffs", handoffs }, { "busyFrames", busy },
 			{ "failure", failure }, { "source", "current DX11 raster scene, existing shadowing preserved" },
 			{ "compositionBackend", "DX12" }, { "visualConsumptionVerified", false } };
@@ -204,13 +208,18 @@ namespace DX12Native
 				producer.Create(backend.d3d12Device.get(), backend.d3d11Device.get(), "DX12NativeScene::SceneHandoff");
 				completion.Create(backend.d3d12Device.get(), backend.d3d11Device.get(), "DX12NativeScene::FinalSceneCompletion");
 			}
-			for (auto& frame : frames)
-				if (!frame.fence || (frame.retirement && NativeSceneReusable(false,
-															 completion.fence12->GetCompletedValue(), frame.fence, producer.fence12->GetCompletedValue(), frame.retirement))) {
+			if (!shadow || !shadow->temporal) shadowHistorySlot = 2;
+			for (uint32_t offset = 1; offset <= frames.size(); ++offset) {
+				const auto index = ((shadowHistorySlot < frames.size() ? shadowHistorySlot : uint32_t(frames.size()) - 1u) + offset) % uint32_t(frames.size());
+				if (index == shadowHistorySlot) continue;
+				auto& frame = frames[index];
+				if (frame.shadowConsumer <= completion.fence12->GetCompletedValue() && (!frame.fence || (frame.retirement && NativeSceneReusable(false,
+															 completion.fence12->GetCompletedValue(), frame.fence, producer.fence12->GetCompletedValue(), frame.retirement)))) {
 					frame.fence = frame.retirement = 0;
 					selected = &frame;
 					break;
 				}
+			}
 			if (!selected) {
 				++busy;
 				return std::nullopt;
@@ -278,9 +287,10 @@ namespace DX12Native
 			frame.commands->CopyResource(frame.output->resource.get(), frame.input->resource.get());
 			for (auto& barrier : barriers) std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
 			frame.commands->ResourceBarrier(2, barriers.data());
+			auto* shadowInput = applyShadow ? ResolveShadow(frame, *shadow, size, budget) : nullptr;
 			const std::array reads{ frame.input->resource.get(), direct ? direct->first : nullptr, direct ? direct->second : nullptr,
 				hybrid ? hybrid->first : nullptr, legacy ? frame.legacy->resource.get() : nullptr,
-				applyShadow ? shadow->gpu.first : nullptr, applyShadow ? shadow->gpu.second : nullptr,
+				shadowInput, applyShadow ? shadow->gpu.second : nullptr,
 				applyShadow ? frame.shadowDepth->resource.get() : nullptr };
 			const std::array writes{ frame.output->resource.get() };
 			const auto& lighting = globals::features::linearLighting;
@@ -299,6 +309,12 @@ namespace DX12Native
 			DX::ThrowIfFailed(backend.commandQueue->Signal(completion.fence12.get(), frame.fence));
 			++submissions;
 			if (applyShadow) ++shadowSubmissions;
+			if (applyShadow && shadowInput == frame.shadowHistory.get()) {
+				shadowHistorySlot = uint32_t(selected - frames.data());
+				++shadowTemporalSubmissions;
+			}
+			else shadowHistorySlot = 2;
+			if (applyShadow && frame.shadowPreviousSlot < frames.size()) frames[frame.shadowPreviousSlot].shadowConsumer = frame.fence;
 			DX::ThrowIfFailed(context->Wait(completion.fence11.get(), frame.fence));
 			context->CopyResource(source.get(), frame.output->resource11);
 			frame.retirement = producer.Next();

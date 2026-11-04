@@ -13,6 +13,9 @@ namespace DX12Native
 		std::array<float, 3> origin{};
 		float strength = 0, blend = 1, radius = 0, tolerance = 2;
 		bool preview = false;
+		bool temporal = true;
+		float historyWeight = 0.70f;
+		uint64_t sceneRevision = 0, policy = 0;
 	};
 	/** @brief Owns the final scene handoff and GPU composition, without selecting producer policy. */
 	class NativeSceneComposition
@@ -46,6 +49,13 @@ namespace DX12Native
 			winrt::com_ptr<ID3D12CommandAllocator> allocator;
 			winrt::com_ptr<ID3D12GraphicsCommandList> commands;
 			winrt::com_ptr<ID3D12Resource> camera;
+			winrt::com_ptr<ID3D12Resource> shadowHistory;
+			std::shared_ptr<const void> shadowBindings;
+			std::array<float, 3> shadowOrigin{};
+			uint32_t shadowFrame = UINT32_MAX;
+			uint64_t shadowRevision = 0, shadowPolicy = 0;
+			uint64_t shadowConsumer = 0;
+			uint32_t shadowPreviousSlot = 2;
 			std::unique_ptr<ConstantBuffer> legacySettings, legacyCamera;
 			std::shared_ptr<const void> bindings;
 			GraphicsBackend backend;
@@ -53,12 +63,17 @@ namespace DX12Native
 		};
 		bool CaptureLegacy(Frame& frame, std::array<uint32_t, 2> size, float strength);
 		bool CaptureShadowDepth(Frame& frame, std::array<uint32_t, 2> dimensions, uint64_t budget);
+		ID3D12Resource* ResolveShadow(Frame& frame, const NativeShadowLayer& shadow, std::array<uint32_t, 2> size, uint64_t budget);
         uint64_t ResidentBytes() const;
         void TrimIdleFrames(Frame* keep = nullptr);
 		std::array<Frame, 2> frames;
 		GraphicsBackend backend;
 		SharedFence producer, completion;
 		NativeCompute composition;
+		NativeCompute shadowResolve;
+		uint32_t shadowHistorySlot = 2;
+		uint64_t shadowTemporalSubmissions = 0;
+		std::string shadowTemporalFailure;
 		winrt::com_ptr<ID3D11ComputeShader> legacyShader;
 		winrt::com_ptr<ID3D11ComputeShader> captureSource;
 		winrt::com_ptr<ID3D11ComputeShader> captureShadowDepth;
