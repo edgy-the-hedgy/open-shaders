@@ -1,0 +1,60 @@
+// Prepare untouched native DX12 Direct Diffuse/Specular checkerboard samples.
+// This is a PACKING pass, not spatial or temporal reconstruction.
+// Schedule before DirectTraceMode 5's nearest-anchor resolve writes into
+// the producer textures; its output must never be treated as expanded rays.
+// AMD FSR RR direct signal A: nonnegative means active; negative means absent.
+Texture2D<float4> TaggedDirect : register(t0);
+Texture2D<float4> DirectDiffuse : register(t1);
+Texture2D<float4> DirectSpecular : register(t2);
+Texture2D<float4> DirectNormalRoughness : register(t3);
+Texture2D<float4> DirectDiffuseAlbedo : register(t4);
+Texture2D<float4> DirectSpecularAlbedo : register(t5);
+RWTexture2D<float4> PackedDirectDiffuse : register(u0);
+RWTexture2D<float4> PackedDirectSpecular : register(u1);
+RWTexture2D<uint> PackedDirectValidity : register(u2);
+
+cbuffer NativeDirectRRPackPolicy : register(b0)
+{
+    uint2 RenderSize;
+    uint2 PackedSize;
+    uint CheckerboardOrigin;
+    uint Reserved0;
+    uint2 Reserved1;
+};
+
+[numthreads(8, 8, 1)]
+void main(uint2 packed : SV_DispatchThreadID)
+{
+    if (any(packed >= PackedSize)) return;
+    const uint2 pixel = uint2(packed.x * 2u +
+        ((packed.y + CheckerboardOrigin) & 1u), packed.y);
+    const float4 missing = float4(0.0, 0.0, 0.0, -1.0);
+    PackedDirectDiffuse[packed] = missing;
+    PackedDirectSpecular[packed] = missing;
+    PackedDirectValidity[packed] = 0u;
+    if (any(pixel >= RenderSize)) return;
+    const float4 tagged = TaggedDirect.Load(int3(pixel, 0));
+    // Current native direct ray-trace writes alpha 4 for a valid receiver.
+    // Do not promote unsupported/missed/untraced receiver data to valid RR.
+    if (!all(isfinite(tagged)) || tagged.a != 4.0) return;
+    const float4 normal = DirectNormalRoughness.Load(int3(pixel, 0));
+    if (!all(isfinite(normal))) return;
+    const float4 diffuse = DirectDiffuse.Load(int3(pixel, 0));
+    const float4 specular = DirectSpecular.Load(int3(pixel, 0));
+    const float4 diffuseAlbedo = DirectDiffuseAlbedo.Load(int3(pixel, 0));
+    const float4 specularAlbedo = DirectSpecularAlbedo.Load(int3(pixel, 0));
+    uint validity = 0u;
+    // Direct RR requires demodulated RGB; lobe albedos remain separate,
+    // full-native guides and are reapplied once after denoising.
+    if (all(isfinite(diffuse)) && all(diffuse.rgb >= 0.0) &&
+        diffuse.a >= 0.0 && all(isfinite(diffuseAlbedo))) {
+        PackedDirectDiffuse[packed] = diffuse;
+        validity |= 1u;
+    }
+    if (all(isfinite(specular)) && all(specular.rgb >= 0.0) &&
+        specular.a >= 0.0 && all(isfinite(specularAlbedo))) {
+        PackedDirectSpecular[packed] = specular;
+        validity |= 2u;
+    }
+    PackedDirectValidity[packed] = validity;
+}
