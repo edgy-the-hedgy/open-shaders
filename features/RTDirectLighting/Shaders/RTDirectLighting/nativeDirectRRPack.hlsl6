@@ -44,16 +44,19 @@ void main(uint2 packed : SV_DispatchThreadID)
     const float4 diffuseAlbedo = DirectDiffuseAlbedo.Load(int3(pixel, 0));
     const float4 specularAlbedo = DirectSpecularAlbedo.Load(int3(pixel, 0));
     uint validity = 0u;
-    // Direct RR requires demodulated RGB; lobe albedos remain separate,
-    // full-native guides and are reapplied once after denoising.
+    // The producer's direct signal alpha is emission metadata, NOT sample
+    // coverage. The independently tagged direct hit (alpha=4) establishes
+    // ray validity. Do not transfer emission lanes to the vendor signal:
+    // preserve emissions in the source textures for final composition.
+    // Albedo modulation was already removed in EvaluateDirectLighting.
     if (all(isfinite(diffuse)) && all(diffuse.rgb >= 0.0) &&
-        diffuse.a >= 0.0 && all(isfinite(diffuseAlbedo))) {
-        PackedDirectDiffuse[packed] = diffuse;
+        all(isfinite(diffuseAlbedo)) && all(diffuseAlbedo.rgb >= 0.0)) {
+        PackedDirectDiffuse[packed] = float4(diffuse.rgb, 1.0);
         validity |= 1u;
     }
     if (all(isfinite(specular)) && all(specular.rgb >= 0.0) &&
-        specular.a >= 0.0 && all(isfinite(specularAlbedo))) {
-        PackedDirectSpecular[packed] = specular;
+        all(isfinite(specularAlbedo)) && all(specularAlbedo.rgb >= 0.0)) {
+        PackedDirectSpecular[packed] = float4(specular.rgb, 1.0);
         validity |= 2u;
     }
     PackedDirectValidity[packed] = validity;
