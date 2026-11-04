@@ -188,9 +188,9 @@ void RedstoneGI::SetRRCheckerboard(bool a_enabled)
 {
     // Native GI sampling belongs to the GI feature, not a global
     // composer or Direct Lighting's sampling policy.
-    auto& settings = globals::features::rtIndirectLighting.settings;
-    if (settings.HybridCheckerboard != a_enabled) {
-        settings.HybridCheckerboard = a_enabled;
+    auto& indirectSettings = globals::features::rtIndirectLighting.settings;
+    if (indirectSettings.HybridCheckerboard != a_enabled) {
+        indirectSettings.HybridCheckerboard = a_enabled;
         globals::features::dx12NativeScene.Tracer().Reset();
     }
 }
