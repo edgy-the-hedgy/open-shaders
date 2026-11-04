@@ -32,7 +32,7 @@ namespace DX12Native
         }
     }
 
-    void NativeHybridGI::PrepareInputs(Frame& frame, const RedstoneGI& settings)
+    void NativeHybridGI::PrepareInputs(Frame& frame, const RedstoneGI&)
     {
         CS_GPU_PASS("RedstoneGI::NativeSnapshot");
         auto* context = backend.d3d11Context.get();
@@ -52,7 +52,7 @@ namespace DX12Native
         ID3D11UnorderedAccessView* writes[6]{};
         for (uint32_t i = 0; i < frame.sources.size(); ++i) writes[i] = frame.sources[i]->uav;
         struct Snapshot { uint32_t width, height; float strength; uint32_t padding = 0; };
-        frame.snapshotSettings->Update(Snapshot{ frame.size[0], frame.size[1], settings.settings.GIStrength });
+        frame.snapshotSettings->Update(Snapshot{ frame.size[0], frame.size[1], 1.0f });
         auto* cb = frame.snapshotSettings->CB();
         context->CSSetConstantBuffers(13, 1, &cb);
         context->CSSetShaderResources(0, 6, reads);

@@ -65,6 +65,10 @@ float2 EncodeNormal(float3 normal)
     uint2 packed = uint2(Checkerboard ? logical.x / 2u : logical.x, logical.y);
     uint2 source = PackedSource ? packed : native;
     float4 diffuse = Diffuse[source], specular = Specular[source];
+    if (DXRMaterials && !DirectSignals) {
+        diffuse.rgb = min(diffuse.rgb / max(diffuseAlbedo, 1e-3), 65504.0);
+        specular.rgb = min(specular.rgb / max(specularAlbedo, 1e-3), 65504.0);
+    }
     bool receiverValid = surfaceValid && (!DXRMaterials || DiffuseAlbedo[native].a > 0.5);
     bool diffuseValid = receiverValid && all(isfinite(diffuse)) && all(diffuse.rgb >= 0) &&
         all(isfinite(diffuseAlbedo)) && (DirectSignals || diffuse.a >= 0);

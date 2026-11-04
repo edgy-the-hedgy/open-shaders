@@ -203,6 +203,8 @@ public:
 	OcclusionSettings GetNativeOcclusionSettings() const { return occlusion; }
 	/** @brief Returns independently enabled native diffuse, specular, AO and specular-occlusion signals. */
 	uint32_t GetNativeSignalMask() const { return (diffuseEnabled ? 1u : 0u) | (specularEnabled ? 2u : 0u) | (occlusion.diffuseEnabled ? 4u : 0u) | (occlusion.specularEnabled ? 8u : 0u); }
+	/** @brief Returns feature-owned diffuse/specular intensity applied once at final composition. */
+	float2 GetNativeContributions() const { return { settings.GIStrength * std::exp2(rgiContributionEV + diffuseContributionEV), settings.GIStrength * std::exp2(rgiContributionEV + specularContributionEV) }; }
 private:
 	eastl::unique_ptr<ConstantBuffer> occlusionSettings;
 	eastl::unique_ptr<Texture2D> texDiffuseOcclusionInput, texSpecularOcclusionInput;
