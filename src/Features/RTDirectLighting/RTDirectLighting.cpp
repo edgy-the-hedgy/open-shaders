@@ -243,20 +243,33 @@ void RTDirectLighting::DrawRayRegenerationSettings()
 void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target, const std::array<uint32_t, 2>& size)
 {
 	CS_GPU_PASS("RTDirectLighting::PreparedLighting");
-	if (!loaded || !WantsComposite() || !target || !globals::features::dx12NativeScene.loaded ||
-		!globals::features::dx12NativeScene.settings.UsePreparedMaterials || globals::game::isVR || globals::state->isMapMenuOpen) return;
+    const bool fsrHybrid = globals::features::rtComposer.FSRIndependentActive();
+	if (!loaded || (!WantsComposite() && !fsrHybrid) || !target ||
+        !globals::features::dx12NativeScene.loaded ||
+        (!globals::features::dx12NativeScene.settings.UsePreparedMaterials && !fsrHybrid) ||
+        globals::game::isVR || globals::state->isMapMenuOpen) return;
 	if (target != Util::AsReal(globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].UAV) ||
 		(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections))) return;
 	auto& native = globals::features::dx12NativeScene;
 	auto& gi = globals::features::rtIndirectLighting;
 	const bool rtExclusive = gi.UsesRTExclusive();
 	auto snapshot = native.GetPublishedScene();
-	if (!snapshot) return;
 	const auto frame = globals::game::graphicsState->GetFrameCount();
 	if (lastFrame && *lastFrame == frame) return;
-	if (!settings.UseAllPreparedLights && settings.SelectedDirectLight >= snapshot->cell->lights.size()) return;
 	auto backend = Feature::FindGraphicsBackend();
 	auto& tracer = native.Tracer();
+    // Only Direct DXR needs a prepared scene, materials and a selected light.
+    // Raster-sourced FSR HybridGI remains active when any of those are absent.
+    const bool directAvailable = WantsComposite() &&
+        native.settings.UsePreparedMaterials && snapshot &&
+        (settings.UseAllPreparedLights ||
+         settings.SelectedDirectLight < snapshot->cell->lights.size());
+    if (!directAvailable) {
+        if (fsrHybrid && backend && tracer.Initialize(*backend, true))
+            tracer.DispatchFSRIndependentRaster(target, size, frame);
+        lastFrame = frame;
+        return;
+    }
     // Composer Shadow Only/Hybrid-Shadowed: quarter-checkerboard mode 6
     // (one traced 2x2 anchor in half the logical checkerboard tiles).
     // Direct RR preferences remain persisted but do not dispatch in these tiers.
