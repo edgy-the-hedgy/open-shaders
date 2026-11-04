@@ -16,26 +16,47 @@ std::pair<std::string, std::vector<std::string>> RTIndirectLighting::GetFeatureS
 
 void RTIndirectLighting::ImportLegacySettings(json& root)
 {
-	if (root.contains(GetName())) return;
-	const json* source = nullptr;
-	for (const char* name : { "RTDirectLighting", "RedstoneShadows" }) {
-		const auto found = root.find(name);
-		if (found != root.end() && found->is_object() &&
-			(found->contains("UseDXRIndirect") || found->contains("IndirectRays") ||
-				found->contains("IndirectStrength") || found->contains("ConnectIndirectLighting"))) {
-			source = &*found;
-			break;
-		}
-	}
-	if (!source) return;
-	json migrated = json::object();
-	migrated["UseRTExclusive"] = source->value("UseDXRIndirect", false);
-	migrated["IndirectRays"] = source->value("IndirectRays", 1u);
-	migrated["IndirectStrength"] = source->value("IndirectStrength", 1.0f);
-	migrated["ConnectHybrid"] = source->value("ConnectIndirectLighting", true);
-	root[GetName()] = std::move(migrated);
+    if (!root.is_object()) return;
+    json migrated = root.value(GetName(), json::object());
+    if (!migrated.is_object()) migrated = json::object();
+    for (const char* name : { "RTDirectLighting", "RedstoneShadows" }) {
+        auto source = root.find(name);
+        if (source == root.end() || !source->is_object()) continue;
+        if (source->contains("UseDXRIndirect") || source->contains("IndirectRays") ||
+            source->contains("IndirectStrength") || source->contains("ConnectIndirectLighting")) {
+            if (!migrated.contains("UseRTExclusive"))
+                migrated["UseRTExclusive"] = source->value("UseDXRIndirect", false);
+            if (!migrated.contains("IndirectRays"))
+                migrated["IndirectRays"] = source->value("IndirectRays", 1u);
+            if (!migrated.contains("IndirectStrength"))
+                migrated["IndirectStrength"] = source->value("IndirectStrength", 1.0f);
+            if (!migrated.contains("ConnectHybrid"))
+                migrated["ConnectHybrid"] = source->value("ConnectIndirectLighting", true);
+            break;
+        }
+    }
+    if (auto legacy = root.find("RTComposer");
+        legacy != root.end() && legacy->is_object()) {
+        const auto composer = legacy->value("Composition", json::object());
+        if (composer.is_object() && composer.contains("useFSRRayRegeneration") &&
+            !migrated.contains("UseHybridRayRegeneration"))
+            migrated["UseHybridRayRegeneration"] = composer["useFSRRayRegeneration"];
+        const auto fsr = legacy->value("FSRRenderer", json::object());
+        if (fsr.is_object()) {
+            const auto hybrid = fsr.value("hybridIllumination", json::object());
+            if (hybrid.is_object()) {
+                for (const auto& [from, to] : {
+                        std::pair{"resolution", "HybridResolution"},
+                        std::pair{"checkerboard", "HybridCheckerboard"},
+                        std::pair{"contribution", "HybridContribution"} }) {
+                    if (hybrid.contains(from) && !migrated.contains(to))
+                        migrated[to] = hybrid[from];
+                }
+            }
+        }
+    }
+    if (!migrated.empty()) root[GetName()] = std::move(migrated);
 }
-
 void RTIndirectLighting::LoadSettings(json& value)
 {
 	Settings selected = value;

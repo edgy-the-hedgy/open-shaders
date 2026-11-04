@@ -28,6 +28,8 @@
 #include "Features/RainRefraction.h"
 #include "Features/RemoteControl/NvPerf.h"
 #include "Features/RTComposer/RTComposer.h"
+#include "Features/RTDirectLighting/RTDirectLighting.h"
+#include "Features/RTIndirectLighting/RTIndirectLighting.h"
 #include "Features/SceneManager.h"
 #include "Features/SceneSelector.h"
 #include "Features/Skin.h"
@@ -584,6 +586,8 @@ void State::Load(ConfigMode a_configMode, bool a_allowReload)
 				userFile >> userSettings;
 				userFile.close();
 				RTComposer::MigrateLegacySettings(userSettings);
+                globals::features::rtDirectLighting.ImportLegacySettings(userSettings);
+                globals::features::rtIndirectLighting.ImportLegacySettings(userSettings);
 
 				Util::Settings::OverlayRecognizedRootSettings(settings, userSettings);
 				if (const auto menu = userSettings.find("Menu"); menu != userSettings.end() && menu->is_object())

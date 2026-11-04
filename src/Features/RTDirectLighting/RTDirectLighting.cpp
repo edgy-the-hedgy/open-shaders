@@ -19,15 +19,39 @@ std::pair<std::string, std::vector<std::string>> RTDirectLighting::GetFeatureSum
 }
 void RTDirectLighting::ImportLegacySettings(json& root)
 {
-	if (root.contains(GetName())) return;
-	auto it = root.find("RedstoneShadows");
-	if (it == root.end() || !it->is_object()) return;
-	json migrated = json::object();
-	for (const char* field : { "RedstoneBlend", "UsePreparedDirectLighting", "UseAllPreparedLights", "UseDirectRayRegeneration",
-			"DirectStrength", "DiffuseStrength", "SpecularStrength", "EmissionStrength", "SelectedDirectLight" })
-		if (it->contains(field)) migrated[field] = (*it)[field];
-	if (!migrated.contains("SelectedDirectLight") && it->contains("PreparedLight")) migrated["SelectedDirectLight"] = (*it)["PreparedLight"];
-	root[GetName()] = std::move(migrated);
+    if (!root.is_object()) return;
+    json migrated = root.value(GetName(), json::object());
+    if (!migrated.is_object()) migrated = json::object();
+    auto copy = [&](const json& from, const char* oldName, const char* newName) {
+        if (from.is_object() && from.contains(oldName) && !migrated.contains(newName))
+            migrated[newName] = from[oldName];
+    };
+    if (auto old = root.find("RedstoneShadows");
+        old != root.end() && old->is_object()) {
+        for (const char* key : { "RedstoneBlend", "UsePreparedDirectLighting",
+                "UseAllPreparedLights", "UseDirectRayRegeneration", "DirectStrength",
+                "DiffuseStrength", "SpecularStrength", "EmissionStrength", "SelectedDirectLight" })
+            copy(*old, key, key);
+        copy(*old, "PreparedLight", "SelectedDirectLight");
+    }
+    if (auto legacy = root.find("RTComposer");
+        legacy != root.end() && legacy->is_object()) {
+        const auto directRR = legacy->value("DirectRR", json::object());
+        for (const char* key : { "UseDirectRayRegeneration", "RRMaterialIsolation",
+                "RRGlossyRoughness" })
+            copy(directRR, key, key);
+        const auto composer = legacy->value("Composition", json::object());
+        copy(composer, "useFSRRayRegeneration", "UseDirectRayRegeneration");
+        const auto fsr = legacy->value("FSRRenderer", json::object());
+        if (fsr.is_object()) {
+            const auto hybrid = fsr.value("hybridIllumination", json::object());
+            copy(hybrid, "earlyShadowMask", "FSREarlyShadowMask");
+            copy(hybrid, "rasterDirectBlend", "FSRDirectBlend");
+            copy(hybrid, "clampRadiance", "FSRClampRadiance");
+            copy(hybrid, "radianceClamp", "FSRRadianceClamp");
+        }
+    }
+    if (!migrated.empty()) root[GetName()] = std::move(migrated);
 }
 void RTDirectLighting::LoadSettings(json& value)
 {
