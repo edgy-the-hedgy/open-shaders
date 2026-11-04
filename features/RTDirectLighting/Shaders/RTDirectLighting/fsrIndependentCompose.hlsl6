@@ -1,6 +1,5 @@
-// Existing DX12 lighting compositor: independent raster shadow masking,
-// Direct radiance and HybridGI, with raw or AMD RR inputs per signal.
-// No custom history, native denoising or Open RT signal reconstruction here.
+// Dedicated FSR Hybrid Independent DX12 compositor.
+// Reads AMD RR outputs only. No native denoiser, history, or shadow-mask input.
 Texture2D<float4> RasterScene : register(t0);
 Texture2D<float4> TaggedDirect : register(t1);
 Texture2D<float4> DirectDiffuseRR : register(t2);
@@ -18,7 +17,6 @@ Texture2D<float4> RasterNormalRoughness : register(t13);
 Texture2D<float4> Receivers : register(t14);
 Texture2D<float4> RawDirectDiffuse : register(t15);
 Texture2D<float4> RawDirectSpecular : register(t16);
-Texture2D<float2> RasterShadowMask : register(t17);
 RWTexture2D<float4> OutScene : register(u0);
 cbuffer FSRIndependentComposition : register(b0)
 {
@@ -32,39 +30,7 @@ cbuffer FSRIndependentComposition : register(b0)
     uint HybridRRMask;
     uint CheckerboardPolicy;
     uint Reserved;
-    uint ShadowEnabled;
-    float ShadowInfluence;
-    uint ShadowContactAA;
-    uint Reserved2;
 };
-float RasterShadowVisibility(uint2 pixel)
-{
-    const float2 vis = RasterShadowMask.Load(int3(pixel, 0));
-    if (!all(isfinite(vis)) || vis.y < 0.5) return 1.0;
-    const float center = saturate(vis.x);
-    if (ShadowContactAA == 0u) return center;
-    const float depth = LinearDepth.Load(int3(pixel, 0));
-    if (!isfinite(depth) || depth <= 0.0) return center;
-    float sum = center * 4.0, weights = 4.0;
-    [unroll] for (int dy = -1; dy <= 1; ++dy)
-    {
-        [unroll] for (int dx = -1; dx <= 1; ++dx)
-        {
-            if (dx == 0 && dy == 0) continue;
-            const int2 sample = int2(pixel) + int2(dx, dy);
-            if (any(sample < 0) || any(sample >= int2(FrameSize))) continue;
-            const float2 n = RasterShadowMask.Load(int3(sample, 0));
-            const float nd = LinearDepth.Load(int3(sample, 0));
-            if (!all(isfinite(n)) || n.y < 0.5 || !isfinite(nd) ||
-                nd <= 0.0 || abs(nd - depth) > max(0.072, depth * 0.015))
-                continue;
-            const float weight = (dx == 0 || dy == 0) ? 2.0 : 1.0;
-            sum += saturate(n.x) * weight;
-            weights += weight;
-        }
-    }
-    return lerp(center, sum / weights, 0.65);
-}
 [numthreads(8,8,1)]
 void main(uint2 pixel : SV_DispatchThreadID)
 {
@@ -73,10 +39,6 @@ void main(uint2 pixel : SV_DispatchThreadID)
     const float3 baseline = all(isfinite(raster.rgb)) ?
         max(raster.rgb, 0.0) : 0.0;
     float3 color = LinearLighting != 0u ? baseline : pow(baseline, 1.6);
-    // Shadow the raster baseline first. Do not multiply reconstructed or
-    // raw Direct radiance by this mask a second time.
-    if (ShadowEnabled != 0u)
-        color *= lerp(1.0, RasterShadowVisibility(pixel), saturate(ShadowInfluence));
     // Direct RR outputs are full-native. An unavailable family uses only
     // its actual traced checkerboard anchor, without inventing coverage.
     const uint2 anchor = uint2(min((pixel.x & ~1u) +
@@ -107,7 +69,7 @@ void main(uint2 pixel : SV_DispatchThreadID)
             (validS ? max(s.rgb, 0.0) * max(albedoS.rgb, 0.0) : 0.0) +
             emission;
         if (all(isfinite(directLighting)))
-            color += directLighting * saturate(DirectBlend);
+            color = lerp(color, directLighting, saturate(DirectBlend));
     }
 
     // Raw HybridGI uses its actual packed signal grid. Only vendor-produced

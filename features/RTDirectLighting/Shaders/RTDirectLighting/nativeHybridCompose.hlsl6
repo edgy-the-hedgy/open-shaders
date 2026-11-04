@@ -69,10 +69,13 @@ void main(uint2 pixel : SV_DispatchThreadID)
     const float4 direct = NativeDirect.Load(int3(pixel, 0));
     if ((SceneSignalMask & 1u) != 0u && direct.a == 4.0 &&
         all(isfinite(direct.rgb)) && all(direct.rgb >= 0.0)) {
-        // The raster input was shadowed by hybridShadowSource before this pass.
-        // Direct DXR radiance is an independent contribution; never apply that
-        // raster visibility mask to it a second time.
-        linearColor += direct.rgb * saturate(DirectBlend);
+        float3 directRadiance = direct.rgb;
+        if (ShadowEdgeFilterEnabled != 0u) {
+            const float visibility = ContactShadowVisibility(pixel);
+            const float attenuation = lerp(1.0, visibility, saturate(ShadowInfluence));
+            directRadiance *= attenuation;
+        }
+        linearColor = lerp(linearColor, directRadiance, saturate(DirectBlend));
     }
 
     // 0: intentional shadow-controlled GI skip; 1: GI evaluated;
