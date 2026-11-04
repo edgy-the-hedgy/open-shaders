@@ -179,6 +179,9 @@ namespace DX12Native
             int32_t shadowHistorySourceSlot = -1; // protects prior resource lifetime until consumer retires
 			// DX11-visible transfer only for final Shadow Only composition.
 			std::unique_ptr<WrappedResource> shadowMaskExport;
+            std::array<winrt::com_ptr<ID3D12Resource>, 3> nativeDirectPacked{};
+            winrt::com_ptr<ID3D12DescriptorHeap> nativeDirectPackDescriptors;
+            bool nativeDirectRRRequested = false, nativeDirectPackValid = false;
             std::array<std::unique_ptr<WrappedResource>, kHybridInputCount> hybridInputs;
             bool hybridInputsReady = false;
             winrt::com_ptr<ID3D12Resource> hybridShadowedSource;
@@ -236,6 +239,7 @@ namespace DX12Native
             return frame.shadowTemporalValid && frame.shadowTemporal ?
                 frame.shadowTemporal.get() : frame.shadowMask.get();
         }
+        bool RecordNativeDirectRRPack(Frame& a_frame);
         void RecordNativeHybridGI(Frame& a_frame);
         void RecordAdvancedTransport(Frame& a_frame);
 		void Record(Frame& a_frame, const float3& a_direction, bool a_localLight);
@@ -258,6 +262,10 @@ namespace DX12Native
         winrt::com_ptr<ID3D12RootSignature> hybridSourceRoot;
         winrt::com_ptr<ID3D12PipelineState> hybridSourcePipeline;
         winrt::com_ptr<ID3D12DescriptorHeap> hybridSourceHeap;
+        winrt::com_ptr<ID3D12RootSignature> nativeDirectPackRoot;
+        winrt::com_ptr<ID3D12PipelineState> nativeDirectPackPipeline;
+        uint64_t nativeDirectPackDispatches = 0;
+        std::string nativeDirectPackFailure;
         std::unique_ptr<NativeHybridGI> nativeHybridGI;
         std::unique_ptr<NativeHybridGI> postHybridGI;
         std::unique_ptr<RedstoneDenoiser> advancedDenoiser; // quarantinable if GPU retirement times out

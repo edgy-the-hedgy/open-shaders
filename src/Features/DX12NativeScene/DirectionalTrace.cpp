@@ -759,6 +759,152 @@ namespace DX12Native
         }
     }
 
+
+    bool DirectionalTrace::RecordNativeDirectRRPack(Frame& frame)
+    {
+        frame.nativeDirectPackValid = false;
+        if (!frame.nativeDirectRRRequested) return false;
+        if (!frame.commands || !frame.output || frame.size[0] < 2u ||
+            (frame.size[0] & 1u) || !frame.size[1]) {
+            nativeDirectPackFailure = "Native Direct RR requires even render width";
+            return false;
+        }
+        for (uint32_t i = 0; i < 5u; ++i)
+            if (!frame.directSignals[i]) {
+                nativeDirectPackFailure = "Direct radiance or material signal missing";
+                return false;
+            }
+        try {
+            auto* device = backend.d3d12Device.get();
+            auto* list = frame.commands.get();
+            if (!nativeDirectPackRoot || !nativeDirectPackPipeline) {
+                std::ifstream file("Data/Shaders/RTDirectLighting/nativeDirectRRPack.dxil",
+                    std::ios::binary | std::ios::ate);
+                if (!file) throw std::runtime_error("Native Direct RR pack DXIL missing");
+                const auto byteSize = file.tellg();
+                if (byteSize <= 0 || byteSize > 16 * 1024 * 1024)
+                    throw std::runtime_error("Invalid native Direct RR pack DXIL");
+                std::vector<char> code(static_cast<size_t>(byteSize));
+                file.seekg(0);
+                if (!file.read(code.data(), std::streamsize(code.size())))
+                    throw std::runtime_error("Cannot read native Direct RR pack DXIL");
+                D3D12_DESCRIPTOR_RANGE ranges[2]{};
+                ranges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 6, 0, 0, 0 };
+                ranges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 3, 0, 0, 0 };
+                D3D12_ROOT_PARAMETER params[3]{};
+                for (uint32_t i = 0; i < 2u; ++i) {
+                    params[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+                    params[i].DescriptorTable = { 1, &ranges[i] };
+                }
+                params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+                params[2].Constants = { 0, 0, 8 };
+                const D3D12_ROOT_SIGNATURE_DESC signature{
+                    3, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE };
+                winrt::com_ptr<ID3DBlob> serialized, errors;
+                DX::ThrowIfFailed(D3D12SerializeRootSignature(&signature,
+                    D3D_ROOT_SIGNATURE_VERSION_1, serialized.put(), errors.put()));
+                DX::ThrowIfFailed(device->CreateRootSignature(0,
+                    serialized->GetBufferPointer(), serialized->GetBufferSize(),
+                    IID_PPV_ARGS(nativeDirectPackRoot.put())));
+                D3D12_COMPUTE_PIPELINE_STATE_DESC state{};
+                state.pRootSignature = nativeDirectPackRoot.get();
+                state.CS = { code.data(), code.size() };
+                DX::ThrowIfFailed(device->CreateComputePipelineState(
+                    &state, IID_PPV_ARGS(nativeDirectPackPipeline.put())));
+            }
+            const uint32_t packedWidth = frame.size[0] / 2u;
+            const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+            for (uint32_t i = 0; i < 3u; ++i) {
+                if (frame.nativeDirectPacked[i]) continue;
+                const DXGI_FORMAT format = i == 2u ?
+                    DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16G16B16A16_FLOAT;
+                const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(
+                    format, packedWidth, frame.size[1], 1, 1, 1, 0,
+                    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+                DX::ThrowIfFailed(device->CreateCommittedResource(&heap,
+                    D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON,
+                    nullptr, IID_PPV_ARGS(frame.nativeDirectPacked[i].put())));
+            }
+            if (!frame.nativeDirectPackDescriptors) {
+                const D3D12_DESCRIPTOR_HEAP_DESC heapDesc{
+                    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 9u,
+                    D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
+                DX::ThrowIfFailed(device->CreateDescriptorHeap(
+                    &heapDesc, IID_PPV_ARGS(frame.nativeDirectPackDescriptors.put())));
+            }
+            const std::array<ID3D12Resource*, 6> inputs{
+                frame.output->resource.get(),
+                frame.directSignals[0]->resource.get(),
+                frame.directSignals[1]->resource.get(),
+                frame.directSignals[2]->resource.get(),
+                frame.directSignals[4]->resource.get(), // Direct Diffuse Albedo
+                frame.directSignals[3]->resource.get()  // Direct Specular Albedo
+            };
+            const UINT step = device->GetDescriptorHandleIncrementSize(
+                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            auto cpu = frame.nativeDirectPackDescriptors->GetCPUDescriptorHandleForHeapStart();
+            D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+            srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srv.Texture2D.MipLevels = 1;
+            for (uint32_t i = 0; i < inputs.size(); ++i) {
+                srv.Format = i == 0u ? DXGI_FORMAT_R32G32B32A32_FLOAT :
+                    DXGI_FORMAT_R16G16B16A16_FLOAT;
+                device->CreateShaderResourceView(inputs[i], &srv, cpu);
+                cpu.ptr += step;
+            }
+            D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+            uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+            for (uint32_t i = 0; i < 3u; ++i) {
+                uav.Format = i == 2u ? DXGI_FORMAT_R32_UINT :
+                    DXGI_FORMAT_R16G16B16A16_FLOAT;
+                device->CreateUnorderedAccessView(frame.nativeDirectPacked[i].get(),
+                    nullptr, &uav, cpu);
+                cpu.ptr += step;
+            }
+            std::array<D3D12_RESOURCE_BARRIER, 9> before{}, after{};
+            for (uint32_t i = 0; i < inputs.size(); ++i) {
+                before[i] = CD3DX12_RESOURCE_BARRIER::Transition(inputs[i],
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                after[i] = CD3DX12_RESOURCE_BARRIER::Transition(inputs[i],
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            }
+            for (uint32_t i = 0; i < 3u; ++i) {
+                before[i+6u] = CD3DX12_RESOURCE_BARRIER::Transition(
+                    frame.nativeDirectPacked[i].get(), D3D12_RESOURCE_STATE_COMMON,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                after[i+6u] = CD3DX12_RESOURCE_BARRIER::Transition(
+                    frame.nativeDirectPacked[i].get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_COMMON);
+            }
+            list->ResourceBarrier(UINT(before.size()), before.data());
+            ID3D12DescriptorHeap* heaps[]{ frame.nativeDirectPackDescriptors.get() };
+            list->SetDescriptorHeaps(1, heaps);
+            list->SetComputeRootSignature(nativeDirectPackRoot.get());
+            list->SetPipelineState(nativeDirectPackPipeline.get());
+            auto gpu = frame.nativeDirectPackDescriptors->GetGPUDescriptorHandleForHeapStart();
+            list->SetComputeRootDescriptorTable(0, gpu);
+            gpu.ptr += uint64_t(6u) * step;
+            list->SetComputeRootDescriptorTable(1, gpu);
+            const uint32_t constants[8]{
+                frame.size[0], frame.size[1], packedWidth, frame.size[1],
+                frame.number & 1u, 0u, 0u, 0u };
+            list->SetComputeRoot32BitConstants(2, 8, constants, 0);
+            list->Dispatch((packedWidth + 7u) / 8u,
+                (frame.size[1] + 7u) / 8u, 1u);
+            list->ResourceBarrier(UINT(after.size()), after.data());
+            frame.nativeDirectPackValid = true;
+            ++nativeDirectPackDispatches;
+            nativeDirectPackFailure.clear();
+            return true;
+        } catch (const std::exception& error) {
+            nativeDirectPackFailure = error.what();
+            return false;
+        }
+    }
+
     void DirectionalTrace::RecordNativeHybridGI(Frame& frame)
     {
         if (globals::features::rtComposer.AdvancedActive()) {
@@ -1164,6 +1310,9 @@ namespace DX12Native
 				commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 			}
 		}
+        // Resolve preserves true checkerboard anchors, read those exclusively.
+        if (a_frame.nativeDirectRRRequested)
+            (void)RecordNativeDirectRRPack(a_frame);
 		const auto ordered = CD3DX12_RESOURCE_BARRIER::UAV(a_frame.output->resource.get());
 		commands->ResourceBarrier(1, &ordered);
 		std::vector<D3D12_RESOURCE_BARRIER> end{
@@ -1932,7 +2081,9 @@ namespace DX12Native
             currentHybrid->nativeGI.sampling : HybridSamplingLayout{};
 		return {
 			{ "submissions", submissions }, { "completions", completions }, { "previewDrawSubmissions", previewDrawSubmissions },
-			{ "directRRDispatches", directRRDispatches }, { "directRRFrame", directRRFrame }, { "directRRBudgetDeferrals", directRRBudgetDeferrals },
+			{ "nativeDirectPackDispatches", nativeDirectPackDispatches },
+            { "nativeDirectPackFailure", nativeDirectPackFailure },
+            { "directRRDispatches", directRRDispatches }, { "directRRFrame", directRRFrame }, { "directRRBudgetDeferrals", directRRBudgetDeferrals },
 			{ "rrDebugSource", rrFullscreenSource }, { "rrDebugSignal", rrSignalView }, { "rrDebugPreviewValid", rrDebugPreviewValid }, { "rrDebugPreviewFrame", rrDebugPreviewFrame },
 			{ "rrDebugPreviewFailed", rrDebugFailed }, { "rrDebugStorageSize", rrDebugStorageSize },
 			{ "directRR", directDenoiser.GetRayRegenerationDiagnostics() }, { "dxrIndirectRR", indirectDenoiser.GetRayRegenerationDiagnostics() },

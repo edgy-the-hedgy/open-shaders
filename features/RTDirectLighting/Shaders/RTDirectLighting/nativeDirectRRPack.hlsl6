@@ -1,7 +1,8 @@
 // Prepare untouched native DX12 Direct Diffuse/Specular checkerboard samples.
 // This is a PACKING pass, not spatial or temporal reconstruction.
-// Schedule before DirectTraceMode 5's nearest-anchor resolve writes into
-// the producer textures; its output must never be treated as expanded rays.
+// Read ONLY the unchanged traced anchors, after DirectTraceMode 5's
+// resolve (which returns early for those anchors). No replicated pixels
+// are ever accepted as ray samples by the denoiser.
 // AMD FSR RR direct signal A: nonnegative means active; negative means absent.
 Texture2D<float4> TaggedDirect : register(t0);
 Texture2D<float4> DirectDiffuse : register(t1);
