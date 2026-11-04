@@ -26,11 +26,6 @@ struct RTDirectLighting final : OverlayFeature
 		bool RRMaterialIsolation = false;
 		float RRGlossyRoughness = 0.2f;
 		uint32_t DirectRRResolution = 3;  // 3 inherits existing shared RR resolution
-        // Direct producer-owned FSR signal conditioning and composition.
-        bool FSREarlyShadowMask = false;
-        float FSRDirectBlend = 1.0f;
-        bool FSRClampRadiance = false;
-        float FSRRadianceClamp = 16384.0f;
 		uint32_t NormalInfluence = 2;  // 0=legacy flat, 1=geometric, 2=full material/True PBR
 	} settings;
 	std::string GetName() override { return "RTDirectLighting"; }

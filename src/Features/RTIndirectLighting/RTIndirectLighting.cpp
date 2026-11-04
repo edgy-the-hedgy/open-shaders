@@ -2,12 +2,11 @@
 #include "Globals.h"
 #include "Features/RTDirectLighting/RTDirectLighting.h"
 #include "Features/RedstoneGI/RedstoneGI.h"
-#include "Features/RTComposer/RTComposer.h"
 #include "Features/DX12NativeScene/DX12NativeScene.h"
 #include "Utils/DevBenchUx.h"
 #include <cmath>
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTIndirectLighting::Settings, UseRTExclusive, IndirectRays, IndirectStrength, ConnectHybrid, HybridResolution, HybridCheckerboard, HybridContribution, UseHybridRayRegeneration)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTIndirectLighting::Settings, UseRTExclusive, IndirectRays, IndirectStrength, ConnectHybrid, HybridResolution)
 
 std::pair<std::string, std::vector<std::string>> RTIndirectLighting::GetFeatureSummary()
 {
@@ -35,26 +34,6 @@ void RTIndirectLighting::ImportLegacySettings(json& root)
             break;
         }
     }
-    if (auto legacy = root.find("RTComposer");
-        legacy != root.end() && legacy->is_object()) {
-        const auto composer = legacy->value("Composition", json::object());
-        if (composer.is_object() && composer.contains("useFSRRayRegeneration") &&
-            !migrated.contains("UseHybridRayRegeneration"))
-            migrated["UseHybridRayRegeneration"] = composer["useFSRRayRegeneration"];
-        const auto fsr = legacy->value("FSRRenderer", json::object());
-        if (fsr.is_object()) {
-            const auto hybrid = fsr.value("hybridIllumination", json::object());
-            if (hybrid.is_object()) {
-                for (const auto& [from, to] : {
-                        std::pair{"resolution", "HybridResolution"},
-                        std::pair{"checkerboard", "HybridCheckerboard"},
-                        std::pair{"contribution", "HybridContribution"} }) {
-                    if (hybrid.contains(from) && !migrated.contains(to))
-                        migrated[to] = hybrid[from];
-                }
-            }
-        }
-    }
     if (!migrated.empty()) root[GetName()] = std::move(migrated);
 }
 void RTIndirectLighting::LoadSettings(json& value)
@@ -63,8 +42,6 @@ void RTIndirectLighting::LoadSettings(json& value)
 	selected.IndirectRays = std::clamp(selected.IndirectRays, 1u, 8u);
 	selected.RTTraceResolution = std::min(selected.RTTraceResolution, 4u);
 	selected.HybridResolution = std::min(selected.HybridResolution, 2u);
-    selected.HybridContribution = std::isfinite(selected.HybridContribution) ?
-        std::clamp(selected.HybridContribution, 0.0f, 1.0f) : 1.0f;
 	selected.IndirectStrength = std::isfinite(selected.IndirectStrength) ? std::clamp(selected.IndirectStrength, 0.0f, 8.0f) : 1.0f;
 	settings = selected;
 	if (settings.UseRTExclusive) {
@@ -142,10 +119,7 @@ void RTIndirectLighting::DrawSettings()
         if (ImGui::Combo("HybridGI logical resolution", &resolution,
                 "Full\0Half width/height\0Quarter width/height\0"))
             settings.HybridResolution = uint32_t(resolution);
-        ImGui::Checkbox("HybridGI checkerboard", &settings.HybridCheckerboard);
-        ImGui::SliderFloat("HybridGI contribution", &settings.HybridContribution, 0.0f, 1.0f);
-        ImGui::Checkbox("AMD HybridGI RR (optional)", &settings.UseHybridRayRegeneration);
-        ImGui::TextWrapped("HybridGI sampling belongs to RT Indirect Lighting and is independent of Direct trace sampling.");
+        ImGui::TextWrapped("HybridGI resolution belongs to RT Indirect Lighting and is independent of Direct trace sampling.");
 		ImGui::TextWrapped("Hybrid uses raymarched indirect diffuse/specular and occlusion with the raster baseline, optionally combined with RT Direct Lighting.");
 		if (globals::features::rtDirectLighting.loaded && globals::features::rtDirectLighting.settings.UsePreparedDirectLighting) {
 			ImGui::Checkbox("Connect Hybrid GI to prepared direct lighting", &settings.ConnectHybrid);
@@ -226,7 +200,6 @@ json RTIndirectLighting::GetDiagnostics()
 		{ "indirectRays", settings.IndirectRays }, { "indirectStrength", settings.IndirectStrength },
 		{ "rtTraceResolutionMode", settings.RTTraceResolution },
         { "hybridResolution", settings.HybridResolution },
-        { "hybridCheckerboard", settings.HybridCheckerboard },
 		{ "connectHybrid", settings.ConnectHybrid },
 		{ "trace", globals::features::dx12NativeScene.Tracer().GetDiagnostics() } };
 }

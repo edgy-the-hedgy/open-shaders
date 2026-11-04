@@ -11,7 +11,7 @@
 #include "Utils/DevBenchUx.h"
 #include "Util.h"
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTDirectLighting::Settings, RedstoneBlend, UsePreparedDirectLighting, UseAllPreparedLights, UseDirectRayRegeneration, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, SelectedDirectLight, NormalInfluence, PointLightRadiusMultiplier, PointLightFalloffFraction, PointLightFalloffExponent, StochasticSampling, EmitterRadiusMultiplier, RRMaterialIsolation, RRGlossyRoughness, DirectRRResolution, DirectTraceResolution, FSREarlyShadowMask, FSRDirectBlend, FSRClampRadiance, FSRRadianceClamp)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTDirectLighting::Settings, RedstoneBlend, UsePreparedDirectLighting, UseAllPreparedLights, UseDirectRayRegeneration, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, SelectedDirectLight, NormalInfluence, PointLightRadiusMultiplier, PointLightFalloffFraction, PointLightFalloffExponent, StochasticSampling, EmitterRadiusMultiplier, RRMaterialIsolation, RRGlossyRoughness, DirectRRResolution, DirectTraceResolution)
 
 std::pair<std::string, std::vector<std::string>> RTDirectLighting::GetFeatureSummary()
 {
@@ -34,23 +34,6 @@ void RTDirectLighting::ImportLegacySettings(json& root)
             copy(*old, key, key);
         copy(*old, "PreparedLight", "SelectedDirectLight");
     }
-    if (auto legacy = root.find("RTComposer");
-        legacy != root.end() && legacy->is_object()) {
-        const auto directRR = legacy->value("DirectRR", json::object());
-        for (const char* key : { "UseDirectRayRegeneration", "RRMaterialIsolation",
-                "RRGlossyRoughness" })
-            copy(directRR, key, key);
-        const auto composer = legacy->value("Composition", json::object());
-        copy(composer, "useFSRRayRegeneration", "UseDirectRayRegeneration");
-        const auto fsr = legacy->value("FSRRenderer", json::object());
-        if (fsr.is_object()) {
-            const auto hybrid = fsr.value("hybridIllumination", json::object());
-            copy(hybrid, "earlyShadowMask", "FSREarlyShadowMask");
-            copy(hybrid, "rasterDirectBlend", "FSRDirectBlend");
-            copy(hybrid, "clampRadiance", "FSRClampRadiance");
-            copy(hybrid, "radianceClamp", "FSRRadianceClamp");
-        }
-    }
     if (!migrated.empty()) root[GetName()] = std::move(migrated);
 }
 void RTDirectLighting::LoadSettings(json& value)
@@ -68,10 +51,6 @@ void RTDirectLighting::LoadSettings(json& value)
 	selected.DirectRRResolution = std::min(selected.DirectRRResolution, 3u);
 	selected.RRGlossyRoughness = std::isfinite(selected.RRGlossyRoughness) ? std::clamp(selected.RRGlossyRoughness, 0.04f, 1.0f) : 0.2f;
 	selected.RedstoneBlend = std::isfinite(selected.RedstoneBlend) ? std::clamp(selected.RedstoneBlend, 0.0f, 1.0f) : 1.0f;
-    selected.FSRDirectBlend = std::isfinite(selected.FSRDirectBlend) ?
-        std::clamp(selected.FSRDirectBlend, 0.0f, 1.0f) : 1.0f;
-    selected.FSRRadianceClamp = std::isfinite(selected.FSRRadianceClamp) ?
-        std::clamp(selected.FSRRadianceClamp, 1.0f, 65504.0f) : 16384.0f;
 	selected.PointLightRadiusMultiplier = std::isfinite(selected.PointLightRadiusMultiplier) ? std::clamp(selected.PointLightRadiusMultiplier, 0.1f, 64.0f) : 1.0f;
 	selected.PointLightFalloffFraction = std::isfinite(selected.PointLightFalloffFraction) ? std::clamp(selected.PointLightFalloffFraction, 0.02f, 1.0f) : 0.1f;
 	selected.PointLightFalloffExponent = std::isfinite(selected.PointLightFalloffExponent) ? std::clamp(selected.PointLightFalloffExponent, 0.25f, 4.0f) : 1.0f;
@@ -154,15 +133,9 @@ void RTDirectLighting::DrawDirectLightingSettings()
         globals::features::dx12NativeScene.Tracer().Reset();
     }
     ImGui::TextWrapped("Geometry mode ignores normal maps. Full material mode uses loaded shading normals. Legacy flat retains the old response with zero direct specular.");
-    ImGui::TextWrapped("Direct lighting traces native or native checkerboard only. Its RR output stays native; HybridGI uses independent SSGI-sized sampling in RT Composer.");
+    ImGui::TextWrapped("Direct RR output stays native; HybridGI has separate sampling controls.");
 
     ImGui::SliderFloat("Raster / RT blend", &settings.RedstoneBlend, 0.0f, 1.0f, "%.2f");
-    ImGui::SeparatorText("Direct signal composition");
-    ImGui::Checkbox("Capture early visibility mask", &settings.FSREarlyShadowMask);
-    ImGui::SliderFloat("Raster / RT Direct contribution", &settings.FSRDirectBlend, 0.0f, 1.0f);
-    ImGui::Checkbox("Clamp raw Direct radiance (FSR)", &settings.FSRClampRadiance);
-    if (settings.FSRClampRadiance)
-        ImGui::SliderFloat("Direct radiance ceiling", &settings.FSRRadianceClamp, 1.0f, 65504.0f);
     ImGui::SliderFloat("Direct lighting strength", &settings.DirectStrength, 0.0f, 8.0f, "%.2fx");
 
     ImGui::SeparatorText("Point-light reach / falloff (live tuning)");
