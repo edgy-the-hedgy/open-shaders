@@ -267,6 +267,8 @@ struct RTComposer final : Feature
         bool hybridGIRasterBaseline = false;
         bool legacyHybridGIPrototype = false; // explicitly non-production test
         bool nativeDirectRRDiagnostic = false; // opt-in GPU pack / AMD dispatch test
+        bool nativeDirectRRPreview = false;
+        float nativeDirectRRPreviewBlend = 1.0f;
         float sceneShadowInfluence = .9f;
         bool showDirect = true, showDiffuse = true, showSpecular = true, useAO = true;
         bool overrideShadowTemporal = false;
@@ -293,6 +295,10 @@ struct RTComposer final : Feature
             composition.fsrRRMode == FSRRRMode::HybridIllumination &&
             advancedDeveloperMode && developer.nativeDirectRRDiagnostic &&
             !developer.legacyHybridGIPrototype;
+    }
+    bool NativeDirectRRPreviewActive() const
+    {
+        return NativeDirectRRDiagnosticActive() && developer.nativeDirectRRPreview;
     }
     bool LegacyHybridPrototypeActive() const
     {

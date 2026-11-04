@@ -214,6 +214,9 @@ json RTComposer::GetDiagnostics()
         { "fsrLegacyHybridPrototype", LegacyHybridPrototypeActive() },
         { "fsrDirectRawPackShaderPackaged", true },
         { "fsrDirectRawPackDispatchWired", NativeDirectRRDiagnosticActive() },
+        { "nativeDirectRRPreviewRequested", NativeDirectRRPreviewActive() },
+        { "nativeDirectRRPreviewBlend",
+            NativeDirectRRPreviewActive() ? developer.nativeDirectRRPreviewBlend : 0.0f },
         { "fsrNativeDirectRRContextsReady", false },
         { "fsrEnhancedSecondBounceWired", false },
         { "fsrHybridIndependentDispatchWired", false },
@@ -836,9 +839,16 @@ void RTComposer::DrawSettings()
                 &developer.legacyHybridGIPrototype);
             ImGui::TextWrapped("Research only: this uses the old DX12 Hybrid-Shadowed path and native RR fallback, not the new raw Direct Diffuse/Specular RR pipeline.");
             if (!developer.legacyHybridGIPrototype) {
-                ImGui::Checkbox("Native Direct FSR-RR diagnostic (GPU-only, not presented)",
+                ImGui::Checkbox("Native Direct FSR-RR diagnostic (GPU-only)",
                     &developer.nativeDirectRRDiagnostic);
-                ImGui::TextWrapped("Traces native checkerboard Direct rays and packs untouched diffuse/specular anchor radiance. The final scene remains Shadow Only until native RR composition is validated. Even render width required.");
+                if (developer.nativeDirectRRDiagnostic) {
+                    ImGui::Checkbox("Preview native Direct RR scene composition",
+                        &developer.nativeDirectRRPreview);
+                    if (developer.nativeDirectRRPreview)
+                        ImGui::SliderFloat("Direct RR scene blend",
+                            &developer.nativeDirectRRPreviewBlend, 0.0f, 1.0f);
+                }
+                ImGui::TextWrapped("Uses native checkerboard Direct rays and independent AMD Direct Diffuse/Specular contexts. Preview only composes completed Direct RR results; any missing result preserves Shadow Only. This is not the finished Hybrid-Illumination tier.");
             }
         }
         if (ImGui::Button("Reset developer test parameters"))
