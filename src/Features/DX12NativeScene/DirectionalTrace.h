@@ -182,6 +182,10 @@ namespace DX12Native
             std::array<winrt::com_ptr<ID3D12Resource>, 3> nativeDirectPacked{};
             winrt::com_ptr<ID3D12DescriptorHeap> nativeDirectPackDescriptors;
             bool nativeDirectRRRequested = false, nativeDirectPackValid = false;
+            bool nativeDirectRRReady = false;
+            uint32_t nativeDirectRRSuccessMask = 0u;
+            NativeHybridGI::FrameOutputs nativeDirectGuides;
+            std::array<winrt::com_ptr<ID3D12Resource>, 2> nativeDirectRROutputs{};
             std::array<std::unique_ptr<WrappedResource>, kHybridInputCount> hybridInputs;
             bool hybridInputsReady = false;
             winrt::com_ptr<ID3D12Resource> hybridShadowedSource;
@@ -240,6 +244,7 @@ namespace DX12Native
                 frame.shadowTemporal.get() : frame.shadowMask.get();
         }
         bool RecordNativeDirectRRPack(Frame& a_frame);
+        bool RecordNativeDirectRR(Frame& a_frame);
         void RecordNativeHybridGI(Frame& a_frame);
         void RecordAdvancedTransport(Frame& a_frame);
 		void Record(Frame& a_frame, const float3& a_direction, bool a_localLight);
@@ -266,6 +271,10 @@ namespace DX12Native
         winrt::com_ptr<ID3D12PipelineState> nativeDirectPackPipeline;
         uint64_t nativeDirectPackDispatches = 0;
         std::string nativeDirectPackFailure;
+        std::unique_ptr<NativeHybridGI> nativeDirectGuideBuilder;
+        std::unique_ptr<RedstoneDenoiser> nativeDirectRRDenoiser;
+        uint64_t nativeDirectRRSuccessfulFrames = 0, nativeDirectRRFailedFrames = 0;
+        std::string nativeDirectRRFailure;
         std::unique_ptr<NativeHybridGI> nativeHybridGI;
         std::unique_ptr<NativeHybridGI> postHybridGI;
         std::unique_ptr<RedstoneDenoiser> advancedDenoiser; // quarantinable if GPU retirement times out

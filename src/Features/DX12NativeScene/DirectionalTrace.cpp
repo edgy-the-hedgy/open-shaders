@@ -905,6 +905,100 @@ namespace DX12Native
         }
     }
 
+
+    bool DirectionalTrace::RecordNativeDirectRR(Frame& frame)
+    {
+        frame.nativeDirectRRReady = false;
+        frame.nativeDirectRRSuccessMask = 0u;
+        if (!frame.nativeDirectRRRequested || !frame.nativeDirectPackValid ||
+            !frame.hybridShadowedSourceReady || !frame.hybridLinearDepth ||
+            !frame.hybridInputsReady || !frame.hybridInputs[5]) {
+            nativeDirectRRFailure = "Native Direct RR raw input or guides unavailable";
+            ++nativeDirectRRFailedFrames;
+            return false;
+        }
+        try {
+            if (!nativeDirectGuideBuilder)
+                nativeDirectGuideBuilder = std::make_unique<NativeHybridGI>();
+            auto* device = backend.d3d12Device.get();
+            auto* list = frame.commands.get();
+            auto& guides = frame.nativeDirectGuides;
+            const uint32_t slot = uint32_t(&frame - frames.data());
+            if (!nativeDirectGuideBuilder->RecordDirectRRGuides(
+                    device, list, guides, slot, frame.number, frame.size,
+                    frame.hybridLinearDepth.get(),
+                    frame.directSignals[2]->resource.get(),
+                    frame.hybridInputs[5]->resource.get(),
+                    frame.directSignals[4]->resource.get(),
+                    frame.directSignals[3]->resource.get())) {
+                nativeDirectRRFailure = nativeDirectGuideBuilder->GuideFailure();
+                ++nativeDirectRRFailedFrames;
+                return false;
+            }
+            const uint64_t policy = globals::features::rtComposer.developerRevision;
+            if (!nativeDirectGuideBuilder->RecordHistoryValidation(
+                    device, list, guides, slot, frame.number,
+                    frame.generation ^ (policy * 0x9e3779b97f4a7c15ULL))) {
+                nativeDirectRRFailure = nativeDirectGuideBuilder->HistoryFailure();
+                ++nativeDirectRRFailedFrames;
+                return false;
+            }
+            const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+            for (uint32_t i = 0; i < 2u; ++i) {
+                if (frame.nativeDirectRROutputs[i]) continue;
+                const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(
+                    DXGI_FORMAT_R16G16B16A16_FLOAT,
+                    frame.size[0], frame.size[1], 1, 1, 1, 0,
+                    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+                DX::ThrowIfFailed(device->CreateCommittedResource(&heap,
+                    D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON,
+                    nullptr, IID_PPV_ARGS(frame.nativeDirectRROutputs[i].put())));
+            }
+            if (!nativeDirectRRDenoiser)
+                nativeDirectRRDenoiser = std::make_unique<RedstoneDenoiser>();
+            if (!nativeDirectRRDenoiser->Initialize(backend)) {
+                nativeDirectRRFailure = "AMD native Direct RR initialization unavailable";
+                ++nativeDirectRRFailedFrames;
+                return false;
+            }
+            RedstoneDenoiser::NativeHybridResources resources{};
+            resources.nativeSize = frame.size;
+            resources.logicalSize = frame.size;
+            resources.frame = frame.number;
+            resources.checkerboard = true;
+            resources.checkerboardOrigin = frame.number & 1u;
+            resources.resetHistory = !guides.rrHistoryValid;
+            resources.skipOcclusion = true;
+            resources.directFamilies = true;
+            resources.inputs[0] = frame.nativeDirectPacked[0].get();
+            resources.inputs[1] = frame.nativeDirectPacked[1].get();
+            resources.outputs[0] = frame.nativeDirectRROutputs[0].get();
+            resources.outputs[1] = frame.nativeDirectRROutputs[1].get();
+            for (uint32_t i = 0; i < resources.guides.size(); ++i)
+                resources.guides[i] = guides.rrGuides[i].get();
+            if (guides.rrHistoryValid && guides.rrValidatedMotion)
+                resources.guides[1] = guides.rrValidatedMotion.get();
+            const bool sdkComplete =
+                nativeDirectRRDenoiser->DispatchNativeHybridRR(list, resources);
+            frame.nativeDirectRRSuccessMask =
+                nativeDirectRRDenoiser->NativeHybridSuccessfulFamilyMask() & 3u;
+            frame.nativeDirectRRReady =
+                sdkComplete && frame.nativeDirectRRSuccessMask == 3u;
+            if (!frame.nativeDirectRRReady) {
+                nativeDirectRRFailure = nativeDirectRRDenoiser->NativeHybridFailure();
+                ++nativeDirectRRFailedFrames;
+                return false;
+            }
+            nativeDirectRRFailure.clear();
+            ++nativeDirectRRSuccessfulFrames;
+            return true;
+        } catch (const std::exception& error) {
+            nativeDirectRRFailure = std::string("Direct RR: ") + error.what();
+            ++nativeDirectRRFailedFrames;
+            return false;
+        }
+    }
+
     void DirectionalTrace::RecordNativeHybridGI(Frame& frame)
     {
         if (globals::features::rtComposer.AdvancedActive()) {
@@ -1331,6 +1425,8 @@ namespace DX12Native
         RecordShadowTemporal(a_frame);
         if (a_frame.hybridInputsReady) {
             RecordHybridShadowedSource(a_frame);
+            if (a_frame.nativeDirectRRRequested)
+                (void)RecordNativeDirectRR(a_frame);
             RecordNativeHybridGI(a_frame);
         }
 		DX::ThrowIfFailed(commands->Close());
@@ -1686,7 +1782,7 @@ namespace DX12Native
         // Conservative DX12 reserve for half-width raw checkerboard, five
         // full-native material/motion guides and two AMD output textures.
         uint64_t nativeDirectBytes = nativeDirectTest ?
-            nextPreviewBytes * 10u + kFrameOverheadBytes : 0u;
+            nextPreviewBytes * 12u + kFrameOverheadBytes : 0u;
         // Optional blur is already resolved for frame-reuse and budget checks.
         uint64_t nativeGIBytes = wantNativeGI ?
             NativeHybridGI::EstimateBytes(backend.d3d12Device.get(), size[0], size[1],
@@ -1838,6 +1934,8 @@ namespace DX12Native
             available->nativeGIRequested = wantNativeGI;
             available->nativeDirectRRRequested = nativeDirectTest;
             available->nativeDirectPackValid = false;
+            available->nativeDirectRRReady = false;
+            available->nativeDirectRRSuccessMask = 0u;
             available->reconstructionBlurMask = requestedBlurMask;
             available->nativeGI.valid = false;
 			available->materialView = std::min(a_materialView, kCombinedDirectView);
@@ -2098,6 +2196,11 @@ namespace DX12Native
 		return {
 			{ "submissions", submissions }, { "completions", completions }, { "previewDrawSubmissions", previewDrawSubmissions },
 			{ "nativeDirectPackDispatches", nativeDirectPackDispatches },
+            { "nativeDirectRRSuccessfulFrames", nativeDirectRRSuccessfulFrames },
+            { "nativeDirectRRFailedFrames", nativeDirectRRFailedFrames },
+            { "nativeDirectRRFailure", nativeDirectRRFailure },
+            { "nativeDirectRRLastReady", std::ranges::any_of(frames,
+                [](const Frame& frame) { return frame.nativeDirectRRReady; }) },
             { "nativeDirectPackFailure", nativeDirectPackFailure },
             { "directRRDispatches", directRRDispatches }, { "directRRFrame", directRRFrame }, { "directRRBudgetDeferrals", directRRBudgetDeferrals },
 			{ "rrDebugSource", rrFullscreenSource }, { "rrDebugSignal", rrSignalView }, { "rrDebugPreviewValid", rrDebugPreviewValid }, { "rrDebugPreviewFrame", rrDebugPreviewFrame },
