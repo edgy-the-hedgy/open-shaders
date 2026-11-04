@@ -109,6 +109,16 @@ bool DX12NativeScene::WantsOpaqueRoomMetadata() const
 	return ready && settings.UsePreparedScene && preparedActive && !transitionOpen && !globals::game::isVR && !globals::state->isMapMenuOpen;
 }
 
+void DX12NativeScene::OnBeforeDeferredLightingComposite(ID3D11ShaderResourceView* diffuse, ID3D11ShaderResourceView* specular,
+	const std::array<uint32_t, 2>& size)
+{
+	const auto& hybrid = globals::features::redstoneGI;
+	if (hybrid.loaded && hybrid.settings.NativeHybrid && !transitionOpen && !globals::game::isVR &&
+		!globals::state->isMapMenuOpen && !(globals::state->permutationData.ExtraShaderDescriptor &
+			static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
+		nativeHybrid.CaptureSource(diffuse, specular, size, globals::game::graphicsState->GetFrameCount());
+}
+
 void DX12NativeScene::OnDeferredLightingComplete(ID3D11UnorderedAccessView* target, const std::array<uint32_t, 2>& size)
 {
 	nativeHybrid.Retire();

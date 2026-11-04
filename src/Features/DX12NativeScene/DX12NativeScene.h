@@ -85,6 +85,9 @@ struct DX12NativeScene final : OverlayFeature
 	void OnAfterDeferredLighting(ID3D11UnorderedAccessView* a_target, const std::array<uint32_t, 2>& a_size) override;
 	/** @brief Records independent raster-sourced GI after all direct feature callbacks. */
 	void OnDeferredLightingComplete(ID3D11UnorderedAccessView* a_target, const std::array<uint32_t, 2>& a_size) override;
+	/** @brief Captures an initially lit source without changing selected indirect providers. */
+	void OnBeforeDeferredLightingComposite(ID3D11ShaderResourceView* diffuse, ID3D11ShaderResourceView* specular,
+		const std::array<uint32_t, 2>& size) override;
 	/** @brief Requests receiver-room storage only for the active eligible prepared-scene session. */
 	bool WantsOpaqueRoomMetadata() const override;
 	/** @brief Claims exclusive indirect ownership even when a requested DXR scene is unavailable. */

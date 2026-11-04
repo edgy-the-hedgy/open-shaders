@@ -11,7 +11,7 @@ namespace DX12Native
 {
     void NativeHybridGI::ReloadShaders()
     {
-        Reset(); prepareInputs = nullptr; root = nullptr; descriptors = nullptr;
+        Reset(); prepareInputs = nullptr; captureSource = nullptr; sourceFrame = UINT32_MAX; root = nullptr; descriptors = nullptr;
         for (auto& value : pipelines) value = nullptr;
         signalPreparation.Reload(); composition.Reset(); failure.clear();
     }
@@ -48,8 +48,84 @@ namespace DX12Native
         }
     }
 
-    void NativeHybridGI::PrepareInputs(Frame& frame, const RedstoneGI&)
-    {
+	void NativeHybridGI::CaptureSource(ID3D11ShaderResourceView* diffuse, ID3D11ShaderResourceView* specular,
+		const std::array<uint32_t, 2>& size, uint32_t frameNumber)
+	{
+		CS_GPU_PASS("RedstoneGI::InitiallyLitSnapshot");
+		sourceFrame = UINT32_MAX;
+		if (!diffuse || !specular || !size[0] || !size[1])
+			return;
+		try {
+			auto* context = globals::d3d::context;
+			if (!captureSource) {
+				captureSource.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(
+					L"Data\\Shaders\\RedstoneGI\\nativeSource.cs.hlsl", {}, "cs_5_0")));
+				if (!captureSource)
+					throw std::runtime_error("Native pre-GI snapshot shader unavailable");
+			}
+			if (!initialRadiance || sourceSize != size) {
+				initialRadiance.reset();
+				D3D11_TEXTURE2D_DESC desc{};
+				desc.Width = size[0];
+				desc.Height = size[1];
+				desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
+				desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+				desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+				initialRadiance = std::make_unique<Texture2D>(desc, "RedstoneGI::InitiallyLitRadiance");
+				D3D11_SHADER_RESOURCE_VIEW_DESC srv{};
+				srv.Format = desc.Format;
+				srv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+				srv.Texture2D.MipLevels = 1;
+				initialRadiance->CreateSRV(srv);
+				D3D11_UNORDERED_ACCESS_VIEW_DESC uav{};
+				uav.Format = desc.Format;
+				uav.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+				initialRadiance->CreateUAV(uav);
+				sourceSize = size;
+			}
+			if (!sourceSettings)
+				sourceSettings = std::make_unique<ConstantBuffer>(ConstantBufferDesc<float4>(), "RedstoneGI::InitialSourceSettings");
+			sourceSettings->Update(std::array<uint32_t, 4>{ size[0], size[1], 0, 0 });
+			winrt::com_ptr<ID3D11ComputeShader> previousShader;
+			std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 2> previousReads;
+			winrt::com_ptr<ID3D11UnorderedAccessView> previousWrite;
+			std::array<winrt::com_ptr<ID3D11Buffer>, 4> previousBuffers;
+			constexpr std::array slots{ 5u, 6u, 12u, 13u };
+			context->CSGetShader(previousShader.put(), nullptr, nullptr);
+			for (uint32_t i = 0; i < 2; ++i) context->CSGetShaderResources(i, 1, previousReads[i].put());
+			context->CSGetUnorderedAccessViews(0, 1, previousWrite.put());
+			for (uint32_t i = 0; i < 4; ++i) context->CSGetConstantBuffers(slots[i], 1, previousBuffers[i].put());
+			globals::state->BindSharedDataCS(context);
+			auto* cb = sourceSettings->CB();
+			context->CSSetConstantBuffers(13, 1, &cb);
+			ID3D11ShaderResourceView* reads[]{ diffuse, specular };
+			auto* write = initialRadiance->uav.get();
+			context->CSSetShaderResources(0, 2, reads);
+			context->CSSetUnorderedAccessViews(0, 1, &write, nullptr);
+			context->CSSetShader(captureSource.get(), nullptr, 0);
+			context->Dispatch((size[0] + 7u) / 8u, (size[1] + 7u) / 8u, 1);
+			write = nullptr;
+			context->CSSetUnorderedAccessViews(0, 1, &write, nullptr);
+			for (uint32_t i = 0; i < 2; ++i) {
+				auto* prior = previousReads[i].get();
+				context->CSSetShaderResources(i, 1, &prior);
+			}
+			write = previousWrite.get();
+			context->CSSetUnorderedAccessViews(0, 1, &write, nullptr);
+			for (uint32_t i = 0; i < 4; ++i) {
+				auto* prior = previousBuffers[i].get();
+				context->CSSetConstantBuffers(slots[i], 1, &prior);
+			}
+			context->CSSetShader(previousShader.get(), nullptr, 0);
+			sourceFrame = frameNumber;
+			sourceSelectedProvider = globals::deferred->indirectLighting ? globals::deferred->indirectLighting->GetName() : "none";
+		} catch (const std::exception& error) {
+			failure = error.what();
+		}
+	}
+
+	void NativeHybridGI::PrepareInputs(Frame& frame, const RedstoneGI&)
+	{
         CS_GPU_PASS("RedstoneGI::NativeSnapshot");
         auto* context = backend.d3d11Context.get();
         std::array<winrt::com_ptr<ID3D11Buffer>, 4> priorBuffers;
@@ -62,7 +138,7 @@ namespace DX12Native
         auto targets = globals::game::renderer->GetRuntimeData().renderTargets;
         ID3D11ShaderResourceView* reads[]{ Util::GetCurrentSceneDepthSRV(),
             Util::AsReal(targets[NORMALROUGHNESS].SRV),
-            Util::AsReal(targets[RE::RENDER_TARGETS::kMAIN].SRV),
+            initialRadiance->srv.get(),
             Util::AsReal(targets[ALBEDO].SRV), Util::AsReal(targets[REFLECTANCE].SRV),
             Util::AsReal(targets[RE::RENDER_TARGET::kMOTION_VECTOR].SRV) };
         ID3D11UnorderedAccessView* writes[6]{};
@@ -96,6 +172,7 @@ namespace DX12Native
         if (lastRequestedFrame == frameNumber) return;
         lastRequestedFrame = frameNumber;
         ++requests;
+        if (sourceFrame != frameNumber || sourceSize != size || !initialRadiance) { failure = "Current-frame pre-GI source unavailable"; return; }
         if (!graphics.d3d12Device || !graphics.d3d11Device || !graphics.d3d11Context ||
             !graphics.commandQueue || !size[0] || !size[1]) return;
         const auto available = std::find_if(frames.begin(), frames.end(), [](const Frame& frame) { return !frame.fence; });
@@ -208,6 +285,9 @@ namespace DX12Native
             { "busyFrames", busyFrames }, { "failure", failure }, { "requiresPreparedScene", false },
             { "nativeRR", nativeDenoiser.GetNativeDiagnostics() }, { "rrPreparationFailure", rrFailure },
             { "slot0RRRecordedMask", frames[0].rr.recordedMask }, { "slot1RRRecordedMask", frames[1].rr.recordedMask },
+            { "radianceSource", "current-frame pre-indirect raster diffuse plus specular" },
+            { "sourceFrame", sourceFrame }, { "sourceIncludesNativeGI", false }, { "sourceIncludesLegacyGIComposite", false },
+            { "sourceIncludesNativeDirectOverride", false }, { "selectedLegacyProvider", sourceSelectedProvider },
             { "requiresDirect", false }, { "requiresRR", false }, { "scenePublishSubmissions", scenePublications },
             { "scenePublishFrame", publicationFrame }, { "rrOutputsBoundForComposition", rrOutputsBoundMask },
             { "compositionFailure", compositionFailure }, { "visualConsumptionVerified", false } };

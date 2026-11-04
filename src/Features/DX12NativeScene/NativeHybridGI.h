@@ -30,6 +30,9 @@ namespace DX12Native
         void Reset();
         /** @brief Reloads producer and consumer bytecode while submitted frames retain old pass objects. */
         void ReloadShaders();
+        /** @brief Snapshots current raster diffuse/specular before any indirect composite. */
+        void CaptureSource(ID3D11ShaderResourceView* diffuse, ID3D11ShaderResourceView* specular,
+            const std::array<uint32_t, 2>& size, uint32_t frameNumber);
         static constexpr uint32_t kOutputs = 5;
         static constexpr uint64_t kCameraSnapshotOffset = 1280;
         enum Output : uint32_t { Specular = 0, Diffuse = 1, Eligibility = 2, DiffuseAO = 3, SpecularAO = 4 };
@@ -88,6 +91,12 @@ namespace DX12Native
         GraphicsBackend backend;
         SharedFence producer, completion;
         winrt::com_ptr<ID3D11ComputeShader> prepareInputs;
+        winrt::com_ptr<ID3D11ComputeShader> captureSource;
+        std::unique_ptr<Texture2D> initialRadiance;
+        std::unique_ptr<ConstantBuffer> sourceSettings;
+        uint32_t sourceFrame = UINT32_MAX;
+        std::array<uint32_t, 2> sourceSize{};
+        std::string sourceSelectedProvider;
         uint64_t requests = 0, submissions = 0, completions = 0, busyFrames = 0;
         uint32_t lastRequestedFrame = UINT32_MAX;
         bool Initialize(ID3D12Device* device);

@@ -8,7 +8,8 @@ namespace DX12Native
 {
     uint64_t NativeHybridGI::ResidentBytes() const
     {
-        uint64_t bytes = 0;
+        uint64_t bytes = initialRadiance && backend.d3d12Device ?
+            NativeTextureBytes(backend.d3d12Device.get(), sourceSize, DXGI_FORMAT_R16G16B16A16_FLOAT) : 0;
         auto* device = backend.d3d12Device.get();
         for (const auto& frame : frames) {
             for (const auto& source : frame.sources) bytes += NativeAllocationBytes(device, source ? source->resource.get() : nullptr);

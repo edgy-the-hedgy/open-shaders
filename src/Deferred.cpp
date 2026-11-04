@@ -456,6 +456,11 @@ void Deferred::DeferredPasses()
 	auto& skylighting = globals::features::skylighting;
 
 	SelectIndirectLighting();
+	Feature::ForEachLoadedFeature("OnBeforeDeferredLightingComposite", [&](Feature* feature) {
+		const auto resolution = Util::ConvertToDynamic(globals::state->screenSize);
+		feature->OnBeforeDeferredLightingComposite(Util::AsReal(main.SRV), Util::AsReal(specular.SRV),
+			{ uint32_t(resolution.x), uint32_t(resolution.y) });
+	});
 	if (indirectLighting) indirectLighting->DrawIndirectLighting();
 	auto [ssgi_ao, ssgi_y, ssgi_cocg, ssgi_gi_spec] = indirectLighting ? indirectLighting->GetIndirectLightingTextures() : Feature::IndirectLightingTextures{};
 	bool ssgi_hq_spec = indirectLighting && indirectLighting->UsesSpecularIndirectLighting();

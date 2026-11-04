@@ -245,6 +245,8 @@ public:
 	virtual void BindCompositeResources() {}
 	/** @brief Retires private composite state and records output consumption. */
 	virtual void FinishComposite(bool) {}
+	/** @brief Offers initially lit opaque diffuse/specular sources before indirect composition. */
+	virtual void OnBeforeDeferredLightingComposite(ID3D11ShaderResourceView*, ID3D11ShaderResourceView*, const std::array<uint32_t, 2>&) {}
 	/** @brief Offers the completed opaque lighting target before forward world rendering. */
 	virtual void OnAfterDeferredLighting(ID3D11UnorderedAccessView*, const std::array<uint32_t, 2>&) {}
 	/** @brief Runs after all deferred-lighting feature callbacks have recorded their contributions. */
