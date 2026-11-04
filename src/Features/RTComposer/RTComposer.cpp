@@ -191,7 +191,26 @@ json RTComposer::GetDiagnostics()
         { "rendererFamily", RendererFamilyName(composition.rendererFamily) },
         { "openRTRequestedMode", static_cast<uint32_t>(composition.openRTMode) },
         { "fsrRRRequestedMode", FSRModeName(composition.fsrRRMode) },
-        { "fsrProductionReady", false },
+        { "fsrProductionReady", GetFSRContract(composition.fsrRRMode).productionReady },
+        { "fsrRequestedWorkload", {
+            { "directTraceMode", GetFSRContract(composition.fsrRRMode).directTraceMode },
+            { "directCheckerboard", GetFSRContract(composition.fsrRRMode).checkerboard },
+            { "sharedPrimaryTraversal", GetFSRContract(composition.fsrRRMode).sharedPrimaryTraversal },
+            { "independentDirectDiffuse", GetFSRContract(composition.fsrRRMode).directDiffuse },
+            { "independentDirectSpecular", GetFSRContract(composition.fsrRRMode).directSpecular },
+            { "hybridGI", GetFSRContract(composition.fsrRRMode).hybridGI },
+            { "hybridConcurrentEligible", GetFSRContract(composition.fsrRRMode).concurrentHybridGI },
+            { "firstBounceSurvival", GetFSRContract(composition.fsrRRMode).firstBounceSurvival },
+            { "secondBounceSurvival", GetFSRContract(composition.fsrRRMode).secondBounceSurvival },
+            { "productionReady", GetFSRContract(composition.fsrRRMode).productionReady }
+        } },
+        { "fsrHybridGISettings", {
+            { "resolution", composition.fsrHybrid.resolution },
+            { "checkerboard", composition.fsrHybrid.checkerboard },
+            { "contribution", composition.fsrHybrid.contribution },
+            { "shadowSkipThreshold", composition.fsrHybrid.shadowSkipThreshold },
+            { "shadowInfluence", composition.fsrHybrid.shadowInfluence }
+        } },
         { "fsrLegacyHybridPrototype", LegacyHybridPrototypeActive() },
         { "requestedMode", ModeName(composition.mode) },
         { "requestedTierReady", composition.mode == CompositorMode::Custom || GetTierPolicy(composition.mode).ready },
@@ -506,6 +525,20 @@ void RTComposer::SaveSettings(json& value)
             { "hybridResolution", composition.hybridResolution },
             { "hybridCheckerboard", composition.hybridCheckerboard },
             { "reconstruction", SaveHybridFilters(composition.reconstruction) }
+        } },
+        { "FSRRenderer", {
+            { "hybridIllumination", {
+                { "resolution", composition.fsrHybrid.resolution },
+                { "checkerboard", composition.fsrHybrid.checkerboard },
+                { "contribution", composition.fsrHybrid.contribution },
+                { "shadowSkipThreshold", composition.fsrHybrid.shadowSkipThreshold },
+                { "shadowInfluence", composition.fsrHybrid.shadowInfluence }
+            } },
+            { "rtEnhanced", {
+                { "firstBounceSurvival", 1.0f },
+                { "secondBounceSurvival", 0.5f },
+                { "hybridGI", false }
+            } }
         } }
     };
 }
@@ -602,6 +635,35 @@ void RTComposer::LoadSettings(json& value)
         composition.directCheckerboard = (migratedSampling & 1u) != 0u;
         composition.hybridResolution = migratedSampling >= 2u ? 1u : 0u;
         composition.hybridCheckerboard = composition.directCheckerboard;
+    }
+    // New family settings are kept in their own persisted section.
+    // Existing Hybrid-Shadowed settings are migrated once for baseline tests.
+    if (auto settings = value.find("FSRRenderer");
+        settings != value.end() && settings->is_object()) {
+        if (auto hybrid = settings->find("hybridIllumination");
+            hybrid != settings->end() && hybrid->is_object()) {
+            composition.fsrHybrid.resolution =
+                std::min(hybrid->value("resolution", 2u), 2u);
+            composition.fsrHybrid.checkerboard =
+                hybrid->value("checkerboard", false);
+            auto boundedFSR = [&](const char* key, float fallback) {
+                const float v = hybrid->value(key, fallback);
+                return std::isfinite(v) ? std::clamp(v, 0.0f, 1.0f) : fallback;
+            };
+            composition.fsrHybrid.contribution =
+                boundedFSR("contribution", 1.0f);
+            composition.fsrHybrid.shadowSkipThreshold =
+                boundedFSR("shadowSkipThreshold", .25f);
+            composition.fsrHybrid.shadowInfluence =
+                boundedFSR("shadowInfluence", .9f);
+        }
+    } else if (composition.rendererFamily == RendererFamily::FSRRayRegeneration &&
+        composition.fsrRRMode == FSRRRMode::HybridIllumination) {
+        composition.fsrHybrid.resolution = composition.hybridResolution;
+        composition.fsrHybrid.checkerboard = composition.hybridCheckerboard;
+        composition.fsrHybrid.contribution = composition.giContribution;
+        composition.fsrHybrid.shadowSkipThreshold = composition.shadowThreshold;
+        composition.fsrHybrid.shadowInfluence = composition.shadowInfluence;
     }
     SynchronizeRendererFamily();
     if (beforeFamily != composition.rendererFamily ||
@@ -714,6 +776,23 @@ void RTComposer::DrawSettings()
             ImGui::EndCombo();
         }
         ImGui::TextWrapped("FSR-RR raw Direct and two-bounce transport is under construction. The selected request is saved independently. Production uses safe Shadow Only until these native DX12 RR providers are ready.");
+        if (composition.fsrRRMode == FSRRRMode::HybridIllumination) {
+            ImGui::SeparatorText("HybridGI baseline settings (FSR-specific)");
+            int res = static_cast<int>(composition.fsrHybrid.resolution);
+            bool changed = ImGui::Combo("HybridGI logical resolution", &res,
+                "Full\0Half width/height\0Quarter width/height\0");
+            if (changed) composition.fsrHybrid.resolution = uint32_t(res);
+            changed |= ImGui::Checkbox("HybridGI checkerboard", &composition.fsrHybrid.checkerboard);
+            changed |= ImGui::SliderFloat("HybridGI contribution",
+                &composition.fsrHybrid.contribution, 0.0f, 1.0f);
+            changed |= ImGui::SliderFloat("HybridGI shadow skip threshold",
+                &composition.fsrHybrid.shadowSkipThreshold, 0.0f, 1.0f);
+            changed |= ImGui::SliderFloat("HybridGI native shadow influence",
+                &composition.fsrHybrid.shadowInfluence, 0.0f, 1.0f);
+            if (changed && LegacyHybridPrototypeActive())
+                OnCompositionPolicyChanged();
+            ImGui::TextWrapped("These settings belong to FSR Hybrid-Illumination only. The research prototype can apply them before the final RR-only pipeline becomes available.");
+        }
         if (composition.fsrRRMode == FSRRRMode::FSRRedstone)
             ImGui::TextWrapped("FSR-REDSTONE is unavailable.");
     }

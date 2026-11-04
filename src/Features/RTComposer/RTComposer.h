@@ -43,6 +43,41 @@ struct RTComposer final : Feature
         }
         return CompositorMode::ShadowOnly;
     }
+    // FSR mode contracts are design targets, not permission to dispatch.
+    // Each RR signal remains raw until the vendor denoiser consumes it.
+    struct FSRWorkloadContract
+    {
+        uint32_t directTraceMode;
+        bool checkerboard, sharedPrimaryTraversal;
+        bool directDiffuse, directSpecular, concurrentHybridGI;
+        float firstBounceSurvival, secondBounceSurvival;
+        bool hybridGI, productionReady;
+    };
+    static constexpr FSRWorkloadContract GetFSRContract(FSRRRMode mode)
+    {
+        switch (mode) {
+        case FSRRRMode::HybridIllumination:
+            return { 5u, true, true, true, true, true,
+                0.0f, 0.0f, true, false };
+        case FSRRRMode::RTEnhanced:
+            return { 5u, true, true, true, true, false,
+                1.0f, 0.5f, false, false };
+        case FSRRRMode::FSRRedstone:
+            return { 5u, true, true, true, true, false,
+                1.0f, 0.5f, false, false };
+        }
+        return GetFSRContract(FSRRRMode::HybridIllumination);
+    }
+    // Independent FSR HybridGI baselining; never overwrites Open RT settings.
+    struct FSRHybridSettings
+    {
+        uint32_t resolution = 2u; // 0 full, 1 half, 2 quarter width/height
+        bool checkerboard = false;
+        float contribution = 1.0f;
+        float shadowSkipThreshold = 0.25f;
+        float shadowInfluence = 0.9f;
+        bool operator==(const FSRHybridSettings&) const = default;
+    };
     struct TierPolicy
     {
         uint32_t directTraceMode; // DXR 6=quarter checkerboard (12.5%), 7=quarter (25%), 5=native checkerboard
@@ -184,6 +219,7 @@ struct RTComposer final : Feature
         RendererFamily rendererFamily = RendererFamily::OpenRT;
         OpenRTMode openRTMode = OpenRTMode::ShadowOnly;
         FSRRRMode fsrRRMode = FSRRRMode::HybridIllumination;
+        FSRHybridSettings fsrHybrid{};
         bool customHybridShadowed = false; // saved custom backend choice
         float shadowInfluence = 0.8f;
         float rtDirectContribution = 0.25f; // composition blend; tier's direct radiance still distinct
@@ -424,3 +460,11 @@ static_assert([] {
     return rr.Get(Mode::RTEnhanced, 0u) &&
         rr.Get(Mode::RTEnhanced, 1u) && rr.Get(Mode::RTEnhanced, 2u);
 }(), "RT Composer fixed RR selection and migration defaults must remain independent");
+
+static_assert(RTComposer::GetFSRContract(RTComposer::FSRRRMode::HybridIllumination).directTraceMode == 5u);
+static_assert(RTComposer::GetFSRContract(RTComposer::FSRRRMode::HybridIllumination).sharedPrimaryTraversal);
+static_assert(RTComposer::GetFSRContract(RTComposer::FSRRRMode::HybridIllumination).hybridGI);
+static_assert(RTComposer::GetFSRContract(RTComposer::FSRRRMode::RTEnhanced).firstBounceSurvival == 1.0f);
+static_assert(RTComposer::GetFSRContract(RTComposer::FSRRRMode::RTEnhanced).secondBounceSurvival == .5f);
+static_assert(!RTComposer::GetFSRContract(RTComposer::FSRRRMode::RTEnhanced).hybridGI);
+static_assert(!RTComposer::GetFSRContract(RTComposer::FSRRRMode::FSRRedstone).productionReady);

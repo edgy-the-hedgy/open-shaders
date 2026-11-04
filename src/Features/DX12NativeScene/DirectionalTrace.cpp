@@ -773,6 +773,8 @@ namespace DX12Native
         const auto& composer = globals::features::rtComposer;
         const auto& composition = composer.composition;
         const auto tier = RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed);
+        const bool research = composer.LegacyHybridPrototypeActive();
+        const auto& researchSettings = composition.fsrHybrid;
         const bool rasterScene = composer.UseRasterHybridGISource();
         // Change only the raw scene radiance sampled by HybridGI.
         // The separate shadowed scene still supplies final composition.
@@ -780,8 +782,10 @@ namespace DX12Native
             frame.hybridInputs[0]->resource.get() :
             frame.hybridShadowedSource.get();
         const auto sampling = MakeHybridSamplingLayout(
-            composer.IsFixedPreset() ? tier.hybridResolution : composition.hybridResolution,
-            composer.IsFixedPreset() ? tier.hybridCheckerboard : composition.hybridCheckerboard,
+            research ? researchSettings.resolution :
+                (composer.IsFixedPreset() ? tier.hybridResolution : composition.hybridResolution),
+            research ? researchSettings.checkerboard :
+                (composer.IsFixedPreset() ? tier.hybridCheckerboard : composition.hybridCheckerboard),
             frame.size, frame.number);
         if (nativeHybridGI->Record(backend.d3d12Device.get(), frame.commands.get(),
                 frame.nativeGI, uint32_t(&frame - frames.data()), frame.number, frame.size,
@@ -789,8 +793,10 @@ namespace DX12Native
                 hybridRadiance, frame.hybridInputs[3]->resource.get(),
                 frame.hybridInputs[4]->resource.get(), EffectiveShadowMask(frame),
                 globals::features::redstoneGI,
-                composer.IsFixedPreset() ? tier.shadowInfluence : composition.shadowInfluence,
-                composer.IsFixedPreset() ? 0.25f : composition.shadowThreshold,
+                research ? researchSettings.shadowInfluence :
+                    (composer.IsFixedPreset() ? tier.shadowInfluence : composition.shadowInfluence),
+                research ? researchSettings.shadowSkipThreshold :
+                    (composer.IsFixedPreset() ? 0.25f : composition.shadowThreshold),
                 rasterScene)) {
             frame.nativeGIFrame = frame.number;
             hybridGIInputScene = rasterScene ? "raster-baseline" : "native-shadowed";
@@ -850,7 +856,8 @@ namespace DX12Native
                     frame.rasterBlend * (globals::features::rtComposer.IsFixedPreset() ?
                         RTComposer::GetTierPolicy(RTComposer::CompositorMode::HybridShadowed).directContribution :
                         composition.rtDirectContribution),
-                    composer.IsFixedPreset() ? 1.0f : composition.giContribution,
+                    research ? researchSettings.contribution :
+                        (composer.IsFixedPreset() ? 1.0f : composition.giContribution),
                     composer.IsFixedPreset() ? 1u : 0u,
                     composer.IsFixedPreset() ? tier.shadowInfluence : composition.shadowInfluence);
         }
@@ -1463,12 +1470,16 @@ namespace DX12Native
             composer.AdvancedActive() ? composer.composition.mode :
                 RTComposer::CompositorMode::HybridShadowed);
         const auto hybridSampling = MakeHybridSamplingLayout(
-            composer.AdvancedActive() ?
-                (composer.composition.mode <= RTComposer::CompositorMode::RTExclusiveII ? 1u : 0u) :
-                (composer.IsFixedPreset() ? fixed.hybridResolution : composition.hybridResolution),
-            composer.AdvancedActive() ?
-                (composer.composition.mode >= RTComposer::CompositorMode::RTEnhanced) :
-                (composer.IsFixedPreset() ? fixed.hybridCheckerboard : composition.hybridCheckerboard),
+            composer.LegacyHybridPrototypeActive() ?
+                composition.fsrHybrid.resolution :
+                (composer.AdvancedActive() ?
+                    (composer.composition.mode <= RTComposer::CompositorMode::RTExclusiveII ? 1u : 0u) :
+                    (composer.IsFixedPreset() ? fixed.hybridResolution : composition.hybridResolution)),
+            composer.LegacyHybridPrototypeActive() ?
+                composition.fsrHybrid.checkerboard :
+                (composer.AdvancedActive() ?
+                    (composer.composition.mode >= RTComposer::CompositorMode::RTEnhanced) :
+                    (composer.IsFixedPreset() ? fixed.hybridCheckerboard : composition.hybridCheckerboard)),
             size, a_frame);
         const auto effectiveRecon = composer.EffectiveReconstructionPolicy().reconstruction;
         const std::array<bool, 3> optionalBlur{
