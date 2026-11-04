@@ -50,8 +50,7 @@ void DX12NativeScene::DispatchNativeShadowMask(const char* stage)
 		shadowMaskUnavailable = "Native DX12 backend unavailable";
 		return;
 	}
-	auto* accumulator = *globals::game::currentAccumulator.get();
-	auto* node = accumulator ? accumulator->GetRuntimeData().activeShadowSceneNode : nullptr;
+	auto* node = globals::game::smState ? globals::game::smState->shadowSceneNode[0] : nullptr;
 	auto* sun = node ? node->GetRuntimeData().sunLight : nullptr;
 	auto* light = sun ? skyrim_cast<RE::NiDirectionalLight*>(sun->light.get()) : nullptr;
 	if (!light) {
