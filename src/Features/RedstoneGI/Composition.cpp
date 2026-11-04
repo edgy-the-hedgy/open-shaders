@@ -85,3 +85,10 @@ void RedstoneGI::FinishComposite(bool a_usedPrivateShader)
 	previousCompositeSettings = nullptr;
 	rrOutputApplied = a_usedPrivateShader && rrLightingReady && rrProviderSucceeded;
 }
+
+void RedstoneGI::FinishCompositeInputCapture()
+{
+	const bool applied = rrOutputApplied;
+	FinishComposite(false);
+	rrOutputApplied = applied;
+}

@@ -10,6 +10,7 @@ struct RTDirectLighting final : OverlayFeature
 		bool UsePreparedDirectLighting = false;
 		bool UseAllPreparedLights = true;
 		bool UseDirectRayRegeneration = true;
+		uint32_t RRSignals = 3;
 		float DirectStrength = 1.0f;
 		float DiffuseStrength = 1.0f;
 		float SpecularStrength = 1.0f;

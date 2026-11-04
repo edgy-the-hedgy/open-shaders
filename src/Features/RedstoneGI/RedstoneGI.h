@@ -124,6 +124,8 @@ struct RedstoneGI final : OverlayFeature
 	bool IsActive() const { return active.load(); }
 	/** @brief Reports whether the selected provider has current-frame indirect lighting to compose. */
 	bool HasCurrentIndirectLighting() const;
+	/** @brief Restores snapshot bindings without changing prior scene-consumption evidence. */
+	void FinishCompositeInputCapture();
 	/** @brief Changes normalized screen-space sampling work and invalidates reconstruction history. */
 	void SetLightingSamples(uint32_t a_diffuseSlices, uint32_t a_specularSlices);
 	/** @brief Returns diffuse and specular slice counts, each tracing both screen-space directions. */
@@ -134,6 +136,7 @@ struct RedstoneGI final : OverlayFeature
 		uint32_t NativeBudgetMB = 512;
 		bool NativeCheckerboard = false;
 		bool NativeRayRegeneration = true;
+		uint32_t NativeRRSignals = 15;
 		bool NativeRadianceClamp = false;
 		float NativeRadianceThreshold = 65504.0f;
 		bool EnableVanillaSSAO = false;

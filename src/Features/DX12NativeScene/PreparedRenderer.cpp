@@ -113,24 +113,35 @@ void DX12NativeScene::OnBeforeDeferredLightingComposite(ID3D11ShaderResourceView
 	const std::array<uint32_t, 2>& size)
 {
 	const auto& hybrid = globals::features::redstoneGI;
-	if (hybrid.loaded && hybrid.settings.NativeHybrid && !transitionOpen && !globals::game::isVR &&
+	if (((hybrid.loaded && hybrid.settings.NativeHybrid) || (globals::features::rtDirectLighting.loaded && globals::features::rtDirectLighting.WantsComposite())) && !transitionOpen && !globals::game::isVR &&
 		!globals::state->isMapMenuOpen && !(globals::state->permutationData.ExtraShaderDescriptor &
 			static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
-		nativeHybrid.CaptureSource(diffuse, specular, size, globals::game::graphicsState->GetFrameCount());
+		if (const auto graphics=Feature::FindGraphicsBackend()) {
+            nativeHybrid.Retire();
+            nativeComposition.CaptureSource(*graphics,diffuse,specular,size,globals::game::graphicsState->GetFrameCount(),
+                uint64_t(settings.SceneCompositionBudgetMB)*1024u*1024u);
+        }
 }
 
 void DX12NativeScene::OnDeferredLightingComplete(ID3D11UnorderedAccessView* target, const std::array<uint32_t, 2>& size)
 {
-	nativeHybrid.Retire();
-	const auto& hybrid = globals::features::redstoneGI;
-	if (!hybrid.loaded || !hybrid.settings.NativeHybrid) nativeHybrid.Reset();
-	if (hybrid.loaded && hybrid.settings.NativeHybrid && !transitionOpen && !globals::game::isVR &&
-		!globals::state->isMapMenuOpen && target &&
-		target == Util::AsReal(globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].UAV) &&
-		!(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections))) {
-		if (const auto graphics = Feature::FindGraphicsBackend())
-			nativeHybrid.Dispatch(*graphics, size, globals::game::graphicsState->GetFrameCount(), hybrid, target);
-	}
+    nativeHybrid.Retire();
+    const auto frame=globals::game::graphicsState->GetFrameCount();
+    const auto& hybrid=globals::features::redstoneGI;
+    if (!hybrid.loaded || !hybrid.settings.NativeHybrid) nativeHybrid.Reset();
+    std::optional<DX12Native::NativeSceneOutput> consumed;
+    if (!transitionOpen && !globals::game::isVR && !globals::state->isMapMenuOpen && target &&
+        target==Util::AsReal(globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].UAV) &&
+        !(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections))) {
+        if (const auto graphics=Feature::FindGraphicsBackend()) {
+            if (hybrid.loaded && hybrid.settings.NativeHybrid)
+                if (const auto input=nativeComposition.GetSceneInput(frame,size)) nativeHybrid.Dispatch(*graphics,size,frame,hybrid,*input);
+            consumed=nativeComposition.Present(*graphics,target,size,preparedTrace.GetSceneOutput(frame),
+                nativeHybrid.GetSceneOutput(frame),uint64_t(settings.SceneCompositionBudgetMB)*1024u*1024u);
+        }
+    }
+    preparedTrace.ReleaseSceneOutput(frame,consumed ? consumed->ready : nullptr,consumed ? consumed->value : 0);
+    nativeHybrid.ReleaseSceneOutput(frame,consumed ? consumed->ready : nullptr,consumed ? consumed->value : 0);
 }
 
 void DX12NativeScene::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target, const std::array<uint32_t, 2>& size)

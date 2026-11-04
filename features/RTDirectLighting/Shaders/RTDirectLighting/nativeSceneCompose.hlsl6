@@ -1,0 +1,30 @@
+#include "Common/ColorSpaces.hlsli"
+#include "Common/NativeSceneComposition.hlsli"
+Texture2D<float4> Raster : register(t0);
+Texture2D<float4> Direct : register(t1);
+Texture2D<float4> Indirect : register(t2);
+Texture2D<float4> Hybrid : register(t3);
+Texture2D<float4> Legacy : register(t4);
+RWTexture2D<float4> Scene : register(u0);
+cbuffer Settings : register(b0) { uint2 Size; uint DirectEnabled, HybridEnabled; float Blend; uint LinearLighting, ACEScg, LegacyEnabled; };
+bool Valid(float4 value) { return value.a > 0.5 && all(isfinite(value)); }
+float3 Working(float3 value) { return LinearLighting && ACEScg ? sRGBToAP1(value) : value; }
+[numthreads(8,8,1)] void main(uint2 pixel : SV_DispatchThreadID)
+{
+    if (any(pixel >= Size)) return;
+    float4 raster = Raster[pixel], direct = Direct[pixel], indirect = Indirect[pixel], hybrid = Hybrid[pixel];
+    bool d = DirectEnabled && Valid(direct), i = DirectEnabled && Valid(indirect), h = HybridEnabled && Valid(hybrid);
+    if (!d && !i && !h) { Scene[pixel] = raster; return; }
+    const float GameGamma = 1.6;
+    float3 base = LinearLighting ? sign(raster.rgb) * pow(abs(raster.rgb), GameGamma) : pow(abs(raster.rgb), GameGamma);
+    base = Working(base);
+    float3 directRGB = Working(direct.rgb), indirectRGB = Working(indirect.rgb);
+    float3 value;
+    value.r = NativeSceneChannel(base.r,directRGB.r,indirectRGB.r,hybrid.r,d,i,h,saturate(Blend));
+    value.g = NativeSceneChannel(base.g,directRGB.g,indirectRGB.g,hybrid.g,d,i,h,saturate(Blend));
+    value.b = NativeSceneChannel(base.b,directRGB.b,indirectRGB.b,hybrid.b,d,i,h,saturate(Blend));
+    if (d && LegacyEnabled) value += Legacy[pixel].rgb * saturate(Blend);
+    if (LinearLighting && ACEScg) value = AP1TosRGB(value);
+    value = LinearLighting ? sign(value) * pow(abs(value), 1.0 / GameGamma) : pow(abs(value), 1.0 / GameGamma);
+    Scene[pixel] = all(isfinite(value)) ? float4(value,raster.a) : raster;
+}

@@ -1,3 +1,4 @@
+#include "Utils/RayRegenerationUI.h"
 #include "RTIndirectLighting.h"
 #include "Globals.h"
 #include "Features/RTDirectLighting/RTDirectLighting.h"
@@ -6,7 +7,7 @@
 #include "Utils/DevBenchUx.h"
 #include <cmath>
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTIndirectLighting::Settings, UseRTExclusive, UseRayRegeneration, RRResolution, IndirectRays, IndirectStrength, ConnectHybrid, RTTraceResolution, HybridResolution)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTIndirectLighting::Settings, UseRTExclusive, UseRayRegeneration, RRSignals, RRResolution, IndirectRays, IndirectStrength, ConnectHybrid, RTTraceResolution, HybridResolution)
 
 std::pair<std::string, std::vector<std::string>> RTIndirectLighting::GetFeatureSummary()
 {
@@ -38,6 +39,7 @@ void RTIndirectLighting::ImportLegacySettings(json& root)
 void RTIndirectLighting::LoadSettings(json& value)
 {
 	Settings selected = value;
+    selected.RRSignals &= 3u;
 	selected.IndirectRays = std::clamp(selected.IndirectRays, 1u, 8u);
 	selected.RTTraceResolution = std::min(selected.RTTraceResolution, 4u);
 	selected.HybridResolution = std::min(selected.HybridResolution, 3u);
@@ -105,6 +107,7 @@ void RTIndirectLighting::DrawSettings()
 		ImGui::TextWrapped("RT-exclusive uses the prepared native scene for indirect diffuse and specular. RT Direct Lighting is required. Direct and indirect run separate GPU compute dispatches using shared retained scene and receiver resources.");
 		if (!UsesRTExclusive()) ImGui::TextWrapped("RT-exclusive remains requested; enable prepared Direct Lighting to satisfy its scene prerequisite.");
 		ImGui::Checkbox("RT-exclusive ray regeneration", &settings.UseRayRegeneration);
+    RayRegeneration::DrawSignalMask("IndirectRRSignals",settings.RRSignals,false);
 		int rrResolution = int(settings.RRResolution);
 		if (ImGui::Combo("RT-exclusive RR resolution", &rrResolution, "Full\0Half\0Quarter\0Shared RR setting\0")) settings.RRResolution = uint32_t(rrResolution);
 		int rays = int(settings.IndirectRays);
@@ -213,7 +216,7 @@ json RTIndirectLighting::GetDiagnostics()
 
 void RTIndirectLighting::RegisterUxActions()
 {
-	FEATURE_COMMAND("setIndirectProducer", "Select rt-exclusive or hybrid GI; dxr/raymarched aliases remain accepted. Optional rays (1..8), traceResolution (0..4), rrEnabled (boolean), rrResolution (0..2, or 3 shared). RT-exclusive preserves Direct enablement and waits for its prerequisites.",
+	FEATURE_COMMAND("setIndirectProducer", "Select rt-exclusive or hybrid GI; dxr/raymarched aliases remain accepted. Optional rays (1..8), traceResolution (0..4), rrEnabled (boolean), rrSignals (integer 0..3: diffuse/specular bits 0/1), rrResolution (0..2, or 3 shared). RT-exclusive preserves Direct enablement and waits for its prerequisites.",
 		[](Feature* self, const json& args) {
 			auto& gi = *static_cast<RTIndirectLighting*>(self);
 			const auto producer = args.at("producer").get<std::string>();
@@ -226,6 +229,7 @@ void RTIndirectLighting::RegisterUxActions()
 			if (args.contains("rays")) gi.settings.IndirectRays = std::clamp(args.at("rays").get<uint32_t>(), 1u, 8u);
 			if (args.contains("traceResolution")) gi.settings.RTTraceResolution = std::min(args.at("traceResolution").get<uint32_t>(), 4u);
 			if (args.contains("rrEnabled")) gi.settings.UseRayRegeneration = args.at("rrEnabled").get<bool>();
+			if (args.contains("rrSignals")) gi.settings.RRSignals = args.at("rrSignals").get<uint32_t>() & 3u;
 			if (args.contains("rrResolution")) gi.settings.RRResolution = std::min(args.at("rrResolution").get<uint32_t>(), 3u);
 			globals::features::dx12NativeScene.Tracer().Reset();
 		});

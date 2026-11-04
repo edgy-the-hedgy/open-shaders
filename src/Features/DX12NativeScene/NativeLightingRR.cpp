@@ -1,3 +1,4 @@
+#include "../../../package/Shaders/Common/NativeSignalSemantics.hlsli"
 #include "DirectionalTrace.h"
 #include "Features/RTIndirectLighting/RTIndirectLighting.h"
 #include "Globals.h"
@@ -25,7 +26,8 @@ namespace DX12Native
         const auto indirectResolution = globals::features::rtIndirectLighting.settings.RRResolution;
         auto record = [&](bool direct, SignalPreparation& preparation, SignalPreparation::Frame& output,
             RedstoneDenoiser& denoiser, SamplingCoverageCache& coverage) {
-            const uint32_t requested = (direct ? frame.useDirectRR : frame.useIndirectRR) ? 3u : 0u;
+            const uint32_t requested = NativeRRRequestedSignals(direct ? frame.useDirectRR : frame.useIndirectRR,3u,
+                direct ? frame.directRRSignals : frame.indirectRRSignals);
             auto& status = nativeRRStatus[direct ? "direct" : "indirect"];
             status = { { "requestedMask", requested }, { "recordedMask", 0u }, { "frame", frame.number } };
             denoiser.RetireNative(15u & ~requested);

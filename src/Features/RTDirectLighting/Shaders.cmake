@@ -64,7 +64,7 @@ if(REDSTONE_DXC)
             ${_native_hybrid_dependencies}
         VERBATIM)
     list(APPEND _native_hybrid_files "${_native_signal_preparation}")
-    foreach(_native_composition IN ITEMS nativeDirectCompose nativeHybridCompose)
+    foreach(_native_composition IN ITEMS nativeDirectCompose nativeHybridCompose nativeSceneCompose)
         set(_native_composition_file "${REDSTONE_DXIL_DIRECTORY}/${_native_composition}.dxil")
         add_custom_command(OUTPUT "${_native_composition_file}"
             COMMAND ${CMAKE_COMMAND} -E make_directory "${REDSTONE_DXIL_DIRECTORY}"

@@ -1,3 +1,4 @@
+#include "../../../package/Shaders/Common/NativeSignalSemantics.hlsli"
 #include "NativeHybridGI.h"
 #include "Features/RedstoneGI/RedstoneGI.h"
 #include "Features/LinearLighting.h"
@@ -8,8 +9,7 @@ namespace DX12Native
 {
     uint64_t NativeHybridGI::ResidentBytes() const
     {
-        uint64_t bytes = initialRadiance && backend.d3d12Device ?
-            NativeTextureBytes(backend.d3d12Device.get(), sourceSize, DXGI_FORMAT_R16G16B16A16_FLOAT) : 0;
+        uint64_t bytes = 0;
         auto* device = backend.d3d12Device.get();
         for (const auto& frame : frames) {
             for (const auto& source : frame.sources) bytes += NativeAllocationBytes(device, source ? source->resource.get() : nullptr);
@@ -24,7 +24,8 @@ namespace DX12Native
     {
         CS_GPU_PASS("RedstoneGI::NativeRayRegeneration");
         frame.rr.recordedMask = 0;
-        const uint32_t mask = settings.settings.NativeRayRegeneration && RayRegeneration::GetSettings().enabled ? settings.GetNativeSignalMask() : 0u;
+        const uint32_t mask = NativeRRRequestedSignals(settings.settings.NativeRayRegeneration && RayRegeneration::GetSettings().enabled,
+            settings.GetNativeSignalMask(),settings.settings.NativeRRSignals);
         nativeDenoiser.RetireNative(15u & ~mask);
         if (!mask) { frame.rr = {}; return; }
         try {
@@ -36,7 +37,7 @@ namespace DX12Native
             for (const auto& candidate : frames) if (!candidate.allocator)
                 rawReserve += EstimateBytes(backend.d3d12Device.get(), frame.outputs.grid.packed[0], frame.outputs.grid.packed[1]) +
                     NativeTextureBytes(backend.d3d12Device.get(), frame.size, DXGI_FORMAT_R32_FLOAT) +
-                    5u * NativeTextureBytes(backend.d3d12Device.get(), frame.size, DXGI_FORMAT_R16G16B16A16_FLOAT);
+                    4u * NativeTextureBytes(backend.d3d12Device.get(), frame.size, DXGI_FORMAT_R16G16B16A16_FLOAT);
             const auto resident = ResidentBytes() + nativeDenoiser.GetNativeResidentBytes() + reserve + rawReserve - frame.rr.Bytes(backend.d3d12Device.get());
             const auto estimate = SignalPreparation::EstimateBytes(backend.d3d12Device.get(), frame.outputs.grid, mask);
             if (resident > budget || estimate > budget - resident) {

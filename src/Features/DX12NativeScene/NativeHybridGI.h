@@ -5,7 +5,7 @@
 #include "SignalGrid.h"
 #include "SignalPreparation.h"
 #include "Features/RedstoneGI/RuntimeDenoiser.h"
-#include "NativePublication.h"
+#include "NativeSceneOutput.h"
 #include <array>
 #include <cstdint>
 #include <string>
@@ -21,18 +21,21 @@ namespace DX12Native
         ~NativeHybridGI();
         /** @brief Records raster-sourced GI/AO without requiring a prepared DXR scene or RR. */
         void Dispatch(const GraphicsBackend& backend, const std::array<uint32_t, 2>& size,
-            uint32_t frameNumber, const RedstoneGI& settings, ID3D11UnorderedAccessView* target);
+            uint32_t frameNumber, const RedstoneGI& settings, const NativeSceneOutput& source);
         /** @brief Releases only fence-complete frame slots. */
         void Retire();
         /** @brief Reports requested, recorded and completed work separately. */
         json GetDiagnostics() const;
+        /** @brief Borrows current-frame GI display output for final DX12 composition. */
+        std::optional<NativeSceneOutput> GetSceneOutput(uint32_t frameNumber) const;
+        /** @brief Retains the frame until final native scene consumption completes. */
+        void ReleaseSceneOutput(uint32_t frameNumber, ID3D12Fence* fence = nullptr, uint64_t value = 0);
+        /** @brief Releases unused offers before the next frame begins. */
+        void DiscardSceneOutputs() { for (auto& frame : frames) frame.awaitingScene = false; }
         /** @brief Retires only native GI signal histories when disabled or after a scene transition. */
         void Reset();
         /** @brief Reloads producer and consumer bytecode while submitted frames retain old pass objects. */
         void ReloadShaders();
-        /** @brief Snapshots current raster diffuse/specular before any indirect composite. */
-        void CaptureSource(ID3D11ShaderResourceView* diffuse, ID3D11ShaderResourceView* specular,
-            const std::array<uint32_t, 2>& size, uint32_t frameNumber);
         static constexpr uint32_t kOutputs = 5;
         static constexpr uint64_t kCameraSnapshotOffset = 1280;
         enum Output : uint32_t { Specular = 0, Diffuse = 1, Eligibility = 2, DiffuseAO = 3, SpecularAO = 4 };
@@ -71,15 +74,19 @@ namespace DX12Native
             std::array<uint32_t, 2> size{};
             uint64_t fence = 0, retirement = 0;
             bool composedValid = false, motionReady = false;
+            bool awaitingScene = false;
+            uint32_t number = UINT32_MAX;
+            winrt::com_ptr<ID3D12Fence> sceneConsumer;
+            uint64_t sceneConsumerValue = 0;
             std::shared_ptr<const void> compositionBindings;
             GraphicsBackend retainedBackend;
+            std::shared_ptr<WrappedResource> sceneSource;
         };
-        void PrepareInputs(Frame& frame, const RedstoneGI& settings);
+        void PrepareInputs(Frame& frame);
         void RecordRR(Frame& frame, uint32_t slot, uint32_t number, const RedstoneGI& settings);
         void RecordComposition(Frame& frame, uint32_t slot, const RedstoneGI& settings);
         uint64_t ResidentBytes() const;
         NativeCompute composition;
-        NativePublication publication;
         uint64_t scenePublications = 0;
         uint32_t publicationFrame = UINT32_MAX, rrOutputsBoundMask = 0;
         std::string compositionFailure;
@@ -91,12 +98,7 @@ namespace DX12Native
         GraphicsBackend backend;
         SharedFence producer, completion;
         winrt::com_ptr<ID3D11ComputeShader> prepareInputs;
-        winrt::com_ptr<ID3D11ComputeShader> captureSource;
-        std::unique_ptr<Texture2D> initialRadiance;
-        std::unique_ptr<ConstantBuffer> sourceSettings;
         uint32_t sourceFrame = UINT32_MAX;
-        std::array<uint32_t, 2> sourceSize{};
-        std::string sourceSelectedProvider;
         uint64_t requests = 0, submissions = 0, completions = 0, busyFrames = 0;
         uint32_t lastRequestedFrame = UINT32_MAX;
         bool Initialize(ID3D12Device* device);

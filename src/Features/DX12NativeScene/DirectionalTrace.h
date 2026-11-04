@@ -7,7 +7,7 @@
 #include "PreparedScene.h"
 #include "Features/RedstoneGI/RuntimeDenoiser.h"
 #include "SignalPreparation.h"
-#include "NativePublication.h"
+#include "NativeSceneOutput.h"
 #include <atomic>
 #include <span>
 
@@ -44,6 +44,12 @@ namespace DX12Native
 		void MarkPreviewDrawSubmitted() { if (Preview()) ++previewDrawSubmissions; }
 		/** @brief Reports raw traversal and preview evidence without claiming RR or replacement coverage. */
 		json GetDiagnostics() const;
+		/** @brief Borrows current-frame display-ready contributions for final DX12 composition. */
+		std::optional<NativeSceneOutput> GetSceneOutput(uint32_t frameNumber) const;
+		/** @brief Retains this frame through the submitted final scene consumer, or releases an unused output. */
+		void ReleaseSceneOutput(uint32_t frameNumber, ID3D12Fence* fence = nullptr, uint64_t value = 0);
+		/** @brief Releases unconsumed offers before the next frame begins. */
+		void DiscardSceneOutputs() { for (auto& frame : frames) frame.awaitingScene = false; }
 		/** @brief Draws prepared RR context diagnostics and current input/output buffers. */
 		void DrawRayRegenerationSettings(bool a_dxrIndirect);
 		/** @brief Retires native consumers when their owning direct/indirect producers are disabled. */
@@ -92,10 +98,14 @@ namespace DX12Native
 			std::array<std::unique_ptr<WrappedResource>, 2> composed;
 			winrt::com_ptr<ID3D12Resource> nativeCamera;
 			bool publishToScene = false, composedValid = false;
+			bool awaitingScene = false;
+			winrt::com_ptr<ID3D12Fence> sceneConsumer;
+			uint64_t sceneConsumerValue = 0;
 			uint64_t budgetBytes = 0;
 			std::shared_ptr<const void> compositionBindings;
 			GraphicsBackend retainedBackend;
 			bool useIndirectRR = false, motionReady = false;
+			uint32_t directRRSignals = 3, indirectRRSignals = 3;
 			winrt::com_ptr<ID3D12RootSignature> root;
 			winrt::com_ptr<ID3D12PipelineState> pipeline;
 			winrt::com_ptr<ID3D12CommandAllocator> allocator;
@@ -138,7 +148,7 @@ namespace DX12Native
 		void RecordNativeLightingRR(Frame& a_frame);
 		void RecordNativeComposition(Frame& a_frame);
 		void Consume(Frame& a_frame);
-		void CompositeScene(Frame& a_frame, ID3D11UnorderedAccessView* a_target);
+		void OfferSceneOutput(Frame& a_frame);
 		void PrepareRRPreview(Frame& a_frame, uint32_t a_rrFlags);
 		uint64_t ResidentBytes() const;
 		uint64_t NativeResidentBytes() const;
@@ -156,7 +166,6 @@ namespace DX12Native
 		SamplingCoverageCache directCoverage, indirectCoverage;
 		json nativeRRStatus = json::object();
 		NativeCompute nativeComposition;
-		NativePublication nativePublication;
 		std::string nativeCompositionFailure;
 		std::array<std::unique_ptr<Texture2D>, 13> directRRTextures;
 		uint64_t directRRPolicyRevision = UINT64_MAX;

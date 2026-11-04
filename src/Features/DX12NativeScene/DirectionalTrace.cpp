@@ -1,3 +1,4 @@
+#include "Features/RTDirectLighting/RTDirectLighting.h"
 #include "DirectionalTrace.h"
 
 #include "Globals.h"
@@ -45,7 +46,8 @@ namespace DX12Native
 		const auto retired = producer.fence12 ? producer.fence12->GetCompletedValue() : 0;
 		bool inFlight = false;
 		for (auto& frame : frames) {
-			if (!frame.submitted || (frame.fence && frame.fence <= done && (!frame.retirement || frame.retirement <= retired))) continue;
+			if (!frame.submitted || (frame.fence && frame.fence <= done && (!frame.retirement || frame.retirement <= retired) &&
+                (!frame.sceneConsumer || frame.sceneConsumer->GetCompletedValue() >= frame.sceneConsumerValue))) continue;
 			inFlight = true;
 			(void)new Frame(std::move(frame));
 		}
@@ -78,7 +80,7 @@ namespace DX12Native
 		rrDebugShader = nullptr;
 		rrDebugFailed = false;
 		failure.clear();
-		nativeComposition.Reset(); nativeDirectPreparation.Reload(); nativeIndirectPreparation.Reload(); nativePublication.Reload();
+		nativeComposition.Reset(); nativeDirectPreparation.Reload(); nativeIndirectPreparation.Reload();
 		directDenoiser.RetireNative(); indirectDenoiser.RetireNative();
 	}
 
@@ -520,7 +522,8 @@ namespace DX12Native
 		if (done == UINT64_MAX || retired == UINT64_MAX) { failure = "Directional device removed"; previewValid = false; return; }
 		try {
 			for (auto& frame : frames) {
-				if (!frame.submitted || !frame.fence || frame.fence > done) continue;
+				if (!frame.submitted || !frame.fence || frame.fence > done || frame.awaitingScene ||
+                    (frame.sceneConsumer && frame.sceneConsumer->GetCompletedValue() < frame.sceneConsumerValue)) continue;
 				if (!frame.retirement && frame.generation == generation && display) { Consume(frame); ++completions; }
 				if (frame.retirement && frame.retirement > retired) continue;
 				if (frame.generation != generation) { frame = {}; continue; }
@@ -532,37 +535,30 @@ namespace DX12Native
 		} catch (const std::exception& error) { failure = error.what(); previewValid = false; }
 	}
 
-	void DirectionalTrace::CompositeScene(Frame& frame, ID3D11UnorderedAccessView* target)
-	{
-		CS_GPU_PASS("RTDirectLighting::DirectSceneComposite");
-		if (!frame.composedValid) return;
-		auto* context = backend.d3d11Context.get();
-		DX::ThrowIfFailed(context->Wait(completion.fence11.get(), frame.fence));
-		auto& indirect = globals::features::redstoneGI;
-		const bool legacy = frame.useIndirect && indirect.HasCurrentIndirectLighting();
-		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 6> previous;
-		if (legacy) {
-			for (uint32_t i = 0; i < previous.size(); ++i) context->CSGetShaderResources(20u + i, 1, previous[i].put());
-			indirect.BindCompositeResources();
-		}
-		const bool published = nativePublication.Publish(backend, target, frame.composed[0]->srv, frame.composed[1]->srv,
-			frame.size, true, frame.rasterBlend, frame.camera.get(), legacy, frame.indirectStrength);
-		if (legacy) {
-			indirect.FinishComposite(published);
-			for (uint32_t i = 0; i < previous.size(); ++i) {
-				auto* read = previous[i].get(); context->CSSetShaderResources(20u + i, 1, &read);
-			}
-			if (published) ++indirectCompositeSubmissions;
-		}
-		frame.retirement = producer.Next();
-		DX::ThrowIfFailed(context->Signal(producer.fence11.get(), frame.retirement));
-		if (published) {
-			++sceneCompositeSubmissions; sceneCompositeFrame = frame.number;
-			if (frame.nativeDirectRR.recordedMask || frame.nativeIndirectRR.recordedMask) ++directRRDispatches;
-			directRRFrame = frame.number; directRRSize = frame.nativeDirectRR.grid.logical;
-			directRRCheckerboard = frame.nativeDirectRR.grid.checkerboard;
-		}
-	}
+    std::optional<NativeSceneOutput> DirectionalTrace::GetSceneOutput(uint32_t frameNumber) const
+    {
+        for (const auto& frame : frames) if (frame.awaitingScene && frame.composedValid && frame.number == frameNumber && frame.generation == generation)
+            return NativeSceneOutput{frame.composed[0]->resource.get(), frame.composed[1]->resource.get(),
+                completion.fence12.get(), frame.fence, frame.rasterBlend, frame.useIndirect, frame.indirectStrength};
+        return std::nullopt;
+    }
+    void DirectionalTrace::ReleaseSceneOutput(uint32_t frameNumber, ID3D12Fence* fence, uint64_t value)
+    {
+        for (auto& frame : frames) if (frame.awaitingScene && frame.number == frameNumber) {
+            frame.sceneConsumer.copy_from(fence); frame.sceneConsumerValue = value; frame.awaitingScene = false;
+            if (fence) {
+                ++sceneCompositeSubmissions; sceneCompositeFrame = frameNumber;
+                if (frame.nativeDirectRR.recordedMask || frame.nativeIndirectRR.recordedMask) ++directRRDispatches;
+                directRRFrame=frameNumber; directRRSize=frame.nativeDirectRR.grid.logical;
+                directRRCheckerboard=frame.nativeDirectRR.grid.checkerboard;
+            }
+        }
+    }
+    void DirectionalTrace::OfferSceneOutput(Frame& frame)
+    {
+        frame.awaitingScene = frame.composedValid;
+        sceneCompositeFrame = frame.number;
+    }
 
 	void DirectionalTrace::Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight, const LightLimitFixData::LightView& a_lights, uint32_t a_materialView, ID3D11UnorderedAccessView* a_sceneTarget, uint32_t a_lightReference, uint32_t a_lightBase, ID3D11ShaderResourceView* a_roomMetadata, std::span<const std::array<uint32_t, 2>> a_lightIdentities, bool a_allPreparedLights, float4 a_strengths, bool a_useIndirect, float a_indirectStrength, bool a_useDirectRR, uint32_t a_indirectRays, std::span<const uint32_t> a_roomReferences, float a_rasterBlend, uint32_t a_normalMode, std::span<const PreparedPointLight> a_preparedLights, uint32_t a_directResolutionMode, uint32_t a_indirectResolutionMode, uint32_t a_directRRResolutionMode, bool a_rrMaterialIsolation, float a_rrGlossyRoughness, float4 a_falloffParameters, float4 a_stochasticParameters)
 	{
@@ -667,6 +663,8 @@ namespace DX12Native
 			std::copy_n(a_roomReferences.begin(), std::min(a_roomReferences.size(), available->roomReferences.size()), available->roomReferences.begin());
 			available->indirectStrength = a_indirectStrength;
 			available->useDirectRR = directRR;
+            available->directRRSignals=globals::features::rtDirectLighting.settings.RRSignals;
+            available->indirectRRSignals=globals::features::rtIndirectLighting.settings.RRSignals;
 			available->publishToScene = a_sceneTarget != nullptr;
 			available->useIndirectRR = a_indirectRays && globals::features::rtIndirectLighting.settings.UseRayRegeneration && rrPolicy.enabled;
 			available->rasterBlend = a_rasterBlend;
@@ -694,14 +692,14 @@ namespace DX12Native
 				static constexpr std::array names{ "RTDirectLighting::DirectDiffuse", "RTDirectLighting::DirectSpecular", "RTDirectLighting::DirectNormalRoughness", "RTDirectLighting::DirectSpecularAlbedo", "RTDirectLighting::DirectDiffuseAlbedo", "RTDirectLighting::IndirectDiffuse", "RTDirectLighting::IndirectSpecular" };
 				for (uint32_t i = 0; i < (a_indirectRays ? kDirectSignalCount : 5u); ++i)
 					if (!available->directSignals[i]) available->directSignals[i] = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), names[i]);
-				if ((directRR || available->useIndirectRR) && !available->motion &&
+				if (((directRR && available->directRRSignals) || (available->useIndirectRR && available->indirectRRSignals)) && !available->motion &&
 					ResidentBytes() + NativeResidentBytes() + nextPreviewBytes <= a_budgetBytes) {
 					try { available->motion = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RTDirectLighting::NativeMotionSnapshot"); }
 					catch (const std::exception& error) { nativeRRStatus["motionFailure"] = error.what(); }
 				}
 			}
 			desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-			if (!directRR && !available->useIndirectRR) available->motion.reset();
+			if (!(directRR && available->directRRSignals) && !(available->useIndirectRR && available->indirectRRSignals)) available->motion.reset();
 			desc.Width = kLightSnapshotWidth; desc.Height = 2;
 			if (!available->light) available->light = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RTDirectLighting::EvaluatedLightSnapshot");
 			// Upload immutable prepared lights to the existing GPU snapshot layout.
@@ -721,7 +719,7 @@ namespace DX12Native
 			PrepareReceivers(*available, a_nativeSize, lights, a_roomMetadata);
 			Record(*available, a_lightDirection, a_localLight);
 			if (direct) ++directSubmissions;
-			if (a_sceneTarget) CompositeScene(*available, a_sceneTarget);
+			if (a_sceneTarget) OfferSceneOutput(*available);
 			localLightMode = a_localLight;
 			sourceLightCount = uint32_t(available->preparedLights.size());
 			sourceLightFrame = a_frame;

@@ -1,3 +1,4 @@
+#include "Utils/RayRegenerationUI.h"
 #include "RedstoneGI.h"
 #include "RuntimeDenoiser.h"
 #include "Globals.h"
@@ -43,7 +44,7 @@ namespace
 	NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RedstoneConfiguration,
 		NativeHybrid, NativeBudgetMB,
 		NativeCheckerboard, NativeRadianceClamp, NativeRadianceThreshold,
-		NativeRayRegeneration,
+		NativeRayRegeneration, NativeRRSignals,
 		EnableVanillaSSAO,
 		EnableAdaptiveSampling,
 		MinScreenRadius, GIRadius, DepthFadeRange,
@@ -65,7 +66,8 @@ json RedstoneGI::DefaultRedstoneSettings()
 
 void RedstoneGI::EnforceFixedPath()
 {
-	settings.NativeBudgetMB = std::clamp(settings.NativeBudgetMB, 64u, 4096u);
+	settings.NativeRRSignals &= 15u;
+    settings.NativeBudgetMB = std::clamp(settings.NativeBudgetMB, 64u, 4096u);
 	settings.NativeRadianceThreshold = std::isfinite(settings.NativeRadianceThreshold) ? std::clamp(settings.NativeRadianceThreshold, 0.0f, 65504.0f) : 65504.0f;
 	settings.GIRadius = std::isfinite(settings.GIRadius) ? std::clamp(settings.GIRadius, kILRadiusMin, kILRadiusMax) : kILRadiusDefault;
 	rrResolutionMode = std::min(rrResolutionMode, 2u);
@@ -236,6 +238,7 @@ void RedstoneGI::DrawSettings()
 {
 	ImGui::Checkbox("Native checkerboard samples", &settings.NativeCheckerboard);
 	ImGui::Checkbox("Native Hybrid GI / AO ray regeneration", &settings.NativeRayRegeneration);
+    RayRegeneration::DrawSignalMask("HybridRRSignals",settings.NativeRRSignals,true);
 	int nativeBudget = int(settings.NativeBudgetMB);
 	if (ImGui::SliderInt("Native GI memory budget (MiB)", &nativeBudget, 64, 4096)) settings.NativeBudgetMB = uint32_t(nativeBudget);
 	ImGui::Checkbox("Clamp native source radiance", &settings.NativeRadianceClamp);

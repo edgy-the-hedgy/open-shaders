@@ -10,7 +10,7 @@
 #include "Util.h"
 #include <chrono>
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(DX12NativeScene::Settings, AcquireScene, UsePreparedScene, PreviewPreparedScene, UsePreparedMaterials, PreparedMaterialView, MaterialTextureBudgetMB, DirectLightingBudgetMB, PreviewLight, PreviewAllLights, PreviewDirectStrength, PreviewDiffuseStrength, PreviewSpecularStrength, PreviewEmissionStrength, NodesPerFrame, MaxInstances, BufferBudgetMB)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(DX12NativeScene::Settings, AcquireScene, UsePreparedScene, PreviewPreparedScene, UsePreparedMaterials, PreparedMaterialView, MaterialTextureBudgetMB, DirectLightingBudgetMB, SceneCompositionBudgetMB, PreviewLight, PreviewAllLights, PreviewDirectStrength, PreviewDiffuseStrength, PreviewSpecularStrength, PreviewEmissionStrength, NodesPerFrame, MaxInstances, BufferBudgetMB)
 
 std::pair<std::string, std::vector<std::string>> DX12NativeScene::GetFeatureSummary()
 {
@@ -45,6 +45,7 @@ void DX12NativeScene::LoadSettings(json& value)
 	selected.PreparedMaterialView = std::min(selected.PreparedMaterialView, DX12Native::DirectionalTrace::kCombinedDirectView);
 	selected.MaterialTextureBudgetMB = std::clamp(selected.MaterialTextureBudgetMB, 64u, 1024u);
 	selected.DirectLightingBudgetMB = std::clamp(selected.DirectLightingBudgetMB, 64u, 1024u);
+    selected.SceneCompositionBudgetMB = std::clamp(selected.SceneCompositionBudgetMB,64u,4096u);
 	for (auto* v : { &selected.PreviewDirectStrength, &selected.PreviewDiffuseStrength,
 			&selected.PreviewSpecularStrength, &selected.PreviewEmissionStrength })
 		*v = std::isfinite(*v) ? std::clamp(*v, 0.0f, 8.0f) : 1.0f;
@@ -94,7 +95,9 @@ void DX12NativeScene::EarlyPrepass()
 	previousFrame = frame;
 	const auto budget = uint64_t(settings.BufferBudgetMB) * 1024 * 1024 / 4;
 	preparedAcceleration.Advance();
-	preparedTrace.Retire();
+	preparedTrace.DiscardSceneOutputs();
+    nativeHybrid.DiscardSceneOutputs();
+    preparedTrace.Retire();
 	if (settings.UsePreparedScene) {
 		CasterObservation::SetEnabled(false);
 		if (acquisitionActive) { acquisitionActive = false; scene.Reset(); geometryBridge.Reset(); acceleration.Reset(); }
@@ -234,6 +237,7 @@ json DX12NativeScene::GetDiagnostics()
 	return {
 		{ "dxrCapable", dxrCapable }, { "rrEligible", rrEligible }, { "resourcesReady", ready },
 		{ "nativeHybrid", nativeHybrid.GetDiagnostics() },
+        { "nativeFinalScene", nativeComposition.GetDiagnostics() },
 		{ "overlappingIndirectRequests", globals::features::redstoneGI.settings.NativeHybrid &&
 			(globals::features::rtIndirectLighting.UsesRTExclusive() || globals::features::redstoneGI.IsActive()) },
 		{ "acquisitionEnabled", settings.AcquireScene }, { "unavailable", unavailable },
@@ -288,6 +292,9 @@ void DX12NativeScene::DrawNativeSceneSettings()
     int lightingBudget = int(settings.DirectLightingBudgetMB);
     if (ImGui::SliderInt("Prepared lighting buffer budget (MiB)", &lightingBudget, 64, 1024))
         settings.DirectLightingBudgetMB = uint32_t(lightingBudget);
+    int sceneBudget = int(settings.SceneCompositionBudgetMB);
+    if (ImGui::SliderInt("Final native scene budget (MiB)", &sceneBudget, 64, 4096))
+        settings.SceneCompositionBudgetMB = uint32_t(sceneBudget);
     ImGui::TextWrapped("The prepared lighting budget also covers reconstruction buffers; insufficient capacity falls back to raw signals. Provider-internal allocations are additional.");
 
     if (ImGui::Checkbox("Observe SCM shadow casters", &settings.AcquireScene)) resetRequested = true;
@@ -341,6 +348,10 @@ void DX12NativeScene::DrawNativeSceneSettings()
 
 void DX12NativeScene::RegisterUxActions()
 {
+	FEATURE_COMMAND("setNativeSceneBudget", "Set the final DX12 scene handoff/composition memory budget. Params: budgetMB (required integer, 64..4096). Does not change producer or RR requests; allocation failure preserves the DX11 raster scene.",
+		[](Feature* self, const json& args) {
+			static_cast<DX12NativeScene*>(self)->settings.SceneCompositionBudgetMB = std::clamp(args.at("budgetMB").get<uint32_t>(), 64u, 4096u);
+		});
 	FEATURE_COMMAND("setPreparedMaterials", "Configure prepared material maps and diagnostic views.",
 		[](Feature* self, const json& args) {
 			auto& n = *static_cast<DX12NativeScene*>(self);

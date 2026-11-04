@@ -2,6 +2,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include "../../package/Shaders/Common/NativeDisplaySampling.hlsli"
 #include "../../package/Shaders/Common/NativeSignalSemantics.hlsli"
+#include "../../package/Shaders/Common/NativeSceneComposition.hlsli"
+#include "Features/DX12NativeScene/NativeSceneOwnership.h"
 #include <limits>
 #include <set>
 #include <fstream>
@@ -184,4 +186,52 @@ TEST_CASE("RR radiance validity does not infer hit distance from Direct alpha", 
     REQUIRE_FALSE(NativeRRChannelValid(std::numeric_limits<float>::infinity()));
     REQUIRE_FALSE(NativeRRChannelValid(std::numeric_limits<float>::quiet_NaN()));
 
+}
+
+TEST_CASE("Final native scene composition selects independent producer outputs", "[NativeScene]")
+{
+    for (uint32_t mask=0;mask<8;++mask) {
+        const bool d=mask&1u,i=mask&2u,h=mask&4u;
+        const float value=NativeSceneChannel(10,20,3,4,d,i,h,1);
+        REQUIRE(value==(d ? 20.0f : 10.0f)+(i ? 3.0f : 0)+(h ? 4.0f : 0));
+        REQUIRE(NativeSceneChannel(10,20,3,4,d,i,h,0)==10+(i ? 3.0f : 0)+(h ? 4.0f : 0));
+    }
+    REQUIRE(NativeSceneChannel(10,20,0,0,true,false,false,0.5f)==15);
+}
+
+TEST_CASE("Shared scene leases wait for every native consumer", "[NativeScene]")
+{
+    REQUIRE_FALSE(NativeSceneReusable(true,5,3,8,7));
+    REQUIRE_FALSE(NativeSceneReusable(false,2,3,8,7));
+    REQUIRE_FALSE(NativeSceneReusable(false,5,3,6,7));
+    REQUIRE(NativeSceneReusable(false,5,3,8,7));
+    REQUIRE_FALSE(NativeSceneReusable(false,UINT64_MAX,3,8,7));
+    REQUIRE_FALSE(NativeSceneReusable(false,5,3,UINT64_MAX,7));
+    REQUIRE(NativeSceneBudgetAllows(100,20,120));
+    REQUIRE_FALSE(NativeSceneBudgetAllows(100,21,120));
+    REQUIRE_FALSE(NativeSceneBudgetAllows(121,0,120));
+    REQUIRE_FALSE(NativeSceneBudgetAllows(UINT64_MAX,1,UINT64_MAX));
+}
+
+TEST_CASE("RR opt-in is bounded by genuine producer signals", "[NativeScene][SignalContract]")
+{
+    for (uint32_t produced=0;produced<16;++produced) for (uint32_t selected=0;selected<16;++selected) {
+        REQUIRE(NativeRRRequestedSignals(false,produced,selected)==0u);
+        REQUIRE((NativeRRRequestedSignals(true,produced,selected)&~produced)==0u);
+        for (uint32_t signal=0;signal<4;++signal)
+            REQUIRE(bool(NativeRRRequestedSignals(true,produced,selected)&(1u<<signal))==bool((produced&selected)&(1u<<signal)));
+    }
+}
+
+TEST_CASE("Native scene allocation estimates cannot wrap the budget", "[NativeScene]")
+{
+    uint64_t required=4;
+    REQUIRE(NativeSceneBudgetAdd(required,8,2,20));
+    REQUIRE(required==20);
+    REQUIRE_FALSE(NativeSceneBudgetAdd(required,1,1,20));
+    REQUIRE(required==20);
+    required=0;
+    REQUIRE_FALSE(NativeSceneBudgetAdd(required,UINT64_MAX,2,UINT64_MAX));
+    REQUIRE(required==0);
+    REQUIRE_FALSE(NativeSceneBudgetAdd(required,1,0,20));
 }

@@ -1,3 +1,4 @@
+#include "Utils/RayRegenerationUI.h"
 #include "RTDirectLighting.h"
 #include "Globals.h"
 #include "Features/DX12NativeScene/DX12NativeScene.h"
@@ -10,7 +11,7 @@
 #include "Utils/DevBenchUx.h"
 #include "Util.h"
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTDirectLighting::Settings, RedstoneBlend, UsePreparedDirectLighting, UseAllPreparedLights, UseDirectRayRegeneration, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, SelectedDirectLight, NormalInfluence, DirectTraceResolution, DirectRRResolution, RRMaterialIsolation, RRGlossyRoughness, PointLightRadiusMultiplier, PointLightFalloffFraction, PointLightFalloffExponent, StochasticSampling, EmitterRadiusMultiplier)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTDirectLighting::Settings, RedstoneBlend, UsePreparedDirectLighting, UseAllPreparedLights, UseDirectRayRegeneration, RRSignals, DirectStrength, DiffuseStrength, SpecularStrength, EmissionStrength, SelectedDirectLight, NormalInfluence, DirectTraceResolution, DirectRRResolution, RRMaterialIsolation, RRGlossyRoughness, PointLightRadiusMultiplier, PointLightFalloffFraction, PointLightFalloffExponent, StochasticSampling, EmitterRadiusMultiplier)
 
 std::pair<std::string, std::vector<std::string>> RTDirectLighting::GetFeatureSummary()
 {
@@ -31,6 +32,7 @@ void RTDirectLighting::ImportLegacySettings(json& root)
 void RTDirectLighting::LoadSettings(json& value)
 {
 	Settings selected = value;
+    selected.RRSignals &= 3u;
 	selected.SelectedDirectLight = std::min(selected.SelectedDirectLight, 255u);
 	selected.NormalInfluence = std::min(selected.NormalInfluence, 2u);
 	selected.DirectTraceResolution = std::min(selected.DirectTraceResolution, 4u);
@@ -205,6 +207,7 @@ void RTDirectLighting::DrawDirectLightingSettings()
 void RTDirectLighting::DrawRayRegenerationSettings()
 {
 	ImGui::Checkbox("Reconstruct prepared lighting", &settings.UseDirectRayRegeneration);
+    RayRegeneration::DrawSignalMask("DirectRRSignals",settings.RRSignals,false);
 	if (ImGui::Checkbox("Separate RR history by material type", &settings.RRMaterialIsolation))
 		globals::features::dx12NativeScene.Tracer().Reset();
 	if (settings.RRMaterialIsolation && ImGui::SliderFloat("Glossy material roughness threshold", &settings.RRGlossyRoughness, 0.04f, 1.0f, "%.2f"))
@@ -233,6 +236,7 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
 	if (!snapshot) return;
 	const auto frame = globals::game::graphicsState->GetFrameCount();
 	if (lastFrame && *lastFrame == frame) return;
+    if (!native.HasNativeSceneInput(frame,size)) return;
 	if (!settings.UseAllPreparedLights && settings.SelectedDirectLight >= snapshot->cell->lights.size()) return;
 	auto backend = Feature::FindGraphicsBackend();
 	auto& tracer = native.Tracer();
@@ -261,7 +265,7 @@ void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target
 
 void RTDirectLighting::RegisterUxActions()
 {
-	FEATURE_COMMAND("setPreparedDirectLighting", "Configure direct lighting, light selection, reconstruction and budget.",
+	FEATURE_COMMAND("setPreparedDirectLighting", "Configure direct lighting, light selection, reconstruction and budget. Optional rrSignals integer 0..3 selects RR diffuse (bit 0) and specular (bit 1) independently.",
 		[](Feature* self, const json& args) {
 			auto& d = *static_cast<RTDirectLighting*>(self);
 			auto& n = globals::features::dx12NativeScene;
@@ -276,6 +280,7 @@ void RTDirectLighting::RegisterUxActions()
 			if (args.contains("rrGlossyRoughness")) d.settings.RRGlossyRoughness = std::clamp(args.at("rrGlossyRoughness").get<float>(), 0.04f, 1.0f);
 			if (args.contains("indirect")) globals::features::rtIndirectLighting.settings.ConnectHybrid = args.at("indirect").get<bool>();
 			if (args.contains("rr")) d.settings.UseDirectRayRegeneration = args.at("rr").get<bool>();
+            if (args.contains("rrSignals")) d.settings.RRSignals = args.at("rrSignals").get<uint32_t>() & 3u;
 			if (args.contains("bufferBudgetMB")) n.settings.DirectLightingBudgetMB = std::clamp(args.at("bufferBudgetMB").get<uint32_t>(), 64u, 1024u);
 			auto tune = [&](const char* name, float& value, float min, float max) {
 				if (!args.contains(name)) return;

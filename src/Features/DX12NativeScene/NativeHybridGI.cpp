@@ -162,7 +162,7 @@ namespace DX12Native
             const NativeLightingCB light{ Util::GetCameraData(),
                 uint32_t(globals::features::linearLighting.IsLinearLightingActive()),
                 globals::features::linearLighting.settings.enableACEScg, uint32_t(settings.settings.EnableAdaptiveSampling),
-                uint32_t(frame.grid.checkerboard || (settings.settings.NativeRayRegeneration && RayRegeneration::GetSettings().enabled)) };
+                uint32_t(frame.grid.checkerboard || (settings.settings.NativeRayRegeneration && RayRegeneration::GetSettings().enabled && (settings.GetNativeSignalMask() & settings.settings.NativeRRSignals))) };
             const auto& camera = globals::game::frameBufferCached.nonVR;
             if (sizeof(nativeGI) > kAOSettingsOffset ||
                 sizeof(nativeAO) > kLightingOffset - kAOSettingsOffset ||

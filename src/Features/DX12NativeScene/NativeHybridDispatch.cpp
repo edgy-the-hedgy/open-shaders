@@ -11,22 +11,23 @@ namespace DX12Native
 {
     void NativeHybridGI::ReloadShaders()
     {
-        Reset(); prepareInputs = nullptr; captureSource = nullptr; sourceFrame = UINT32_MAX; root = nullptr; descriptors = nullptr;
+        Reset(); prepareInputs = nullptr; root = nullptr; descriptors = nullptr;
         for (auto& value : pipelines) value = nullptr;
-        signalPreparation.Reload(); composition.Reset(); publication.Reload(); failure.clear();
+        signalPreparation.Reload(); composition.Reset(); failure.clear();
     }
     void NativeHybridGI::Reset()
     {
         ++historyRevision;
         nativeDenoiser.RetireNative();
-        for (auto& frame : frames) if (!frame.fence) { frame.rr = {}; frame.sources[5].reset(); }
+        for (auto& frame : frames) if (!frame.fence) { frame.rr = {}; frame.sources[5].reset(); frame.sceneSource.reset(); }
     }
     NativeHybridGI::~NativeHybridGI()
     {
         if (backend.d3d11Context) backend.d3d11Context->Flush();
         const bool complete = completion.CpuWait(completion.value, SharedFence::kFenceTimeoutMs);
         const bool retired = producer.CpuWait(producer.value, SharedFence::kFenceTimeoutMs);
-        if ((!complete || !retired) && backend.d3d12Device && SUCCEEDED(backend.d3d12Device->GetDeviceRemovedReason())) {
+        const bool sceneBusy=std::ranges::any_of(frames,[](const Frame& frame) { return frame.sceneConsumer && frame.sceneConsumer->GetCompletedValue()<frame.sceneConsumerValue; });
+        if ((!complete || !retired || sceneBusy) && backend.d3d12Device && SUCCEEDED(backend.d3d12Device->GetDeviceRemovedReason())) {
             for (auto& frame : frames) if (frame.fence) (void)new Frame(std::move(frame));
             (void)producer.fence11.detach(); (void)producer.fence12.detach();
             (void)completion.fence11.detach(); (void)completion.fence12.detach();
@@ -41,90 +42,18 @@ namespace DX12Native
         const auto retired = producer.fence12->GetCompletedValue();
         if (done == UINT64_MAX) { failure = "Native HybridGI device removed"; return; }
         for (auto& frame : frames) {
-            if (!frame.fence || frame.fence > done || (frame.retirement && frame.retirement > retired)) continue;
+            if (!frame.fence || frame.fence > done || frame.awaitingScene ||
+                (frame.sceneConsumer && frame.sceneConsumer->GetCompletedValue() < frame.sceneConsumerValue) ||
+                (frame.retirement && frame.retirement > retired)) continue;
             frame.fence = 0;
             frame.retirement = 0;
+            frame.sceneSource.reset();
             ++completions;
         }
     }
 
-	void NativeHybridGI::CaptureSource(ID3D11ShaderResourceView* diffuse, ID3D11ShaderResourceView* specular,
-		const std::array<uint32_t, 2>& size, uint32_t frameNumber)
-	{
-		CS_GPU_PASS("RedstoneGI::InitiallyLitSnapshot");
-		sourceFrame = UINT32_MAX;
-		if (!diffuse || !specular || !size[0] || !size[1])
-			return;
-		try {
-			auto* context = globals::d3d::context;
-			if (!captureSource) {
-				captureSource.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(
-					L"Data\\Shaders\\RedstoneGI\\nativeSource.cs.hlsl", {}, "cs_5_0")));
-				if (!captureSource)
-					throw std::runtime_error("Native pre-GI snapshot shader unavailable");
-			}
-			if (!initialRadiance || sourceSize != size) {
-				initialRadiance.reset();
-				D3D11_TEXTURE2D_DESC desc{};
-				desc.Width = size[0];
-				desc.Height = size[1];
-				desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
-				desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-				desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-				initialRadiance = std::make_unique<Texture2D>(desc, "RedstoneGI::InitiallyLitRadiance");
-				D3D11_SHADER_RESOURCE_VIEW_DESC srv{};
-				srv.Format = desc.Format;
-				srv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-				srv.Texture2D.MipLevels = 1;
-				initialRadiance->CreateSRV(srv);
-				D3D11_UNORDERED_ACCESS_VIEW_DESC uav{};
-				uav.Format = desc.Format;
-				uav.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
-				initialRadiance->CreateUAV(uav);
-				sourceSize = size;
-			}
-			if (!sourceSettings)
-				sourceSettings = std::make_unique<ConstantBuffer>(ConstantBufferDesc<float4>(), "RedstoneGI::InitialSourceSettings");
-			sourceSettings->Update(std::array<uint32_t, 4>{ size[0], size[1], 0, 0 });
-			winrt::com_ptr<ID3D11ComputeShader> previousShader;
-			std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 2> previousReads;
-			winrt::com_ptr<ID3D11UnorderedAccessView> previousWrite;
-			std::array<winrt::com_ptr<ID3D11Buffer>, 4> previousBuffers;
-			constexpr std::array slots{ 5u, 6u, 12u, 13u };
-			context->CSGetShader(previousShader.put(), nullptr, nullptr);
-			for (uint32_t i = 0; i < 2; ++i) context->CSGetShaderResources(i, 1, previousReads[i].put());
-			context->CSGetUnorderedAccessViews(0, 1, previousWrite.put());
-			for (uint32_t i = 0; i < 4; ++i) context->CSGetConstantBuffers(slots[i], 1, previousBuffers[i].put());
-			globals::state->BindSharedDataCS(context);
-			auto* cb = sourceSettings->CB();
-			context->CSSetConstantBuffers(13, 1, &cb);
-			ID3D11ShaderResourceView* reads[]{ diffuse, specular };
-			auto* write = initialRadiance->uav.get();
-			context->CSSetUnorderedAccessViews(0, 1, &write, nullptr);
-            context->CSSetShaderResources(0, 2, reads);
-			context->CSSetShader(captureSource.get(), nullptr, 0);
-			context->Dispatch((size[0] + 7u) / 8u, (size[1] + 7u) / 8u, 1);
-			write = nullptr;
-			context->CSSetUnorderedAccessViews(0, 1, &write, nullptr);
-			for (uint32_t i = 0; i < 2; ++i) {
-				auto* prior = previousReads[i].get();
-				context->CSSetShaderResources(i, 1, &prior);
-			}
-			write = previousWrite.get();
-			context->CSSetUnorderedAccessViews(0, 1, &write, nullptr);
-			for (uint32_t i = 0; i < 4; ++i) {
-				auto* prior = previousBuffers[i].get();
-				context->CSSetConstantBuffers(slots[i], 1, &prior);
-			}
-			context->CSSetShader(previousShader.get(), nullptr, 0);
-			sourceFrame = frameNumber;
-			sourceSelectedProvider = globals::deferred->indirectLighting ? globals::deferred->indirectLighting->GetName() : "none";
-		} catch (const std::exception& error) {
-			failure = error.what();
-		}
-	}
 
-	void NativeHybridGI::PrepareInputs(Frame& frame, const RedstoneGI&)
+	void NativeHybridGI::PrepareInputs(Frame& frame)
 	{
         CS_GPU_PASS("RedstoneGI::NativeSnapshot");
         auto* context = backend.d3d11Context.get();
@@ -138,7 +67,7 @@ namespace DX12Native
         auto targets = globals::game::renderer->GetRuntimeData().renderTargets;
         ID3D11ShaderResourceView* reads[]{ Util::GetCurrentSceneDepthSRV(),
             Util::AsReal(targets[NORMALROUGHNESS].SRV),
-            initialRadiance->srv.get(),
+            nullptr,
             Util::AsReal(targets[ALBEDO].SRV), Util::AsReal(targets[REFLECTANCE].SRV),
             Util::AsReal(targets[RE::RENDER_TARGET::kMOTION_VECTOR].SRV) };
         ID3D11UnorderedAccessView* writes[6]{};
@@ -165,14 +94,14 @@ namespace DX12Native
     }
 
     void NativeHybridGI::Dispatch(const GraphicsBackend& graphics, const std::array<uint32_t, 2>& size,
-        uint32_t frameNumber, const RedstoneGI& settings, ID3D11UnorderedAccessView* target)
+        uint32_t frameNumber, const RedstoneGI& settings, const NativeSceneOutput& source)
     {
         CS_GPU_PASS("RedstoneGI::NativeDispatch");
         Retire();
         if (lastRequestedFrame == frameNumber) return;
         lastRequestedFrame = frameNumber;
         ++requests;
-        if (sourceFrame != frameNumber || sourceSize != size || !initialRadiance) { failure = "Current-frame pre-GI source unavailable"; return; }
+        if (!source.first || !source.sourceOwner) { failure = "Current-frame pre-GI source unavailable"; return; }
         if (!graphics.d3d12Device || !graphics.d3d11Device || !graphics.d3d11Context ||
             !graphics.commandQueue || !size[0] || !size[1]) return;
         const auto available = std::find_if(frames.begin(), frames.end(), [](const Frame& frame) { return !frame.fence; });
@@ -195,12 +124,13 @@ namespace DX12Native
             const auto grid = MakeSignalGrid(size, resolution, settings.settings.NativeCheckerboard, frameNumber);
             if (frame.size != size || frame.outputs.grid.logical != grid.logical || frame.outputs.grid.packed != grid.packed) frame = {};
             frame.outputs.grid = grid;
+            frame.number = frameNumber;
             frame.retainedBackend = backend;
             if (!frame.allocator) {
                 const uint64_t budget = uint64_t(settings.settings.NativeBudgetMB) * 1024 * 1024;
                 const uint64_t outputs = EstimateBytes(backend.d3d12Device.get(), grid.packed[0], grid.packed[1]);
                 const uint64_t sourceBytes = NativeTextureBytes(backend.d3d12Device.get(), size, DXGI_FORMAT_R32_FLOAT) +
-                    5u * NativeTextureBytes(backend.d3d12Device.get(), size, DXGI_FORMAT_R16G16B16A16_FLOAT);
+                    4u * NativeTextureBytes(backend.d3d12Device.get(), size, DXGI_FORMAT_R16G16B16A16_FLOAT);
                 if (outputs > budget / 2 || sourceBytes > budget / 2 - outputs)
                     throw std::runtime_error("Native GI two-frame allocation exceeds its memory budget");
                 if (ResidentBytes() + nativeDenoiser.GetNativeResidentBytes() + outputs + sourceBytes > budget) Reset();
@@ -212,6 +142,7 @@ namespace DX12Native
                 desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
                 constexpr std::array names{ "Depth", "NormalRoughness", "Radiance", "DiffuseAlbedo", "SpecularAlbedo", "Motion" };
                 for (uint32_t i = 0; i < 5; ++i) {
+                    if (i==2u) continue;
                     desc.Format = i ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R32_FLOAT;
                     frame.sources[i] = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(),
                         backend.d3d12Device.get(), std::string("RedstoneGI::Native") + names[i]);
@@ -225,7 +156,7 @@ namespace DX12Native
                 frame.camera = std::make_unique<ConstantBuffer>(ConstantBufferDesc<globals::FrameBuffer>(), "RedstoneGI::NativeCamera");
                 frame.size = size;
             }
-            const bool wantsRR = settings.settings.NativeRayRegeneration && RayRegeneration::GetSettings().enabled && settings.GetNativeSignalMask();
+            const bool wantsRR = settings.settings.NativeRayRegeneration && RayRegeneration::GetSettings().enabled && (settings.GetNativeSignalMask() & settings.settings.NativeRRSignals);
             if (!wantsRR) frame.sources[5].reset();
             if (wantsRR && !frame.sources[5]) {
                 const auto budget = uint64_t(settings.settings.NativeBudgetMB) * 1024 * 1024;
@@ -239,16 +170,19 @@ namespace DX12Native
                     catch (const std::exception& error) { rrFailure = error.what(); }
                 }
             }
-            PrepareInputs(frame, settings);
+            sourceFrame=frameNumber;
+            frame.sceneSource=source.sourceOwner;
+            PrepareInputs(frame);
             const auto ready = producer.Next();
             DX::ThrowIfFailed(backend.d3d11Context->Signal(producer.fence11.get(), ready));
             backend.d3d11Context->Flush();
             DX::ThrowIfFailed(backend.commandQueue->Wait(producer.fence12.get(), ready));
             DX::ThrowIfFailed(frame.allocator->Reset());
             DX::ThrowIfFailed(frame.commands->Reset(frame.allocator.get(), nullptr));
+            DX::ThrowIfFailed(backend.commandQueue->Wait(source.ready,source.value));
             const bool recorded = Record(backend.d3d12Device.get(), frame.commands.get(), frame.outputs,
                 uint32_t(available - frames.begin()), frameNumber, size,
-                frame.sources[0]->resource.get(), frame.sources[1]->resource.get(), frame.sources[2]->resource.get(),
+                frame.sources[0]->resource.get(), frame.sources[1]->resource.get(), frame.sceneSource->resource.get(),
                 frame.sources[3]->resource.get(), frame.sources[4]->resource.get(), settings);
             if (recorded) RecordRR(frame, uint32_t(available - frames.begin()), frameNumber, settings);
             if (recorded) RecordComposition(frame, uint32_t(available - frames.begin()), settings);
@@ -260,17 +194,25 @@ namespace DX12Native
             frame.fence = completion.Next();
             DX::ThrowIfFailed(backend.commandQueue->Signal(completion.fence12.get(), frame.fence));
             ++submissions;
-            if (target && frame.composedValid) {
-                DX::ThrowIfFailed(backend.d3d11Context->Wait(completion.fence11.get(), frame.fence));
-                if (publication.Publish(backend, target, frame.composed->srv, nullptr, size, false, 0.0f, frame.camera->CB())) {
-                    ++scenePublications; publicationFrame = frameNumber; rrOutputsBoundMask = frame.rr.recordedMask;
-                }
-                frame.retirement = producer.Next();
-                DX::ThrowIfFailed(backend.d3d11Context->Signal(producer.fence11.get(), frame.retirement));
-            }
+            frame.awaitingScene = frame.composedValid;
+
         } catch (const std::exception& error) {
             nativeDenoiser.CancelNativeRecording(); available->outputs.valid = false;
             available->composedValid = false; failure = error.what();
+        }
+    }
+
+    std::optional<NativeSceneOutput> NativeHybridGI::GetSceneOutput(uint32_t frameNumber) const
+    {
+        for (const auto& frame : frames) if (frame.awaitingScene && frame.composedValid && frame.number == frameNumber)
+            return NativeSceneOutput{frame.composed->resource.get(), nullptr, completion.fence12.get(), frame.fence};
+        return std::nullopt;
+    }
+    void NativeHybridGI::ReleaseSceneOutput(uint32_t frameNumber, ID3D12Fence* fence, uint64_t value)
+    {
+        for (auto& frame : frames) if (frame.awaitingScene && frame.number == frameNumber) {
+            frame.sceneConsumer.copy_from(fence); frame.sceneConsumerValue = value; frame.awaitingScene = false;
+            if (fence) { ++scenePublications; publicationFrame = frameNumber; rrOutputsBoundMask = frame.rr.recordedMask; }
         }
     }
 
@@ -287,7 +229,7 @@ namespace DX12Native
             { "slot0RRRecordedMask", frames[0].rr.recordedMask }, { "slot1RRRecordedMask", frames[1].rr.recordedMask },
             { "radianceSource", "current-frame pre-indirect raster diffuse plus specular" },
             { "sourceFrame", sourceFrame }, { "sourceIncludesNativeGI", false }, { "sourceIncludesLegacyGIComposite", false },
-            { "sourceIncludesNativeDirectOverride", false }, { "selectedLegacyProvider", sourceSelectedProvider },
+            { "sourceIncludesNativeDirectOverride", false },
             { "requiresDirect", false }, { "requiresRR", false }, { "scenePublishSubmissions", scenePublications },
             { "scenePublishFrame", publicationFrame }, { "rrOutputsBoundForComposition", rrOutputsBoundMask },
             { "compositionFailure", compositionFailure }, { "visualConsumptionVerified", false } };
