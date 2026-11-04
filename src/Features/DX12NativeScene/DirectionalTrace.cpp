@@ -2307,6 +2307,13 @@ namespace DX12Native
         Frame* available = nullptr;
         for (auto& frame : frames) {
             if (frame.scene || frame.submitted) continue;
+            const auto index = int32_t(&frame - frames.data());
+            const bool retainedForShadowHistory = std::ranges::any_of(
+                frames, [&](const Frame& other) {
+                    return &other != &frame && other.submitted &&
+                        other.shadowHistorySourceSlot == index;
+                });
+            if (retainedForShadowHistory) continue;
             if (!available || frame.number < available->number)
                 available = &frame;
         }
