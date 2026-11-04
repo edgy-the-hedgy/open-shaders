@@ -27,7 +27,7 @@ bool ValidRR(float4 value) { return all(isfinite(value)) && value.a >= 0; }
     float depth = Depth[pixel];
     if (!isfinite(depth) || depth <= 18.0 || depth >= MaximumDepth || !all(isfinite(NormalRoughness[pixel]))) return;
     uint2 logical = min(pixel * LogicalSize / NativeSize, LogicalSize - 1u);
-    uint2 representative = min(uint2((float2(logical) + 0.5) * NativeSize / LogicalSize), NativeSize - 1u);
+    uint2 representative = min(((logical * 2u + 1u) * NativeSize) / (LogicalSize * 2u), NativeSize - 1u);
     if (any(representative != pixel)) return;
     bool sampled = all(representative == pixel) && (!Checkerboard || ((logical.x + logical.y) & 1u) == Origin);
     uint2 packed = uint2(Checkerboard ? logical.x / 2u : logical.x, logical.y);

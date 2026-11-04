@@ -28,13 +28,20 @@ json RedstoneDenoiser::GetConfiguration() const
 {
 	std::scoped_lock lock(configurationMutex);
 	const auto& shared = RayRegeneration::GetConfiguration();
+	const auto nativeDefaults = NativeDefaultsForUI();
+	const bool defaultsReady = configurationDefaultsReady || nativeDefaults.has_value();
+	bool nativePending = false;
+	for (const auto& signal : GetNativeDiagnostics())
+		if (signal.value("initialized", false) && (!signal.value("configured", false) || signal.value("configurationRevision", UINT64_MAX) != shared.revision)) nativePending = true;
 	json overrides = json::object(), defaults = json::object();
 	for (size_t i = 0; i < configurationOverrides.size(); ++i) {
 		const char* name = i < kConfigurationKeys.size() ? kConfigurationKeys[i].name : kBoundsNames[i - kConfigurationKeys.size()];
 		overrides[name] = shared.overrides.contains(name) ? shared.overrides.at(name) : json(nullptr);
-		defaults[name] = configurationDefaultsReady ? json(configurationDefaults[i]) : json(nullptr);
+		defaults[name] = configurationDefaultsReady ? json(configurationDefaults[i]) : nativeDefaults ? json((*nativeDefaults)[i]) : json(nullptr);
 	}
-	return { { "overrides", overrides }, { "defaults", defaults }, { "defaultsReady", configurationDefaultsReady }, { "pending", configurationDirty || sharedConfigurationRevision != shared.revision } };
+	return { { "overrides", overrides }, { "defaults", defaults }, { "defaultsReady", defaultsReady },
+		{ "defaultsSource", configurationDefaultsReady ? "legacy-context" : nativeDefaults ? "first-native-signal; per-signal defaults are in native diagnostics" : "unavailable" },
+		{ "pending", nativeDefaults ? nativePending : configurationDirty || sharedConfigurationRevision != shared.revision } };
 }
 
 void RedstoneDenoiser::SetConfiguration(const json& a_configuration)

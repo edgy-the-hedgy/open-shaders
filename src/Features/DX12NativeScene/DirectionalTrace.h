@@ -46,6 +46,8 @@ namespace DX12Native
 		json GetDiagnostics() const;
 		/** @brief Draws prepared RR context diagnostics and current input/output buffers. */
 		void DrawRayRegenerationSettings(bool a_dxrIndirect);
+		/** @brief Retires native consumers when their owning direct/indirect producers are disabled. */
+		void RetireRayRegeneration() { directDenoiser.RetireNative(); indirectDenoiser.RetireNative(); }
 		/** @brief Presents an explicitly selected prepared-signal RR debug overlay. */
 		void DrawRRDebugOverlay();
 		/** @brief Reports whether prepared RR full-screen debugging is selected. */
@@ -90,6 +92,9 @@ namespace DX12Native
 			std::array<std::unique_ptr<WrappedResource>, 2> composed;
 			winrt::com_ptr<ID3D12Resource> nativeCamera;
 			bool publishToScene = false, composedValid = false;
+			uint64_t budgetBytes = 0;
+			std::shared_ptr<const void> compositionBindings;
+			GraphicsBackend retainedBackend;
 			bool useIndirectRR = false, motionReady = false;
 			winrt::com_ptr<ID3D12RootSignature> root;
 			winrt::com_ptr<ID3D12PipelineState> pipeline;
@@ -134,10 +139,9 @@ namespace DX12Native
 		void RecordNativeComposition(Frame& a_frame);
 		void Consume(Frame& a_frame);
 		void CompositeScene(Frame& a_frame, ID3D11UnorderedAccessView* a_target);
-		/** @brief Reconstructs the current separated direct signals using matching RT material guides. */
-		uint32_t DenoiseDirect(Frame& a_frame);
 		void PrepareRRPreview(Frame& a_frame, uint32_t a_rrFlags);
 		uint64_t ResidentBytes() const;
+		uint64_t NativeResidentBytes() const;
 		uint64_t MaterialResidentBytes() const;
 		GraphicsBackend backend;
 		SharedFence producer, completion;

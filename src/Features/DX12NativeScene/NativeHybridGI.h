@@ -28,6 +28,8 @@ namespace DX12Native
         json GetDiagnostics() const;
         /** @brief Retires only native GI signal histories when disabled or after a scene transition. */
         void Reset();
+        /** @brief Reloads producer and consumer bytecode while submitted frames retain old pass objects. */
+        void ReloadShaders();
         static constexpr uint32_t kOutputs = 5;
         static constexpr uint64_t kCameraSnapshotOffset = 1280;
         enum Output : uint32_t { Specular = 0, Diffuse = 1, Eligibility = 2, DiffuseAO = 3, SpecularAO = 4 };
@@ -37,6 +39,9 @@ namespace DX12Native
             winrt::com_ptr<ID3D12Resource> constants;
             SignalGrid grid;
             bool valid = false;
+            winrt::com_ptr<ID3D12RootSignature> root;
+            std::array<winrt::com_ptr<ID3D12PipelineState>, 2> pipelines;
+            winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
         };
         /** @brief Checks the two required native estimator binaries. */
         static bool ShadersAvailable();
@@ -62,11 +67,14 @@ namespace DX12Native
             std::unique_ptr<ConstantBuffer> camera;
             std::array<uint32_t, 2> size{};
             uint64_t fence = 0, retirement = 0;
-            bool composedValid = false;
+            bool composedValid = false, motionReady = false;
+            std::shared_ptr<const void> compositionBindings;
+            GraphicsBackend retainedBackend;
         };
         void PrepareInputs(Frame& frame, const RedstoneGI& settings);
         void RecordRR(Frame& frame, uint32_t slot, uint32_t number, const RedstoneGI& settings);
         void RecordComposition(Frame& frame, uint32_t slot, const RedstoneGI& settings);
+        uint64_t ResidentBytes() const;
         NativeCompute composition;
         NativePublication publication;
         uint64_t scenePublications = 0;
@@ -75,6 +83,7 @@ namespace DX12Native
         SignalPreparation signalPreparation;
         RedstoneDenoiser nativeDenoiser;
         std::string rrFailure;
+        uint64_t historyRevision = 0;
         std::array<Frame, 2> frames;
         GraphicsBackend backend;
         SharedFence producer, completion;

@@ -73,7 +73,11 @@ SamplerState samplerLinearClamp : register(s1);
 #endif
 uint2 SelectSurfacePixel(Texture2D<float> depthTexture, uint2 pixel)
 {
+#if defined(DX12_HYBRID_GI)
+	return min(((pixel * 2u + 1u) * uint2(FrameDim)) / (NativeLogicalSize * 2u), uint2(FrameDim) - 1u);
+#else
 	return min(uint2((float2(pixel) + 0.5) * FrameDim / OUT_FRAME_DIM), uint2(FrameDim) - 1u);
+#endif
 }
 float3 ScreenToViewPosition(float2 screen, float depth, uint eyeIndex = 0)
 {

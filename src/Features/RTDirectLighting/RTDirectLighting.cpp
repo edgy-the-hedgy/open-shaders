@@ -59,6 +59,7 @@ void RTDirectLighting::OnSceneTransitionReset(bool) { lastFrame.reset(); }
 void RTDirectLighting::OnRuntimeDisabled()
 {
 	lastFrame.reset();
+	globals::features::dx12NativeScene.Tracer().RetireRayRegeneration();
 	globals::features::dx12NativeScene.Tracer().ClearRRDebugOverlay();
 }
 void RTDirectLighting::ClearShaderCache()
@@ -220,6 +221,7 @@ void RTDirectLighting::DrawRayRegenerationSettings()
 void RTDirectLighting::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target, const std::array<uint32_t, 2>& size)
 {
 	CS_GPU_PASS("RTDirectLighting::PreparedLighting");
+	if (!WantsComposite()) globals::features::dx12NativeScene.Tracer().RetireRayRegeneration();
 	if (!loaded || !WantsComposite() || !target || !globals::features::dx12NativeScene.loaded ||
 		!globals::features::dx12NativeScene.settings.UsePreparedMaterials || globals::game::isVR || globals::state->isMapMenuOpen) return;
 	if (target != Util::AsReal(globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].UAV) ||

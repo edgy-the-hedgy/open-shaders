@@ -6,6 +6,17 @@
 
 namespace DX12Native
 {
+    uint64_t DirectionalTrace::NativeResidentBytes() const
+    {
+        auto* device = backend.d3d12Device.get();
+        uint64_t bytes = directDenoiser.GetNativeResidentBytes() + indirectDenoiser.GetNativeResidentBytes();
+        for (const auto& frame : frames) {
+            bytes += frame.nativeDirectRR.Bytes(device) + frame.nativeIndirectRR.Bytes(device);
+            bytes += NativeAllocationBytes(device, frame.motion ? frame.motion->resource.get() : nullptr);
+            bytes += NativeAllocationBytes(device, frame.nativeCamera.get());
+        }
+        return bytes;
+    }
     void DirectionalTrace::RecordNativeLightingRR(Frame& frame)
     {
         CS_GPU_PASS("RTDirectLighting::NativeRayRegeneration");
@@ -24,8 +35,10 @@ namespace DX12Native
             const auto mode = direct ? frame.directTraceMode : frame.indirectTraceMode;
             status = { { "requestedMask", requested }, { "frame", frame.number }, { "traceResolution", mode }, { "rrResolution", resolution },
                 { "nativeSize", frame.size }, { "logicalSize", grid.logical }, { "packedSize", grid.packed },
+                { "stochastic", frame.stochasticParameters.x >= 0.5f }, { "requestedCheckerboard", shared.checkerboard },
                 { "checkerboard", grid.checkerboard }, { "origin", grid.origin }, { "recordedMask", 0u } };
             const auto missing = coverage.Check(grid, mode, frame.stochasticParameters.x >= 0.5f, frame.number, direct ? 0u : 0x51b349d5u);
+            status["coverageCompatible"] = !missing.has_value();
             if (missing) {
                 status["unavailableReason"] = "Requested RR sample was not traced by this producer";
                 status["firstUntracedNativePixel"] = *missing;
@@ -33,6 +46,14 @@ namespace DX12Native
             }
             if (!frame.motionReady) { status["unavailableReason"] = "Native motion snapshot unavailable"; return; }
             if (!denoiser.InitializeNative(backend)) { status["unavailableReason"] = "Native AMD SDK provider unavailable"; return; }
+            uint64_t rawReserve = 0;
+            for (const auto& candidate : frames) if (!candidate.receivers) rawReserve += frame.bytes;
+            const auto resident = ResidentBytes() + NativeResidentBytes() + rawReserve - output.Bytes(backend.d3d12Device.get());
+            const auto estimate = SignalPreparation::EstimateBytes(backend.d3d12Device.get(), grid, requested);
+            if (resident > frame.budgetBytes || estimate > frame.budgetBytes - resident) {
+                status["unavailableReason"] = "Optional native RR surfaces exceed the lighting memory budget";
+                denoiser.RetireNative(requested); output = {}; return;
+            }
             const auto offset = direct ? 0u : 5u;
             const std::array inputs{ frame.receivers->resource.get(), frame.rawSignals[2].get(), frame.motion->resource.get(),
                 frame.rawSignals[4].get(), frame.rawSignals[3].get(), frame.rawSignals[offset].get(), frame.rawSignals[offset + 1u].get() };
@@ -46,6 +67,9 @@ namespace DX12Native
                 resources.input = output.packed[i].get(); resources.output = output.outputs[i].get();
                 resources.nativeSize = frame.size; resources.logicalSize = grid.logical; resources.frame = frame.number;
                 resources.origin = grid.origin; resources.checkerboard = grid.checkerboard; resources.direct = direct;
+                resources.historyRevision = frame.generation;
+                const auto otherBytes = ResidentBytes() + NativeResidentBytes() + rawReserve - denoiser.GetNativeResidentBytes();
+                resources.contextBudgetBytes = otherBytes < frame.budgetBytes ? frame.budgetBytes - otherBytes : 0;
                 if (denoiser.RecordNativeSignal(frame.commands.get(), resources, i)) output.recordedMask |= 1u << i;
             }
             status["recordedMask"] = output.recordedMask;

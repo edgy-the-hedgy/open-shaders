@@ -33,6 +33,8 @@ public:
 		std::array<uint32_t, 2> nativeSize{}, logicalSize{};
 		uint32_t frame = 0, origin = 0;
 		bool checkerboard = false, direct = false, reset = false;
+		uint64_t contextBudgetBytes = UINT64_MAX;
+		uint64_t historyRevision = 0;
 	};
 	/** @brief Records one SDK signal without submitting, copying or reading back its textures. */
 	bool RecordNativeSignal(ID3D12GraphicsCommandList* a_list, const NativeResources& a_resources, uint32_t a_signal);
@@ -42,6 +44,10 @@ public:
 	void RetireNative(uint32_t a_mask = 15u);
 	/** @brief Reports independent native initialization, configuration and dispatch evidence. */
 	json GetNativeDiagnostics() const;
+	/** @brief Reports active and fence-retained SDK allocations queried through the provider. */
+	uint64_t GetNativeResidentBytes() const;
+	/** @brief Invalidates histories whose recorded command list could not be submitted. */
+	void CancelNativeRecording();
 	~RedstoneDenoiser();
 	bool CanDispatchRayRegeneration() const { return featureRayRegeneration && !rayRegenerationFailureLatched; }
 	json GetRayRegenerationDiagnostics() const;
@@ -62,6 +68,7 @@ private:
 	struct NativeState;
 	std::shared_ptr<NativeState> nativeState;
 	bool DisposeNative();
+	std::optional<std::array<float, 8>> NativeDefaultsForUI() const;
 	bool ApplyConfiguration(bool& a_resetHistory);
 	mutable std::mutex configurationMutex;
 	std::array<std::optional<float>, 8> configurationOverrides{};

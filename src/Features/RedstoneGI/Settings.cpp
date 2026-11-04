@@ -234,9 +234,10 @@ void RedstoneGI::DrawAmbientOcclusionSettings()
 
 void RedstoneGI::DrawSettings()
 {
-	ImGui::Checkbox("Native DX12 Hybrid GI / AO", &settings.NativeHybrid);
 	ImGui::Checkbox("Native checkerboard samples", &settings.NativeCheckerboard);
 	ImGui::Checkbox("Native Hybrid GI / AO ray regeneration", &settings.NativeRayRegeneration);
+	int nativeBudget = int(settings.NativeBudgetMB);
+	if (ImGui::SliderInt("Native GI memory budget (MiB)", &nativeBudget, 64, 4096)) settings.NativeBudgetMB = uint32_t(nativeBudget);
 	ImGui::Checkbox("Clamp native source radiance", &settings.NativeRadianceClamp);
 	if (settings.NativeRadianceClamp)
 		ImGui::SliderFloat("Native radiance threshold", &settings.NativeRadianceThreshold, 0.0f, 65504.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
@@ -247,7 +248,7 @@ void RedstoneGI::DrawSettings()
 		ImGui::TextWrapped("Hybrid raymarched GI is not selected.");
 		return;
 	}
-	if (!resourcesReady || switchFailed)
+	if (selected && (!resourcesReady || switchFailed))
 		ImGui::TextWrapped("Hybrid raymarched GI resources or composite are unavailable; the existing provider fallback remains active.");
 	ImGui::SeparatorText("Screen-space indirect lighting");
 	ImGui::SliderFloat(T("feature.upscaling.redstone.contribution", "RGI Contribution (EV)"), &rgiContributionEV, kContributionMinEV, kContributionMaxEV, "%.1f", ImGuiSliderFlags_AlwaysClamp);

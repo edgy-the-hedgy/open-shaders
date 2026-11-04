@@ -25,6 +25,7 @@ namespace DX12Native
                     i ? "RTIndirectLighting::NativeComposedLighting" : "RTDirectLighting::NativeComposedLighting");
             }
             SnapshotNativeCamera(backend.d3d12Device.get(), frame.nativeCamera);
+            frame.compositionBindings = nativeComposition.RetainBindings();
             const auto& direct = frame.nativeDirectRR;
             const auto& indirect = frame.nativeIndirectRR;
             const std::array<uint32_t, 16> constants{ frame.size[0], frame.size[1], direct.grid.logical[0], direct.grid.logical[1],

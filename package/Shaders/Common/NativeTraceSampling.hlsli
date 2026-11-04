@@ -25,7 +25,7 @@ NATIVE_TRACE_CONSTEXPR bool NativeTraceSample(uint x, uint y, uint mode, bool st
         if (mode == 3u) return x % 3u != 1u && y % 3u != 1u;
         return x % span == 0u && y % span == 0u;
     }
-    const uint phase = (frame + NativeTraceHash((x / span) * 0x9e3779b9u ^ (y / span) * 0x85ebca6bu ^ salt) % (span * span)) % (span * span);
+    const uint phase = (frame % (span * span) + NativeTraceHash((x / span) * 0x9e3779b9u ^ (y / span) * 0x85ebca6bu ^ salt) % (span * span)) % (span * span);
     const uint firstX = phase % span, firstY = phase / span;
     if (mode == 3u)
         return (x % span == firstX || x % span == (firstX + 2u) % 3u) &&

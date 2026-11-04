@@ -6,6 +6,19 @@
 
 namespace DX12Native
 {
+    uint64_t NativeHybridGI::ResidentBytes() const
+    {
+        uint64_t bytes = 0;
+        auto* device = backend.d3d12Device.get();
+        for (const auto& frame : frames) {
+            for (const auto& source : frame.sources) bytes += NativeAllocationBytes(device, source ? source->resource.get() : nullptr);
+            for (const auto& output : frame.outputs.textures) bytes += NativeAllocationBytes(device, output.get());
+            bytes += NativeAllocationBytes(device, frame.outputs.constants.get());
+            bytes += NativeAllocationBytes(device, frame.composed ? frame.composed->resource.get() : nullptr);
+            bytes += frame.rr.Bytes(device);
+        }
+        return bytes;
+    }
     void NativeHybridGI::RecordRR(Frame& frame, uint32_t slot, uint32_t number, const RedstoneGI& settings)
     {
         CS_GPU_PASS("RedstoneGI::NativeRayRegeneration");
@@ -15,6 +28,20 @@ namespace DX12Native
         if (!mask) { frame.rr = {}; return; }
         try {
             if (!nativeDenoiser.InitializeNative(backend)) { rrFailure = "Native RR SDK unavailable; raw GI/AO retained"; return; }
+            if (!frame.motionReady) { rrFailure = "Native RR motion snapshot unavailable within its memory allowance; raw GI/AO retained"; return; }
+            const auto budget = uint64_t(settings.settings.NativeBudgetMB) * 1024 * 1024;
+            const auto reserve = frame.composed ? 0u : NativeTextureBytes(backend.d3d12Device.get(), frame.size, DXGI_FORMAT_R16G16B16A16_FLOAT);
+            uint64_t rawReserve = 0;
+            for (const auto& candidate : frames) if (!candidate.allocator)
+                rawReserve += EstimateBytes(backend.d3d12Device.get(), frame.outputs.grid.packed[0], frame.outputs.grid.packed[1]) +
+                    NativeTextureBytes(backend.d3d12Device.get(), frame.size, DXGI_FORMAT_R32_FLOAT) +
+                    5u * NativeTextureBytes(backend.d3d12Device.get(), frame.size, DXGI_FORMAT_R16G16B16A16_FLOAT);
+            const auto resident = ResidentBytes() + nativeDenoiser.GetNativeResidentBytes() + reserve + rawReserve - frame.rr.Bytes(backend.d3d12Device.get());
+            const auto estimate = SignalPreparation::EstimateBytes(backend.d3d12Device.get(), frame.outputs.grid, mask);
+            if (resident > budget || estimate > budget - resident) {
+                rrFailure = "Optional native RR surfaces exceed the GI memory budget; raw GI/AO retained";
+                nativeDenoiser.RetireNative(mask); frame.rr = {}; return;
+            }
             const std::array inputs{ frame.sources[0]->resource.get(), frame.sources[1]->resource.get(), frame.sources[5]->resource.get(),
                 frame.sources[3]->resource.get(), frame.sources[4]->resource.get(), frame.outputs.textures[Diffuse].get(), frame.outputs.textures[Specular].get() };
             if (!signalPreparation.Record(backend.d3d12Device.get(), frame.commands.get(), frame.rr, slot, frame.outputs.grid, inputs,
@@ -30,6 +57,9 @@ namespace DX12Native
                 resources.input = noisy[i]; resources.output = frame.rr.outputs[i].get();
                 resources.nativeSize = frame.size; resources.logicalSize = frame.outputs.grid.logical;
                 resources.frame = number; resources.origin = frame.outputs.grid.origin; resources.checkerboard = frame.outputs.grid.checkerboard;
+                resources.historyRevision = historyRevision;
+                const auto otherBytes = ResidentBytes() + reserve + rawReserve;
+                resources.contextBudgetBytes = otherBytes < budget ? budget - otherBytes : 0;
                 if (nativeDenoiser.RecordNativeSignal(frame.commands.get(), resources, i)) frame.rr.recordedMask |= 1u << i;
             }
             rrFailure.clear();

@@ -45,12 +45,13 @@ struct RedstoneDenoiser::NativeState
         std::array<uint32_t, 2> size{}, nativeSize{};
         uint32_t type = 0, lastFrame = UINT32_MAX;
         bool checkerboard = false, configured = false, faulted = false, recording = false;
-        uint64_t fence = 0, configuration = UINT64_MAX, requests = 0, records = 0;
+        uint64_t fence = 0, configuration = UINT64_MAX, requests = 0, records = 0, bytes = 0;
+        uint64_t historyRevision = UINT64_MAX;
         std::array<float, 8> defaults{};
         bool defaultsReady = false;
         std::string failure;
     };
-    struct Retired { ffxContext context; uint64_t fence; };
+    struct Retired { ffxContext context; uint64_t fence; uint64_t bytes; };
     std::array<Signal, 4> signals;
     std::vector<Retired> retired;
     winrt::com_ptr<ID3D12Fence> fence;
@@ -112,7 +113,7 @@ struct RedstoneDenoiser::NativeState
 
 bool RedstoneDenoiser::InitializeNative(const GraphicsBackend& graphics)
 {
-    if (nativeState) { nativeState->Poll(denoiserFunctions); return true; }
+    if (nativeState) { nativeState->Poll(denoiserFunctions); return backend.d3d12Device == graphics.d3d12Device; }
     if (!graphics.d3d12Device || !graphics.commandQueue) return false;
     const auto directory = (Util::PathHelpers::GetDataPath() / "Shaders" / "Upscaling" / "FidelityFX").lexically_normal();
     if (!directory.is_absolute()) return false;
@@ -135,7 +136,8 @@ void RedstoneDenoiser::RetireNative(uint32_t mask)
     for (uint32_t i = 0; i < 4; ++i) {
         auto& signal = nativeState->signals[i];
         if (!(mask & (1u << i)) || !signal.context) continue;
-        nativeState->retired.push_back({ signal.context, signal.fence });
+        nativeState->retired.push_back({ signal.context, signal.fence, signal.bytes });
+        signal.bytes = 0;
         signal.context = nullptr; signal.configured = false; signal.defaultsReady = false;
         signal.lastFrame = UINT32_MAX; signal.faulted = false;
     }
@@ -155,17 +157,26 @@ void RedstoneDenoiser::NotifyNativeSubmitted()
         }
 }
 
+void RedstoneDenoiser::CancelNativeRecording()
+{
+    if (!nativeState) return;
+    for (auto& signal : nativeState->signals) if (signal.recording) {
+        signal.lastFrame = UINT32_MAX; signal.recording = false;
+    }
+}
+
 bool RedstoneDenoiser::DisposeNative()
 {
     if (!nativeState) return true;
+    auto preserve = [&] { (void)new std::shared_ptr<NativeState>(std::move(nativeState)); return false; };
     RetireNative(15u);
     if (!nativeState->retired.empty()) {
         winrt::handle event{ CreateEventW(nullptr, FALSE, FALSE, nullptr) };
         if (!event || FAILED(nativeState->fence->SetEventOnCompletion(nativeState->submitted, event.get())) ||
-            WaitForSingleObject(event.get(), SharedFence::kFenceTimeoutMs) != WAIT_OBJECT_0) return false;
+            WaitForSingleObject(event.get(), SharedFence::kFenceTimeoutMs) != WAIT_OBJECT_0) return preserve();
         nativeState->Poll(denoiserFunctions);
     }
-    if (!nativeState->retired.empty()) return false;
+    if (!nativeState->retired.empty()) return preserve();
     nativeState.reset();
     return true;
 }
@@ -200,7 +211,25 @@ bool RedstoneDenoiser::RecordNativeSignal(ID3D12GraphicsCommandList* list, const
     if (signal.context && (signal.size != extent || signal.type != uint32_t(type) || signal.checkerboard != resources.checkerboard))
         RetireNative(1u << index);
     if (signal.faulted) { signal.failure = "SDK signal context quarantined after provider exception"; return false; }
+    if (signal.context && GetNativeResidentBytes() > resources.contextBudgetBytes) {
+        signal.failure = "Retained SDK allocations exceed the selected context allowance";
+        RetireNative(1u << index); return false;
+    }
     if (!signal.context) {
+        FfxApiEffectMemoryUsage memory{};
+        ffxQueryDescDenoiserGetGPUMemoryUsage query{};
+        query.header.type = FFX_API_QUERY_DESC_TYPE_DENOISER_GPU_MEMORY_USAGE;
+        query.device = backend.d3d12Device.get(); query.maxRenderSize = { extent[0], extent[1] };
+        query.signalFlags = uint32_t(type); query.checkerboardSignalFlags = resources.checkerboard ? uint32_t(type) : 0u;
+        query.gpuMemoryUsage = &memory;
+        if (denoiserFunctions.Query(nullptr, &query.header) != FFX_API_RETURN_OK) {
+            signal.failure = "SDK memory requirement query failed; raw signal retained"; return false;
+        }
+        const auto retained = GetNativeResidentBytes();
+        if (retained > resources.contextBudgetBytes || memory.totalUsageInBytes > resources.contextBudgetBytes - retained) {
+            signal.failure = std::format("SDK signal needs {} bytes with {} retained; context budget is {}", memory.totalUsageInBytes, retained, resources.contextBudgetBytes);
+            return false;
+        }
         ffxCreateContextDescDenoiser create{};
         create.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_DENOISER;
         create.version = FFX_DENOISER_VERSION; create.maxRenderSize = { extent[0], extent[1] };
@@ -212,6 +241,13 @@ bool RedstoneDenoiser::RecordNativeSignal(ID3D12GraphicsCommandList* list, const
             signal.failure = "SDK signal context creation failed"; return false;
         }
         signal.size = extent; signal.type = uint32_t(type); signal.checkerboard = resources.checkerboard;
+        signal.bytes = memory.totalUsageInBytes;
+        signal.fence = 0; signal.recording = false;
+        if (denoiserFunctions.Query(&signal.context, &query.header) == FFX_API_RETURN_OK) signal.bytes = memory.totalUsageInBytes;
+        if (GetNativeResidentBytes() > resources.contextBudgetBytes) {
+            signal.failure = "Actual SDK allocation exceeds the signal's memory allowance";
+            RetireNative(1u << index); return false;
+        }
     }
     if (!nativeState->Configure(signal, denoiserFunctions)) return false;
     std::vector<D3D12_RESOURCE_BARRIER> barriers;
@@ -242,7 +278,7 @@ bool RedstoneDenoiser::RecordNativeSignal(ID3D12GraphicsCommandList* list, const
     common.linearDepthBounds = { std::max(0.001f, *globals::game::cameraNear), *globals::game::cameraFar };
     common.renderSize = { extent[0], extent[1] }; common.frameIndex = resources.frame;
     common.flags = FFX_DENOISER_DISPATCH_NON_GAMMA_ALBEDO;
-    if (resources.reset || signal.lastFrame + 1u != resources.frame || signal.lastFrame == UINT32_MAX || signal.nativeSize != resources.nativeSize)
+    if (resources.reset || signal.lastFrame + 1u != resources.frame || signal.lastFrame == UINT32_MAX || signal.nativeSize != resources.nativeSize || signal.historyRevision != resources.historyRevision)
         common.flags |= FFX_DENOISER_DISPATCH_RESET;
     struct SignalDesc { ffxDispatchDescHeader header; FfxApiDenoiserSignal signal; } desc{};
     static_assert(sizeof(SignalDesc) == sizeof(ffxDispatchDescDenoiserDirectDiffuse));
@@ -264,7 +300,7 @@ bool RedstoneDenoiser::RecordNativeSignal(ID3D12GraphicsCommandList* list, const
         signal.lastFrame = UINT32_MAX;
         signal.failure = std::format("SDK signal dispatch failed ({})", result); return false;
     }
-    signal.lastFrame = resources.frame; signal.nativeSize = resources.nativeSize;
+    signal.lastFrame = resources.frame; signal.nativeSize = resources.nativeSize; signal.historyRevision = resources.historyRevision;
     signal.failure.clear(); ++signal.records;
     return true;
 }
@@ -278,6 +314,23 @@ json RedstoneDenoiser::GetNativeDiagnostics() const
         { "requests", signal.requests }, { "dispatchesRecorded", signal.records },
         { "logicalSize", signal.size }, { "checkerboard", signal.checkerboard },
         { "lastRecordedFrame", signal.lastFrame }, { "failure", signal.failure },
+        { "gpuBytes", signal.bytes },
+        { "configurationRevision", signal.configuration },
         { "defaults", signal.defaultsReady ? json(signal.defaults) : json(nullptr) } });
     return result;
+}
+
+uint64_t RedstoneDenoiser::GetNativeResidentBytes() const
+{
+    uint64_t result = 0;
+    if (!nativeState) return result;
+    for (const auto& signal : nativeState->signals) result += signal.bytes;
+    for (const auto& retired : nativeState->retired) result += retired.bytes;
+    return result;
+}
+
+std::optional<std::array<float, 8>> RedstoneDenoiser::NativeDefaultsForUI() const
+{
+    if (nativeState) for (const auto& signal : nativeState->signals) if (signal.defaultsReady) return signal.defaults;
+    return std::nullopt;
 }

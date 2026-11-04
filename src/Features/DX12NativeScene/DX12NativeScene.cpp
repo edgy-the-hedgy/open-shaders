@@ -2,6 +2,7 @@
 
 #include "Globals.h"
 #include "Features/RedstoneGI/RedstoneGI.h"
+#include "Features/RTIndirectLighting/RTIndirectLighting.h"
 #include "GpuPass.h"
 #include "State.h"
 #include "Utils/DevBenchUx.h"
@@ -207,6 +208,7 @@ void DX12NativeScene::OnSceneTransitionReset(bool a_open)
 
 void DX12NativeScene::OnRuntimeDisabled()
 {
+	nativeHybrid.Reset();
 	ResetPreparedScene();
 	preparedAcceleration.Advance();
 	preparedTrace.Retire();
@@ -232,6 +234,8 @@ json DX12NativeScene::GetDiagnostics()
 	return {
 		{ "dxrCapable", dxrCapable }, { "rrEligible", rrEligible }, { "resourcesReady", ready },
 		{ "nativeHybrid", nativeHybrid.GetDiagnostics() },
+		{ "overlappingIndirectRequests", globals::features::redstoneGI.settings.NativeHybrid &&
+			(globals::features::rtIndirectLighting.UsesRTExclusive() || globals::features::redstoneGI.IsActive()) },
 		{ "acquisitionEnabled", settings.AcquireScene }, { "unavailable", unavailable },
 		{ "preparedSceneEnabled", settings.UsePreparedScene }, { "preparedScene", preparedScene.GetDiagnostics() },
 		{ "preparedAcceleration", preparedAcceleration.GetDiagnostics() }, { "preparedTrace", traceStatus },

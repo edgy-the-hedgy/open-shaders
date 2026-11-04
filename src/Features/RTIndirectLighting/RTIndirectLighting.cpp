@@ -45,8 +45,6 @@ void RTIndirectLighting::LoadSettings(json& value)
 	selected.IndirectStrength = std::isfinite(selected.IndirectStrength) ? std::clamp(selected.IndirectStrength, 0.0f, 8.0f) : 1.0f;
 	settings = selected;
 	if (settings.UseRTExclusive) {
-		// Keep an old RT-exclusive selection valid after migration.
-		globals::features::rtDirectLighting.settings.UsePreparedDirectLighting = true;
 		globals::features::dx12NativeScene.RequestPreparedScene();
 	}
 	// Hybrid retains the previously saved screen-space GI selection on load.
@@ -82,13 +80,16 @@ void RTIndirectLighting::SelectRTExclusive()
 {
 	if (globals::game::isVR || !globals::features::rtDirectLighting.loaded) return;
 	settings.UseRTExclusive = true;
-	globals::features::rtDirectLighting.settings.UsePreparedDirectLighting = true;
 	globals::features::dx12NativeScene.RequestPreparedScene();
 	globals::features::dx12NativeScene.Tracer().Reset();
 }
 
 void RTIndirectLighting::DrawSettings()
 {
+	ImGui::Checkbox("Independent native Hybrid GI / AO", &globals::features::redstoneGI.settings.NativeHybrid);
+	int hybridResolution = static_cast<int>(settings.HybridResolution);
+	if (ImGui::Combo("Hybrid GI / AO processing resolution", &hybridResolution, "Full\0Half\0Quarter\0Use shared RR setting (legacy)\0"))
+		settings.HybridResolution = uint32_t(hybridResolution);
 	ImGui::TextUnformatted("How would you like your GI to be rendered?");
 	ImGui::BeginDisabled(globals::game::isVR || !globals::features::rtDirectLighting.loaded);
 	if (ImGui::RadioButton("RT-exclusive", settings.UseRTExclusive)) SelectRTExclusive();
@@ -102,6 +103,7 @@ void RTIndirectLighting::DrawSettings()
 
 	if (settings.UseRTExclusive) {
 		ImGui::TextWrapped("RT-exclusive uses the prepared native scene for indirect diffuse and specular. RT Direct Lighting is required. Direct and indirect run separate GPU compute dispatches using shared retained scene and receiver resources.");
+		if (!UsesRTExclusive()) ImGui::TextWrapped("RT-exclusive remains requested; enable prepared Direct Lighting to satisfy its scene prerequisite.");
 		ImGui::Checkbox("RT-exclusive ray regeneration", &settings.UseRayRegeneration);
 		int rrResolution = int(settings.RRResolution);
 		if (ImGui::Combo("RT-exclusive RR resolution", &rrResolution, "Full\0Half\0Quarter\0Shared RR setting\0")) settings.RRResolution = uint32_t(rrResolution);
@@ -125,15 +127,15 @@ void RTIndirectLighting::DrawSettings()
 		const auto failure = trace.value("failure", std::string{});
 		if (!failure.empty()) ImGui::TextWrapped("RT-exclusive lighting unavailable: %s", failure.c_str());
 	} else {
-		int hybridResolution = static_cast<int>(settings.HybridResolution);
-		if (ImGui::Combo("Hybrid GI / AO processing resolution", &hybridResolution, "Full\0Half\0Quarter\0Use shared RR setting (legacy)\0"))
-			settings.HybridResolution = uint32_t(hybridResolution);
 		ImGui::TextWrapped("Hybrid uses raymarched indirect diffuse/specular and occlusion with the raster baseline, optionally combined with RT Direct Lighting.");
 		if (globals::features::rtDirectLighting.loaded && globals::features::rtDirectLighting.settings.UsePreparedDirectLighting) {
 			ImGui::Checkbox("Connect Hybrid GI to prepared direct lighting", &settings.ConnectHybrid);
 			ImGui::SliderFloat("Prepared indirect intensity", &settings.IndirectStrength, 0.0f, 8.0f, "%.2fx");
 		}
 		globals::features::redstoneGI.DrawSettings();
+	}
+	if (settings.UseRTExclusive && globals::features::redstoneGI.settings.NativeHybrid && ImGui::TreeNode("Native Hybrid GI / AO controls")) {
+		globals::features::redstoneGI.DrawSettings(); ImGui::TreePop();
 	}
 }
 
@@ -211,7 +213,7 @@ json RTIndirectLighting::GetDiagnostics()
 
 void RTIndirectLighting::RegisterUxActions()
 {
-	FEATURE_COMMAND("setIndirectProducer", "Select rt-exclusive or hybrid GI; dxr/raymarched aliases remain accepted.",
+	FEATURE_COMMAND("setIndirectProducer", "Select rt-exclusive or hybrid GI; dxr/raymarched aliases remain accepted. Optional rays (1..8), traceResolution (0..4), rrEnabled (boolean), rrResolution (0..2, or 3 shared). RT-exclusive preserves Direct enablement and waits for its prerequisites.",
 		[](Feature* self, const json& args) {
 			auto& gi = *static_cast<RTIndirectLighting*>(self);
 			const auto producer = args.at("producer").get<std::string>();
@@ -223,6 +225,8 @@ void RTIndirectLighting::RegisterUxActions()
 			else throw std::invalid_argument("Producer must be rt-exclusive or hybrid");
 			if (args.contains("rays")) gi.settings.IndirectRays = std::clamp(args.at("rays").get<uint32_t>(), 1u, 8u);
 			if (args.contains("traceResolution")) gi.settings.RTTraceResolution = std::min(args.at("traceResolution").get<uint32_t>(), 4u);
+			if (args.contains("rrEnabled")) gi.settings.UseRayRegeneration = args.at("rrEnabled").get<bool>();
+			if (args.contains("rrResolution")) gi.settings.RRResolution = std::min(args.at("rrResolution").get<uint32_t>(), 3u);
 			globals::features::dx12NativeScene.Tracer().Reset();
 		});
 	FEATURE_COMMAND("setLightingSampling", "Adjust existing Hybrid GI slice counts.",

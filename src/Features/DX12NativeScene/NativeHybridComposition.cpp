@@ -14,6 +14,7 @@ namespace DX12Native
             if (!composition.Initialize(backend.d3d12Device.get(), "Data/Shaders/RTDirectLighting/nativeHybridCompose.dxil")) {
                 compositionFailure = composition.Failure(); return;
             }
+            frame.compositionBindings = composition.RetainBindings();
             if (!frame.composed) {
                 D3D11_TEXTURE2D_DESC desc{};
                 desc.Width = frame.size[0]; desc.Height = frame.size[1];

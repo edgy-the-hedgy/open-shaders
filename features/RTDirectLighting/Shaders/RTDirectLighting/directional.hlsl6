@@ -75,7 +75,7 @@ uint2 TraceAnchor(uint2 pixel, uint mode, uint passSalt)
 		const uint2 local = pixel % tileSpan;
 		const uint phases = tileSpan * tileSpan;
 		const uint seed = Hash(tile.x * 0x9e3779b9u ^ tile.y * 0x85ebca6bu ^ passSalt);
-		const uint phase = (FrameIndex + seed % phases) % phases;
+		const uint phase = (FrameIndex % phases + seed % phases) % phases;
 		const uint2 first = uint2(phase % tileSpan, phase / tileSpan);
 		if (mode == 3u) {
 			const uint2 second = (first + 2u) % 3u;

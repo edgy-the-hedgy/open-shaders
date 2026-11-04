@@ -60,7 +60,8 @@ namespace DX12Native
     uint64_t NativeHybridGI::EstimateBytes(ID3D12Device* device, uint32_t width, uint32_t height)
     {
         if (!device || !width || !height) return UINT64_MAX;
-        uint64_t total = kUploadBytes;
+        const auto upload = CD3DX12_RESOURCE_DESC::Buffer(kUploadBytes);
+        uint64_t total = device->GetResourceAllocationInfo(0, 1, &upload).SizeInBytes;
         for (uint32_t i = 0; i < kOutputs; ++i) {
             const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(OutputFormat(i), width, height, 1, 1, 1, 0,
                 D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
@@ -137,6 +138,7 @@ namespace DX12Native
         frame.valid = false;
         if (slot >= 2 || !list || !linearDepth || !normalRough || !linearRadiance ||
             !albedo || !reflectance || !Initialize(device)) return false;
+        frame.root = root; frame.pipelines = pipelines; frame.descriptors = descriptors;
         try {
             const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
             for (uint32_t i = 0; i < kOutputs; ++i) {

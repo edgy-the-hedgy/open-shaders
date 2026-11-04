@@ -1,6 +1,7 @@
 #include "Features/DX12NativeScene/SignalGrid.h"
 #include <catch2/catch_test_macros.hpp>
 #include <set>
+#include <fstream>
 
 using namespace DX12Native;
 
@@ -47,7 +48,7 @@ TEST_CASE("RR compatibility uses the producer's actual trace coordinates", "[Sig
     for (uint32_t mode = 0; mode < 5; ++mode)
         for (uint32_t resolution = 0; resolution < 3; ++resolution)
             for (bool stochastic : { false, true })
-                for (uint32_t frame = 0; frame < 16; ++frame) {
+                for (uint32_t frame = 0; frame < 32; ++frame) {
                     const auto grid = MakeSignalGrid({ 32u, 18u }, resolution, true, frame);
                     const auto missing = FirstUntracedSample(grid, mode, stochastic, frame);
                     REQUIRE(cache.Check(grid, mode, stochastic, frame, 0) == missing);
@@ -63,4 +64,34 @@ TEST_CASE("RR compatibility uses the producer's actual trace coordinates", "[Sig
                 }
     REQUIRE_FALSE(FirstUntracedSample(MakeSignalGrid({ 1920u, 1080u }, 2, false, 0), 1, false, 0));
     REQUIRE(FirstUntracedSample(MakeSignalGrid({ 1920u, 1080u }, 1, false, 0), 1, false, 0));
+    REQUIRE_FALSE(FirstUntracedSample(MakeSignalGrid({ 1919u, 1079u }, 1, false, 0), 1, false, 0));
+    for (uint32_t mode = 0; mode < 5; ++mode) {
+        const auto grid = MakeSignalGrid({ 31u, 17u }, 1, true, UINT32_MAX);
+        REQUIRE(cache.Check(grid, mode, true, UINT32_MAX, 0x51b349d5u) ==
+            FirstUntracedSample(grid, mode, true, UINT32_MAX, 0x51b349d5u));
+    }
+    std::ofstream report("native-rr-coverage.csv");
+    report << "native_width,native_height,direct_mode,stochastic,rr_resolution,requested_checkerboard,logical_width,logical_height,packed_width,packed_height,effective_checkerboard,compatible_all_phases,supported_phases,total_phases,sdk_validated\n";
+    for (const auto size : { std::array{ 1920u, 1080u }, std::array{ 1919u, 1079u } })
+        for (uint32_t mode = 0; mode < 5; ++mode)
+            for (bool stochastic : { false, true })
+                for (uint32_t resolution = 0; resolution < 3; ++resolution)
+                    for (bool checkerboard : { false, true }) {
+                        const auto span = mode == 1 ? 2u : mode == 2 ? 4u : 3u;
+                        uint32_t period = mode && stochastic ? span * span : 1u;
+                        if (checkerboard && (period & 1u)) period *= 2u;
+                        uint32_t supported = 0;
+                        for (uint32_t frame = 0; frame < period; ++frame) {
+                            const auto grid = MakeSignalGrid(size, resolution, checkerboard, frame);
+                            const auto missing = FirstUntracedSample(grid, mode, stochastic, frame);
+                            if (mode == 0) REQUIRE_FALSE(missing);
+                            if (!stochastic && mode == 1 && size[0] == 1920 && resolution == 2) REQUIRE_FALSE(missing);
+                            supported += uint32_t(!missing);
+                        }
+                        const auto layout = MakeSignalGrid(size, resolution, checkerboard, 0);
+                        report << size[0] << ',' << size[1] << ',' << mode << ',' << stochastic << ',' << resolution << ',' << checkerboard << ','
+                            << layout.logical[0] << ',' << layout.logical[1] << ',' << layout.packed[0] << ',' << layout.packed[1] << ',' << layout.checkerboard << ','
+                            << (supported == period) << ',' << supported << ',' << period << ",not_run\n";
+                    }
+    REQUIRE(report.good());
 }

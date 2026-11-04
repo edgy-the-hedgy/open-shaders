@@ -131,7 +131,7 @@ struct RedstoneGI final : OverlayFeature
 	struct Settings
 	{
 		bool NativeHybrid = false;
-		uint32_t NativeBudgetMB = 256;
+		uint32_t NativeBudgetMB = 512;
 		bool NativeCheckerboard = false;
 		bool NativeRayRegeneration = true;
 		bool NativeRadianceClamp = false;

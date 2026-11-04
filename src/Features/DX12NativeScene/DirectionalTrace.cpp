@@ -78,6 +78,8 @@ namespace DX12Native
 		rrDebugShader = nullptr;
 		rrDebugFailed = false;
 		failure.clear();
+		nativeComposition.Reset(); nativeDirectPreparation.Reload(); nativeIndirectPreparation.Reload();
+		directDenoiser.RetireNative(); indirectDenoiser.RetireNative();
 	}
 
 	void DirectionalTrace::CreatePipeline()
@@ -334,6 +336,7 @@ namespace DX12Native
 	void DirectionalTrace::Record(Frame& a_frame, const float3& a_direction, bool a_localLight)
 	{
 		CS_GPU_PASS("RTDirectLighting::DirectionalTraversal");
+		a_frame.retainedBackend = backend;
 		a_frame.root = root;
 		a_frame.pipeline = pipeline;
 		if (a_frame.allocator) DX::ThrowIfFailed(a_frame.allocator->Reset());
@@ -421,6 +424,7 @@ namespace DX12Native
 			commands->ResourceBarrier(uint32_t(barriers.size()), barriers.data());
 			Constants resolve = constants;
 			resolve.signalPadding[0] = 2u;
+			resolve.exportSignals = 0u;
 			commands->SetComputeRoot32BitConstants(5, 36, &resolve, 0);
 			commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 		}
@@ -439,16 +443,7 @@ namespace DX12Native
 			commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
 			++indirectTraceDispatches;
 			CaptureRawSignals(a_frame, 5, 2);
-			if (a_frame.indirectTraceMode != 0u) {
-				std::array<D3D12_RESOURCE_BARRIER, 2> resolveOrder{
-					CD3DX12_RESOURCE_BARRIER::UAV(a_frame.directSignals[5]->resource.get()),
-					CD3DX12_RESOURCE_BARRIER::UAV(a_frame.directSignals[6]->resource.get())
-				};
-				commands->ResourceBarrier(uint32_t(resolveOrder.size()), resolveOrder.data());
-				indirectConstants.signalPadding[0] = 3u;
-				commands->SetComputeRoot32BitConstants(5, 36, &indirectConstants, 0);
-				commands->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
-			}
+
 		}
 		const auto ordered = CD3DX12_RESOURCE_BARRIER::UAV(a_frame.output->resource.get());
 		commands->ResourceBarrier(1, &ordered);
@@ -607,7 +602,8 @@ namespace DX12Native
 		const auto rrPolicy = RayRegeneration::GetSettings();
 		const uint32_t effectiveRRMode = a_directRRResolutionMode == 3u ? rrPolicy.resolutionMode : std::min(a_directRRResolutionMode, 2u);
 		const bool directRR = a_sceneTarget && a_useDirectRR && rrPolicy.enabled;
-		const bool reuse = available->size == size && available->useDirectRR == directRR && available->indirectRays == a_indirectRays && available->receivers && available->output && available->light;
+		const bool reuse = available->size == size && bool(available->indirectRays) == bool(a_indirectRays) && available->receivers && available->output && available->light;
+		if (!reuse) { available->nativeDirectRR = {}; available->nativeIndirectRR = {}; available->motion.reset(); available->nativeCamera = nullptr; }
 		constexpr uint64_t kFrameOverheadBytes = 1024 * 1024;
 		const auto textureDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32G32B32A32_FLOAT, size[0], size[1], 1, 1, 1, 0,
 			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS);
@@ -618,16 +614,16 @@ namespace DX12Native
 		const auto lightBytes = backend.d3d12Device->GetResourceAllocationInfo(0, 1, &lightDesc).SizeInBytes;
 		const auto nextPreviewBytes = backend.d3d12Device->GetResourceAllocationInfo(0, 1, &previewDesc).SizeInBytes;
 		if (textureBytes == UINT64_MAX || lightBytes == UINT64_MAX || nextPreviewBytes == UINT64_MAX) { failure = "Directional texture allocation unsupported"; return; }
-		const uint64_t signalBytes = direct ? nextPreviewBytes * (kDirectSignalCount + 5u + (a_indirectRays ? 2u : 0u)) : 0;
-		const uint64_t rrInteropReserve = directRR ? uint64_t(std::max(1u, size[0] >> effectiveRRMode)) * std::max(1u, size[1] >> effectiveRRMode) * 256 + kFrameOverheadBytes : 0;
-		const uint64_t required = (reuse ? 0 : textureBytes * 2 + lightBytes + signalBytes + kFrameOverheadBytes) + (a_sceneTarget ? 0 : nextPreviewBytes) + bindingBytes + rrInteropReserve;
+		const uint64_t signalBytes = direct ? nextPreviewBytes * (5u + (a_indirectRays ? 2u : 0u)) : 0;
+		const uint64_t publicationBytes = a_sceneTarget ? nextPreviewBytes * 2u : 0u;
+		const uint64_t frameBytes = textureBytes * 2 + lightBytes + signalBytes + publicationBytes + kFrameOverheadBytes;
+		const uint64_t required = (reuse ? 0 : frameBytes) + (a_sceneTarget ? 0 : nextPreviewBytes) + bindingBytes;
 		const uint64_t retainedBytes = ResidentBytes() - (reuse ? 0 : available->bytes);
+		if (!reuse && (required > a_budgetBytes || retainedBytes + NativeResidentBytes() > a_budgetBytes - required))
+			RetireRayRegeneration();
+		if (!reuse && (required > a_budgetBytes || retainedBytes + NativeResidentBytes() > a_budgetBytes - required)) { ++budgetDeferrals; return; }
 		if (required > a_budgetBytes || retainedBytes > a_budgetBytes - required) {
-			if (directRR) {
-				++directRRBudgetDeferrals;
-				Dispatch(a_scene, a_nativeSize, a_lightDirection, a_frame, a_budgetBytes, a_localLight, a_lights, a_materialView, a_sceneTarget,
-					a_lightReference, a_lightBase, a_roomMetadata, a_lightIdentities, a_allPreparedLights, a_strengths, a_useIndirect, a_indirectStrength, false, a_indirectRays, a_roomReferences, a_rasterBlend, a_normalMode, a_preparedLights, a_directResolutionMode, a_indirectResolutionMode, a_directRRResolutionMode, a_rrMaterialIsolation, a_rrGlossyRoughness, a_falloffParameters, a_stochasticParameters);
-			} else ++budgetDeferrals;
+			++budgetDeferrals;
 			return;
 		}
 		try {
@@ -684,7 +680,8 @@ namespace DX12Native
 				std::vector<PreparedPointLight>{ a_preparedLights.empty() ? PreparedPointLight{} : a_preparedLights.front() };
 			if (a_allPreparedLights) available->lightIdentities.assign(a_lightIdentities.begin(), a_lightIdentities.end());
 			else available->lightIdentities = { { a_lightReference, a_lightBase } };
-			available->bytes = textureBytes * 2 + lightBytes + signalBytes + kFrameOverheadBytes;
+			available->bytes = frameBytes;
+			available->budgetBytes = a_budgetBytes;
 			D3D11_TEXTURE2D_DESC desc{};
 			desc.Width = size[0]; desc.Height = size[1];
 			desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
@@ -695,12 +692,16 @@ namespace DX12Native
 			if (direct) {
 				desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
 				static constexpr std::array names{ "RTDirectLighting::DirectDiffuse", "RTDirectLighting::DirectSpecular", "RTDirectLighting::DirectNormalRoughness", "RTDirectLighting::DirectSpecularAlbedo", "RTDirectLighting::DirectDiffuseAlbedo", "RTDirectLighting::IndirectDiffuse", "RTDirectLighting::IndirectSpecular" };
-				for (uint32_t i = 0; i < kDirectSignalCount; ++i)
+				for (uint32_t i = 0; i < (a_indirectRays ? kDirectSignalCount : 5u); ++i)
 					if (!available->directSignals[i]) available->directSignals[i] = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), names[i]);
-				if ((directRR || available->useIndirectRR) && !available->motion)
-					available->motion = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RTDirectLighting::NativeMotionSnapshot");
+				if ((directRR || available->useIndirectRR) && !available->motion &&
+					ResidentBytes() + NativeResidentBytes() + nextPreviewBytes <= a_budgetBytes) {
+					try { available->motion = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RTDirectLighting::NativeMotionSnapshot"); }
+					catch (const std::exception& error) { nativeRRStatus["motionFailure"] = error.what(); }
+				}
 			}
 			desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+			if (!directRR && !available->useIndirectRR) available->motion.reset();
 			desc.Width = kLightSnapshotWidth; desc.Height = 2;
 			if (!available->light) available->light = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RTDirectLighting::EvaluatedLightSnapshot");
 			// Upload immutable prepared lights to the existing GPU snapshot layout.
@@ -732,6 +733,7 @@ namespace DX12Native
 			requestedLightCount = uint32_t(available->preparedLights.size());
 		} catch (const std::exception& error) {
 			failure = error.what(); previewValid = false;
+			directDenoiser.CancelNativeRecording(); indirectDenoiser.CancelNativeRecording();
 			if (!available->submitted) *available = {};
 		}
 	}

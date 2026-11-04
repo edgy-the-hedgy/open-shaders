@@ -31,7 +31,7 @@ float2 EncodeNormal(float3 normal)
 [numthreads(8,8,1)] void main(uint2 logical : SV_DispatchThreadID)
 {
     if (any(logical >= LogicalSize)) return;
-    uint2 native = min(uint2((float2(logical) + 0.5) * NativeSize / LogicalSize), NativeSize - 1u);
+    uint2 native = min(((logical * 2u + 1u) * NativeSize) / (LogicalSize * 2u), NativeSize - 1u);
     float4 receiver = DepthOrReceiver[native];
     float depth = DXRMaterials ? mul(FrameBuffer::CameraView[0], float4(receiver.xyz, 1)).z : receiver.x;
     float4 nr = NormalRoughness[native];
@@ -54,11 +54,18 @@ float2 EncodeNormal(float3 normal)
     if (surfaceValid) {
         float4 view = DXRMaterials ? mul(FrameBuffer::CameraView[0], float4(receiver.xyz, 1)) :
             mul(FrameBuffer::CameraProjInverse[0], float4(uv * float2(2, -2) + float2(-1, 1), 0.5, 1));
+        float4 surfaceView = DXRMaterials ? view : float4(view.xyz * (depth / view.z), 1);
         float3 position = DXRMaterials ? receiver.xyz :
-            mul(FrameBuffer::CameraViewInverse[0], float4(view.xyz * (depth / view.z), 1)).xyz;
+            mul(FrameBuffer::CameraViewInverse[0], surfaceView).xyz;
         float3 previous = position + FrameBuffer::CameraPosAdjust[0].xyz - FrameBuffer::CameraPreviousPosAdjust[0].xyz;
         float4 previousClip = mul(FrameBuffer::CameraPreviousViewProjUnjittered[0], float4(previous, 1));
-        delta = isfinite(previousClip.w) ? clamp(previousClip.w - depth, -65504.0, 65504.0) : 0;
+        float4 currentClip = mul(FrameBuffer::CameraProjUnjittered[0], surfaceView);
+        if (all(isfinite(previousClip)) && all(isfinite(currentClip)) && previousClip.w > 0 && currentClip.w > 0 && all(isfinite(motion))) {
+            float2 cameraMotion = (previousClip.xy / previousClip.w - currentClip.xy / currentClip.w) * float2(0.5, -0.5);
+            const float CameraMotionAgreementPixels = 0.5;
+            if (all(abs(cameraMotion - motion) * NativeSize <= CameraMotionAgreementPixels))
+                delta = clamp(previousClip.w - depth, -65504.0, 65504.0);
+        }
     }
     RRMotion[logical] = float4(all(isfinite(motion)) ? motion : 0, delta, 0);
     if (Checkerboard && ((logical.x + logical.y) & 1u) != Origin) return;

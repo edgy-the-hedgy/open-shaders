@@ -27,7 +27,7 @@ uint2 LogicalPixel(uint2 pixel, uint2 logicalSize)
 }
 bool ExactReceiver(uint2 pixel, uint2 logical, uint2 logicalSize)
 {
-    return all(pixel == uint2((float2(logical) + 0.5) * NativeSize / logicalSize));
+    return all(pixel == ((logical * 2u + 1u) * NativeSize) / (logicalSize * 2u));
 }
 bool ValidRR(float4 value) { return all(isfinite(value)) && value.a >= 0 && all(value.rgb >= 0); }
 [numthreads(8,8,1)] void main(uint2 pixel : SV_DispatchThreadID)

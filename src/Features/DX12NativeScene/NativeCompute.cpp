@@ -7,6 +7,17 @@
 
 namespace DX12Native
 {
+    uint64_t NativeTextureBytes(ID3D12Device* device, std::array<uint32_t, 2> size, DXGI_FORMAT format, D3D12_RESOURCE_FLAGS flags)
+    {
+        const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(format, size[0], size[1], 1, 1, 1, 0, flags);
+        return device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
+    }
+    uint64_t NativeAllocationBytes(ID3D12Device* device, ID3D12Resource* resource)
+    {
+        if (!resource) return 0;
+        const auto desc = resource->GetDesc();
+        return device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
+    }
     winrt::com_ptr<ID3D12Resource> CreateNativeTexture(ID3D12Device* device,
         std::array<uint32_t, 2> size, DXGI_FORMAT format, const wchar_t* name)
     {
@@ -68,6 +79,8 @@ namespace DX12Native
             const D3D12_DESCRIPTOR_HEAP_DESC heap{ D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 44,
                 D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
             DX::ThrowIfFailed(device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(descriptors.put())));
+            retained = std::make_shared<const std::array<winrt::com_ptr<IUnknown>, 3>>(
+                std::array{ root.as<IUnknown>(), pipeline.as<IUnknown>(), descriptors.as<IUnknown>() });
             failure.clear(); return true;
         } catch (const std::exception& error) {
             pipeline = nullptr; root = nullptr; descriptors = nullptr; failure = error.what(); return false;
