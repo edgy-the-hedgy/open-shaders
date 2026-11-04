@@ -719,10 +719,13 @@ namespace DX12Native
             gpu.ptr += 3 * step;
             commands->SetComputeRootDescriptorTable(1, gpu);
             const auto& composer = globals::features::rtComposer;
-            const float influence = composer.IsFixedPreset() ?
-                RTComposer::GetTierPolicy(composer.AdvancedActive() ?
-                    composer.composition.mode : RTComposer::CompositorMode::HybridShadowed).shadowInfluence :
-                composer.composition.shadowInfluence;
+            const float influence = composer.LegacyHybridPrototypeActive() ?
+                composer.composition.fsrHybrid.shadowInfluence :
+                (composer.IsFixedPreset() ?
+                    RTComposer::GetTierPolicy(composer.AdvancedActive() ?
+                        composer.composition.mode :
+                        RTComposer::CompositorMode::HybridShadowed).shadowInfluence :
+                    composer.composition.shadowInfluence);
             const auto projection = globals::game::frameBufferCached.GetCameraProj();
             const bool reverseDepth = projection._33 * projection._43 < 0.0f;
             const float4 cameraData = Util::GetCameraData();
@@ -859,7 +862,8 @@ namespace DX12Native
                     research ? researchSettings.contribution :
                         (composer.IsFixedPreset() ? 1.0f : composition.giContribution),
                     composer.IsFixedPreset() ? 1u : 0u,
-                    composer.IsFixedPreset() ? tier.shadowInfluence : composition.shadowInfluence);
+                    research ? researchSettings.shadowInfluence :
+                        (composer.IsFixedPreset() ? tier.shadowInfluence : composition.shadowInfluence));
         }
     }
 

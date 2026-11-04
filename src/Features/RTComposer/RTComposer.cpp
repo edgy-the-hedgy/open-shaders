@@ -802,7 +802,7 @@ void RTComposer::DrawSettings()
                 &composition.fsrHybrid.shadowInfluence, 0.0f, 1.0f);
             if (changed && LegacyHybridPrototypeActive())
                 OnCompositionPolicyChanged();
-            ImGui::TextWrapped("These settings belong to FSR Hybrid-Illumination only. The research prototype can apply them before the final RR-only pipeline becomes available.");
+            ImGui::TextWrapped("These settings belong to FSR Hybrid-Illumination only. The research prototype can apply them before the final RR-only pipeline becomes available. Shadow suppression threshold applies to Native Shadowed; Raster Baseline intentionally bypasses native shadow gating.");
         }
         if (composition.fsrRRMode == FSRRRMode::FSRRedstone)
             ImGui::TextWrapped("FSR-REDSTONE is unavailable.");
