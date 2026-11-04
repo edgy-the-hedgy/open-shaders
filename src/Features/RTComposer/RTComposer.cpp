@@ -859,7 +859,22 @@ void RTComposer::DrawSettings()
                         ImGui::SliderFloat("Direct RR scene blend",
                             &developer.nativeDirectRRPreviewBlend, 0.0f, 1.0f);
                 }
-                ImGui::TextWrapped("Uses native checkerboard Direct rays and independent AMD Direct Diffuse/Specular contexts. Preview only composes completed Direct RR results; any missing result preserves Shadow Only. This is not the finished Hybrid-Illumination tier.");
+                ImGui::TextWrapped("Uses native checkerboard Direct rays and independent AMD Direct Diffuse/Specular contexts. Preview only composes successful Direct RR results; failures preserve Shadow Only. This is not the finished Hybrid-Illumination tier.");
+                const auto state = globals::features::dx12NativeScene.Tracer().GetDiagnostics();
+                ImGui::Text("Direct RR recorded frames: %llu",
+                    static_cast<unsigned long long>(state.value(
+                        "nativeDirectRRSuccessfulFrames", uint64_t{0})));
+                ImGui::Text("Direct RR recorded failures: %llu",
+                    static_cast<unsigned long long>(state.value(
+                        "nativeDirectRRFailedFrames", uint64_t{0})));
+                ImGui::Text("Direct RR preview frames presented: %llu",
+                    static_cast<unsigned long long>(state.value(
+                        "nativeDirectRRPresentedFrames", uint64_t{0})));
+                const auto rrFailure = state.value("nativeDirectRRFailure", std::string{});
+                const auto previewFailure = state.value("nativeDirectRRComposeFailure", std::string{});
+                if (!rrFailure.empty()) ImGui::TextWrapped("Direct RR provider: %s", rrFailure.c_str());
+                if (!previewFailure.empty()) ImGui::TextWrapped("DX12 preview: %s", previewFailure.c_str());
+                ImGui::TextWrapped("Counters represent CPU-recorded work and display submissions, not confirmation that the GPU result is visually correct.");
             }
         }
         if (ImGui::Button("Reset developer test parameters"))
