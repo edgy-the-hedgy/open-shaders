@@ -702,9 +702,17 @@ void RTComposer::DrawSettings()
         ImGui::TextWrapped("Open RT uses native DX12 reconstruction; no FSR-RR contexts are dispatched by this renderer.");
     } else {
         int selection = static_cast<int>(composition.fsrRRMode);
-        if (ImGui::Combo("FSR Ray Regeneration mode", &selection,
-            "Hybrid-Illumination\0RT-Enhanced\0FSR-REDSTONE (unavailable)\0"))
-            composition.fsrRRMode = static_cast<FSRRRMode>(selection);
+        constexpr std::array rrNames{
+            "Hybrid-Illumination", "RT-Enhanced", "FSR-REDSTONE (unavailable)" };
+        if (ImGui::BeginCombo("FSR Ray Regeneration mode", rrNames[selection])) {
+            for (int index = 0; index < static_cast<int>(rrNames.size()); ++index) {
+                if (ImGui::Selectable(rrNames[index], selection == index,
+                        index == 2 ? ImGuiSelectableFlags_Disabled :
+                            ImGuiSelectableFlags_None))
+                    composition.fsrRRMode = static_cast<FSRRRMode>(index);
+            }
+            ImGui::EndCombo();
+        }
         ImGui::TextWrapped("FSR-RR raw Direct and two-bounce transport is under construction. The selected request is saved independently. Production uses safe Shadow Only until these native DX12 RR providers are ready.");
         if (composition.fsrRRMode == FSRRRMode::FSRRedstone)
             ImGui::TextWrapped("FSR-REDSTONE is unavailable.");
@@ -1060,6 +1068,40 @@ void RTComposer::DrawSettings()
 void RTComposer::RegisterUxActions()
 {
     auto& registry = Util::DevBenchUx::Registry::GetSingleton();
+    registry.RegisterCommand(GetShortName(), "selectRendererFamily",
+        "Family 0=Open RT, 1=FSR RR; optional openRTMode 0..3, fsrRRMode 0..2.",
+        +[](Feature* self, const json& args) {
+            auto& composer = *static_cast<RTComposer*>(self);
+            auto& state = composer.composition;
+            const uint32_t family = args.at("family").get<uint32_t>();
+            const uint32_t openMode = args.value("openRTMode", static_cast<uint32_t>(state.openRTMode));
+            const uint32_t rrMode = args.value("fsrRRMode", static_cast<uint32_t>(state.fsrRRMode));
+            if (family > 1u || openMode > 3u || rrMode > 2u)
+                throw std::invalid_argument("Invalid renderer family or family-mode selector");
+            const auto old = std::pair{state.rendererFamily, state.mode};
+            state.rendererFamily = static_cast<RendererFamily>(family);
+            state.openRTMode = static_cast<OpenRTMode>(openMode);
+            state.fsrRRMode = static_cast<FSRRRMode>(rrMode);
+            composer.SynchronizeRendererFamily();
+            if (old != std::pair{state.rendererFamily, state.mode})
+                composer.OnCompositionPolicyChanged();
+        });
+    registry.RegisterCommand(GetShortName(), "selectFamilyMode",
+        "Select 0..3 within Open RT or 0..2 within FSR RR; renderer selections persist independently.",
+        +[](Feature* self, const json& args) {
+            auto& composer = *static_cast<RTComposer*>(self);
+            auto& state = composer.composition;
+            const auto requested = args.at("mode").get<uint32_t>();
+            if (composer.IsOpenRT()) {
+                if (requested > 3u) throw std::invalid_argument("Open RT mode must be 0..3");
+                state.openRTMode = static_cast<OpenRTMode>(requested);
+            } else {
+                if (requested > 2u) throw std::invalid_argument("FSR RR mode must be 0..2");
+                state.fsrRRMode = static_cast<FSRRRMode>(requested);
+            }
+            if (composer.SynchronizeRendererFamily())
+                composer.OnCompositionPolicyChanged();
+        });
     registry.RegisterCommand(GetShortName(), "setComposition",
         "Select compositor preset 0..6 (6=Custom); only Custom permits manual tuning.",
         +[](Feature* self, const json& args) {
@@ -1068,6 +1110,8 @@ void RTComposer::RegisterUxActions()
             uint32_t requested = static_cast<uint32_t>(policy.mode);
             if (args.contains("mode")) requested = args.at("mode").get<uint32_t>();
             if (requested > 6u) throw std::invalid_argument("Unknown RT compositor mode");
+            if (requested == 1u || requested == 4u || requested == 5u)
+                throw std::invalid_argument("Retired RR/GI compositor IDs: use selectRendererFamily and selectFamilyMode instead.");
             // Fixed RR policy is managed by setFixedRR, never by the legacy global setting.
             if (requested != static_cast<uint32_t>(CompositorMode::Custom) &&
                 args.contains("useFSRRayRegeneration"))
@@ -1084,6 +1128,7 @@ void RTComposer::RegisterUxActions()
                     if (args.contains(key))
                         throw std::invalid_argument("Fixed compositor tier settings are locked; select Custom (mode 6) to tune.");
             const auto previous = std::tuple{ policy.enabled, policy.mode,
+                policy.rendererFamily,
                 policy.diagnoseAdvancedTransport, policy.useFSRRayRegeneration,
                 policy.customHybridShadowed, policy.directCheckerboard,
                 policy.hybridResolution, policy.hybridCheckerboard };
@@ -1106,7 +1151,12 @@ void RTComposer::RegisterUxActions()
             const bool enabled = args.value("enabled", policy.enabled);
             const bool transportDiagnostic = args.value("diagnoseAdvancedTransport", policy.diagnoseAdvancedTransport);
             const bool compositorRR = args.value("useFSRRayRegeneration", policy.useFSRRayRegeneration);
-            policy.mode = static_cast<CompositorMode>(requested);
+            // Backwards-compatible script IDs 0/2/3/6 select Open RT.
+            policy.rendererFamily = RendererFamily::OpenRT;
+            policy.openRTMode = requested == 0u ? OpenRTMode::ShadowOnly :
+                requested == 2u ? OpenRTMode::RTExclusiveI :
+                requested == 3u ? OpenRTMode::RTExclusiveII : OpenRTMode::Custom;
+            composer.SynchronizeRendererFamily();
             policy.useFSRRayRegeneration = compositorRR;
             policy.diagnoseAdvancedTransport = transportDiagnostic;
             policy.enabled = enabled;
@@ -1121,6 +1171,7 @@ void RTComposer::RegisterUxActions()
                 policy.customHybridShadowed = customHybrid;
             }
             if (previous != std::tuple{ policy.enabled, policy.mode,
+                policy.rendererFamily,
                 policy.diagnoseAdvancedTransport, policy.useFSRRayRegeneration,
                 policy.customHybridShadowed, policy.directCheckerboard,
                 policy.hybridResolution, policy.hybridCheckerboard }) {
@@ -1133,6 +1184,8 @@ void RTComposer::RegisterUxActions()
         "Save a fixed-tier reconstruction request (family: direct, indirect or hybrid). Does not change tracing.",
         +[](Feature* self, const json& args) {
             auto& composer = *static_cast<RTComposer*>(self);
+            if (composer.composition.enabled && composer.IsOpenRT())
+                throw std::invalid_argument("FSR-RR is unavailable in Open RT.");
             const uint32_t modeValue = args.at("mode").get<uint32_t>();
             if (modeValue > 4u)
                 throw std::invalid_argument("Fixed RR request requires an available fixed compositor tier (0..4)");
@@ -1151,6 +1204,8 @@ void RTComposer::RegisterUxActions()
         "Configure directCheckerboard, hybridResolution (0 full, 1 half, 2 quarter), hybridCheckerboard, and RR enablement.",
         +[](Feature* self, const json& args) {
             auto& composer = *static_cast<RTComposer*>(self);
+            if (composer.composition.enabled && composer.IsOpenRT())
+                throw std::invalid_argument("FSR-RR is unavailable in Open RT.");
             if (composer.TierControlsLocked())
                 throw std::invalid_argument("Fixed compositor RR controls are locked; select Custom (mode 6).");
             if (args.contains("resolutionMode") || args.contains("checkerboard") ||
