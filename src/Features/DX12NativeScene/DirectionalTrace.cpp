@@ -1,6 +1,7 @@
 #include "DirectionalTrace.h"
 
 #include "Globals.h"
+#include "Features/LinearLighting.h"
 #include "GpuPass.h"
 #include "State.h"
 #include "Utils/D3D.h"
