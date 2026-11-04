@@ -86,6 +86,10 @@ namespace DX12Native
             (void)nativeHybridGI.release();
             (void)postHybridGI.release();
             (void)advancedDenoiser.release();
+            // A native Direct SDK context or guide snapshot may still be
+            // referenced by submitted DX12 work on a failed retirement.
+            (void)nativeDirectGuideBuilder.release();
+            (void)nativeDirectRRDenoiser.release();
             (void)producer.fence11.detach();
             (void)producer.fence12.detach();
             (void)completion.fence11.detach();
@@ -135,6 +139,9 @@ namespace DX12Native
         nativeDirectRRComposePipeline = nullptr;
         nativeDirectRRComposeRoot = nullptr;
         nativeDirectRRComposeFailure.clear();
+        nativeDirectPackPipeline = nullptr;
+        nativeDirectPackRoot = nullptr;
+        nativeDirectPackFailure.clear();
 		prepareDirectGuides = nullptr;
 		packRRSignals = nullptr;
 		rrDebugShader = nullptr;
@@ -898,6 +905,8 @@ namespace DX12Native
             list->Dispatch((packedWidth + 7u) / 8u,
                 (frame.size[1] + 7u) / 8u, 1u);
             list->ResourceBarrier(UINT(after.size()), after.data());
+            frame.nativeDirectPackRootRef = nativeDirectPackRoot;
+            frame.nativeDirectPackPipelineRef = nativeDirectPackPipeline;
             frame.nativeDirectPackValid = true;
             ++nativeDirectPackDispatches;
             nativeDirectPackFailure.clear();

@@ -181,6 +181,8 @@ namespace DX12Native
 			std::unique_ptr<WrappedResource> shadowMaskExport;
             std::array<winrt::com_ptr<ID3D12Resource>, 3> nativeDirectPacked{};
             winrt::com_ptr<ID3D12DescriptorHeap> nativeDirectPackDescriptors;
+            winrt::com_ptr<ID3D12RootSignature> nativeDirectPackRootRef;
+            winrt::com_ptr<ID3D12PipelineState> nativeDirectPackPipelineRef;
             bool nativeDirectRRRequested = false, nativeDirectPackValid = false;
             bool nativeDirectRRReady = false;
             uint32_t nativeDirectRRSuccessMask = 0u;
