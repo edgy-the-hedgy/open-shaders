@@ -1,3 +1,5 @@
+#include "Common/GBuffer.hlsli"
+#include "Common/NativeDisplaySampling.hlsli"
 Texture2D<float4> RawDiffuse : register(t0);
 Texture2D<float4> RawSpecular : register(t1);
 Texture2D<float> RawAO : register(t2);
@@ -26,25 +28,54 @@ bool ValidRR(float4 value) { return all(isfinite(value)) && value.a >= 0; }
     Output[pixel] = 0;
     float depth = Depth[pixel];
     if (!isfinite(depth) || depth <= 18.0 || depth >= MaximumDepth || !all(isfinite(NormalRoughness[pixel]))) return;
-    uint2 logical = min(pixel * LogicalSize / NativeSize, LogicalSize - 1u);
-    uint2 representative = min(((logical * 2u + 1u) * NativeSize) / (LogicalSize * 2u), NativeSize - 1u);
-    if (any(representative != pixel)) return;
-    bool sampled = all(representative == pixel) && (!Checkerboard || ((logical.x + logical.y) & 1u) == Origin);
-    uint2 packed = uint2(Checkerboard ? logical.x / 2u : logical.x, logical.y);
-    sampled = sampled && Eligibility[packed] == 1u;
-    float4 d = sampled ? RawDiffuse[packed] : float4(0, 0, 0, -2);
-    float4 s = sampled ? RawSpecular[packed] : float4(0, 0, 0, -2);
-    bool validD = sampled && ValidRaw(d), validS = sampled && ValidRaw(s);
-    if (RRMask & 1u) { float4 rr = RRDiffuse[logical]; if (ValidRR(rr)) { d = rr; validD = true; } }
-    if (RRMask & 2u) { float4 rr = RRSpecular[logical]; if (ValidRR(rr)) { s = rr; validS = true; } }
+    uint2 center = uint2(NativeDisplayLogical(pixel.x, NativeSize.x, LogicalSize.x),
+        NativeDisplayLogical(pixel.y, NativeSize.y, LogicalSize.y));
+    float4 d = 0, s = 0;
+    bool validD = false, validS = false;
     float ao = 1, so = 1;
-    if (EnabledMask & 4u) {
-        float value = RRMask & 4u ? RRAO[logical] : sampled ? RawAO[packed] : 1;
-        if (isfinite(value)) ao = lerp(1, saturate(value), saturate(AOStrength));
-    }
-    if (EnabledMask & 8u) {
-        float value = RRMask & 8u ? RRSO[logical] : sampled ? RawSO[packed] : 1;
-        if (isfinite(value)) so = lerp(1, saturate(value), saturate(SOStrength));
+    float4 best = 1e30;
+    float3 targetNormal = GBuffer::DecodeNormal(NormalRoughness[pixel].xy);
+    float3 targetMaterial = DiffuseAlbedo[pixel].rgb;
+    int radius = Checkerboard || any(NativeSize != LogicalSize) ? 1 : 0;
+    for (int y = -radius; y <= radius; ++y) for (int x = -radius; x <= radius; ++x) {
+        int2 candidate = int2(center) + int2(x,y);
+        if (any(candidate < 0) || any(candidate >= int2(LogicalSize))) continue;
+        uint2 logical = uint2(candidate);
+        uint2 representative = uint2(NativeDisplayReceiver(logical.x, NativeSize.x, LogicalSize.x),
+            NativeDisplayReceiver(logical.y, NativeSize.y, LogicalSize.y));
+        float sourceDepth = Depth[representative];
+        float4 nr = NormalRoughness[representative];
+        float3 material = DiffuseAlbedo[representative].rgb;
+        bool surface = isfinite(sourceDepth) && sourceDepth > 18 && sourceDepth < MaximumDepth && all(isfinite(nr)) &&
+            abs(sourceDepth - depth) <= max(0.5, depth * 0.02) &&
+            dot(targetNormal, GBuffer::DecodeNormal(nr.xy)) >= 0.8 &&
+            all(isfinite(material)) && all(isfinite(targetMaterial)) && all(abs(material - targetMaterial) <= 0.25) &&
+            abs(nr.z - NormalRoughness[pixel].z) <= 0.15;
+        if (!surface) continue;
+        float2 offset = float2(representative) - float2(pixel);
+        float distance = dot(offset, offset);
+        bool sampled = !Checkerboard || ((logical.x + logical.y) & 1u) == Origin;
+        uint2 packed = uint2(Checkerboard ? logical.x / 2u : logical.x, logical.y);
+        sampled = sampled && Eligibility[packed] == 1u;
+        float4 rawD = sampled ? RawDiffuse[packed] : float4(0,0,0,-2);
+        float4 rawS = sampled ? RawSpecular[packed] : float4(0,0,0,-2);
+        bool candidateD = sampled && ValidRaw(rawD), candidateS = sampled && ValidRaw(rawS);
+        if (RRMask & 1u) { float4 rr = RRDiffuse[logical]; if (ValidRR(rr)) { rawD = rr; candidateD = true; } }
+        if (RRMask & 2u) { float4 rr = RRSpecular[logical]; if (ValidRR(rr)) { rawS = rr; candidateS = true; } }
+        if (NativeDisplayPrefer(distance, best.x, candidateD)) { d = rawD; validD = true; best.x = distance; }
+        if (NativeDisplayPrefer(distance, best.y, candidateS)) { s = rawS; validS = true; best.y = distance; }
+        if (EnabledMask & 4u) {
+            float value = RRMask & 4u ? RRAO[logical] : sampled ? RawAO[packed] : -1;
+            if (NativeDisplayPrefer(distance, best.z, isfinite(value) && value >= 0)) {
+                ao = lerp(1, saturate(value), saturate(AOStrength)); best.z = distance;
+            }
+        }
+        if (EnabledMask & 8u) {
+            float value = RRMask & 8u ? RRSO[logical] : sampled ? RawSO[packed] : -1;
+            if (NativeDisplayPrefer(distance, best.w, isfinite(value) && value >= 0)) {
+                so = lerp(1, saturate(value), saturate(SOStrength)); best.w = distance;
+            }
+        }
     }
     float3 diffuseFactor = DiffuseAlbedo[pixel].rgb / (LinearLighting ? 1.0 : 0.65);
     if (!LinearLighting) diffuseFactor = pow(abs(diffuseFactor), 1.6);

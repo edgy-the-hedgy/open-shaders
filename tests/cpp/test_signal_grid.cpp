@@ -110,3 +110,30 @@ TEST_CASE("Display reconstruction uses independent surface-safe selection", "[Si
     REQUIRE_FALSE(NativeDisplayUseRR(1, 0, false, true));
     REQUIRE_FALSE(NativeDisplayUseRR(1, 0, true, false));
 }
+
+TEST_CASE("Hybrid display covers native receivers without promoting raw samples", "[SignalGrid][Display]")
+{
+    for (const auto size : { std::array{32u,18u}, std::array{31u,17u} })
+        for (uint32_t resolution = 0; resolution < 3; ++resolution)
+            for (bool checkerboard : { false, true })
+                for (uint32_t origin = 0; origin < 2; ++origin) {
+                    const auto grid = MakeSignalGrid(size, resolution, checkerboard, origin);
+                    for (uint32_t py = 0; py < size[1]; ++py) for (uint32_t px = 0; px < size[0]; ++px) {
+                        const int cx = int(NativeDisplayLogical(px, size[0], grid.logical[0]));
+                        const int cy = int(NativeDisplayLogical(py, size[1], grid.logical[1]));
+                        const int radius = grid.checkerboard || grid.logical != size ? 1 : 0;
+                        float best = 1e30f; bool covered = false;
+                        for (int y = -radius; y <= radius; ++y) for (int x = -radius; x <= radius; ++x) {
+                            const int lx = cx+x, ly = cy+y;
+                            if (lx < 0 || ly < 0 || lx >= int(grid.logical[0]) || ly >= int(grid.logical[1])) continue;
+                            const bool sampled = grid.PackedPixel({uint32_t(lx),uint32_t(ly)}).has_value();
+                            const auto receiver = grid.NativePixel({uint32_t(lx),uint32_t(ly)});
+                            REQUIRE(receiver[0] == NativeDisplayReceiver(uint32_t(lx),size[0],grid.logical[0]));
+                            REQUIRE(receiver[1] == NativeDisplayReceiver(uint32_t(ly),size[1],grid.logical[1]));
+                            const float dx = float(receiver[0])-float(px), dy = float(receiver[1])-float(py);
+                            if (NativeDisplayPrefer(dx*dx+dy*dy,best,sampled)) { best=dx*dx+dy*dy; covered=true; }
+                        }
+                        REQUIRE(covered);
+                    }
+                }
+}

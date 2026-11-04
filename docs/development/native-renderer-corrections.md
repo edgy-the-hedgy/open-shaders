@@ -14,3 +14,9 @@ Verification: Release DLL and native composition DXIL compiled; production share
 ## Stage 2: RT-exclusive indirect display
 
 Independent indirect diffuse/specular display selection uses the same bounded, surface-compatible search with its own trace mode. Full deterministic raw output bypasses reconstruction. Each lobe accepts genuine hits or producer misses independently; no Direct validity or RR availability is required for raw display. Indirect strength applies once after per-lobe raw/RR selection. Prepared-scene dependencies are unchanged. RR still reads original raw inputs before composition. Release C++/DXIL and the existing C++ suite are verified for this stage.
+
+## Stage 3: Hybrid display resolution
+
+Native composition now maps every native receiver to logical candidates. A display-only 3x3 logical search selects each lobe and occlusion independently, with depth, decoded-normal, diffuse-material and roughness rejection. Full non-checkerboard grids use only their exact pixel. Checkerboard fallback selects genuine packed samples with matching eligibility; successful SDK signals use reconstructed logical outputs. Raw producer and RR preparation are unchanged. Material factors apply at the destination exactly once. No extra texture or temporal history is introduced.
+
+Production shared coordinate and selection helpers are tested across Full/Half/Quarter, both checkerboard origins and odd/even native sizes. Every planar display pixel finds a genuine raw candidate; tests do not label reconstructed display pixels as traced. Boundary quality and actual frame coverage still require owner validation. Native Hybrid DXIL, Release target and C++ tests passed.

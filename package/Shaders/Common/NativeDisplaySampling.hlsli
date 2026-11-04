@@ -13,6 +13,18 @@ DISPLAY_CONSTEXPR uint NativeDisplayRadius(uint traceMode)
 {
     return traceMode == 0u ? 0u : traceMode == 2u ? 4u : traceMode == 1u ? 2u : 3u;
 }
+DISPLAY_CONSTEXPR uint NativeDisplayLogical(uint pixel, uint nativeSize, uint logicalSize)
+{
+    return pixel * logicalSize / nativeSize;
+}
+DISPLAY_CONSTEXPR uint NativeDisplayReceiver(uint logical, uint nativeSize, uint logicalSize)
+{
+    return ((logical * 2u + 1u) * nativeSize) / (logicalSize * 2u);
+}
+DISPLAY_CONSTEXPR bool NativeDisplayPrefer(float distance, float bestDistance, bool valid)
+{
+    return valid && distance < bestDistance;
+}
 DISPLAY_CONSTEXPR bool NativeDisplaySurface(float receiverIdentity, float sampleIdentity,
     float distanceSquared, float receiverDistanceSquared)
 {
