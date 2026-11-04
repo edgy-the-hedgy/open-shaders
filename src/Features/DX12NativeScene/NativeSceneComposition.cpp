@@ -60,6 +60,7 @@ namespace DX12Native
 	{
 		composition.Reset();
 		captureSource = nullptr;
+		captureShadowDepth = nullptr;
 		sourceFrame = UINT32_MAX;
 		sourceValid = false;
 		legacyShader = nullptr;
@@ -84,9 +85,16 @@ namespace DX12Native
 			auto texture = source.as<ID3D11Texture2D>();
 			D3D11_TEXTURE2D_DESC desc{};
 			texture->GetDesc(&desc);
-			if ((desc.Format != DXGI_FORMAT_R32_TYPELESS && desc.Format != DXGI_FORMAT_R32_FLOAT) ||
+			D3D11_SHADER_RESOURCE_VIEW_DESC view{};
+			depth->GetDesc(&view);
+			if (view.ViewDimension != D3D11_SRV_DIMENSION_TEXTURE2D ||
 				desc.Width != dimensions[0] || desc.Height != dimensions[1] || desc.SampleDesc.Count != 1 || desc.MipLevels != 1 || desc.ArraySize != 1)
-				throw std::runtime_error("Shadow layer requires matching single-sample R32 receiver depth; other lighting remains active");
+				throw std::runtime_error(std::format("Shadow receiver depth layout unsupported: {}x{}, samples {}, format {}; scene {}x{}",
+					desc.Width, desc.Height, desc.SampleDesc.Count, uint32_t(desc.Format), dimensions[0], dimensions[1]));
+			if (!captureShadowDepth)
+				captureShadowDepth.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(
+					L"Data\\Shaders\\RTDirectLighting\\captureShadowDepth.cs.hlsl", {}, "cs_5_0")));
+			if (!captureShadowDepth) throw std::runtime_error("Shadow receiver depth capture shader unavailable");
 			if (!frame.shadowDepth) {
 				const auto bytes = NativeTextureBytes(backend.d3d12Device.get(), dimensions, DXGI_FORMAT_R32_FLOAT);
 				if (!NativeSceneBudgetAllows(ResidentBytes(), bytes, budget))
@@ -96,7 +104,23 @@ namespace DX12Native
 				desc.MiscFlags = 0;
 				frame.shadowDepth = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "DX12native-shadowmask::CompositionDepth");
 			}
-			backend.d3d11Context->CopyResource(frame.shadowDepth->resource11, texture.get());
+			auto* context = backend.d3d11Context.get();
+			winrt::com_ptr<ID3D11ComputeShader> priorShader;
+			winrt::com_ptr<ID3D11ShaderResourceView> priorRead;
+			winrt::com_ptr<ID3D11UnorderedAccessView> priorWrite;
+			context->CSGetShader(priorShader.put(), nullptr, nullptr);
+			context->CSGetShaderResources(0, 1, priorRead.put());
+			context->CSGetUnorderedAccessViews(0, 1, priorWrite.put());
+			auto* output = frame.shadowDepth->uav;
+			context->CSSetShaderResources(0, 1, &depth);
+			context->CSSetUnorderedAccessViews(0, 1, &output, nullptr);
+			context->CSSetShader(captureShadowDepth.get(), nullptr, 0);
+			context->Dispatch((dimensions[0] + 7u) / 8u, (dimensions[1] + 7u) / 8u, 1);
+			output = priorWrite.get();
+			depth = priorRead.get();
+			context->CSSetUnorderedAccessViews(0, 1, &output, nullptr);
+			context->CSSetShaderResources(0, 1, &depth);
+			context->CSSetShader(priorShader.get(), nullptr, 0);
 			shadowFailure.clear();
 			return true;
 		} catch (const std::exception& error) { shadowFailure = error.what(); return false; }

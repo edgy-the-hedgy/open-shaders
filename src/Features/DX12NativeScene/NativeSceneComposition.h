@@ -61,6 +61,7 @@ namespace DX12Native
 		NativeCompute composition;
 		winrt::com_ptr<ID3D11ComputeShader> legacyShader;
 		winrt::com_ptr<ID3D11ComputeShader> captureSource;
+		winrt::com_ptr<ID3D11ComputeShader> captureShadowDepth;
 		std::array<std::shared_ptr<WrappedResource>, 2> initialSources;
 		std::array<uint64_t, 2> sourceReady{};
 		std::unique_ptr<ConstantBuffer> sourceSettings;

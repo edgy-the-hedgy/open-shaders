@@ -61,11 +61,13 @@ first with `setNativeShadowMask`. Strength or blend zero, with preview off, skip
 the shadow layer entirely and preserves existing composition behavior. The layer
 also works without Direct or Hybrid GI being enabled.
 
-Composition snapshots the current single-sample R32 depth and reconstructs the
+Composition reads the current single-sample depth SRV into an R32 snapshot and reconstructs the
 visible world receiver using the current camera. It accepts a mask pixel only
 when that position agrees with the prepared primary-ray hit within the selected
 tolerance. This late check does not feed depth into the independent RT producer.
-Unsupported depth format/dimensions or insufficient depth-snapshot budget skips
+The capture shader preserves raw depth values from both standard packed
+depth/stencil and reverse-Z float depth/stencil views; it does not copy incompatible
+texture formats. Unsupported depth layout/dimensions or insufficient depth-snapshot budget skips
 only the layer and records the reason in `nativeFinalScene` diagnostics.
 
 Softening uses at most 25 depth/instance-guided taps. It does not blur validity,
