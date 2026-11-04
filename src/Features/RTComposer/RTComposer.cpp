@@ -831,11 +831,13 @@ void RTComposer::DrawSettings()
             }
             ImGui::EndCombo();
         }
-        ImGui::TextWrapped("FSR RR runs in its own execution tree: no Open RT reconstruction, legacy Direct composer, or Shadow Only fallback. Unavailable frames preserve the original raster scene.");
+        ImGui::TextWrapped("FSR HybridGI and Direct signals compose independently; AMD RR is optional. Unavailable RR families use their raw samples, while unsampled pixels retain raster coverage.");
         if (composition.fsrRRMode == FSRRRMode::HybridIllumination) {
             ImGui::SeparatorText("HybridGI baseline settings (FSR-specific)");
+            bool changed = ImGui::Checkbox("Enable AMD RR (optional)",
+                &composition.useFSRRayRegeneration);
             int res = static_cast<int>(composition.fsrHybrid.resolution);
-            bool changed = ImGui::Combo("HybridGI logical resolution", &res,
+            changed |= ImGui::Combo("HybridGI logical resolution", &res,
                 "Full\0Half width/height\0Quarter width/height\0");
             if (changed) composition.fsrHybrid.resolution = uint32_t(res);
             changed |= ImGui::Checkbox("HybridGI checkerboard", &composition.fsrHybrid.checkerboard);
@@ -847,9 +849,9 @@ void RTComposer::DrawSettings()
             if (composition.fsrHybrid.clampRadiance)
                 changed |= ImGui::SliderFloat("Raw RR radiance ceiling",
                     &composition.fsrHybrid.radianceClamp, 1.0f, 65504.0f);
-            if (changed && FSRIndependentActive())
-                OnCompositionPolicyChanged();
-            ImGui::TextWrapped("Independent HybridGI uses raster alone and never reads the Direct mask. The optional mask caches Direct visibility; non-finite RR samples are rejected.");
+            // FSR inputs and the DX12 queue are already frame-owned. There
+            // is no Open RT reconstruction history to reset for these knobs.
+            ImGui::TextWrapped("HybridGI uses captured raster color without a Direct mask. RR can be disabled without disabling raw diffuse, specular, or occlusion.");
         }
         if (composition.fsrRRMode == FSRRRMode::FSRRedstone)
             ImGui::TextWrapped("FSR-REDSTONE is unavailable.");
