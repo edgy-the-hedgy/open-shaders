@@ -7,6 +7,8 @@ struct RTIndirectLighting final : Feature
 	struct Settings
 	{
 		bool UseRTExclusive = false;
+		bool UseRayRegeneration = true;
+		uint32_t RRResolution = 3;
 		uint32_t IndirectRays = 1;
 		float IndirectStrength = 1.0f;
 		bool ConnectHybrid = true;

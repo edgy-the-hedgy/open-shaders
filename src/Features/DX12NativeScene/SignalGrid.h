@@ -60,4 +60,27 @@ namespace DX12Native
             }
         return std::nullopt;
     }
+
+    /** @brief Caches coordinate proofs for the bounded producer phase cycle. */
+    class SamplingCoverageCache
+    {
+    public:
+        /** @brief Rechecks coordinates only when dimensions, sampling, salt or phase change. */
+        std::optional<std::array<uint32_t, 2>> Check(const SignalGrid& grid, uint32_t mode,
+            bool stochastic, uint32_t frame, uint32_t salt)
+        {
+            const std::array<uint32_t, 9> next{ grid.native[0], grid.native[1], grid.logical[0], grid.logical[1],
+                grid.packed[0], grid.packed[1], mode, uint32_t(stochastic), salt };
+            if (key != next) { key = next; known.fill(false); }
+            const auto span = mode == 1u ? 2u : mode == 2u ? 4u : 3u;
+            const auto phase = stochastic && mode ? frame % (span * span) : 0u;
+            const auto index = phase * 2u + grid.origin;
+            if (!known[index]) { values[index] = FirstUntracedSample(grid, mode, stochastic, frame, salt); known[index] = true; }
+            return values[index];
+        }
+    private:
+        std::array<uint32_t, 9> key{};
+        std::array<bool, 32> known{};
+        std::array<std::optional<std::array<uint32_t, 2>>, 32> values{};
+    };
 }

@@ -1,0 +1,76 @@
+#include "Common/FrameBuffer.hlsli"
+#include "Common/GBuffer.hlsli"
+Texture2D<float4> DepthOrReceiver : register(t0);
+Texture2D<float4> NormalRoughness : register(t1);
+Texture2D<float4> Motion : register(t2);
+Texture2D<float4> DiffuseAlbedo : register(t3);
+Texture2D<float4> SpecularAlbedo : register(t4);
+Texture2D<float4> Diffuse : register(t5);
+Texture2D<float4> Specular : register(t6);
+RWTexture2D<float> RRDepth : register(u0);
+RWTexture2D<float4> RRMotion : register(u1);
+RWTexture2D<float4> RRNormal : register(u2);
+RWTexture2D<float4> RRDiffuseAlbedo : register(u3);
+RWTexture2D<float4> RRSpecularAlbedo : register(u4);
+RWTexture2D<float4> PackedDiffuse : register(u5);
+RWTexture2D<float4> PackedSpecular : register(u6);
+RWTexture2D<uint> Validity : register(u7);
+cbuffer Sampling : register(b0)
+{
+    uint2 NativeSize, LogicalSize, PackedSize;
+    uint Checkerboard, Origin, DXRMaterials, DirectSignals, PackedSource, LinearLighting;
+    float RoughnessFloor;
+    uint3 Reserved;
+};
+float2 EncodeNormal(float3 normal)
+{
+    normal /= max(dot(abs(normal), 1.0), 1e-6);
+    if (normal.z < 0) normal.xy = (1 - abs(normal.yx)) * float2(normal.x >= 0 ? 1 : -1, normal.y >= 0 ? 1 : -1);
+    return normal.xy * 0.5 + 0.5;
+}
+[numthreads(8,8,1)] void main(uint2 logical : SV_DispatchThreadID)
+{
+    if (any(logical >= LogicalSize)) return;
+    uint2 native = min(uint2((float2(logical) + 0.5) * NativeSize / LogicalSize), NativeSize - 1u);
+    float4 receiver = DepthOrReceiver[native];
+    float depth = DXRMaterials ? mul(FrameBuffer::CameraView[0], float4(receiver.xyz, 1)).z : receiver.x;
+    float4 nr = NormalRoughness[native];
+    bool surfaceValid = isfinite(depth) && depth > 0.001 && all(isfinite(nr));
+    RRDepth[logical] = surfaceValid ? depth : 0;
+    float3 normal = normalize(mul((float3x3)FrameBuffer::CameraViewInverse[0], GBuffer::DecodeNormal(nr.xy)));
+    RRNormal[logical] = DXRMaterials ? float4(nr.xyz, saturate(nr.w / 3.0)) :
+        float4(EncodeNormal(normal), max(RoughnessFloor, saturate(1 - nr.z)), 0);
+    float3 diffuseAlbedo = DiffuseAlbedo[native].rgb;
+    if (!DXRMaterials) {
+        diffuseAlbedo /= LinearLighting ? 1.0 : 0.65;
+        if (!LinearLighting) diffuseAlbedo = pow(abs(diffuseAlbedo), 1.6);
+    }
+    float3 specularAlbedo = SpecularAlbedo[native].rgb;
+    RRDiffuseAlbedo[logical] = float4(all(isfinite(diffuseAlbedo)) ? max(diffuseAlbedo, 0) : 0, 1);
+    RRSpecularAlbedo[logical] = float4(all(isfinite(specularAlbedo)) ? max(specularAlbedo, 0) : 0, 1);
+    float2 uv = (float2(native) + 0.5) / NativeSize;
+    float2 motion = Motion[native].xy;
+    float delta = 0;
+    if (surfaceValid) {
+        float4 view = DXRMaterials ? mul(FrameBuffer::CameraView[0], float4(receiver.xyz, 1)) :
+            mul(FrameBuffer::CameraProjInverse[0], float4(uv * float2(2, -2) + float2(-1, 1), 0.5, 1));
+        float3 position = DXRMaterials ? receiver.xyz :
+            mul(FrameBuffer::CameraViewInverse[0], float4(view.xyz * (depth / view.z), 1)).xyz;
+        float3 previous = position + FrameBuffer::CameraPosAdjust[0].xyz - FrameBuffer::CameraPreviousPosAdjust[0].xyz;
+        float4 previousClip = mul(FrameBuffer::CameraPreviousViewProjUnjittered[0], float4(previous, 1));
+        delta = isfinite(previousClip.w) ? clamp(previousClip.w - depth, -65504.0, 65504.0) : 0;
+    }
+    RRMotion[logical] = float4(all(isfinite(motion)) ? motion : 0, delta, 0);
+    if (Checkerboard && ((logical.x + logical.y) & 1u) != Origin) return;
+    uint2 packed = uint2(Checkerboard ? logical.x / 2u : logical.x, logical.y);
+    uint2 source = PackedSource ? packed : native;
+    float4 diffuse = Diffuse[source], specular = Specular[source];
+    bool receiverValid = surfaceValid && (!DXRMaterials || DiffuseAlbedo[native].a > 0.5);
+    bool diffuseValid = receiverValid && all(isfinite(diffuse)) && all(diffuse.rgb >= 0) &&
+        all(isfinite(diffuseAlbedo)) && (DirectSignals || diffuse.a >= 0);
+    bool specularValid = receiverValid && all(isfinite(specular)) && all(specular.rgb >= 0) &&
+        all(isfinite(specularAlbedo)) && (DirectSignals || specular.a >= 0);
+    PackedDiffuse[packed] = diffuseValid ? float4(diffuse.rgb, DirectSignals ? 0.0 : diffuse.a) : float4(0, 0, 0, -1);
+    PackedSpecular[packed] = specularValid ? float4(specular.rgb, DirectSignals ? 0.0 : specular.a) : float4(0, 0, 0, -1);
+    Validity[packed] = (diffuseValid ? 1u : 0u) | (specularValid ? 2u : 0u);
+}

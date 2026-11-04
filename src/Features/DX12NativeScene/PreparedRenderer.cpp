@@ -113,6 +113,7 @@ void DX12NativeScene::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target,
 {
 	nativeHybrid.Retire();
 	const auto& hybrid = globals::features::redstoneGI;
+	if (!hybrid.loaded || !hybrid.settings.NativeHybrid) nativeHybrid.Reset();
 	if (hybrid.loaded && hybrid.settings.NativeHybrid && !transitionOpen && !globals::game::isVR &&
 		!globals::state->isMapMenuOpen && target &&
 		target == Util::AsReal(globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].UAV) &&

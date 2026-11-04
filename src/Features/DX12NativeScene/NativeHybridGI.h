@@ -3,6 +3,8 @@
 #include "GraphicsBackend.h"
 #include "Buffer.h"
 #include "SignalGrid.h"
+#include "SignalPreparation.h"
+#include "Features/RedstoneGI/RuntimeDenoiser.h"
 #include <array>
 #include <cstdint>
 #include <string>
@@ -23,6 +25,8 @@ namespace DX12Native
         void Retire();
         /** @brief Reports requested, recorded and completed work separately. */
         json GetDiagnostics() const;
+        /** @brief Retires only native GI signal histories when disabled or after a scene transition. */
+        void Reset();
         static constexpr uint32_t kOutputs = 5;
         enum Output : uint32_t { Specular = 0, Diffuse = 1, Eligibility = 2, DiffuseAO = 3, SpecularAO = 4 };
         struct FrameOutputs
@@ -47,7 +51,8 @@ namespace DX12Native
         struct Frame
         {
             FrameOutputs outputs;
-            std::array<std::unique_ptr<WrappedResource>, 5> sources;
+            std::array<std::unique_ptr<WrappedResource>, 6> sources;
+            SignalPreparation::Frame rr;
             winrt::com_ptr<ID3D12CommandAllocator> allocator;
             winrt::com_ptr<ID3D12GraphicsCommandList> commands;
             std::unique_ptr<ConstantBuffer> snapshotSettings;
@@ -56,6 +61,10 @@ namespace DX12Native
             uint64_t fence = 0;
         };
         void PrepareInputs(Frame& frame, const RedstoneGI& settings);
+        void RecordRR(Frame& frame, uint32_t slot, uint32_t number, const RedstoneGI& settings);
+        SignalPreparation signalPreparation;
+        RedstoneDenoiser nativeDenoiser;
+        std::string rrFailure;
         std::array<Frame, 2> frames;
         GraphicsBackend backend;
         SharedFence producer, completion;

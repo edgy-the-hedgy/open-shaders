@@ -106,10 +106,11 @@ json RedstoneGI::GetRedstoneStatus() const
 
 void RedstoneGI::RegisterUxActions()
 {
-	FEATURE_COMMAND("setNativeHybrid", "Enable independent native DX12 GI/AO production. Params: enabled (required boolean), budgetMB (optional 64..4096), checkerboard (optional boolean), clampRadiance (optional boolean), radianceThreshold (optional finite 0..65504). No Direct DXR, prepared scene or RR requirement. Hybrid resolution remains owned by RTIndirectLighting. Other producers remain requested; scene consumption is reported separately by DX12NativeScene diagnostics.",
+	FEATURE_COMMAND("setNativeHybrid", "Enable independent native DX12 GI/AO production. Params: enabled (required boolean), rrEnabled (optional boolean), budgetMB (optional 64..4096), checkerboard (optional boolean), clampRadiance (optional boolean), radianceThreshold (optional finite 0..65504). No Direct DXR, prepared scene or RR requirement. Hybrid resolution remains owned by RTIndirectLighting. Other producers remain requested; independent SDK signal diagnostics and scene consumption are reported by DX12NativeScene.",
 		[](Feature* self, const json& args) {
 			auto& gi = *static_cast<RedstoneGI*>(self);
 			gi.settings.NativeHybrid = args.at("enabled").get<bool>();
+			if (args.contains("rrEnabled")) gi.settings.NativeRayRegeneration = args.at("rrEnabled").get<bool>();
 			if (args.contains("budgetMB")) gi.settings.NativeBudgetMB = std::clamp(args.at("budgetMB").get<uint32_t>(), 64u, 4096u);
 			if (args.contains("checkerboard")) gi.settings.NativeCheckerboard = args.at("checkerboard").get<bool>();
 			if (args.contains("clampRadiance")) gi.settings.NativeRadianceClamp = args.at("clampRadiance").get<bool>();

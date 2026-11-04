@@ -5,6 +5,7 @@
 #include "State.h"
 #include "Utils/D3D.h"
 #include "Features/RedstoneGI/RedstoneGI.h"
+#include "Features/RTIndirectLighting/RTIndirectLighting.h"
 #include "Deferred.h"
 #include "Utils/RayRegenerationSettings.h"
 
@@ -284,7 +285,7 @@ namespace DX12Native
 		create(&globals::game::frameBufferCached.nonVR, sizeof(globals::FrameBuffer), a_frame.camera, "RTDirectLighting::ReceiverCamera CB");
 		winrt::com_ptr<ID3D11ComputeShader> shader;
 		winrt::com_ptr<ID3D11ShaderResourceView> input, lightInput, roomInput;
-		winrt::com_ptr<ID3D11UnorderedAccessView> output, lightOutput;
+		winrt::com_ptr<ID3D11UnorderedAccessView> output, lightOutput, motionOutput;
 		winrt::com_ptr<ID3D11Buffer> oldGrid, oldCamera, oldShared, oldFeatures;
 		auto* context = backend.d3d11Context.get();
 		context->CSGetShader(shader.put(), nullptr, nullptr);
@@ -293,6 +294,7 @@ namespace DX12Native
 		context->CSGetShaderResources(2, 1, roomInput.put());
 		context->CSGetUnorderedAccessViews(0, 1, output.put());
 		context->CSGetUnorderedAccessViews(1, 1, lightOutput.put());
+		context->CSGetUnorderedAccessViews(2, 1, motionOutput.put());
 		context->CSGetConstantBuffers(0, 1, oldGrid.put());
 		context->CSGetConstantBuffers(12, 1, oldCamera.put());
 		context->CSGetConstantBuffers(5, 1, oldShared.put());
@@ -301,20 +303,22 @@ namespace DX12Native
 		if (!depth) throw std::runtime_error("Native receiver depth unavailable");
 		auto* gridBuffer = a_frame.grid.get();
 		auto* cameraBuffer = a_frame.camera.get();
-		ID3D11ShaderResourceView* inputs[]{ depth, nullptr, a_roomMetadata };
-		ID3D11UnorderedAccessView* outputs[]{ a_frame.receivers->uav, a_frame.light->uav };
+		auto* motion = Util::AsReal(globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGET::kMOTION_VECTOR].SRV);
+		a_frame.motionReady = a_frame.motion && motion;
+		ID3D11ShaderResourceView* inputs[]{ depth, a_frame.motionReady ? motion : nullptr, a_roomMetadata };
+		ID3D11UnorderedAccessView* outputs[]{ a_frame.receivers->uav, a_frame.light->uav, a_frame.motionReady ? a_frame.motion->uav : nullptr };
 		context->CSSetShaderResources(0, 3, inputs);
-		context->CSSetUnorderedAccessViews(0, 2, outputs, nullptr);
+		context->CSSetUnorderedAccessViews(0, 3, outputs, nullptr);
 		context->CSSetConstantBuffers(0, 1, &gridBuffer);
 		context->CSSetConstantBuffers(12, 1, &cameraBuffer);
 		globals::state->BindSharedDataCS(context);
 		context->CSSetShader(prepare.get(), nullptr, 0);
 		a_frame.submitted = true;
 		context->Dispatch((std::max({ a_frame.size[0], uint32_t(a_frame.lightIdentities.size()), 128u }) + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
-		ID3D11UnorderedAccessView* priorOutputs[]{ output.get(), lightOutput.get() };
+		ID3D11UnorderedAccessView* priorOutputs[]{ output.get(), lightOutput.get(), motionOutput.get() };
 		ID3D11ShaderResourceView* priorInputs[]{ input.get(), lightInput.get(), roomInput.get() };
 		gridBuffer = oldGrid.get(); cameraBuffer = oldCamera.get();
-		context->CSSetUnorderedAccessViews(0, 2, priorOutputs, nullptr);
+		context->CSSetUnorderedAccessViews(0, 3, priorOutputs, nullptr);
 		context->CSSetShaderResources(0, 3, priorInputs);
 		context->CSSetConstantBuffers(0, 1, &gridBuffer);
 		context->CSSetConstantBuffers(12, 1, &cameraBuffer);
@@ -455,9 +459,12 @@ namespace DX12Native
 		};
 		for (const auto& signal : a_frame.directSignals) if (signal) end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(signal->resource.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON));
 		commands->ResourceBarrier(uint32_t(end.size()), end.data());
+		RecordNativeLightingRR(a_frame);
 		DX::ThrowIfFailed(commands->Close());
 		ID3D12CommandList* lists[]{ commands };
 		backend.commandQueue->ExecuteCommandLists(1, lists);
+		directDenoiser.NotifyNativeSubmitted();
+		indirectDenoiser.NotifyNativeSubmitted();
 		a_frame.fence = ++nextCompletion;
 		DX::ThrowIfFailed(backend.commandQueue->Signal(completion.fence12.get(), a_frame.fence));
 		++submissions;
@@ -554,7 +561,7 @@ namespace DX12Native
 		globals::state->BindSharedDataCS(context);
 		auto* cameraBuffer = a_frame.camera.get();
 		context->CSSetConstantBuffers(12, 1, &cameraBuffer);
-		const uint32_t rrFlags = DenoiseDirect(a_frame);
+		const uint32_t rrFlags = 0;
 		PrepareRRPreview(a_frame, rrFlags);
 		const bool directRR = (rrFlags & 1u) != 0;
 		auto& indirect = globals::features::redstoneGI;
@@ -706,6 +713,7 @@ namespace DX12Native
 			std::copy_n(a_roomReferences.begin(), std::min(a_roomReferences.size(), available->roomReferences.size()), available->roomReferences.begin());
 			available->indirectStrength = a_indirectStrength;
 			available->useDirectRR = directRR;
+			available->useIndirectRR = a_indirectRays && globals::features::rtIndirectLighting.settings.UseRayRegeneration && rrPolicy.enabled;
 			available->rasterBlend = a_rasterBlend;
 			available->normalMode = std::min(a_normalMode, 2u);
 			available->directTraceMode = std::min(a_directResolutionMode, 4u);
@@ -730,6 +738,8 @@ namespace DX12Native
 				static constexpr std::array names{ "RTDirectLighting::DirectDiffuse", "RTDirectLighting::DirectSpecular", "RTDirectLighting::DirectNormalRoughness", "RTDirectLighting::DirectSpecularAlbedo", "RTDirectLighting::DirectDiffuseAlbedo", "RTDirectLighting::IndirectDiffuse", "RTDirectLighting::IndirectSpecular" };
 				for (uint32_t i = 0; i < kDirectSignalCount; ++i)
 					if (!available->directSignals[i]) available->directSignals[i] = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), names[i]);
+				if ((directRR || available->useIndirectRR) && !available->motion)
+					available->motion = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "RTDirectLighting::NativeMotionSnapshot");
 			}
 			desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
 			desc.Width = kLightSnapshotWidth; desc.Height = 2;
@@ -787,6 +797,8 @@ namespace DX12Native
 			{ "allPreparedLights", allPreparedLights }, { "requestedLightCount", requestedLightCount }, { "maximumDirectLights", kMaximumDirectLights }, { "lightSelectionFailure", lightSelectionFailure },
 			{ "directSubmissions", directSubmissions }, { "directTraceDispatches", directTraceDispatches }, { "indirectTraceDispatches", indirectTraceDispatches }, { "sceneCompositeSubmissions", sceneCompositeSubmissions }, { "sceneCompositeFrame", sceneCompositeFrame },
 			{ "rawDirectCaptures", rawDirectCaptures }, { "rawIndirectCaptures", rawIndirectCaptures },
+			{ "nativeRR", nativeRRStatus }, { "nativeDirectRRSignals", directDenoiser.GetNativeDiagnostics() },
+			{ "nativeIndirectRRSignals", indirectDenoiser.GetNativeDiagnostics() },
 			{ "directScope", "selected light or complete bounded prepared point-light set; supported depth-matched PBR surfaces; per-light diffuse/specular, emission once; no native CPU bypass" },
 			{ "sourceLightCount", sourceLightCount }, { "sourceLightFrame", sourceLightFrame }, { "unavailableLightFrames", unavailableLightFrames },
 			{ "bindingCreations", bindingCreations }, { "bindingDeferrals", bindingDeferrals }, { "cachedSceneBindings", bool(cachedBindings) },

@@ -8,11 +8,13 @@ Texture2D<float4> NormalRoughness : register(t1);
 Texture2D<float3> SceneColor : register(t2);
 Texture2D<float3> DiffuseAlbedo : register(t3);
 Texture2D<float3> SpecularAlbedo : register(t4);
+Texture2D<float4> NativeMotion : register(t5);
 RWTexture2D<float> LinearDepth : register(u0);
 RWTexture2D<float4> NormalOutput : register(u1);
 RWTexture2D<float4> LinearRadiance : register(u2);
 RWTexture2D<float4> DiffuseOutput : register(u3);
 RWTexture2D<float4> SpecularOutput : register(u4);
+RWTexture2D<float4> MotionOutput : register(u5);
 cbuffer SnapshotSettings : register(b13)
 {
     uint2 NativeSize;
@@ -30,4 +32,5 @@ cbuffer SnapshotSettings : register(b13)
     LinearRadiance[pixel] = float4(all(isfinite(radiance)) ? max(0, radiance) * SourceStrength : 0, 0);
     DiffuseOutput[pixel] = float4(DiffuseAlbedo[pixel], 0);
     SpecularOutput[pixel] = float4(SpecularAlbedo[pixel], 0);
+    MotionOutput[pixel] = NativeMotion[pixel];
 }

@@ -6,6 +6,7 @@
 #include "MaterialResources.h"
 #include "PreparedScene.h"
 #include "Features/RedstoneGI/RuntimeDenoiser.h"
+#include "SignalPreparation.h"
 #include <atomic>
 #include <span>
 
@@ -83,6 +84,9 @@ namespace DX12Native
 			std::unique_ptr<WrappedResource> receivers, output, light;
 			std::array<std::unique_ptr<WrappedResource>, kDirectSignalCount> directSignals;
 			std::array<winrt::com_ptr<ID3D12Resource>, kDirectSignalCount> rawSignals;
+			std::unique_ptr<WrappedResource> motion;
+			SignalPreparation::Frame nativeDirectRR, nativeIndirectRR;
+			bool useIndirectRR = false, motionReady = false;
 			winrt::com_ptr<ID3D12RootSignature> root;
 			winrt::com_ptr<ID3D12PipelineState> pipeline;
 			winrt::com_ptr<ID3D12CommandAllocator> allocator;
@@ -122,6 +126,7 @@ namespace DX12Native
 		void PrepareReceivers(Frame& a_frame, const std::array<uint32_t, 2>& a_nativeSize, const LightLimitFixData::LightView& a_lights, ID3D11ShaderResourceView* a_roomMetadata);
 		void Record(Frame& a_frame, const float3& a_direction, bool a_localLight);
 		void CaptureRawSignals(Frame& a_frame, uint32_t a_first, uint32_t a_count);
+		void RecordNativeLightingRR(Frame& a_frame);
 		void Consume(Frame& a_frame);
 		void CompositeScene(Frame& a_frame, ID3D11UnorderedAccessView* a_target);
 		/** @brief Reconstructs the current separated direct signals using matching RT material guides. */
@@ -138,6 +143,9 @@ namespace DX12Native
 		std::unique_ptr<ConstantBuffer> lightingCompositeSettings;
 		RedstoneDenoiser directDenoiser;
 		RedstoneDenoiser indirectDenoiser;
+		SignalPreparation nativeDirectPreparation, nativeIndirectPreparation;
+		SamplingCoverageCache directCoverage, indirectCoverage;
+		json nativeRRStatus = json::object();
 		std::array<std::unique_ptr<Texture2D>, 13> directRRTextures;
 		uint64_t directRRPolicyRevision = UINT64_MAX;
 		uint32_t directRRIndirectRays = 0;

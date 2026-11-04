@@ -133,6 +133,7 @@ struct RedstoneGI final : OverlayFeature
 		bool NativeHybrid = false;
 		uint32_t NativeBudgetMB = 256;
 		bool NativeCheckerboard = false;
+		bool NativeRayRegeneration = true;
 		bool NativeRadianceClamp = false;
 		float NativeRadianceThreshold = 65504.0f;
 		bool EnableVanillaSSAO = false;
@@ -200,6 +201,8 @@ public:
 	STATIC_ASSERT_ALIGNAS_16(OcclusionSettings);
 	/** @brief Snapshots the existing occlusion estimator controls for native recording. */
 	OcclusionSettings GetNativeOcclusionSettings() const { return occlusion; }
+	/** @brief Returns independently enabled native diffuse, specular, AO and specular-occlusion signals. */
+	uint32_t GetNativeSignalMask() const { return (diffuseEnabled ? 1u : 0u) | (specularEnabled ? 2u : 0u) | (occlusion.diffuseEnabled ? 4u : 0u) | (occlusion.specularEnabled ? 8u : 0u); }
 private:
 	eastl::unique_ptr<ConstantBuffer> occlusionSettings;
 	eastl::unique_ptr<Texture2D> texDiffuseOcclusionInput, texSpecularOcclusionInput;

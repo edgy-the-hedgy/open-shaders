@@ -43,12 +43,14 @@ TEST_CASE("Signal grids retain odd edge blocks without phantom checkerboard samp
 
 TEST_CASE("RR compatibility uses the producer's actual trace coordinates", "[SignalGrid]")
 {
+    SamplingCoverageCache cache;
     for (uint32_t mode = 0; mode < 5; ++mode)
         for (uint32_t resolution = 0; resolution < 3; ++resolution)
             for (bool stochastic : { false, true })
                 for (uint32_t frame = 0; frame < 16; ++frame) {
                     const auto grid = MakeSignalGrid({ 32u, 18u }, resolution, true, frame);
                     const auto missing = FirstUntracedSample(grid, mode, stochastic, frame);
+                    REQUIRE(cache.Check(grid, mode, stochastic, frame, 0) == missing);
                     if (missing) {
                         REQUIRE_FALSE(NativeTraceSample((*missing)[0], (*missing)[1], mode, stochastic, frame, 0));
                     } else {

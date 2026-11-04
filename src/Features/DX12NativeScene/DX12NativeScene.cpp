@@ -200,6 +200,7 @@ void DX12NativeScene::AdvanceAcquisition(const GraphicsBackend& a_backend, uint6
 
 void DX12NativeScene::OnSceneTransitionReset(bool a_open)
 {
+	nativeHybrid.Reset();
 	transitionOpen = a_open;
 	resetRequested = true;
 }

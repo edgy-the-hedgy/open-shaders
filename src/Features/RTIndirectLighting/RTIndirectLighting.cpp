@@ -6,7 +6,7 @@
 #include "Utils/DevBenchUx.h"
 #include <cmath>
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTIndirectLighting::Settings, UseRTExclusive, IndirectRays, IndirectStrength, ConnectHybrid, RTTraceResolution, HybridResolution)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTIndirectLighting::Settings, UseRTExclusive, UseRayRegeneration, RRResolution, IndirectRays, IndirectStrength, ConnectHybrid, RTTraceResolution, HybridResolution)
 
 std::pair<std::string, std::vector<std::string>> RTIndirectLighting::GetFeatureSummary()
 {
@@ -41,6 +41,7 @@ void RTIndirectLighting::LoadSettings(json& value)
 	selected.IndirectRays = std::clamp(selected.IndirectRays, 1u, 8u);
 	selected.RTTraceResolution = std::min(selected.RTTraceResolution, 4u);
 	selected.HybridResolution = std::min(selected.HybridResolution, 3u);
+	selected.RRResolution = std::min(selected.RRResolution, 3u);
 	selected.IndirectStrength = std::isfinite(selected.IndirectStrength) ? std::clamp(selected.IndirectStrength, 0.0f, 8.0f) : 1.0f;
 	settings = selected;
 	if (settings.UseRTExclusive) {
@@ -101,6 +102,9 @@ void RTIndirectLighting::DrawSettings()
 
 	if (settings.UseRTExclusive) {
 		ImGui::TextWrapped("RT-exclusive uses the prepared native scene for indirect diffuse and specular. RT Direct Lighting is required. Direct and indirect run separate GPU compute dispatches using shared retained scene and receiver resources.");
+		ImGui::Checkbox("RT-exclusive ray regeneration", &settings.UseRayRegeneration);
+		int rrResolution = int(settings.RRResolution);
+		if (ImGui::Combo("RT-exclusive RR resolution", &rrResolution, "Full\0Half\0Quarter\0Shared RR setting\0")) settings.RRResolution = uint32_t(rrResolution);
 		int rays = int(settings.IndirectRays);
 		if (ImGui::SliderInt("Indirect rays per pixel", &rays, 1, 8)) {
 			settings.IndirectRays = uint32_t(rays);

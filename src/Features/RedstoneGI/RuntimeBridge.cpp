@@ -24,6 +24,10 @@ bool RedstoneDenoiser::Initialize(const GraphicsBackend& a_backend)
 
 RedstoneDenoiser::~RedstoneDenoiser()
 {
+	if (!DisposeNative()) {
+		logger::error("[RayRegeneration] Native teardown has outstanding GPU work; preserving the provider");
+		return;
+	}
 	ResetRayRegeneration();
 	if (rayRegenerationContext || rrSharedSignal) {
 		for (auto& context : runtimeCommandContexts) {

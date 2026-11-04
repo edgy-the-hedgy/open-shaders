@@ -22,6 +22,26 @@ public:
 	};
 	/** @brief Uses the shared loader API and loads the denoiser after backend eligibility passes. */
 	bool Initialize(const GraphicsBackend& a_backend);
+	/** @brief Loads the existing SDK provider for caller-owned native command recording. */
+	bool InitializeNative(const GraphicsBackend& a_backend);
+	/** @brief Describes one independently requested native signal and its unfiltered guides. */
+	struct NativeResources
+	{
+		std::array<ID3D12Resource*, 5> guides{};
+		ID3D12Resource* input = nullptr;
+		ID3D12Resource* output = nullptr;
+		std::array<uint32_t, 2> nativeSize{}, logicalSize{};
+		uint32_t frame = 0, origin = 0;
+		bool checkerboard = false, direct = false, reset = false;
+	};
+	/** @brief Records one SDK signal without submitting, copying or reading back its textures. */
+	bool RecordNativeSignal(ID3D12GraphicsCommandList* a_list, const NativeResources& a_resources, uint32_t a_signal);
+	/** @brief Stamps SDK contexts only after their caller has submitted the recorded commands. */
+	void NotifyNativeSubmitted();
+	/** @brief Retires only selected native signal contexts after their last submitted GPU use. */
+	void RetireNative(uint32_t a_mask = 15u);
+	/** @brief Reports independent native initialization, configuration and dispatch evidence. */
+	json GetNativeDiagnostics() const;
 	~RedstoneDenoiser();
 	bool CanDispatchRayRegeneration() const { return featureRayRegeneration && !rayRegenerationFailureLatched; }
 	json GetRayRegenerationDiagnostics() const;
@@ -39,6 +59,9 @@ public:
 		bool a_checkerboard, uint32_t a_checkerboardOrigin, bool a_directSignals = false);
 
 private:
+	struct NativeState;
+	std::shared_ptr<NativeState> nativeState;
+	bool DisposeNative();
 	bool ApplyConfiguration(bool& a_resetHistory);
 	mutable std::mutex configurationMutex;
 	std::array<std::optional<float>, 8> configurationOverrides{};

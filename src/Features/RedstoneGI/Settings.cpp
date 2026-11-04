@@ -43,6 +43,7 @@ namespace
 	NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RedstoneConfiguration,
 		NativeHybrid, NativeBudgetMB,
 		NativeCheckerboard, NativeRadianceClamp, NativeRadianceThreshold,
+		NativeRayRegeneration,
 		EnableVanillaSSAO,
 		EnableAdaptiveSampling,
 		MinScreenRadius, GIRadius, DepthFadeRange,
@@ -235,6 +236,7 @@ void RedstoneGI::DrawSettings()
 {
 	ImGui::Checkbox("Native DX12 Hybrid GI / AO", &settings.NativeHybrid);
 	ImGui::Checkbox("Native checkerboard samples", &settings.NativeCheckerboard);
+	ImGui::Checkbox("Native Hybrid GI / AO ray regeneration", &settings.NativeRayRegeneration);
 	ImGui::Checkbox("Clamp native source radiance", &settings.NativeRadianceClamp);
 	if (settings.NativeRadianceClamp)
 		ImGui::SliderFloat("Native radiance threshold", &settings.NativeRadianceThreshold, 0.0f, 65504.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);

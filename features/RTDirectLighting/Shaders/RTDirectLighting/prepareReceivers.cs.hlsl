@@ -7,10 +7,12 @@
 #include "RTDirectLighting/directContract.hlsli"
 
 Texture2D<float> Depth : register(t0);
+Texture2D<float4> Motion : register(t1);
 // t1 reserved; native light snapshot is uploaded directly to the shared texture.
 Texture2D<float4> RoomMetadata : register(t2);
 RWTexture2D<float4> Receivers : register(u0);
 RWTexture2D<float4> LightSnapshot : register(u1);
+RWTexture2D<float4> MotionSnapshot : register(u2);
 cbuffer Grid : register(b0)
 {
 	uint2 Size;
@@ -41,6 +43,9 @@ void main(uint3 id : SV_DispatchThreadID)
 	}
 	if (any(id.xy >= Size)) return;
 	uint2 pixel = min(uint2((float2(id.xy) + 0.5) * NativeSize / Size), NativeSize - 1);
+	uint motionWidth, motionHeight;
+	MotionSnapshot.GetDimensions(motionWidth, motionHeight);
+	if (id.x < motionWidth && id.y < motionHeight) MotionSnapshot[id.xy] = Motion[pixel];
 	float raw = Depth.Load(int3(pixel, 0));
 	float depth = FrameBuffer::ToStandardDepth(raw);
 	float2 uv = (float2(pixel) + 0.5) / NativeSize;

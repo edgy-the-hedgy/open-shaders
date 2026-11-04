@@ -9,6 +9,11 @@
 
 namespace DX12Native
 {
+    void NativeHybridGI::Reset()
+    {
+        nativeDenoiser.RetireNative();
+        for (auto& frame : frames) if (!frame.fence) frame.rr = {};
+    }
     NativeHybridGI::~NativeHybridGI()
     {
         if (completion.fence12 && completion.value)
@@ -42,21 +47,22 @@ namespace DX12Native
         ID3D11ShaderResourceView* reads[]{ Util::GetCurrentSceneDepthSRV(),
             Util::AsReal(targets[NORMALROUGHNESS].SRV),
             Util::AsReal(targets[globals::deferred->forwardRenderTargets[0]].SRV),
-            Util::AsReal(targets[ALBEDO].SRV), Util::AsReal(targets[REFLECTANCE].SRV) };
-        ID3D11UnorderedAccessView* writes[5]{};
+            Util::AsReal(targets[ALBEDO].SRV), Util::AsReal(targets[REFLECTANCE].SRV),
+            Util::AsReal(targets[RE::RENDER_TARGET::kMOTION_VECTOR].SRV) };
+        ID3D11UnorderedAccessView* writes[6]{};
         for (uint32_t i = 0; i < frame.sources.size(); ++i) writes[i] = frame.sources[i]->uav;
         struct Snapshot { uint32_t width, height; float strength; uint32_t padding = 0; };
         frame.snapshotSettings->Update(Snapshot{ frame.size[0], frame.size[1], settings.settings.GIStrength });
         auto* cb = frame.snapshotSettings->CB();
         context->CSSetConstantBuffers(13, 1, &cb);
-        context->CSSetShaderResources(0, 5, reads);
-        context->CSSetUnorderedAccessViews(0, 5, writes, nullptr);
+        context->CSSetShaderResources(0, 6, reads);
+        context->CSSetUnorderedAccessViews(0, 6, writes, nullptr);
         context->CSSetShader(prepareInputs.get(), nullptr, 0);
         context->Dispatch((frame.size[0] + 7u) / 8u, (frame.size[1] + 7u) / 8u, 1);
         std::fill(std::begin(reads), std::end(reads), nullptr);
         std::fill(std::begin(writes), std::end(writes), nullptr);
-        context->CSSetShaderResources(0, 5, reads);
-        context->CSSetUnorderedAccessViews(0, 5, writes, nullptr);
+        context->CSSetShaderResources(0, 6, reads);
+        context->CSSetUnorderedAccessViews(0, 6, writes, nullptr);
         cb = nullptr;
         context->CSSetConstantBuffers(13, 1, &cb);
         for (uint32_t i = 0; i < slots.size(); ++i) {
@@ -98,14 +104,14 @@ namespace DX12Native
             if (!frame.allocator) {
                 const uint64_t budget = uint64_t(settings.settings.NativeBudgetMB) * 1024 * 1024;
                 const uint64_t outputs = EstimateBytes(backend.d3d12Device.get(), size[0], size[1]);
-                const uint64_t sourceBytes = uint64_t(size[0]) * size[1] * 36u;
+                const uint64_t sourceBytes = uint64_t(size[0]) * size[1] * 44u;
                 if (outputs > budget / 2 || sourceBytes > budget / 2 - outputs)
                     throw std::runtime_error("Native GI two-frame allocation exceeds its memory budget");
                 D3D11_TEXTURE2D_DESC desc{};
                 desc.Width = size[0]; desc.Height = size[1];
                 desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
                 desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-                constexpr std::array names{ "Depth", "NormalRoughness", "Radiance", "DiffuseAlbedo", "SpecularAlbedo" };
+                constexpr std::array names{ "Depth", "NormalRoughness", "Radiance", "DiffuseAlbedo", "SpecularAlbedo", "Motion" };
                 for (uint32_t i = 0; i < frame.sources.size(); ++i) {
                     desc.Format = i ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R32_FLOAT;
                     frame.sources[i] = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(),
@@ -131,10 +137,12 @@ namespace DX12Native
                 uint32_t(available - frames.begin()), frameNumber, size,
                 frame.sources[0]->resource.get(), frame.sources[1]->resource.get(), frame.sources[2]->resource.get(),
                 frame.sources[3]->resource.get(), frame.sources[4]->resource.get(), settings);
+            if (recorded) RecordRR(frame, uint32_t(available - frames.begin()), frameNumber, settings);
             DX::ThrowIfFailed(frame.commands->Close());
             if (!recorded) return;
             ID3D12CommandList* lists[]{ frame.commands.get() };
             backend.commandQueue->ExecuteCommandLists(1, lists);
+            nativeDenoiser.NotifyNativeSubmitted();
             frame.fence = completion.Next();
             DX::ThrowIfFailed(backend.commandQueue->Signal(completion.fence12.get(), frame.fence));
             ++submissions;
@@ -150,6 +158,8 @@ namespace DX12Native
             { "samplesPerRecordedDispatch", uint64_t(grid.packed[0]) * grid.packed[1] },
             { "giDispatchesRecorded", giDispatches }, { "aoDispatchesRecorded", aoDispatches },
             { "busyFrames", busyFrames }, { "failure", failure }, { "requiresPreparedScene", false },
+            { "nativeRR", nativeDenoiser.GetNativeDiagnostics() }, { "rrPreparationFailure", rrFailure },
+            { "slot0RRRecordedMask", frames[0].rr.recordedMask }, { "slot1RRRecordedMask", frames[1].rr.recordedMask },
             { "requiresDirect", false }, { "requiresRR", false }, { "sceneConsumed", false } };
     }
 }
