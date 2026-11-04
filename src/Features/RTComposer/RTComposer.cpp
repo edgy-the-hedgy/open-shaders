@@ -212,8 +212,12 @@ json RTComposer::GetDiagnostics()
             { "shadowInfluence", composition.fsrHybrid.shadowInfluence }
         } },
         { "fsrLegacyHybridPrototype", LegacyHybridPrototypeActive() },
-        { "requestedMode", ModeName(composition.mode) },
-        { "requestedTierReady", composition.mode == CompositorMode::Custom || GetTierPolicy(composition.mode).ready },
+        { "requestedMode", IsOpenRT() ? ModeName(composition.mode) :
+            FSRModeName(composition.fsrRRMode) },
+        { "internalExecutionMode", ModeName(composition.mode) },
+        { "requestedTierReady", IsOpenRT() ?
+            (composition.mode == CompositorMode::Custom || GetTierPolicy(composition.mode).ready) :
+            GetFSRContract(composition.fsrRRMode).productionReady },
         { "tierControlsLocked", TierControlsLocked() },
         { "customHybridShadowed", composition.customHybridShadowed },
         { "firstBounceSurvival", GetTierPolicy(composition.mode).firstBounceSurvival },
@@ -364,20 +368,21 @@ json RTComposer::GetDiagnostics()
             (developer.showDiffuse ? 2u : 0u) |
             (developer.showSpecular ? 4u : 0u) |
             (developer.useAO ? 8u : 0u)) : 15u },
-        { "fixedRRProviderWired", false }, // native Direct RR remains deferred
+        { "fixedRRProviderWired", false }, // new FSR Direct RR not implemented
         { "fixedRRProviderStatus", {
-            { "direct", "pending-native-dx12-provider" },
-            { "indirect", IsAdvancedTransportTier(composition.mode) &&
-                GetTierPolicy(composition.mode).ready ? "native-fallback-wired-unverified" : "unavailable" },
-            { "hybrid", (composition.mode == CompositorMode::HybridShadowed ||
-                composition.mode == CompositorMode::RTEnhanced) ?
-                "native-fallback-wired-unverified" : "unavailable" }
+            { "direct", IsOpenRT() ? "not-applicable" : "pending-native-dx12-provider" },
+            { "indirect", IsOpenRT() ? "native-reconstruction-only" :
+                "pending-fsr-family-integration" },
+            { "hybrid", IsOpenRT() ? "not-applicable" :
+                (LegacyHybridPrototypeActive() ? "legacy-prototype-native-fallback" :
+                    "pending-fsr-family-integration") }
         } },
         { "currentHybridReconstructionProvider", tracer.GetDiagnostics().value(
             "nativeHybridReconstructionProvider", std::string{}) },
         { "currentPostHybridReconstructionProvider", tracer.GetDiagnostics().value(
             "postHybridReconstructionProvider", std::string{}) },
         { "effectiveDirectRREnabled",
+            !(composition.enabled && IsOpenRT()) &&
             !TierControlsLocked() &&
             globals::features::rtDirectLighting.settings.UseDirectRayRegeneration &&
             RayRegeneration::GetSettings().enabled },
@@ -393,10 +398,16 @@ json RTComposer::GetDiagnostics()
         { "directCheckerboard", composition.directCheckerboard },
         { "hybridResolution", composition.hybridResolution },
         { "hybridCheckerboard", composition.hybridCheckerboard },
-        { "effectiveHybridResolution", composition.enabled && IsFixedPreset() && WantsNativeHybrid() ?
-            GetTierPolicy(AdvancedActive() ? composition.mode : CompositorMode::HybridShadowed).hybridResolution : composition.hybridResolution },
-        { "effectiveHybridCheckerboard", composition.enabled && IsFixedPreset() && WantsNativeHybrid() ?
-            GetTierPolicy(AdvancedActive() ? composition.mode : CompositorMode::HybridShadowed).hybridCheckerboard : composition.hybridCheckerboard },
+        { "effectiveHybridResolution", LegacyHybridPrototypeActive() ?
+            composition.fsrHybrid.resolution :
+            (composition.enabled && IsFixedPreset() && WantsNativeHybrid() ?
+                GetTierPolicy(AdvancedActive() ? composition.mode : CompositorMode::HybridShadowed).hybridResolution :
+                composition.hybridResolution) },
+        { "effectiveHybridCheckerboard", LegacyHybridPrototypeActive() ?
+            composition.fsrHybrid.checkerboard :
+            (composition.enabled && IsFixedPreset() && WantsNativeHybrid() ?
+                GetTierPolicy(AdvancedActive() ? composition.mode : CompositorMode::HybridShadowed).hybridCheckerboard :
+                composition.hybridCheckerboard) },
         { "hybridSamplingMode", composition.hybridResolution },
         { "hybridSpatialScale", 1u << composition.hybridResolution },
         { "shadowThreshold", composition.shadowThreshold },
@@ -957,16 +968,19 @@ void RTComposer::DrawSettings()
 
     if (IsFixedPreset()) {
         if (IsFSRRenderer() && !LegacyHybridPrototypeActive())
-            ImGui::TextWrapped("FSR-RR renderer is pending. Fixed-tier controls below describe the safe Shadow Only fallback, NOT the requested neural mode.");
+            ImGui::TextWrapped("FSR-RR renderer is pending. The safe Shadow Only fallback is active; the requested neural mode is not yet implemented.");
+        else if (IsOpenRT())
+            ImGui::TextWrapped("Open RT fixed tier: native reconstruction, no FSR-RR contexts.");
         else
-            ImGui::TextWrapped("Fixed tier: lighting and sampling tuning are locked; RR requests remain individually editable.");
+            ImGui::TextWrapped("Developer prototype: legacy HybridGI reconstruction, not the new RR-only renderer.");
         constexpr std::array rrLabels{ "Direct FSR Ray Regeneration",
             "Indirect FSR Ray Regeneration", "HybridGI FSR Ray Regeneration" };
         const auto selectedMode = composition.mode;
-        if (selectedMode != CompositorMode::ShadowOnly &&
+        if (IsFSRRenderer() &&
+            selectedMode != CompositorMode::ShadowOnly &&
             selectedMode != CompositorMode::FSRRedstone) {
             ImGui::SeparatorText("Independent RR requests");
-            for (uint32_t family = 0u; family < rrLabels.size() && IsFSRRenderer(); ++family) {
+            for (uint32_t family = 0u; family < rrLabels.size(); ++family) {
                 const uint32_t index = static_cast<uint32_t>(selectedMode);
                 const bool supported = (index == 1u && family == 2u) ||
                     ((index == 2u || index == 3u) && family < 2u) || index == 4u;
@@ -1182,7 +1196,7 @@ void RTComposer::RegisterUxActions()
                 composer.OnCompositionPolicyChanged();
         });
     registry.RegisterCommand(GetShortName(), "setComposition",
-        "Select compositor preset 0..6 (6=Custom); only Custom permits manual tuning.",
+        "Legacy compatibility: 0=Open RT Shadow Only, 2/3=RT-exclusive I/II, 6=Custom. RR-only legacy IDs are retired.",
         +[](Feature* self, const json& args) {
             auto& composer = *static_cast<RTComposer*>(self);
             auto& policy = composer.composition;
@@ -1192,9 +1206,8 @@ void RTComposer::RegisterUxActions()
             if (requested == 1u || requested == 4u || requested == 5u)
                 throw std::invalid_argument("Retired RR/GI compositor IDs: use selectRendererFamily and selectFamilyMode instead.");
             // Fixed RR policy is managed by setFixedRR, never by the legacy global setting.
-            if (requested != static_cast<uint32_t>(CompositorMode::Custom) &&
-                args.contains("useFSRRayRegeneration"))
-                throw std::invalid_argument("Fixed RR must use setFixedRR with a signal family");
+            if (args.contains("useFSRRayRegeneration"))
+                throw std::invalid_argument("Open RT never exposes FSR-RR; select the FSR renderer family instead");
             if (requested == static_cast<uint32_t>(CompositorMode::FSRRedstone))
                 throw std::invalid_argument("FSR-REDSTONE unavailable: saved settings remain preserved; runtime uses Shadow Only");
             if (args.contains("samplingMode"))
@@ -1263,8 +1276,8 @@ void RTComposer::RegisterUxActions()
         "Save a fixed-tier reconstruction request (family: direct, indirect or hybrid). Does not change tracing.",
         +[](Feature* self, const json& args) {
             auto& composer = *static_cast<RTComposer*>(self);
-            if (composer.composition.enabled && composer.IsOpenRT())
-                throw std::invalid_argument("FSR-RR is unavailable in Open RT.");
+            if (!composer.LegacyHybridPrototypeActive())
+                throw std::invalid_argument("Legacy fixedRR requests are only usable by the opt-in FSR HybridGI prototype. New FSR rendering modes have separate pending policies.");
             const uint32_t modeValue = args.at("mode").get<uint32_t>();
             if (modeValue > 4u)
                 throw std::invalid_argument("Fixed RR request requires an available fixed compositor tier (0..4)");
@@ -1274,6 +1287,8 @@ void RTComposer::RegisterUxActions()
                 familyName == "indirect" ? 1u :
                 familyName == "hybrid" ? 2u : 3u;
             const bool enabled = args.at("enabled").get<bool>();
+            if (mode != CompositorMode::HybridShadowed || family != 2u)
+                throw std::invalid_argument("Research HybridGI uses only the legacy Hybrid RR context");
             if (!composer.composition.fixedRR.Set(mode, family, enabled))
                 throw std::invalid_argument("This RR signal family is unavailable in the requested tier");
             composer.OnReconstructionPolicyChanged(mode, family, enabled);

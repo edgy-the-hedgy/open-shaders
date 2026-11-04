@@ -63,8 +63,9 @@ struct RTComposer final : Feature
             return { 5u, true, true, true, true, false,
                 1.0f, 0.5f, false, false };
         case FSRRRMode::FSRRedstone:
-            return { 5u, true, true, true, true, false,
-                1.0f, 0.5f, false, false };
+            // Reserved name only. No unapproved sampling/bounce design.
+            return { 0u, false, false, false, false, false,
+                0.0f, 0.0f, false, false };
         }
         return GetFSRContract(FSRRRMode::HybridIllumination);
     }
