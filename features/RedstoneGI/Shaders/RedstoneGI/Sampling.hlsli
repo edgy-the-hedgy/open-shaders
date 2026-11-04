@@ -82,7 +82,8 @@ Surface BuildSurface(uint2 pixel, float depth, float3 normal)
 	result.normalView = dot(normal, result.view);
 	uint2 noisePixel = pixel % 128u + uint2(0, (FrameIndex % 64u) * 128u);
 #if defined(DX12_HYBRID_GI)
-	uint hash = (pixel.x + 1u) * 0x9e3779b9u ^ (pixel.y + 1u) * 0x85ebca6bu;
+	uint hash = (pixel.x + 1u) * 0x9e3779b9u ^ (pixel.y + 1u) * 0x85ebca6bu ^
+		NativeTraceHash(NativeGIPhase(FrameIndex, NativeTemporalSampling != 0u));
 	hash ^= hash >> 16; hash *= 0x7feb352du; hash ^= hash >> 15; hash *= 0x846ca68bu; hash ^= hash >> 16;
 	result.noise = float2(hash & 0x00ffffffu, (hash * 1664525u + 1013904223u) & 0x00ffffffu) / 16777216.0;
 #else

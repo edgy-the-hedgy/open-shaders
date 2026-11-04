@@ -25,7 +25,7 @@ namespace DX12Native
         struct NativeLightingCB
         {
             float4 camera;
-            uint32_t linear, aces, adaptive, padding = 0;
+            uint32_t linear, aces, adaptive, temporal;
         };
         DXGI_FORMAT OutputFormat(uint32_t index)
         {
@@ -161,7 +161,8 @@ namespace DX12Native
             auto nativeAO = settings.GetNativeOcclusionSettings();
             const NativeLightingCB light{ Util::GetCameraData(),
                 uint32_t(globals::features::linearLighting.IsLinearLightingActive()),
-                globals::features::linearLighting.settings.enableACEScg, uint32_t(settings.settings.EnableAdaptiveSampling) };
+                globals::features::linearLighting.settings.enableACEScg, uint32_t(settings.settings.EnableAdaptiveSampling),
+                uint32_t(frame.grid.checkerboard || (settings.settings.NativeRayRegeneration && RayRegeneration::GetSettings().enabled)) };
             const auto& camera = globals::game::frameBufferCached.nonVR;
             if (sizeof(nativeGI) > kAOSettingsOffset ||
                 sizeof(nativeAO) > kLightingOffset - kAOSettingsOffset ||

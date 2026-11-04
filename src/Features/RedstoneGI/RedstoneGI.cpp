@@ -325,7 +325,7 @@ bool RedstoneGI::ShadersOK() const
 	       sourceRadianceCompute && giCompute && HasRayRegenerationResources();
 }
 
-RedstoneGI::RGICB RedstoneGI::GetNativeGISettings(std::array<uint32_t, 2> nativeSize, uint32_t) const
+RedstoneGI::RGICB RedstoneGI::GetNativeGISettings(std::array<uint32_t, 2> nativeSize, uint32_t frameNumber) const
 {
     RGICB data{};
     if (!nativeSize[0] || !nativeSize[1]) return data;
@@ -338,7 +338,7 @@ RedstoneGI::RGICB RedstoneGI::GetNativeGISettings(std::array<uint32_t, 2> native
     data.RcpTexDim = { 1.0f / size.x, 1.0f / size.y };
     data.FrameDim = size;
     data.RcpFrameDim = data.RcpTexDim;
-    data.FrameIndex = 0u;
+    data.FrameIndex = frameNumber;
     data.DiffuseSlices = diffuseEnabled ? diffuseSlices : 0u;
     data.DiffuseSteps = diffuseSteps;
     data.SpecularSlices = specularEnabled ? specularSlices : 0u;

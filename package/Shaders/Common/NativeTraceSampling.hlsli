@@ -17,6 +17,10 @@ NATIVE_TRACE_CONSTEXPR uint NativeTraceHash(uint value)
     value *= 0x846ca68bu;
     return value ^ (value >> 16);
 }
+NATIVE_TRACE_CONSTEXPR uint NativeGIPhase(uint frame, bool temporalSampling)
+{
+    return temporalSampling ? frame : 0u;
+}
 NATIVE_TRACE_CONSTEXPR bool NativeTraceSample(uint x, uint y, uint mode, bool stochastic, uint frame, uint salt)
 {
     if (mode == 0u) return true;

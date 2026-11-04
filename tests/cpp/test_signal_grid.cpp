@@ -111,6 +111,16 @@ TEST_CASE("Display reconstruction uses independent surface-safe selection", "[Si
     REQUIRE_FALSE(NativeDisplayUseRR(1, 0, true, false));
 }
 
+TEST_CASE("Native GI sampling metadata preserves deterministic and temporal policies", "[SignalGrid]")
+{
+    for (uint32_t frame : { 0u, 1u, 2u, 63u, 64u, UINT32_MAX }) {
+        REQUIRE(NativeGIPhase(frame, false) == 0u);
+        REQUIRE(NativeGIPhase(frame, true) == frame);
+        REQUIRE(MakeSignalGrid({32u,18u}, 1, true, frame).origin == (NativeGIPhase(frame, true) & 1u));
+    }
+    REQUIRE(NativeTraceHash(NativeGIPhase(1, true)) != NativeTraceHash(NativeGIPhase(2, true)));
+}
+
 TEST_CASE("Hybrid display covers native receivers without promoting raw samples", "[SignalGrid][Display]")
 {
     for (const auto size : { std::array{32u,18u}, std::array{31u,17u} })
