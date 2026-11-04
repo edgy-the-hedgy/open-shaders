@@ -1,6 +1,26 @@
 #include "RuntimeDenoiser.h"
 #include "Util.h"
 
+bool RedstoneDenoiser::InitializeNative(const GraphicsBackend& a_backend)
+{
+    if (featureRayRegeneration) return true;
+    if (!a_backend.d3d12Device || !a_backend.commandQueue) return false;
+    const auto directory = (Util::PathHelpers::GetDataPath() /
+        "Shaders" / "Upscaling" / "FidelityFX").lexically_normal();
+    if (!directory.is_absolute()) return false;
+    backend = a_backend;
+    denoiserFunctions = backend.fidelityFX;
+    if (!denoiserFunctions.CreateContext || !denoiserFunctions.DestroyContext ||
+        !denoiserFunctions.Dispatch || !denoiserFunctions.Configure ||
+        !denoiserFunctions.Query) return false;
+    if (!denoiserModule)
+        denoiserModule = LoadLibraryExW(
+            (directory / "amd_fidelityfx_denoiser_dx12.dll").c_str(), nullptr,
+            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    featureRayRegeneration = denoiserModule != nullptr;
+    return featureRayRegeneration;
+}
+
 bool RedstoneDenoiser::Initialize(const GraphicsBackend& a_backend)
 {
 	if (featureRayRegeneration) return true;

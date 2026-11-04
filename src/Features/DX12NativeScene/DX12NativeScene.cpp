@@ -149,9 +149,9 @@ void DX12NativeScene::SetupResources()
 	D3D12_FEATURE_DATA_D3D12_OPTIONS5 options{};
 	dxrCapable = SUCCEEDED(backend->d3d12Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options, sizeof(options))) &&
 		options.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1;
-	rrEligible = backend->fsrFrameGeneration && backend->rayRegenerationHardware && !globals::game::isVR;
+	rrEligible = backend->rayRegenerationHardware && !globals::game::isVR;
 	if (!rrEligible || !dxrCapable) {
-		unavailable = !rrEligible ? "Requires the existing eligible non-VR FSR-FG session" : "DXR 1.1 unsupported by the current device";
+		unavailable = !rrEligible ? "Requires eligible non-VR FSR-RR hardware" : "DXR 1.1 unsupported by the current device";
 		return;
 	}
 	ready = settings.UsePreparedScene || scene.Initialize();

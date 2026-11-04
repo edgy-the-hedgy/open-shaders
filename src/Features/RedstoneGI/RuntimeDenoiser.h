@@ -22,6 +22,8 @@ public:
 	};
 	/** @brief Uses the shared loader API and loads the denoiser after backend eligibility passes. */
 	bool Initialize(const GraphicsBackend& a_backend);
+    // Native AMD contexts only: DX12 device and queue, no DX11 interop gate.
+    bool InitializeNative(const GraphicsBackend& a_backend);
 	~RedstoneDenoiser();
 	bool CanDispatchRayRegeneration() const { return featureRayRegeneration && !rayRegenerationFailureLatched; }
     struct NativeHybridResources

@@ -947,13 +947,17 @@ namespace DX12Native
                 ++nativeDirectRRFailedFrames;
                 return false;
             }
-            const uint64_t policy = globals::features::rtComposer.developerRevision;
-            if (!nativeDirectGuideBuilder->RecordHistoryValidation(
-                    device, list, guides, slot, frame.number,
-                    frame.generation ^ (policy * 0x9e3779b97f4a7c15ULL))) {
-                nativeDirectRRFailure = nativeDirectGuideBuilder->HistoryFailure();
-                ++nativeDirectRRFailedFrames;
-                return false;
+            // FSR Independent delegates all temporal history decisions to AMD.
+            // No bespoke motion rewriting, depth comparison or normal rejection.
+            if (!frame.fsrIndependent) {
+                const uint64_t policy = globals::features::rtComposer.developerRevision;
+                if (!nativeDirectGuideBuilder->RecordHistoryValidation(
+                        device, list, guides, slot, frame.number,
+                        frame.generation ^ (policy * 0x9e3779b97f4a7c15ULL))) {
+                    nativeDirectRRFailure = nativeDirectGuideBuilder->HistoryFailure();
+                    ++nativeDirectRRFailedFrames;
+                    return false;
+                }
             }
             const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
             for (uint32_t i = 0; i < 2u; ++i) {
@@ -968,7 +972,8 @@ namespace DX12Native
             }
             if (!nativeDirectRRDenoiser)
                 nativeDirectRRDenoiser = std::make_unique<RedstoneDenoiser>();
-            if (!nativeDirectRRDenoiser->Initialize(backend)) {
+            if (!(frame.fsrIndependent ? nativeDirectRRDenoiser->InitializeNative(backend) :
+                    nativeDirectRRDenoiser->Initialize(backend))) {
                 nativeDirectRRFailure = "AMD native Direct RR initialization unavailable";
                 ++nativeDirectRRFailedFrames;
                 return false;
@@ -979,7 +984,7 @@ namespace DX12Native
             resources.frame = frame.number;
             resources.checkerboard = true;
             resources.checkerboardOrigin = frame.number & 1u;
-            resources.resetHistory = !guides.rrHistoryValid;
+            resources.resetHistory = !frame.fsrIndependent && !guides.rrHistoryValid;
             resources.skipOcclusion = true;
             resources.directFamilies = true;
             resources.inputs[0] = frame.nativeDirectPacked[0].get();
@@ -988,7 +993,7 @@ namespace DX12Native
             resources.outputs[1] = frame.nativeDirectRROutputs[1].get();
             for (uint32_t i = 0; i < resources.guides.size(); ++i)
                 resources.guides[i] = guides.rrGuides[i].get();
-            if (guides.rrHistoryValid && guides.rrValidatedMotion)
+            if (!frame.fsrIndependent && guides.rrHistoryValid && guides.rrValidatedMotion)
                 resources.guides[1] = guides.rrValidatedMotion.get();
             const bool sdkComplete =
                 nativeDirectRRDenoiser->DispatchNativeHybridRR(list, resources);
