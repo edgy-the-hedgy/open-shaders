@@ -6,6 +6,7 @@
 #include "Features/DX12NativeScene/AccelerationScene.h"
 #include "Features/DX12NativeScene/PreparedScene.h"
 #include "Features/DX12NativeScene/DirectionalTrace.h"
+#include "Features/DX12NativeScene/NativeHybridGI.h"
 #include <atomic>
 
 /** @brief Independently owns Redstone shadow acquisition, settings and diagnostics. */
@@ -107,6 +108,7 @@ private:
 	DX12Native::PreparedScene preparedScene;
 	DX12Native::AccelerationWorker preparedAcceleration;
 	DX12Native::DirectionalTrace preparedTrace;
+	DX12Native::NativeHybridGI nativeHybrid;
 	uint32_t preparedCellID = 0;
 	uint64_t preparedRevision = 1;
 	bool preparedSubmitted = false;

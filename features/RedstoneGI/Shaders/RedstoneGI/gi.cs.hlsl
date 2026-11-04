@@ -1,5 +1,9 @@
+#if defined(DX12_HYBRID_GI)
+#include "RedstoneGI/NativeGICompat.hlsli"
+#else
 #include "Common/Color.hlsli"
 #include "Common/GBuffer.hlsli"
+#endif
 #include "RedstoneGI/common.hlsli"
 Texture2D<float> srcWorkingDepth : register(t0);
 Texture2D<float4> srcNormalRoughness : register(t1);
@@ -9,6 +13,9 @@ Texture2D<float3> srcDiffuseAlbedo : register(t5);
 Texture2D<float3> srcSpecularAlbedo : register(t6);
 RWTexture2D<float4> outSpecular : register(u0);
 RWTexture2D<float4> outDiffuse : register(u1);
+#if defined(DX12_HYBRID_GI)
+RWTexture2D<uint> outReceiverEligibility : register(u2);
+#endif
 #include "RedstoneGI/Sampling.hlsli"
 
 float4 EstimateDiffuse(Surface surface)
@@ -91,6 +98,9 @@ float4 EstimateSpecular(Surface surface, float roughness, bool traceRadiance)
 	float4 diffuse = float4(0,0,0,-1);
 	float4 specular = float4(0,0,0,-1);
 	float4 nr = srcNormalRoughness.Load(int3(surfacePixel, 0));
+#if defined(DX12_HYBRID_GI)
+	outReceiverEligibility[pixel] = isfinite(depth) && depth > FP_Z && depth < DepthFadeRange.y && all(isfinite(nr)) ? 1u : 0u;
+#endif
 	if (isfinite(depth) && depth > FP_Z && depth < DepthFadeRange.y) {
 #ifdef REVERSE_Z
 	 depth *= 0.99999;

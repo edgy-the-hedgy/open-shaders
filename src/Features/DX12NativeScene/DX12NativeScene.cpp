@@ -230,6 +230,7 @@ json DX12NativeScene::GetDiagnostics()
 		accelerationStatus["publicationMatchesBatch"] = false;
 	return {
 		{ "dxrCapable", dxrCapable }, { "rrEligible", rrEligible }, { "resourcesReady", ready },
+		{ "nativeHybrid", nativeHybrid.GetDiagnostics() },
 		{ "acquisitionEnabled", settings.AcquireScene }, { "unavailable", unavailable },
 		{ "preparedSceneEnabled", settings.UsePreparedScene }, { "preparedScene", preparedScene.GetDiagnostics() },
 		{ "preparedAcceleration", preparedAcceleration.GetDiagnostics() }, { "preparedTrace", traceStatus },

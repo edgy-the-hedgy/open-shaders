@@ -1,5 +1,9 @@
+#if defined(DX12_HYBRID_GI)
+#include "RedstoneGI/NativeGICompat.hlsli"
+#else
 #include "Common/Color.hlsli"
 #include "Common/GBuffer.hlsli"
+#endif
 #include "RedstoneGI/common.hlsli"
 #include "RedstoneGI/OcclusionSettings.hlsli"
 Texture2D<float> srcWorkingDepth : register(t0);

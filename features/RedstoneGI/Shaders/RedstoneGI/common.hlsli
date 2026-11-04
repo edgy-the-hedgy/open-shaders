@@ -1,7 +1,9 @@
 #ifndef REDSTONE_GI_COMMON
 #define REDSTONE_GI_COMMON
 #include "Common/Math.hlsli"
+#if !defined(DX12_HYBRID_GI)
 #include "Common/SharedData.hlsli"
+#endif
 #include "Common/FrameBuffer.hlsli"
 #include "Common/VR.hlsli"
 
@@ -75,7 +77,11 @@ float3 ScreenToViewPosition(float2 screen, float depth, uint eyeIndex = 0)
 float ScreenToViewDepth(float screenDepth)
 {
 	float depth = FrameBuffer::ToStandardDepth(screenDepth);
+#if defined(DX12_HYBRID_GI)
+	return NativeCameraData.w / (-depth * NativeCameraData.z + NativeCameraData.x);
+#else
 	return SharedData::CameraData.w / (-depth * SharedData::CameraData.z + SharedData::CameraData.x);
+#endif
 }
 float3 ViewToWorldVector(float3 direction, float4x4 inverseView)
 {

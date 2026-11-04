@@ -1,5 +1,6 @@
 #include "DX12NativeScene.h"
 #include "Features/RTDirectLighting/RTDirectLighting.h"
+#include "Features/RedstoneGI/RedstoneGI.h"
 #include "Features/LightLimitFix.h"
 #include "Deferred.h"
 
@@ -110,6 +111,15 @@ bool DX12NativeScene::WantsOpaqueRoomMetadata() const
 
 void DX12NativeScene::OnAfterDeferredLighting(ID3D11UnorderedAccessView* target, const std::array<uint32_t, 2>& size)
 {
+	nativeHybrid.Retire();
+	const auto& hybrid = globals::features::redstoneGI;
+	if (hybrid.loaded && hybrid.settings.NativeHybrid && !transitionOpen && !globals::game::isVR &&
+		!globals::state->isMapMenuOpen && target &&
+		target == Util::AsReal(globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].UAV) &&
+		!(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections))) {
+		if (const auto graphics = Feature::FindGraphicsBackend())
+			nativeHybrid.Dispatch(*graphics, size, globals::game::graphicsState->GetFrameCount(), hybrid);
+	}
 	if (!settings.PreviewPreparedScene || !settings.UsePreparedScene ||
 		(globals::features::rtDirectLighting.loaded && globals::features::rtDirectLighting.WantsComposite())) return;
 	if (!target || !ready || !preparedActive || transitionOpen || globals::game::isVR || globals::state->isMapMenuOpen) return;

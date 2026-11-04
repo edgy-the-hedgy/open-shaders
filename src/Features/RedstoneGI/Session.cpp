@@ -106,6 +106,12 @@ json RedstoneGI::GetRedstoneStatus() const
 
 void RedstoneGI::RegisterUxActions()
 {
+	FEATURE_COMMAND("setNativeHybrid", "Enable independent native DX12 GI/AO production. Params: enabled (required boolean), budgetMB (optional 64..4096). No Direct DXR, prepared scene or RR requirement. Does not select or disable other producers; scene consumption is reported separately by DX12NativeScene diagnostics.",
+		[](Feature* self, const json& args) {
+			auto& gi = *static_cast<RedstoneGI*>(self);
+			gi.settings.NativeHybrid = args.at("enabled").get<bool>();
+			if (args.contains("budgetMB")) gi.settings.NativeBudgetMB = std::clamp(args.at("budgetMB").get<uint32_t>(), 64u, 4096u);
+		});
 	FEATURE_QUERY("redstoneStatus",
 		"Return cached FSR-Redstone startup gates, independent RGI settings, engine context capacity, active RR dispatch size, independent IL and occlusion RR signals, packed occlusion layout, checkerboard layout and compositor consumption. Runtime flags RROutputOnly and RRInputsOnly select mutually exclusive previews; setRedstoneDebugView selects combined/diffuse/specular/diffuseAO/specularOcclusion/combinedOcclusion/allSignals/geometryDepth and inputs/outputs. Geometry depth shows native working depth with fixed zero white, frame-maximum black and invalid pixels red, independent of RR success. IL previews apply scene gains and display exposure; occlusion previews show raw grayscale visibility without gains. Params: none.",
 		[](const Feature* a_self, const json&) { return static_cast<const RedstoneGI*>(a_self)->GetRedstoneStatus(); });

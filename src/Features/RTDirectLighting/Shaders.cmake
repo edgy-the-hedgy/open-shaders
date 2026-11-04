@@ -29,6 +29,32 @@ if(REDSTONE_DXC)
             "${CMAKE_CURRENT_SOURCE_DIR}/package/Shaders/Common/BRDF.hlsli"
             "${CMAKE_CURRENT_SOURCE_DIR}/package/Shaders/Common/Math.hlsli"
         VERBATIM)
+    file(GLOB_RECURSE _native_hybrid_dependencies CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/features/RedstoneGI/Shaders/RedstoneGI/*.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/package/Shaders/Common/*.hlsli")
+    set(_native_hybrid_files "")
+    foreach(_hybrid_pass IN ITEMS gi occlusion)
+        if(_hybrid_pass STREQUAL "gi")
+            set(_hybrid_name hybridGI)
+        else()
+            set(_hybrid_name hybridAO)
+        endif()
+        set(_hybrid_file "${REDSTONE_DXIL_DIRECTORY}/${_hybrid_name}.dxil")
+        add_custom_command(OUTPUT "${_hybrid_file}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${REDSTONE_DXIL_DIRECTORY}"
+            COMMAND "${REDSTONE_DXC}" -T cs_6_5 -E main -HV 2018 -O3 -Ges -D DX12_HYBRID_GI=1
+                -I "${CMAKE_CURRENT_SOURCE_DIR}/package/Shaders"
+                -I "${CMAKE_CURRENT_SOURCE_DIR}/features/RedstoneGI/Shaders"
+                -Fo "${_hybrid_file}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/features/RedstoneGI/Shaders/RedstoneGI/${_hybrid_pass}.cs.hlsl"
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/features/RedstoneGI/Shaders/RedstoneGI/${_hybrid_pass}.cs.hlsl"
+                ${_native_hybrid_dependencies}
+            VERBATIM)
+        list(APPEND _native_hybrid_files "${_hybrid_file}")
+    endforeach()
+    add_custom_target(NativeHybridDXIL DEPENDS ${_native_hybrid_files})
+    add_dependencies(${PROJECT_NAME} NativeHybridDXIL)
+    list(APPEND REDSTONE_DXIL_FILES ${_native_hybrid_files})
     add_custom_target(RTDirectLightingDXIL DEPENDS "${_redstone_directional}")
     add_dependencies(${PROJECT_NAME} RTDirectLightingDXIL)
     list(APPEND REDSTONE_DXIL_FILES "${_redstone_directional}")

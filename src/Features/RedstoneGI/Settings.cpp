@@ -41,6 +41,7 @@ namespace
 	};
 
 	NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RedstoneConfiguration,
+		NativeHybrid, NativeBudgetMB,
 		EnableVanillaSSAO,
 		EnableAdaptiveSampling,
 		MinScreenRadius, GIRadius, DepthFadeRange,
@@ -62,6 +63,7 @@ json RedstoneGI::DefaultRedstoneSettings()
 
 void RedstoneGI::EnforceFixedPath()
 {
+	settings.NativeBudgetMB = std::clamp(settings.NativeBudgetMB, 64u, 4096u);
 	settings.GIRadius = std::isfinite(settings.GIRadius) ? std::clamp(settings.GIRadius, kILRadiusMin, kILRadiusMax) : kILRadiusDefault;
 	rrResolutionMode = std::min(rrResolutionMode, 2u);
 }
@@ -229,9 +231,11 @@ void RedstoneGI::DrawAmbientOcclusionSettings()
 
 void RedstoneGI::DrawSettings()
 {
+	ImGui::Checkbox("Native DX12 Hybrid GI / AO", &settings.NativeHybrid);
+	ImGui::TextWrapped("Independent native producer; no prepared scene or RR required. Native output consumption is reported separately in diagnostics.");
 	// This is the Hybrid backend's controls, presented by RTIndirectLighting.
 	// The two-mode method selector is owned solely by RTIndirectLighting.
-	if (!selected) {
+	if (!selected && !settings.NativeHybrid) {
 		ImGui::TextWrapped("Hybrid raymarched GI is not selected.");
 		return;
 	}

@@ -130,6 +130,8 @@ struct RedstoneGI final : OverlayFeature
 	std::array<uint32_t, 2> GetLightingSamples() const { return { diffuseSlices, specularSlices }; }
 	struct Settings
 	{
+		bool NativeHybrid = false;
+		uint32_t NativeBudgetMB = 256;
 		bool EnableVanillaSSAO = false;
 		bool EnableAdaptiveSampling = true;
 		float MinScreenRadius = 0.01f;
@@ -182,6 +184,7 @@ private:
 	float occluderDepth = kDefaultOccluderDepth;
 	float giCompensationMaxDistance = 256.0f;
 	float specularRoughnessFloor = 0.2f;
+public:
 	struct OcclusionSettings
 	{
 		uint diffuseEnabled = 0, specularEnabled = 0;
@@ -192,6 +195,9 @@ private:
 		uint useDenoised = 0, padding = 0;
 	} occlusion;
 	STATIC_ASSERT_ALIGNAS_16(OcclusionSettings);
+	/** @brief Snapshots the existing occlusion estimator controls for native recording. */
+	OcclusionSettings GetNativeOcclusionSettings() const { return occlusion; }
+private:
 	eastl::unique_ptr<ConstantBuffer> occlusionSettings;
 	eastl::unique_ptr<Texture2D> texDiffuseOcclusionInput, texSpecularOcclusionInput;
 	eastl::unique_ptr<Texture2D> texDiffuseOcclusionOutput, texSpecularOcclusionOutput, texPackedOcclusion;
@@ -231,6 +237,7 @@ private:
 	bool HasRayRegenerationResources() const;
 	void SetupRayRegenerationResources(const D3D11_TEXTURE2D_DESC& a_textureDesc);
 	void DrawRayRegeneration(const std::array<uint, 2>& a_engineResolution, const std::array<uint, 2>& a_internalResolution);
+public:
 	struct alignas(16) RGICB
 	{
 		float2 NDCToViewMul;
@@ -265,6 +272,9 @@ private:
 		uint geometryPadding[3]{};
 	};
 	STATIC_ASSERT_ALIGNAS_16(RGICB);
+	/** @brief Snapshots the estimator ABI independently of DX11 RR resources. */
+	RGICB GetNativeGISettings(std::array<uint32_t, 2> nativeSize, uint32_t frameNumber) const;
+private:
 	RedstoneDenoiser denoiser;
 	eastl::unique_ptr<Texture2D> texRRSpecularInput = nullptr;
 	eastl::unique_ptr<Texture2D> texRRSpecularOutput = nullptr;
