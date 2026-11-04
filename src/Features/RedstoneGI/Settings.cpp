@@ -2,6 +2,7 @@
 #include "RuntimeDenoiser.h"
 #include "Globals.h"
 #include "Features/RTIndirectLighting/RTIndirectLighting.h"
+#include "Features/DX12NativeScene/DX12NativeScene.h"
 #include "Features/RTComposer/RTComposer.h"
 #include "Utils/UI.h"
 
@@ -185,12 +186,13 @@ const void* RedstoneGI::GetBootValue(std::string_view) const
 
 void RedstoneGI::SetRRCheckerboard(bool a_enabled)
 {
-    // Compatibility API: configure only native HybridGI checkerboarding.
-    // Direct checkerboard and RR logical resolution remain independent.
-    auto& composer = globals::features::rtComposer;
-    const bool changed = composer.composition.hybridCheckerboard != a_enabled;
-    composer.composition.hybridCheckerboard = a_enabled;
-    if (changed) composer.OnCompositionPolicyChanged();
+    // Native GI sampling belongs to the GI feature, not a global
+    // composer or Direct Lighting's sampling policy.
+    auto& settings = globals::features::rtIndirectLighting.settings;
+    if (settings.HybridCheckerboard != a_enabled) {
+        settings.HybridCheckerboard = a_enabled;
+        globals::features::dx12NativeScene.Tracer().Reset();
+    }
 }
 
 void RedstoneGI::DrawRayRegenerationSettings()

@@ -7,7 +7,7 @@
 #include "Utils/DevBenchUx.h"
 #include <cmath>
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTIndirectLighting::Settings, UseRTExclusive, IndirectRays, IndirectStrength, ConnectHybrid)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RTIndirectLighting::Settings, UseRTExclusive, IndirectRays, IndirectStrength, ConnectHybrid, HybridResolution, HybridCheckerboard)
 
 std::pair<std::string, std::vector<std::string>> RTIndirectLighting::GetFeatureSummary()
 {
@@ -41,7 +41,7 @@ void RTIndirectLighting::LoadSettings(json& value)
 	Settings selected = value;
 	selected.IndirectRays = std::clamp(selected.IndirectRays, 1u, 8u);
 	selected.RTTraceResolution = std::min(selected.RTTraceResolution, 4u);
-	selected.HybridResolution = std::min(selected.HybridResolution, 3u);
+	selected.HybridResolution = std::min(selected.HybridResolution, 2u);
 	selected.IndirectStrength = std::isfinite(selected.IndirectStrength) ? std::clamp(selected.IndirectStrength, 0.0f, 8.0f) : 1.0f;
 	settings = selected;
 	if (settings.UseRTExclusive) {
@@ -62,7 +62,7 @@ void RTIndirectLighting::RestoreDefaultSettings()
 bool RTIndirectLighting::UsesRTExclusive() const
 {
 	const auto& direct = globals::features::rtDirectLighting;
-	return loaded && !globals::features::rtComposer.BlocksRTIndirect() && settings.UseRTExclusive && !globals::game::isVR &&
+	return loaded && settings.UseRTExclusive && !globals::game::isVR &&
 		direct.loaded && direct.settings.UsePreparedDirectLighting;
 }
 
@@ -115,7 +115,12 @@ void RTIndirectLighting::DrawSettings()
 		const auto failure = trace.value("failure", std::string{});
 		if (!failure.empty()) ImGui::TextWrapped("RT-exclusive lighting unavailable: %s", failure.c_str());
 	} else {
-		ImGui::TextWrapped("Hybrid GI/AO uses the same producer-derived resolution and checkerboard policy selected in RT Composer.");
+        int resolution = int(settings.HybridResolution);
+        if (ImGui::Combo("HybridGI logical resolution", &resolution,
+                "Full\0Half width/height\0Quarter width/height\0"))
+            settings.HybridResolution = uint32_t(resolution);
+        ImGui::Checkbox("HybridGI checkerboard", &settings.HybridCheckerboard);
+        ImGui::TextWrapped("HybridGI sampling belongs to RT Indirect Lighting and is independent of Direct trace sampling.");
 		ImGui::TextWrapped("Hybrid uses raymarched indirect diffuse/specular and occlusion with the raster baseline, optionally combined with RT Direct Lighting.");
 		if (globals::features::rtDirectLighting.loaded && globals::features::rtDirectLighting.settings.UsePreparedDirectLighting) {
 			ImGui::Checkbox("Connect Hybrid GI to prepared direct lighting", &settings.ConnectHybrid);
@@ -189,13 +194,14 @@ json RTIndirectLighting::GetDiagnostics()
 	const auto& direct = globals::features::rtDirectLighting;
 	return { { "mode", settings.UseRTExclusive ? "rt-exclusive" : "hybrid" }, { "unifiedDebugView", debugView },
 		{ "rtExclusiveActive", UsesRTExclusive() },
-        { "indirectDisabledByComposer", globals::features::rtComposer.BlocksRTIndirect() },
-        { "indirectAvailability", globals::features::rtComposer.BlocksRTIndirect() ? "disabled-by-compositor-policy" : "available" },
+        { "indirectAvailability", "owned-by-RTIndirectLighting" },
         { "effectiveRTIndirectRays", UsesRTExclusive() ? settings.IndirectRays : 0u },
 		{ "rtDirectRequired", settings.UseRTExclusive },
 		{ "rtDirectEnabled", direct.loaded && direct.settings.UsePreparedDirectLighting },
 		{ "indirectRays", settings.IndirectRays }, { "indirectStrength", settings.IndirectStrength },
-		{ "rtTraceResolutionMode", (globals::features::rtComposer.composition.directCheckerboard ? 5u : 0u) },
+		{ "rtTraceResolutionMode", settings.RTTraceResolution },
+        { "hybridResolution", settings.HybridResolution },
+        { "hybridCheckerboard", settings.HybridCheckerboard },
 		{ "connectHybrid", settings.ConnectHybrid },
 		{ "trace", globals::features::dx12NativeScene.Tracer().GetDiagnostics() } };
 }
