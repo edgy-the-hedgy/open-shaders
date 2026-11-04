@@ -17,8 +17,26 @@
 
 namespace DX12Native
 {
-	bool DirectionalTrace::Initialize(const GraphicsBackend& a_backend)
+	bool DirectionalTrace::Initialize(const GraphicsBackend& a_backend, bool a_fsrHybridOnly)
 	{
+        // Keep the existing GPU backend and fences, without making DXR
+        // shaders/geometry prerequisites of raster-sourced FSR HybridGI.
+        if (a_fsrHybridOnly) {
+            if (completion.fence12 && producer.fence12) return true;
+            if (!a_backend.d3d12Device || !a_backend.d3d11Device ||
+                !a_backend.d3d11Context || !a_backend.commandQueue) return false;
+            backend = a_backend;
+            try {
+                producer.Create(backend.d3d12Device.get(), backend.d3d11Device.get(),
+                    "RTDirectLighting::ReceiverProducer");
+                completion.Create(backend.d3d12Device.get(), backend.d3d11Device.get(),
+                    "RTDirectLighting::TraceCompletion");
+                return true;
+            } catch (const std::exception& error) {
+                fsrIndependentGIFailure = error.what();
+                return false;
+            }
+        }
 		if (!failure.empty()) return false;
 		if (pipeline && prepare && display) return true;
 		if (!completion.fence12) backend = a_backend;
@@ -1380,14 +1398,11 @@ namespace DX12Native
     bool DirectionalTrace::RecordFSRIndependentComposition(Frame& frame)
     {
         frame.fsrIndependentComposed = false;
-        if (!frame.fsrIndependent || !frame.nativeDirectRRReady ||
-            frame.nativeDirectRRSuccessMask != 3u || !frame.nativeGI.rrValid ||
+        if (!frame.fsrIndependent || !frame.nativeGI.valid || !frame.nativeGI.rrValid ||
             (frame.nativeGI.rrFamilySuccessMask & 7u) != 7u ||
             !frame.hybridInputsReady || !frame.hybridLinearDepth ||
-            !frame.receivers || !frame.output || !frame.directSignals[0] ||
-            !frame.directSignals[1] || !frame.directSignals[3] ||
-            !frame.directSignals[4] || !frame.nativeDirectRROutputs[0] ||
-            !frame.nativeDirectRROutputs[1])
+            !frame.hybridInputs[0] || !frame.hybridInputs[2] ||
+            !frame.hybridInputs[3] || !frame.hybridInputs[4])
             return false;
         try {
             auto* device = backend.d3d12Device.get();
@@ -1448,16 +1463,29 @@ namespace DX12Native
             const auto& gi = frame.nativeGI;
             for (const auto& resource : gi.rrOutputs)
                 if (!resource) return false;
+            // Null Direct SRVs read as zero. HybridGI thus works without a
+            // prepared DXR scene, while complete Direct RR is still composed
+            // from its original signals when that producer is available.
+            const bool directReady = frame.nativeDirectRRReady &&
+                frame.nativeDirectRRSuccessMask == 3u &&
+                frame.output && frame.receivers &&
+                frame.directSignals[0] && frame.directSignals[1] &&
+                frame.directSignals[3] && frame.directSignals[4] &&
+                frame.nativeDirectRROutputs[0] && frame.nativeDirectRROutputs[1];
             const std::array<ID3D12Resource*, 17> inputs{
-                frame.hybridInputs[0]->resource.get(), frame.output->resource.get(),
-                frame.nativeDirectRROutputs[0].get(), frame.nativeDirectRROutputs[1].get(),
-                frame.directSignals[4]->resource.get(), frame.directSignals[3]->resource.get(),
+                frame.hybridInputs[0]->resource.get(),
+                directReady ? frame.output->resource.get() : nullptr,
+                directReady ? frame.nativeDirectRROutputs[0].get() : nullptr,
+                directReady ? frame.nativeDirectRROutputs[1].get() : nullptr,
+                directReady ? frame.directSignals[4]->resource.get() : nullptr,
+                directReady ? frame.directSignals[3]->resource.get() : nullptr,
                 gi.rrOutputs[0].get(), gi.rrOutputs[1].get(),
                 gi.rrOutputs[2].get(), gi.rrOutputs[3].get(),
                 frame.hybridInputs[3]->resource.get(), frame.hybridInputs[4]->resource.get(),
                 frame.hybridLinearDepth.get(), frame.hybridInputs[2]->resource.get(),
-                frame.receivers->resource.get(),
-                frame.directSignals[0]->resource.get(), frame.directSignals[1]->resource.get()
+                directReady ? frame.receivers->resource.get() : nullptr,
+                directReady ? frame.directSignals[0]->resource.get() : nullptr,
+                directReady ? frame.directSignals[1]->resource.get() : nullptr
             };
             const std::array<DXGI_FORMAT, 17> formats{
                 DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT,
@@ -1470,7 +1498,9 @@ namespace DX12Native
                 DXGI_FORMAT_R32G32B32A32_FLOAT,
                 DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT
             };
-            std::array<D3D12_RESOURCE_BARRIER, 18> before{}, after{};
+            std::vector<D3D12_RESOURCE_BARRIER> before, after;
+            before.reserve(18);
+            after.reserve(18);
             auto cpu = frame.fsrIndependentComposeDescriptors->GetCPUDescriptorHandleForHeapStart();
             const UINT step = device->GetDescriptorHandleIncrementSize(
                 D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -1482,22 +1512,24 @@ namespace DX12Native
                 srv.Format = formats[i];
                 device->CreateShaderResourceView(inputs[i], &srv, cpu);
                 cpu.ptr += step;
-                before[i] = CD3DX12_RESOURCE_BARRIER::Transition(inputs[i],
-                    D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-                after[i] = CD3DX12_RESOURCE_BARRIER::Transition(inputs[i],
-                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+                if (inputs[i]) {
+                    before.push_back(CD3DX12_RESOURCE_BARRIER::Transition(inputs[i],
+                        D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
+                    after.push_back(CD3DX12_RESOURCE_BARRIER::Transition(inputs[i],
+                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON));
+                }
             }
             D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
             uav.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
             uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
             device->CreateUnorderedAccessView(
                 frame.fsrIndependentScene->resource.get(), nullptr, &uav, cpu);
-            before[17] = CD3DX12_RESOURCE_BARRIER::Transition(
+            before.push_back(CD3DX12_RESOURCE_BARRIER::Transition(
                 frame.fsrIndependentScene->resource.get(),
-                D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            after[17] = CD3DX12_RESOURCE_BARRIER::Transition(
+                D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
+            after.push_back(CD3DX12_RESOURCE_BARRIER::Transition(
                 frame.fsrIndependentScene->resource.get(),
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON));
             list->ResourceBarrier(UINT(before.size()), before.data());
             list->SetComputeRootSignature(fsrIndependentComposeRoot.get());
             list->SetPipelineState(fsrIndependentComposePipeline.get());
@@ -1786,13 +1818,31 @@ namespace DX12Native
 		a_frame.pipeline = pipeline;
 		if (a_frame.allocator) DX::ThrowIfFailed(a_frame.allocator->Reset());
 		else DX::ThrowIfFailed(backend.d3d12Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(a_frame.allocator.put())));
-		if (a_frame.commands) DX::ThrowIfFailed(a_frame.commands->Reset(a_frame.allocator.get(), pipeline.get()));
-		else DX::ThrowIfFailed(backend.d3d12Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, a_frame.allocator.get(), pipeline.get(), IID_PPV_ARGS(a_frame.commands.put())));
+		if (a_frame.commands) DX::ThrowIfFailed(a_frame.commands->Reset(
+            a_frame.allocator.get(), a_frame.fsrHybridOnly ? nullptr : pipeline.get()));
+        else DX::ThrowIfFailed(backend.d3d12Device->CreateCommandList(
+            0, D3D12_COMMAND_LIST_TYPE_DIRECT, a_frame.allocator.get(),
+            a_frame.fsrHybridOnly ? nullptr : pipeline.get(),
+            IID_PPV_ARGS(a_frame.commands.put())));
 		// Independent raster GI/AO starts as soon as captured DX11 source inputs
         // become GPU-visible; it does not depend on Direct or shadow work.
         if (a_frame.fsrIndependent && a_frame.hybridInputsReady &&
             RecordFSRRasterDepth(a_frame))
             (void)RecordFSRIndependentGI(a_frame);
+        if (a_frame.fsrHybridOnly) {
+            // Direct ray traversal, its signal packing, and its RR processing
+            // are unchanged and never executed in the GI-only case.
+            if (a_frame.nativeGI.rrValid)
+                (void)RecordFSRIndependentComposition(a_frame);
+            DX::ThrowIfFailed(a_frame.commands->Close());
+            ID3D12CommandList* lists[]{ a_frame.commands.get() };
+            backend.commandQueue->ExecuteCommandLists(1, lists);
+            a_frame.fence = ++nextCompletion;
+            DX::ThrowIfFailed(backend.commandQueue->Signal(
+                completion.fence12.get(), a_frame.fence));
+            ++submissions;
+            return;
+        }
         // Early FSR HybridGI used a different PSO. Restore the DXR Direct PSO.
         a_frame.commands->SetPipelineState(pipeline.get());
         const auto step = backend.d3d12Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -2034,14 +2084,14 @@ namespace DX12Native
 
 	void DirectionalTrace::Retire()
 	{
-		if (!completion.fence12 || !failure.empty()) return;
+		if (!completion.fence12) return;
 		const auto done = completion.fence12->GetCompletedValue();
 		const auto retired = producer.fence12->GetCompletedValue();
 		if (done == UINT64_MAX || retired == UINT64_MAX) { failure = "Directional device removed"; previewValid = false; return; }
 		try {
 			for (auto& frame : frames) {
 				if (!frame.submitted || !frame.fence || frame.fence > done) continue;
-				if (!frame.retirement && frame.generation == generation && display) { Consume(frame); ++completions; }
+				if (!frame.retirement && !frame.fsrHybridOnly && frame.generation == generation && display) { Consume(frame); ++completions; }
 				if (frame.retirement && frame.retirement > retired) continue;
 				if (frame.generation != generation) { frame = {}; continue; }
 				frame.scene.reset();
@@ -2084,8 +2134,7 @@ namespace DX12Native
         // scene image; its raw signals and SDK contexts never go via DX11.
         const bool fsrReady = composer.FSRIndependentActive() &&
             a_frame.fsrIndependent && a_frame.fsrIndependentComposed &&
-            a_frame.nativeDirectRRReady && a_frame.nativeGI.rrValid &&
-            a_frame.fsrIndependentScene;
+            a_frame.nativeGI.rrValid && a_frame.fsrIndependentScene;
         const bool nativeDirectPreview = composer.NativeDirectRRPreviewActive() &&
             a_frame.nativeDirectRRComposed && a_frame.nativeDirectRRReady &&
             a_frame.nativeDirectRRSuccessMask == 3u &&
@@ -2210,6 +2259,99 @@ namespace DX12Native
 	}
 
 
+
+    void DirectionalTrace::DispatchFSRIndependentRaster(
+        ID3D11UnorderedAccessView* a_sceneTarget,
+        const std::array<uint32_t, 2>& a_size, uint32_t a_frame)
+    {
+        if (!globals::features::rtComposer.FSRIndependentActive() ||
+            !a_sceneTarget || !a_size[0] || !a_size[1] ||
+            a_size[0] > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+            a_size[1] > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+            !completion.fence12 || !producer.fence12 ||
+            (sceneCompositeSubmissions && sceneCompositeFrame == a_frame)) return;
+
+        // Existing tracer slots, backend queue and producer/completion fences
+        // remain the sole owners. No scene, TLAS, materials or Direct buffers.
+        Frame* available = nullptr;
+        for (auto& frame : frames) {
+            if (frame.scene || frame.submitted) continue;
+            if (!available || frame.number < available->number)
+                available = &frame;
+        }
+        if (!available) return;
+        try {
+            if (!available->fsrHybridOnly || available->size != a_size)
+                *available = {};
+            available->size = a_size;
+            available->number = a_frame;
+            available->generation = generation;
+            available->fsrHybridOnly = true;
+            available->fsrIndependent = true;
+            available->fsrIndependentComposed = false;
+            available->fsrDepthReady = false;
+            available->nativeGIRequested = true;
+            available->nativeGI.rrValid = false;
+            available->nativeGI.valid = false;
+            available->nativeDirectRRRequested = false;
+            available->nativeDirectRRReady = false;
+            available->nativeDirectRRSuccessMask = 0u;
+            available->fence = available->retirement = 0u;
+            available->submitted = false;
+
+            const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+            const auto linearDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+                DXGI_FORMAT_R32_FLOAT, a_size[0], a_size[1], 1, 1, 1, 0,
+                D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+            if (!available->hybridLinearDepth)
+                DX::ThrowIfFailed(backend.d3d12Device->CreateCommittedResource(
+                    &heap, D3D12_HEAP_FLAG_NONE, &linearDesc,
+                    D3D12_RESOURCE_STATE_COMMON, nullptr,
+                    IID_PPV_ARGS(available->hybridLinearDepth.put())));
+
+            static constexpr std::array names{
+                "RTComposer::HybridScene", "RTComposer::HybridDepth",
+                "RTComposer::HybridNormalRoughness", "RTComposer::HybridAlbedo",
+                "RTComposer::HybridReflectance", "RTComposer::HybridMotion" };
+            D3D11_TEXTURE2D_DESC desc{};
+            desc.Width = a_size[0];
+            desc.Height = a_size[1];
+            desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
+            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+            for (uint32_t i = 0; i < kHybridInputCount; ++i) {
+                if (available->hybridInputs[i]) continue;
+                desc.Format = i == 1u ?
+                    DXGI_FORMAT_R32G32B32A32_FLOAT :
+                    DXGI_FORMAT_R16G16B16A16_FLOAT;
+                available->hybridInputs[i] = std::make_unique<WrappedResource>(
+                    desc, backend.d3d11Device.get(), backend.d3d12Device.get(), names[i]);
+            }
+            PrepareHybridInputs(*available);
+            if (!available->hybridInputsReady) return;
+
+            const auto produced = producer.Next();
+            DX::ThrowIfFailed(backend.d3d11Context->Signal(
+                producer.fence11.get(), produced));
+            backend.d3d11Context->Flush();
+            DX::ThrowIfFailed(backend.commandQueue->Wait(
+                producer.fence12.get(), produced));
+            available->submitted = true;
+            Record(*available, {}, false);
+            CompositeScene(*available, a_sceneTarget);
+        } catch (const std::exception& error) {
+            fsrIndependentGIFailure = error.what();
+            if (available->submitted && !available->fence) {
+                // Retain resources until the enqueued producer fence has
+                // retired even if subsequent command recording failed.
+                const uint64_t fenceValue = ++nextCompletion;
+                if (SUCCEEDED(backend.commandQueue->Signal(
+                    completion.fence12.get(), fenceValue)))
+                    available->fence = fenceValue;
+            }
+            if (!available->submitted) *available = {};
+        }
+    }
+
 	void DirectionalTrace::Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight, const LightLimitFixData::LightView& a_lights, uint32_t a_materialView, ID3D11UnorderedAccessView* a_sceneTarget, uint32_t a_lightReference, uint32_t a_lightBase, ID3D11ShaderResourceView* a_roomMetadata, std::span<const std::array<uint32_t, 2>> a_lightIdentities, bool a_allPreparedLights, float4 a_strengths, bool a_useIndirect, float a_indirectStrength, bool a_useDirectRR, uint32_t a_indirectRays, std::span<const uint32_t> a_roomReferences, float a_rasterBlend, uint32_t a_normalMode, std::span<const PreparedPointLight> a_preparedLights, uint32_t a_directResolutionMode, uint32_t a_indirectResolutionMode, uint32_t a_directRRResolutionMode, bool a_rrMaterialIsolation, float a_rrGlossyRoughness, float4 a_falloffParameters, float4 a_stochasticParameters)
 	{
 		CS_GPU_PASS("RTDirectLighting::DirectionalDispatch");
@@ -2231,7 +2373,7 @@ namespace DX12Native
         // Alternate retired slots, but never overwrite a history producer
         // while the other frame's queued DX12 pass still reads its textures.
         for (auto& frame : frames) {
-            if (frame.scene) continue;
+            if (frame.scene || frame.submitted) continue;
             const auto index = int32_t(&frame - frames.data());
             const bool referenced = std::ranges::any_of(frames, [&](const Frame& other) {
                 return &other != &frame && other.submitted &&
