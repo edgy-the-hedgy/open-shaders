@@ -1263,6 +1263,117 @@ namespace DX12Native
         }
     }
 
+    bool DirectionalTrace::RecordFSRIndependentGI(Frame& frame)
+    {
+        frame.nativeGI.valid = frame.nativeGI.rrValid = false;
+        frame.nativeGI.postValid = frame.nativeGI.composedValid = false;
+        if (!frame.fsrIndependent || !frame.nativeGIRequested ||
+            !frame.fsrDepthReady || !frame.hybridInputsReady ||
+            !frame.hybridInputs[0] || !frame.hybridInputs[2] ||
+            !frame.hybridInputs[3] || !frame.hybridInputs[4] ||
+            !frame.hybridInputs[5]) return false;
+        try {
+            const auto& settings = globals::features::rtComposer.composition.fsrHybrid;
+            const auto sampling = MakeHybridSamplingLayout(
+                settings.resolution, settings.checkerboard, frame.size, frame.number);
+            if (!sampling.logical[0] || !sampling.logical[1] ||
+                !sampling.packed[0] || !sampling.packed[1] ||
+                (sampling.checkerboard && (sampling.logical[0] & 1u))) {
+                fsrIndependentGIFailure = "Invalid native FSR HybridGI signal layout";
+                ++fsrIndependentGIFailures;
+                return false;
+            }
+            if (!fsrIndependentGI)
+                fsrIndependentGI = std::make_unique<NativeHybridGI>();
+            auto* device = backend.d3d12Device.get();
+            auto* list = frame.commands.get();
+            const uint32_t slot = uint32_t(&frame - frames.data());
+            if (!fsrIndependentGI->Record(device, list, frame.nativeGI, slot,
+                    frame.number, frame.size, sampling,
+                    frame.hybridLinearDepth.get(),
+                    frame.hybridInputs[2]->resource.get(),
+                    frame.hybridInputs[0]->resource.get(),
+                    frame.hybridInputs[3]->resource.get(),
+                    frame.hybridInputs[4]->resource.get(), nullptr,
+                    globals::features::redstoneGI, 0.0f, 0.0f, true, true)) {
+                fsrIndependentGIFailure = fsrIndependentGI->Failure();
+                ++fsrIndependentGIFailures;
+                return false;
+            }
+            frame.nativeGIFrame = frame.number;
+            if (!fsrIndependentGI->RecordRRGuides(device, list, frame.nativeGI,
+                    slot, frame.hybridLinearDepth.get(),
+                    frame.hybridInputs[2]->resource.get(),
+                    frame.hybridInputs[5]->resource.get(),
+                    frame.hybridInputs[3]->resource.get(),
+                    frame.hybridInputs[4]->resource.get())) {
+                fsrIndependentGIFailure = fsrIndependentGI->GuideFailure();
+                ++fsrIndependentGIFailures;
+                return false;
+            }
+            // No RecordHistoryValidation, RecordPostRR, native spatial,
+            // temporal reconstruction, post-RR blur or legacy fallback.
+            if (!fsrHybridRRDenoiser)
+                fsrHybridRRDenoiser = std::make_unique<RedstoneDenoiser>();
+            if (!fsrHybridRRDenoiser->InitializeNative(backend)) {
+                fsrIndependentGIFailure = "Independent AMD HybridGI RR unavailable";
+                ++fsrIndependentGIFailures;
+                return false;
+            }
+            auto& outputs = frame.nativeGI;
+            if (outputs.rrOutputSize != sampling.logical) {
+                for (auto& resource : outputs.rrOutputs) resource = nullptr;
+                outputs.rrOutputSize = sampling.logical;
+            }
+            for (uint32_t i = 0; i < outputs.rrOutputs.size(); ++i) {
+                if (outputs.rrOutputs[i]) continue;
+                const DXGI_FORMAT format = i < 2u ?
+                    DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8_UNORM;
+                const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(format,
+                    sampling.logical[0], sampling.logical[1], 1, 1, 1, 0,
+                    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+                const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+                DX::ThrowIfFailed(device->CreateCommittedResource(
+                    &heap, D3D12_HEAP_FLAG_NONE, &desc,
+                    D3D12_RESOURCE_STATE_COMMON, nullptr,
+                    IID_PPV_ARGS(outputs.rrOutputs[i].put())));
+            }
+            RedstoneDenoiser::NativeHybridResources resources{};
+            resources.nativeSize = frame.size;
+            resources.logicalSize = sampling.logical;
+            resources.checkerboard = sampling.checkerboard;
+            resources.checkerboardOrigin = sampling.checkerboardOrigin;
+            resources.frame = frame.number;
+            resources.resetHistory = false; // AMD alone owns its temporal history
+            resources.directFamilies = false;
+            resources.skipOcclusion = false;
+            resources.inputs[0] = outputs.textures[NativeHybridGI::Diffuse].get();
+            resources.inputs[1] = outputs.textures[NativeHybridGI::Specular].get();
+            resources.inputs[2] = outputs.textures[NativeHybridGI::DiffuseAO].get();
+            resources.inputs[3] = outputs.textures[NativeHybridGI::SpecularAO].get();
+            for (uint32_t i = 0; i < 4u; ++i)
+                resources.outputs[i] = outputs.rrOutputs[i].get();
+            for (uint32_t i = 0; i < resources.guides.size(); ++i)
+                resources.guides[i] = outputs.rrGuides[i].get();
+            outputs.rrValid = fsrHybridRRDenoiser->DispatchNativeHybridRR(list, resources);
+            outputs.rrFamilySuccessMask =
+                fsrHybridRRDenoiser->NativeHybridSuccessfulFamilyMask();
+            if (!outputs.rrValid || (outputs.rrFamilySuccessMask & 7u) != 7u) {
+                fsrIndependentGIFailure = fsrHybridRRDenoiser->NativeHybridFailure();
+                ++fsrIndependentGIFailures;
+                return false;
+            }
+            fsrIndependentGIFailure.clear();
+            ++fsrIndependentGISuccesses;
+            return true;
+        } catch (const std::exception& error) {
+            fsrIndependentGIFailure = error.what();
+            ++fsrIndependentGIFailures;
+            frame.nativeGI.rrValid = false;
+            return false;
+        }
+    }
+
     void DirectionalTrace::RecordNativeHybridGI(Frame& frame)
     {
         if (globals::features::rtComposer.AdvancedActive()) {
@@ -1520,8 +1631,13 @@ namespace DX12Native
 		else DX::ThrowIfFailed(backend.d3d12Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(a_frame.allocator.put())));
 		if (a_frame.commands) DX::ThrowIfFailed(a_frame.commands->Reset(a_frame.allocator.get(), pipeline.get()));
 		else DX::ThrowIfFailed(backend.d3d12Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, a_frame.allocator.get(), pipeline.get(), IID_PPV_ARGS(a_frame.commands.put())));
-		const auto step = backend.d3d12Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-		auto cpu = a_frame.bindings->heap->GetCPUDescriptorHandleForHeapStart();
+		// Independent raster GI/AO starts as soon as captured DX11 source inputs
+        // become GPU-visible; it does not depend on Direct or shadow work.
+        if (a_frame.fsrIndependent && a_frame.hybridInputsReady &&
+            RecordFSRRasterDepth(a_frame))
+            (void)RecordFSRIndependentGI(a_frame);
+        const auto step = backend.d3d12Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        auto cpu = a_frame.bindings->heap->GetCPUDescriptorHandleForHeapStart();
 		cpu.ptr += uint64_t(a_frame.descriptorBase) * step;
 		D3D12_SHADER_RESOURCE_VIEW_DESC receiver{};
 		receiver.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
@@ -1687,8 +1803,7 @@ namespace DX12Native
         // Shared low-tier shadow mask temporal resolve MUST run before either
         // DX11 Shadow Only export consumption or DX12 Hybrid source/GI.
         if (a_frame.fsrIndependent) {
-            if (a_frame.hybridInputsReady && RecordFSRRasterDepth(a_frame) &&
-                a_frame.nativeDirectRRRequested)
+            if (a_frame.fsrDepthReady && a_frame.nativeDirectRRRequested)
                 (void)RecordNativeDirectRR(a_frame);
         } else {
             RecordShadowTemporal(a_frame);
@@ -2004,8 +2119,9 @@ namespace DX12Native
         // eligible; Shadow Only is the sole DX11 scene-composition mode.
         bool wantHybridInputs = a_sceneTarget &&
             (composer.DX12HybridActive() || nativeDirectTest);
-        bool wantNativeGI = a_sceneTarget && composer.DX12HybridActive() &&
-            NativeHybridGI::ShadersAvailable();
+        bool wantNativeGI = a_sceneTarget &&
+            (fsrIndependent || (composer.DX12HybridActive() &&
+                NativeHybridGI::ShadersAvailable()));
         const auto& composition = composer.composition;
         // Compute the intended second-pass resource requirement before
         // frame-reuse checks; later VRAM fallback can disable it.
@@ -2015,12 +2131,12 @@ namespace DX12Native
             composer.AdvancedActive() ? composer.composition.mode :
                 RTComposer::CompositorMode::HybridShadowed);
         const auto hybridSampling = MakeHybridSamplingLayout(
-            composer.LegacyHybridPrototypeActive() ?
+            (fsrIndependent || composer.LegacyHybridPrototypeActive()) ?
                 composition.fsrHybrid.resolution :
                 (composer.AdvancedActive() ?
                     (composer.composition.mode <= RTComposer::CompositorMode::RTExclusiveII ? 1u : 0u) :
                     (composer.IsFixedPreset() ? fixed.hybridResolution : composition.hybridResolution)),
-            composer.LegacyHybridPrototypeActive() ?
+            (fsrIndependent || composer.LegacyHybridPrototypeActive()) ?
                 composition.fsrHybrid.checkerboard :
                 (composer.AdvancedActive() ?
                     (composer.composition.mode >= RTComposer::CompositorMode::RTEnhanced) :

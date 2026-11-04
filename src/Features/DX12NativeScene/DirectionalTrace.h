@@ -259,6 +259,7 @@ namespace DX12Native
         bool RecordNativeDirectRR(Frame& a_frame);
         bool RecordNativeDirectRRComposition(Frame& a_frame);
         void RecordNativeHybridGI(Frame& a_frame);
+        bool RecordFSRIndependentGI(Frame& a_frame);
         void RecordAdvancedTransport(Frame& a_frame);
 		void Record(Frame& a_frame, const float3& a_direction, bool a_localLight);
 		void Consume(Frame& a_frame);
@@ -295,6 +296,10 @@ namespace DX12Native
         uint64_t nativeDirectRRSuccessfulFrames = 0, nativeDirectRRFailedFrames = 0;
         std::string nativeDirectRRFailure;
         std::unique_ptr<NativeHybridGI> nativeHybridGI;
+        std::unique_ptr<NativeHybridGI> fsrIndependentGI;
+        std::unique_ptr<RedstoneDenoiser> fsrHybridRRDenoiser;
+        uint64_t fsrIndependentGISuccesses = 0, fsrIndependentGIFailures = 0;
+        std::string fsrIndependentGIFailure;
         std::unique_ptr<NativeHybridGI> postHybridGI;
         std::unique_ptr<RedstoneDenoiser> advancedDenoiser; // quarantinable if GPU retirement times out
         uint64_t advancedComposeSubmissions = 0, postHybridComposeSubmissions = 0;
