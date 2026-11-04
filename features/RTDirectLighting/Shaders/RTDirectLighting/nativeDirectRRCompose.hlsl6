@@ -1,0 +1,49 @@
+// DX12 scene preview of actual AMD Direct RR output. No reconstruction here.
+// Demodulated RR radiance is multiplied by first-bounce albedo exactly once.
+// Raw source alpha stores emission, never signal validity.
+Texture2D<float4> ShadowedRaster : register(t0);
+Texture2D<float4> RRDiffuse : register(t1);
+Texture2D<float4> RRSpecular : register(t2);
+Texture2D<float4> DiffuseAlbedo : register(t3);
+Texture2D<float4> SpecularAlbedo : register(t4);
+Texture2D<float4> TaggedDirect : register(t5);
+Texture2D<float4> RawDiffuse : register(t6);
+Texture2D<float4> RawSpecular : register(t7);
+RWTexture2D<float4> ComposedScene : register(u0);
+
+cbuffer DirectRRComposition : register(b0)
+{
+    uint2 RenderSize;
+    float DirectBlend;
+    uint Reserved;
+};
+
+[numthreads(8, 8, 1)]
+void main(uint2 pixel : SV_DispatchThreadID)
+{
+    if (any(pixel >= RenderSize)) return;
+    const float4 baseline = ShadowedRaster.Load(int3(pixel, 0));
+    float4 result = baseline;
+    const float4 tagged = TaggedDirect.Load(int3(pixel, 0));
+    if (all(isfinite(tagged)) && tagged.a == 4.0) {
+        const float4 diffuse = RRDiffuse.Load(int3(pixel, 0));
+        const float4 specular = RRSpecular.Load(int3(pixel, 0));
+        const float4 albedoD = DiffuseAlbedo.Load(int3(pixel, 0));
+        const float4 albedoS = SpecularAlbedo.Load(int3(pixel, 0));
+        const float4 rawD = RawDiffuse.Load(int3(pixel, 0));
+        const float4 rawS = RawSpecular.Load(int3(pixel, 0));
+        const bool valid = all(isfinite(diffuse)) && all(isfinite(specular)) &&
+            all(isfinite(albedoD)) && all(isfinite(albedoS)) &&
+            all(isfinite(rawD)) && all(isfinite(rawS)) &&
+            all(diffuse.rgb >= 0.0) && all(specular.rgb >= 0.0) &&
+            all(albedoD.rgb >= 0.0) && all(albedoS.rgb >= 0.0);
+        if (valid) {
+            const float3 emission = max(float3(rawD.a, rawS.a, albedoS.a), 0.0);
+            const float3 lighting = max(diffuse.rgb, 0.0) * saturate(albedoD.rgb) +
+                max(specular.rgb, 0.0) * saturate(albedoS.rgb) + emission;
+            if (all(isfinite(lighting)))
+                result.rgb = lerp(baseline.rgb, lighting, saturate(DirectBlend));
+        }
+    }
+    ComposedScene[pixel] = result;
+}
