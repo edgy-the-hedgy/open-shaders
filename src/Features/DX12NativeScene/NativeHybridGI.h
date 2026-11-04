@@ -5,6 +5,7 @@
 #include "SignalGrid.h"
 #include "SignalPreparation.h"
 #include "Features/RedstoneGI/RuntimeDenoiser.h"
+#include "NativePublication.h"
 #include <array>
 #include <cstdint>
 #include <string>
@@ -20,7 +21,7 @@ namespace DX12Native
         ~NativeHybridGI();
         /** @brief Records raster-sourced GI/AO without requiring a prepared DXR scene or RR. */
         void Dispatch(const GraphicsBackend& backend, const std::array<uint32_t, 2>& size,
-            uint32_t frameNumber, const RedstoneGI& settings);
+            uint32_t frameNumber, const RedstoneGI& settings, ID3D11UnorderedAccessView* target);
         /** @brief Releases only fence-complete frame slots. */
         void Retire();
         /** @brief Reports requested, recorded and completed work separately. */
@@ -28,6 +29,7 @@ namespace DX12Native
         /** @brief Retires only native GI signal histories when disabled or after a scene transition. */
         void Reset();
         static constexpr uint32_t kOutputs = 5;
+        static constexpr uint64_t kCameraSnapshotOffset = 1280;
         enum Output : uint32_t { Specular = 0, Diffuse = 1, Eligibility = 2, DiffuseAO = 3, SpecularAO = 4 };
         struct FrameOutputs
         {
@@ -53,15 +55,23 @@ namespace DX12Native
             FrameOutputs outputs;
             std::array<std::unique_ptr<WrappedResource>, 6> sources;
             SignalPreparation::Frame rr;
+            std::unique_ptr<WrappedResource> composed;
             winrt::com_ptr<ID3D12CommandAllocator> allocator;
             winrt::com_ptr<ID3D12GraphicsCommandList> commands;
             std::unique_ptr<ConstantBuffer> snapshotSettings;
             std::unique_ptr<ConstantBuffer> camera;
             std::array<uint32_t, 2> size{};
-            uint64_t fence = 0;
+            uint64_t fence = 0, retirement = 0;
+            bool composedValid = false;
         };
         void PrepareInputs(Frame& frame, const RedstoneGI& settings);
         void RecordRR(Frame& frame, uint32_t slot, uint32_t number, const RedstoneGI& settings);
+        void RecordComposition(Frame& frame, uint32_t slot, const RedstoneGI& settings);
+        NativeCompute composition;
+        NativePublication publication;
+        uint64_t scenePublications = 0;
+        uint32_t publicationFrame = UINT32_MAX, rrOutputsBoundMask = 0;
+        std::string compositionFailure;
         SignalPreparation signalPreparation;
         RedstoneDenoiser nativeDenoiser;
         std::string rrFailure;

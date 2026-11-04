@@ -1,0 +1,56 @@
+Texture2D<float4> RawDiffuse : register(t0);
+Texture2D<float4> RawSpecular : register(t1);
+Texture2D<float> RawAO : register(t2);
+Texture2D<float> RawSO : register(t3);
+Texture2D<float4> RRDiffuse : register(t4);
+Texture2D<float4> RRSpecular : register(t5);
+Texture2D<float> RRAO : register(t6);
+Texture2D<float> RRSO : register(t7);
+Texture2D<float4> DiffuseAlbedo : register(t8);
+Texture2D<float4> SpecularAlbedo : register(t9);
+Texture2D<float> Depth : register(t10);
+Texture2D<float4> NormalRoughness : register(t11);
+Texture2D<uint> Eligibility : register(t12);
+RWTexture2D<float4> Output : register(u0);
+cbuffer Composition : register(b0)
+{
+    uint2 NativeSize, LogicalSize, PackedSize;
+    uint Checkerboard, Origin, RRMask, EnabledMask, LinearLighting;
+    float DiffuseStrength, SpecularStrength, AOStrength, SOStrength, MaximumDepth;
+};
+bool ValidRaw(float4 value) { return all(isfinite(value)) && value.a >= -1; }
+bool ValidRR(float4 value) { return all(isfinite(value)) && value.a >= 0; }
+[numthreads(8,8,1)] void main(uint2 pixel : SV_DispatchThreadID)
+{
+    if (any(pixel >= NativeSize)) return;
+    Output[pixel] = 0;
+    float depth = Depth[pixel];
+    if (!isfinite(depth) || depth <= 18.0 || depth >= MaximumDepth || !all(isfinite(NormalRoughness[pixel]))) return;
+    uint2 logical = min(pixel * LogicalSize / NativeSize, LogicalSize - 1u);
+    uint2 representative = min(uint2((float2(logical) + 0.5) * NativeSize / LogicalSize), NativeSize - 1u);
+    if (any(representative != pixel)) return;
+    bool sampled = all(representative == pixel) && (!Checkerboard || ((logical.x + logical.y) & 1u) == Origin);
+    uint2 packed = uint2(Checkerboard ? logical.x / 2u : logical.x, logical.y);
+    sampled = sampled && Eligibility[packed] == 1u;
+    float4 d = sampled ? RawDiffuse[packed] : float4(0, 0, 0, -2);
+    float4 s = sampled ? RawSpecular[packed] : float4(0, 0, 0, -2);
+    bool validD = sampled && ValidRaw(d), validS = sampled && ValidRaw(s);
+    if (RRMask & 1u) { float4 rr = RRDiffuse[logical]; if (ValidRR(rr)) { d = rr; validD = true; } }
+    if (RRMask & 2u) { float4 rr = RRSpecular[logical]; if (ValidRR(rr)) { s = rr; validS = true; } }
+    float ao = 1, so = 1;
+    if (EnabledMask & 4u) {
+        float value = RRMask & 4u ? RRAO[logical] : sampled ? RawAO[packed] : 1;
+        if (isfinite(value)) ao = lerp(1, saturate(value), saturate(AOStrength));
+    }
+    if (EnabledMask & 8u) {
+        float value = RRMask & 8u ? RRSO[logical] : sampled ? RawSO[packed] : 1;
+        if (isfinite(value)) so = lerp(1, saturate(value), saturate(SOStrength));
+    }
+    float3 diffuseFactor = DiffuseAlbedo[pixel].rgb / (LinearLighting ? 1.0 : 0.65);
+    if (!LinearLighting) diffuseFactor = pow(abs(diffuseFactor), 1.6);
+    float3 specularFactor = SpecularAlbedo[pixel].rgb;
+    float3 value = 0;
+    if ((EnabledMask & 1u) && validD && all(isfinite(diffuseFactor))) value += max(d.rgb, 0) * diffuseFactor * ao * DiffuseStrength;
+    if ((EnabledMask & 2u) && validS && all(isfinite(specularFactor))) value += max(s.rgb, 0) * specularFactor * so * SpecularStrength;
+    Output[pixel] = float4(min(max(value, 0), 65504.0), (validD || validS) && all(isfinite(value)) ? 1 : 0);
+}

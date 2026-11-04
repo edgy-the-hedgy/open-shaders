@@ -20,7 +20,7 @@ namespace DX12Native
         constexpr uint64_t kGISettingsOffset = 0;
         constexpr uint64_t kAOSettingsOffset = 768;
         constexpr uint64_t kLightingOffset = 1024;
-        constexpr uint64_t kCameraOffset = 1280;
+        constexpr uint64_t kCameraOffset = NativeHybridGI::kCameraSnapshotOffset;
         constexpr uint64_t kSamplingOffset = 2304;
         struct NativeLightingCB
         {

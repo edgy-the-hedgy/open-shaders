@@ -247,6 +247,8 @@ public:
 	virtual void FinishComposite(bool) {}
 	/** @brief Offers the completed opaque lighting target before forward world rendering. */
 	virtual void OnAfterDeferredLighting(ID3D11UnorderedAccessView*, const std::array<uint32_t, 2>&) {}
+	/** @brief Runs after all deferred-lighting feature callbacks have recorded their contributions. */
+	virtual void OnDeferredLightingComplete(ID3D11UnorderedAccessView*, const std::array<uint32_t, 2>&) {}
 	/** @brief Requests extended opaque metadata for current-frame receiver room classification. */
 	virtual bool WantsOpaqueRoomMetadata() const { return false; }
 

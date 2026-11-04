@@ -460,6 +460,7 @@ namespace DX12Native
 		for (const auto& signal : a_frame.directSignals) if (signal) end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(signal->resource.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON));
 		commands->ResourceBarrier(uint32_t(end.size()), end.data());
 		RecordNativeLightingRR(a_frame);
+		RecordNativeComposition(a_frame);
 		DX::ThrowIfFailed(commands->Close());
 		ID3D12CommandList* lists[]{ commands };
 		backend.commandQueue->ExecuteCommandLists(1, lists);
@@ -536,76 +537,37 @@ namespace DX12Native
 		} catch (const std::exception& error) { failure = error.what(); previewValid = false; }
 	}
 
-	void DirectionalTrace::CompositeScene(Frame& a_frame, ID3D11UnorderedAccessView* a_target)
+	void DirectionalTrace::CompositeScene(Frame& frame, ID3D11UnorderedAccessView* target)
 	{
 		CS_GPU_PASS("RTDirectLighting::DirectSceneComposite");
+		if (!frame.composedValid) return;
 		auto* context = backend.d3d11Context.get();
-		struct Settings { uint32_t indirect, directRR; float indirectStrength; uint32_t useDXRIndirect; float redstoneBlend; float padding[3]{}; };
-		if (!lightingCompositeSettings) lightingCompositeSettings = std::make_unique<ConstantBuffer>(ConstantBufferDesc<Settings>(), "RTDirectLighting::LightingComposite CB");
-		winrt::com_ptr<ID3D11ComputeShader> shader;
-		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 16> inputs;
-		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 6> indirectInputs;
-		std::array<winrt::com_ptr<ID3D11UnorderedAccessView>, 7> outputs;
-		winrt::com_ptr<ID3D11Buffer> shared, features, settings, camera;
-		context->CSGetShader(shader.put(), nullptr, nullptr);
-		for (uint32_t i = 0; i < inputs.size(); ++i) {
-			context->CSGetShaderResources(i, 1, inputs[i].put());
-			if (i < indirectInputs.size()) context->CSGetShaderResources(20 + i, 1, indirectInputs[i].put());
-		}
-		for (uint32_t i = 0; i < outputs.size(); ++i) context->CSGetUnorderedAccessViews(i, 1, outputs[i].put());
-		context->CSGetConstantBuffers(0, 1, settings.put());
-		context->CSGetConstantBuffers(5, 1, shared.put());
-		context->CSGetConstantBuffers(6, 1, features.put());
-		context->CSGetConstantBuffers(12, 1, camera.put());
-		DX::ThrowIfFailed(context->Wait(completion.fence11.get(), a_frame.fence));
-		globals::state->BindSharedDataCS(context);
-		auto* cameraBuffer = a_frame.camera.get();
-		context->CSSetConstantBuffers(12, 1, &cameraBuffer);
-		const uint32_t rrFlags = 0;
-		PrepareRRPreview(a_frame, rrFlags);
-		const bool directRR = (rrFlags & 1u) != 0;
+		DX::ThrowIfFailed(context->Wait(completion.fence11.get(), frame.fence));
 		auto& indirect = globals::features::redstoneGI;
-		const bool useIndirect = a_frame.useIndirect && indirect.HasCurrentIndirectLighting();
-		if (useIndirect) indirect.BindCompositeResources();
-		lightingCompositeSettings->Update(Settings{ useIndirect ? 1u : 0u, rrFlags, a_frame.indirectStrength, a_frame.indirectRays != 0 ? 1u : 0u, a_frame.rasterBlend });
-		auto* cb = lightingCompositeSettings->CB();
-		context->CSSetConstantBuffers(0, 1, &cb);
-		const auto& targets = globals::game::renderer->GetRuntimeData().renderTargets;
-		ID3D11ShaderResourceView* reads[]{ a_frame.output->srv, Util::AsReal(targets[NORMALROUGHNESS].SRV),
-			directRR ? a_frame.directSignals[0]->srv : nullptr, directRR ? a_frame.directSignals[1]->srv : nullptr,
-			directRR ? directRRTextures[2]->srv.get() : nullptr, directRR ? directRRTextures[3]->srv.get() : nullptr, directRR ? a_frame.directSignals[3]->srv : nullptr,
-			a_frame.indirectRays ? a_frame.directSignals[5]->srv : nullptr, a_frame.indirectRays ? a_frame.directSignals[6]->srv : nullptr,
-			(rrFlags & 2u) ? directRRTextures[4]->srv.get() : nullptr, (rrFlags & 2u) ? directRRTextures[5]->srv.get() : nullptr,
-			rrFlags ? directRRTextures[0]->srv.get() : nullptr, rrFlags ? directRRTextures[10]->srv.get() : nullptr, a_frame.receivers->srv,
-			rrFlags ? a_frame.directSignals[2]->srv : nullptr,
-			directRR ? a_frame.directSignals[4]->srv : nullptr };
-		context->CSSetShaderResources(0, 16, reads);
-		context->CSSetUnorderedAccessViews(0, 1, &a_target, nullptr);
-		context->CSSetShader(composite.get(), nullptr, 0);
-		context->Dispatch((a_frame.size[0] + 7) / 8, (a_frame.size[1] + 7) / 8, 1);
-		if (useIndirect) { indirect.FinishComposite(true); ++indirectCompositeSubmissions; }
-		for (uint32_t i = 0; i < outputs.size(); ++i) {
-			auto* output = outputs[i].get();
-			context->CSSetUnorderedAccessViews(i, 1, &output, nullptr);
+		const bool legacy = frame.useIndirect && indirect.HasCurrentIndirectLighting();
+		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 6> previous;
+		if (legacy) {
+			for (uint32_t i = 0; i < previous.size(); ++i) context->CSGetShaderResources(20u + i, 1, previous[i].put());
+			indirect.BindCompositeResources();
 		}
-		for (uint32_t i = 0; i < inputs.size(); ++i) {
-			auto* input = inputs[i].get();
-			auto* indirectInput = i < indirectInputs.size() ? indirectInputs[i].get() : nullptr;
-			context->CSSetShaderResources(i, 1, &input);
-			if (i < indirectInputs.size()) context->CSSetShaderResources(20 + i, 1, &indirectInput);
+		const bool published = nativePublication.Publish(backend, target, frame.composed[0]->srv, frame.composed[1]->srv,
+			frame.size, true, frame.rasterBlend, frame.camera.get(), legacy, frame.indirectStrength);
+		if (legacy) {
+			indirect.FinishComposite(published);
+			for (uint32_t i = 0; i < previous.size(); ++i) {
+				auto* read = previous[i].get(); context->CSSetShaderResources(20u + i, 1, &read);
+			}
+			if (published) ++indirectCompositeSubmissions;
 		}
-		ID3D11Buffer* priorShared[]{ shared.get(), features.get() };
-		cb = settings.get(); cameraBuffer = camera.get();
-		context->CSSetConstantBuffers(0, 1, &cb);
-		context->CSSetConstantBuffers(5, 2, priorShared);
-		context->CSSetConstantBuffers(12, 1, &cameraBuffer);
-		context->CSSetShader(shader.get(), nullptr, 0);
-		a_frame.retirement = producer.Next();
-		DX::ThrowIfFailed(context->Signal(producer.fence11.get(), a_frame.retirement));
-		++sceneCompositeSubmissions;
-		sceneCompositeFrame = a_frame.number;
+		frame.retirement = producer.Next();
+		DX::ThrowIfFailed(context->Signal(producer.fence11.get(), frame.retirement));
+		if (published) {
+			++sceneCompositeSubmissions; sceneCompositeFrame = frame.number;
+			if (frame.nativeDirectRR.recordedMask || frame.nativeIndirectRR.recordedMask) ++directRRDispatches;
+			directRRFrame = frame.number; directRRSize = frame.nativeDirectRR.grid.logical;
+			directRRCheckerboard = frame.nativeDirectRR.grid.checkerboard;
+		}
 	}
-
 
 	void DirectionalTrace::Dispatch(std::shared_ptr<const TopLevel> a_scene, const std::array<uint32_t, 2>& a_nativeSize, const float3& a_lightDirection, uint32_t a_frame, uint64_t a_budgetBytes, bool a_localLight, const LightLimitFixData::LightView& a_lights, uint32_t a_materialView, ID3D11UnorderedAccessView* a_sceneTarget, uint32_t a_lightReference, uint32_t a_lightBase, ID3D11ShaderResourceView* a_roomMetadata, std::span<const std::array<uint32_t, 2>> a_lightIdentities, bool a_allPreparedLights, float4 a_strengths, bool a_useIndirect, float a_indirectStrength, bool a_useDirectRR, uint32_t a_indirectRays, std::span<const uint32_t> a_roomReferences, float a_rasterBlend, uint32_t a_normalMode, std::span<const PreparedPointLight> a_preparedLights, uint32_t a_directResolutionMode, uint32_t a_indirectResolutionMode, uint32_t a_directRRResolutionMode, bool a_rrMaterialIsolation, float a_rrGlossyRoughness, float4 a_falloffParameters, float4 a_stochasticParameters)
 	{
@@ -670,10 +632,6 @@ namespace DX12Native
 		}
 		try {
 			if (!reuse) *available = {};
-			if (a_sceneTarget && !composite) {
-				composite.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\RTDirectLighting\\compositeDirect.cs.hlsl", {}, "cs_5_0")));
-				if (!composite) throw std::runtime_error("Direct-light scene compositor unavailable");
-			}
 			if (!cachedBindings) {
 				pendingBindings = std::make_shared<PendingBindings>();
 				pendingBindings->generation = generation;
@@ -713,6 +671,7 @@ namespace DX12Native
 			std::copy_n(a_roomReferences.begin(), std::min(a_roomReferences.size(), available->roomReferences.size()), available->roomReferences.begin());
 			available->indirectStrength = a_indirectStrength;
 			available->useDirectRR = directRR;
+			available->publishToScene = a_sceneTarget != nullptr;
 			available->useIndirectRR = a_indirectRays && globals::features::rtIndirectLighting.settings.UseRayRegeneration && rrPolicy.enabled;
 			available->rasterBlend = a_rasterBlend;
 			available->normalMode = std::min(a_normalMode, 2u);
@@ -799,6 +758,7 @@ namespace DX12Native
 			{ "rawDirectCaptures", rawDirectCaptures }, { "rawIndirectCaptures", rawIndirectCaptures },
 			{ "nativeRR", nativeRRStatus }, { "nativeDirectRRSignals", directDenoiser.GetNativeDiagnostics() },
 			{ "nativeIndirectRRSignals", indirectDenoiser.GetNativeDiagnostics() },
+			{ "nativeCompositionFailure", nativeCompositionFailure }, { "visualConsumptionVerified", false },
 			{ "directScope", "selected light or complete bounded prepared point-light set; supported depth-matched PBR surfaces; per-light diffuse/specular, emission once; no native CPU bypass" },
 			{ "sourceLightCount", sourceLightCount }, { "sourceLightFrame", sourceLightFrame }, { "unavailableLightFrames", unavailableLightFrames },
 			{ "bindingCreations", bindingCreations }, { "bindingDeferrals", bindingDeferrals }, { "cachedSceneBindings", bool(cachedBindings) },

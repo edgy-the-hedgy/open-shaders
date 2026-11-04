@@ -29,7 +29,7 @@ cbuffer SnapshotSettings : register(b13)
     LinearDepth[pixel] = isfinite(depth) && depth > 0 ? depth : 0;
     NormalOutput[pixel] = NormalRoughness[pixel];
     float3 radiance = ENABLE_LL ? Color::SceneGammaToLinear(SceneColor[pixel]) : Color::RadianceToLinear(SceneColor[pixel]);
-    LinearRadiance[pixel] = float4(all(isfinite(radiance)) ? max(0, radiance) * SourceStrength : 0, 0);
+    LinearRadiance[pixel] = float4(all(isfinite(radiance)) ? min(max(0, radiance) * SourceStrength, 65504.0) : 0, 0);
     DiffuseOutput[pixel] = float4(DiffuseAlbedo[pixel], 0);
     SpecularOutput[pixel] = float4(SpecularAlbedo[pixel], 0);
     MotionOutput[pixel] = NativeMotion[pixel];

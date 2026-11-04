@@ -47,7 +47,7 @@ namespace DX12Native
             stream.seekg(0);
             if (!stream.read(code.data(), std::streamsize(code.size()))) throw std::runtime_error("Native DXIL read failed");
             const D3D12_DESCRIPTOR_RANGE ranges[]{
-                { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 10, 0, 0, 0 },
+                { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 14, 0, 0, 0 },
                 { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 8, 0, 0, 0 } };
             D3D12_ROOT_PARAMETER parameters[4]{};
             for (uint32_t i = 0; i < 2; ++i) {
@@ -55,7 +55,7 @@ namespace DX12Native
                 parameters[i].DescriptorTable = { 1, &ranges[i] };
             }
             parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-            parameters[2].Constants = { 0, 0, 16 };
+            parameters[2].Constants = { 0, 0, 24 };
             parameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
             parameters[3].Descriptor = { 12, 0 };
             const D3D12_ROOT_SIGNATURE_DESC desc{ 4, parameters, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE };
@@ -65,7 +65,7 @@ namespace DX12Native
             D3D12_COMPUTE_PIPELINE_STATE_DESC state{};
             state.pRootSignature = root.get(); state.CS = { code.data(), code.size() };
             DX::ThrowIfFailed(device->CreateComputePipelineState(&state, IID_PPV_ARGS(pipeline.put())));
-            const D3D12_DESCRIPTOR_HEAP_DESC heap{ D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 36,
+            const D3D12_DESCRIPTOR_HEAP_DESC heap{ D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 44,
                 D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
             DX::ThrowIfFailed(device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(descriptors.put())));
             failure.clear(); return true;
@@ -76,17 +76,17 @@ namespace DX12Native
 
     void NativeCompute::Dispatch(ID3D12Device* device, ID3D12GraphicsCommandList* commands, uint32_t slot,
         std::span<ID3D12Resource* const> reads, std::span<ID3D12Resource* const> writes,
-        const std::array<uint32_t, 16>& constants, D3D12_GPU_VIRTUAL_ADDRESS camera,
+        std::span<const uint32_t> constants, D3D12_GPU_VIRTUAL_ADDRESS camera,
         const std::array<uint32_t, 2>& size)
     {
         CS_GPU_PASS("DX12NativeScene::NativeCompute");
-        if (!pipeline || slot >= 2 || reads.size() > 10 || writes.size() > 8) throw std::runtime_error("Invalid native pass bindings");
+        if (!pipeline || slot >= 2 || reads.size() > 14 || writes.size() > 8 || constants.size() > 24) throw std::runtime_error("Invalid native pass bindings");
         const auto step = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         auto cpu = descriptors->GetCPUDescriptorHandleForHeapStart();
-        cpu.ptr += uint64_t(slot * 18u) * step;
+        cpu.ptr += uint64_t(slot * 22u) * step;
         std::vector<D3D12_RESOURCE_BARRIER> barriers;
         std::set<ID3D12Resource*> bound;
-        for (uint32_t i = 0; i < 10; ++i) {
+        for (uint32_t i = 0; i < 14; ++i) {
             auto* resource = i < reads.size() ? reads[i] : nullptr;
             D3D12_SHADER_RESOURCE_VIEW_DESC desc{};
             desc.Format = resource ? resource->GetDesc().Format : DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -108,10 +108,12 @@ namespace DX12Native
         commands->ResourceBarrier(UINT(barriers.size()), barriers.data());
         ID3D12DescriptorHeap* heaps[]{ descriptors.get() }; commands->SetDescriptorHeaps(1, heaps);
         commands->SetComputeRootSignature(root.get()); commands->SetPipelineState(pipeline.get());
-        auto gpu = descriptors->GetGPUDescriptorHandleForHeapStart(); gpu.ptr += uint64_t(slot * 18u) * step;
-        commands->SetComputeRootDescriptorTable(0, gpu); gpu.ptr += 10u * step;
+        auto gpu = descriptors->GetGPUDescriptorHandleForHeapStart(); gpu.ptr += uint64_t(slot * 22u) * step;
+        commands->SetComputeRootDescriptorTable(0, gpu); gpu.ptr += 14u * step;
         commands->SetComputeRootDescriptorTable(1, gpu);
-        commands->SetComputeRoot32BitConstants(2, 16, constants.data(), 0);
+        std::array<uint32_t, 24> upload{};
+        std::copy(constants.begin(), constants.end(), upload.begin());
+        commands->SetComputeRoot32BitConstants(2, 24, upload.data(), 0);
         commands->SetComputeRootConstantBufferView(3, camera);
         commands->Dispatch((size[0] + 7u) / 8u, (size[1] + 7u) / 8u, 1);
         for (auto& barrier : barriers) std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);

@@ -7,6 +7,7 @@
 #include "PreparedScene.h"
 #include "Features/RedstoneGI/RuntimeDenoiser.h"
 #include "SignalPreparation.h"
+#include "NativePublication.h"
 #include <atomic>
 #include <span>
 
@@ -86,6 +87,9 @@ namespace DX12Native
 			std::array<winrt::com_ptr<ID3D12Resource>, kDirectSignalCount> rawSignals;
 			std::unique_ptr<WrappedResource> motion;
 			SignalPreparation::Frame nativeDirectRR, nativeIndirectRR;
+			std::array<std::unique_ptr<WrappedResource>, 2> composed;
+			winrt::com_ptr<ID3D12Resource> nativeCamera;
+			bool publishToScene = false, composedValid = false;
 			bool useIndirectRR = false, motionReady = false;
 			winrt::com_ptr<ID3D12RootSignature> root;
 			winrt::com_ptr<ID3D12PipelineState> pipeline;
@@ -127,6 +131,7 @@ namespace DX12Native
 		void Record(Frame& a_frame, const float3& a_direction, bool a_localLight);
 		void CaptureRawSignals(Frame& a_frame, uint32_t a_first, uint32_t a_count);
 		void RecordNativeLightingRR(Frame& a_frame);
+		void RecordNativeComposition(Frame& a_frame);
 		void Consume(Frame& a_frame);
 		void CompositeScene(Frame& a_frame, ID3D11UnorderedAccessView* a_target);
 		/** @brief Reconstructs the current separated direct signals using matching RT material guides. */
@@ -146,6 +151,9 @@ namespace DX12Native
 		SignalPreparation nativeDirectPreparation, nativeIndirectPreparation;
 		SamplingCoverageCache directCoverage, indirectCoverage;
 		json nativeRRStatus = json::object();
+		NativeCompute nativeComposition;
+		NativePublication nativePublication;
+		std::string nativeCompositionFailure;
 		std::array<std::unique_ptr<Texture2D>, 13> directRRTextures;
 		uint64_t directRRPolicyRevision = UINT64_MAX;
 		uint32_t directRRIndirectRays = 0;

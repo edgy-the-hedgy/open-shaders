@@ -24,10 +24,12 @@ namespace DX12Native
     {
         if (!completion.fence12) return;
         const auto done = completion.fence12->GetCompletedValue();
+        const auto retired = producer.fence12->GetCompletedValue();
         if (done == UINT64_MAX) { failure = "Native HybridGI device removed"; return; }
         for (auto& frame : frames) {
-            if (!frame.fence || frame.fence > done) continue;
+            if (!frame.fence || frame.fence > done || (frame.retirement && frame.retirement > retired)) continue;
             frame.fence = 0;
+            frame.retirement = 0;
             ++completions;
         }
     }
@@ -46,7 +48,7 @@ namespace DX12Native
         auto targets = globals::game::renderer->GetRuntimeData().renderTargets;
         ID3D11ShaderResourceView* reads[]{ Util::GetCurrentSceneDepthSRV(),
             Util::AsReal(targets[NORMALROUGHNESS].SRV),
-            Util::AsReal(targets[globals::deferred->forwardRenderTargets[0]].SRV),
+            Util::AsReal(targets[RE::RENDER_TARGETS::kMAIN].SRV),
             Util::AsReal(targets[ALBEDO].SRV), Util::AsReal(targets[REFLECTANCE].SRV),
             Util::AsReal(targets[RE::RENDER_TARGET::kMOTION_VECTOR].SRV) };
         ID3D11UnorderedAccessView* writes[6]{};
@@ -72,7 +74,7 @@ namespace DX12Native
     }
 
     void NativeHybridGI::Dispatch(const GraphicsBackend& graphics, const std::array<uint32_t, 2>& size,
-        uint32_t frameNumber, const RedstoneGI& settings)
+        uint32_t frameNumber, const RedstoneGI& settings, ID3D11UnorderedAccessView* target)
     {
         CS_GPU_PASS("RedstoneGI::NativeDispatch");
         Retire();
@@ -138,6 +140,7 @@ namespace DX12Native
                 frame.sources[0]->resource.get(), frame.sources[1]->resource.get(), frame.sources[2]->resource.get(),
                 frame.sources[3]->resource.get(), frame.sources[4]->resource.get(), settings);
             if (recorded) RecordRR(frame, uint32_t(available - frames.begin()), frameNumber, settings);
+            if (recorded) RecordComposition(frame, uint32_t(available - frames.begin()), settings);
             DX::ThrowIfFailed(frame.commands->Close());
             if (!recorded) return;
             ID3D12CommandList* lists[]{ frame.commands.get() };
@@ -146,6 +149,14 @@ namespace DX12Native
             frame.fence = completion.Next();
             DX::ThrowIfFailed(backend.commandQueue->Signal(completion.fence12.get(), frame.fence));
             ++submissions;
+            if (target && frame.composedValid) {
+                DX::ThrowIfFailed(backend.d3d11Context->Wait(completion.fence11.get(), frame.fence));
+                if (publication.Publish(backend, target, frame.composed->srv, nullptr, size, false, 0.0f, frame.camera->CB())) {
+                    ++scenePublications; publicationFrame = frameNumber; rrOutputsBoundMask = frame.rr.recordedMask;
+                }
+                frame.retirement = producer.Next();
+                DX::ThrowIfFailed(backend.d3d11Context->Signal(producer.fence11.get(), frame.retirement));
+            }
         } catch (const std::exception& error) { failure = error.what(); }
     }
 
@@ -160,6 +171,8 @@ namespace DX12Native
             { "busyFrames", busyFrames }, { "failure", failure }, { "requiresPreparedScene", false },
             { "nativeRR", nativeDenoiser.GetNativeDiagnostics() }, { "rrPreparationFailure", rrFailure },
             { "slot0RRRecordedMask", frames[0].rr.recordedMask }, { "slot1RRRecordedMask", frames[1].rr.recordedMask },
-            { "requiresDirect", false }, { "requiresRR", false }, { "sceneConsumed", false } };
+            { "requiresDirect", false }, { "requiresRR", false }, { "scenePublishSubmissions", scenePublications },
+            { "scenePublishFrame", publicationFrame }, { "rrOutputsBoundForComposition", rrOutputsBoundMask },
+            { "compositionFailure", compositionFailure }, { "visualConsumptionVerified", false } };
     }
 }

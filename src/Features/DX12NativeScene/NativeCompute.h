@@ -9,12 +9,12 @@ namespace DX12Native
     class NativeCompute
     {
     public:
-        /** @brief Loads packaged bytecode with ten SRVs, eight UAVs, b0 constants and b12 camera data. */
+        /** @brief Loads packaged bytecode with fourteen SRVs, eight UAVs, b0 constants and b12 camera data. */
         bool Initialize(ID3D12Device* device, const char* file);
         /** @brief Binds exact resource formats and restores all resources to COMMON after dispatch. */
         void Dispatch(ID3D12Device* device, ID3D12GraphicsCommandList* commands, uint32_t slot,
             std::span<ID3D12Resource* const> reads, std::span<ID3D12Resource* const> writes,
-            const std::array<uint32_t, 16>& constants, D3D12_GPU_VIRTUAL_ADDRESS camera,
+            std::span<const uint32_t> constants, D3D12_GPU_VIRTUAL_ADDRESS camera,
             const std::array<uint32_t, 2>& size);
         /** @brief Returns the most recent pipeline initialization error. */
         const std::string& Failure() const { return failure; }

@@ -552,6 +552,10 @@ void Deferred::DeferredPasses()
 		const auto resolution = Util::ConvertToDynamic(globals::state->screenSize);
 		feature->OnAfterDeferredLighting(Util::AsReal(main.UAV), { uint32_t(resolution.x), uint32_t(resolution.y) });
 	});
+	Feature::ForEachLoadedFeature("OnDeferredLightingComplete", [&](Feature* feature) {
+		const auto resolution = Util::ConvertToDynamic(globals::state->screenSize);
+		feature->OnDeferredLightingComplete(Util::AsReal(main.UAV), { uint32_t(resolution.x), uint32_t(resolution.y) });
+	});
 
 	if (dynamicCubemaps.loaded)
 		dynamicCubemaps.PostDeferred();

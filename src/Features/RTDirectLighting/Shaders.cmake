@@ -64,6 +64,19 @@ if(REDSTONE_DXC)
             ${_native_hybrid_dependencies}
         VERBATIM)
     list(APPEND _native_hybrid_files "${_native_signal_preparation}")
+    foreach(_native_composition IN ITEMS nativeDirectCompose nativeHybridCompose)
+        set(_native_composition_file "${REDSTONE_DXIL_DIRECTORY}/${_native_composition}.dxil")
+        add_custom_command(OUTPUT "${_native_composition_file}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${REDSTONE_DXIL_DIRECTORY}"
+            COMMAND "${REDSTONE_DXC}" -T cs_6_5 -E main -HV 2018 -O3 -Ges
+                -I "${CMAKE_CURRENT_SOURCE_DIR}/package/Shaders"
+                -Fo "${_native_composition_file}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/features/RTDirectLighting/Shaders/RTDirectLighting/${_native_composition}.hlsl6"
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/features/RTDirectLighting/Shaders/RTDirectLighting/${_native_composition}.hlsl6"
+                ${_native_hybrid_dependencies}
+            VERBATIM)
+        list(APPEND _native_hybrid_files "${_native_composition_file}")
+    endforeach()
     add_custom_target(NativeHybridDXIL DEPENDS ${_native_hybrid_files})
     add_dependencies(${PROJECT_NAME} NativeHybridDXIL)
     list(APPEND REDSTONE_DXIL_FILES ${_native_hybrid_files})
