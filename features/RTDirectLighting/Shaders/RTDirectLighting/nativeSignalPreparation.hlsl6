@@ -1,3 +1,4 @@
+#include "Common/NativeSignalSemantics.hlsli"
 #include "Common/FrameBuffer.hlsli"
 #include "Common/GBuffer.hlsli"
 Texture2D<float4> DepthOrReceiver : register(t0);
@@ -77,11 +78,11 @@ float2 EncodeNormal(float3 normal)
         specular.rgb = min(specular.rgb / max(specularAlbedo, 1e-3), 65504.0);
     }
     bool receiverValid = surfaceValid && (!DXRMaterials || DiffuseAlbedo[native].a > 0.5);
-    bool diffuseValid = receiverValid && all(isfinite(diffuse)) && all(diffuse.rgb >= 0) &&
-        all(isfinite(diffuseAlbedo)) && (DirectSignals || diffuse.a >= 0);
-    bool specularValid = receiverValid && all(isfinite(specular)) && all(specular.rgb >= 0) &&
-        all(isfinite(specularAlbedo)) && (DirectSignals || specular.a >= 0);
-    PackedDiffuse[packed] = diffuseValid ? float4(diffuse.rgb, DirectSignals ? 0.0 : diffuse.a) : float4(0, 0, 0, -1);
-    PackedSpecular[packed] = specularValid ? float4(specular.rgb, DirectSignals ? 0.0 : specular.a) : float4(0, 0, 0, -1);
+    bool diffuseValid = receiverValid && all(isfinite(diffuse.rgb)) && all(diffuse.rgb >= 0) &&
+        all(isfinite(diffuseAlbedo)) && (DirectSignals || (isfinite(diffuse.a) && diffuse.a >= 0));
+    bool specularValid = receiverValid && all(isfinite(specular.rgb)) && all(specular.rgb >= 0) &&
+        all(isfinite(specularAlbedo)) && (DirectSignals || (isfinite(specular.a) && specular.a >= 0));
+    PackedDiffuse[packed] = diffuseValid ? float4(diffuse.rgb, DirectSignals ? NativeDirectAlpha(true) : diffuse.a) : float4(0, 0, 0, NativeDirectAlpha(false));
+    PackedSpecular[packed] = specularValid ? float4(specular.rgb, DirectSignals ? NativeDirectAlpha(true) : specular.a) : float4(0, 0, 0, NativeDirectAlpha(false));
     Validity[packed] = (diffuseValid ? 1u : 0u) | (specularValid ? 2u : 0u);
 }

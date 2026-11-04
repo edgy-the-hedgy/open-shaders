@@ -1,5 +1,6 @@
 #include "Common/GBuffer.hlsli"
 #include "Common/NativeDisplaySampling.hlsli"
+#include "Common/NativeSignalSemantics.hlsli"
 Texture2D<float4> RawDiffuse : register(t0);
 Texture2D<float4> RawSpecular : register(t1);
 Texture2D<float> RawAO : register(t2);
@@ -21,7 +22,7 @@ cbuffer Composition : register(b0)
     float DiffuseStrength, SpecularStrength, AOStrength, SOStrength, MaximumDepth;
 };
 bool ValidRaw(float4 value) { return all(isfinite(value)) && value.a >= -1; }
-bool ValidRR(float4 value) { return all(isfinite(value)) && value.a >= 0; }
+bool ValidRR(float4 value) { return NativeRRChannelValid(value.r) && NativeRRChannelValid(value.g) && NativeRRChannelValid(value.b); }
 [numthreads(8,8,1)] void main(uint2 pixel : SV_DispatchThreadID)
 {
     if (any(pixel >= NativeSize)) return;
@@ -50,7 +51,9 @@ bool ValidRR(float4 value) { return all(isfinite(value)) && value.a >= 0; }
             abs(sourceDepth - depth) <= max(0.5, depth * 0.02) &&
             dot(targetNormal, GBuffer::DecodeNormal(nr.xy)) >= 0.8 &&
             all(isfinite(material)) && all(isfinite(targetMaterial)) && all(abs(material - targetMaterial) <= 0.25) &&
-            abs(nr.z - NormalRoughness[pixel].z) <= 0.15;
+            abs(nr.z - NormalRoughness[pixel].z) <= 0.15 &&
+            all(isfinite(SpecularAlbedo[representative].rgb)) && all(isfinite(SpecularAlbedo[pixel].rgb)) &&
+            all(abs(SpecularAlbedo[representative].rgb - SpecularAlbedo[pixel].rgb) <= 0.25);
         if (!surface) continue;
         float2 offset = float2(representative) - float2(pixel);
         float distance = dot(offset, offset);
@@ -60,18 +63,20 @@ bool ValidRR(float4 value) { return all(isfinite(value)) && value.a >= 0; }
         float4 rawD = sampled ? RawDiffuse[packed] : float4(0,0,0,-2);
         float4 rawS = sampled ? RawSpecular[packed] : float4(0,0,0,-2);
         bool candidateD = sampled && ValidRaw(rawD), candidateS = sampled && ValidRaw(rawS);
-        if (RRMask & 1u) { float4 rr = RRDiffuse[logical]; if (ValidRR(rr)) { rawD = rr; candidateD = true; } }
-        if (RRMask & 2u) { float4 rr = RRSpecular[logical]; if (ValidRR(rr)) { rawS = rr; candidateS = true; } }
+        if (RRMask & 1u) { float4 rr = RRDiffuse[logical]; if (NativeDisplayUseRR(RRMask, 0u, ValidRR(rr), surface)) { rawD = rr; candidateD = true; } }
+        if (RRMask & 2u) { float4 rr = RRSpecular[logical]; if (NativeDisplayUseRR(RRMask, 1u, ValidRR(rr), surface)) { rawS = rr; candidateS = true; } }
         if (NativeDisplayPrefer(distance, best.x, candidateD)) { d = rawD; validD = true; best.x = distance; }
         if (NativeDisplayPrefer(distance, best.y, candidateS)) { s = rawS; validS = true; best.y = distance; }
         if (EnabledMask & 4u) {
-            float value = RRMask & 4u ? RRAO[logical] : sampled ? RawAO[packed] : -1;
+            float value = sampled ? RawAO[packed] : -1;
+            if (RRMask & 4u) { float rr = RRAO[logical]; if (isfinite(rr) && rr >= 0 && rr <= 1) value = rr; }
             if (NativeDisplayPrefer(distance, best.z, isfinite(value) && value >= 0)) {
                 ao = lerp(1, saturate(value), saturate(AOStrength)); best.z = distance;
             }
         }
         if (EnabledMask & 8u) {
-            float value = RRMask & 8u ? RRSO[logical] : sampled ? RawSO[packed] : -1;
+            float value = sampled ? RawSO[packed] : -1;
+            if (RRMask & 8u) { float rr = RRSO[logical]; if (isfinite(rr) && rr >= 0 && rr <= 1) value = rr; }
             if (NativeDisplayPrefer(distance, best.w, isfinite(value) && value >= 0)) {
                 so = lerp(1, saturate(value), saturate(SOStrength)); best.w = distance;
             }

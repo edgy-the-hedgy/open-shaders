@@ -1,5 +1,6 @@
 #include "Common/FrameBuffer.hlsli"
 #include "Common/NativeDisplaySampling.hlsli"
+#include "Common/NativeSignalSemantics.hlsli"
 Texture2D<float4> RawDiffuse : register(t0);
 Texture2D<float4> RawSpecular : register(t1);
 Texture2D<float4> SpecularAlbedo : register(t2);
@@ -28,11 +29,7 @@ uint2 LogicalPixel(uint2 pixel, uint2 logicalSize)
 {
     return min(pixel * logicalSize / NativeSize, logicalSize - 1u);
 }
-bool ExactReceiver(uint2 pixel, uint2 logical, uint2 logicalSize)
-{
-    return all(pixel == ((logical * 2u + 1u) * NativeSize) / (logicalSize * 2u));
-}
-bool ValidRR(float4 value) { return all(isfinite(value)) && value.a >= 0 && all(value.rgb >= 0); }
+bool ValidRR(float4 value) { return NativeRRChannelValid(value.r) && NativeRRChannelValid(value.g) && NativeRRChannelValid(value.b); }
 bool DisplayReceiver(uint2 pixel, uint2 source)
 {
     float4 receiver = Receivers[pixel], sample = Receivers[source];
@@ -50,11 +47,11 @@ float3 DirectDisplay(uint2 pixel, out bool validD, out bool validS, out uint2 ma
     int radius = int(NativeDisplaySearchRadius(DirectTraceMode, pixel.x, pixel.y, NativeSize.x, NativeSize.y));
     float4 ownD = RawDiffuse[pixel], ownS = RawSpecular[pixel];
     float4 ownDA = DiffuseAlbedo[pixel], ownSA = SpecularAlbedo[pixel];
-    if (DisplayReceiver(pixel, pixel) && ownDA.a > 0.5 && all(isfinite(ownDA)) && all(isfinite(ownSA)) &&
-        all(isfinite(ownD)) && all(isfinite(ownS))) {
+    if (DisplayReceiver(pixel, pixel) && ownDA.a > 0.5 && all(isfinite(ownDA.rgb)) && all(isfinite(ownSA.rgb)) &&
+        all(isfinite(ownD.rgb)) && all(isfinite(ownS.rgb))) {
         validD = validS = true;
         diffuse = ownD.rgb * ownDA.rgb; specular = ownS.rgb * ownSA.rgb;
-        return diffuse + specular + float3(ownD.a, ownS.a, ownSA.a);
+        return diffuse + specular + float3(isfinite(ownD.a) ? ownD.a : 0, isfinite(ownS.a) ? ownS.a : 0, isfinite(ownSA.a) ? ownSA.a : 0);
     }
     for (int y = -radius; y <= radius; ++y) for (int x = -radius; x <= radius; ++x) {
         int2 candidate = int2(pixel) + int2(x, y);
@@ -62,14 +59,14 @@ float3 DirectDisplay(uint2 pixel, out bool validD, out bool validS, out uint2 ma
         uint2 source = uint2(candidate);
         if (!DisplayReceiver(pixel, source)) continue;
         float4 da = DiffuseAlbedo[source], sa = SpecularAlbedo[source];
-        if (da.a <= 0.5 || !all(isfinite(da)) || !all(isfinite(sa))) continue;
+        if (!(da.a > 0.5)) continue;
         float distance = float(x*x + y*y);
         float4 d = RawDiffuse[source], s = RawSpecular[source];
-        if (distance < bestD && all(isfinite(d))) { diffuse = d.rgb * da.rgb; validD = true; bestD = distance; }
-        if (distance < bestS && all(isfinite(s))) { specular = s.rgb * sa.rgb; validS = true; bestS = distance; }
+        if (distance < bestD && all(isfinite(d.rgb)) && all(isfinite(da.rgb))) { diffuse = d.rgb * da.rgb; validD = true; bestD = distance; }
+        if (distance < bestS && all(isfinite(s.rgb)) && all(isfinite(sa.rgb))) { specular = s.rgb * sa.rgb; validS = true; bestS = distance; }
         if (distance < bestMaterial) {
             materialPixel = source; bestMaterial = distance;
-            emission = float3(isfinite(d.a) ? d.a : 0, isfinite(s.a) ? s.a : 0, sa.a);
+            emission = float3(isfinite(d.a) ? d.a : 0, isfinite(s.a) ? s.a : 0, isfinite(sa.a) ? sa.a : 0);
         }
     }
     return diffuse + specular + emission;
@@ -101,17 +98,16 @@ void IndirectDisplay(uint2 pixel, out float3 diffuse, out float3 specular, out b
     uint2 materialPixel;
     float3 fallbackD, fallbackS;
     float3 direct = DirectDisplay(pixel, validD, validS, materialPixel, fallbackD, fallbackS);
-    float4 d = RawDiffuse[materialPixel], s = RawSpecular[materialPixel];
     float4 da = DiffuseAlbedo[materialPixel], sa = SpecularAlbedo[materialPixel];
-    bool receiver = da.a > 0.5 && all(isfinite(da)) && all(isfinite(sa));
+    bool receiver = da.a > 0.5;
     float depth = mul(FrameBuffer::CameraView[0], float4(Receivers[pixel].xyz, 1)).z;
     if (DirectMask && receiver) {
         uint2 logical = LogicalPixel(pixel, DirectLogical);
         uint2 representative = ((logical * 2u + 1u) * NativeSize) / (DirectLogical * 2u);
         if (DisplayReceiver(pixel, representative) && abs(DirectDepth[logical] - depth) <= max(0.5, abs(depth) * 0.005)) {
             float4 rrD = RRDiffuse[logical], rrS = RRSpecular[logical];
-            if ((DirectMask & 1u) && ValidRR(rrD)) { direct += rrD.rgb * da.rgb - fallbackD; validD = true; }
-            if ((DirectMask & 2u) && ValidRR(rrS)) { direct += rrS.rgb * sa.rgb - fallbackS; validS = true; }
+            if (NativeDisplayUseRR(DirectMask, 0u, ValidRR(rrD), all(isfinite(da.rgb)))) { direct += rrD.rgb * da.rgb - fallbackD; validD = true; }
+            if (NativeDisplayUseRR(DirectMask, 1u, ValidRR(rrS), all(isfinite(sa.rgb)))) { direct += rrS.rgb * sa.rgb - fallbackS; validS = true; }
         }
     }
     DirectOutput[pixel] = float4(min(max(direct, 0), 65504.0), (validD || validS) && all(isfinite(direct)) ? 1 : 0);
@@ -126,8 +122,8 @@ void IndirectDisplay(uint2 pixel, out float3 diffuse, out float3 specular, out b
             uint2 representative = ((logical * 2u + 1u) * NativeSize) / (IndirectLogical * 2u);
             if (DisplayReceiver(pixel, representative) && abs(IndirectDepth[logical] - depth) <= max(0.5, abs(depth) * 0.005)) {
                 float4 rrD = RRIndirectDiffuse[logical], rrS = RRIndirectSpecular[logical];
-                if ((IndirectMask & 1u) && ValidRR(rrD)) { indirectD = rrD.rgb * da.rgb; validID = true; }
-                if ((IndirectMask & 2u) && ValidRR(rrS)) { indirectS = rrS.rgb * sa.rgb; validIS = true; }
+                if (NativeDisplayUseRR(IndirectMask, 0u, ValidRR(rrD), all(isfinite(da.rgb)))) { indirectD = rrD.rgb * da.rgb; validID = true; }
+                if (NativeDisplayUseRR(IndirectMask, 1u, ValidRR(rrS), all(isfinite(sa.rgb)))) { indirectS = rrS.rgb * sa.rgb; validIS = true; }
             }
         }
         indirect = max(0, indirectD + indirectS) * IndirectStrength;

@@ -1,6 +1,8 @@
 #include "Features/DX12NativeScene/SignalGrid.h"
 #include <catch2/catch_test_macros.hpp>
 #include "../../package/Shaders/Common/NativeDisplaySampling.hlsli"
+#include "../../package/Shaders/Common/NativeSignalSemantics.hlsli"
+#include <limits>
 #include <set>
 #include <fstream>
 
@@ -170,4 +172,16 @@ TEST_CASE("Sparse display footprints cover only genuine producer candidates", "[
         REQUIRE(NativeDisplayUseRR(mask,1,true,true)==bool(mask&2u));
         REQUIRE_FALSE(NativeDisplayUseRR(mask,0,false,true));
     }
+}
+
+TEST_CASE("RR radiance validity does not infer hit distance from Direct alpha", "[SignalGrid][SignalContract]")
+{
+    REQUIRE(NativeDirectAlpha(true) == 0.0f);
+    REQUIRE(NativeDirectAlpha(false) == -1.0f);
+    REQUIRE(NativeRRChannelValid(0));
+    REQUIRE(NativeRRChannelValid(65504));
+    REQUIRE_FALSE(NativeRRChannelValid(-1));
+    REQUIRE_FALSE(NativeRRChannelValid(std::numeric_limits<float>::infinity()));
+    REQUIRE_FALSE(NativeRRChannelValid(std::numeric_limits<float>::quiet_NaN()));
+
 }

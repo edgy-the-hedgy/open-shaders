@@ -40,3 +40,87 @@ Direct and RT-exclusive raw references are published only after all producer dis
 Audit: Direct slots remain owned from DX11 receiver submission through DX12 completion and DX11 retirement; Hybrid slots have the equivalent completion/retirement conditions. Each NativeCompute owner has two descriptor ranges; Direct preparation, indirect preparation, Direct composition, Hybrid preparation and Hybrid composition are separate owners and record once per slot submission. Hybrid estimator GI/AO have separate descriptor ranges within each slot. Frames retain old roots, pipelines and heaps across reload. Resize only reallocates available slots. SDK contexts retire against their own last-use fences; abandoned recordings invalidate history. Failed submitted fences retain the slot/context instead of allowing reuse. Shutdown timeout quarantine remains the conservative exceptional path. No CPU readback or per-frame CPU wait was introduced.
 
 Publication bytecode now reloads with native passes. Initial source capture unbinds an old UAV before binding source SRVs, and checks snapshot budget admission before allocating a new source. Source snapshot bytes and existing native display outputs are included in residency; display reconstruction adds no extra surfaces. Production tests enumerate sparse-mode candidate coordinates across stochastic phases and independent output masks. Incomplete stochastic edge tiles widen only the display search to the adjacent tile; coordinate tests include these edge pixels. If geometry rejection leaves no compatible genuine sample, raster fallback remains. Release/DXIL and C++ tests are verified. Final native sampling changes also preserve 24 recompiled legacy GI/AO DXBC permutations byte-for-byte (`build/native-correction-legacy/verification.csv`).
+
+## Stage 7: Demonstrated signal-contract corrections
+
+The pinned `vendor/include/FidelityFX/denoisers/include/ffx_denoiser.h` documents preserved Direct output alpha, preserved indirect hit-distance alpha and visibility-valued AO/SO outputs. [AMD's channel/layout documentation](https://gpuopen.com/manuals/fsr_sdk/techniques/denoising/) agrees with those channel meanings. SDK output RGB selection now uses per-signal successful-record masks, finite representable radiance and compatible surfaces, without treating preserved alpha as a hit distance or reconstructed-output validity marker. A record is still not GPU/visual acceptance evidence.
+
+Direct packing keeps exactly 0/-1 active/inactive alpha. Internal emission metadata no longer determines radiance finiteness. Diffuse and specular material/radiance validity remain independent in display and packing. Invalid AO/SO SDK values fall back to their own raw visibility instead of discarding that fallback. Hybrid surface matching also checks the available specular material guide. The pinned SDK's linear-albedo dispatch flag remains unchanged; current online naming differences do not trigger an SDK/API upgrade.
+
+Indirect producer misses remain -1, invalid/untraced raw data -2, and valid hit distances are preserved. Negative distances pack as inactive; the corrective pass does not invent a replacement hit distance. RT-exclusive RR still requires genuine valid receiver/material guides in addition to traced coordinates; missing guides remain inactive. Emission stays outside denoised radiance and material factors are restored exactly once. No new filtering or changes to producer sampling are introduced here.
+
+## Supported RR grids and fallback
+
+The existing [120-configuration coordinate matrix](native-rr-coverage.csv) remains applicable: display reconstruction never changes RR availability. Full Direct maps to all three RR grids. Fixed Half maps to Quarter RR at 1920x1080 and Half RR at 1919x1079. Other sparse combinations must pass the actual per-phase coordinate proof; no name whitelist is used. Odd logical widths use populated full-width storage. Native Hybrid shares its producer/packer layout. No combination is SDK runtime validated by this work.
+
+Direct diffuse/specular, RT-exclusive diffuse/specular and Hybrid diffuse/specular/AO/SO retain separate success masks and context failures. Incompatible Direct coverage leaves other producers eligible and selects display-ready raw fallback. Disabled producers schedule no fabricated RR work. Failed SDK outputs cannot substitute an unrelated signal.
+
+## Static matrix and verification scope
+
+| Requested combination | Static evidence / selected behavior |
+|---|---|
+| Full Direct, RR off | Radius zero; original per-pixel raw shading |
+| Sparse Direct, RR off | Actual producer candidates, bounded surface-safe display resolve |
+| Sparse Direct, compatible RR | Successful per-lobe logical RR mapped to native receivers |
+| Sparse Direct, incompatible RR | Coordinate proof rejects RR; display raw fallback stays available |
+| Direct off, Hybrid Half, RR off | Every planar native pixel finds genuine packed raw candidate |
+| Direct off, Hybrid Quarter, RR on | SDK logical output maps to surface-compatible native display |
+| Direct off, RT-exclusive on | Existing prepared-scene/Direct tracing prerequisites preserved |
+| Direct on, sparse RT-exclusive | Separate mode and independently selected indirect lobes |
+| All producers and RR on | Independent masks; native source excludes accumulated GI |
+| All producers off, RR on | Zero requested masks select no SDK output |
+
+Production helper tests enumerate native/logical/packed coordinates, stochastic phases, edge tiles, origins, output masks and invalid output values. These are CPU coverage/selection proofs under compatible-surface assumptions, not executed HLSL or GPU integration tests. Boundary rejection, actual shading and presentation remain owner checks.
+
+Verification logs are local under `build/native-correction-stage1.log` through `stage7.log`, with Stage 4/6 final logs and Stage 6 shader/test rerun. All stages built the Release DLL, compiled modified shaders and ran CppUtilTests. A concurrent Stage 6 test link hit an executable lock; the separate completed test build and subsequent test run passed. Final verification is sequential. The unchanged screenshot directory-symlink test remains skipped because alias privilege/support is unavailable. No runtime testing, deployment target or package generation was performed; automatic deployment is disabled in the build cache.
+
+## Owner validation and remaining limits
+
+Validate Full/Half/Quarter and checkerboard display, odd dimensions, sparse stochastic edge tiles, independently unavailable lobes, RR-off/incompatible/provider-failure fallback, material/depth discontinuities, source capture under each legacy provider, resize/reset/reload, actual GPU fences/output consumption, memory pressure and flat/VR fallback. Performance and reconstruction quality are unmeasured. Surface matching is conservative and can retain raster fallback when no compatible sample exists. Direct receiver identity is room-level, not object-level. Native execution remains flat-only. Animated/deforming depth motion and native texture mirroring into the old DX11 viewer remain outside this pass. No shadow-mask producer, Composer policy, transport tier, upscaling, frame-generation or final-present migration was added. The read-only reference branch was not modified.
+
+## Final verification and commits
+
+Final sequential Release build and CppUtilTests passed: **566 passed, one skipped; 386,522 assertions passed**. All six native DXIL shaders compiled, both changed DX11 capture shaders compiled as cs_5_0, and 24 legacy GI/AO permutations matched baseline bytecode. No runtime or SDK execution was performed. See the owner validation list above.
+
+| Stage | Commit |
+|---|---|
+| Direct display | `047d82630` |
+| RT-exclusive display | `499486ec0` |
+| Hybrid display | `b65405579` |
+| Initially lit source | `1c68b6403` |
+| Frame sampling | `6c2dcd12e` |
+| Raw ownership / lifetime | `e6c30f662` |
+| SDK signal contract | Commit containing this report; exact SHA in delivery reply |
+
+## Exact changed files
+
+Relative to the starting revision, excluding pre-existing generated files and local launchers:
+
+```text
+docs/development/native-renderer-corrections.md
+features/RTDirectLighting/Shaders/RTDirectLighting/directional.hlsl6
+features/RTDirectLighting/Shaders/RTDirectLighting/nativeDirectCompose.hlsl6
+features/RTDirectLighting/Shaders/RTDirectLighting/nativeHybridCompose.hlsl6
+features/RTDirectLighting/Shaders/RTDirectLighting/nativeSignalPreparation.hlsl6
+features/RedstoneGI/Shaders/RedstoneGI/NativeGICompat.hlsli
+features/RedstoneGI/Shaders/RedstoneGI/Sampling.hlsli
+features/RedstoneGI/Shaders/RedstoneGI/nativeInputs.cs.hlsl
+features/RedstoneGI/Shaders/RedstoneGI/nativeSource.cs.hlsl
+package/Shaders/Common/NativeDisplaySampling.hlsli
+package/Shaders/Common/NativeSignalSemantics.hlsli
+package/Shaders/Common/NativeTraceSampling.hlsli
+src/Deferred.cpp
+src/Feature.h
+src/Features/DX12NativeScene/DX12NativeScene.h
+src/Features/DX12NativeScene/DirectionalTrace.cpp
+src/Features/DX12NativeScene/NativeCompute.cpp
+src/Features/DX12NativeScene/NativeDirectComposition.cpp
+src/Features/DX12NativeScene/NativeHybridDispatch.cpp
+src/Features/DX12NativeScene/NativeHybridGI.cpp
+src/Features/DX12NativeScene/NativeHybridGI.h
+src/Features/DX12NativeScene/NativeHybridRR.cpp
+src/Features/DX12NativeScene/NativePublication.h
+src/Features/DX12NativeScene/PreparedRenderer.cpp
+src/Features/RedstoneGI/RedstoneGI.cpp
+tests/cpp/test_signal_grid.cpp
+```
