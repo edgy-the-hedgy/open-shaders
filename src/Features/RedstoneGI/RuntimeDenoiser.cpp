@@ -536,11 +536,12 @@ bool RedstoneDenoiser::DispatchNativeHybridRR(
     const bool fresh = nativeHybridLastFrame == UINT32_MAX;
     uint32_t newlyCreatedMask = 0u;
     const std::array<uint32_t, 3> familyFlags{
-        resources.directFamilies ? FFX_DENOISER_SIGNAL_DIRECT_DIFFUSE :
-            FFX_DENOISER_SIGNAL_INDIRECT_DIFFUSE,
-        resources.directFamilies ? FFX_DENOISER_SIGNAL_DIRECT_SPECULAR :
-            FFX_DENOISER_SIGNAL_INDIRECT_SPECULAR,
-        FFX_DENOISER_SIGNAL_AMBIENT_OCCLUSION | FFX_DENOISER_SIGNAL_SPECULAR_OCCLUSION };
+        static_cast<uint32_t>(resources.directFamilies ?
+            FFX_DENOISER_SIGNAL_DIRECT_DIFFUSE : FFX_DENOISER_SIGNAL_INDIRECT_DIFFUSE),
+        static_cast<uint32_t>(resources.directFamilies ?
+            FFX_DENOISER_SIGNAL_DIRECT_SPECULAR : FFX_DENOISER_SIGNAL_INDIRECT_SPECULAR),
+        static_cast<uint32_t>(FFX_DENOISER_SIGNAL_AMBIENT_OCCLUSION) |
+            static_cast<uint32_t>(FFX_DENOISER_SIGNAL_SPECULAR_OCCLUSION) };
     for (uint32_t family = 0; family < familyCount; ++family) {
         if (nativeHybridContexts[family]) continue;
         ffxCreateContextDescDenoiser create{};
