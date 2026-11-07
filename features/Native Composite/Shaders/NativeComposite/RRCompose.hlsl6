@@ -44,8 +44,8 @@ void main(uint3 id : SV_DispatchThreadID)
     if (!all(isfinite(nativeLight)) || !any(nativeLight != 0.0f)) return;
     // Raster color is accessed for the first time ONLY here, post-denoising.
     float4 color = Scene[pixel];
-    float3 linear = LegacyTransfer != 0u ? SignedPower(color.rgb, 1.6f) : color.rgb;
-    linear += nativeLight * Strength;
-    color.rgb = LegacyTransfer != 0u ? SignedPower(linear, 1.0f / 1.6f) : linear;
+    float3 linearColor = LegacyTransfer != 0u ? SignedPower(color.rgb, 1.6f) : color.rgb;
+    linearColor += nativeLight * Strength;
+    color.rgb = LegacyTransfer != 0u ? SignedPower(linearColor, 1.0f / 1.6f) : linearColor;
     Scene[pixel] = color;
 }
