@@ -2,6 +2,7 @@
 // coupling the native direct BRDF or its RR-ready raw signals to shadow history.
 Texture2D<float4> ShadowMask : register(t0);
 Texture2D<float> RasterDepth : register(t1);
+Texture2D<float4> RRShadowedIrradiance : register(t2);
 RWTexture2D<float4> Scene : register(u0);
 
 cbuffer ShadowConstants : register(b0)
@@ -15,6 +16,8 @@ cbuffer ShadowConstants : register(b0)
     float Blend;
     row_major float4x4 InverseProjection;
     row_major float4x4 InverseView;
+    uint RRActive;
+    float RRContribution;
 };
 
 float3 SignedPower(float3 value, float exponent)
@@ -39,7 +42,9 @@ void main(uint3 id : SV_DispatchThreadID)
 {
     if (any(id.xy >= Size)) return;
     const float4 center = ShadowMask[id.xy];
-    if (!ValidMask(center)) return;
+    const bool traced = ValidMask(center);
+    const bool skipped = center.y == -1.0f;
+    if (!traced && !(RRActive != 0u && skipped)) return;
     const float depth = RasterDepth[id.xy];
     if (!isfinite(depth)) return;
     float2 clip = (float2(id.xy) + 0.5f) * (2.0f / float2(Size)) - 1.0f;
@@ -48,11 +53,42 @@ void main(uint3 id : SV_DispatchThreadID)
     if (!all(isfinite(cameraView)) || abs(cameraView.w) <= 1e-8f) return;
     const float3 position = mul((float3x3)InverseView, cameraView.xyz / cameraView.w);
     const float receiverDistance = length(position);
-    if (!isfinite(receiverDistance) || receiverDistance <= 0.0f ||
-        abs(receiverDistance - center.z) > max(ReceiverTolerance, center.z * 1e-5f)) return;
+    if (!isfinite(receiverDistance) || receiverDistance <= 0.0f) return;
+    if (traced) {
+        if (abs(receiverDistance - center.z) > max(ReceiverTolerance, center.z * 1e-5f)) return;
+    } else {
+        // An omitted pixel has no native receiver identity. Admit a
+        // reconstructed result only near a current-frame traced receiver
+        // with compatible raster-derived distance.
+        const int2 offsets[4] = {
+            int2(-1, 0), int2(1, 0), int2(0, -1), int2(0, 1)
+        };
+        bool neighborValid = false;
+        [unroll] for (uint i = 0; i < 4; ++i) {
+            int2 at = int2(id.xy) + offsets[i];
+            if (any(at < 0) || any(at >= int2(Size))) continue;
+            float4 neighbor = ShadowMask[uint2(at)];
+            if (ValidMask(neighbor) &&
+                abs(receiverDistance - neighbor.z) <= max(ReceiverTolerance, neighbor.z * 1e-5f))
+                neighborValid = true;
+        }
+        if (!neighborValid) return;
+    }
 
-    float visibility = saturate(center.x);
-    if (RadiusPixels > 0.5f) {
+    float visibility = traced ? saturate(center.x) : 1.0f;
+    if (RRActive != 0u) {
+        const float reconstructed = RRShadowedIrradiance[id.xy].r;
+        if (!isfinite(reconstructed)) {
+            if (!traced) return;
+        } else {
+            // Unit-albedo shadowed irradiance is a normalized visibility.
+            // Missing checkerboard pixels have no raw value to blend with.
+            visibility = traced ? lerp(visibility, saturate(reconstructed), saturate(RRContribution))
+                                : saturate(reconstructed);
+        }
+    }
+    // Do not stack the experimental spatial shadow blur on top of RR.
+    if (RRActive == 0u && RadiusPixels > 0.5f) {
         int radius = clamp(int(round(RadiusPixels)), 1, 32);
         const int2 pixel = int2(id.xy);
         const int2 directions[4] = { int2(radius,0), int2(-radius,0), int2(0,radius), int2(0,-radius) };

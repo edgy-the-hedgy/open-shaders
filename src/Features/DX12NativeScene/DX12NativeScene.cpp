@@ -241,7 +241,7 @@ void DX12NativeScene::DispatchShadow(const char* a_stage)
 		shadowSettings.ShadowReachMultiplier, shadowSettings.ShadowFalloffFraction,
 		shadowSettings.ShadowFalloffExponent, shadowSettings.ShadowEmitterRadius,
 		shadowSettings.ShadowStochastic, shadowSettings.ShadowDistanceFade, shadowSettings.ShadowNormalInfluence,
-		shadowSettings.ShadowTraceDensityMode
+		shadowRRCheckerboard.load() ? 2u : shadowSettings.ShadowTraceDensityMode
 	};
 	shadow.Dispatch(*backend, scene->acceleration, scene->materials, selectedLights, camera, size, frame,
 		uint64_t(shadowSettings.FrameBudgetMB) * 1024 * 1024, controls);
@@ -320,7 +320,8 @@ void DX12NativeScene::PublishDiagnostics()
 			{ "stochastic", settings.ShadowStochastic }, { "emitterRadius", settings.ShadowEmitterRadius },
 			{ "reachMultiplier", settings.ShadowReachMultiplier }, { "falloffFraction", settings.ShadowFalloffFraction },
 			{ "falloffExponent", settings.ShadowFalloffExponent }, { "distanceFade", settings.ShadowDistanceFade },
-			{ "normalInfluence", settings.ShadowNormalInfluence }, { "traceDensityMode", settings.ShadowTraceDensityMode } } },
+			{ "normalInfluence", settings.ShadowNormalInfluence }, { "traceDensityMode", settings.ShadowTraceDensityMode },
+			{ "shadowRRCheckerboardOverride", shadowRRCheckerboard.load() } } },
 		{ "prepared", prepared.GetDiagnostics() }, { "materialFailure", materialBindings.Failure() }, { "acceleration", acceleration.GetDiagnostics() }, { "published", GetPublishedScene().has_value() } };
 	std::scoped_lock lock(diagnosticsMutex);
 	diagnostics = std::move(snapshot);

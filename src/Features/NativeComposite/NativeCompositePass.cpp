@@ -28,12 +28,12 @@ bool NativeComposite::InitializeShadow(ID3D12Device* a_device)
 			return false;
 		}
 		CD3DX12_DESCRIPTOR_RANGE ranges[2];
-		ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0);
+		ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0);
 		ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
 		CD3DX12_ROOT_PARAMETER parameters[3];
 		parameters[0].InitAsDescriptorTable(1, &ranges[0]);
 		parameters[1].InitAsDescriptorTable(1, &ranges[1]);
-		parameters[2].InitAsConstants(40, 0);
+		parameters[2].InitAsConstants(42, 0);
 		const CD3DX12_ROOT_SIGNATURE_DESC desc(3, parameters);
 		winrt::com_ptr<ID3DBlob> serialized, errors;
 		DX::ThrowIfFailed(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, serialized.put(), errors.put()));
@@ -173,6 +173,9 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			shadowStatus = "Current-frame shadow admitted; awaiting GPU submission";
 		}
 	}
+	const bool shadowRRRequested = applyShadow && a_shadowSettings.rrEnabled &&
+		a_shadow && a_shadow->controls.traceDensityMode == 2u && a_raster &&
+		a_raster->frame == a_frame && a_raster->cameraValid;
 	const bool blend = !a_rrSelection.enabled && supportsLighting && a_lighting && a_lighting->readyFence && a_lighting->readyValue &&
 		a_lighting->readyValue != UINT64_MAX && a_lighting->backend.d3d12Device.get() == a_device12 &&
 		a_lighting->textures[0] && a_lighting->textures[1] && a_lighting->textures[2] && a_lighting->textures[7] && a_lighting->textures[8] && a_lighting->textures[9] &&
@@ -236,7 +239,8 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 	try {
 		const bool recreate = !slot->frame || slot->device != a_device12 || slot->device11 != a_device11 ||
 			slot->sourceDesc.Width != desc.Width || slot->sourceDesc.Height != desc.Height || slot->sourceDesc.Format != desc.Format || slot->supportsLighting != supportsLighting ||
-			(rrRequested && (!slot->rrSlot.Ready() || slot->rrSlot.width != a_width || slot->rrSlot.height != a_height));
+			(rrRequested && (!slot->rrSlot.Ready() || slot->rrSlot.width != a_width || slot->rrSlot.height != a_height)) ||
+			(shadowRRRequested && (!slot->shadowRRSlot.Ready() || slot->shadowRRSlot.width != a_width || slot->shadowRRSlot.height != a_height));
 		if (recreate) {
 			// Reserve two full-size images: one DX11/DX12 shared input and
 			// one DX12-owned composited output. Guard incremental slot growth
@@ -247,9 +251,12 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			if (allocation == UINT64_MAX || allocation > (UINT64_MAX - 2ull * 1024 * 1024) / 2)
 				throw std::runtime_error("Composite allocation size unsupported");
 			const uint64_t rrBytes = rrRequested ? rr.EstimateBytes(a_device12, a_width, a_height) : 0u;
-			if (rrBytes == UINT64_MAX || rrBytes > UINT64_MAX - (allocation * 2 + 2ull * 1024 * 1024))
+			const uint64_t shadowRRBytes = shadowRRRequested ? shadowRR.EstimateBytes(a_device12, a_width, a_height) : 0u;
+			const uint64_t baseBytes = allocation * 2 + 2ull * 1024 * 1024;
+			if (rrBytes == UINT64_MAX || rrBytes > UINT64_MAX - baseBytes ||
+				shadowRRBytes == UINT64_MAX || shadowRRBytes > UINT64_MAX - baseBytes - rrBytes)
 				throw std::runtime_error("Native RR frame-pool allocation overflow");
-			const uint64_t required = allocation * 2 + 2ull * 1024 * 1024 + rrBytes;
+			const uint64_t required = baseBytes + rrBytes + shadowRRBytes;
 			uint64_t retained = 0;
 			for (const auto& candidate : slots) if (candidate && candidate.get() != slot) {
 				if (retained > UINT64_MAX - candidate->frameBytes) throw std::runtime_error("Composite retained size overflow");
@@ -267,6 +274,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			replacement->sourceDesc = desc;
 			replacement->supportsLighting = supportsLighting;
 			if (rrRequested) rr.Allocate(a_device12, replacement->rrSlot, a_width, a_height);
+			if (shadowRRRequested) shadowRR.Allocate(a_device12, replacement->shadowRRSlot, a_width, a_height);
 			auto sharedDesc = desc;
 			sharedDesc.Usage = D3D11_USAGE_DEFAULT;
 			sharedDesc.BindFlags = 0;
@@ -295,7 +303,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			srv.Texture2D.MipLevels = 1;
 			a_device12->CreateShaderResourceView(replacement->frame->color.get(), &srv, replacement->frame->descriptors->GetCPUDescriptorHandleForHeapStart());
 			if (supportsLighting) {
-				heapDesc.NumDescriptors = 3;
+				heapDesc.NumDescriptors = 4;
 				DX::ThrowIfFailed(a_device12->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(replacement->shadowDescriptors.put())));
 				heapDesc.NumDescriptors = 8;
 				DX::ThrowIfFailed(a_device12->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(replacement->lightingDescriptors.put())));
@@ -337,6 +345,12 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 				((blend || rrRequested) && !(applyShadow && !a_shadowSettings.afterLighting)) ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : D3D12_RESOURCE_STATE_COMMON)
 		};
 		slot->commands->ResourceBarrier(static_cast<UINT>(endBarriers.size()), endBarriers.data());
+		// Independent shadow RR requires only DX12 Native Scene's sparse mask
+		// and full-resolution raster geometry guidance, never Native Lighting.
+		NativeShadowRayRegeneration::Output shadowRROutput{};
+		if (shadowRRRequested)
+			shadowRROutput = shadowRR.Prepare(a_device12, slot->commands.get(),
+				slot->shadowRRSlot, a_shadow, a_raster, a_frame);
 		auto recordShadow = [&]() {
 			slot->shadowRoot = shadowRoot;
 			slot->shadowPipeline = shadowPipeline;
@@ -352,15 +366,23 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			srv.Format = DXGI_FORMAT_R32_FLOAT;
 			a_device12->CreateShaderResourceView(a_raster->depth->resource.get(), &srv, cpu);
 			cpu.ptr += step;
+			srv.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+			a_device12->CreateShaderResourceView(shadowRROutput.dispatched ?
+				slot->shadowRRSlot.resources[NativeShadowRayRegeneration::Resource::DenoisedSignal].get() : nullptr, &srv, cpu);
+			cpu.ptr += step;
 			D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
 			uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
 			uav.Format = desc.Format;
 			a_device12->CreateUnorderedAccessView(slot->frame->color.get(), nullptr, &uav, cpu);
-			const std::array start{
+			std::vector<D3D12_RESOURCE_BARRIER> start{
 				CD3DX12_RESOURCE_BARRIER::Transition(slot->frame->color.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
 				CD3DX12_RESOURCE_BARRIER::Transition(a_shadow->mask->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
 				CD3DX12_RESOURCE_BARRIER::Transition(a_raster->depth->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
 			};
+			if (shadowRROutput.dispatched)
+				start.push_back(CD3DX12_RESOURCE_BARRIER::Transition(
+					slot->shadowRRSlot.resources[NativeShadowRayRegeneration::Resource::DenoisedSignal].get(),
+					D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
 			slot->commands->ResourceBarrier(static_cast<UINT>(start.size()), start.data());
 			ID3D12DescriptorHeap* heaps[]{ slot->shadowDescriptors.get() };
 			slot->commands->SetDescriptorHeaps(1, heaps);
@@ -368,26 +390,32 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			slot->commands->SetComputeRootSignature(slot->shadowRoot.get());
 			auto gpu = slot->shadowDescriptors->GetGPUDescriptorHandleForHeapStart();
 			slot->commands->SetComputeRootDescriptorTable(0, gpu);
-			gpu.ptr += 2ull * step;
+			gpu.ptr += 3ull * step;
 			slot->commands->SetComputeRootDescriptorTable(1, gpu);
 			struct Constants {
 				uint32_t width, height; float receiverTolerance, radiusPixels;
 				uint32_t legacyTransfer, preview; float strength, blend;
 				DirectX::SimpleMath::Matrix inverseProjection, inverseView;
+				uint32_t rrActive; float rrContribution;
 			};
-			static_assert(sizeof(Constants) == 40 * sizeof(uint32_t));
+			static_assert(sizeof(Constants) == 42 * sizeof(uint32_t));
 			const auto& camera = a_raster->camera;
 			const Constants constants{ a_width, a_height, a_shadowSettings.receiverTolerance, a_shadowSettings.radiusPixels,
 				a_transfer == Transfer::LegacyScene ? 1u : 0u, a_shadowSettings.preview ? 1u : 0u,
 				a_shadowSettings.contribution, a_shadowSettings.blend,
-				camera.CameraProjInverse, camera.CameraViewInverse };
-			slot->commands->SetComputeRoot32BitConstants(2, 40, &constants, 0);
+				camera.CameraProjInverse, camera.CameraViewInverse,
+				shadowRROutput.dispatched ? 1u : 0u, a_shadowSettings.rrContribution };
+			slot->commands->SetComputeRoot32BitConstants(2, 42, &constants, 0);
 			slot->commands->Dispatch((a_width + 7) / 8, (a_height + 7) / 8, 1);
-			const std::array end{
+			std::vector<D3D12_RESOURCE_BARRIER> end{
 				CD3DX12_RESOURCE_BARRIER::Transition(slot->frame->color.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON),
 				CD3DX12_RESOURCE_BARRIER::Transition(a_shadow->mask->resource.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
 				CD3DX12_RESOURCE_BARRIER::Transition(a_raster->depth->resource.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON)
 			};
+			if (shadowRROutput.dispatched)
+				end.push_back(CD3DX12_RESOURCE_BARRIER::Transition(
+					slot->shadowRRSlot.resources[NativeShadowRayRegeneration::Resource::DenoisedSignal].get(),
+					D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON));
 			slot->commands->ResourceBarrier(static_cast<UINT>(end.size()), end.data());
 		};
         // The GPU command list records all RR preparation and AMD dispatches
@@ -513,6 +541,8 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 		submitted = true;
 		DX::ThrowIfFailed(a_queue->Signal(slot->fence.fence12.get(), done));
 		if (rrCompose) rr.OnSubmitted(slot->rrSlot, slot->fence.fence12.get(), done, rrOutput);
+		if (shadowRROutput.dispatched)
+			shadowRR.OnSubmitted(slot->shadowRRSlot, slot->fence.fence12.get(), done, shadowRROutput);
 		auto& frame = *slot->frame;
 		frame.producerFence = slot->fence.fence12;
 		frame.producerValue = done;
@@ -524,6 +554,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 		frame.valid = true;
 		frame.lightingSubmitted = blend || rrCompose;
 		frame.shadowSubmitted = applyShadow;
+		frame.shadowRRSubmitted = applyShadow && shadowRROutput.dispatched;
 		frame.rrSubmitted = rrCompose && rrOutput.dispatched;
 		frame.rrRawBypass = rrCompose && !rrOutput.dispatched;
 		slot->countersRead = !blend;
@@ -533,7 +564,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			"Submitted: native raw bypass combined after RR stage") : "Submitted";
 		if (a_rrSelection.enabled && !rrCompose && !rrRequested)
 			status = "RR admission rejected; raster scene retained without native direct lighting";
-		if (applyShadow) shadowStatus = "Independent shadow layer submitted";
+		if (applyShadow) shadowStatus = shadowRROutput.dispatched ? "Independent 50% shadow RR output submitted" : "Independent raw shadow layer submitted";
 		return slot->frame;
 	} catch (const std::exception& error) {
 		status = error.what();

@@ -4,7 +4,7 @@
 #include "Globals.h"
 #include "Features/LinearLighting.h"
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(NativeCompositeFeature::Settings, Enabled, AddLighting, LightingStrength, PersistLab, ShadowLayerEnabled, ShadowContribution, ShadowBlend, ShadowRadiusPixels, ShadowReceiverTolerance, ShadowPreview, ShadowAfterLighting, RREnabled, RRDirectDiffuse, RRDirectSpecular, RRDiffuseContribution, RRSpecularContribution)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(NativeCompositeFeature::Settings, Enabled, AddLighting, LightingStrength, PersistLab, ShadowLayerEnabled, ShadowContribution, ShadowBlend, ShadowRadiusPixels, ShadowReceiverTolerance, ShadowPreview, ShadowAfterLighting, ShadowRREnabled, ShadowRRContribution, RREnabled, RRDirectDiffuse, RRDirectSpecular, RRDiffuseContribution, RRSpecularContribution)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(NativeComposite::Policy, diffuse, specular, visual)
 
 namespace
@@ -61,11 +61,24 @@ void NativeCompositeFeature::DrawSettings()
 	shadowChanged |= ImGui::SliderFloat("Shadow blend", &settings.ShadowBlend, 0.0f, 1.0f, "%.2f");
 	shadowChanged |= ImGui::SliderFloat("Shadow softness (pixels)", &settings.ShadowRadiusPixels, 0.0f, 32.0f, "%.1f");
 	shadowChanged |= ImGui::SliderFloat("Shadow receiver tolerance", &settings.ShadowReceiverTolerance, 0.1f, 64.0f, "%.2f");
+	shadowChanged |= ImGui::Checkbox("Shadow FSR RR (50% checkerboard)", &settings.ShadowRREnabled);
+	ImGui::BeginDisabled(!settings.ShadowRREnabled);
+	shadowChanged |= ImGui::SliderFloat("Shadow RR contribution", &settings.ShadowRRContribution, 0.0f, 1.0f, "%.2f");
+	ImGui::EndDisabled();
+	ImGui::TextDisabled("Full-res shadow RR context/output; half-width packed ray input.");
+	ImGui::TextDisabled("At 0 RR mix, skipped checkerboard pixels still use reconstructed visibility.");
+	if (settings.ShadowRREnabled) {
+		ImGui::TextWrapped("Shadow RR: %s", pass.ShadowRRStatus().c_str());
+		ImGui::TextDisabled("Shadow RR dispatches: %llu | bypasses: %llu",
+			static_cast<unsigned long long>(pass.ShadowRRDispatches()),
+			static_cast<unsigned long long>(pass.ShadowRRBypasses()));
+	}
 	shadowChanged |= ImGui::Checkbox("Preview independent shadow mask", &settings.ShadowPreview);
 	shadowChanged |= ImGui::Checkbox("Apply shadows to final combined lighting", &settings.ShadowAfterLighting);
 	ImGui::TextDisabled("Off: shadow raster first. On: shadow raster + native direct.");
 	ImGui::TextDisabled("Boost >1 deepens partial shadows. Native Lighting may be disabled.");
 	if (shadowChanged) ++validityRevision;
+	globals::features::dx12NativeScene.SetShadowRRCheckerboard(settings.Enabled && settings.ShadowLayerEnabled && settings.ShadowRREnabled);
 	if (ImGui::CollapsingHeader("Validity Lab")) {
 		ImGui::Checkbox("Persist experimental compositor policies", &settings.PersistLab);
 		const char* policies[]{ "Strict", "Effective", "Force finite contributions" };
@@ -120,9 +133,11 @@ void NativeCompositeFeature::LoadSettings(json& a_json)
 	settings.RRDiffuseContribution = safe(settings.RRDiffuseContribution, Settings{}.RRDiffuseContribution, 0.0f, 4.0f);
 	settings.RRSpecularContribution = safe(settings.RRSpecularContribution, Settings{}.RRSpecularContribution, 0.0f, 4.0f);
 	settings.ShadowBlend = safe(settings.ShadowBlend, Settings{}.ShadowBlend, 0.0f, 1.0f);
+	settings.ShadowRRContribution = safe(settings.ShadowRRContribution, Settings{}.ShadowRRContribution, 0.0f, 1.0f);
 	settings.ShadowRadiusPixels = safe(settings.ShadowRadiusPixels, Settings{}.ShadowRadiusPixels, 0.0f, 32.0f);
 	settings.ShadowReceiverTolerance = safe(settings.ShadowReceiverTolerance, Settings{}.ShadowReceiverTolerance, 0.1f, 64.0f);
 	enabled = settings.Enabled;
+	globals::features::dx12NativeScene.SetShadowRRCheckerboard(settings.Enabled && settings.ShadowLayerEnabled && settings.ShadowRREnabled);
 	if (settings.ShadowLayerEnabled)
 		globals::features::dx12NativeScene.RequestShadowProducerForComposite();
 }
@@ -141,6 +156,7 @@ void NativeCompositeFeature::RestoreDefaultSettings()
 	policy = {};
 	++validityRevision;
 	enabled = settings.Enabled;
+	globals::features::dx12NativeScene.SetShadowRRCheckerboard(settings.Enabled && settings.ShadowLayerEnabled && settings.ShadowRREnabled);
 	if (settings.ShadowLayerEnabled)
 		globals::features::dx12NativeScene.RequestShadowProducerForComposite();
 }
@@ -159,10 +175,13 @@ void NativeCompositeFeature::ConfigureShadowLayer(const json& args)
 	tune("blend", settings.ShadowBlend, 0.0f, 1.0f);
 	tune("radiusPixels", settings.ShadowRadiusPixels, 0.0f, 32.0f);
 	tune("receiverTolerance", settings.ShadowReceiverTolerance, 0.1f, 64.0f);
+	tune("rrContribution", settings.ShadowRRContribution, 0.0f, 1.0f);
+	if (args.contains("rrEnabled")) settings.ShadowRREnabled = args.at("rrEnabled").get<bool>();
 	if (args.contains("enabled")) settings.ShadowLayerEnabled = args.at("enabled").get<bool>();
 	else if (args.contains("strength") || args.contains("contribution")) settings.ShadowLayerEnabled = true;
 	if (args.contains("preview")) settings.ShadowPreview = args.at("preview").get<bool>();
 	if (args.contains("afterLighting")) settings.ShadowAfterLighting = args.at("afterLighting").get<bool>();
+	globals::features::dx12NativeScene.SetShadowRRCheckerboard(settings.Enabled && settings.ShadowLayerEnabled && settings.ShadowRREnabled);
 	if (settings.ShadowLayerEnabled)
 		globals::features::dx12NativeScene.RequestShadowProducerForComposite();
 	++validityRevision;
@@ -197,7 +216,7 @@ void NativeCompositeFeature::RegisterUxActions()
 		}
 		++feature.validityRevision;
 	});
-	FEATURE_COMMAND("shadowLayer", "Configure independent shadow composition, unrelated to Native Lighting: enabled, contribution (0..4), blend (0..1), radiusPixels, receiverTolerance, preview, afterLighting.", [](Feature* self, const json& args) {
+	FEATURE_COMMAND("shadowLayer", "Configure independent shadow composition, unrelated to Native Lighting: enabled, contribution (0..4), blend (0..1), radiusPixels, receiverTolerance, preview, afterLighting, rrEnabled, rrContribution.", [](Feature* self, const json& args) {
 		auto& feature = *static_cast<NativeCompositeFeature*>(self);
 		feature.ConfigureShadowLayer(args);
 	});
@@ -239,6 +258,9 @@ json NativeCompositeFeature::GetDiagnostics()
 		{ "shadowOpaqueRetryAttempts", sceneDiagnostics.value("shadowOpaqueRetryAttempts", uint64_t{ 0 }) },
 		{ "shadowOpaqueRetryRecovered", sceneDiagnostics.value("shadowOpaqueRetryRecovered", uint64_t{ 0 }) },
 		{ "shadowLayerEnabled", settings.ShadowLayerEnabled },
+		{ "shadowRREnabled", settings.ShadowRREnabled }, { "shadowRRContribution", settings.ShadowRRContribution },
+		{ "shadowRRStatus", pass.ShadowRRStatus() }, { "shadowRRDispatches", pass.ShadowRRDispatches() },
+		{ "shadowRRBypasses", pass.ShadowRRBypasses() },
 		{ "shadowContribution", settings.ShadowContribution },
 		{ "shadowAfterLighting", settings.ShadowAfterLighting } };
 }
@@ -265,7 +287,8 @@ std::shared_ptr<const NativeComposite::Frame> NativeCompositeFeature::Capture(ID
 	const NativeComposite::ShadowSettings shadowSettings{
 		selected.ShadowLayerEnabled ? selected.ShadowContribution : 0.0f,
 		selected.ShadowBlend, selected.ShadowRadiusPixels, selected.ShadowReceiverTolerance,
-		selected.ShadowLayerEnabled && selected.ShadowPreview, selected.ShadowAfterLighting, revision
+		selected.ShadowLayerEnabled && selected.ShadowPreview, selected.ShadowAfterLighting,
+		selected.ShadowRREnabled && selected.ShadowLayerEnabled, selected.ShadowRRContribution, revision
 	};
 	const bool wantShadow = shadowSettings.preview || shadowSettings.contribution * shadowSettings.blend > 0.0f;
 	const auto shadow = wantShadow && !unsupportedGamut ? globals::features::dx12NativeScene.GetShadowMask(a_frame) : nullptr;
@@ -277,6 +300,15 @@ std::shared_ptr<const NativeComposite::Frame> NativeCompositeFeature::Capture(ID
 			selected.RRDirectDiffuse, selected.RRDirectSpecular },
 		selected.LightingStrength, selected.RRDiffuseContribution, selected.RRSpecularContribution,
 		selectedPolicy, revision);
+	// If the dedicated runtime/shader context fails, revert the producer to
+	// its saved trace density on the next frame instead of leaving permanent
+	// checkerboard holes in the raw-shadow fallback.
+	if (selected.ShadowRREnabled && pass.ShadowRRFailed()) {
+		std::scoped_lock lock(settingsMutex);
+		settings.ShadowRREnabled = false;
+		++validityRevision;
+		globals::features::dx12NativeScene.SetShadowRRCheckerboard(false);
+	}
 	if (frame) ++captures;
 	if (frame && frame->lightingSubmitted) {
 		++lightingSubmissions;

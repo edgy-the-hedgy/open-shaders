@@ -20,6 +20,8 @@ public:
 	{
 		float contribution = 1.0f, blend = 1.0f, radiusPixels = 0.0f, receiverTolerance = 2.0f;
 		bool preview = false, afterLighting = false;
+		bool rrEnabled = false;
+		float rrContribution = 1.0f;
 		uint64_t revision = 1;
 	};
 	struct Policy
@@ -43,6 +45,7 @@ public:
 		bool valid = false;
 		bool lightingSubmitted = false;
 		bool shadowSubmitted = false;
+		bool shadowRRSubmitted = false;
 		bool rrSubmitted = false;
 		bool rrRawBypass = false;
 		/** @brief Reports whether the producer fence completed without device removal. */
@@ -76,6 +79,10 @@ public:
 	uint64_t RRDispatches() const { return rr.RRDispatches(); }
 	uint64_t RRRawBypasses() const { return rr.RawBypasses(); }
 	uint64_t RRCompositePasses() const { return rr.CompositePasses(); }
+	const std::string& ShadowRRStatus() const { return shadowRR.Status(); }
+	uint64_t ShadowRRDispatches() const { return shadowRR.Dispatches(); }
+	uint64_t ShadowRRBypasses() const { return shadowRR.Bypasses(); }
+	bool ShadowRRFailed() const { return shadowRR.Failed(); }
 	uint64_t CompletedComposites() const { return completedComposites.load(); }
 	uint64_t AcceptedPixels() const { return acceptedPixels.load(); }
 	uint64_t ModifiedPixels() const { return modifiedPixels.load(); }
@@ -91,6 +98,7 @@ private:
 		std::shared_ptr<Frame> frame;
 		std::unique_ptr<WrappedResource> shared;
 		NativeRayRegeneration::Slot rrSlot;
+		NativeShadowRayRegeneration::Slot shadowRRSlot;
 		winrt::com_ptr<ID3D12CommandAllocator> allocator;
 		winrt::com_ptr<ID3D12GraphicsCommandList> commands;
 		winrt::com_ptr<ID3D12DescriptorHeap> lightingDescriptors, shadowDescriptors;
@@ -111,6 +119,7 @@ private:
 	};
 	std::array<std::unique_ptr<Slot>, 4> slots;
 	NativeRayRegeneration rr;
+	NativeShadowRayRegeneration shadowRR;
 	winrt::com_ptr<ID3D12RootSignature> root;
 	winrt::com_ptr<ID3D12PipelineState> pipeline;
 	ID3D12Device* pipelineDevice = nullptr, *shadowPipelineDevice = nullptr;

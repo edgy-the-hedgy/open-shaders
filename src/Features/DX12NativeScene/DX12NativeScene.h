@@ -63,6 +63,9 @@ struct DX12NativeScene final : Feature
 		requestedShadow = 1;
 		shadowResetRequested = true;
 	}
+	/** @brief Native Composite requests sparse shadow rays only while shadow RR is active.
+	 * Raw producer remains independent of Native Lighting and keeps its saved density mode. */
+	void SetShadowRRCheckerboard(bool a_enabled) { shadowRRCheckerboard.store(a_enabled); }
 	/** @brief Retains the scene graphics session for DX12-only consumers. */
 	std::optional<GraphicsBackend> GetGraphicsBackend() const { return loaded && settings.Enabled && !transitionOpen ? backend : std::nullopt; }
 	/** @brief Retains a completed scene matching the current cell and revision. */
@@ -93,6 +96,7 @@ private:
 	uint64_t revision = 0;
 	uint32_t cellID = 0;
 	std::atomic<bool> resetRequested{ false }, reloadRequested{ false }, shadowResetRequested{ false };
+	std::atomic<bool> shadowRRCheckerboard{ false };
 	std::atomic<int> requestedEnabled{ -1 }, requestedShadow{ -1 };
 	std::atomic<uint32_t> requestedBudget{ 0 };
 	std::atomic<uint32_t> requestedFrameBudget{ UINT32_MAX };

@@ -107,3 +107,70 @@ private:
     void RetireContexts();
     static bool IsComplete(ID3D12Fence* fence, uint64_t value);
 };
+
+ 
+// Dedicated checkerboard Direct Diffuse context for independent native shadows.
+// Native Lighting is intentionally not an input or a precondition.
+class NativeShadowRayRegeneration
+{
+public:
+    enum Resource : size_t {
+        LinearDepth, MotionDepth, Normals, DiffuseAlbedo, PackedSignal, DenoisedSignal, Count
+    };
+    struct Slot {
+        std::array<winrt::com_ptr<ID3D12Resource>, Resource::Count> resources;
+        winrt::com_ptr<ID3D12DescriptorHeap> guideDescriptors, packingDescriptors;
+        uint32_t width = 0, height = 0;
+        uint64_t allocationBytes = 0;
+        bool Ready() const {
+            return resources[LinearDepth] && resources[DenoisedSignal] &&
+                guideDescriptors && packingDescriptors;
+        }
+    };
+    struct Output {
+        bool dispatched = false;
+        uint32_t frame = 0;
+        uint64_t sceneRevision = 0;
+    };
+
+    ~NativeShadowRayRegeneration();
+    uint64_t EstimateBytes(ID3D12Device* device, uint32_t width, uint32_t height) const;
+    void Allocate(ID3D12Device* device, Slot& slot, uint32_t width, uint32_t height);
+    Output Prepare(ID3D12Device* device, ID3D12GraphicsCommandList* commands,
+        Slot& slot, const std::shared_ptr<const DX12Native::ShadowFrame>& shadow,
+        const std::shared_ptr<const DX12Native::RasterFrame>& raster, uint32_t frame);
+    void OnSubmitted(const Slot& slot, ID3D12Fence* fence, uint64_t value, const Output& output);
+    const std::string& Status() const { return status; }
+    uint64_t Dispatches() const { return dispatches; }
+    uint64_t Bypasses() const { return bypasses; }
+    bool Failed() const { return sdkFailed; }
+private:
+    struct Retired {
+        ffx::Context context{};
+        winrt::com_ptr<ID3D12Fence> fence;
+        uint64_t value = 0;
+    };
+    bool EnsureRuntime();
+    bool EnsureShaders(ID3D12Device* device);
+    bool EnsureContext(ID3D12Device* device, uint32_t width, uint32_t height);
+    void RetireContexts();
+    static bool Complete(ID3D12Fence* fence, uint64_t value);
+    ffx::Context context{};
+    std::vector<Retired> retired;
+    ID3D12Device* contextDevice = nullptr;
+    uint32_t contextWidth = 0, contextHeight = 0;
+    HMODULE loaderModule = nullptr, denoiserModule = nullptr;
+    ffxFunctions runtimeApi{};
+    bool sdkFailed = false;
+    winrt::com_ptr<ID3D12Fence> lastContextFence;
+    uint64_t lastContextValue = 0;
+    uint32_t lastFrame = 0, previousFrame = 0, previousWidth = 0, previousHeight = 0;
+    uint64_t lastSceneRevision = 0, previousSceneRevision = 0;
+    bool lastFrameValid = false, previousValid = false;
+    winrt::com_ptr<ID3D12Resource> previousDepth;
+    winrt::com_ptr<ID3D12RootSignature> guideRoot, packRoot;
+    winrt::com_ptr<ID3D12PipelineState> guidePso, packPso;
+    ID3D12Device* shaderDevice = nullptr;
+    uint64_t dispatches = 0, bypasses = 0;
+    std::string status = "Shadow RR disabled";
+};

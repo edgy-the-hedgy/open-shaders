@@ -22,6 +22,8 @@ struct NativeCompositeFeature final : Feature
 		bool ShadowLayerEnabled = true;
 		float ShadowContribution = 2.0f; // 0..4, boosts weighted occlusion beyond 1x.
 		float ShadowBlend = 0.70f;       // 0..1, mixes shadow effect with unshadowed scene.
+		bool ShadowRREnabled = false; // Separate full-res RR context, half-rate shadow rays.
+		float ShadowRRContribution = 1.0f; // 0..1, final-stage mix for traced samples.
 		float ShadowRadiusPixels = 2.0f, ShadowReceiverTolerance = 16.0f;
 		bool ShadowPreview = false;
 		bool ShadowAfterLighting = true;  // false: raster only; true: combined raster + native direct.

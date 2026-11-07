@@ -539,3 +539,375 @@ void NativeRayRegeneration::OnSubmitted(const Slot& slot, ID3D12Fence* fence,
         lastRRFrameValid = true;
     } else lastRRFrameValid = false;
 }
+
+
+bool NativeShadowRayRegeneration::Complete(ID3D12Fence* fence, uint64_t value)
+{
+    if (!fence || !value) return true;
+    const auto completed = fence->GetCompletedValue();
+    return completed != UINT64_MAX && completed >= value;
+}
+
+void NativeShadowRayRegeneration::RetireContexts()
+{
+    if (!runtimeApi.DestroyContext) return;
+    for (auto it = retired.begin(); it != retired.end();) {
+        if (Complete(it->fence.get(), it->value)) {
+            if (it->context) (void)runtimeApi.DestroyContext(&it->context, nullptr);
+            it = retired.erase(it);
+        } else ++it;
+    }
+}
+
+NativeShadowRayRegeneration::~NativeShadowRayRegeneration()
+{
+    RetireContexts();
+    bool safe = Complete(lastContextFence.get(), lastContextValue);
+    for (const auto& old : retired) safe &= Complete(old.fence.get(), old.value);
+    if (safe && runtimeApi.DestroyContext) {
+        if (context) (void)runtimeApi.DestroyContext(&context, nullptr);
+        for (auto& old : retired)
+            if (old.context) (void)runtimeApi.DestroyContext(&old.context, nullptr);
+    } else if (context || !retired.empty()) {
+        safe = false; // Keep the provider loaded while GPU work may still reference it.
+    }
+    if (safe) {
+        if (denoiserModule) FreeLibrary(denoiserModule);
+        if (loaderModule) FreeLibrary(loaderModule);
+    }
+}
+
+bool NativeShadowRayRegeneration::EnsureRuntime()
+{
+    if (sdkFailed) { status = "Shadow RR provider quarantined for this session"; return false; }
+    if (loaderModule && denoiserModule && runtimeApi.CreateContext &&
+        runtimeApi.DestroyContext && runtimeApi.Dispatch) return true;
+    const auto directory = (Util::PathHelpers::GetDataPath() /
+        "Shaders" / "Upscaling" / "FidelityFX").lexically_normal();
+    if (!directory.is_absolute()) { status = "Shadow RR DLL path is not absolute"; return false; }
+    constexpr DWORD flags = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
+        LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_USER_DIRS;
+    static DLL_DIRECTORY_COOKIE registered = nullptr;
+    if (!registered) {
+        const auto kernel = GetModuleHandleW(L"kernel32.dll");
+        using RegisterDir = DLL_DIRECTORY_COOKIE(WINAPI*)(PCWSTR);
+        const auto fn = kernel ? reinterpret_cast<RegisterDir>(GetProcAddress(kernel, "AddDllDirectory")) : nullptr;
+        if (fn) registered = fn(directory.c_str());
+    }
+    if (!registered) { status = "Shadow RR DLL directory registration failed"; return false; }
+    if (!loaderModule)
+        loaderModule = LoadLibraryExW((directory / "amd_fidelityfx_loader_dx12.dll").c_str(), nullptr, flags);
+    if (!loaderModule) { sdkFailed = true; status = "Shadow RR loader DLL unavailable"; return false; }
+    if (!denoiserModule)
+        denoiserModule = LoadLibraryExW((directory / "amd_fidelityfx_denoiser_dx12.dll").c_str(), nullptr, flags);
+    if (!denoiserModule) { sdkFailed = true; status = "Shadow RR 1.2.1 denoiser DLL unavailable"; return false; }
+    ffxLoadFunctions(&runtimeApi, loaderModule);
+    if (!runtimeApi.CreateContext || !runtimeApi.DestroyContext || !runtimeApi.Dispatch) {
+        sdkFailed = true;
+        status = "Shadow RR runtime missing required exports";
+        return false;
+    }
+    return true;
+}
+
+bool NativeShadowRayRegeneration::EnsureShaders(ID3D12Device* device)
+{
+    if (shaderDevice == device && guideRoot && guidePso && packRoot && packPso) return true;
+    guideRoot = nullptr; guidePso = nullptr; packRoot = nullptr; packPso = nullptr;
+    try {
+        MakeComputePipeline(device, "Data/Shaders/NativeComposite/ShadowRRPrepare.dxil",
+            4, 4, 36, guideRoot, guidePso);
+        MakeComputePipeline(device, "Data/Shaders/NativeComposite/ShadowRRPack.dxil",
+            1, 1, 4, packRoot, packPso);
+        shaderDevice = device;
+        return true;
+    } catch (const std::exception& error) {
+        status = error.what();
+        sdkFailed = true;
+        return false;
+    }
+}
+
+bool NativeShadowRayRegeneration::EnsureContext(ID3D12Device* device, uint32_t width, uint32_t height)
+{
+    RetireContexts();
+    if (!EnsureRuntime()) return false;
+    if (context && (contextDevice != device || contextWidth != width || contextHeight != height)) {
+        if (retired.size() >= 8) { status = "Shadow RR context retirement budget exhausted"; return false; }
+        if (Complete(lastContextFence.get(), lastContextValue))
+            (void)runtimeApi.DestroyContext(&context, nullptr);
+        else {
+            Retired old{};
+            old.context = context;
+            old.fence = lastContextFence;
+            old.value = lastContextValue;
+            retired.push_back(std::move(old));
+        }
+        context = nullptr;
+        lastFrameValid = false;
+        previousValid = false;
+    }
+    if (context) return true;
+    ffx::CreateContextDescDenoiser desc{};
+    desc.version = FFX_DENOISER_VERSION;
+    desc.maxRenderSize = { width, height };
+    desc.signalFlags = FFX_DENOISER_SIGNAL_DIRECT_DIFFUSE;
+    desc.checkerboardSignalFlags = FFX_DENOISER_SIGNAL_DIRECT_DIFFUSE;
+    ffx::CreateBackendDX12Desc backend{};
+    backend.device = device;
+    ffxReturnCode_t result = FFX_API_RETURN_ERROR;
+    DWORD faultCode = 0;
+    const bool safe = Util::SehGuarded([&] {
+        desc.header.pNext = &backend.header;
+        backend.header.pNext = nullptr;
+        result = runtimeApi.CreateContext(&context, &desc.header, nullptr);
+    }, &faultCode);
+    if (!safe || result != FFX_API_RETURN_OK || !context) {
+        if (context) (void)runtimeApi.DestroyContext(&context, nullptr);
+        context = nullptr;
+        sdkFailed = true;
+        status = "Shadow RR context unsupported or failed; raw shadow fallback";
+        return false;
+    }
+    contextDevice = device; contextWidth = width; contextHeight = height;
+    lastFrameValid = false;
+    status = "Independent shadow RR 1.2.1 context ready (50% checkerboard)";
+    return true;
+}
+
+uint64_t NativeShadowRayRegeneration::EstimateBytes(ID3D12Device* device, uint32_t width, uint32_t height) const
+{
+    if (!device || !width || !height) return UINT64_MAX;
+    uint64_t bytes = 1ull * 1024 * 1024;
+    for (size_t i = 0; i < Resource::Count; ++i) {
+        const DXGI_FORMAT format = i == Resource::LinearDepth ?
+            DXGI_FORMAT_R32_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT;
+        const uint32_t resourceWidth = i == Resource::PackedSignal ? (width + 1u) / 2u : width;
+        const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(format, resourceWidth, height,
+            1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+        const uint64_t size = device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
+        if (size == UINT64_MAX || bytes > UINT64_MAX - size) return UINT64_MAX;
+        bytes += size;
+    }
+    return bytes;
+}
+
+void NativeShadowRayRegeneration::Allocate(ID3D12Device* device, Slot& slot, uint32_t width, uint32_t height)
+{
+    slot = {};
+    slot.width = width; slot.height = height;
+    slot.allocationBytes = EstimateBytes(device, width, height);
+    if (slot.allocationBytes == UINT64_MAX)
+        throw std::runtime_error("Shadow RR resource dimensions or allocation size unsupported");
+    const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+    for (size_t i = 0; i < Resource::Count; ++i) {
+        const DXGI_FORMAT format = i == Resource::LinearDepth ?
+            DXGI_FORMAT_R32_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT;
+        const uint32_t resourceWidth = i == Resource::PackedSignal ? (width + 1u) / 2u : width;
+        const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(format, resourceWidth, height,
+            1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+        DX::ThrowIfFailed(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE,
+            &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(slot.resources[i].put())));
+    }
+    D3D12_DESCRIPTOR_HEAP_DESC desc{};
+    desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    desc.NumDescriptors = 8; // 4 guide SRVs, 4 guide UAVs
+    DX::ThrowIfFailed(device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(slot.guideDescriptors.put())));
+    desc.NumDescriptors = 2; // shadow mask SRV, packed signal UAV
+    DX::ThrowIfFailed(device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(slot.packingDescriptors.put())));
+}
+
+NativeShadowRayRegeneration::Output NativeShadowRayRegeneration::Prepare(
+    ID3D12Device* device, ID3D12GraphicsCommandList* commands, Slot& slot,
+    const std::shared_ptr<const DX12Native::ShadowFrame>& shadow,
+    const std::shared_ptr<const DX12Native::RasterFrame>& raster, uint32_t frame)
+{
+    Output out{};
+    if (!device || !commands || !shadow || !shadow->scene || !shadow->mask ||
+        !shadow->mask->resource || !raster || !raster->cameraValid ||
+        frame != shadow->frame || frame != raster->frame ||
+        shadow->width != slot.width || shadow->height != slot.height ||
+        raster->width < slot.width || raster->height < slot.height ||
+        shadow->controls.traceDensityMode != 2u || !slot.Ready() ||
+        !raster->depth || !raster->depth->resource ||
+        !raster->inputs[size_t(DX12Native::RasterFrame::Input::Motion)] ||
+        !raster->inputs[size_t(DX12Native::RasterFrame::Input::NormalRoughness)]) {
+        lastFrameValid = false;
+        previousValid = false;
+        ++bypasses;
+        status = "Shadow RR bypass: same-frame half-rate mask or raster guidance unavailable";
+        return out;
+    }
+    if (!EnsureShaders(device) || !EnsureContext(device, slot.width, slot.height)) {
+        lastFrameValid = false;
+        previousValid = false;
+        ++bypasses;
+        return out;
+    }
+
+    const uint64_t sceneRevision = shadow->scene->scope.scene;
+    const auto& camera = raster->camera;
+    const bool usePrevious = previousValid && previousDepth &&
+        previousSceneRevision == sceneRevision && previousFrame + 1u == frame &&
+        previousWidth == slot.width && previousHeight == slot.height &&
+        previousDepth.get() != slot.resources[Resource::LinearDepth].get();
+    const std::array<ID3D12Resource*, 4> guides{
+        raster->depth->resource.get(),
+        raster->inputs[size_t(DX12Native::RasterFrame::Input::Motion)]->resource.get(),
+        raster->inputs[size_t(DX12Native::RasterFrame::Input::NormalRoughness)]->resource.get(),
+        usePrevious ? previousDepth.get() : nullptr
+    };
+    const auto step = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    auto cpu = slot.guideDescriptors->GetCPUDescriptorHandleForHeapStart();
+    for (auto* resource : guides) {
+        CreateSRV(device, resource, cpu);
+        cpu.ptr += step;
+    }
+    for (size_t i = 0; i < 4; ++i) {
+        CreateUAV(device, slot.resources[i].get(), cpu);
+        cpu.ptr += step;
+    }
+    std::vector<D3D12_RESOURCE_BARRIER> begin;
+    for (auto* resource : guides)
+        Transition(begin, resource, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    for (size_t i = 0; i < 4; ++i)
+        Transition(begin, slot.resources[i].get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    if (!begin.empty()) commands->ResourceBarrier(UINT(begin.size()), begin.data());
+
+    ID3D12DescriptorHeap* heaps[]{ slot.guideDescriptors.get() };
+    commands->SetDescriptorHeaps(1, heaps);
+    commands->SetPipelineState(guidePso.get());
+    commands->SetComputeRootSignature(guideRoot.get());
+    auto gpu = slot.guideDescriptors->GetGPUDescriptorHandleForHeapStart();
+    commands->SetComputeRootDescriptorTable(0, gpu);
+    gpu.ptr += 4ull * step;
+    commands->SetComputeRootDescriptorTable(1, gpu);
+    struct GuideConstants {
+        uint32_t width, height, history, reverseZ;
+        DirectX::SimpleMath::Matrix inverseProjection, inverseView;
+    };
+    static_assert(sizeof(GuideConstants) == 36 * sizeof(uint32_t));
+    const GuideConstants constants{ slot.width, slot.height, usePrevious ? 1u : 0u,
+        globals::features::reverseZ.IsActive() ? 1u : 0u,
+        camera.CameraProjInverse, camera.CameraViewInverse };
+    commands->SetComputeRoot32BitConstants(2, 36, &constants, 0);
+    commands->Dispatch((slot.width + 7u) / 8u, (slot.height + 7u) / 8u, 1);
+
+    std::vector<D3D12_RESOURCE_BARRIER> guideReady;
+    for (auto* resource : guides)
+        Transition(guideReady, resource, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+    for (size_t i = 0; i < 4; ++i)
+        Transition(guideReady, slot.resources[i].get(),
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    if (!guideReady.empty()) commands->ResourceBarrier(UINT(guideReady.size()), guideReady.data());
+
+    cpu = slot.packingDescriptors->GetCPUDescriptorHandleForHeapStart();
+    CreateSRV(device, shadow->mask->resource.get(), cpu);
+    cpu.ptr += step;
+    CreateUAV(device, slot.resources[Resource::PackedSignal].get(), cpu);
+    std::vector<D3D12_RESOURCE_BARRIER> packBegin;
+    Transition(packBegin, shadow->mask->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Transition(packBegin, slot.resources[Resource::PackedSignal].get(),
+        D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    commands->ResourceBarrier(UINT(packBegin.size()), packBegin.data());
+    ID3D12DescriptorHeap* packHeaps[]{ slot.packingDescriptors.get() };
+    commands->SetDescriptorHeaps(1, packHeaps);
+    commands->SetPipelineState(packPso.get());
+    commands->SetComputeRootSignature(packRoot.get());
+    gpu = slot.packingDescriptors->GetGPUDescriptorHandleForHeapStart();
+    commands->SetComputeRootDescriptorTable(0, gpu);
+    gpu.ptr += step;
+    commands->SetComputeRootDescriptorTable(1, gpu);
+    const uint32_t packedWidth = (slot.width + 1u) / 2u;
+    // NativeTraceDensityPixel uses salt 0x62c01dae (even low bit).
+    // Thus the traced pixel at (y=0) has X parity frame & 1.
+    const std::array<uint32_t, 4> packConstants{ slot.width, slot.height, frame & 1u, packedWidth };
+    commands->SetComputeRoot32BitConstants(2, 4, packConstants.data(), 0);
+    commands->Dispatch((packedWidth + 7u) / 8u, (slot.height + 7u) / 8u, 1);
+    std::vector<D3D12_RESOURCE_BARRIER> packReady;
+    Transition(packReady, shadow->mask->resource.get(),
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+    Transition(packReady, slot.resources[Resource::PackedSignal].get(),
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Transition(packReady, slot.resources[Resource::DenoisedSignal].get(),
+        D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    commands->ResourceBarrier(UINT(packReady.size()), packReady.data());
+
+    ffx::DispatchDescDenoiser common{};
+    common.commandList = commands;
+    common.linearDepth = ffxApiGetResourceDX12(slot.resources[Resource::LinearDepth].get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
+    common.motionVectors = ffxApiGetResourceDX12(slot.resources[Resource::MotionDepth].get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
+    common.normals = ffxApiGetResourceDX12(slot.resources[Resource::Normals].get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
+    common.diffuseAlbedo = ffxApiGetResourceDX12(slot.resources[Resource::DiffuseAlbedo].get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
+    common.motionVectorScale = { 1.0f, 1.0f, 1.0f };
+    common.jitterOffsets = { globals::features::upscaling.jitter.x, globals::features::upscaling.jitter.y };
+    common.cameraPositionDelta = {
+        camera.CameraPreviousPosAdjust.x - camera.CameraPosAdjust.x,
+        camera.CameraPreviousPosAdjust.y - camera.CameraPosAdjust.y,
+        camera.CameraPreviousPosAdjust.z - camera.CameraPosAdjust.z
+    };
+    static_assert(sizeof(common.view) == sizeof(camera.CameraView));
+    std::memcpy(&common.view, &camera.CameraView, sizeof(common.view));
+    std::memcpy(&common.projection, &camera.CameraProjUnjittered, sizeof(common.projection));
+    common.linearDepthBounds = { -60000.0f, 60000.0f };
+    common.renderSize = { slot.width, slot.height }; // Full-resolution context and guides.
+    common.frameIndex = frame;
+    common.flags = !lastFrameValid || lastFrame + 1u != frame ||
+        lastSceneRevision != sceneRevision || !usePrevious ? FFX_DENOISER_DISPATCH_RESET : 0u;
+
+    ffx::DispatchDescDenoiserDirectDiffuse diffuse{};
+    diffuse.signal.input = ffxApiGetResourceDX12(slot.resources[Resource::PackedSignal].get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
+    diffuse.signal.output = ffxApiGetResourceDX12(slot.resources[Resource::DenoisedSignal].get(),
+        FFX_API_RESOURCE_STATE_UNORDERED_ACCESS, FFX_API_RESOURCE_USAGE_UAV);
+    diffuse.signal.checkerboardOrigin = frame & 1u;
+    common.header.pNext = &diffuse.header;
+
+    ffxReturnCode_t result = FFX_API_RETURN_ERROR;
+    DWORD faultCode = 0;
+    const bool safe = Util::SehGuarded([&] {
+        result = runtimeApi.Dispatch(&context, &common.header);
+    }, &faultCode);
+
+    std::vector<D3D12_RESOURCE_BARRIER> end;
+    for (size_t i = 0; i < 4; ++i)
+        Transition(end, slot.resources[i].get(),
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+    Transition(end, slot.resources[Resource::PackedSignal].get(),
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+    Transition(end, slot.resources[Resource::DenoisedSignal].get(),
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+    commands->ResourceBarrier(UINT(end.size()), end.data());
+
+    if (safe && result == FFX_API_RETURN_OK) {
+        ++dispatches;
+        out.dispatched = true;
+        out.frame = frame;
+        out.sceneRevision = sceneRevision;
+        status = "Shadow RR dispatched: full-resolution context, packed 50% rays";
+    } else {
+        sdkFailed = true;
+        previousValid = false;
+        lastFrameValid = false;
+        ++bypasses;
+        status = safe ? "Shadow RR dispatch rejected; raw mask used" :
+            "Shadow RR provider access fault; raw mask used";
+    }
+    return out;
+}
+
+void NativeShadowRayRegeneration::OnSubmitted(const Slot& slot, ID3D12Fence* fence,
+    uint64_t value, const Output& output)
+{
+    if (!output.dispatched || !fence || !value) return;
+    previousDepth = slot.resources[Resource::LinearDepth];
+    previousFrame = output.frame;
+    previousWidth = slot.width; previousHeight = slot.height;
+    previousSceneRevision = output.sceneRevision;
+    previousValid = true;
+    lastContextFence.copy_from(fence);
+    lastContextValue = value;
+    lastFrame = output.frame;
+    lastSceneRevision = output.sceneRevision;
+    lastFrameValid = true;
+}

@@ -1,0 +1,73 @@
+// Full-resolution RR guidance for the independent shadow context.
+// No raster scene color or raster lighting is bound to this shader.
+Texture2D<float> RasterDepth : register(t0);
+Texture2D<float4> RasterMotion : register(t1);
+Texture2D<float4> RasterNormalRoughness : register(t2);
+Texture2D<float> PreviousLinearDepth : register(t3);
+
+RWTexture2D<float> LinearDepth : register(u0);
+RWTexture2D<float4> MotionDepthDelta : register(u1);
+RWTexture2D<float4> NormalsRoughness : register(u2);
+RWTexture2D<float4> DiffuseAlbedo : register(u3);
+
+cbuffer ShadowRRConstants : register(b0)
+{
+    uint2 Size;
+    uint HasPreviousDepth;
+    uint ReverseZ;
+    row_major float4x4 InverseProjection;
+    row_major float4x4 InverseView;
+};
+
+float2 EncodeNormal(float3 n)
+{
+    n /= max(abs(n.x) + abs(n.y) + abs(n.z), 1e-6f);
+    if (n.z < 0.0f)
+        n.xy = (1.0f - abs(n.yx)) * sign(n.xy);
+    return n.xy * 0.5f + 0.5f;
+}
+float3 DecodeRasterNormal(float2 uv)
+{
+    uv = uv * 2.0f - 1.0f;
+    float3 n = float3(uv, 1.0f - abs(uv.x) - abs(uv.y));
+    float t = saturate(-n.z);
+    n.xy += float2(n.x >= 0.0f ? -t : t, n.y >= 0.0f ? -t : t);
+    return -normalize(n);
+}
+
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id.xy >= Size)) return;
+    uint2 pixel = id.xy;
+    float depth = RasterDepth[pixel];
+    bool valid = isfinite(depth) && depth != (ReverseZ != 0u ? 0.0f : 1.0f);
+    float2 ndc = (float2(pixel) + 0.5f) * (2.0f / float2(Size)) - 1.0f;
+    ndc.y = -ndc.y;
+    float4 position = mul(InverseProjection, float4(ndc, depth, 1.0f));
+    valid = valid && all(isfinite(position)) && abs(position.w) > 1e-8f;
+    float current = valid ? position.z / position.w : 0.0f;
+    valid = valid && isfinite(current);
+    LinearDepth[pixel] = valid ? current : 0.0f;
+
+    float2 motion = RasterMotion[pixel].xy; // PreviousUV - CurrentUV
+    if (!all(isfinite(motion))) motion = 0.0f;
+    float prior = current;
+    float2 uv = (float2(pixel) + 0.5f) / float2(Size) + motion;
+    if (HasPreviousDepth != 0u && valid && all(uv >= 0.0f) && all(uv < 1.0f)) {
+        uint2 previous = min(uint2(uv * float2(Size)), Size - 1u);
+        prior = PreviousLinearDepth[previous];
+        if (!isfinite(prior) || prior == 0.0f) prior = current;
+    }
+    MotionDepthDelta[pixel] = float4(valid ? motion : 0.0f,
+        valid ? prior - current : 0.0f, 0.0f);
+
+    float4 rasterNormal = RasterNormalRoughness[pixel];
+    float3 worldNormal = normalize(mul((float3x3)InverseView,
+        DecodeRasterNormal(rasterNormal.xy)));
+    NormalsRoughness[pixel] = float4(EncodeNormal(worldNormal),
+        saturate(1.0f - rasterNormal.z), 0.0f);
+    // The input signal is normalized shadowed irradiance. Unit albedo keeps
+    // the SDK's direct-diffuse denoiser from modulating the visibility ratio.
+    DiffuseAlbedo[pixel] = float4(1.0f, 1.0f, 1.0f, 0.0f);
+}

@@ -1,0 +1,26 @@
+// Pack the authoritative half-rate native shadow samples into the
+// half-width input required by the FSR RR checkerboard signal contract.
+// Only an explicitly traced, valid sample contributes; missing samples are
+// represented by unoccluded irradiance, never by false black shadows.
+Texture2D<float4> RawShadowMask : register(t0);
+RWTexture2D<float4> PackedShadowedIrradiance : register(u0);
+cbuffer ShadowPackConstants : register(b0)
+{
+    uint2 Size;
+    uint CheckerboardOrigin;
+    uint PackedWidth;
+};
+
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= PackedWidth || id.y >= Size.y) return;
+    uint x = id.x * 2u + ((id.y ^ CheckerboardOrigin) & 1u);
+    float visibility = 1.0f;
+    if (x < Size.x) {
+        float4 mask = RawShadowMask[uint2(x, id.y)];
+        if (all(isfinite(mask)) && mask.y == 1.0f && mask.z > 0.0f && mask.w > 0.0f)
+            visibility = saturate(mask.x);
+    }
+    PackedShadowedIrradiance[id.xy] = float4(visibility.xxx, 0.0f);
+}
