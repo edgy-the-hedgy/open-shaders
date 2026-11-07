@@ -1,0 +1,102 @@
+// AMD RR 1.2.1 full-resolution geometric guidance.
+// Raster buffers supply depth/motion/material hints, NEVER raster lighting.
+// Native material guides remain authoritative where a native primary ray hit.
+Texture2D<float> RasterDepth : register(t0);
+Texture2D<float4> RasterMotion : register(t1);
+Texture2D<float4> RasterNormalRoughness : register(t2);
+Texture2D<float4> RasterAlbedo : register(t3);
+Texture2D<float4> RasterReflectance : register(t4);
+Texture2D<float4> NativeDiffuseAlbedo : register(t5);
+Texture2D<float4> NativeSpecularAlbedo : register(t6);
+Texture2D<float4> NativeNormalRoughness : register(t7);
+Texture2D<float> PreviousLinearDepth : register(t8);
+
+RWTexture2D<float> LinearDepth : register(u0);
+RWTexture2D<float4> MotionDepthDelta : register(u1);
+RWTexture2D<float4> NormalsRoughness : register(u2);
+RWTexture2D<float4> DiffuseAlbedo : register(u3);
+RWTexture2D<float4> SpecularAlbedo : register(u4);
+
+cbuffer RRPrepareConstants : register(b0)
+{
+    uint2 Size;
+    uint HasPreviousDepth;
+    uint ReverseZ;
+    row_major float4x4 InverseProjection;
+    row_major float4x4 InverseView;
+};
+
+float2 EncodeRRNormal(float3 n)
+{
+    n /= max(abs(n.x) + abs(n.y) + abs(n.z), 1e-6f);
+    if (n.z < 0.0f)
+        n.xy = (1.0f - abs(n.yx)) * sign(n.xy);
+    return n.xy * 0.5f + 0.5f;
+}
+
+float3 DecodeRasterNormal(float2 uv)
+{
+    uv = uv * 2.0f - 1.0f;
+    float3 n = float3(uv, 1.0f - abs(uv.x) - abs(uv.y));
+    float t = saturate(-n.z);
+    n.xy += n.xy >= 0.0f ? -t : t;
+    // Mirrors Common/GBuffer.hlsli: Skyrim encodes the negated normal.
+    return -normalize(n);
+}
+
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id.xy >= Size)) return;
+    uint2 pixel = id.xy;
+    float depth = RasterDepth[pixel];
+    bool depthValid = isfinite(depth) && depth != (ReverseZ != 0u ? 0.0f : 1.0f);
+    float2 ndc = (float2(pixel) + 0.5f) * (2.0f / float2(Size)) - 1.0f;
+    ndc.y = -ndc.y;
+    float4 viewPosition = mul(InverseProjection, float4(ndc, depth, 1.0f));
+    depthValid = depthValid && all(isfinite(viewPosition)) && abs(viewPosition.w) > 1e-8f;
+    float currentLinear = depthValid ? viewPosition.z / viewPosition.w : 0.0f;
+    depthValid = depthValid && isfinite(currentLinear);
+    LinearDepth[pixel] = depthValid ? currentLinear : 0.0f;
+
+    float2 velocity = RasterMotion[pixel].xy; // Skyrim: previous UV minus current UV.
+    if (!all(isfinite(velocity))) velocity = 0.0f;
+    float priorLinear = currentLinear;
+    float2 priorUV = (float2(pixel) + 0.5f) / float2(Size) + velocity;
+    bool priorValid = HasPreviousDepth != 0u && depthValid &&
+        all(priorUV >= 0.0f) && all(priorUV < 1.0f);
+    if (priorValid) {
+        uint2 previousPixel = min(uint2(priorUV * float2(Size)), Size - 1u);
+        priorLinear = PreviousLinearDepth[previousPixel];
+        if (!isfinite(priorLinear) || priorLinear == 0.0f) priorLinear = currentLinear;
+    }
+    MotionDepthDelta[pixel] = float4(depthValid ? velocity : 0.0f,
+        depthValid ? priorLinear - currentLinear : 0.0f, 0.0f);
+
+    float4 nativeNormal = NativeNormalRoughness[pixel];
+    // Native material guides exist only at traced, successfully evaluated
+    // receivers. Skipped pixels obtain raster geometry guidance, but their
+    // native radiance remains black and their material is never invented.
+    bool nativeMaterialValid = all(isfinite(nativeNormal)) && nativeNormal.z > 0.0f;
+    float4 rasterNormal = RasterNormalRoughness[pixel];
+    float3 normalWS = normalize(mul((float3x3)InverseView,
+        DecodeRasterNormal(rasterNormal.xy)));
+    float2 encodedNormal = EncodeRRNormal(normalWS);
+    float roughness = saturate(1.0f - rasterNormal.z);
+    if (nativeMaterialValid) {
+        encodedNormal = nativeNormal.xy;
+        roughness = nativeNormal.z;
+    }
+    NormalsRoughness[pixel] = float4(encodedNormal, roughness, 0.0f);
+
+    float3 rasterDiffuse = saturate(RasterAlbedo[pixel].rgb);
+    float3 rasterSpecular = saturate(RasterReflectance[pixel].rgb);
+    float3 encodedDiffuse = sqrt(rasterDiffuse);
+    float3 encodedSpecular = sqrt(rasterSpecular);
+    if (nativeMaterialValid) {
+        encodedDiffuse = NativeDiffuseAlbedo[pixel].rgb;
+        encodedSpecular = NativeSpecularAlbedo[pixel].rgb;
+    }
+    DiffuseAlbedo[pixel] = float4(encodedDiffuse, 0.0f);
+    SpecularAlbedo[pixel] = float4(encodedSpecular, 0.0f);
+}

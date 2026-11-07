@@ -1,0 +1,47 @@
+// Post-RR composition only: the scene is read AFTER the denoiser completes.
+// RR inputs are never sampled from this raster-lit scene target.
+Texture2D<float4> DirectDiffuse : register(t0);
+Texture2D<float4> DirectSpecular : register(t1);
+Texture2D<float4> DiffuseAlbedo : register(t2);
+Texture2D<float4> SpecularAlbedo : register(t3);
+Texture2D<float4> NativeEmission : register(t4);
+RWTexture2D<float4> Scene : register(u0);
+
+cbuffer RRComposeConstants : register(b0)
+{
+    uint2 Size;
+    float Strength;
+    uint LegacyTransfer;
+    uint DiffuseEnabled;
+    uint SpecularEnabled;
+    uint IncludeEmission;
+    uint Reserved;
+};
+
+float3 SignedPower(float3 v, float exponent)
+{
+    return sign(v) * pow(abs(v), exponent);
+}
+
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id.xy >= Size)) return;
+    uint2 pixel = id.xy;
+    float3 diffuse = DirectDiffuse[pixel].rgb;
+    float3 specular = DirectSpecular[pixel].rgb;
+    // The SDK's sqrt albedo encoding is reversed ONLY after RR.
+    float3 modulationDiffuse = pow(max(DiffuseAlbedo[pixel].rgb, 0), 2.0f);
+    float3 modulationSpecular = pow(max(SpecularAlbedo[pixel].rgb, 0), 2.0f);
+    float3 nativeLight =
+        (DiffuseEnabled != 0u ? diffuse * modulationDiffuse : 0.0f) +
+        (SpecularEnabled != 0u ? specular * modulationSpecular : 0.0f) +
+        (IncludeEmission != 0u ? NativeEmission[pixel].rgb : 0.0f);
+    if (!all(isfinite(nativeLight)) || !any(nativeLight != 0.0f)) return;
+    // Raster color is accessed for the first time ONLY here, post-denoising.
+    float4 color = Scene[pixel];
+    float3 linear = LegacyTransfer != 0u ? SignedPower(color.rgb, 1.6f) : color.rgb;
+    linear += nativeLight * Strength;
+    color.rgb = LegacyTransfer != 0u ? SignedPower(linear, 1.0f / 1.6f) : linear;
+    Scene[pixel] = color;
+}
