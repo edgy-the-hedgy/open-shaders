@@ -399,7 +399,11 @@ void NativeLightingFeature::Dispatch(DX12NativeScene::SceneFrame a_scene, const 
 			throw std::runtime_error("Native lighting dimensions unavailable");
 		constexpr std::array formats{ DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R32_UINT,
 			DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
-			DXGI_FORMAT_R32_UINT, DXGI_FORMAT_R32_UINT, DXGI_FORMAT_R32G32B32A32_FLOAT };
+			DXGI_FORMAT_R32_UINT, DXGI_FORMAT_R32_UINT, DXGI_FORMAT_R32G32B32A32_FLOAT,
+			// RR inputs are floating-point, native-render-size and never raster-lit.
+			DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
+			DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
+			DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT };
 		uint64_t trackedBytes = 0;
 		for (const auto& frame : frames) if (frame) {
 			if (trackedBytes > UINT64_MAX - frame->bytes) throw std::runtime_error("Native lighting pool accounting overflow");
@@ -434,7 +438,10 @@ void NativeLightingFeature::Dispatch(DX12NativeScene::SceneFrame a_scene, const 
 				resource->SetName(name);
 				return resource;
 			};
-			constexpr std::array names{ L"NativeLighting::RawDiffuse", L"NativeLighting::RawSpecular", L"NativeLighting::Validity", L"NativeLighting::ReceiverGuide", L"NativeLighting::Debug", L"NativeLighting::ComparisonDiffuse", L"NativeLighting::ComparisonSpecular", L"NativeLighting::EffectiveValidity", L"NativeLighting::RejectionReason", L"NativeLighting::LabGuide" };
+			constexpr std::array names{ L"NativeLighting::RawDiffuse", L"NativeLighting::RawSpecular", L"NativeLighting::Validity", L"NativeLighting::ReceiverGuide", L"NativeLighting::Debug", L"NativeLighting::ComparisonDiffuse", L"NativeLighting::ComparisonSpecular", L"NativeLighting::EffectiveValidity", L"NativeLighting::RejectionReason", L"NativeLighting::LabGuide",
+				L"NativeLighting::RRDirectDiffuse", L"NativeLighting::RRDirectSpecular",
+				L"NativeLighting::RRDiffuseAlbedo", L"NativeLighting::RRSpecularAlbedo",
+				L"NativeLighting::RRNormalRoughness", L"NativeLighting::RREmission" };
 			for (size_t i = 0; i < formats.size(); ++i) {
 				if (!a_settings.CompareCulling && (i == 5 || i == 6)) continue;
 				const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(formats[i], width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
@@ -453,7 +460,7 @@ void NativeLightingFeature::Dispatch(DX12NativeScene::SceneFrame a_scene, const 
 			DX::ThrowIfFailed(created->counterReset->Map(0, &noRead, &zeros));
 			std::memset(zeros, 0, totals.size() * sizeof(uint32_t));
 			created->counterReset->Unmap(0, nullptr);
-			constexpr uint32_t kDescriptors = 13 + 2 * DX12Native::ShadowBindings::kMaximumInstances + DX12Native::kMaximumTexturePools;
+			constexpr uint32_t kDescriptors = 19 + 2 * DX12Native::ShadowBindings::kMaximumInstances + DX12Native::kMaximumTexturePools;
 			const D3D12_DESCRIPTOR_HEAP_DESC heapDesc{ D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kDescriptors, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
 			DX::ThrowIfFailed(backend.d3d12Device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(created->heap.put())));
 			created->heap->SetName(L"NativeLighting::Descriptors");
@@ -519,7 +526,7 @@ void NativeLightingFeature::Dispatch(DX12NativeScene::SceneFrame a_scene, const 
 		DX::ThrowIfFailed(slot->lights->Map(0, &noRead, &mapped)); std::memcpy(mapped, lights.data(), sizeof(lights)); slot->lights->Unmap(0, nullptr);
 		DX::ThrowIfFailed(slot->constants->Map(0, &noRead, &mapped)); std::memcpy(mapped, &constants, sizeof(constants)); slot->constants->Unmap(0, nullptr);
 		const auto step = backend.d3d12Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-		constexpr uint32_t kGeometry = 13;
+		constexpr uint32_t kGeometry = 19;
 		constexpr uint32_t kAttributes = kGeometry + DX12Native::ShadowBindings::kMaximumInstances;
 		constexpr uint32_t kTextures = kAttributes + DX12Native::ShadowBindings::kMaximumInstances;
 		auto cpu = slot->heap->GetCPUDescriptorHandleForHeapStart();
@@ -533,7 +540,7 @@ void NativeLightingFeature::Dispatch(DX12NativeScene::SceneFrame a_scene, const 
 		textureSrv.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
 		backend.d3d12Device->CreateShaderResourceView(slot->scene.shadow ? slot->scene.shadow->mask->resource.get() : nullptr, &textureSrv, cpu);
 		cpu.ptr += step;
-		for (size_t i = 0; i < 11; ++i) {
+		for (size_t i = 0; i < 17; ++i) {
 			D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
 			if (i == 4) {
 				uav.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;

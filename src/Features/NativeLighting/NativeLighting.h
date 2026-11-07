@@ -41,8 +41,15 @@ struct NativeLightingFeature final : Feature
 	};
 	struct Contribution
 	{
-		enum class Output : size_t { Diffuse, Specular, Validity, ReceiverGuide, Debug, ComparisonDiffuse, ComparisonSpecular, EffectiveValidity, RejectionReason, LabGuide };
-		std::array<winrt::com_ptr<ID3D12Resource>, 10> textures;
+		enum class Output : size_t {
+			Diffuse, Specular, Validity, ReceiverGuide, Debug, ComparisonDiffuse,
+			ComparisonSpecular, EffectiveValidity, RejectionReason, LabGuide,
+			// RR-specific unmodulated signals and material guides. Existing 0..9
+			// remain unchanged for the pre-RR native compositor.
+			RRDirectDiffuse, RRDirectSpecular, RRDiffuseAlbedo, RRSpecularAlbedo,
+			RRNormalRoughness, RREmission
+		};
+		std::array<winrt::com_ptr<ID3D12Resource>, 16> textures;
 		winrt::com_ptr<ID3D12Resource> counters, counterReset, counterReadback, lights, constants;
 		winrt::com_ptr<ID3D12DescriptorHeap> heap;
 		winrt::com_ptr<ID3D12CommandAllocator> allocator;

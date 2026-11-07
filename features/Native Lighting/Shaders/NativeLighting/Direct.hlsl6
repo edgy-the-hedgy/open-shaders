@@ -16,6 +16,13 @@ RWTexture2D<float4> ComparisonSpecular : register(u7);
 RWTexture2D<uint> EffectiveValidity : register(u8);
 RWTexture2D<uint> RejectionReason : register(u9);
 RWTexture2D<float4> LabGuide : register(u10);
+// RR dedicated resources: never sourced from the DX11 raster color.
+RWTexture2D<float4> RRDirectDiffuse : register(u11);
+RWTexture2D<float4> RRDirectSpecular : register(u12);
+RWTexture2D<float4> RRDiffuseAlbedo : register(u13);
+RWTexture2D<float4> RRSpecularAlbedo : register(u14);
+RWTexture2D<float4> RRNormalRoughness : register(u15);
+RWTexture2D<float4> RREmission : register(u16);
 
 cbuffer Trace : register(b0)
 {
@@ -55,6 +62,14 @@ cbuffer Trace : register(b0)
 #include "ShadowCull.hlsli"
 #include "DX12NativeScene/NativeTraceDensity.hlsli"
 #include "ValidityLab.hlsli"
+
+float2 RROctEncode(float3 normal)
+{
+	normal /= max(abs(normal.x) + abs(normal.y) + abs(normal.z), 1e-6f);
+	if (normal.z < 0.0f)
+		normal.xy = (1.0f - abs(normal.yx)) * sign(normal.xy);
+	return normal.xy * 0.5f + 0.5f;
+}
 
 bool AdmitReceiverCandidate(uint instance, uint primitive, float2 barycentric, inout bool valid)
 {
@@ -106,6 +121,12 @@ void main(uint2 pixel : SV_DispatchThreadID)
 	if (any(pixel >= Size)) return;
 	RawDirectDiffuse[pixel] = 0;
 	RawDirectSpecular[pixel] = 0;
+	RRDirectDiffuse[pixel] = 0;
+	RRDirectSpecular[pixel] = 0;
+	RRDiffuseAlbedo[pixel] = 0;
+	RRSpecularAlbedo[pixel] = 0;
+	RRNormalRoughness[pixel] = 0;
+	RREmission[pixel] = 0;
 	DirectValidity[pixel] = 0;
 	EffectiveValidity[pixel] = 0;
 	RejectionReason[pixel] = 0;
@@ -212,7 +233,16 @@ void main(uint2 pixel : SV_DispatchThreadID)
 		if (!all(isfinite(geometric)) || dot(geometric, geometric) <= 1e-8f) { Finish(pixel, 3, 3, 5); return; }
 		n = normalize(geometric);
 	}
+	// Stable per-receiver specular albedo proxy: non-zero even for grazing
+	// dielectric reflectance, so SDK demodulation does not divide by zero.
+	float viewNormal = saturate(abs(dot(n, v)));
+	float grazing = pow(1.0f - viewNormal, 5.0f);
+	float3 specularAlbedo = saturate(material.f0 * (1.0f - 0.28f * material.roughness) +
+		(1.0f - material.f0) * (0.04f * grazing));
+	specularAlbedo = max(specularAlbedo, 0.02f);
+	float3 diffuseAlbedo = saturate((1.0f - material.metallic) * material.baseColor);
 	float3 diffuse = 0, specular = 0;
+	float3 rrDiffuse = 0, rrSpecular = 0;
 	uint eligibleLights = 0;
 	bool strictVisibilityRejected = false;
 	for (uint i = 0; i < LightCount; ++i) {
@@ -281,9 +311,16 @@ void main(uint2 pixel : SV_DispatchThreadID)
 		float3 microfacet = PBR::SpecularMicrofacet(material.roughness, material.f0, max(ndotl, 1e-5f),
 			saturate(abs(dot(n, v)) + 1e-5f), saturate(dot(n, h)), saturate(dot(v, h)), fresnel);
 		float3 irradiance = light.radianceSourceRadius.rgb * attenuation * ndotl * shadowVisibility;
-		if (EnabledLobes & 1u) diffuse += (1 - material.metallic) * material.baseColor *
-			(NormalInfluence == 0u ? 1.0f : (1 - fresnel)) * BRDF::Diffuse_Lambert() * irradiance;
-		if ((EnabledLobes & 2u) && NormalInfluence != 0u) specular += microfacet * irradiance;
+		if (EnabledLobes & 1u) {
+			float3 demodulatedDiffuse = (NormalInfluence == 0u ? 1.0f : (1.0f - fresnel)) * BRDF::Diffuse_Lambert() * irradiance;
+			rrDiffuse += demodulatedDiffuse;
+			diffuse += diffuseAlbedo * demodulatedDiffuse;
+		}
+		if ((EnabledLobes & 2u) && NormalInfluence != 0u) {
+			float3 materialSpecular = microfacet * irradiance;
+			specular += materialSpecular;
+			rrSpecular += materialSpecular / specularAlbedo;
+		}
 	}
 	if (strictVisibilityRejected && originalReason == 0) originalReason = 7;
 	if (eligibleLights == 0) { Finish(pixel, 0, 0, originalReason == 0 ? 6 : originalReason); return; }
@@ -299,6 +336,14 @@ void main(uint2 pixel : SV_DispatchThreadID)
 	if (ComparisonEnabled != 0) { ComparisonDiffuse[pixel] = diffuseOutput; ComparisonSpecular[pixel] = specularOutput; }
 	RawDirectDiffuse[pixel] = diffuseOutput;
 	RawDirectSpecular[pixel] = specularOutput;
+	// Raw RR inputs intentionally have NO first-bounce albedo, emission or
+	// raster attenuation. The RR compositor re-modulates after the SDK.
+	RRDirectDiffuse[pixel] = float4(rrDiffuse * DiffuseIntensity * LightTuning.w, 0);
+	RRDirectSpecular[pixel] = float4(rrSpecular * SpecularIntensity * LightTuning.w, 0);
+	RRDiffuseAlbedo[pixel] = float4(sqrt(max(diffuseAlbedo, 0.0f)), 0);
+	RRSpecularAlbedo[pixel] = float4(sqrt(max(specularAlbedo, 0.0f)), 0);
+	RRNormalRoughness[pixel] = float4(RROctEncode(n), material.roughness, 0);
+	RREmission[pixel] = float4(emission, 0);
 	if (!culled && !rejectSelectedDepth) {
 		if (DebugEnabled != 0) DebugVisualization[pixel] = float4(0, 1, 0, 1);
 	}
