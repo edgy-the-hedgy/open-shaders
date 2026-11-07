@@ -11,6 +11,35 @@
 
 ffxFunctions ffxModule;
 
+// The ffx:: C++ helpers call these C API symbols. This build links the legacy
+// host FSR3 libraries, while the newer FFX API is provided by the DLL loaded in
+// LoadFFX(). Forward through its resolved exports instead of requiring an
+// import library (which would also make the runtime loader mandatory at launch).
+extern "C" ffxReturnCode_t ffxCreateContext(ffxContext* context, ffxCreateContextDescHeader* desc, const ffxAllocationCallbacks* memCb)
+{
+	return ffxModule.CreateContext ? ffxModule.CreateContext(context, desc, memCb) : FFX_API_RETURN_ERROR;
+}
+
+extern "C" ffxReturnCode_t ffxDestroyContext(ffxContext* context, const ffxAllocationCallbacks* memCb)
+{
+	return ffxModule.DestroyContext ? ffxModule.DestroyContext(context, memCb) : FFX_API_RETURN_ERROR;
+}
+
+extern "C" ffxReturnCode_t ffxConfigure(ffxContext* context, const ffxConfigureDescHeader* desc)
+{
+	return ffxModule.Configure ? ffxModule.Configure(context, desc) : FFX_API_RETURN_ERROR;
+}
+
+extern "C" ffxReturnCode_t ffxQuery(ffxContext* context, ffxQueryDescHeader* desc)
+{
+	return ffxModule.Query ? ffxModule.Query(context, desc) : FFX_API_RETURN_ERROR;
+}
+
+extern "C" ffxReturnCode_t ffxDispatch(ffxContext* context, const ffxDispatchDescHeader* desc)
+{
+	return ffxModule.Dispatch ? ffxModule.Dispatch(context, desc) : FFX_API_RETURN_ERROR;
+}
+
 std::vector<std::pair<std::string, std::string>> FidelityFX::dllVersions = {};
 
 namespace
