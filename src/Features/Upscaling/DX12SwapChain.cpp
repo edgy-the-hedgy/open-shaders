@@ -21,7 +21,7 @@ DX12SwapChain::~DX12SwapChain()
 			if (!fidelityFX.swapChainContext)
 				return true;
 			ffx::DispatchDescFrameGenerationSwapChainWaitForPresentsDX12 wait{};
-			return ffxModule.Dispatch && ffx::Dispatch(fidelityFX.swapChainContext, wait) == ffx::ReturnCode::Ok; }, [this] {
+			return ffx::Dispatch(fidelityFX.swapChainContext, wait) == ffx::ReturnCode::Ok; }, [this] {
 			if (globals::features::upscaling.fidelityFX.swapChainContext) {
 				antiLag2Enabled = false;
 				if (swapChain)
