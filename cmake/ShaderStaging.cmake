@@ -110,6 +110,14 @@ endif()
 if(NATIVE_COMPOSITE_RR_COMPOSE_DXIL)
     append_copy_if_different(_shader_copy_cmds NATIVE_COMPOSITE_RR_COMPOSE_DXIL "${NATIVE_COMPOSITE_DXIL_DIR}" "${AIO_DIR}/Shaders/NativeComposite")
 endif()
+# Native Composite also compiles the independent shadow RR guidance/packing
+# shaders. Stage both for the game's runtime shader loader.
+if(NATIVE_COMPOSITE_SHADOW_RR_PREPARE_DXIL)
+    append_copy_if_different(_shader_copy_cmds NATIVE_COMPOSITE_SHADOW_RR_PREPARE_DXIL "${NATIVE_COMPOSITE_DXIL_DIR}" "${AIO_DIR}/Shaders/NativeComposite")
+endif()
+if(NATIVE_COMPOSITE_SHADOW_RR_PACK_DXIL)
+    append_copy_if_different(_shader_copy_cmds NATIVE_COMPOSITE_SHADOW_RR_PACK_DXIL "${NATIVE_COMPOSITE_DXIL_DIR}" "${AIO_DIR}/Shaders/NativeComposite")
+endif()
 append_copy_if_different(_shader_copy_cmds FFX_RUNTIME_FILES "${FFX_RUNTIME_SHADER_ROOT}" "${AIO_DIR}/Shaders")
 # Streamline-Runtime.cmake's payload is a build-tree dir, not a FEATURE_PATH, so
 # the glob below never discovers it -- wire it in explicitly, same as FFX above.
@@ -146,6 +154,8 @@ add_custom_command(
         ${NATIVE_COMPOSITE_SHADOW_DXIL}
         ${NATIVE_COMPOSITE_RR_PREPARE_DXIL}
         ${NATIVE_COMPOSITE_RR_COMPOSE_DXIL}
+        ${NATIVE_COMPOSITE_SHADOW_RR_PREPARE_DXIL}
+        ${NATIVE_COMPOSITE_SHADOW_RR_PACK_DXIL}
         ${FFX_RUNTIME_FILES}
         ${STREAMLINE_RUNTIME_FILES}
         ${STREAMLINE_RUNTIME_DX12_FILES}
