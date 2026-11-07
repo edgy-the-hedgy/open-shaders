@@ -14,6 +14,10 @@ struct NativeCompositeFeature final : Feature
 		bool AddLighting = true;
 		float LightingStrength = 1.0f;
 		bool PersistLab = false;
+		// RR receives only native raw radiance and geometric/material guides.
+		// The original raster image is combined AFTER SDK output is available.
+		bool RREnabled = false, RRDirectDiffuse = true, RRDirectSpecular = true;
+		float RRDiffuseContribution = 1.0f, RRSpecularContribution = 1.0f; // 0..4; post-RR only.
 		// Independent DX12 shadow layer. Does not require Native Lighting.
 		bool ShadowLayerEnabled = true;
 		float ShadowContribution = 2.0f; // 0..4, boosts weighted occlusion beyond 1x.

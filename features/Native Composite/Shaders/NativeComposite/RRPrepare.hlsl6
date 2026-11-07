@@ -39,7 +39,7 @@ float3 DecodeRasterNormal(float2 uv)
     uv = uv * 2.0f - 1.0f;
     float3 n = float3(uv, 1.0f - abs(uv.x) - abs(uv.y));
     float t = saturate(-n.z);
-    n.xy += n.xy >= 0.0f ? -t : t;
+    n.xy += float2(n.x >= 0.0f ? -t : t, n.y >= 0.0f ? -t : t);
     // Mirrors Common/GBuffer.hlsli: Skyrim encodes the negated normal.
     return -normalize(n);
 }
@@ -77,7 +77,7 @@ void main(uint3 id : SV_DispatchThreadID)
     // Native material guides exist only at traced, successfully evaluated
     // receivers. Skipped pixels obtain raster geometry guidance, but their
     // native radiance remains black and their material is never invented.
-    bool nativeMaterialValid = all(isfinite(nativeNormal)) && nativeNormal.z > 0.0f;
+    bool nativeMaterialValid = all(isfinite(nativeNormal)) && nativeNormal.w > 0.5f;
     float4 rasterNormal = RasterNormalRoughness[pixel];
     float3 normalWS = normalize(mul((float3x3)InverseView,
         DecodeRasterNormal(rasterNormal.xy)));
@@ -90,9 +90,10 @@ void main(uint3 id : SV_DispatchThreadID)
     NormalsRoughness[pixel] = float4(encodedNormal, roughness, 0.0f);
 
     float3 rasterDiffuse = saturate(RasterAlbedo[pixel].rgb);
-    float3 rasterSpecular = saturate(RasterReflectance[pixel].rgb);
+    // Reflectance contains preweighted raster lobe data, not a reliable F0.
+    // Use a neutral dielectric fallback at omitted/invalid native hits.
     float3 encodedDiffuse = sqrt(rasterDiffuse);
-    float3 encodedSpecular = sqrt(rasterSpecular);
+    float3 encodedSpecular = sqrt(float3(0.04f, 0.04f, 0.04f));
     if (nativeMaterialValid) {
         encodedDiffuse = NativeDiffuseAlbedo[pixel].rgb;
         encodedSpecular = NativeSpecularAlbedo[pixel].rgb;

@@ -14,8 +14,12 @@ cbuffer RRComposeConstants : register(b0)
     uint LegacyTransfer;
     uint DiffuseEnabled;
     uint SpecularEnabled;
+    float DiffuseContribution;
+    float SpecularContribution;
     uint IncludeEmission;
-    uint Reserved;
+    uint ReservedA;
+    uint ReservedB;
+    uint ReservedC;
 };
 
 float3 SignedPower(float3 v, float exponent)
@@ -34,8 +38,8 @@ void main(uint3 id : SV_DispatchThreadID)
     float3 modulationDiffuse = pow(max(DiffuseAlbedo[pixel].rgb, 0), 2.0f);
     float3 modulationSpecular = pow(max(SpecularAlbedo[pixel].rgb, 0), 2.0f);
     float3 nativeLight =
-        (DiffuseEnabled != 0u ? diffuse * modulationDiffuse : 0.0f) +
-        (SpecularEnabled != 0u ? specular * modulationSpecular : 0.0f) +
+        (DiffuseEnabled != 0u ? diffuse * modulationDiffuse * DiffuseContribution : 0.0f) +
+        (SpecularEnabled != 0u ? specular * modulationSpecular * SpecularContribution : 0.0f) +
         (IncludeEmission != 0u ? NativeEmission[pixel].rgb : 0.0f);
     if (!all(isfinite(nativeLight)) || !any(nativeLight != 0.0f)) return;
     // Raster color is accessed for the first time ONLY here, post-denoising.

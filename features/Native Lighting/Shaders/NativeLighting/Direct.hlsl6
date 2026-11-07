@@ -342,7 +342,7 @@ void main(uint2 pixel : SV_DispatchThreadID)
 	RRDirectSpecular[pixel] = float4(rrSpecular * SpecularIntensity * LightTuning.w, 0);
 	RRDiffuseAlbedo[pixel] = float4(sqrt(max(diffuseAlbedo, 0.0f)), 0);
 	RRSpecularAlbedo[pixel] = float4(sqrt(max(specularAlbedo, 0.0f)), 0);
-	RRNormalRoughness[pixel] = float4(RROctEncode(n), material.roughness, 0);
+	RRNormalRoughness[pixel] = float4(RROctEncode(n), material.roughness, 1);
 	RREmission[pixel] = float4(emission, 0);
 	if (!culled && !rejectSelectedDepth) {
 		if (DebugEnabled != 0) DebugVisualization[pixel] = float4(0, 1, 0, 1);

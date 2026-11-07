@@ -2,6 +2,7 @@
 
 #include "GraphicsInterop.h"
 #include "Features/NativeLighting/NativeLighting.h"
+#include "NativeRayRegeneration.h"
 #include "Features/DX12NativeScene/VideoMemoryBudget.h"
 #include <array>
 #include <atomic>
@@ -42,6 +43,8 @@ public:
 		bool valid = false;
 		bool lightingSubmitted = false;
 		bool shadowSubmitted = false;
+		bool rrSubmitted = false;
+		bool rrRawBypass = false;
 		/** @brief Reports whether the producer fence completed without device removal. */
 		bool IsComplete() const
 		{
@@ -60,13 +63,19 @@ public:
 		const std::shared_ptr<const DX12Native::ShadowFrame>& a_shadow,
 		const std::shared_ptr<const DX12Native::RasterFrame>& a_raster,
 		const ShadowSettings& a_shadowSettings,
-		float a_strength, const Policy& a_policy, uint64_t a_revision);
+		const NativeRayRegeneration::Selection& a_rrSelection,
+		float a_strength, float a_diffuseContribution, float a_specularContribution,
+		const Policy& a_policy, uint64_t a_revision);
 	/** @brief Retains a frame until a downstream consumer's GPU fence completes. */
 	bool Retain(const std::shared_ptr<const Frame>& a_frame, ID3D12Fence* a_fence, uint64_t a_value);
 	/** @brief Returns a short explanation of the latest capture result. */
 	const std::string& Status() const { return status; }
 	/** @brief The first rejected independent shadow gate or successful submission. */
 	const std::string& ShadowStatus() const { return shadowStatus; }
+	const std::string& RRStatus() const { return rr.Status(); }
+	uint64_t RRDispatches() const { return rr.RRDispatches(); }
+	uint64_t RRRawBypasses() const { return rr.RawBypasses(); }
+	uint64_t RRCompositePasses() const { return rr.CompositePasses(); }
 	uint64_t CompletedComposites() const { return completedComposites.load(); }
 	uint64_t AcceptedPixels() const { return acceptedPixels.load(); }
 	uint64_t ModifiedPixels() const { return modifiedPixels.load(); }
@@ -81,6 +90,7 @@ private:
 	{
 		std::shared_ptr<Frame> frame;
 		std::unique_ptr<WrappedResource> shared;
+		NativeRayRegeneration::Slot rrSlot;
 		winrt::com_ptr<ID3D12CommandAllocator> allocator;
 		winrt::com_ptr<ID3D12GraphicsCommandList> commands;
 		winrt::com_ptr<ID3D12DescriptorHeap> lightingDescriptors, shadowDescriptors;
@@ -100,6 +110,7 @@ private:
 		bool untracked = false;
 	};
 	std::array<std::unique_ptr<Slot>, 4> slots;
+	NativeRayRegeneration rr;
 	winrt::com_ptr<ID3D12RootSignature> root;
 	winrt::com_ptr<ID3D12PipelineState> pipeline;
 	ID3D12Device* pipelineDevice = nullptr, *shadowPipelineDevice = nullptr;

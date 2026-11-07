@@ -4,7 +4,7 @@
 #include "Globals.h"
 #include "Features/LinearLighting.h"
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(NativeCompositeFeature::Settings, Enabled, AddLighting, LightingStrength, PersistLab, ShadowLayerEnabled, ShadowContribution, ShadowBlend, ShadowRadiusPixels, ShadowReceiverTolerance, ShadowPreview, ShadowAfterLighting)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(NativeCompositeFeature::Settings, Enabled, AddLighting, LightingStrength, PersistLab, ShadowLayerEnabled, ShadowContribution, ShadowBlend, ShadowRadiusPixels, ShadowReceiverTolerance, ShadowPreview, ShadowAfterLighting, RREnabled, RRDirectDiffuse, RRDirectSpecular, RRDiffuseContribution, RRSpecularContribution)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(NativeComposite::Policy, diffuse, specular, visual)
 
 namespace
@@ -17,6 +17,8 @@ namespace
 		case 3: return "Additive lighting submitted";
 		case 4: return "Raster pass-through: lighting pipeline or format unavailable";
 		case 5: return "Independent DX12 shadow layer submitted";
+		case 6: return "FSR RR denoised native direct lighting submitted";
+		case 7: return "Native raw lighting submitted (RR bypassed)";
 		default: return "Additive lighting disabled";
 		}
 	}
@@ -28,6 +30,26 @@ void NativeCompositeFeature::DrawSettings()
 	ImGui::Checkbox(T("feature.nativecomposite.enabled", "Enable Native Composite"), &settings.Enabled);
 	ImGui::Checkbox(T("feature.nativecomposite.add_lighting", "Add native direct lighting"), &settings.AddLighting);
 	ImGui::SliderFloat(T("feature.nativecomposite.lighting_strength", "Lighting strength"), &settings.LightingStrength, 0.0f, 2.0f);
+	ImGui::SeparatorText("FSR Ray Regeneration 1.2.1");
+	bool rrChanged = ImGui::Checkbox("Enable FSR Ray Regeneration", &settings.RREnabled);
+	ImGui::BeginDisabled(!settings.RREnabled);
+	rrChanged |= ImGui::Checkbox("RR direct diffuse", &settings.RRDirectDiffuse);
+	rrChanged |= ImGui::Checkbox("RR direct specular", &settings.RRDirectSpecular);
+	rrChanged |= ImGui::SliderFloat("RR direct diffuse contribution", &settings.RRDiffuseContribution, 0.0f, 4.0f, "%.2fx");
+	rrChanged |= ImGui::SliderFloat("RR direct specular contribution", &settings.RRSpecularContribution, 0.0f, 4.0f, "%.2fx");
+	ImGui::EndDisabled();
+	if (rrChanged) ++validityRevision;
+	ImGui::TextDisabled("Each contribution is post-RR only (0 = hidden, 1 = original, 4 = 4x).");
+	ImGui::TextDisabled("Both are also multiplied by overall Lighting strength at final composition.");
+	ImGui::TextDisabled("RR inputs use native raw radiance only; raster is combined after RR.");
+	ImGui::TextDisabled("Full: RR. Half: RR checkerboard. Two-thirds: raw sparse bypass.");
+	if (settings.RREnabled) {
+		ImGui::TextWrapped("FSR RR: %s", pass.RRStatus().c_str());
+		ImGui::TextDisabled("RR SDK dispatches: %llu | raw bypasses: %llu | final composites: %llu",
+			static_cast<unsigned long long>(pass.RRDispatches()),
+			static_cast<unsigned long long>(pass.RRRawBypasses()),
+			static_cast<unsigned long long>(pass.RRCompositePasses()));
+	}
 	ImGui::SeparatorText("Independent RT shadows");
 	bool shadowChanged = false;
 	if (ImGui::Checkbox("Enable independent shadow layer", &settings.ShadowLayerEnabled)) {
@@ -95,6 +117,8 @@ void NativeCompositeFeature::LoadSettings(json& a_json)
 	settings.LightingStrength = std::isfinite(settings.LightingStrength) ? std::clamp(settings.LightingStrength, 0.0f, 2.0f) : 1.0f;
 	const auto safe = [](float v, float fallback, float low, float high) { return std::isfinite(v) ? std::clamp(v, low, high) : fallback; };
 	settings.ShadowContribution = safe(settings.ShadowContribution, Settings{}.ShadowContribution, 0.0f, 4.0f);
+	settings.RRDiffuseContribution = safe(settings.RRDiffuseContribution, Settings{}.RRDiffuseContribution, 0.0f, 4.0f);
+	settings.RRSpecularContribution = safe(settings.RRSpecularContribution, Settings{}.RRSpecularContribution, 0.0f, 4.0f);
 	settings.ShadowBlend = safe(settings.ShadowBlend, Settings{}.ShadowBlend, 0.0f, 1.0f);
 	settings.ShadowRadiusPixels = safe(settings.ShadowRadiusPixels, Settings{}.ShadowRadiusPixels, 0.0f, 32.0f);
 	settings.ShadowReceiverTolerance = safe(settings.ShadowReceiverTolerance, Settings{}.ShadowReceiverTolerance, 0.1f, 64.0f);
@@ -157,6 +181,22 @@ void NativeCompositeFeature::RegisterUxActions()
 		}
 		feature.enabled = feature.settings.Enabled;
 	});
+	FEATURE_COMMAND("rayRegeneration", "Configure AMD RR 1.2.1 direct-signal denoising in Native Composite: enabled, diffuse, specular. RR reads native raw signals only; raster is combined after RR.", [](Feature* self, const json& args) {
+		auto& feature = *static_cast<NativeCompositeFeature*>(self);
+		std::scoped_lock lock(feature.settingsMutex);
+		if (args.contains("enabled")) feature.settings.RREnabled = args.at("enabled").get<bool>();
+		if (args.contains("diffuse")) feature.settings.RRDirectDiffuse = args.at("diffuse").get<bool>();
+		if (args.contains("specular")) feature.settings.RRDirectSpecular = args.at("specular").get<bool>();
+		if (args.contains("diffuseContribution")) {
+			const float v = args.at("diffuseContribution").get<float>();
+			if (std::isfinite(v)) feature.settings.RRDiffuseContribution = std::clamp(v, 0.0f, 4.0f);
+		}
+		if (args.contains("specularContribution")) {
+			const float v = args.at("specularContribution").get<float>();
+			if (std::isfinite(v)) feature.settings.RRSpecularContribution = std::clamp(v, 0.0f, 4.0f);
+		}
+		++feature.validityRevision;
+	});
 	FEATURE_COMMAND("shadowLayer", "Configure independent shadow composition, unrelated to Native Lighting: enabled, contribution (0..4), blend (0..1), radiusPixels, receiverTolerance, preview, afterLighting.", [](Feature* self, const json& args) {
 		auto& feature = *static_cast<NativeCompositeFeature*>(self);
 		feature.ConfigureShadowLayer(args);
@@ -187,6 +227,10 @@ json NativeCompositeFeature::GetDiagnostics()
 		{ "modifiedPixels", pass.ModifiedPixels() }, { "visualizationPixels", pass.VisualizationPixels() },
 		{ "effectiveRecoveredPixels", pass.EffectiveRecoveredPixels() }, { "finiteOnlyPixels", pass.FiniteOnlyPixels() },
 		{ "counterReadFailures", pass.CounterReadFailures() }, { "visuallyConsumedPixels", nullptr },
+		{ "rrEnabled", settings.RREnabled }, { "rrDirectDiffuse", settings.RRDirectDiffuse }, { "rrDirectSpecular", settings.RRDirectSpecular },
+		{ "rrDiffuseContribution", settings.RRDiffuseContribution }, { "rrSpecularContribution", settings.RRSpecularContribution },
+		{ "rrStatus", pass.RRStatus() }, { "rrDispatches", pass.RRDispatches() },
+		{ "rrRawBypasses", pass.RRRawBypasses() }, { "rrCompositePasses", pass.RRCompositePasses() },
 		{ "lightingStatus", LightingStatus(state) },
 		{ "shadowAdmissionStatus", pass.ShadowStatus() },
 		{ "shadowProducerStatus", sceneDiagnostics.value("shadowStatus", std::string{}) },
@@ -215,7 +259,8 @@ std::shared_ptr<const NativeComposite::Frame> NativeCompositeFeature::Capture(ID
 	const auto candidate = globals::game::graphicsState ? globals::features::nativeLighting.GetContribution(globals::game::graphicsState->GetFrameCount()) : nullptr;
 	if (candidate && candidate->geometryOnly && selectedPolicy.visual == 0) selectedPolicy.visual = 5;
 	lightingStatus = (!selected.AddLighting || selected.LightingStrength <= 0) && selectedPolicy.visual == 0 ? 0 : unsupportedGamut && selectedPolicy.visual == 0 ? 2 : 1;
-	if ((selected.AddLighting && selected.LightingStrength > 0 && !unsupportedGamut) || selectedPolicy.visual != 0)
+	if ((selected.AddLighting && selected.LightingStrength > 0 && !unsupportedGamut) ||
+		(selected.RREnabled && selected.AddLighting && !unsupportedGamut) || selectedPolicy.visual != 0)
 		lighting = candidate;
 	const NativeComposite::ShadowSettings shadowSettings{
 		selected.ShadowLayerEnabled ? selected.ShadowContribution : 0.0f,
@@ -224,11 +269,19 @@ std::shared_ptr<const NativeComposite::Frame> NativeCompositeFeature::Capture(ID
 	};
 	const bool wantShadow = shadowSettings.preview || shadowSettings.contribution * shadowSettings.blend > 0.0f;
 	const auto shadow = wantShadow && !unsupportedGamut ? globals::features::dx12NativeScene.GetShadowMask(a_frame) : nullptr;
-	const auto raster = shadow ? globals::features::dx12NativeScene.GetRasterFrame(a_frame) : nullptr;
+	const auto raster = (shadow || (selected.RREnabled && selected.AddLighting)) && !unsupportedGamut ?
+		globals::features::dx12NativeScene.GetRasterFrame(a_frame) : nullptr;
 	auto frame = pass.Capture(a_device11, a_context11, a_device12, a_queue, a_source, a_frame, a_width, a_height,
-		a_transfer, lighting, shadow, raster, shadowSettings, selected.LightingStrength, selectedPolicy, revision);
+		a_transfer, lighting, shadow, raster, shadowSettings,
+		NativeRayRegeneration::Selection{ selected.RREnabled && selected.AddLighting && selected.LightingStrength > 0.0f,
+			selected.RRDirectDiffuse, selected.RRDirectSpecular },
+		selected.LightingStrength, selected.RRDiffuseContribution, selected.RRSpecularContribution,
+		selectedPolicy, revision);
 	if (frame) ++captures;
-	if (frame && frame->lightingSubmitted) { ++lightingSubmissions; lightingStatus = 3; }
+	if (frame && frame->lightingSubmitted) {
+		++lightingSubmissions;
+		lightingStatus = frame->rrSubmitted ? 6 : frame->rrRawBypass ? 7 : 3;
+	}
 	else if (lighting) lightingStatus = 4;
 	if (frame && frame->shadowSubmitted) {
 		++shadowSubmissions;

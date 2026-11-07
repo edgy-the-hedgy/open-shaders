@@ -99,7 +99,9 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 	const std::shared_ptr<const DX12Native::ShadowFrame>& a_shadow,
 	const std::shared_ptr<const DX12Native::RasterFrame>& a_raster,
 	const ShadowSettings& a_shadowSettings,
-	float a_strength, const Policy& a_policy, uint64_t a_revision)
+	const NativeRayRegeneration::Selection& a_rrSelection,
+	float a_strength, float a_diffuseContribution, float a_specularContribution,
+	const Policy& a_policy, uint64_t a_revision)
 {
 	CS_GPU_PASS("NativeComposite::RasterPassThrough");
 	status = "Invalid capture input";
@@ -171,11 +173,25 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			shadowStatus = "Current-frame shadow admitted; awaiting GPU submission";
 		}
 	}
-	const bool blend = supportsLighting && a_lighting && a_lighting->readyFence && a_lighting->readyValue &&
+	const bool blend = !a_rrSelection.enabled && supportsLighting && a_lighting && a_lighting->readyFence && a_lighting->readyValue &&
 		a_lighting->readyValue != UINT64_MAX && a_lighting->backend.d3d12Device.get() == a_device12 &&
 		a_lighting->textures[0] && a_lighting->textures[1] && a_lighting->textures[2] && a_lighting->textures[7] && a_lighting->textures[8] && a_lighting->textures[9] &&
 		a_lighting->width == a_width && a_lighting->height == a_height && (a_policy.visual != 0 || a_transfer != Transfer::Unknown) && InitializeLighting(a_device12);
 
+    // RR produces native-only lighting; raster is a final compositor input.
+	// Admission and resource checks are independent of legacy AddLighting.
+	const bool rrRequested = a_rrSelection.enabled && supportsLighting && a_transfer != Transfer::Unknown &&
+		a_lighting && a_lighting->readyFence && a_lighting->readyValue &&
+		a_lighting->readyValue != UINT64_MAX && a_lighting->frame == a_frame &&
+		a_lighting->backend.d3d12Device.get() == a_device12 &&
+		a_lighting->width == a_width && a_lighting->height == a_height &&
+		a_raster && a_raster->frame == a_frame && a_raster->cameraValid &&
+		a_raster->readyFence && a_raster->readyValue && a_raster->readyValue != UINT64_MAX &&
+		a_raster->width >= a_width && a_raster->height >= a_height &&
+		a_raster->depth && a_raster->depth->resource &&
+		a_lighting->textures[10] && a_lighting->textures[11] &&
+		a_lighting->textures[12] && a_lighting->textures[13] &&
+		a_lighting->textures[14] && a_lighting->textures[15];
 	Slot* slot = nullptr;
 	for (auto& candidate : slots) {
 		if (!candidate)
@@ -219,7 +235,8 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 	bool producerSignalled = false;
 	try {
 		const bool recreate = !slot->frame || slot->device != a_device12 || slot->device11 != a_device11 ||
-			slot->sourceDesc.Width != desc.Width || slot->sourceDesc.Height != desc.Height || slot->sourceDesc.Format != desc.Format || slot->supportsLighting != supportsLighting;
+			slot->sourceDesc.Width != desc.Width || slot->sourceDesc.Height != desc.Height || slot->sourceDesc.Format != desc.Format || slot->supportsLighting != supportsLighting ||
+			(rrRequested && (!slot->rrSlot.Ready() || slot->rrSlot.width != a_width || slot->rrSlot.height != a_height));
 		if (recreate) {
 			// Reserve two full-size images: one DX11/DX12 shared input and
 			// one DX12-owned composited output. Guard incremental slot growth
@@ -229,7 +246,10 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			const auto allocation = a_device12->GetResourceAllocationInfo(0, 1, &allocationDesc).SizeInBytes;
 			if (allocation == UINT64_MAX || allocation > (UINT64_MAX - 2ull * 1024 * 1024) / 2)
 				throw std::runtime_error("Composite allocation size unsupported");
-			const uint64_t required = allocation * 2 + 2ull * 1024 * 1024;
+			const uint64_t rrBytes = rrRequested ? rr.EstimateBytes(a_device12, a_width, a_height) : 0u;
+			if (rrBytes == UINT64_MAX || rrBytes > UINT64_MAX - (allocation * 2 + 2ull * 1024 * 1024))
+				throw std::runtime_error("Native RR frame-pool allocation overflow");
+			const uint64_t required = allocation * 2 + 2ull * 1024 * 1024 + rrBytes;
 			uint64_t retained = 0;
 			for (const auto& candidate : slots) if (candidate && candidate.get() != slot) {
 				if (retained > UINT64_MAX - candidate->frameBytes) throw std::runtime_error("Composite retained size overflow");
@@ -246,6 +266,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			replacement->device11 = a_device11;
 			replacement->sourceDesc = desc;
 			replacement->supportsLighting = supportsLighting;
+			if (rrRequested) rr.Allocate(a_device12, replacement->rrSlot, a_width, a_height);
 			auto sharedDesc = desc;
 			sharedDesc.Usage = D3D11_USAGE_DEFAULT;
 			sharedDesc.BindFlags = 0;
@@ -313,7 +334,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 		const std::array endBarriers{
 			CD3DX12_RESOURCE_BARRIER::Transition(slot->shared->resource.get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON),
 			CD3DX12_RESOURCE_BARRIER::Transition(slot->frame->color.get(), D3D12_RESOURCE_STATE_COPY_DEST,
-				(blend && !(applyShadow && !a_shadowSettings.afterLighting)) ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : D3D12_RESOURCE_STATE_COMMON)
+				((blend || rrRequested) && !(applyShadow && !a_shadowSettings.afterLighting)) ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : D3D12_RESOURCE_STATE_COMMON)
 		};
 		slot->commands->ResourceBarrier(static_cast<UINT>(endBarriers.size()), endBarriers.data());
 		auto recordShadow = [&]() {
@@ -369,8 +390,39 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			};
 			slot->commands->ResourceBarrier(static_cast<UINT>(end.size()), end.data());
 		};
+        // The GPU command list records all RR preparation and AMD dispatches
+		// BEFORE any raster shadowing, additive lighting or scene-color reads.
+		NativeRayRegeneration::Output rrOutput{};
+		if (rrRequested)
+			rrOutput = rr.Prepare(a_device12, slot->commands.get(), slot->rrSlot,
+				a_lighting, a_raster, a_frame, a_rrSelection);
+		const bool rrCompose = rrOutput.ready;
+		// If RR guidance or SDK prerequisites failed, the preceding raster copy
+		// may have left Scene in UAV state. Restore COMMON before the shadow
+		// layer or downstream presentation attempts to use the raster frame.
+		if (rrRequested && !rrCompose && !(applyShadow && !a_shadowSettings.afterLighting)) {
+			const auto noRR = CD3DX12_RESOURCE_BARRIER::Transition(slot->frame->color.get(),
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+			slot->commands->ResourceBarrier(1, &noRR);
+		}
 		if (applyShadow && !a_shadowSettings.afterLighting) recordShadow();
-		if (blend) {
+		if (rrCompose) {
+			// Raster color stays unchanged until RR (or explicit raw bypass)
+			// has returned its completely separate native lighting textures.
+			if (applyShadow && !a_shadowSettings.afterLighting) {
+				const auto beginRRCompose = CD3DX12_RESOURCE_BARRIER::Transition(slot->frame->color.get(),
+					D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+				slot->commands->ResourceBarrier(1, &beginRRCompose);
+			}
+			if (!rr.Compose(a_device12, slot->commands.get(), slot->rrSlot,
+				slot->frame->color.get(), desc.Format, rrOutput,
+				a_strength, a_diffuseContribution, a_specularContribution,
+				a_transfer == Transfer::LegacyScene))
+				throw std::runtime_error("Native RR final composition pipeline unavailable");
+			const auto finishRRCompose = CD3DX12_RESOURCE_BARRIER::Transition(slot->frame->color.get(),
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+			slot->commands->ResourceBarrier(1, &finishRRCompose);
+		} else if (blend) {
 			if (applyShadow && !a_shadowSettings.afterLighting) {
 				// Shadow pass resolved the raster back to COMMON before native direct lighting.
 				const auto startDirect = CD3DX12_RESOURCE_BARRIER::Transition(slot->frame->color.get(),
@@ -436,11 +488,13 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			DX::ThrowIfFailed(a_queue->Wait(a_shadow->readyFence.get(), a_shadow->readyValue));
 			DX::ThrowIfFailed(a_queue->Wait(a_raster->readyFence.get(), a_raster->readyValue));
 		}
-		if (blend)
+        if (blend || rrCompose)
 			DX::ThrowIfFailed(a_queue->Wait(a_lighting->readyFence.get(), a_lighting->readyValue));
+		if (rrCompose && !applyShadow)
+			DX::ThrowIfFailed(a_queue->Wait(a_raster->readyFence.get(), a_raster->readyValue));
 		ID3D12CommandList* lists[]{ slot->commands.get() };
 		const uint64_t done = slot->fence.Next();
-		if (blend && !globals::features::nativeLighting.RetainContribution(a_lighting, slot->fence.fence12.get(), done)) {
+		if ((blend || rrCompose) && !globals::features::nativeLighting.RetainContribution(a_lighting, slot->fence.fence12.get(), done)) {
 			if (applyShadow) shadowStatus = "Shadow submission blocked by native-lighting retention failure";
 			slot->untracked = true;
 			return {};
@@ -450,7 +504,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			slot->untracked = true;
 			return {};
 		}
-		if (applyShadow && !globals::features::dx12NativeScene.RetainRasterFrame(a_raster, slot->fence.fence12.get(), done)) {
+		if ((applyShadow || rrCompose) && !globals::features::dx12NativeScene.RetainRasterFrame(a_raster, slot->fence.fence12.get(), done)) {
 			shadowStatus = "Raster depth consumer-fence retention failed";
 			slot->untracked = true;
 			return {};
@@ -458,6 +512,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 		a_queue->ExecuteCommandLists(1, lists);
 		submitted = true;
 		DX::ThrowIfFailed(a_queue->Signal(slot->fence.fence12.get(), done));
+		if (rrCompose) rr.OnSubmitted(slot->rrSlot, slot->fence.fence12.get(), done, rrOutput);
 		auto& frame = *slot->frame;
 		frame.producerFence = slot->fence.fence12;
 		frame.producerValue = done;
@@ -467,12 +522,17 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 		frame.format = desc.Format;
 		frame.transfer = a_transfer;
 		frame.valid = true;
-		frame.lightingSubmitted = blend;
+		frame.lightingSubmitted = blend || rrCompose;
 		frame.shadowSubmitted = applyShadow;
+		frame.rrSubmitted = rrCompose && rrOutput.dispatched;
+		frame.rrRawBypass = rrCompose && !rrOutput.dispatched;
 		slot->countersRead = !blend;
-		frame.validityRevision = a_revision ^ (blend ? (a_lighting->validityRevision * 0x9e3779b97f4a7c15ull) : 0) ^
+		frame.validityRevision = a_revision ^ ((blend || rrCompose) ? (a_lighting->validityRevision * 0x9e3779b97f4a7c15ull) : 0) ^
 			(applyShadow ? (a_shadowSettings.revision * 0xbf58476d1ce4e5b9ull) : 0);
-		status = "Submitted";
+		status = rrCompose ? (rrOutput.dispatched ? "Submitted: native RR output combined after denoising" :
+			"Submitted: native raw bypass combined after RR stage") : "Submitted";
+		if (a_rrSelection.enabled && !rrCompose && !rrRequested)
+			status = "RR admission rejected; raster scene retained without native direct lighting";
 		if (applyShadow) shadowStatus = "Independent shadow layer submitted";
 		return slot->frame;
 	} catch (const std::exception& error) {
