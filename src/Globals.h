@@ -10,6 +10,7 @@ struct CloudShadows;
 struct CloudRelight;
 struct ProceduralSun;
 struct DynamicCubemaps;
+struct DX12NativeScene;
 struct VolumetricShadows;
 struct LODShadows;
 struct ExtendedMaterials;
@@ -117,6 +118,7 @@ namespace globals
 		extern CloudRelight cloudRelight;
 		extern ProceduralSun proceduralSun;
 		extern DynamicCubemaps dynamicCubemaps;
+		extern DX12NativeScene dx12NativeScene;
 		extern VolumetricShadows volumetricShadows;
 		extern LODShadows lodShadows;
 		extern ExtendedMaterials extendedMaterials;

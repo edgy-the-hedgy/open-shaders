@@ -10,6 +10,7 @@
 #include "Features/CloudShadows.h"
 #include "Features/DeveloperTools.h"
 #include "Features/DynamicCubemaps.h"
+#include "Features/DX12NativeScene/DX12NativeScene.h"
 #include "Features/Effects11.h"
 #include "Features/ExponentialHeightFog.h"
 #include "Features/ExtendedMaterials.h"
@@ -81,6 +82,7 @@ namespace globals
 		CloudRelight cloudRelight{};
 		ProceduralSun proceduralSun{};
 		DynamicCubemaps dynamicCubemaps{};
+		DX12NativeScene dx12NativeScene{};
 		VolumetricShadows volumetricShadows{};
 		LODShadows lodShadows{};
 		ExtendedMaterials extendedMaterials{};

@@ -10,6 +10,7 @@
 #include "Features/CloudShadows.h"
 #include "Features/DeveloperTools.h"
 #include "Features/DynamicCubemaps.h"
+#include "Features/DX12NativeScene/DX12NativeScene.h"
 #include "Features/ProceduralSun.h"
 #if defined(ENABLE_EFFECTS11)
 #	include "Features/Effects11.h"
@@ -298,6 +299,7 @@ namespace
 			&globals::features::ibl,
 			&globals::features::extendedTranslucency,
 			&globals::features::upscaling,
+			&globals::features::dx12NativeScene,
 			&globals::features::developerTools,
 			&globals::features::csEditor,
 			&globals::features::sceneSelector,
