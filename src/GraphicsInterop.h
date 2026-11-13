@@ -58,4 +58,3 @@ struct SharedFence
 	/** @brief True only when the fence reached a_value inside the bound. */
 	bool CpuWait(uint64_t a_value, DWORD a_timeoutMs) const { return CpuWaitOutcome(a_value, a_timeoutMs) == WaitOutcome::kComplete; }
 };
-
