@@ -29,6 +29,7 @@
 #include "Features/LODShadows.h"
 #include "Features/LightLimitFix.h"
 #include "Features/LinearLighting.h"
+#include "Features/NativeComposite/NativeComposite.h"
 #include "Features/PerformanceOverlay.h"
 #include "Features/PostProcessing.h"
 #include "Features/ProceduralSun.h"
@@ -93,6 +94,7 @@ namespace globals
 		IBL ibl{};
 		LightLimitFix lightLimitFix{};
 		LinearLighting linearLighting{};
+		NativeCompositeFeature nativeComposite{};
 		LODBlending lodBlending{};
 		HairSpecular hairSpecular{};
 		HorizonFix horizonFix{};

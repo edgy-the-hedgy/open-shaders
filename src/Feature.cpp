@@ -32,6 +32,7 @@
 #include "Features/LODShadows.h"
 #include "Features/LightLimitFix.h"
 #include "Features/LinearLighting.h"
+#include "Features/NativeComposite/NativeComposite.h"
 #include "Features/PerformanceOverlay.h"
 #include "Features/PostProcessing.h"
 #include "Features/RainRefraction.h"
@@ -300,6 +301,7 @@ namespace
 			&globals::features::extendedTranslucency,
 			&globals::features::upscaling,
 			&globals::features::dx12NativeScene,
+			&globals::features::nativeComposite,
 			&globals::features::developerTools,
 			&globals::features::csEditor,
 			&globals::features::sceneSelector,

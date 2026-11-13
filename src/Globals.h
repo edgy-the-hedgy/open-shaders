@@ -23,6 +23,7 @@ struct HorizonFix;
 struct IBL;
 struct LightLimitFix;
 struct LinearLighting;
+struct NativeCompositeFeature;
 struct LODBlending;
 struct InteriorSun;
 struct FurShells;
@@ -131,6 +132,7 @@ namespace globals
 		extern IBL ibl;
 		extern LightLimitFix lightLimitFix;
 		extern LinearLighting linearLighting;
+		extern NativeCompositeFeature nativeComposite;
 		extern LODBlending lodBlending;
 		extern InteriorSun interiorSun;
 		extern FurShells furShells;
