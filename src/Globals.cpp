@@ -2,12 +2,15 @@
 
 #include "Utils/D3D.h"
 
+#include "CSEditor/SceneManager/SceneManager.h"
+#include "CSEditor/SceneManager/SceneSettingsManager.h"
 #include "Deferred.h"
 #include "Feature.h"
 #include "Features/CSEditor.h"
 #include "Features/CSUtility.h"
 #include "Features/CloudRelight.h"
 #include "Features/CloudShadows.h"
+#include "Features/DeveloperTools.h"
 #include "Features/DynamicCubemaps.h"
 #include "Features/Effects11.h"
 #include "Features/ExponentialHeightFog.h"
@@ -40,7 +43,6 @@
 #include "Features/RemoteControl.h"
 #include "Features/RenderDoc.h"
 #include "Features/ReverseZ.h"
-#include "Features/SceneManager.h"
 #include "Features/SceneSelector.h"
 #include "Features/ScreenSpaceGI.h"
 #include "Features/ScreenSpaceShadows.h"
@@ -65,7 +67,6 @@
 #include "Features/WetnessEffects.h"
 #include "Features/Wind/Wind.h"
 #include "Menu.h"
-#include "SceneSettingsManager.h"
 #include "ShaderCache.h"
 #include "State.h"
 #include "TruePBR.h"
@@ -132,6 +133,7 @@ namespace globals
 #if defined(ENABLE_EFFECTS11)
 		Effects11 effects11{};
 #endif
+		DeveloperTools developerTools{};
 		RenderDoc renderDoc{};
 		RemoteControl remoteControl{};
 		ScreenshotFeature screenshotFeature{};

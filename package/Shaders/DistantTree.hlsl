@@ -1,6 +1,15 @@
+<<<<<<< HEAD
 #define DISTANT_TREE
 
 #include "Common/Color.hlsli"
+||||||| 12b261724
+#include "Common/Color.hlsli"
+=======
+// SPDX-License-Identifier: MIT AND (LicenseRef-GPL-3.0-with-Modding-Exception WITH GPL-3.0-linking-source-exception)
+// Original code Copyright (c) 2022 Ilya Perapechka (MIT), modifications GPL-3.0 with Modding Exception (see EXCEPTIONS.md)
+
+#include "Common/ColorManagement.hlsli"
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 #include "Common/FrameBuffer.hlsli"
 #include "Common/GBuffer.hlsli"
 #include "Common/MotionBlur.hlsli"
@@ -202,8 +211,16 @@ const static float DepthOffsets[16] = {
 #	if defined(EXP_HEIGHT_FOG)
 void ApplyReflectionExponentialHeightFog(inout float3 color, float3 positionWS, float4 screenPosition, uint eyeIndex)
 {
+<<<<<<< HEAD
 	float3 fogColor = Color::Fog(AmbientColor.xyz);
 	float4 exponentialHeightFog = ExponentialHeightFog::GetExponentialHeightFogNoVolumetric(positionWS, FrameBuffer::CameraPosAdjust[eyeIndex].xyz, fogColor, float4(screenPosition.xy * FrameBuffer::DynamicResolutionParams2.xy, screenPosition.z, 1));
+||||||| 12b261724
+	float3 fogColor = Color::Fog(AmbientColor.xyz);
+	float4 exponentialHeightFog = ExponentialHeightFog::GetExponentialHeightFogNoVolumetric(positionWS, FrameBuffer::CameraPosAdjust.xyz, fogColor, float4(screenPosition.xy * FrameBuffer::DynamicResolutionParams2.xy, screenPosition.z, 1));
+=======
+	float3 fogColor = ColorManagement::SRGBToWorking(AmbientColor.xyz);
+	float4 exponentialHeightFog = ExponentialHeightFog::GetExponentialHeightFogNoVolumetric(positionWS, FrameBuffer::CameraPosAdjust.xyz, fogColor, float4(screenPosition.xy * FrameBuffer::DynamicResolutionParams2.xy, screenPosition.z, 1));
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	color = lerp(color, exponentialHeightFog.xyz, exponentialHeightFog.w);
 }
 #	endif
@@ -242,11 +259,22 @@ PS_OUTPUT ShadeDistantTree(PS_INPUT input, bool sampleDistantShadow)
 	psout.Diffuse.w = 0;
 #	else
 	float4 baseColor = TexDiffuse.SampleBias(SampDiffuse, input.TexCoord.xy, SharedData::MipBias);
-	baseColor.xyz = Color::Diffuse(baseColor.xyz);
+	baseColor.xyz = Color::Albedo(ColorManagement::DiffuseToWorking(baseColor.xyz));
 
 	if ((baseColor.w - AlphaTestRefRS) < 0) {
 		discard;
 	}
+
+	float3 ddx = ddx_coarse(input.WorldPosition.xyz);
+	float3 ddy = ddy_coarse(input.WorldPosition.xyz);
+	float3 normal = -normalize(cross(ddx, ddy));
+
+	float3 directionalAmbientColor = max(0, Color::Ambient(SharedData::GetAmbient(normal)));
+#		if defined(IBL)
+	if (SharedData::iblSettings.EnableIBL) {
+		directionalAmbientColor = ImageBasedLighting::GetDiffuseIBL(directionalAmbientColor, -normal);
+	}
+#		endif
 
 #		if defined(DEFERRED)
 	float dirShadow = ShadowSampling::GetWorldShadow(input.WorldPosition.xyz, FrameBuffer::CameraPosAdjust[eyeIndex].xyz, eyeIndex, true, sampleDistantShadow);
@@ -256,8 +284,21 @@ PS_OUTPUT ShadeDistantTree(PS_INPUT input, bool sampleDistantShadow)
 		dirShadow *= lerp(1.0, ScreenSpaceShadows::GetScreenSpaceShadow(input.Position.xyz, 0.0.xx, 0.0, eyeIndex), ScreenSpaceShadowStrength);
 #			endif
 
+<<<<<<< HEAD
 	float llDirLightMult = (SharedData::linearLightingSettings.enableLinearLighting && !SharedData::linearLightingSettings.isDirLightLinear) ? SharedData::linearLightingSettings.dirLightMult : 1.0f;
 	float3 diffuseColor = Color::DirectionalLight(SharedData::DirLightColor.xyz / max(llDirLightMult, 1e-5), SharedData::linearLightingSettings.isDirLightLinear) * dirShadow * 0.5 * llDirLightMult * Color::VanillaNormalization();
+||||||| 12b261724
+	if (dirShadow != 0.0)
+		dirShadow *= ShadowSampling::GetWorldShadow(input.WorldPosition.xyz, FrameBuffer::CameraPosAdjust.xyz);
+
+	float llDirLightMult = (SharedData::linearLightingSettings.enableLinearLighting && !SharedData::linearLightingSettings.isDirLightLinear) ? SharedData::linearLightingSettings.dirLightMult : 1.0f;
+	float3 diffuseColor = Color::DirectionalLight(SharedData::DirLightColor.xyz / max(llDirLightMult, 1e-5), SharedData::linearLightingSettings.isDirLightLinear) * dirShadow * 0.5 * llDirLightMult * Color::VanillaNormalization();
+=======
+	if (dirShadow != 0.0)
+		dirShadow *= ShadowSampling::GetWorldShadow(input.WorldPosition.xyz, FrameBuffer::CameraPosAdjust.xyz);
+
+	float3 diffuseColor = Color::DirectionalLight(SharedData::DirLightColor.xyz) * dirShadow * 0.5 * Color::BRDFScale;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 #			if defined(EXP_HEIGHT_FOG)
 	if (SharedData::exponentialHeightFogSettings.enabled) {
@@ -265,6 +306,7 @@ PS_OUTPUT ShadeDistantTree(PS_INPUT input, bool sampleDistantShadow)
 	}
 #			endif
 
+<<<<<<< HEAD
 	float3 ddx = ddx_coarse(input.WorldPosition.xyz);
 	float3 ddy = ddy_coarse(input.WorldPosition.xyz);
 	float3 normal = -normalize(cross(ddx, ddy));
@@ -279,6 +321,19 @@ PS_OUTPUT ShadeDistantTree(PS_INPUT input, bool sampleDistantShadow)
 		directionalAmbientColor = ImageBasedLighting::GetDiffuseIBL(directionalAmbientColor, -normal);
 	}
 #			endif
+||||||| 12b261724
+	float3 ddx = ddx_coarse(input.WorldPosition.xyz);
+	float3 ddy = ddy_coarse(input.WorldPosition.xyz);
+	float3 normal = -normalize(cross(ddx, ddy));
+
+	float3 directionalAmbientColor = max(0, Color::Ambient(SharedData::GetAmbient(normal)));
+#			if defined(IBL)
+	if (SharedData::iblSettings.EnableIBL) {
+		directionalAmbientColor = ImageBasedLighting::GetDiffuseIBL(directionalAmbientColor, -normal);
+	}
+#			endif
+=======
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	diffuseColor += directionalAmbientColor;
 
 	psout.Diffuse.xyz = diffuseColor * baseColor.xyz;
@@ -300,8 +355,7 @@ PS_OUTPUT ShadeDistantTree(PS_INPUT input, bool sampleDistantShadow)
 #		else
 	float dirShadow = ShadowSampling::GetWorldShadow(input.WorldPosition.xyz, FrameBuffer::CameraPosAdjust[eyeIndex].xyz, eyeIndex, true, sampleDistantShadow);
 
-	float llDirLightMult = (SharedData::linearLightingSettings.enableLinearLighting && !SharedData::linearLightingSettings.isDirLightLinear) ? SharedData::linearLightingSettings.dirLightMult : 1.0f;
-	float3 diffuseColor = Color::DirectionalLight(SharedData::DirLightColor.xyz / max(llDirLightMult, 1e-5), SharedData::linearLightingSettings.isDirLightLinear) * dirShadow * 0.5 * llDirLightMult * Color::VanillaNormalization();
+	float3 diffuseColor = Color::DirectionalLight(SharedData::DirLightColor.xyz) * dirShadow * 0.5 * Color::BRDFScale;
 
 #			if defined(EXP_HEIGHT_FOG)
 	if (SharedData::exponentialHeightFogSettings.enabled) {
@@ -309,6 +363,7 @@ PS_OUTPUT ShadeDistantTree(PS_INPUT input, bool sampleDistantShadow)
 	}
 #			endif
 
+<<<<<<< HEAD
 	float3 ddx = ddx_coarse(input.WorldPosition.xyz);
 	float3 ddy = ddy_coarse(input.WorldPosition.xyz);
 	float3 normal = normalize(cross(ddx, ddy));
@@ -323,6 +378,19 @@ PS_OUTPUT ShadeDistantTree(PS_INPUT input, bool sampleDistantShadow)
 		directionalAmbientColor = ImageBasedLighting::GetDiffuseIBL(directionalAmbientColor, -normal);
 	}
 #			endif
+||||||| 12b261724
+	float3 ddx = ddx_coarse(input.WorldPosition.xyz);
+	float3 ddy = ddy_coarse(input.WorldPosition.xyz);
+	float3 normal = normalize(cross(ddx, ddy));
+
+	float3 directionalAmbientColor = Color::Ambient(SharedData::GetAmbient(normal));
+#			if defined(IBL)
+	if (SharedData::iblSettings.EnableIBL) {
+		directionalAmbientColor = ImageBasedLighting::GetDiffuseIBL(directionalAmbientColor, -normal);
+	}
+#			endif
+=======
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	diffuseColor += directionalAmbientColor;
 
 	float3 color = diffuseColor * baseColor.xyz;

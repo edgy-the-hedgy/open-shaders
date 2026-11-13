@@ -1649,7 +1649,7 @@ bool FidelityFX::UpscaleRegion(uint32_t a_contextIndex, ID3D11Resource* a_color,
 	const bool runtimeFallbackReset = runtimeRequested && runtimeFallbackResetDispatchesRemaining > 0;
 	if (runtimeFallbackReset)
 		runtimeFallbackResetDispatchesRemaining--;
-	dispatchParameters.reset = (state->IsMainOrLoadingMenuOpen() && !upscaling.menuCameraMVsValid) || runtimeFallbackReset;
+	dispatchParameters.reset = state->ShouldResetHistory() || (state->IsMainOrLoadingMenuOpen() && !upscaling.menuCameraMVsValid) || runtimeFallbackReset;
 	dispatchParameters.preExposure = 1.0f;
 	dispatchParameters.flags = 0;
 

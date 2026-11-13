@@ -164,14 +164,21 @@ namespace stl
 			detour_record_installed(a_relId.address(), reinterpret_cast<PVOID>(T::thunk));
 	}
 
+	// a_original: detour this function instead of the slot's current one (0 = current)
 	template <std::size_t idx, class T>
-	void detour_vfunc(void* target)
+	void detour_vfunc(void* target, std::uintptr_t a_original = 0)
 	{
 		auto vtable = *reinterpret_cast<uintptr_t**>(target);
+<<<<<<< HEAD
 		const auto original = vtable[idx];
 		if (original == reinterpret_cast<std::uintptr_t>(T::thunk) || detour_is_installed(original, reinterpret_cast<PVOID>(T::thunk)))
 			return;
 		T::func = original;
+||||||| 12b261724
+		T::func = vtable[idx];
+=======
+		T::func = a_original ? a_original : vtable[idx];
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 		const auto result = detour_attach(reinterpret_cast<PVOID*>(&T::func), reinterpret_cast<PVOID>(T::thunk));
 		if (result == NO_ERROR)
 			detour_record_installed(original, reinterpret_cast<PVOID>(T::thunk));

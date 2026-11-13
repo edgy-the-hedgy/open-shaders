@@ -4,6 +4,7 @@
 
 #include "BackgroundBlur.h"
 #include "../Features/HDRDisplay.h"
+#include "../Features/PerformanceOverlay.h"
 #include "../Features/Upscaling.h"
 #include "../Globals.h"
 #include "../GpuPass.h"
@@ -39,7 +40,12 @@ namespace BackgroundBlur
 		std::mutex resourceMutex;
 		bool enabled = false;
 		bool csEditorActive = false;
+<<<<<<< HEAD
 		bool retainedDesktopMirror = false;
+||||||| 12b261724
+=======
+		float fade = 1.0f;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 		// DirectX resources (RAII managed)
 		winrt::com_ptr<ID3D11VertexShader> vertexShader;
@@ -112,10 +118,33 @@ namespace BackgroundBlur
 
 		struct BlurConstants
 		{
+<<<<<<< HEAD
 			float blurTextureSize[4];
 			float windowRect[4];
 			float windowParams[4];
 			float uiParams[4];
+||||||| 12b261724
+			float texelSize[4];  // x = 1/width, y = 1/height, z = blur strength, w = unused
+			int blurParams[4];   // x = samples, y = unused, z = unused, w = unused
+		};
+
+		// Window constants for rounded corner compositing
+		struct WindowConstants
+		{
+			float windowRect[4];    // x = minX, y = minY, z = maxX, w = maxY (in pixels)
+			float windowParams[4];  // x = cornerRadius, y = screenWidth, z = screenHeight, w = unused
+=======
+			float texelSize[4];  // x = 1/width, y = 1/height, z = blur strength, w = unused
+			int blurParams[4];   // x = samples, y = unused, z = unused, w = unused
+		};
+
+		// Window constants for rounded corner compositing
+		struct WindowConstants
+		{
+			float windowRect[4];    // x = minX, y = minY, z = maxX, w = maxY (in pixels)
+			float windowParams[4];  // x = cornerRadius, y = screenWidth, z = screenHeight, w = fullscreen
+			float fadeParams[4];    // x = fade
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 		};
 		static_assert(sizeof(BlurConstants) == 64);
 
@@ -603,6 +632,7 @@ namespace BackgroundBlur
 
 		auto downsampleRTVPtr = downsampleRTV.get();
 		context->OMSetRenderTargets(1, &downsampleRTVPtr, nullptr);
+<<<<<<< HEAD
 		context->PSSetShader(frame.hdr ? hdrDownsamplePixelShader.get() : downsamplePixelShader.get(), nullptr, 0);
 		context->PSSetShaderResources(0, 1, &frame.sourceSRV);
 		if (frame.hdr) {
@@ -622,9 +652,51 @@ namespace BackgroundBlur
 		} else {
 			context->Draw(FULLSCREEN_TRIANGLE_VERTICES, 0);
 		}
+||||||| 12b261724
+		context->VSSetShader(vertexShader.get(), nullptr, 0);
+		context->PSSetShader(horizontalPixelShader.get(), nullptr, 0);
+		context->PSSetSamplers(0, 1, &samplerStatePtr);
+
+		// Step 1: Downsample game world directly (bilinear filtering does the work)
+		BlurConstants downsampleConstants = {};
+		downsampleConstants.texelSize[0] = 1.0f / static_cast<float>(sourceDesc.Width);
+		downsampleConstants.texelSize[1] = 1.0f / static_cast<float>(sourceDesc.Height);
+		downsampleConstants.blurParams[0] = 1;  // Single sample for downsample
+		context->UpdateSubresource(constantBuffer.get(), 0, nullptr, &downsampleConstants, 0, 0);
+		context->PSSetConstantBuffers(0, 1, &constantBufferPtr);
+		context->PSSetShaderResources(0, 1, &sourceSRV);
+		context->Draw(FULLSCREEN_TRIANGLE_VERTICES, 0);
+=======
+		context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		context->VSSetShader(vertexShader.get(), nullptr, 0);
+		context->PSSetShader(horizontalPixelShader.get(), nullptr, 0);
+		context->PSSetSamplers(0, 1, &samplerStatePtr);
+
+		// Step 1: Downsample game world directly (bilinear filtering does the work)
+		BlurConstants downsampleConstants = {};
+		downsampleConstants.texelSize[0] = 1.0f / static_cast<float>(sourceDesc.Width);
+		downsampleConstants.texelSize[1] = 1.0f / static_cast<float>(sourceDesc.Height);
+		downsampleConstants.blurParams[0] = 1;  // Single sample for downsample
+		context->UpdateSubresource(constantBuffer.get(), 0, nullptr, &downsampleConstants, 0, 0);
+		context->PSSetConstantBuffers(0, 1, &constantBufferPtr);
+		context->PSSetShaderResources(0, 1, &sourceSRV);
+		context->Draw(FULLSCREEN_TRIANGLE_VERTICES, 0);
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 		context->PSSetShaderResources(0, 1, &nullSRV);
 
+<<<<<<< HEAD
 		if (frame.uiBuffer.srv && !frame.hdr) {
+||||||| 12b261724
+		// Step 2: Blend UI buffer at downsampled resolution (pre-multiplied alpha)
+		// Small HUD elements may be slightly softened but this is much faster
+		if (uiBufferSRV && compositeBlendState) {
+=======
+		// Step 2: Blend UI buffer at downsampled resolution (pre-multiplied alpha)
+		// Small HUD elements may be slightly softened but this is much faster
+		// The HUD is only blurred and cleared at full strength; while fading it stays sharp, so it never pops
+		const bool blurHud = fade >= 1.0f;
+		if (blurHud && uiBufferSRV && compositeBlendState) {
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 			context->OMSetBlendState(compositeBlendState.get(), nullptr, 0xFFFFFFFF);
 			context->PSSetShaderResources(0, 1, &frame.uiBuffer.srv);
 			context->Draw(FULLSCREEN_TRIANGLE_VERTICES, 0);
@@ -648,22 +720,110 @@ namespace BackgroundBlur
 		context->Draw(FULLSCREEN_TRIANGLE_VERTICES, 0);
 		context->PSSetShaderResources(0, 1, &nullSRV);
 
+<<<<<<< HEAD
 		D3D11_VIEWPORT compositeViewport{};
 		compositeViewport.Width = constants.windowParams[1];
 		compositeViewport.Height = constants.windowParams[2];
 		compositeViewport.MaxDepth = 1.0f;
 		context->RSSetViewports(1, &compositeViewport);
+||||||| 12b261724
+		// Final composition: upscale from quarter-res with rounded corner mask
+		context->RSSetViewports(1, &originalViewport);
+
+		// Expand scissor rect slightly for anti-aliased rounded corner edges
+		D3D11_RECT scissorRect;
+		scissorRect.left = static_cast<LONG>((std::max)(0.0f, menuMin.x - SCISSOR_AA_PADDING));
+		scissorRect.top = static_cast<LONG>((std::max)(0.0f, menuMin.y - SCISSOR_AA_PADDING));
+		scissorRect.right = static_cast<LONG>((std::min)(static_cast<FLOAT>(sourceDesc.Width), menuMax.x + SCISSOR_AA_PADDING));
+		scissorRect.bottom = static_cast<LONG>((std::min)(static_cast<FLOAT>(sourceDesc.Height), menuMax.y + SCISSOR_AA_PADDING));
+
+		context->RSSetState(scissorRasterizerState.get());
+=======
+		// Final composition: upscale from eighth-res with rounded corner mask
+		context->RSSetViewports(1, &originalViewport);
+
+		// Expand scissor rect slightly for anti-aliased rounded corner edges
+		D3D11_RECT scissorRect;
+		scissorRect.left = static_cast<LONG>((std::max)(0.0f, menuMin.x - SCISSOR_AA_PADDING));
+		scissorRect.top = static_cast<LONG>((std::max)(0.0f, menuMin.y - SCISSOR_AA_PADDING));
+		scissorRect.right = static_cast<LONG>((std::min)(static_cast<FLOAT>(sourceDesc.Width), menuMax.x + SCISSOR_AA_PADDING));
+		scissorRect.bottom = static_cast<LONG>((std::min)(static_cast<FLOAT>(sourceDesc.Height), menuMax.y + SCISSOR_AA_PADDING));
+
+		context->RSSetState(scissorRasterizerState.get());
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 		context->RSSetScissorRects(1, &scissorRect);
+<<<<<<< HEAD
 		context->OMSetRenderTargets(1, &frame.targetRTV, nullptr);
 		context->OMSetBlendState(frame.uiOnly ? nullptr : blendState.get(), nullptr, 0xFFFFFFFF);
 		context->PSSetShader(frame.uiOnly ? layerPixelShader.get() : compositePixelShader.get(), nullptr, 0);
+||||||| 12b261724
+
+		// Set up window constants for rounded corner shaders (used by both composite and clear)
+		bool useRoundedCorners = compositePixelShader && clearPixelShader && windowConstantBuffer;
+		if (useRoundedCorners) {
+			WindowConstants windowConstants = {};
+			windowConstants.windowRect[0] = menuMin.x;
+			windowConstants.windowRect[1] = menuMin.y;
+			windowConstants.windowRect[2] = menuMax.x;
+			windowConstants.windowRect[3] = menuMax.y;
+			windowConstants.windowParams[0] = cornerRadius;
+			windowConstants.windowParams[1] = static_cast<float>(sourceDesc.Width);
+			windowConstants.windowParams[2] = static_cast<float>(sourceDesc.Height);
+			windowConstants.windowParams[3] = csEditorActive ? 1.0f : 0.0f;
+			context->UpdateSubresource(windowConstantBuffer.get(), 0, nullptr, &windowConstants, 0, 0);
+			auto windowConstantBufferPtr = windowConstantBuffer.get();
+			context->PSSetConstantBuffers(1, 1, &windowConstantBufferPtr);
+		}
+
+		// Draw blur to target
+		context->OMSetRenderTargets(1, &targetRTV, nullptr);
+		float blendFactor[4] = { 1.0f, 1.0f, 1.0f, BLUR_INTENSITY * BLEND_ALPHA_SCALE };
+		context->OMSetBlendState(blendState.get(), blendFactor, 0xFFFFFFFF);
+		context->PSSetShader(useRoundedCorners ? compositePixelShader.get() : verticalPixelShader.get(), nullptr, 0);
+=======
+
+		// Set up window constants for rounded corner shaders (used by both composite and clear)
+		bool useRoundedCorners = compositePixelShader && clearPixelShader && windowConstantBuffer;
+		if (useRoundedCorners) {
+			WindowConstants windowConstants = {};
+			windowConstants.windowRect[0] = menuMin.x;
+			windowConstants.windowRect[1] = menuMin.y;
+			windowConstants.windowRect[2] = menuMax.x;
+			windowConstants.windowRect[3] = menuMax.y;
+			windowConstants.windowParams[0] = cornerRadius;
+			windowConstants.windowParams[1] = static_cast<float>(sourceDesc.Width);
+			windowConstants.windowParams[2] = static_cast<float>(sourceDesc.Height);
+			windowConstants.windowParams[3] = csEditorActive ? 1.0f : 0.0f;
+			windowConstants.fadeParams[0] = fade;
+			context->UpdateSubresource(windowConstantBuffer.get(), 0, nullptr, &windowConstants, 0, 0);
+			auto windowConstantBufferPtr = windowConstantBuffer.get();
+			context->PSSetConstantBuffers(1, 1, &windowConstantBufferPtr);
+		}
+
+		// Draw blur to target
+		context->OMSetRenderTargets(1, &targetRTV, nullptr);
+		float blendFactor[4] = { 1.0f, 1.0f, 1.0f, BLUR_INTENSITY * BLEND_ALPHA_SCALE };
+		context->OMSetBlendState(blendState.get(), blendFactor, 0xFFFFFFFF);
+		context->PSSetShader(useRoundedCorners ? compositePixelShader.get() : verticalPixelShader.get(), nullptr, 0);
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 		auto srv2Ptr = blurSRV2.get();
 		context->PSSetShaderResources(0, 1, &srv2Ptr);
 		context->Draw(FULLSCREEN_TRIANGLE_VERTICES, 0);
 		context->PSSetShaderResources(0, 1, &nullSRV);
 
+<<<<<<< HEAD
 		if (frame.uiBuffer.rtv) {
 			context->OMSetRenderTargets(1, &frame.uiBuffer.rtv, nullptr);
+||||||| 12b261724
+		// Clear UI buffer where blur was drawn (prevents HUD showing through)
+		if (uiBufferRTV) {
+			context->OMSetRenderTargets(1, &uiBufferRTV, nullptr);
+=======
+		// Clear UI buffer where blur was drawn (prevents HUD showing through)
+		if (blurHud && uiBufferRTV) {
+			context->OMSetRenderTargets(1, &uiBufferRTV, nullptr);
+			// Unblended on purpose: a fade-scaled blend blacked out and flickered the D3D12 UI buffer
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 			context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
 			context->PSSetShader(clearPixelShader.get(), nullptr, 0);
 			context->Draw(FULLSCREEN_TRIANGLE_VERTICES, 0);
@@ -758,18 +918,35 @@ namespace BackgroundBlur
 		enabled = enable;
 	}
 
+	void SetFade(float newFade)
+	{
+		fade = std::clamp(newFade, 0.0f, 1.0f);
+	}
+
 	void SetCSEditorActive(bool active)
 	{
 		csEditorActive = active;
 	}
 
+<<<<<<< HEAD
 	bool IsCSEditorActive()
 	{
 		return csEditorActive;
 	}
 
 	bool ImageHDRScene(const ImVec2& size)
+||||||| 12b261724
+	bool IsCSEditorActive()
 	{
+		return csEditorActive;
+	}
+
+	void RenderBackgroundBlur()
+=======
+	void RenderBackgroundBlur()
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
+	{
+<<<<<<< HEAD
 		auto& hdr = globals::features::hdrDisplay;
 		if (!hdr.loaded || !hdr.settings.enableHDR || !hdr.hdrTexture || !hdr.hdrTexture->rtv ||
 			!hdr.hdrOutputCS || !hdr.IsCleanSceneCaptureFresh() || (!initialized && !Initialize()) || initializationFailed ||
@@ -856,6 +1033,13 @@ namespace BackgroundBlur
 			if (!sourceDrawData || !sourceDrawData->Valid ||
 				!DesktopMirrorDrawData::GetFitTransform(*sourceDrawData, drawData->DisplaySize, fit))
 				return false;
+||||||| 12b261724
+		if (!enabled) {
+			return;
+=======
+		if (!enabled || fade <= 0.0f) {
+			return;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 		}
 
 		if (!initialized || initializationFailed) {
@@ -1068,11 +1252,87 @@ namespace BackgroundBlur
 				auto& commands = window.drawList->CmdBuffer;
 				commands.erase(commands.begin(), commands.begin() + 2);
 			}
+<<<<<<< HEAD
 		});
 		ImGui_ImplDX11_RenderDrawData(drawData);
 		if (useEditorLayer)
 			CompositeEditorLayer(imguiRTV.get());
 		return true;
+||||||| 12b261724
+
+			// Skip child windows - only blur root windows to cover headers and footers
+			// Exception: docked windows are visually independent even though ParentWindow is set
+			if (window->ParentWindow != nullptr && !window->DockIsActive) {
+				continue;
+			}
+
+			// Skip tooltip windows
+			if (window->Flags & ImGuiWindowFlags_Tooltip) {
+				continue;
+			}
+
+			// Skip Performance Overlay window (no blur)
+			if (window->Name && std::string_view(window->Name) == "Performance Overlay") {
+				continue;
+			}
+
+			// Skip if window has no background (fully transparent)
+			if (window->Flags & ImGuiWindowFlags_NoBackground) {
+				continue;
+			}
+
+			// Get window outer bounds (includes title bar, borders, etc.)
+			// Use window's inner rect which includes all content drawn inside the window
+			// including custom headers and footers, not just OuterRectClipped
+			ImRect windowRect = window->Rect();
+			ImVec2 windowMin = windowRect.Min;
+			ImVec2 windowMax = windowRect.Max;
+
+			// Get window corner rounding from the window's style
+			float cornerRadius = window->WindowRounding;
+
+			// Perform blur for this window area with rounded corners
+			// Pass UI buffer SRV/RTV for compositing and clearing during upscaling gameplay
+			PerformBlur(currentTexture.get(), sourceSRV, currentRTV.get(), windowMin, windowMax, cornerRadius, uiBuffer.srv, uiBuffer.rtv);
+		}
+=======
+
+			// Skip child windows - only blur root windows to cover headers and footers
+			// Exception: docked windows are visually independent even though ParentWindow is set
+			if (window->ParentWindow != nullptr && !window->DockIsActive) {
+				continue;
+			}
+
+			// Skip tooltip windows
+			if (window->Flags & ImGuiWindowFlags_Tooltip) {
+				continue;
+			}
+
+			// Skip Performance Overlay window (no blur)
+			if (window->Name && std::string_view(window->Name).ends_with(PerformanceOverlay::kWindowId)) {
+				continue;
+			}
+
+			// Skip if window has no background (fully transparent)
+			if (window->Flags & ImGuiWindowFlags_NoBackground) {
+				continue;
+			}
+
+			// Get window outer bounds (includes title bar, borders, etc.)
+			// Use window's inner rect which includes all content drawn inside the window
+			// including custom headers and footers, not just OuterRectClipped
+			ImRect windowRect = window->Rect();
+			ImVec2 windowMin = windowRect.Min;
+			ImVec2 windowMax = windowRect.Max;
+
+			// Get window corner rounding from the window's style
+			float cornerRadius = window->WindowRounding;
+
+			// Perform blur for this window area with rounded corners
+			// Pass UI buffer SRV/RTV for compositing and clearing during upscaling gameplay
+			PerformBlur(currentTexture.get(), sourceSRV, currentRTV.get(), windowMin, windowMax, cornerRadius, uiBuffer.srv, uiBuffer.rtv);
+		}
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	}
 
 }  // namespace BackgroundBlur

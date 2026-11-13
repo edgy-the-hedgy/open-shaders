@@ -1,8 +1,17 @@
+<<<<<<< HEAD
 // Always kPOST_ZPREPASS_COPY, never TerrainBlending's blendedDepthTexture: that one is produced at
 // end of frame and would be a frame stale here, which made grass flicker on fast camera movement.
 #include "Common/ReverseZ.hlsli"
 
 Texture2D<SCENE_DEPTH_FORMAT> SrcDepth : register(t0);
+||||||| 12b261724
+// Always kPOST_ZPREPASS_COPY, never TerrainBlending's blendedDepthTexture: that one is produced at
+// end of frame and would be a frame stale here, which made grass flicker on fast camera movement.
+Texture2D<unorm float> SrcDepth : register(t0);
+=======
+// The live main depth uses an R24_UNORM_X8_TYPELESS view.
+Texture2D<unorm float> SrcDepth : register(t0);
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 RWTexture2D<float> HiZ : register(u0);
 

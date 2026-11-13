@@ -305,8 +305,15 @@ float3 AccumulateLocalLightScattering(
 		float3 L = toLight * rsqrt(distanceSqr);
 		float phase = ExponentialHeightFog::HenyeyGreenstein(dot(L, -viewDirection), phaseG);
 
+<<<<<<< HEAD
 		const bool isPointLightLinear = light.lightFlags & LightLimitFix::LightFlags::Linear;
 		float3 lightColor = Color::PointLight(light.color.xyz, isPointLightLinear, light.lightFlags) * attenuation * light.fade;
+||||||| 12b261724
+		const bool isPointLightLinear = light.lightFlags & LightLimitFix::LightFlags::Linear;
+		float3 lightColor = Color::PointLight(light.color.xyz, isPointLightLinear) * attenuation * light.fade;
+=======
+		float3 lightColor = Color::PointLight(light.color.xyz) * attenuation * light.fade;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 		localScattering += lightColor * phase;
 	}
 
@@ -390,6 +397,11 @@ float4 ComputeLightScattering(uint3 coord, float3 cellOffset)
 	float viewDepth;
 	float3 centerPositionWS = ExponentialHeightFog::ComputeCellWorldPosition(dispatchID, 0.5f.xxx, eyeIndex, viewDepth);
 	if (VolumetricFogHasConservativeDepth && IsFroxelBehindSceneDepth(dispatchID)) {
+		LightScattering[dispatchID] = 0.0f.xxxx;
+		return;
+	}
+
+	if (all(VBufferA[dispatchID] == 0.0f)) {
 		LightScattering[dispatchID] = 0.0f.xxxx;
 		return;
 	}

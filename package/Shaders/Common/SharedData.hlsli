@@ -10,6 +10,10 @@
 
 namespace SharedData
 {
+	static const uint TonemapOwnerVanilla = 0;
+	static const uint TonemapOwnerPostProcessing = 1;
+	static const uint TonemapOwnerEffects11 = 2;
+
 	cbuffer SharedData : register(b5)
 	{
 		float4 WaterData[25];
@@ -31,8 +35,10 @@ namespace SharedData
 		bool InMapMenu;           // If the world/local map is open (note that the renderer is still deferred here)
 		bool HideSky;             // HideSky flag in WorldSpace, e.g. Blackreach
 		float MipBias;            // Offset to mip level for TAA sharpness
-		float WaterSystemHeight;  // TES::GetWaterHeight at eye-0 in camera-relative Z; -FLT_MAX when no water body found (VR only)
-		float3 pad0;
+		float WaterSystemHeight;  // TES::GetWaterHeight in camera-relative Z; -FLT_MAX when no water body found
+		uint PostWaterComposite;
+		uint ResetHistory;
+		uint TonemapOwner;
 		float4 AmbientSHR;
 		float4 AmbientSHG;
 		float4 AmbientSHB;
@@ -68,7 +74,15 @@ namespace SharedData
 		// Only read by the GRASS_OPTIMIZATIONS permutation, for grass drawn with an LOD mesh.
 		float MidLODBrightness;
 		float FarLODBrightness;
+<<<<<<< HEAD
 		float3 pad0;
+||||||| 12b261724
+=======
+		float PBRWrappedLightingAmount;
+		float SubsurfaceBalance;
+		float CanopyOcclusion;
+		float ClumpShading;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	};
 
 	struct CPMSettings
@@ -164,6 +178,7 @@ namespace SharedData
 		float RippleRadius;
 		float RippleBreadth;
 		float RippleLifetimeRcp;
+<<<<<<< HEAD
 
 		uint EnableCharacterRainSpots;
 		float CharacterSpotDensity;
@@ -180,6 +195,21 @@ namespace SharedData
 		float CharacterImpactIntensity;
 		float CharacterRetainedWetness;
 		float2 CharacterStatePadding;
+||||||| 12b261724
+		float pad0;
+=======
+		float WallRainDensity;
+
+		float WallRainDropSize;
+		float WallRainSpeed;
+		float WallRainLayering;
+		float WallRainNormalStrength;
+
+		float WallRainWetness;
+		float WallRainDarkening;
+		bool EnableWallRain;
+		float WallRainTrailLength;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	};
 
 	struct SkylightingSettings
@@ -293,9 +323,9 @@ namespace SharedData
 		float EnvIBLSaturation;
 		float SkyIBLSaturation;
 		float FogAmount;
-		uint DALCMode;  // 0: Luminance Ratio, 1: Color Ratio, 2: DALC + Sky, 3: DALC + Sky (Directional)
+		uint DALCMode;       // 0: Luminance Ratio, 1: Color Ratio, 2: DALC + Sky, 3: DALC + Sky (Directional)
+		uint ENBSkyFalloff;  // Effects 11 owns IBL: darken sky irradiance from below
 		float pad0;
-		float pad1;
 	};
 
 	struct ExtendedTranslucencySettings
@@ -308,10 +338,33 @@ namespace SharedData
 
 	struct CSUtilitySettings
 	{
+<<<<<<< HEAD
 		float skyBrightness;
 		float ambientLightMult;
+||||||| 12b261724
+		uint enableLinearLighting;
+		uint isDirLightLinear;
+		float dirLightMult;
+		float lightGamma;
+		float colorGamma;
+		float emitColorGamma;
+		float glowmapGamma;
+		float ambientGamma;
+		float fogGamma;
+		float fogAlphaGamma;
+		float effectGamma;
+		float effectAlphaGamma;
+		float skyGamma;
+		float waterGamma;
+		float vlGamma;
+		float vanillaDiffuseColorMult;
+=======
+		uint isMainOrLoadingMenu;
+		float diffuseGamma;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 		float directionalLightMult;
 		float pointLightMult;
+<<<<<<< HEAD
 		float linearPointLightMult;
 		float spotlightMult;
 		float linearSpotlightMult;
@@ -326,8 +379,15 @@ namespace SharedData
 		float waterFresnelMax;
 		float waterMuddiness;
 		float emitColorMult;
+||||||| 12b261724
+		float ambientMult;
+		float emitColorMult;
+=======
+		float ambientMult;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 		float glowmapMult;
 		float effectLightingMult;
+<<<<<<< HEAD
 		float skyGammaOffset;
 		float fogGammaOffset;
 		float fogAlphaGammaOffset;
@@ -392,6 +452,27 @@ namespace SharedData
 		float ambientMult;
 		float3 skyStaticsColor;
 		float pad;
+||||||| 12b261724
+		float membraneEffectMult;
+		float bloodEffectMult;
+		float projectedEffectMult;
+		float deferredEffectMult;
+		float otherEffectMult;
+		uint pad0;
+=======
+		float membraneEffectMult;
+		float bloodEffectMult;
+		float projectedEffectMult;
+		float deferredEffectMult;
+		float otherEffectMult;
+		float particleEffectMult;
+		float lightSpriteEffectMult;
+		float fireEffectMult;
+		float fireEffectCurve;
+		float diffuseCurve;
+		float diffuseWhiteReflectance;
+		float2 pad;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	};
 
 	struct ENBSettings
@@ -410,19 +491,35 @@ namespace SharedData
 		float CloudsEdgeMoonMultiplier;
 
 		uint EnableProceduralSun;
-		float ProceduralSunDiskRadiusSq;
-		float ProceduralSunDiskEdgeScale;
-		float ProceduralSunGlowIntensity;
+		float ProceduralSunDiskCos;
+		float ProceduralSunDiskRadiance;
+		float ProceduralSunEdgeSoftness;
 
+<<<<<<< HEAD
 		float ProceduralSunCoronaFalloff;
 		float ProceduralSunCoronaScale;
 		float SkyScaleMultiplier;
 		float ProceduralSunPad;
 
+||||||| 12b261724
+		float ProceduralSunCoronaFalloff;
+		float ProceduralSunCoronaScale;
+=======
+		float ProceduralSunHaloCos;
+		float ProceduralSunHaloIntensity;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 		uint UseProceduralGradientWeights;
 		float ProceduralGradientWeightCurve;
 		float LightSpriteCurve;
+<<<<<<< HEAD
 		uint EnableParticle;
+||||||| 12b261724
+		float3 pad1;
+=======
+		float ProceduralSunHaloFalloff;
+		float ProceduralSunRadianceLimit;
+		float pad1;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 		float ParticleIntensity;
 		float ParticleLightingInfluence;
@@ -496,8 +593,15 @@ namespace SharedData
 
 		float MasserBillboardTan;
 		float SecundaBillboardTan;
+<<<<<<< HEAD
 		float SkyScatteringPad0;
 		float SkyScatteringPad1;
+||||||| 12b261724
+		float2 SkyScatteringPad0;
+=======
+		float SkyScaleMultiplier;
+		float SkyScatteringPad0;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 		float3 VolumetricFogColorFilter;
 		float VolumetricFogIntensity;
@@ -600,6 +704,7 @@ namespace SharedData
 		float volumetricFogNoiseThreshold;
 		float2 pad3;
 		float3 volumetricFogNoiseVelocity;
+<<<<<<< HEAD
 		uint volumetricFogNoiseType;
 		uint mistsEnabled;
 		float mistStrength;
@@ -609,6 +714,12 @@ namespace SharedData
 		uint mistFollowWind;
 		float mistWindMultiplier;
 		float pad5;
+||||||| 12b261724
+		float pad0;
+=======
+		float pad0;
+		float4 originalFogColorOverride;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	};
 
 	struct TruePBRSettings
@@ -699,9 +810,33 @@ namespace SharedData
 		float MotionStretch;
 		float MotionTransparency;
 		float pad0;
+<<<<<<< HEAD
 		float4 TextureBounds;
 		float2 TextureRadiusScale;
 		float2 pad1;
+||||||| 12b261724
+=======
+		float4 TextureBounds;
+		float2 TextureRadiusScale;
+		float2 pad1;
+	};
+
+	struct ProceduralSunSettings
+	{
+		uint enabled;
+		float sunDiskCos;
+		float diskIntensity;
+		float edgeSoftness;
+
+		uint haloEnabled;
+		float sunHaloCos;
+		float haloIntensity;
+		float haloFalloff;
+
+		float cloudOcclusionStrength;
+		float sunQuadModelRadius;
+		float2 pad0;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	};
 
 #if defined(SNOW_COVER) && defined(PSHADER)
@@ -792,9 +927,14 @@ namespace SharedData
 		GrassCollisionData grassCollisionData;
 		HorizonFixSettings horizonFixSettings;
 		RainRefractionSettings rainRefractionSettings;
+<<<<<<< HEAD
 #if defined(SNOW_COVER) && defined(PSHADER)
 		SnowCoverSettings snowCoverSettings;
 #endif
+||||||| 12b261724
+=======
+		ProceduralSunSettings proceduralSunSettings;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	};
 
 	Texture2D<float4> DepthTexture : register(t17);
@@ -859,6 +999,7 @@ namespace SharedData
 	// camera-relative frame; defaults to 0 (no correction, backwards-compatible).
 	float4 GetWaterData(float3 worldPosition, uint eyeIndex = 0)
 	{
+<<<<<<< HEAD
 		float2 cellF = (((worldPosition.xy + FrameBuffer::CameraPosAdjust[0].xy)) / 4096.0) + 64.0;  // always positive
 		int2 cellInt;
 		float2 cellFrac = modf(cellF, cellInt);
@@ -867,6 +1008,20 @@ namespace SharedData
 		cellF += 2.5;                                       // 5x5 cell grid
 		cellF -= cellFrac;                                  // align to cell borders
 		cellInt = round(cellF);
+||||||| 12b261724
+		float2 cellF = (((worldPosition.xy + FrameBuffer::CameraPosAdjust.xy)) / 4096.0) + 64.0;  // always positive
+		int2 cellInt;
+		float2 cellFrac = modf(cellF, cellInt);
+
+		cellF = worldPosition.xy / float2(4096.0, 4096.0);  // remap to cell scale
+		cellF += 2.5;                                       // 5x5 cell grid
+		cellF -= cellFrac;                                  // align to cell borders
+		cellInt = round(cellF);
+=======
+		// floor keeps negative coordinates and cell borders exact
+		float2 absolutePosition = worldPosition.xy + FrameBuffer::CameraPosAdjust.xy;
+		int2 cellInt = (int2)(floor(absolutePosition / 4096.0) - floor(FrameBuffer::CameraPosAdjust.xy / 4096.0)) + 2;  // 5x5 cell grid
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 		uint waterTile = (uint)clamp(cellInt.x + (cellInt.y * 5), 0, 24);  // remap xy to 0-24
 

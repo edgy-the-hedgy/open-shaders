@@ -64,6 +64,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 
 void GrassCollision::DrawSettings()
 {
+<<<<<<< HEAD
 	if (ImGui::TreeNodeEx(T(TKEY("grass_collision"), "Grass Collision"), ImGuiTreeNodeFlags_DefaultOpen)) {
 		Util::CheckboxFlag(T(TKEY("enable"), "Enable Grass Collision"), settings.EnableGrassCollision);
 		ImGui::SliderFloat(T(TKEY("radius_scale"), "Collision Radius Scale"), &settings.CollisionRadiusScale,
@@ -95,6 +96,14 @@ void GrassCollision::DrawSettings()
 			ImGui::TextUnformatted(T(TKEY("compression_recovery_tooltip"), "Lower values keep grass compressed longer after an actor moves away."));
 		ImGui::TreePop();
 	}
+||||||| 12b261724
+	if (ImGui::TreeNodeEx(T(TKEY("grass_collision"), "Grass Collision"), ImGuiTreeNodeFlags_DefaultOpen)) {
+		ImGui::Checkbox(T(TKEY("enable"), "Enable Grass Collision"), (bool*)&settings.EnableGrassCollision);
+		ImGui::TreePop();
+	}
+=======
+	ImGui::Checkbox(T(TKEY("enable"), "Enable Grass Collision"), (bool*)&settings.EnableGrassCollision);
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 }
 
 GrassCollision::ShaderData GrassCollision::GetCommonBufferData() const noexcept
@@ -527,11 +536,21 @@ void GrassCollision::UpdateCollisionTexture()
 	context->VSSetShaderResources(100, ARRAYSIZE(nullVertexSrvs), nullVertexSrvs);
 
 	if (!settings.EnableGrassCollision) {
+<<<<<<< HEAD
 		const float clearColor[4] = {};
 		for (uint textureIndex = 0; textureIndex < 2; ++textureIndex) {
 			context->ClearUnorderedAccessViewFloat(deformationTextures[textureIndex]->uav.get(), clearColor);
 			context->ClearUnorderedAccessViewFloat(velocityTextures[textureIndex]->uav.get(), clearColor);
 		}
+||||||| 12b261724
+		float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+		context->ClearUnorderedAccessViewFloat(collisionTexture->uav.get(), clearColor);
+=======
+		float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+		globals::profiler->BeginPass("GrassCollision::Clear");
+		context->ClearUnorderedAccessViewFloat(collisionTexture->uav.get(), clearColor);
+		globals::profiler->EndPass();
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 		return;
 	}
 

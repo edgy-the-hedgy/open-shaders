@@ -63,6 +63,7 @@ public:
 		float RippleRadius = 1.f;
 		float RippleBreadth = .5f;
 		float RippleLifetime = .5f;
+<<<<<<< HEAD
 
 		uint EnableCharacterRainSpots = true;
 		float CharacterSpotDensity = 1.0f;
@@ -77,6 +78,18 @@ public:
 		// Used by CPU wetness decay; retained here to preserve the mirrored settings layout.
 		float CharacterDryTime = 10.0f;
 		uint EnableWeaponRainDrops = true;
+||||||| 12b261724
+=======
+		float WallRainDensity = 1.0f;
+		float WallRainDropSize = 1.0f;
+		float WallRainSpeed = 1.0f;
+		float WallRainLayering = 1.0f;
+		float WallRainNormalStrength = 2.0f;
+		float WallRainWetness = 1.0f;
+		float WallRainDarkening = 0.65f;
+		uint EnableWallRain = true;
+		float WallRainTrailLength = 1.0f;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	};
 
 	/** @brief Stable debug-mode ordering shared by the character-rain UI and frame upload. */
@@ -101,12 +114,24 @@ public:
 		float Wetness;
 		float PuddleWetness;
 		Settings settings;
+<<<<<<< HEAD
 		float CharacterImpactIntensity;
 		float CharacterRetainedWetness;
 		float2 CharacterStatePadding;
+||||||| 12b261724
+		uint pad0;
+=======
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	};
 	STATIC_ASSERT_ALIGNAS_16(PerFrame);
+<<<<<<< HEAD
 	static_assert(sizeof(PerFrame) == 256);
+||||||| 12b261724
+=======
+	static_assert(sizeof(Settings) == 144);
+	static_assert(offsetof(PerFrame, settings) == 80);
+	static_assert(sizeof(PerFrame) == 224);
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 	struct DebugSettings
 	{
@@ -223,9 +248,15 @@ private:
 	void UpdateCharacterRainData(PerFrame& a_data) const;
 	void DrawWeatherAnalysis() const;
 
+<<<<<<< HEAD
 	mutable float characterSurfaceWetness = 0.0f;
 	mutable Util::FrameLatch characterWetnessFrame;
 	mutable Util::FrameLatch rainTimerFrame;
+||||||| 12b261724
+	size_t rainTimer = 0;  // milliseconds; size_t for precision
+=======
+	size_t rainTimer = 0;  // microseconds; size_t for precision
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	bool splashesOfStormsLoaded = false;
 
 	// Weather wetness calculation result for debug display

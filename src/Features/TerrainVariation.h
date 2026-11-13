@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <shared_mutex>
 #include <string>
 #include <string_view>
@@ -68,15 +69,34 @@ public:
 
 	// Guards landscapeDiffusePaths, landscapeDiffuseFileNames, meshTextureCache and meshTextureKeepAlive.
 	std::shared_mutex meshTextureMutex;
+	// Canonical diffuse paths of every land texture record, relative to textures/.
 	std::unordered_set<std::string> landscapeDiffusePaths;
+<<<<<<< HEAD
 	std::unordered_set<std::string> landscapeDiffuseFileNames;
+||||||| 12b261724
+=======
+	// File names of the land texture diffuses that live under a landscape/ directory.
+	std::unordered_set<std::string> landscapeDiffuseFileNames;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	// Keyed on the interned BSFixedString pointer of a diffuse texture name.
 	std::unordered_map<const char*, bool> meshTextureCache;
 	// Keeps every cached key interned so its pointer cannot be recycled.
 	std::vector<RE::BSFixedString> meshTextureKeepAlive;
+	std::atomic<uint32_t> meshTextureGeneration{ 0 };
+	const char* lastMeshTextureKey = nullptr;
+	uint32_t lastMeshTextureGeneration = 0;
+	bool lastMeshTextureResult = false;
 
 	/**
+<<<<<<< HEAD
 	 * @brief Matches landscape diffuse paths or landscape copies with a matching file name, memoising the result.
+||||||| 12b261724
+	 * @brief Resolves whether a diffuse texture name belongs to a landscape texture, memoising the result.
+=======
+	 * @brief Resolves whether a diffuse texture is painted on the landscape surface, memoising the result.
+	 * @details Matches the exact diffuse path of a land texture record, or a texture under a landscape/
+	 * directory that shares its file name with one (a mesh copy kept in a subfolder).
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	 * @param a_name The interned diffuse texture name from the shader property.
 	 * @return True if the texture qualifies for mesh stochastic variation.
 	 */

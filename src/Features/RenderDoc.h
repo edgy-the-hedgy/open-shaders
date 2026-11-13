@@ -1,7 +1,13 @@
 #pragma once
 
+<<<<<<< HEAD
 #include "Feature.h"
 #include "Utils/BootSnapshot.h"
+||||||| 12b261724
+#include "Feature.h"
+=======
+#include <chrono>
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 #include <filesystem>
 #include <mutex>
 #include <nlohmann/json.hpp>
@@ -29,7 +35,10 @@ struct CaptureFileInfo
 	std::string deletionErrorMessage;
 };
 
-class RenderDoc : public Feature
+/**
+ * @brief In-application RenderDoc capture support. A component of the Developer Tools feature, not a feature itself.
+ */
+class RenderDoc
 {
 public:
 	static RenderDoc* GetSingleton();
@@ -39,17 +48,21 @@ public:
 	/** @brief True when renderdoc.dll is in the process, whether loaded by CS or injected by the RenderDoc UI. */
 	static bool IsLoaded();
 	void TriggerCapture();
+	/** @brief Captures with the configured frame count after checking disk space, as the panel's button does. @return False when it could not start. */
+	bool CaptureNow() { return TriggerConfiguredCapture(); }
+	/** @brief Turns capture on or off for the next start, forcing frame annotations on while it is on and restoring them after. */
+	void SetCaptureEnabled(bool a_enabled);
 	void TriggerMultiFrameCapture(uint32_t a_frameCount);
 	bool HandleCaptureHotkey(uint32_t a_vkKey);
 	void SetCaptureFilePathTemplate(const std::string& a_template);
 	std::string GetCapturesDirectory() const;
 	std::string GetCapturePath(uint32_t a_index);
 	uint32_t GetNumCaptures() const;
-	uint32_t CalculateCapturesDiskUsage();
 	void ClearFrameCaptures();
 	void SetPendingCaptureComments(std::string a_comments);
 	void ApplyPendingCaptureComments(uint32_t a_index);
 
+<<<<<<< HEAD
 	// Feature overrides
 	std::string GetName() override { return "RenderDoc"; }
 	virtual std::string GetDisplayName() override { return T("feature.render_doc.name", "RenderDoc"); }
@@ -80,6 +93,46 @@ public:
 
 	// Lifecycle
 	void Load() override;
+||||||| 12b261724
+	// Feature overrides
+	std::string GetName() override { return "RenderDoc"; }
+	virtual std::string GetDisplayName() override { return T("feature.render_doc.name", "RenderDoc"); }
+	std::string GetShortName() override { return "RenderDoc"; }
+	std::string_view GetCategory() const override { return FeatureCategories::kUtility; }
+	bool IsCore() const override { return true; }
+	bool IsInMenu() const override { return true; }
+	std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
+	{
+		return { T("feature.render_doc.description", "In-application RenderDoc capture support and convenience UI."),
+			{ T("feature.render_doc.key_feature_1", "Attach comments to captures that appear in RenderDoc UI"),
+				T("feature.render_doc.key_feature_2", "Open captures folder"),
+				T("feature.render_doc.key_feature_3", "Capture file management") } };
+	}
+	std::string_view GetShaderDefineName() override { return ""; }
+	bool HasShaderDefine(RE::BSShader::Type) override { return false; };
+
+	// Settings & UI
+	void DrawSettings() override;
+	void RestoreDefaultSettings() override;
+	void LoadSettings(json& o_json) override;
+	void SaveSettings(json& o_json) override;
+
+	// Resources
+	void SetupResources() override;
+	void ClearShaderCache() override;
+
+	// Lifecycle
+	void Load() override;
+=======
+	// Lifecycle and UI, driven by DeveloperTools
+	/** @brief Renders the RenderDoc tab of the Developer Tools panel. */
+	void DrawSettings();
+	void RestoreDefaultSettings();
+	void LoadSettings(json& o_json);
+	void SaveSettings(json& o_json);
+	/** @brief Loads renderdoc.dll when capture is enabled. Called from DeveloperTools::Load. */
+	void Load();
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 	// Helper methods
 	std::filesystem::path GetCapturesPath() const;
@@ -93,6 +146,9 @@ public:
 	 * @return Formatted warning message for overlay display
 	 */
 	std::string GetOverlayWarningMessage() const;
+
+	/** @brief True when the RenderDoc warning should be drawn in the overlay: RenderDoc is loaded and the user has not hidden it. */
+	bool ShouldShowOverlay() const { return IsAvailable() && !hideOverlay; }
 
 private:
 	bool TriggerConfiguredCapture(bool a_checkDiskSpace = true);
@@ -147,6 +203,9 @@ public:
 	const void* GetSettingsBlob() const override { return &settings; }
 	size_t GetSettingsBlobSize() const override { return sizeof(settings); }
 
+	/** @brief Hides the RenderDoc warning in the overlay. Session-only: deliberately never saved or loaded, so it resets on every launch. */
+	bool hideOverlay = false;
+
 	// Track the last capture count we've processed for automatic comments
 	uint32_t lastCaptureCount = 0;
 
@@ -154,7 +213,6 @@ public:
 	std::vector<CaptureFileInfo> cachedCaptureFiles;
 	std::chrono::steady_clock::time_point cacheLastUpdate;
 	bool cacheValid = false;
-	bool wasSectionVisible = false;  // Track if RenderDoc section was visible last frame
 
 	// Track files that failed to delete for UI feedback
 	std::unordered_map<std::filesystem::path, std::string> failedDeletions;

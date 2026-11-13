@@ -6,6 +6,7 @@
 #include "Globals.h"
 #include "NativeMenu/Vendor/ListRows.h"
 #include "NativeMenu/Vendor/Text.h"
+#include "Utils/Logging.h"
 
 #include <chrono>
 #include <cmath>
@@ -258,10 +259,24 @@ namespace NativeMenu::Vendor::VanillaSettingsEngine
 				return;
 
 			const auto hook = [&](const char* a_name, RE::FxDelegateHandler::CallbackFn*& a_original,
+<<<<<<< HEAD
 								  RE::FxDelegateHandler::CallbackFn* a_replacement) {
 				RE::GString name(a_name);
 				auto* current = a_fxDelegate->callbacks.Get(name);
 				if (!current || current->callback == a_replacement)
+||||||| 12b261724
+								   RE::FxDelegateHandler::CallbackFn* a_replacement) {
+				RE::GString                  name(a_name);
+				RE::FxDelegate::CallbackDefn current{};
+				a_fxDelegate->callbacks.Get(name, &current);
+				if (current.callback == a_replacement)
+=======
+								  RE::FxDelegateHandler::CallbackFn* a_replacement) {
+				RE::GString name(a_name);
+				RE::FxDelegate::CallbackDefn current{};
+				a_fxDelegate->callbacks.Get(name, &current);
+				if (current.callback == a_replacement)
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 					return;
 				a_original = current->callback;
 				current->callback = a_replacement;
@@ -317,12 +332,10 @@ namespace NativeMenu::Vendor::VanillaSettingsEngine
 					RE::GFxValue("__cs_scrollbar"), RE::GFxValue(22000.0) };
 				if (!a_list.Invoke("attachMovie", &bar, attach, 3) || !bar.IsObject()) {
 					// A replacer interface may not export it; leave the list as vanilla built it.
-					static bool loggedOnce = false;
-					if (!loggedOnce) {
-						loggedOnce = true;
+					static Util::OnceFlag loggedOnce;
+					if (loggedOnce.First())
 						logger::warn(
 							"VanillaSettingsEngine: no JournalScrollBar in this interface - lists keep their arrows");
-					}
 					return;
 				}
 

@@ -1,9 +1,15 @@
 #pragma once
 
+<<<<<<< HEAD
 #include "Buffer.h"
 #include "GpuPass.h"
 #include "RainRefraction/TextureFootprint.h"
 
+||||||| 12b261724
+=======
+#include "RainRefraction/TextureFootprint.h"
+
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 #include <winrt/base.h>
 
 /**
@@ -49,9 +55,16 @@ public:
 		float MotionStretch;
 		float MotionTransparency;
 		float pad0;
+<<<<<<< HEAD
 		float4 TextureBounds{ 0, 0, 1, 1 };
 		float2 TextureRadiusScale{ 1, 1 };
 		float2 pad1{};
+||||||| 12b261724
+=======
+		float4 TextureBounds{ 0, 0, 1, 1 };  ///< UV rectangle of the raindrop texture's alpha coverage
+		float2 TextureRadiusScale{ 1, 1 };   ///< Billboard half-extents per unit drop radius
+		float2 pad1{};
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	};
 	STATIC_ASSERT_ALIGNAS_16(PerFrame);
 
@@ -95,7 +108,13 @@ public:
 	/** @brief Loads enbraindrops.png from the Effects 11 preset folder; called whenever a preset is applied. */
 	void LoadPresetRaindrops(const std::filesystem::path& a_presetPath);
 
+<<<<<<< HEAD
 	/** @brief Binds shared vertex buffers for rain and the normal map while refraction is active. */
+||||||| 12b261724
+	/** @brief Binds the raindrop texture and the vertex shader feature buffers for refractive rain passes. */
+=======
+	/** @brief Binds the vertex shader feature buffers for rain passes, plus the raindrop texture while refraction is active. */
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	void ModifyParticle();
 	/** @brief Switches refractive rain passes to alpha blending. */
 	void ParticleShaderHacks();

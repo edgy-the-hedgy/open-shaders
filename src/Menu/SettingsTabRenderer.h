@@ -1,18 +1,16 @@
 #pragma once
 
+#include "Menu/SettingsSections.h"
 #include "Utils/Input.h"
 #include <functional>
+#include <span>
 #include <vector>
 
 // Forward declarations
 class Menu;
 
 /**
- * @brief Renders the General Settings page with Shaders, Keybindings, and Interface tabs.
- *
- * The Shaders tab shows shader compilation options. The Keybindings tab allows
- * rebinding hotkeys for menu toggle, effects toggle, and other actions. The
- * Interface tab provides theme, font, styling, color, and behavior configuration.
+ * @brief Draws the General and Appearance sections of the Settings page (see SettingsPageRenderer).
  */
 class SettingsTabRenderer
 {
@@ -37,17 +35,45 @@ public:
 		bool& settingEffects11EditorKey; /**< @brief True while capturing a new Effects 11 editor key. */
 	};
 
+	/** @brief Searchable setting labels of the sections drawn here. */
+	static std::span<const SettingsSearchEntry> GetSearchIndex();
+
+	/** @brief Whether the theme differs from the selected theme's file, as of the last CheckThemeChanged(). */
+	static bool IsThemeDirty();
 	/**
+<<<<<<< HEAD
 	 * @brief Renders the General Settings page with tabbed sub-sections.
 	 *
 	 * Draws a tab bar containing Shaders, Keybindings, Interface, and Themes tabs.
 	 * The Interface tab further contains sub-tabs for Behavior, Fonts, Styling,
 	 * and Colors.
 	 *
+||||||| 12b261724
+	 * @brief Renders the General Settings page with tabbed sub-sections.
+	 *
+	 * Draws a tab bar containing Shaders, Keybindings, and Interface tabs.
+	 * The Interface tab further contains sub-tabs for Behavior, Themes, Fonts,
+	 * Styling, and Colors.
+	 *
+=======
+	 * @brief Compares the theme with the selected theme's file, for IsThemeDirty(). Call once a frame after the menu draws.
+	 * @param interacted A value was edited or something was clicked this frame; otherwise only a theme undo triggers the check.
+	 */
+	static void CheckThemeChanged(bool interacted);
+
+	/** @brief While the theme has unsaved edits, a banner that opens the Theme section. */
+	static void RenderThemeUnsavedBanner();
+
+	/** @brief Shader cache options and the last build's compilation breakdown. */
+	static void RenderShadersSection();
+	/**
+	 * @brief Rebinding rows for the menu hotkeys.
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	 * @param state References to the key-capture state flags for all rebindable hotkeys.
 	 */
-	static void RenderGeneralSettings(
+	static void RenderKeybindingsSection(
 		SettingsState& state);
+<<<<<<< HEAD
 
 private:
 	static void RenderShadersTab();
@@ -61,4 +87,37 @@ private:
 	static void RenderFontsTab();
 	static void RenderStylingTab();
 	static void RenderColorsTab();
+||||||| 12b261724
+
+private:
+	static void RenderShadersTab();
+	static void RenderKeybindingsTab(
+		SettingsState& state);
+	static void RenderInterfaceTab();
+
+	// Interface sub-tabs
+	static void RenderBehaviorTab();
+	static void RenderThemesTab();
+	static void RenderFontsTab();
+	static void RenderStylingTab();
+	static void RenderColorsTab();
+=======
+	/** @brief Interface language picker. */
+	static void RenderLanguageSection();
+	/** @brief Menu behaviour options and the Reset Window Layout button. */
+	/** @brief General interface options (animations, window and layout, tooltips); drawn on the Styling page's General tab. */
+	static void RenderInterfaceOptions();
+	/** @brief Header title and icon options, background blur, menu fade and the theme cursor. */
+	static void RenderHeaderEffectsSection();
+	/** @brief Theme preset picker with save, save-as and delete. */
+	static void RenderThemesSection();
+	/** @brief Font size and per-role font pickers. Requests the font preview atlas while drawn. */
+	static void RenderFontsSection();
+	/** @brief Global scale and scrollbar opacity, with the raw ImGui style sliders in a collapsed fold. */
+	static void RenderStylingSection();
+	/** @brief Per-role look of the menu surfaces (Home cards, toasts, status card, palette, selected nav row). */
+	static void RenderSurfacesSection();
+	/** @brief Simple palette and the full ImGui color list. */
+	static void RenderColorsSection();
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 };

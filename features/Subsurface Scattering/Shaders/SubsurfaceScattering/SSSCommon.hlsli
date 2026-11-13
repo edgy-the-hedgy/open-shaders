@@ -1,7 +1,12 @@
 #ifndef SSS_COMMON_HLSLI
 #define SSS_COMMON_HLSLI
 
+<<<<<<< HEAD
 #include "Common/Color.hlsli"
+||||||| 12b261724
+=======
+#include "Common/ColorManagement.hlsli"
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 #include "Common/Math.hlsli"
 
 #define SSSS_N_SAMPLES 21
@@ -26,7 +31,7 @@ cbuffer PerFrameSSS : register(b1)
 float3 SSSDecodeAlbedo(float3 encodedAlbedo)
 {
 	float3 albedo = encodedAlbedo / Color::PBRLightingScale;
-	return max(Color::IrradianceToLinear(albedo), 0.0f);
+	return max(ColorManagement::SceneToLinear(albedo), 0.0f);
 }
 
 float3 SSSGetAlbedoFactor(float3 albedo, uint mode)
@@ -42,7 +47,7 @@ float3 SSSGetAlbedoParticipation(float3 albedo)
 	// continuously instead of changing semantics at one quantized UNORM code.
 	// The threshold is converted to the same linear domain as albedo so non-linear
 	// lighting retains its previous effective cutoff.
-	float threshold = Color::IrradianceToLinear(EPSILON_SSS_ALBEDO);
+	float threshold = ColorManagement::SceneToLinear(EPSILON_SSS_ALBEDO);
 	return smoothstep(threshold, threshold * 4.0f, albedo);
 }
 

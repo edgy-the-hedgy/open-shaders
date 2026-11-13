@@ -1,4 +1,4 @@
-#include "Common/Color.hlsli"
+#include "Common/ColorManagement.hlsli"
 #include "Common/FrameBuffer.hlsli"
 #include "Common/GBuffer.hlsli"
 #include "Common/Math.hlsli"
@@ -157,8 +157,14 @@ void readHistory(
 
 	half3 radiance = 0;
 #ifdef GI
+<<<<<<< HEAD
 	float3 sourceRadiance = FULLRES_LOAD(srcDiffuse, pixCoord, uv * frameScale, samplerLinearClamp).rgb;
 	radiance = ENABLE_LL ? Color::SceneGammaToLinear(sourceRadiance) * GIStrength : Color::RadianceToLinear(sourceRadiance * GIStrength);
+||||||| 12b261724
+	radiance = Color::RadianceToLinear(FULLRES_LOAD(srcDiffuse, pixCoord, uv * frameScale, samplerLinearClamp).rgb * GIStrength);
+=======
+	radiance = ColorManagement::SceneToLinear(FULLRES_LOAD(srcDiffuse, pixCoord, uv * frameScale, samplerLinearClamp).rgb * GIStrength);
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	radiance = filterNaN(radiance);
 	radiance = filterInf(radiance);
 	outRadianceDisocc[pixCoord] = radiance;

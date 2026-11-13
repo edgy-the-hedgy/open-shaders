@@ -8,8 +8,13 @@
 #include <DirectXTex.h>
 
 #include "../ENBExtender.h"
+<<<<<<< HEAD
 #include "../EffectManager.h"
 #include "../EffectSourceCompatibility.h"
+||||||| 12b261724
+=======
+#include "../IniSerialization.h"
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 #include "../PresetManager.h"
 #include "../TextureManager.h"
 #include "Features/Effects11/SettingsPatches.h"
@@ -207,7 +212,7 @@ void Effect::Save()
 
 		switch (uiVar.type) {
 		case UIVariableType::Float:
-			value = std::to_string(useBase ? uiVar.baseFloatValue : uiVar.floatValue);
+			value = Effects11Util::Ini::FormatFloat(useBase ? uiVar.baseFloatValue : uiVar.floatValue);
 			break;
 		case UIVariableType::Int:
 			value = std::to_string(uiVar.intValue);
@@ -224,22 +229,16 @@ void Effect::Save()
 				                                                                                                          4;
 				for (int i = 0; i < numComponents; ++i) {
 					std::string compKey = iniKey + suffixes[i];
-					std::string compValue = std::to_string(vectorValue[i]);
+					std::string compValue = Effects11Util::Ini::FormatFloat(vectorValue[i]);
 					BOOL compResult = WritePrivateProfileStringA(section.c_str(), compKey.c_str(), compValue.c_str(), iniPath.string().c_str());
 					if (!compResult)
 						logger::warn("[EFFECTS11] Failed to write key '{}' to ini file '{}'", compKey, iniPath.string());
 				}
 				continue;
 			} else {
-				std::ostringstream oss;
 				int numComponents = (uiVar.type == UIVariableType::Float2) ? 2 : (uiVar.type == UIVariableType::Float3) ? 3 :
 				                                                                                                          4;
-
-				std::copy(vectorValue, vectorValue + numComponents - 1,
-					std::ostream_iterator<float>(oss, ", "));
-				oss << vectorValue[numComponents - 1];
-
-				value = oss.str();
+				value = Effects11Util::Ini::FormatFloatList({ vectorValue, static_cast<size_t>(numComponents) });
 			}
 			break;
 		}

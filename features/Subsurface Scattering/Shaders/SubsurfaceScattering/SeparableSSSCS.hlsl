@@ -9,6 +9,7 @@ Texture2D<float4> NormalTexture : register(t4);
 SamplerState PointSampler : register(s0);
 
 #include "Common/Color.hlsli"
+#include "Common/ColorManagement.hlsli"
 #include "Common/Random.hlsli"
 #include "Common/SharedData.hlsli"
 #include "SubsurfaceScattering/SSSCommon.hlsli"
@@ -56,8 +57,16 @@ SamplerState PointSampler : register(s0);
 		float4 originalColor = SSSRW[DTid.xy];
 		float4 color = SSSSBlurCS(texCoord, float2(0.0, 1.0), sssAmount, humanProfile);
 		float3 albedo = SSSDecodeAlbedo(AlbedoTexture[DTid.xy].rgb);
+<<<<<<< HEAD
 		color.rgb = SSSApplyAlbedo(color.rgb, Color::SceneGammaToLinear(originalColor.rgb), albedo, ScatterMode);
 		color.rgb = Color::SceneLinearToGamma(color.rgb);
+||||||| 12b261724
+		color.rgb = SSSApplyAlbedo(color.rgb, Color::IrradianceToLinear(originalColor.rgb), albedo, ScatterMode);
+		color.rgb = Color::IrradianceToGamma(color.rgb);
+=======
+		color.rgb = SSSApplyAlbedo(color.rgb, ColorManagement::SceneToLinear(originalColor.rgb), albedo, ScatterMode);
+		color.rgb = ColorManagement::LinearToScene(color.rgb);
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 		SSSRW[DTid.xy] = float4(color.rgb, originalColor.a);
 	}
 

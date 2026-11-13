@@ -11,6 +11,7 @@ struct IDXGISwapChain;
 /**
  * @brief Specialized renderer component for overlay and frame management
  *
+<<<<<<< HEAD
  * This class was extracted from Menu.cpp to handle all overlay-related rendering
  * responsibilities including VR setup, shader compilation status, feature overlays,
  * A/B testing, and ImGui frame lifecycle management.
@@ -20,6 +21,20 @@ struct IDXGISwapChain;
  *
  * @note This class is designed as a stateless utility with static methods to avoid
  *       coupling to Menu's internal state while providing clean separation of concerns.
+||||||| 12b261724
+ * This class was extracted from Menu.cpp to handle all overlay-related rendering
+ * responsibilities including shader compilation status, feature overlays,
+ * A/B testing, and ImGui frame lifecycle management.
+ *
+ * The renderer uses a callback-based architecture to maintain separation of concerns
+ * while accessing necessary Menu functionality through provided function objects.
+ *
+ * @note This class is designed as a stateless utility with static methods to avoid
+ *       coupling to Menu's internal state while providing clean separation of concerns.
+=======
+ * Handles shader compilation status, feature overlays, A/B testing and the ImGui frame
+ * lifecycle. A stateless utility: Menu functionality is reached through callbacks.
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
  */
 class OverlayRenderer
 {

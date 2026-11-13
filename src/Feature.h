@@ -24,6 +24,8 @@ namespace globals
 	struct FrameBufferVR;
 }
 
+struct SharedLighting;
+
 struct Feature
 {
 	// For global settings search
@@ -93,12 +95,13 @@ struct Feature
 	virtual std::string GetName() = 0;
 	virtual std::string GetShortName() = 0;
 	virtual std::string GetDisplayName() { return GetName(); }
-	std::string GetDisplayCategory() const;
 	virtual std::string GetFeatureModLink() { return ""; }
 	virtual std::string_view GetShaderDefineName() { return ""; }
 
 	/** @brief Gets additional shader define key-value pairs for this feature. */
 	virtual std::vector<std::pair<std::string_view, std::string_view>> GetShaderDefineOptions() { return {}; }
+	// Names and values must outlive queued compilations; explicit caller defines take precedence.
+	virtual std::vector<std::pair<std::string_view, std::string_view>> GetCommonShaderDefines() { return {}; }
 
 protected:
 	/** @brief Builds a full Nexus Mods URL from a numeric mod ID. */
@@ -178,13 +181,6 @@ public:
 	bool IsHiddenUnreleased() const { return !installed && IsUnreleased(); }
 
 	/**
-	 * Localized stage marker shown after the feature name ("[ALPHA]", "[BETA]"),
-	 * empty for release features. Takes the stage so callers that already resolved
-	 * it (see GetReleaseStage) avoid a redundant lookup.
-	 */
-	static std::string GetReleaseStageTag(ReleaseStage stage);
-
-	/**
 	 * Whether the feature is disabled at boot by default (before any user override).
 	 * Alpha and Beta features start disabled on first install; users can still enable
 	 * them via the "Disable at Boot" menu.
@@ -212,6 +208,9 @@ public:
 
 	/** @brief Allocates GPU resources (textures, buffers) needed by this feature. */
 	virtual void SetupResources() {}
+	// All loaded features have finished allocating resources.
+	virtual void PostSetupResources() {}
+	virtual void ModifySharedLighting(SharedLighting&) {}
 
 	/**
 	 * @brief Adjusts the engine's newly created render targets in place.
@@ -320,6 +319,9 @@ public:
 
 	/** @brief Per-frame work executed before the main rendering pass. */
 	virtual void Prepass() {}
+
+	/** @brief Per-frame work after every feature's Prepass, so it sees the depth they wrote. */
+	virtual void PostPrepass() {}
 
 	/** @brief Per-frame work executed before Prepass, earliest per-frame hook. */
 	virtual void EarlyPrepass() {}
@@ -569,6 +571,10 @@ public:
 	 */
 	void DisableForConflict(std::string_view a_conflict);
 
+	/** @brief Rewrites defaults that depend on the current settings, so a middle-click reset restores the right value.
+	 *  @param a_defaults The feature's default settings, in the shape SaveSettings writes. */
+	virtual void ApplyContextualDefaults(json& a_defaults) const { (void)a_defaults; }
+
 	/**
 	 * @brief Toggles the "disabled at boot" state for this feature.
 	 * @return The new disabled state (true = disabled at boot).
@@ -576,6 +582,7 @@ public:
 	virtual bool ToggleAtBootSetting();
 
 	/**
+<<<<<<< HEAD
 	 * @brief Reapplies override settings for this feature if available
 	 * @return True if overrides were found and applied, false otherwise
 	 */
@@ -588,6 +595,15 @@ public:
 	virtual bool ReapplyCurrentPageOverrideSettings() { return ReapplyOverrideSettings(); }
 
 	/**
+||||||| 12b261724
+	 * @brief Reapplies override settings for this feature if available
+	 * @return True if overrides were found and applied, false otherwise
+	 */
+	virtual bool ReapplyOverrideSettings();
+
+	/**
+=======
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	 * Weather analysis configuration for features that want to provide weather analysis.
 	 * If sectionName is empty, the feature will not appear in weather analysis UI.
 	 * Features should populate this struct to opt-in to weather analysis display.
@@ -809,7 +825,7 @@ public:
 		for (auto* feature : features) {
 			if (feature->loaded) {
 #ifdef TRACY_ENABLE
-				if (!emitCpuZone) {
+				if (!emitCpuZone || !TracyIsConnected) {
 					callback(feature);
 					continue;
 				}

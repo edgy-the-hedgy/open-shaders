@@ -10,7 +10,12 @@ BSLightingShaderMaterialPBRLandscape::BSLightingShaderMaterialPBRLandscape()
 
 BSLightingShaderMaterialPBRLandscape::~BSLightingShaderMaterialPBRLandscape()
 {
+<<<<<<< HEAD
 	globals::features::truePBR.nativeRegistry.Forget(this);
+||||||| 12b261724
+=======
+	std::lock_guard lock(AllMutex);
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	All.erase(this);
 }
 
@@ -44,26 +49,27 @@ void BSLightingShaderMaterialPBRLandscape::CopyMembers(RE::BSShaderMaterial* tha
 
 	auto* pbrThat = static_cast<BSLightingShaderMaterialPBRLandscape*>(that);
 
-	pbrThat->numLandscapeTextures = numLandscapeTextures;
+	numLandscapeTextures = pbrThat->numLandscapeTextures;
 
 	for (uint32_t textureIndex = 0; textureIndex < NumTiles; ++textureIndex) {
-		pbrThat->landscapeBaseColorTextures[textureIndex] = landscapeBaseColorTextures[textureIndex];
-		pbrThat->landscapeNormalTextures[textureIndex] = landscapeNormalTextures[textureIndex];
-		pbrThat->landscapeDisplacementTextures[textureIndex] = landscapeDisplacementTextures[textureIndex];
-		pbrThat->landscapeRMAOSTextures[textureIndex] = landscapeRMAOSTextures[textureIndex];
+		landscapeBaseColorTextures[textureIndex] = pbrThat->landscapeBaseColorTextures[textureIndex];
+		landscapeNormalTextures[textureIndex] = pbrThat->landscapeNormalTextures[textureIndex];
+		landscapeDisplacementTextures[textureIndex] = pbrThat->landscapeDisplacementTextures[textureIndex];
+		landscapeRMAOSTextures[textureIndex] = pbrThat->landscapeRMAOSTextures[textureIndex];
 	}
-	pbrThat->terrainOverlayTexture = terrainOverlayTexture;
-	pbrThat->terrainNoiseTexture = terrainNoiseTexture;
-	pbrThat->landBlendParams = landBlendParams;
-	pbrThat->isPbr = isPbr;
-	pbrThat->roughnessScales = roughnessScales;
-	pbrThat->displacementScales = displacementScales;
-	pbrThat->specularLevels = specularLevels;
-	pbrThat->terrainTexOffsetX = terrainTexOffsetX;
-	pbrThat->terrainTexOffsetY = terrainTexOffsetY;
-	pbrThat->terrainTexFade = terrainTexFade;
-	pbrThat->glintParameters = glintParameters;
+	terrainOverlayTexture = pbrThat->terrainOverlayTexture;
+	terrainNoiseTexture = pbrThat->terrainNoiseTexture;
+	landBlendParams = pbrThat->landBlendParams;
+	isPbr = pbrThat->isPbr;
+	roughnessScales = pbrThat->roughnessScales;
+	displacementScales = pbrThat->displacementScales;
+	specularLevels = pbrThat->specularLevels;
+	terrainTexOffsetX = pbrThat->terrainTexOffsetX;
+	terrainTexOffsetY = pbrThat->terrainTexOffsetY;
+	terrainTexFade = pbrThat->terrainTexFade;
+	glintParameters = pbrThat->glintParameters;
 
+	std::lock_guard lock(AllMutex);
 	All[this] = All[pbrThat];
 	globals::features::truePBR.nativeRegistry.MarkDirty(this);
 	globals::features::truePBR.nativeRegistry.MarkDirty(pbrThat);

@@ -158,6 +158,7 @@ public:
 	};
 
 	Settings settings;
+<<<<<<< HEAD
 
 	inline static constexpr Util::Settings::RestartTable<Settings, 1> kRestartFields{ {
 		UTIL_RESTART_FIELD(Settings, EnabledSSR, "Screen Space Reflections"),
@@ -173,6 +174,10 @@ public:
 	const void* GetSettingsBlob() const override { return &settings; }
 	size_t GetSettingsBlobSize() const override { return sizeof(settings); }
 
+||||||| 12b261724
+=======
+	Settings GetCommonBufferData() const;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	void UpdateCubemap();
 
 	void PostDeferred();

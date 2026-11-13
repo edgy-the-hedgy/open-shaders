@@ -8,7 +8,21 @@ Act as an experienced graphics-programming and Skyrim-modding engineer: performa
 
 ## Quick Checklist (Most Violated Rules)
 
+<<<<<<< HEAD
 Each rule is stated once, in the section named in brackets.
+||||||| 12b261724
+-   Build wrappers and shader validation
+-   Feature layout and SE/AE runtime targeting (CommonLibSSE-NG)
+-   Feature release stages (Alpha / Beta / Unreleased) and versioning
+-   Project conventions (D3D11 resource naming, UI constants, i18n)
+-   Commit and branch rules
+=======
+- Build wrappers and shader validation
+- Feature layout and SE/AE runtime targeting (CommonLibSSE-NG)
+- Feature release stages (Alpha / Beta / Unreleased) and versioning
+- Project conventions (D3D11 resource naming, UI constants, i18n)
+- Commit and branch rules
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 -   **PR title & commits:** Conventional Commits `type(scope): description`, title <= 50 chars, body wrapped to 72, target `dev` (never `main`). Fix a stale title with `gh pr edit <num> --title "..."` (the title becomes the release commit message). [Git & Release]
 -   **Comments:** 0 lines by default, and at most 2 when the WHY is non-obvious. [Comments]
@@ -38,7 +52,17 @@ Each rule is stated once, in the section named in brackets.
 -   **Brand and log names:** `PLUGIN_DISPLAY_NAME` and `PLUGIN_LOG_NAME` in `CMakeLists.txt` surface as `Plugin::DISPLAY_NAME` and `Plugin::LOG_NAME` (log file `OpenShaders.log`); the DLL and SKSE plugin name stay `CommunityShaders`. Use `Plugin::DISPLAY_NAME` in C++ strings and `{brand}` in `T()` defaults, translation values and devbench descriptions, never a literal "Open Shaders".
 -   **No logo:** `cs-logo.png` is intentionally absent (non-GPL); do not restore upstream assets. Logo draws are null-safe (`IconLoader.cpp`, `Menu.cpp`, `MenuHeaderRenderer`, `HomePageRenderer`).
 
+<<<<<<< HEAD
 ---
+||||||| 12b261724
+-   **Build**: `./BuildRelease.bat [PRESET]` (WSL: use `powershell.exe -Command`)
+-   **Shader Test**: `hlslkit-compile --shader-dir [target]` (install via pip first)
+-   **Feature Access**: `globals::features::*` namespace
+=======
+- **Build**: `./BuildRelease.bat [PRESET]` (WSL: use `powershell.exe -Command`)
+- **Shader Test**: `hlslkit-compile --shader-dir [target]` (install via pip first)
+- **Feature Access**: `globals::features::*` namespace
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 ## Comments
 
@@ -49,7 +73,19 @@ Each rule is stated once, in the section named in brackets.
 
 ---
 
+<<<<<<< HEAD
 ## Code Quality & Architecture
+||||||| 12b261724
+-   `AUTO_PLUGIN_DEPLOYMENT=ON` - Auto-copy to `CommunityShadersOutputDir`
+-   `ZIP_TO_DIST=ON` (default) - Create individual feature 7z packages
+-   `AIO_ZIP_TO_DIST=ON` (default) - Create all-in-one 7z package
+-   `TRACY_SUPPORT=ON` - Enable Tracy profiler integration
+=======
+- `AUTO_PLUGIN_DEPLOYMENT=ON` - Auto-copy to `CommunityShadersOutputDir`
+- `ZIP_TO_DIST=ON` (default) - Create individual feature 7z packages
+- `AIO_ZIP_TO_DIST=ON` (default) - Create all-in-one 7z package
+- `TRACY_SUPPORT=ON` - Enable Tracy profiler integration
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 -   **No placeholders:** no TODO/FIXME or incomplete implementations unless explicitly requested for planning.
 -   **Minimal churn:** do not reformat unrelated code, rename adjacent variables, add or remove stray blank lines, or reorder or relocate existing code (prefer a forward declaration over moving a definition). An unreviewable diff is a violation even when functionally identical. Extracting a helper to satisfy the function-size rule is fine when scoped to the function you are already touching.
@@ -65,12 +101,26 @@ Each rule is stated once, in the section named in brackets.
 
 ---
 
+<<<<<<< HEAD
 ## DirectX Naming
+||||||| 12b261724
+-   `PREPARE_AIO`, `prepare_shaders`, `COPY_SHADERS`, `AIO_ZIP_PACKAGE`
+-   `FORMAT_CODE`, `generate_shader_configs`
+=======
+- `PREPARE_AIO`, `prepare_shaders`, `COPY_SHADERS`, `AIO_ZIP_PACKAGE`
+- `FORMAT_CODE`, `generate_shader_configs`
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 -   Name every D3D11 resource for RenderDoc with `Util::SetResourceName(ptr, "Feature::ResourceDescription")` after raw `device->Create*` calls. Wrappers (`Texture2D`, `Buffer`, `ConstantBuffer` in `Buffer.h`) take the name in the constructor and name their views.
 -   Use `"Feature::Name"` for the resource and `"Feature::Name SRV"` / `"Feature::Name UAV"` for views. The implementation is in `Utils/D3D.cpp`; never duplicate the GUID or re-implement it inline.
 
+<<<<<<< HEAD
 ---
+||||||| 12b261724
+AI-based training, scraping, and other automated or human reuse do not waive the licence terms that apply to Community Shaders code. Copying, modifying, incorporating, or distributing protected code without complying with [GPL-3.0-or-later](COPYING) and any applicable terms in [EXCEPTIONS.md](EXCEPTIONS.md) is not authorised by this project and is STRICTLY PROHIBITED.
+=======
+AI-based training, scraping, and other automated or human reuse do not waive the licence terms that apply to Community Shaders code. Copying, modifying, incorporating, or distributing protected code without complying with [GPL-3.0](COPYING.txt) and any applicable terms in [EXCEPTIONS.md](EXCEPTIONS.md) is not authorised by this project and is STRICTLY PROHIBITED.
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 ## VR & Cross-Platform Policy
 

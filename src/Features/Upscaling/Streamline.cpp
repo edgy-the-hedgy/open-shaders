@@ -21,6 +21,7 @@
 #include "FoveatedRender/Bridge.h"
 #include "FoveatedRender/Ops.h"
 #include "PerfMode.h"
+#include "Utils/Logging.h"
 
 void LoggingCallback(sl::LogType type, const char* msg)
 {
@@ -180,7 +181,7 @@ void Streamline::LoadInterposer()
 	slSetD3DDevice = reinterpret_cast<PFun_slSetD3DDevice*>(reinterpret_cast<void*>(GetProcAddress(interposer, "slSetD3DDevice")));
 
 	if (SL_FAILED(res, slInit(pref, sl::kSDKVersion))) {
-		logger::critical("[Streamline {}] Failed to initialize Streamline", instanceTag);
+		logger::critical("[Streamline {}] Failed to initialize Streamline: slInit returned {} ({})", instanceTag, magic_enum::enum_name(res), std::to_underlying(res));
 	} else {
 		initialized = true;
 		featureDLSS = false;
@@ -425,11 +426,14 @@ bool Streamline::EnsureFrameToken()
 	if (!frameChecker.IsNewFrame())
 		return frameToken != nullptr;
 
+	static Util::OnceFlag tokenErrorLogged;
 	if (SL_FAILED(result, slGetNewFrameToken(frameToken, &globals::state->frameCount))) {
-		logger::error("[Streamline {}] Could not get frame token: {}", instanceTag, magic_enum::enum_name(result));
+		if (tokenErrorLogged.First())
+			logger::error("[Streamline {}] Could not get frame token: {}", instanceTag, magic_enum::enum_name(result));
 		frameToken = nullptr;
 		return false;
 	}
+	tokenErrorLogged.Reset();
 
 	return frameToken != nullptr;
 }
@@ -485,7 +489,7 @@ bool Streamline::CheckFrameConstants(sl::ViewportHandle p_viewport, uint32_t eye
 	// Reset only when that fill couldn't run — accumulating against zero MVs ghosts.
 	const bool menuReset = state->IsMainOrLoadingMenuOpen() && !upscaling.menuCameraMVsValid;
 	const bool gazeReset = upscaling.foveatedRender.ConsumeGazeEyeReset(eyeIndex);
-	slConstants.reset = (menuReset || gazeReset) ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+	slConstants.reset = (menuReset || gazeReset || state->ShouldResetHistory()) ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 
 	// Apply foveated mvec scale only when the subrect execute path is actually
 	// running this frame (flag set by ExecuteFoveatedRoute). The standard full-frame
@@ -657,12 +661,11 @@ bool Streamline::EvaluateDLSS(sl::ViewportHandle vp, uint32_t eyeIndex,
 			return;
 		const sl::Result markerResult = slPCLSetMarker(marker, *frameToken);
 		if (markerResult != sl::Result::eOk) {
-			static bool markerErrorLogged[2][2] = { { false, false }, { false, false } };
+			static Util::OnceFlag markerErrorLogged[2][2];
 			const uint32_t logIdx = globals::game::isVR ? std::min(eyeIndex, 1u) : 0u;
 			const uint32_t boundedStageIndex = std::min(stageIndex, 1u);
-			if (markerErrorLogged[logIdx][boundedStageIndex])
+			if (!markerErrorLogged[logIdx][boundedStageIndex].First())
 				return;
-			markerErrorLogged[logIdx][boundedStageIndex] = true;
 			logger::warn(
 				"[Streamline {}] slPCLSetMarker({}) failed{}: {}",
 				instanceTag,

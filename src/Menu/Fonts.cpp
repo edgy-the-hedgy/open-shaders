@@ -1,9 +1,15 @@
 #include "Fonts.h"
+#include "FontAtlasState.h"
 
 #include "../Globals.h"
 #include "../I18n/I18n.h"
 #include "../Utils/FileSystem.h"
+<<<<<<< HEAD
 #include "../Utils/StringUtils.h"
+||||||| 12b261724
+=======
+#include "../Utils/UI.h"
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 #include "ThemeManager.h"
 
 #include <algorithm>
@@ -17,8 +23,17 @@
 #include <unordered_map>
 #include <unordered_set>
 
+static_assert(MenuFonts::kFontRoleCount == static_cast<size_t>(Menu::FontRole::Count),
+	"MenuFonts::kFontRoleCount must match Menu::FontRole::Count");
+
 namespace MenuFonts
 {
+	AtlasState& GetAtlasState()
+	{
+		static AtlasState state;
+		return state;
+	}
+
 	namespace
 	{
 		constexpr size_t RoleIndex(Menu::FontRole role)
@@ -154,44 +169,12 @@ namespace MenuFonts
 		}
 	}
 
-	TabBarPaddingGuard::TabBarPaddingGuard(FontRole tabFontRole)
-	{
-		// Get the font that will be used for tabs
-		ImFont* tabFont = globals::menu->GetFont(tabFontRole);
-		ImFont* bodyFont = globals::menu->GetFont(FontRole::Body);
-
-		if (tabFont && bodyFont) {
-			float fontScale = tabFont->LegacySize / bodyFont->LegacySize;
-
-			// Only scale if the tab font is noticeably larger
-			if (fontScale > 1.05f) {
-				ImGuiStyle& style = ImGui::GetStyle();
-				originalPadding_ = style.FramePadding;
-
-				// Scale padding proportionally to font size
-				style.FramePadding.x *= fontScale;
-				style.FramePadding.y *= fontScale;
-
-				scaled_ = true;
-			}
-		}
-	}
-
-	TabBarPaddingGuard::~TabBarPaddingGuard()
-	{
-		if (scaled_) {
-			ImGuiStyle& style = ImGui::GetStyle();
-			style.FramePadding = originalPadding_;
-		}
-	}
-
 	bool BeginTabItemWithFont(const char* label, FontRole role, ImGuiTabItemFlags flags)
 	{
-		// Push the font for this role
-		FontRoleGuard guard(role);
+		if (Util::IsInsidePillTabBar())
+			return Util::BeginPillTabItem(label, nullptr, flags);
 
-		// Simply begin the tab item - padding adjustments should be handled
-		// by the tab bar wrapper, not individual tab items
+		FontRoleGuard guard(role);
 		return ImGui::BeginTabItem(label, nullptr, flags);
 	}
 
@@ -382,8 +365,35 @@ namespace Util
 				"extended", "expanded", "wide",
 				"ultracompressed", "ultracondensed", "ultraexpanded"
 			};
+<<<<<<< HEAD
 			std::string lower = Util::ToLowerAscii(token);
+||||||| 12b261724
+			std::string lower = ToLowerCopy(token);
+=======
+			std::string lower = Util::ToLower(token);
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 			return std::find(widthVariants.begin(), widthVariants.end(), lower) != widthVariants.end();
+		}
+
+		/// Splits a font file stem on '-', '_' and ' ', dropping empty tokens.
+		std::vector<std::string> SplitFontTokens(const std::string& stem)
+		{
+			std::vector<std::string> tokens;
+			std::string token;
+			for (char c : stem) {
+				if (c == '-' || c == '_' || c == ' ') {
+					if (!token.empty()) {
+						tokens.push_back(std::move(token));
+						token.clear();
+					}
+				} else {
+					token += c;
+				}
+			}
+			if (!token.empty()) {
+				tokens.push_back(std::move(token));
+			}
+			return tokens;
 		}
 
 		std::string ExtractFamilyName(const std::filesystem::path& relativePath)
@@ -397,21 +407,7 @@ namespace Util
 			auto stem = relativePath.stem().string();
 
 			// Split by delimiters and take tokens before width variants
-			std::vector<std::string> tokens;
-			std::string token;
-			for (char c : stem) {
-				if (c == '-' || c == '_' || c == ' ') {
-					if (!token.empty()) {
-						tokens.push_back(token);
-						token.clear();
-					}
-				} else {
-					token += c;
-				}
-			}
-			if (!token.empty()) {
-				tokens.push_back(token);
-			}
+			const auto tokens = SplitFontTokens(stem);
 
 			// Find first width variant and take everything before it
 			std::string family;
@@ -437,8 +433,16 @@ namespace Util
 		std::string ExtractStyleName(const std::filesystem::path& relativePath, const std::string& family)
 		{
 			std::string stem = relativePath.stem().string();
+<<<<<<< HEAD
 			std::string lowerStem = Util::ToLowerAscii(stem);
 			std::string lowerFamily = Util::ToLowerAscii(family);
+||||||| 12b261724
+			std::string lowerStem = ToLowerCopy(stem);
+			std::string lowerFamily = ToLowerCopy(family);
+=======
+			std::string lowerStem = Util::ToLower(stem);
+			std::string lowerFamily = Util::ToLower(family);
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 			// Remove family prefix if present
 			if (!lowerFamily.empty()) {
@@ -455,32 +459,24 @@ namespace Util
 			}
 
 			// Parse remaining tokens and build style
-			std::vector<std::string> tokens;
-			std::string token;
-			for (char c : stem) {
-				if (c == '-' || c == '_' || c == ' ') {
-					if (!token.empty()) {
-						tokens.push_back(token);
-						token.clear();
-					}
-				} else {
-					token += c;
-				}
-			}
-			if (!token.empty()) {
-				tokens.push_back(token);
-			}
+			const auto tokens = SplitFontTokens(stem);
 
 			// Build style from all tokens
 			std::string style;
 			for (const auto& t : tokens) {
 				if (!style.empty()) {
-					style += " ";
+					style += ' ';
 				}
 				style += t;
 			}
 
+<<<<<<< HEAD
 			if (style.empty() || Util::ToLowerAscii(style) == lowerFamily) {
+||||||| 12b261724
+			if (style.empty() || ToLowerCopy(style) == lowerFamily) {
+=======
+			if (style.empty() || Util::ToLower(style) == lowerFamily) {
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 				style = "Regular";
 			}
 			return style;
@@ -516,7 +512,13 @@ namespace Util
 
 		int StyleRank(const std::string& style)
 		{
+<<<<<<< HEAD
 			std::string lower = Util::ToLowerAscii(style);
+||||||| 12b261724
+			std::string lower = ToLowerCopy(style);
+=======
+			std::string lower = Util::ToLower(style);
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 			struct WeightRank
 			{
 				const char* token;
@@ -588,7 +590,14 @@ namespace Util
 						continue;
 					}
 
+<<<<<<< HEAD
 					const auto extension = Util::ToLowerAscii(entry.path().extension().string());
+||||||| 12b261724
+					auto extension = entry.path().extension().string();
+					std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
+=======
+					const auto extension = Util::ToLower(entry.path().extension().string());
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 					if (extension != ".ttf" && extension != ".otf") {
 						continue;
 					}
@@ -602,12 +611,23 @@ namespace Util
 					}
 
 					std::filesystem::path relPath(relativePath);
+					// Skip leftover Fonts/Icons trees from older packages; icon fonts now live
+					// under Icons/glyphs and are loaded explicitly by ThemeManager.
+					if (auto it = relPath.begin(); it != relPath.end() && _stricmp(it->string().c_str(), "Icons") == 0) {
+						continue;
+					}
 					std::string family = ExtractFamilyName(relPath);
 					if (family.empty()) {
 						family = relPath.stem().string();
 					}
 					std::string style = ExtractStyleName(relPath, family);
+<<<<<<< HEAD
 					std::string familyKey = Util::ToLowerAscii(family);
+||||||| 12b261724
+					std::string familyKey = ToLowerCopy(family);
+=======
+					std::string familyKey = Util::ToLower(family);
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 					size_t familyIdx;
 					auto found = familyIndex.find(familyKey);
 					if (found == familyIndex.end()) {
@@ -709,18 +729,6 @@ namespace Util
 		}
 	}  // namespace Fonts
 
-	std::vector<std::string> DiscoverFonts()
-	{
-		std::vector<std::string> fonts;
-		auto catalog = Fonts::DiscoverFontCatalog();
-		for (const auto& family : catalog.families) {
-			for (const auto& style : family.styles) {
-				fonts.push_back(style.file);
-			}
-		}
-		return fonts;
-	}
-
 	bool ValidateFont(const std::string& fontName)
 	{
 		if (fontName.empty()) {
@@ -747,7 +755,14 @@ namespace Util
 			}
 
 			auto isValidExtension = [](const std::filesystem::path& candidate) {
+<<<<<<< HEAD
 				const auto extension = Util::ToLowerAscii(candidate.extension().string());
+||||||| 12b261724
+				auto extension = candidate.extension().string();
+				std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
+=======
+				const auto extension = Util::ToLower(candidate.extension().string());
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 				return extension == ".ttf" || extension == ".otf";
 			};
 
@@ -757,13 +772,29 @@ namespace Util
 
 			// Performance: Use cached catalog for case-insensitive search instead of scanning filesystem
 			auto catalog = Fonts::DiscoverFontCatalog();  // Uses cache
+<<<<<<< HEAD
 			std::string targetNormalized = Util::ToLowerAscii(relative.generic_string());
 			std::string targetFilename = Util::ToLowerAscii(relative.filename().string());
+||||||| 12b261724
+			std::string targetNormalized = ToLowerCopy(relative.generic_string());
+			std::string targetFilename = ToLowerCopy(relative.filename().string());
+=======
+			std::string targetNormalized = Util::ToLower(relative.generic_string());
+			std::string targetFilename = Util::ToLower(relative.filename().string());
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 			for (const auto& family : catalog.families) {
 				for (const auto& style : family.styles) {
+<<<<<<< HEAD
 					std::string fileLower = Util::ToLowerAscii(style.file);
 					std::string filenameLower = Util::ToLowerAscii(std::filesystem::path(style.file).filename().string());
+||||||| 12b261724
+					std::string fileLower = ToLowerCopy(style.file);
+					std::string filenameLower = ToLowerCopy(std::filesystem::path(style.file).filename().string());
+=======
+					std::string fileLower = Util::ToLower(style.file);
+					std::string filenameLower = Util::ToLower(std::filesystem::path(style.file).filename().string());
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 					if (fileLower == targetNormalized || filenameLower == targetFilename) {
 						return true;

@@ -42,7 +42,13 @@ void TerrainVariation::DrawSettings()
 	}
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("enable_mesh_support_tooltip"),
+<<<<<<< HEAD
 							  "Applies terrain variation to meshes whose diffuse texture is referenced by a landscape texture record.\nCopies in landscape folders also qualify when their filenames match a referenced texture.\nOther textures, alpha-tested meshes, decals and materials without texture wrapping are excluded."));
+||||||| 12b261724
+							  "Applies the tiling fix to meshes that use landscape textures, such as dirt cliffs and mountain slabs.\nAlpha tested meshes like foliage and decals are never affected."));
+=======
+							  "Applies the tiling fix to meshes that share a texture with the landscape surface, such as dirt cliffs, rocks and mountain slabs.\nTree branches, roots, foliage and decals are never affected."));
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	}
 }
 
@@ -68,6 +74,7 @@ namespace
 
 		return canonical;
 	}
+<<<<<<< HEAD
 
 	bool IsInLandscapeDirectory(std::string_view a_canonical)
 	{
@@ -79,6 +86,21 @@ namespace
 		const auto separator = a_canonical.rfind('/');
 		return separator == std::string_view::npos ? a_canonical : a_canonical.substr(separator + 1);
 	}
+||||||| 12b261724
+=======
+
+	// Covers textures/landscape/ and prefixed copies such as textures/pbr/landscape/
+	bool IsInLandscapeDirectory(std::string_view a_canonical)
+	{
+		return a_canonical.starts_with(LandscapeDirectory) || a_canonical.find("/landscape/") != std::string_view::npos;
+	}
+
+	std::string_view GetFileName(std::string_view a_canonical)
+	{
+		const auto separator = a_canonical.rfind('/');
+		return separator == std::string_view::npos ? a_canonical : a_canonical.substr(separator + 1);
+	}
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 }
 
 void TerrainVariation::DataLoaded()
@@ -97,6 +119,7 @@ void TerrainVariation::DataLoaded()
 	landscapeDiffuseFileNames.clear();
 	meshTextureCache.clear();
 	meshTextureKeepAlive.clear();
+	meshTextureGeneration.fetch_add(1, std::memory_order_release);
 
 	auto addTextureSet = [this](RE::BGSTextureSet* textureSet) {
 		if (textureSet == nullptr) {
@@ -142,6 +165,9 @@ bool TerrainVariation::IsLandscapeDiffuseTexture(const RE::BSFixedString& a_name
 	const std::unique_lock lock(meshTextureMutex);
 	auto [it, inserted] = meshTextureCache.try_emplace(key, false);
 	if (inserted) {
+		// Only textures painted on the landscape surface qualify, wherever they live, so branches and roots
+		// sharing a landscape/ subfolder with a ground texture are left alone. A mesh copy of a ground texture
+		// in another landscape/ subfolder (landscape/mountains/mountainslab01.dds) still matches by file name.
 		const auto canonical = CanonicaliseTexturePath(key);
 		it->second = landscapeDiffusePaths.contains(canonical) ||
 		             (IsInLandscapeDirectory(canonical) && landscapeDiffuseFileNames.contains(std::string(GetFileName(canonical))));
@@ -193,7 +219,14 @@ void TerrainVariation::BSLightingShader_SetupGeometry(RE::BSRenderPass* a_pass)
 		return;
 	}
 
-	if (IsLandscapeDiffuseTexture(baseTexture->name)) {
+	const char* key = baseTexture->name.c_str();
+	const uint32_t generation = meshTextureGeneration.load(std::memory_order_acquire);
+	if (key != lastMeshTextureKey || generation != lastMeshTextureGeneration) {
+		lastMeshTextureResult = IsLandscapeDiffuseTexture(baseTexture->name);
+		lastMeshTextureKey = key;
+		lastMeshTextureGeneration = generation;
+	}
+	if (lastMeshTextureResult) {
 		descriptor |= uint(State::ExtraFeatureDescriptors::TVMeshVariation);
 	}
 }

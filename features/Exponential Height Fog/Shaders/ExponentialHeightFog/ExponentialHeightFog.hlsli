@@ -237,6 +237,7 @@ namespace ExponentialHeightFog
 
 		float expFogFactor = (fogDensity > 0.0f || fogDensity2 > 0.0f) ? saturate(exp2(-exponentialHeightLineIntegral)) : 1.0f;
 
+<<<<<<< HEAD
 		float3 fogInscatteringColor = 0.0f.xxx;
 		if (SharedData::exponentialHeightFogSettings.useVanillaFogSettings != 0) {
 			fogInscatteringColor = GetFogAmbientColor(viewToPosLength);
@@ -251,6 +252,14 @@ namespace ExponentialHeightFog
 			fogInscatteringColor = fogColor * SharedData::exponentialHeightFogSettings.originalFogColorAmount;
 		}
 		fogInscatteringColor += Color::GamutTransform(SharedData::exponentialHeightFogSettings.fogInscatteringColor.rgb) * SharedData::exponentialHeightFogSettings.fogInscatteringColor.a;
+||||||| 12b261724
+		float3 fogInscatteringColor = fogColor * SharedData::exponentialHeightFogSettings.originalFogColorAmount;
+		fogInscatteringColor += SharedData::exponentialHeightFogSettings.fogInscatteringColor.rgb * SharedData::exponentialHeightFogSettings.fogInscatteringColor.a;
+=======
+		float3 originalFogColor = lerp(fogColor, SharedData::exponentialHeightFogSettings.originalFogColorOverride.rgb, SharedData::exponentialHeightFogSettings.originalFogColorOverride.a);
+		float3 fogInscatteringColor = originalFogColor * SharedData::exponentialHeightFogSettings.originalFogColorAmount;
+		fogInscatteringColor += SharedData::exponentialHeightFogSettings.fogInscatteringColor.rgb * SharedData::exponentialHeightFogSettings.fogInscatteringColor.a;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 #if defined(IBL) || defined(DYNAMIC_CUBEMAPS)
 		if (SharedData::exponentialHeightFogSettings.useVanillaFogSettings == 0) {

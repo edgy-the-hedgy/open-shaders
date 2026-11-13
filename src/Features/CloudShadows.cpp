@@ -17,6 +17,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 
 void CloudShadows::DrawSettings()
 {
+<<<<<<< HEAD
 #if defined(ENABLE_EFFECTS11)
 	if (globals::features::effects11.loaded) {
 		auto& enb = globals::features::effects11;
@@ -26,6 +27,18 @@ void CloudShadows::DrawSettings()
 		}
 	}
 #endif
+||||||| 12b261724
+	if (globals::features::effects11.loaded) {
+		auto& enb = globals::features::effects11;
+		if (enb.enableEffect) {
+			ImGui::TextColored(globals::menu->GetSettings().Theme.StatusPalette.Warning, "%s", T("common.settings_managed_by_enb", "Settings are currently managed by ENB."));
+			return;
+		}
+	}
+=======
+	const Util::LockedSection enbLock(globals::features::effects11.OwnsFeature(E11Handoff::Feature::CloudShadows),
+		T("common.settings_managed_by_enb", "This setting is managed by Effects 11."));
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 	ImGui::SliderFloat(T(TKEY("opacity"), "Opacity"), &settings.Opacity, 0.0f, 4.0f, "%.1f");
 	if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -58,6 +71,7 @@ CloudShadows::Settings CloudShadows::GetCommonBufferData()
 
 	auto data = settings;
 
+<<<<<<< HEAD
 #if defined(ENABLE_EFFECTS11)
 	if (globals::features::effects11.loaded) {
 		auto& enb = globals::features::effects11;
@@ -68,6 +82,24 @@ CloudShadows::Settings CloudShadows::GetCommonBufferData()
 			} else {
 				data.Opacity = 0.0f;
 			}
+||||||| 12b261724
+	if (globals::features::effects11.loaded) {
+		auto& enb = globals::features::effects11;
+		if (enb.enableEffect) {
+			auto& settingManager = SettingManager::GetSingleton();
+			if (settingManager.GetValue<bool>("EnableCloudShadows", "EFFECT")) {
+				data.Opacity = settingManager.GetInterpolatedTimeOfDayValue("Amount", "CLOUDSHADOWS");
+			} else {
+				data.Opacity = 0.0f;
+			}
+=======
+	if (globals::features::effects11.OwnsFeature(E11Handoff::Feature::CloudShadows)) {
+		auto& settingManager = SettingManager::GetSingleton();
+		if (settingManager.GetValue<bool>("EnableCloudShadows", "EFFECT")) {
+			data.Opacity = settingManager.GetInterpolatedTimeOfDayValue("Amount", "CLOUDSHADOWS");
+		} else {
+			data.Opacity = 0.0f;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 		}
 	}
 #endif
@@ -77,7 +109,6 @@ CloudShadows::Settings CloudShadows::GetCommonBufferData()
 
 void CloudShadows::CheckResourcesSide(int side)
 {
-	static Util::FrameChecker frame_checker[6];
 	if (!frame_checker[side].IsNewFrame())
 		return;
 
@@ -88,7 +119,9 @@ void CloudShadows::CheckResourcesSide(int side)
 	auto context = globals::d3d::context;
 
 	float black[4] = { 0, 0, 0, 0 };
+	globals::profiler->BeginPass("CloudShadows::ClearLayer");
 	context->ClearRenderTargetView(cloudShadowLayerRTVs[0][side], black);
+	globals::profiler->EndPass();
 	renderedLayersMask[side] = 0;
 }
 
@@ -100,6 +133,7 @@ void CloudShadows::PropagateToCompletion(int side)
 
 	auto context = globals::d3d::context;
 
+	globals::profiler->BeginPass("CloudShadows::Propagate");
 	uint32_t newLayers = mask & ~globalRenderedMask;
 	if (newLayers) {
 		unsigned long bit;
@@ -131,6 +165,7 @@ void CloudShadows::PropagateToCompletion(int side)
 			texCloudShadowLayers[kMaxCloudLayers - 1]->resource.get(), subresource, 0, 0, 0,
 			texCloudShadowLayers[fromLayer]->resource.get(), subresource, nullptr);
 	}
+	globals::profiler->EndPass();
 }
 
 void CloudShadows::SkyShaderHacks()
@@ -174,10 +209,28 @@ void CloudShadows::SkyShaderHacks()
 		int sourceLayer = std::max(previousLayer, 0);
 		UINT subresource = D3D11CalcSubresource(0, side, cubemapMipLevels);
 
+<<<<<<< HEAD
 		if (layer > 0 && sourceLayer < layer) {
+||||||| 12b261724
+		int fromLayer = std::max(prevLayer, 0);
+
+		if (layer > 0) {
+=======
+		int fromLayer = std::max(prevLayer, 0);
+
+		if (layer > 0) {
+			globals::profiler->BeginPass("CloudShadows::LayerSeed");
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 			context->CopySubresourceRegion(
 				texCloudShadowLayers[layer]->resource.get(), subresource, 0, 0, 0,
+<<<<<<< HEAD
 				texCloudShadowLayers[sourceLayer]->resource.get(), subresource, nullptr);
+||||||| 12b261724
+				texCloudShadowLayers[fromLayer]->resource.get(), subresource, nullptr);
+=======
+				texCloudShadowLayers[fromLayer]->resource.get(), subresource, nullptr);
+			globals::profiler->EndPass();
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 		}
 
 		// The layer chain is being written by this draw, so self shadowing reads last frame's composite
@@ -251,7 +304,6 @@ void CloudShadows::ModifySky(RE::BSRenderPass* Pass)
 
 void CloudShadows::ReflectionsPrepass()
 {
-	Util::FrameChecker frameChecker;
 	if (frameChecker.IsNewFrame()) {
 		if ((globals::game::sky->mode.get() != RE::Sky::Mode::kFull) ||
 			!globals::game::sky->currentClimate)
@@ -259,6 +311,7 @@ void CloudShadows::ReflectionsPrepass()
 
 		auto context = globals::d3d::context;
 
+		globals::profiler->BeginPass("CloudShadows::OcclusionCopy");
 		// No cloud layer draws, so nothing would overwrite the last weather's occlusion
 		auto clouds = globals::game::sky->clouds;
 		if (!clouds || clouds->numLayers == 0) {
@@ -273,6 +326,7 @@ void CloudShadows::ReflectionsPrepass()
 		}
 
 		context->CopyResource(texCubemapCloudOccCopy->resource.get(), texCloudShadowLayers[kMaxCloudLayers - 1]->resource.get());
+		globals::profiler->EndPass();
 
 		ID3D11ShaderResourceView* srv = texCubemapCloudOccCopy->srv.get();
 		context->PSSetShaderResources(25, 1, &srv);

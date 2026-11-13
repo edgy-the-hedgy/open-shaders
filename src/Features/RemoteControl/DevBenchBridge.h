@@ -7,10 +7,42 @@
 // The implementation compiles only with -DDEVBENCH_BRIDGE_ENABLED (set by CMake when the
 // `devbench-api` port is available); otherwise this file compiles to an empty Install().
 // When built in, Install() is still a runtime no-op if no devbench host is present — so
+<<<<<<< HEAD
 // it is always safe to call.
+||||||| 12b261724
+/**
+ * Registers the project's tools with the devbench host.
+ *
+ * Fetches the devbench interface and registers the project's tools for remote
+ * control. If the devbench host is not present or the bridge was compiled with
+ * the feature disabled, this function is a no-op.
+ */
+=======
+/**
+ * Registers the project's tools with the devbench host.
+ *
+ * Fetches the devbench interface and registers the project's tools for remote
+ * control. If the devbench host is not present or the bridge was compiled with
+ * the feature disabled, this function is a no-op.
+ */
+#include <filesystem>
+#include <optional>
+#include <string>
+
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 namespace DevBenchBridge
 {
 	// Fetch the devbench interface (after kPostLoad) and register our tools. No-op if
 	// devbench is not present or the bridge was built disabled. Safe to call always.
 	void Install();
+
+	/** @brief One tool call devbench routed to Community Shaders. */
+	struct Request
+	{
+		std::string tool;                     /**< @brief Registered tool name, e.g. communityshaders.feature. */
+		std::filesystem::file_time_type time; /**< @brief When it arrived (file clock, for Util::FormatTimeAgo). */
+	};
+
+	/** @brief The most recent tool call; nothing before the first one or when the bridge is not built. Thread-safe. */
+	std::optional<Request> GetLastRequest();
 }

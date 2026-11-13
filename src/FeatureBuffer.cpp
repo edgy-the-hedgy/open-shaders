@@ -20,8 +20,13 @@
 #include "Features/LODBlending.h"
 #include "Features/LightLimitFix.h"
 #include "Features/LinearLighting.h"
+<<<<<<< HEAD
 #include "Features/PostProcessing.h"
 #include "Features/ProceduralSun.h"
+||||||| 12b261724
+=======
+#include "Features/ProceduralSun.h"
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 #include "Features/RainRefraction.h"
 #include "Features/Skin.h"
 #include "Features/Skylighting.h"
@@ -60,7 +65,7 @@ std::pair<unsigned char*, size_t> GetFeatureBufferData(bool a_inWorld)
 	return _GetFeatureBufferData(
 		globals::features::grassLighting.settings,
 		globals::features::extendedMaterials.settings,
-		globals::features::dynamicCubemaps.settings,
+		globals::features::dynamicCubemaps.GetCommonBufferData(),
 		globals::features::terrainShadows.GetCommonBufferData(),
 		globals::features::lightLimitFix.GetCommonBufferData(),
 		globals::features::wetnessEffects.GetCommonBufferData(),
@@ -94,6 +99,15 @@ std::pair<unsigned char*, size_t> GetFeatureBufferData(bool a_inWorld)
 		globals::features::postProcessing.GetCommonBufferData(),
 		globals::features::grassCollision.GetCommonBufferData(),
 		globals::features::horizonFix.GetCommonBufferData(),
+<<<<<<< HEAD
 		globals::features::rainRefraction.GetCommonBufferData(),
 		globals::features::snowCover.GetCommonBufferData(a_inWorld));
 }
+||||||| 12b261724
+		globals::features::rainRefraction.GetCommonBufferData());
+}
+=======
+		globals::features::rainRefraction.GetCommonBufferData(),
+		globals::features::proceduralSun.GetCommonBufferData());
+}
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb

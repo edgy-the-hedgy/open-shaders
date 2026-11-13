@@ -760,8 +760,16 @@ void TerrainBlending::ResetDepth()
 	CS_GPU_PASS("TerrainBlending::ResetDepth");
 	auto context = globals::d3d::context;
 
+<<<<<<< HEAD
 	auto dsv = Util::AsReal(terrainDepth.views[0]);
+||||||| 12b261724
+	auto dsv = terrainDepth.views[0];
+=======
+	auto dsv = terrainDepth.views[0];
+	globals::profiler->BeginPass("TerrainBlending::ClearDepth");
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	context->ClearDepthStencilView(dsv, D3D11_CLEAR_DEPTH, 1.0f, 0u);
+	globals::profiler->EndPass();
 }
 
 void TerrainBlending::ResetTerrainDepth()
@@ -816,8 +824,30 @@ void TerrainBlending::BlendPrepassDepths()
 
 	auto stateUpdateFlags = globals::game::stateUpdateFlags;
 	stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
+<<<<<<< HEAD
 	// CopyResource(terrainDepth <- mainDepth) eliminated: main depth is now written
 	// directly into mainDepthCopy (u2) by the CS above, saving a full-stereo D24S8 copy.
+||||||| 12b261724
+
+	auto renderer = globals::game::renderer;
+	auto& mainDepth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+
+	context->CopyResource(terrainDepth.texture, mainDepth.texture);
+
+	if (globals::state->frameAnnotations)
+		globals::state->EndPerfEvent();
+=======
+
+	auto renderer = globals::game::renderer;
+	auto& mainDepth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+
+	globals::profiler->BeginPass("TerrainBlending::CopyDepth");
+	context->CopyResource(terrainDepth.texture, mainDepth.texture);
+	globals::profiler->EndPass();
+
+	if (globals::state->frameAnnotations)
+		globals::state->EndPerfEvent();
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 }
 
 void TerrainBlending::ClearShaderCache()
@@ -909,7 +939,9 @@ void TerrainBlending::Hooks::BSBatchRenderer__RenderPassImmediately::thunk(RE::B
 			}
 
 			if (inTerrain) {
+				globals::profiler->BeginPass("TerrainBlending::TerrainDepth");
 				func(a_pass, a_technique, a_alphaTest, a_renderFlags);  // Run terrain twice
+				globals::profiler->EndPass();
 			}
 		} else if (globals::state->inWorld) {
 			if (auto shaderProperty = a_pass->shaderProperty) {
@@ -1019,8 +1051,10 @@ void TerrainBlending::RenderTerrainBlendingPasses()
 		// Enable rendering for depth below the surface
 		context->OMSetDepthStencilState(terrainDepthStencilState, 0xFF);
 
+		globals::profiler->BeginPass("TerrainBlending::TerrainPasses");
 		for (auto& renderPass : terrainRenderPasses)
 			Hooks::BSBatchRenderer__RenderPassImmediately::func(renderPass.a_pass, renderPass.a_technique, renderPass.a_alphaTest, renderPass.a_renderFlags);
+		globals::profiler->EndPass();
 
 		// Reset alpha blending
 		alphaBlendMode = 0;
@@ -1030,8 +1064,10 @@ void TerrainBlending::RenderTerrainBlendingPasses()
 		depthStencilDepthMode = RE::BSGraphics::DepthStencilDepthMode::kTestEqual;
 		stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_DEPTH_MODE);
 
+		globals::profiler->BeginPass("TerrainBlending::NoBlendPasses");
 		for (auto& renderPass : renderPasses)
 			Hooks::BSBatchRenderer__RenderPassImmediately::func(renderPass.a_pass, renderPass.a_technique, renderPass.a_alphaTest, renderPass.a_renderFlags);
+		globals::profiler->EndPass();
 
 		terrainRenderPasses.clear();
 		renderPasses.clear();

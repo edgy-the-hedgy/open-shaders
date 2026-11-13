@@ -50,7 +50,7 @@ namespace
 			for (std::size_t i = 0; i < n; ++i)
 				target.emplace_back(static_cast<InputDeviceType>(static_cast<uint32_t>(keys[i].GetDevice())), keys[i].GetKey());
 			if (globals::state)
-				globals::state->Save(State::ConfigMode::USER);
+				globals::state->Save();
 			logger::info("ImGuiVRHelper: persisted VR combo rebind ({} keys)", n);
 		};
 	}

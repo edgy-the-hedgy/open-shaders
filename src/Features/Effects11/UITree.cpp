@@ -94,11 +94,22 @@ namespace UITree
 			for (int i = 0; i < static_cast<int>(effect->uiVariables.size()); ++i) {
 				auto& var = effect->uiVariables[i];
 
+<<<<<<< HEAD
 				std::string uname = !var.uniqueName.empty() ? var.uniqueName : !var.group.empty() ? var.group + "." + var.displayName :
 				                                                                                    var.displayName;
 				auto [global, inserted] = uniqueNameMap.try_emplace(uname, VarRef{ effect, i });
 				if (!inserted && global->second.effect != effect)
 					global->second = {};
+||||||| 12b261724
+				std::string uname = !var.uniqueName.empty() ? var.uniqueName
+				                    : !var.group.empty()    ? var.group + "." + var.displayName
+				                                            : var.displayName;
+				uniqueNameMap[uname] = { effect, i };
+=======
+				std::string uname = !var.uniqueName.empty() ? var.uniqueName : !var.group.empty() ? var.group + "." + var.displayName :
+				                                                                                    var.displayName;
+				uniqueNameMap[uname] = { effect, i };
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 				fileMap[uname] = { effect, i };
 
 				if (filter == FilterMode::TopLevelOnly && !var.isTopLevel)

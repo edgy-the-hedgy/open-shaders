@@ -72,10 +72,23 @@ public:
 	Texture2D* blurHorizontalTemp = nullptr;
 	Texture2D* diffuseNoAlbedoTex = nullptr;
 
+<<<<<<< HEAD
 	Util::LazyShader<ID3D11ComputeShader> prepassSS;
 	Util::LazyShader<ID3D11ComputeShader> horizontalSSBlur;
 	Util::LazyShader<ID3D11ComputeShader> verticalSSBlur;
 	Util::LazyShader<ID3D11ComputeShader> burleySS;
+||||||| 12b261724
+	ID3D11ComputeShader* prepassSS = nullptr;
+	ID3D11ComputeShader* horizontalSSBlur = nullptr;
+	ID3D11ComputeShader* verticalSSBlur = nullptr;
+	ID3D11ComputeShader* burleySS = nullptr;
+=======
+	ID3D11ComputeShader* prepassSS = nullptr;
+	ID3D11ComputeShader* prepassBurleySS = nullptr;
+	ID3D11ComputeShader* horizontalSSBlur = nullptr;
+	ID3D11ComputeShader* verticalSSBlur = nullptr;
+	ID3D11ComputeShader* burleySS = nullptr;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	RE::BGSKeyword* isBeastRaceKeyword = nullptr;
 
 	virtual inline std::string GetName() override { return "Subsurface Scattering"; }

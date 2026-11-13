@@ -212,7 +212,8 @@ void FidelityFX::Present(bool a_useFrameGeneration, bool a_isHDR)
 	// Use seq_cst for both to ensure the callback sees both values consistently
 	hdrPeakNits.store(peakNits, std::memory_order_seq_cst);
 	isHDRActive.store(a_isHDR, std::memory_order_seq_cst);
-	needsReset.store(hdrParamsChanged, std::memory_order_seq_cst);
+	if (hdrParamsChanged || globals::state->ShouldResetHistory())
+		needsReset.store(true, std::memory_order_seq_cst);
 
 	ffx::ConfigureDescFrameGeneration configParameters{};
 
@@ -258,7 +259,7 @@ void FidelityFX::Present(bool a_useFrameGeneration, bool a_isHDR)
 	// If HDR parameters changed, skip a frame ID to force FidelityFX to reset its history
 	// This prevents interpolation artifacts when frames were encoded with different parameters
 	// Per FidelityFX docs: "Any non-exactly-one difference will reset the frame generation logic"
-	if (hdrParamsChanged && a_useFrameGeneration) {
+	if ((hdrParamsChanged || globals::state->ShouldResetHistory()) && a_useFrameGeneration) {
 		frameID += 2;  // Skip one ID to trigger reset
 	}
 
@@ -417,11 +418,10 @@ void FidelityFX::CreateFSRResources()
 		contextDescription.maxUpscaleSize.height = displayHeight;
 		contextDescription.displaySize.width = displayWidth;
 		contextDescription.displaySize.height = displayHeight;
-		contextDescription.flags = FFX_FSR3_ENABLE_UPSCALING_ONLY | FFX_FSR3_ENABLE_AUTO_EXPOSURE;
+		contextDescription.flags = FFX_FSR3_ENABLE_UPSCALING_ONLY | FFX_FSR3_ENABLE_AUTO_EXPOSURE | FFX_FSR3_ENABLE_HIGH_DYNAMIC_RANGE;
 		if (globals::features::reverseZ.IsActive())
 			contextDescription.flags |= FFX_FSR3_ENABLE_DEPTH_INVERTED;
 		if (globals::features::hdrDisplay.loaded) {
-			contextDescription.flags |= FFX_FSR3_ENABLE_HIGH_DYNAMIC_RANGE;
 			contextDescription.backBufferFormat = FFX_SURFACE_FORMAT_R10G10B10A2_UNORM;
 		} else {
 			contextDescription.backBufferFormat = FFX_SURFACE_FORMAT_R8G8B8A8_UNORM;
@@ -459,7 +459,7 @@ void FidelityFX::DestroyFSRResources()
 	}
 
 	// Reset crash logging flag when resources are destroyed
-	fsrDispatchCrashLogged = false;
+	fsrDispatchCrashLogged.Reset();
 
 	WaitForRuntimeUpscalerIdle();
 	DestroyRuntimeUpscalerContexts(false);

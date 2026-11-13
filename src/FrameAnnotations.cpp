@@ -126,7 +126,7 @@ namespace FrameAnnotations
 	{
 		static void thunk(RE::BSGraphics::BSShaderAccumulator* shaderAccumulator, uint32_t renderFlags)
 		{
-			const bool frameAnnotations = globals::state->frameAnnotations;
+			const bool frameAnnotations = globals::state->AnnotateDraws();
 			if (frameAnnotations) {
 				globals::state->BeginPerfEvent("BSShaderAccumulator::FinishAccumulatingDispatch [{}] <{}>",
 					static_cast<uint32_t>(shaderAccumulator->GetRuntimeData().renderMode), renderFlags);
@@ -134,7 +134,7 @@ namespace FrameAnnotations
 
 			func(shaderAccumulator, renderFlags);
 
-			if (frameAnnotations) {
+			if (annotate) {
 				globals::state->EndPerfEvent();
 			}
 		}
@@ -216,7 +216,7 @@ namespace FrameAnnotations
 			void* passIndexList,
 			uint32_t renderFlags)
 		{
-			const bool frameAnnotations = globals::state->frameAnnotations;
+			const bool frameAnnotations = globals::state->AnnotateDraws();
 			if (frameAnnotations) {
 				globals::state->BeginPerfEvent("BSBatchRenderer::RenderBatches ({:X})[{}] <{}>", *currentPass, *bucketIndex,
 					renderFlags);
@@ -224,7 +224,7 @@ namespace FrameAnnotations
 
 			const bool result = func(renderer, currentPass, bucketIndex, passIndexList, renderFlags);
 
-			if (frameAnnotations) {
+			if (annotate) {
 				globals::state->EndPerfEvent();
 			}
 
@@ -356,7 +356,7 @@ namespace FrameAnnotations
 	{
 		static void thunk(void* shaderAccumulator, uint32_t firstPass, uint32_t lastPass, uint32_t renderFlags, int groupIndex)
 		{
-			const bool frameAnnotations = globals::state->frameAnnotations;
+			const bool frameAnnotations = globals::state->AnnotateDraws();
 			if (frameAnnotations) {
 				globals::state->BeginPerfEvent("BSShaderAccumulator::RenderBatches ({:X}:{:X})[{}] <{}>", firstPass, lastPass, groupIndex,
 					renderFlags);
@@ -364,7 +364,7 @@ namespace FrameAnnotations
 
 			func(shaderAccumulator, firstPass, lastPass, renderFlags, groupIndex);
 
-			if (frameAnnotations) {
+			if (annotate) {
 				globals::state->EndPerfEvent();
 			}
 		};
@@ -375,14 +375,14 @@ namespace FrameAnnotations
 	{
 		static void thunk(void* passList, uint32_t renderFlags)
 		{
-			const bool frameAnnotations = globals::state->frameAnnotations;
+			const bool frameAnnotations = globals::state->AnnotateDraws();
 			if (frameAnnotations) {
 				globals::state->BeginPerfEvent("BSShaderAccumulator::RenderPersistentPassList <{}>", renderFlags);
 			}
 
 			func(passList, renderFlags);
 
-			if (frameAnnotations) {
+			if (annotate) {
 				globals::state->EndPerfEvent();
 			}
 		};

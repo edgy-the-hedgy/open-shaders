@@ -6,8 +6,13 @@
 #include "ShaderCache.h"
 #include "State.h"
 #include "Utils/D3D.h"
+<<<<<<< HEAD
 #include "Utils/DevBenchUx.h"
 #include "Utils/MathUtils.h"
+||||||| 12b261724
+=======
+#include "Utils/Logging.h"
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 #include "Utils/SphericalHarmonics.h"
 
 #include <cmath>
@@ -176,7 +181,7 @@ void Skylighting::DrawSettings()
 
 	ImGui::Separator();
 
-	if (ImGui::Button(T(TKEY("rebuild"), "Rebuild Skylighting")))
+	if (Util::Button(T(TKEY("rebuild"), "Rebuild Skylighting")))
 		ResetSkylighting();
 
 	if (auto _tt = Util::HoverTooltipWrapper())
@@ -955,6 +960,7 @@ void Skylighting::BSUtilityShader_RestoreGeometry::thunk(
 	RE::BSRenderPass* a_pass,
 	uint32_t a_renderFlags)
 {
+<<<<<<< HEAD
 	func(a_shader, a_pass, a_renderFlags);
 	globals::features::skylighting.EndInteriorOcclusionGeometry();
 }
@@ -963,6 +969,21 @@ uint32_t* Skylighting::GetRasterCullMode() const
 {
 	auto* shadowState = globals::game::shadowState;
 	if (!shadowState)
+||||||| 12b261724
+	// The engine allocates from this pool without a bounds check; callers already handle a null group
+	static REL::Relocation<std::uint32_t*> poolCount{ REL::RelocationID(528319, 415271) };
+	if (*poolCount >= poolCapacity) {
+		static bool warned = false;
+		if (!std::exchange(warned, true))
+			logger::warn("[SKYLIGHTING] Alpha group pool full, extra ordered geometry renders unsorted");
+=======
+	// The engine allocates from this pool without a bounds check; callers already handle a null group
+	static REL::Relocation<std::uint32_t*> poolCount{ REL::RelocationID(528319, 415271) };
+	if (*poolCount >= poolCapacity) {
+		static Util::OnceFlag warned;
+		if (warned.First())
+			logger::warn("[SKYLIGHTING] Alpha group pool full, extra ordered geometry renders unsorted");
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 		return nullptr;
 
 	return globals::game::isVR ?

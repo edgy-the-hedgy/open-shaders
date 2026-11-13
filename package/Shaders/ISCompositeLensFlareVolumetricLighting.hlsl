@@ -50,15 +50,35 @@ PS_OUTPUT main(PS_INPUT input)
 		volumetricLightingColor *= SharedData::enbSettings.VolumetricRaysColorFilter;
 	}
 #		endif
+<<<<<<< HEAD
 	volumetricLightingColor = Color::AdjustUtilityColor(volumetricLightingColor, float2(SharedData::csUtilitySettings.vlSaturation, 0.0));
 	color += volumetricLightingColor * Color::VolumetricLighting(volumetricLightingPower);
+||||||| 12b261724
+	color += volumetricLightingColor * Color::VolumetricLighting(volumetricLightingPower.xxx).x;
+=======
+	color += volumetricLightingColor * volumetricLightingPower;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 #	endif
 
 #	if defined(LENS_FLARE)
 	float3 lensFlareColor = LFSourceTex.Sample(LFSourceSampler, input.TexCoord).xyz;
+<<<<<<< HEAD
 	if (ENABLE_LL)
 		lensFlareColor = Color::SceneGammaToLinear(lensFlareColor);
 	color += lensFlareColor;
+||||||| 12b261724
+	if (SharedData::linearLightingSettings.enableLinearLighting) {
+		color += Color::SkyrimGammaToLinear(lensFlareColor);
+	} else {
+		color += lensFlareColor;
+	}
+=======
+#		if defined(ENABLE_LL)
+	color += TransferFunctions::GameGammaToLinear(lensFlareColor);
+#		else
+	color += lensFlareColor;
+#		endif
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 #	endif
 
 	psout.Color = color;

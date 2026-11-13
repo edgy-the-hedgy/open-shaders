@@ -338,13 +338,14 @@ namespace ImGuiUtils
 		static void Rect(ImDrawList* drawList, ImVec2 minPoint, ImVec2 maxPoint, uint32_t col, bool filled = true)
 		{
 			if (filled)
-				drawList->AddRectFilled(minPoint, maxPoint, col);
+				drawList->AddRectFilled(minPoint, maxPoint, ImGui::GetColorU32(col));
 			else
-				drawList->AddRect(minPoint, maxPoint, col);
+				drawList->AddRect(minPoint, maxPoint, ImGui::GetColorU32(col));
 		}
 
 		static void Text(ImDrawList* drawList, ImVec2 point, uint32_t col, const char* text, float scale = 1.0f)
 		{
+<<<<<<< HEAD
 			ImFont* font = ImGui::GetFont();
 			const float fontSize = ImGui::GetFontSize() * scale;
 			drawList->AddText(font, fontSize, point, col, text);
@@ -355,6 +356,11 @@ namespace ImGuiUtils
 			ImFont* font = ImGui::GetFont();
 			const float fontSize = ImGui::GetFontSize() * scale;
 			return font->CalcTextSizeA(fontSize, 1000000.0f, 0.0f, text).x;
+||||||| 12b261724
+			drawList->AddText(point, col, text);
+=======
+			drawList->AddText(point, ImGui::GetColorU32(col), text);
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 		}
 
 		static void RenderTaskMarker(ImDrawList* drawList, ImVec2 leftMinPoint, ImVec2 leftMaxPoint, ImVec2 rightMinPoint, ImVec2 rightMaxPoint, uint32_t col)
@@ -367,7 +373,7 @@ namespace ImGuiUtils
 				ImVec2(rightMinPoint.x, rightMaxPoint.y),
 				ImVec2(rightMinPoint.x, rightMinPoint.y)
 			};
-			drawList->AddConvexPolyFilled(points.data(), int(points.size()), col);
+			drawList->AddConvexPolyFilled(points.data(), int(points.size()), ImGui::GetColorU32(col));
 		}
 
 		struct FrameData

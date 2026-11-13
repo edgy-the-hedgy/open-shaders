@@ -37,6 +37,7 @@ namespace GrassCollision
 		out float3 displacement, out float3 previousDisplacement,
 		out float3 bendAxis, out float bendAngle)
 	{
+<<<<<<< HEAD
 		float normalizedHeight = saturate(input.Color.w);
 		float bendWeight = normalizedHeight * normalizedHeight;
 		float compressionReach = max(SharedData::grassCollisionData.CompressionHeight, 0.1);
@@ -50,6 +51,15 @@ namespace GrassCollision
 		float heightFade = min(maximumCompressibleHeight * 0.25, 16.0);
 		compressionWeight *= 1.0 - smoothstep(
 									   maximumCompressibleHeight - heightFade, maximumCompressibleHeight, bladeHeight);
+||||||| 12b261724
+		float3 tangentX = float3(delta, 0, hX - h0);
+		float3 tangentY = float3(0, delta, hY - h0);
+		float3 crossProd = cross(tangentX, tangentY) * float3(1.0, 1.0, 0.1);
+=======
+		float3 tangentX = float3(2.0 * delta, delta, hX - h0);
+		float3 tangentY = float3(delta, 2.0 * delta, hY - h0);
+		float3 crossProd = cross(tangentX, tangentY) * float3(1.0, 1.0, 0.1 / 3.0);
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 		displacement = CalculateDisplacement(
 			currentPosition, instanceRoot, currentField, bendWeight, compressionWeight,

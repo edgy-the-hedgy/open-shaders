@@ -268,6 +268,7 @@ void WriteScreenSpaceShadow(DispatchParameters inParameters, int3 inGroupID, int
 		half2 coord = read_xy * inParameters.InvDepthTextureSize * inParameters.DynamicRes;
 		half2 coord_with_offset = (read_xy + offset_xy) * inParameters.InvDepthTextureSize * inParameters.DynamicRes;
 
+<<<<<<< HEAD
 #if defined(VR)
 		// VR side-by-side: halve x to map stereo pixel coords to texture UV.
 		coord *= half2(0.5, 1.0);
@@ -297,6 +298,15 @@ void WriteScreenSpaceShadow(DispatchParameters inParameters, int3 inGroupID, int
 		depths.x = inParameters.DepthTexture.SampleLevel(inParameters.PointBorderSampler, coord, 0);
 		depths.y = inParameters.DepthTexture.SampleLevel(inParameters.PointBorderSampler, coord_with_offset, 0);
 #endif
+||||||| 12b261724
+		depths.x = inParameters.DepthTexture.SampleLevel(inParameters.PointBorderSampler, coord, 0);
+		depths.y = inParameters.DepthTexture.SampleLevel(inParameters.PointBorderSampler, coord_with_offset, 0);
+=======
+		// Under dynamic resolution the render area is the texture's top-left, and the border sampler
+		// only covers reads past the texture: reads past the render area are off-screen too.
+		depths.x = all(coord < inParameters.DynamicRes) ? inParameters.DepthTexture.SampleLevel(inParameters.PointBorderSampler, coord, 0) : inParameters.FarDepthValue;
+		depths.y = all(coord_with_offset < inParameters.DynamicRes) ? inParameters.DepthTexture.SampleLevel(inParameters.PointBorderSampler, coord_with_offset, 0) : inParameters.FarDepthValue;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 		// Depth thresholds (bilinear/shadow thickness) are based on a fractional ratio of the difference between sampled depth and the far clip depth
 		static const half kDepthThicknessFloor = 1e-4h;  // Prevents division by zero in depth_scale when depth is at the far clip plane

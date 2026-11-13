@@ -4,6 +4,7 @@
 #include <DirectXTex.h>
 
 #include "../I18n/I18n.h"
+#include "CSEditor/SceneManager/SceneWidgetInterceptor.h"
 #include "Deferred.h"
 #include "Features/ReverseZ.h"
 #include "Features/VR.h"
@@ -175,13 +176,31 @@ void ScreenSpaceGI::DrawSettings()
 	{
 		auto qualityGuard = Util::DisableGuard(!settings.Enabled);
 
+<<<<<<< HEAD
 		if (ImGui::BeginTable("Presets", 5)) {
 			auto select = [](auto flatVal, auto vrVal) { return globals::game::isVR ? vrVal : flatVal; };
 
+||||||| 12b261724
+		if (ImGui::BeginTable("Presets", 5)) {
+=======
+		// A preset button writes several settings at once, which the per-control override system
+		// cannot represent, so hide it while a Scene Manager replica is borrowing this panel.
+		if (!SceneWidgetInterceptor::IsArmed() && ImGui::BeginTable("Presets", 5)) {
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 			ImGui::TableNextColumn();
+<<<<<<< HEAD
 			if (ImGui::Button(T(TKEY("ao_only"), "AO only"), { -1, 0 })) {
 				settings.NumSlices = select(1, 3);
 				settings.NumSteps = select(6, 8);
+||||||| 12b261724
+			if (ImGui::Button(T(TKEY("ao_only"), "AO only"), { -1, 0 })) {
+				settings.NumSlices = 1;
+				settings.NumSteps = 6;
+=======
+			if (Util::Button(T(TKEY("ao_only"), "AO only"), { -1, 0 })) {
+				settings.NumSlices = 1;
+				settings.NumSteps = 6;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 				settings.EnableBlur = true;
 				settings.ResourceProfile = kResourceProfileAOOnly;
 				settings.EnableGI = false;
@@ -193,7 +212,7 @@ void ScreenSpaceGI::DrawSettings()
 			}
 
 			ImGui::TableNextColumn();
-			if (ImGui::Button(T(TKEY("low"), "Low"), { -1, 0 })) {
+			if (Util::Button(T(TKEY("low"), "Low"), { -1, 0 })) {
 				settings.NumSlices = 10;
 				settings.NumSteps = 12;
 				settings.ResolutionMode = 2;
@@ -206,7 +225,7 @@ void ScreenSpaceGI::DrawSettings()
 				ImGui::Text("%s", T(TKEY("low_tooltip"), "Quarter res and blurry."));
 
 			ImGui::TableNextColumn();
-			if (ImGui::Button(T(TKEY("standard"), "Standard"), { -1, 0 })) {
+			if (Util::Button(T(TKEY("standard"), "Standard"), { -1, 0 })) {
 				settings.NumSlices = 4;
 				settings.NumSteps = 8;
 				settings.ResolutionMode = 1;
@@ -219,7 +238,7 @@ void ScreenSpaceGI::DrawSettings()
 				ImGui::Text("%s", T(TKEY("standard_tooltip"), "Half res and somewhat stable."));
 
 			ImGui::TableNextColumn();
-			if (ImGui::Button(T(TKEY("extreme"), "Extreme"), { -1, 0 })) {
+			if (Util::Button(T(TKEY("extreme"), "Extreme"), { -1, 0 })) {
 				settings.NumSlices = 4;
 				settings.NumSteps = 8;
 				settings.ResolutionMode = 0;
@@ -232,7 +251,7 @@ void ScreenSpaceGI::DrawSettings()
 				ImGui::Text("%s", T(TKEY("extreme_tooltip"), "Full res and clean."));
 
 			ImGui::TableNextColumn();
-			if (ImGui::Button(T(TKEY("reference"), "Reference"), { -1, 0 })) {
+			if (Util::Button(T(TKEY("reference"), "Reference"), { -1, 0 })) {
 				settings.NumSlices = 8;
 				settings.NumSteps = 10;
 				settings.ResolutionMode = 0;
@@ -265,7 +284,7 @@ void ScreenSpaceGI::DrawSettings()
 				ImGui::Text("%s", T(TKEY("adaptive_sampling_tooltip"), "Reduces steps on distant or flat surfaces. Adds a depth/normal variance pass; net cost depends on scene."));
 		}
 
-		if (ImGui::BeginTable("Less Work", 3)) {
+		if (ImGui::BeginTable("Less Work", 3, ImGuiTableFlags_SizingStretchSame)) {
 			ImGui::TableNextColumn();
 			recompileFlag |= ImGui::RadioButton(T(TKEY("full_res"), "Full Res"), &settings.ResolutionMode, 0);
 			ImGui::TableNextColumn();
@@ -416,6 +435,11 @@ void ScreenSpaceGI::DrawSettings()
 		}
 	}
 
+	// The buffer viewer has no scene-context meaning, so hide it while a Scene Manager replica
+	// is borrowing this panel to author overrides.
+	if (SceneWidgetInterceptor::IsArmed())
+		return;
+
 	///////////////////////////////
 	ImGui::SeparatorText(T(TKEY("debug"), "Debug"));
 
@@ -447,14 +471,21 @@ void ScreenSpaceGI::DrawSettings()
 
 void ScreenSpaceGI::LoadSettings(json& o_json)
 {
+<<<<<<< HEAD
 	const auto previousShaderConfiguration = std::tuple{
 		settings.EnableGI, settings.EnableExperimentalSpecularGI,
 		settings.ResolutionMode, settings.EnableTemporalDenoiser, settings.EnableAdaptiveSampling
 	};
+||||||| 12b261724
+=======
+	const auto previous = settings;
+
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	settings = o_json;
 	settings.ResolutionMode = std::clamp(settings.ResolutionMode, 0, 2);
 	settings.NumSlices = std::clamp(settings.NumSlices, 1u, 10u);
 	settings.NumSteps = std::clamp(settings.NumSteps, 1u, 20u);
+<<<<<<< HEAD
 	if (!o_json.contains("ResourceProfile")) {
 		// Existing VR configs keep full resources if GI was active, else use lean AO-only.
 		settings.ResourceProfile = (REL::Module::IsVR() && !settings.EnableGI) ? kResourceProfileAOOnly : kResourceProfileFullGI;
@@ -463,6 +494,19 @@ void ScreenSpaceGI::LoadSettings(json& o_json)
 		settings.EnableGI, settings.EnableExperimentalSpecularGI,
 		settings.ResolutionMode, settings.EnableTemporalDenoiser, settings.EnableAdaptiveSampling
 	};
+||||||| 12b261724
+
+	recompileFlag = true;
+=======
+
+	// Scene overrides reload settings on every value change, so recompile only when a setting
+	// CompileComputeShaders turns into a define changed.
+	recompileFlag = recompileFlag ||
+	                settings.ResolutionMode != previous.ResolutionMode ||
+	                settings.EnableTemporalDenoiser != previous.EnableTemporalDenoiser ||
+	                settings.EnableGI != previous.EnableGI ||
+	                settings.EnableExperimentalSpecularGI != previous.EnableExperimentalSpecularGI;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 }
 
 void ScreenSpaceGI::SaveSettings(json& o_json)
@@ -649,7 +693,8 @@ void ScreenSpaceGI::SetupResources()
 			}
 		}
 
-		srvDesc.Format = uavDesc.Format = texDesc.Format = DXGI_FORMAT_R8_UNORM;
+		// 8-bit history stalls the temporal AO blend.
+		srvDesc.Format = uavDesc.Format = texDesc.Format = DXGI_FORMAT_R16_UNORM;
 		{
 			texAo[0] = eastl::make_unique<Texture2D>(texDesc, "SSGI::AO[0]");
 			texAo[0]->CreateSRV(srvDesc);
@@ -658,7 +703,10 @@ void ScreenSpaceGI::SetupResources()
 			texAo[1] = eastl::make_unique<Texture2D>(texDesc, "SSGI::AO[1]");
 			texAo[1]->CreateSRV(srvDesc);
 			texAo[1]->CreateUAV(uavDesc);
+		}
 
+		srvDesc.Format = uavDesc.Format = texDesc.Format = DXGI_FORMAT_R8_UNORM;
+		{
 			texAccumFrames[0] = eastl::make_unique<Texture2D>(texDesc, "SSGI::AccumFrames[0]");
 			texAccumFrames[0]->CreateSRV(srvDesc);
 			texAccumFrames[0]->CreateUAV(uavDesc);
@@ -734,7 +782,24 @@ void ScreenSpaceGI::SetupResources()
 
 void ScreenSpaceGI::ClearShaderCache()
 {
+<<<<<<< HEAD
 	Util::ClearShaders<ID3D11ComputeShader>({ prefilterDepthsCompute, prefilterRadianceCompute, prefilterNormalCompute, radianceDisoccCompute, giCompute, giEye0OnlyCompute, blurCompute, stereoSyncCompute, reprojectCompute, reprojectDebugCompute, upsampleCompute });
+||||||| 12b261724
+	static const std::vector<winrt::com_ptr<ID3D11ComputeShader>*> shaderPtrs = {
+		&prefilterDepthsCompute, &prefilterRadianceCompute, &prefilterNormalCompute, &radianceDisoccCompute, &giCompute, &blurCompute, &upsampleCompute
+	};
+
+	for (auto shader : shaderPtrs)
+		*shader = nullptr;
+=======
+	queuedResetHistory = true;
+	static const std::vector<winrt::com_ptr<ID3D11ComputeShader>*> shaderPtrs = {
+		&prefilterDepthsCompute, &prefilterRadianceCompute, &prefilterNormalCompute, &radianceDisoccCompute, &giCompute, &blurCompute, &upsampleCompute
+	};
+
+	for (auto shader : shaderPtrs)
+		*shader = nullptr;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 	CompileComputeShaders();
 }
@@ -858,7 +923,6 @@ void ScreenSpaceGI::UpdateSB()
 		data.RcpTexDim = float2(1.0f) / res;
 		data.FrameDim = dynres;
 		data.RcpFrameDim = float2(1.0f) / dynres;
-		data.FrameIndex = globals::state->frameCount;
 
 		data.NumSlices = settings.NumSlices;
 		data.NumSteps = settings.NumSteps;
@@ -1093,8 +1157,13 @@ void ScreenSpaceGI::DrawSSGI()
 			srvs.at(7) = texGiSpecular[inputAoTexIdx]->srv.get();
 		}
 		srvs.at(8) = texNormal->srv.get();
+<<<<<<< HEAD
 		if (useModeTextureThisFrame)
 			srvs.at(9) = globals::features::vr.stereoOpt.GetModeTextureSRV();
+||||||| 12b261724
+=======
+		srvs.at(9) = texAo[inputAoTexIdx]->srv.get();
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 		uavs.at(0) = texAo[!inputAoTexIdx]->uav.get();
 		if (runILPath) {

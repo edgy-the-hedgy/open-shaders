@@ -1,8 +1,14 @@
 // Shared moon processing utilities
 #pragma once
 
+<<<<<<< HEAD
 #include "Utils/StringUtils.h"
 
+||||||| 12b261724
+=======
+#include "ColorSpace.h"
+
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 namespace Util::Moon
 {
 	/** @brief Intensity factor for a new (invisible) moon. */
@@ -13,9 +19,9 @@ namespace Util::Moon
 	static constexpr float FullMoonIntensityFactor = 1.0f;
 
 	/** @brief Base colour of Masser (the larger, reddish moon). */
-	static constexpr float4 MasserBaseColor = { 142.0f / 255.0f * 0.5f, 96.0f / 255.0f * 0.5f, 90.0f / 255.0f * 0.5f, 1.0f };
+	static constexpr Util::ColorSpace::LightColor MasserBaseColor{ .color = { 142.0f / 255.0f, 96.0f / 255.0f, 90.0f / 255.0f }, .intensity = 0.5f };
 	/** @brief Base colour of Secunda (the smaller, greyish moon). */
-	static constexpr float4 SecundaBaseColor = { 117.0f / 255.0f * 0.25f, 115.0f / 255.0f * 0.25f, 109.0f / 255.0f * 0.25f, 1.0f };
+	static constexpr Util::ColorSpace::LightColor SecundaBaseColor{ .color = { 117.0f / 255.0f, 115.0f / 255.0f, 109.0f / 255.0f }, .intensity = 0.25f };
 
 	/** @brief Lookup table mapping texture name substrings to moon phase enums. */
 	static constexpr std::array<std::pair<std::string_view, RE::Moon::Phases::Phase>, 8> PhaseLookup{
@@ -91,6 +97,7 @@ namespace Util::Moon
 	}
 
 	/**
+<<<<<<< HEAD
 	 * @brief Compute the final blended colour contribution of a moon.
 	 *
 	 * Combines the moon's shader blend colour, base colour, phase intensity,
@@ -104,6 +111,52 @@ namespace Util::Moon
 	 * @return The premultiplied RGBA blend colour, or zero if the moon is invalid.
 	 */
 	inline float4 GetBlendColor(const RE::Moon* moon, const float4& baseColor, float newMoon = NewMoonIntensityFactor, float crescent = CrescentMoonIntensityFactor, float full = FullMoonIntensityFactor)
+||||||| 12b261724
+	 * @brief Get the normalised world-space direction vector towards a moon.
+	 * @param moon The moon object to query.
+	 * @return The unit direction vector, or straight up (0,0,1) if the moon is invalid.
+	 */
+	inline RE::NiPoint3 GetDirection(const RE::Moon* moon)
+	{
+		if (!moon || !moon->root)
+			return { 0.0f, 0.0f, 1.0f };
+
+		auto dir = GetFacingAxis(moon->root->world.rotate);
+		dir.Unitize();
+		return dir;
+	}
+
+	/**
+	 * @brief Compute the final blended colour contribution of a moon.
+	 *
+	 * Combines the moon's shader blend colour, base colour, phase intensity,
+	 * and alpha to produce a premultiplied RGBA colour.
+	 *
+	 * @param moon The moon object to evaluate.
+	 * @param baseColor The reference base colour for this moon (e.g. MasserBaseColor).
+	 * @param newMoon Intensity factor for the new moon phase.
+	 * @param crescent Intensity factor for crescent phases.
+	 * @param full Intensity factor for the full moon phase.
+	 * @return The premultiplied RGBA blend colour, or zero if the moon is invalid.
+	 */
+	inline float4 GetBlendColor(const RE::Moon* moon, const float4& baseColor, float newMoon = NewMoonIntensityFactor, float crescent = CrescentMoonIntensityFactor, float full = FullMoonIntensityFactor)
+=======
+	 * @brief Get the normalised world-space direction vector towards a moon.
+	 * @param moon The moon object to query.
+	 * @return The unit direction vector, or straight up (0,0,1) if the moon is invalid.
+	 */
+	inline RE::NiPoint3 GetDirection(const RE::Moon* moon)
+	{
+		if (!moon || !moon->root)
+			return { 0.0f, 0.0f, 1.0f };
+
+		auto dir = GetFacingAxis(moon->root->world.rotate);
+		dir.Unitize();
+		return dir;
+	}
+
+	inline Util::ColorSpace::LightColor GetLightColor(const RE::Moon* moon, const Util::ColorSpace::LightColor& baseColor, float newMoon = NewMoonIntensityFactor, float crescent = CrescentMoonIntensityFactor, float full = FullMoonIntensityFactor)
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	{
 		if (!moon || !moon->moonMesh)
 			return {};
@@ -116,8 +169,11 @@ namespace Util::Moon
 		if (auto tex = prop->GetBaseTexture())
 			phase = GetPhaseIntensityFactor(GetPhaseFromTexture(tex->name.c_str()), newMoon, crescent, full);
 
-		float alpha = prop->kBlendColor.alpha;
-		return { prop->kBlendColor.red * baseColor.x * phase * alpha, prop->kBlendColor.green * baseColor.y * phase * alpha, prop->kBlendColor.blue * baseColor.z * phase * alpha, alpha };
+		auto result = baseColor;
+		result.tint = { prop->kBlendColor.red, prop->kBlendColor.green, prop->kBlendColor.blue };
+		result.alpha = prop->kBlendColor.alpha;
+		result.intensity *= phase * result.alpha;
+		return result;
 	}
 
 }

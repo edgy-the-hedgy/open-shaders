@@ -389,6 +389,7 @@ public:
 		}
 	}
 
+<<<<<<< HEAD
 	explicit Texture3D(ID3D11Texture3D* a_resource, const char* name = nullptr)
 	{
 		a_resource->GetDesc(&desc);
@@ -399,6 +400,15 @@ public:
 		}
 	}
 
+||||||| 12b261724
+=======
+	explicit Texture3D(ID3D11Texture3D* a_resource)
+	{
+		a_resource->GetDesc(&desc);
+		resource.attach(a_resource);
+	}
+
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	/** @brief Creates a shader resource view from the given descriptor. */
 	void CreateSRV(D3D11_SHADER_RESOURCE_VIEW_DESC const& a_desc)
 	{

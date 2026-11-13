@@ -161,6 +161,7 @@ void TextureManager::CreateDownsampleResources()
 	samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
 
 	DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, linearSampler.put()));
+	Util::SetResourceName(linearSampler.get(), "TextureManager::LinearSampler");
 
 	// Create downsample vertex shader
 	downsampleVS.attach(static_cast<ID3D11VertexShader*>(
@@ -170,6 +171,23 @@ void TextureManager::CreateDownsampleResources()
 		return;
 	}
 
+<<<<<<< HEAD
+||||||| 12b261724
+	DX::ThrowIfFailed(device->CreateVertexShader(
+		vertexShaderBlob->GetBufferPointer(),
+		vertexShaderBlob->GetBufferSize(),
+		nullptr,
+		downsampleVS.put()));
+
+=======
+	DX::ThrowIfFailed(device->CreateVertexShader(
+		vertexShaderBlob->GetBufferPointer(),
+		vertexShaderBlob->GetBufferSize(),
+		nullptr,
+		downsampleVS.put()));
+	Util::SetResourceName(downsampleVS.get(), "TextureManager::DownsampleVS");
+
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	// Create downsample pixel shader
 	downsamplePS.attach(static_cast<ID3D11PixelShader*>(
 		Util::CompileShader(L"Data\\Shaders\\Effects11\\DownsamplePS.hlsl", {}, "ps_5_0")));
@@ -178,6 +196,23 @@ void TextureManager::CreateDownsampleResources()
 		return;
 	}
 
+<<<<<<< HEAD
+||||||| 12b261724
+	DX::ThrowIfFailed(device->CreatePixelShader(
+		pixelShaderBlob->GetBufferPointer(),
+		pixelShaderBlob->GetBufferSize(),
+		nullptr,
+		downsamplePS.put()));
+
+=======
+	DX::ThrowIfFailed(device->CreatePixelShader(
+		pixelShaderBlob->GetBufferPointer(),
+		pixelShaderBlob->GetBufferSize(),
+		nullptr,
+		downsamplePS.put()));
+	Util::SetResourceName(downsamplePS.get(), "TextureManager::DownsamplePS");
+
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	// Create shared downsample texture
 	sharedDownsampleTexture = CreateDownsampleTexture(DXGI_FORMAT_R11G11B10_FLOAT);
 }

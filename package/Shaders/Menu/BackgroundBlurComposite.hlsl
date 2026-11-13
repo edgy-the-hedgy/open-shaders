@@ -1,9 +1,27 @@
 // Composite Blur Pass Shader with Rounded Rectangle Mask
 // Part of the BackgroundBlur system - applies blurred texture with rounded corners
 
+<<<<<<< HEAD
 #include "Menu/BackgroundBlur.hlsli"
+||||||| 12b261724
+cbuffer WindowBuffer : register(b1)
+{
+	float4 WindowRect;    // x = minX, y = minY, z = maxX, w = maxY (in pixels)
+	float4 WindowParams;  // x = cornerRadius, y = screenWidth, z = screenHeight, w = fullscreen (1.0 = skip SDF)
+};
+=======
+cbuffer WindowBuffer : register(b1)
+{
+	float4 WindowRect;    // x = minX, y = minY, z = maxX, w = maxY (in pixels)
+	float4 WindowParams;  // x = cornerRadius, y = screenWidth, z = screenHeight, w = fullscreen (1.0 = skip SDF)
+	float4 FadeParams;    // x = fade (0 = hidden, 1 = fully shown)
+};
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 static const float CLIP_EPSILON = 0.001f;
+// Soft-knee: leave dark/mid backdrop alone, compress bright peaks under UI windows
+static const float BRIGHT_KNEE = 0.25f;
+static const float BRIGHT_COMPRESS = 4.0f;
 
 float4 SampleBicubic(float2 uv)
 {
@@ -72,11 +90,34 @@ float4 PS_Main(VS_OUTPUT input) :
 
 	float4 blurColor = SampleBicubic(input.TexCoord);
 
+<<<<<<< HEAD
 	blurColor.a = alpha;
+||||||| 12b261724
+	// Sample with soft dithering to hide blocky pixels from the downsampled blur
+	float4 blurColor = SampleWithSoftening(input.TexCoord, pixelPos, blurTexelSize);
+
+	// Apply rounded corner mask to alpha
+	// The blur strength is applied via blend state, so just use the rounded mask here
+	blurColor.a = alpha;
+=======
+	// Sample with soft dithering to hide blocky pixels from the downsampled blur
+	float4 blurColor = SampleWithSoftening(input.TexCoord, pixelPos, blurTexelSize);
+
+	// Soft-knee bright peaks (sun / HDR highlights) so they don't wash out transparent UI text.
+	// Dark/mid backdrop stays largely unchanged; only high peak values are compressed.
+	float peak = max(blurColor.r, max(blurColor.g, blurColor.b));
+	float brightExcess = max(peak - BRIGHT_KNEE, 0.0f);
+	blurColor.rgb *= rcp(1.0f + brightExcess * BRIGHT_COMPRESS);
+
+	// Apply rounded corner mask to alpha
+	// The blur strength is applied via blend state, so just use the rounded mask here
+	blurColor.a = alpha * FadeParams.x;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 	return blurColor;
 }
 
+<<<<<<< HEAD
 float4 PS_Layer(VS_OUTPUT input) : SV_TARGET
 {
 	float2 pixelPos = input.TexCoord * WindowParams.yz;
@@ -99,6 +140,11 @@ SceneOutput PS_Scene(VS_OUTPUT input)
 }
 
 // Clear shader entry point - outputs transparent black inside rounded rect only
+||||||| 12b261724
+// Clear shader entry point - outputs transparent black inside rounded rect only
+=======
+// Clear shader entry point - outputs transparent black inside rounded rect
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 // Used to clear UI buffer (HUD) in the exact same shape as the blur
 float4 PS_Clear(VS_OUTPUT input) :
 	SV_TARGET

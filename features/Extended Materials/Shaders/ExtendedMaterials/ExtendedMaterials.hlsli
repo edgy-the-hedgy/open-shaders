@@ -77,11 +77,17 @@ namespace ExtendedMaterials
 	{
 #if !defined(PARALLAX) && !defined(TRUE_PBR)
 		textureDims /= 2.0;
+<<<<<<< HEAD
 #endif
 
 #if defined(VR)
 		textureDims /= 2.0;
 #endif
+||||||| 12b261724
+#	endif
+=======
+#endif
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 		float2 texCoordsPerSize = coords * textureDims;
 

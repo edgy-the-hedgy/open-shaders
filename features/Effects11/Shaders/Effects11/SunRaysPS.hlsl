@@ -1,4 +1,18 @@
+<<<<<<< HEAD
 #include "Common/Color.hlsli"
+||||||| 12b261724
+// ENB [RAYS] screen-space shafts from the sun or a moon.
+// MASK draws the light's sky disc at half resolution, BLUR smears it radially towards the light,
+// and COMPOSITE adds the result to the main target.
+
+#include "Common/Color.hlsli"
+=======
+// ENB [RAYS] screen-space shafts from the sun or a moon.
+// MASK draws the light's sky disc at half resolution, BLUR smears it radially towards the light,
+// and COMPOSITE adds the result to the main target.
+
+#include "Common/ColorManagement.hlsli"
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 #include "Common/FrameBuffer.hlsli"
 #include "Common/Random.hlsli"
 #include "Common/ReverseZ.hlsli"
@@ -111,11 +125,25 @@ float main(VS_OUTPUT_POST input) : SV_Target0
 #elif defined(COMPOSITE)
 float4 main(VS_OUTPUT_POST input) : SV_Target0
 {
+<<<<<<< HEAD
 	Stereo::EyeUV eye = Stereo::UnpackEyeUV(input.txcoord0);
 	float2 uv = eye.uv;
 	float3 direction = normalize(float3((eye.index == 0 ? LightUV.xy : LightUV.zw) - uv, CompositeDirectionDepth));
 	float2 target = uv + direction.xy * (InvScreenWidth * float(StepCount) * CompositeSampleSpacing);
 	float rays = RadialBlur(uv, target, GetNoise(eye.uv * float2(rcp(InvScreenWidth), SharedData::BufferDim.y)), eye.index);
 	return float4(rays * Color::Sky(RaysColor), 1.0);
+||||||| 12b261724
+	float2 uv = input.txcoord0;
+	float3 direction = normalize(float3(LightUV - uv, 0.035));
+	float2 target = uv + direction.xy * (InvScreenWidth * float(StepCount) * 6.0);
+	float rays = RadialBlur(uv, target, GetNoise(input.pos.xy));
+	return float4(rays * Color::Sky(RaysColor), 1.0);
+=======
+	float2 uv = input.txcoord0;
+	float3 direction = normalize(float3(LightUV - uv, 0.035));
+	float2 target = uv + direction.xy * (InvScreenWidth * float(StepCount) * 6.0);
+	float rays = RadialBlur(uv, target, GetNoise(input.pos.xy));
+	return float4(rays * ColorManagement::SRGBToWorking(RaysColor), 1.0);
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 }
 #endif

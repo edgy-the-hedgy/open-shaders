@@ -5,6 +5,7 @@
 #include "Common/Math.hlsli"
 #include "Common/PointLightFlags.hlsli"
 #include "Common/SharedData.hlsli"
+<<<<<<< HEAD
 
 #ifndef VSHADER
 #	define ENABLE_LL SharedData::linearLightingSettings.enableLinearLighting
@@ -26,6 +27,20 @@ cbuffer CSUtilityPerGeometry : register(b3)
 	uint4 CSUtilityPointLightFlags1;
 };
 #endif
+||||||| 12b261724
+
+#define ENABLE_LL SharedData::linearLightingSettings.enableLinearLighting
+
+#if defined(PSHADER) && defined(LIGHTING)
+cbuffer LLPerGeometry : register(b8)
+{
+	float emissiveMult;
+	float3 pad0;
+};
+#endif
+=======
+#include "Common/TransferFunctions.hlsli"
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 // Float limits
 #define FLT_MIN asfloat(0x00800000)  // 1.175494351e-38f
@@ -33,6 +48,7 @@ cbuffer CSUtilityPerGeometry : register(b3)
 
 namespace Color
 {
+<<<<<<< HEAD
 	static float GammaCorrectionValue = 2.2;
 	static const uint PointLightFlagLinear = POINT_LIGHT_FLAG_LINEAR;
 	static const uint PointLightFlagSpot = POINT_LIGHT_FLAG_SPOT;
@@ -51,6 +67,11 @@ namespace Color
 	static const float SRGBScale = 1.055;
 	static const float SRGBExponent = 2.4;
 
+||||||| 12b261724
+	static float GammaCorrectionValue = 2.2;
+
+=======
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	// Copyright 2019 Google LLC.
 	// SPDX-License-Identifier: Apache-2.0
 	// Polynomial approximation in GLSL for the Turbo colormap
@@ -85,6 +106,7 @@ namespace Color
 #if defined(PSHADER) || defined(CSHADER) || defined(COMPUTESHADER)
 	float RGBToLuminance(float3 color)
 	{
+<<<<<<< HEAD
 		// AP1 (ACEScg) luminance coefficients from AP1_2_XYZ_MAT Y row
 		return ENABLE_ACEScg ? dot(color, float3(0.2722287168, 0.6740817658, 0.0536895174)) : dot(color, kRec709LuminanceWeights);
 	}
@@ -104,16 +126,36 @@ namespace Color
 	float RGBToLuminance(float3 color)
 	{
 		return dot(color, kRec709LuminanceWeights);
+||||||| 12b261724
+		return dot(color, float3(0.2125, 0.7154, 0.0721));
+=======
+#if defined(ENABLE_ACESCG)
+		// AP1 (ACEScg) luminance coefficients from AP1_2_XYZ_MAT Y row
+		return dot(color, float3(0.2722287168, 0.6740817658, 0.0536895174));
+#else
+		return dot(color, float3(0.2125, 0.7154, 0.0721));
+#endif
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	}
 
 	float RGBToLuminanceAlternative(float3 color)
 	{
+#if defined(ENABLE_ACESCG)
+		// For ACEScg, fall back to the accurate AP1 luminance
+		return dot(color, float3(0.2722287168, 0.6740817658, 0.0536895174));
+#else
 		return dot(color, float3(0.3, 0.59, 0.11));
+#endif
 	}
 
 	float RGBToLuminance2(float3 color)
 	{
+#if defined(ENABLE_ACESCG)
+		// For ACEScg, fall back to the accurate AP1 luminance
+		return dot(color, float3(0.2722287168, 0.6740817658, 0.0536895174));
+#else
 		return dot(color, float3(0.299, 0.587, 0.114));
+#endif
 	}
 #endif
 
@@ -145,6 +187,7 @@ namespace Color
 		return color;
 	}
 
+<<<<<<< HEAD
 	float SkyrimGammaToLinear(float color)
 	{
 		return pow(abs(color), GameGamma);
@@ -232,6 +275,49 @@ namespace Color
 		return SignedPow(color, 1.0 / 2.2);
 	}
 
+||||||| 12b261724
+	float SkyrimGammaToLinear(float color)
+	{
+		return pow(abs(color), 1.6);
+	}
+
+	float LinearToSkyrimGamma(float color)
+	{
+		return pow(abs(color), 1.0 / 1.6);
+	}
+
+	float3 SkyrimGammaToLinear(float3 color)
+	{
+		return pow(abs(color), 1.6);
+	}
+
+	float3 LinearToSkyrimGamma(float3 color)
+	{
+		return pow(abs(color), 1.0 / 1.6);
+	}
+
+	float3 SrgbToLinear(float3 color)
+	{
+		return pow(abs(color), 2.2);
+	}
+
+	float3 LinearToSrgb(float3 color)
+	{
+		return pow(abs(color), 1.0 / 2.2);
+	}
+
+	float3 GammaToLinearSafe(float3 color)
+	{
+		return sign(color) * pow(abs(color), 2.2);
+	}
+
+	float3 LinearToGammaSafe(float3 color)
+	{
+		return sign(color) * pow(abs(color), 1.0 / 2.2);
+	}
+
+=======
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	static const float3x3 BT709_2_BT2020 = {
 		0.627403914928436279296875f, 0.3292830288410186767578125f, 0.0433130674064159393310546875f,
 		0.069097287952899932861328125f, 0.9195404052734375f, 0.011362315155565738677978515625f,
@@ -278,8 +364,8 @@ namespace Color
 
 	}  // namespace pq
 
-#if defined(PSHADER) || defined(CSHADER) || defined(COMPUTESHADER)
 	// Attempt to match vanilla materials that are darker than PBR
+<<<<<<< HEAD
 	const static float PBRLightingScale = ENABLE_LL ? 1.0 : 0.65;
 
 	// Attempt to normalise reflection brightness against DALC
@@ -687,28 +773,206 @@ namespace Color
 		return ENABLE_LL ? 1.0 / Math::PI : 1.0f;
 	}
 #else
-	const static float PBRLightingScale = 1.0;
-	const static float ReflectionNormalisationScale = 1.0;
-	const static float PBRLightingCompensation = Math::PI;
+||||||| 12b261724
+	const static float PBRLightingScale = ENABLE_LL ? 1.0 : 0.65;
+
+	// Attempt to normalise reflection brightness against DALC
+	const static float ReflectionNormalisationScale = ENABLE_LL ? 1.0 : 0.65;
+
+	const static float PBRLightingCompensation = ENABLE_LL ? 1.0 : Math::PI;
+
+	// Linear Lighting Functions
+	float3 LLGammaToLinear(float3 color)
+	{
+		return ENABLE_LL ? SkyrimGammaToLinear(color) : color;
+	}
+
+	float3 LLLinearToGamma(float3 color)
+	{
+		return ENABLE_LL ? LinearToSkyrimGamma(color) : color;
+	}
+
+	/** @brief Applies the ENB ColorPow curve to a gamma-space diffuse color when Effects 11 is enabled. */
+	float3 EnbColorPow(float3 color)
+	{
+#	if defined(EFFECTS11)
+		if (SharedData::enbSettings.Enable)
+			color = pow(abs(color), SharedData::enbSettings.ColorPow);
+#	endif
+		return color;
+	}
 
 	float3 Diffuse(float3 color)
 	{
+		color = EnbColorPow(color);
 #	if defined(TRUE_PBR)
-		return LinearToSrgb(color);
+		return ENABLE_LL ? color : LinearToSrgb(color);
+#	else
+		return ENABLE_LL ? pow(abs(color), SharedData::linearLightingSettings.colorGamma) * SharedData::linearLightingSettings.vanillaDiffuseColorMult : color;
+#	endif
+	}
+
+	float3 Light(float3 color, bool isLinear = false)
+	{
+		color = (ENABLE_LL && !isLinear) ? pow(abs(color), SharedData::linearLightingSettings.lightGamma) : color;
+#	if defined(TRUE_PBR)
+		return color * PBRLightingCompensation;  // Compensate for traditional Lambertian diffuse
 #	else
 		return color;
 #	endif
 	}
 
-	float3 Light(float3 color)
+	float3 DirectionalLight(float3 color, bool isLinear = false)
+	{
+		return Light(color, isLinear) *
+		       ((ENABLE_LL && !isLinear) ? Math::PI * SharedData::linearLightingSettings.directionalLightMult : 1.0f);
+	}
+
+	float3 PointLight(float3 color, bool isLinear = false)
+	{
+		return Light(color, isLinear) *
+		       ((ENABLE_LL && !isLinear) ? Math::PI * SharedData::linearLightingSettings.pointLightMult : 1.0f);
+	}
+#	if defined(LIGHTING)
+	float3 EmitColor(float3 color)
+	{
+		return ENABLE_LL ? (pow(abs(color / max(emissiveMult, 1e-5)), SharedData::linearLightingSettings.emitColorGamma) * emissiveMult * SharedData::linearLightingSettings.emitColorMult) : color;
+	}
+#	endif
+
+	float3 Glowmap(float3 color)
 	{
 #	if defined(TRUE_PBR)
-		return color * Math::PI;  // Compensate for traditional Lambertian diffuse
+		return ENABLE_LL ? color * SharedData::linearLightingSettings.glowmapMult : LinearToSrgb(color);
 #	else
-		return color;
+		return ENABLE_LL ? pow(abs(color), SharedData::linearLightingSettings.glowmapGamma) * SharedData::linearLightingSettings.glowmapMult : color;
 #	endif
 	}
+
+	float3 Ambient(float3 color)
+	{
+		return ENABLE_LL ? pow(abs(color), SharedData::linearLightingSettings.ambientGamma) * SharedData::linearLightingSettings.ambientMult : color;
+	}
+
+	float3 Fog(float3 color)
+	{
+		return ENABLE_LL ? pow(abs(color), SharedData::linearLightingSettings.fogGamma) : color;
+	}
+
+	float FogAlpha(float alpha)
+	{
+		return ENABLE_LL ? pow(abs(alpha), SharedData::linearLightingSettings.fogAlphaGamma) : alpha;
+	}
+
+	float3 Effect(float3 color)
+	{
+		return ENABLE_LL ? pow(abs(color), SharedData::linearLightingSettings.effectGamma) : color;
+	}
+
+	float3 EffectMult(float3 color)
+	{
+		if (ENABLE_LL) {
+#	if defined(MEMBRANE)
+			color *= SharedData::linearLightingSettings.membraneEffectMult;
+#	elif defined(BLOOD)
+			color *= SharedData::linearLightingSettings.bloodEffectMult;
+#	elif defined(PROJECTED_UV)
+			color *= SharedData::linearLightingSettings.projectedEffectMult;
+#	elif defined(DEFERRED)
+			color *= SharedData::linearLightingSettings.deferredEffectMult;
+#	else
+			color *= SharedData::linearLightingSettings.otherEffectMult;
+#	endif
+		}
+		return color;
+	}
+
+	float EffectLightingMult()
+	{
+		return ENABLE_LL ? SharedData::linearLightingSettings.effectLightingMult : 1.0f;
+	}
+
+	float EffectAlpha(float alpha)
+	{
+		return ENABLE_LL ? pow(abs(alpha), SharedData::linearLightingSettings.effectAlphaGamma) : alpha;
+	}
+
+	float3 Sky(float3 color)
+	{
+		return ENABLE_LL ? pow(abs(color), SharedData::linearLightingSettings.skyGamma) : color;
+	}
+
+	float3 Water(float3 color)
+	{
+		return ENABLE_LL ? pow(abs(color), SharedData::linearLightingSettings.waterGamma) : color;
+	}
+
+	float3 VolumetricLighting(float3 color)
+	{
+		return ENABLE_LL ? pow(abs(color), SharedData::linearLightingSettings.vlGamma) : color;
+	}
+
+	float3 ColorToLinear(float3 color)
+	{
+		return ENABLE_LL ? pow(abs(color), SharedData::linearLightingSettings.colorGamma) : color;
+	}
+
+	float3 RadianceToLinear(float3 color)
+	{
+		return ENABLE_LL ? color : SkyrimGammaToLinear(color);
+	}
+
+	float IrradianceToLinear(float color)
+	{
+		return ENABLE_LL ? color : SkyrimGammaToLinear(color);
+	}
+
+	float IrradianceToGamma(float color)
+	{
+		return ENABLE_LL ? color : LinearToSkyrimGamma(color);
+	}
+
+	float3 IrradianceToLinear(float3 color)
+	{
+		return ENABLE_LL ? color : SkyrimGammaToLinear(color);
+	}
+
+	float3 IrradianceToGamma(float3 color)
+	{
+		return ENABLE_LL ? color : LinearToSkyrimGamma(color);
+	}
+
+	float VanillaNormalization()
+	{
+		return ENABLE_LL ? 1.0 / Math::PI : 1.0f;
+	}
+
+	float VanillaDiffuseColorMult()
+	{
+		return ENABLE_LL ? SharedData::linearLightingSettings.vanillaDiffuseColorMult : 1.0f;
+	}
+#else
+=======
+#if defined(ENABLE_LL)
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
+	const static float PBRLightingScale = 1.0;
+	const static float ReflectionNormalisationScale = 1.0;  // Attempt to normalise reflection brightness against DALC
+	const static float PBRLightingCompensation = 1.0;
+#else
+	const static float PBRLightingScale = 0.65;
+	const static float ReflectionNormalisationScale = 0.65;
+	const static float PBRLightingCompensation = Math::PI;
 #endif
+
+	// Gamut transform: converts linear sRGB-gamut color to ACEScg when enabled
+	float3 LinearSRGBToWorking(float3 linearSRGB)
+	{
+#if defined(ENABLE_ACESCG)
+		return sRGBToAP1(linearSRGB);
+#else
+		return linearSRGB;
+#endif
+	}
 
 	namespace Correct
 	{

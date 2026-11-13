@@ -77,4 +77,7 @@ namespace ENBExtender
 	bool CreateEncryptedEffect(const std::filesystem::path& effectPath, winrt::com_ptr<ID3DX11Effect>& effect, std::string& error);
 	/** @brief Recovers encrypted preset groups from reflected names and saved settings. */
 	void ResolveCompiledGroups(Effect& effect, const std::filesystem::path& iniPath);
+
+	/** @brief Answers No to KiLoader's prompt that ENB Extender's bundled ENBHelperSE.dll needs ENB; must run before KiLoader's SKSE satellite loads. */
+	void SuppressHelperPrompt();
 }

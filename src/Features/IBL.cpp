@@ -62,21 +62,25 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	SkyIBLSaturation,
 	FogAmount,
 	DALCMode,
-	DisableInInteriors,
 	DisableInWorldMap,
 	DisableInLoadingScreen)
 
 void IBL::DrawSettings()
 {
-	if (IsManagedByENB()) {
-		ImGui::TextColored(globals::menu->GetSettings().Theme.StatusPalette.Warning, "%s", T("common.settings_managed_by_enb", "Settings are currently managed by ENB."));
-		return;
-	}
+	const Util::LockedSection enbLock(IsManagedByENB(),
+		T("common.settings_managed_by_enb", "This setting is managed by Effects 11."));
 
+<<<<<<< HEAD
 	Util::CheckboxFlag(T(TKEY("enable_ibl"), "Enable IBL"), settings.EnableIBL);
+||||||| 12b261724
+	Util::WeatherUI::Checkbox(T(TKEY("enable_ibl"), "Enable IBL"), this, "EnableIBL", (bool*)&settings.EnableIBL);
+=======
+	ImGui::Checkbox(T(TKEY("enable_ibl"), "Enable IBL"), (bool*)&settings.EnableIBL);
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("enable_ibl_tooltip"), "Toggle IBL. When enabled, ambient lighting is derived from cubemap spherical harmonics instead of the vanilla system."));
 	}
+<<<<<<< HEAD
 	if (ImGui::TreeNodeEx(T(TKEY("enable_ibl_options"), "Enable IBL Options"), ImGuiTreeNodeFlags_None)) {
 		DrawEnableCheckbox(T(TKEY("enable_in_interiors"), "Enable Interior IBL"), settings.DisableInInteriors);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -93,10 +97,21 @@ void IBL::DrawSettings()
 		ImGui::TreePop();
 	}
 	ImGui::SliderFloat(T(TKEY("env_ibl_scale"), "Env IBL Scale"), &settings.EnvIBLScale, kIBLScaleMin, kIBLScaleMax, "%.2f");
+||||||| 12b261724
+	Util::WeatherUI::SliderFloat(T(TKEY("env_ibl_scale"), "Env IBL Scale"), this, "EnvIBLScale", &settings.EnvIBLScale, 0.0f, 10.0f, "%.2f");
+=======
+	ImGui::SliderFloat(T(TKEY("env_ibl_scale"), "Env IBL Scale"), &settings.EnvIBLScale, 0.0f, 10.0f, "%.2f");
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("env_ibl_scale_tooltip"), "Intensity multiplier for the environment IBL (from Dynamic Cubemaps).\nControls how strongly the surrounding environment contributes to ambient lighting."));
 	}
+<<<<<<< HEAD
 	ImGui::SliderFloat(T(TKEY("sky_ibl_scale"), "Sky IBL Scale"), &settings.SkyIBLScale, kIBLScaleMin, kIBLScaleMax, "%.2f");
+||||||| 12b261724
+	Util::WeatherUI::SliderFloat(T(TKEY("sky_ibl_scale"), "Sky IBL Scale"), this, "SkyIBLScale", &settings.SkyIBLScale, 0.0f, 10.0f, "%.2f");
+=======
+	ImGui::SliderFloat(T(TKEY("sky_ibl_scale"), "Sky IBL Scale"), &settings.SkyIBLScale, 0.0f, 10.0f, "%.2f");
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("sky_ibl_scale_tooltip"), "Intensity multiplier for the sky IBL (from the game's native reflections cubemap).\nControls how strongly the sky contributes to ambient lighting."));
 	}
@@ -172,6 +187,30 @@ void IBL::DrawSettings()
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("preserve_fog_luminance_tooltip"), "When Fog Mix is active, rescales the IBL-tinted fog to keep the original fog brightness.\nPrevents fog from becoming too bright or too dark."));
 	}
+<<<<<<< HEAD
+||||||| 12b261724
+	ImGui::Checkbox(T(TKEY("disable_in_interiors"), "Disable in interiors"), &settings.DisableInInteriors);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("disable_in_interiors_tooltip"), "Disables IBL in interior cells."));
+	}
+	ImGui::Checkbox(T(TKEY("disable_in_world_map"), "Disable in world map"), &settings.DisableInWorldMap);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("disable_in_world_map_tooltip"), "Disables IBL while the world map is open."));
+	}
+	ImGui::Checkbox(T(TKEY("disable_in_loading_screen"), "Disable in loading screens"), &settings.DisableInLoadingScreen);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("disable_in_loading_screen_tooltip"), "Disables IBL during loading screens and the main menu."));
+	}
+=======
+	ImGui::Checkbox(T(TKEY("disable_in_world_map"), "Disable in world map"), &settings.DisableInWorldMap);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("disable_in_world_map_tooltip"), "Disables IBL while the world map is open."));
+	}
+	ImGui::Checkbox(T(TKEY("disable_in_loading_screen"), "Disable in loading screens"), &settings.DisableInLoadingScreen);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("disable_in_loading_screen_tooltip"), "Disables IBL during loading screens and the main menu."));
+	}
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 }
 
 #undef I18N_KEY_PREFIX
@@ -204,7 +243,14 @@ IBL::PerFrame IBL::GetCommonBufferData() const
 		.EnvIBLSaturation = settings.EnvIBLSaturation,
 		.SkyIBLSaturation = settings.SkyIBLSaturation,
 		.FogAmount = settings.FogAmount,
+<<<<<<< HEAD
 		.DALCMode = GetEffectiveDALCMode(settings)
+||||||| 12b261724
+		.DALCMode = settings.DALCMode
+=======
+		.DALCMode = settings.DALCMode,
+		.ENBSkyFalloff = globals::features::effects11.OwnsFeature(E11Handoff::Feature::IBL)
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	};
 
 #if defined(ENABLE_EFFECTS11)
@@ -230,6 +276,7 @@ IBL::PerFrame IBL::GetCommonBufferData() const
 
 bool IBL::IsManagedByENB() const
 {
+<<<<<<< HEAD
 #if defined(ENABLE_EFFECTS11)
 	auto& enb = globals::features::effects11;
 	if (!enb.loaded || !enb.enableEffect)
@@ -238,6 +285,14 @@ bool IBL::IsManagedByENB() const
 #else
 	return false;
 #endif
+||||||| 12b261724
+	auto& enb = globals::features::effects11;
+	if (!enb.loaded || !enb.enableEffect)
+		return false;
+	return SettingManager::GetSingleton().GetValue<bool>("EnableImageBasedLighting", "EFFECT");
+=======
+	return globals::features::effects11.OwnsFeature(E11Handoff::Feature::IBL) && SettingManager::GetSingleton().GetValue<bool>("EnableImageBasedLighting", "EFFECT");
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 }
 
 bool IBL::IsDisabledForCurrentScene() const
@@ -246,6 +301,7 @@ bool IBL::IsDisabledForCurrentScene() const
 	if (!state)
 		return false;
 
+<<<<<<< HEAD
 	if (state->IsMainOrLoadingMenuOpen())
 		return settings.DisableInLoadingScreen;
 
@@ -253,6 +309,16 @@ bool IBL::IsDisabledForCurrentScene() const
 		return settings.DisableInWorldMap;
 
 	return settings.DisableInInteriors && Util::IsInterior();
+||||||| 12b261724
+	const bool inLoadingScreen = settings.DisableInLoadingScreen && state->IsMainOrLoadingMenuOpen();
+	const bool inWorldMap = settings.DisableInWorldMap && state->isMapMenuOpen;
+	const bool inInterior = settings.DisableInInteriors && Util::IsInterior();
+	return inLoadingScreen || inWorldMap || inInterior;
+=======
+	const bool inLoadingScreen = settings.DisableInLoadingScreen && state->IsMainOrLoadingMenuOpen();
+	const bool inWorldMap = settings.DisableInWorldMap && state->isMapMenuOpen;
+	return inLoadingScreen || inWorldMap;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 }
 
 void IBL::ReflectionsPrepass()
@@ -469,6 +535,7 @@ void IBL::Prepass()
 		context->CSSetSamplers(0, (uint)samplers.size(), samplers.data());
 		context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
 		context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
+<<<<<<< HEAD
 		if (diffuseIBLShader) {
 			context->CSSetShader(diffuseIBLShader, nullptr, 0);
 			{
@@ -476,6 +543,17 @@ void IBL::Prepass()
 				context->Dispatch(1, 1, 1);
 			}
 		}
+||||||| 12b261724
+		context->CSSetShader(GetDiffuseIBLCS(), nullptr, 0);
+		globals::profiler->BeginPass("IBL::EnvDiffuseIBL");
+		context->Dispatch(1, 1, 1);
+		globals::profiler->EndPass();
+=======
+		context->CSSetShader(GetDiffuseIBLCS(), nullptr, 0);
+		globals::profiler->BeginPass("ImageBasedLighting::EnvDiffuseIBL");
+		context->Dispatch(1, 1, 1);
+		globals::profiler->EndPass();
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	} else {
 		// Still need to set sampler and shader for sky IBL dispatch below
 		context->CSSetSamplers(0, (uint)samplers.size(), samplers.data());
@@ -491,11 +569,21 @@ void IBL::Prepass()
 
 		context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
 		context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
+<<<<<<< HEAD
 		if (diffuseIBLShader) {
 			context->CSSetShader(diffuseIBLShader, nullptr, 0);
 			CS_GPU_PASS("IBL::SkyDiffuseIBL");
 			context->Dispatch(1, 1, 1);
 		}
+||||||| 12b261724
+		globals::profiler->BeginPass("IBL::SkyDiffuseIBL");
+		context->Dispatch(1, 1, 1);
+		globals::profiler->EndPass();
+=======
+		globals::profiler->BeginPass("ImageBasedLighting::SkyDiffuseIBL");
+		context->Dispatch(1, 1, 1);
+		globals::profiler->EndPass();
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	}
 
 	// Reset
@@ -575,10 +663,22 @@ void IBL::SetupResources()
 			.Texture2D = { .MipSlice = 0 }
 		};
 
+<<<<<<< HEAD
 		envIBLTexture = new Texture2D(texDesc, "IBL::EnvironmentIrradiance");
+||||||| 12b261724
+		envIBLTexture = new Texture2D(texDesc);
+=======
+		envIBLTexture = new Texture2D(texDesc, "IBL::EnvIBL");
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 		envIBLTexture->CreateSRV(srvDesc);
 		envIBLTexture->CreateUAV(uavDesc);
+<<<<<<< HEAD
 		skyIBLTexture = new Texture2D(texDesc, "IBL::SkyIrradiance");
+||||||| 12b261724
+		skyIBLTexture = new Texture2D(texDesc);
+=======
+		skyIBLTexture = new Texture2D(texDesc, "IBL::SkyIBL");
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 		skyIBLTexture->CreateSRV(srvDesc);
 		skyIBLTexture->CreateUAV(uavDesc);
 	}

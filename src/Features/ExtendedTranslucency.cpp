@@ -87,13 +87,12 @@ void ExtendedTranslucency::PostPostLoad()
 
 void ExtendedTranslucency::DrawSettings()
 {
-	if (ImGui::TreeNodeEx(T(TKEY("translucent_material"), "Translucent Material"), ImGuiTreeNodeFlags_DefaultOpen)) {
-		const char* AlphaModeNames[] = {
-			T(TKEY("alpha_mode_disabled"), "0 - Disabled"),
-			T(TKEY("alpha_mode_rim_edge"), "1 - Rim Edge"),
-			T(TKEY("alpha_mode_isotropic_fabric"), "2 - Isotropic Fabric, Glass, ..."),
-			T(TKEY("alpha_mode_anisotropic_fabric"), "3 - Anisotropic Fabric"),
-		};
+	const char* AlphaModeNames[] = {
+		T(TKEY("alpha_mode_disabled"), "0 - Disabled"),
+		T(TKEY("alpha_mode_rim_edge"), "1 - Rim Edge"),
+		T(TKEY("alpha_mode_isotropic_fabric"), "2 - Isotropic Fabric, Glass, ..."),
+		T(TKEY("alpha_mode_anisotropic_fabric"), "3 - Anisotropic Fabric"),
+	};
 
 		Util::Combo(T(TKEY("default_material_model"), "Default Material Model"), &settings.AlphaMode, AlphaModeNames);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -119,6 +118,7 @@ void ExtendedTranslucency::DrawSettings()
 			ImGui::Text("%s", T(TKEY("softness_tooltip"), "Control the softness of the alpha increase, increase the softness reduce the increased amount of alpha."));
 		}
 
+<<<<<<< HEAD
 		ImGui::SliderFloat(T(TKEY("blend_weight"), "Blend Weight"), &settings.AlphaStrength, 0.0f, 1.0f);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::Text("%s", T(TKEY("blend_weight_tooltip"), "Control the blend weight of the effect applied to the final result."));
@@ -127,6 +127,24 @@ void ExtendedTranslucency::DrawSettings()
 		ImGui::Spacing();
 		ImGui::Spacing();
 		ImGui::TreePop();
+||||||| 12b261724
+		if (ImGui::SliderFloat(T(TKEY("blend_weight"), "Blend Weight"), &settings.AlphaStrength, 0.0f, 1.0f)) {
+			changed = true;
+		}
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::Text("%s", T(TKEY("blend_weight_tooltip"), "Control the blend weight of the effect applied to the final result."));
+		}
+
+		ImGui::Spacing();
+		ImGui::Spacing();
+		ImGui::TreePop();
+=======
+	if (ImGui::SliderFloat(T(TKEY("blend_weight"), "Blend Weight"), &settings.AlphaStrength, 0.0f, 1.0f)) {
+		changed = true;
+	}
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("blend_weight_tooltip"), "Control the blend weight of the effect applied to the final result."));
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	}
 }
 

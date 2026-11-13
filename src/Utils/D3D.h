@@ -4,10 +4,17 @@
 #include "ShaderInclude.h"
 #include <array>
 #include <d3d11.h>
+<<<<<<< HEAD
 #include <d3dcompiler.h>
 #include <filesystem>
 #include <functional>
 #include <type_traits>
+||||||| 12b261724
+=======
+#include <d3dcompiler.h>
+#include <filesystem>
+#include <fstream>
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 #include <winrt/base.h>
 
 namespace DirectX
@@ -24,6 +31,46 @@ namespace Util
 	using REX::W32::AsW32;
 	using REX::W32::CastTo;
 
+	/**
+	 * @brief ID3DInclude handler resolving #include paths under Data\Shaders,
+	 *        shared by every HLSL compile call site in this codebase.
+	 */
+	struct CustomInclude : public ID3DInclude
+	{
+		HRESULT Open([[maybe_unused]] D3D_INCLUDE_TYPE IncludeType, LPCSTR pFileName, [[maybe_unused]] LPCVOID pParentData, LPCVOID* ppData, UINT* pBytes) override
+		{
+			std::filesystem::path filePath = pFileName;
+			filePath = L"Data\\Shaders" / filePath;
+
+			std::ifstream file(filePath, std::ios::binary);
+			if (!file.is_open()) {
+				*ppData = NULL;
+				*pBytes = 0;
+				return E_FAIL;
+			}
+
+			file.seekg(0, std::ios::end);
+			UINT size = static_cast<UINT>(file.tellg());
+			file.seekg(0, std::ios::beg);
+
+			char* data = new char[size];
+			if (!file.read(data, size)) {
+				delete[] data;
+				*ppData = NULL;
+				*pBytes = 0;
+				return E_FAIL;
+			}
+			*ppData = data;
+			*pBytes = size;
+			return S_OK;
+		}
+
+		HRESULT Close(LPCVOID pData) override
+		{
+			delete[] static_cast<const char*>(pData);
+			return S_OK;
+		}
+	};
 	/**
 	 * @brief Look up the matching SRV for a given render target view.
 	 * @param a_rtv The render target view to look up.
@@ -60,10 +107,25 @@ namespace Util
 	void SetResourceName(ID3D11DeviceChild* Resource, const char* Format, ...);
 
 	/**
+<<<<<<< HEAD
 	 * @brief Holds D3D11 multithread protection and the device lock on the immediate context for its scope.
 	 * Holders are reference counted: protection is restored to its prior state only when the last holder leaves,
 	 * so overlapping scopes never turn it off under each other. Protection must not outlive the scope; leaving it
 	 * on corrupts ReverseZ depth state.
+||||||| 12b261724
+	 * @brief Enables D3D11 multithread protection and holds the immediate context's lock for the scope.
+	 * Scopes are reference counted, and the protection state from before the first scope is restored when the last one ends.
+=======
+	 * @brief A texture's or buffer's size from its descriptor: every mip, array slice and sample.
+	 * @param a_resource The resource to measure.
+	 * @return Bytes, or 0 for a null resource or an unknown format.
+	 */
+	uint64_t ResourceBytes(ID3D11Resource* a_resource);
+
+	/**
+	 * @brief Enables D3D11 multithread protection and holds the immediate context's lock for the scope.
+	 * Scopes are reference counted, and the protection state from before the first scope is restored when the last one ends.
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	 */
 	class MultithreadScope
 	{
@@ -104,9 +166,10 @@ namespace Util
 	 * @param Defines Preprocessor macro name/value pairs to pass to the compiler.
 	 * @param ProgramType Shader model target (e.g. "ps_5_0", "vs_5_0", "cs_5_0").
 	 * @param Program Entry point function name (defaults to "main").
+	 * @param OutBlob When non-null, receives the compiled bytecode (caller owns the reference).
 	 * @return The compiled shader object, or nullptr on failure. A failed compile is not retried until ClearShaderCompileFailures().
 	 */
-	ID3D11DeviceChild* CompileShader(const wchar_t* FilePath, const std::vector<std::pair<const char*, const char*>>& Defines, const char* ProgramType, const char* Program = "main");
+	ID3D11DeviceChild* CompileShader(const wchar_t* FilePath, const std::vector<std::pair<const char*, const char*>>& Defines, const char* ProgramType, const char* Program = "main", ID3DBlob** OutBlob = nullptr);
 
 	/**
 	 * @brief Log a D3DCompile error/warning blob verbatim, if present.
@@ -123,6 +186,9 @@ namespace Util
 	 * @brief Allow previously failed CompileShader requests to compile again.
 	 */
 	void ClearShaderCompileFailures();
+
+	/** @brief True for supported float-sampled material formats with continuous alpha, including sRGB aliases; excludes BC1, integer and typeless formats. */
+	bool SupportsMaterialAlpha(DXGI_FORMAT format);
 
 	/**
 	 * @brief Apply an alpha-blended highlight tint to a texture via CPU staging copy.

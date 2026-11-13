@@ -1,8 +1,13 @@
 #pragma once
 
 #include <array>
+<<<<<<< HEAD
 #include <atomic>
 #include <cstdint>
+||||||| 12b261724
+=======
+#include <atomic>
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 #include <d3d11.h>
 #include <functional>
 #include <mutex>
@@ -26,8 +31,16 @@
 class Profiler
 {
 public:
+<<<<<<< HEAD
 	static constexpr uint32_t kMaxTimers = 1024;
 	static constexpr uint32_t kFrameLatency = 3;
+||||||| 12b261724
+	static constexpr uint32_t kMaxTimers = 128;
+	static constexpr uint32_t kFrameLatency = 3;
+=======
+	static constexpr uint32_t kMaxTimers = 128;
+	static constexpr uint32_t kFrameLatency = 6;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	static constexpr uint32_t kHistorySize = 300;
 	/** @brief Collection-cycle gap before retiring an inactive timer.
 		Must exceed the longest legitimate gap between samples of a still-running pass;
@@ -135,6 +148,16 @@ public:
 		}
 	};
 
+	/** @brief Rolling wall-clock statistics of the interval between EndFrame calls. */
+	struct FrameStats
+	{
+		float lastMs = 0.0f;
+		float avgMs = 0.0f;
+		float p95Ms = 0.0f;
+		float p99Ms = 0.0f;
+		uint32_t count = 0;
+	};
+
 	/**
 	 * @brief Creates timestamp query objects and prepares the frame ring buffer.
 	 * @param device D3D11 device used to create query objects.
@@ -172,11 +195,17 @@ public:
 		endPerfEvent = std::move(endCb);
 	}
 
+<<<<<<< HEAD
 	/**
 	 * @brief Begins a new profiling frame; collects results from the oldest in-flight frame.
 	 * If those are still pending or the query batch cannot begin, the whole frame is skipped
 	 * (no GPU sample, no capture cycle) until EndFrame; CPU timing still runs.
 	 */
+||||||| 12b261724
+	/** @brief Begins a new profiling frame; collects results from the oldest in-flight frame. */
+=======
+	/** @brief Collects resolved frames; begins one unless the ring is full. */
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	void BeginFrame();
 
 	/**
@@ -184,8 +213,14 @@ public:
 	 * capacity or before Initialize(). Passes may nest: each call acquires
 	 * its own slot, and EndPass closes the innermost still-open one.
 	 */
+<<<<<<< HEAD
 	bool BeginPass(std::string_view name, bool fireCallbacks = true);
 	void EndPass(bool fireCallbacks = true);
+||||||| 12b261724
+	void BeginPass(const std::string& name);
+=======
+	void BeginPass(std::string_view name);
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 	/**
 	 * @brief Ends the current profiling frame.
@@ -195,6 +230,7 @@ public:
 	 */
 	void EndFrame(uint32_t a_frameCount);
 
+<<<<<<< HEAD
 	/**
 	 * @brief Opens a CPU-only named scope (no GPU query); returns false (no-op
 	 * EndCpuPass expected) while disabled. Scopes may nest: each successful
@@ -202,6 +238,35 @@ public:
 	 */
 	bool BeginCpuPass(std::string_view name);
 	void EndCpuPass();
+||||||| 12b261724
+	/** @brief Ends the current profiling frame and advances the ring buffer write cursor. */
+	void EndFrame();
+=======
+	/**
+	 * @brief Records a zero sample for a pass skipped on purpose this frame, so its row reads 0 instead of its last cost.
+	 * @param name Pass identifier, as given to BeginPass. Ignored if that pass began this frame or has no row yet.
+	 * @note Needs an active profiler. A mark made before the frame's first BeginPass waits for it, and is dropped if no profiling frame begins before EndFrame. Zero samples do not keep a row alive, so a pass skipped for kTimerRetireFrames retires. Ignored on a frame that ran out of timers.
+	 */
+	void MarkPassSkipped(std::string_view name);
+
+	/** @brief Ends the current profiling frame and advances the ring buffer write cursor. */
+	void EndFrame();
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
+
+	/**
+	 * @brief Keeps GPU/CPU pass timing running for the next few frames; call it each frame a consumer reads the results.
+	 * @param frameCount Frames to stay active for. Timing stops once no consumer has asked within that window.
+	 * A shorter request never cuts a longer one short, so the overlay cannot end a DevBench window.
+	 */
+	void KeepActive(uint32_t frameCount = 2)
+	{
+		const uint64_t until = frameCounter.load(std::memory_order_relaxed) + frameCount;
+		uint64_t current = activeUntilFrame.load(std::memory_order_relaxed);
+		while (current < until && !activeUntilFrame.compare_exchange_weak(current, until, std::memory_order_relaxed)) {
+		}
+	}
+	/** @brief True while a consumer asked for timings within its KeepActive window. */
+	bool IsActive() const { return frameCounter.load(std::memory_order_relaxed) <= activeUntilFrame.load(std::memory_order_relaxed); }
 
 	/** @brief Gets the live timings and history from the last collected frame. Rolling statistics are left at zero; see GetStatistics. */
 	const std::vector<TimerResult>& GetResults() const { return results; }
@@ -213,6 +278,13 @@ public:
 	 * @param timerPrefix Includes only passes starting with this prefix, or all passes when empty.
 	 */
 	std::vector<TimerResult> GetStatistics(std::string_view timerPrefix = {}) const;
+
+	/**
+	 * @brief Gets the present-cadence frame interval statistics, tracked even while GPU timing is off.
+	 * Re-sorts the history if it gained a sample, so callers should throttle it.
+	 * Not synchronized: call it only on the thread that calls EndFrame, like GetResults.
+	 */
+	FrameStats GetFrameStats() const;
 
 	/** @brief Gets the total GPU time in milliseconds for the last collected frame. */
 	float GetTotalTimeMs() const { return totalTimeMs; }
@@ -292,15 +364,60 @@ public:
 	}
 
 private:
+<<<<<<< HEAD
 	/// A CPU-only scope still open, awaiting EndCpuPass.
 	struct CpuTimer
+||||||| 12b261724
+	struct FrameQueries
+=======
+	/** @brief Pass names marked skipped for one frame. The string slots are reused, so marking allocates only on first use. */
+	struct SkipMarks
 	{
+		std::vector<std::string> names;
+		uint32_t count = 0;
+
+		void Add(std::string_view name);
+	};
+
+	struct FrameQueries
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
+	{
+<<<<<<< HEAD
 		std::string name;
 		LARGE_INTEGER cpuBegin{};
 		/// Nesting depth at acquisition, stamped once at Begin rather than
 		/// derived from activeCpuTimers.size() at End: ClearTimersForFeature
 		/// can erase a middle stack entry, which would desync a derived depth.
 		uint32_t depth = 0;
+||||||| 12b261724
+		winrt::com_ptr<ID3D11Query> disjoint;
+		struct TimerPair
+		{
+			winrt::com_ptr<ID3D11Query> begin;
+			winrt::com_ptr<ID3D11Query> end;
+			std::string name;
+			LARGE_INTEGER cpuBegin{};
+			float cpuMs = 0.0f;
+		};
+		std::vector<TimerPair> timers;
+		uint32_t activeCount = 0;
+		bool inFlight = false;
+=======
+		winrt::com_ptr<ID3D11Query> disjoint;
+		struct TimerPair
+		{
+			winrt::com_ptr<ID3D11Query> begin;
+			winrt::com_ptr<ID3D11Query> end;
+			std::string name;
+			LARGE_INTEGER cpuBegin{};
+			float cpuMs = 0.0f;
+		};
+		std::vector<TimerPair> timers;
+		uint32_t activeCount = 0;
+		SkipMarks skipped;
+		// A pass began past kMaxTimers, so a marked pass may have run untimed.
+		bool overflowed = false;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	};
 
 	/// A CPU-only scope that finished this cycle, pending collection.
@@ -341,8 +458,16 @@ private:
 	FrameQueries frames[kFrameLatency];
 	uint32_t writeFrame = 0;
 	uint32_t readFrame = 0;
+<<<<<<< HEAD
+||||||| 12b261724
+	uint32_t framesSinceInit = 0;
+=======
+	// Ended frames awaiting collection, oldest at readFrame.
+	uint32_t pendingFrames = 0;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	bool initialized = false;
 	bool frameActive = false;
+<<<<<<< HEAD
 	/// Set when the frame could not open at its first pass (oldest slot pending or batch failed);
 	/// a bracket opened by a later pass would record the earlier passes as 0 ms.
 	bool frameRefused = false;
@@ -358,6 +483,20 @@ private:
 	std::string activeNamePrefix;
 	std::vector<bool> activePassUsesGpu;
 	double cpuTicksToMs = 0.0;
+||||||| 12b261724
+	double cpuTicksToMs = 0.0;
+=======
+	bool passOpen = false;
+	// Ring was full at BeginFrame; the whole frame is unprofiled.
+	bool frameSkipped = false;
+	static double QpcTicksToMs();
+
+	double cpuTicksToMs = QpcTicksToMs();
+	std::atomic<uint64_t> frameCounter{ 0 };
+	std::atomic<uint64_t> activeUntilFrame{ 0 };
+	RollingHistory frameHistory;
+	int64_t lastFrameTicks = 0;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 	PerfEventCallback beginPerfEvent;
 	PerfEventCallback endPerfEvent;
@@ -378,7 +517,15 @@ private:
 	};
 	std::vector<KnownTimer> knownTimers;
 	std::unordered_map<std::string, size_t> knownTimerIndex;
+<<<<<<< HEAD
 	uint64_t captureCycleCount = 0;
+||||||| 12b261724
+	uint64_t collectedFrames = 0;
+=======
+	/** @brief Skip marks made before the frame's first BeginPass; they join that frame. */
+	SkipMarks pendingSkipped;
+	uint64_t collectedFrames = 0;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	float totalTimeMs = 0.0f;
 	float cpuTotalTimeMs = 0.0f;
 	float resolvedTotalMs = 0.0f;
@@ -391,6 +538,7 @@ private:
 	uint32_t peakAcquiredSlots = 0;
 	uint32_t slotRefusals = 0;
 
+<<<<<<< HEAD
 	std::vector<CpuTimer> activeCpuTimers;
 	std::vector<CompletedCpuTimer> completedCpuTimers;
 
@@ -412,6 +560,12 @@ private:
 	}
 
 	void LatchCaptureRequest();
+||||||| 12b261724
+	void CollectResults();
+=======
+	/** @brief Pushes each resolved frame's samples into the rows and publishes the newest. */
+	void CollectResults();
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 	/** @brief Drops timers that have not been sampled for kTimerRetireFrames, so disabled passes stop reporting stale values. */
 	void RetireStaleTimers();

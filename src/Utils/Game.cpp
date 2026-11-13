@@ -400,9 +400,19 @@ namespace Util
 	float GetVerticalFOVRad()
 	{
 		static float& cameraFOVDeg = (*(float*)(REL::RelocationID(513786, 388785).address()));  // FOV degrees
+<<<<<<< HEAD
 		float hFOVRad = DirectX::XMConvertToRadians(cameraFOVDeg);
 		float unitHalfWidth = tan(hFOVRad / 2);                                                                // This is same as camera frustum RL
 		float unitHalfHeight = unitHalfWidth / (globals::state->screenSize.x / globals::state->screenSize.y);  // frustum TB
+||||||| 12b261724
+		float hFOVRad = cameraFOVDeg * (3.14159265359f / 180.0f);
+		float unitHalfWidth = tan(hFOVRad / 2);                                                                // This is same as camera frustum RL
+		float unitHalfHeight = unitHalfWidth / ((float)globals::game::graphicsState->screenWidth / (float)globals::game::graphicsState->screenHeight);  // frustum TB
+=======
+		float hFOVRad = cameraFOVDeg * (3.14159265359f / 180.0f);
+		float unitHalfWidth = tan(hFOVRad / 2);                                                                                                         // This is same as camera frustum RL
+		float unitHalfHeight = unitHalfWidth / ((float)globals::game::graphicsState->screenWidth / (float)globals::game::graphicsState->screenHeight);  // frustum TB
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 		float vFOVRad = 2.0f * atan(unitHalfHeight);
 		return vFOVRad;
 	}
@@ -562,6 +572,17 @@ namespace Util
 		}
 
 		return textureSet;
+	}
+
+	float GetSunVisibility(const RE::Sun* a_sun)
+	{
+		if (!a_sun || !a_sun->root || !a_sun->sunBaseNode || !a_sun->sunBase)
+			return 0.0f;
+		if (a_sun->root->GetFlags().any(RE::NiAVObject::Flag::kHidden) || a_sun->sunBaseNode->GetFlags().any(RE::NiAVObject::Flag::kHidden))
+			return 0.0f;
+
+		const auto property = skyrim_cast<RE::BSSkyShaderProperty*>(a_sun->sunBase->GetGeometryRuntimeData().shaderProperty.get());
+		return property ? std::clamp(property->kBlendColor.alpha, 0.0f, 1.0f) : 0.0f;
 	}
 
 	bool IsInterior()
@@ -735,11 +756,70 @@ namespace Util
 	{
 		WorldToCell(RE::NiPoint2(worldPos.x, worldPos.y), x, y);
 	}
+<<<<<<< HEAD
 	std::uintptr_t MainUpdateCallSite()
 	{
 		const std::uintptr_t aeOffset = REL::Module::IsAtLeast(REL::Version(1, 7, 99, 0)) ? 0xC38 : 0xC26;
 		return REL::RelocationID(35565, 36564).address() + REL::Relocate<std::uintptr_t>(0x748, aeOffset, 0x7EE);
 	}
+||||||| 12b261724
+=======
+
+	void ComputeFrustumPlanes(RE::NiFrustumPlanes& out, const RE::NiFrustum& viewFrustum, const RE::NiTransform& transform, float edgePadding)
+	{
+		const __m128 forward = _mm_set_ps(0.0f, transform.rotate.entry[2][0], transform.rotate.entry[1][0], transform.rotate.entry[0][0]);
+		const __m128 up = _mm_set_ps(0.0f, transform.rotate.entry[2][1], transform.rotate.entry[1][1], transform.rotate.entry[0][1]);
+		const __m128 right = _mm_set_ps(0.0f, transform.rotate.entry[2][2], transform.rotate.entry[1][2], transform.rotate.entry[0][2]);
+		const __m128 translation = _mm_set_ps(0.0f, transform.translate.z, transform.translate.y, transform.translate.x);
+
+		const __m128 nearPoint = _mm_add_ps(translation, _mm_mul_ps(forward, _mm_set1_ps(viewFrustum.fNear)));
+		const __m128 farPoint = _mm_add_ps(translation, _mm_mul_ps(forward, _mm_set1_ps(viewFrustum.fFar)));
+
+		auto setPlane = [&](int planeIndex, __m128 normal, __m128 point) {
+			alignas(16) float components[4];
+			_mm_store_ps(components, normal);
+			out.cullingPlanes[planeIndex].normal = { components[0], components[1], components[2] };
+			out.cullingPlanes[planeIndex].constant = _mm_cvtss_f32(_mm_dp_ps(normal, point, 0x71));
+		};
+
+		setPlane(0, forward, nearPoint);
+		const __m128 backward = _mm_xor_ps(forward, _mm_set1_ps(-0.0f));
+		setPlane(1, backward, farPoint);
+
+		if (viewFrustum.bOrtho) {
+			setPlane(2, right, _mm_add_ps(translation, _mm_mul_ps(right, _mm_set1_ps(viewFrustum.fLeft))));
+			setPlane(3, _mm_xor_ps(right, _mm_set1_ps(-0.0f)), _mm_add_ps(translation, _mm_mul_ps(right, _mm_set1_ps(viewFrustum.fRight))));
+			setPlane(4, _mm_xor_ps(up, _mm_set1_ps(-0.0f)), _mm_add_ps(translation, _mm_mul_ps(up, _mm_set1_ps(viewFrustum.fTop))));
+			setPlane(5, up, _mm_add_ps(translation, _mm_mul_ps(up, _mm_set1_ps(viewFrustum.fBottom))));
+		} else {
+			// Normalize each side plane from the camera axis and frustum slope.
+			auto setSidePlane = [&](int planeIndex, __m128 axis, float slope, float forwardSign, float axisSign) {
+				const float inverseLength = 1.0f / std::sqrt(slope * slope + 1.0f);
+				const __m128 normal = _mm_add_ps(
+					_mm_mul_ps(forward, _mm_set1_ps(forwardSign * slope * inverseLength)),
+					_mm_mul_ps(axis, _mm_set1_ps(axisSign * inverseLength)));
+				setPlane(planeIndex, normal, translation);
+			};
+
+			setSidePlane(2, right, viewFrustum.fLeft, -1.0f, +1.0f);
+			setSidePlane(3, right, viewFrustum.fRight, +1.0f, -1.0f);
+			setSidePlane(4, up, viewFrustum.fTop, +1.0f, -1.0f);
+			setSidePlane(5, up, viewFrustum.fBottom, -1.0f, +1.0f);
+		}
+
+		out.activePlanes = RE::NiFrustumPlanes::ActivePlane(0x3F);
+
+		for (int planeIndex = RE::NiFrustumPlanes::Planes::kLeft; planeIndex <= RE::NiFrustumPlanes::Planes::kBottom; planeIndex++)
+			out.cullingPlanes[planeIndex].constant -= edgePadding;
+	}
+
+	bool IsSphereInFrustum(const RE::NiFrustumPlanes& frustum, const RE::NiPoint3& center, float radius)
+	{
+		return std::ranges::all_of(frustum.cullingPlanes, [&](const RE::NiPlane& plane) {
+			return plane.normal.Dot(center) - plane.constant >= -radius;
+		});
+	}
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 }  // namespace Util
 
 namespace Util::EnvironmentControls

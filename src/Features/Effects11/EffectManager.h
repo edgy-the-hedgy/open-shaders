@@ -85,10 +85,18 @@ public:
 	winrt::com_ptr<ID3D11ComputeShader> colorCorrectionComputeShader;
 	winrt::com_ptr<ID3D11Buffer> colorCorrectionConstantBuffer;
 
+<<<<<<< HEAD
 	winrt::com_ptr<ID3D11ComputeShader> standardDepthComputeShader;
 	std::unique_ptr<Texture2D> standardDepthTexture;
 	uint32_t standardDepthFrame = 0xFFFFFFFF;
 
+||||||| 12b261724
+	static std::string LoadShaderFile(const char* path);
+	/** @brief Sun disc visibility in [0, 1] from its sky shader blend alpha; 0 when the sun is missing or hidden. */
+	static float GetSunVisibility(const RE::Sun* a_sun);
+=======
+	static std::string LoadShaderFile(const char* path);
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	void CreateQuadGeometry();
 	void CreateRenderStates();
 	void CreateCopyShaders();

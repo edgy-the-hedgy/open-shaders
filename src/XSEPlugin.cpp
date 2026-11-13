@@ -8,7 +8,6 @@
 #include "Menu.h"
 #include "Menu/ThemeManager.h"
 #include "NativeMenu/NativeMenu.h"
-#include "SceneSettingsManager.h"
 #include "ShaderCache.h"
 #include "State.h"
 #include "Utils/FileSystem.h"
@@ -52,9 +51,24 @@ SKSE_PLUGIN_LOAD(const SKSE::LoadInterface* a_skse)
 	while (!REX::W32::IsDebuggerPresent()) {};
 #endif
 	InitializeLog();
+<<<<<<< HEAD
 	logger::info("Loaded {} {}", Plugin::NAME, Plugin::VERSION.string());
 	SKSE::Init(a_skse, { .log = false });
 	SKSE::AllocTrampoline(1 << 12);
+||||||| 12b261724
+	logger::info("Loaded {} {}", Plugin::NAME, Plugin::VERSION.string());
+	SKSE::Init(a_skse);
+	SKSE::AllocTrampoline(1 << 10);
+=======
+	SKSE::Init(a_skse);
+	logger::info("Community Shaders {} | branch: {} | describe: {} | hash: {}{}",
+		Util::GetFormattedVersion(Plugin::VERSION),
+		Plugin::BUILD_BRANCH.empty() ? "(detached)" : Plugin::BUILD_BRANCH,
+		Plugin::BUILD_DESCRIBE,
+		Plugin::BUILD_HASH.empty() ? "unknown" : Plugin::BUILD_HASH,
+		Plugin::BUILD_DIRTY ? " (dirty)" : "");
+	SKSE::AllocTrampoline(1 << 10);
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	return Load();
 }
 
@@ -197,7 +211,7 @@ bool Load()
 	I18n::GetSingleton()->Init();
 
 	state->Load();
-	state->LoadTheme();  // Load theme settings from SettingsTheme.json
+	state->LoadTheme();  // Load the active theme preset
 
 	// Initialize theme system - create default themes and discover existing ones
 	globals::menu->CreateDefaultThemes();  // Creates JSON files if they don't exist
@@ -207,12 +221,53 @@ bool Load()
 	auto log = spdlog::default_logger();
 	log->set_level(state->GetLogLevel());
 
+<<<<<<< HEAD
 	for (const auto& plugin : Compatibility::incompatiblePlugins) {
 		if (LoadLibrary(plugin.dll)) {
 			auto dllName = stl::utf16_to_utf8(plugin.dll).value_or("<unicode conversion error>"s);
 			auto errorMessage = plugin.reason.empty() ?
 			                        std::format("Incompatible DLL {} detected. Remove it to use {}.", dllName, Plugin::DISPLAY_NAME) :
 			                        std::format("Incompatible DLL {} detected ({}). Remove it to use {}.", dllName, plugin.reason, Plugin::DISPLAY_NAME);
+||||||| 12b261724
+	const std::array incompatibleDLLs = {
+		L"Data/SKSE/Plugins/ShaderTools.dll",
+		L"Data/SKSE/Plugins/SSEShaderTools.dll",
+		L"Data/SKSE/Plugins/SkyrimUpscaler.dll",
+		L"Data/SKSE/Plugins/EVLaS.dll",
+		L"Data/SKSE/Plugins/AELAS.dll",
+		L"Data/SKSE/Plugins/SSEReShadeHelper.dll",
+		L"Data/SKSE/Plugins/TAASharpen.dll",
+		L"Data/SKSE/Plugins/NVIDIA_Reflex.dll",
+		L"Data/SKSE/Plugins/MARA.dll",
+		L"Data/SKSE/Plugins/NativeWaterLightStabilizer.dll",
+		L"Data/SKSE/Plugins/DynamicWetness.dll",
+		L"Data/SKSE/Plugins/NMN_DeformableTerrain.dll",
+		L"Data/SKSE/Plugins/ShadowFixes.dll"
+	};
+
+	for (const auto dll : incompatibleDLLs) {
+		if (LoadLibrary(dll)) {
+			auto errorMessage = std::format("Incompatible DLL {} detected", stl::utf16_to_utf8(dll).value_or("<unicode conversion error>"s));
+=======
+	const std::array incompatibleDLLs = {
+		L"Data/SKSE/Plugins/ShaderTools.dll",
+		L"Data/SKSE/Plugins/SSEShaderTools.dll",
+		L"Data/SKSE/Plugins/SkyrimUpscaler.dll",
+		L"Data/SKSE/Plugins/EVLaS.dll",
+		L"Data/SKSE/Plugins/AELAS.dll",
+		L"Data/SKSE/Plugins/SSEReShadeHelper.dll",
+		L"Data/SKSE/Plugins/TAASharpen.dll",
+		L"Data/SKSE/Plugins/NVIDIA_Reflex.dll",
+		L"Data/SKSE/Plugins/MARA.dll",
+		L"Data/SKSE/Plugins/NativeWaterLightStabilizer.dll",
+		L"Data/SKSE/Plugins/DynamicWetness.dll",
+		L"Data/SKSE/Plugins/NMN_DeformableTerrain.dll"
+	};
+
+	for (const auto dll : incompatibleDLLs) {
+		if (std::filesystem::exists(dll)) {
+			auto errorMessage = std::format("Incompatible DLL {} detected", stl::utf16_to_utf8(dll).value_or("<unicode conversion error>"s));
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 			logger::error("{}", errorMessage);
 			errors.push_back(errorMessage);
 		}

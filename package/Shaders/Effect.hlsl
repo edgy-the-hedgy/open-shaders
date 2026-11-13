@@ -1,4 +1,7 @@
-#include "Common/Color.hlsli"
+// SPDX-License-Identifier: MIT AND (LicenseRef-GPL-3.0-with-Modding-Exception WITH GPL-3.0-linking-source-exception)
+// Original code Copyright (c) 2022 Ilya Perapechka (MIT), modifications GPL-3.0 with Modding Exception (see EXCEPTIONS.md)
+
+#include "Common/ColorManagement.hlsli"
 #include "Common/FrameBuffer.hlsli"
 #include "Common/GBuffer.hlsli"
 #include "Common/Math.hlsli"
@@ -48,10 +51,16 @@ struct VS_INPUT
 #	if defined(SKINNED)
 	float4 BoneWeights: BLENDWEIGHT0;
 	float4 BoneIndices: BLENDINDICES0;
+<<<<<<< HEAD
 #	endif
 #	if defined(VR)
 	uint InstanceID: SV_INSTANCEID;
 #	endif  // VR
+||||||| 12b261724
+#endif
+=======
+#	endif
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 };
 #endif
 
@@ -278,7 +287,7 @@ VS_OUTPUT main(VS_INPUT input)
 	float fogColorParam = min(FogParam.w,
 		exp2(FogParam.z * log2(saturate(length(FrameBuffer::ToStandardClip(viewPos, FrameBuffer::IsReverseProjection(Proj[eyeIndex]))) * FogParam.y - FogParam.x))));
 
-	vsout.FogParam.xyz = lerp(FogNearColor.xyz, FogFarColor.xyz, fogColorParam);
+	vsout.FogParam.xyz = lerp(ColorManagement::SRGBToWorking(FogNearColor.xyz), ColorManagement::SRGBToWorking(FogFarColor.xyz), fogColorParam);
 	vsout.FogParam.w = fogColorParam;
 #	endif
 
@@ -550,6 +559,7 @@ static const float EffectDirectionalLightScale = 0.5;
 
 bool UseAmbientEffectLighting()
 {
+<<<<<<< HEAD
 	return SharedData::csUtilitySettings.useAmbientEffectLighting &&
 	       (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::InWorld);
 }
@@ -618,10 +628,26 @@ float3 GetLightingColor(
 {
 	const bool isSkyObject = Permutation::VertexShaderDescriptor & Permutation::EffectFlags::SkyObject;
 	float3 color = GetWeatherEffectLighting(isSkyObject);
+||||||| 12b261724
+	float3 color = DLightColor.xyz * Color::EffectLightingMult();
+=======
+	float3 color = DLightColor.xyz * Color::EffectLightingScale;
+	const float3 sceneAmbientColor = ShadowSampling::GetAmbientLighting();
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	bool suppressExternalEmittance = SharedData::InInterior && (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::SuppressExternalEmittance);
+<<<<<<< HEAD
 	shadowedWeatherReference = 0.0;
 	shadowedInfluencedWeatherReference = 0.0;
 	applyWeatherInfluenceToShadows = false;
+||||||| 12b261724
+	if (suppressExternalEmittance) {
+		color = ShadowSampling::GetAmbientLighting() + ShadowSampling::GetDirectionalLighting();
+	}
+=======
+	if (suppressExternalEmittance) {
+		color = sceneAmbientColor + ShadowSampling::GetDirectionalLighting();
+	}
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 #		if defined(SKYLIGHTING)
 	float skylightingDiffuse = 1.0;
@@ -639,6 +665,7 @@ float3 GetLightingColor(
 
 	float3 dirColor;
 	float3 ambientColor;
+<<<<<<< HEAD
 	float3 influencedDirColor = 0.0;
 	float3 influencedAmbientColor = 0.0;
 	const bool useAmbientEffectLighting = UseAmbientEffectLighting();
@@ -666,17 +693,28 @@ float3 GetLightingColor(
 		ambientColor = ShadowSampling::GetAmbientLighting();
 #		endif
 	}
+||||||| 12b261724
+	ShadowSampling::ExtractLighting(color, dirColor, ambientColor);
+=======
+	ShadowSampling::ExtractLighting(color, sceneAmbientColor, dirColor, ambientColor);
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 #		if defined(EFFECTS11)
 	if (SharedData::enbSettings.EnableParticle && !useAmbientEffectLighting) {
 		useWeatherEffectLighting = false;
 		applyWeatherInfluenceToShadows = false;
 		dirColor = ShadowSampling::GetDirectionalLighting();
+<<<<<<< HEAD
 #			if defined(SKYLIGHTING) && !defined(INTERIOR)
 		ambientColor = ShadowSampling::GetAmbientLighting(skylightingDiffuse);
 #			else
 		ambientColor = ShadowSampling::GetAmbientLighting();
 #			endif
+||||||| 12b261724
+		ambientColor = ShadowSampling::GetAmbientLighting();
+=======
+		ambientColor = sceneAmbientColor;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 		dirColor *= SharedData::enbSettings.ParticleLightingInfluence;
 		ambientColor *= SharedData::enbSettings.ParticleAmbientInfluence;
 	}
@@ -720,6 +758,7 @@ float3 GetLightingColor(
 	if (!SharedData::iblSettings.EnableIBL)
 #			endif
 	{
+<<<<<<< HEAD
 		if (useWeatherEffectLighting)
 			ambientColor = Color::EffectLight(ambientColor);
 		ambientColor = Color::IrradianceToLinear(ambientColor);
@@ -734,6 +773,13 @@ float3 GetLightingColor(
 			influencedAmbientColor = Color::IrradianceToGamma(influencedAmbientColor);
 			influencedAmbientColor = Color::EffectLightToGamma(influencedAmbientColor);
 		}
+||||||| 12b261724
+		ambientColor = Color::IrradianceToLinear(ambientColor);
+		ambientColor *= skylightingDiffuse;
+		ambientColor = Color::IrradianceToGamma(ambientColor);
+=======
+		ambientColor = ColorManagement::SceneColor::ScaleByLinear(ambientColor, skylightingDiffuse);
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	}
 #		endif
 
@@ -756,16 +802,29 @@ float3 GetLightingColor(
 	{
 		float4 lightDistanceSquared = (PLightPositionX[eyeIndex] - msPosition.xxxx) * (PLightPositionX[eyeIndex] - msPosition.xxxx) + (PLightPositionY[eyeIndex] - msPosition.yyyy) * (PLightPositionY[eyeIndex] - msPosition.yyyy) + (PLightPositionZ[eyeIndex] - msPosition.zzzz) * (PLightPositionZ[eyeIndex] - msPosition.zzzz);
 		float4 lightFadeMul = 1.0.xxxx - saturate(PLightingRadiusInverseSquared * lightDistanceSquared);
+#		if defined(ENABLE_LL)
+		lightFadeMul = pow(lightFadeMul, TransferFunctions::GAME_GAMMA);
+#		endif
 #		if defined(EFFECTS11)
 		float pointScale = SharedData::enbSettings.EnableParticle ? SharedData::enbSettings.ParticlePointLightingInfluence : 1.0;
 #		else
 		float pointScale = 1.0;
 #		endif
+<<<<<<< HEAD
 		[unroll] for (uint lightIndex = 0; lightIndex < 4; lightIndex++)
 		{
 			float3 pointColor = float3(PLightColorR[lightIndex], PLightColorG[lightIndex], PLightColorB[lightIndex]);
 			color += Color::EffectPointLight(pointColor) * lightFadeMul[lightIndex] * pointScale;
 		}
+||||||| 12b261724
+		color.x += dot(Color::PointLight(PLightColorR.xxx).x * lightFadeMul * Color::EffectLightingMult(), 1.0.xxxx) * pointScale;
+		color.y += dot(Color::PointLight(PLightColorG.xxx).x * lightFadeMul * Color::EffectLightingMult(), 1.0.xxxx) * pointScale;
+		color.z += dot(Color::PointLight(PLightColorB.xxx).x * lightFadeMul * Color::EffectLightingMult(), 1.0.xxxx) * pointScale;
+=======
+		color.x += dot(Color::PointLight(PLightColorR.xxx).x * lightFadeMul * Color::EffectLightingScale, 1.0.xxxx) * pointScale;
+		color.y += dot(Color::PointLight(PLightColorG.xxx).x * lightFadeMul * Color::EffectLightingScale, 1.0.xxxx) * pointScale;
+		color.z += dot(Color::PointLight(PLightColorB.xxx).x * lightFadeMul * Color::EffectLightingScale, 1.0.xxxx) * pointScale;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	}
 
 	return color;
@@ -812,8 +871,16 @@ float GetViewRayShadow(float3 worldPosition, float depth, uint eyeIndex, float n
 	return shadow;
 }
 
+<<<<<<< HEAD
 float3 GetLightingShadow(float3 color, float3 materialColor, float3 worldPosition, float2 screenPosition, float depth, uint eyeIndex, inout float shadowVariance, float noise, bool isSkyObject, bool sampleDistantShadow)
+||||||| 12b261724
+float3 GetLightingShadow(float3 color, float3 worldPosition, float2 screenPosition, float depth, inout float shadowVariance)
+=======
+/** @brief Takes the shadowed share of the sun out of a lit colour; unshadowed, the colour is unchanged. */
+float3 GetLightingShadow(float3 color, float3 worldPosition, float2 screenPosition, float depth, inout float shadowVariance)
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 {
+<<<<<<< HEAD
 	color = Color::EffectLight(color);
 	if (isSkyObject)
 		color = Color::WeatherEffect(color, true, true);
@@ -835,17 +902,31 @@ float3 GetLightingShadow(float3 color, float3 materialColor, float3 worldPositio
 
 	float shadow = isSkyObject ? GetViewRayShadow(worldPosition, depth, eyeIndex, noise, sampleDistantShadow) :
 	                             ShadowSampling::GetWorldShadow(worldPosition, FrameBuffer::CameraPosAdjust[eyeIndex].xyz, eyeIndex, false, sampleDistantShadow);
+||||||| 12b261724
+	float3 dirColor;
+	float3 ambientColor;
+	ShadowSampling::ExtractLighting(color, dirColor, ambientColor);
+
+	float shadow = GetViewRayShadow(worldPosition, screenPosition, depth);
+=======
+	float shadow = GetViewRayShadow(worldPosition, screenPosition, depth);
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 
 	shadowVariance = 1.0 - sqrt(saturate(fwidth(shadow)));
 
-	dirColor *= shadow;
-
 #		if defined(EXP_HEIGHT_FOG)
 	if (SharedData::exponentialHeightFogSettings.enabled) {
+<<<<<<< HEAD
 		dirColor *= ExponentialHeightFog::GetSunlightFogAttenuation(worldPosition.xyz, FrameBuffer::CameraPosAdjust[eyeIndex].xyz);
+||||||| 12b261724
+		dirColor *= ExponentialHeightFog::GetSunlightFogAttenuation(worldPosition.xyz, FrameBuffer::CameraPosAdjust.xyz);
+=======
+		shadow *= ExponentialHeightFog::GetSunlightFogAttenuation(worldPosition.xyz, FrameBuffer::CameraPosAdjust.xyz);
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	}
 #		endif
 
+<<<<<<< HEAD
 	if (useAmbientEffectLighting) {
 		float brightness = isSkyObject ? SharedData::csUtilitySettings.skyStaticBrightness : SharedData::csUtilitySettings.effectBrightness;
 		float3 lighting = Color::EffectLightToGamma(Color::WeatherEffect(dirColor + ambientColor, isSkyObject));
@@ -856,6 +937,13 @@ float3 GetLightingShadow(float3 color, float3 materialColor, float3 worldPositio
 		color = dirColor + ambientColor;
 	}
 	return color;
+||||||| 12b261724
+	return dirColor + ambientColor;
+=======
+	float3 dirLight = ShadowSampling::GetDirectionalLighting();
+	float3 sceneLight = ShadowSampling::GetSceneLightingColor();
+	return color * (1.0 - saturate(dirLight * (1.0 - shadow) / max(sceneLight, EPSILON_DIVISION)));
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 }
 #	endif
 
@@ -897,7 +985,7 @@ PS_OUTPUT ShadeEffect(PS_INPUT input, bool sampleDistantShadow)
 #		endif
 	float NdotV = dot(normal, input.ViewVector.xyz);
 	float membraneColorMul = pow(saturate(1 - NdotV), MembraneVars.x);
-	float4 membraneColor = MembraneRimColor * membraneColorMul;
+	float4 membraneColor = ColorManagement::SRGBToWorking(MembraneRimColor) * membraneColorMul;
 #	elif defined(PROJECTED_UV) && defined(NORMALS)
 	float2 noiseTexCoord = 0.00333333341 * input.TexCoord0.xy;
 	float noise = TexNoiseSampler.Sample(SampNoiseSampler, noiseTexCoord).x * 0.2 + 0.4;
@@ -917,6 +1005,127 @@ PS_OUTPUT ShadeEffect(PS_INPUT input, bool sampleDistantShadow)
 	softMul = saturate(-input.TexCoord0.w + LightingInfluence.y / ((1 - depth) * CameraDataEffect.z + CameraDataEffect.y));
 #	endif
 
+<<<<<<< HEAD
+||||||| 12b261724
+	float lightingInfluence = LightingInfluence.x;
+	float3 propertyColor = Color::Effect(PropertyColor.xyz);
+	float shadowVariance = 1.0;
+
+#	if defined(EFFECTS11)
+	bool isFire = false;
+#		if defined(ADDBLEND)
+#			if defined(SOFT)
+	if (Permutation::PixelShaderDescriptor & Permutation::EffectFlags::GrayscaleToColor && Permutation::PixelShaderDescriptor & Permutation::EffectFlags::GrayscaleToAlpha)
+		isFire = true;
+#			elif defined(PARTICLES) && defined(TEXCOORD_INDEX) && defined(INDEXED_TEXTURE)
+	isFire = true;
+#			endif
+#		endif
+
+#		if !defined(IS_VOLUMETRIC_FOG) && !defined(MULTBLEND) && !defined(MULTBLEND_DECAL)
+	if (SharedData::enbSettings.Enable && !(Permutation::VertexShaderDescriptor & Permutation::EffectFlags::SkyObject) && !isFire)
+		propertyColor *= SharedData::enbSettings.ParticleIntensity;
+#		endif
+#	endif
+
+#	if defined(EFFECTS11) && defined(IS_VOLUMETRIC_FOG)
+	const bool isEnbVolumetricFog = SharedData::enbSettings.Enable && !(Permutation::VertexShaderDescriptor & Permutation::EffectFlags::SkyObject) &&
+	                                (Permutation::PixelShaderDescriptor & Permutation::EffectFlags::GrayscaleToAlpha) && !(Permutation::PixelShaderDescriptor & Permutation::EffectFlags::GrayscaleToColor);
+#	endif
+
+#	if defined(LIGHTING)
+	propertyColor = GetLightingColor(input.MSPosition.xyz, input.WorldPosition.xyz, input.Position.xy, shadowVariance);
+
+#		if defined(LIGHT_LIMIT_FIX)
+	uint lightCount = 0;
+
+	float3 viewPosition = mul(FrameBuffer::CameraView, float4(input.WorldPosition.xyz, 1)).xyz;
+	float2 screenUV = FrameBuffer::ViewToUV(viewPosition);
+	bool inWorld = Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::InWorld;
+
+#			if defined(EFFECTS11)
+	float clusteredPointScale = SharedData::enbSettings.Enable ? SharedData::enbSettings.ParticlePointLightingInfluence : 1.0;
+#			else
+	float clusteredPointScale = 1.0;
+#			endif
+
+	uint clusterIndex = 0;
+	if (inWorld && LightLimitFix::GetClusterIndex(screenUV, viewPosition.z, clusterIndex)) {
+		lightCount = LightLimitFix::lightGrid[clusterIndex].lightCount;
+		uint lightOffset = LightLimitFix::lightGrid[clusterIndex].offset;
+		[loop] for (uint i = 0; i < lightCount; i++)
+		{
+			uint clusteredLightIndex = LightLimitFix::lightList[lightOffset + i];
+			LightLimitFix::Light light = LightLimitFix::lights[clusteredLightIndex];
+			if (LightLimitFix::IsLightIgnored(light) || light.lightFlags & LightLimitFix::LightFlags::ShadowCaster) {
+				continue;
+			}
+			float3 lightDirection = light.positionWS.xyz - input.WorldPosition.xyz;
+			float lightDist = length(lightDirection);
+
+			float intensityMultiplier = LightLimitFix::GetAttenuation(lightDist, light);
+
+			const bool isPointLightLinear = light.lightFlags & LightLimitFix::LightFlags::Linear;
+			float3 lightColor = Color::PointLight(light.color.xyz, isPointLightLinear) * intensityMultiplier * 0.5 * light.fade * Color::EffectLightingMult();
+			propertyColor += lightColor * clusteredPointScale;
+		}
+	}
+
+#		endif
+#	elif defined(MEMBRANE)
+	propertyColor *= 0;
+	lightingInfluence = 0;
+#	endif
+
+=======
+	float lightingInfluence = LightingInfluence.x;
+	float3 propertyColor = PropertyColor.xyz;
+	float shadowVariance = 1.0;
+
+	bool isFire = false;
+	bool isLightSprite = false;
+#	if defined(ADDBLEND)
+#		if defined(EFFECTS11)
+	// ENB's classes: a palette-mapped additive effect (a spell bolt, a flame) is fire; a light sprite is a sky glow or a soft
+	// plain-textured glow. Everything else, lit, membrane, blood and projected-UV effects included, keeps its own brightness.
+#			if !defined(LIGHTING) && !defined(MEMBRANE) && !defined(BLOOD) && !defined(PROJECTED_UV)
+	const bool grayscaleToColor = Permutation::PixelShaderDescriptor & Permutation::EffectFlags::GrayscaleToColor;
+	const bool grayscaleToAlpha = Permutation::PixelShaderDescriptor & Permutation::EffectFlags::GrayscaleToAlpha;
+	const bool skyObject = Permutation::VertexShaderDescriptor & Permutation::EffectFlags::SkyObject;
+#				if defined(TEXTURE)
+	const bool plainTexture = !grayscaleToColor && !grayscaleToAlpha && !(Permutation::PixelShaderDescriptor & Permutation::EffectFlags::IgnoreTexAlpha);
+#				else
+	const bool plainTexture = false;
+#				endif
+#				if defined(PARTICLES) && defined(TEXCOORD_INDEX) && defined(INDEXED_TEXTURE) && !defined(SOFT)
+	isFire = true;
+#				else
+	isFire = grayscaleToColor && grayscaleToAlpha;
+#					if defined(SOFT)
+	isLightSprite = !isFire && (skyObject || plainTexture);
+#					else
+	isLightSprite = !isFire && skyObject;
+#					endif
+#				endif
+#			endif
+#		else
+#			if defined(SOFT)
+	if (Permutation::PixelShaderDescriptor & Permutation::EffectFlags::GrayscaleToColor && Permutation::PixelShaderDescriptor & Permutation::EffectFlags::GrayscaleToAlpha)
+		isFire = true;
+#			elif defined(PARTICLES) && defined(TEXCOORD_INDEX) && defined(INDEXED_TEXTURE)
+	isFire = true;
+#			endif
+	// Linear Lighting treats every non-fire additive effect as a light sprite
+	isLightSprite = !isFire;
+#		endif
+#	endif
+
+#	if defined(EFFECTS11) && defined(IS_VOLUMETRIC_FOG)
+	const bool isEnbVolumetricFog = SharedData::enbSettings.Enable && !(Permutation::VertexShaderDescriptor & Permutation::EffectFlags::SkyObject) &&
+	                                (Permutation::PixelShaderDescriptor & Permutation::EffectFlags::GrayscaleToAlpha) && !(Permutation::PixelShaderDescriptor & Permutation::EffectFlags::GrayscaleToColor);
+#	endif
+
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	float4 baseTexColor = float4(1, 1, 1, 1);
 	float4 baseColor = float4(1, 1, 1, 1);
 #	if !defined(TEXTURE)
@@ -924,6 +1133,15 @@ PS_OUTPUT ShadeEffect(PS_INPUT input, bool sampleDistantShadow)
 #	endif
 	{
 		baseTexColor = TexBaseSampler.Sample(SampBaseSampler, input.TexCoord0.xy);
+<<<<<<< HEAD
+||||||| 12b261724
+		baseTexColor.xyz = Color::Effect(baseTexColor.xyz);
+=======
+#	if !defined(BLOOD)
+		if (!(Permutation::PixelShaderDescriptor & Permutation::EffectFlags::GrayscaleToColor))
+			baseTexColor.xyz = ColorManagement::TextureToWorking(baseTexColor.xyz);
+#	endif
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 		baseColor *= baseTexColor;
 		if (Permutation::PixelShaderDescriptor & Permutation::EffectFlags::IgnoreTexAlpha || Permutation::PixelShaderDescriptor & Permutation::EffectFlags::GrayscaleToAlpha) {
 			baseColor.w = 1;
@@ -935,7 +1153,17 @@ PS_OUTPUT ShadeEffect(PS_INPUT input, bool sampleDistantShadow)
 #	else
 	float4 baseColorMul = BaseColor;
 #		if defined(VC) && !defined(PROJECTED_UV)
+<<<<<<< HEAD
 	baseColorMul *= input.Color;
+||||||| 12b261724
+	baseColorMul *= float4(Color::Effect(input.Color.xyz), input.Color.w);
+=======
+#			if defined(BLOOD)
+	baseColorMul *= input.Color;
+#			else
+	baseColorMul *= (Permutation::PixelShaderDescriptor & Permutation::EffectFlags::GrayscaleToColor) ? input.Color : ColorManagement::SRGBToWorking(input.Color);
+#			endif
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 #		endif
 #	endif
 
@@ -1110,6 +1338,7 @@ PS_OUTPUT ShadeEffect(PS_INPUT input, bool sampleDistantShadow)
 		bloodMul *= (deltaY / AlphaTestRef.y);
 	}
 	baseColor.xyz = saturate(float3(2, 1, 1) - bloodMul.xxx) * (-bloodMul * AlphaTestRef.z + 1);
+	baseColor.xyz = ColorManagement::TextureToWorking(baseColor.xyz);
 #	endif
 
 	alpha *= PropertyColor.w;
@@ -1131,7 +1360,13 @@ PS_OUTPUT ShadeEffect(PS_INPUT input, bool sampleDistantShadow)
 #	if defined(MEMBRANE)
 		grayscaleToColorUv.y = PropertyColor.x;
 #	endif
+<<<<<<< HEAD
 		baseColor.xyz = baseColorScale * TexGrayscaleSampler.Sample(SampGrayscaleSampler, grayscaleToColorUv).xyz;
+||||||| 12b261724
+		baseColor.xyz = Color::Effect(baseColorScale * TexGrayscaleSampler.Sample(SampGrayscaleSampler, grayscaleToColorUv).xyz);
+=======
+		baseColor.xyz = baseColorScale * ColorManagement::TextureToWorking(TexGrayscaleSampler.Sample(SampGrayscaleSampler, grayscaleToColorUv).xyz);
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	}
 
 #	if defined(EFFECTS11) && defined(IS_VOLUMETRIC_FOG)
@@ -1144,7 +1379,15 @@ PS_OUTPUT ShadeEffect(PS_INPUT input, bool sampleDistantShadow)
 		float3 volumetricFogScale = SharedData::enbSettings.VolumetricFogIntensity * SharedData::enbSettings.VolumetricFogColorFilter;
 		[branch] if (SharedData::enbSettings.VolumetricFogEnableLighting)
 		{
+<<<<<<< HEAD
 			float3 volumetricFogTint = BaseColor.xyz;
+||||||| 12b261724
+			// The vertex tint only colours the fog here; brightness comes from the scene lighting
+			float3 volumetricFogTint = Color::Effect(BaseColor.xyz);
+=======
+			// The vertex tint only colours the fog here; brightness comes from the scene lighting
+			float3 volumetricFogTint = BaseColor.xyz;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 			volumetricFogTint /= max(max(max(volumetricFogTint.x, volumetricFogTint.y), volumetricFogTint.z), 1.0);
 			float3 volumetricFogLight = ShadowSampling::GetDirectionalLighting() * volumetricFogShadow + ShadowSampling::GetAmbientLighting();
 			baseColor.xyz = pow(max(volumetricFogTint * baseTexColor.xyz, 0.0), SharedData::enbSettings.VolumetricFogCurve) * volumetricFogLight * volumetricFogScale * 0.5;
@@ -1158,12 +1401,81 @@ PS_OUTPUT ShadeEffect(PS_INPUT input, bool sampleDistantShadow)
 	}
 #	endif
 
+<<<<<<< HEAD
 	baseColor.xyz = Color::CompensateGammaInput(baseColor.xyz, Color::GameGamma);
 	float3 lightColor = lerp(baseColor.xyz, propertyColor * baseColor.xyz, lightingInfluence);
 
+||||||| 12b261724
+	float3 lightColor = lerp(baseColor.xyz, propertyColor * baseColor.xyz, lightingInfluence);
+
+=======
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 #	if !defined(MOTIONVECTORS_NORMALS)
 	if (alpha * fogMul.w - AlphaTestRefRS < 0) {
 		discard;
+	}
+#	endif
+
+	// Light only pixels that survive the alpha test.
+#	if defined(LIGHTING)
+	propertyColor = GetLightingColor(input.MSPosition.xyz, input.WorldPosition.xyz, input.Position.xy, shadowVariance);
+
+#		if defined(LIGHT_LIMIT_FIX)
+	uint lightCount = 0;
+
+	float3 viewPosition = mul(FrameBuffer::CameraView, float4(input.WorldPosition.xyz, 1)).xyz;
+	float2 screenUV = FrameBuffer::ViewToUV(viewPosition);
+	bool inWorld = Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::InWorld;
+
+#			if defined(EFFECTS11)
+	float clusteredPointScale = SharedData::enbSettings.Enable ? SharedData::enbSettings.ParticlePointLightingInfluence : 1.0;
+#			else
+	float clusteredPointScale = 1.0;
+#			endif
+
+	uint clusterIndex = 0;
+	if (inWorld && LightLimitFix::GetClusterIndex(screenUV, viewPosition.z, clusterIndex)) {
+		lightCount = LightLimitFix::lightGrid[clusterIndex].lightCount;
+		uint lightOffset = LightLimitFix::lightGrid[clusterIndex].offset;
+		[loop] for (uint i = 0; i < lightCount; i++)
+		{
+			uint clusteredLightIndex = LightLimitFix::lightList[lightOffset + i];
+			LightLimitFix::Light light = LightLimitFix::lights[clusteredLightIndex];
+			const bool localShadow = light.lightFlags & LightLimitFix::LightFlags::LocalShadow;
+			if (LightLimitFix::IsLightIgnored(light) || ((light.lightFlags & LightLimitFix::LightFlags::ShadowCaster) && !localShadow)) {
+				continue;
+			}
+			float3 lightDirection = light.positionWS.xyz - input.WorldPosition.xyz;
+			float lightDist = length(lightDirection);
+
+			float intensityMultiplier = LightLimitFix::GetAttenuation(lightDist, light);
+			[branch] if (intensityMultiplier > 1e-5 && localShadow)
+				intensityMultiplier *= LightLimitFix::GetLocalShadowWithLightFade(LinearSampler, light.localShadowIndex, input.WorldPosition.xyz, LightLimitFix::FirstPerson ? LightLimitFix::WorldEyePosition.xyz : FrameBuffer::CameraPosAdjust.xyz, lightDirection / max(lightDist, 1e-5), false, Random::InterleavedGradientNoise(input.Position.xy, SharedData::FrameCount));
+
+			float3 lightColor = Color::PointLight(light.color.xyz) * intensityMultiplier * 0.5 * light.fade * Color::EffectLightingScale;
+			propertyColor += lightColor * clusteredPointScale;
+		}
+	}
+
+#		endif
+#	elif defined(MEMBRANE)
+	propertyColor *= 0;
+	lightingInfluence = 0;
+#	endif
+
+	// Effects 11 PARTICLE Intensity never reached lit particles, keep that behavior.
+#	if !defined(IS_VOLUMETRIC_FOG) && !defined(MULTBLEND) && !defined(MULTBLEND_DECAL) && !(defined(EFFECTS11) && defined(LIGHTING))
+	if (!(Permutation::VertexShaderDescriptor & Permutation::EffectFlags::SkyObject) && !isFire)
+		propertyColor *= Color::ParticleEffectMult();
+#	endif
+
+	float3 lightColor = lerp(baseColor.xyz, propertyColor * baseColor.xyz, lightingInfluence);
+
+#	if defined(ENABLE_LL) && !defined(DEFERRED) && !defined(MEMBRANE) && !defined(BLOOD) && !defined(MULTBLEND) && !defined(MULTBLEND_DECAL)
+	if ((Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::SourceAlphaBlend) &&
+		(!Permutation::RenderToUI || (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::InReflection))) {
+		// Preserve legacy fades without remapping linear medium transmittance.
+		alpha = pow(saturate(alpha), TransferFunctions::GAME_GAMMA);
 	}
 #	endif
 
@@ -1202,8 +1514,8 @@ PS_OUTPUT ShadeEffect(PS_INPUT input, bool sampleDistantShadow)
 	}
 
 #	if !defined(MOTIONVECTORS_NORMALS)
-	float fogFactor = Color::FogAlpha(input.FogParam.w);
-	float3 fogColor = Color::Fog(input.FogParam.xyz);
+	float fogFactor = input.FogParam.w;
+	float3 fogColor = input.FogParam.xyz;
 #		if defined(IBL)
 	if (SharedData::iblSettings.EnableIBL) {
 		fogColor = ImageBasedLighting::GetFogIBLColor(fogColor);
@@ -1239,6 +1551,7 @@ PS_OUTPUT ShadeEffect(PS_INPUT input, bool sampleDistantShadow)
 #			else
 	float3 blendedColor = lightColor * (1 - fogFactor);
 #			endif
+<<<<<<< HEAD
 #			if defined(EFFECTS11)
 	if (SharedData::enbSettings.Enable) {
 		if (isFire)
@@ -1247,6 +1560,18 @@ PS_OUTPUT ShadeEffect(PS_INPUT input, bool sampleDistantShadow)
 			blendedColor = pow(abs(blendedColor), SharedData::enbSettings.LightSpriteCurve) * SharedData::enbSettings.LightSpriteIntensity;
 	}
 #			endif
+||||||| 12b261724
+#			if defined(EFFECTS11)
+	if (SharedData::enbSettings.Enable) {
+		if (isFire)
+			blendedColor = pow(abs(blendedColor), SharedData::enbSettings.FireCurve) * SharedData::enbSettings.FireIntensity;
+		else
+			blendedColor = pow(abs(blendedColor), SharedData::enbSettings.LightSpriteCurve) * SharedData::enbSettings.LightSpriteIntensity;
+	}
+#			endif
+=======
+	blendedColor = Color::AdditiveEffect(blendedColor, isFire, isLightSprite);
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 #		elif defined(MULTBLEND) || defined(MULTBLEND_DECAL)
 #			if defined(EXP_HEIGHT_FOG)
 	float3 blendedColor = lerp(lightColor, 1.0.xxx, saturate(1.5 * vanillaFogFactor).xxx);
@@ -1270,6 +1595,7 @@ PS_OUTPUT ShadeEffect(PS_INPUT input, bool sampleDistantShadow)
 	float3 blendedColor = lightColor.xyz;
 #	endif
 
+<<<<<<< HEAD
 #	if defined(ADDBLEND) || defined(MULTBLEND)
 	[branch] if (isSkyStatic)
 	{
@@ -1281,6 +1607,11 @@ PS_OUTPUT ShadeEffect(PS_INPUT input, bool sampleDistantShadow)
 	}
 #	endif
 
+||||||| 12b261724
+	alpha = Color::EffectAlpha(alpha);
+
+=======
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	float4 finalColor = float4(blendedColor, alpha);
 #	if defined(MULTBLEND_DECAL)
 	finalColor.xyz *= alpha;
@@ -1373,6 +1704,19 @@ PS_OUTPUT ShadeEffect(PS_INPUT input, bool sampleDistantShadow)
 	psout.Color2 = float4(auxiliaryColor, finalColor.w);
 #	endif
 
+<<<<<<< HEAD
+||||||| 12b261724
+#	if !defined(HDR_OUTPUT)
+	if (!(Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::InWorld) && SharedData::linearLightingSettings.enableLinearLighting) {
+		psout.Diffuse.xyz = Color::LinearToSrgb(psout.Diffuse.xyz);
+	}
+#	endif
+=======
+#	if defined(ENABLE_LL)
+	if (Permutation::RenderToUI && !(Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::InReflection))
+		psout.Diffuse.xyz = ColorManagement::WorkingToUI(psout.Diffuse.xyz);
+#	endif
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	return psout;
 }
 PS_OUTPUT main(PS_INPUT input)

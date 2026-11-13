@@ -112,6 +112,7 @@ public:
 		float volumetricFogNoiseThreshold = 0.5f;
 		float2 pad3 = {};
 		float3 volumetricFogNoiseVelocity = { 0.0f, 0.0f, 0.0f };
+<<<<<<< HEAD
 		uint volumetricFogNoiseType = 0;  // 0 = hash value noise, 1 = PCG value noise with a quintic fade
 		uint mistsEnabled = 0;
 		float mistStrength = 0.1f;
@@ -121,6 +122,12 @@ public:
 		uint mistFollowWind = 1;
 		float mistWindMultiplier = 1.0f;
 		float pad5 = 0.0f;
+||||||| 12b261724
+		float pad0;
+=======
+		float pad0;
+		float4 originalFogColorOverride = { 1.0f, 1.0f, 1.0f, 0.0f };  // rgb = replaces the weather fog colour, a = blend amount
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	} settings;
 	STATIC_ASSERT_ALIGNAS_16(Settings);
 	static_assert(offsetof(Settings, vanillaFogNearColor) == 256);
@@ -173,13 +180,21 @@ private:
 	void AdvanceMistShape(double elapsed);
 	void UpdateMistAnimation(const Settings& frameSettings);
 
+<<<<<<< HEAD
+||||||| 12b261724
+	/** @brief Shaders see height fog as disabled: an ENB preset replaces it, or the flat world map is open. */
+	bool IsSuppressed() const;
+=======
+	/** @brief Shaders see height fog as disabled: an ENB preset replaces it without handing it back to CS, or the flat world map is open. */
+	bool IsSuppressed() const;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	void EnsureVolumetricResources();
 	void ReleaseVolumetricResources();
 	void BindIntegratedLightScattering();
 	ID3D11ComputeShader* GetMaterialSetupCS();
 	ID3D11ComputeShader* GetFarMaterialSetupCS();
-	ID3D11ComputeShader* GetConservativeDepthCS();
-	ID3D11ComputeShader* GetFarConservativeDepthCS();
+	ID3D11ComputeShader* GetConservativeDepthCS(bool a_groupReduce);
+	ID3D11ComputeShader* GetFarConservativeDepthCS(bool a_groupReduce);
 	ID3D11ComputeShader* GetLightScatteringCS();
 	ID3D11ComputeShader* GetFarLightScatteringCS();
 	ID3D11ComputeShader* GetIntegrationCS();
@@ -201,6 +216,7 @@ private:
 	winrt::com_ptr<ID3D11SamplerState> linearSampler;
 	winrt::com_ptr<ID3D11SamplerState> shadowSampler;
 	winrt::com_ptr<ID3D11ShaderResourceView> directionalShadowMap;
+<<<<<<< HEAD
 	Util::LazyShader<ID3D11ComputeShader> materialSetupCS;
 	Util::LazyShader<ID3D11ComputeShader> farMaterialSetupCS;
 	Util::LazyShader<ID3D11ComputeShader> conservativeDepthCS;
@@ -209,6 +225,27 @@ private:
 	Util::LazyShader<ID3D11ComputeShader> farLightScatteringCS;
 	Util::LazyShader<ID3D11ComputeShader> integrationCS;
 	Util::LazyShader<ID3D11ComputeShader> farIntegrationCS;
+||||||| 12b261724
+	ID3D11ComputeShader* materialSetupCS = nullptr;
+	ID3D11ComputeShader* farMaterialSetupCS = nullptr;
+	ID3D11ComputeShader* conservativeDepthCS = nullptr;
+	ID3D11ComputeShader* farConservativeDepthCS = nullptr;
+	ID3D11ComputeShader* lightScatteringCS = nullptr;
+	ID3D11ComputeShader* farLightScatteringCS = nullptr;
+	ID3D11ComputeShader* integrationCS = nullptr;
+	ID3D11ComputeShader* farIntegrationCS = nullptr;
+=======
+	ID3D11ComputeShader* materialSetupCS = nullptr;
+	ID3D11ComputeShader* farMaterialSetupCS = nullptr;
+	ID3D11ComputeShader* conservativeDepthCS = nullptr;
+	ID3D11ComputeShader* farConservativeDepthCS = nullptr;
+	ID3D11ComputeShader* conservativeDepthGroupCS = nullptr;
+	ID3D11ComputeShader* farConservativeDepthGroupCS = nullptr;
+	ID3D11ComputeShader* lightScatteringCS = nullptr;
+	ID3D11ComputeShader* farLightScatteringCS = nullptr;
+	ID3D11ComputeShader* integrationCS = nullptr;
+	ID3D11ComputeShader* farIntegrationCS = nullptr;
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 	DirectX::XMUINT4 currentGridSize = {};
 	DirectX::XMUINT4 currentFarGridSize = {};
 	bool hasLightScatteringHistory = false;

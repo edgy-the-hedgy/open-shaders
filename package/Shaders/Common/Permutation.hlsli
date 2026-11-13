@@ -20,6 +20,7 @@ namespace Permutation
 	namespace LightingTechnique
 	{
 		static const uint Glowmap = 2;
+		static const uint TreeAnim = 12;
 	}
 
 	namespace LightingFlags
@@ -77,12 +78,11 @@ namespace Permutation
 		static const uint IsSun = (1 << 4);
 		static const uint SuppressExternalEmittance = (1 << 5);
 		static const uint AdditiveLighting = (1 << 6);
-		static const uint IsAurora = (1 << 7);
-		static const uint IsMoon = (1 << 8);
+		static const uint IsEye = (1u << 31);
+		static const uint SourceAlphaBlend = (1 << 8);
 		static const uint NoSkyScattering = (1 << 9);
 		// Fork-only flags reserve the high end so upstream's next sequential flag never collides.
 		static const uint TreeBend = (1u << 28);
-		static const uint IsEye = (1u << 31);
 		static const uint IsCharacterRainSurface = (1u << 30);
 		static const uint IsHeldWeapon = (1u << 29);
 		static const uint GammaRenderTarget = (1u << 27);
@@ -94,6 +94,10 @@ namespace Permutation
 		static const uint SnowLODTree = (1u << 22);
 		static const uint SnowInactive = (1u << 21);
 #endif
+		static const uint IsAurora = (1 << 10);
+		static const uint IsMoon = (1 << 11);
+		static const uint ProjectedTextureIsSRGB = (1 << 12);
+		static const uint GrassPBR = (1 << 13);
 	}
 
 	namespace ExtraFeatureFlags
@@ -147,6 +151,9 @@ namespace Permutation
 
 		float4 TreeWindProbeBase;
 		float4 TreeWindProbeTop;
+		uint BaseTextureIsWorking;
+		uint RenderToUI;
+		float GrassCanopyHeight;  // Model-space height of the grass mesh being drawn
 	};
 
 	bool IsReflectionRadianceCapture()

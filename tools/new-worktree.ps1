@@ -60,6 +60,7 @@ if (-not $NoSubmodules) {
     Write-Host "Initializing submodules in new worktree"
     & git -C $Path submodule update --init --recursive
     if ($LASTEXITCODE -ne 0) {
+<<<<<<< HEAD
         # The clones borrow the main checkout's submodule objects, which lag behind a pin that landed
         # after its last update, so fetch from each submodule's own remote and retry once.
         Write-Host "Submodule update failed; fetching from the submodule remotes and retrying"
@@ -74,6 +75,24 @@ if (-not $NoSubmodules) {
         & git -C $Path submodule update --init --recursive
     }
     if ($LASTEXITCODE -ne 0) {
+||||||| 12b261724
+=======
+        # The clones borrow the main checkout's submodule objects, which lag behind a pin that landed
+        # after its last update, so fetch from each submodule's own remote (and any nested submodule a
+        # fetched commit now pins, e.g. CommonLibSSE-NG's openvr) and retry once.
+        Write-Host "Submodule update failed; fetching from the submodule remotes and retrying"
+        $submodules = & git -C $Path config -f .gitmodules --get-regexp '^submodule\..*\.url$'
+        foreach ($entry in $submodules) {
+            $name, $url = $entry -split ' ', 2
+            $subPath = (& git -C $Path config -f .gitmodules ($name -replace '\.url$', '.path'))
+            if (Test-Path (Join-Path $Path $subPath)) {
+                & git -C (Join-Path $Path $subPath) fetch --quiet --recurse-submodules=on-demand $url '+refs/heads/*:refs/remotes/origin/*' '+refs/tags/*:refs/tags/*'
+            }
+        }
+        & git -C $Path submodule update --init --recursive
+    }
+    if ($LASTEXITCODE -ne 0) {
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
         Write-Error "Submodule initialization failed. The worktree was created but may be incomplete."
         exit $LASTEXITCODE
     }

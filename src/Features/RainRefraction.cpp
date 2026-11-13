@@ -41,6 +41,7 @@ namespace
 		if (FAILED(hr))
 			return fail(std::format("Failed to load texture (invalid image, HRESULT 0x{:08X})", static_cast<uint32_t>(hr)));
 
+<<<<<<< HEAD
 		DirectX::ScratchImage rgbaImage;
 		const auto* source = image.GetImage(0, 0, 0);
 		if (source->format != DXGI_FORMAT_R8G8B8A8_UNORM) {
@@ -51,6 +52,20 @@ namespace
 		}
 		result.footprint = RainRefractionTexture::GetFootprint({ source->pixels, source->slicePitch }, source->width, source->height, source->rowPitch);
 
+||||||| 12b261724
+=======
+		// Fit the drop billboard to the texture's alpha coverage, which needs 8-bit RGBA texels
+		DirectX::ScratchImage rgbaImage;
+		const auto* source = image.GetImage(0, 0, 0);
+		if (source->format != DXGI_FORMAT_R8G8B8A8_UNORM) {
+			hr = DirectX::Convert(*source, DXGI_FORMAT_R8G8B8A8_UNORM, DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, rgbaImage);
+			if (FAILED(hr))
+				return fail(std::format("Failed to load texture (invalid image, HRESULT 0x{:08X})", static_cast<uint32_t>(hr)));
+			source = rgbaImage.GetImage(0, 0, 0);
+		}
+		result.footprint = RainRefractionTexture::GetFootprint({ source->pixels, source->slicePitch }, source->width, source->height, source->rowPitch);
+
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 		DirectX::ScratchImage mipImage;
 		hr = DirectX::GenerateMipMaps(image.GetImages(), image.GetImageCount(), image.GetMetadata(), DirectX::TEX_FILTER_DEFAULT, 0, mipImage);
 		if (FAILED(hr))
@@ -89,10 +104,8 @@ namespace
 
 void RainRefraction::DrawSettings()
 {
-	if (IsManagedByENB()) {
-		ImGui::TextColored(globals::menu->GetSettings().Theme.StatusPalette.Warning, "%s", T("common.settings_managed_by_enb", "Settings are currently managed by ENB."));
-		return;
-	}
+	const Util::LockedSection enbLock(IsManagedByENB(),
+		T("common.settings_managed_by_enb", "This setting is managed by Effects 11."));
 
 	if (!defaultRaindrops.status.empty())
 		Util::Text::WrappedWarning("%s", defaultRaindrops.status.c_str());
@@ -209,9 +222,11 @@ void RainRefraction::ModifyParticle()
 	if (globals::state->currentPixelDescriptor != static_cast<uint32_t>(SIE::ShaderCache::ParticleShaderTechniques::EnvCubeRain))
 		return;
 
+	// The rain vertex shader reads the Enable flag whether or not refraction is active this frame
 	auto context = globals::d3d::context;
 	ID3D11Buffer* cbs[] = { globals::state->sharedDataCB->CB(), globals::state->featureDataCB->CB() };
 	context->VSSetConstantBuffers(5, 2, cbs);
+<<<<<<< HEAD
 	if (IsRefractiveRainPass()) {
 		ID3D11ShaderResourceView* srv = GetRaindropSRV();
 		context->PSSetShaderResources(80, 1, &srv);
@@ -311,6 +326,14 @@ std::function<void()> RainRefraction::OnRenderPassBegin(const RE::BSRenderPass* 
 	[[maybe_unused]] static const bool registered = GpuPassCapabilities::Register("RainRefraction::Particles");
 	particlePass.emplace("RainRefraction::Particles", GpuPassSpan::Spanning);
 	return [this]() { particlePass.reset(); };
+||||||| 12b261724
+=======
+	if (!perFrameCache.Enable)
+		return;
+
+	ID3D11ShaderResourceView* srv = GetRaindropSRV();
+	context->PSSetShaderResources(80, 1, &srv);
+>>>>>>> c393c10e29a46d85eb61e74bde6b59c39f4582bb
 }
 
 void RainRefraction::ParticleShaderHacks()
