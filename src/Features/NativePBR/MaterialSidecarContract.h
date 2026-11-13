@@ -61,4 +61,22 @@ namespace NativePBR
 		return a_depth24 ? std::abs(a_writtenDepth - a_finalDepth) <= 0.5f / 16777215.0f :
 			a_writtenDepth == a_finalDepth;
 	}
+
+	/** GPU report layout shared with the DXC sidecar validation shader. */
+	struct SidecarValidationReport
+	{
+		uint32_t validPixels = 0, invalidOrdinals = 0, invalidUV = 0, invalidGradients = 0;
+		uint32_t invalidBasis = 0, invalidFacing = 0, depthMismatches = 0, coveredPixels = 0;
+		uint32_t sampleOrdinal = 0, sampleFlags = 0, gradientMismatchQuads = 0, comparedQuads = 0;
+		std::array<float, 4> uvDdx{}, ddyDepth{}, basis0{}, basis1{}, basis2{};
+	};
+	static_assert(sizeof(SidecarValidationReport) == 128);
+
+	inline bool SidecarValidationClean(const SidecarValidationReport& report)
+	{
+		return report.coveredPixels != 0 && report.validPixels == report.coveredPixels &&
+			!report.invalidOrdinals && !report.invalidUV && !report.invalidGradients &&
+			!report.invalidBasis && !report.invalidFacing && !report.depthMismatches &&
+			!report.gradientMismatchQuads;
+	}
 }

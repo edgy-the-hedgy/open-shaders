@@ -36,3 +36,24 @@ TEST_CASE("NativePBR sidecar retains six independent outputs without using defer
 	REQUIRE(static_cast<size_t>(NativePBR::SidecarTarget::Identity) == 0);
 	REQUIRE(static_cast<size_t>(NativePBR::SidecarTarget::Basis2) == 5);
 }
+
+TEST_CASE("NativePBR GPU report requires surviving valid pixels and no identity or surface failures", "[NativePBR]")
+{
+	NativePBR::SidecarValidationReport report{};
+	REQUIRE(sizeof(report) == 128u);
+	REQUIRE_FALSE(NativePBR::SidecarValidationClean(report));
+	report.coveredPixels = 34;
+	report.validPixels = 34;
+	REQUIRE(NativePBR::SidecarValidationClean(report));
+	report.invalidOrdinals = 1;
+	REQUIRE_FALSE(NativePBR::SidecarValidationClean(report));
+	report.invalidOrdinals = 0;
+	report.invalidGradients = 1;
+	REQUIRE_FALSE(NativePBR::SidecarValidationClean(report));
+	report.invalidGradients = 0;
+	report.gradientMismatchQuads = 1;
+	REQUIRE_FALSE(NativePBR::SidecarValidationClean(report));
+	report.gradientMismatchQuads = 0;
+	report.depthMismatches = 1;
+	REQUIRE_FALSE(NativePBR::SidecarValidationClean(report));
+}

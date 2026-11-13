@@ -2,6 +2,7 @@
 
 #include "Feature.h"
 #include "Features/DX12NativeScene/NativeCharacterObservation.h"
+#include "Features/DX12NativeScene/PBRSidecarValidation.h"
 #include "Features/DX12NativeScene/PreparedScene.h"
 #include "Features/DX12NativeScene/RasterCapture.h"
 #include "Features/DX12NativeScene/RuntimeGeometryCacheWorker.h"
@@ -146,6 +147,7 @@ struct DX12NativeScene final : Feature
 	std::optional<SceneFrame> GetSceneFrame(uint32_t a_frame) const;
 	/** @brief Retains the current raster snapshot through the consumer GPU work. */
 	std::shared_ptr<const DX12Native::RasterFrame> GetRasterFrame(uint32_t a_frame) const { return loaded && settings.Enabled && !transitionOpen ? raster.Get(a_frame) : nullptr; }
+	DX12Native::PBRSidecarValidation& GetPBRValidation() { return pbrValidation; }
 	/** @brief Eligible third-person character caster for independent native
      * visibility consumers. This does not require the separate shadow-mask
      * toggle, and does not promote characters to prepared receivers.
@@ -206,6 +208,7 @@ private:
 	std::mutex runtimeGeometryBudgetMutex;
 	uint32_t runtimeGeometryBudgetFrame = UINT32_MAX, runtimeGeometryFrameBytes = 0;
 	DX12Native::RasterCapture raster;
+	DX12Native::PBRSidecarValidation pbrValidation;
 	DX12Native::ShadowTrace shadow;
 	DX12Native::AccelerationWorker acceleration;
 	DX12Native::ShadowBindingWorker materialBindings;
