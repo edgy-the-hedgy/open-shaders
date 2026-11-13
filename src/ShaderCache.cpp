@@ -2950,6 +2950,19 @@ namespace SIE
 		return nullptr;
 	}
 
+	void ShaderCache::EnqueueNativePBRInputPixelShader(const RE::BSShader& shader, uint32_t descriptor)
+	{
+		if (shader.shaderType != RE::BSShader::Type::Lighting)
+			return;
+		const auto generation = compilationSet.LiveGeneration(shader.shaderType.get());
+		compilationSet.EnqueueAux([this, &shader, descriptor, generation] {
+			if (IsGenerationStale(generation, shader.shaderType.get()))
+				return;
+			std::ignore = SShaderCache::CompileShader(ShaderClass::Pixel, shader, descriptor,
+				IsDiskCacheActive(), dependencyTracker.get(), generation, NativePBR::ShaderDomain::NativePBRInput);
+		});
+	}
+
 	bool ShaderCache::HasPixelShaders(RE::BSShader::Type type, std::span<const uint32_t> descriptors)
 	{
 		if (type <= RE::BSShader::Type::None || type >= RE::BSShader::Type::Total)

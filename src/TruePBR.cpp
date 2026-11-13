@@ -916,11 +916,20 @@ void TruePBR::GenerateShaderPermutations(RE::BSShader* shader)
 	auto shaderCache = globals::shaderCache;
 	if (shader->shaderType == RE::BSShader::Type::Lighting) {
 		const auto pixelPermutations = Permutations::GeneratePBRLightingPixelPermutations();
+		const bool buildNativeInputs = globals::features::nativePBR.enabled.load(std::memory_order_relaxed);
+		using enum SIE::ShaderCache::LightingShaderFlags;
+		constexpr uint32_t required = static_cast<uint32_t>(TruePbr) | static_cast<uint32_t>(Deferred);
+		constexpr uint32_t excluded = static_cast<uint32_t>(DoAlphaTest) | static_cast<uint32_t>(Skinned) |
+			static_cast<uint32_t>(ModelSpaceNormals) | static_cast<uint32_t>(ProjectedUV) |
+			static_cast<uint32_t>(FurShells) | static_cast<uint32_t>(FurShellsDepth);
 		for (auto descriptor : pixelPermutations) {
 			auto vertexShaderDesriptor = descriptor;
 			auto pixelShaderDescriptor = descriptor;
 			state->ModifyShaderLookup(*shader, vertexShaderDesriptor, pixelShaderDescriptor);
 			std::ignore = shaderCache->GetPixelShader(*shader, pixelShaderDescriptor, true);
+			if (buildNativeInputs && ((pixelShaderDescriptor >> 24) & 0x3Fu) == 0 &&
+				(pixelShaderDescriptor & required) == required && (pixelShaderDescriptor & excluded) == 0)
+				shaderCache->EnqueueNativePBRInputPixelShader(*shader, pixelShaderDescriptor);
 		}
 	} else if (shader->shaderType == RE::BSShader::Type::Utility) {
 		for (auto descriptor : Permutations::GeneratePBRUtilityPixelPermutations()) {

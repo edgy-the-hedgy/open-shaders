@@ -819,6 +819,8 @@ namespace SIE
 		/** Requests a pixel shader; optional startup precompiles are skipped in background mode. */
 		RE::BSGraphics::PixelShader* GetPixelShader(const RE::BSShader& shader,
 			uint32_t descriptor, bool a_precompile = false);
+		/** Precompile the NativePBR FXC input domain without publishing a live DX11 pixel shader. */
+		void EnqueueNativePBRInputPixelShader(const RE::BSShader& shader, uint32_t descriptor);
 		/** @brief Checks that every requested pixel-shader permutation is ready. */
 		bool HasPixelShaders(RE::BSShader::Type type, std::span<const uint32_t> descriptors);
 		RE::BSGraphics::ComputeShader* GetComputeShader(const RE::BSShader& shader,
