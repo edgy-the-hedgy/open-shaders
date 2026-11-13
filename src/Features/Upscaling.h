@@ -193,6 +193,8 @@ public:
 	bool frameGenerationPrepared = false;
 	std::shared_ptr<const NativeComposite::Frame> nativeCompositeFrame;
 	std::atomic<uint64_t> nativeCompositeCaptures{ 0 };
+	std::atomic<uint64_t> nativeCompositeFsrDispatches{ 0 };
+	std::atomic<uint32_t> nativeCompositeFsrFrame{ UINT32_MAX };
 
 	// Timing and scaling
 	double refreshRate = 0.0f;

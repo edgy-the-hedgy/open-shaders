@@ -98,6 +98,7 @@ add_executable(
     test_generationclaim.cpp
     test_framelatch.cpp
     test_dx12_memory_budget.cpp
+    test_native_composite_frame.cpp
     test_lightattachgate.cpp
     test_pointersearch.cpp
     test_splitlatchbackoff.cpp

@@ -16,6 +16,7 @@
 
 #include "../../../GpuPass.h"
 #include "../../../State.h"
+#include "../../NativeComposite/NativeComposite.h"
 #include "../../ReverseZ.h"
 #include "../../Upscaling.h"
 #include "../DX12SwapChain.h"
@@ -644,6 +645,7 @@ FidelityFX::RuntimeCommandContext* FidelityFX::AcquireRuntimeCommandContext()
 			continue;
 
 		commandContext.fenceValue = 0;
+		commandContext.nativeColorFrame.reset();
 		runtimeCommandContextCursor = (index + 1) % commandContextCount;
 		return &commandContext;
 	}
@@ -669,6 +671,7 @@ FidelityFX::RuntimeCommandContext* FidelityFX::AcquireRuntimeCommandContext()
 
 	auto& commandContext = runtimeCommandContexts[waitIndex];
 	commandContext.fenceValue = 0;
+	commandContext.nativeColorFrame.reset();
 	runtimeCommandContextCursor = (waitIndex + 1) % commandContextCount;
 	return &commandContext;
 }
@@ -678,6 +681,7 @@ void FidelityFX::ResetRuntimeCommandContexts()
 	for (auto& commandContext : runtimeCommandContexts) {
 		commandContext.commandList = nullptr;
 		commandContext.commandAllocator = nullptr;
+		commandContext.nativeColorFrame.reset();
 		commandContext.fenceValue = 0;
 	}
 	runtimeCommandContextCursor = 0;
@@ -1155,6 +1159,24 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 	if (!state)
 		return false;
 
+	const auto nativeColorFrame = upscaling.nativeCompositeFrame;
+	const bool nativeColorReady = [&] {
+		if (globals::game::isVR || a_contextIndex != 0 || !nativeColorFrame ||
+			!nativeColorFrame->color || !nativeColorFrame->producerFence || !nativeColorFrame->producerValue ||
+			!nativeColorFrame->Matches(state->frameCount, a_renderWidth, a_renderHeight, colorDesc.Format) ||
+			nativeColorFrame->producerFence->GetCompletedValue() == UINT64_MAX)
+			return false;
+		const auto* renderer = globals::game::renderer;
+		if (!renderer || static_cast<ID3D11Resource*>(Util::AsReal(renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].texture)) != a_color)
+			return false;
+		const auto desc = nativeColorFrame->color->GetDesc();
+		if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.Format != colorDesc.Format ||
+			desc.Width < a_renderWidth || desc.Height < a_renderHeight || desc.SampleDesc.Count != 1)
+			return false;
+		winrt::com_ptr<ID3D12Device> device;
+		return SUCCEEDED(nativeColorFrame->color->GetDevice(IID_PPV_ARGS(device.put()))) &&
+			device.get() == swapChain.d3d12Device.get();
+	}();
 	auto isValidShared = [](WrappedResource* a_resource) {
 		return a_resource && a_resource->resource11 && a_resource->resource.get();
 	};
@@ -1166,6 +1188,7 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 		!isValidShared(runtimeOutputShared[a_contextIndex])) {
 		return false;
 	}
+	ID3D12Resource* color12 = nativeColorReady ? nativeColorFrame->color.get() : runtimeColorShared[a_contextIndex]->resource.get();
 
 	auto* commandContext = AcquireRuntimeCommandContext();
 	if (!commandContext)
@@ -1203,7 +1226,7 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 			return true;
 		};
 
-		if (!copyIntoShared(a_color, runtimeColorShared[a_contextIndex], colorDesc.Width, colorDesc.Height, runtimeColorSharedDesc.Width, runtimeColorSharedDesc.Height) ||
+		if ((!nativeColorReady && !copyIntoShared(a_color, runtimeColorShared[a_contextIndex], colorDesc.Width, colorDesc.Height, runtimeColorSharedDesc.Width, runtimeColorSharedDesc.Height)) ||
 			!copyIntoShared(a_depth, runtimeDepthShared[a_contextIndex], depthDesc.Width, depthDesc.Height, runtimeDepthSharedDesc.Width, runtimeDepthSharedDesc.Height) ||
 			!copyIntoShared(a_motionVectors, runtimeMotionShared[a_contextIndex], motionDesc.Width, motionDesc.Height, runtimeMotionSharedDesc.Width, runtimeMotionSharedDesc.Height) ||
 			!copyIntoShared(a_reactiveMask, runtimeReactiveShared[a_contextIndex], reactiveDesc.Width, reactiveDesc.Height, runtimeReactiveSharedDesc.Width, runtimeReactiveSharedDesc.Height) ||
@@ -1214,12 +1237,14 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 			const uint64_t d3d11SubmitFence = runtimeFence.Next();
 			DX::ThrowIfFailed(swapChain.d3d11Context->Signal(runtimeFence.fence11.get(), d3d11SubmitFence));
 			DX::ThrowIfFailed(swapChain.commandQueue->Wait(runtimeFence.fence12.get(), d3d11SubmitFence));
+			if (nativeColorReady)
+				DX::ThrowIfFailed(swapChain.commandQueue->Wait(nativeColorFrame->producerFence.get(), nativeColorFrame->producerValue));
 
 			DX::ThrowIfFailed(commandAllocator->Reset());
 			DX::ThrowIfFailed(commandList->Reset(commandAllocator, nullptr));
 
 			std::array<D3D12_RESOURCE_BARRIER, 6> beginBarriers = {
-				CD3DX12_RESOURCE_BARRIER::Transition(runtimeColorShared[a_contextIndex]->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+				CD3DX12_RESOURCE_BARRIER::Transition(color12, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
 				CD3DX12_RESOURCE_BARRIER::Transition(runtimeDepthShared[a_contextIndex]->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
 				CD3DX12_RESOURCE_BARRIER::Transition(runtimeMotionShared[a_contextIndex]->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
 				CD3DX12_RESOURCE_BARRIER::Transition(runtimeReactiveShared[a_contextIndex]->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
@@ -1230,7 +1255,7 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 
 			ffx::DispatchDescUpscale dispatchParameters{};
 			dispatchParameters.commandList = commandList;
-			dispatchParameters.color = ffxApiGetResourceDX12(runtimeColorShared[a_contextIndex]->resource.get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
+			dispatchParameters.color = ffxApiGetResourceDX12(color12, FFX_API_RESOURCE_STATE_COMPUTE_READ);
 			dispatchParameters.depth = ffxApiGetResourceDX12(runtimeDepthShared[a_contextIndex]->resource.get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
 			dispatchParameters.motionVectors = ffxApiGetResourceDX12(runtimeMotionShared[a_contextIndex]->resource.get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
 			dispatchParameters.exposure = FfxApiResource({});
@@ -1282,7 +1307,7 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 			}
 
 			std::array<D3D12_RESOURCE_BARRIER, 6> endBarriers = {
-				CD3DX12_RESOURCE_BARRIER::Transition(runtimeColorShared[a_contextIndex]->resource.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
+				CD3DX12_RESOURCE_BARRIER::Transition(color12, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
 				CD3DX12_RESOURCE_BARRIER::Transition(runtimeDepthShared[a_contextIndex]->resource.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
 				CD3DX12_RESOURCE_BARRIER::Transition(runtimeMotionShared[a_contextIndex]->resource.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
 				CD3DX12_RESOURCE_BARRIER::Transition(runtimeReactiveShared[a_contextIndex]->resource.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
@@ -1300,6 +1325,11 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 			DX::ThrowIfFailed(swapChain.commandQueue->Signal(runtimeFence.fence12.get(), d3d12SubmitFence));
 			commandContext->fenceValue = d3d12SubmitFence;
 			commandFenceTracked = true;
+			if (nativeColorReady) {
+				commandContext->nativeColorFrame = nativeColorFrame;
+				if (!globals::features::nativeComposite.Retain(nativeColorFrame, runtimeFence.fence12.get(), d3d12SubmitFence))
+					logger::warn("[FidelityFX] Native Composite frame retention failed; keeping a command-context reference");
+			}
 			DX::ThrowIfFailed(swapChain.d3d11Context->Wait(runtimeFence.fence11.get(), d3d12SubmitFence));
 
 			if (dispatchOk) {
@@ -1349,6 +1379,10 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 		QuarantineRuntimeUpscalerForSession("runtime upscaler dispatch threw an unknown exception");
 	}
 
+	if (dispatchOk && nativeColorReady) {
+		upscaling.nativeCompositeFsrFrame.store(state->frameCount);
+		++upscaling.nativeCompositeFsrDispatches;
+	}
 	return dispatchOk;
 }
 

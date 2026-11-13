@@ -4,6 +4,7 @@
 #include <atomic>
 #include <d3d11_4.h>
 #include <d3d12.h>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <winrt/base.h>
@@ -22,6 +23,7 @@
 
 #include "../../Buffer.h"
 #include "../../State.h"
+#include "Features/NativeComposite/NativeCompositePass.h"
 #include "DX12SwapChain.h"
 #include "Utils/Logging.h"
 
@@ -176,6 +178,7 @@ private:
 	{
 		winrt::com_ptr<ID3D12CommandAllocator> commandAllocator;
 		winrt::com_ptr<ID3D12GraphicsCommandList4> commandList;
+		std::shared_ptr<const NativeComposite::Frame> nativeColorFrame;
 		uint64_t fenceValue = 0;
 	};
 	std::array<RuntimeCommandContext, kRuntimeCommandContextCount> runtimeCommandContexts;

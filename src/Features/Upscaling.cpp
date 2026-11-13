@@ -707,7 +707,8 @@ void Upscaling::RegisterUxActions()
 				{ "width", frame ? frame->width : 0u },
 				{ "height", frame ? frame->height : 0u },
 				{ "gpuComplete", frame && frame->IsComplete() },
-				{ "usedForUpscaling", false },
+				{ "usedForUpscaling", frame && frame->frame == feature.nativeCompositeFsrFrame.load() },
+				{ "runtimeFsrDispatches", feature.nativeCompositeFsrDispatches.load() },
 				{ "vrNativeRoute", false }
 			};
 		}));

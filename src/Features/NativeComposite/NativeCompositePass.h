@@ -26,6 +26,13 @@ public:
 		Transfer transfer = Transfer::Unknown;
 		bool valid = false;
 
+		/** @brief Checks the frame metadata required by a render-size consumer. */
+		bool Matches(uint32_t a_frame, uint32_t a_width, uint32_t a_height, DXGI_FORMAT a_format) const
+		{
+			return valid && frame == a_frame && width == a_width && height == a_height &&
+				format == a_format && state == D3D12_RESOURCE_STATE_COMMON;
+		}
+
 		/** @brief Returns true when the GPU has completed this frame's copy. */
 		bool IsComplete() const
 		{
