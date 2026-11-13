@@ -39,7 +39,7 @@ struct NativePBRFeature final : Feature
 	void DrawSettings() override;
 	void LoadSettings(json&) override;
 	void SaveSettings(json&) override;
-	void RestoreDefaultSettings() override;
+	void RestoreDefaultSettings() override { enabled = true; }
 	json GetDiagnostics() override;
 };
 

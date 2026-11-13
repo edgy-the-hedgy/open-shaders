@@ -13,8 +13,6 @@
 #include <BS_thread_pool.hpp>
 #include <algorithm>
 #include <cmath>
-#include <filesystem>
-#include <fstream>
 #include <limits>
 
 // Backend selection is the ONLY automatic execution switch. Feature toggles
@@ -489,126 +487,11 @@ void NativePBRFeature::DrawSettings()
 	DrawOwnership("Enable Native PBR", enabled, IsActive());
 	ImGui::TextDisabled("Consumes TruePBR's live recipe registry in the native material worker.");
 	ImGui::TextDisabled("Texture source and prepared material controls remain in DX12 Native Scene.");
-	ImGui::Text("Cumulative sidecar draws: %llu | rejected draws: %llu", materialSidecar.ReplayedDraws(), materialSidecar.RejectedDraws());
-	ImGui::Text("Last frame's eligible PBR draws: %zu | frame: %u", materialSidecar.PublishedDrawCount(), materialSidecar.GetFrame());
+	ImGui::Text("Sidecar raster draws: %llu | rejected: %llu", materialSidecar.ReplayedDraws(), materialSidecar.RejectedDraws());
+	ImGui::Text("Last frame's PBR surfaces: %zu | frame: %u", materialSidecar.PublishedDrawCount(), materialSidecar.GetFrame());
 	if (!materialSidecar.Status().empty())
 		ImGui::TextWrapped("Sidecar: %s", materialSidecar.Status().c_str());
 	ImGui::TextDisabled("Commit 3 captures surface identity only; native shading is not enabled yet.");
-	auto& validation = globals::features::dx12NativeScene.GetPBRValidation();
-	ImGui::SeparatorText("NativePBR validation (DX12 SM6.5)");
-	ImGui::Checkbox("Enable fenced GPU validation", &validation.enabled);
-	ImGui::SameLine();
-	ImGui::TextDisabled("Opt-in, no CPU GPU waits");
-	if (!validation.enabled)
-		return;
-	int interval = int(validation.intervalFrames);
-	if (ImGui::SliderInt("Validation interval (frames)", &interval, 1, 120))
-		validation.intervalFrames = uint32_t(interval);
-	static constexpr const char* views[] = { "Visible coverage", "Material identity", "UV coordinates", "UV derivatives", "Geometric basis" };
-	int selectedMode = int(validation.mode);
-	if (ImGui::Combo("Preview mode", &selectedMode, views, int(std::size(views))))
-		validation.mode = uint32_t(selectedMode);
-	ImGui::Checkbox("Show screen-space diagnostic overlay", &validation.screenOverlay);
-	int coordinate[2]{ int(validation.inspectX), int(validation.inspectY) };
-	if (ImGui::InputInt2("Inspect render pixel X/Y", coordinate)) {
-		validation.inspectX = uint32_t(std::max(0, coordinate[0]));
-		validation.inspectY = uint32_t(std::max(0, coordinate[1]));
-	}
-	const auto& result = validation.Latest();
-	if (!validation.Status().empty())
-		ImGui::TextWrapped("Validator: %s", validation.Status().c_str());
-	if (result.valid) {
-		const auto& report = result.report;
-		ImGui::Text("Validated frame: %u | %ux%u | draws: %zu", result.frame, result.width,
-			result.height, result.draws.size());
-		ImGui::Text("Pixels: covered %u | fully valid %u | invalid ordinal %u", report.coveredPixels,
-			report.validPixels, report.invalidOrdinals);
-		ImGui::TextColored(NativePBR::SidecarValidationClean(report) ? ImVec4{ 0.3f, 0.9f, 0.4f, 1.0f } :
-			ImVec4{ 1.0f, 0.7f, 0.25f, 1.0f }, "GPU data sanity: %s",
-			NativePBR::SidecarValidationClean(report) ? "PASS" : "INCOMPLETE / INVALID");
-		ImGui::Text("Invalid UV %u | gradients %u | basis %u | facing %u | depth %u",
-			report.invalidUV, report.invalidGradients, report.invalidBasis,
-			report.invalidFacing, report.depthMismatches);
-		ImGui::Text("Same-draw UV quads compared: %u | derivative mismatches: %u",
-			report.comparedQuads, report.gradientMismatchQuads);
-		ImGui::Text("Recipe inspection: absent %u | revision changed %u", result.missingRecipes,
-			result.revisionMismatches);
-		ImGui::Text("Selected pixel (%u, %u): ordinal %u | checks 0x%02X",
-			result.inspectedX, result.inspectedY, report.sampleOrdinal, report.sampleFlags);
-		if (report.sampleOrdinal > 0 && report.sampleOrdinal <= result.draws.size() &&
-			result.draws[report.sampleOrdinal - 1].ordinal == report.sampleOrdinal) {
-			const auto& draw = result.draws[report.sampleOrdinal - 1];
-			ImGui::Text("Material: %016llX | revision: %llu", draw.materialIdentity, draw.materialRevision);
-			ImGui::TextWrapped("Reference: %s | shape: %s", draw.referenceKey.c_str(), draw.shapeName.c_str());
-		}
-		ImGui::Text("UV %.5f %.5f | ddx %.6f %.6f | ddy %.6f %.6f",
-			report.uvDdx[0], report.uvDdx[1], report.uvDdx[2], report.uvDdx[3],
-			report.ddyDepth[0], report.ddyDepth[1]);
-		ImGui::Text("Depth %.8f | facing %.0f | basis Z %.3f %.3f %.3f",
-			report.ddyDepth[2], report.ddyDepth[3], report.basis2[0],
-			report.basis2[1], report.basis2[2]);
-	}
-	if (auto* preview = validation.Preview(); preview && result.valid) {
-		const float scale = std::min(2.0f, 620.0f / std::max(1u, validation.PreviewWidth()));
-		const ImVec2 imageSize{ validation.PreviewWidth() * scale, validation.PreviewHeight() * scale };
-		ImGui::Image(preview, imageSize);
-		if (ImGui::IsItemClicked() && imageSize.x > 0 && imageSize.y > 0) {
-			const ImVec2 start = ImGui::GetItemRectMin();
-			const ImVec2 mouse = ImGui::GetMousePos();
-			validation.inspectX = std::min(result.width - 1, uint32_t(std::max(0.0f,
-				(mouse.x - start.x) / imageSize.x) * result.width));
-			validation.inspectY = std::min(result.height - 1, uint32_t(std::max(0.0f,
-				(mouse.y - start.y) / imageSize.y) * result.height));
-		}
-		if (validation.screenOverlay) {
-			const auto* viewport = ImGui::GetMainViewport();
-			ImGui::GetBackgroundDrawList()->AddImage(preview, viewport->Pos,
-				{ viewport->Pos.x + viewport->Size.x, viewport->Pos.y + viewport->Size.y },
-				{ 0, 0 }, { 1, 1 }, IM_COL32(255, 255, 255, 140));
-		}
-		ImGui::TextDisabled("1/8-scale preview; screen overlay while menu is open is approximate with upscaling.");
-	}
-	static std::string exportStatus;
-	if (ImGui::Button("Save latest completed validation snapshot")) {
-		try {
-			if (!result.valid)
-				throw std::runtime_error("No completed validation frame yet");
-			const std::filesystem::path folder = "Data/SKSE/Plugins/CommunityShaders";
-			std::filesystem::create_directories(folder);
-			std::filesystem::path destination = folder /
-				std::format("NativePBR-validation-{}.json", result.frame);
-			for (uint32_t copy = 1; std::filesystem::exists(destination); ++copy)
-				destination = folder / std::format("NativePBR-validation-{}-{}.json", result.frame, copy);
-			json draws = json::array();
-			for (const auto& draw : result.draws)
-				draws.push_back({ { "ordinal", draw.ordinal }, { "materialIdentity", draw.materialIdentity },
-					{ "materialRevision", draw.materialRevision }, { "reference", draw.referenceKey },
-					{ "shape", draw.shapeName } });
-			const auto& sample = result.report;
-			const json snapshot{ { "frame", result.frame }, { "width", result.width },
-				{ "height", result.height }, { "gpuSanityClean", NativePBR::SidecarValidationClean(sample) },
-				{ "inspection", { { "x", result.inspectedX },
-					{ "y", result.inspectedY }, { "ordinal", sample.sampleOrdinal },
-					{ "checks", sample.sampleFlags }, { "uvDdx", sample.uvDdx },
-					{ "ddyDepthFacing", sample.ddyDepth }, { "basis0", sample.basis0 },
-					{ "basis1", sample.basis1 }, { "basis2", sample.basis2 } } },
-				{ "coveredPixels", sample.coveredPixels }, { "validPixels", sample.validPixels },
-				{ "invalidOrdinals", sample.invalidOrdinals }, { "invalidUV", sample.invalidUV },
-				{ "invalidGradients", sample.invalidGradients }, { "invalidBasis", sample.invalidBasis },
-				{ "invalidFacing", sample.invalidFacing }, { "depthMismatches", sample.depthMismatches },
-				{ "comparedQuads", sample.comparedQuads }, { "gradientMismatchQuads", sample.gradientMismatchQuads },
-				{ "missingRecipes", result.missingRecipes }, { "revisionMismatches", result.revisionMismatches },
-				{ "draws", std::move(draws) } };
-			std::ofstream output(destination, std::ios::trunc);
-			if (!output || !(output << snapshot.dump(2)))
-				throw std::runtime_error("Cannot write NativePBR snapshot");
-			exportStatus = destination.string();
-		} catch (const std::exception& error) {
-			exportStatus = error.what();
-		}
-	}
-	if (!exportStatus.empty())
-		ImGui::TextWrapped("Snapshot: %s", exportStatus.c_str());
 }
 void NativeLLFFeature::DrawSettings()
 {
@@ -663,17 +546,7 @@ void NativeSCMFeature::DrawSettings()
 	ImGui::TextDisabled("Uncovered rigid CPU-backed casters may enter the native DX12 geometry mailbox.");
 	ImGui::TextDisabled("DX12 owns BLAS/TLAS and RayQuery; moving and skinned casters still need updates.");
 }
-void NativePBRFeature::LoadSettings(json& j)
-{
-	enabled.store(j.value("Enabled", true), std::memory_order_relaxed);
-	auto& validation = globals::features::dx12NativeScene.GetPBRValidation();
-	validation.enabled = j.value("ValidationEnabled", false);
-	validation.screenOverlay = j.value("ValidationOverlay", false);
-	validation.mode = std::min(j.value("ValidationMode", 0u), 4u);
-	validation.intervalFrames = std::clamp(j.value("ValidationInterval", 12u), 1u, 120u);
-	validation.inspectX = j.value("ValidationInspectX", 0u);
-	validation.inspectY = j.value("ValidationInspectY", 0u);
-}
+void NativePBRFeature::LoadSettings(json& j) { enabled.store(j.value("Enabled", true), std::memory_order_relaxed); }
 void NativeLLFFeature::LoadSettings(json& j)
 {
 	enabled.store(j.value("Enabled", true), std::memory_order_relaxed);
@@ -687,22 +560,7 @@ void NativeLLFFeature::LoadSettings(json& j)
 		std::memory_order_relaxed);
 }
 void NativeSCMFeature::LoadSettings(json& j) { enabled.store(j.value("Enabled", true), std::memory_order_relaxed); }
-void NativePBRFeature::SaveSettings(json& j)
-{
-	const auto& validation = globals::features::dx12NativeScene.GetPBRValidation();
-	j = { { "Enabled", enabled.load(std::memory_order_relaxed) },
-		{ "ValidationEnabled", validation.enabled }, { "ValidationOverlay", validation.screenOverlay },
-		{ "ValidationMode", validation.mode }, { "ValidationInterval", validation.intervalFrames },
-		{ "ValidationInspectX", validation.inspectX }, { "ValidationInspectY", validation.inspectY } };
-}
-void NativePBRFeature::RestoreDefaultSettings()
-{
-	enabled = true;
-	auto& validation = globals::features::dx12NativeScene.GetPBRValidation();
-	validation.enabled = validation.screenOverlay = false;
-	validation.mode = validation.inspectX = validation.inspectY = 0;
-	validation.intervalFrames = 12;
-}
+void NativePBRFeature::SaveSettings(json& j) { j = { { "Enabled", enabled.load(std::memory_order_relaxed) } }; }
 void NativeLLFFeature::SaveSettings(json& j)
 {
 	j = { { "Enabled", enabled.load(std::memory_order_relaxed) },
@@ -714,8 +572,6 @@ void NativeLLFFeature::SaveSettings(json& j)
 void NativeSCMFeature::SaveSettings(json& j) { j = { { "Enabled", enabled.load(std::memory_order_relaxed) } }; }
 json NativePBRFeature::GetDiagnostics()
 {
-	const auto& gpu = globals::features::dx12NativeScene.GetPBRValidation();
-	const auto& capture = gpu.Latest();
 	const auto recipes = globals::features::truePBR.GetNativeRecipes();
 	const auto state = NativePBR::ResolveRouting({
 		.nativeSelected = enabled.load(std::memory_order_relaxed),
@@ -734,17 +590,7 @@ json NativePBRFeature::GetDiagnostics()
 		{ "legacyComparisonRequested", state.legacyComparisonRequested },
 		{ "materialSidecar", { { "frame", materialSidecar.GetFrame() }, { "surfaces", materialSidecar.PublishedDrawCount() },
 			{ "replayedDraws", materialSidecar.ReplayedDraws() }, { "rejectedDraws", materialSidecar.RejectedDraws() },
-			{ "failedFrames", materialSidecar.FailedFrames() }, { "status", materialSidecar.Status() } } },
-		{ "gpuValidation", { { "enabled", gpu.enabled }, { "status", gpu.Status() },
-			{ "ready", capture.valid }, { "frame", capture.frame },
-			{ "draws", capture.draws.size() }, { "coveredPixels", capture.report.coveredPixels },
-			{ "validPixels", capture.report.validPixels }, { "invalidOrdinals", capture.report.invalidOrdinals },
-			{ "invalidUV", capture.report.invalidUV }, { "invalidGradients", capture.report.invalidGradients },
-			{ "invalidBasis", capture.report.invalidBasis }, { "invalidFacing", capture.report.invalidFacing },
-			{ "depthMismatches", capture.report.depthMismatches },
-			{ "comparedQuads", capture.report.comparedQuads },
-			{ "gradientMismatchQuads", capture.report.gradientMismatchQuads },
-			{ "missingRecipes", capture.missingRecipes }, { "revisionMismatches", capture.revisionMismatches } } } };
+			{ "failedFrames", materialSidecar.FailedFrames() }, { "status", materialSidecar.Status() } } } };
 }
 json NativeLLFFeature::GetDiagnostics()
 {

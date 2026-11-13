@@ -1097,7 +1097,6 @@ void DX12NativeScene::ResetScene()
 	cellID = 0;
 	submitted = false;
 	raster.Reset();
-	pbrValidation.Reset();
 	shadow.Reset();
 	if (auto old = materialBindings.Get())
 		retiredMaterials = old;
@@ -1787,7 +1786,6 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& a_inputs)
 	const auto pbrDraws = globals::features::nativePBR.materialSidecar.GetDrawTable();
 	raster.Capture(*backend, inputs, Util::GetCurrentSceneDepthSRV(false), camera, frame, 0ull,
 		sidecar, pbrDraws);
-	pbrValidation.Advance(*backend, raster.Get(frame));
 	// Earlier shadow hooks may precede the current-frame main camera.
 	// Retry only when the same-frame producer has not already published a mask;
 	// DispatchShadow retains the camera, cell, material, scope and fence guards.

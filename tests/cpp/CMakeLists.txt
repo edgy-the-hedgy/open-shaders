@@ -97,7 +97,6 @@ add_executable(
     test_cacheinvalidation.cpp
     test_native_pbr_registry.cpp
     test_native_pbr_routing.cpp
-    test_native_pbr_sidecar.cpp
     test_compilededupe.cpp
     test_shaderdescriptor.cpp
     test_contenthash.cpp
