@@ -429,6 +429,21 @@ namespace globals
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
+	struct ID3D11DeviceContext_NativePBRDrawIndexed
+	{
+		static void thunk(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base)
+		{
+			static thread_local bool replaying = false;
+			func(a_context, a_count, a_first, a_base);
+			if (replaying || a_context != globals::d3d::context)
+				return;
+			replaying = true;
+			globals::features::nativePBR.ReplaySidecarDraw(a_context, a_count, a_first, a_base);
+			replaying = false;
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
 	/**
 	 * @brief Hooked ClearDepthStencilView — blocks stencil clears when VR stereo opt stencil is active.
 	 *
@@ -497,5 +512,9 @@ namespace globals
 			globals::features::upscaling.perfMode.InstallFadeOverlayHook(a_context);
 
 		UnderwaterDepthOfField::InstallD3DHooks(a_context);
+		if (!globals::game::isVR) {
+			globals::features::nativePBR.PrepareSidecar(globals::d3d::device);
+			stl::detour_vfunc<12, ID3D11DeviceContext_NativePBRDrawIndexed>(a_context);
+		}
 	}
 }

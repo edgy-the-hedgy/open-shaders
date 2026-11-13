@@ -3,6 +3,7 @@
 #include "Features/LightLimitFix.h"
 #include "Features/LightLimitFix/ShadowCasterManager.h"
 #include "Features/NativePBR/MaterialRouting.h"
+#include "Utils/D3D.h"
 #include "Features/NativeLighting/NativeLighting.h"
 #include "Globals.h"
 #include "State.h"
@@ -24,6 +25,45 @@ bool NativePBRFeature::IsActive() const
 		.sceneOwnsNative = globals::features::dx12NativeScene.OwnsNativeFeatures(),
 		.scope = NativePBR::MaterialScope::OpaqueStaticMesh
 	}).owner == NativePBR::RenderingOwner::Native;
+}
+
+void NativePBRFeature::PrepareSidecar(ID3D11Device* a_device)
+{
+	if (!globals::game::isVR)
+		materialSidecar.Prepare(a_device);
+}
+
+void NativePBRFeature::BeginOpaqueSidecar()
+{
+	if (!IsActive() || globals::game::isVR || !globals::game::renderer || !globals::game::graphicsState)
+		return;
+	const auto& target = globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGET::kMAIN];
+	auto* texture = Util::AsReal(target.texture);
+	if (!texture)
+		return;
+	D3D11_TEXTURE2D_DESC desc{};
+	texture->GetDesc(&desc);
+	materialSidecar.BeginFrame(globals::d3d::device, globals::d3d::context, Util::AsReal(target.RTV),
+		globals::game::graphicsState->GetFrameCount(), desc.Width, desc.Height);
+}
+
+void NativePBRFeature::BeginSidecarPass(uint64_t a_identity, uint64_t a_revision, std::string a_referenceKey, std::string a_shapeName)
+{
+	materialSidecar.BeginPass(a_identity, a_revision, std::move(a_referenceKey), std::move(a_shapeName));
+}
+void NativePBRFeature::EndSidecarPass() { materialSidecar.EndPass(); }
+void NativePBRFeature::ReplaySidecarDraw(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base)
+{
+	if (IsActive() && !globals::game::isVR)
+		materialSidecar.ReplayDrawIndexed(a_context, a_count, a_first, a_base);
+}
+void NativePBRFeature::FinishOpaqueSidecar(ID3D11ShaderResourceView* a_finalDepth)
+{
+	materialSidecar.FinishFrame(globals::d3d::context, a_finalDepth);
+}
+NativePBR::MaterialSidecar::Sources NativePBRFeature::GetSidecarSources(uint32_t a_frame) const
+{
+	return IsActive() ? materialSidecar.GetSources(a_frame) : NativePBR::MaterialSidecar::Sources{};
 }
 bool NativeLLFFeature::IsActive() const { return loaded && enabled.load(std::memory_order_relaxed) && globals::features::dx12NativeScene.OwnsNativeFeatures(); }
 bool NativeSCMFeature::IsActive() const { return loaded && enabled.load(std::memory_order_relaxed) && globals::features::dx12NativeScene.OwnsNativeFeatures(); }
@@ -447,6 +487,11 @@ void NativePBRFeature::DrawSettings()
 	DrawOwnership("Enable Native PBR", enabled, IsActive());
 	ImGui::TextDisabled("Consumes TruePBR's live recipe registry in the native material worker.");
 	ImGui::TextDisabled("Texture source and prepared material controls remain in DX12 Native Scene.");
+	ImGui::Text("Sidecar raster draws: %llu | rejected: %llu", materialSidecar.ReplayedDraws(), materialSidecar.RejectedDraws());
+	ImGui::Text("Last frame's PBR surfaces: %zu | frame: %u", materialSidecar.PublishedDrawCount(), materialSidecar.GetFrame());
+	if (!materialSidecar.Status().empty())
+		ImGui::TextWrapped("Sidecar: %s", materialSidecar.Status().c_str());
+	ImGui::TextDisabled("Commit 3 captures surface identity only; native shading is not enabled yet.");
 }
 void NativeLLFFeature::DrawSettings()
 {
@@ -542,7 +587,10 @@ json NativePBRFeature::GetDiagnostics()
 		{ "publishedNativeMaterialGeneration", state.publishedNativeMaterialGeneration },
 		{ "renderingOwnerPolicy", state.owner == NativePBR::RenderingOwner::Native ? "native" :
 			(state.owner == NativePBR::RenderingOwner::NativeUnavailable ? "native-unavailable" : "legacy") },
-		{ "legacyComparisonRequested", state.legacyComparisonRequested } };
+		{ "legacyComparisonRequested", state.legacyComparisonRequested },
+		{ "materialSidecar", { { "frame", materialSidecar.GetFrame() }, { "surfaces", materialSidecar.PublishedDrawCount() },
+			{ "replayedDraws", materialSidecar.ReplayedDraws() }, { "rejectedDraws", materialSidecar.RejectedDraws() },
+			{ "failedFrames", materialSidecar.FailedFrames() }, { "status", materialSidecar.Status() } } } };
 }
 json NativeLLFFeature::GetDiagnostics()
 {

@@ -15,7 +15,8 @@ namespace DX12Native
 		}
 	}
 
-	void RasterCapture::Capture(const GraphicsBackend& a_backend, const std::array<ID3D11Texture2D*, static_cast<size_t>(RasterFrame::Input::Count)>& a_inputs, ID3D11ShaderResourceView* a_depth, const globals::FrameBuffer* a_camera, uint32_t a_frame, uint64_t a_budget)
+	void RasterCapture::Capture(const GraphicsBackend& a_backend, const std::array<ID3D11Texture2D*, static_cast<size_t>(RasterFrame::Input::Count)>& a_inputs, ID3D11ShaderResourceView* a_depth, const globals::FrameBuffer* a_camera, uint32_t a_frame, uint64_t a_budget,
+		const NativePBR::MaterialSidecar::Sources& a_pbrSidecar, std::shared_ptr<const std::vector<NativePBR::SidecarDraw>> a_pbrDraws)
 	{
 		CS_GPU_PASS("DX12NativeScene::CaptureOpaqueRaster");
 		current.reset();
@@ -76,6 +77,34 @@ namespace DX12Native
 				if (desc.Width != width || desc.Height != height)
 					throw std::runtime_error("Opaque raster input dimensions differ");
 			}
+			constexpr std::array<DXGI_FORMAT, NativePBR::MaterialSidecar::kCount> pbrFormats{
+				DXGI_FORMAT_R32_UINT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT,
+				DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT
+			};
+			bool sidecarRequested = a_pbrSidecar[0] != nullptr;
+			sidecarStatus.clear();
+			std::array<D3D11_TEXTURE2D_DESC, NativePBR::MaterialSidecar::kCount> sidecarDesc{};
+			if (sidecarRequested) {
+				if (!a_pbrDraws || a_pbrDraws->empty()) {
+					sidecarRequested = false;
+					sidecarStatus = "Sidecar identity table absent";
+				}
+				for (size_t i = 0; sidecarRequested && i < a_pbrSidecar.size(); ++i) {
+					if (!a_pbrSidecar[i]) {
+						sidecarRequested = false;
+						sidecarStatus = "Sidecar attachment missing";
+						break;
+					}
+					a_pbrSidecar[i]->GetDesc(&sidecarDesc[i]);
+					const auto& desc = sidecarDesc[i];
+					if (desc.Width != width || desc.Height != height || desc.ArraySize != 1 || desc.MipLevels != 1 ||
+						desc.SampleDesc.Count != 1 || desc.Format != pbrFormats[i]) {
+						sidecarRequested = false;
+						sidecarStatus = "Sidecar dimension/typed format mismatch";
+					}
+				}
+			} else if (std::ranges::any_of(a_pbrSidecar, [](const auto* source) { return source != nullptr; }))
+				sidecarStatus = "Sidecar lacks identity target";
 			if (!a_depth)
 				throw std::runtime_error("Opaque depth unavailable");
 			D3D11_SHADER_RESOURCE_VIEW_DESC depthView{};
@@ -98,10 +127,19 @@ namespace DX12Native
 			depthDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
 			depthDesc.CPUAccessFlags = depthDesc.MiscFlags = 0;
 			auto& slot = *available;
-			bool recreate = !slot || slot->width != width || slot->height != height;
-			if (slot && !recreate)
-				for (size_t i = 0; i < descriptions.size(); ++i) recreate |= slot->formats[i] != descriptions[i].Format;
-			uint64_t slotBytes = recreate ? 0 : slot->allocationBytes;
+			bool recreateBase = !slot || slot->width != width || slot->height != height;
+			if (slot && !recreateBase)
+				for (size_t i = 0; i < descriptions.size(); ++i) recreateBase |= slot->formats[i] != descriptions[i].Format;
+			if (sidecarRequested && !recreateBase && slot->pbrSidecarAttempted && !slot->pbrSidecar[0]) {
+				sidecarRequested = false;
+				sidecarStatus = "Sidecar allocation deferred for this resolution until capture reset";
+			}
+			uint64_t slotBytes = recreateBase ? 0 : slot->allocationBytes;
+			uint64_t addedSidecarBytes = 0;
+			const bool allocateSidecar = sidecarRequested && (recreateBase || !slot->pbrSidecar[0]);
+			const bool recreate = recreateBase || allocateSidecar;
+			if (allocateSidecar && !recreateBase)
+				slotBytes = 0; // a replacement is needed for the extended shared-resource layout
 			if (recreate) {
 				for (const auto& source : descriptions) {
 					D3D12_RESOURCE_DESC desc{};
@@ -115,6 +153,24 @@ namespace DX12Native
 					if (allocation.SizeInBytes == UINT64_MAX || allocation.SizeInBytes > budget || slotBytes > budget - allocation.SizeInBytes)
 						throw std::runtime_error("Raster snapshot exceeds memory budget or format is unsupported");
 					slotBytes += allocation.SizeInBytes;
+				}
+				if (sidecarRequested) {
+					for (const auto& source : sidecarDesc) {
+						D3D12_RESOURCE_DESC desc{};
+						desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+						desc.Width = source.Width;
+						desc.Height = source.Height;
+						desc.DepthOrArraySize = desc.MipLevels = 1;
+						desc.Format = source.Format;
+						desc.SampleDesc.Count = 1;
+						const auto allocation = backend.d3d12Device->GetResourceAllocationInfo(0, 1, &desc);
+						if (allocation.SizeInBytes == UINT64_MAX || addedSidecarBytes > UINT64_MAX - allocation.SizeInBytes) {
+							sidecarRequested = false;
+							sidecarStatus = "Sidecar allocation format unsupported";
+							break;
+						}
+						addedSidecarBytes += allocation.SizeInBytes;
+					}
 				}
 				D3D12_RESOURCE_DESC depthAllocation{};
 				depthAllocation.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -133,11 +189,19 @@ namespace DX12Native
 			for (auto it = slots.begin(); it != slots.end(); ++it)
 				if (it != available && *it)
 					otherBytes += (*it)->allocationBytes;
+			if (sidecarRequested && (otherBytes > budget || slotBytes > budget - otherBytes ||
+				addedSidecarBytes > budget - otherBytes - slotBytes)) {
+				sidecarRequested = false;
+				sidecarStatus = "Sidecar deferred: dynamic DXGI budget reserved for original opaque inputs";
+			}
 			if (otherBytes > budget || slotBytes > budget - otherBytes)
 				throw std::runtime_error("Raster snapshot exceeds memory budget");
+			if (sidecarRequested)
+				slotBytes += addedSidecarBytes;
 			if (recreate) {
 				slot.reset();
 				auto replacement = std::make_shared<RasterFrame>();
+				replacement->pbrSidecarAttempted = allocateSidecar;
 				replacement->width = width;
 				replacement->height = height;
 				replacement->allocationBytes = slotBytes;
@@ -150,14 +214,40 @@ namespace DX12Native
 					replacement->inputs[i] = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), std::format("DX12NativeScene::Raster{}", names[i]));
 					replacement->formats[i] = desc.Format;
 				}
+				if (sidecarRequested) {
+					constexpr std::array names{ "Identity", "UvDdx", "DdyDepth", "Basis0", "Basis1", "Basis2" };
+					try {
+						for (size_t i = 0; i < sidecarDesc.size(); ++i) {
+							auto desc = sidecarDesc[i];
+							desc.Usage = D3D11_USAGE_DEFAULT;
+							desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+							desc.CPUAccessFlags = desc.MiscFlags = 0;
+							replacement->pbrSidecar[i] = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), std::format("DX12NativeScene::PBR{}", names[i]));
+						}
+					} catch (const std::exception& error) {
+						sidecarStatus = std::format("Sidecar interop unavailable: {}", error.what());
+						sidecarRequested = false;
+						for (auto& resource : replacement->pbrSidecar)
+							resource.reset();
+						replacement->allocationBytes -= addedSidecarBytes;
+					}
+				}
 				replacement->depth = std::make_unique<WrappedResource>(depthDesc, backend.d3d11Device.get(), backend.d3d12Device.get(), "DX12NativeScene::RasterDepth");
 				slot = std::move(replacement);
 			}
 			slot->consumers.clear();
+			slot->pbrSidecarValid = false;
+			slot->pbrDraws.reset();
 			slot->readyValue = UINT64_MAX;
 			slot->completionCounted = false;
 			for (size_t i = 0; i < a_inputs.size(); ++i)
 				backend.d3d11Context->CopyResource(slot->inputs[i]->resource11, a_inputs[i]);
+			if (sidecarRequested) {
+				for (size_t i = 0; i < a_pbrSidecar.size(); ++i)
+					backend.d3d11Context->CopyResource(slot->pbrSidecar[i]->resource11, a_pbrSidecar[i]);
+				slot->pbrDraws = std::move(a_pbrDraws);
+				slot->pbrSidecarValid = true;
+			}
 			auto* context = backend.d3d11Context.get();
 			winrt::com_ptr<ID3D11ComputeShader> priorShader;
 			winrt::com_ptr<ID3D11ShaderResourceView> priorRead;
@@ -205,6 +295,8 @@ namespace DX12Native
 		return { { "status", status }, { "submissions", submissions }, { "gpuCompletions", completions }, { "offered", bool(current) },
 			{ "frame", current ? current->frame : 0 }, { "width", current ? current->width : 0 }, { "height", current ? current->height : 0 },
 			{ "cameraValid", current && current->cameraValid }, { "frameSlots", slots.size() }, { "busyDeferrals", busyDeferrals },
+			{ "nativePbrSidecarReady", current && current->pbrSidecarValid }, { "nativePbrDrawCount", current && current->pbrDraws ? current->pbrDraws->size() : 0 },
+			{ "nativePbrSidecarStatus", sidecarStatus },
 			{ "dxgiAvailable", videoBudget.last.dxgiAvailable }, { "effectiveFrameBudgetBytes", videoBudget.last.effectiveBytes },
 			{ "dxgiLocalBudgetBytes", videoBudget.last.localBudget }, { "dxgiLocalUsageBytes", videoBudget.last.localUsage },
 			{ "gpuComplete", current && completed != UINT64_MAX && completed >= current->readyValue } };

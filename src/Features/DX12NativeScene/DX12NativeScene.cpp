@@ -1782,7 +1782,10 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& a_inputs)
 				camera = &cached;
 		}
 	}
-	raster.Capture(*backend, inputs, Util::GetCurrentSceneDepthSRV(false), camera, frame, 0ull);
+	const auto sidecar = globals::features::nativePBR.GetSidecarSources(frame);
+	const auto pbrDraws = globals::features::nativePBR.materialSidecar.GetDrawTable();
+	raster.Capture(*backend, inputs, Util::GetCurrentSceneDepthSRV(false), camera, frame, 0ull,
+		sidecar, pbrDraws);
 	// Earlier shadow hooks may precede the current-frame main camera.
 	// Retry only when the same-frame producer has not already published a mask;
 	// DispatchShadow retains the camera, cell, material, scope and fence guards.

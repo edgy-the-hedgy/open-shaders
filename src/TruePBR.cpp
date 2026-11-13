@@ -6,6 +6,7 @@
 
 #include "Features/DX12NativeScene/DX12NativeScene.h"
 #include "Features/InteriorSun.h"
+#include "Features/NativeFeatures.h"
 #include "Hooks.h"
 #include "I18n/I18n.h"
 #include "ShaderCache.h"
@@ -1642,6 +1643,50 @@ struct BSLightingShader_SetupGeometry
 		func(shader, pass, renderFlags);
 
 		shader->currentRawTechnique = originalTechnique;
+		uint64_t materialId = 0, materialRevision = 0;
+		std::string referenceKey, shapeName;
+		if (pass && pass->shaderProperty && pass->geometry &&
+			(originalTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ModelSpaceNormals)) == 0 &&
+			(originalTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Skinned)) == 0 &&
+			(originalTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::FurShells)) == 0 &&
+			pass->geometry->GetType() == RE::BSGeometry::Type::kTriShape &&
+			!pass->geometry->HasAnimation() &&
+			!pass->geometry->GetGeometryRuntimeData().skinInstance &&
+			!pass->geometry->GetGeometryRuntimeData().alphaProperty &&
+			IsPBRShaderProperty(pass->shaderProperty) &&
+			!pass->shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape,
+				RE::BSShaderProperty::EShaderPropertyFlag::kProjectedUV,
+				RE::BSShaderProperty::EShaderPropertyFlag::kRefraction,
+				RE::BSShaderProperty::EShaderPropertyFlag::kTempRefraction,
+				RE::BSShaderProperty::EShaderPropertyFlag::kDecal,
+				RE::BSShaderProperty::EShaderPropertyFlag::kDynamicDecal,
+				RE::BSShaderProperty::EShaderPropertyFlag::kLODLandscape,
+				RE::BSShaderProperty::EShaderPropertyFlag::kSkinned)) {
+			auto* reference = pass->geometry->GetUserData();
+			if (reference && !reference->IsDynamicForm()) {
+				if (const auto* file = reference->GetFile(0)) {
+					if (const auto published = globals::features::truePBR.nativeRegistry.FindPublishedMeshIdentity(pass->shaderProperty->material)) {
+						materialId = published->identity;
+						materialRevision = published->revision;
+						referenceKey = std::format("{:06X}:{}", reference->GetLocalFormID(), file->GetFilename());
+						shapeName = pass->geometry->name.c_str();
+						if (referenceKey.empty() || referenceKey.size() > 256 || shapeName.empty() || shapeName.size() > 1024)
+							materialId = materialRevision = 0;
+					}
+				}
+			}
+		}
+		globals::features::nativePBR.BeginSidecarPass(materialId, materialRevision, std::move(referenceKey), std::move(shapeName));
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+struct BSLightingShader_RestoreGeometry
+{
+	static void thunk(RE::BSLightingShader* shader, RE::BSRenderPass* pass, uint32_t renderFlags)
+	{
+		globals::features::nativePBR.EndSidecarPass();
+		func(shader, pass, renderFlags);
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
@@ -2299,6 +2344,7 @@ void TruePBR::PostPostLoad()
 
 	logger::info("[TruePBR] Hooking BSLightingShader");
 	stl::write_vfunc<0x6, BSLightingShader_SetupGeometry>(RE::VTABLE_BSLightingShader[0]);
+	stl::write_vfunc<0x7, BSLightingShader_RestoreGeometry>(RE::VTABLE_BSLightingShader[0]);
 	stl::detour_thunk_ignore_func<BSLightingShader_GetPixelTechnique>(REL::RelocationID(101633, 108700));
 
 	logger::info("[TruePBR] Hooking TESLandTexture");

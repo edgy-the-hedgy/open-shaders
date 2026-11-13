@@ -386,6 +386,23 @@ namespace NativePBR
 		}
 
 		/** @brief Copies only owned metadata, safe for background and DX12 preparation. */
+		struct PublishedMeshIdentity
+		{
+			uint64_t identity = 0, revision = 0;
+		};
+		std::optional<PublishedMeshIdentity> FindPublishedMeshIdentity(const void* a_source) const
+		{
+			if (!a_source)
+				return std::nullopt;
+			std::shared_lock lock(mutex);
+			const auto it = entries.find(a_source);
+			if (it == entries.end() || it->second.dirty || !it->second.revision ||
+				it->second.data.kind != MaterialKind::Mesh || it->second.data.materialAlpha < 1.0f)
+				return std::nullopt;
+			return PublishedMeshIdentity{ it->second.identity, it->second.revision };
+		}
+
+		/** @brief Copies only owned metadata, safe for background and DX12 preparation. */
 		std::vector<Snapshot> Export() const
 		{
 			std::shared_lock lock(mutex);
