@@ -2,10 +2,12 @@
 #include "Features/DX12NativeScene/DX12NativeScene.h"
 #include "Features/LightLimitFix.h"
 #include "Features/LightLimitFix/ShadowCasterManager.h"
+#include "Features/NativePBR/MaterialRouting.h"
 #include "Features/NativeLighting/NativeLighting.h"
 #include "Globals.h"
 #include "State.h"
 #include "TruePBR.h"
+#include "TruePBR/NativePBRCompiler.h"
 #include "Utils/PointLightFlags.h"
 #include <BS_thread_pool.hpp>
 #include <algorithm>
@@ -14,7 +16,15 @@
 
 // Backend selection is the ONLY automatic execution switch. Feature toggles
 // are explicit user choices, never material/caster/light validity gates.
-bool NativePBRFeature::IsActive() const { return loaded && enabled.load(std::memory_order_relaxed) && globals::features::dx12NativeScene.OwnsNativeFeatures(); }
+bool NativePBRFeature::IsActive() const
+{
+	return NativePBR::ResolveRouting({
+		.nativeSelected = enabled.load(std::memory_order_relaxed),
+		.featureLoaded = loaded,
+		.sceneOwnsNative = globals::features::dx12NativeScene.OwnsNativeFeatures(),
+		.scope = NativePBR::MaterialScope::OpaqueStaticMesh
+	}).owner == NativePBR::RenderingOwner::Native;
+}
 bool NativeLLFFeature::IsActive() const { return loaded && enabled.load(std::memory_order_relaxed) && globals::features::dx12NativeScene.OwnsNativeFeatures(); }
 bool NativeSCMFeature::IsActive() const { return loaded && enabled.load(std::memory_order_relaxed) && globals::features::dx12NativeScene.OwnsNativeFeatures(); }
 
@@ -517,8 +527,22 @@ void NativeLLFFeature::SaveSettings(json& j)
 void NativeSCMFeature::SaveSettings(json& j) { j = { { "Enabled", enabled.load(std::memory_order_relaxed) } }; }
 json NativePBRFeature::GetDiagnostics()
 {
-	return { { "selected", enabled.load() }, { "native", IsActive() },
-		{ "recipeRevision", globals::features::truePBR.nativeRegistry.Revision() } };
+	const auto recipes = globals::features::truePBR.GetNativeRecipes();
+	const auto state = NativePBR::ResolveRouting({
+		.nativeSelected = enabled.load(std::memory_order_relaxed),
+		.featureLoaded = loaded,
+		.sceneOwnsNative = globals::features::dx12NativeScene.OwnsNativeFeatures(),
+		.materialInputsAvailable = recipes && !recipes->recipes.empty(),
+		.scope = NativePBR::MaterialScope::OpaqueStaticMesh
+	});
+	return { { "selected", enabled.load() }, { "native", state.owner == NativePBR::RenderingOwner::Native },
+		{ "recipeRevision", globals::features::truePBR.nativeRegistry.Revision() },
+		{ "shaderDomainPolicy", state.shaderDomain == NativePBR::ShaderDomain::NativePBRInput ? "native-pbr-input" : "legacy-true-pbr" },
+		{ "materialInputsAvailable", state.materialInputsAvailable },
+		{ "publishedNativeMaterialGeneration", state.publishedNativeMaterialGeneration },
+		{ "renderingOwnerPolicy", state.owner == NativePBR::RenderingOwner::Native ? "native" :
+			(state.owner == NativePBR::RenderingOwner::NativeUnavailable ? "native-unavailable" : "legacy") },
+		{ "legacyComparisonRequested", state.legacyComparisonRequested } };
 }
 json NativeLLFFeature::GetDiagnostics()
 {
