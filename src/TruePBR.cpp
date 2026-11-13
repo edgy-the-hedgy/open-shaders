@@ -1580,6 +1580,7 @@ struct BSLightingShader_SetupGeometry
 		auto surveyClass = NativePBR::PreviewSurveyClass::None;
 		uint32_t unsupportedReasons = 0;
 		std::string referenceKey, shapeName;
+		const bool captureProjectedUv = globals::features::nativePBR.captureProjectedUv.load(std::memory_order_relaxed);
 		if (pass && pass->shaderProperty && pass->geometry &&
 			(originalTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ModelSpaceNormals)) == 0 &&
 			(originalTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::DoAlphaTest)) == 0 &&
@@ -1591,18 +1592,23 @@ struct BSLightingShader_SetupGeometry
 			!pass->geometry->GetGeometryRuntimeData().alphaProperty &&
 			IsPBRShaderProperty(pass->shaderProperty) &&
 			!pass->shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape,
-				RE::BSShaderProperty::EShaderPropertyFlag::kProjectedUV,
 				RE::BSShaderProperty::EShaderPropertyFlag::kRefraction,
 				RE::BSShaderProperty::EShaderPropertyFlag::kTempRefraction,
 				RE::BSShaderProperty::EShaderPropertyFlag::kDecal,
 				RE::BSShaderProperty::EShaderPropertyFlag::kDynamicDecal,
 				RE::BSShaderProperty::EShaderPropertyFlag::kLODLandscape,
-				RE::BSShaderProperty::EShaderPropertyFlag::kSkinned)) {
+				RE::BSShaderProperty::EShaderPropertyFlag::kSkinned) &&
+			(captureProjectedUv || !pass->shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kProjectedUV))) {
+			const bool projected = pass->shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kProjectedUV);
+			const bool supportedProjectedTechnique = !projected || ((originalTechnique >> 24) & 0x3Fu) == 0;
 			// A rigid opaque PBR pass qualifies for the lightweight coverage preview even
 			// when its TruePBR registry identity/reference could not be resolved.
-			surveyClass = NativePBR::PreviewSurveyClass::OpaquePbrCandidate;
+			surveyClass = projected ? NativePBR::PreviewSurveyClass::UnsupportedProjectedUv :
+				NativePBR::PreviewSurveyClass::OpaquePbrCandidate;
+			if (projected)
+				unsupportedReasons |= NativePBR::ProjectedUvReason;
 			auto* reference = pass->geometry->GetUserData();
-			if (reference && !reference->IsDynamicForm()) {
+			if (supportedProjectedTechnique && reference && !reference->IsDynamicForm()) {
 				if (const auto* file = reference->GetFile(0)) {
 					if (const auto published = globals::features::truePBR.nativeRegistry.FindPublishedMeshIdentity(pass->shaderProperty->material)) {
 						materialId = published->identity;

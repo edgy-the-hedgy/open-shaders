@@ -19,14 +19,16 @@ namespace NativePBR
 			DXGI_FORMAT_R32G32B32A32_FLOAT,
 			DXGI_FORMAT_R16G16B16A16_FLOAT,
 			DXGI_FORMAT_R16G16B16A16_FLOAT,
-			DXGI_FORMAT_R16G16B16A16_FLOAT
+			DXGI_FORMAT_R16G16B16A16_FLOAT,
+			DXGI_FORMAT_R32G32B32A32_FLOAT,
+			DXGI_FORMAT_R32G32B32A32_FLOAT
 		};
 
-		uint64_t RequiredBytes(uint32_t a_width, uint32_t a_height)
+		uint64_t RequiredBytes(uint32_t a_width, uint32_t a_height, bool a_projected)
 		{
 			uint64_t perPixel = 0;
-			for (const auto bytes : kSidecarBytesPerPixel)
-				perPixel += bytes;
+			for (size_t i = 0; i < (a_projected ? MaterialSidecar::kCount : kBaseSidecarTargetCount); ++i)
+				perPixel += kSidecarBytesPerPixel[i];
 			return uint64_t(a_width) * a_height * perPixel;
 		}
 
@@ -58,6 +60,10 @@ namespace NativePBR
 		try {
 			shader.attach(static_cast<ID3D11PixelShader*>(Util::CompileShader(
 				L"Data\\Shaders\\NativePBR\\MaterialSidecar.ps.hlsl", {}, "ps_5_0")));
+			projectedShader.attach(static_cast<ID3D11PixelShader*>(Util::CompileShader(
+				L"Data\\Shaders\\NativePBR\\MaterialSidecar.ps.hlsl", { { "CAPTURE_PROJECTED_UV", "1" } }, "ps_5_0")));
+			if (projectedShader)
+				Util::SetResourceName(projectedShader.get(), "NativePBR::ProjectedSidecar");
 			previewShader.attach(static_cast<ID3D11PixelShader*>(Util::CompileShader(
 				L"Data\\Shaders\\NativePBR\\PreviewOpaque.ps.hlsl", {}, "ps_5_0")));
 			if (previewShader)
@@ -85,7 +91,7 @@ namespace NativePBR
 	}
 
 	void MaterialSidecar::BeginFrame(ID3D11Device* a_device, ID3D11DeviceContext* a_context, ID3D11RenderTargetView* a_mainTarget,
-		uint32_t a_frame, uint32_t a_width, uint32_t a_height)
+		uint32_t a_frame, uint32_t a_width, uint32_t a_height, bool a_captureProjectedUv)
 	{
 		CS_GPU_PASS("NativePBR::SidecarBegin");
 		ready = recording = false;
@@ -100,18 +106,24 @@ namespace NativePBR
 		draws.clear();
 		nextDraw = 1;
 		surveyDrawsThisFrame = 0;
+		projectedDrawsThisFrame = 0;
 		unsupportedReasonsThisFrame.fill(0);
 		if (!a_device || !a_context || !a_mainTarget || !shader || !validation || !writeAll || !a_width || !a_height) {
 			status = "Sidecar shaders, device, or dimensions unavailable";
 			++failedFrames;
 			return;
 		}
+		if (a_captureProjectedUv && !projectedShader) {
+			status = "ProjectedUV sidecar shader unavailable; legacy rendering remains active";
+			++failedFrames;
+			return;
+		}
 		try {
-			if (width != a_width || height != a_height || !targets[0].texture) {
-				if (!HasVideoBudget(a_device, RequiredBytes(a_width, a_height)))
+			if (width != a_width || height != a_height || captureProjectedUv != a_captureProjectedUv || !targets[0].texture) {
+				if (!HasVideoBudget(a_device, RequiredBytes(a_width, a_height, a_captureProjectedUv)))
 					throw std::runtime_error("DXGI local budget cannot accommodate full-resolution PBR sidecar");
 				std::array<Target, kCount> replacements;
-				for (size_t i = 0; i < kCount; ++i) {
+				for (size_t i = 0; i < (a_captureProjectedUv ? kCount : kBaseSidecarTargetCount); ++i) {
 					D3D11_TEXTURE2D_DESC desc{};
 					desc.Width = a_width;
 					desc.Height = a_height;
@@ -125,12 +137,16 @@ namespace NativePBR
 					winrt::check_hresult(a_device->CreateTexture2D(&desc, nullptr, replacements[i].texture.put()));
 					winrt::check_hresult(a_device->CreateRenderTargetView(replacements[i].texture.get(), nullptr, replacements[i].rtv.put()));
 					winrt::check_hresult(a_device->CreateShaderResourceView(replacements[i].texture.get(), nullptr, replacements[i].srv.put()));
+					Util::SetResourceName(replacements[i].texture.get(), "NativePBR::SidecarTarget%zu", i);
+					Util::SetResourceName(replacements[i].rtv.get(), "NativePBR::SidecarTarget%zu RTV", i);
+					Util::SetResourceName(replacements[i].srv.get(), "NativePBR::SidecarTarget%zu SRV", i);
 					if (i == static_cast<size_t>(SidecarTarget::Identity))
 						winrt::check_hresult(a_device->CreateUnorderedAccessView(replacements[i].texture.get(), nullptr, replacements[i].uav.put()));
 				}
 				targets = std::move(replacements);
 				width = a_width;
 				height = a_height;
+				captureProjectedUv = a_captureProjectedUv;
 			}
 			const float clear[4]{};
 			a_context->ClearRenderTargetView(targets[0].rtv.get(), clear);
@@ -149,7 +165,8 @@ namespace NativePBR
 	{
 		activeSurveyClass = recording ? a_surveyClass : PreviewSurveyClass::None;
 		activeUnsupportedReasons = recording ? a_unsupportedReasons : 0;
-		activeMaterial = recording && a_materialRevision ? a_materialIdentity : 0;
+		activeMaterial = recording && a_materialRevision &&
+			((a_unsupportedReasons & ProjectedUvReason) == 0 || captureProjectedUv) ? a_materialIdentity : 0;
 		activeRevision = activeMaterial ? a_materialRevision : 0;
 		activeReference = activeMaterial ? std::move(a_referenceKey) : std::string{};
 		activeShape = activeMaterial ? std::move(a_shapeName) : std::string{};
@@ -167,10 +184,13 @@ namespace NativePBR
 
 	void MaterialSidecar::ReplayDrawIndexed(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base, PreviewMode a_previewMode)
 	{
+		const bool projectedDraw = activeMaterial && captureProjectedUv &&
+			(activeUnsupportedReasons & ProjectedUvReason) != 0;
 		const bool surveyDraw = a_previewMode == PreviewMode::Coverage && !activeMaterial &&
 			activeSurveyClass != PreviewSurveyClass::None;
 		if (!recording || (!activeMaterial && !surveyDraw) || !a_context || a_count == 0 ||
-			(surveyDraw && (!previewShader || surveyDrawsThisFrame >= kSurveyDrawLimit)))
+			(surveyDraw && (!previewShader || surveyDrawsThisFrame >= kSurveyDrawLimit)) ||
+			(projectedDraw && projectedDrawsThisFrame >= kSurveyDrawLimit))
 			return;
 		CS_GPU_PASS("NativePBR::SidecarRaster");
 		// This call is made AFTER the original draw has finished, on the same immediate context.
@@ -236,7 +256,7 @@ namespace NativePBR
 		a_context->PSGetConstantBuffers(13, 1, oldConstant.put());
 		// Survey-only geometry is previewed, never recorded as a native PBR material.
 		const uint32_t ordinal = activeMaterial ? nextDraw++ : 0;
-		const uint32_t surveyCode = surveyDraw ? static_cast<uint32_t>(activeSurveyClass) : 0u;
+		const uint32_t surveyCode = surveyDraw || projectedDraw ? static_cast<uint32_t>(activeSurveyClass) : 0u;
 		const uint32_t previewFlags = static_cast<uint32_t>(a_previewMode) | (surveyCode << 8);
 		const Constants constants{ ordinal, previewFlags, static_cast<uint32_t>(activeMaterial), static_cast<uint32_t>(activeMaterial >> 32) };
 		a_context->UpdateSubresource(drawConstants.get(), 0, nullptr, &constants, 0, 0);
@@ -248,10 +268,11 @@ namespace NativePBR
 		// A caller-side recursion guard skips the replay in DrawIndexed detours.
 		if (activeMaterial) {
 			std::array<ID3D11RenderTargetView*, kCount> views{};
-			for (size_t i = 0; i < kCount; ++i)
+			const size_t targetCount = projectedDraw ? kCount : kBaseSidecarTargetCount;
+			for (size_t i = 0; i < targetCount; ++i)
 				views[i] = targets[i].rtv.get();
-			a_context->OMSetRenderTargets(static_cast<UINT>(views.size()), views.data(), dsv.get());
-			a_context->PSSetShader(shader.get(), nullptr, 0);
+			a_context->OMSetRenderTargets(static_cast<UINT>(targetCount), views.data(), dsv.get());
+			a_context->PSSetShader(projectedDraw ? projectedShader.get() : shader.get(), nullptr, 0);
 			a_context->DrawIndexed(a_count, a_first, a_base);
 		}
 		if (a_previewMode != PreviewMode::Off && previewShader) {
@@ -284,8 +305,10 @@ namespace NativePBR
 		a_context->OMSetRenderTargets(static_cast<UINT>(oldRaw.size()), oldRaw.data(), dsv.get());
 		if (activeMaterial) {
 			try {
-				draws.push_back({ ordinal, activeMaterial, activeRevision, activeReference, activeShape });
+				draws.push_back({ ordinal, activeMaterial, activeRevision, activeReference, activeShape, projectedDraw });
 				++replayed;
+				if (projectedDraw)
+					++projectedDrawsThisFrame;
 			} catch (const std::bad_alloc&) {
 				recording = false;
 				status = "Sidecar draw table allocation exhausted";

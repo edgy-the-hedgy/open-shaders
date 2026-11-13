@@ -44,6 +44,7 @@ struct NativePBRFeature final : Feature
 	std::shared_ptr<const NativePBR::RecipeGeneration> GetNativeRecipes() const;
 	std::atomic<bool> enabled{ true };
 	std::atomic<bool> previewOpaqueReplacement{ false };
+	std::atomic<bool> captureProjectedUv{ false };
 	// 0 = material identity; 1 = UV/derivatives; 2 = PBR coverage comparison.
 	std::atomic<uint32_t> previewVisualization{ 0 };
 	NativePBR::MaterialSidecar materialSidecar;
@@ -64,7 +65,7 @@ struct NativePBRFeature final : Feature
 	void DrawSettings() override;
 	void LoadSettings(json&) override;
 	void SaveSettings(json&) override;
-	void RestoreDefaultSettings() override { enabled = true; previewOpaqueReplacement = false; previewVisualization = 0; }
+	void RestoreDefaultSettings() override { enabled = true; previewOpaqueReplacement = false; captureProjectedUv = false; previewVisualization = 0; }
 	json GetDiagnostics() override;
 };
 

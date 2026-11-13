@@ -15,6 +15,16 @@ TEST_CASE("NativePBR sidecar encodes a full 64-bit registry identity and frame-l
 	REQUIRE(NativePBR::ResolveSidecarMaterial(1, mismatched) == 0);
 }
 
+TEST_CASE("NativePBR projected draw keeps its capture-only classification", "[NativePBR]")
+{
+	const NativePBR::SidecarDraw ordinary{ 1, 42, 1, "ref", "mesh", false };
+	const NativePBR::SidecarDraw projected{ 2, 43, 1, "ref", "mesh", true };
+	const std::array draws{ ordinary, projected };
+	REQUIRE_FALSE(ordinary.projectedUv);
+	REQUIRE(projected.projectedUv);
+	REQUIRE(NativePBR::ResolveSidecarMaterial(2, draws) == 43);
+}
+
 TEST_CASE("NativePBR coverage rejects different final depth and invalid depth", "[NativePBR]")
 {
 	REQUIRE(NativePBR::SidecarDepthMatches(0.25f, 0.25f, false));
@@ -26,13 +36,16 @@ TEST_CASE("NativePBR coverage rejects different final depth and invalid depth", 
 	REQUIRE_FALSE(NativePBR::SidecarDepthMatches(0.5f, std::numeric_limits<float>::infinity(), false));
 }
 
-TEST_CASE("NativePBR sidecar retains six independent outputs without using deferred MRTs", "[NativePBR]")
+TEST_CASE("NativePBR sidecar adds two projected outputs without using deferred MRTs", "[NativePBR]")
 {
-	REQUIRE(NativePBR::kSidecarBytesPerPixel.size() == 6u);
+	REQUIRE(NativePBR::kBaseSidecarTargetCount == 6u);
+	REQUIRE(NativePBR::kSidecarBytesPerPixel.size() == 8u);
 	uint32_t bytes = 0;
-	for (auto size : NativePBR::kSidecarBytesPerPixel)
-		bytes += size;
+	for (size_t i = 0; i < NativePBR::kBaseSidecarTargetCount; ++i)
+		bytes += NativePBR::kSidecarBytesPerPixel[i];
 	REQUIRE(bytes == 60u);
+	REQUIRE(bytes + NativePBR::kSidecarBytesPerPixel[6] + NativePBR::kSidecarBytesPerPixel[7] == 92u);
 	REQUIRE(static_cast<size_t>(NativePBR::SidecarTarget::Identity) == 0);
 	REQUIRE(static_cast<size_t>(NativePBR::SidecarTarget::Basis2) == 5);
+	REQUIRE(static_cast<size_t>(NativePBR::SidecarTarget::ProjectedDirection) == 7);
 }

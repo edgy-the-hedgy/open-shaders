@@ -47,7 +47,7 @@ namespace NativePBR
 
 		void Prepare(ID3D11Device* a_device);
 		void BeginFrame(ID3D11Device* a_device, ID3D11DeviceContext* a_context, ID3D11RenderTargetView* a_mainTarget,
-			uint32_t a_frame, uint32_t a_width, uint32_t a_height);
+			uint32_t a_frame, uint32_t a_width, uint32_t a_height, bool a_captureProjectedUv);
 		void BeginPass(uint64_t a_materialIdentity, uint64_t a_materialRevision, std::string a_referenceKey, std::string a_shapeName,
 			PreviewSurveyClass a_surveyClass, uint32_t a_unsupportedReasons);
 		void EndPass();
@@ -67,6 +67,7 @@ namespace NativePBR
 		std::array<uint64_t, 4> PreviewUnsupportedReasons() const { return previewUnsupportedReasons; }
 		std::array<uint32_t, 4> UnsupportedReasonsThisFrame() const { return unsupportedReasonsThisFrame; }
 		uint32_t SurveyDrawsThisFrame() const { return surveyDrawsThisFrame; }
+		uint32_t ProjectedDrawsThisFrame() const { return projectedDrawsThisFrame; }
 		uint32_t SurveyLimit() const { return kSurveyDrawLimit; }
 		bool PreviewReady() const { return static_cast<bool>(previewShader); }
 		const std::string& Status() const { return status; }
@@ -85,7 +86,7 @@ namespace NativePBR
 			uint32_t ordinal, reserved, materialLow, materialHigh;
 		};
 		std::array<Target, kCount> targets{};
-		winrt::com_ptr<ID3D11PixelShader> shader, previewShader;
+		winrt::com_ptr<ID3D11PixelShader> shader, projectedShader, previewShader;
 		winrt::com_ptr<ID3D11ComputeShader> validation;
 		winrt::com_ptr<ID3D11Buffer> drawConstants, validationConstants;
 		winrt::com_ptr<ID3D11BlendState> writeAll;
@@ -102,9 +103,9 @@ namespace NativePBR
 			previewMissingIdentities = 0, previewOrdinaryDraws = 0, previewUnsupportedDraws = 0;
 		std::array<uint64_t, 4> previewUnsupportedReasons{};
 		std::array<uint32_t, 4> unsupportedReasonsThisFrame{};
-		uint32_t frame = 0, width = 0, height = 0, nextDraw = 1, surveyDrawsThisFrame = 0;
+		uint32_t frame = 0, width = 0, height = 0, nextDraw = 1, surveyDrawsThisFrame = 0, projectedDrawsThisFrame = 0;
 		uint32_t activeUnsupportedReasons = 0;
-		bool recording = false, ready = false;
+		bool recording = false, ready = false, captureProjectedUv = false;
 		PreviewSurveyClass activeSurveyClass = PreviewSurveyClass::None;
 		std::string status;
 	};

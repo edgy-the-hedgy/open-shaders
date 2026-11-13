@@ -19,10 +19,13 @@ namespace NativePBR
 		Basis0,
 		Basis1,
 		Basis2,
+		ProjectedWorldPosition,
+		ProjectedDirection,
 		Count
 	};
 
-	inline constexpr std::array<uint32_t, static_cast<size_t>(SidecarTarget::Count)> kSidecarBytesPerPixel{ 4, 16, 16, 8, 8, 8 };
+	inline constexpr size_t kBaseSidecarTargetCount = static_cast<size_t>(SidecarTarget::ProjectedWorldPosition);
+	inline constexpr std::array<uint32_t, static_cast<size_t>(SidecarTarget::Count)> kSidecarBytesPerPixel{ 4, 16, 16, 8, 8, 8, 16, 16 };
 
 	/** Stored alongside the frame's fenced GPU textures; no borrowed engine pointers. */
 	struct SidecarDraw
@@ -31,6 +34,7 @@ namespace NativePBR
 		uint64_t materialIdentity = 0;
 		uint64_t materialRevision = 0;
 		std::string referenceKey, shapeName;
+		bool projectedUv = false;
 	};
 
 	/** Zero is uncovered. Nonzero ordinals address an exact frame-local 64-bit material ID. */

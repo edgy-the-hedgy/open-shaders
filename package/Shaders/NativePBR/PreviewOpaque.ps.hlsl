@@ -27,7 +27,7 @@ float4 main(Input input) : SV_Target0
 		return float4(lerp(uvColor, 1.0.xxx, grid * 0.4), 1.0);
 	}
 	if (mode == 3u) {
-		// The non-green categories are raster-only and cannot enter the native material identity table.
+		// Only green represents a shading-eligible surface; projected inputs are capture-only.
 		uint classification = (Reserved >> 8) & 7u;
 		float3 coverageColor = float3(0.08, 0.85, 0.15);
 		if (classification == 1u)

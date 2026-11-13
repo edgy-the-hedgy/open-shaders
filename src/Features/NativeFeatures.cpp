@@ -135,7 +135,8 @@ void NativePBRFeature::BeginOpaqueSidecar()
 	D3D11_TEXTURE2D_DESC desc{};
 	texture->GetDesc(&desc);
 	materialSidecar.BeginFrame(globals::d3d::device, globals::d3d::context, Util::AsReal(target.RTV),
-		globals::game::graphicsState->GetFrameCount(), desc.Width, desc.Height);
+		globals::game::graphicsState->GetFrameCount(), desc.Width, desc.Height,
+		captureProjectedUv.load(std::memory_order_relaxed));
 }
 
 void NativePBRFeature::BeginSidecarPass(uint64_t a_identity, uint64_t a_revision, std::string a_referenceKey,
@@ -587,6 +588,13 @@ void NativePBRFeature::DrawSettings()
 	ImGui::TextDisabled("Texture source and prepared material controls remain in DX12 Native Scene.");
 	ImGui::Text("Sidecar raster draws: %llu | rejected: %llu", materialSidecar.ReplayedDraws(), materialSidecar.RejectedDraws());
 	ImGui::Text("Last frame's PBR surfaces: %zu | frame: %u", materialSidecar.PublishedDrawCount(), materialSidecar.GetFrame());
+	bool projected = captureProjectedUv.load(std::memory_order_relaxed);
+	if (ImGui::Checkbox("Capture ProjectedUV material inputs (experimental)", &projected))
+		captureProjectedUv.store(projected, std::memory_order_relaxed);
+	if (projected) {
+		ImGui::Text("ProjectedUV sidecar draws this frame: %u/%u", materialSidecar.ProjectedDrawsThisFrame(), materialSidecar.SurveyLimit());
+		ImGui::TextDisabled("Input capture only; projected shading remains on legacy TruePBR.");
+	}
 	bool preview = previewOpaqueReplacement.load(std::memory_order_relaxed);
 	if (ImGui::Checkbox("Preview opaque PBR replacement (temporary)", &preview))
 		previewOpaqueReplacement.store(preview, std::memory_order_relaxed);
@@ -683,6 +691,7 @@ void NativeSCMFeature::DrawSettings()
 void NativePBRFeature::LoadSettings(json& j)
 {
 	enabled.store(j.value("Enabled", true), std::memory_order_relaxed);
+	captureProjectedUv.store(j.value("CaptureProjectedUv", false), std::memory_order_relaxed);
 	previewOpaqueReplacement.store(j.value("PreviewOpaqueReplacement", false), std::memory_order_relaxed);
 	previewVisualization.store(static_cast<uint32_t>(std::clamp(j.value("PreviewVisualization", 0), 0, 2)),
 		std::memory_order_relaxed);
@@ -703,6 +712,7 @@ void NativeSCMFeature::LoadSettings(json& j) { enabled.store(j.value("Enabled", 
 void NativePBRFeature::SaveSettings(json& j)
 {
 	j = { { "Enabled", enabled.load(std::memory_order_relaxed) },
+		{ "CaptureProjectedUv", captureProjectedUv.load(std::memory_order_relaxed) },
 		{ "PreviewOpaqueReplacement", previewOpaqueReplacement.load(std::memory_order_relaxed) },
 		{ "PreviewVisualization", previewVisualization.load(std::memory_order_relaxed) } };
 }
@@ -726,6 +736,8 @@ json NativePBRFeature::GetDiagnostics()
 		.scope = NativePBR::MaterialScope::OpaqueStaticMesh
 	});
 	return { { "selected", enabled.load() }, { "native", state.owner == NativePBR::RenderingOwner::Native },
+		{ "captureProjectedUv", captureProjectedUv.load(std::memory_order_relaxed) },
+		{ "projectedDrawsThisFrame", materialSidecar.ProjectedDrawsThisFrame() },
 		{ "recipeRevision", materialRegistry.Revision() },
 		{ "previewOpaqueReplacement", previewOpaqueReplacement.load(std::memory_order_relaxed) },
 		{ "previewVisualization", previewVisualization.load(std::memory_order_relaxed) },

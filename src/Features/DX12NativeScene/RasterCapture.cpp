@@ -79,17 +79,24 @@ namespace DX12Native
 			}
 			constexpr std::array<DXGI_FORMAT, NativePBR::MaterialSidecar::kCount> pbrFormats{
 				DXGI_FORMAT_R32_UINT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT,
-				DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT
+				DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
+				DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT
 			};
 			bool sidecarRequested = a_pbrSidecar[0] != nullptr;
+			const bool projectedAttachments = a_pbrSidecar[NativePBR::kBaseSidecarTargetCount] != nullptr;
+			const size_t sidecarCount = projectedAttachments ? pbrFormats.size() : NativePBR::kBaseSidecarTargetCount;
 			sidecarStatus.clear();
 			std::array<D3D11_TEXTURE2D_DESC, NativePBR::MaterialSidecar::kCount> sidecarDesc{};
 			if (sidecarRequested) {
+				if (projectedAttachments != (a_pbrSidecar[NativePBR::kBaseSidecarTargetCount + 1] != nullptr)) {
+					sidecarRequested = false;
+					sidecarStatus = "Projected sidecar attachments are incomplete";
+				}
 				if (!a_pbrDraws || a_pbrDraws->empty()) {
 					sidecarRequested = false;
 					sidecarStatus = "Sidecar identity table absent";
 				}
-				for (size_t i = 0; sidecarRequested && i < a_pbrSidecar.size(); ++i) {
+				for (size_t i = 0; sidecarRequested && i < sidecarCount; ++i) {
 					if (!a_pbrSidecar[i]) {
 						sidecarRequested = false;
 						sidecarStatus = "Sidecar attachment missing";
@@ -134,9 +141,11 @@ namespace DX12Native
 				sidecarRequested = false;
 				sidecarStatus = "Sidecar allocation deferred for this resolution until capture reset";
 			}
+			const bool sidecarLayoutChanged = sidecarRequested && slot && slot->pbrSidecar[0] &&
+				static_cast<bool>(slot->pbrSidecar[NativePBR::kBaseSidecarTargetCount]) != projectedAttachments;
 			uint64_t slotBytes = recreateBase ? 0 : slot->allocationBytes;
 			uint64_t addedSidecarBytes = 0;
-			const bool allocateSidecar = sidecarRequested && (recreateBase || !slot->pbrSidecar[0]);
+			const bool allocateSidecar = sidecarRequested && (recreateBase || !slot->pbrSidecar[0] || sidecarLayoutChanged);
 			const bool recreate = recreateBase || allocateSidecar;
 			if (allocateSidecar && !recreateBase)
 				slotBytes = 0; // a replacement is needed for the extended shared-resource layout
@@ -155,7 +164,8 @@ namespace DX12Native
 					slotBytes += allocation.SizeInBytes;
 				}
 				if (sidecarRequested) {
-					for (const auto& source : sidecarDesc) {
+					for (size_t i = 0; i < sidecarCount; ++i) {
+						const auto& source = sidecarDesc[i];
 						D3D12_RESOURCE_DESC desc{};
 						desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
 						desc.Width = source.Width;
@@ -215,9 +225,10 @@ namespace DX12Native
 					replacement->formats[i] = desc.Format;
 				}
 				if (sidecarRequested) {
-					constexpr std::array pbrNames{ "Identity", "UvDdx", "DdyDepth", "Basis0", "Basis1", "Basis2" };
+					constexpr std::array pbrNames{ "Identity", "UvDdx", "DdyDepth", "Basis0", "Basis1", "Basis2",
+						"ProjectedPosition", "ProjectedDirection" };
 					try {
-						for (size_t i = 0; i < sidecarDesc.size(); ++i) {
+						for (size_t i = 0; i < sidecarCount; ++i) {
 							auto desc = sidecarDesc[i];
 							desc.Usage = D3D11_USAGE_DEFAULT;
 							desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
@@ -243,7 +254,7 @@ namespace DX12Native
 			for (size_t i = 0; i < a_inputs.size(); ++i)
 				backend.d3d11Context->CopyResource(slot->inputs[i]->resource11, a_inputs[i]);
 			if (sidecarRequested) {
-				for (size_t i = 0; i < a_pbrSidecar.size(); ++i)
+				for (size_t i = 0; i < sidecarCount; ++i)
 					backend.d3d11Context->CopyResource(slot->pbrSidecar[i]->resource11, a_pbrSidecar[i]);
 				slot->pbrDraws = std::move(a_pbrDraws);
 				slot->pbrSidecarValid = true;
