@@ -1656,6 +1656,7 @@ struct BSLightingShader_SetupGeometry
 		std::string referenceKey, shapeName;
 		if (pass && pass->shaderProperty && pass->geometry &&
 			(originalTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ModelSpaceNormals)) == 0 &&
+			(originalTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::DoAlphaTest)) == 0 &&
 			(originalTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Skinned)) == 0 &&
 			(originalTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::FurShells)) == 0 &&
 			pass->geometry->GetType() == RE::BSGeometry::Type::kTriShape &&

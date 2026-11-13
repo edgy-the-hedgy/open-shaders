@@ -23,6 +23,7 @@ namespace RE
 struct NativePBRFeature final : Feature
 {
 	std::atomic<bool> enabled{ true };
+	std::atomic<bool> previewOpaqueReplacement{ false };
 	NativePBR::MaterialSidecar materialSidecar;
 	void PrepareSidecar(ID3D11Device* a_device);
 	void BeginOpaqueSidecar();
@@ -39,7 +40,7 @@ struct NativePBRFeature final : Feature
 	void DrawSettings() override;
 	void LoadSettings(json&) override;
 	void SaveSettings(json&) override;
-	void RestoreDefaultSettings() override { enabled = true; }
+	void RestoreDefaultSettings() override { enabled = true; previewOpaqueReplacement = false; }
 	json GetDiagnostics() override;
 };
 

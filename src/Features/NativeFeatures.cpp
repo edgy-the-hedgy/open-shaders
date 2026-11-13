@@ -55,7 +55,7 @@ void NativePBRFeature::EndSidecarPass() { materialSidecar.EndPass(); }
 void NativePBRFeature::ReplaySidecarDraw(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base)
 {
 	if (IsActive() && !globals::game::isVR)
-		materialSidecar.ReplayDrawIndexed(a_context, a_count, a_first, a_base);
+		materialSidecar.ReplayDrawIndexed(a_context, a_count, a_first, a_base, previewOpaqueReplacement.load(std::memory_order_relaxed));
 }
 void NativePBRFeature::FinishOpaqueSidecar(ID3D11ShaderResourceView* a_finalDepth)
 {
@@ -489,6 +489,13 @@ void NativePBRFeature::DrawSettings()
 	ImGui::TextDisabled("Texture source and prepared material controls remain in DX12 Native Scene.");
 	ImGui::Text("Sidecar raster draws: %llu | rejected: %llu", materialSidecar.ReplayedDraws(), materialSidecar.RejectedDraws());
 	ImGui::Text("Last frame's PBR surfaces: %zu | frame: %u", materialSidecar.PublishedDrawCount(), materialSidecar.GetFrame());
+	bool preview = previewOpaqueReplacement.load(std::memory_order_relaxed);
+	if (ImGui::Checkbox("Preview opaque PBR replacement (temporary)", &preview))
+		previewOpaqueReplacement.store(preview, std::memory_order_relaxed);
+	if (preview && !materialSidecar.PreviewReady())
+		ImGui::TextDisabled("Preview shader unavailable; check FXC compile log.");
+	ImGui::TextDisabled("Material colors and UV grid replace opaque PBR pixels; no native PBR lighting yet.");
+	ImGui::Text("Preview draws: %llu", materialSidecar.PreviewDraws());
 	if (!materialSidecar.Status().empty())
 		ImGui::TextWrapped("Sidecar: %s", materialSidecar.Status().c_str());
 	ImGui::TextDisabled("Commit 3 captures surface identity only; native shading is not enabled yet.");
@@ -546,7 +553,11 @@ void NativeSCMFeature::DrawSettings()
 	ImGui::TextDisabled("Uncovered rigid CPU-backed casters may enter the native DX12 geometry mailbox.");
 	ImGui::TextDisabled("DX12 owns BLAS/TLAS and RayQuery; moving and skinned casters still need updates.");
 }
-void NativePBRFeature::LoadSettings(json& j) { enabled.store(j.value("Enabled", true), std::memory_order_relaxed); }
+void NativePBRFeature::LoadSettings(json& j)
+{
+	enabled.store(j.value("Enabled", true), std::memory_order_relaxed);
+	previewOpaqueReplacement.store(j.value("PreviewOpaqueReplacement", false), std::memory_order_relaxed);
+}
 void NativeLLFFeature::LoadSettings(json& j)
 {
 	enabled.store(j.value("Enabled", true), std::memory_order_relaxed);
@@ -560,7 +571,11 @@ void NativeLLFFeature::LoadSettings(json& j)
 		std::memory_order_relaxed);
 }
 void NativeSCMFeature::LoadSettings(json& j) { enabled.store(j.value("Enabled", true), std::memory_order_relaxed); }
-void NativePBRFeature::SaveSettings(json& j) { j = { { "Enabled", enabled.load(std::memory_order_relaxed) } }; }
+void NativePBRFeature::SaveSettings(json& j)
+{
+	j = { { "Enabled", enabled.load(std::memory_order_relaxed) },
+		{ "PreviewOpaqueReplacement", previewOpaqueReplacement.load(std::memory_order_relaxed) } };
+}
 void NativeLLFFeature::SaveSettings(json& j)
 {
 	j = { { "Enabled", enabled.load(std::memory_order_relaxed) },
@@ -582,6 +597,8 @@ json NativePBRFeature::GetDiagnostics()
 	});
 	return { { "selected", enabled.load() }, { "native", state.owner == NativePBR::RenderingOwner::Native },
 		{ "recipeRevision", globals::features::truePBR.nativeRegistry.Revision() },
+		{ "previewOpaqueReplacement", previewOpaqueReplacement.load(std::memory_order_relaxed) },
+		{ "previewDraws", materialSidecar.PreviewDraws() },
 		{ "shaderDomainPolicy", state.shaderDomain == NativePBR::ShaderDomain::NativePBRInput ? "native-pbr-input" : "legacy-true-pbr" },
 		{ "materialInputsAvailable", state.materialInputsAvailable },
 		{ "publishedNativeMaterialGeneration", state.publishedNativeMaterialGeneration },

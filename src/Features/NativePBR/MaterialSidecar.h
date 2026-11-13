@@ -23,7 +23,7 @@ namespace NativePBR
 			uint32_t a_frame, uint32_t a_width, uint32_t a_height);
 		void BeginPass(uint64_t a_materialIdentity, uint64_t a_materialRevision, std::string a_referenceKey, std::string a_shapeName);
 		void EndPass();
-		void ReplayDrawIndexed(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base);
+		void ReplayDrawIndexed(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base, bool a_previewReplacement);
 		void FinishFrame(ID3D11DeviceContext* a_context, ID3D11ShaderResourceView* a_finalDepth);
 		Sources GetSources(uint32_t a_frame) const;
 		std::shared_ptr<const std::vector<SidecarDraw>> GetDrawTable() const { return publishedDraws; }
@@ -32,6 +32,8 @@ namespace NativePBR
 		uint64_t ReplayedDraws() const { return replayed; }
 		uint64_t RejectedDraws() const { return rejected; }
 		uint64_t FailedFrames() const { return failedFrames; }
+		uint64_t PreviewDraws() const { return previewDraws; }
+		bool PreviewReady() const { return static_cast<bool>(previewShader); }
 		const std::string& Status() const { return status; }
 
 	private:
@@ -47,7 +49,7 @@ namespace NativePBR
 			uint32_t ordinal, reserved, materialLow, materialHigh;
 		};
 		std::array<Target, kCount> targets{};
-		winrt::com_ptr<ID3D11PixelShader> shader;
+		winrt::com_ptr<ID3D11PixelShader> shader, previewShader;
 		winrt::com_ptr<ID3D11ComputeShader> validation;
 		winrt::com_ptr<ID3D11Buffer> drawConstants, validationConstants;
 		winrt::com_ptr<ID3D11BlendState> writeAll;
@@ -60,7 +62,7 @@ namespace NativePBR
 		std::vector<SidecarDraw> draws;
 		std::shared_ptr<const std::vector<SidecarDraw>> publishedDraws;
 		std::string activeReference, activeShape;
-		uint64_t activeMaterial = 0, activeRevision = 0, replayed = 0, rejected = 0, failedFrames = 0;
+		uint64_t activeMaterial = 0, activeRevision = 0, replayed = 0, rejected = 0, failedFrames = 0, previewDraws = 0;
 		uint32_t frame = 0, width = 0, height = 0, nextDraw = 1;
 		bool recording = false, ready = false;
 		std::string status;

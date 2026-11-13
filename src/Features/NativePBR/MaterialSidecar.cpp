@@ -58,6 +58,10 @@ namespace NativePBR
 		try {
 			shader.attach(static_cast<ID3D11PixelShader*>(Util::CompileShader(
 				L"Data\\Shaders\\NativePBR\\MaterialSidecar.ps.hlsl", {}, "ps_5_0")));
+			previewShader.attach(static_cast<ID3D11PixelShader*>(Util::CompileShader(
+				L"Data\\Shaders\\NativePBR\\PreviewOpaque.ps.hlsl", {}, "ps_5_0")));
+			if (previewShader)
+				Util::SetResourceName(previewShader.get(), "NativePBR::PreviewOpaque");
 			validation.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(
 				L"Data\\Shaders\\NativePBR\\ValidateSidecar.cs.hlsl", {}, "cs_5_0")));
 			if (!shader || !validation)
@@ -152,7 +156,7 @@ namespace NativePBR
 		activeShape.clear();
 	}
 
-	void MaterialSidecar::ReplayDrawIndexed(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base)
+	void MaterialSidecar::ReplayDrawIndexed(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base, bool a_previewReplacement)
 	{
 		if (!recording || !activeMaterial || !a_context || a_count == 0)
 			return;
@@ -233,6 +237,14 @@ namespace NativePBR
 		// The original vertex shader, input layout, IA streams, clipping and viewport remain bound.
 		// A caller-side recursion guard skips the replay in DrawIndexed detours.
 		a_context->DrawIndexed(a_count, a_first, a_base);
+		if (a_previewReplacement && previewShader) {
+			CS_GPU_PASS("NativePBR::PreviewOpaqueReplacement");
+			ID3D11RenderTargetView* previewTarget = oldRaw[0];
+			a_context->OMSetRenderTargets(1, &previewTarget, dsv.get());
+			a_context->PSSetShader(previewShader.get(), nullptr, 0);
+			a_context->DrawIndexed(a_count, a_first, a_base);
+			++previewDraws;
+		}
 		cb = oldConstant.get();
 		a_context->PSSetConstantBuffers(13, 1, &cb);
 		a_context->PSSetShader(oldShader.get(), nullptr, 0);
