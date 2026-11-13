@@ -32,6 +32,8 @@
 #include <mutex>
 
 #include "Features/PostProcessing.h"
+#include "Features/NativeComposite/NativeComposite.h"
+#include "Features/LinearLighting.h"
 
 #define I18N_KEY_PREFIX "feature.upscaling."
 
@@ -694,6 +696,22 @@ void Upscaling::OnRuntimeDisabled()
 /** @brief Registers upscaling and frame-generation commands for menu and devbench use. */
 void Upscaling::RegisterUxActions()
 {
+	FEATURE_RENDER_QUERY("nativeFrameStatus", "Reports the optional pre-upscale DX12 raster frame without altering the selected upscaler.",
+		([](const Feature* self, const json&) -> json {
+			const auto& feature = *static_cast<const Upscaling*>(self);
+			const auto frame = feature.nativeCompositeFrame;
+			return {
+				{ "captures", feature.nativeCompositeCaptures.load() },
+				{ "available", frame && frame->valid },
+				{ "frame", frame ? frame->frame : 0u },
+				{ "width", frame ? frame->width : 0u },
+				{ "height", frame ? frame->height : 0u },
+				{ "gpuComplete", frame && frame->IsComplete() },
+				{ "usedForUpscaling", false },
+				{ "vrNativeRoute", false }
+			};
+		}));
+
 	FEATURE_COMMAND("applyFoveationPreset",
 		"Apply a named foveation crop preset (see openshaders.feature get shortName=Upscaling -> foveatedRender.CropPresets[].name, e.g. \"Center 75%\") -- the same code path as clicking the preset dropdown, including right-eye auto-mirror. Params: name (string).",
 		[](Feature*, const json& args) {
@@ -3583,6 +3601,20 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 		if (postProcessing.loaded)
 			postProcessing.ClearBorderMotionVectorsForFrameGen();
 		upscaling.frameGenerationPrepared = upscaling.CopySharedD3D12Resources();
+	}
+
+	upscaling.nativeCompositeFrame.reset();
+	if (globals::features::nativeComposite.IsEnabled() && !globals::game::isVR &&
+		globals::state->worldRenderedThisFrame && !globals::state->IsMainOrLoadingMenuOpen()) {
+		auto* renderer = globals::game::renderer;
+		const auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
+		const auto renderSize = Util::ConvertToDynamic(globals::state->screenSize);
+		const auto transfer = globals::features::linearLighting.IsLinearLightingActive() ?
+			NativeComposite::Transfer::Linear : NativeComposite::Transfer::LegacyScene;
+		upscaling.nativeCompositeFrame = globals::features::nativeComposite.Capture(Util::AsReal(main.texture),
+			globals::state->frameCount, static_cast<uint32_t>(renderSize.x), static_cast<uint32_t>(renderSize.y), transfer);
+		if (upscaling.nativeCompositeFrame)
+			++upscaling.nativeCompositeCaptures;
 	}
 
 	if (upscaleMethod != UpscaleMethod::kNONE && upscaleMethod != UpscaleMethod::kTAA) {

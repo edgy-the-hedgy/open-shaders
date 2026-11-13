@@ -1,6 +1,7 @@
 #pragma once
 
 #include "OverlayFeature.h"
+#include "Features/NativeComposite/NativeCompositePass.h"
 #include "Upscaling/DX12SwapChain.h"
 #include "Upscaling/FidelityFX.h"
 #include "Upscaling/FoveatedRender.h"
@@ -190,6 +191,8 @@ public:
 	bool fidelityFXMissing = false;
 	bool d3d12SwapChainActive = false;
 	bool frameGenerationPrepared = false;
+	std::shared_ptr<const NativeComposite::Frame> nativeCompositeFrame;
+	std::atomic<uint64_t> nativeCompositeCaptures{ 0 };
 
 	// Timing and scaling
 	double refreshRate = 0.0f;
