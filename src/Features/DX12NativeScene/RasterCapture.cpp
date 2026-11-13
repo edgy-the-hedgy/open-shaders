@@ -215,14 +215,14 @@ namespace DX12Native
 					replacement->formats[i] = desc.Format;
 				}
 				if (sidecarRequested) {
-					constexpr std::array names{ "Identity", "UvDdx", "DdyDepth", "Basis0", "Basis1", "Basis2" };
+					constexpr std::array pbrNames{ "Identity", "UvDdx", "DdyDepth", "Basis0", "Basis1", "Basis2" };
 					try {
 						for (size_t i = 0; i < sidecarDesc.size(); ++i) {
 							auto desc = sidecarDesc[i];
 							desc.Usage = D3D11_USAGE_DEFAULT;
 							desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 							desc.CPUAccessFlags = desc.MiscFlags = 0;
-							replacement->pbrSidecar[i] = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), std::format("DX12NativeScene::PBR{}", names[i]));
+							replacement->pbrSidecar[i] = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), std::format("DX12NativeScene::PBR{}", pbrNames[i]));
 						}
 					} catch (const std::exception& error) {
 						sidecarStatus = std::format("Sidecar interop unavailable: {}", error.what());
