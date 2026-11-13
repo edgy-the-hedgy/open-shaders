@@ -32,6 +32,7 @@ struct GlintParameters
 struct TruePBR : Feature
 {
 public:
+	TruePBR();
 	/** @brief Returns the internal name of the feature. */
 	virtual std::string GetName() override { return "True PBR"; }
 	/** @brief Returns the user-facing translated display name. */
@@ -100,12 +101,9 @@ public:
 
 	Settings settings;
 
-	/** @brief Current live PBR metadata, exposed to native workers as value snapshots. */
-	NativePBR::Registry nativeRegistry;
-
-	struct RecipeWorker;
-	std::shared_ptr<RecipeWorker> recipeWorker;
-	/** @brief On the render thread, retains a generation if it still matches the registry. */
+	/** @brief Compatibility reference; ownership now belongs to NativePBRFeature. */
+	NativePBR::Registry& nativeRegistry;
+	/** @brief Compatibility accessor for scene consumers; NativePBR owns the generation. */
 	std::shared_ptr<const NativePBR::RecipeGeneration> GetNativeRecipes() const;
 
 	/** @brief When true, logs each PBR JSON file path during load. Off by default. */

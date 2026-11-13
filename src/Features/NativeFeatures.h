@@ -4,6 +4,7 @@
 #include "Features/DX12NativeScene/PreparedScene.h"
 #include "LightLimitFix.h"
 #include "Features/NativePBR/MaterialSidecar.h"
+#include "TruePBR/NativePBRRegistry.h"
 #include <array>
 #include <atomic>
 #include <memory>
@@ -14,6 +15,10 @@ namespace RE
 {
 	class BSShadowLight;
 }
+namespace NativePBR
+{
+	struct RecipeGeneration;
+}
 
 /** Additional DX12 features. The original TruePBR/LLF/SCM implementations are
  * unchanged as the legacy baseline and continue to collect Skyrim state.
@@ -22,6 +27,21 @@ namespace RE
  */
 struct NativePBRFeature final : Feature
 {
+	NativePBRFeature();
+	struct MaterialSummary
+	{
+		size_t recipes = 0, pending = 0, incomplete = 0, observedTextures = 0, sharedCandidates = 0;
+		std::array<size_t, 13> issues{};
+		bool failed = false;
+	};
+	struct MaterialWorker;
+	// NativePBR owns identities, revisions, immutable snapshots and recipe generations.
+	// TruePBR only produces observations from Skyrim's existing hooks.
+	NativePBR::Registry materialRegistry;
+	std::shared_ptr<MaterialWorker> materialWorker;
+	void PollMaterialRegistry();
+	MaterialSummary GetMaterialSummary() const;
+	std::shared_ptr<const NativePBR::RecipeGeneration> GetNativeRecipes() const;
 	std::atomic<bool> enabled{ true };
 	std::atomic<bool> previewOpaqueReplacement{ false };
 	// 0 = material identity; 1 = UV/derivatives; 2 = PBR coverage comparison.

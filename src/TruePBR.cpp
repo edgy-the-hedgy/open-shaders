@@ -13,8 +13,6 @@
 #include "State.h"
 #include "Util.h"
 #include "Utils/UI.h"
-#include <BS_thread_pool.hpp>
-#include <atomic>
 
 #define I18N_KEY_PREFIX "feature.true_pbr."
 
@@ -94,6 +92,11 @@ static NativePBR::MaterialData SnapshotPBRMesh(const BSLightingShaderMaterialPBR
 	result.kind = NativePBR::MaterialKind::Mesh;
 	SnapshotPBRBase(a_material, result);
 	result.pbrFlags = a_material.pbrFlags.underlying();
+	result.nifThinSurfaceFlags = a_material.nifThinSurfaceFlags.underlying();
+	result.subsurfaceBalance = a_material.subsurfaceBalance;
+	result.thinSurfaceParameters = a_material.thinSurfaceParameters;
+	result.fuzzRoughness = a_material.fuzzRoughness;
+	result.fuzzRoughnessTexture = a_material.fuzzRoughnessTexture;
 	result.roughnessScale = a_material.GetRoughnessScale();
 	result.displacementScale = a_material.GetDisplacementScale();
 	result.specularLevel = a_material.GetSpecularLevel();
@@ -254,37 +257,16 @@ namespace PNState
 
 void SetupPBRLandscapeTextureParameters(BSLightingShaderMaterialPBRLandscape& material, const TruePBR::PBRTextureSetData& textureSetData, uint32_t textureIndex);
 
-struct TruePBR::RecipeWorker
-{
-	struct Summary
-	{
-		size_t recipes = 0, pending = 0, incomplete = 0, observedTextures = 0, sharedCandidates = 0;
-		std::array<size_t, 13> issues{};
-		bool failed = false;
-	};
-	NativePBR::RecipeCache cache;
-	std::mutex mutex;
-	Summary summary;
-	std::atomic<bool> active{ false }, more{ false };
-	std::atomic<uint64_t> revision{ 0 };
-	std::atomic<std::shared_ptr<const NativePBR::RecipeGeneration>> published;
-};
+TruePBR::TruePBR() : nativeRegistry(globals::features::nativePBR.materialRegistry) {}
 
 std::shared_ptr<const NativePBR::RecipeGeneration> TruePBR::GetNativeRecipes() const
 {
-	if (!recipeWorker)
-		return {};
-	auto generation = recipeWorker->published.load(std::memory_order_acquire);
-	return generation && generation->revision == nativeRegistry.Revision() ? generation : nullptr;
+	return globals::features::nativePBR.GetNativeRecipes();
 }
 
 void TruePBR::DrawSettings()
 {
-	RecipeWorker::Summary summary;
-	if (recipeWorker) {
-		std::scoped_lock lock(recipeWorker->mutex);
-		summary = recipeWorker->summary;
-	}
+	const auto summary = globals::features::nativePBR.GetMaterialSummary();
 	const auto& recipeIssues = summary.issues;
 	const auto nativePbr = nativeRegistry.GetStatistics();
 	ImGui::TextDisabled("Native PBR metadata: %zu mesh, %zu landscape | dirty: %zu | revision: %llu",
@@ -583,65 +565,7 @@ void TruePBR::SetupResources()
 
 void TruePBR::Prepass()
 {
-	if (!recipeWorker)
-		recipeWorker = std::make_shared<RecipeWorker>();
-	const auto worker = recipeWorker;
-	if (!worker->active.load(std::memory_order_acquire) &&
-		(worker->more.load(std::memory_order_relaxed) || worker->revision.load(std::memory_order_relaxed) != nativeRegistry.Revision())) {
-		worker->active.store(true, std::memory_order_release);
-		try {
-			static BS::thread_pool<> pool{ 1 };
-			pool.detach_task([worker, registry = &nativeRegistry] {
-				try {
-					if (auto changes = registry->ExportChanges(worker->cache.Revision(), worker->cache.KnownRevisions())) {
-						worker->cache.Update(*changes);
-						worker->published.store(NativePBR::PublishRecipes(worker->cache, *changes,
-													worker->published.load(std::memory_order_relaxed)),
-							std::memory_order_release);
-						worker->more.store(changes->hasMore, std::memory_order_relaxed);
-					}
-					RecipeWorker::Summary summary;
-					summary.recipes = worker->cache.Recipes().size();
-					summary.pending = worker->cache.Pending();
-					for (const auto& [identity, recipe] : worker->cache.Recipes()) {
-						if (recipe.issues & ~NativePBR::UnknownOpacity)
-							++summary.incomplete;
-						for (const auto& texture : recipe.textures) {
-							if (!texture.resource.texture2D)
-								continue;
-							++summary.observedTextures;
-							if (texture.resource.miscFlags & D3D11_RESOURCE_MISC_SHARED_NTHANDLE)
-								++summary.sharedCandidates;
-						}
-						for (size_t issue = 0; issue < summary.issues.size(); ++issue)
-							if (recipe.issues & (1u << issue))
-								++summary.issues[issue];
-					}
-					{
-						std::scoped_lock lock(worker->mutex);
-						worker->summary = summary;
-					}
-					worker->revision.store(worker->cache.Revision(), std::memory_order_relaxed);
-				} catch (...) {
-					{
-						std::scoped_lock lock(worker->mutex);
-						worker->summary.failed = true;
-					}
-					worker->revision.store(registry->Revision(), std::memory_order_relaxed);
-					worker->more.store(false, std::memory_order_relaxed);
-				}
-				worker->active.store(false, std::memory_order_release);
-			});
-		} catch (...) {
-			worker->active.store(false, std::memory_order_release);
-			{
-				std::scoped_lock lock(worker->mutex);
-				worker->summary.failed = true;
-			}
-			worker->revision.store(nativeRegistry.Revision(), std::memory_order_relaxed);
-			worker->more.store(false, std::memory_order_relaxed);
-		}
-	}
+	globals::features::nativePBR.PollMaterialRegistry();
 	SetupDefaultPBRLandTextureSet();
 
 	auto context = globals::d3d::context;

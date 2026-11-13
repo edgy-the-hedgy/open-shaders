@@ -61,12 +61,16 @@ namespace NativePBR
 	{
 		MaterialKind kind = MaterialKind::Mesh;
 		uint64_t textureGeneration = 0;
-		uint32_t pbrFlags = 0, clampMode = 0, landscapeTileCount = 0;
+		uint32_t pbrFlags = 0, nifThinSurfaceFlags = 0, clampMode = 0, landscapeTileCount = 0;
 		std::array<std::array<float, 4>, 2> uvOffsetScale{ { { 0, 0, 1, 1 }, { 0, 0, 1, 1 } } };
 		float materialAlpha = 1.0f;
 		float roughnessScale = 1.0f, displacementScale = 1.0f, specularLevel = 0.04f;
 		float coatStrength = 0.0f, coatRoughness = 1.0f, coatSpecularLevel = 0.04f;
 		float subsurfaceOpacity = 0.0f, fuzzWeight = 0.0f;
+		// Effective per-NIF overrides, copied from the canonical TruePBR material on the render thread.
+		float subsurfaceBalance = 0.75f, fuzzRoughness = -1.0f;
+		std::array<float, 3> thinSurfaceParameters{ 0.5f, 0.5f, 1.0f };
+		bool fuzzRoughnessTexture = false;
 		std::array<float, 3> coatColor{ 1.0f, 1.0f, 1.0f }, subsurfaceColor{}, fuzzColor{};
 		std::array<float, 3> projectedColor{ 1.0f, 1.0f, 1.0f };
 		float projectedRoughness = 1.0f, projectedSpecularLevel = 0.04f;
@@ -91,11 +95,13 @@ namespace NativePBR
 			if (!floats(uv))
 				return false;
 		if (!floats(a_data.coatColor) || !floats(a_data.subsurfaceColor) || !floats(a_data.fuzzColor) ||
+			!floats(a_data.thinSurfaceParameters) ||
 			!floats(a_data.projectedColor) || !glint(a_data.glint) || !glint(a_data.projectedGlint))
 			return false;
 		const std::array scalars{ a_data.materialAlpha, a_data.roughnessScale, a_data.displacementScale, a_data.specularLevel,
 			a_data.coatStrength, a_data.coatRoughness, a_data.coatSpecularLevel, a_data.subsurfaceOpacity,
-			a_data.fuzzWeight, a_data.projectedRoughness, a_data.projectedSpecularLevel };
+			a_data.fuzzWeight, a_data.subsurfaceBalance, a_data.fuzzRoughness,
+			a_data.projectedRoughness, a_data.projectedSpecularLevel };
 		if (!floats(scalars) || a_data.landscapeTileCount > a_data.landscapeTiles.size())
 			return false;
 		for (const auto& tile : a_data.landscapeTiles)

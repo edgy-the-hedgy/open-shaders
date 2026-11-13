@@ -15,6 +15,97 @@
 #include <cmath>
 #include <limits>
 
+struct NativePBRFeature::MaterialWorker
+{
+	NativePBR::RecipeCache cache;
+	std::mutex mutex;
+	MaterialSummary summary;
+	std::atomic<bool> active{ false }, more{ false };
+	std::atomic<uint64_t> revision{ 0 };
+	std::atomic<std::shared_ptr<const NativePBR::RecipeGeneration>> published;
+};
+
+NativePBRFeature::NativePBRFeature() : materialWorker(std::make_shared<MaterialWorker>()) {}
+
+std::shared_ptr<const NativePBR::RecipeGeneration> NativePBRFeature::GetNativeRecipes() const
+{
+	if (!materialWorker)
+		return {};
+	const auto generation = materialWorker->published.load(std::memory_order_acquire);
+	return generation && generation->revision == materialRegistry.Revision() ? generation : nullptr;
+}
+
+NativePBRFeature::MaterialSummary NativePBRFeature::GetMaterialSummary() const
+{
+	MaterialSummary result;
+	if (materialWorker) {
+		std::scoped_lock lock(materialWorker->mutex);
+		result = materialWorker->summary;
+	}
+	return result;
+}
+
+void NativePBRFeature::PollMaterialRegistry()
+{
+	const auto worker = materialWorker;
+	if (worker->active.load(std::memory_order_acquire) ||
+		(!worker->more.load(std::memory_order_relaxed) &&
+			worker->revision.load(std::memory_order_relaxed) == materialRegistry.Revision()))
+		return;
+	worker->active.store(true, std::memory_order_release);
+	try {
+		static BS::thread_pool<> pool{ 1 };
+		pool.detach_task([worker, registry = &materialRegistry] {
+			try {
+				if (auto changes = registry->ExportChanges(worker->cache.Revision(), worker->cache.KnownRevisions())) {
+					worker->cache.Update(*changes);
+					worker->published.store(NativePBR::PublishRecipes(worker->cache, *changes,
+							worker->published.load(std::memory_order_relaxed)), std::memory_order_release);
+					worker->more.store(changes->hasMore, std::memory_order_relaxed);
+				}
+				MaterialSummary summary;
+				summary.recipes = worker->cache.Recipes().size();
+				summary.pending = worker->cache.Pending();
+				for (const auto& [identity, recipe] : worker->cache.Recipes()) {
+					if (recipe.issues & ~NativePBR::UnknownOpacity)
+						++summary.incomplete;
+					for (const auto& texture : recipe.textures) {
+						if (!texture.resource.texture2D)
+							continue;
+						++summary.observedTextures;
+						if (texture.resource.miscFlags & D3D11_RESOURCE_MISC_SHARED_NTHANDLE)
+							++summary.sharedCandidates;
+					}
+					for (size_t issue = 0; issue < summary.issues.size(); ++issue)
+						if (recipe.issues & (1u << issue))
+							++summary.issues[issue];
+				}
+				{
+					std::scoped_lock lock(worker->mutex);
+					worker->summary = summary;
+				}
+				worker->revision.store(worker->cache.Revision(), std::memory_order_relaxed);
+			} catch (...) {
+				{
+					std::scoped_lock lock(worker->mutex);
+					worker->summary.failed = true;
+				}
+				worker->revision.store(registry->Revision(), std::memory_order_relaxed);
+				worker->more.store(false, std::memory_order_relaxed);
+			}
+			worker->active.store(false, std::memory_order_release);
+		});
+	} catch (...) {
+		worker->active.store(false, std::memory_order_release);
+		{
+			std::scoped_lock lock(worker->mutex);
+			worker->summary.failed = true;
+		}
+		worker->revision.store(materialRegistry.Revision(), std::memory_order_relaxed);
+		worker->more.store(false, std::memory_order_relaxed);
+	}
+}
+
 // Backend selection is the ONLY automatic execution switch. Feature toggles
 // are explicit user choices, never material/caster/light validity gates.
 bool NativePBRFeature::IsActive() const
@@ -621,7 +712,7 @@ void NativeLLFFeature::SaveSettings(json& j)
 void NativeSCMFeature::SaveSettings(json& j) { j = { { "Enabled", enabled.load(std::memory_order_relaxed) } }; }
 json NativePBRFeature::GetDiagnostics()
 {
-	const auto recipes = globals::features::truePBR.GetNativeRecipes();
+	const auto recipes = GetNativeRecipes();
 	const auto state = NativePBR::ResolveRouting({
 		.nativeSelected = enabled.load(std::memory_order_relaxed),
 		.featureLoaded = loaded,
@@ -630,7 +721,7 @@ json NativePBRFeature::GetDiagnostics()
 		.scope = NativePBR::MaterialScope::OpaqueStaticMesh
 	});
 	return { { "selected", enabled.load() }, { "native", state.owner == NativePBR::RenderingOwner::Native },
-		{ "recipeRevision", globals::features::truePBR.nativeRegistry.Revision() },
+		{ "recipeRevision", materialRegistry.Revision() },
 		{ "previewOpaqueReplacement", previewOpaqueReplacement.load(std::memory_order_relaxed) },
 		{ "previewVisualization", previewVisualization.load(std::memory_order_relaxed) },
 		{ "previewDraws", materialSidecar.PreviewDraws() },
