@@ -44,8 +44,8 @@ Output main(Input input, bool frontFacing : SV_IsFrontFace)
 {
     Output output;
     output.identity = DrawOrdinal;
-    output.uvDdx = float4(input.uv, ddx(input.uv));
-    output.ddyDepthFacing = float4(ddy(input.uv), input.position.z, frontFacing ? 1.0f : -1.0f);
+    output.uvDdx = float4(input.uv.xy, ddx(input.uv.xy));
+    output.ddyDepthFacing = float4(ddy(input.uv.xy), input.position.z, frontFacing ? 1.0f : -1.0f);
 #ifdef CAPTURE_PROJECTED_UV
     output.basis0 = float4(input.basis0, input.vertexColor.a);
 #else
