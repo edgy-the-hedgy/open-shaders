@@ -1,4 +1,5 @@
 #include "Features/NativePBR/MaterialRouting.h"
+#include "Features/NativePBR/ShaderDomainCache.h"
 #include <catch2/catch_test_macros.hpp>
 
 TEST_CASE("NativePBR compilation routing is independent of DX12 initialization", "[native_pbr]")
@@ -36,4 +37,16 @@ TEST_CASE("NativePBR compilation routing is independent of DX12 initialization",
 	input.scope = NativePBR::MaterialScope::OpaqueStaticMesh;
 	input.nativeSelected = false;
 	REQUIRE(NativePBR::ResolveRouting(input).owner == NativePBR::RenderingOwner::Legacy);
+}
+
+TEST_CASE("NativePBR input domain isolates FXC cache identities", "[native_pbr][shader_cache]")
+{
+	const std::string legacyKey = NativePBR::CacheKeyForDomain("Lighting:Pixel:TRUE_PBR", NativePBR::ShaderDomain::LegacyTruePBR);
+	const std::string nativeKey = NativePBR::CacheKeyForDomain("Lighting:Pixel:TRUE_PBR", NativePBR::ShaderDomain::NativePBRInput);
+	REQUIRE(legacyKey == "Lighting:Pixel:TRUE_PBR");
+	REQUIRE(nativeKey != legacyKey);
+	REQUIRE(nativeKey.find("NATIVE_PBR_INPUT:v1") != std::string::npos);
+	REQUIRE(NativePBR::kInputDomainDirectory != L"Lighting");
+	REQUIRE(NativePBR::SourceRelativePath("NATIVE_PBR_INPUT/v1/Lighting/ABC.pso") == "Lighting/ABC.pso");
+	REQUIRE(NativePBR::SourceRelativePath("Lighting/ABC.pso") == "Lighting/ABC.pso");
 }

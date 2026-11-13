@@ -14,6 +14,7 @@
 #include <winrt/base.h>
 
 #include "Utils/CacheInvalidation.h"
+#include "Features/NativePBR/MaterialRouting.h"
 #include "Utils/WinApi.h"
 
 struct ID3D11ComputeShader;
@@ -791,7 +792,7 @@ namespace SIE
 
 		/** @brief Publishes a_blob as this task's result. Returns false if the compile
 		 *  failed, a_taskGeneration is stale, or Clear(path) evicted this key mid-flight. */
-		bool AddCompletedShader(ShaderClass shaderClass, const RE::BSShader& shader, uint32_t descriptor, winrt::com_ptr<ID3DBlob> a_blob, bool fromDisk = false, std::optional<uint64_t> a_taskGeneration = std::nullopt);
+		bool AddCompletedShader(ShaderClass shaderClass, const RE::BSShader& shader, uint32_t descriptor, winrt::com_ptr<ID3DBlob> a_blob, bool fromDisk = false, std::optional<uint64_t> a_taskGeneration = std::nullopt, NativePBR::ShaderDomain a_domain = NativePBR::ShaderDomain::LegacyTruePBR);
 
 		enum class ClaimResult
 		{
