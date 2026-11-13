@@ -15,7 +15,7 @@ struct Input
 float4 main(Input input) : SV_Target0
 {
 	// One already-running depth-equal raster replay, no GPU readback or validation frame.
-	// Low byte: preview mode. Bit 8: opaque PBR candidate without a published material identity.
+	// Low byte: preview mode. Bits 8-9: unresolved PBR, ordinary static, or unsupported PBR survey.
 	uint mode = Reserved & 0xffu;
 	float2 gridUV = frac(input.uv * 8.0);
 	float grid = 1.0 - step(0.035, min(gridUV.x, gridUV.y));
@@ -27,8 +27,15 @@ float4 main(Input input) : SV_Target0
 		return float4(lerp(uvColor, 1.0.xxx, grid * 0.4), 1.0);
 	}
 	if (mode == 3u) {
-		// Green: captured and registered. Amber: same opaque PBR geometry scope, no valid registry identity.
-		float3 coverageColor = (Reserved & 0x100u) != 0u ? float3(1.0, 0.28, 0.07) : float3(0.08, 0.85, 0.15);
+		// The non-green categories are raster-only and cannot enter the native material identity table.
+		uint classification = (Reserved >> 8) & 3u;
+		float3 coverageColor = float3(0.08, 0.85, 0.15);
+		if (classification == 1u)
+			coverageColor = float3(1.0, 0.28, 0.07);
+		else if (classification == 2u)
+			coverageColor = float3(0.08, 0.36, 1.0);
+		else if (classification == 3u)
+			coverageColor = float3(0.7, 0.16, 0.86);
 		return float4(lerp(coverageColor, 1.0.xxx, grid * 0.5), 1.0);
 	}
 	// Original per-material identity preview.

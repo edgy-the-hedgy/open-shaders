@@ -1653,7 +1653,7 @@ struct BSLightingShader_SetupGeometry
 
 		shader->currentRawTechnique = originalTechnique;
 		uint64_t materialId = 0, materialRevision = 0;
-		bool opaquePbrCandidate = false;
+		auto surveyClass = NativePBR::PreviewSurveyClass::None;
 		std::string referenceKey, shapeName;
 		if (pass && pass->shaderProperty && pass->geometry &&
 			(originalTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ModelSpaceNormals)) == 0 &&
@@ -1675,7 +1675,7 @@ struct BSLightingShader_SetupGeometry
 				RE::BSShaderProperty::EShaderPropertyFlag::kSkinned)) {
 			// A rigid opaque PBR pass qualifies for the lightweight coverage preview even
 			// when its TruePBR registry identity/reference could not be resolved.
-			opaquePbrCandidate = true;
+			surveyClass = NativePBR::PreviewSurveyClass::OpaquePbrCandidate;
 			auto* reference = pass->geometry->GetUserData();
 			if (reference && !reference->IsDynamicForm()) {
 				if (const auto* file = reference->GetFile(0)) {
@@ -1690,8 +1690,30 @@ struct BSLightingShader_SetupGeometry
 				}
 			}
 		}
+		// Only the explicitly selected survey mode will replay these additional draws.
+		// Never grant a native material identity to non-PBR or unsupported geometry.
+		if (surveyClass == NativePBR::PreviewSurveyClass::None && pass && pass->shaderProperty && pass->geometry &&
+			pass->geometry->GetType() == RE::BSGeometry::Type::kTriShape &&
+			!pass->geometry->HasAnimation() && !pass->geometry->GetGeometryRuntimeData().skinInstance &&
+			!pass->geometry->GetGeometryRuntimeData().alphaProperty &&
+			(originalTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::DoAlphaTest)) == 0 &&
+			(originalTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Skinned)) == 0 &&
+			(originalTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::FurShells)) == 0 &&
+			!pass->shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kRefraction,
+				RE::BSShaderProperty::EShaderPropertyFlag::kTempRefraction,
+				RE::BSShaderProperty::EShaderPropertyFlag::kDecal,
+				RE::BSShaderProperty::EShaderPropertyFlag::kDynamicDecal)) {
+			if (IsPBRShaderProperty(pass->shaderProperty)) {
+				surveyClass = NativePBR::PreviewSurveyClass::UnsupportedPbr;
+			} else if (auto* reference = pass->geometry->GetUserData(); reference && !reference->IsDynamicForm() &&
+				!reference->IsActor() && reference->GetFile(0)) {
+				if (const auto* base = reference->GetBaseObject(); base &&
+					base->Is(RE::FormType::Static, RE::FormType::MovableStatic))
+					surveyClass = NativePBR::PreviewSurveyClass::OrdinaryStatic;
+			}
+		}
 		globals::features::nativePBR.BeginSidecarPass(materialId, materialRevision, std::move(referenceKey), std::move(shapeName),
-			opaquePbrCandidate);
+			surveyClass);
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };

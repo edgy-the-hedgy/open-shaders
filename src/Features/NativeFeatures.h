@@ -30,7 +30,7 @@ struct NativePBRFeature final : Feature
 	void PrepareSidecar(ID3D11Device* a_device);
 	void BeginOpaqueSidecar();
 	void BeginSidecarPass(uint64_t a_materialIdentity, uint64_t a_materialRevision = 0, std::string a_referenceKey = {},
-		std::string a_shapeName = {}, bool a_opaquePbrCandidate = false);
+		std::string a_shapeName = {}, NativePBR::PreviewSurveyClass a_surveyClass = NativePBR::PreviewSurveyClass::None);
 	void EndSidecarPass();
 	void ReplaySidecarDraw(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base);
 	void FinishOpaqueSidecar(ID3D11ShaderResourceView* a_finalDepth);

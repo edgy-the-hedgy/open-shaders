@@ -18,6 +18,14 @@ namespace NativePBR
 		UvDerivatives = 2,
 		Coverage = 3
 	};
+	// Diagnostic classifications only. Non-PBR materials never enter the native identity table.
+	enum class PreviewSurveyClass : uint32_t
+	{
+		None = 0,
+		OpaquePbrCandidate = 1,
+		OrdinaryStatic = 2,
+		UnsupportedPbr = 3
+	};
 
 	/** FXC capture data only. DX12 owns later material evaluation. */
 	class MaterialSidecar
@@ -30,7 +38,7 @@ namespace NativePBR
 		void BeginFrame(ID3D11Device* a_device, ID3D11DeviceContext* a_context, ID3D11RenderTargetView* a_mainTarget,
 			uint32_t a_frame, uint32_t a_width, uint32_t a_height);
 		void BeginPass(uint64_t a_materialIdentity, uint64_t a_materialRevision, std::string a_referenceKey, std::string a_shapeName,
-			bool a_opaquePbrCandidate);
+			PreviewSurveyClass a_surveyClass);
 		void EndPass();
 		void ReplayDrawIndexed(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base, PreviewMode a_previewMode);
 		void FinishFrame(ID3D11DeviceContext* a_context, ID3D11ShaderResourceView* a_finalDepth);
@@ -43,10 +51,15 @@ namespace NativePBR
 		uint64_t FailedFrames() const { return failedFrames; }
 		uint64_t PreviewDraws() const { return previewDraws; }
 		uint64_t PreviewMissingIdentities() const { return previewMissingIdentities; }
+		uint64_t PreviewOrdinaryDraws() const { return previewOrdinaryDraws; }
+		uint64_t PreviewUnsupportedDraws() const { return previewUnsupportedDraws; }
+		uint32_t SurveyDrawsThisFrame() const { return surveyDrawsThisFrame; }
+		uint32_t SurveyLimit() const { return kSurveyDrawLimit; }
 		bool PreviewReady() const { return static_cast<bool>(previewShader); }
 		const std::string& Status() const { return status; }
 
 	private:
+		static constexpr uint32_t kSurveyDrawLimit = 1024;
 		struct Target
 		{
 			winrt::com_ptr<ID3D11Texture2D> texture;
@@ -73,9 +86,10 @@ namespace NativePBR
 		std::shared_ptr<const std::vector<SidecarDraw>> publishedDraws;
 		std::string activeReference, activeShape;
 		uint64_t activeMaterial = 0, activeRevision = 0, replayed = 0, rejected = 0, failedFrames = 0, previewDraws = 0,
-			previewMissingIdentities = 0;
-		uint32_t frame = 0, width = 0, height = 0, nextDraw = 1;
-		bool recording = false, ready = false, activeOpaquePbrCandidate = false;
+			previewMissingIdentities = 0, previewOrdinaryDraws = 0, previewUnsupportedDraws = 0;
+		uint32_t frame = 0, width = 0, height = 0, nextDraw = 1, surveyDrawsThisFrame = 0;
+		bool recording = false, ready = false;
+		PreviewSurveyClass activeSurveyClass = PreviewSurveyClass::None;
 		std::string status;
 	};
 }

@@ -92,12 +92,13 @@ namespace NativePBR
 		publishedDraws.reset();
 		activeMaterial = 0;
 		activeRevision = 0;
-		activeOpaquePbrCandidate = false;
+		activeSurveyClass = PreviewSurveyClass::None;
 		activeReference.clear();
 		activeShape.clear();
 		expectedMain = nullptr;
 		draws.clear();
 		nextDraw = 1;
+		surveyDrawsThisFrame = 0;
 		if (!a_device || !a_context || !a_mainTarget || !shader || !validation || !writeAll || !a_width || !a_height) {
 			status = "Sidecar shaders, device, or dimensions unavailable";
 			++failedFrames;
@@ -142,9 +143,9 @@ namespace NativePBR
 	}
 
 	void MaterialSidecar::BeginPass(uint64_t a_materialIdentity, uint64_t a_materialRevision, std::string a_referenceKey,
-		std::string a_shapeName, bool a_opaquePbrCandidate)
+		std::string a_shapeName, PreviewSurveyClass a_surveyClass)
 	{
-		activeOpaquePbrCandidate = recording && a_opaquePbrCandidate;
+		activeSurveyClass = recording ? a_surveyClass : PreviewSurveyClass::None;
 		activeMaterial = recording && a_materialRevision ? a_materialIdentity : 0;
 		activeRevision = activeMaterial ? a_materialRevision : 0;
 		activeReference = activeMaterial ? std::move(a_referenceKey) : std::string{};
@@ -155,16 +156,17 @@ namespace NativePBR
 	{
 		activeMaterial = 0;
 		activeRevision = 0;
-		activeOpaquePbrCandidate = false;
+		activeSurveyClass = PreviewSurveyClass::None;
 		activeReference.clear();
 		activeShape.clear();
 	}
 
 	void MaterialSidecar::ReplayDrawIndexed(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base, PreviewMode a_previewMode)
 	{
-		const bool missingIdentity = a_previewMode == PreviewMode::Coverage && activeOpaquePbrCandidate && !activeMaterial;
-		if (!recording || (!activeMaterial && !missingIdentity) || !a_context || a_count == 0 ||
-			(missingIdentity && !previewShader))
+		const bool surveyDraw = a_previewMode == PreviewMode::Coverage && !activeMaterial &&
+			activeSurveyClass != PreviewSurveyClass::None;
+		if (!recording || (!activeMaterial && !surveyDraw) || !a_context || a_count == 0 ||
+			(surveyDraw && (!previewShader || surveyDrawsThisFrame >= kSurveyDrawLimit)))
 			return;
 		CS_GPU_PASS("NativePBR::SidecarRaster");
 		// This call is made AFTER the original draw has finished, on the same immediate context.
@@ -228,9 +230,18 @@ namespace NativePBR
 		a_context->PSGetShader(oldShader.put(), nullptr, nullptr);
 		winrt::com_ptr<ID3D11Buffer> oldConstant;
 		a_context->PSGetConstantBuffers(13, 1, oldConstant.put());
-		// The missing-identity candidate is previewed only; it must never enter the sidecar identity table.
+		// Survey-only geometry is previewed, never recorded as a native PBR material.
 		const uint32_t ordinal = activeMaterial ? nextDraw++ : 0;
-		const uint32_t previewFlags = static_cast<uint32_t>(a_previewMode) | (missingIdentity ? 0x100u : 0u);
+		uint32_t surveyCode = 0;
+		if (!activeMaterial && surveyDraw) {
+			switch (activeSurveyClass) {
+			case PreviewSurveyClass::OpaquePbrCandidate: surveyCode = 1; break;
+			case PreviewSurveyClass::OrdinaryStatic: surveyCode = 2; break;
+			case PreviewSurveyClass::UnsupportedPbr: surveyCode = 3; break;
+			default: break;
+			}
+		}
+		const uint32_t previewFlags = static_cast<uint32_t>(a_previewMode) | (surveyCode << 8);
 		const Constants constants{ ordinal, previewFlags, static_cast<uint32_t>(activeMaterial), static_cast<uint32_t>(activeMaterial >> 32) };
 		a_context->UpdateSubresource(drawConstants.get(), 0, nullptr, &constants, 0, 0);
 		a_context->OMSetDepthStencilState(replayDepth, stencilRef);
@@ -254,8 +265,14 @@ namespace NativePBR
 			a_context->PSSetShader(previewShader.get(), nullptr, 0);
 			a_context->DrawIndexed(a_count, a_first, a_base);
 			++previewDraws;
-			if (missingIdentity)
+			if (surveyCode == 1)
 				++previewMissingIdentities;
+			else if (surveyCode == 2)
+				++previewOrdinaryDraws;
+			else if (surveyCode == 3)
+				++previewUnsupportedDraws;
+			if (surveyDraw)
+				++surveyDrawsThisFrame;
 		}
 		cb = oldConstant.get();
 		a_context->PSSetConstantBuffers(13, 1, &cb);
