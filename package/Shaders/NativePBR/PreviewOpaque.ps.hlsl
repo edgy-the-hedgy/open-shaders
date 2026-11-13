@@ -15,7 +15,7 @@ struct Input
 float4 main(Input input) : SV_Target0
 {
 	// One already-running depth-equal raster replay, no GPU readback or validation frame.
-	// Low byte: preview mode. Bits 8-9: unresolved PBR, ordinary static, or unsupported PBR survey.
+	// Low byte: preview mode. Bits 8-10: survey category; all colors reuse the same depth-equal replay.
 	uint mode = Reserved & 0xffu;
 	float2 gridUV = frac(input.uv * 8.0);
 	float grid = 1.0 - step(0.035, min(gridUV.x, gridUV.y));
@@ -28,14 +28,20 @@ float4 main(Input input) : SV_Target0
 	}
 	if (mode == 3u) {
 		// The non-green categories are raster-only and cannot enter the native material identity table.
-		uint classification = (Reserved >> 8) & 3u;
+		uint classification = (Reserved >> 8) & 7u;
 		float3 coverageColor = float3(0.08, 0.85, 0.15);
 		if (classification == 1u)
 			coverageColor = float3(1.0, 0.28, 0.07);
 		else if (classification == 2u)
 			coverageColor = float3(0.08, 0.36, 1.0);
 		else if (classification == 3u)
-			coverageColor = float3(0.7, 0.16, 0.86);
+			coverageColor = float3(0.06, 0.88, 0.96); // projected UV (cyan)
+		else if (classification == 4u)
+			coverageColor = float3(1.0, 0.88, 0.07); // model-space normals (yellow)
+		else if (classification == 5u)
+			coverageColor = float3(0.94, 0.12, 0.69); // landscape (magenta)
+		else if (classification == 6u)
+			coverageColor = float3(0.56, 0.11, 0.9); // other unsupported PBR (purple)
 		return float4(lerp(coverageColor, 1.0.xxx, grid * 0.5), 1.0);
 	}
 	// Original per-material identity preview.

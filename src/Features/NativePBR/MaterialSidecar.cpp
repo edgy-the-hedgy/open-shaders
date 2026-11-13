@@ -93,12 +93,14 @@ namespace NativePBR
 		activeMaterial = 0;
 		activeRevision = 0;
 		activeSurveyClass = PreviewSurveyClass::None;
+		activeUnsupportedReasons = 0;
 		activeReference.clear();
 		activeShape.clear();
 		expectedMain = nullptr;
 		draws.clear();
 		nextDraw = 1;
 		surveyDrawsThisFrame = 0;
+		unsupportedReasonsThisFrame.fill(0);
 		if (!a_device || !a_context || !a_mainTarget || !shader || !validation || !writeAll || !a_width || !a_height) {
 			status = "Sidecar shaders, device, or dimensions unavailable";
 			++failedFrames;
@@ -143,9 +145,10 @@ namespace NativePBR
 	}
 
 	void MaterialSidecar::BeginPass(uint64_t a_materialIdentity, uint64_t a_materialRevision, std::string a_referenceKey,
-		std::string a_shapeName, PreviewSurveyClass a_surveyClass)
+		std::string a_shapeName, PreviewSurveyClass a_surveyClass, uint32_t a_unsupportedReasons)
 	{
 		activeSurveyClass = recording ? a_surveyClass : PreviewSurveyClass::None;
+		activeUnsupportedReasons = recording ? a_unsupportedReasons : 0;
 		activeMaterial = recording && a_materialRevision ? a_materialIdentity : 0;
 		activeRevision = activeMaterial ? a_materialRevision : 0;
 		activeReference = activeMaterial ? std::move(a_referenceKey) : std::string{};
@@ -157,6 +160,7 @@ namespace NativePBR
 		activeMaterial = 0;
 		activeRevision = 0;
 		activeSurveyClass = PreviewSurveyClass::None;
+		activeUnsupportedReasons = 0;
 		activeReference.clear();
 		activeShape.clear();
 	}
@@ -232,15 +236,7 @@ namespace NativePBR
 		a_context->PSGetConstantBuffers(13, 1, oldConstant.put());
 		// Survey-only geometry is previewed, never recorded as a native PBR material.
 		const uint32_t ordinal = activeMaterial ? nextDraw++ : 0;
-		uint32_t surveyCode = 0;
-		if (!activeMaterial && surveyDraw) {
-			switch (activeSurveyClass) {
-			case PreviewSurveyClass::OpaquePbrCandidate: surveyCode = 1; break;
-			case PreviewSurveyClass::OrdinaryStatic: surveyCode = 2; break;
-			case PreviewSurveyClass::UnsupportedPbr: surveyCode = 3; break;
-			default: break;
-			}
-		}
+		const uint32_t surveyCode = surveyDraw ? static_cast<uint32_t>(activeSurveyClass) : 0u;
 		const uint32_t previewFlags = static_cast<uint32_t>(a_previewMode) | (surveyCode << 8);
 		const Constants constants{ ordinal, previewFlags, static_cast<uint32_t>(activeMaterial), static_cast<uint32_t>(activeMaterial >> 32) };
 		a_context->UpdateSubresource(drawConstants.get(), 0, nullptr, &constants, 0, 0);
@@ -269,8 +265,14 @@ namespace NativePBR
 				++previewMissingIdentities;
 			else if (surveyCode == 2)
 				++previewOrdinaryDraws;
-			else if (surveyCode == 3)
+			else if (surveyCode >= 3 && surveyCode <= 6) {
 				++previewUnsupportedDraws;
+				for (size_t bit = 0; bit < previewUnsupportedReasons.size(); ++bit)
+					if ((activeUnsupportedReasons & (1u << bit)) != 0) {
+						++previewUnsupportedReasons[bit];
+						++unsupportedReasonsThisFrame[bit];
+					}
+			}
 			if (surveyDraw)
 				++surveyDrawsThisFrame;
 		}

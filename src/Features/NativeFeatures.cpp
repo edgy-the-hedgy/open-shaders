@@ -139,9 +139,10 @@ void NativePBRFeature::BeginOpaqueSidecar()
 }
 
 void NativePBRFeature::BeginSidecarPass(uint64_t a_identity, uint64_t a_revision, std::string a_referenceKey,
-	std::string a_shapeName, NativePBR::PreviewSurveyClass a_surveyClass)
+	std::string a_shapeName, NativePBR::PreviewSurveyClass a_surveyClass, uint32_t a_unsupportedReasons)
 {
-	materialSidecar.BeginPass(a_identity, a_revision, std::move(a_referenceKey), std::move(a_shapeName), a_surveyClass);
+	materialSidecar.BeginPass(a_identity, a_revision, std::move(a_referenceKey), std::move(a_shapeName),
+		a_surveyClass, a_unsupportedReasons);
 }
 void NativePBRFeature::EndSidecarPass() { materialSidecar.EndPass(); }
 void NativePBRFeature::ReplaySidecarDraw(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base)
@@ -599,7 +600,8 @@ void NativePBRFeature::DrawSettings()
 			break;
 		case 2:
 			ImGui::TextDisabled("Green: registered PBR; amber: PBR candidate without identity.");
-			ImGui::TextDisabled("Blue: ordinary static; purple: compatible unsupported PBR.");
+			ImGui::TextDisabled("Blue: ordinary static. Cyan: projected UV. Yellow: model-space normals.");
+			ImGui::TextDisabled("Magenta: landscape. Purple: other PBR exclusions.");
 			ImGui::TextDisabled("Survey-only geometry is never admitted to native shading.");
 			break;
 		default:
@@ -615,6 +617,9 @@ void NativePBRFeature::DrawSettings()
 		ImGui::Text("Unregistered PBR candidate draws: %llu", materialSidecar.PreviewMissingIdentities());
 		ImGui::Text("Ordinary static preview draws: %llu | unsupported PBR: %llu",
 			materialSidecar.PreviewOrdinaryDraws(), materialSidecar.PreviewUnsupportedDraws());
+		const auto reasons = materialSidecar.UnsupportedReasonsThisFrame();
+		ImGui::Text("This frame: projected UV %u | model-space normals %u", reasons[0], reasons[1]);
+		ImGui::Text("Landscape %u | other %u (overlaps counted)", reasons[2], reasons[3]);
 		ImGui::Text("Survey-only draws this frame: %u/%u", materialSidecar.SurveyDrawsThisFrame(), materialSidecar.SurveyLimit());
 	}
 	ImGui::TextDisabled("Depth-equal raster preview only; no GPU readback or native PBR lighting.");
@@ -728,6 +733,8 @@ json NativePBRFeature::GetDiagnostics()
 		{ "previewMissingIdentities", materialSidecar.PreviewMissingIdentities() },
 		{ "previewOrdinaryDraws", materialSidecar.PreviewOrdinaryDraws() },
 		{ "previewUnsupportedDraws", materialSidecar.PreviewUnsupportedDraws() },
+		{ "previewUnsupportedReasons", materialSidecar.PreviewUnsupportedReasons() },
+		{ "unsupportedReasonsThisFrame", materialSidecar.UnsupportedReasonsThisFrame() },
 		{ "surveyDrawsThisFrame", materialSidecar.SurveyDrawsThisFrame() },
 		{ "shaderDomainPolicy", state.shaderDomain == NativePBR::ShaderDomain::NativePBRInput ? "native-pbr-input" : "legacy-true-pbr" },
 		{ "materialInputsAvailable", state.materialInputsAvailable },

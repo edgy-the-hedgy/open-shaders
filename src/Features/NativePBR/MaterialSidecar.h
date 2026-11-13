@@ -24,7 +24,18 @@ namespace NativePBR
 		None = 0,
 		OpaquePbrCandidate = 1,
 		OrdinaryStatic = 2,
-		UnsupportedPbr = 3
+		UnsupportedProjectedUv = 3,
+		UnsupportedModelSpaceNormals = 4,
+		UnsupportedLandscape = 5,
+		UnsupportedOther = 6
+	};
+	// Independent reasons; a draw may have several, even though it receives only one preview color.
+	enum UnsupportedPbrReason : uint32_t
+	{
+		ProjectedUvReason = 1u << 0,
+		ModelSpaceNormalsReason = 1u << 1,
+		LandscapeReason = 1u << 2,
+		OtherReason = 1u << 3
 	};
 
 	/** FXC capture data only. DX12 owns later material evaluation. */
@@ -38,7 +49,7 @@ namespace NativePBR
 		void BeginFrame(ID3D11Device* a_device, ID3D11DeviceContext* a_context, ID3D11RenderTargetView* a_mainTarget,
 			uint32_t a_frame, uint32_t a_width, uint32_t a_height);
 		void BeginPass(uint64_t a_materialIdentity, uint64_t a_materialRevision, std::string a_referenceKey, std::string a_shapeName,
-			PreviewSurveyClass a_surveyClass);
+			PreviewSurveyClass a_surveyClass, uint32_t a_unsupportedReasons);
 		void EndPass();
 		void ReplayDrawIndexed(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base, PreviewMode a_previewMode);
 		void FinishFrame(ID3D11DeviceContext* a_context, ID3D11ShaderResourceView* a_finalDepth);
@@ -53,6 +64,8 @@ namespace NativePBR
 		uint64_t PreviewMissingIdentities() const { return previewMissingIdentities; }
 		uint64_t PreviewOrdinaryDraws() const { return previewOrdinaryDraws; }
 		uint64_t PreviewUnsupportedDraws() const { return previewUnsupportedDraws; }
+		std::array<uint64_t, 4> PreviewUnsupportedReasons() const { return previewUnsupportedReasons; }
+		std::array<uint32_t, 4> UnsupportedReasonsThisFrame() const { return unsupportedReasonsThisFrame; }
 		uint32_t SurveyDrawsThisFrame() const { return surveyDrawsThisFrame; }
 		uint32_t SurveyLimit() const { return kSurveyDrawLimit; }
 		bool PreviewReady() const { return static_cast<bool>(previewShader); }
@@ -87,7 +100,10 @@ namespace NativePBR
 		std::string activeReference, activeShape;
 		uint64_t activeMaterial = 0, activeRevision = 0, replayed = 0, rejected = 0, failedFrames = 0, previewDraws = 0,
 			previewMissingIdentities = 0, previewOrdinaryDraws = 0, previewUnsupportedDraws = 0;
+		std::array<uint64_t, 4> previewUnsupportedReasons{};
+		std::array<uint32_t, 4> unsupportedReasonsThisFrame{};
 		uint32_t frame = 0, width = 0, height = 0, nextDraw = 1, surveyDrawsThisFrame = 0;
+		uint32_t activeUnsupportedReasons = 0;
 		bool recording = false, ready = false;
 		PreviewSurveyClass activeSurveyClass = PreviewSurveyClass::None;
 		std::string status;

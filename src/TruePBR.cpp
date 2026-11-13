@@ -1578,6 +1578,7 @@ struct BSLightingShader_SetupGeometry
 		shader->currentRawTechnique = originalTechnique;
 		uint64_t materialId = 0, materialRevision = 0;
 		auto surveyClass = NativePBR::PreviewSurveyClass::None;
+		uint32_t unsupportedReasons = 0;
 		std::string referenceKey, shapeName;
 		if (pass && pass->shaderProperty && pass->geometry &&
 			(originalTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ModelSpaceNormals)) == 0 &&
@@ -1628,7 +1629,25 @@ struct BSLightingShader_SetupGeometry
 				RE::BSShaderProperty::EShaderPropertyFlag::kDecal,
 				RE::BSShaderProperty::EShaderPropertyFlag::kDynamicDecal)) {
 			if (IsPBRShaderProperty(pass->shaderProperty)) {
-				surveyClass = NativePBR::PreviewSurveyClass::UnsupportedPbr;
+				const auto& flags = pass->shaderProperty->flags;
+				if (flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kProjectedUV))
+					unsupportedReasons |= NativePBR::ProjectedUvReason;
+				if ((originalTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ModelSpaceNormals)) != 0)
+					unsupportedReasons |= NativePBR::ModelSpaceNormalsReason;
+				if (flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape,
+					RE::BSShaderProperty::EShaderPropertyFlag::kLODLandscape))
+					unsupportedReasons |= NativePBR::LandscapeReason;
+				if (flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kSkinned) || !unsupportedReasons)
+					unsupportedReasons |= NativePBR::OtherReason;
+				// Visual priority for overlaps: landscape, model-space normals, projected UV, other.
+				if (unsupportedReasons & NativePBR::LandscapeReason)
+					surveyClass = NativePBR::PreviewSurveyClass::UnsupportedLandscape;
+				else if (unsupportedReasons & NativePBR::ModelSpaceNormalsReason)
+					surveyClass = NativePBR::PreviewSurveyClass::UnsupportedModelSpaceNormals;
+				else if (unsupportedReasons & NativePBR::ProjectedUvReason)
+					surveyClass = NativePBR::PreviewSurveyClass::UnsupportedProjectedUv;
+				else
+					surveyClass = NativePBR::PreviewSurveyClass::UnsupportedOther;
 			} else if (auto* reference = pass->geometry->GetUserData(); reference && !reference->IsDynamicForm() &&
 				!reference->IsActor() && reference->GetFile(0)) {
 				if (const auto* base = reference->GetBaseObject(); base &&
@@ -1637,7 +1656,7 @@ struct BSLightingShader_SetupGeometry
 			}
 		}
 		globals::features::nativePBR.BeginSidecarPass(materialId, materialRevision, std::move(referenceKey), std::move(shapeName),
-			surveyClass);
+			surveyClass, unsupportedReasons);
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
