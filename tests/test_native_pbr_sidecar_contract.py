@@ -39,6 +39,13 @@ class NativePBRSidecarContractTests(unittest.TestCase):
         self.assertIn("SidecarIdentity[xy] = 0", self.validate)
         self.assertIn("ClearRenderTargetView(targets[0].rtv", (ROOT / "src/Features/NativePBR/MaterialSidecar.cpp").read_text())
 
+    def test_reverse_z_float_stencil_depth_view_is_supported(self):
+        reverse_z = (ROOT / "src/Features/ReverseZ.cpp").read_text()
+        sidecar = (ROOT / "src/Features/NativePBR/MaterialSidecar.cpp").read_text()
+        self.assertIn("return DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS", reverse_z)
+        self.assertIn("depthView.Format == DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS", sidecar)
+        self.assertIn("depth24 ? 1u : 0u", sidecar)
+
     def test_identity_is_losslessly_resolved_from_fenced_draw_table(self):
         self.assertIn("uint64_t materialIdentity", self.contract)
         self.assertIn("draw.ordinal == a_ordinal", self.contract)

@@ -4,6 +4,7 @@
 
 #include <dxgi1_4.h>
 #include <algorithm>
+#include <format>
 #include <new>
 #include <ranges>
 #include <stdexcept>
@@ -262,9 +263,13 @@ namespace NativePBR
 		}
 		D3D11_SHADER_RESOURCE_VIEW_DESC depthView{};
 		a_finalDepth->GetDesc(&depthView);
+		const bool depth24 = depthView.Format == DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+		const bool depth32 = depthView.Format == DXGI_FORMAT_R32_FLOAT ||
+			depthView.Format == DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
 		if (depthView.ViewDimension != D3D11_SRV_DIMENSION_TEXTURE2D ||
-			(depthView.Format != DXGI_FORMAT_R24_UNORM_X8_TYPELESS && depthView.Format != DXGI_FORMAT_R32_FLOAT)) {
-			status = "Unsupported final depth format for exact coverage validation";
+			(!depth24 && !depth32)) {
+			status = std::format("Unsupported final depth view for coverage validation: format={}, dimension={}",
+				static_cast<uint32_t>(depthView.Format), static_cast<uint32_t>(depthView.ViewDimension));
 			++failedFrames;
 			return;
 		}
@@ -297,7 +302,7 @@ namespace NativePBR
 		for (size_t i = 0; i < 2; ++i)
 			oldSRVs[i].attach(oldReads[i]);
 		a_context->CSGetUnorderedAccessViews(0, 1, oldUAV.put());
-		const std::array<uint32_t, 4> constants{ width, height, depthView.Format == DXGI_FORMAT_R24_UNORM_X8_TYPELESS ? 1u : 0u, 0u };
+		const std::array<uint32_t, 4> constants{ width, height, depth24 ? 1u : 0u, 0u };
 		a_context->UpdateSubresource(validationConstants.get(), 0, nullptr, constants.data(), 0, 0);
 		a_context->OMSetRenderTargets(0, nullptr, nullptr);
 		ID3D11ShaderResourceView* reads[2]{ a_finalDepth, targets[2].srv.get() };
