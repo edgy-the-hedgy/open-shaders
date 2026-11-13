@@ -11,6 +11,14 @@
 
 namespace NativePBR
 {
+	enum class PreviewMode : uint32_t
+	{
+		Off = 0,
+		MaterialIdentity = 1,
+		UvDerivatives = 2,
+		Coverage = 3
+	};
+
 	/** FXC capture data only. DX12 owns later material evaluation. */
 	class MaterialSidecar
 	{
@@ -21,9 +29,10 @@ namespace NativePBR
 		void Prepare(ID3D11Device* a_device);
 		void BeginFrame(ID3D11Device* a_device, ID3D11DeviceContext* a_context, ID3D11RenderTargetView* a_mainTarget,
 			uint32_t a_frame, uint32_t a_width, uint32_t a_height);
-		void BeginPass(uint64_t a_materialIdentity, uint64_t a_materialRevision, std::string a_referenceKey, std::string a_shapeName);
+		void BeginPass(uint64_t a_materialIdentity, uint64_t a_materialRevision, std::string a_referenceKey, std::string a_shapeName,
+			bool a_opaquePbrCandidate);
 		void EndPass();
-		void ReplayDrawIndexed(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base, bool a_previewReplacement);
+		void ReplayDrawIndexed(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base, PreviewMode a_previewMode);
 		void FinishFrame(ID3D11DeviceContext* a_context, ID3D11ShaderResourceView* a_finalDepth);
 		Sources GetSources(uint32_t a_frame) const;
 		std::shared_ptr<const std::vector<SidecarDraw>> GetDrawTable() const { return publishedDraws; }
@@ -33,6 +42,7 @@ namespace NativePBR
 		uint64_t RejectedDraws() const { return rejected; }
 		uint64_t FailedFrames() const { return failedFrames; }
 		uint64_t PreviewDraws() const { return previewDraws; }
+		uint64_t PreviewMissingIdentities() const { return previewMissingIdentities; }
 		bool PreviewReady() const { return static_cast<bool>(previewShader); }
 		const std::string& Status() const { return status; }
 
@@ -62,9 +72,10 @@ namespace NativePBR
 		std::vector<SidecarDraw> draws;
 		std::shared_ptr<const std::vector<SidecarDraw>> publishedDraws;
 		std::string activeReference, activeShape;
-		uint64_t activeMaterial = 0, activeRevision = 0, replayed = 0, rejected = 0, failedFrames = 0, previewDraws = 0;
+		uint64_t activeMaterial = 0, activeRevision = 0, replayed = 0, rejected = 0, failedFrames = 0, previewDraws = 0,
+			previewMissingIdentities = 0;
 		uint32_t frame = 0, width = 0, height = 0, nextDraw = 1;
-		bool recording = false, ready = false;
+		bool recording = false, ready = false, activeOpaquePbrCandidate = false;
 		std::string status;
 	};
 }

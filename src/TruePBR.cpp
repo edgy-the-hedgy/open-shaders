@@ -1653,6 +1653,7 @@ struct BSLightingShader_SetupGeometry
 
 		shader->currentRawTechnique = originalTechnique;
 		uint64_t materialId = 0, materialRevision = 0;
+		bool opaquePbrCandidate = false;
 		std::string referenceKey, shapeName;
 		if (pass && pass->shaderProperty && pass->geometry &&
 			(originalTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ModelSpaceNormals)) == 0 &&
@@ -1672,6 +1673,9 @@ struct BSLightingShader_SetupGeometry
 				RE::BSShaderProperty::EShaderPropertyFlag::kDynamicDecal,
 				RE::BSShaderProperty::EShaderPropertyFlag::kLODLandscape,
 				RE::BSShaderProperty::EShaderPropertyFlag::kSkinned)) {
+			// A rigid opaque PBR pass qualifies for the lightweight coverage preview even
+			// when its TruePBR registry identity/reference could not be resolved.
+			opaquePbrCandidate = true;
 			auto* reference = pass->geometry->GetUserData();
 			if (reference && !reference->IsDynamicForm()) {
 				if (const auto* file = reference->GetFile(0)) {
@@ -1686,7 +1690,8 @@ struct BSLightingShader_SetupGeometry
 				}
 			}
 		}
-		globals::features::nativePBR.BeginSidecarPass(materialId, materialRevision, std::move(referenceKey), std::move(shapeName));
+		globals::features::nativePBR.BeginSidecarPass(materialId, materialRevision, std::move(referenceKey), std::move(shapeName),
+			opaquePbrCandidate);
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };

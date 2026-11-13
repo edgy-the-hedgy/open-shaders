@@ -92,6 +92,7 @@ namespace NativePBR
 		publishedDraws.reset();
 		activeMaterial = 0;
 		activeRevision = 0;
+		activeOpaquePbrCandidate = false;
 		activeReference.clear();
 		activeShape.clear();
 		expectedMain = nullptr;
@@ -140,8 +141,10 @@ namespace NativePBR
 		}
 	}
 
-	void MaterialSidecar::BeginPass(uint64_t a_materialIdentity, uint64_t a_materialRevision, std::string a_referenceKey, std::string a_shapeName)
+	void MaterialSidecar::BeginPass(uint64_t a_materialIdentity, uint64_t a_materialRevision, std::string a_referenceKey,
+		std::string a_shapeName, bool a_opaquePbrCandidate)
 	{
+		activeOpaquePbrCandidate = recording && a_opaquePbrCandidate;
 		activeMaterial = recording && a_materialRevision ? a_materialIdentity : 0;
 		activeRevision = activeMaterial ? a_materialRevision : 0;
 		activeReference = activeMaterial ? std::move(a_referenceKey) : std::string{};
@@ -152,13 +155,16 @@ namespace NativePBR
 	{
 		activeMaterial = 0;
 		activeRevision = 0;
+		activeOpaquePbrCandidate = false;
 		activeReference.clear();
 		activeShape.clear();
 	}
 
-	void MaterialSidecar::ReplayDrawIndexed(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base, bool a_previewReplacement)
+	void MaterialSidecar::ReplayDrawIndexed(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base, PreviewMode a_previewMode)
 	{
-		if (!recording || !activeMaterial || !a_context || a_count == 0)
+		const bool missingIdentity = a_previewMode == PreviewMode::Coverage && activeOpaquePbrCandidate && !activeMaterial;
+		if (!recording || (!activeMaterial && !missingIdentity) || !a_context || a_count == 0 ||
+			(missingIdentity && !previewShader))
 			return;
 		CS_GPU_PASS("NativePBR::SidecarRaster");
 		// This call is made AFTER the original draw has finished, on the same immediate context.
@@ -222,28 +228,34 @@ namespace NativePBR
 		a_context->PSGetShader(oldShader.put(), nullptr, nullptr);
 		winrt::com_ptr<ID3D11Buffer> oldConstant;
 		a_context->PSGetConstantBuffers(13, 1, oldConstant.put());
-		const uint32_t ordinal = nextDraw++;
-		const Constants constants{ ordinal, 0, static_cast<uint32_t>(activeMaterial), static_cast<uint32_t>(activeMaterial >> 32) };
+		// The missing-identity candidate is previewed only; it must never enter the sidecar identity table.
+		const uint32_t ordinal = activeMaterial ? nextDraw++ : 0;
+		const uint32_t previewFlags = static_cast<uint32_t>(a_previewMode) | (missingIdentity ? 0x100u : 0u);
+		const Constants constants{ ordinal, previewFlags, static_cast<uint32_t>(activeMaterial), static_cast<uint32_t>(activeMaterial >> 32) };
 		a_context->UpdateSubresource(drawConstants.get(), 0, nullptr, &constants, 0, 0);
-		std::array<ID3D11RenderTargetView*, kCount> views{};
-		for (size_t i = 0; i < kCount; ++i)
-			views[i] = targets[i].rtv.get();
-		a_context->OMSetRenderTargets(static_cast<UINT>(views.size()), views.data(), dsv.get());
 		a_context->OMSetDepthStencilState(replayDepth, stencilRef);
 		a_context->OMSetBlendState(writeAll.get(), nullptr, 0xffffffffu);
-		a_context->PSSetShader(shader.get(), nullptr, 0);
 		ID3D11Buffer* cb = drawConstants.get();
 		a_context->PSSetConstantBuffers(13, 1, &cb);
 		// The original vertex shader, input layout, IA streams, clipping and viewport remain bound.
 		// A caller-side recursion guard skips the replay in DrawIndexed detours.
-		a_context->DrawIndexed(a_count, a_first, a_base);
-		if (a_previewReplacement && previewShader) {
+		if (activeMaterial) {
+			std::array<ID3D11RenderTargetView*, kCount> views{};
+			for (size_t i = 0; i < kCount; ++i)
+				views[i] = targets[i].rtv.get();
+			a_context->OMSetRenderTargets(static_cast<UINT>(views.size()), views.data(), dsv.get());
+			a_context->PSSetShader(shader.get(), nullptr, 0);
+			a_context->DrawIndexed(a_count, a_first, a_base);
+		}
+		if (a_previewMode != PreviewMode::Off && previewShader) {
 			CS_GPU_PASS("NativePBR::PreviewOpaqueReplacement");
 			ID3D11RenderTargetView* previewTarget = oldRaw[0];
 			a_context->OMSetRenderTargets(1, &previewTarget, dsv.get());
 			a_context->PSSetShader(previewShader.get(), nullptr, 0);
 			a_context->DrawIndexed(a_count, a_first, a_base);
 			++previewDraws;
+			if (missingIdentity)
+				++previewMissingIdentities;
 		}
 		cb = oldConstant.get();
 		a_context->PSSetConstantBuffers(13, 1, &cb);
@@ -251,13 +263,15 @@ namespace NativePBR
 		a_context->OMSetBlendState(oldBlend.get(), oldFactor, oldMask);
 		a_context->OMSetDepthStencilState(oldDepth.get(), stencilRef);
 		a_context->OMSetRenderTargets(static_cast<UINT>(oldRaw.size()), oldRaw.data(), dsv.get());
-		try {
-			draws.push_back({ ordinal, activeMaterial, activeRevision, activeReference, activeShape });
-			++replayed;
-		} catch (const std::bad_alloc&) {
-			recording = false;
-			status = "Sidecar draw table allocation exhausted";
-			++failedFrames;
+		if (activeMaterial) {
+			try {
+				draws.push_back({ ordinal, activeMaterial, activeRevision, activeReference, activeShape });
+				++replayed;
+			} catch (const std::bad_alloc&) {
+				recording = false;
+				status = "Sidecar draw table allocation exhausted";
+				++failedFrames;
+			}
 		}
 	}
 

@@ -47,15 +47,21 @@ void NativePBRFeature::BeginOpaqueSidecar()
 		globals::game::graphicsState->GetFrameCount(), desc.Width, desc.Height);
 }
 
-void NativePBRFeature::BeginSidecarPass(uint64_t a_identity, uint64_t a_revision, std::string a_referenceKey, std::string a_shapeName)
+void NativePBRFeature::BeginSidecarPass(uint64_t a_identity, uint64_t a_revision, std::string a_referenceKey,
+	std::string a_shapeName, bool a_opaquePbrCandidate)
 {
-	materialSidecar.BeginPass(a_identity, a_revision, std::move(a_referenceKey), std::move(a_shapeName));
+	materialSidecar.BeginPass(a_identity, a_revision, std::move(a_referenceKey), std::move(a_shapeName), a_opaquePbrCandidate);
 }
 void NativePBRFeature::EndSidecarPass() { materialSidecar.EndPass(); }
 void NativePBRFeature::ReplaySidecarDraw(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base)
 {
 	if (IsActive() && !globals::game::isVR)
-		materialSidecar.ReplayDrawIndexed(a_context, a_count, a_first, a_base, previewOpaqueReplacement.load(std::memory_order_relaxed));
+	{
+		const auto mode = previewOpaqueReplacement.load(std::memory_order_relaxed) ?
+			static_cast<NativePBR::PreviewMode>(1u + std::min(previewVisualization.load(std::memory_order_relaxed), 2u)) :
+			NativePBR::PreviewMode::Off;
+		materialSidecar.ReplayDrawIndexed(a_context, a_count, a_first, a_base, mode);
+	}
 }
 void NativePBRFeature::FinishOpaqueSidecar(ID3D11ShaderResourceView* a_finalDepth)
 {
@@ -492,10 +498,29 @@ void NativePBRFeature::DrawSettings()
 	bool preview = previewOpaqueReplacement.load(std::memory_order_relaxed);
 	if (ImGui::Checkbox("Preview opaque PBR replacement (temporary)", &preview))
 		previewOpaqueReplacement.store(preview, std::memory_order_relaxed);
+	if (preview) {
+		int mode = static_cast<int>(std::min(previewVisualization.load(std::memory_order_relaxed), 2u));
+		if (ImGui::Combo("Preview visualization", &mode, "Material identity\0UV / derivatives\0Coverage comparison\0"))
+			previewVisualization.store(static_cast<uint32_t>(mode), std::memory_order_relaxed);
+		switch (mode) {
+		case 1:
+			ImGui::TextDisabled("R/G: wrapped UV; B: UV derivative footprint. White: UV grid.");
+			break;
+		case 2:
+			ImGui::TextDisabled("Green: registered PBR; amber: opaque PBR candidate without identity.");
+			ImGui::TextDisabled("Non-PBR and out-of-scope geometry is unchanged.");
+			break;
+		default:
+			ImGui::TextDisabled("Stable per-material colors and UV grid.");
+			break;
+		}
+	}
 	if (preview && !materialSidecar.PreviewReady())
 		ImGui::TextDisabled("Preview shader unavailable; check FXC compile log.");
-	ImGui::TextDisabled("Material colors and UV grid replace opaque PBR pixels; no native PBR lighting yet.");
 	ImGui::Text("Preview draws: %llu", materialSidecar.PreviewDraws());
+	if (preview && previewVisualization.load(std::memory_order_relaxed) == 2u)
+		ImGui::Text("Unregistered PBR candidate draws: %llu", materialSidecar.PreviewMissingIdentities());
+	ImGui::TextDisabled("Depth-equal raster preview only; no GPU readback or native PBR lighting.");
 	if (!materialSidecar.Status().empty())
 		ImGui::TextWrapped("Sidecar: %s", materialSidecar.Status().c_str());
 	ImGui::TextDisabled("Commit 3 captures surface identity only; native shading is not enabled yet.");
@@ -557,6 +582,8 @@ void NativePBRFeature::LoadSettings(json& j)
 {
 	enabled.store(j.value("Enabled", true), std::memory_order_relaxed);
 	previewOpaqueReplacement.store(j.value("PreviewOpaqueReplacement", false), std::memory_order_relaxed);
+	previewVisualization.store(static_cast<uint32_t>(std::clamp(j.value("PreviewVisualization", 0), 0, 2)),
+		std::memory_order_relaxed);
 }
 void NativeLLFFeature::LoadSettings(json& j)
 {
@@ -574,7 +601,8 @@ void NativeSCMFeature::LoadSettings(json& j) { enabled.store(j.value("Enabled", 
 void NativePBRFeature::SaveSettings(json& j)
 {
 	j = { { "Enabled", enabled.load(std::memory_order_relaxed) },
-		{ "PreviewOpaqueReplacement", previewOpaqueReplacement.load(std::memory_order_relaxed) } };
+		{ "PreviewOpaqueReplacement", previewOpaqueReplacement.load(std::memory_order_relaxed) },
+		{ "PreviewVisualization", previewVisualization.load(std::memory_order_relaxed) } };
 }
 void NativeLLFFeature::SaveSettings(json& j)
 {
@@ -598,7 +626,9 @@ json NativePBRFeature::GetDiagnostics()
 	return { { "selected", enabled.load() }, { "native", state.owner == NativePBR::RenderingOwner::Native },
 		{ "recipeRevision", globals::features::truePBR.nativeRegistry.Revision() },
 		{ "previewOpaqueReplacement", previewOpaqueReplacement.load(std::memory_order_relaxed) },
+		{ "previewVisualization", previewVisualization.load(std::memory_order_relaxed) },
 		{ "previewDraws", materialSidecar.PreviewDraws() },
+		{ "previewMissingIdentities", materialSidecar.PreviewMissingIdentities() },
 		{ "shaderDomainPolicy", state.shaderDomain == NativePBR::ShaderDomain::NativePBRInput ? "native-pbr-input" : "legacy-true-pbr" },
 		{ "materialInputsAvailable", state.materialInputsAvailable },
 		{ "publishedNativeMaterialGeneration", state.publishedNativeMaterialGeneration },
