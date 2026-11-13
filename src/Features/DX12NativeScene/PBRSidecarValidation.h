@@ -58,8 +58,8 @@ namespace DX12Native
 		winrt::com_ptr<ID3D12RootSignature> root;
 		winrt::com_ptr<ID3D12PipelineState> pipeline;
 		winrt::com_ptr<ID3D12Fence> completion;
-		winrt::com_ptr<ID3D12Device> device;
-		winrt::com_ptr<ID3D12CommandQueue> queue;
+		winrt::com_ptr<ID3D12Device> ownerDevice;
+		winrt::com_ptr<ID3D12CommandQueue> ownerQueue;
 		winrt::com_ptr<ID3D11Texture2D> preview11;
 		winrt::com_ptr<ID3D11ShaderResourceView> previewSRV;
 		Result latest;

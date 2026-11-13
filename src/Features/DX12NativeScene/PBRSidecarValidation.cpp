@@ -217,7 +217,7 @@ namespace DX12Native
 	void PBRSidecarValidation::Advance(const GraphicsBackend& backend, std::shared_ptr<const RasterFrame> frame)
 	{
 		CS_GPU_PASS("NativePBR::ValidateCopiedSidecar");
-		if (device && (device.get() != backend.d3d12Device.get() || queue.get() != backend.commandQueue.get())) {
+		if (ownerDevice && (ownerDevice.get() != backend.d3d12Device.get() || ownerQueue.get() != backend.commandQueue.get())) {
 			status = "NativePBR validation backend changed; restart required";
 			return;
 		}
@@ -245,9 +245,9 @@ namespace DX12Native
 		try {
 			if (!device || !backend.commandQueue)
 				throw std::runtime_error("NativePBR validation backend unavailable");
-			if (!this->device) {
-				this->device.copy_from(device);
-				queue.copy_from(backend.commandQueue.get());
+			if (!ownerDevice) {
+				ownerDevice.copy_from(device);
+				ownerQueue.copy_from(backend.commandQueue.get());
 			}
 			CreatePipeline(device);
 			if (!completion)
