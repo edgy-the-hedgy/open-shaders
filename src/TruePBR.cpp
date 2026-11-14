@@ -10,51 +10,13 @@
 #include "Features/NativePBR/PBRHookDispatcher.h"
 #include "Hooks.h"
 #include "I18n/I18n.h"
+#include "Materials/PBRRecordConfig.h"
 #include "ShaderCache.h"
 #include "State.h"
 #include "Util.h"
 #include "Utils/UI.h"
 
 #define I18N_KEY_PREFIX "feature.true_pbr."
-
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
-	GlintParameters,
-	enabled,
-	screenSpaceScale,
-	logMicrofacetDensity,
-	microfacetRoughness,
-	densityRandomization);
-
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
-	TruePBR::PBRTextureSetData,
-	roughnessScale,
-	displacementScale,
-	specularLevel,
-	subsurfaceColor,
-	subsurfaceOpacity,
-	subsurfaceBalance,
-	thinSurface,
-	foliage,
-	thinSurfaceSpecularWeight,
-	thinSurfaceBackSpecularWeight,
-	thinSurfaceBackRoughnessScale,
-	coatColor,
-	coatStrength,
-	coatRoughness,
-	coatSpecularLevel,
-	innerLayerDisplacementOffset,
-	fuzzColor,
-	fuzzWeight,
-	fuzzRoughness,
-	fuzzRoughnessTexture,
-	glintParameters);
-
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
-	TruePBR::PBRMaterialObjectData,
-	baseColorScale,
-	roughness,
-	specularLevel,
-	glintParameters);
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	TruePBR::Settings,
@@ -203,56 +165,6 @@ static void WarnInvalidPBRDecalTextureSetOnce(const std::string& formEditorID)
 	static std::unordered_set<std::string> warned;
 	if (warned.insert(formEditorID).second) {
 		logger::warn("[TruePBR] {} missing required PBR texture(s); skipping decal", formEditorID);
-	}
-}
-
-namespace PNState
-{
-	void ReadPBRRecordConfigs(const std::string& rootPath, std::function<bool(const std::string&, const json&)> recordReader, bool enableVerboseJsonLogging)
-	{
-		if (std::filesystem::exists(rootPath)) {
-			auto configs = clib_util::distribution::get_configs(rootPath, "", ".json");
-
-			if (configs.empty()) {
-				logger::warn("[TruePBR] no .json files were found within the {} folder, aborting...", rootPath);
-				return;
-			}
-
-			if (enableVerboseJsonLogging) {
-				logger::info("[TruePBR] {} matching jsons found", configs.size());
-			}
-
-			bool anyFailed = false;
-			for (auto& path : configs) {
-				if (enableVerboseJsonLogging) {
-					logger::info("[TruePBR] loading json : {}", path);
-				}
-
-				std::string error;
-				const auto config = Util::FileHelpers::ReadJsonFile(path, "PBR record config", 0, &error);
-				if (!config) {
-					// The helper already logged parse failures; only a failed open is still unreported.
-					if (error.empty())
-						logger::error("[TruePBR] failed to read {}", path);
-					anyFailed = true;
-					continue;
-				}
-
-				const auto editorId = std::filesystem::path(path).stem().string();
-				if (!recordReader(editorId, *config)) {
-					anyFailed = true;
-				}
-			}
-
-			if (!enableVerboseJsonLogging && !anyFailed) {
-				logger::info("[TruePBR] All .jsons loaded successfully.");
-			}
-		}
-	}
-
-	void SavePBRRecordConfig(const std::string& rootPath, const std::string& editorId, const json& config)
-	{
-		Util::FileHelpers::WriteJsonAtomically(std::filesystem::path(rootPath) / (editorId + ".json"), config, 4, "PBR record config");
 	}
 }
 
@@ -411,7 +323,7 @@ void TruePBR::DrawSettings()
 			}
 			if (selectedPbrTextureSet != nullptr) {
 				if (Util::Button(T(TKEY("save"), "Save"))) {
-					PNState::SavePBRRecordConfig("Data\\PBRTextureSets", selectedPbrTextureSetName, *selectedPbrTextureSet);
+					PBRRecords::SaveConfig("Data\\PBRTextureSets", selectedPbrTextureSetName, *selectedPbrTextureSet);
 				}
 			}
 		}
@@ -519,7 +431,7 @@ void TruePBR::DrawSettings()
 			}
 			if (selectedPbrMaterialObject != nullptr) {
 				if (Util::Button(T(TKEY("material_save"), "Save"))) {
-					PNState::SavePBRRecordConfig("Data\\PBRMaterialObjects", selectedPbrMaterialObjectName, *selectedPbrMaterialObject);
+					PBRRecords::SaveConfig("Data\\PBRMaterialObjects", selectedPbrMaterialObjectName, *selectedPbrMaterialObject);
 				}
 			}
 		}
@@ -656,7 +568,7 @@ void TruePBR::SetupTextureSetData()
 
 	pbrTextureSets.clear();
 
-	PNState::ReadPBRRecordConfigs("Data\\PBRTextureSets", [this](const std::string& editorId, const json& config) {
+	PBRRecords::ReadConfigs("Data\\PBRTextureSets", [this](const std::string& editorId, const json& config) {
 		try {
 			pbrTextureSets.insert_or_assign(editorId, config);
 			return true;
@@ -672,7 +584,7 @@ void TruePBR::ReloadTextureSetData()
 		logger::info("[TruePBR] reloading PBR texture set configs");
 	}
 
-	PNState::ReadPBRRecordConfigs("Data\\PBRTextureSets", [this](const std::string& editorId, const json& config) {
+	PBRRecords::ReadConfigs("Data\\PBRTextureSets", [this](const std::string& editorId, const json& config) {
 		try {
 			if (auto it = pbrTextureSets.find(editorId); it != pbrTextureSets.cend()) {
 				it->second = config;
@@ -725,7 +637,7 @@ void TruePBR::SetupMaterialObjectData()
 
 	pbrMaterialObjects.clear();
 
-	PNState::ReadPBRRecordConfigs("Data\\PBRMaterialObjects", [this](const std::string& editorId, const json& config) {
+	PBRRecords::ReadConfigs("Data\\PBRMaterialObjects", [this](const std::string& editorId, const json& config) {
 		try {
 			pbrMaterialObjects.insert_or_assign(editorId, config);
 			return true;
