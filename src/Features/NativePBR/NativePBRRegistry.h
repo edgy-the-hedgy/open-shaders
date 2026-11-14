@@ -119,12 +119,19 @@ namespace NativePBR
 	/** @brief Captures per-geometry shader and alpha state without retaining engine objects. */
 	struct InstanceProperties
 	{
+		enum class Opacity : uint8_t { Unknown, Opaque, NonOpaque };
+		enum class NormalMode : uint8_t { Unknown, TangentSpace, ModelSpace };
+		enum class UvAnimation : uint8_t { Unknown, Static, Animated };
 		uint64_t shaderFlags = 0;
 		uint16_t alphaFlags = 0;
 		uint8_t alphaThreshold = 0;
 		bool alphaProperty = false, skinned = false, emissionKnown = false;
 		std::array<float, 3> emissiveColor{};
 		float emissiveMultiplier = 0;
+		Opacity opacity = Opacity::Unknown;
+		NormalMode normalMode = NormalMode::Unknown;
+		UvAnimation uvAnimation = UvAnimation::Unknown;
+		std::string materialObjectEditorId;
 		bool operator==(const InstanceProperties&) const = default;
 	};
 
