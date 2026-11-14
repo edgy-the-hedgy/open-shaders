@@ -1082,6 +1082,27 @@ TEST_CASE("Loose PBR texture planner is bounded, deduplicated and excludes prepa
 	REQUIRE(plan.invalid == 1);
 }
 
+TEST_CASE("Native GPU source preparation includes feature DDS without changing legacy source requests", "[native_pbr]")
+{
+	NativePBR::Snapshot snapshot{ 9, 2, {} };
+	snapshot.material.texturePathsComplete = true;
+	snapshot.material.texturePaths = { "textures/c.dds", "textures/n.dds", "textures/r.dds",
+		"textures/e.dds", "textures/d.dds", "textures/f0.dds", "textures/f1.dds" };
+	const auto recipe = std::make_shared<const NativePBR::Recipe>(NativePBR::CompileRecipe(snapshot));
+	REQUIRE(recipe->issues & NativePBR::UnsupportedDisplacement);
+	REQUIRE(recipe->issues & NativePBR::UnsupportedFeatureTextures);
+	NativePBR::LiveMatchResult matches;
+	matches.matches.push_back(NativePBR::VerifiedLiveMatch{ recipe, {} });
+	const auto legacy = DX12Native::PlanLiveLooseTextures(matches, {}, 8);
+	REQUIRE(legacy.paths.size() == 4);
+	const auto native = DX12Native::PlanLiveLooseTextures(matches, {}, 8, {}, true);
+	REQUIRE(native.paths.size() == 7);
+	REQUIRE(native.paths[4] == "textures/d.dds");
+	REQUIRE(native.paths[5] == "textures/f0.dds");
+	REQUIRE(native.paths[6] == "textures/f1.dds");
+	REQUIRE(native.featureLimitedRecipes == 1);
+}
+
 TEST_CASE("Native material path lookup resolves slash- and case-normalized loose DDS aliases", "[native_pbr]")
 {
 	REQUIRE(DX12Native::MaterialTextureLookupKey("Textures\\MyMod\\RMAOS.DDS") ==
