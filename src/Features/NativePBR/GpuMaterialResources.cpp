@@ -1,4 +1,5 @@
 #include "GpuMaterialResources.h"
+#include "GpuMaterialResidency.h"
 
 #include "Features/DX12NativeScene/MaterialTextureLookup.h"
 #include "Features/DX12NativeScene/VideoMemoryBudget.h"
@@ -15,7 +16,6 @@ namespace NativePBR
 {
 	namespace
 	{
-		constexpr uint32_t kRequiredTextureRoles = 0x07u;
 		constexpr uint64_t kDescriptorReserveBytes = 1024 * 1024;
 		constexpr uint64_t kMaximumRecordTableBytes = 16ull * 1024 * 1024;
 
@@ -36,9 +36,50 @@ namespace NativePBR
 			if (logical == a_residency.logicalLocations.end())
 				return { kGpuMissingTexture, 0 };
 			auto result = logical->second;
-			if (a_request.interpretation == TextureInterpretation::ColorSrgb)
-				result[0] += DX12Native::kMaximumTexturePools;
+			result[0] = GpuTextureDescriptorIndex(result[0], a_request.interpretation);
 			return result;
+		}
+
+		std::shared_ptr<DX12Native::MaterialResources> SelectActiveResidency(
+			const DX12Native::MaterialResources& a_previous, const RecipeGeneration& a_generation)
+		{
+			std::unordered_set<std::string> requested, canonical;
+			for (const auto& [identity, recipe] : a_generation.recipes) {
+				if (!recipe || recipe->identity != identity)
+					continue;
+				for (const auto& texture : recipe->textures)
+					if (!texture.canonicalPath.empty()) {
+						requested.insert(DX12Native::MaterialTextureLookupKey(texture.canonicalPath));
+						canonical.insert(texture.canonicalPath);
+					}
+			}
+			const auto remap = PlanGpuMaterialPageRemap(requested, a_previous.locations,
+				a_previous.logicalLocations, a_previous.pools.size());
+			auto active = std::make_shared<DX12Native::MaterialResources>();
+			active->pendingUpload = a_previous.pendingUpload;
+			for (size_t pool = 0; pool < remap.size(); ++pool)
+				if (remap[pool] != UINT32_MAX) {
+					active->pools.push_back(a_previous.pools[pool]);
+					active->bytes += a_previous.pools[pool].bytes;
+				}
+			for (const auto& path : requested) {
+				const auto location = a_previous.locations.find(path);
+				if (location == a_previous.locations.end())
+					continue;
+				const auto logical = a_previous.logicalLocations.find(location->second);
+				if (logical == a_previous.logicalLocations.end() || logical->second[0] >= remap.size() ||
+					remap[logical->second[0]] == UINT32_MAX)
+					continue;
+				active->locations.emplace(path, location->second);
+				active->logicalLocations.insert_or_assign(location->second,
+					std::array<uint32_t, 2>{ remap[logical->second[0]], logical->second[1] });
+			}
+			for (const auto& ticket : a_previous.textureTickets)
+				if (ticket && active->logicalLocations.contains(ticket->handle))
+					active->textureTickets.push_back(ticket);
+			active->textures = uint32_t(active->logicalLocations.size());
+			active->verifiedTextureSources = a_previous.verifiedTextureSources.Select(canonical);
+			return active;
 		}
 
 		void WriteTextureDescriptors(ID3D12Device* a_device, GpuMaterialResources& a_resources)
@@ -77,6 +118,25 @@ namespace NativePBR
 		return entry;
 	}
 
+	GpuMaterialView GpuMaterialResources::MakeView() const
+	{
+		GpuMaterialView result;
+		result.generation = shared_from_this();
+		if (records && textureDescriptors) {
+			result.recordAddress = records->GetGPUVirtualAddress();
+			result.descriptorHeap = textureDescriptors.get();
+			result.textureTable = textureDescriptors->GetGPUDescriptorHandleForHeapStart();
+			result.recordCount = uint32_t(entries.size());
+			result.publicationRevision = generation ? generation->revision : 0;
+		}
+		return result;
+	}
+
+	void GpuMaterialResources::RetainUntil(winrt::com_ptr<ID3D12Fence> a_fence, uint64_t a_value) const
+	{
+		GpuMaterialRetirement::Global().RetainUntil(shared_from_this(), std::move(a_fence), a_value);
+	}
+
 	std::shared_ptr<const GpuMaterialResources> GpuMaterialResources::Create(const GraphicsBackend& a_backend,
 		std::shared_ptr<const RecipeGeneration> a_generation, uint64_t a_budgetLimit, uint64_t a_batchLimit,
 		bool a_importArchives, std::shared_ptr<const GpuMaterialResources> a_previous,
@@ -99,11 +159,19 @@ namespace NativePBR
 					throw std::runtime_error("NativePBR shared DDS residency belongs to a different DX12 device");
 			}
 		}
+		std::shared_ptr<DX12Native::MaterialResources> activeResidency;
+		if (inherited) {
+			activeResidency = SelectActiveResidency(*inherited, *result->generation);
+			result->reusedPoolCount = uint32_t(activeResidency->pools.size());
+			result->prunedPoolCount = uint32_t(inherited->pools.size() - activeResidency->pools.size());
+			inherited = activeResidency.get();
+		}
 		std::vector<uint64_t> identities;
 		identities.reserve(result->generation->recipes.size());
 		for (const auto& [identity, recipe] : result->generation->recipes)
 			if (identity && recipe && recipe->identity == identity && recipe->revision)
 				identities.push_back(identity);
+		result->unindexableRecipes = uint32_t(result->generation->recipes.size() - identities.size());
 		std::ranges::sort(identities);
 		const auto tableSize = std::max<size_t>(1, identities.size()) * sizeof(GpuMaterialRecord);
 		const auto tableDesc = CD3DX12_RESOURCE_DESC::Buffer(tableSize);
@@ -127,6 +195,11 @@ namespace NativePBR
 		for (const auto identity : identities)
 			matches.matches.emplace_back(VerifiedLiveMatch{ result->generation->recipes.at(identity), {} });
 		result->residency = DX12Native::MaterialResources::LoadResidency(a_backend, source, &matches, inherited, true);
+		result->deferredTextureSources = result->residency->looseDdsDeferred;
+		result->rejectedTextureSources = result->residency->rejectedTextureSources +
+			result->residency->looseDdsRejected + result->residency->archiveDdsRejected;
+		result->firstTextureSourceFailure = result->residency->firstTextureSourceFailure.empty() ?
+			result->residency->failure : result->residency->firstTextureSourceFailure;
 
 		std::vector<GpuMaterialRecord> records;
 		records.reserve(std::max<size_t>(1, identities.size()));
@@ -138,11 +211,16 @@ namespace NativePBR
 			const auto record = PackGpuMaterialRecord(recipe, locations);
 			const auto index = uint32_t(records.size());
 			result->indices.emplace(identity, index);
-			result->entries.push_back({ index, record.controls[0], recipe.issues, recipe.revision });
-			if ((record.controls[0] & kRequiredTextureRoles) == kRequiredTextureRoles)
+			const auto requestedRoles = GpuRequestedTextureRoles(recipe);
+			const auto availability = ClassifyGpuMaterialAvailability(record.controls[0], requestedRoles);
+			result->entries.push_back({ index, record.controls[0], requestedRoles, recipe.issues,
+				recipe.revision, availability });
+			if (availability == GpuMaterialAvailability::Resident)
 				++result->fullyResident;
-			else
+			else if (availability == GpuMaterialAvailability::PartiallyResident)
 				++result->partiallyResident;
+			else
+				++result->unavailable;
 			if ((EffectiveNativeIssues(recipe) & ~(UnknownOpacity | UnknownNormalMode |
 				UnknownUvAnimation | UnmatchedSceneInstance)) != 0)
 				++result->featureLimited;
@@ -200,6 +278,7 @@ namespace NativePBR
 
 	void GpuMaterialWorker::Advance()
 	{
+		GpuMaterialRetirement::Global().Collect();
 		DX12Native::RetireMaterialUploads();
 		if (pending) {
 			if (!pending->done.load(std::memory_order_acquire))
@@ -296,11 +375,21 @@ namespace NativePBR
 			pending->resources && pending->resources->residency->pendingUpload);
 	}
 
+	GpuMaterialRetirement& GpuMaterialRetirement::Global()
+	{
+		static auto* retirement = new GpuMaterialRetirement;
+		return *retirement;
+	}
+
 	void GpuMaterialRetirement::RetainUntil(std::shared_ptr<const GpuMaterialResources> a_generation,
 		winrt::com_ptr<ID3D12Fence> a_consumerFence, uint64_t a_value)
 	{
 		if (!a_generation || !a_consumerFence || !a_value)
 			throw std::invalid_argument("NativePBR material retirement requires a generation and signaled consumer fence");
+		winrt::com_ptr<ID3D12Device> fenceDevice;
+		if (!a_generation->device || FAILED(a_consumerFence->GetDevice(IID_PPV_ARGS(fenceDevice.put()))) ||
+			fenceDevice.get() != a_generation->device.get())
+			throw std::invalid_argument("NativePBR consumer fence and material residency must use the same DX12 device");
 		std::scoped_lock lock(mutex);
 		pending.push_back({ std::move(a_generation), std::move(a_consumerFence), a_value });
 	}
@@ -310,7 +399,7 @@ namespace NativePBR
 		std::scoped_lock lock(mutex);
 		std::erase_if(pending, [](const Pending& entry) {
 			const auto completed = entry.fence->GetCompletedValue();
-			return completed == UINT64_MAX || completed >= entry.value;
+			return Completed(completed, entry.value);
 		});
 	}
 }

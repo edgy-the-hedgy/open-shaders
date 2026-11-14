@@ -10,10 +10,42 @@ namespace NativePBR
 {
 	inline constexpr uint32_t kGpuMissingTexture = UINT32_MAX;
 	inline constexpr uint32_t kGpuMaterialRecordVersion = 1;
+	inline constexpr uint32_t kGpuTexturePoolCapacity = 256;
+	inline constexpr uint32_t kGpuTextureDescriptorCapacity = 2 * kGpuTexturePoolCapacity;
+	inline constexpr uint32_t kGpuRequiredTextureRoles = 0x07u;
+	enum class GpuMaterialAvailability : uint8_t
+	{
+		Resident,
+		PartiallyResident,
+		Unavailable
+	};
+	/** @brief Resource coverage is independent of recipe feature-support diagnostics. */
+	inline GpuMaterialAvailability ClassifyGpuMaterialAvailability(uint32_t a_resident, uint32_t a_requested)
+	{
+		return (a_resident & (a_requested | kGpuRequiredTextureRoles)) == (a_requested | kGpuRequiredTextureRoles) ?
+			GpuMaterialAvailability::Resident : a_resident ?
+			GpuMaterialAvailability::PartiallyResident : GpuMaterialAvailability::Unavailable;
+	}
 	inline constexpr uint32_t kGpuDrawUsesVertexColor = 1u;
 	inline constexpr uint32_t kGpuDrawProjected = 2u;
 	using GpuTextureLocation = std::array<uint32_t, 2>;
 	using GpuTextureLocations = std::array<GpuTextureLocation, static_cast<size_t>(TextureRole::Count)>;
+	/** @brief Converts one physical DDS page to the matching linear or sRGB SRV index. */
+	inline uint32_t GpuTextureDescriptorIndex(uint32_t a_pool, TextureInterpretation a_interpretation)
+	{
+		return a_pool < kGpuTexturePoolCapacity ?
+			a_pool + (a_interpretation == TextureInterpretation::ColorSrgb ? kGpuTexturePoolCapacity : 0) :
+			kGpuMissingTexture;
+	}
+	/** @brief Includes required base textures plus optional roles requested by an immutable recipe. */
+	inline uint32_t GpuRequestedTextureRoles(const Recipe& a_recipe)
+	{
+		uint32_t result = kGpuRequiredTextureRoles;
+		for (size_t role = 0; role < a_recipe.textures.size(); ++role)
+			if (!a_recipe.textures[role].canonicalPath.empty())
+				result |= 1u << role;
+		return result;
+	}
 
 	/** @brief Geometry-independent SM6 material record, indexed by stable material identity. */
 	struct GpuMaterialRecord
@@ -36,6 +68,16 @@ namespace NativePBR
 	};
 	static_assert(sizeof(GpuMaterialRecord) == 304);
 	static_assert(offsetof(GpuMaterialRecord, uv) == 64);
+	static_assert(offsetof(GpuMaterialRecord, base) == 96);
+	static_assert(offsetof(GpuMaterialRecord, coat) == 112);
+	static_assert(offsetof(GpuMaterialRecord, surface) == 128);
+	static_assert(offsetof(GpuMaterialRecord, projected) == 144);
+	static_assert(offsetof(GpuMaterialRecord, coatColor) == 160);
+	static_assert(offsetof(GpuMaterialRecord, subsurfaceColor) == 176);
+	static_assert(offsetof(GpuMaterialRecord, fuzzColor) == 192);
+	static_assert(offsetof(GpuMaterialRecord, thinSurface) == 208);
+	static_assert(offsetof(GpuMaterialRecord, glint) == 224);
+	static_assert(offsetof(GpuMaterialRecord, projectedGlint) == 240);
 	static_assert(offsetof(GpuMaterialRecord, properties) == 256);
 	static_assert(offsetof(GpuMaterialRecord, identity) == 272);
 	static_assert(offsetof(GpuMaterialRecord, controls) == 288);
@@ -48,7 +90,10 @@ namespace NativePBR
 		uint32_t flags = 0;
 	};
 	static_assert(sizeof(GpuDrawBinding) == 24);
+	static_assert(offsetof(GpuDrawBinding, identity) == 0);
+	static_assert(offsetof(GpuDrawBinding, revision) == 8);
 	static_assert(offsetof(GpuDrawBinding, materialIndex) == 16);
+	static_assert(offsetof(GpuDrawBinding, flags) == 20);
 
 	inline GpuDrawBinding PackGpuDrawBinding(uint64_t a_identity, uint64_t a_revision,
 		uint32_t a_materialIndex, uint32_t a_flags)
