@@ -19,16 +19,16 @@ struct Input
     float3 basis0 : TEXCOORD1;
     float3 basis1 : TEXCOORD2;
     float3 basis2 : TEXCOORD3;
+    float4 vertexColor : COLOR0;
 #ifdef CAPTURE_PROJECTED_UV
     float4 worldPosition : POSITION1;
-    float4 vertexColor : COLOR0;
     float3 projectionDirection : TEXCOORD7;
 #endif
 };
 
 struct Output
 {
-    uint identity : SV_Target0;
+    uint2 identityAndColor : SV_Target0;
     float4 uvDdx : SV_Target1;
     float4 ddyDepthFacing : SV_Target2;
     float4 basis0 : SV_Target3;
@@ -43,7 +43,9 @@ struct Output
 Output main(Input input, bool frontFacing : SV_IsFrontFace)
 {
     Output output;
-    output.identity = DrawOrdinal;
+    uint4 rgba8 = (uint4)round(saturate(input.vertexColor) * 255.0f);
+    output.identityAndColor = uint2(DrawOrdinal,
+        rgba8.r | (rgba8.g << 8) | (rgba8.b << 16) | (rgba8.a << 24));
     output.uvDdx = float4(input.uv.xy, ddx(input.uv.xy));
     output.ddyDepthFacing = float4(ddy(input.uv.xy), input.position.z, frontFacing ? 1.0f : -1.0f);
 #ifdef CAPTURE_PROJECTED_UV

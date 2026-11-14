@@ -14,7 +14,7 @@ namespace NativePBR
 	namespace
 	{
 		constexpr std::array<DXGI_FORMAT, MaterialSidecar::kCount> kFormats{
-			DXGI_FORMAT_R32_UINT,
+			DXGI_FORMAT_R32G32_UINT,
 			DXGI_FORMAT_R32G32B32A32_FLOAT,
 			DXGI_FORMAT_R32G32B32A32_FLOAT,
 			DXGI_FORMAT_R16G16B16A16_FLOAT,
@@ -151,6 +151,11 @@ namespace NativePBR
 		}
 		try {
 			if (width != a_width || height != a_height || captureProjectedUv != a_captureProjectedUv || !targets[0].texture) {
+				UINT identityFormatSupport = 0;
+				if (FAILED(a_device->CheckFormatSupport(DXGI_FORMAT_R32G32_UINT, &identityFormatSupport)) ||
+					(identityFormatSupport & (D3D11_FORMAT_SUPPORT_RENDER_TARGET | D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW)) !=
+						(D3D11_FORMAT_SUPPORT_RENDER_TARGET | D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW))
+					throw std::runtime_error("NativePBR ABI v2 R32G32_UINT RTV/UAV format unsupported; original DX11 draw retained");
 				if (!HasVideoBudget(a_device, RequiredBytes(a_width, a_height, a_captureProjectedUv)))
 					throw std::runtime_error("DXGI local budget cannot accommodate full-resolution PBR sidecar");
 				std::array<Target, kCount> replacements;
@@ -163,7 +168,7 @@ namespace NativePBR
 					desc.SampleDesc.Count = 1;
 					desc.Usage = D3D11_USAGE_DEFAULT;
 					desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-					if (i == static_cast<size_t>(SidecarTarget::Identity))
+					if (i == static_cast<size_t>(SidecarTarget::IdentityAndColor))
 						desc.BindFlags |= D3D11_BIND_UNORDERED_ACCESS;
 					winrt::check_hresult(a_device->CreateTexture2D(&desc, nullptr, replacements[i].texture.put()));
 					winrt::check_hresult(a_device->CreateRenderTargetView(replacements[i].texture.get(), nullptr, replacements[i].rtv.put()));
@@ -171,8 +176,10 @@ namespace NativePBR
 					Util::SetResourceName(replacements[i].texture.get(), "NativePBR::SidecarTarget%zu", i);
 					Util::SetResourceName(replacements[i].rtv.get(), "NativePBR::SidecarTarget%zu RTV", i);
 					Util::SetResourceName(replacements[i].srv.get(), "NativePBR::SidecarTarget%zu SRV", i);
-					if (i == static_cast<size_t>(SidecarTarget::Identity))
+					if (i == static_cast<size_t>(SidecarTarget::IdentityAndColor)) {
 						winrt::check_hresult(a_device->CreateUnorderedAccessView(replacements[i].texture.get(), nullptr, replacements[i].uav.put()));
+						Util::SetResourceName(replacements[i].uav.get(), "NativePBR::SidecarTarget%zu UAV", i);
+					}
 				}
 				targets = std::move(replacements);
 				width = a_width;

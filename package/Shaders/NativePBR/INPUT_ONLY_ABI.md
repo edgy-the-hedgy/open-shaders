@@ -1,6 +1,6 @@
 # NativePBR FXC producer ABI (Chat 3 → Chat 5)
 
-**Status:** existing eight-MRT input-only ABI documented; expanded surface ABI **not yet agreed** with Chat 5. This is a producer handoff, not a claim that DX12 PBR material evaluation is complete.
+**Status:** ABI v2 is produced by selective sidecar replay; the separate eight-MRT input-only draw path remains an experimental, incomplete signal. This describes the FXC producer, not confirmation of DX12 SM6.5 evaluation.
 
 ## Ownership and draw admission
 
@@ -28,13 +28,13 @@
 
 The main eight-MRT binding remains intact, and **unowned** pixels retain ordinary DX11 G-buffer semantics. However, native-owned pixel values repurpose some deferred channels. Any DX11 pass that interprets those channels as traditional PBR outputs needs a Chat 5 integration policy; mere MRT-slot compatibility does not prove semantic equivalence. The native composite prototype currently consumes only the partial values above.
 
-## Complete auxiliary sidecar ABI already available (legacy/replay mode)
+## Complete auxiliary sidecar ABI v2 (selective replay mode)
 
 The separate `MaterialSidecar.ps.hlsl` captures the missing raw inputs **without modifying any deferred MRT**. Its output is post-original-draw replay, with depth-equal testing and a final-depth coverage clear:
 
 | Sidecar slot | Format | Components |
 | --- | --- | --- |
-| 0 `Identity` | `R32_UINT` | Nonzero draw ordinal |
+| 0 `IdentityAndColor` | `R32G32_UINT` | `x`: nonzero frame-local draw ordinal; `y`: RGBA8 vertex color packed R bits 0–7, G 8–15, B 16–23, A 24–31 |
 | 1 `UVAndDdx` | `R32G32B32A32_FLOAT` | UV.xy, ddx(UV.xy) |
 | 2 `DdyDepthFacing` | `R32G32B32A32_FLOAT` | ddy(UV.xy), raster depth, front-facing ±1 |
 | 3 `Basis0` | `R16G16B16A16_FLOAT` | Interpolated TBN row 0; projected vertex alpha in W |
@@ -43,21 +43,24 @@ The separate `MaterialSidecar.ps.hlsl` captures the missing raw inputs **without
 | 6 `ProjectedWorldPosition` | `R32G32B32A32_FLOAT` | Projected world position xyz; projected UV z in W |
 | 7 `ProjectedDirection` | `R32G32B32A32_FLOAT` | Projection direction xyz; projected UV w in W |
 
-Slots 0–5 cost 60 bytes/pixel and slots 0–7 cost 92 bytes/pixel. The additional projected outputs are present only when projected capture is enabled. `SidecarSurface` and `SidecarTarget` in `MaterialSidecarContract.h` are the matching CPU declarations. The projected path does not yet supply vertex color RGB; this must be agreed if required for the DX12 evaluator.
+Slots 0–5 cost **64 bytes/pixel** and slots 0–7 cost **96 bytes/pixel**. All vertex colors, including projected draws, are quantized to RGBA8 using saturation and nearest-integer conversion. The additional projected outputs are present only when projected capture is enabled. `SidecarIdentityAndColor`, `SidecarSurface`, `SidecarTarget`, and `kSidecarSurfaceAbiVersion == 2` in `MaterialSidecarContract.h` define the CPU contract.
+
+The original opaque draw always completes on the original eight deferred RTVs before replay; the replay temporarily binds six (or eight projected) **separate** sidecar RTVs under depth-equal testing, then restores the original RTV/DSV, shader, blend, depth/stencil, and constant-buffer state. The post-pass depth validator writes `(0, 0)` to `IdentityAndColor` for invalid or later-occluded pixels. A zero ordinal means no native material ownership; its color must also be treated as unowned. The original UV gradients, facing, geometric TBN, projected positions, and projection vectors retain their specified precision.
 
 ## Lifetime and synchronization
 
-1. `Deferred::StartDeferred` starts the frame-local producer. `SetupGeometry` records the active material association; the `DrawIndexed` interception commits the ordinal **only** after both FXC PS and eight RTs are confirmed. Shader/constant-buffer/blend state is restored immediately after the original draw.
+1. `Deferred::StartDeferred` starts the frame-local producer. `SetupGeometry` records the active material association. The input-only path commits ordinals after FXC PS and eight-RT availability checks; the sidecar replay path records ordinals after the original draw and its depth-equal replay. Both paths retain a frame-local draw table.
 2. `Deferred::DeferredPasses` ends capture and publishes an immutable draw table before `OnOpaqueRasterReady`. `RasterCapture` copies the unchanged eight DX11 MRT resources into its per-frame wrapped DX12 resources. In the auxiliary mode, it also copies the sidecar targets.
 3. DX11 signals a producer fence and flushes; the DX12 queue waits for that value before consuming raster/sidecar resources. The captured frame retains the draw-table shared owner and its texture slots through consumer GPU fences. Never pair a new ordinal texture with a previous frame's table.
 
-## Chat 5 agreement required before expanded integration
+## Further single-draw integration decisions
 
-FXC/D3D11 cannot simultaneously bind eight deferred RTVs **and additional pixel-shader UAV/RTV surface outputs**: the OM output-slot limit is eight. The existing single-draw input-only packet lacks unwrapped UVs, derivatives, full TBN, facing and projected world inputs, and it does not preserve every traditional DX11 G-buffer semantic on native-owned pixels.
+The eight-MRT-plus-`u8` single-draw UAV option remains **unverified experimental infrastructure** under `tools/nativepbr-uav-probe/`. The existing single-draw input-only packet lacks unwrapped UVs, derivatives, full TBN, facing and projected world inputs, and it does not preserve every traditional DX11 G-buffer semantic on native-owned pixels.
 
-The teams must agree on one of these producer/consumer strategies before claiming the full SM6.5 surface contract:
+Chat 1 must coordinate any switch away from the current ABI-v2 replay producer:
 
-1. Keep all eight DX11 MRTs semantically compatible and capture complete raw sidecar inputs in a depth-equal second draw (correctness-first; extra raster work).
+1. Keep all eight DX11 MRTs semantically compatible and capture complete raw ABI-v2 sidecar inputs in a depth-equal second draw (current implementation; extra raster work).
 2. Define a versioned packed eight-MRT **replacement** payload and explicitly update all DX11 consumers of native-owned pixels (single draw; requires a shared input/layout decision and may sacrifice precision).
+3. Validate eight deferred RTVs plus a pixel-shader UAV at `u8` on the actual D3D11.1 runtime, including final-visibility ordering, before considering single-draw surface output (Strategy C; currently disabled).
 
-This branch does not silently switch between those strategies or introduce TLAS/material-recipe readiness gates. Current supported counters: admitted input draws, FXC shader misses, wrong-MRT rejections, draw-table capacity misses, missing identities, and unsupported observed categories.
+This branch does not silently switch between strategies or introduce TLAS/material-recipe readiness gates. Depth-only validation cannot distinguish exact equal-depth overlapping geometry or replay differences caused by discarded/partially covered pixels; the capture remains scoped to eligible opaque static materials. Current supported counters: admitted input draws, FXC shader misses, wrong-MRT rejections, draw-table capacity misses, missing identities, and unsupported observed categories.

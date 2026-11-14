@@ -52,14 +52,29 @@ TEST_CASE("NativePBR coverage rejects different final depth and invalid depth", 
 
 TEST_CASE("NativePBR sidecar adds two projected outputs without using deferred MRTs", "[NativePBR]")
 {
+	REQUIRE(NativePBR::kSidecarSurfaceAbiVersion == 2u);
 	REQUIRE(NativePBR::kBaseSidecarTargetCount == 6u);
 	REQUIRE(NativePBR::kSidecarBytesPerPixel.size() == 8u);
 	uint32_t bytes = 0;
 	for (size_t i = 0; i < NativePBR::kBaseSidecarTargetCount; ++i)
 		bytes += NativePBR::kSidecarBytesPerPixel[i];
-	REQUIRE(bytes == 60u);
-	REQUIRE(bytes + NativePBR::kSidecarBytesPerPixel[6] + NativePBR::kSidecarBytesPerPixel[7] == 92u);
-	REQUIRE(static_cast<size_t>(NativePBR::SidecarTarget::Identity) == 0);
+	REQUIRE(bytes == 64u);
+	REQUIRE(bytes + NativePBR::kSidecarBytesPerPixel[6] + NativePBR::kSidecarBytesPerPixel[7] == 96u);
+	REQUIRE(static_cast<size_t>(NativePBR::SidecarTarget::IdentityAndColor) == 0);
 	REQUIRE(static_cast<size_t>(NativePBR::SidecarTarget::Basis2) == 5);
 	REQUIRE(static_cast<size_t>(NativePBR::SidecarTarget::ProjectedDirection) == 7);
+}
+
+TEST_CASE("NativePBR ABI v2 packs ordinal and vertex color into two uints", "[NativePBR]")
+{
+	using namespace NativePBR;
+	constexpr SidecarIdentityAndColor identity{ 7, PackSidecarRgba8(0x12, 0x34, 0x56, 0x78) };
+	STATIC_REQUIRE(sizeof(SidecarIdentityAndColor) == 8u);
+	STATIC_REQUIRE(offsetof(SidecarIdentityAndColor, rgba8) == 4u);
+	REQUIRE(identity.ordinal == 7u);
+	REQUIRE(identity.rgba8 == 0x78563412u);
+	REQUIRE(PackSidecarRgba8(255, 128, 0, 255) == 0xFF0080FFu);
+	const SidecarIdentityAndColor uncovered{};
+	REQUIRE(uncovered.ordinal == 0u);
+	REQUIRE(uncovered.rgba8 == 0u);
 }
