@@ -26,6 +26,22 @@ namespace NativePBR
 
 	inline constexpr size_t kBaseSidecarTargetCount = static_cast<size_t>(SidecarTarget::ProjectedWorldPosition);
 	inline constexpr std::array<uint32_t, static_cast<size_t>(SidecarTarget::Count)> kSidecarBytesPerPixel{ 4, 16, 16, 8, 8, 8, 16, 16 };
+	inline constexpr uint32_t kMaximumFrameDraws = 1024;
+	inline constexpr uint32_t kInputOnlyIdentityScale = 65535;
+	inline constexpr uint32_t kInputOnlyOpaqueSignature = 0xA55A;
+	inline constexpr uint32_t kInputOnlyProjectedSignature = 0x5AA5;
+
+	/** R16G16_UNORM Masks2 holds the ordinal and format signature for an owned opaque draw. */
+	inline uint32_t DecodeInputOnlyOrdinal(float a_normalizedOrdinal, float a_normalizedSignature, bool a_projected)
+	{
+		if (!std::isfinite(a_normalizedOrdinal) || !std::isfinite(a_normalizedSignature) ||
+			a_normalizedOrdinal < 0 || a_normalizedOrdinal > 1 || a_normalizedSignature < 0 || a_normalizedSignature > 1)
+			return 0;
+		const auto signature = static_cast<uint32_t>(std::lround(a_normalizedSignature * kInputOnlyIdentityScale));
+		const auto ordinal = static_cast<uint32_t>(std::lround(a_normalizedOrdinal * kInputOnlyIdentityScale));
+		return signature == (a_projected ? kInputOnlyProjectedSignature : kInputOnlyOpaqueSignature) &&
+			ordinal <= kMaximumFrameDraws ? ordinal : 0;
+	}
 
 	/** Stored alongside the frame's fenced GPU textures; no borrowed engine pointers. */
 	struct SidecarDraw
