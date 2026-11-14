@@ -14,6 +14,9 @@
 #include <mutex>
 #include <span>
 #include <vector>
+#include <d3d11_4.h>
+#include <d3d12.h>
+#include <winrt/base.h>
 namespace RE
 {
 	class BSShadowLight;
@@ -23,6 +26,8 @@ namespace NativePBR
 	struct RecipeGeneration;
 	struct MaterialPublication;
 	struct GpuMaterialResources;
+struct SurfaceFrame;
+class SurfaceFramePublisher;
 }
 
 /** Additional DX12 features. The original TruePBR/LLF/SCM implementations are
@@ -33,6 +38,7 @@ namespace NativePBR
 struct NativePBRFeature final : Feature
 {
 	NativePBRFeature();
+	~NativePBRFeature();
 	struct BackendSettings
 	{
 		bool NativeBackend = true;
@@ -70,6 +76,11 @@ struct NativePBRFeature final : Feature
 	// 0 = material identity; 1 = UV/derivatives; 2 = PBR coverage comparison.
 	std::atomic<uint32_t> previewVisualization{ 0 };
 	NativePBR::MaterialSidecar materialSidecar;
+	std::unique_ptr<NativePBR::SurfaceFramePublisher> surfacePublisher;
+	winrt::com_ptr<ID3D11Device5> surfaceDevice11;
+	winrt::com_ptr<ID3D11DeviceContext4> surfaceContext11;
+	winrt::com_ptr<ID3D12Device> surfaceDevice12;
+	winrt::com_ptr<ID3D12CommandQueue> surfaceQueue12;
 	void PrepareSidecar(ID3D11Device* a_device);
 	void BeginOpaqueSidecar();
 	void BeginSidecarPass(uint64_t a_materialIdentity, uint64_t a_materialRevision = 0, std::string a_referenceKey = {},
@@ -81,6 +92,12 @@ struct NativePBRFeature final : Feature
 	void EndInputOnlyDraw();
 	void ReplaySidecarDraw(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base);
 	void FinishOpaqueSidecar(ID3D11ShaderResourceView* a_finalDepth);
+	/** @brief Registers the DX12 presentation backend without depending on its owning feature. */
+	void BindSurfaceInterop(ID3D11Device5*, ID3D11DeviceContext4*, ID3D12Device*, ID3D12CommandQueue*);
+	/** @brief Publishes this frame's opaque material attachments after DX11 raster completion. */
+	void OnOpaqueRasterReady(const OpaqueRasterInputs&) override;
+	/** @brief Returns the independently published material frame, if the IDs match. */
+	std::shared_ptr<const NativePBR::SurfaceFrame> GetSurfaceFrame(uint32_t a_frame) const;
 	NativePBR::MaterialSidecar::Sources GetSidecarSources(uint32_t a_frame) const;
 	std::string GetName() override { return "NativePBR"; }
 	std::string GetShortName() override { return "NativePBR"; }

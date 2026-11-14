@@ -126,7 +126,7 @@ namespace NativePBR
 		uint64_t shaderFlags = 0;
 		uint16_t alphaFlags = 0;
 		uint8_t alphaThreshold = 0;
-		bool alphaProperty = false, skinned = false, emissionKnown = false;
+		bool alphaProperty = false, skinned = false, emissionKnown = false, projectedUv = false;
 		std::array<float, 3> emissiveColor{};
 		float emissiveMultiplier = 0;
 		Opacity opacity = Opacity::Unknown;

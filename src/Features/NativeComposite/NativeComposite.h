@@ -47,6 +47,11 @@ struct NativeCompositeFeature final : Feature
 		return pass.Retain(a_frame, a_fence, a_value);
 	}
 	bool IsEnabled() const { return loaded && enabled.load(); }
+	bool WantsNativePbrSurfaceDiagnostic()
+	{
+		std::scoped_lock lock(settingsMutex);
+		return IsEnabled() && settings.NativePbrDiagnosticDispatch;
+	}
 
 private:
 	NativeComposite pass;

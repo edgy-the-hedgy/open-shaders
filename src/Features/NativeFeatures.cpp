@@ -14,6 +14,7 @@
 #include "Features/NativePBR/NativePBRCompiler.h"
 #include "Features/NativePBR/MaterialService.h"
 #include "Features/NativePBR/GpuMaterialResources.h"
+#include "Features/NativePBR/SurfaceFramePublisher.h"
 #include "Utils/PointLightFlags.h"
 #include <BS_thread_pool.hpp>
 #include <algorithm>
@@ -34,7 +35,9 @@ struct NativePBRFeature::MaterialWorker
 	std::atomic<std::shared_ptr<const NativePBR::RecipeGeneration>> published;
 };
 
-NativePBRFeature::NativePBRFeature() : materialWorker(std::make_shared<MaterialWorker>()) {}
+NativePBRFeature::NativePBRFeature() : materialWorker(std::make_shared<MaterialWorker>()),
+	surfacePublisher(std::make_unique<NativePBR::SurfaceFramePublisher>()) {}
+NativePBRFeature::~NativePBRFeature() = default;
 
 void NativePBRFeature::SetupResources()
 {
@@ -245,6 +248,51 @@ void NativePBRFeature::FinishOpaqueSidecar(ID3D11ShaderResourceView* a_finalDept
 {
 	materialSidecar.FinishFrame(globals::d3d::context, a_finalDepth);
 }
+void NativePBRFeature::BindSurfaceInterop(ID3D11Device5* a_device11, ID3D11DeviceContext4* a_context11,
+	ID3D12Device* a_device12, ID3D12CommandQueue* a_queue12)
+{
+	if (!a_device11 || !a_context11 || !a_device12 || !a_queue12) {
+		surfacePublisher.reset();
+		surfaceDevice11 = nullptr;
+		surfaceContext11 = nullptr;
+		surfaceDevice12 = nullptr;
+		surfaceQueue12 = nullptr;
+		return;
+	}
+	if (!surfacePublisher || surfaceDevice11.get() != a_device11 || surfaceContext11.get() != a_context11 ||
+		surfaceDevice12.get() != a_device12 || surfaceQueue12.get() != a_queue12)
+		surfacePublisher = std::make_unique<NativePBR::SurfaceFramePublisher>();
+	surfaceDevice11.copy_from(a_device11);
+	surfaceContext11.copy_from(a_context11);
+	surfaceDevice12.copy_from(a_device12);
+	surfaceQueue12.copy_from(a_queue12);
+}
+
+void NativePBRFeature::OnOpaqueRasterReady(const OpaqueRasterInputs&)
+{
+	if (!IsActive() || globals::game::isVR || !globals::game::graphicsState ||
+		!globals::features::nativeComposite.WantsNativePbrSurfaceDiagnostic() || !surfacePublisher ||
+		!surfaceDevice11 || !surfaceContext11 || !surfaceDevice12 || !surfaceQueue12)
+		return;
+	const auto frame = globals::game::graphicsState->GetFrameCount();
+	const auto attachments = materialSidecar.GetSources(frame);
+	const auto draws = materialSidecar.GetDrawTable();
+	if (!attachments[0] || !draws || draws->empty())
+		return;
+	NativePBR::SurfaceFramePublisher::Sources sources;
+	sources.textures = attachments;
+	sources.draws = draws;
+	sources.frame = frame;
+	sources.nativeOwnedDraws = true;
+	surfacePublisher->Publish(surfaceDevice11.get(), surfaceContext11.get(),
+		surfaceDevice12.get(), surfaceQueue12.get(), sources);
+}
+
+std::shared_ptr<const NativePBR::SurfaceFrame> NativePBRFeature::GetSurfaceFrame(uint32_t a_frame) const
+{
+	return IsActive() && surfacePublisher ? surfacePublisher->Get(a_frame) : nullptr;
+}
+
 NativePBR::MaterialSidecar::Sources NativePBRFeature::GetSidecarSources(uint32_t a_frame) const
 {
 	return IsActive() ? materialSidecar.GetSources(a_frame) : NativePBR::MaterialSidecar::Sources{};
@@ -705,6 +753,12 @@ void NativePBRFeature::DrawSettings()
 	ImGui::Text("%s: %llu | rejected: %llu", materialSidecar.InputOnly() ? "Input-only raster draws" : "Sidecar raster draws",
 		materialSidecar.ReplayedDraws(), materialSidecar.RejectedDraws());
 	ImGui::Text("Last frame's PBR surfaces: %zu | frame: %u", materialSidecar.PublishedDrawCount(), materialSidecar.GetFrame());
+	if (surfacePublisher) {
+		const auto& publication = surfacePublisher->GetDiagnostics();
+		ImGui::Text("DX12 surface publications: %llu | busy slots: %llu | budget deferrals: %llu",
+			publication.published, publication.busySlots, publication.budgetDeferrals);
+		ImGui::TextDisabled("Surface publisher: %s", publication.status.c_str());
+	}
 	if (materialSidecar.InputOnly())
 		ImGui::Text("FXC input draws this frame: %u | shader unavailable: %u | RT rejected: %u",
 			materialSidecar.InputOnlyDrawsThisFrame(), materialSidecar.InputShaderMissesThisFrame(),
@@ -918,6 +972,12 @@ json NativePBRFeature::GetDiagnostics()
 		{ "gpuPartiallyResident", gpuMaterials ? gpuMaterials->partiallyResident : 0 },
 		{ "gpuFeatureLimited", gpuMaterials ? gpuMaterials->featureLimited : 0 },
 		{ "gpuMaterialFailure", materialWorker ? materialWorker->gpu.Failure() : std::string{} },
+		{ "surfacePublication", surfacePublisher ? json{ { "published", surfacePublisher->GetDiagnostics().published },
+			{ "busySlots", surfacePublisher->GetDiagnostics().busySlots },
+			{ "budgetDeferrals", surfacePublisher->GetDiagnostics().budgetDeferrals },
+			{ "invalidDrawTables", surfacePublisher->GetDiagnostics().invalidDrawTables },
+			{ "unavailableSources", surfacePublisher->GetDiagnostics().unavailableSources },
+			{ "status", surfacePublisher->GetDiagnostics().status } } : json::object() },
 		{ "previewOpaqueReplacement", previewOpaqueReplacement.load(std::memory_order_relaxed) },
 		{ "previewVisualization", previewVisualization.load(std::memory_order_relaxed) },
 		{ "previewDraws", materialSidecar.PreviewDraws() },

@@ -2,6 +2,7 @@
 
 #include "MaterialCatalog.h"
 #include "MaterialInterpretation.h"
+#include "MaterialReadiness.h"
 #include "NativePBRCompiler.h"
 #include "Utils/StringUtils.h"
 
@@ -31,11 +32,18 @@ namespace NativePBR
 	enum InstanceMaterialIssue : uint32_t
 	{
 		MissingMatoConfiguration = 1u << 0,
-		UnsupportedMatoGlint = 1u << 1
+		UnsupportedMatoGlint = 1u << 1,
+		NonOpaqueInstance = 1u << 2,
+		UnsupportedModelSpaceNormal = 1u << 3,
+		UnsupportedAnimatedUv = 1u << 4,
+		UnsupportedSkinnedInstance = 1u << 5,
+		UnsupportedProjectedInstance = 1u << 6
 	};
 
-	inline constexpr std::array<std::string_view, 2> kInstanceMaterialIssueNames{
-		"missing-mato-configuration", "unsupported-mato-glint"
+	inline constexpr std::array<std::string_view, 7> kInstanceMaterialIssueNames{
+		"missing-mato-configuration", "unsupported-mato-glint", "non-opaque-instance",
+		"unsupported-model-space-normal", "unsupported-animated-uv", "unsupported-skinned-instance",
+		"unsupported-projected-instance"
 	};
 
 	/** @brief Self-contained lookup result that retains source generations across retirement. */
@@ -48,6 +56,16 @@ namespace NativePBR
 		uint32_t recipeIssues = 0, instanceIssues = 0;
 		std::string missingMatoEditorId;
 		explicit operator bool() const { return status == MaterialLookupStatus::Available && recipe != nullptr; }
+		/** @brief Inspect source, shading and unresolved properties without changing lookup availability. */
+		RecipeReadiness Readiness() const
+		{
+			if (!recipe)
+				return {};
+			auto effective = EffectiveNativeIssues(*recipe);
+			effective &= ~(recipe->issues & ~recipeIssues);
+			effective |= recipeIssues & ~recipe->issues;
+			return ClassifyRecipeReadiness(effective);
+		}
 	};
 
 	/** @brief An immutable material generation usable without geometry or renderer state. */
@@ -113,6 +131,16 @@ namespace NativePBR
 				if (binding.materialOverride)
 					result.recipeIssues |= UnsupportedProjection;
 			}
+			if (binding.properties.opacity == InstanceProperties::Opacity::NonOpaque)
+				result.instanceIssues |= NonOpaqueInstance;
+			if (binding.properties.normalMode == InstanceProperties::NormalMode::ModelSpace)
+				result.instanceIssues |= UnsupportedModelSpaceNormal;
+			if (binding.properties.uvAnimation == InstanceProperties::UvAnimation::Animated)
+				result.instanceIssues |= UnsupportedAnimatedUv;
+			if (binding.properties.skinned)
+				result.instanceIssues |= UnsupportedSkinnedInstance;
+			if (binding.properties.projectedUv)
+				result.instanceIssues |= UnsupportedProjectedInstance;
 			return result;
 		}
 

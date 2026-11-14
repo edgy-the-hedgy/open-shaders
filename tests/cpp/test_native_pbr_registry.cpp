@@ -20,6 +20,7 @@
 #include "Features/NativePBR/NativePBRRegistry.h"
 #include "Features/NativePBR/MaterialService.h"
 #include "Features/NativePBR/MaterialDiscovery.h"
+#include "Features/NativePBR/MaterialReadiness.h"
 #include "Features/NativePBR/VerifiedBridge.h"
 #include <catch2/catch_test_macros.hpp>
 #include <fstream>
@@ -1830,4 +1831,122 @@ TEST_CASE("Verified MATO mutations replace only the selected instance", "[native
 	REQUIRE(b->properties.materialObjectEditorId == "MatoB");
 	REQUIRE_FALSE(a->propertiesConflict);
 	REQUIRE(material.identity == a->materialIdentity);
+}
+
+TEST_CASE("Material readiness separates unresolved instance state from unsupported shading", "[native_pbr]")
+{
+	NativePBR::Snapshot snapshot{ 43, 7, {} };
+	snapshot.material.texturePaths = { "textures/c.dds", "textures/n.dds", "textures/r.dds", "", "", "", "" };
+	snapshot.material.texturePathsComplete = true;
+	auto recipe = NativePBR::CompileRecipe(snapshot);
+	auto readiness = NativePBR::ClassifyRecipeReadiness(recipe);
+	REQUIRE(readiness.sourceIssues == 0);
+	REQUIRE(readiness.unsupportedFeatures == 0);
+	REQUIRE(readiness.unresolvedInstance == NativePBR::kUnresolvedInstanceIssues);
+	REQUIRE(readiness.IsOpaqueFeatureCompatible());
+	NativePBR::MaterialReadinessCounts counts;
+	counts.Observe(recipe);
+	REQUIRE(counts.recipes == 1);
+	REQUIRE(counts.opaqueFeatureCompatible == 1);
+	REQUIRE(counts.featureLimited == 0);
+	REQUIRE(counts.unresolvedInstances == 1);
+	snapshot.material.pbrFlags = uint32_t(PBRFlags::ColoredCoat) |
+		uint32_t(PBRFlags::CoatNormal) | uint32_t(PBRFlags::InterlayerParallax);
+	recipe = NativePBR::CompileRecipe(snapshot);
+	REQUIRE(NativePBR::ClassifyRecipeReadiness(recipe).unsupportedFeatures == 0);
+	REQUIRE(NativePBR::NativeMeshRecipeSupported(recipe));
+	snapshot.material.pbrFlags |= uint32_t(PBRFlags::TwoLayer);
+	recipe = NativePBR::CompileRecipe(snapshot);
+	REQUIRE(NativePBR::ClassifyRecipeReadiness(recipe).unsupportedFeatures & NativePBR::UnsupportedPbrFeatures);
+	snapshot.material.pbrFlags = uint32_t(PBRFlags::Fuzz);
+	snapshot.material.fuzzWeight = 0.0f;
+	recipe = NativePBR::CompileRecipe(snapshot);
+	REQUIRE(NativePBR::ClassifyRecipeReadiness(recipe).unsupportedFeatures == 0);
+	NativePBR::RecipeIssueTally tally;
+	tally.Observe(recipe);
+	REQUIRE(tally.affected == 0);
+	REQUIRE(tally.issues[2] == 0);
+	REQUIRE(tally.pbrFlags[5] == 1);
+	snapshot.material.pbrFlags = uint32_t(PBRFlags::ThinSurface) | uint32_t(PBRFlags::Foliage);
+	recipe = NativePBR::CompileRecipe(snapshot);
+	tally.Observe(recipe);
+	REQUIRE(tally.pbrFlags[7] == 1);
+	REQUIRE(tally.pbrFlags[8] == 1);
+	snapshot.material.pbrFlags = uint32_t(PBRFlags::Fuzz);
+	snapshot.material.fuzzWeight = 0.5f;
+	recipe = NativePBR::CompileRecipe(snapshot);
+	REQUIRE(NativePBR::ClassifyRecipeReadiness(recipe).unsupportedFeatures & NativePBR::UnsupportedPbrFeatures);
+	counts.Observe(recipe);
+	REQUIRE(counts.featureLimited == 1);
+	REQUIRE(counts.opaqueFeatureCompatible == 1);
+	snapshot.material.texturePaths[0] = "../invalid.dds";
+	recipe = NativePBR::CompileRecipe(snapshot);
+	REQUIRE(NativePBR::ClassifyRecipeReadiness(recipe).sourceIssues & NativePBR::InvalidTexturePath);
+	counts.Observe(recipe);
+	REQUIRE(counts.sourceLimited == 1);
+}
+
+TEST_CASE("Material observations resolve only authoritatively known instance modes", "[native_pbr]")
+{
+	NativePBR::InstanceProperties opaque;
+	NativePBR::ResolveObservedInstanceProperties(opaque, 1.0f);
+	REQUIRE(opaque.opacity == NativePBR::InstanceProperties::Opacity::Opaque);
+	REQUIRE(opaque.normalMode == NativePBR::InstanceProperties::NormalMode::TangentSpace);
+	REQUIRE(opaque.uvAnimation == NativePBR::InstanceProperties::UvAnimation::Unknown);
+	NativePBR::InstanceProperties model;
+	model.shaderFlags = 1ull << 12;
+	NativePBR::ResolveObservedInstanceProperties(model, 1.0f);
+	REQUIRE(model.normalMode == NativePBR::InstanceProperties::NormalMode::ModelSpace);
+	NativePBR::InstanceProperties vertexAlpha;
+	vertexAlpha.shaderFlags = 1ull << 3;
+	NativePBR::ResolveObservedInstanceProperties(vertexAlpha, 1.0f);
+	REQUIRE(vertexAlpha.opacity == NativePBR::InstanceProperties::Opacity::NonOpaque);
+	NativePBR::InstanceProperties alphaProperty;
+	alphaProperty.alphaProperty = true;
+	NativePBR::ResolveObservedInstanceProperties(alphaProperty, 1.0f);
+	REQUIRE(alphaProperty.opacity == NativePBR::InstanceProperties::Opacity::NonOpaque);
+	NativePBR::InstanceProperties missingAlpha;
+	NativePBR::ResolveObservedInstanceProperties(missingAlpha, {});
+	REQUIRE(missingAlpha.opacity == NativePBR::InstanceProperties::Opacity::Unknown);
+	NativePBR::ResolveObservedInstanceProperties(missingAlpha, std::numeric_limits<float>::quiet_NaN());
+	REQUIRE(missingAlpha.opacity == NativePBR::InstanceProperties::Opacity::Unknown);
+}
+
+TEST_CASE("Published instance readiness preserves unsupported projected and animated state", "[native_pbr]")
+{
+	NativePBR::Registry registry;
+	NativePBR::MaterialService service;
+	NativePBR::RecipeCache cache;
+	int source = 0;
+	NativePBR::MaterialData parameters;
+	parameters.texturePaths = { "textures/c.dds", "textures/n.dds", "textures/r.dds", "", "", "", "" };
+	parameters.texturePathsComplete = true;
+	const auto token = registry.BeginCapture(&source);
+	REQUIRE(registry.Publish(&source, token, parameters));
+	NativePBR::InstanceProperties instance;
+	instance.opacity = NativePBR::InstanceProperties::Opacity::Opaque;
+	instance.normalMode = NativePBR::InstanceProperties::NormalMode::ModelSpace;
+	instance.uvAnimation = NativePBR::InstanceProperties::UvAnimation::Animated;
+	instance.projectedUv = true;
+	instance.materialObjectEditorId = "missing-mato";
+	registry.ObserveInstance(&source, "ref", "shape", instance);
+	const auto changes = *registry.ExportChanges(0, {});
+	cache.Update(changes);
+	const auto generation = NativePBR::PublishRecipes(cache, changes, {});
+	REQUIRE(service.Publish(generation, {}, changes.instanceHints, changes.instanceEpoch));
+	const auto publication = service.GetSnapshotForRegistry(registry);
+	REQUIRE(publication);
+	const auto material = publication->FindMaterial(token.identity);
+	REQUIRE(material.Readiness().unresolvedInstance == NativePBR::kUnresolvedInstanceIssues);
+	const auto bound = publication->FindInstance("ref", "shape");
+	REQUIRE(bound);
+	REQUIRE(bound.recipe == material.recipe);
+	REQUIRE(bound.Readiness().unresolvedInstance == 0);
+	REQUIRE(bound.Readiness().unsupportedFeatures == 0);
+	REQUIRE(bound.instanceIssues & NativePBR::UnsupportedModelSpaceNormal);
+	REQUIRE(bound.instanceIssues & NativePBR::UnsupportedAnimatedUv);
+	REQUIRE(bound.instanceIssues & NativePBR::UnsupportedProjectedInstance);
+	REQUIRE(bound.instanceIssues & NativePBR::MissingMatoConfiguration);
+	REQUIRE(bound.missingMatoEditorId == "missing-mato");
+	REQUIRE(material.recipe->revision == bound.recipe->revision);
 }
