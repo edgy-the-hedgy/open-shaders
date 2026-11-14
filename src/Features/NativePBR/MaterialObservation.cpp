@@ -1,4 +1,5 @@
 #include "MaterialObservation.h"
+#include "MaterialReadiness.h"
 
 #include "TruePBR/BSLightingShaderMaterialPBR.h"
 #include "TruePBR/BSLightingShaderMaterialPBRLandscape.h"
@@ -174,16 +175,17 @@ void NativePBR::ObserveVisibleInstance(Registry& a_registry, const RE::BSLightin
 			const auto& geometryData = a_geometry.GetGeometryRuntimeData();
 			InstanceProperties instance;
 			instance.shaderFlags = a_property.flags.underlying();
+			instance.projectedUv = a_property.flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kProjectedUV);
 			instance.skinned = bool(geometryData.skinInstance);
 			if (const auto* alpha = geometryData.alphaProperty.get()) {
 				instance.alphaProperty = true;
 				instance.alphaFlags = alpha->alphaFlags;
 				instance.alphaThreshold = alpha->alphaThreshold;
-				instance.opacity = InstanceProperties::Opacity::NonOpaque;
 			}
-			if (a_property.material &&
-				static_cast<const RE::BSLightingShaderMaterialBase*>(a_property.material)->materialAlpha < 1.0f)
-				instance.opacity = InstanceProperties::Opacity::NonOpaque;
+			const auto alpha = a_property.material ?
+				std::optional{ static_cast<const RE::BSLightingShaderMaterialBase*>(a_property.material)->materialAlpha } :
+				std::optional<float>{};
+			ResolveObservedInstanceProperties(instance, alpha);
 			if (a_property.flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kVertexLighting) &&
 				reference->data.objectReference && reference->data.objectReference->formType == RE::FormType::Static) {
 				const auto* stat = static_cast<const RE::TESObjectSTAT*>(reference->data.objectReference);
