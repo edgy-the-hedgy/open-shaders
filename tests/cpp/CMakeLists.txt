@@ -96,6 +96,7 @@ add_executable(
     test_hdr_png_metadata.cpp
     test_cacheinvalidation.cpp
     test_native_pbr_registry.cpp
+    test_native_pbr_gpu_material.cpp
     test_native_pbr_routing.cpp
     test_compilededupe.cpp
     test_shaderdescriptor.cpp
