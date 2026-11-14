@@ -54,11 +54,7 @@ namespace
 				result.fuzzWeight = a_material.GetFuzzWeight();
 			}
 		}
-		result.projectedColor = a_material.GetProjectedMaterialBaseColorScale();
-		result.projectedRoughness = a_material.GetProjectedMaterialRoughness();
-		result.projectedSpecularLevel = a_material.GetProjectedMaterialSpecularLevel();
 		result.glint = SnapshotGlint(a_material.GetGlintParameters());
-		result.projectedGlint = SnapshotGlint(a_material.GetProjectedMaterialGlintParameters());
 
 		const std::array textures{ a_material.diffuseTexture.get(), a_material.normalTexture.get(), a_material.rmaosTexture.get(),
 			a_material.emissiveTexture.get(), a_material.displacementTexture.get(), a_material.featuresTexture0.get(), a_material.featuresTexture1.get() };
@@ -183,6 +179,17 @@ void NativePBR::ObserveVisibleInstance(Registry& a_registry, const RE::BSLightin
 				instance.alphaProperty = true;
 				instance.alphaFlags = alpha->alphaFlags;
 				instance.alphaThreshold = alpha->alphaThreshold;
+				instance.opacity = InstanceProperties::Opacity::NonOpaque;
+			}
+			if (a_property.material &&
+				static_cast<const RE::BSLightingShaderMaterialBase*>(a_property.material)->materialAlpha < 1.0f)
+				instance.opacity = InstanceProperties::Opacity::NonOpaque;
+			if (a_property.flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kVertexLighting) &&
+				reference->data.objectReference && reference->data.objectReference->formType == RE::FormType::Static) {
+				const auto* stat = static_cast<const RE::TESObjectSTAT*>(reference->data.objectReference);
+				if (const auto* mato = stat->data.materialObj; mato && mato->directionalData.singlePass)
+					if (const char* editorId = mato->GetFormEditorID(); editorId)
+						instance.materialObjectEditorId = editorId;
 			}
 			if (const auto* color = a_property.emissiveColor; color && std::isfinite(color->red) && std::isfinite(color->green) &&
 																 std::isfinite(color->blue) && std::isfinite(a_property.emissiveMult)) {

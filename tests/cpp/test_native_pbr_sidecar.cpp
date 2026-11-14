@@ -25,6 +25,20 @@ TEST_CASE("NativePBR projected draw keeps its capture-only classification", "[Na
 	REQUIRE(NativePBR::ResolveSidecarMaterial(2, draws) == 43);
 }
 
+TEST_CASE("NativePBR input-only identity survives R16G16 UNORM packing", "[NativePBR]")
+{
+	using namespace NativePBR;
+	const float opaque = static_cast<float>(kInputOnlyOpaqueSignature) / kInputOnlyIdentityScale;
+	const float projected = static_cast<float>(kInputOnlyProjectedSignature) / kInputOnlyIdentityScale;
+	REQUIRE(DecodeInputOnlyOrdinal(1.0f / kInputOnlyIdentityScale, opaque, false) == 1);
+	REQUIRE(DecodeInputOnlyOrdinal(static_cast<float>(kMaximumFrameDraws) / kInputOnlyIdentityScale, projected, true) == kMaximumFrameDraws);
+	REQUIRE(DecodeInputOnlyOrdinal(0, opaque, false) == 0);
+	REQUIRE(DecodeInputOnlyOrdinal(static_cast<float>(kMaximumFrameDraws + 1) / kInputOnlyIdentityScale, opaque, false) == 0);
+	REQUIRE(DecodeInputOnlyOrdinal(1.0f / kInputOnlyIdentityScale, projected, false) == 0);
+	REQUIRE(DecodeInputOnlyOrdinal(-0.5f, opaque, false) == 0);
+	REQUIRE(DecodeInputOnlyOrdinal(0.5f, std::numeric_limits<float>::quiet_NaN(), false) == 0);
+}
+
 TEST_CASE("NativePBR coverage rejects different final depth and invalid depth", "[NativePBR]")
 {
 	REQUIRE(NativePBR::SidecarDepthMatches(0.25f, 0.25f, false));

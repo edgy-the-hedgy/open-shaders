@@ -251,6 +251,7 @@ namespace NativePBR
 		uint64_t revision = 0;
 		bool batchesComplete = false;
 		std::unordered_map<uint64_t, std::shared_ptr<const Recipe>> recipes;
+		std::unordered_set<uint64_t> pendingIdentities;
 	};
 
 	/** @brief Publishes owned recipes while excluding dirty and not-yet-compiled entries. */
@@ -260,6 +261,7 @@ namespace NativePBR
 		auto result = std::make_shared<RecipeGeneration>();
 		result->revision = a_changes.revision;
 		result->batchesComplete = !a_changes.hasMore;
+		result->pendingIdentities.insert(a_changes.pendingIdentities.begin(), a_changes.pendingIdentities.end());
 		result->recipes.reserve(a_cache.Recipes().size());
 		for (const auto& [identity, recipe] : a_cache.Recipes()) {
 			if (a_cache.IsPending(identity))
