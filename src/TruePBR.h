@@ -161,8 +161,6 @@ public:
 	void SetupGlintsTexture();
 	eastl::unique_ptr<Texture2D> glintsNoiseTexture = nullptr;
 
-	std::unordered_map<uint32_t, std::string> editorIDs;
-
 	using PBRTextureSetData = PBRRecords::TextureSetData;
 
 	/** @brief Loads all PBR texture set configurations from JSON files in Data/PBRTextureSets. */

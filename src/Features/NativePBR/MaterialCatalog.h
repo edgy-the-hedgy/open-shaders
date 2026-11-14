@@ -13,8 +13,12 @@ namespace NativePBR
 
 		/** @brief Return a recipe while the caller retains this immutable snapshot. */
 		const PBRRecords::TextureSetData* FindTextureSet(std::string_view a_editorId) const;
+		/** @brief Resolve a Skyrim texture set using the shared form editor-ID hooks. */
+		const PBRRecords::TextureSetData* FindTextureSet(const RE::TESForm* a_form) const;
 		/** @brief Return a MATO recipe while the caller retains this immutable snapshot. */
 		const PBRRecords::MaterialObjectData* FindMaterialObject(std::string_view a_editorId) const;
+		/** @brief Resolve a Skyrim MATO using the shared form editor-ID hooks. */
+		const PBRRecords::MaterialObjectData* FindMaterialObject(const RE::TESForm* a_form) const;
 	};
 
 	class MaterialCatalog

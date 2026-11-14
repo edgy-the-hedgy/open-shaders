@@ -10,6 +10,7 @@
 #include "Features/NativePBR/PBRHookDispatcher.h"
 #include "Hooks.h"
 #include "I18n/I18n.h"
+#include "Materials/PBRFormEditorIDs.h"
 #include "Materials/PBRRecordConfig.h"
 #include "ShaderCache.h"
 #include "State.h"
@@ -1877,12 +1878,7 @@ struct TESForm_GetFormEditorID
 {
 	static const char* thunk(const RE::TESForm* form)
 	{
-		auto* singleton = &globals::features::truePBR;
-		auto it = singleton->editorIDs.find(form->GetFormID());
-		if (it == singleton->editorIDs.cend()) {
-			return "";
-		}
-		return it->second.c_str();
+		return PBRRecords::GetFormEditorID(form->GetFormID());
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
@@ -1891,8 +1887,7 @@ struct TESForm_SetFormEditorID
 {
 	static bool thunk(RE::TESForm* form, const char* editorId)
 	{
-		auto* singleton = &globals::features::truePBR;
-		singleton->editorIDs[form->GetFormID()] = editorId;
+		PBRRecords::SetFormEditorID(form->GetFormID(), editorId);
 		return func(form, editorId);
 	}
 	static inline REL::Relocation<decltype(thunk)> func;

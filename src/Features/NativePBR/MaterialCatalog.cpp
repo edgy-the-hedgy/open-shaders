@@ -8,10 +8,20 @@ const PBRRecords::TextureSetData* NativePBR::MaterialCatalogSnapshot::FindTextur
 	return it == textureSets.end() ? nullptr : &it->second;
 }
 
+const PBRRecords::TextureSetData* NativePBR::MaterialCatalogSnapshot::FindTextureSet(const RE::TESForm* a_form) const
+{
+	return a_form ? FindTextureSet(a_form->GetFormEditorID()) : nullptr;
+}
+
 const PBRRecords::MaterialObjectData* NativePBR::MaterialCatalogSnapshot::FindMaterialObject(std::string_view a_editorId) const
 {
 	auto it = materialObjects.find(std::string(a_editorId));
 	return it == materialObjects.end() ? nullptr : &it->second;
+}
+
+const PBRRecords::MaterialObjectData* NativePBR::MaterialCatalogSnapshot::FindMaterialObject(const RE::TESForm* a_form) const
+{
+	return a_form ? FindMaterialObject(a_form->GetFormEditorID()) : nullptr;
 }
 
 void NativePBR::MaterialCatalog::Load(bool a_verbose)
