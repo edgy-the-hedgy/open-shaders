@@ -1,5 +1,6 @@
 #include "NativeComposite.h"
 #include "Features/LinearLighting.h"
+#include "Features/NativeFeatures.h"
 #include "Globals.h"
 #include "State.h"
 #include "Utils/DevBenchUx.h"
