@@ -62,7 +62,7 @@ namespace NativePBR
 			bool ambiguous = false;
 		};
 
-		uint64_t serial = 0;
+		uint64_t serial = 0, instanceEpoch = 0;
 		std::shared_ptr<const RecipeGeneration> recipes;
 		std::shared_ptr<const MaterialCatalogSnapshot> catalog;
 		std::vector<InstanceHint> sourceHints;
@@ -141,24 +141,28 @@ namespace NativePBR
 				if (!previous)
 					return Publish(std::make_shared<RecipeGeneration>(), catalog, {});
 				return previous && previous->catalog != catalog &&
-					Publish(previous->recipes, catalog, previous->sourceHints);
+					Publish(previous->recipes, catalog, previous->sourceHints, previous->instanceEpoch);
 			}
 			recipeCache.Update(*changes);
 			const auto previous = GetSnapshot();
 			return Publish(PublishRecipes(recipeCache, *changes, previous ? previous->recipes : nullptr),
-				catalog, a_registry.ExportInstanceHints());
+				catalog, changes->instanceHints, changes->instanceEpoch);
 		}
 
 		/** @brief Publishes a consistent read-only view, preserving older readers' handles. */
 		bool Publish(std::shared_ptr<const RecipeGeneration> a_recipes,
-			std::shared_ptr<const MaterialCatalogSnapshot> a_catalog, const std::vector<InstanceHint>& a_hints)
+			std::shared_ptr<const MaterialCatalogSnapshot> a_catalog, const std::vector<InstanceHint>& a_hints,
+			uint64_t a_instanceEpoch = 0)
 		{
 			std::scoped_lock lock(publicationMutex);
 			const auto previous = published.load(std::memory_order_acquire);
 			if (previous && previous->recipes && a_recipes && a_recipes->revision < previous->recipes->revision)
 				return false;
+			if (previous && a_instanceEpoch < previous->instanceEpoch)
+				return false;
 			auto next = std::make_shared<MaterialPublication>();
 			next->serial = ++nextSerial;
+			next->instanceEpoch = a_instanceEpoch;
 			next->recipes = std::move(a_recipes);
 			next->catalog = std::move(a_catalog);
 			next->sourceHints = a_hints;
@@ -198,6 +202,23 @@ namespace NativePBR
 		std::shared_ptr<const MaterialPublication> GetSnapshot() const
 		{
 			return published.load(std::memory_order_acquire);
+		}
+
+		/** @brief Exposes only a publication matching the requested registry and instance epoch. */
+		std::shared_ptr<const MaterialPublication> GetSnapshotAt(uint64_t a_revision, uint64_t a_instanceEpoch) const
+		{
+			auto snapshot = GetSnapshot();
+			return snapshot && snapshot->recipes && snapshot->recipes->revision == a_revision &&
+				snapshot->instanceEpoch == a_instanceEpoch ? snapshot : nullptr;
+		}
+
+		/** @brief Reject scene transitions racing a lookup, without filtering material capabilities. */
+		std::shared_ptr<const MaterialPublication> GetSnapshotForRegistry(const Registry& a_registry) const
+		{
+			const auto revision = a_registry.Revision();
+			const auto epoch = a_registry.InstanceEpoch();
+			auto result = GetSnapshotAt(revision, epoch);
+			return a_registry.Revision() == revision && a_registry.InstanceEpoch() == epoch ? result : nullptr;
 		}
 
 	private:
