@@ -59,4 +59,5 @@ private:
 	std::atomic<uint64_t> lightingSubmissions{ 0 };
 	std::atomic<uint64_t> shadowSubmissions{ 0 };
 	std::atomic<uint32_t> lightingStatus{ 0 };
+	std::string pbrSurfaceSourceStatus = "Diagnostic evaluation disabled";
 };
