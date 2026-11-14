@@ -56,6 +56,10 @@ public:
 	uint64_t MissingTextures() const { return missingTextures; }
 	uint64_t UnsupportedRecipes() const { return unsupportedRecipes; }
 	uint64_t UnsupportedInputs() const { return unsupportedInputs; }
+	uint64_t OrdinalMismatches() const { return ordinalMismatches; }
+	uint64_t NoEligibleFrames() const { return noEligibleFrames; }
+	/** @brief Count a recorded dispatch only after the owning command queue signals successfully. */
+	void MarkSubmitted();
 
 private:
 	winrt::com_ptr<ID3D12RootSignature> root;
@@ -63,4 +67,5 @@ private:
 	ID3D12Device* device = nullptr;
 	std::string status = "Waiting for surface input producer";
 	uint64_t submissions = 0, missingMaterials = 0, missingRevisions = 0, missingTextures = 0, unsupportedRecipes = 0, unsupportedInputs = 0;
+	uint64_t ordinalMismatches = 0, noEligibleFrames = 0;
 };

@@ -21,7 +21,6 @@ namespace
 	};
 	constexpr uint32_t kFrameDescriptors = 10;
 	constexpr uint32_t kTotalDescriptors = kFrameDescriptors + NativePBRSurfacePass::kMaterialPages + NativePBRSurfacePass::kSurfaceOutputs;
-	constexpr uint32_t kRequiredOpaqueRoles = 0x07u;
 	constexpr uint64_t kDescriptorReserveBytes = 1024 * 1024;
 
 	D3D12_CPU_DESCRIPTOR_HANDLE Offset(D3D12_CPU_DESCRIPTOR_HANDLE a_handle, uint32_t a_count, uint32_t a_step)
@@ -49,7 +48,7 @@ bool NativePBRSurfacePass::Initialize(ID3D12Device* a_device)
 {
 	if (root && pipeline && device == a_device)
 		return true;
-	status = "NativePBRSurfaceEval.dxil unavailable";
+	status = "NativePBRSurfaceEval.dxil missing from Data/Shaders/NativeComposite";
 	if (!a_device)
 		return false;
 	try {
@@ -132,6 +131,10 @@ bool NativePBRSurfacePass::Record(ID3D12Device* a_device, ID3D12GraphicsCommandL
 		status = "NativePBR screen producer fence belongs to another device";
 		return false;
 	}
+	if (a_input->readyFence->GetCompletedValue() == UINT64_MAX) {
+		status = "NativePBR screen producer fence reports device removal";
+		return false;
+	}
 	for (uint32_t index = 0; index < kSurfaceInputs; ++index) {
 		if (index >= 6 && !a_input->textures[index])
 			continue;
@@ -159,6 +162,44 @@ bool NativePBRSurfacePass::Record(ID3D12Device* a_device, ID3D12GraphicsCommandL
 			throw std::runtime_error("NativePBR frame-local draw table exceeds supported capacity");
 		const uint32_t drawCount = uint32_t(a_input->draws->size());
 		const uint32_t materialCount = uint32_t(a_materials->entries.size());
+		if (uint64_t(materialCount) * sizeof(NativePBR::GpuMaterialRecord) > a_materials->records->GetDesc().Width) {
+			status = "NativePBR material record allocation is smaller than its immutable generation";
+			return false;
+		}
+		std::vector<NativePBR::GpuDrawBinding> drawBindings(drawCount);
+		uint32_t eligibleDraws = 0;
+		for (uint32_t index = 0; index < drawCount; ++index) {
+			const auto& draw = (*a_input->draws)[index];
+			const auto identity = a_materials->Find(draw.materialIdentity);
+			const auto candidate = a_materials->Find(draw.materialIdentity, draw.materialRevision);
+			const auto exact = candidate && candidate->revision == draw.materialRevision && draw.materialRevision ? candidate : std::nullopt;
+			if (!identity)
+				++missingMaterials;
+			else if (!exact)
+				++missingRevisions;
+			const bool resident = exact && (exact->residentRoles & NativePBR::kGpuRequiredTextureRoles) == NativePBR::kGpuRequiredTextureRoles;
+			if (exact) {
+				if (!resident)
+					++missingTextures;
+				if (exact->recipeIssues != 0)
+					++unsupportedRecipes;
+			}
+			if (draw.projectedUv)
+				++unsupportedInputs;
+			if (draw.ordinal != index + 1)
+				++ordinalMismatches;
+			const bool eligible = resident && draw.ordinal == index + 1 && !draw.projectedUv;
+			if (eligible)
+				++eligibleDraws;
+			drawBindings[index] = NativePBR::PackGpuDrawBinding(draw.materialIdentity, draw.materialRevision,
+				eligible ? exact->index : UINT32_MAX,
+				NativePBR::kGpuDrawUsesVertexColor | (draw.projectedUv ? NativePBR::kGpuDrawProjected : 0u));
+		}
+		if (!eligibleDraws) {
+			++noEligibleFrames;
+			status = "NativePBR surface frame has no eligible opaque draw bindings";
+			return false;
+		}
 		const bool recreate = !a_slot.descriptors || a_slot.width != a_width || a_slot.height != a_height || a_slot.drawCapacity < drawCount;
 		if (recreate) {
 			uint64_t bytes = kDescriptorReserveBytes;
@@ -190,28 +231,6 @@ bool NativePBRSurfacePass::Record(ID3D12Device* a_device, ID3D12GraphicsCommandL
 			DX::ThrowIfFailed(a_device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &drawDesc,
 				D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(replacement.drawBindings.put())));
 			a_slot = std::move(replacement);
-		}
-		std::vector<NativePBR::GpuDrawBinding> drawBindings(drawCount);
-		for (uint32_t index = 0; index < drawCount; ++index) {
-			const auto& draw = (*a_input->draws)[index];
-			const auto identity = a_materials->Find(draw.materialIdentity);
-			const auto candidate = a_materials->Find(draw.materialIdentity, draw.materialRevision);
-			const auto exact = candidate && candidate->revision == draw.materialRevision && draw.materialRevision ? candidate : std::nullopt;
-			if (!identity)
-				++missingMaterials;
-			else if (!exact)
-				++missingRevisions;
-			if (exact) {
-				if ((exact->residentRoles & kRequiredOpaqueRoles) != kRequiredOpaqueRoles)
-					++missingTextures;
-				if (exact->recipeIssues != 0)
-					++unsupportedRecipes;
-			}
-			if (draw.projectedUv && (!a_input->textures[6] || !a_input->textures[7]))
-				++unsupportedInputs;
-			drawBindings[index] = NativePBR::PackGpuDrawBinding(draw.materialIdentity, draw.materialRevision,
-				draw.ordinal == index + 1 && exact && !draw.projectedUv ? exact->index : UINT32_MAX,
-				NativePBR::kGpuDrawUsesVertexColor | (draw.projectedUv ? NativePBR::kGpuDrawProjected : 0u));
 		}
 		void* mapped = nullptr;
 		const D3D12_RANGE noRead{};
@@ -279,11 +298,16 @@ bool NativePBRSurfacePass::Record(ID3D12Device* a_device, ID3D12GraphicsCommandL
 		a_commands->ResourceBarrier(uint32_t(barriers.size()), barriers.data());
 		a_slot.input = std::move(a_input);
 		a_slot.materials = std::move(a_materials);
-		++submissions;
-		status = "NativePBR SM6.5 material evaluation recorded; final composition unchanged";
+		status = "NativePBR SM6.5 material dispatch recorded; awaiting queue submission";
 		return true;
 	} catch (const std::exception& error) {
 		status = error.what();
 		return false;
 	}
+}
+
+void NativePBRSurfacePass::MarkSubmitted()
+{
+	++submissions;
+	status = "NativePBR SM6.5 dispatch submitted; final composition unchanged";
 }
