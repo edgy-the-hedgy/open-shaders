@@ -3,6 +3,7 @@
 #include "TruePBR/BSLightingShaderMaterialPBR.h"
 #include "TruePBR/BSLightingShaderMaterialPBRLandscape.h"
 #include "Features/NativePBR/NativePBRCompiler.h"
+#include "Features/NativePBR/MaterialObservation.h"
 
 #include "Features/DX12NativeScene/DX12NativeScene.h"
 #include "Features/InteriorSun.h"
@@ -32,121 +33,6 @@ static bool PBRMaterialHasRequiredTextures(RE::BSLightingShaderMaterialBase cons
 {
 	auto* pbrMaterial = static_cast<const BSLightingShaderMaterialPBR*>(material);
 	return pbrMaterial->diffuseTexture && pbrMaterial->normalTexture && pbrMaterial->rmaosTexture;
-}
-
-static NativePBR::Glint SnapshotGlint(const GlintParameters& a_glint)
-{
-	return { a_glint.enabled, a_glint.screenSpaceScale, a_glint.logMicrofacetDensity,
-		a_glint.microfacetRoughness, a_glint.densityRandomization };
-}
-
-static void SnapshotPBRBase(const RE::BSLightingShaderMaterialBase& a_material, NativePBR::MaterialData& a_result)
-{
-	for (size_t index = 0; index < a_result.uvOffsetScale.size(); ++index) {
-		a_result.uvOffsetScale[index] = { a_material.texCoordOffset[index].x, a_material.texCoordOffset[index].y,
-			a_material.texCoordScale[index].x, a_material.texCoordScale[index].y };
-	}
-	a_result.materialAlpha = a_material.materialAlpha;
-	a_result.clampMode = static_cast<uint32_t>(a_material.textureClampMode);
-}
-
-static NativePBR::MaterialData SnapshotPBRMesh(const BSLightingShaderMaterialPBR& a_material)
-{
-	NativePBR::MaterialData result;
-	result.kind = NativePBR::MaterialKind::Mesh;
-	SnapshotPBRBase(a_material, result);
-	result.pbrFlags = a_material.pbrFlags.underlying();
-	result.nifThinSurfaceFlags = a_material.nifThinSurfaceFlags.underlying();
-	result.subsurfaceBalance = a_material.subsurfaceBalance;
-	result.thinSurfaceParameters = a_material.thinSurfaceParameters;
-	result.fuzzRoughness = a_material.fuzzRoughness;
-	result.fuzzRoughnessTexture = a_material.fuzzRoughnessTexture;
-	result.roughnessScale = a_material.GetRoughnessScale();
-	result.displacementScale = a_material.GetDisplacementScale();
-	result.specularLevel = a_material.GetSpecularLevel();
-	if (a_material.pbrFlags.any(PBRFlags::TwoLayer)) {
-		const auto& color = a_material.GetCoatColor();
-		result.coatColor = { color.red, color.green, color.blue };
-		result.coatStrength = a_material.GetCoatStrength();
-		result.coatRoughness = a_material.GetCoatRoughness();
-		result.coatSpecularLevel = a_material.GetCoatSpecularLevel();
-	} else {
-		if (a_material.pbrFlags.any(PBRFlags::Subsurface)) {
-			const auto& color = a_material.GetSubsurfaceColor();
-			result.subsurfaceColor = { color.red, color.green, color.blue };
-			result.subsurfaceOpacity = a_material.GetSubsurfaceOpacity();
-		}
-		if (a_material.pbrFlags.any(PBRFlags::Fuzz)) {
-			const auto& color = a_material.GetFuzzColor();
-			result.fuzzColor = { color.red, color.green, color.blue };
-			result.fuzzWeight = a_material.GetFuzzWeight();
-		}
-	}
-	result.projectedColor = a_material.GetProjectedMaterialBaseColorScale();
-	result.projectedRoughness = a_material.GetProjectedMaterialRoughness();
-	result.projectedSpecularLevel = a_material.GetProjectedMaterialSpecularLevel();
-	result.glint = SnapshotGlint(a_material.GetGlintParameters());
-	result.projectedGlint = SnapshotGlint(a_material.GetProjectedMaterialGlintParameters());
-
-	const std::array textures{ a_material.diffuseTexture.get(), a_material.normalTexture.get(), a_material.rmaosTexture.get(),
-		a_material.emissiveTexture.get(), a_material.displacementTexture.get(), a_material.featuresTexture0.get(), a_material.featuresTexture1.get() };
-	for (size_t role = 0; role < textures.size(); ++role) {
-		if (!textures[role])
-			continue;
-		result.textureResourceNames[role] = textures[role]->name.c_str();
-		const auto* rendererTexture = textures[role]->rendererTexture;
-		if (!rendererTexture || !rendererTexture->texture)
-			continue;
-		winrt::com_ptr<ID3D11Texture2D> texture;
-		if (FAILED(Util::AsReal(rendererTexture->texture)->QueryInterface(IID_PPV_ARGS(texture.put()))))
-			continue;
-		D3D11_TEXTURE2D_DESC desc{};
-		texture->GetDesc(&desc);
-		result.textureResources[role] = { desc.Width, desc.Height, desc.MipLevels, desc.ArraySize, uint32_t(desc.Format),
-			desc.MiscFlags, desc.BindFlags, uint32_t(desc.Usage), desc.SampleDesc.Count, true };
-	}
-
-	auto* textureSet = a_material.textureSet.get();
-	if (!textureSet)
-		return result;
-	static const auto* textureSetRTTI = REL::Relocation<const RE::NiRTTI*>{ RE::BSTextureSet::Ni_RTTI }.get();
-	const auto* rtti = textureSet->GetRTTI();
-	if (!rtti || !rtti->IsKindOf(textureSetRTTI))
-		return result;
-	constexpr std::array<uint32_t, 7> textureSlots{ 0, 1, 5, 2, 3, 7, 6 };
-	for (size_t index = 0; index < textureSlots.size(); ++index) {
-		const auto* path = textureSet->GetTexturePath(static_cast<RE::BSTextureSet::Texture>(textureSlots[index]));
-		if (path)
-			result.texturePaths[index] = path;
-	}
-	result.texturePathsComplete = !result.texturePaths[0].empty() &&
-	                              !result.texturePaths[1].empty() && !result.texturePaths[2].empty();
-	return result;
-}
-
-static NativePBR::MaterialData SnapshotPBRLandscape(const BSLightingShaderMaterialPBRLandscape& a_material)
-{
-	NativePBR::MaterialData result;
-	result.kind = NativePBR::MaterialKind::Landscape;
-	SnapshotPBRBase(a_material, result);
-	result.landscapeTileCount = std::min(uint32_t(a_material.numLandscapeTextures),
-		uint32_t(BSLightingShaderMaterialPBRLandscape::NumTiles));
-	for (uint32_t tile = 0; tile < result.landscapeTileCount; ++tile) {
-		auto& output = result.landscapeTiles[tile];
-		output.isPbr = a_material.isPbr[tile];
-		output.roughnessScale = a_material.roughnessScales[tile];
-		output.displacementScale = a_material.displacementScales[tile];
-		output.specularLevel = a_material.specularLevels[tile];
-		const std::array textures{ a_material.landscapeBaseColorTextures[tile].get(),
-			a_material.landscapeNormalTextures[tile].get(), a_material.landscapeRMAOSTextures[tile].get(),
-			a_material.landscapeDisplacementTextures[tile].get() };
-		for (size_t role = 0; role < textures.size(); ++role) {
-			if (textures[role])
-				output.textureNames[role] = textures[role]->name.c_str();
-		}
-		output.glint = SnapshotGlint(a_material.glintParameters[tile]);
-	}
-	return result;
 }
 
 // SetupMaterial runs every draw of every visible instance; without this, a
@@ -995,29 +881,8 @@ struct BSLightingShaderProperty_GetRenderPasses
 		}
 
 		const bool isPbr = IsPBRShaderProperty(property);
-		if (isPbr && geometry && !geometry->name.empty()) {
-			if (auto* reference = geometry->GetUserData(); reference && !reference->IsDynamicForm()) {
-				if (const auto* file = reference->GetFile(0)) {
-					const auto& geometryData = geometry->GetGeometryRuntimeData();
-					NativePBR::InstanceProperties instance;
-					instance.shaderFlags = property->flags.underlying();
-					instance.skinned = bool(geometryData.skinInstance);
-					if (const auto* alpha = geometryData.alphaProperty.get()) {
-						instance.alphaProperty = true;
-						instance.alphaFlags = alpha->alphaFlags;
-						instance.alphaThreshold = alpha->alphaThreshold;
-					}
-					if (const auto* color = property->emissiveColor; color && std::isfinite(color->red) && std::isfinite(color->green) &&
-																	 std::isfinite(color->blue) && std::isfinite(property->emissiveMult)) {
-						instance.emissionKnown = true;
-						instance.emissiveColor = { color->red, color->green, color->blue };
-						instance.emissiveMultiplier = property->emissiveMult;
-					}
-					globals::features::nativePBR.materialRegistry.ObserveInstance(property->material,
-						std::format("{:06X}:{}", reference->GetLocalFormID(), file->GetFilename()), geometry->name.c_str(), instance);
-				}
-			}
-		}
+		if (isPbr && geometry)
+			NativePBR::ObserveVisibleInstance(globals::features::nativePBR.materialRegistry, *property, *geometry);
 
 		auto currentPass = renderPasses->head;
 		while (currentPass != nullptr) {
@@ -1107,50 +972,6 @@ bool TruePBR::BSLightingShader_SetupMaterial(RE::BSLightingShader* shader, RE::B
 		auto renderer = globals::game::renderer;
 		auto graphicsState = globals::game::graphicsState;
 		auto smState = globals::game::smState;
-
-		const std::array<std::array<float, 4>, 2> uv{ { { material->texCoordOffset[0].x, material->texCoordOffset[0].y,
-															material->texCoordScale[0].x, material->texCoordScale[0].y },
-			{ material->texCoordOffset[1].x, material->texCoordOffset[1].y,
-				material->texCoordScale[1].x, material->texCoordScale[1].y } } };
-		if (lightingType == MTLand || lightingType == MTLandLODBlend) {
-			const auto* pbr = static_cast<const BSLightingShaderMaterialPBRLandscape*>(material);
-			std::array<const void*, 24> textures{};
-			for (size_t tile = 0; tile < std::min(pbr->numLandscapeTextures, BSLightingShaderMaterialPBRLandscape::NumTiles); ++tile) {
-				textures[tile * 4] = pbr->landscapeBaseColorTextures[tile].get();
-				textures[tile * 4 + 1] = pbr->landscapeNormalTextures[tile].get();
-				textures[tile * 4 + 2] = pbr->landscapeRMAOSTextures[tile].get();
-				textures[tile * 4 + 3] = pbr->landscapeDisplacementTextures[tile].get();
-			}
-			if (auto capture = globals::features::nativePBR.materialRegistry.ObserveAndBegin(material, uv, material->materialAlpha, uint32_t(material->textureClampMode), textures))
-				globals::features::nativePBR.materialRegistry.Publish(material, capture, SnapshotPBRLandscape(*pbr));
-		} else if (isObjectTechnique) {
-			const auto* pbr = static_cast<const BSLightingShaderMaterialPBR*>(material);
-			auto observeTextures = [pbr] {
-				const std::array sources{ pbr->diffuseTexture.get(), pbr->normalTexture.get(), pbr->rmaosTexture.get(),
-					pbr->emissiveTexture.get(), pbr->displacementTexture.get(), pbr->featuresTexture0.get(), pbr->featuresTexture1.get() };
-				std::array<const void*, 8> textures{};
-				std::array<const void*, 14> resources{};
-				for (size_t index = 0; index < sources.size(); ++index) {
-					textures[index] = sources[index];
-					if (sources[index] && sources[index]->rendererTexture) {
-						resources[index * 2] = sources[index]->rendererTexture;
-						resources[index * 2 + 1] = sources[index]->rendererTexture->texture;
-					}
-				}
-				textures.back() = pbr->textureSet.get();
-				return std::pair{ textures, resources };
-			};
-			const auto [textures, resources] = observeTextures();
-			auto capture = globals::features::nativePBR.materialRegistry.ObserveAndBegin(material, uv, material->materialAlpha, uint32_t(material->textureClampMode), textures, resources);
-			if (capture && PBRMaterialHasRequiredTextures(material)) {
-				auto snapshot = SnapshotPBRMesh(*pbr);
-				const auto [currentTextures, currentResources] = observeTextures();
-				NativePBR::MaterialData current;
-				SnapshotPBRBase(*material, current);
-				globals::features::nativePBR.materialRegistry.ObserveAndBegin(material, current.uvOffsetScale, current.materialAlpha, current.clampMode, currentTextures, currentResources);
-				globals::features::nativePBR.materialRegistry.Publish(material, capture, std::move(snapshot));
-			}
-		}
 
 		RE::BSGraphics::Renderer::PrepareVSConstantGroup(RE::BSGraphics::ConstantGroupLevel::PerMaterial);
 		RE::BSGraphics::Renderer::PreparePSConstantGroup(RE::BSGraphics::ConstantGroupLevel::PerMaterial);
@@ -2202,6 +2023,20 @@ struct PBR_BSLightingShader_SetupMaterial
 	{
 		if (!material) {
 			return;
+		}
+		using enum SIE::ShaderCache::LightingShaderTechniques;
+		const auto technique = shader->currentRawTechnique;
+		const auto flags = technique & 0xFFFFFFu;
+		const auto kind = static_cast<SIE::ShaderCache::LightingShaderTechniques>((technique >> 24) & 0x3Fu);
+		if ((flags & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::TruePbr)) != 0 &&
+			kind != LODLand && kind != LODLandNoise) {
+			if (kind == MTLand || kind == MTLandLODBlend) {
+				NativePBR::ObserveLightingMaterial(globals::features::nativePBR.materialRegistry,
+					*material, NativePBR::MaterialKind::Landscape);
+			} else if (kind == None || kind == TreeAnim || kind == LODObjects || kind == LODObjectHD) {
+				NativePBR::ObserveLightingMaterial(globals::features::nativePBR.materialRegistry,
+					*material, NativePBR::MaterialKind::Mesh);
+			}
 		}
 
 		if (globals::features::truePBR.BSLightingShader_SetupMaterial(shader, material)) {
