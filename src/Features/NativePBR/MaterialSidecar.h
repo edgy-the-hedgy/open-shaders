@@ -74,6 +74,8 @@ namespace NativePBR
 		uint32_t InputOnlyDrawsThisFrame() const { return inputDrawsThisFrame; }
 		uint32_t InputShaderMissesThisFrame() const { return inputShaderMissesThisFrame; }
 		uint32_t InputTargetRejectionsThisFrame() const { return inputTargetRejectionsThisFrame; }
+		uint32_t InputCapacityMissesThisFrame() const { return inputCapacityMissesThisFrame; }
+		uint32_t UnsupportedDrawsThisFrame() const { return unsupportedDrawsThisFrame; }
 		uint32_t SetupPassesThisFrame() const { return setupPassesThisFrame; }
 		uint32_t PbrCandidatesThisFrame() const { return pbrCandidatesThisFrame; }
 		uint32_t MissingPbrIdentitiesThisFrame() const { return missingPbrIdentitiesThisFrame; }
@@ -83,7 +85,7 @@ namespace NativePBR
 		const std::string& Status() const { return status; }
 
 	private:
-		static constexpr uint32_t kSurveyDrawLimit = 1024;
+		static constexpr uint32_t kSurveyDrawLimit = kMaximumFrameDraws;
 		struct Target
 		{
 			winrt::com_ptr<ID3D11Texture2D> texture;
@@ -105,6 +107,9 @@ namespace NativePBR
 		winrt::com_ptr<ID3D11PixelShader> stagedInputShader;
 		winrt::com_ptr<ID3D11PixelShader> priorInputPixelShader;
 		winrt::com_ptr<ID3D11Buffer> priorInputConstants;
+		winrt::com_ptr<ID3D11BlendState> priorInputBlend;
+		std::array<float, 4> priorInputBlendFactor{};
+		UINT priorInputSampleMask = 0;
 		struct DepthState
 		{
 			winrt::com_ptr<ID3D11DepthStencilState> source, replay;
@@ -119,6 +124,7 @@ namespace NativePBR
 		std::array<uint32_t, 4> unsupportedReasonsThisFrame{};
 		uint32_t frame = 0, width = 0, height = 0, nextDraw = 1, surveyDrawsThisFrame = 0, projectedDrawsThisFrame = 0;
 		uint32_t inputDrawsThisFrame = 0, inputShaderMissesThisFrame = 0, inputTargetRejectionsThisFrame = 0;
+		uint32_t inputCapacityMissesThisFrame = 0, unsupportedDrawsThisFrame = 0;
 		uint32_t setupPassesThisFrame = 0, pbrCandidatesThisFrame = 0, missingPbrIdentitiesThisFrame = 0;
 		uint32_t activeUnsupportedReasons = 0;
 		bool recording = false, ready = false, captureProjectedUv = false, inputOnly = false, inputPassActive = false;

@@ -58,33 +58,47 @@ namespace NativePBR
 		if (!a_device || (shader && validation && drawConstants && validationConstants && writeAll))
 			return;
 		try {
-			shader.attach(static_cast<ID3D11PixelShader*>(Util::CompileShader(
-				L"Data\\Shaders\\NativePBR\\MaterialSidecar.ps.hlsl", {}, "ps_5_0")));
-			projectedShader.attach(static_cast<ID3D11PixelShader*>(Util::CompileShader(
-				L"Data\\Shaders\\NativePBR\\MaterialSidecar.ps.hlsl", { { "CAPTURE_PROJECTED_UV", "1" } }, "ps_5_0")));
-			if (projectedShader)
-				Util::SetResourceName(projectedShader.get(), "NativePBR::ProjectedSidecar");
-			previewShader.attach(static_cast<ID3D11PixelShader*>(Util::CompileShader(
-				L"Data\\Shaders\\NativePBR\\PreviewOpaque.ps.hlsl", {}, "ps_5_0")));
-			if (previewShader)
-				Util::SetResourceName(previewShader.get(), "NativePBR::PreviewOpaque");
-			validation.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(
-				L"Data\\Shaders\\NativePBR\\ValidateSidecar.cs.hlsl", {}, "cs_5_0")));
-			if (!shader || !validation)
-				throw std::runtime_error("Sidecar capture/validation shader compile failed");
 			D3D11_BUFFER_DESC cb{};
 			cb.ByteWidth = sizeof(Constants);
 			cb.Usage = D3D11_USAGE_DEFAULT;
 			cb.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-			winrt::check_hresult(a_device->CreateBuffer(&cb, nullptr, drawConstants.put()));
-			winrt::check_hresult(a_device->CreateBuffer(&cb, nullptr, validationConstants.put()));
-			D3D11_BLEND_DESC blend{};
-			for (auto& rt : blend.RenderTarget) {
-				rt.BlendEnable = FALSE;
-				rt.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+			if (!drawConstants) {
+				winrt::check_hresult(a_device->CreateBuffer(&cb, nullptr, drawConstants.put()));
+				Util::SetResourceName(drawConstants.get(), "NativePBR::DrawConstants");
 			}
-			winrt::check_hresult(a_device->CreateBlendState(&blend, writeAll.put()));
-			status.clear();
+			if (!validationConstants) {
+				winrt::check_hresult(a_device->CreateBuffer(&cb, nullptr, validationConstants.put()));
+				Util::SetResourceName(validationConstants.get(), "NativePBR::ValidationConstants");
+			}
+			if (!writeAll) {
+				D3D11_BLEND_DESC blend{};
+				for (auto& rt : blend.RenderTarget) {
+					rt.BlendEnable = FALSE;
+					rt.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+				}
+				winrt::check_hresult(a_device->CreateBlendState(&blend, writeAll.put()));
+				Util::SetResourceName(writeAll.get(), "NativePBR::UnblendedInputs");
+			}
+			if (!shader)
+				shader.attach(static_cast<ID3D11PixelShader*>(Util::CompileShader(
+					L"Data\\Shaders\\NativePBR\\MaterialSidecar.ps.hlsl", {}, "ps_5_0")));
+			if (!projectedShader)
+				projectedShader.attach(static_cast<ID3D11PixelShader*>(Util::CompileShader(
+					L"Data\\Shaders\\NativePBR\\MaterialSidecar.ps.hlsl", { { "CAPTURE_PROJECTED_UV", "1" } }, "ps_5_0")));
+			if (projectedShader)
+				Util::SetResourceName(projectedShader.get(), "NativePBR::ProjectedSidecar");
+			if (!previewShader)
+				previewShader.attach(static_cast<ID3D11PixelShader*>(Util::CompileShader(
+					L"Data\\Shaders\\NativePBR\\PreviewOpaque.ps.hlsl", {}, "ps_5_0")));
+			if (previewShader)
+				Util::SetResourceName(previewShader.get(), "NativePBR::PreviewOpaque");
+			if (!validation)
+				validation.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(
+					L"Data\\Shaders\\NativePBR\\ValidateSidecar.cs.hlsl", {}, "cs_5_0")));
+			if (shader && validation)
+				status.clear();
+			else
+				status = "Auxiliary sidecar capture/validation shaders unavailable";
 		} catch (const std::exception& e) {
 			status = e.what();
 		}
@@ -109,11 +123,13 @@ namespace NativePBR
 		nextDraw = 1;
 		surveyDrawsThisFrame = 0;
 		projectedDrawsThisFrame = 0;
-		inputDrawsThisFrame = inputShaderMissesThisFrame = inputTargetRejectionsThisFrame = 0;
+		inputDrawsThisFrame = inputShaderMissesThisFrame = inputTargetRejectionsThisFrame = inputCapacityMissesThisFrame = 0;
+		unsupportedDrawsThisFrame = 0;
 		setupPassesThisFrame = pbrCandidatesThisFrame = missingPbrIdentitiesThisFrame = 0;
 		unsupportedReasonsThisFrame.fill(0);
-		if (!a_device || !a_context || !a_mainTarget || !shader || !validation || !writeAll || !a_width || !a_height) {
-			status = "Sidecar shaders, device, or dimensions unavailable";
+		if (!a_device || !a_context || !a_mainTarget || !drawConstants || !writeAll ||
+			(!inputOnly && (!shader || !validation || !validationConstants)) || !a_width || !a_height) {
+			status = "Raster input resources, shaders, or dimensions unavailable";
 			++failedFrames;
 			return;
 		}
@@ -180,6 +196,12 @@ namespace NativePBR
 	{
 		if (recording && inputOnly) {
 			++setupPassesThisFrame;
+			if (a_unsupportedReasons) {
+				++unsupportedDrawsThisFrame;
+				for (size_t bit = 0; bit < unsupportedReasonsThisFrame.size(); ++bit)
+					if (a_unsupportedReasons & (1u << bit))
+						++unsupportedReasonsThisFrame[bit];
+			}
 			if (a_surveyClass == PreviewSurveyClass::OpaquePbrCandidate || a_surveyClass == PreviewSurveyClass::UnsupportedProjectedUv) {
 				++pbrCandidatesThisFrame;
 				if (!a_materialIdentity || !a_materialRevision)
@@ -214,11 +236,13 @@ namespace NativePBR
 			ID3D11Buffer* priorConstants = priorInputConstants.get();
 			inputContext->PSSetConstantBuffers(13, 1, &priorConstants);
 			inputContext->PSSetShader(priorInputPixelShader.get(), nullptr, 0);
+			inputContext->OMSetBlendState(priorInputBlend.get(), priorInputBlendFactor.data(), priorInputSampleMask);
 		}
 		inputPassActive = false;
 		inputContext = nullptr;
 		priorInputPixelShader = nullptr;
 		priorInputConstants = nullptr;
+		priorInputBlend = nullptr;
 	}
 
 	bool MaterialSidecar::StageInputOnlyShader(ID3D11PixelShader* a_shader)
@@ -237,8 +261,12 @@ namespace NativePBR
 	bool MaterialSidecar::BeginInputOnlyPass(ID3D11DeviceContext* a_context)
 	{
 		if (!recording || !inputOnly || !activeMaterial || !a_context || !stagedInputShader ||
-			!drawConstants || inputPassActive || nextDraw > kSurveyDrawLimit)
+			!drawConstants || !writeAll || inputPassActive)
 			return false;
+		if (nextDraw > kSurveyDrawLimit) {
+			++inputCapacityMissesThisFrame;
+			return false;
+		}
 		std::array<ID3D11RenderTargetView*, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> boundTargets{};
 		ID3D11DepthStencilView* boundDepth = nullptr;
 		a_context->OMGetRenderTargets(static_cast<UINT>(boundTargets.size()), boundTargets.data(), &boundDepth);
@@ -265,11 +293,13 @@ namespace NativePBR
 		inputContext.copy_from(a_context);
 		a_context->PSGetShader(priorInputPixelShader.put(), nullptr, nullptr);
 		a_context->PSGetConstantBuffers(13, 1, priorInputConstants.put());
+		a_context->OMGetBlendState(priorInputBlend.put(), priorInputBlendFactor.data(), &priorInputSampleMask);
 		const Constants constants{ ordinal, 0, static_cast<uint32_t>(activeMaterial), static_cast<uint32_t>(activeMaterial >> 32) };
 		a_context->UpdateSubresource(drawConstants.get(), 0, nullptr, &constants, 0, 0);
 		ID3D11Buffer* identity = drawConstants.get();
 		a_context->PSSetConstantBuffers(13, 1, &identity);
 		a_context->PSSetShader(stagedInputShader.get(), nullptr, 0);
+		a_context->OMSetBlendState(writeAll.get(), nullptr, 0xffffffffu);
 		inputPassActive = true;
 		++inputDrawsThisFrame;
 		++replayed;

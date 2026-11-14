@@ -679,9 +679,14 @@ void NativePBRFeature::DrawSettings()
 			materialSidecar.InputOnlyDrawsThisFrame(), materialSidecar.InputShaderMissesThisFrame(),
 			materialSidecar.InputTargetRejectionsThisFrame());
 	if (materialSidecar.InputOnly())
-		ImGui::Text("Geometry passes: %u | PBR candidates: %u | missing identity: %u",
+		ImGui::Text("Geometry passes: %u | PBR candidates: %u | missing identity: %u | draw limit: %u",
 			materialSidecar.SetupPassesThisFrame(), materialSidecar.PbrCandidatesThisFrame(),
-			materialSidecar.MissingPbrIdentitiesThisFrame());
+			materialSidecar.MissingPbrIdentitiesThisFrame(), materialSidecar.InputCapacityMissesThisFrame());
+	if (materialSidecar.InputOnly()) {
+		const auto reasons = materialSidecar.UnsupportedReasonsThisFrame();
+		ImGui::Text("Unsupported observations: %u | projected: %u | model-space: %u | landscape: %u | other: %u",
+			materialSidecar.UnsupportedDrawsThisFrame(), reasons[0], reasons[1], reasons[2], reasons[3]);
+	}
 	bool projected = captureProjectedUv.load(std::memory_order_relaxed);
 	bool inputOnly = experimentalInputOnly.load(std::memory_order_relaxed);
 	if (ImGui::Checkbox("Run input-only FXC with DX12 experimental evaluation", &inputOnly))
@@ -861,6 +866,11 @@ json NativePBRFeature::GetDiagnostics()
 		{ "exclusiveInputOnlyShading", OwnsInputOnlyShading() },
 		{ "captureProjectedUv", captureProjectedUv.load(std::memory_order_relaxed) },
 		{ "projectedDrawsThisFrame", materialSidecar.ProjectedDrawsThisFrame() },
+		{ "inputOnlyAdmittedDraws", materialSidecar.InputOnlyDrawsThisFrame() },
+		{ "inputOnlyShaderMisses", materialSidecar.InputShaderMissesThisFrame() },
+		{ "inputOnlyTargetRejections", materialSidecar.InputTargetRejectionsThisFrame() },
+		{ "inputOnlyDrawLimitMisses", materialSidecar.InputCapacityMissesThisFrame() },
+		{ "unsupportedObservedDraws", materialSidecar.UnsupportedDrawsThisFrame() },
 		{ "setupPassesThisFrame", materialSidecar.SetupPassesThisFrame() },
 		{ "pbrCandidatesThisFrame", materialSidecar.PbrCandidatesThisFrame() },
 		{ "missingPbrIdentitiesThisFrame", materialSidecar.MissingPbrIdentitiesThisFrame() },
