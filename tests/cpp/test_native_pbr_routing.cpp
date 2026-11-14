@@ -5,7 +5,8 @@
 TEST_CASE("NativePBR compilation routing is independent of DX12 initialization", "[native_pbr]")
 {
 	NativePBR::RoutingInputs input;
-	input.nativeSelected = true;
+	input.backend = NativePBR::Backend::NativeDX12;
+	input.nativeFeatureEnabled = true;
 	input.featureLoaded = true;
 	input.scope = NativePBR::MaterialScope::OpaqueStaticMesh;
 	const auto unavailable = NativePBR::ResolveRouting(input);
@@ -26,17 +27,26 @@ TEST_CASE("NativePBR compilation routing is independent of DX12 initialization",
 
 	input.legacyComparisonRequested = true;
 	const auto comparison = NativePBR::ResolveRouting(input);
-	REQUIRE(comparison.owner == NativePBR::RenderingOwner::Legacy);
-	REQUIRE(comparison.shaderDomain == NativePBR::ShaderDomain::LegacyTruePBR);
+	REQUIRE(comparison.owner == NativePBR::RenderingOwner::Native);
+	REQUIRE(comparison.shaderDomain == NativePBR::ShaderDomain::NativePBRInput);
 	REQUIRE(comparison.legacyComparisonRequested);
 
 	input.legacyComparisonRequested = false;
+	input.scope = NativePBR::MaterialScope::ProjectedStaticMesh;
+	REQUIRE(NativePBR::ResolveRouting(input).owner == NativePBR::RenderingOwner::Native);
 	input.scope = NativePBR::MaterialScope::Unmigrated;
+	REQUIRE(NativePBR::ResolveRouting(input).owner == NativePBR::RenderingOwner::NativeUnavailable);
+	REQUIRE(NativePBR::ResolveRouting(input).shaderDomain == NativePBR::ShaderDomain::Unavailable);
+	input.sceneOwnsNative = false;
+	REQUIRE(NativePBR::ResolveRouting(input).owner == NativePBR::RenderingOwner::NativeUnavailable);
+	input.sceneOwnsNative = true;
+	input.scope = NativePBR::MaterialScope::OpaqueStaticMesh;
+	input.nativeFeatureEnabled = false;
+	REQUIRE(NativePBR::ResolveRouting(input).owner == NativePBR::RenderingOwner::NativeUnavailable);
+	input.backend = NativePBR::Backend::LegacyDX11;
 	REQUIRE(NativePBR::ResolveRouting(input).owner == NativePBR::RenderingOwner::Legacy);
 	REQUIRE(NativePBR::ResolveRouting(input).shaderDomain == NativePBR::ShaderDomain::LegacyTruePBR);
-	input.scope = NativePBR::MaterialScope::OpaqueStaticMesh;
-	input.nativeSelected = false;
-	REQUIRE(NativePBR::ResolveRouting(input).owner == NativePBR::RenderingOwner::Legacy);
+	REQUIRE(NativePBR::ResolveRouting(input).backend == NativePBR::Backend::LegacyDX11);
 }
 
 TEST_CASE("NativePBR input domain isolates FXC cache identities", "[native_pbr][shader_cache]")

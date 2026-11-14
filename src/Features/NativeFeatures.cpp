@@ -111,10 +111,18 @@ void NativePBRFeature::PollMaterialRegistry()
 
 // Backend selection is the ONLY automatic execution switch. Feature toggles
 // are explicit user choices, never material/caster/light validity gates.
+NativePBR::Backend NativePBRFeature::SelectedBackend() const
+{
+	const auto& scene = globals::features::dx12NativeScene;
+	return scene.loaded && scene.settings.Enabled && !globals::game::isVR ?
+		NativePBR::Backend::NativeDX12 : NativePBR::Backend::LegacyDX11;
+}
+
 bool NativePBRFeature::IsActive() const
 {
 	return NativePBR::ResolveRouting({
-		.nativeSelected = enabled.load(std::memory_order_relaxed),
+		.backend = SelectedBackend(),
+		.nativeFeatureEnabled = enabled.load(std::memory_order_relaxed),
 		.featureLoaded = loaded,
 		.sceneOwnsNative = globals::features::dx12NativeScene.OwnsNativeFeatures(),
 		.scope = NativePBR::MaterialScope::OpaqueStaticMesh
@@ -773,13 +781,15 @@ json NativePBRFeature::GetDiagnostics()
 {
 	const auto recipes = GetNativeRecipes();
 	const auto state = NativePBR::ResolveRouting({
-		.nativeSelected = enabled.load(std::memory_order_relaxed),
+		.backend = SelectedBackend(),
+		.nativeFeatureEnabled = enabled.load(std::memory_order_relaxed),
 		.featureLoaded = loaded,
 		.sceneOwnsNative = globals::features::dx12NativeScene.OwnsNativeFeatures(),
 		.materialInputsAvailable = recipes && !recipes->recipes.empty(),
 		.scope = NativePBR::MaterialScope::OpaqueStaticMesh
 	});
 	return { { "selected", enabled.load() }, { "native", state.owner == NativePBR::RenderingOwner::Native },
+		{ "selectedBackend", state.backend == NativePBR::Backend::NativeDX12 ? "dx12-native" : "dx11-legacy" },
 		{ "experimentalInputOnly", experimentalInputOnly.load(std::memory_order_relaxed) },
 		{ "exclusiveInputOnlyShading", OwnsInputOnlyShading() },
 		{ "captureProjectedUv", captureProjectedUv.load(std::memory_order_relaxed) },
@@ -797,7 +807,8 @@ json NativePBRFeature::GetDiagnostics()
 		{ "previewUnsupportedReasons", materialSidecar.PreviewUnsupportedReasons() },
 		{ "unsupportedReasonsThisFrame", materialSidecar.UnsupportedReasonsThisFrame() },
 		{ "surveyDrawsThisFrame", materialSidecar.SurveyDrawsThisFrame() },
-		{ "shaderDomainPolicy", state.shaderDomain == NativePBR::ShaderDomain::NativePBRInput ? "native-pbr-input" : "legacy-true-pbr" },
+		{ "shaderDomainPolicy", state.shaderDomain == NativePBR::ShaderDomain::NativePBRInput ? "native-pbr-input" :
+			(state.shaderDomain == NativePBR::ShaderDomain::Unavailable ? "unmigrated" : "legacy-true-pbr") },
 		{ "materialInputsAvailable", state.materialInputsAvailable },
 		{ "publishedNativeMaterialGeneration", state.publishedNativeMaterialGeneration },
 		{ "renderingOwnerPolicy", state.owner == NativePBR::RenderingOwner::Native ? "native" :

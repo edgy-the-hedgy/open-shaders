@@ -3,6 +3,7 @@
 #include "Feature.h"
 #include "Features/DX12NativeScene/PreparedScene.h"
 #include "LightLimitFix.h"
+#include "Features/NativePBR/MaterialRouting.h"
 #include "Features/NativePBR/MaterialSidecar.h"
 #include "TruePBR/NativePBRRegistry.h"
 #include <array>
@@ -65,6 +66,8 @@ struct NativePBRFeature final : Feature
 	std::string GetShortName() override { return "NativePBR"; }
 	std::string_view GetCategory() const override { return FeatureCategories::kMaterials; }
 	bool IsCore() const override { return true; }
+	/** @brief Selects the PBR backend independently of DX12 device readiness. */
+	NativePBR::Backend SelectedBackend() const;
 	bool IsActive() const;
 	/** @brief True when eligible TruePBR pixel permutations are owned by FXC-input-only NativePBR. */
 	bool OwnsInputOnlyShading() const;
