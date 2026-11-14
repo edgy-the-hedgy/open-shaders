@@ -109,6 +109,7 @@ namespace NativePBR
 		nextDraw = 1;
 		surveyDrawsThisFrame = 0;
 		projectedDrawsThisFrame = 0;
+		inputDrawsThisFrame = inputShaderMissesThisFrame = inputTargetRejectionsThisFrame = 0;
 		unsupportedReasonsThisFrame.fill(0);
 		if (!a_device || !a_context || !a_mainTarget || !shader || !validation || !writeAll || !a_width || !a_height) {
 			status = "Sidecar shaders, device, or dimensions unavailable";
@@ -176,6 +177,7 @@ namespace NativePBR
 	void MaterialSidecar::BeginPass(uint64_t a_materialIdentity, uint64_t a_materialRevision, std::string a_referenceKey,
 		std::string a_shapeName, PreviewSurveyClass a_surveyClass, uint32_t a_unsupportedReasons)
 	{
+		stagedInputShader = nullptr;
 		activeSurveyClass = recording ? a_surveyClass : PreviewSurveyClass::None;
 		activeUnsupportedReasons = recording ? a_unsupportedReasons : 0;
 		activeMaterial = recording && a_materialRevision &&
@@ -187,6 +189,18 @@ namespace NativePBR
 
 	void MaterialSidecar::EndPass()
 	{
+		EndInputOnlyDraw();
+		stagedInputShader = nullptr;
+		activeMaterial = 0;
+		activeRevision = 0;
+		activeSurveyClass = PreviewSurveyClass::None;
+		activeUnsupportedReasons = 0;
+		activeReference.clear();
+		activeShape.clear();
+	}
+
+	void MaterialSidecar::EndInputOnlyDraw()
+	{
 		if (inputPassActive && inputContext) {
 			ID3D11Buffer* priorConstants = priorInputConstants.get();
 			inputContext->PSSetConstantBuffers(13, 1, &priorConstants);
@@ -196,17 +210,24 @@ namespace NativePBR
 		inputContext = nullptr;
 		priorInputPixelShader = nullptr;
 		priorInputConstants = nullptr;
-		activeMaterial = 0;
-		activeRevision = 0;
-		activeSurveyClass = PreviewSurveyClass::None;
-		activeUnsupportedReasons = 0;
-		activeReference.clear();
-		activeShape.clear();
 	}
 
-	bool MaterialSidecar::BeginInputOnlyPass(ID3D11DeviceContext* a_context, ID3D11PixelShader* a_shader)
+	bool MaterialSidecar::StageInputOnlyShader(ID3D11PixelShader* a_shader)
 	{
-		if (!recording || !inputOnly || !activeMaterial || !a_context || !a_shader ||
+		stagedInputShader = nullptr;
+		if (!recording || !inputOnly || !activeMaterial)
+			return false;
+		if (!a_shader) {
+			++inputShaderMissesThisFrame;
+			return false;
+		}
+		stagedInputShader.copy_from(a_shader);
+		return true;
+	}
+
+	bool MaterialSidecar::BeginInputOnlyPass(ID3D11DeviceContext* a_context)
+	{
+		if (!recording || !inputOnly || !activeMaterial || !a_context || !stagedInputShader ||
 			!drawConstants || inputPassActive || nextDraw > kSurveyDrawLimit)
 			return false;
 		std::array<ID3D11RenderTargetView*, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> boundTargets{};
@@ -219,8 +240,10 @@ namespace NativePBR
 				target->Release();
 		if (boundDepth)
 			boundDepth->Release();
-		if (!deferredPass)
+		if (!deferredPass) {
+			++inputTargetRejectionsThisFrame;
 			return false;
+		}
 		const uint32_t ordinal = nextDraw;
 		try {
 			draws.push_back({ ordinal, activeMaterial, activeRevision, activeReference, activeShape,
@@ -237,8 +260,9 @@ namespace NativePBR
 		a_context->UpdateSubresource(drawConstants.get(), 0, nullptr, &constants, 0, 0);
 		ID3D11Buffer* identity = drawConstants.get();
 		a_context->PSSetConstantBuffers(13, 1, &identity);
-		a_context->PSSetShader(a_shader, nullptr, 0);
+		a_context->PSSetShader(stagedInputShader.get(), nullptr, 0);
 		inputPassActive = true;
+		++inputDrawsThisFrame;
 		++replayed;
 		if ((activeUnsupportedReasons & ProjectedUvReason) != 0)
 			++projectedDrawsThisFrame;
@@ -392,7 +416,8 @@ namespace NativePBR
 		recording = false;
 		if (inputOnly) {
 			if (draws.empty()) {
-				status = "No input-only PBR draws";
+				status = std::format("No input-only PBR draws (FXC unavailable: {}, target rejected: {})",
+					inputShaderMissesThisFrame, inputTargetRejectionsThisFrame);
 				return;
 			}
 			try {

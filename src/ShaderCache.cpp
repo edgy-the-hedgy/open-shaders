@@ -2975,7 +2975,19 @@ namespace SIE
 		const auto key = SShaderCache::GetShaderString(ShaderClass::Pixel, shader, descriptor, true,
 			NativePBR::ShaderDomain::NativePBRInput);
 		const auto blob = GetCompletedShader(key);
-		if (!blob || !globals::d3d::device)
+		if (!blob) {
+			bool enqueue = false;
+			{
+				std::lock_guard lock(pixelShadersMutex);
+				enqueue = nativePbrInputRequests.insert(descriptor).second;
+			}
+			// Runtime permutations may not be present in the startup precompile list.
+			// Keep the original DX11 draw until the input-only FXC variant is ready.
+			if (enqueue)
+				EnqueueNativePBRInputPixelShader(shader, descriptor);
+			return nullptr;
+		}
+		if (!globals::d3d::device)
 			return nullptr;
 		winrt::com_ptr<ID3D11PixelShader> shader11;
 		if (FAILED(globals::d3d::device->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, shader11.put())))
@@ -3080,6 +3092,7 @@ namespace SIE
 		{
 			std::lock_guard lockGuardP(pixelShadersMutex);
 			nativePbrInputShaders.clear();
+			nativePbrInputRequests.clear();
 			for (auto& shaders : pixelShaders) {
 				for (auto& [id, shader] : shaders) {
 					shader->shader->Release();
@@ -3164,6 +3177,7 @@ namespace SIE
 		if (!entries.empty()) {
 			std::lock_guard lock(pixelShadersMutex);
 			nativePbrInputShaders.clear();
+			nativePbrInputRequests.clear();
 			logger::debug("Marked {} entries for recompile due to change to {}", entries.size(), a_path);
 			compilationSet.Clear();
 		}
@@ -3185,8 +3199,10 @@ namespace SIE
 		}
 		std::lock_guard lockGuardP(pixelShadersMutex);
 		{
-			if (a_type == RE::BSShader::Type::Lighting)
+			if (a_type == RE::BSShader::Type::Lighting) {
 				nativePbrInputShaders.clear();
+				nativePbrInputRequests.clear();
+			}
 			for (auto& [id, shader] : pixelShaders[static_cast<size_t>(a_type)]) {
 				shader->shader->Release();
 			}

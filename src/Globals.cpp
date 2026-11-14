@@ -434,7 +434,13 @@ namespace globals
 		static void thunk(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base)
 		{
 			static thread_local bool replaying = false;
+			// State is guaranteed to be current at DrawIndexed, unlike SetupGeometry.
+			// Bind the FXC input shader for this exact draw and restore it immediately.
+			const bool inputBound = !replaying && a_count != 0 && a_context == globals::d3d::context &&
+				globals::features::nativePBR.BeginInputOnlyDraw(a_context);
 			func(a_context, a_count, a_first, a_base);
+			if (inputBound)
+				globals::features::nativePBR.EndInputOnlyDraw();
 			if (replaying || a_context != globals::d3d::context)
 				return;
 			replaying = true;

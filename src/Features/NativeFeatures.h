@@ -56,6 +56,8 @@ struct NativePBRFeature final : Feature
 		uint32_t a_unsupportedReasons = 0);
 	void EndSidecarPass();
 	bool TryInputOnlyPass(const RE::BSShader& a_shader, uint32_t a_descriptor);
+	bool BeginInputOnlyDraw(ID3D11DeviceContext* a_context);
+	void EndInputOnlyDraw();
 	void ReplaySidecarDraw(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base);
 	void FinishOpaqueSidecar(ID3D11ShaderResourceView* a_finalDepth);
 	NativePBR::MaterialSidecar::Sources GetSidecarSources(uint32_t a_frame) const;

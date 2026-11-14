@@ -152,12 +152,18 @@ void NativePBRFeature::BeginSidecarPass(uint64_t a_identity, uint64_t a_revision
 void NativePBRFeature::EndSidecarPass() { materialSidecar.EndPass(); }
 bool NativePBRFeature::TryInputOnlyPass(const RE::BSShader& a_shader, uint32_t a_descriptor)
 {
-	if (!materialSidecar.InputOnly() || !IsActive() || globals::game::isVR || !globals::shaderCache ||
-		!std::filesystem::exists("Data/Shaders/NativeComposite/NativePBRInput.dxil"))
+	if (!materialSidecar.InputOnly() || !IsActive() || globals::game::isVR)
 		return false;
-	auto* shader = globals::shaderCache->GetNativePBRInputPixelShader(a_shader, a_descriptor);
-	return shader && materialSidecar.BeginInputOnlyPass(globals::d3d::context, shader);
+	const bool nativeDxilAvailable = std::filesystem::exists("Data/Shaders/NativeComposite/NativePBRInput.dxil");
+	auto* shader = nativeDxilAvailable && globals::shaderCache ?
+		globals::shaderCache->GetNativePBRInputPixelShader(a_shader, a_descriptor) : nullptr;
+	return materialSidecar.StageInputOnlyShader(shader);
 }
+bool NativePBRFeature::BeginInputOnlyDraw(ID3D11DeviceContext* a_context)
+{
+	return IsActive() && !globals::game::isVR && materialSidecar.BeginInputOnlyPass(a_context);
+}
+void NativePBRFeature::EndInputOnlyDraw() { materialSidecar.EndInputOnlyDraw(); }
 void NativePBRFeature::ReplaySidecarDraw(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base)
 {
 	if (IsActive() && !globals::game::isVR)
@@ -601,6 +607,10 @@ void NativePBRFeature::DrawSettings()
 	ImGui::Text("%s: %llu | rejected: %llu", materialSidecar.InputOnly() ? "Input-only raster draws" : "Sidecar raster draws",
 		materialSidecar.ReplayedDraws(), materialSidecar.RejectedDraws());
 	ImGui::Text("Last frame's PBR surfaces: %zu | frame: %u", materialSidecar.PublishedDrawCount(), materialSidecar.GetFrame());
+	if (materialSidecar.InputOnly())
+		ImGui::Text("FXC input draws this frame: %u | shader unavailable: %u | RT rejected: %u",
+			materialSidecar.InputOnlyDrawsThisFrame(), materialSidecar.InputShaderMissesThisFrame(),
+			materialSidecar.InputTargetRejectionsThisFrame());
 	bool projected = captureProjectedUv.load(std::memory_order_relaxed);
 	bool inputOnly = experimentalInputOnly.load(std::memory_order_relaxed);
 	if (ImGui::Checkbox("Run input-only FXC with DX12 experimental evaluation", &inputOnly))

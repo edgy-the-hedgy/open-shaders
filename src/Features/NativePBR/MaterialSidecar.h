@@ -50,7 +50,9 @@ namespace NativePBR
 			uint32_t a_frame, uint32_t a_width, uint32_t a_height, bool a_captureProjectedUv, bool a_inputOnly = false);
 		void BeginPass(uint64_t a_materialIdentity, uint64_t a_materialRevision, std::string a_referenceKey, std::string a_shapeName,
 			PreviewSurveyClass a_surveyClass, uint32_t a_unsupportedReasons);
-		bool BeginInputOnlyPass(ID3D11DeviceContext* a_context, ID3D11PixelShader* a_shader);
+		bool StageInputOnlyShader(ID3D11PixelShader* a_shader);
+		bool BeginInputOnlyPass(ID3D11DeviceContext* a_context);
+		void EndInputOnlyDraw();
 		void EndPass();
 		void ReplayDrawIndexed(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base, PreviewMode a_previewMode);
 		void FinishFrame(ID3D11DeviceContext* a_context, ID3D11ShaderResourceView* a_finalDepth);
@@ -69,6 +71,9 @@ namespace NativePBR
 		std::array<uint32_t, 4> UnsupportedReasonsThisFrame() const { return unsupportedReasonsThisFrame; }
 		uint32_t SurveyDrawsThisFrame() const { return surveyDrawsThisFrame; }
 		uint32_t ProjectedDrawsThisFrame() const { return projectedDrawsThisFrame; }
+		uint32_t InputOnlyDrawsThisFrame() const { return inputDrawsThisFrame; }
+		uint32_t InputShaderMissesThisFrame() const { return inputShaderMissesThisFrame; }
+		uint32_t InputTargetRejectionsThisFrame() const { return inputTargetRejectionsThisFrame; }
 		uint32_t SurveyLimit() const { return kSurveyDrawLimit; }
 		bool InputOnly() const { return inputOnly; }
 		bool PreviewReady() const { return static_cast<bool>(previewShader); }
@@ -94,6 +99,7 @@ namespace NativePBR
 		winrt::com_ptr<ID3D11BlendState> writeAll;
 		winrt::com_ptr<ID3D11RenderTargetView> expectedMain;
 		winrt::com_ptr<ID3D11DeviceContext> inputContext;
+		winrt::com_ptr<ID3D11PixelShader> stagedInputShader;
 		winrt::com_ptr<ID3D11PixelShader> priorInputPixelShader;
 		winrt::com_ptr<ID3D11Buffer> priorInputConstants;
 		struct DepthState
@@ -109,6 +115,7 @@ namespace NativePBR
 		std::array<uint64_t, 4> previewUnsupportedReasons{};
 		std::array<uint32_t, 4> unsupportedReasonsThisFrame{};
 		uint32_t frame = 0, width = 0, height = 0, nextDraw = 1, surveyDrawsThisFrame = 0, projectedDrawsThisFrame = 0;
+		uint32_t inputDrawsThisFrame = 0, inputShaderMissesThisFrame = 0, inputTargetRejectionsThisFrame = 0;
 		uint32_t activeUnsupportedReasons = 0;
 		bool recording = false, ready = false, captureProjectedUv = false, inputOnly = false, inputPassActive = false;
 		PreviewSurveyClass activeSurveyClass = PreviewSurveyClass::None;

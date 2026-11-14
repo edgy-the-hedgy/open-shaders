@@ -1376,6 +1376,7 @@ namespace SIE
 		ShaderMapArray<RE::BSGraphics::VertexShader, SShaderCache::VertexShaderDeleter> vertexShaders;
 		ShaderMapArray<RE::BSGraphics::PixelShader> pixelShaders;
 		ankerl::unordered_dense::map<uint32_t, winrt::com_ptr<ID3D11PixelShader>> nativePbrInputShaders;
+		ankerl::unordered_dense::set<uint32_t> nativePbrInputRequests;
 		ShaderMapArray<RE::BSGraphics::ComputeShader> computeShaders;
 
 		bool isEnabled = true;
