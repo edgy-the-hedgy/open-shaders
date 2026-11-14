@@ -4,6 +4,10 @@
 
 TEST_CASE("NativePBR compilation routing is independent of DX12 initialization", "[native_pbr]")
 {
+	REQUIRE(NativePBR::SelectBackend(true, true, false) == NativePBR::Backend::NativeDX12);
+	REQUIRE(NativePBR::SelectBackend(false, true, false) == NativePBR::Backend::LegacyDX11);
+	REQUIRE(NativePBR::SelectBackend(true, false, false) == NativePBR::Backend::LegacyDX11);
+	REQUIRE(NativePBR::SelectBackend(true, true, true) == NativePBR::Backend::LegacyDX11);
 	NativePBR::RoutingInputs input;
 	input.backend = NativePBR::Backend::NativeDX12;
 	input.nativeFeatureEnabled = true;

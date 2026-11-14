@@ -244,6 +244,12 @@ namespace
 	}
 }
 
+bool DX12NativeScene::IsNativeBackendRequested() const
+{
+	const int requested = requestedEnabled.load(std::memory_order_relaxed);
+	return loaded && (requested >= 0 ? requested != 0 : settings.Enabled);
+}
+
 bool DX12NativeScene::OwnsNativeFeatures() const
 {
 	// Ownership is selected by the native scene backend, not the upscaler,

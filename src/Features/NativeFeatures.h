@@ -6,6 +6,7 @@
 #include "Features/NativePBR/MaterialRouting.h"
 #include "Features/NativePBR/MaterialSidecar.h"
 #include "Features/NativePBR/NativePBRRegistry.h"
+#include "Utils/BootSnapshot.h"
 #include <array>
 #include <atomic>
 #include <memory>
@@ -29,6 +30,17 @@ namespace NativePBR
 struct NativePBRFeature final : Feature
 {
 	NativePBRFeature();
+	struct BackendSettings
+	{
+		bool NativeBackend = true;
+	} backendSettings;
+	inline static constexpr Util::Settings::RestartTable<BackendSettings, 1> kRestartFields{ {
+		UTIL_RESTART_FIELD(BackendSettings, NativeBackend, "PBR Backend"),
+	} };
+	Util::Settings::BootSnapshot<BackendSettings> bootSnapshot{ kRestartFields };
+	std::once_flag backendLatchOnce;
+	std::atomic<bool> backendLatched{ false };
+	std::atomic<NativePBR::Backend> bootBackend{ NativePBR::Backend::LegacyDX11 };
 	struct MaterialSummary
 	{
 		size_t recipes = 0, pending = 0, incomplete = 0, observedTextures = 0, sharedCandidates = 0;
@@ -66,6 +78,15 @@ struct NativePBRFeature final : Feature
 	std::string GetShortName() override { return "NativePBR"; }
 	std::string_view GetCategory() const override { return FeatureCategories::kMaterials; }
 	bool IsCore() const override { return true; }
+	std::span<const Util::Settings::RestartFieldInfo> GetRestartRequiredFields() const override
+	{
+		return { kRestartFields.data(), kRestartFields.size() };
+	}
+	const void* GetBootValue(std::string_view a_key) const override { return bootSnapshot.RawBoot(a_key); }
+	const void* GetSettingsBlob() const override { return &backendSettings; }
+	size_t GetSettingsBlobSize() const override { return sizeof(backendSettings); }
+	/** @brief Captures the selected rendering backend exactly once for this session. */
+	void LatchBackendAtBoot();
 	/** @brief Selects the PBR backend independently of DX12 device readiness. */
 	NativePBR::Backend SelectedBackend() const;
 	bool IsActive() const;
@@ -74,7 +95,7 @@ struct NativePBRFeature final : Feature
 	void DrawSettings() override;
 	void LoadSettings(json&) override;
 	void SaveSettings(json&) override;
-	void RestoreDefaultSettings() override { enabled = true; previewOpaqueReplacement = false; captureProjectedUv = false; experimentalInputOnly = false; previewVisualization = 0; }
+	void RestoreDefaultSettings() override { backendSettings = {}; enabled = true; previewOpaqueReplacement = false; captureProjectedUv = false; experimentalInputOnly = false; previewVisualization = 0; }
 	json GetDiagnostics() override;
 };
 

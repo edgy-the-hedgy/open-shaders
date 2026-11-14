@@ -132,6 +132,8 @@ struct DX12NativeScene final : Feature
 	/** @brief The selected DX12 pipeline owns native materials, lights and casters.
 	 *  Not dependent on material/scene/effect validity. */
 	bool OwnsNativeFeatures() const;
+	/** @brief Returns the requested scene backend before the render-thread toggle is applied. */
+	bool IsNativeBackendRequested() const;
 	/** @brief True only when this exact static reference/shape exists in the active native TLAS. */
 	bool IsPreparedStaticCaster(RE::BSGeometry& geometry) const;
 	/** @brief Retains the scene graphics session for DX12-only consumers. */

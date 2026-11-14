@@ -10,6 +10,12 @@ namespace NativePBR
 		NativeDX12
 	};
 
+	/** @brief Selects one session-long PBR backend independently of GPU readiness. */
+	constexpr Backend SelectBackend(bool a_nativePbrRequested, bool a_nativeSceneRequested, bool a_isVr)
+	{
+		return a_nativePbrRequested && a_nativeSceneRequested && !a_isVr ? Backend::NativeDX12 : Backend::LegacyDX11;
+	}
+
 	enum class MaterialScope : uint8_t
 	{
 		OpaqueStaticMesh,

@@ -4,6 +4,7 @@
 #include "Features/LightLimitFix/ShadowCasterManager.h"
 #include "Features/NativePBR/MaterialRouting.h"
 #include "Utils/D3D.h"
+#include "Utils/UI.h"
 #include "Features/NativeLighting/NativeLighting.h"
 #include "Features/NativeComposite/NativeComposite.h"
 #include "Globals.h"
@@ -110,11 +111,22 @@ void NativePBRFeature::PollMaterialRegistry()
 
 // Backend selection is the ONLY automatic execution switch. Feature toggles
 // are explicit user choices, never material/caster/light validity gates.
+void NativePBRFeature::LatchBackendAtBoot()
+{
+	std::call_once(backendLatchOnce, [this] {
+		bootSnapshot.Latch(backendSettings);
+		bootBackend.store(NativePBR::SelectBackend(backendSettings.NativeBackend,
+			globals::features::dx12NativeScene.IsNativeBackendRequested(), globals::game::isVR), std::memory_order_relaxed);
+		backendLatched.store(true, std::memory_order_release);
+	});
+}
+
 NativePBR::Backend NativePBRFeature::SelectedBackend() const
 {
-	const auto& scene = globals::features::dx12NativeScene;
-	return scene.loaded && scene.settings.Enabled && !globals::game::isVR ?
-		NativePBR::Backend::NativeDX12 : NativePBR::Backend::LegacyDX11;
+	if (backendLatched.load(std::memory_order_acquire))
+		return bootBackend.load(std::memory_order_relaxed);
+	return NativePBR::SelectBackend(backendSettings.NativeBackend,
+		globals::features::dx12NativeScene.IsNativeBackendRequested(), globals::game::isVR);
 }
 
 bool NativePBRFeature::IsActive() const
@@ -613,6 +625,12 @@ namespace
 
 void NativePBRFeature::DrawSettings()
 {
+	bool nativeBackend = backendSettings.NativeBackend;
+	if (ImGui::Checkbox("Use DX12-Native PBR backend (restart required)", &nativeBackend))
+		backendSettings.NativeBackend = nativeBackend;
+	ImGui::TextDisabled("Boot PBR backend: %s", SelectedBackend() == NativePBR::Backend::NativeDX12 ? "DX12-Native" : "Legacy DX11");
+	if (bootSnapshot.HasPendingChange(backendSettings, &BackendSettings::NativeBackend))
+		Util::Text::RestartNeeded("%s", "PBR backend change pending restart");
 	DrawOwnership("Enable Native PBR", enabled, IsActive());
 	ImGui::TextDisabled("NativePBR owns live material recipes; current engine observations still originate in TruePBR hooks.");
 	ImGui::TextDisabled("Texture source and prepared material controls remain in DX12 Native Scene.");
@@ -739,6 +757,7 @@ void NativeSCMFeature::DrawSettings()
 }
 void NativePBRFeature::LoadSettings(json& j)
 {
+	backendSettings.NativeBackend = j.value("NativeBackend", true);
 	enabled.store(j.value("Enabled", true), std::memory_order_relaxed);
 	captureProjectedUv.store(j.value("CaptureProjectedUv", false), std::memory_order_relaxed);
 	experimentalInputOnly.store(j.value("ExperimentalInputOnly", false), std::memory_order_relaxed);
@@ -762,6 +781,7 @@ void NativeSCMFeature::LoadSettings(json& j) { enabled.store(j.value("Enabled", 
 void NativePBRFeature::SaveSettings(json& j)
 {
 	j = { { "Enabled", enabled.load(std::memory_order_relaxed) },
+		{ "NativeBackend", backendSettings.NativeBackend },
 		{ "CaptureProjectedUv", captureProjectedUv.load(std::memory_order_relaxed) },
 		{ "ExperimentalInputOnly", experimentalInputOnly.load(std::memory_order_relaxed) },
 		{ "PreviewOpaqueReplacement", previewOpaqueReplacement.load(std::memory_order_relaxed) },
@@ -788,6 +808,7 @@ json NativePBRFeature::GetDiagnostics()
 		.scope = NativePBR::MaterialScope::OpaqueStaticMesh
 	});
 	return { { "selected", enabled.load() }, { "native", state.owner == NativePBR::RenderingOwner::Native },
+		{ "backendRestartPending", bootSnapshot.HasPendingChange(backendSettings, &BackendSettings::NativeBackend) },
 		{ "selectedBackend", state.backend == NativePBR::Backend::NativeDX12 ? "dx12-native" : "dx11-legacy" },
 		{ "experimentalInputOnly", experimentalInputOnly.load(std::memory_order_relaxed) },
 		{ "exclusiveInputOnlyShading", OwnsInputOnlyShading() },
