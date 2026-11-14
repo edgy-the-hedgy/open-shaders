@@ -12,6 +12,7 @@
 #include "Hooks.h"
 #include "I18n/I18n.h"
 #include "Materials/PBRFormEditorIDs.h"
+#include "Materials/PBRNifMaterial.h"
 #include "Materials/PBRRecordConfig.h"
 #include "ShaderCache.h"
 #include "State.h"
@@ -739,38 +740,24 @@ struct BSLightingShaderProperty_LoadBinary
 
 		if (isPbr) {
 			auto pbrMaterial = static_cast<BSLightingShaderMaterialPBR*>(property->material);
-			if (property->flags.any(kMultiLayerParallax)) {
-				pbrMaterial->pbrFlags.set(PBRFlags::TwoLayer);
-				if (property->flags.any(kSoftLighting)) {
-					pbrMaterial->pbrFlags.set(PBRFlags::InterlayerParallax);
-				}
-				if (property->flags.any(kBackLighting)) {
-					pbrMaterial->pbrFlags.set(PBRFlags::CoatNormal);
-				}
-				if (property->flags.any(kEffectLighting)) {
-					pbrMaterial->pbrFlags.set(PBRFlags::ColoredCoat);
-				}
-			} else if (property->flags.any(kBackLighting)) {
-				pbrMaterial->pbrFlags.set(PBRFlags::HairMarschner);
-			} else {
-				// These NIF flags select thin-surface behavior only outside coat and hair materials.
-				if (property->flags.any(kAnisotropicLighting)) {
-					pbrMaterial->nifThinSurfaceFlags.set(PBRFlags::ThinSurface);
-				}
-				if (property->flags.any(kEffectLighting)) {
-					pbrMaterial->nifThinSurfaceFlags.set(PBRFlags::Foliage);
-				}
+			const auto interpreted = PBRRecords::InterpretNifSurface({
+				.multiLayerParallax = property->flags.any(kMultiLayerParallax),
+				.backLighting = property->flags.any(kBackLighting),
+				.effectLighting = property->flags.any(kEffectLighting),
+				.anisotropicLighting = property->flags.any(kAnisotropicLighting),
+				.rimLighting = property->flags.any(kRimLighting),
+				.softLighting = property->flags.any(kSoftLighting),
+				.fitSlope = property->flags.any(kFitSlope)
+			});
+			if (interpreted.applyThinSurfaceFlags) {
+				if (interpreted.thinSurfaceFlags)
+					pbrMaterial->nifThinSurfaceFlags.set(static_cast<PBRFlags>(interpreted.thinSurfaceFlags));
 				pbrMaterial->pbrFlags.set(pbrMaterial->nifThinSurfaceFlags.get());
-
-				if (property->flags.any(kRimLighting)) {
-					pbrMaterial->pbrFlags.set(PBRFlags::Subsurface);
-				}
-				if (property->flags.any(kSoftLighting)) {
-					pbrMaterial->pbrFlags.set(PBRFlags::Fuzz);
-				} else if (property->flags.any(kFitSlope)) {
-					pbrMaterial->glintParameters.enabled = true;
-				}
 			}
+			if (interpreted.pbrFlags)
+				pbrMaterial->pbrFlags.set(static_cast<PBRFlags>(interpreted.pbrFlags));
+			if (interpreted.enableGlint)
+				pbrMaterial->glintParameters.enabled = true;
 
 			// It was a bad idea originally to use kMenuScreen flag to enable PBR since it's actually used for world map
 			// meshes. But it was too late to move to use different flag so internally we use kVertexLighting instead
