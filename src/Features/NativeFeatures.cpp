@@ -616,6 +616,10 @@ void NativePBRFeature::DrawSettings()
 		ImGui::Text("FXC input draws this frame: %u | shader unavailable: %u | RT rejected: %u",
 			materialSidecar.InputOnlyDrawsThisFrame(), materialSidecar.InputShaderMissesThisFrame(),
 			materialSidecar.InputTargetRejectionsThisFrame());
+	if (materialSidecar.InputOnly())
+		ImGui::Text("Geometry passes: %u | PBR candidates: %u | missing identity: %u",
+			materialSidecar.SetupPassesThisFrame(), materialSidecar.PbrCandidatesThisFrame(),
+			materialSidecar.MissingPbrIdentitiesThisFrame());
 	bool projected = captureProjectedUv.load(std::memory_order_relaxed);
 	bool inputOnly = experimentalInputOnly.load(std::memory_order_relaxed);
 	if (ImGui::Checkbox("Run input-only FXC with DX12 experimental evaluation", &inputOnly))
@@ -780,6 +784,9 @@ json NativePBRFeature::GetDiagnostics()
 		{ "exclusiveInputOnlyShading", OwnsInputOnlyShading() },
 		{ "captureProjectedUv", captureProjectedUv.load(std::memory_order_relaxed) },
 		{ "projectedDrawsThisFrame", materialSidecar.ProjectedDrawsThisFrame() },
+		{ "setupPassesThisFrame", materialSidecar.SetupPassesThisFrame() },
+		{ "pbrCandidatesThisFrame", materialSidecar.PbrCandidatesThisFrame() },
+		{ "missingPbrIdentitiesThisFrame", materialSidecar.MissingPbrIdentitiesThisFrame() },
 		{ "recipeRevision", materialRegistry.Revision() },
 		{ "previewOpaqueReplacement", previewOpaqueReplacement.load(std::memory_order_relaxed) },
 		{ "previewVisualization", previewVisualization.load(std::memory_order_relaxed) },

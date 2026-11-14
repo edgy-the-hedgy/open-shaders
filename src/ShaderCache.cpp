@@ -2903,12 +2903,6 @@ namespace SIE
 	RE::BSGraphics::PixelShader* ShaderCache::GetPixelShader(const RE::BSShader& shader,
 		uint32_t descriptor, bool a_precompile)
 	{
-		// Exclusive native mode keeps TruePBR's material registration and shader
-		// descriptors, but does not compile or select its full opaque DX11 pixel BRDF.
-		// Uncovered PBR techniques still use the legacy implementation.
-		if (shader.shaderType == RE::BSShader::Type::Lighting &&
-			globals::features::nativePBR.OwnsInputOnlyShading() && IsNativePBRInputPermutation(descriptor))
-			return nullptr;
 		if (a_precompile && backgroundCompilation)
 			return nullptr;
 		auto state = globals::state;

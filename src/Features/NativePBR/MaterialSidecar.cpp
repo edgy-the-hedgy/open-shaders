@@ -110,6 +110,7 @@ namespace NativePBR
 		surveyDrawsThisFrame = 0;
 		projectedDrawsThisFrame = 0;
 		inputDrawsThisFrame = inputShaderMissesThisFrame = inputTargetRejectionsThisFrame = 0;
+		setupPassesThisFrame = pbrCandidatesThisFrame = missingPbrIdentitiesThisFrame = 0;
 		unsupportedReasonsThisFrame.fill(0);
 		if (!a_device || !a_context || !a_mainTarget || !shader || !validation || !writeAll || !a_width || !a_height) {
 			status = "Sidecar shaders, device, or dimensions unavailable";
@@ -177,6 +178,14 @@ namespace NativePBR
 	void MaterialSidecar::BeginPass(uint64_t a_materialIdentity, uint64_t a_materialRevision, std::string a_referenceKey,
 		std::string a_shapeName, PreviewSurveyClass a_surveyClass, uint32_t a_unsupportedReasons)
 	{
+		if (recording && inputOnly) {
+			++setupPassesThisFrame;
+			if (a_surveyClass == PreviewSurveyClass::OpaquePbrCandidate || a_surveyClass == PreviewSurveyClass::UnsupportedProjectedUv) {
+				++pbrCandidatesThisFrame;
+				if (!a_materialIdentity || !a_materialRevision)
+					++missingPbrIdentitiesThisFrame;
+			}
+		}
 		stagedInputShader = nullptr;
 		activeSurveyClass = recording ? a_surveyClass : PreviewSurveyClass::None;
 		activeUnsupportedReasons = recording ? a_unsupportedReasons : 0;

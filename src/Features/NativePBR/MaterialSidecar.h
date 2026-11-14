@@ -74,6 +74,9 @@ namespace NativePBR
 		uint32_t InputOnlyDrawsThisFrame() const { return inputDrawsThisFrame; }
 		uint32_t InputShaderMissesThisFrame() const { return inputShaderMissesThisFrame; }
 		uint32_t InputTargetRejectionsThisFrame() const { return inputTargetRejectionsThisFrame; }
+		uint32_t SetupPassesThisFrame() const { return setupPassesThisFrame; }
+		uint32_t PbrCandidatesThisFrame() const { return pbrCandidatesThisFrame; }
+		uint32_t MissingPbrIdentitiesThisFrame() const { return missingPbrIdentitiesThisFrame; }
 		uint32_t SurveyLimit() const { return kSurveyDrawLimit; }
 		bool InputOnly() const { return inputOnly; }
 		bool PreviewReady() const { return static_cast<bool>(previewShader); }
@@ -116,6 +119,7 @@ namespace NativePBR
 		std::array<uint32_t, 4> unsupportedReasonsThisFrame{};
 		uint32_t frame = 0, width = 0, height = 0, nextDraw = 1, surveyDrawsThisFrame = 0, projectedDrawsThisFrame = 0;
 		uint32_t inputDrawsThisFrame = 0, inputShaderMissesThisFrame = 0, inputTargetRejectionsThisFrame = 0;
+		uint32_t setupPassesThisFrame = 0, pbrCandidatesThisFrame = 0, missingPbrIdentitiesThisFrame = 0;
 		uint32_t activeUnsupportedReasons = 0;
 		bool recording = false, ready = false, captureProjectedUv = false, inputOnly = false, inputPassActive = false;
 		PreviewSurveyClass activeSurveyClass = PreviewSurveyClass::None;
