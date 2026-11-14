@@ -3,6 +3,7 @@
 #include "Features/LightLimitFix.h"
 #include "Features/LightLimitFix/ShadowCasterManager.h"
 #include "Features/NativePBR/MaterialRouting.h"
+#include "Features/NativePBR/PBRHookDispatcher.h"
 #include "Utils/D3D.h"
 #include "Utils/UI.h"
 #include "Features/NativeLighting/NativeLighting.h"
@@ -127,6 +128,13 @@ NativePBR::Backend NativePBRFeature::SelectedBackend() const
 		return bootBackend.load(std::memory_order_relaxed);
 	return NativePBR::SelectBackend(backendSettings.NativeBackend,
 		globals::features::dx12NativeScene.IsNativeBackendRequested(), globals::game::isVR);
+}
+
+void NativePBRFeature::PostPostLoad()
+{
+	LatchBackendAtBoot();
+	if (SelectedBackend() == NativePBR::Backend::NativeDX12)
+		PBRHooks::Install();
 }
 
 bool NativePBRFeature::IsActive() const

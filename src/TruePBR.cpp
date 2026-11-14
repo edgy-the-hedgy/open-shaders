@@ -7,6 +7,7 @@
 #include "Features/DX12NativeScene/DX12NativeScene.h"
 #include "Features/InteriorSun.h"
 #include "Features/NativeFeatures.h"
+#include "Features/NativePBR/PBRHookDispatcher.h"
 #include "Hooks.h"
 #include "I18n/I18n.h"
 #include "ShaderCache.h"
@@ -2312,6 +2313,13 @@ struct PBR_BSLightingShader_SetupMaterial
 
 void TruePBR::PostPostLoad()
 {
+	auto& nativePbr = globals::features::nativePBR;
+	nativePbr.LatchBackendAtBoot();
+	PBRHooks::Install();
+}
+
+static void InstallPBRHookTargets()
+{
 	logger::info("[TruePBR] Hooking BGSTextureSet");
 	stl::detour_thunk<BGSTextureSet_ToShaderTextureSet>(REL::RelocationID(20905, 21361));
 
@@ -2360,6 +2368,12 @@ void TruePBR::PostPostLoad()
 
 	logger::info("[TruePBR] Hooking BSLightingShader::SetupMaterial");
 	stl::write_vfunc<0x4, PBR_BSLightingShader_SetupMaterial>(RE::VTABLE_BSLightingShader[0]);
+}
+
+void PBRHooks::Install()
+{
+	static std::once_flag installed;
+	std::call_once(installed, InstallPBRHookTargets);
 }
 
 void TruePBR::DataLoaded()

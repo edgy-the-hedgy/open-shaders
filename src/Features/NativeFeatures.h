@@ -87,6 +87,7 @@ struct NativePBRFeature final : Feature
 	size_t GetSettingsBlobSize() const override { return sizeof(backendSettings); }
 	/** @brief Captures the selected rendering backend exactly once for this session. */
 	void LatchBackendAtBoot();
+	void PostPostLoad() override;
 	/** @brief Selects the PBR backend independently of DX12 device readiness. */
 	NativePBR::Backend SelectedBackend() const;
 	bool IsActive() const;
