@@ -1,12 +1,6 @@
 #pragma once
 
 #include "Feature.h"
-#include "TruePBR/NativePBRRegistry.h"
-
-namespace NativePBR
-{
-	struct RecipeGeneration;
-}
 
 class BSLightingShaderMaterialPBR;
 
@@ -32,7 +26,7 @@ struct GlintParameters
 struct TruePBR : Feature
 {
 public:
-	TruePBR();
+	TruePBR() = default;
 	/** @brief Returns the internal name of the feature. */
 	virtual std::string GetName() override { return "True PBR"; }
 	/** @brief Returns the user-facing translated display name. */
@@ -100,11 +94,6 @@ public:
 	static_assert(sizeof(Settings) == 16);
 
 	Settings settings;
-
-	/** @brief Compatibility reference; ownership now belongs to NativePBRFeature. */
-	NativePBR::Registry& nativeRegistry;
-	/** @brief Compatibility accessor for scene consumers; NativePBR owns the generation. */
-	std::shared_ptr<const NativePBR::RecipeGeneration> GetNativeRecipes() const;
 
 	/** @brief When true, logs each PBR JSON file path during load. Off by default. */
 	bool enableVerboseJsonLogging = false;

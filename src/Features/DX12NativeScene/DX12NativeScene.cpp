@@ -10,7 +10,6 @@
 #include "RE/T/TESWorldSpace.h"
 #include "ShaderCache.h"
 #include "State.h"
-#include "TruePBR.h"
 #include "Utils/D3D.h"
 #include "Utils/DevBenchUx.h"
 #include <BS_thread_pool.hpp>
@@ -954,7 +953,7 @@ void DX12NativeScene::OnSceneTransitionReset(bool a_open)
 {
 	transitionOpen = a_open;
 	if (a_open) {
-		globals::features::truePBR.nativeRegistry.ClearInstanceHints();
+		globals::features::nativePBR.materialRegistry.ClearInstanceHints();
 		runtimeGeometry.Reset();
 	}
 	ResetScene();
@@ -1153,10 +1152,10 @@ void DX12NativeScene::AdvanceCoverage()
 	try {
 		auto task = std::make_shared<CoverageTask>();
 		task->sceneRevision = scene->revision;
-		auto& pbr = globals::features::truePBR;
+		auto& pbr = globals::features::nativePBR;
 		auto recipes = pbr.GetNativeRecipes();
-		auto hints = pbr.nativeRegistry.ExportInstanceHints();
-		if (recipes && recipes->revision != pbr.nativeRegistry.Revision())
+		auto hints = pbr.materialRegistry.ExportInstanceHints();
+		if (recipes && recipes->revision != pbr.materialRegistry.Revision())
 			recipes.reset();
 		static BS::thread_pool<> pool{ 1 };
 		pool.detach_task([task, acceleration = scene->acceleration, hints = std::move(hints), recipes = std::move(recipes)] {
@@ -1512,8 +1511,8 @@ void DX12NativeScene::EarlyPrepass()
 											  shadow.RetireScenesExcept(currentSceneStableAcceleration ? currentSceneStableAcceleration : scene) &&
 											  retiredMaterials.expired()) {
 		if (globals::features::nativePBR.IsActive() && globals::game::graphicsState) {
-			auto& pbr = globals::features::truePBR;
-			const uint64_t currentRevision = pbr.nativeRegistry.Revision();
+			auto& pbr = globals::features::nativePBR;
+			const uint64_t currentRevision = pbr.materialRegistry.Revision();
 			const uint32_t currentFrame = globals::game::graphicsState->GetFrameCount();
 			if ((currentRevision != livePbrRevision || !livePbrSource) &&
 				livePbrLastCaptureFrame != currentFrame) {
@@ -1522,8 +1521,8 @@ void DX12NativeScene::EarlyPrepass()
 				if (recipes && recipes->batchesComplete) {
 					auto source = std::make_shared<NativePBR::LiveBindingSource>();
 					source->generation = std::move(recipes);
-					source->hints = pbr.nativeRegistry.ExportInstanceHints();
-					if (pbr.nativeRegistry.Revision() == currentRevision) {
+					source->hints = pbr.materialRegistry.ExportInstanceHints();
+					if (pbr.materialRegistry.Revision() == currentRevision) {
 						livePbrSource = std::move(source);
 						livePbrRevision = currentRevision;
 					}

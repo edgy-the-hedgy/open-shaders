@@ -257,20 +257,13 @@ namespace PNState
 
 void SetupPBRLandscapeTextureParameters(BSLightingShaderMaterialPBRLandscape& material, const TruePBR::PBRTextureSetData& textureSetData, uint32_t textureIndex);
 
-TruePBR::TruePBR() : nativeRegistry(globals::features::nativePBR.materialRegistry) {}
-
-std::shared_ptr<const NativePBR::RecipeGeneration> TruePBR::GetNativeRecipes() const
-{
-	return globals::features::nativePBR.GetNativeRecipes();
-}
-
 void TruePBR::DrawSettings()
 {
 	if (globals::features::nativePBR.OwnsInputOnlyShading())
-		ImGui::TextDisabled("NativePBR exclusive: FXC inputs only for covered opaque/projected PBR; TruePBR supplies material recipes.");
+		ImGui::TextDisabled("NativePBR input-only FXC active for eligible opaque/projected PBR; material hooks still require migration.");
 	const auto summary = globals::features::nativePBR.GetMaterialSummary();
 	const auto& recipeIssues = summary.issues;
-	const auto nativePbr = nativeRegistry.GetStatistics();
+	const auto nativePbr = globals::features::nativePBR.materialRegistry.GetStatistics();
 	ImGui::TextDisabled("Native PBR metadata: %zu mesh, %zu landscape | dirty: %zu | revision: %llu",
 		nativePbr.mesh, nativePbr.landscape, nativePbr.dirty, static_cast<unsigned long long>(nativePbr.revision));
 	ImGui::TextDisabled("Native PBR recipes: %zu | pending: %zu | unsupported or incomplete: %zu | opacity unverified",
@@ -560,7 +553,7 @@ void TruePBR::RestoreDefaultSettings()
 
 void TruePBR::SetupResources()
 {
-	nativeRegistry.MarkAllDirty();
+	globals::features::nativePBR.materialRegistry.MarkAllDirty();
 	SetupTextureSetData();
 	SetupMaterialObjectData();
 }
@@ -1106,7 +1099,7 @@ struct BSLightingShaderProperty_GetRenderPasses
 						instance.emissiveColor = { color->red, color->green, color->blue };
 						instance.emissiveMultiplier = property->emissiveMult;
 					}
-					globals::features::truePBR.nativeRegistry.ObserveInstance(property->material,
+					globals::features::nativePBR.materialRegistry.ObserveInstance(property->material,
 						std::format("{:06X}:{}", reference->GetLocalFormID(), file->GetFilename()), geometry->name.c_str(), instance);
 				}
 			}
@@ -1214,8 +1207,8 @@ bool TruePBR::BSLightingShader_SetupMaterial(RE::BSLightingShader* shader, RE::B
 				textures[tile * 4 + 2] = pbr->landscapeRMAOSTextures[tile].get();
 				textures[tile * 4 + 3] = pbr->landscapeDisplacementTextures[tile].get();
 			}
-			if (auto capture = nativeRegistry.ObserveAndBegin(material, uv, material->materialAlpha, uint32_t(material->textureClampMode), textures))
-				nativeRegistry.Publish(material, capture, SnapshotPBRLandscape(*pbr));
+			if (auto capture = globals::features::nativePBR.materialRegistry.ObserveAndBegin(material, uv, material->materialAlpha, uint32_t(material->textureClampMode), textures))
+				globals::features::nativePBR.materialRegistry.Publish(material, capture, SnapshotPBRLandscape(*pbr));
 		} else if (isObjectTechnique) {
 			const auto* pbr = static_cast<const BSLightingShaderMaterialPBR*>(material);
 			auto observeTextures = [pbr] {
@@ -1234,14 +1227,14 @@ bool TruePBR::BSLightingShader_SetupMaterial(RE::BSLightingShader* shader, RE::B
 				return std::pair{ textures, resources };
 			};
 			const auto [textures, resources] = observeTextures();
-			auto capture = nativeRegistry.ObserveAndBegin(material, uv, material->materialAlpha, uint32_t(material->textureClampMode), textures, resources);
+			auto capture = globals::features::nativePBR.materialRegistry.ObserveAndBegin(material, uv, material->materialAlpha, uint32_t(material->textureClampMode), textures, resources);
 			if (capture && PBRMaterialHasRequiredTextures(material)) {
 				auto snapshot = SnapshotPBRMesh(*pbr);
 				const auto [currentTextures, currentResources] = observeTextures();
 				NativePBR::MaterialData current;
 				SnapshotPBRBase(*material, current);
-				nativeRegistry.ObserveAndBegin(material, current.uvOffsetScale, current.materialAlpha, current.clampMode, currentTextures, currentResources);
-				nativeRegistry.Publish(material, capture, std::move(snapshot));
+				globals::features::nativePBR.materialRegistry.ObserveAndBegin(material, current.uvOffsetScale, current.materialAlpha, current.clampMode, currentTextures, currentResources);
+				globals::features::nativePBR.materialRegistry.Publish(material, capture, std::move(snapshot));
 			}
 		}
 
@@ -1609,7 +1602,7 @@ struct BSLightingShader_SetupGeometry
 			auto* reference = pass->geometry->GetUserData();
 			if (supportedProjectedTechnique && reference && !reference->IsDynamicForm()) {
 				if (const auto* file = reference->GetFile(0)) {
-					if (const auto published = globals::features::truePBR.nativeRegistry.FindPublishedMeshIdentity(pass->shaderProperty->material)) {
+					if (const auto published = globals::features::nativePBR.materialRegistry.FindPublishedMeshIdentity(pass->shaderProperty->material)) {
 						materialId = published->identity;
 						materialRevision = published->revision;
 						referenceKey = std::format("{:06X}:{}", reference->GetLocalFormID(), file->GetFilename());
@@ -1700,7 +1693,7 @@ void SetupPBRLandscapeTextureParameters(BSLightingShaderMaterialPBRLandscape& ma
 	material.roughnessScales[textureIndex] = textureSetData.roughnessScale;
 	material.specularLevels[textureIndex] = textureSetData.specularLevel;
 	material.glintParameters[textureIndex] = textureSetData.glintParameters;
-	globals::features::truePBR.nativeRegistry.MarkDirty(&material);
+	globals::features::nativePBR.materialRegistry.MarkDirty(&material);
 }
 
 void SetupLandscapeTexture(BSLightingShaderMaterialPBRLandscape& material, RE::TESLandTexture& landTexture, uint32_t textureIndex, std::array<TruePBR::PBRTextureSetData*, BSLightingShaderMaterialPBRLandscape::NumTiles>& textureSets)
@@ -1733,7 +1726,7 @@ void SetupLandscapeTexture(BSLightingShaderMaterialPBRLandscape& material, RE::T
 	if (material.landscapeBaseColorTextures[textureIndex] != nullptr) {
 		material.numLandscapeTextures = std::max(material.numLandscapeTextures, textureIndex + 1);
 	}
-	truePBR->nativeRegistry.MarkDirty(&material);
+	globals::features::nativePBR.materialRegistry.MarkDirty(&material);
 }
 
 RE::TESLandTexture* GetDefaultLandTexture()

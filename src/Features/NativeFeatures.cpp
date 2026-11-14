@@ -9,7 +9,6 @@
 #include "Globals.h"
 #include "State.h"
 #include "ShaderCache.h"
-#include "TruePBR.h"
 #include "TruePBR/NativePBRCompiler.h"
 #include "Utils/PointLightFlags.h"
 #include <BS_thread_pool.hpp>
@@ -615,7 +614,7 @@ namespace
 void NativePBRFeature::DrawSettings()
 {
 	DrawOwnership("Enable Native PBR", enabled, IsActive());
-	ImGui::TextDisabled("Consumes TruePBR's live recipe registry in the native material worker.");
+	ImGui::TextDisabled("NativePBR owns live material recipes; current engine observations still originate in TruePBR hooks.");
 	ImGui::TextDisabled("Texture source and prepared material controls remain in DX12 Native Scene.");
 	ImGui::Text("%s: %llu | rejected: %llu", materialSidecar.InputOnly() ? "Input-only raster draws" : "Sidecar raster draws",
 		materialSidecar.ReplayedDraws(), materialSidecar.RejectedDraws());
@@ -633,7 +632,7 @@ void NativePBRFeature::DrawSettings()
 	if (ImGui::Checkbox("Run input-only FXC with DX12 experimental evaluation", &inputOnly))
 		experimentalInputOnly.store(inputOnly, std::memory_order_relaxed);
 	if (inputOnly)
-		ImGui::TextDisabled("TruePBR provides recipes only for covered opaque/projected draws; DX12 owns shading.");
+		ImGui::TextDisabled("NativePBR owns recipes and input-only FXC; engine material hooks remain shared during migration.");
 	if (ImGui::Checkbox("Capture ProjectedUV material inputs (experimental)", &projected))
 		captureProjectedUv.store(projected, std::memory_order_relaxed);
 	if (projected) {
