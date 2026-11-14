@@ -844,7 +844,7 @@ void TruePBR::GenerateShaderPermutations(RE::BSShader* shader)
 		using enum SIE::ShaderCache::LightingShaderFlags;
 		constexpr uint32_t required = static_cast<uint32_t>(TruePbr) | static_cast<uint32_t>(Deferred);
 		constexpr uint32_t excluded = static_cast<uint32_t>(DoAlphaTest) | static_cast<uint32_t>(Skinned) |
-			static_cast<uint32_t>(ModelSpaceNormals) | static_cast<uint32_t>(ProjectedUV) |
+			static_cast<uint32_t>(ModelSpaceNormals) |
 			static_cast<uint32_t>(FurShells) | static_cast<uint32_t>(FurShellsDepth);
 		for (auto descriptor : pixelPermutations) {
 			auto vertexShaderDesriptor = descriptor;

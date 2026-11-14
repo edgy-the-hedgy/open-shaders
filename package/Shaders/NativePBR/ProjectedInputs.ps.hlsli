@@ -1,0 +1,7 @@
+#ifndef NATIVE_PBR_PROJECTED_INPUTS_PS_HLSLI
+#define NATIVE_PBR_PROJECTED_INPUTS_PS_HLSLI
+
+#define NATIVE_PBR_PROJECTED_INPUT 1
+#include "NativePBR/OpaqueInputs.ps.hlsli"
+
+#endif

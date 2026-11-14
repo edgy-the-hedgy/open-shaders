@@ -13,10 +13,17 @@ cbuffer PerTechnique : register(b0)
 struct Input
 {
 	float4 Position : SV_POSITION0;
+#if defined(NATIVE_PBR_PROJECTED_INPUT)
+	float4 TexCoord0 : TEXCOORD0;
+#else
 	float2 TexCoord0 : TEXCOORD0;
+#endif
 	float3 TBN0 : TEXCOORD1;
 	float3 TBN1 : TEXCOORD2;
 	float3 TBN2 : TEXCOORD3;
+#if defined(NATIVE_PBR_PROJECTED_INPUT)
+	float3 TexProj : TEXCOORD7;
+#endif
 	float4 WorldPosition : POSITION1;
 	float4 PreviousWorldPosition : POSITION2;
 	float4 Color : COLOR0;
