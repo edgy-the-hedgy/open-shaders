@@ -18,6 +18,7 @@
 #include "Features/NativePBR/InstanceCoverage.h"
 #include "Features/NativePBR/NativePBRCompiler.h"
 #include "Features/NativePBR/NativePBRRegistry.h"
+#include "Features/NativePBR/MaterialService.h"
 #include "Features/NativePBR/VerifiedBridge.h"
 #include <catch2/catch_test_macros.hpp>
 #include <fstream>
@@ -1535,4 +1536,138 @@ TEST_CASE("Geometry cache files have a distinct extension and independently veri
 	modify.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 	modify.close();
 	REQUIRE_FALSE(cache.Read(*hash, 1024));
+}
+
+TEST_CASE("Native PBR interprets JSON and NIF data without an engine feature object", "[native_pbr]")
+{
+	NativePBR::MaterialData base;
+	base.pbrFlags = uint32_t(PBRFlags::Subsurface) | uint32_t(PBRFlags::Fuzz);
+	base.nifThinSurfaceFlags = uint32_t(PBRFlags::ThinSurface);
+	PBRRecords::TextureSetData config;
+	config.roughnessScale = 0.7f;
+	config.subsurfaceOpacity = 0.6f;
+	config.subsurfaceBalance = 0.8f;
+	config.fuzzWeight = 0.25f;
+	config.fuzzRoughness = 0.3f;
+	config.glintParameters.enabled = true;
+	config.thinSurface = false;
+	const auto interpreted = NativePBR::InterpretTextureSet(base, config,
+		std::array{ 0.2f, 0.3f, 0.4f, 2.0f }, std::array{ 0.8f, 1.0f });
+	REQUIRE(interpreted.roughnessScale == 0.7f);
+	REQUIRE(interpreted.subsurfaceOpacity == 0.6f);
+	REQUIRE(interpreted.subsurfaceBalance == 0.2f);
+	REQUIRE(interpreted.fuzzWeight == 0.25f);
+	REQUIRE(interpreted.fuzzRoughness == 0.8f);
+	REQUIRE(interpreted.fuzzRoughnessTexture);
+	REQUIRE(interpreted.glint.enabled);
+	REQUIRE(interpreted.pbrFlags & uint32_t(PBRFlags::ThinSurface));
+	REQUIRE(base.roughnessScale == 1.0f);
+	REQUIRE(base.fuzzRoughness == -1.0f);
+	auto invalid = interpreted;
+	const std::array badNif{ 0.5f, std::numeric_limits<float>::quiet_NaN() };
+	REQUIRE_FALSE(NativePBR::InterpretNifFuzz(badNif, invalid));
+	REQUIRE(invalid == interpreted);
+}
+
+TEST_CASE("Native PBR material service keeps MATO reference-local across generations", "[native_pbr]")
+{
+	NativePBR::Registry registry;
+	NativePBR::RecipeCache cache;
+	NativePBR::MaterialService service;
+	int source = 0;
+	NativePBR::MaterialData data;
+	data.roughnessScale = 0.55f;
+	const auto capture = registry.BeginCapture(&source);
+	REQUIRE(registry.Publish(&source, capture, data));
+	const auto changes = *registry.ExportChanges(0, {});
+	cache.Update(changes);
+	const auto recipes = NativePBR::PublishRecipes(cache, changes, {});
+	auto catalog = std::make_shared<NativePBR::MaterialCatalogSnapshot>();
+	PBRRecords::MaterialObjectData red;
+	red.baseColorScale = { 1.0f, 0.2f, 0.3f };
+	red.roughness = 0.25f;
+	red.glintParameters.enabled = true;
+	PBRRecords::MaterialObjectData blue;
+	blue.baseColorScale = { 0.2f, 0.2f, 1.0f };
+	catalog->materialObjects.emplace("redmato", red);
+	catalog->materialObjects.emplace("bluemato", blue);
+	NativePBR::InstanceProperties first;
+	first.materialObjectEditorId = "RedMato";
+	first.opacity = NativePBR::InstanceProperties::Opacity::NonOpaque;
+	first.normalMode = NativePBR::InstanceProperties::NormalMode::TangentSpace;
+	NativePBR::InstanceProperties second;
+	second.materialObjectEditorId = "BlueMato";
+	std::vector<NativePBR::InstanceHint> hints{ { capture.identity, "ref-a", "Body", first },
+		{ capture.identity, "ref-b", "Body", second } };
+	REQUIRE(service.Publish(recipes, catalog, hints));
+	const auto generation = service.GetSnapshot();
+	REQUIRE(generation);
+	const auto shared = generation->FindMaterial(capture.identity, recipes->recipes.at(capture.identity)->revision);
+	REQUIRE(shared);
+	REQUIRE(shared.recipe->parameters.roughnessScale == 0.55f);
+	REQUIRE(shared.recipe->parameters.projectedRoughness == 1.0f);
+	REQUIRE_FALSE(shared.instanceOverride);
+	const auto a = generation->FindInstance("REF-A", "body");
+	const auto b = generation->FindInstance("ref-b", "BODY");
+	REQUIRE(a);
+	REQUIRE(b);
+	REQUIRE(a.recipe == b.recipe);
+	REQUIRE(a.instanceOverride->roughness == 0.25f);
+	REQUIRE(b.instanceOverride->roughness == 1.0f);
+	REQUIRE(a.instanceIssues & NativePBR::UnsupportedMatoGlint);
+	REQUIRE_FALSE(b.instanceIssues & NativePBR::UnsupportedMatoGlint);
+	REQUIRE(a.recipeIssues & NativePBR::UnsupportedProjection);
+	REQUIRE_FALSE(a.recipeIssues & NativePBR::UnmatchedSceneInstance);
+	REQUIRE_FALSE(a.recipeIssues & NativePBR::UnknownOpacity);
+	REQUIRE_FALSE(a.recipeIssues & NativePBR::UnknownNormalMode);
+	REQUIRE(b.recipeIssues & NativePBR::UnknownOpacity);
+	REQUIRE(generation->FindMaterial(capture.identity, 999).status == NativePBR::MaterialLookupStatus::RevisionMismatch);
+	REQUIRE(generation->FindInstance("missing", "Body").status == NativePBR::MaterialLookupStatus::MissingInstance);
+
+	REQUIRE(service.Publish(recipes, catalog, {}));
+	REQUIRE(service.GetSnapshot()->FindInstance("ref-a", "body").status == NativePBR::MaterialLookupStatus::MissingInstance);
+	REQUIRE(a.instanceOverride->roughness == 0.25f);
+	REQUIRE(a.recipe->parameters.roughnessScale == 0.55f);
+	REQUIRE(generation->FindInstance("ref-b", "Body"));
+}
+
+TEST_CASE("Native PBR publication reports missing MATO, ambiguity and retired materials", "[native_pbr]")
+{
+	NativePBR::Registry registry;
+	NativePBR::RecipeCache cache;
+	NativePBR::MaterialService service;
+	int source = 0;
+	const auto token = registry.BeginCapture(&source);
+	REQUIRE(registry.Publish(&source, token, {}));
+	auto changes = *registry.ExportChanges(0, {});
+	cache.Update(changes);
+	auto recipes = NativePBR::PublishRecipes(cache, changes, {});
+	NativePBR::InstanceProperties properties;
+	properties.materialObjectEditorId = "UnknownMato";
+	std::vector<NativePBR::InstanceHint> hints{ { token.identity, "ref", "shape", properties } };
+	REQUIRE(service.Publish(recipes, {}, hints));
+	auto publication = service.GetSnapshot();
+	const auto missingMato = publication->FindInstance("ref", "shape");
+	REQUIRE(missingMato);
+	REQUIRE(missingMato.instanceIssues & NativePBR::MissingMatoConfiguration);
+	REQUIRE(missingMato.missingMatoEditorId == "UnknownMato");
+	REQUIRE(missingMato.recipeIssues & NativePBR::MissingRequiredTextures);
+	hints.push_back({ token.identity + 1, "ref", "shape" });
+	REQUIRE(service.Publish(recipes, {}, hints));
+	REQUIRE(service.GetSnapshot()->FindInstance("ref", "shape").status == NativePBR::MaterialLookupStatus::AmbiguousInstance);
+	registry.MarkDirty(&source);
+	changes = *registry.ExportChanges(cache.Revision(), cache.KnownRevisions());
+	cache.Update(changes);
+	const auto pending = NativePBR::PublishRecipes(cache, changes, recipes);
+	REQUIRE(pending->pendingIdentities.contains(token.identity));
+	REQUIRE(service.Publish(pending, {}, hints));
+	REQUIRE(service.GetSnapshot()->FindMaterial(token.identity).status == NativePBR::MaterialLookupStatus::PendingMaterial);
+	registry.Forget(&source);
+	changes = *registry.ExportChanges(cache.Revision(), cache.KnownRevisions());
+	cache.Update(changes);
+	const auto retired = NativePBR::PublishRecipes(cache, changes, pending);
+	REQUIRE(service.Publish(retired, {}, {}));
+	REQUIRE(service.GetSnapshot()->FindMaterial(token.identity).status == NativePBR::MaterialLookupStatus::MissingMaterial);
+	REQUIRE(publication->FindMaterial(token.identity));
+	REQUIRE_FALSE(service.Publish(recipes, {}, {}));
 }
