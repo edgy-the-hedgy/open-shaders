@@ -14,12 +14,21 @@
 
 namespace NativePBR
 {
-	inline constexpr uint32_t kSurfaceFrameAbiVersion = 2;
+	inline constexpr uint32_t kSurfaceSourceAbiVersion = 2;
+	inline constexpr uint32_t kSurfaceFrameAbiVersion = 3;
 	inline constexpr uint32_t kSurfaceFrameAttachmentCount = 8;
 	inline constexpr uint32_t kSurfaceFrameBaseAttachments = 6;
+	inline constexpr uint32_t kSurfaceTransportAttachmentCount = kSurfaceFrameAttachmentCount + 1;
+	inline constexpr uint32_t kSurfaceTransportBaseAttachments = kSurfaceFrameBaseAttachments + 1;
 	inline constexpr uint32_t kSurfaceFrameSlotCount = 5;
 	inline constexpr std::array<DXGI_FORMAT, kSurfaceFrameAttachmentCount> kSurfaceFrameFormats{
 		DXGI_FORMAT_R32G32_UINT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT,
+		DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
+		DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT
+	};
+	inline constexpr std::array<DXGI_FORMAT, kSurfaceTransportAttachmentCount> kSurfaceTransportFormats{
+		DXGI_FORMAT_R8G8B8A8_UINT, DXGI_FORMAT_R8G8B8A8_UINT,
+		DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT,
 		DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
 		DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT
 	};
@@ -41,8 +50,8 @@ namespace NativePBR
 	/** @brief GPU-visible, independently owned DX11 surface snapshot for screen-space NativePBR. */
 	struct SurfaceFrame
 	{
-		std::array<winrt::com_ptr<ID3D12Resource>, kSurfaceFrameAttachmentCount> textures;
-		std::array<D3D12_RESOURCE_STATES, kSurfaceFrameAttachmentCount> states{};
+		std::array<winrt::com_ptr<ID3D12Resource>, kSurfaceTransportAttachmentCount> textures;
+		std::array<D3D12_RESOURCE_STATES, kSurfaceTransportAttachmentCount> states{};
 		std::shared_ptr<const std::vector<SidecarDraw>> draws;
 		winrt::com_ptr<ID3D12Fence> readyFence;
 		std::function<bool(ID3D12Fence*, uint64_t)> retainThrough;

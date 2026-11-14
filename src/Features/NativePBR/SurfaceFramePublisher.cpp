@@ -4,6 +4,7 @@
 #include "GpuPass.h"
 #include "GraphicsInterop.h"
 #include "PCH.h"
+#include "Utils/D3D.h"
 
 #include <algorithm>
 #include <format>
@@ -49,6 +50,8 @@ namespace
 		description.DepthOrArraySize = description.MipLevels = 1;
 		description.Format = a_source.Format;
 		description.SampleDesc.Count = 1;
+		description.Flags = (a_source.BindFlags & D3D11_BIND_UNORDERED_ACCESS) ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS :
+			(a_source.BindFlags & D3D11_BIND_RENDER_TARGET) ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_NONE;
 		const auto bytes = a_device->GetResourceAllocationInfo(0, 1, &description).SizeInBytes;
 		if (bytes == UINT64_MAX)
 			throw std::runtime_error("NativePBR surface format has no DX12 allocation size");
@@ -66,6 +69,31 @@ namespace
 			a_description.ArraySize == 1 && a_description.MipLevels == 1 && a_description.SampleDesc.Count == 1 &&
 			a_description.Usage == D3D11_USAGE_DEFAULT;
 	}
+
+	D3D11_TEXTURE2D_DESC TransportDescription(const std::array<D3D11_TEXTURE2D_DESC,
+		NativePBR::kSurfaceFrameAttachmentCount>& a_sources, uint32_t a_index)
+	{
+		auto description = a_sources[a_index < 2 ? 0 : a_index - 1];
+		description.Format = NativePBR::kSurfaceTransportFormats[a_index];
+		description.Usage = D3D11_USAGE_DEFAULT;
+		description.BindFlags = D3D11_BIND_SHADER_RESOURCE |
+			(a_index < 2 ? D3D11_BIND_UNORDERED_ACCESS : D3D11_BIND_RENDER_TARGET);
+		description.CPUAccessFlags = description.MiscFlags = 0;
+		return description;
+	}
+
+	uint64_t TransportBytes(ID3D12Device* a_device, const std::array<D3D11_TEXTURE2D_DESC,
+		NativePBR::kSurfaceFrameAttachmentCount>& a_sources, uint32_t a_sourceCount)
+	{
+		uint64_t bytes = 0;
+		for (uint32_t index = 0; index < a_sourceCount + 1; ++index) {
+			const auto additional = TextureBytes(a_device, TransportDescription(a_sources, index));
+			if (bytes > UINT64_MAX - additional)
+				throw std::runtime_error("NativePBR surface allocation accounting overflow");
+			bytes += additional;
+		}
+		return bytes;
+	}
 }
 
 namespace NativePBR
@@ -74,8 +102,8 @@ namespace NativePBR
 	{
 		struct Slot
 		{
-			std::array<std::unique_ptr<WrappedResource>, kSurfaceFrameAttachmentCount> textures;
-			std::array<DXGI_FORMAT, kSurfaceFrameAttachmentCount> formats{};
+			std::array<std::unique_ptr<WrappedResource>, kSurfaceTransportAttachmentCount> textures;
+			std::array<DXGI_FORMAT, kSurfaceTransportAttachmentCount> formats{};
 			winrt::com_ptr<ID3D12Device> device;
 			winrt::com_ptr<ID3D12Fence> producerFence;
 			std::weak_ptr<const SurfaceFrame> published;
@@ -118,13 +146,12 @@ namespace NativePBR
 				return true;
 			}
 
-			bool Matches(uint32_t a_width, uint32_t a_height, const std::array<D3D11_TEXTURE2D_DESC,
-				kSurfaceFrameAttachmentCount>& a_sources, uint32_t a_count) const
+			bool Matches(uint32_t a_width, uint32_t a_height, uint32_t a_count) const
 			{
 				if (width != a_width || height != a_height || capacity < a_count)
 					return false;
-				for (uint32_t index = 0; index < a_count; ++index)
-					if (!textures[index] || formats[index] != a_sources[index].Format)
+				for (uint32_t index = 0; index < a_count + 1; ++index)
+					if (!textures[index] || formats[index] != kSurfaceTransportFormats[index])
 						return false;
 				return true;
 			}
@@ -139,16 +166,14 @@ namespace NativePBR
 				result->width = a_descriptions[0].Width;
 				result->height = a_descriptions[0].Height;
 				result->capacity = a_count;
-				constexpr std::array names{ "IdentityColor", "UvDdx", "DdyDepthFacing", "Basis0", "Basis1", "Basis2", "ProjectedWorld", "ProjectedDirection" };
-				for (uint32_t index = 0; index < a_count; ++index) {
-					const auto bytes = TextureBytes(a_device12, a_descriptions[index]);
+				constexpr std::array names{ "OrdinalBytes", "VertexColorBytes", "UvDdx", "DdyDepthFacing",
+					"Basis0", "Basis1", "Basis2", "ProjectedWorld", "ProjectedDirection" };
+				for (uint32_t index = 0; index < a_count + 1; ++index) {
+					const auto desc = TransportDescription(a_descriptions, index);
+					const auto bytes = TextureBytes(a_device12, desc);
 					if (result->bytes > UINT64_MAX - bytes)
 						throw std::runtime_error("NativePBR surface allocation accounting overflow");
 					result->bytes += bytes;
-					auto desc = a_descriptions[index];
-					desc.Usage = D3D11_USAGE_DEFAULT;
-					desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-					desc.CPUAccessFlags = desc.MiscFlags = 0;
 					result->textures[index] = std::make_unique<WrappedResource>(desc, a_device11, a_device12,
 						std::format("NativePBR::Surface{}", names[index]));
 					result->formats[index] = desc.Format;
@@ -163,6 +188,16 @@ namespace NativePBR
 		winrt::com_ptr<ID3D12Device> device12;
 		winrt::com_ptr<ID3D12CommandQueue> queue12;
 		SharedFence producer;
+		winrt::com_ptr<ID3D11ComputeShader> packIdentity;
+		bool packIdentityAttempted = false;
+		winrt::com_ptr<ID3D11Texture2D> identitySource;
+		winrt::com_ptr<ID3D11ShaderResourceView> identitySourceView;
+		bool capabilitiesChecked = false;
+		std::string capabilityFailure;
+		bool allocationRejected = false;
+		uint32_t rejectedWidth = 0, rejectedHeight = 0, rejectedCount = 0;
+		bool projectedAllocationRejected = false;
+		uint32_t projectedRejectedWidth = 0, projectedRejectedHeight = 0;
 		DX12Native::VideoMemoryBudget budget;
 		Diagnostics diagnostics;
 		mutable std::mutex mutex;
@@ -196,13 +231,32 @@ namespace NativePBR
 		try {
 			if (!a_device11 || !a_context11 || !a_device12 || !a_queue12)
 				throw std::runtime_error("NativePBR DX11/DX12 transfer backend unavailable");
+			if (!state->capabilitiesChecked) {
+				state->capabilitiesChecked = true;
+				D3D11_FEATURE_DATA_D3D11_OPTIONS5 sharing{};
+				if (FAILED(a_device11->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS5, &sharing, sizeof(sharing))) ||
+					sharing.SharedResourceTier < D3D11_SHARED_RESOURCE_TIER_2)
+					state->capabilityFailure = "NativePBR lossless DX11/DX12 surface transfer requires shared-resource tier 2";
+				UINT identitySupport = 0;
+				if (state->capabilityFailure.empty() &&
+					(FAILED(a_device11->CheckFormatSupport(DXGI_FORMAT_R8G8B8A8_UINT, &identitySupport)) ||
+						(identitySupport & D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW) == 0))
+					state->capabilityFailure = "NativePBR packed identity requires R8G8B8A8_UINT typed UAV support";
+				D3D11_FEATURE_DATA_FORMAT_SUPPORT2 identityStore{ DXGI_FORMAT_R8G8B8A8_UINT, 0 };
+				if (state->capabilityFailure.empty() &&
+					(FAILED(a_device11->CheckFeatureSupport(D3D11_FEATURE_FORMAT_SUPPORT2, &identityStore, sizeof(identityStore))) ||
+						(identityStore.OutFormatSupport2 & D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE) == 0))
+					state->capabilityFailure = "NativePBR packed identity requires R8G8B8A8_UINT UAV typed-store support";
+			}
+			if (!state->capabilityFailure.empty())
+				throw std::runtime_error(state->capabilityFailure);
 			winrt::com_ptr<ID3D11Device> contextDevice;
 			a_context11->GetDevice(contextDevice.put());
 			winrt::com_ptr<ID3D12Device> queueDevice;
 			if (contextDevice.get() != static_cast<ID3D11Device*>(a_device11) ||
 				FAILED(a_queue12->GetDevice(IID_PPV_ARGS(queueDevice.put()))) || queueDevice.get() != a_device12)
 				throw std::runtime_error("NativePBR DX11 context or DX12 queue belongs to another device");
-			if (a_sources.abiVersion != kSurfaceFrameAbiVersion || !a_sources.nativeOwnedDraws ||
+			if (a_sources.abiVersion != kSurfaceSourceAbiVersion || !a_sources.nativeOwnedDraws ||
 				!a_sources.draws || !ValidSurfaceDrawTable(*a_sources.draws)) {
 				++stats.invalidDrawTables;
 				throw std::runtime_error("NativePBR ABI-v2 draw ownership or immutable draw table unavailable");
@@ -232,6 +286,22 @@ namespace NativePBR
 					throw std::runtime_error("NativePBR surface source belongs to another DX11 device");
 			}
 			const uint32_t width = descriptions[0].Width, height = descriptions[0].Height;
+			if (!state->packIdentityAttempted) {
+				state->packIdentityAttempted = true;
+				state->packIdentity.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(
+					L"Data\\Shaders\\NativePBR\\PackIdentity.cs.hlsl", {}, "cs_5_0")));
+				if (state->packIdentity)
+					Util::SetResourceName(state->packIdentity.get(), "NativePBR::PackIdentity");
+			}
+			if (!state->packIdentity)
+				throw std::runtime_error("NativePBR identity packing shader unavailable; restart after staging shaders");
+			if (state->identitySource.get() != a_sources.textures[0]) {
+				winrt::com_ptr<ID3D11ShaderResourceView> view;
+				DX::ThrowIfFailed(a_device11->CreateShaderResourceView(a_sources.textures[0], nullptr, view.put()));
+				Util::SetResourceName(view.get(), "NativePBR::IdentitySource SRV");
+				state->identitySource.copy_from(a_sources.textures[0]);
+				state->identitySourceView = std::move(view);
+			}
 			const bool projectedRequested = std::ranges::any_of(*a_sources.draws, [](const SidecarDraw& draw) {
 				return draw.projectedUv;
 			});
@@ -245,10 +315,18 @@ namespace NativePBR
 					a_sources.textures[index]->GetDevice(owner.put());
 					projectedReady &= owner.get() == contextDevice.get();
 				}
-			uint32_t count = projectedReady ? kSurfaceFrameAttachmentCount : kSurfaceFrameBaseAttachments;
+			if (state->projectedAllocationRejected && (state->projectedRejectedWidth != width ||
+				state->projectedRejectedHeight != height))
+				state->projectedAllocationRejected = false;
+			uint32_t count = projectedReady && !state->projectedAllocationRejected ?
+				kSurfaceFrameAttachmentCount : kSurfaceFrameBaseAttachments;
+			if (state->allocationRejected && state->rejectedWidth == width && state->rejectedHeight == height &&
+				state->rejectedCount == count)
+				throw std::runtime_error("NativePBR surface sharing rejected by device; retry after resolution change or restart");
+			state->allocationRejected = false;
 			auto& slots = state->slots;
 			auto available = std::find_if(slots.begin(), slots.end(), [&](const auto& slot) {
-				return slot && slot->Reusable() && slot->Matches(width, height, descriptions, count);
+				return slot && slot->Reusable() && slot->Matches(width, height, count);
 			});
 			if (available == slots.end())
 				available = std::find_if(slots.begin(), slots.end(), [](const auto& slot) { return !slot || slot->Reusable(); });
@@ -273,16 +351,9 @@ namespace NativePBR
 			if (!budget.dxgiAvailable)
 				throw std::runtime_error("NativePBR DXGI local-memory budget unavailable");
 			auto requiredBytes = [&](uint32_t a_count, bool a_newAllocation = false) {
-				if (!a_newAllocation && *available && (*available)->Matches(width, height, descriptions, a_count))
+				if (!a_newAllocation && *available && (*available)->Matches(width, height, a_count))
 					return (*available)->bytes;
-				uint64_t bytes = 0;
-				for (uint32_t index = 0; index < a_count; ++index) {
-					const auto additional = TextureBytes(a_device12, descriptions[index]);
-					if (bytes > UINT64_MAX - additional)
-						throw std::runtime_error("NativePBR surface allocation size overflow");
-					bytes += additional;
-				}
-				return bytes;
+				return TransportBytes(a_device12, descriptions, a_count);
 			};
 			bool trimProjected = false;
 			if (otherBytes > budget.effectiveBytes || requiredBytes(count) > budget.effectiveBytes - otherBytes) {
@@ -297,20 +368,32 @@ namespace NativePBR
 				}
 			}
 			auto& selected = *available;
-			if (!selected || trimProjected || !selected->Matches(width, height, descriptions, count)) {
+			if (!selected || trimProjected || !selected->Matches(width, height, count)) {
 				// Reusing old allocation credit requires releasing the idle slot before allocating its replacement.
 				selected.reset();
 				try {
 					selected = State::Slot::Allocate(a_device11, a_device12, state->producer.fence12.get(), descriptions, count);
 				} catch (const std::exception&) {
 					++stats.allocationFailures;
-					if (count != kSurfaceFrameAttachmentCount)
+					if (count == kSurfaceFrameAttachmentCount && otherBytes <= budget.effectiveBytes &&
+						requiredBytes(kSurfaceFrameBaseAttachments, true) <= budget.effectiveBytes - otherBytes) {
+						state->projectedAllocationRejected = true;
+						state->projectedRejectedWidth = width;
+						state->projectedRejectedHeight = height;
+						count = kSurfaceFrameBaseAttachments;
+						try {
+							selected = State::Slot::Allocate(a_device11, a_device12, state->producer.fence12.get(), descriptions, count);
+						} catch (const std::exception&) {
+							state->allocationRejected = true;
+						}
+					} else
+						state->allocationRejected = true;
+					if (state->allocationRejected) {
+						state->rejectedWidth = width;
+						state->rejectedHeight = height;
+						state->rejectedCount = count;
 						throw;
-					count = kSurfaceFrameBaseAttachments;
-					if (otherBytes > budget.effectiveBytes ||
-						requiredBytes(count, true) > budget.effectiveBytes - otherBytes)
-						throw;
-					selected = State::Slot::Allocate(a_device11, a_device12, state->producer.fence12.get(), descriptions, count);
+					}
 				}
 			}
 			const bool publishProjected = projectedReady && count == kSurfaceFrameAttachmentCount;
@@ -322,7 +405,7 @@ namespace NativePBR
 			frame->projectedAvailable = publishProjected;
 			frame->draws = a_sources.draws;
 			frame->readyFence = state->producer.fence12;
-			for (uint32_t index = 0; index < count; ++index) {
+			for (uint32_t index = 0; index < count + 1; ++index) {
 				frame->textures[index] = selected->textures[index]->resource;
 				frame->states[index] = D3D12_RESOURCE_STATE_COMMON;
 			}
@@ -336,8 +419,31 @@ namespace NativePBR
 			frame->retainThrough = [owner = selected, serial](ID3D12Fence* a_fence, uint64_t a_value) {
 				return owner->Retain(a_fence, a_value, serial);
 			};
-			for (uint32_t index = 0; index < count; ++index)
-				a_context11->CopyResource(selected->textures[index]->resource11, a_sources.textures[index]);
+			winrt::com_ptr<ID3D11ComputeShader> priorShader;
+			winrt::com_ptr<ID3D11ShaderResourceView> priorRead;
+			std::array<winrt::com_ptr<ID3D11UnorderedAccessView>, 2> priorWrites;
+			a_context11->CSGetShader(priorShader.put(), nullptr, nullptr);
+			a_context11->CSGetShaderResources(0, 1, priorRead.put());
+			std::array<ID3D11UnorderedAccessView*, 2> rawWrites{};
+			a_context11->CSGetUnorderedAccessViews(0, 2, rawWrites.data());
+			for (size_t index = 0; index < priorWrites.size(); ++index)
+				priorWrites[index].attach(rawWrites[index]);
+			ID3D11ShaderResourceView* identityRead = state->identitySourceView.get();
+			ID3D11UnorderedAccessView* writes[]{ selected->textures[0]->uav, selected->textures[1]->uav };
+			a_context11->CSSetShaderResources(0, 1, &identityRead);
+			a_context11->CSSetUnorderedAccessViews(0, 2, writes, nullptr);
+			a_context11->CSSetShader(state->packIdentity.get(), nullptr, 0);
+			a_context11->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
+			ID3D11UnorderedAccessView* emptyWrites[2]{};
+			a_context11->CSSetUnorderedAccessViews(0, 2, emptyWrites, nullptr);
+			ID3D11ShaderResourceView* restoreRead = priorRead.get();
+			a_context11->CSSetShaderResources(0, 1, &restoreRead);
+			for (size_t index = 0; index < priorWrites.size(); ++index)
+				rawWrites[index] = priorWrites[index].get();
+			a_context11->CSSetUnorderedAccessViews(0, 2, rawWrites.data(), nullptr);
+			a_context11->CSSetShader(priorShader.get(), nullptr, 0);
+			for (uint32_t index = 1; index < count; ++index)
+				a_context11->CopyResource(selected->textures[index + 1]->resource11, a_sources.textures[index]);
 			const auto ready = state->producer.Next();
 			DX::ThrowIfFailed(a_context11->Signal(state->producer.fence11.get(), ready));
 			a_context11->Flush();
@@ -352,7 +458,7 @@ namespace NativePBR
 				++stats.projectedDeferred;
 			stats.status = !publishProjected && projectedRequested ?
 				"NativePBR opaque surface published; optional projected inputs deferred" :
-				"NativePBR ABI-v2 opaque surface published";
+				"NativePBR ABI-v3 packed opaque surface published";
 			stats.allocatedBytes = otherBytes + selected->bytes;
 			return true;
 		} catch (const std::exception& error) {

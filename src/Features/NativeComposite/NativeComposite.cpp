@@ -40,7 +40,7 @@ void NativeCompositeFeature::DrawSettings()
 	ImGui::TextDisabled("Full-resolution diffuse/specular fill; raw RT signals remain untouched.");
 	ImGui::SeparatorText("NativePBR SM6.5 diagnostic dispatch");
 	ImGui::Checkbox("Record NativePBR material evaluation (isolated)", &settings.NativePbrDiagnosticDispatch);
-	ImGui::TextDisabled("Requires an ABI-v2 synchronized opaque surface producer; does not replace final color.");
+	ImGui::TextDisabled("Requires synchronized ABI-v3 surface transport; does not replace final color.");
 	if (settings.NativePbrDiagnosticDispatch) {
 		ImGui::TextWrapped("Surface producer: %s", pbrSurfaceSourceStatus.c_str());
 		ImGui::TextWrapped("Material evaluation: %s", pass.PbrSurfaceStatus().c_str());
@@ -315,7 +315,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeCompositeFeature::Capture(ID
 			surfaceSourceStatus = "Opaque replay sidecar and draw table not published";
 		else {
 			bool complete = true;
-			for (size_t index = 0; index < NativePBRSurfacePass::kSurfaceInputs; ++index) {
+			for (size_t index = 0; index < NativePBR::kSurfaceFrameAttachmentCount; ++index) {
 				if (index >= 6 && !raster->pbrSidecar[index])
 					continue;
 				if (!raster->pbrSidecar[index] || !raster->pbrSidecar[index]->resource) {
@@ -333,7 +333,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeCompositeFeature::Capture(ID
 				else {
 					try {
 						auto published = std::make_shared<NativePBRSurfacePass::InputFrame>();
-						for (size_t index = 0; index < published->textures.size(); ++index)
+						for (size_t index = 0; index < NativePBR::kSurfaceFrameAttachmentCount; ++index)
 							if (raster->pbrSidecar[index])
 								published->textures[index] = raster->pbrSidecar[index]->resource;
 						published->draws = raster->pbrDraws;
@@ -342,7 +342,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeCompositeFeature::Capture(ID
 						published->frame = raster->frame;
 						published->width = raster->width;
 						published->height = raster->height;
-						published->abiVersion = NativePBRSurfacePass::kProvisionalSurfaceAbiVersion;
+						published->abiVersion = NativePBR::kSurfaceSourceAbiVersion;
 						published->nativeOwnedDraws = true;
 						std::weak_ptr<const DX12Native::RasterFrame> retained = raster;
 						published->retainThrough = [retained](ID3D12Fence* fence, uint64_t value) {

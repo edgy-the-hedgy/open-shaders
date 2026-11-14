@@ -10,12 +10,12 @@
 
 namespace
 {
-	constexpr auto kInputFormats = NativePBR::kSurfaceFrameFormats;
+	constexpr auto kInputFormats = NativePBR::kSurfaceTransportFormats;
 	constexpr std::array<DXGI_FORMAT, NativePBRSurfacePass::kSurfaceOutputs> kOutputFormats{
 		DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
 		DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R32_UINT
 	};
-	constexpr uint32_t kFrameDescriptors = 10;
+	constexpr uint32_t kFrameDescriptors = NativePBRSurfacePass::kSurfaceInputs + 2;
 	constexpr uint32_t kTotalDescriptors = kFrameDescriptors + NativePBRSurfacePass::kMaterialPages + NativePBRSurfacePass::kSurfaceOutputs;
 	constexpr uint64_t kDescriptorReserveBytes = 1024 * 1024;
 
@@ -132,7 +132,7 @@ bool NativePBRSurfacePass::Record(ID3D12Device* a_device, ID3D12GraphicsCommandL
 		return false;
 	}
 	for (uint32_t index = 0; index < kSurfaceInputs; ++index) {
-		if (index >= 6 && !a_input->textures[index])
+		if (index >= NativePBR::kSurfaceTransportBaseAttachments && !a_input->textures[index])
 			continue;
 		const auto& resource = a_input->textures[index];
 		if (!resource || resource->GetDesc().Format != kInputFormats[index] ||

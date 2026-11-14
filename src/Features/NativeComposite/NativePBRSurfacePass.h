@@ -10,7 +10,7 @@
 class NativePBRSurfacePass
 {
 public:
-	static constexpr uint32_t kSurfaceInputs = NativePBR::kSurfaceFrameAttachmentCount;
+	static constexpr uint32_t kSurfaceInputs = NativePBR::kSurfaceTransportAttachmentCount;
 	static constexpr uint32_t kSurfaceOutputs = 5;
 	static constexpr uint32_t kMaterialPages = NativePBR::GpuMaterialResources::kTextureDescriptorCount;
 	static constexpr uint32_t kProvisionalSurfaceAbiVersion = NativePBR::kSurfaceFrameAbiVersion;

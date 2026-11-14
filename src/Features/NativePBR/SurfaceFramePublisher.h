@@ -16,7 +16,7 @@ namespace NativePBR
 		{
 			std::array<ID3D11Texture2D*, kSurfaceFrameAttachmentCount> textures{};
 			std::shared_ptr<const std::vector<SidecarDraw>> draws;
-			uint32_t frame = 0, abiVersion = kSurfaceFrameAbiVersion;
+			uint32_t frame = 0, abiVersion = kSurfaceSourceAbiVersion;
 			bool nativeOwnedDraws = false;
 		};
 		struct Diagnostics
