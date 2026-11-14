@@ -53,6 +53,7 @@ struct NativePBRFeature final : Feature
 	NativePBR::Registry materialRegistry;
 	std::shared_ptr<MaterialWorker> materialWorker;
 	void PollMaterialRegistry();
+	void Prepass() override;
 	MaterialSummary GetMaterialSummary() const;
 	std::shared_ptr<const NativePBR::RecipeGeneration> GetNativeRecipes() const;
 	std::atomic<bool> enabled{ true };

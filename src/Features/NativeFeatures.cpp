@@ -110,6 +110,12 @@ void NativePBRFeature::PollMaterialRegistry()
 	}
 }
 
+void NativePBRFeature::Prepass()
+{
+	if (SelectedBackend() == NativePBR::Backend::NativeDX12 && enabled.load(std::memory_order_relaxed))
+		PollMaterialRegistry();
+}
+
 // Backend selection is the ONLY automatic execution switch. Feature toggles
 // are explicit user choices, never material/caster/light validity gates.
 void NativePBRFeature::LatchBackendAtBoot()

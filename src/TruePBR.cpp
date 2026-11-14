@@ -561,7 +561,6 @@ void TruePBR::SetupResources()
 
 void TruePBR::Prepass()
 {
-	globals::features::nativePBR.PollMaterialRegistry();
 	SetupDefaultPBRLandTextureSet();
 
 	auto context = globals::d3d::context;
@@ -836,7 +835,8 @@ void TruePBR::GenerateShaderPermutations(RE::BSShader* shader)
 	auto shaderCache = globals::shaderCache;
 	if (shader->shaderType == RE::BSShader::Type::Lighting) {
 		const auto pixelPermutations = Permutations::GeneratePBRLightingPixelPermutations();
-		const bool buildNativeInputs = globals::features::nativePBR.enabled.load(std::memory_order_relaxed);
+		const bool buildNativeInputs = globals::features::nativePBR.SelectedBackend() == NativePBR::Backend::NativeDX12 &&
+			globals::features::nativePBR.enabled.load(std::memory_order_relaxed);
 		for (auto descriptor : pixelPermutations) {
 			auto vertexShaderDesriptor = descriptor;
 			auto pixelShaderDescriptor = descriptor;
