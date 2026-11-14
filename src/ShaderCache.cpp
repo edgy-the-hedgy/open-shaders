@@ -2957,7 +2957,9 @@ namespace SIE
 		constexpr uint32_t required = static_cast<uint32_t>(TruePbr) | static_cast<uint32_t>(Deferred);
 		constexpr uint32_t excluded = static_cast<uint32_t>(DoAlphaTest) | static_cast<uint32_t>(Skinned) |
 			static_cast<uint32_t>(ModelSpaceNormals) | static_cast<uint32_t>(FurShells) |
-			static_cast<uint32_t>(FurShellsDepth);
+			static_cast<uint32_t>(FurShellsDepth) | static_cast<uint32_t>(WorldMap) |
+			static_cast<uint32_t>(LandscapeSeams) | static_cast<uint32_t>(CharacterLight) |
+			static_cast<uint32_t>(AdditionalAlphaMask);
 		return ((descriptor >> 24) & 0x3Fu) == 0 && (descriptor & required) == required &&
 			(descriptor & excluded) == 0;
 	}
@@ -2966,6 +2968,11 @@ namespace SIE
 	{
 		if (shader.shaderType != RE::BSShader::Type::Lighting || !IsNativePBRInputPermutation(descriptor))
 			return;
+		{
+			std::lock_guard lock(pixelShadersMutex);
+			if (nativePbrInputShaders.contains(descriptor) || !nativePbrInputRequests.insert(descriptor).second)
+				return;
+		}
 		const auto generation = compilationSet.LiveGeneration(shader.shaderType.get());
 		compilationSet.EnqueueAux([this, &shader, descriptor, generation] {
 			if (IsGenerationStale(generation, shader.shaderType.get()))
@@ -2988,15 +2995,7 @@ namespace SIE
 			NativePBR::ShaderDomain::NativePBRInput);
 		const auto blob = GetCompletedShader(key);
 		if (!blob) {
-			bool enqueue = false;
-			{
-				std::lock_guard lock(pixelShadersMutex);
-				enqueue = nativePbrInputRequests.insert(descriptor).second;
-			}
-			// Runtime permutations may not be present in the startup precompile list.
-			// Keep the original DX11 draw until the input-only FXC variant is ready.
-			if (enqueue)
-				EnqueueNativePBRInputPixelShader(shader, descriptor, true);
+			EnqueueNativePBRInputPixelShader(shader, descriptor, true);
 			return nullptr;
 		}
 		if (!globals::d3d::device)
