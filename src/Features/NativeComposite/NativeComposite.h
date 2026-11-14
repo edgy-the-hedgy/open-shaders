@@ -14,6 +14,7 @@ struct NativeCompositeFeature final : Feature
 		bool AddLighting = true;
 		float LightingStrength = 1.0f;
 		bool DirectSpatialReconstruction = true;
+		bool NativePbrDiagnosticDispatch = false;
 		bool PersistLab = false;
 		// Independent DX12 shadow layer. Does not require Native Lighting.
 		bool ShadowLayerEnabled = true;
@@ -38,7 +39,8 @@ struct NativeCompositeFeature final : Feature
 	json GetDiagnostics() override;
 	/** @brief Produces a frame on the provided shared graphics backend. */
 	std::shared_ptr<const NativeComposite::Frame> Capture(ID3D11Device5*, ID3D11DeviceContext4*, ID3D12Device*, ID3D12CommandQueue*,
-		ID3D11Texture2D*, uint32_t, uint32_t, uint32_t, NativeComposite::Transfer);
+		ID3D11Texture2D*, uint32_t, uint32_t, uint32_t, NativeComposite::Transfer,
+		std::shared_ptr<const NativePBRSurfacePass::InputFrame> a_pbrSurface = {});
 	/** @brief Retains a published frame through a downstream GPU fence. */
 	bool Retain(const std::shared_ptr<const NativeComposite::Frame>& a_frame, ID3D12Fence* a_fence, uint64_t a_value)
 	{

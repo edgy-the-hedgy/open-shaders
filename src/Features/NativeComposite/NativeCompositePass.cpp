@@ -7,6 +7,7 @@
 #include <fstream>
 #include <limits>
 #include <ranges>
+#include <unordered_set>
 
 bool NativeComposite::InitializeShadow(ID3D12Device* a_device)
 {
@@ -149,7 +150,9 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 	const std::shared_ptr<const DX12Native::ShadowFrame>& a_shadow,
 	const std::shared_ptr<const DX12Native::RasterFrame>& a_raster,
 	const ShadowSettings& a_shadowSettings,
-	float a_strength, bool a_directSpatialReconstruction, const Policy& a_policy, uint64_t a_revision)
+	float a_strength, bool a_directSpatialReconstruction, const Policy& a_policy, uint64_t a_revision,
+	std::shared_ptr<const NativePBRSurfacePass::InputFrame> a_pbrSurface,
+	std::shared_ptr<const NativePBR::GpuMaterialResources> a_pbrMaterials, bool a_pbrDiagnostic)
 {
 	CS_GPU_PASS("NativeComposite::RasterPassThrough");
 	status = "Invalid capture input";
@@ -247,6 +250,8 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			size_t(DX12Native::RasterFrame::Input::Masks2) }, [&](size_t index) {
 			return a_raster->inputs[index] && a_raster->inputs[index]->resource;
 		}) && InitializePbrInput(a_device12);
+	if (a_pbrDiagnostic)
+		(void)pbrSurfacePass.Initialize(a_device12);
 
 	Slot* slot = nullptr;
 	for (auto& candidate : slots) {
@@ -295,6 +300,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 
 	bool submitted = false;
 	bool producerSignalled = false;
+	bool pbrSurfaceRecorded = false;
 	try {
 		const bool recreate = !slot->frame || slot->device != a_device12 || slot->device11 != a_device11 ||
 		                      slot->sourceDesc.Width != desc.Width || slot->sourceDesc.Height != desc.Height || slot->sourceDesc.Format != desc.Format || slot->supportsLighting != supportsLighting;
@@ -311,11 +317,15 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			uint64_t retained = 0;
 			for (const auto& candidate : slots)
 				if (candidate && candidate.get() != slot) {
-					if (retained > UINT64_MAX - candidate->frameBytes)
+					if (candidate->frameBytes > UINT64_MAX - candidate->pbrSurface.bytes ||
+						retained > UINT64_MAX - candidate->frameBytes - candidate->pbrSurface.bytes)
 						throw std::runtime_error("Composite retained size overflow");
-					retained += candidate->frameBytes;
+					retained += candidate->frameBytes + candidate->pbrSurface.bytes;
 				}
-			const uint64_t tracked = retained > UINT64_MAX - slot->frameBytes ? UINT64_MAX : retained + slot->frameBytes;
+			if (slot->frameBytes > UINT64_MAX - slot->pbrSurface.bytes)
+				throw std::runtime_error("Composite tracked size overflow");
+			const uint64_t current = slot->frameBytes + slot->pbrSurface.bytes;
+			const uint64_t tracked = retained > UINT64_MAX - current ? UINT64_MAX : retained + current;
 			const uint64_t allowance = videoBudget.Query(a_device12, tracked).effectiveBytes;
 			if (required > allowance || retained > allowance - required)
 				throw std::runtime_error("Composite frame allocation deferred by DXGI memory budget");
@@ -584,6 +594,20 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
 			slot->commands->ResourceBarrier(1, &outputEnd);
 		}
+		if (a_pbrDiagnostic && a_pbrSurface && a_pbrMaterials) {
+			uint64_t retained = 0;
+			for (const auto& candidate : slots)
+				if (candidate) {
+					const auto bytes = candidate->frameBytes + candidate->pbrSurface.bytes;
+					if (bytes < candidate->frameBytes || retained > UINT64_MAX - bytes)
+						throw std::runtime_error("Composite material allocation count overflow");
+					retained += bytes;
+				}
+			const auto budget = videoBudget.Query(a_device12, retained).effectiveBytes;
+			const auto additional = budget > retained ? budget - retained : 0;
+			pbrSurfaceRecorded = pbrSurfacePass.Record(a_device12, slot->commands.get(), slot->pbrSurface,
+				a_pbrSurface, a_pbrMaterials, a_frame, a_width, a_height, additional);
+		}
 		DX::ThrowIfFailed(slot->commands->Close());
 		if (applyShadow) {
 			DX::ThrowIfFailed(a_queue->Wait(a_shadow->readyFence.get(), a_shadow->readyValue));
@@ -593,6 +617,14 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			DX::ThrowIfFailed(a_queue->Wait(a_lighting->readyFence.get(), a_lighting->readyValue));
 		if (pbrInput)
 			DX::ThrowIfFailed(a_queue->Wait(a_raster->readyFence.get(), a_raster->readyValue));
+		if (pbrSurfaceRecorded)
+			DX::ThrowIfFailed(a_queue->Wait(a_pbrSurface->readyFence.get(), a_pbrSurface->readyValue));
+		if (pbrSurfaceRecorded) {
+			std::unordered_set<ID3D12Fence*> awaited;
+			for (const auto& page : a_pbrMaterials->residency->pools)
+				if (page.readyFence && awaited.insert(page.readyFence.get()).second && page.readyFence->GetCompletedValue() < 1)
+					DX::ThrowIfFailed(a_queue->Wait(page.readyFence.get(), 1));
+		}
 		ID3D12CommandList* lists[]{ slot->commands.get() };
 		const uint64_t done = slot->fence.Next();
 		if (blend && !globals::features::nativeLighting.RetainContribution(a_lighting, slot->fence.fence12.get(), done)) {
@@ -611,6 +643,11 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			slot->untracked = true;
 			return {};
 		}
+		if (pbrSurfaceRecorded && !a_pbrSurface->retainThrough(slot->fence.fence12.get(), done)) {
+			status = "NativePBR screen-input producer could not retain the submitted draw frame";
+			slot->untracked = true;
+			return {};
+		}
 		a_queue->ExecuteCommandLists(1, lists);
 		submitted = true;
 		DX::ThrowIfFailed(a_queue->Signal(slot->fence.fence12.get(), done));
@@ -626,6 +663,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 		frame.lightingSubmitted = blend;
 		frame.shadowSubmitted = applyShadow;
 		frame.pbrInputSubmitted = pbrInput;
+		frame.pbrSurfaceSubmitted = pbrSurfaceRecorded;
 		if (pbrInput)
 			++pbrInputSubmissions;
 		slot->countersRead = !blend;
