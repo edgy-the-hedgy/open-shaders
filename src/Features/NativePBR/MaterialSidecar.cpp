@@ -66,10 +66,6 @@ namespace NativePBR
 				winrt::check_hresult(a_device->CreateBuffer(&cb, nullptr, drawConstants.put()));
 				Util::SetResourceName(drawConstants.get(), "NativePBR::DrawConstants");
 			}
-			if (!validationConstants) {
-				winrt::check_hresult(a_device->CreateBuffer(&cb, nullptr, validationConstants.put()));
-				Util::SetResourceName(validationConstants.get(), "NativePBR::ValidationConstants");
-			}
 			if (!writeAll) {
 				D3D11_BLEND_DESC blend{};
 				for (auto& rt : blend.RenderTarget) {
@@ -78,6 +74,10 @@ namespace NativePBR
 				}
 				winrt::check_hresult(a_device->CreateBlendState(&blend, writeAll.put()));
 				Util::SetResourceName(writeAll.get(), "NativePBR::UnblendedInputs");
+			}
+			if (!validationConstants) {
+				winrt::check_hresult(a_device->CreateBuffer(&cb, nullptr, validationConstants.put()));
+				Util::SetResourceName(validationConstants.get(), "NativePBR::ValidationConstants");
 			}
 			if (!shader)
 				shader.attach(static_cast<ID3D11PixelShader*>(Util::CompileShader(
