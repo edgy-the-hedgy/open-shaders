@@ -656,6 +656,19 @@ void NativePBRFeature::DrawSettings()
 		ImGui::Text("Native JSON sources: %zu texture sets / %zu MATO | rejected: %zu / %zu",
 			catalog->textureSets.size(), catalog->materialObjects.size(),
 			catalog->rejectedTextureSets, catalog->rejectedMaterialObjects);
+	if (ImGui::TreeNode("Native recipe issues")) {
+		const auto summary = GetMaterialSummary();
+		ImGui::Text("Recipes: %zu | pending: %zu | incomplete: %zu", summary.recipes, summary.pending, summary.incomplete);
+		if (summary.failed)
+			ImGui::TextDisabled("Recipe compilation failed; inspect the native material log.");
+		for (size_t index = 0; index < summary.issues.size(); ++index) {
+			if (summary.issues[index] == 0)
+				continue;
+			const auto name = NativePBR::kRecipeIssueNames[index];
+			ImGui::BulletText("%.*s: %zu", static_cast<int>(name.size()), name.data(), summary.issues[index]);
+		}
+		ImGui::TreePop();
+	}
 	ImGui::TextDisabled("NativePBR owns live material recipes; current engine observations still originate in TruePBR hooks.");
 	ImGui::TextDisabled("Texture source and prepared material controls remain in DX12 Native Scene.");
 	ImGui::Text("%s: %llu | rejected: %llu", materialSidecar.InputOnly() ? "Input-only raster draws" : "Sidecar raster draws",
@@ -824,6 +837,11 @@ json NativePBRFeature::GetDiagnostics()
 {
 	const auto recipes = GetNativeRecipes();
 	const auto catalog = materialCatalog.GetSnapshot();
+	const auto summary = GetMaterialSummary();
+	json issueCounts = json::object();
+	for (size_t index = 0; index < summary.issues.size(); ++index)
+		if (summary.issues[index] != 0)
+			issueCounts[std::string(NativePBR::kRecipeIssueNames[index])] = summary.issues[index];
 	const auto state = NativePBR::ResolveRouting({
 		.backend = SelectedBackend(),
 		.nativeFeatureEnabled = enabled.load(std::memory_order_relaxed),
@@ -847,6 +865,9 @@ json NativePBRFeature::GetDiagnostics()
 		{ "pbrCandidatesThisFrame", materialSidecar.PbrCandidatesThisFrame() },
 		{ "missingPbrIdentitiesThisFrame", materialSidecar.MissingPbrIdentitiesThisFrame() },
 		{ "recipeRevision", materialRegistry.Revision() },
+		{ "recipeCount", summary.recipes }, { "recipePending", summary.pending },
+		{ "recipeIncomplete", summary.incomplete }, { "recipeCompileFailed", summary.failed },
+		{ "recipeIssueCounts", std::move(issueCounts) },
 		{ "previewOpaqueReplacement", previewOpaqueReplacement.load(std::memory_order_relaxed) },
 		{ "previewVisualization", previewVisualization.load(std::memory_order_relaxed) },
 		{ "previewDraws", materialSidecar.PreviewDraws() },

@@ -23,6 +23,12 @@ namespace NativePBR
 		UnmatchedSceneInstance = 1u << 11,
 		InvalidTexturePath = 1u << 12
 	};
+	inline constexpr std::array<std::string_view, 13> kRecipeIssueNames{
+		"missing-required-textures", "unsupported-landscape", "unsupported-pbr-features", "unsupported-glint",
+		"unknown-opacity", "invalid-snapshot", "unsupported-displacement", "unsupported-feature-textures",
+		"unsupported-projection", "unknown-normal-mode", "unknown-uv-animation", "unmatched-scene-instance",
+		"invalid-texture-path"
+	};
 
 	enum class TextureInterpretation : uint8_t
 	{
