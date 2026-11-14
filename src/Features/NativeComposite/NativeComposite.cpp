@@ -4,7 +4,7 @@
 #include "State.h"
 #include "Utils/DevBenchUx.h"
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(NativeCompositeFeature::Settings, Enabled, AddLighting, LightingStrength, DirectSpatialReconstruction, PersistLab, ShadowLayerEnabled, ShadowContribution, ShadowBlend, ShadowRadiusPixels, ShadowReceiverTolerance, ShadowPreview, ShadowAfterLighting, ShadowSpatialReconstruction)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(NativeCompositeFeature::Settings, Enabled, AddLighting, LightingStrength, DirectSpatialReconstruction, NativePbrDiagnosticDispatch, PersistLab, ShadowLayerEnabled, ShadowContribution, ShadowBlend, ShadowRadiusPixels, ShadowReceiverTolerance, ShadowPreview, ShadowAfterLighting, ShadowSpatialReconstruction)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(NativeComposite::Policy, diffuse, specular, visual)
 
 namespace
@@ -37,6 +37,20 @@ void NativeCompositeFeature::DrawSettings()
 	if (ImGui::Checkbox("Spatially reconstruct missing native direct pixels", &settings.DirectSpatialReconstruction))
 		++validityRevision;
 	ImGui::TextDisabled("Full-resolution diffuse/specular fill; raw RT signals remain untouched.");
+	ImGui::SeparatorText("NativePBR SM6.5 diagnostic dispatch");
+	ImGui::Checkbox("Record NativePBR material evaluation (isolated)", &settings.NativePbrDiagnosticDispatch);
+	ImGui::TextDisabled("Requires an ABI-v2 synchronized opaque surface producer; does not replace final color.");
+	if (settings.NativePbrDiagnosticDispatch) {
+		ImGui::TextWrapped("Material evaluation: %s", pass.PbrSurfaceStatus().c_str());
+		ImGui::TextDisabled("SM6.5 dispatches: %llu | missing materials: %llu | revision mismatch: %llu",
+			static_cast<unsigned long long>(pass.PbrSurfaceSubmissions()),
+			static_cast<unsigned long long>(pass.PbrMissingMaterials()),
+			static_cast<unsigned long long>(pass.PbrMissingRevisions()));
+		ImGui::TextDisabled("Missing DDS roles: %llu | unsupported recipes: %llu | unsupported inputs: %llu",
+			static_cast<unsigned long long>(pass.PbrMissingTextures()),
+			static_cast<unsigned long long>(pass.PbrUnsupportedRecipes()),
+			static_cast<unsigned long long>(pass.PbrUnsupportedInputs()));
+	}
 	ImGui::SeparatorText("Independent RT shadows");
 	bool shadowChanged = false;
 	if (ImGui::Checkbox("Enable independent shadow layer", &settings.ShadowLayerEnabled)) {
@@ -174,13 +188,15 @@ void NativeCompositeFeature::ConfigureShadowLayer(const json& args)
 
 void NativeCompositeFeature::RegisterUxActions()
 {
-	FEATURE_COMMAND("configure", "Set Native Composite enabled, addLighting, lightingStrength and directSpatialReconstruction.", [](Feature* self, const json& args) {
+	FEATURE_COMMAND("configure", "Set Native Composite enabled, addLighting, lightingStrength, directSpatialReconstruction, and pbrDiagnosticDispatch.", [](Feature* self, const json& args) {
 		auto& feature = *static_cast<NativeCompositeFeature*>(self);
 		std::scoped_lock lock(feature.settingsMutex);
 		if (args.contains("enabled"))
 			feature.settings.Enabled = args.at("enabled").get<bool>();
 		if (args.contains("addLighting"))
 			feature.settings.AddLighting = args.at("addLighting").get<bool>();
+		if (args.contains("pbrDiagnosticDispatch"))
+			feature.settings.NativePbrDiagnosticDispatch = args.at("pbrDiagnosticDispatch").get<bool>();
 		if (args.contains("directSpatialReconstruction")) {
 			feature.settings.DirectSpatialReconstruction = args.at("directSpatialReconstruction").get<bool>();
 			++feature.validityRevision;
@@ -222,6 +238,14 @@ json NativeCompositeFeature::GetDiagnostics()
 	const auto sceneDiagnostics = globals::features::dx12NativeScene.GetDiagnostics();
 	return { { "enabled", enabled.load() }, { "captures", captures.load() }, { "lightingSubmissions", lightingSubmissions.load() }, { "shadowSubmissions", shadowSubmissions.load() },
 		{ "nativePbrInputSubmissions", pass.PbrInputSubmissions() },
+		{ "nativePbrSurfaceDiagnosticEnabled", settings.NativePbrDiagnosticDispatch },
+		{ "nativePbrSurfaceDiagnosticDispatches", pass.PbrSurfaceSubmissions() },
+		{ "nativePbrSurfaceDiagnosticStatus", pass.PbrSurfaceStatus() },
+		{ "nativePbrSurfaceMissingMaterials", pass.PbrMissingMaterials() },
+		{ "nativePbrSurfaceMissingRevisions", pass.PbrMissingRevisions() },
+		{ "nativePbrSurfaceMissingTextures", pass.PbrMissingTextures() },
+		{ "nativePbrSurfaceUnsupportedRecipes", pass.PbrUnsupportedRecipes() },
+		{ "nativePbrSurfaceUnsupportedInputs", pass.PbrUnsupportedInputs() },
 		{ "completedComposites", pass.CompletedComposites() }, { "acceptedPixels", pass.AcceptedPixels() },
 		{ "modifiedPixels", pass.ModifiedPixels() }, { "visualizationPixels", pass.VisualizationPixels() },
 		{ "effectiveRecoveredPixels", pass.EffectiveRecoveredPixels() }, { "finiteOnlyPixels", pass.FiniteOnlyPixels() },
@@ -240,7 +264,8 @@ json NativeCompositeFeature::GetDiagnostics()
 
 std::shared_ptr<const NativeComposite::Frame> NativeCompositeFeature::Capture(ID3D11Device5* a_device11, ID3D11DeviceContext4* a_context11,
 	ID3D12Device* a_device12, ID3D12CommandQueue* a_queue, ID3D11Texture2D* a_source,
-	uint32_t a_frame, uint32_t a_width, uint32_t a_height, NativeComposite::Transfer a_transfer)
+	uint32_t a_frame, uint32_t a_width, uint32_t a_height, NativeComposite::Transfer a_transfer,
+	std::shared_ptr<const NativePBRSurfacePass::InputFrame> a_pbrSurface)
 {
 	if (!loaded || !enabled)
 		return {};
@@ -271,8 +296,11 @@ std::shared_ptr<const NativeComposite::Frame> NativeCompositeFeature::Capture(ID
 	const bool wantShadow = shadowSettings.preview || shadowSettings.contribution * shadowSettings.blend > 0.0f;
 	const auto shadow = wantShadow && !unsupportedGamut ? globals::features::dx12NativeScene.GetShadowMask(a_frame) : nullptr;
 	const auto raster = shadow ? globals::features::dx12NativeScene.GetRasterFrame(a_frame) : nullptr;
+	const auto pbrMaterials = selected.NativePbrDiagnosticDispatch && globals::features::nativePBR.IsActive() ?
+		globals::features::nativePBR.GetNativeGpuMaterials() : nullptr;
 	auto frame = pass.Capture(a_device11, a_context11, a_device12, a_queue, a_source, a_frame, a_width, a_height,
-		a_transfer, lighting, shadow, raster, shadowSettings, selected.LightingStrength, selected.DirectSpatialReconstruction, selectedPolicy, revision);
+		a_transfer, lighting, shadow, raster, shadowSettings, selected.LightingStrength, selected.DirectSpatialReconstruction, selectedPolicy, revision,
+		std::move(a_pbrSurface), pbrMaterials, selected.NativePbrDiagnosticDispatch);
 	if (frame)
 		++captures;
 	if (frame && frame->lightingSubmitted) {

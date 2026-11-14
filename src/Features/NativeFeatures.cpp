@@ -20,6 +20,7 @@
 #include <cmath>
 #include <filesystem>
 #include <limits>
+#include <stdexcept>
 
 struct NativePBRFeature::MaterialWorker
 {
@@ -51,7 +52,7 @@ std::shared_ptr<const NativePBR::RecipeGeneration> NativePBRFeature::GetNativeRe
 
 std::shared_ptr<const NativePBR::MaterialPublication> NativePBRFeature::GetMaterialPublication() const
 {
-	return materialWorker ? materialWorker->service.GetSnapshot() : nullptr;
+	return materialWorker ? materialWorker->service.GetSnapshotForRegistry(materialRegistry) : nullptr;
 }
 
 std::shared_ptr<const NativePBR::GpuMaterialResources> NativePBRFeature::GetNativeGpuMaterials() const
@@ -85,7 +86,8 @@ void NativePBRFeature::PollMaterialRegistry()
 					worker->cache.Update(*changes);
 					const auto generation = NativePBR::PublishRecipes(worker->cache, *changes,
 						worker->published.load(std::memory_order_relaxed));
-					worker->service.Publish(generation, catalog->GetSnapshot(), registry->ExportInstanceHints());
+					if (!worker->service.Publish(generation, catalog->GetSnapshot(), changes->instanceHints, changes->instanceEpoch))
+						throw std::runtime_error("NativePBR material publication rejected a stale generation");
 					worker->published.store(generation, std::memory_order_release);
 					worker->more.store(changes->hasMore, std::memory_order_relaxed);
 				}

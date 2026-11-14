@@ -19,6 +19,7 @@
 #include "Features/NativePBR/NativePBRCompiler.h"
 #include "Features/NativePBR/NativePBRRegistry.h"
 #include "Features/NativePBR/MaterialService.h"
+#include "Features/NativePBR/MaterialDiscovery.h"
 #include "Features/NativePBR/VerifiedBridge.h"
 #include <catch2/catch_test_macros.hpp>
 #include <fstream>
@@ -1691,4 +1692,142 @@ TEST_CASE("Native PBR publication reports missing MATO, ambiguity and retired ma
 	REQUIRE(service.GetSnapshot()->FindMaterial(token.identity).status == NativePBR::MaterialLookupStatus::MissingMaterial);
 	REQUIRE(publication->FindMaterial(token.identity));
 	REQUIRE_FALSE(service.Publish(recipes, {}, {}));
+}
+
+TEST_CASE("Native material discovery owns identities, NIF interpretation and JSON reapplication", "[native_pbr]")
+{
+	NativePBR::MaterialDiscovery discovery;
+	auto catalog = std::make_shared<NativePBR::MaterialCatalogSnapshot>();
+	PBRRecords::TextureSetData config;
+	config.roughnessScale = 0.4f;
+	config.fuzzWeight = 0.3f;
+	catalog->textureSets.emplace("mytexture", config);
+	NativePBR::MaterialSource source;
+	source.base.texturePaths = { "textures/test/color.dds", "textures/test/normal.dds", "textures/test/rmaos.dds", "", "", "", "" };
+	source.base.texturePathsComplete = true;
+	source.textureSetEditorId = "MyTexture";
+	source.nifFlags = PBRRecords::NifSurfaceFlags{ .softLighting = true };
+	source.nifFuzz = std::array{ 0.8f, 1.0f };
+	const auto first = discovery.Register("Meshes/Example.nif|Shape", source, catalog);
+	REQUIRE(first.status == NativePBR::MaterialSourceReport::Status::Published);
+	REQUIRE(first.identity > 0);
+	REQUIRE(first.issues == 0);
+	REQUIRE(discovery.Count() == 1);
+	REQUIRE(discovery.Inspect(first.identity).revision == first.revision);
+	REQUIRE(discovery.Register("meshes/example.nif|shape", source, catalog).status == NativePBR::MaterialSourceReport::Status::Unchanged);
+	REQUIRE(discovery.GetRegistry().Revision() == first.revision);
+	const auto published = discovery.GetRegistry().Export();
+	REQUIRE(published.size() == 1);
+	REQUIRE(published[0].material.roughnessScale == 0.4f);
+	REQUIRE(published[0].material.fuzzRoughness == 0.8f);
+	REQUIRE(published[0].material.pbrFlags & uint32_t(PBRFlags::Fuzz));
+	REQUIRE(published[0].identity == first.identity);
+	const auto original = published[0];
+	catalog = std::make_shared<NativePBR::MaterialCatalogSnapshot>(*catalog);
+	catalog->textureSets.at("mytexture").roughnessScale = 0.9f;
+	discovery.RefreshCatalog(catalog);
+	const auto modified = discovery.GetRegistry().Export().front();
+	REQUIRE(modified.identity == first.identity);
+	REQUIRE(modified.revision > original.revision);
+	REQUIRE(modified.material.roughnessScale == 0.9f);
+	REQUIRE(original.material.roughnessScale == 0.4f);
+	REQUIRE(discovery.Retire("Meshes/Example.nif|Shape"));
+	REQUIRE(discovery.GetRegistry().Export().empty());
+	REQUIRE(discovery.Inspect(first.identity).status == NativePBR::MaterialSourceReport::Status::NotFound);
+	const auto recreated = discovery.Register("Meshes/Example.nif|Shape", source, catalog);
+	REQUIRE(recreated.identity != first.identity);
+}
+
+TEST_CASE("Native discovery reports incomplete sources without hiding their recipes", "[native_pbr]")
+{
+	NativePBR::MaterialDiscovery discovery;
+	NativePBR::MaterialSource source;
+	source.textureSetEditorId = "MissingJson";
+	source.nifThinSurface = std::array{ 0.25f, 0.5f, 0.75f, 1.0f };
+	source.nifFuzz = std::array{ 0.2f, 2.0f };
+	const auto published = discovery.Register("mesh|shape", source, {});
+	REQUIRE(published.status == NativePBR::MaterialSourceReport::Status::Published);
+	REQUIRE(published.issues & NativePBR::MissingTextureSetConfiguration);
+	REQUIRE(published.issues & NativePBR::InvalidNifFuzz);
+	REQUIRE(discovery.GetRegistry().Export().size() == 1);
+	REQUIRE(discovery.GetRegistry().Export().front().material.subsurfaceBalance == 0.25f);
+	source.base.roughnessScale = std::numeric_limits<float>::quiet_NaN();
+	const auto invalid = discovery.Register("mesh|shape", source, {});
+	REQUIRE(invalid.status == NativePBR::MaterialSourceReport::Status::InvalidParameters);
+	REQUIRE(invalid.issues & NativePBR::NonFiniteMaterialParameters);
+	REQUIRE(discovery.GetRegistry().Export().empty());
+	source.base.roughnessScale = 0.7f;
+	const auto restored = discovery.Register("mesh|shape", source, {});
+	REQUIRE(restored.status == NativePBR::MaterialSourceReport::Status::Published);
+	REQUIRE(restored.identity == published.identity);
+	REQUIRE(restored.revision > published.revision);
+}
+
+TEST_CASE("Registry exports atomic material and instance epochs for safe cell transitions", "[native_pbr]")
+{
+	NativePBR::Registry registry;
+	NativePBR::RecipeCache cache;
+	NativePBR::MaterialService service;
+	int source = 0;
+	const auto capture = registry.BeginCapture(&source);
+	REQUIRE(registry.Publish(&source, capture, {}));
+	registry.ObserveInstance(&source, "cell-a:ref", "shape");
+	auto changes = *registry.ExportChanges(0, {});
+	REQUIRE(changes.instanceHints.size() == 1);
+	REQUIRE(changes.instanceEpoch == 0);
+	cache.Update(changes);
+	const auto oldRecipes = NativePBR::PublishRecipes(cache, changes, {});
+	REQUIRE(service.Publish(oldRecipes, {}, changes.instanceHints, changes.instanceEpoch));
+	const auto previous = service.GetSnapshot();
+	REQUIRE(previous->FindInstance("cell-a:ref", "shape"));
+	REQUIRE(service.GetSnapshotForRegistry(registry));
+	registry.BeginInstanceEpoch();
+	REQUIRE(registry.InstanceEpoch() == 1);
+	REQUIRE_FALSE(service.GetSnapshotAt(registry.Revision(), registry.InstanceEpoch()));
+	REQUIRE_FALSE(service.GetSnapshotForRegistry(registry));
+	changes = *registry.ExportChanges(cache.Revision(), cache.KnownRevisions());
+	REQUIRE(changes.instanceHints.empty());
+	REQUIRE(changes.instanceEpoch == 1);
+	cache.Update(changes);
+	const auto nextRecipes = NativePBR::PublishRecipes(cache, changes, oldRecipes);
+	REQUIRE(service.Publish(nextRecipes, {}, changes.instanceHints, changes.instanceEpoch));
+	REQUIRE(service.GetSnapshotAt(registry.Revision(), registry.InstanceEpoch()));
+	REQUIRE(service.GetSnapshotForRegistry(registry));
+	REQUIRE(service.GetSnapshot()->FindInstance("cell-a:ref", "shape").status == NativePBR::MaterialLookupStatus::MissingInstance);
+	REQUIRE(previous->FindInstance("cell-a:ref", "shape"));
+	REQUIRE_FALSE(service.Publish(oldRecipes, {}, previous->sourceHints, previous->instanceEpoch));
+}
+
+TEST_CASE("Verified MATO mutations replace only the selected instance", "[native_pbr]")
+{
+	NativePBR::MaterialDiscovery discovery;
+	NativePBR::MaterialSource source;
+	const auto material = discovery.Register("model|material", source, {});
+	NativePBR::InstanceProperties first;
+	first.materialObjectEditorId = "MatoA";
+	NativePBR::InstanceProperties second;
+	second.materialObjectEditorId = "MatoB";
+	REQUIRE(discovery.ObserveInstance("model|material", "ref-a", "shape", first));
+	REQUIRE(discovery.ObserveInstance("model|material", "ref-b", "shape", second));
+	const auto sourceRevision = discovery.GetRegistry().Export().front().revision;
+	const auto previous = *discovery.GetRegistry().ExportChanges(0, {});
+	first.materialObjectEditorId = "MatoC";
+	REQUIRE(discovery.ReplaceInstance("model|material", "ref-a", "shape", first));
+	REQUIRE_FALSE(discovery.ReplaceInstance("model|material", "ref-c", "shape", first));
+	const auto changed = *discovery.GetRegistry().ExportChanges(previous.revision, {});
+	REQUIRE(changed.instanceHints.size() == 2);
+	REQUIRE(discovery.GetRegistry().Export().front().revision == sourceRevision);
+	REQUIRE(changed.revision > previous.revision);
+	const auto a = std::find_if(changed.instanceHints.begin(), changed.instanceHints.end(), [](const auto& hint) {
+		return hint.referenceKey == "ref-a";
+	});
+	const auto b = std::find_if(changed.instanceHints.begin(), changed.instanceHints.end(), [](const auto& hint) {
+		return hint.referenceKey == "ref-b";
+	});
+	REQUIRE(a != changed.instanceHints.end());
+	REQUIRE(b != changed.instanceHints.end());
+	REQUIRE(a->properties.materialObjectEditorId == "MatoC");
+	REQUIRE(b->properties.materialObjectEditorId == "MatoB");
+	REQUIRE_FALSE(a->propertiesConflict);
+	REQUIRE(material.identity == a->materialIdentity);
 }

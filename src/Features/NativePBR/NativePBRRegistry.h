@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -365,6 +366,26 @@ namespace NativePBR
 			++revision;
 		}
 
+		/** @brief Replace a known instance after a verified mutation, without revising its base material. */
+		bool ReplaceInstance(const void* a_source, std::string_view a_reference, std::string_view a_shape,
+			InstanceProperties a_properties)
+		{
+			std::unique_lock lock(mutex);
+			const auto it = entries.find(a_source);
+			if (it == entries.end())
+				return false;
+			for (auto& hint : it->second.hints)
+				if (hint.referenceKey == a_reference && hint.shapeName == a_shape) {
+					if (hint.properties != a_properties || hint.propertiesConflict) {
+						hint.properties = std::move(a_properties);
+						hint.propertiesConflict = false;
+						++revision;
+					}
+					return true;
+				}
+			return false;
+		}
+
 		/** @brief Copies unverified instance associations without engine pointers. */
 		std::vector<InstanceHint> ExportInstanceHints() const
 		{
@@ -383,6 +404,17 @@ namespace NativePBR
 				return;
 			for (auto& [source, entry] : entries) entry.hints.clear();
 			totalHints = 0;
+			++instanceEpoch;
+			++revision;
+		}
+
+		/** @brief Starts a new scene epoch even if the old scene contained no observations. */
+		void BeginInstanceEpoch()
+		{
+			std::unique_lock lock(mutex);
+			for (auto& [source, entry] : entries) entry.hints.clear();
+			totalHints = 0;
+			++instanceEpoch;
 			++revision;
 		}
 
@@ -454,10 +486,11 @@ namespace NativePBR
 
 		struct ChangeSet
 		{
-			uint64_t revision = 0;
+			uint64_t revision = 0, instanceEpoch = 0;
 			bool hasMore = false;
 			std::vector<Snapshot> changed;
 			std::vector<uint64_t> liveIdentities, pendingIdentities;
+			std::vector<InstanceHint> instanceHints;
 		};
 
 		/** @brief Exports changed metadata and current identities against consumer-owned revisions. */
@@ -470,17 +503,25 @@ namespace NativePBR
 			if (!a_limit)
 				a_limit = 1;
 			result.revision = revision;
+			result.instanceEpoch = instanceEpoch;
 			result.liveIdentities.reserve(entries.size());
-			for (const auto& [source, entry] : entries) {
-				result.liveIdentities.push_back(entry.identity);
-				if (entry.dirty)
-					result.pendingIdentities.push_back(entry.identity);
-				else if (auto known = a_known.find(entry.identity); known == a_known.end() || known->second != entry.revision) {
+			result.instanceHints.reserve(totalHints);
+			std::vector<const Entry*> ordered;
+			ordered.reserve(entries.size());
+			for (const auto& [source, entry] : entries)
+				ordered.push_back(&entry);
+			std::sort(ordered.begin(), ordered.end(), [](const Entry* a, const Entry* b) { return a->identity < b->identity; });
+			for (const Entry* entry : ordered) {
+				result.liveIdentities.push_back(entry->identity);
+				result.instanceHints.insert(result.instanceHints.end(), entry->hints.begin(), entry->hints.end());
+				if (entry->dirty)
+					result.pendingIdentities.push_back(entry->identity);
+				else if (auto known = a_known.find(entry->identity); known == a_known.end() || known->second != entry->revision) {
 					if (result.changed.size() < a_limit)
-						result.changed.push_back({ entry.identity, entry.revision, entry.data });
+						result.changed.push_back({ entry->identity, entry->revision, entry->data });
 					else {
 						result.hasMore = true;
-						result.pendingIdentities.push_back(entry.identity);
+						result.pendingIdentities.push_back(entry->identity);
 					}
 				}
 			}
@@ -492,6 +533,13 @@ namespace NativePBR
 		{
 			std::shared_lock lock(mutex);
 			return revision;
+		}
+
+		/** @brief Returns the current scene-observation epoch. */
+		uint64_t InstanceEpoch() const
+		{
+			std::shared_lock lock(mutex);
+			return instanceEpoch;
 		}
 
 		/** @brief Returns registration diagnostics without exposing engine pointers. */
@@ -564,5 +612,6 @@ namespace NativePBR
 		std::unordered_map<const void*, Entry> entries;
 		size_t totalHints = 0;
 		uint64_t nextIdentity = 1, revision = 0, published = 0, forgotten = 0, hintLimitHits = 0;
+		uint64_t instanceEpoch = 0;
 	};
 }
