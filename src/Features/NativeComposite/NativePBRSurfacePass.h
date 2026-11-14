@@ -1,33 +1,21 @@
 #pragma once
 
 #include "Features/NativePBR/GpuMaterialResources.h"
-#include "Features/NativePBR/MaterialSidecarContract.h"
+#include "Features/NativePBR/SurfaceFrameContract.h"
 
 #include <array>
-#include <functional>
 #include <memory>
 
 /** @brief DX12-only consumer of a producer-owned opaque surface frame. */
 class NativePBRSurfacePass
 {
 public:
-	static constexpr uint32_t kSurfaceInputs = 8;
+	static constexpr uint32_t kSurfaceInputs = NativePBR::kSurfaceFrameAttachmentCount;
 	static constexpr uint32_t kSurfaceOutputs = 5;
 	static constexpr uint32_t kMaterialPages = NativePBR::GpuMaterialResources::kTextureDescriptorCount;
-	static constexpr uint32_t kProvisionalSurfaceAbiVersion = 2;
+	static constexpr uint32_t kProvisionalSurfaceAbiVersion = NativePBR::kSurfaceFrameAbiVersion;
 
-	struct InputFrame
-	{
-		std::array<winrt::com_ptr<ID3D12Resource>, kSurfaceInputs> textures;
-		std::array<D3D12_RESOURCE_STATES, kSurfaceInputs> states{};
-		std::shared_ptr<const std::vector<NativePBR::SidecarDraw>> draws;
-		winrt::com_ptr<ID3D12Fence> readyFence;
-		std::function<bool(ID3D12Fence*, uint64_t)> retainThrough;
-		uint64_t readyValue = 0;
-		uint32_t frame = 0, width = 0, height = 0;
-		uint32_t abiVersion = 0;
-		bool nativeOwnedDraws = false;
-	};
+	using InputFrame = NativePBR::SurfaceFrame;
 
 	struct Slot
 	{
