@@ -6,6 +6,7 @@
 #include "Features/NativePBR/MaterialRouting.h"
 #include "Features/NativePBR/MaterialSidecar.h"
 #include "Features/NativePBR/NativePBRRegistry.h"
+#include "Features/NativePBR/MaterialCatalog.h"
 #include "Utils/BootSnapshot.h"
 #include <array>
 #include <atomic>
@@ -51,9 +52,11 @@ struct NativePBRFeature final : Feature
 	// NativePBR owns identities, revisions, immutable snapshots and recipe generations.
 	// TruePBR only produces observations from Skyrim's existing hooks.
 	NativePBR::Registry materialRegistry;
+	NativePBR::MaterialCatalog materialCatalog;
 	std::shared_ptr<MaterialWorker> materialWorker;
 	void PollMaterialRegistry();
 	void Prepass() override;
+	void SetupResources() override;
 	MaterialSummary GetMaterialSummary() const;
 	std::shared_ptr<const NativePBR::RecipeGeneration> GetNativeRecipes() const;
 	std::atomic<bool> enabled{ true };

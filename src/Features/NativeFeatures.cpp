@@ -31,6 +31,12 @@ struct NativePBRFeature::MaterialWorker
 
 NativePBRFeature::NativePBRFeature() : materialWorker(std::make_shared<MaterialWorker>()) {}
 
+void NativePBRFeature::SetupResources()
+{
+	if (SelectedBackend() == NativePBR::Backend::NativeDX12)
+		materialCatalog.Load();
+}
+
 std::shared_ptr<const NativePBR::RecipeGeneration> NativePBRFeature::GetNativeRecipes() const
 {
 	if (!materialWorker)
@@ -646,6 +652,10 @@ void NativePBRFeature::DrawSettings()
 	if (bootSnapshot.HasPendingChange(backendSettings, &BackendSettings::NativeBackend))
 		Util::Text::RestartNeeded("%s", "PBR backend change pending restart");
 	DrawOwnership("Enable Native PBR", enabled, IsActive());
+	if (const auto catalog = materialCatalog.GetSnapshot())
+		ImGui::Text("Native JSON sources: %zu texture sets / %zu MATO | rejected: %zu / %zu",
+			catalog->textureSets.size(), catalog->materialObjects.size(),
+			catalog->rejectedTextureSets, catalog->rejectedMaterialObjects);
 	ImGui::TextDisabled("NativePBR owns live material recipes; current engine observations still originate in TruePBR hooks.");
 	ImGui::TextDisabled("Texture source and prepared material controls remain in DX12 Native Scene.");
 	ImGui::Text("%s: %llu | rejected: %llu", materialSidecar.InputOnly() ? "Input-only raster draws" : "Sidecar raster draws",
@@ -813,6 +823,7 @@ void NativeSCMFeature::SaveSettings(json& j) { j = { { "Enabled", enabled.load(s
 json NativePBRFeature::GetDiagnostics()
 {
 	const auto recipes = GetNativeRecipes();
+	const auto catalog = materialCatalog.GetSnapshot();
 	const auto state = NativePBR::ResolveRouting({
 		.backend = SelectedBackend(),
 		.nativeFeatureEnabled = enabled.load(std::memory_order_relaxed),
@@ -822,6 +833,10 @@ json NativePBRFeature::GetDiagnostics()
 		.scope = NativePBR::MaterialScope::OpaqueStaticMesh
 	});
 	return { { "selected", enabled.load() }, { "native", state.owner == NativePBR::RenderingOwner::Native },
+		{ "nativeJsonTextureSets", catalog ? catalog->textureSets.size() : 0 },
+		{ "nativeJsonMaterialObjects", catalog ? catalog->materialObjects.size() : 0 },
+		{ "nativeJsonRejectedTextureSets", catalog ? catalog->rejectedTextureSets : 0 },
+		{ "nativeJsonRejectedMaterialObjects", catalog ? catalog->rejectedMaterialObjects : 0 },
 		{ "backendRestartPending", bootSnapshot.HasPendingChange(backendSettings, &BackendSettings::NativeBackend) },
 		{ "selectedBackend", state.backend == NativePBR::Backend::NativeDX12 ? "dx12-native" : "dx11-legacy" },
 		{ "experimentalInputOnly", experimentalInputOnly.load(std::memory_order_relaxed) },
