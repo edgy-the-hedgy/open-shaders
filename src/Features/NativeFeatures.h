@@ -21,6 +21,8 @@ namespace RE
 namespace NativePBR
 {
 	struct RecipeGeneration;
+	struct MaterialPublication;
+	struct GpuMaterialResources;
 }
 
 /** Additional DX12 features. The original TruePBR/LLF/SCM implementations are
@@ -59,6 +61,8 @@ struct NativePBRFeature final : Feature
 	void SetupResources() override;
 	MaterialSummary GetMaterialSummary() const;
 	std::shared_ptr<const NativePBR::RecipeGeneration> GetNativeRecipes() const;
+	std::shared_ptr<const NativePBR::MaterialPublication> GetMaterialPublication() const;
+	std::shared_ptr<const NativePBR::GpuMaterialResources> GetNativeGpuMaterials() const;
 	std::atomic<bool> enabled{ true };
 	std::atomic<bool> previewOpaqueReplacement{ false };
 	std::atomic<bool> captureProjectedUv{ false };

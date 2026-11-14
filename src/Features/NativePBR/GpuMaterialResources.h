@@ -22,6 +22,7 @@ namespace NativePBR
 	struct GpuMaterialResources
 	{
 		static constexpr uint32_t kTextureDescriptorCount = 2 * DX12Native::kMaximumTexturePools;
+		static_assert(kTextureDescriptorCount == 512);
 		std::shared_ptr<const RecipeGeneration> generation;
 		std::shared_ptr<const DX12Native::MaterialResources> residency;
 		winrt::com_ptr<ID3D12Device> device;

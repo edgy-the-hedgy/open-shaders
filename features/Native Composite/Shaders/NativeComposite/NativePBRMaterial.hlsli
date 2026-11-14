@@ -6,19 +6,25 @@
 namespace NativePBR
 {
 	static const uint MissingTexture = 0xffffffffu;
-	static const uint VertexColorFlag = 8u;
-	static const uint EmissionFlag = 64u;
+	static const uint DrawVertexColorFlag = 1u;
 
 	struct MaterialRecord
 	{
-		uint4 colorNormal;
-		uint4 packedEmission;
-		float4 uv;
-		float4 emission;
-		float4 specular;
-		float4 scalar;
-		uint4 flags;
-		float4 reserved;
+		uint4 textures[4];
+		float4 uv[2];
+		float4 base;
+		float4 coat;
+		float4 surface;
+		float4 projected;
+		float4 coatColor;
+		float4 subsurfaceColor;
+		float4 fuzzColor;
+		float4 thinSurface;
+		float4 glint;
+		float4 projectedGlint;
+		uint4 properties;
+		uint4 identity;
+		uint4 controls;
 	};
 
 	struct SurfaceInput
@@ -68,20 +74,19 @@ namespace NativePBR
 	}
 
 	SurfaceMaterial EvaluateOpaque(MaterialRecord material, SurfaceInput surface, float4 baseTexel,
-		float4 normalTexel, float4 packedTexel, float4 emissionTexel)
+		float4 normalTexel, float4 packedTexel, float4 emissionTexel, uint drawFlags)
 	{
 		SurfaceMaterial result;
-		result.baseColor = SrgbToLinear(baseTexel.rgb);
-		if ((material.flags.x & VertexColorFlag) != 0u)
+		result.baseColor = baseTexel.rgb;
+		if ((drawFlags & DrawVertexColorFlag) != 0u)
 			result.baseColor *= SrgbToLinear(surface.vertexColor);
 		result.normal = DecodeNormal(surface, normalTexel.xyz);
-		result.roughness = clamp(packedTexel.r * material.scalar.w, PBR::Constants::MinRoughness, PBR::Constants::MaxRoughness);
+		result.roughness = clamp(packedTexel.r * material.base.y, PBR::Constants::MinRoughness, PBR::Constants::MaxRoughness);
 		result.metallic = saturate(packedTexel.g);
 		result.ao = saturate(packedTexel.b);
-		result.f0 = lerp(saturate(packedTexel.a * material.scalar.z).xxx, result.baseColor, result.metallic);
-		result.opacity = saturate(baseTexel.a * material.scalar.x);
-		result.emission = (material.flags.x & EmissionFlag) != 0u ?
-			SrgbToLinear(emissionTexel.rgb) * material.emission.rgb * material.emission.a : 0.0f;
+		result.f0 = lerp(saturate(packedTexel.a * material.base.w).xxx, result.baseColor, result.metallic);
+		result.opacity = saturate(baseTexel.a * material.base.x);
+		result.emission = material.textures[1].z != MissingTexture ? emissionTexel.rgb : 0.0f;
 		return result;
 	}
 }

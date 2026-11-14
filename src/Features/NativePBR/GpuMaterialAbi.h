@@ -10,6 +10,8 @@ namespace NativePBR
 {
 	inline constexpr uint32_t kGpuMissingTexture = UINT32_MAX;
 	inline constexpr uint32_t kGpuMaterialRecordVersion = 1;
+	inline constexpr uint32_t kGpuDrawUsesVertexColor = 1u;
+	inline constexpr uint32_t kGpuDrawProjected = 2u;
 	using GpuTextureLocation = std::array<uint32_t, 2>;
 	using GpuTextureLocations = std::array<GpuTextureLocation, static_cast<size_t>(TextureRole::Count)>;
 
@@ -37,6 +39,23 @@ namespace NativePBR
 	static_assert(offsetof(GpuMaterialRecord, properties) == 256);
 	static_assert(offsetof(GpuMaterialRecord, identity) == 272);
 	static_assert(offsetof(GpuMaterialRecord, controls) == 288);
+
+	struct GpuDrawBinding
+	{
+		std::array<uint32_t, 2> identity{};
+		std::array<uint32_t, 2> revision{};
+		uint32_t materialIndex = UINT32_MAX;
+		uint32_t flags = 0;
+	};
+	static_assert(sizeof(GpuDrawBinding) == 24);
+	static_assert(offsetof(GpuDrawBinding, materialIndex) == 16);
+
+	inline GpuDrawBinding PackGpuDrawBinding(uint64_t a_identity, uint64_t a_revision,
+		uint32_t a_materialIndex, uint32_t a_flags)
+	{
+		return { { uint32_t(a_identity), uint32_t(a_identity >> 32) },
+			{ uint32_t(a_revision), uint32_t(a_revision >> 32) }, a_materialIndex, a_flags };
+	}
 
 	/** @brief Packs all observed material features without treating unsupported lobes as residency failures. */
 	inline GpuMaterialRecord PackGpuMaterialRecord(const Recipe& a_recipe, const GpuTextureLocations& a_locations)

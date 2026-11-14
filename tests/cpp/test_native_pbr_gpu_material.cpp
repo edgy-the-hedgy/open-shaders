@@ -44,3 +44,13 @@ TEST_CASE("NativePBR GPU records distinguish unresident sources from missing mat
 	CHECK(record.identity[2] == 3u);
 	CHECK(record.textures[3][2] == NativePBR::kGpuMissingTexture);
 }
+
+TEST_CASE("NativePBR GPU draw bindings preserve full material identity and revision", "[NativePBR][gpu-material]")
+{
+	const auto binding = NativePBR::PackGpuDrawBinding(0x1122334455667788ull,
+		0x99aabbccddeeff00ull, 17u, NativePBR::kGpuDrawProjected | NativePBR::kGpuDrawUsesVertexColor);
+	CHECK((binding.identity == std::array<uint32_t, 2>{ 0x55667788u, 0x11223344u }));
+	CHECK((binding.revision == std::array<uint32_t, 2>{ 0xddeeff00u, 0x99aabbccu }));
+	CHECK(binding.materialIndex == 17u);
+	CHECK(binding.flags == 3u);
+}

@@ -18,7 +18,7 @@ struct DrawBinding
 
 StructuredBuffer<DrawBinding> DrawBindings : register(t7);
 StructuredBuffer<NativePBR::MaterialRecord> MaterialRecords : register(t8);
-Texture2DArray<float4> TexturePages[256] : register(t0, space1);
+Texture2DArray<float4> TexturePages[512] : register(t0, space1);
 SamplerState ClampClampSampler : register(s0);
 SamplerState ClampWrapSampler : register(s1);
 SamplerState WrapClampSampler : register(s2);
@@ -40,7 +40,7 @@ cbuffer NativePBRConstants : register(b0)
 
 float4 SampleTexture(uint2 location, uint clampMode, float2 uv, float2 uvDx, float2 uvDy, float4 fallback)
 {
-	if (location.x == NativePBR::MissingTexture || location.x >= min(PageCount, 256u))
+	if (location.x == NativePBR::MissingTexture || location.x >= min(PageCount, 512u))
 		return fallback;
 	uint width, height, slices, mips;
 	TexturePages[NonUniformResourceIndex(location.x)].GetDimensions(0, width, height, slices, mips);
@@ -88,14 +88,14 @@ void main(uint3 threadId : SV_DispatchThreadID)
 	surface.geometricNormal = float3(basis0.z, basis1.z, basis2.z);
 	surface.vertexColor = VertexColors[pixel].rgb;
 	surface.facing = ddyDepthFacing.w;
-	float2 uv = surface.uv * record.uv.xy + record.uv.zw;
-	float2 uvDx = surface.uvDx * record.uv.xy;
-	float2 uvDy = surface.uvDy * record.uv.xy;
-	float4 base = SampleTexture(record.colorNormal.xy, record.flags.z, uv, uvDx, uvDy, 1.0f);
-	float4 normal = SampleTexture(record.colorNormal.zw, record.flags.z, uv, uvDx, uvDy, float4(0.5f, 0.5f, 1.0f, 1.0f));
-	float4 packed = SampleTexture(record.packedEmission.xy, record.flags.z, uv, uvDx, uvDy, float4(1.0f, 0.0f, 1.0f, 1.0f));
-	float4 emission = SampleTexture(record.packedEmission.zw, record.flags.z, uv, uvDx, uvDy, 1.0f);
-	NativePBR::SurfaceMaterial material = NativePBR::EvaluateOpaque(record, surface, base, normal, packed, emission);
+	float2 uv = surface.uv * record.uv[0].zw + record.uv[0].xy;
+	float2 uvDx = surface.uvDx * record.uv[0].zw;
+	float2 uvDy = surface.uvDy * record.uv[0].zw;
+	float4 base = SampleTexture(record.textures[0].xy, record.properties.z, uv, uvDx, uvDy, 1.0f);
+	float4 normal = SampleTexture(record.textures[0].zw, record.properties.z, uv, uvDx, uvDy, float4(0.5f, 0.5f, 1.0f, 1.0f));
+	float4 packed = SampleTexture(record.textures[1].xy, record.properties.z, uv, uvDx, uvDy, float4(1.0f, 0.0f, 1.0f, 1.0f));
+	float4 emission = SampleTexture(record.textures[1].zw, record.properties.z, uv, uvDx, uvDy, 0.0f);
+	NativePBR::SurfaceMaterial material = NativePBR::EvaluateOpaque(record, surface, base, normal, packed, emission, binding.flags);
 	BaseOpacity[pixel] = float4(material.baseColor, material.opacity);
 	NormalRoughness[pixel] = float4(material.normal, material.roughness);
 	F0Metallic[pixel] = float4(material.f0, material.metallic);

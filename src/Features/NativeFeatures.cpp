@@ -12,6 +12,8 @@
 #include "State.h"
 #include "ShaderCache.h"
 #include "Features/NativePBR/NativePBRCompiler.h"
+#include "Features/NativePBR/MaterialService.h"
+#include "Features/NativePBR/GpuMaterialResources.h"
 #include "Utils/PointLightFlags.h"
 #include <BS_thread_pool.hpp>
 #include <algorithm>
@@ -22,6 +24,8 @@
 struct NativePBRFeature::MaterialWorker
 {
 	NativePBR::RecipeCache cache;
+	NativePBR::MaterialService service;
+	NativePBR::GpuMaterialWorker gpu;
 	std::mutex mutex;
 	MaterialSummary summary;
 	std::atomic<bool> active{ false }, more{ false };
@@ -45,6 +49,16 @@ std::shared_ptr<const NativePBR::RecipeGeneration> NativePBRFeature::GetNativeRe
 	return generation && generation->revision == materialRegistry.Revision() ? generation : nullptr;
 }
 
+std::shared_ptr<const NativePBR::MaterialPublication> NativePBRFeature::GetMaterialPublication() const
+{
+	return materialWorker ? materialWorker->service.GetSnapshot() : nullptr;
+}
+
+std::shared_ptr<const NativePBR::GpuMaterialResources> NativePBRFeature::GetNativeGpuMaterials() const
+{
+	return materialWorker ? materialWorker->gpu.Get() : nullptr;
+}
+
 NativePBRFeature::MaterialSummary NativePBRFeature::GetMaterialSummary() const
 {
 	MaterialSummary result;
@@ -65,12 +79,14 @@ void NativePBRFeature::PollMaterialRegistry()
 	worker->active.store(true, std::memory_order_release);
 	try {
 		static BS::thread_pool<> pool{ 1 };
-		pool.detach_task([worker, registry = &materialRegistry] {
+		pool.detach_task([worker, registry = &materialRegistry, catalog = &materialCatalog] {
 			try {
 				if (auto changes = registry->ExportChanges(worker->cache.Revision(), worker->cache.KnownRevisions())) {
 					worker->cache.Update(*changes);
-					worker->published.store(NativePBR::PublishRecipes(worker->cache, *changes,
-							worker->published.load(std::memory_order_relaxed)), std::memory_order_release);
+					const auto generation = NativePBR::PublishRecipes(worker->cache, *changes,
+						worker->published.load(std::memory_order_relaxed));
+					worker->service.Publish(generation, catalog->GetSnapshot(), registry->ExportInstanceHints());
+					worker->published.store(generation, std::memory_order_release);
 					worker->more.store(changes->hasMore, std::memory_order_relaxed);
 				}
 				MaterialSummary summary;
@@ -118,8 +134,13 @@ void NativePBRFeature::PollMaterialRegistry()
 
 void NativePBRFeature::Prepass()
 {
-	if (SelectedBackend() == NativePBR::Backend::NativeDX12 && enabled.load(std::memory_order_relaxed))
-		PollMaterialRegistry();
+	if (SelectedBackend() != NativePBR::Backend::NativeDX12 || !enabled.load(std::memory_order_relaxed))
+		return;
+	PollMaterialRegistry();
+	if (auto backend = globals::features::dx12NativeScene.GetGraphicsBackend())
+		if (auto recipes = GetNativeRecipes(); recipes && recipes->batchesComplete)
+			materialWorker->gpu.Request(*backend, std::move(recipes));
+	materialWorker->gpu.Advance();
 }
 
 // Backend selection is the ONLY automatic execution switch. Feature toggles
@@ -670,7 +691,15 @@ void NativePBRFeature::DrawSettings()
 		ImGui::TreePop();
 	}
 	ImGui::TextDisabled("NativePBR owns live material recipes; current engine observations still originate in TruePBR hooks.");
-	ImGui::TextDisabled("Texture source and prepared material controls remain in DX12 Native Scene.");
+	const auto materialView = GetMaterialPublication();
+	const auto gpuMaterials = GetNativeGpuMaterials();
+	ImGui::Text("Material publication: %llu | instance bindings: %zu",
+		materialView ? materialView->serial : 0, materialView ? materialView->instances.size() : 0);
+	ImGui::Text("DX12 GPU materials: %zu | fully resident: %u | partial: %u | limited: %u",
+		gpuMaterials ? gpuMaterials->entries.size() : 0, gpuMaterials ? gpuMaterials->fullyResident : 0,
+		gpuMaterials ? gpuMaterials->partiallyResident : 0, gpuMaterials ? gpuMaterials->featureLimited : 0);
+	if (materialWorker && !materialWorker->gpu.Failure().empty())
+		ImGui::TextDisabled("Native material GPU preparation: %s", materialWorker->gpu.Failure().c_str());
 	ImGui::Text("%s: %llu | rejected: %llu", materialSidecar.InputOnly() ? "Input-only raster draws" : "Sidecar raster draws",
 		materialSidecar.ReplayedDraws(), materialSidecar.RejectedDraws());
 	ImGui::Text("Last frame's PBR surfaces: %zu | frame: %u", materialSidecar.PublishedDrawCount(), materialSidecar.GetFrame());
@@ -841,6 +870,8 @@ void NativeSCMFeature::SaveSettings(json& j) { j = { { "Enabled", enabled.load(s
 json NativePBRFeature::GetDiagnostics()
 {
 	const auto recipes = GetNativeRecipes();
+	const auto materialView = GetMaterialPublication();
+	const auto gpuMaterials = GetNativeGpuMaterials();
 	const auto catalog = materialCatalog.GetSnapshot();
 	const auto summary = GetMaterialSummary();
 	json issueCounts = json::object();
@@ -878,6 +909,13 @@ json NativePBRFeature::GetDiagnostics()
 		{ "recipeCount", summary.recipes }, { "recipePending", summary.pending },
 		{ "recipeIncomplete", summary.incomplete }, { "recipeCompileFailed", summary.failed },
 		{ "recipeIssueCounts", std::move(issueCounts) },
+		{ "materialPublicationSerial", materialView ? materialView->serial : 0 },
+		{ "materialInstanceBindings", materialView ? materialView->instances.size() : 0 },
+		{ "gpuMaterialCount", gpuMaterials ? gpuMaterials->entries.size() : 0 },
+		{ "gpuFullyResident", gpuMaterials ? gpuMaterials->fullyResident : 0 },
+		{ "gpuPartiallyResident", gpuMaterials ? gpuMaterials->partiallyResident : 0 },
+		{ "gpuFeatureLimited", gpuMaterials ? gpuMaterials->featureLimited : 0 },
+		{ "gpuMaterialFailure", materialWorker ? materialWorker->gpu.Failure() : std::string{} },
 		{ "previewOpaqueReplacement", previewOpaqueReplacement.load(std::memory_order_relaxed) },
 		{ "previewVisualization", previewVisualization.load(std::memory_order_relaxed) },
 		{ "previewDraws", materialSidecar.PreviewDraws() },
