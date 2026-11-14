@@ -66,6 +66,8 @@ struct NativePBRFeature final : Feature
 	std::string_view GetCategory() const override { return FeatureCategories::kMaterials; }
 	bool IsCore() const override { return true; }
 	bool IsActive() const;
+	/** @brief True when eligible TruePBR pixel permutations are owned by FXC-input-only NativePBR. */
+	bool OwnsInputOnlyShading() const;
 	void DrawSettings() override;
 	void LoadSettings(json&) override;
 	void SaveSettings(json&) override;

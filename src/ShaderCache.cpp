@@ -34,6 +34,7 @@
 #include "Utils/StringUtils.h"
 
 #include "Features/DynamicCubemaps.h"
+#include "Features/NativeFeatures.h"
 #include "Features/NativePBR/ShaderDomainCache.h"
 #include "Features/RenderDoc.h"
 #include "Features/ReverseZ.h"
@@ -2902,6 +2903,12 @@ namespace SIE
 	RE::BSGraphics::PixelShader* ShaderCache::GetPixelShader(const RE::BSShader& shader,
 		uint32_t descriptor, bool a_precompile)
 	{
+		// Exclusive native mode keeps TruePBR's material registration and shader
+		// descriptors, but does not compile or select its full opaque DX11 pixel BRDF.
+		// Uncovered PBR techniques still use the legacy implementation.
+		if (shader.shaderType == RE::BSShader::Type::Lighting &&
+			globals::features::nativePBR.OwnsInputOnlyShading() && IsNativePBRInputPermutation(descriptor))
+			return nullptr;
 		if (a_precompile && backgroundCompilation)
 			return nullptr;
 		auto state = globals::state;
@@ -2950,9 +2957,20 @@ namespace SIE
 		return nullptr;
 	}
 
-	void ShaderCache::EnqueueNativePBRInputPixelShader(const RE::BSShader& shader, uint32_t descriptor)
+	bool ShaderCache::IsNativePBRInputPermutation(uint32_t descriptor)
 	{
-		if (shader.shaderType != RE::BSShader::Type::Lighting)
+		using enum LightingShaderFlags;
+		constexpr uint32_t required = static_cast<uint32_t>(TruePbr) | static_cast<uint32_t>(Deferred);
+		constexpr uint32_t excluded = static_cast<uint32_t>(DoAlphaTest) | static_cast<uint32_t>(Skinned) |
+			static_cast<uint32_t>(ModelSpaceNormals) | static_cast<uint32_t>(FurShells) |
+			static_cast<uint32_t>(FurShellsDepth);
+		return ((descriptor >> 24) & 0x3Fu) == 0 && (descriptor & required) == required &&
+			(descriptor & excluded) == 0;
+	}
+
+	void ShaderCache::EnqueueNativePBRInputPixelShader(const RE::BSShader& shader, uint32_t descriptor, bool a_priority)
+	{
+		if (shader.shaderType != RE::BSShader::Type::Lighting || !IsNativePBRInputPermutation(descriptor))
 			return;
 		const auto generation = compilationSet.LiveGeneration(shader.shaderType.get());
 		compilationSet.EnqueueAux([this, &shader, descriptor, generation] {
@@ -2960,12 +2978,12 @@ namespace SIE
 				return;
 			std::ignore = SShaderCache::CompileShader(ShaderClass::Pixel, shader, descriptor,
 				IsDiskCacheActive(), dependencyTracker.get(), generation, NativePBR::ShaderDomain::NativePBRInput);
-		});
+		}, a_priority);
 	}
 
 	ID3D11PixelShader* ShaderCache::GetNativePBRInputPixelShader(const RE::BSShader& shader, uint32_t descriptor)
 	{
-		if (shader.shaderType != RE::BSShader::Type::Lighting)
+		if (shader.shaderType != RE::BSShader::Type::Lighting || !IsNativePBRInputPermutation(descriptor))
 			return nullptr;
 		{
 			std::lock_guard lock(pixelShadersMutex);
@@ -2984,7 +3002,7 @@ namespace SIE
 			// Runtime permutations may not be present in the startup precompile list.
 			// Keep the original DX11 draw until the input-only FXC variant is ready.
 			if (enqueue)
-				EnqueueNativePBRInputPixelShader(shader, descriptor);
+				EnqueueNativePBRInputPixelShader(shader, descriptor, true);
 			return nullptr;
 		}
 		if (!globals::d3d::device)
@@ -5708,7 +5726,8 @@ namespace SIE
 		auto shaderCache = globals::shaderCache;
 		if (!conditionVariable.wait(
 				lock, stoken,
-				[this, &shaderCache]() { return (!availableTasks.empty() || !demandedTasks.empty() || !pendingAuxTasks.empty()) &&
+				[this, &shaderCache]() { return (!availableTasks.empty() || !demandedTasks.empty() ||
+				                                    !pendingPriorityAuxTasks.empty() || !pendingAuxTasks.empty()) &&
 			                                    // Count matrix and auxiliary tasks; ReleaseDispatchSlot()
 			                                    // decrements under this mutex before notifying the waiter.
 			                                    static_cast<int32_t>(dispatchedTasksInFlight.load(std::memory_order_relaxed)) <
@@ -5725,8 +5744,15 @@ namespace SIE
 			lastCalculation = lastReset;
 		}
 
-		// Matrix tasks are checked before aux so queued shader work always wins
-		// admission over standalone compute-shader work when both are ready.
+		// NativePBR owns these pixel permutations in exclusive input-only mode.
+		// Do not starve them behind full legacy permutation-matrix compiles.
+		if (!pendingPriorityAuxTasks.empty()) {
+			auto work = std::move(pendingPriorityAuxTasks.front());
+			pendingPriorityAuxTasks.pop_front();
+			dispatchedTasksInFlight.fetch_add(1, std::memory_order_relaxed);
+			return std::variant<ShaderCompilationTask, std::function<void()>>(std::in_place_index<1>, std::move(work));
+		}
+		// Regular matrix tasks still outrank non-native standalone compute work.
 		if (!availableTasks.empty() || !demandedTasks.empty()) {
 			// Startup policy: keep dispatching the hardest queued work first.
 			// This preserves the existing priority score while preventing light tasks
@@ -5766,11 +5792,11 @@ namespace SIE
 		conditionVariable.notify_one();
 	}
 
-	void CompilationSet::EnqueueAux(std::function<void()> work)
+	void CompilationSet::EnqueueAux(std::function<void()> work, bool a_priority)
 	{
 		{
 			std::scoped_lock lock(compilationMutex);
-			pendingAuxTasks.push_back(std::move(work));
+			(a_priority ? pendingPriorityAuxTasks : pendingAuxTasks).push_back(std::move(work));
 		}
 		conditionVariable.notify_one();
 	}
@@ -6008,6 +6034,7 @@ namespace SIE
 		if (a_includeStandalone) {
 			standaloneGeneration.fetch_add(1, std::memory_order_release);
 			pendingAuxTasks.clear();
+			pendingPriorityAuxTasks.clear();
 		}
 		tasksInProgress.clear();
 		processedTasks.clear();

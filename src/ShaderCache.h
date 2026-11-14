@@ -355,10 +355,8 @@ namespace SIE
 			completionTime.store(0, std::memory_order_relaxed);
 		}
 
-		/** @brief Blocks until a dispatch slot and some work (a queued permutation-matrix
-		 *  task, or -- only once the matrix is empty -- a queued aux closure) are both
-		 *  available, or the stop token is signalled. The matrix always wins admission
-		 *  over aux when both are ready, preserving LPT priority ordering. */
+		/** @brief Blocks until a dispatch slot and work are available. Native input-only
+		 *  compiles can run before the legacy matrix; normal auxiliary work stays last. */
 		std::optional<std::variant<ShaderCompilationTask, std::function<void()>>> TryTakeNext(std::stop_token stoken);
 		/** @brief Enqueues a task for compilation. */
 		void Add(const ShaderCompilationTask& task);
@@ -371,7 +369,7 @@ namespace SIE
 		 *  standalone compute-shader compiles from PostProcessFeature::CompileComputeShadersAsync)
 		 *  to share the same dispatchedTasksInFlight budget as the main permutation matrix,
 		 *  instead of being submitted to compilationPool independently of it. Wakes TryTakeNext(). */
-		void EnqueueAux(std::function<void()> work);
+		void EnqueueAux(std::function<void()> work, bool a_priority = false);
 		/** @brief Latches the compilation-phase clock at the moment a real (non-disk-hit)
 		 *  compile begins, so ETA and the "started" log reflect the actual first compile
 		 *  rather than when it finishes. Logs once per phase. */
@@ -523,6 +521,7 @@ namespace SIE
 		std::set<ShaderCompilationTask, TaskPriorityLess> tasksInProgress;
 		std::set<ShaderCompilationTask, TaskPriorityLess> processedTasks;  // completed or failed
 		std::deque<std::function<void()>> pendingAuxTasks;                 // see EnqueueAux/TryTakeNext
+		std::deque<std::function<void()>> pendingPriorityAuxTasks;         // native input-only compiles
 		std::condition_variable_any conditionVariable;
 	};
 
@@ -820,9 +819,11 @@ namespace SIE
 		RE::BSGraphics::PixelShader* GetPixelShader(const RE::BSShader& shader,
 			uint32_t descriptor, bool a_precompile = false);
 		/** Precompile the NativePBR FXC input domain without publishing a live DX11 pixel shader. */
-		void EnqueueNativePBRInputPixelShader(const RE::BSShader& shader, uint32_t descriptor);
+		void EnqueueNativePBRInputPixelShader(const RE::BSShader& shader, uint32_t descriptor, bool a_priority = false);
 		/** @brief Returns a compiled input-only FXC shader without substituting an uncompiled legacy permutation. */
 		ID3D11PixelShader* GetNativePBRInputPixelShader(const RE::BSShader& shader, uint32_t descriptor);
+		/** @brief Scope where input-only FXC can replace a full TruePBR deferred pixel shader. */
+		static bool IsNativePBRInputPermutation(uint32_t descriptor);
 		/** @brief Checks that every requested pixel-shader permutation is ready. */
 		bool HasPixelShaders(RE::BSShader::Type type, std::span<const uint32_t> descriptors);
 		RE::BSGraphics::ComputeShader* GetComputeShader(const RE::BSShader& shader,

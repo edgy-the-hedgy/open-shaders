@@ -121,6 +121,12 @@ bool NativePBRFeature::IsActive() const
 	}).owner == NativePBR::RenderingOwner::Native;
 }
 
+bool NativePBRFeature::OwnsInputOnlyShading() const
+{
+	return !globals::game::isVR && IsActive() && experimentalInputOnly.load(std::memory_order_relaxed) &&
+		globals::features::nativeComposite.IsEnabled();
+}
+
 void NativePBRFeature::PrepareSidecar(ID3D11Device* a_device)
 {
 	if (!globals::game::isVR)
@@ -139,8 +145,7 @@ void NativePBRFeature::BeginOpaqueSidecar()
 	texture->GetDesc(&desc);
 	materialSidecar.BeginFrame(globals::d3d::device, globals::d3d::context, Util::AsReal(target.RTV),
 		globals::game::graphicsState->GetFrameCount(), desc.Width, desc.Height,
-		captureProjectedUv.load(std::memory_order_relaxed),
-		experimentalInputOnly.load(std::memory_order_relaxed) && globals::features::nativeComposite.IsEnabled());
+		captureProjectedUv.load(std::memory_order_relaxed), OwnsInputOnlyShading());
 }
 
 void NativePBRFeature::BeginSidecarPass(uint64_t a_identity, uint64_t a_revision, std::string a_referenceKey,
@@ -616,7 +621,7 @@ void NativePBRFeature::DrawSettings()
 	if (ImGui::Checkbox("Run input-only FXC with DX12 experimental evaluation", &inputOnly))
 		experimentalInputOnly.store(inputOnly, std::memory_order_relaxed);
 	if (inputOnly)
-		ImGui::TextDisabled("No sidecar replay or extra MRTs; SM6.5 evaluates geometry only (textures pending).");
+		ImGui::TextDisabled("TruePBR provides recipes only for covered opaque/projected draws; DX12 owns shading.");
 	if (ImGui::Checkbox("Capture ProjectedUV material inputs (experimental)", &projected))
 		captureProjectedUv.store(projected, std::memory_order_relaxed);
 	if (projected) {
@@ -772,6 +777,7 @@ json NativePBRFeature::GetDiagnostics()
 	});
 	return { { "selected", enabled.load() }, { "native", state.owner == NativePBR::RenderingOwner::Native },
 		{ "experimentalInputOnly", experimentalInputOnly.load(std::memory_order_relaxed) },
+		{ "exclusiveInputOnlyShading", OwnsInputOnlyShading() },
 		{ "captureProjectedUv", captureProjectedUv.load(std::memory_order_relaxed) },
 		{ "projectedDrawsThisFrame", materialSidecar.ProjectedDrawsThisFrame() },
 		{ "recipeRevision", materialRegistry.Revision() },
