@@ -2,7 +2,7 @@
 
 #include "MaterialResources.h"
 #include "RuntimeTextureProgress.h"
-#include "TruePBR/VerifiedBridge.h"
+#include "Features/NativePBR/VerifiedBridge.h"
 #include "VideoMemoryBudget.h"
 
 namespace DX12Native

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "TruePBR/VerifiedBridge.h"
+#include "Features/NativePBR/VerifiedBridge.h"
 #include <array>
 #include <cstddef>
 #include <string>

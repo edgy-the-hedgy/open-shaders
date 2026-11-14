@@ -15,10 +15,10 @@
 #include "Features/DX12NativeScene/TextureSourceBatch.h"
 #include "Features/DX12NativeScene/VerifiedTextureSources.h"
 #include "Features/DX12NativeScene/VideoMemoryBudget.h"
-#include "TruePBR/InstanceCoverage.h"
-#include "TruePBR/NativePBRCompiler.h"
-#include "TruePBR/NativePBRRegistry.h"
-#include "TruePBR/VerifiedBridge.h"
+#include "Features/NativePBR/InstanceCoverage.h"
+#include "Features/NativePBR/NativePBRCompiler.h"
+#include "Features/NativePBR/NativePBRRegistry.h"
+#include "Features/NativePBR/VerifiedBridge.h"
 #include <catch2/catch_test_macros.hpp>
 #include <fstream>
 #include <limits>

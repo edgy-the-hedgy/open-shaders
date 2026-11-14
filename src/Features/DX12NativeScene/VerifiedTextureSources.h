@@ -1,6 +1,6 @@
 #pragma once
 
-#include "TruePBR/NativePBRCompiler.h"
+#include "Features/NativePBR/NativePBRCompiler.h"
 #include <algorithm>
 #include <array>
 #include <cctype>

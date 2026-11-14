@@ -9,7 +9,7 @@
 #include "Globals.h"
 #include "State.h"
 #include "ShaderCache.h"
-#include "TruePBR/NativePBRCompiler.h"
+#include "Features/NativePBR/NativePBRCompiler.h"
 #include "Utils/PointLightFlags.h"
 #include <BS_thread_pool.hpp>
 #include <algorithm>

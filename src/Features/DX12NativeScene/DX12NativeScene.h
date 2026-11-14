@@ -10,8 +10,8 @@
 #include "Features/DX12NativeScene/ShadowTrace.h"
 #include "Features/DX12NativeScene/SubcellStreamingManager.h"
 #include "Features/DX12NativeScene/VideoMemoryBudget.h"
-#include "TruePBR/InstanceCoverage.h"
-#include "TruePBR/VerifiedBridge.h"
+#include "Features/NativePBR/InstanceCoverage.h"
+#include "Features/NativePBR/VerifiedBridge.h"
 #include <atomic>
 #include <mutex>
 #include <optional>

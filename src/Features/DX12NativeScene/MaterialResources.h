@@ -5,7 +5,7 @@
 #include "LiveLooseTexturePlan.h"
 #include "LogicalTextureRegistry.h"
 #include "MaterialUploadStatus.h"
-#include "TruePBR/VerifiedBridge.h"
+#include "Features/NativePBR/VerifiedBridge.h"
 #include "VerifiedTextureSources.h"
 #include <array>
 #include <stdexcept>

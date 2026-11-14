@@ -5,7 +5,7 @@
 #include "LightLimitFix.h"
 #include "Features/NativePBR/MaterialRouting.h"
 #include "Features/NativePBR/MaterialSidecar.h"
-#include "TruePBR/NativePBRRegistry.h"
+#include "Features/NativePBR/NativePBRRegistry.h"
 #include <array>
 #include <atomic>
 #include <memory>

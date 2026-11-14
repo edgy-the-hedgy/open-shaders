@@ -2,7 +2,7 @@
 
 #include "TruePBR/BSLightingShaderMaterialPBR.h"
 #include "TruePBR/BSLightingShaderMaterialPBRLandscape.h"
-#include "TruePBR/NativePBRCompiler.h"
+#include "Features/NativePBR/NativePBRCompiler.h"
 
 #include "Features/DX12NativeScene/DX12NativeScene.h"
 #include "Features/InteriorSun.h"
