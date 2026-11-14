@@ -1,12 +1,13 @@
 #include "NativePBRBRDF.hlsli"
 
-Texture2D<uint> DrawOrdinals : register(t0);
+Texture2D<uint2> IdentityAndColor : register(t0);
 Texture2D<float4> UVAndDdx : register(t1);
 Texture2D<float4> DdyDepthFacing : register(t2);
 Texture2D<float4> Basis0 : register(t3);
 Texture2D<float4> Basis1 : register(t4);
 Texture2D<float4> Basis2 : register(t5);
-Texture2D<float4> VertexColors : register(t6);
+Texture2D<float4> ProjectedWorldPosition : register(t6);
+Texture2D<float4> ProjectedDirection : register(t7);
 
 struct DrawBinding
 {
@@ -16,8 +17,8 @@ struct DrawBinding
 	uint flags;
 };
 
-StructuredBuffer<DrawBinding> DrawBindings : register(t7);
-StructuredBuffer<NativePBR::MaterialRecord> MaterialRecords : register(t8);
+StructuredBuffer<DrawBinding> DrawBindings : register(t8);
+StructuredBuffer<NativePBR::MaterialRecord> MaterialRecords : register(t9);
 Texture2DArray<float4> TexturePages[512] : register(t0, space1);
 SamplerState ClampClampSampler : register(s0);
 SamplerState ClampWrapSampler : register(s1);
@@ -67,13 +68,16 @@ void main(uint3 threadId : SV_DispatchThreadID)
 	NormalRoughness[pixel] = 0.0f;
 	F0Metallic[pixel] = 0.0f;
 	EmissionAO[pixel] = 0.0f;
-	uint ordinal = DrawOrdinals[pixel];
+	uint2 identityAndColor = IdentityAndColor[pixel];
+	uint ordinal = identityAndColor.x;
 	if (ordinal == 0u || ordinal > DrawCount)
 		return;
 	DrawBinding binding = DrawBindings[ordinal - 1u];
 	if (binding.materialIndex >= MaterialCount)
 		return;
 	NativePBR::MaterialRecord record = MaterialRecords[binding.materialIndex];
+	if (any(binding.identity != record.identity.xy) || any(binding.revision != record.identity.zw))
+		return;
 	NativePBR::SurfaceInput surface;
 	float4 uvDdx = UVAndDdx[pixel];
 	float4 ddyDepthFacing = DdyDepthFacing[pixel];
@@ -86,7 +90,8 @@ void main(uint3 threadId : SV_DispatchThreadID)
 	surface.tangent = float3(basis0.x, basis1.x, basis2.x);
 	surface.bitangent = float3(basis0.y, basis1.y, basis2.y);
 	surface.geometricNormal = float3(basis0.z, basis1.z, basis2.z);
-	surface.vertexColor = VertexColors[pixel].rgb;
+	surface.vertexColor = float3(identityAndColor.y & 255u,
+		(identityAndColor.y >> 8) & 255u, (identityAndColor.y >> 16) & 255u) / 255.0f;
 	surface.facing = ddyDepthFacing.w;
 	float2 uv = surface.uv * record.uv[0].zw + record.uv[0].xy;
 	float2 uvDx = surface.uvDx * record.uv[0].zw;
