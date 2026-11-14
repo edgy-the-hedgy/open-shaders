@@ -13,7 +13,7 @@ namespace NativePBR
 	/** Distinct from the eight deferred MRTs; none of their channels are repurposed. */
 	enum class SidecarTarget : size_t
 	{
-		Identity,
+		IdentityAndColor,
 		UVAndDdx,
 		DdyDepthFacing,
 		Basis0,
@@ -25,7 +25,22 @@ namespace NativePBR
 	};
 
 	inline constexpr size_t kBaseSidecarTargetCount = static_cast<size_t>(SidecarTarget::ProjectedWorldPosition);
-	inline constexpr std::array<uint32_t, static_cast<size_t>(SidecarTarget::Count)> kSidecarBytesPerPixel{ 4, 16, 16, 8, 8, 8, 16, 16 };
+	inline constexpr uint32_t kSidecarSurfaceAbiVersion = 2;
+	inline constexpr std::array<uint32_t, static_cast<size_t>(SidecarTarget::Count)> kSidecarBytesPerPixel{ 8, 16, 16, 8, 8, 8, 16, 16 };
+
+	/** R32G32_UINT: frame-local ordinal, then RGBA8 with R in the least-significant byte. */
+	struct SidecarIdentityAndColor
+	{
+		uint32_t ordinal = 0;
+		uint32_t rgba8 = 0;
+	};
+	static_assert(sizeof(SidecarIdentityAndColor) == 8);
+	static_assert(offsetof(SidecarIdentityAndColor, rgba8) == 4);
+
+	inline constexpr uint32_t PackSidecarRgba8(uint8_t a_r, uint8_t a_g, uint8_t a_b, uint8_t a_a)
+	{
+		return uint32_t(a_r) | (uint32_t(a_g) << 8) | (uint32_t(a_b) << 16) | (uint32_t(a_a) << 24);
+	}
 	inline constexpr uint32_t kMaximumFrameDraws = 1024;
 	inline constexpr uint32_t kInputOnlyIdentityScale = 65535;
 	inline constexpr uint32_t kInputOnlyOpaqueSignature = 0xA55A;

@@ -78,7 +78,7 @@ namespace DX12Native
 					throw std::runtime_error("Opaque raster input dimensions differ");
 			}
 			constexpr std::array<DXGI_FORMAT, NativePBR::MaterialSidecar::kCount> pbrFormats{
-				DXGI_FORMAT_R32_UINT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT,
+				DXGI_FORMAT_R32G32_UINT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT,
 				DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
 				DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT
 			};
@@ -227,7 +227,7 @@ namespace DX12Native
 					replacement->formats[i] = desc.Format;
 				}
 				if (sidecarRequested) {
-					constexpr std::array pbrNames{ "Identity", "UvDdx", "DdyDepth", "Basis0", "Basis1", "Basis2",
+					constexpr std::array pbrNames{ "IdentityAndColor", "UvDdx", "DdyDepth", "Basis0", "Basis1", "Basis2",
 						"ProjectedPosition", "ProjectedDirection" };
 					try {
 						for (size_t i = 0; i < sidecarCount; ++i) {

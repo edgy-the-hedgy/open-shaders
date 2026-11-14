@@ -653,6 +653,8 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 		DX::ThrowIfFailed(a_queue->Signal(slot->fence.fence12.get(), done));
 		if (pbrSurfaceRecorded)
 			a_pbrMaterials->RetainUntil(slot->fence.fence12, done);
+		if (pbrSurfaceRecorded)
+			pbrSurfacePass.MarkSubmitted();
 		auto& frame = *slot->frame;
 		frame.producerFence = slot->fence.fence12;
 		frame.producerValue = done;

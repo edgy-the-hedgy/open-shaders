@@ -96,6 +96,8 @@ public:
 	uint64_t PbrMissingTextures() const { return pbrSurfacePass.MissingTextures(); }
 	uint64_t PbrUnsupportedRecipes() const { return pbrSurfacePass.UnsupportedRecipes(); }
 	uint64_t PbrUnsupportedInputs() const { return pbrSurfacePass.UnsupportedInputs(); }
+	uint64_t PbrOrdinalMismatches() const { return pbrSurfacePass.OrdinalMismatches(); }
+	uint64_t PbrNoEligibleFrames() const { return pbrSurfacePass.NoEligibleFrames(); }
 	~NativeComposite();
 
 private:
