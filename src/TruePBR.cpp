@@ -1580,7 +1580,8 @@ struct BSLightingShader_SetupGeometry
 		auto surveyClass = NativePBR::PreviewSurveyClass::None;
 		uint32_t unsupportedReasons = 0;
 		std::string referenceKey, shapeName;
-		const bool captureProjectedUv = globals::features::nativePBR.captureProjectedUv.load(std::memory_order_relaxed);
+		const bool captureProjectedUv = globals::features::nativePBR.captureProjectedUv.load(std::memory_order_relaxed) ||
+			globals::features::nativePBR.experimentalInputOnly.load(std::memory_order_relaxed);
 		if (pass && pass->shaderProperty && pass->geometry &&
 			(originalTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ModelSpaceNormals)) == 0 &&
 			(originalTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::DoAlphaTest)) == 0 &&
@@ -1663,6 +1664,8 @@ struct BSLightingShader_SetupGeometry
 		}
 		globals::features::nativePBR.BeginSidecarPass(materialId, materialRevision, std::move(referenceKey), std::move(shapeName),
 			surveyClass, unsupportedReasons);
+		if (materialId)
+			globals::features::nativePBR.TryInputOnlyPass(*shader, globals::state->modifiedPixelDescriptor);
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };

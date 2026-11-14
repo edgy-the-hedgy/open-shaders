@@ -33,6 +33,7 @@ namespace DX12Native
 		std::array<std::unique_ptr<WrappedResource>, NativePBR::MaterialSidecar::kCount> pbrSidecar;
 		std::shared_ptr<const std::vector<NativePBR::SidecarDraw>> pbrDraws;
 		bool pbrSidecarValid = false;
+		bool pbrInputOnly = false;
 		bool pbrSidecarAttempted = false;
 		DXGI_FORMAT sourceDepthFormat = DXGI_FORMAT_UNKNOWN;
 		globals::FrameBuffer camera{};

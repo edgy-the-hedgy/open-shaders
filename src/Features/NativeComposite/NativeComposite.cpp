@@ -98,6 +98,8 @@ void NativeCompositeFeature::DrawSettings()
 	}
 	ImGui::TextDisabled("Lighting submissions: %llu | shadow-layer submissions: %llu",
 		static_cast<unsigned long long>(lightingSubmissions.load()), static_cast<unsigned long long>(shadowSubmissions.load()));
+	ImGui::TextDisabled("NativePBR input-only DX12 submissions: %llu",
+		static_cast<unsigned long long>(pass.PbrInputSubmissions()));
 }
 
 void NativeCompositeFeature::LoadSettings(json& a_json)
@@ -219,6 +221,7 @@ json NativeCompositeFeature::GetDiagnostics()
 	const auto state = lightingStatus.load();
 	const auto sceneDiagnostics = globals::features::dx12NativeScene.GetDiagnostics();
 	return { { "enabled", enabled.load() }, { "captures", captures.load() }, { "lightingSubmissions", lightingSubmissions.load() }, { "shadowSubmissions", shadowSubmissions.load() },
+		{ "nativePbrInputSubmissions", pass.PbrInputSubmissions() },
 		{ "completedComposites", pass.CompletedComposites() }, { "acceptedPixels", pass.AcceptedPixels() },
 		{ "modifiedPixels", pass.ModifiedPixels() }, { "visualizationPixels", pass.VisualizationPixels() },
 		{ "effectiveRecoveredPixels", pass.EffectiveRecoveredPixels() }, { "finiteOnlyPixels", pass.FiniteOnlyPixels() },

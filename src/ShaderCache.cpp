@@ -2963,6 +2963,27 @@ namespace SIE
 		});
 	}
 
+	ID3D11PixelShader* ShaderCache::GetNativePBRInputPixelShader(const RE::BSShader& shader, uint32_t descriptor)
+	{
+		if (shader.shaderType != RE::BSShader::Type::Lighting)
+			return nullptr;
+		{
+			std::lock_guard lock(pixelShadersMutex);
+			if (const auto found = nativePbrInputShaders.find(descriptor); found != nativePbrInputShaders.end())
+				return found->second.get();
+		}
+		const auto key = SShaderCache::GetShaderString(ShaderClass::Pixel, shader, descriptor, true,
+			NativePBR::ShaderDomain::NativePBRInput);
+		const auto blob = GetCompletedShader(key);
+		if (!blob || !globals::d3d::device)
+			return nullptr;
+		winrt::com_ptr<ID3D11PixelShader> shader11;
+		if (FAILED(globals::d3d::device->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, shader11.put())))
+			return nullptr;
+		std::lock_guard lock(pixelShadersMutex);
+		return nativePbrInputShaders.try_emplace(descriptor, std::move(shader11)).first->second.get();
+	}
+
 	bool ShaderCache::HasPixelShaders(RE::BSShader::Type type, std::span<const uint32_t> descriptors)
 	{
 		if (type <= RE::BSShader::Type::None || type >= RE::BSShader::Type::Total)
@@ -3058,6 +3079,7 @@ namespace SIE
 		}
 		{
 			std::lock_guard lockGuardP(pixelShadersMutex);
+			nativePbrInputShaders.clear();
 			for (auto& shaders : pixelShaders) {
 				for (auto& [id, shader] : shaders) {
 					shader->shader->Release();
@@ -3140,6 +3162,8 @@ namespace SIE
 		}
 
 		if (!entries.empty()) {
+			std::lock_guard lock(pixelShadersMutex);
+			nativePbrInputShaders.clear();
 			logger::debug("Marked {} entries for recompile due to change to {}", entries.size(), a_path);
 			compilationSet.Clear();
 		}
@@ -3161,6 +3185,8 @@ namespace SIE
 		}
 		std::lock_guard lockGuardP(pixelShadersMutex);
 		{
+			if (a_type == RE::BSShader::Type::Lighting)
+				nativePbrInputShaders.clear();
 			for (auto& [id, shader] : pixelShaders[static_cast<size_t>(a_type)]) {
 				shader->shader->Release();
 			}

@@ -821,6 +821,8 @@ namespace SIE
 			uint32_t descriptor, bool a_precompile = false);
 		/** Precompile the NativePBR FXC input domain without publishing a live DX11 pixel shader. */
 		void EnqueueNativePBRInputPixelShader(const RE::BSShader& shader, uint32_t descriptor);
+		/** @brief Returns a compiled input-only FXC shader without substituting an uncompiled legacy permutation. */
+		ID3D11PixelShader* GetNativePBRInputPixelShader(const RE::BSShader& shader, uint32_t descriptor);
 		/** @brief Checks that every requested pixel-shader permutation is ready. */
 		bool HasPixelShaders(RE::BSShader::Type type, std::span<const uint32_t> descriptors);
 		RE::BSGraphics::ComputeShader* GetComputeShader(const RE::BSShader& shader,
@@ -1373,6 +1375,7 @@ namespace SIE
 
 		ShaderMapArray<RE::BSGraphics::VertexShader, SShaderCache::VertexShaderDeleter> vertexShaders;
 		ShaderMapArray<RE::BSGraphics::PixelShader> pixelShaders;
+		ankerl::unordered_dense::map<uint32_t, winrt::com_ptr<ID3D11PixelShader>> nativePbrInputShaders;
 		ShaderMapArray<RE::BSGraphics::ComputeShader> computeShaders;
 
 		bool isEnabled = true;

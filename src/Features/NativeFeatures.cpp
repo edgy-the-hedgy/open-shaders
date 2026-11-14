@@ -5,14 +5,17 @@
 #include "Features/NativePBR/MaterialRouting.h"
 #include "Utils/D3D.h"
 #include "Features/NativeLighting/NativeLighting.h"
+#include "Features/NativeComposite/NativeComposite.h"
 #include "Globals.h"
 #include "State.h"
+#include "ShaderCache.h"
 #include "TruePBR.h"
 #include "TruePBR/NativePBRCompiler.h"
 #include "Utils/PointLightFlags.h"
 #include <BS_thread_pool.hpp>
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <limits>
 
 struct NativePBRFeature::MaterialWorker
@@ -136,7 +139,8 @@ void NativePBRFeature::BeginOpaqueSidecar()
 	texture->GetDesc(&desc);
 	materialSidecar.BeginFrame(globals::d3d::device, globals::d3d::context, Util::AsReal(target.RTV),
 		globals::game::graphicsState->GetFrameCount(), desc.Width, desc.Height,
-		captureProjectedUv.load(std::memory_order_relaxed));
+		captureProjectedUv.load(std::memory_order_relaxed),
+		experimentalInputOnly.load(std::memory_order_relaxed) && globals::features::nativeComposite.IsEnabled());
 }
 
 void NativePBRFeature::BeginSidecarPass(uint64_t a_identity, uint64_t a_revision, std::string a_referenceKey,
@@ -146,6 +150,14 @@ void NativePBRFeature::BeginSidecarPass(uint64_t a_identity, uint64_t a_revision
 		a_surveyClass, a_unsupportedReasons);
 }
 void NativePBRFeature::EndSidecarPass() { materialSidecar.EndPass(); }
+bool NativePBRFeature::TryInputOnlyPass(const RE::BSShader& a_shader, uint32_t a_descriptor)
+{
+	if (!materialSidecar.InputOnly() || !IsActive() || globals::game::isVR || !globals::shaderCache ||
+		!std::filesystem::exists("Data/Shaders/NativeComposite/NativePBRInput.dxil"))
+		return false;
+	auto* shader = globals::shaderCache->GetNativePBRInputPixelShader(a_shader, a_descriptor);
+	return shader && materialSidecar.BeginInputOnlyPass(globals::d3d::context, shader);
+}
 void NativePBRFeature::ReplaySidecarDraw(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base)
 {
 	if (IsActive() && !globals::game::isVR)
@@ -586,18 +598,28 @@ void NativePBRFeature::DrawSettings()
 	DrawOwnership("Enable Native PBR", enabled, IsActive());
 	ImGui::TextDisabled("Consumes TruePBR's live recipe registry in the native material worker.");
 	ImGui::TextDisabled("Texture source and prepared material controls remain in DX12 Native Scene.");
-	ImGui::Text("Sidecar raster draws: %llu | rejected: %llu", materialSidecar.ReplayedDraws(), materialSidecar.RejectedDraws());
+	ImGui::Text("%s: %llu | rejected: %llu", materialSidecar.InputOnly() ? "Input-only raster draws" : "Sidecar raster draws",
+		materialSidecar.ReplayedDraws(), materialSidecar.RejectedDraws());
 	ImGui::Text("Last frame's PBR surfaces: %zu | frame: %u", materialSidecar.PublishedDrawCount(), materialSidecar.GetFrame());
 	bool projected = captureProjectedUv.load(std::memory_order_relaxed);
+	bool inputOnly = experimentalInputOnly.load(std::memory_order_relaxed);
+	if (ImGui::Checkbox("Run input-only FXC with DX12 experimental evaluation", &inputOnly))
+		experimentalInputOnly.store(inputOnly, std::memory_order_relaxed);
+	if (inputOnly)
+		ImGui::TextDisabled("No sidecar replay or extra MRTs; SM6.5 evaluates geometry only (textures pending).");
 	if (ImGui::Checkbox("Capture ProjectedUV material inputs (experimental)", &projected))
 		captureProjectedUv.store(projected, std::memory_order_relaxed);
 	if (projected) {
-		ImGui::Text("ProjectedUV sidecar draws this frame: %u/%u", materialSidecar.ProjectedDrawsThisFrame(), materialSidecar.SurveyLimit());
-		ImGui::TextDisabled("Input capture only; projected shading remains on legacy TruePBR.");
+		ImGui::Text("ProjectedUV %s draws this frame: %u/%u", inputOnly ? "input-only" : "sidecar",
+			materialSidecar.ProjectedDrawsThisFrame(), materialSidecar.SurveyLimit());
+		if (!inputOnly)
+			ImGui::TextDisabled("Input capture only; projected shading remains on legacy TruePBR.");
 	}
 	bool preview = previewOpaqueReplacement.load(std::memory_order_relaxed);
+	ImGui::BeginDisabled(inputOnly);
 	if (ImGui::Checkbox("Preview opaque PBR replacement (temporary)", &preview))
 		previewOpaqueReplacement.store(preview, std::memory_order_relaxed);
+	ImGui::EndDisabled();
 	if (preview) {
 		int mode = static_cast<int>(std::min(previewVisualization.load(std::memory_order_relaxed), 2u));
 		if (ImGui::Combo("Preview visualization", &mode, "Material identity\0UV / derivatives\0Coverage comparison\0"))
@@ -633,7 +655,8 @@ void NativePBRFeature::DrawSettings()
 	ImGui::TextDisabled("Depth-equal raster preview only; no GPU readback or native PBR lighting.");
 	if (!materialSidecar.Status().empty())
 		ImGui::TextWrapped("Sidecar: %s", materialSidecar.Status().c_str());
-	ImGui::TextDisabled("Commit 3 captures surface identity only; native shading is not enabled yet.");
+	ImGui::TextDisabled(inputOnly ? "Experimental SM6.5 geometry shading; texture PBR and projected sampling not wired yet." :
+		"Commit 3 captures surface identity only; native shading is not enabled yet.");
 }
 void NativeLLFFeature::DrawSettings()
 {
@@ -692,6 +715,7 @@ void NativePBRFeature::LoadSettings(json& j)
 {
 	enabled.store(j.value("Enabled", true), std::memory_order_relaxed);
 	captureProjectedUv.store(j.value("CaptureProjectedUv", false), std::memory_order_relaxed);
+	experimentalInputOnly.store(j.value("ExperimentalInputOnly", false), std::memory_order_relaxed);
 	previewOpaqueReplacement.store(j.value("PreviewOpaqueReplacement", false), std::memory_order_relaxed);
 	previewVisualization.store(static_cast<uint32_t>(std::clamp(j.value("PreviewVisualization", 0), 0, 2)),
 		std::memory_order_relaxed);
@@ -713,6 +737,7 @@ void NativePBRFeature::SaveSettings(json& j)
 {
 	j = { { "Enabled", enabled.load(std::memory_order_relaxed) },
 		{ "CaptureProjectedUv", captureProjectedUv.load(std::memory_order_relaxed) },
+		{ "ExperimentalInputOnly", experimentalInputOnly.load(std::memory_order_relaxed) },
 		{ "PreviewOpaqueReplacement", previewOpaqueReplacement.load(std::memory_order_relaxed) },
 		{ "PreviewVisualization", previewVisualization.load(std::memory_order_relaxed) } };
 }
@@ -736,6 +761,7 @@ json NativePBRFeature::GetDiagnostics()
 		.scope = NativePBR::MaterialScope::OpaqueStaticMesh
 	});
 	return { { "selected", enabled.load() }, { "native", state.owner == NativePBR::RenderingOwner::Native },
+		{ "experimentalInputOnly", experimentalInputOnly.load(std::memory_order_relaxed) },
 		{ "captureProjectedUv", captureProjectedUv.load(std::memory_order_relaxed) },
 		{ "projectedDrawsThisFrame", materialSidecar.ProjectedDrawsThisFrame() },
 		{ "recipeRevision", materialRegistry.Revision() },

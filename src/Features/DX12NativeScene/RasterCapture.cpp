@@ -83,6 +83,7 @@ namespace DX12Native
 				DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT
 			};
 			bool sidecarRequested = a_pbrSidecar[0] != nullptr;
+			const bool inputOnlyRequested = !sidecarRequested && a_pbrDraws && !a_pbrDraws->empty();
 			const bool projectedAttachments = a_pbrSidecar[NativePBR::kBaseSidecarTargetCount] != nullptr;
 			const size_t sidecarCount = projectedAttachments ? pbrFormats.size() : NativePBR::kBaseSidecarTargetCount;
 			sidecarStatus.clear();
@@ -143,11 +144,12 @@ namespace DX12Native
 			}
 			const bool sidecarLayoutChanged = sidecarRequested && slot && slot->pbrSidecar[0] &&
 				static_cast<bool>(slot->pbrSidecar[NativePBR::kBaseSidecarTargetCount]) != projectedAttachments;
+			const bool releaseSidecar = !sidecarRequested && slot && slot->pbrSidecar[0];
 			uint64_t slotBytes = recreateBase ? 0 : slot->allocationBytes;
 			uint64_t addedSidecarBytes = 0;
 			const bool allocateSidecar = sidecarRequested && (recreateBase || !slot->pbrSidecar[0] || sidecarLayoutChanged);
-			const bool recreate = recreateBase || allocateSidecar;
-			if (allocateSidecar && !recreateBase)
+			const bool recreate = recreateBase || allocateSidecar || releaseSidecar;
+			if ((allocateSidecar || releaseSidecar) && !recreateBase)
 				slotBytes = 0; // a replacement is needed for the extended shared-resource layout
 			if (recreate) {
 				for (const auto& source : descriptions) {
@@ -248,6 +250,7 @@ namespace DX12Native
 			}
 			slot->consumers.clear();
 			slot->pbrSidecarValid = false;
+			slot->pbrInputOnly = false;
 			slot->pbrDraws.reset();
 			slot->readyValue = UINT64_MAX;
 			slot->completionCounted = false;
@@ -258,6 +261,9 @@ namespace DX12Native
 					backend.d3d11Context->CopyResource(slot->pbrSidecar[i]->resource11, a_pbrSidecar[i]);
 				slot->pbrDraws = std::move(a_pbrDraws);
 				slot->pbrSidecarValid = true;
+			} else if (inputOnlyRequested) {
+				slot->pbrDraws = std::move(a_pbrDraws);
+				slot->pbrInputOnly = true;
 			}
 			auto* context = backend.d3d11Context.get();
 			winrt::com_ptr<ID3D11ComputeShader> priorShader;
@@ -307,6 +313,7 @@ namespace DX12Native
 			{ "frame", current ? current->frame : 0 }, { "width", current ? current->width : 0 }, { "height", current ? current->height : 0 },
 			{ "cameraValid", current && current->cameraValid }, { "frameSlots", slots.size() }, { "busyDeferrals", busyDeferrals },
 			{ "nativePbrSidecarReady", current && current->pbrSidecarValid }, { "nativePbrDrawCount", current && current->pbrDraws ? current->pbrDraws->size() : 0 },
+			{ "nativePbrInputOnly", current && current->pbrInputOnly },
 			{ "nativePbrSidecarStatus", sidecarStatus },
 			{ "dxgiAvailable", videoBudget.last.dxgiAvailable }, { "effectiveFrameBudgetBytes", videoBudget.last.effectiveBytes },
 			{ "dxgiLocalBudgetBytes", videoBudget.last.localBudget }, { "dxgiLocalUsageBytes", videoBudget.last.localUsage },

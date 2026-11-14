@@ -45,6 +45,7 @@ struct NativePBRFeature final : Feature
 	std::atomic<bool> enabled{ true };
 	std::atomic<bool> previewOpaqueReplacement{ false };
 	std::atomic<bool> captureProjectedUv{ false };
+	std::atomic<bool> experimentalInputOnly{ false };
 	// 0 = material identity; 1 = UV/derivatives; 2 = PBR coverage comparison.
 	std::atomic<uint32_t> previewVisualization{ 0 };
 	NativePBR::MaterialSidecar materialSidecar;
@@ -54,6 +55,7 @@ struct NativePBRFeature final : Feature
 		std::string a_shapeName = {}, NativePBR::PreviewSurveyClass a_surveyClass = NativePBR::PreviewSurveyClass::None,
 		uint32_t a_unsupportedReasons = 0);
 	void EndSidecarPass();
+	bool TryInputOnlyPass(const RE::BSShader& a_shader, uint32_t a_descriptor);
 	void ReplaySidecarDraw(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base);
 	void FinishOpaqueSidecar(ID3D11ShaderResourceView* a_finalDepth);
 	NativePBR::MaterialSidecar::Sources GetSidecarSources(uint32_t a_frame) const;
@@ -65,7 +67,7 @@ struct NativePBRFeature final : Feature
 	void DrawSettings() override;
 	void LoadSettings(json&) override;
 	void SaveSettings(json&) override;
-	void RestoreDefaultSettings() override { enabled = true; previewOpaqueReplacement = false; captureProjectedUv = false; previewVisualization = 0; }
+	void RestoreDefaultSettings() override { enabled = true; previewOpaqueReplacement = false; captureProjectedUv = false; experimentalInputOnly = false; previewVisualization = 0; }
 	json GetDiagnostics() override;
 };
 

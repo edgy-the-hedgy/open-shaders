@@ -91,10 +91,12 @@ namespace NativePBR
 	}
 
 	void MaterialSidecar::BeginFrame(ID3D11Device* a_device, ID3D11DeviceContext* a_context, ID3D11RenderTargetView* a_mainTarget,
-		uint32_t a_frame, uint32_t a_width, uint32_t a_height, bool a_captureProjectedUv)
+		uint32_t a_frame, uint32_t a_width, uint32_t a_height, bool a_captureProjectedUv, bool a_inputOnly)
 	{
 		CS_GPU_PASS("NativePBR::SidecarBegin");
+		EndPass();
 		ready = recording = false;
+		inputOnly = a_inputOnly;
 		publishedDraws.reset();
 		activeMaterial = 0;
 		activeRevision = 0;
@@ -111,6 +113,17 @@ namespace NativePBR
 		if (!a_device || !a_context || !a_mainTarget || !shader || !validation || !writeAll || !a_width || !a_height) {
 			status = "Sidecar shaders, device, or dimensions unavailable";
 			++failedFrames;
+			return;
+		}
+		if (inputOnly) {
+			targets = {};
+			expectedMain.copy_from(a_mainTarget);
+			frame = a_frame;
+			width = a_width;
+			height = a_height;
+			captureProjectedUv = true;
+			recording = true;
+			status.clear();
 			return;
 		}
 		if (a_captureProjectedUv && !projectedShader) {
@@ -174,6 +187,15 @@ namespace NativePBR
 
 	void MaterialSidecar::EndPass()
 	{
+		if (inputPassActive && inputContext) {
+			ID3D11Buffer* priorConstants = priorInputConstants.get();
+			inputContext->PSSetConstantBuffers(13, 1, &priorConstants);
+			inputContext->PSSetShader(priorInputPixelShader.get(), nullptr, 0);
+		}
+		inputPassActive = false;
+		inputContext = nullptr;
+		priorInputPixelShader = nullptr;
+		priorInputConstants = nullptr;
 		activeMaterial = 0;
 		activeRevision = 0;
 		activeSurveyClass = PreviewSurveyClass::None;
@@ -182,8 +204,51 @@ namespace NativePBR
 		activeShape.clear();
 	}
 
+	bool MaterialSidecar::BeginInputOnlyPass(ID3D11DeviceContext* a_context, ID3D11PixelShader* a_shader)
+	{
+		if (!recording || !inputOnly || !activeMaterial || !a_context || !a_shader ||
+			!drawConstants || inputPassActive || nextDraw > kSurveyDrawLimit)
+			return false;
+		std::array<ID3D11RenderTargetView*, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> boundTargets{};
+		ID3D11DepthStencilView* boundDepth = nullptr;
+		a_context->OMGetRenderTargets(static_cast<UINT>(boundTargets.size()), boundTargets.data(), &boundDepth);
+		const bool deferredPass = boundDepth && boundTargets[0] == expectedMain.get() &&
+			std::ranges::all_of(boundTargets, [](const auto* target) { return target != nullptr; });
+		for (auto* target : boundTargets)
+			if (target)
+				target->Release();
+		if (boundDepth)
+			boundDepth->Release();
+		if (!deferredPass)
+			return false;
+		const uint32_t ordinal = nextDraw;
+		try {
+			draws.push_back({ ordinal, activeMaterial, activeRevision, activeReference, activeShape,
+				(activeUnsupportedReasons & ProjectedUvReason) != 0 });
+		} catch (const std::bad_alloc&) {
+			status = "Input-only draw table allocation exhausted";
+			return false;
+		}
+		++nextDraw;
+		inputContext.copy_from(a_context);
+		a_context->PSGetShader(priorInputPixelShader.put(), nullptr, nullptr);
+		a_context->PSGetConstantBuffers(13, 1, priorInputConstants.put());
+		const Constants constants{ ordinal, 0, static_cast<uint32_t>(activeMaterial), static_cast<uint32_t>(activeMaterial >> 32) };
+		a_context->UpdateSubresource(drawConstants.get(), 0, nullptr, &constants, 0, 0);
+		ID3D11Buffer* identity = drawConstants.get();
+		a_context->PSSetConstantBuffers(13, 1, &identity);
+		a_context->PSSetShader(a_shader, nullptr, 0);
+		inputPassActive = true;
+		++replayed;
+		if ((activeUnsupportedReasons & ProjectedUvReason) != 0)
+			++projectedDrawsThisFrame;
+		return true;
+	}
+
 	void MaterialSidecar::ReplayDrawIndexed(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base, PreviewMode a_previewMode)
 	{
+		if (inputOnly)
+			return;
 		const bool projectedDraw = activeMaterial && captureProjectedUv &&
 			(activeUnsupportedReasons & ProjectedUvReason) != 0;
 		const bool surveyDraw = a_previewMode == PreviewMode::Coverage && !activeMaterial &&
@@ -320,11 +385,27 @@ namespace NativePBR
 	void MaterialSidecar::FinishFrame(ID3D11DeviceContext* a_context, ID3D11ShaderResourceView* a_finalDepth)
 	{
 		CS_GPU_PASS("NativePBR::SidecarValidateCoverage");
-		activeMaterial = 0;
+		EndPass();
 		ready = false;
 		if (!recording)
 			return;
 		recording = false;
+		if (inputOnly) {
+			if (draws.empty()) {
+				status = "No input-only PBR draws";
+				return;
+			}
+			try {
+				publishedDraws = std::make_shared<const std::vector<SidecarDraw>>(std::move(draws));
+			} catch (const std::bad_alloc&) {
+				status = "Input-only publication allocation exhausted";
+				++failedFrames;
+				return;
+			}
+			ready = true;
+			status.clear();
+			return;
+		}
 		if (!a_context || !a_finalDepth || !validation || draws.empty()) {
 			status = draws.empty() ? "No eligible PBR draws" : "Final opaque depth unavailable";
 			return;
@@ -407,7 +488,7 @@ namespace NativePBR
 	MaterialSidecar::Sources MaterialSidecar::GetSources(uint32_t a_frame) const
 	{
 		Sources sources{};
-		if (!ready || frame != a_frame)
+		if (!ready || inputOnly || frame != a_frame)
 			return sources;
 		for (size_t i = 0; i < kCount; ++i)
 			sources[i] = targets[i].texture.get();

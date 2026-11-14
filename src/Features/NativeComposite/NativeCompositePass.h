@@ -50,6 +50,7 @@ public:
 		bool valid = false;
 		bool lightingSubmitted = false;
 		bool shadowSubmitted = false;
+		bool pbrInputSubmitted = false;
 		/** @brief Reports whether the producer fence completed without device removal. */
 		bool IsComplete() const
 		{
@@ -83,6 +84,7 @@ public:
 	uint64_t FiniteOnlyPixels() const { return finiteOnlyPixels.load(); }
 	uint64_t CounterReadFailures() const { return counterReadFailures.load(); }
 	uint64_t ReconstructedPixels() const { return reconstructedPixels.load(); }
+	uint64_t PbrInputSubmissions() const { return pbrInputSubmissions.load(); }
 	~NativeComposite();
 
 private:
@@ -92,9 +94,11 @@ private:
 		std::unique_ptr<WrappedResource> shared;
 		winrt::com_ptr<ID3D12CommandAllocator> allocator;
 		winrt::com_ptr<ID3D12GraphicsCommandList> commands;
-		winrt::com_ptr<ID3D12DescriptorHeap> lightingDescriptors, shadowDescriptors;
+		winrt::com_ptr<ID3D12DescriptorHeap> lightingDescriptors, shadowDescriptors, pbrInputDescriptors;
 		winrt::com_ptr<ID3D12RootSignature> shadowRoot;
 		winrt::com_ptr<ID3D12PipelineState> shadowPipeline;
+		winrt::com_ptr<ID3D12RootSignature> pbrInputRoot;
+		winrt::com_ptr<ID3D12PipelineState> pbrInputPipeline;
 		winrt::com_ptr<ID3D12RootSignature> root;
 		winrt::com_ptr<ID3D12PipelineState> pipeline;
 		winrt::com_ptr<ID3D12Resource> counters, counterReset, counterReadback;
@@ -114,11 +118,16 @@ private:
 	ID3D12Device *pipelineDevice = nullptr, *shadowPipelineDevice = nullptr;
 	winrt::com_ptr<ID3D12RootSignature> shadowRoot;
 	winrt::com_ptr<ID3D12PipelineState> shadowPipeline;
+	winrt::com_ptr<ID3D12RootSignature> pbrInputRoot;
+	winrt::com_ptr<ID3D12PipelineState> pbrInputPipeline;
+	ID3D12Device* pbrInputPipelineDevice = nullptr;
 	std::atomic<uint64_t> completedComposites{ 0 }, acceptedPixels{ 0 }, modifiedPixels{ 0 }, visualizationPixels{ 0 }, counterReadFailures{ 0 };
 	std::atomic<uint64_t> effectiveRecoveredPixels{ 0 }, finiteOnlyPixels{ 0 }, reconstructedPixels{ 0 };
+	std::atomic<uint64_t> pbrInputSubmissions{ 0 };
 	DX12Native::VideoMemoryBudget videoBudget;
 	bool InitializeLighting(ID3D12Device* a_device);
 	bool InitializeShadow(ID3D12Device* a_device);
+	bool InitializePbrInput(ID3D12Device* a_device);
 	std::string status = "Not captured";
 	std::string shadowStatus = "Independent shadow layer not captured";
 	std::string shadowPipelineFailure;
