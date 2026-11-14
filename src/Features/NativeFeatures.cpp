@@ -2,19 +2,301 @@
 #include "Features/DX12NativeScene/DX12NativeScene.h"
 #include "Features/LightLimitFix.h"
 #include "Features/LightLimitFix/ShadowCasterManager.h"
+#include "Features/NativePBR/MaterialRouting.h"
+#include "Features/NativePBR/PBRHookDispatcher.h"
+#include "Utils/D3D.h"
+#include "Utils/UI.h"
 #include "Features/NativeLighting/NativeLighting.h"
+#include "Features/NativeComposite/NativeComposite.h"
 #include "Globals.h"
 #include "State.h"
-#include "TruePBR.h"
+#include "ShaderCache.h"
+#include "Features/NativePBR/NativePBRCompiler.h"
+#include "Features/NativePBR/MaterialService.h"
+#include "Features/NativePBR/GpuMaterialResources.h"
+#include "Features/NativePBR/SurfaceFramePublisher.h"
 #include "Utils/PointLightFlags.h"
 #include <BS_thread_pool.hpp>
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <limits>
+#include <stdexcept>
+
+struct NativePBRFeature::MaterialWorker
+{
+	NativePBR::RecipeCache cache;
+	NativePBR::MaterialService service;
+	NativePBR::GpuMaterialWorker gpu;
+	std::mutex mutex;
+	MaterialSummary summary;
+	std::atomic<bool> active{ false }, more{ false };
+	std::atomic<uint64_t> revision{ 0 };
+	std::atomic<std::shared_ptr<const NativePBR::RecipeGeneration>> published;
+};
+
+NativePBRFeature::NativePBRFeature() : materialWorker(std::make_shared<MaterialWorker>()),
+	surfacePublisher(std::make_unique<NativePBR::SurfaceFramePublisher>()) {}
+NativePBRFeature::~NativePBRFeature() = default;
+
+void NativePBRFeature::SetupResources()
+{
+	if (SelectedBackend() == NativePBR::Backend::NativeDX12)
+		materialCatalog.Load();
+}
+
+std::shared_ptr<const NativePBR::RecipeGeneration> NativePBRFeature::GetNativeRecipes() const
+{
+	if (!materialWorker)
+		return {};
+	const auto generation = materialWorker->published.load(std::memory_order_acquire);
+	return generation && generation->revision == materialRegistry.Revision() ? generation : nullptr;
+}
+
+std::shared_ptr<const NativePBR::MaterialPublication> NativePBRFeature::GetMaterialPublication() const
+{
+	return materialWorker ? materialWorker->service.GetSnapshotForRegistry(materialRegistry) : nullptr;
+}
+
+std::shared_ptr<const NativePBR::GpuMaterialResources> NativePBRFeature::GetNativeGpuMaterials() const
+{
+	return materialWorker ? materialWorker->gpu.Get() : nullptr;
+}
+
+NativePBRFeature::MaterialSummary NativePBRFeature::GetMaterialSummary() const
+{
+	MaterialSummary result;
+	if (materialWorker) {
+		std::scoped_lock lock(materialWorker->mutex);
+		result = materialWorker->summary;
+	}
+	return result;
+}
+
+void NativePBRFeature::PollMaterialRegistry()
+{
+	const auto worker = materialWorker;
+	if (worker->active.load(std::memory_order_acquire) ||
+		(!worker->more.load(std::memory_order_relaxed) &&
+			worker->revision.load(std::memory_order_relaxed) == materialRegistry.Revision()))
+		return;
+	worker->active.store(true, std::memory_order_release);
+	try {
+		static BS::thread_pool<> pool{ 1 };
+		pool.detach_task([worker, registry = &materialRegistry, catalog = &materialCatalog] {
+			try {
+				if (auto changes = registry->ExportChanges(worker->cache.Revision(), worker->cache.KnownRevisions())) {
+					worker->cache.Update(*changes);
+					const auto generation = NativePBR::PublishRecipes(worker->cache, *changes,
+						worker->published.load(std::memory_order_relaxed));
+					if (!worker->service.Publish(generation, catalog->GetSnapshot(), changes->instanceHints, changes->instanceEpoch))
+						throw std::runtime_error("NativePBR material publication rejected a stale generation");
+					worker->published.store(generation, std::memory_order_release);
+					worker->more.store(changes->hasMore, std::memory_order_relaxed);
+				}
+				MaterialSummary summary;
+				summary.recipes = worker->cache.Recipes().size();
+				summary.pending = worker->cache.Pending();
+				for (const auto& [identity, recipe] : worker->cache.Recipes()) {
+					if (recipe.issues & ~NativePBR::UnknownOpacity)
+						++summary.incomplete;
+					for (const auto& texture : recipe.textures) {
+						if (!texture.resource.texture2D)
+							continue;
+						++summary.observedTextures;
+						if (texture.resource.miscFlags & D3D11_RESOURCE_MISC_SHARED_NTHANDLE)
+							++summary.sharedCandidates;
+					}
+					for (size_t issue = 0; issue < summary.issues.size(); ++issue)
+						if (recipe.issues & (1u << issue))
+							++summary.issues[issue];
+				}
+				{
+					std::scoped_lock lock(worker->mutex);
+					worker->summary = summary;
+				}
+				worker->revision.store(worker->cache.Revision(), std::memory_order_relaxed);
+			} catch (...) {
+				{
+					std::scoped_lock lock(worker->mutex);
+					worker->summary.failed = true;
+				}
+				worker->revision.store(registry->Revision(), std::memory_order_relaxed);
+				worker->more.store(false, std::memory_order_relaxed);
+			}
+			worker->active.store(false, std::memory_order_release);
+		});
+	} catch (...) {
+		worker->active.store(false, std::memory_order_release);
+		{
+			std::scoped_lock lock(worker->mutex);
+			worker->summary.failed = true;
+		}
+		worker->revision.store(materialRegistry.Revision(), std::memory_order_relaxed);
+		worker->more.store(false, std::memory_order_relaxed);
+	}
+}
+
+void NativePBRFeature::Prepass()
+{
+	if (SelectedBackend() != NativePBR::Backend::NativeDX12 || !enabled.load(std::memory_order_relaxed))
+		return;
+	PollMaterialRegistry();
+	if (auto backend = globals::features::dx12NativeScene.GetGraphicsBackend())
+		if (auto recipes = GetNativeRecipes(); recipes && recipes->batchesComplete)
+			materialWorker->gpu.Request(*backend, std::move(recipes));
+	materialWorker->gpu.Advance();
+}
 
 // Backend selection is the ONLY automatic execution switch. Feature toggles
 // are explicit user choices, never material/caster/light validity gates.
-bool NativePBRFeature::IsActive() const { return loaded && enabled.load(std::memory_order_relaxed) && globals::features::dx12NativeScene.OwnsNativeFeatures(); }
+void NativePBRFeature::LatchBackendAtBoot()
+{
+	std::call_once(backendLatchOnce, [this] {
+		bootSnapshot.Latch(backendSettings);
+		bootBackend.store(NativePBR::SelectBackend(backendSettings.NativeBackend,
+			globals::features::dx12NativeScene.IsNativeBackendRequested(), globals::game::isVR), std::memory_order_relaxed);
+		backendLatched.store(true, std::memory_order_release);
+	});
+}
+
+NativePBR::Backend NativePBRFeature::SelectedBackend() const
+{
+	if (backendLatched.load(std::memory_order_acquire))
+		return bootBackend.load(std::memory_order_relaxed);
+	return NativePBR::SelectBackend(backendSettings.NativeBackend,
+		globals::features::dx12NativeScene.IsNativeBackendRequested(), globals::game::isVR);
+}
+
+void NativePBRFeature::PostPostLoad()
+{
+	LatchBackendAtBoot();
+	if (SelectedBackend() == NativePBR::Backend::NativeDX12)
+		PBRHooks::Install();
+}
+
+bool NativePBRFeature::IsActive() const
+{
+	return NativePBR::ResolveRouting({
+		.backend = SelectedBackend(),
+		.nativeFeatureEnabled = enabled.load(std::memory_order_relaxed),
+		.featureLoaded = loaded,
+		.sceneOwnsNative = globals::features::dx12NativeScene.OwnsNativeFeatures(),
+		.scope = NativePBR::MaterialScope::OpaqueStaticMesh
+	}).owner == NativePBR::RenderingOwner::Native;
+}
+
+bool NativePBRFeature::OwnsInputOnlyShading() const
+{
+	return !globals::game::isVR && IsActive() && experimentalInputOnly.load(std::memory_order_relaxed) &&
+		globals::features::nativeComposite.IsEnabled();
+}
+
+void NativePBRFeature::PrepareSidecar(ID3D11Device* a_device)
+{
+	if (!globals::game::isVR)
+		materialSidecar.Prepare(a_device);
+}
+
+void NativePBRFeature::BeginOpaqueSidecar()
+{
+	if (!IsActive() || globals::game::isVR || !globals::game::renderer || !globals::game::graphicsState)
+		return;
+	const auto& target = globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGET::kMAIN];
+	auto* texture = Util::AsReal(target.texture);
+	if (!texture)
+		return;
+	D3D11_TEXTURE2D_DESC desc{};
+	texture->GetDesc(&desc);
+	materialSidecar.BeginFrame(globals::d3d::device, globals::d3d::context, Util::AsReal(target.RTV),
+		globals::game::graphicsState->GetFrameCount(), desc.Width, desc.Height,
+		captureProjectedUv.load(std::memory_order_relaxed), OwnsInputOnlyShading());
+}
+
+void NativePBRFeature::BeginSidecarPass(uint64_t a_identity, uint64_t a_revision, std::string a_referenceKey,
+	std::string a_shapeName, NativePBR::PreviewSurveyClass a_surveyClass, uint32_t a_unsupportedReasons)
+{
+	materialSidecar.BeginPass(a_identity, a_revision, std::move(a_referenceKey), std::move(a_shapeName),
+		a_surveyClass, a_unsupportedReasons);
+}
+void NativePBRFeature::EndSidecarPass() { materialSidecar.EndPass(); }
+bool NativePBRFeature::TryInputOnlyPass(const RE::BSShader& a_shader, uint32_t a_descriptor)
+{
+	if (!materialSidecar.InputOnly() || !IsActive() || globals::game::isVR)
+		return false;
+	const bool nativeDxilAvailable = std::filesystem::exists("Data/Shaders/NativeComposite/NativePBRInput.dxil");
+	auto* shader = nativeDxilAvailable && globals::shaderCache ?
+		globals::shaderCache->GetNativePBRInputPixelShader(a_shader, a_descriptor) : nullptr;
+	return materialSidecar.StageInputOnlyShader(shader);
+}
+bool NativePBRFeature::BeginInputOnlyDraw(ID3D11DeviceContext* a_context)
+{
+	return IsActive() && !globals::game::isVR && materialSidecar.BeginInputOnlyPass(a_context);
+}
+void NativePBRFeature::EndInputOnlyDraw() { materialSidecar.EndInputOnlyDraw(); }
+void NativePBRFeature::ReplaySidecarDraw(ID3D11DeviceContext* a_context, UINT a_count, UINT a_first, INT a_base)
+{
+	if (IsActive() && !globals::game::isVR)
+	{
+		const auto mode = previewOpaqueReplacement.load(std::memory_order_relaxed) ?
+			static_cast<NativePBR::PreviewMode>(1u + std::min(previewVisualization.load(std::memory_order_relaxed), 2u)) :
+			NativePBR::PreviewMode::Off;
+		materialSidecar.ReplayDrawIndexed(a_context, a_count, a_first, a_base, mode);
+	}
+}
+void NativePBRFeature::FinishOpaqueSidecar(ID3D11ShaderResourceView* a_finalDepth)
+{
+	materialSidecar.FinishFrame(globals::d3d::context, a_finalDepth);
+}
+void NativePBRFeature::BindSurfaceInterop(ID3D11Device5* a_device11, ID3D11DeviceContext4* a_context11,
+	ID3D12Device* a_device12, ID3D12CommandQueue* a_queue12)
+{
+	if (!a_device11 || !a_context11 || !a_device12 || !a_queue12) {
+		surfacePublisher.reset();
+		surfaceDevice11 = nullptr;
+		surfaceContext11 = nullptr;
+		surfaceDevice12 = nullptr;
+		surfaceQueue12 = nullptr;
+		return;
+	}
+	if (!surfacePublisher || surfaceDevice11.get() != a_device11 || surfaceContext11.get() != a_context11 ||
+		surfaceDevice12.get() != a_device12 || surfaceQueue12.get() != a_queue12)
+		surfacePublisher = std::make_unique<NativePBR::SurfaceFramePublisher>();
+	surfaceDevice11.copy_from(a_device11);
+	surfaceContext11.copy_from(a_context11);
+	surfaceDevice12.copy_from(a_device12);
+	surfaceQueue12.copy_from(a_queue12);
+}
+
+void NativePBRFeature::OnOpaqueRasterReady(const OpaqueRasterInputs&)
+{
+	if (!IsActive() || globals::game::isVR || !globals::game::graphicsState ||
+		!globals::features::nativeComposite.WantsNativePbrSurfaceDiagnostic() || !surfacePublisher ||
+		!surfaceDevice11 || !surfaceContext11 || !surfaceDevice12 || !surfaceQueue12)
+		return;
+	const auto frame = globals::game::graphicsState->GetFrameCount();
+	const auto attachments = materialSidecar.GetSources(frame);
+	const auto draws = materialSidecar.GetDrawTable();
+	if (!attachments[0] || !draws || draws->empty())
+		return;
+	NativePBR::SurfaceFramePublisher::Sources sources;
+	sources.textures = attachments;
+	sources.draws = draws;
+	sources.frame = frame;
+	sources.nativeOwnedDraws = true;
+	surfacePublisher->Publish(surfaceDevice11.get(), surfaceContext11.get(),
+		surfaceDevice12.get(), surfaceQueue12.get(), sources);
+}
+
+std::shared_ptr<const NativePBR::SurfaceFrame> NativePBRFeature::GetSurfaceFrame(uint32_t a_frame) const
+{
+	return IsActive() && surfacePublisher ? surfacePublisher->Get(a_frame) : nullptr;
+}
+
+NativePBR::MaterialSidecar::Sources NativePBRFeature::GetSidecarSources(uint32_t a_frame) const
+{
+	return IsActive() ? materialSidecar.GetSources(a_frame) : NativePBR::MaterialSidecar::Sources{};
+}
 bool NativeLLFFeature::IsActive() const { return loaded && enabled.load(std::memory_order_relaxed) && globals::features::dx12NativeScene.OwnsNativeFeatures(); }
 bool NativeSCMFeature::IsActive() const { return loaded && enabled.load(std::memory_order_relaxed) && globals::features::dx12NativeScene.OwnsNativeFeatures(); }
 
@@ -434,9 +716,118 @@ namespace
 
 void NativePBRFeature::DrawSettings()
 {
+	bool nativeBackend = backendSettings.NativeBackend;
+	if (ImGui::Checkbox("Use DX12-Native PBR backend (restart required)", &nativeBackend))
+		backendSettings.NativeBackend = nativeBackend;
+	ImGui::TextDisabled("Boot PBR backend: %s", SelectedBackend() == NativePBR::Backend::NativeDX12 ? "DX12-Native" : "Legacy DX11");
+	if (bootSnapshot.HasPendingChange(backendSettings, &BackendSettings::NativeBackend))
+		Util::Text::RestartNeeded("%s", "PBR backend change pending restart");
 	DrawOwnership("Enable Native PBR", enabled, IsActive());
-	ImGui::TextDisabled("Consumes TruePBR's live recipe registry in the native material worker.");
-	ImGui::TextDisabled("Texture source and prepared material controls remain in DX12 Native Scene.");
+	if (const auto catalog = materialCatalog.GetSnapshot())
+		ImGui::Text("Native JSON sources: %zu texture sets / %zu MATO | rejected: %zu / %zu",
+			catalog->textureSets.size(), catalog->materialObjects.size(),
+			catalog->rejectedTextureSets, catalog->rejectedMaterialObjects);
+	if (ImGui::TreeNode("Native recipe issues")) {
+		const auto summary = GetMaterialSummary();
+		ImGui::Text("Recipes: %zu | pending: %zu | incomplete: %zu", summary.recipes, summary.pending, summary.incomplete);
+		if (summary.failed)
+			ImGui::TextDisabled("Recipe compilation failed; inspect the native material log.");
+		for (size_t index = 0; index < summary.issues.size(); ++index) {
+			if (summary.issues[index] == 0)
+				continue;
+			const auto name = NativePBR::kRecipeIssueNames[index];
+			ImGui::BulletText("%.*s: %zu", static_cast<int>(name.size()), name.data(), summary.issues[index]);
+		}
+		ImGui::TreePop();
+	}
+	ImGui::TextDisabled("NativePBR owns live material recipes; current engine observations still originate in TruePBR hooks.");
+	const auto materialView = GetMaterialPublication();
+	const auto gpuMaterials = GetNativeGpuMaterials();
+	ImGui::Text("Material publication: %llu | instance bindings: %zu",
+		materialView ? materialView->serial : 0, materialView ? materialView->instances.size() : 0);
+	ImGui::Text("DX12 GPU materials: %zu | fully resident: %u | partial: %u | limited: %u",
+		gpuMaterials ? gpuMaterials->entries.size() : 0, gpuMaterials ? gpuMaterials->fullyResident : 0,
+		gpuMaterials ? gpuMaterials->partiallyResident : 0, gpuMaterials ? gpuMaterials->featureLimited : 0);
+	if (materialWorker && !materialWorker->gpu.Failure().empty())
+		ImGui::TextDisabled("Native material GPU preparation: %s", materialWorker->gpu.Failure().c_str());
+	ImGui::Text("%s: %llu | rejected: %llu", materialSidecar.InputOnly() ? "Input-only raster draws" : "Sidecar raster draws",
+		materialSidecar.ReplayedDraws(), materialSidecar.RejectedDraws());
+	ImGui::Text("Last frame's PBR surfaces: %zu | frame: %u", materialSidecar.PublishedDrawCount(), materialSidecar.GetFrame());
+	if (surfacePublisher) {
+		const auto& publication = surfacePublisher->GetDiagnostics();
+		ImGui::Text("DX12 surface publications: %llu | busy slots: %llu | budget deferrals: %llu",
+			publication.published, publication.busySlots, publication.budgetDeferrals);
+		ImGui::TextDisabled("Surface publisher: %s", publication.status.c_str());
+	}
+	if (materialSidecar.InputOnly())
+		ImGui::Text("FXC input draws this frame: %u | shader unavailable: %u | RT rejected: %u",
+			materialSidecar.InputOnlyDrawsThisFrame(), materialSidecar.InputShaderMissesThisFrame(),
+			materialSidecar.InputTargetRejectionsThisFrame());
+	if (materialSidecar.InputOnly())
+		ImGui::Text("Geometry passes: %u | PBR candidates: %u | missing identity: %u | draw limit: %u",
+			materialSidecar.SetupPassesThisFrame(), materialSidecar.PbrCandidatesThisFrame(),
+			materialSidecar.MissingPbrIdentitiesThisFrame(), materialSidecar.InputCapacityMissesThisFrame());
+	if (materialSidecar.InputOnly()) {
+		const auto reasons = materialSidecar.UnsupportedReasonsThisFrame();
+		ImGui::Text("Unsupported observations: %u | projected: %u | model-space: %u | landscape: %u | other: %u",
+			materialSidecar.UnsupportedDrawsThisFrame(), reasons[0], reasons[1], reasons[2], reasons[3]);
+	}
+	bool projected = captureProjectedUv.load(std::memory_order_relaxed);
+	bool inputOnly = experimentalInputOnly.load(std::memory_order_relaxed);
+	if (ImGui::Checkbox("Run input-only FXC with DX12 experimental evaluation", &inputOnly))
+		experimentalInputOnly.store(inputOnly, std::memory_order_relaxed);
+	if (inputOnly)
+		ImGui::TextDisabled("NativePBR owns recipes and input-only FXC; engine material hooks remain shared during migration.");
+	if (ImGui::Checkbox("Capture ProjectedUV material inputs (experimental)", &projected))
+		captureProjectedUv.store(projected, std::memory_order_relaxed);
+	if (projected) {
+		ImGui::Text("ProjectedUV %s draws this frame: %u/%u", inputOnly ? "input-only" : "sidecar",
+			materialSidecar.ProjectedDrawsThisFrame(), materialSidecar.SurveyLimit());
+		if (!inputOnly)
+			ImGui::TextDisabled("Input capture only; projected shading remains on legacy TruePBR.");
+	}
+	bool preview = previewOpaqueReplacement.load(std::memory_order_relaxed);
+	ImGui::BeginDisabled(inputOnly);
+	if (ImGui::Checkbox("Preview opaque PBR replacement (temporary)", &preview))
+		previewOpaqueReplacement.store(preview, std::memory_order_relaxed);
+	ImGui::EndDisabled();
+	if (preview) {
+		int mode = static_cast<int>(std::min(previewVisualization.load(std::memory_order_relaxed), 2u));
+		if (ImGui::Combo("Preview visualization", &mode, "Material identity\0UV / derivatives\0Coverage comparison\0"))
+			previewVisualization.store(static_cast<uint32_t>(mode), std::memory_order_relaxed);
+		switch (mode) {
+		case 1:
+			ImGui::TextDisabled("R/G: wrapped UV; B: UV derivative footprint. White: UV grid.");
+			break;
+		case 2:
+			ImGui::TextDisabled("Green: registered PBR; amber: PBR candidate without identity.");
+			ImGui::TextDisabled("Blue: ordinary static. Cyan: projected UV. Yellow: model-space normals.");
+			ImGui::TextDisabled("Magenta: landscape. Purple: other PBR exclusions.");
+			ImGui::TextDisabled("Survey-only geometry is never admitted to native shading.");
+			break;
+		default:
+			ImGui::TextDisabled("Stable per-material colors and UV grid.");
+			break;
+		}
+	}
+	if (preview && !materialSidecar.PreviewReady())
+		ImGui::TextDisabled("Preview shader unavailable; check FXC compile log.");
+	ImGui::Text("Preview draws: %llu", materialSidecar.PreviewDraws());
+	if (preview && previewVisualization.load(std::memory_order_relaxed) == 2u)
+	{
+		ImGui::Text("Unregistered PBR candidate draws: %llu", materialSidecar.PreviewMissingIdentities());
+		ImGui::Text("Ordinary static preview draws: %llu | unsupported PBR: %llu",
+			materialSidecar.PreviewOrdinaryDraws(), materialSidecar.PreviewUnsupportedDraws());
+		const auto reasons = materialSidecar.UnsupportedReasonsThisFrame();
+		ImGui::Text("This frame: projected UV %u | model-space normals %u", reasons[0], reasons[1]);
+		ImGui::Text("Landscape %u | other %u (overlaps counted)", reasons[2], reasons[3]);
+		ImGui::Text("Survey-only draws this frame: %u/%u", materialSidecar.SurveyDrawsThisFrame(), materialSidecar.SurveyLimit());
+	}
+	ImGui::TextDisabled("Depth-equal raster preview only; no GPU readback or native PBR lighting.");
+	if (!materialSidecar.Status().empty())
+		ImGui::TextWrapped("Sidecar: %s", materialSidecar.Status().c_str());
+	ImGui::TextDisabled(inputOnly ? "Experimental SM6.5 geometry shading; texture PBR and projected sampling not wired yet." :
+		"Commit 3 captures surface identity only; native shading is not enabled yet.");
 }
 void NativeLLFFeature::DrawSettings()
 {
@@ -491,7 +882,16 @@ void NativeSCMFeature::DrawSettings()
 	ImGui::TextDisabled("Uncovered rigid CPU-backed casters may enter the native DX12 geometry mailbox.");
 	ImGui::TextDisabled("DX12 owns BLAS/TLAS and RayQuery; moving and skinned casters still need updates.");
 }
-void NativePBRFeature::LoadSettings(json& j) { enabled.store(j.value("Enabled", true), std::memory_order_relaxed); }
+void NativePBRFeature::LoadSettings(json& j)
+{
+	backendSettings.NativeBackend = j.value("NativeBackend", true);
+	enabled.store(j.value("Enabled", true), std::memory_order_relaxed);
+	captureProjectedUv.store(j.value("CaptureProjectedUv", false), std::memory_order_relaxed);
+	experimentalInputOnly.store(j.value("ExperimentalInputOnly", false), std::memory_order_relaxed);
+	previewOpaqueReplacement.store(j.value("PreviewOpaqueReplacement", false), std::memory_order_relaxed);
+	previewVisualization.store(static_cast<uint32_t>(std::clamp(j.value("PreviewVisualization", 0), 0, 2)),
+		std::memory_order_relaxed);
+}
 void NativeLLFFeature::LoadSettings(json& j)
 {
 	enabled.store(j.value("Enabled", true), std::memory_order_relaxed);
@@ -505,7 +905,15 @@ void NativeLLFFeature::LoadSettings(json& j)
 		std::memory_order_relaxed);
 }
 void NativeSCMFeature::LoadSettings(json& j) { enabled.store(j.value("Enabled", true), std::memory_order_relaxed); }
-void NativePBRFeature::SaveSettings(json& j) { j = { { "Enabled", enabled.load(std::memory_order_relaxed) } }; }
+void NativePBRFeature::SaveSettings(json& j)
+{
+	j = { { "Enabled", enabled.load(std::memory_order_relaxed) },
+		{ "NativeBackend", backendSettings.NativeBackend },
+		{ "CaptureProjectedUv", captureProjectedUv.load(std::memory_order_relaxed) },
+		{ "ExperimentalInputOnly", experimentalInputOnly.load(std::memory_order_relaxed) },
+		{ "PreviewOpaqueReplacement", previewOpaqueReplacement.load(std::memory_order_relaxed) },
+		{ "PreviewVisualization", previewVisualization.load(std::memory_order_relaxed) } };
+}
 void NativeLLFFeature::SaveSettings(json& j)
 {
 	j = { { "Enabled", enabled.load(std::memory_order_relaxed) },
@@ -517,8 +925,78 @@ void NativeLLFFeature::SaveSettings(json& j)
 void NativeSCMFeature::SaveSettings(json& j) { j = { { "Enabled", enabled.load(std::memory_order_relaxed) } }; }
 json NativePBRFeature::GetDiagnostics()
 {
-	return { { "selected", enabled.load() }, { "native", IsActive() },
-		{ "recipeRevision", globals::features::truePBR.nativeRegistry.Revision() } };
+	const auto recipes = GetNativeRecipes();
+	const auto materialView = GetMaterialPublication();
+	const auto gpuMaterials = GetNativeGpuMaterials();
+	const auto catalog = materialCatalog.GetSnapshot();
+	const auto summary = GetMaterialSummary();
+	json issueCounts = json::object();
+	for (size_t index = 0; index < summary.issues.size(); ++index)
+		if (summary.issues[index] != 0)
+			issueCounts[std::string(NativePBR::kRecipeIssueNames[index])] = summary.issues[index];
+	const auto state = NativePBR::ResolveRouting({
+		.backend = SelectedBackend(),
+		.nativeFeatureEnabled = enabled.load(std::memory_order_relaxed),
+		.featureLoaded = loaded,
+		.sceneOwnsNative = globals::features::dx12NativeScene.OwnsNativeFeatures(),
+		.materialInputsAvailable = recipes && !recipes->recipes.empty(),
+		.scope = NativePBR::MaterialScope::OpaqueStaticMesh
+	});
+	return { { "selected", enabled.load() }, { "native", state.owner == NativePBR::RenderingOwner::Native },
+		{ "nativeJsonTextureSets", catalog ? catalog->textureSets.size() : 0 },
+		{ "nativeJsonMaterialObjects", catalog ? catalog->materialObjects.size() : 0 },
+		{ "nativeJsonRejectedTextureSets", catalog ? catalog->rejectedTextureSets : 0 },
+		{ "nativeJsonRejectedMaterialObjects", catalog ? catalog->rejectedMaterialObjects : 0 },
+		{ "backendRestartPending", bootSnapshot.HasPendingChange(backendSettings, &BackendSettings::NativeBackend) },
+		{ "selectedBackend", state.backend == NativePBR::Backend::NativeDX12 ? "dx12-native" : "dx11-legacy" },
+		{ "experimentalInputOnly", experimentalInputOnly.load(std::memory_order_relaxed) },
+		{ "exclusiveInputOnlyShading", OwnsInputOnlyShading() },
+		{ "captureProjectedUv", captureProjectedUv.load(std::memory_order_relaxed) },
+		{ "projectedDrawsThisFrame", materialSidecar.ProjectedDrawsThisFrame() },
+		{ "inputOnlyAdmittedDraws", materialSidecar.InputOnlyDrawsThisFrame() },
+		{ "inputOnlyShaderMisses", materialSidecar.InputShaderMissesThisFrame() },
+		{ "inputOnlyTargetRejections", materialSidecar.InputTargetRejectionsThisFrame() },
+		{ "inputOnlyDrawLimitMisses", materialSidecar.InputCapacityMissesThisFrame() },
+		{ "unsupportedObservedDraws", materialSidecar.UnsupportedDrawsThisFrame() },
+		{ "setupPassesThisFrame", materialSidecar.SetupPassesThisFrame() },
+		{ "pbrCandidatesThisFrame", materialSidecar.PbrCandidatesThisFrame() },
+		{ "missingPbrIdentitiesThisFrame", materialSidecar.MissingPbrIdentitiesThisFrame() },
+		{ "recipeRevision", materialRegistry.Revision() },
+		{ "recipeCount", summary.recipes }, { "recipePending", summary.pending },
+		{ "recipeIncomplete", summary.incomplete }, { "recipeCompileFailed", summary.failed },
+		{ "recipeIssueCounts", std::move(issueCounts) },
+		{ "materialPublicationSerial", materialView ? materialView->serial : 0 },
+		{ "materialInstanceBindings", materialView ? materialView->instances.size() : 0 },
+		{ "gpuMaterialCount", gpuMaterials ? gpuMaterials->entries.size() : 0 },
+		{ "gpuFullyResident", gpuMaterials ? gpuMaterials->fullyResident : 0 },
+		{ "gpuPartiallyResident", gpuMaterials ? gpuMaterials->partiallyResident : 0 },
+		{ "gpuFeatureLimited", gpuMaterials ? gpuMaterials->featureLimited : 0 },
+		{ "gpuMaterialFailure", materialWorker ? materialWorker->gpu.Failure() : std::string{} },
+		{ "surfacePublication", surfacePublisher ? json{ { "published", surfacePublisher->GetDiagnostics().published },
+			{ "busySlots", surfacePublisher->GetDiagnostics().busySlots },
+			{ "budgetDeferrals", surfacePublisher->GetDiagnostics().budgetDeferrals },
+			{ "invalidDrawTables", surfacePublisher->GetDiagnostics().invalidDrawTables },
+			{ "unavailableSources", surfacePublisher->GetDiagnostics().unavailableSources },
+			{ "status", surfacePublisher->GetDiagnostics().status } } : json::object() },
+		{ "previewOpaqueReplacement", previewOpaqueReplacement.load(std::memory_order_relaxed) },
+		{ "previewVisualization", previewVisualization.load(std::memory_order_relaxed) },
+		{ "previewDraws", materialSidecar.PreviewDraws() },
+		{ "previewMissingIdentities", materialSidecar.PreviewMissingIdentities() },
+		{ "previewOrdinaryDraws", materialSidecar.PreviewOrdinaryDraws() },
+		{ "previewUnsupportedDraws", materialSidecar.PreviewUnsupportedDraws() },
+		{ "previewUnsupportedReasons", materialSidecar.PreviewUnsupportedReasons() },
+		{ "unsupportedReasonsThisFrame", materialSidecar.UnsupportedReasonsThisFrame() },
+		{ "surveyDrawsThisFrame", materialSidecar.SurveyDrawsThisFrame() },
+		{ "shaderDomainPolicy", state.shaderDomain == NativePBR::ShaderDomain::NativePBRInput ? "native-pbr-input" :
+			(state.shaderDomain == NativePBR::ShaderDomain::Unavailable ? "unmigrated" : "legacy-true-pbr") },
+		{ "materialInputsAvailable", state.materialInputsAvailable },
+		{ "publishedNativeMaterialGeneration", state.publishedNativeMaterialGeneration },
+		{ "renderingOwnerPolicy", state.owner == NativePBR::RenderingOwner::Native ? "native" :
+			(state.owner == NativePBR::RenderingOwner::NativeUnavailable ? "native-unavailable" : "legacy") },
+		{ "legacyComparisonRequested", state.legacyComparisonRequested },
+		{ "materialSidecar", { { "frame", materialSidecar.GetFrame() }, { "surfaces", materialSidecar.PublishedDrawCount() },
+			{ "replayedDraws", materialSidecar.ReplayedDraws() }, { "rejectedDraws", materialSidecar.RejectedDraws() },
+			{ "failedFrames", materialSidecar.FailedFrames() }, { "status", materialSidecar.Status() } } } };
 }
 json NativeLLFFeature::GetDiagnostics()
 {

@@ -14,6 +14,7 @@
 #include "Features/IBL.h"
 #include "Features/LightLimitFix.h"
 #include "Features/LightLimitFix/ShadowCasterManager.h"
+#include "Features/NativeFeatures.h"
 #include "Features/ScreenSpaceGI.h"
 #include "Features/Skylighting.h"
 #include "Features/SubsurfaceScattering.h"
@@ -349,6 +350,7 @@ void Deferred::StartDeferred()
 	}
 
 	PrepassPasses();
+	globals::features::nativePBR.BeginOpaqueSidecar();
 
 	OverrideBlendStates();
 
@@ -408,6 +410,7 @@ void Deferred::DeferredPasses()
 	// dynamic-resolution-sized copy here left it stale and caused hard water intersections.
 	context->CopyResource(Util::AsReal(finalDepthCopy.texture), Util::AsReal(depth.texture));
 	sceneDepthFinal = true;
+	globals::features::nativePBR.FinishOpaqueSidecar(Util::GetCurrentSceneDepthSRV(false));
 	auto reflectance = renderer->GetRuntimeData().renderTargets[REFLECTANCE];
 
 	auto motionVectors = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];

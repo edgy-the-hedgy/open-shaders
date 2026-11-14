@@ -1,4 +1,5 @@
 #include "BSLightingShaderMaterialPBRLandscape.h"
+#include "Features/NativeFeatures.h"
 
 BSLightingShaderMaterialPBRLandscape::BSLightingShaderMaterialPBRLandscape()
 {
@@ -10,7 +11,7 @@ BSLightingShaderMaterialPBRLandscape::BSLightingShaderMaterialPBRLandscape()
 
 BSLightingShaderMaterialPBRLandscape::~BSLightingShaderMaterialPBRLandscape()
 {
-	globals::features::truePBR.nativeRegistry.Forget(this);
+	globals::features::nativePBR.materialRegistry.Forget(this);
 	std::lock_guard lock(AllMutex);
 	All.erase(this);
 }
@@ -67,8 +68,8 @@ void BSLightingShaderMaterialPBRLandscape::CopyMembers(RE::BSShaderMaterial* tha
 
 	std::lock_guard lock(AllMutex);
 	All[this] = All[pbrThat];
-	globals::features::truePBR.nativeRegistry.MarkDirty(this);
-	globals::features::truePBR.nativeRegistry.MarkDirty(pbrThat);
+	globals::features::nativePBR.materialRegistry.MarkDirty(this);
+	globals::features::nativePBR.materialRegistry.MarkDirty(pbrThat);
 }
 
 RE::BSShaderMaterial::Feature BSLightingShaderMaterialPBRLandscape::GetFeature() const
@@ -94,7 +95,7 @@ void BSLightingShaderMaterialPBRLandscape::ClearTextures()
 	}
 	terrainOverlayTexture.reset();
 	terrainNoiseTexture.reset();
-	globals::features::truePBR.nativeRegistry.MarkDirty(this);
+	globals::features::nativePBR.materialRegistry.MarkDirty(this);
 }
 
 void BSLightingShaderMaterialPBRLandscape::ReceiveValuesFromRootMaterial(bool skinned, bool rimLighting, bool softLighting, bool backLighting, bool MSN)
@@ -125,7 +126,7 @@ void BSLightingShaderMaterialPBRLandscape::ReceiveValuesFromRootMaterial(bool sk
 		}
 	}
 	if (changed)
-		globals::features::truePBR.nativeRegistry.MarkDirty(this);
+		globals::features::nativePBR.materialRegistry.MarkDirty(this);
 }
 
 uint32_t BSLightingShaderMaterialPBRLandscape::GetTextures(RE::NiSourceTexture** textures)

@@ -7,6 +7,7 @@
 #include "Hooks.h"
 #include "LinearLighting.h"
 #include "Menu.h"
+#include "NativeFeatures.h"
 #include "RenderDoc.h"
 #include "ScreenshotFeature.h"
 #include "State.h"
@@ -3001,6 +3002,9 @@ void Upscaling::CreateProxySwapChainDirect(IDXGIAdapter* adapter, DXGI_SWAP_CHAI
 void Upscaling::CreateProxyInterop()
 {
 	dx12SwapChain.CreateInterop();
+	globals::features::nativePBR.BindSurfaceInterop(dx12SwapChain.d3d11Device.get(),
+		dx12SwapChain.d3d11Context.get(), dx12SwapChain.d3d12Device.get(),
+		dx12SwapChain.commandQueue.get());
 }
 
 IDXGISwapChain* Upscaling::GetProxySwapChain()
@@ -3677,7 +3681,8 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 		upscaling.nativeCompositeFrame = globals::features::nativeComposite.Capture(upscaling.dx12SwapChain.d3d11Device.get(),
 			upscaling.dx12SwapChain.d3d11Context.get(), upscaling.dx12SwapChain.d3d12Device.get(),
 			upscaling.dx12SwapChain.commandQueue.get(), scene, globals::state->frameCount,
-			static_cast<uint32_t>(renderSize.x), static_cast<uint32_t>(renderSize.y), transfer);
+			static_cast<uint32_t>(renderSize.x), static_cast<uint32_t>(renderSize.y), transfer,
+			globals::features::nativePBR.GetSurfaceFrame(globals::state->frameCount));
 		if (upscaling.nativeCompositeFrame) {
 			++upscaling.nativeCompositeCaptures;
 			upscaling.nativeCompositeFrameId = upscaling.nativeCompositeFrame->frame;

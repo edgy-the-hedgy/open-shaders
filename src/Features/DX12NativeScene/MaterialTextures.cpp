@@ -333,7 +333,8 @@ namespace DX12Native
 				const auto source = CD3DX12_TEXTURE_COPY_LOCATION(upload.staging.get(), footprints[subresource]);
 				upload.commands->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
 			}
-			const auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(upload.target.get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+			const auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(upload.target.get(), D3D12_RESOURCE_STATE_COPY_DEST,
+				D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 			upload.commands->ResourceBarrier(1, &barrier);
 			DX::ThrowIfFailed(upload.commands->Close());
 			if (a_batch) {
@@ -453,7 +454,7 @@ namespace DX12Native
 	}
 
 	void LoadMaterialTextures(const GraphicsBackend& a_backend, const MaterialSource& a_source, MaterialResources& a_result,
-		const NativePBR::LiveMatchResult* a_matches)
+		const NativePBR::LiveMatchResult* a_matches, bool a_extendedRoles)
 	{
 		if (!MaterialUploadsReady())
 			throw MaterialUploadBusy("Previous material upload is still in flight");
@@ -583,7 +584,7 @@ namespace DX12Native
 				if (const auto canonical = NativePBR::CanonicalTexturePath(residentPath))
 					present.insert(*canonical);
 			const auto planned = PlanLiveLooseTextures(*a_matches, present, 8,
-				a_source.attemptedRuntimePaths);
+				a_source.attemptedRuntimePaths, a_extendedRoles);
 			a_result.looseDdsAttemptedPaths = planned.paths;
 			a_result.looseDdsPreviouslyAttempted = uint32_t(planned.alreadyAttempted);
 			a_result.looseDdsPlanned = uint32_t(planned.paths.size());

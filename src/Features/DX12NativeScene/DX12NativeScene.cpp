@@ -10,7 +10,6 @@
 #include "RE/T/TESWorldSpace.h"
 #include "ShaderCache.h"
 #include "State.h"
-#include "TruePBR.h"
 #include "Utils/D3D.h"
 #include "Utils/DevBenchUx.h"
 #include <BS_thread_pool.hpp>
@@ -243,6 +242,12 @@ namespace
 			mib("asyncBatchStagingBytes"));
 		ImGui::Text("Material upload wait: %.3f ms", double(count("uploadWaitMicroseconds")) / 1000.0);
 	}
+}
+
+bool DX12NativeScene::IsNativeBackendRequested() const
+{
+	const int requested = requestedEnabled.load(std::memory_order_relaxed);
+	return loaded && (requested >= 0 ? requested != 0 : settings.Enabled);
 }
 
 bool DX12NativeScene::OwnsNativeFeatures() const
@@ -954,7 +959,7 @@ void DX12NativeScene::OnSceneTransitionReset(bool a_open)
 {
 	transitionOpen = a_open;
 	if (a_open) {
-		globals::features::truePBR.nativeRegistry.ClearInstanceHints();
+		globals::features::nativePBR.materialRegistry.ClearInstanceHints();
 		runtimeGeometry.Reset();
 	}
 	ResetScene();
@@ -1153,10 +1158,10 @@ void DX12NativeScene::AdvanceCoverage()
 	try {
 		auto task = std::make_shared<CoverageTask>();
 		task->sceneRevision = scene->revision;
-		auto& pbr = globals::features::truePBR;
+		auto& pbr = globals::features::nativePBR;
 		auto recipes = pbr.GetNativeRecipes();
-		auto hints = pbr.nativeRegistry.ExportInstanceHints();
-		if (recipes && recipes->revision != pbr.nativeRegistry.Revision())
+		auto hints = pbr.materialRegistry.ExportInstanceHints();
+		if (recipes && recipes->revision != pbr.materialRegistry.Revision())
 			recipes.reset();
 		static BS::thread_pool<> pool{ 1 };
 		pool.detach_task([task, acceleration = scene->acceleration, hints = std::move(hints), recipes = std::move(recipes)] {
@@ -1512,8 +1517,8 @@ void DX12NativeScene::EarlyPrepass()
 											  shadow.RetireScenesExcept(currentSceneStableAcceleration ? currentSceneStableAcceleration : scene) &&
 											  retiredMaterials.expired()) {
 		if (globals::features::nativePBR.IsActive() && globals::game::graphicsState) {
-			auto& pbr = globals::features::truePBR;
-			const uint64_t currentRevision = pbr.nativeRegistry.Revision();
+			auto& pbr = globals::features::nativePBR;
+			const uint64_t currentRevision = pbr.materialRegistry.Revision();
 			const uint32_t currentFrame = globals::game::graphicsState->GetFrameCount();
 			if ((currentRevision != livePbrRevision || !livePbrSource) &&
 				livePbrLastCaptureFrame != currentFrame) {
@@ -1522,8 +1527,8 @@ void DX12NativeScene::EarlyPrepass()
 				if (recipes && recipes->batchesComplete) {
 					auto source = std::make_shared<NativePBR::LiveBindingSource>();
 					source->generation = std::move(recipes);
-					source->hints = pbr.nativeRegistry.ExportInstanceHints();
-					if (pbr.nativeRegistry.Revision() == currentRevision) {
+					source->hints = pbr.materialRegistry.ExportInstanceHints();
+					if (pbr.materialRegistry.Revision() == currentRevision) {
 						livePbrSource = std::move(source);
 						livePbrRevision = currentRevision;
 					}
@@ -1782,7 +1787,10 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& a_inputs)
 				camera = &cached;
 		}
 	}
-	raster.Capture(*backend, inputs, Util::GetCurrentSceneDepthSRV(false), camera, frame, 0ull);
+	const auto sidecar = globals::features::nativePBR.GetSidecarSources(frame);
+	const auto pbrDraws = globals::features::nativePBR.materialSidecar.GetDrawTable();
+	raster.Capture(*backend, inputs, Util::GetCurrentSceneDepthSRV(false), camera, frame, 0ull,
+		sidecar, pbrDraws);
 	// Earlier shadow hooks may precede the current-frame main camera.
 	// Retry only when the same-frame producer has not already published a mask;
 	// DispatchShadow retains the camera, cell, material, scope and fence guards.

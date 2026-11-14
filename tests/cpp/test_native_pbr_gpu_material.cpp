@@ -1,0 +1,128 @@
+#include "Features/NativePBR/GpuMaterialAbi.h"
+#include "Features/NativePBR/GpuMaterialResidency.h"
+#include "Features/NativePBR/GpuMaterialResources.h"
+#include <catch2/catch_test_macros.hpp>
+
+TEST_CASE("NativePBR GPU material ABI preserves all seven texture roles", "[NativePBR][gpu-material]")
+{
+	NativePBR::Recipe recipe;
+	recipe.identity = 0x1122334455667788ull;
+	recipe.revision = 0x99aabbccddeeff00ull;
+	recipe.issues = NativePBR::UnsupportedDisplacement | NativePBR::UnsupportedFeatureTextures;
+	recipe.parameters.roughnessScale = 0.67f;
+	recipe.parameters.displacementScale = 1.7f;
+	recipe.parameters.projectedColor = { 0.2f, 0.3f, 0.4f };
+	recipe.parameters.glint.enabled = true;
+	NativePBR::GpuTextureLocations locations{};
+	for (size_t role = 0; role < locations.size(); ++role)
+		locations[role] = { uint32_t(role + 10), uint32_t(role + 20) };
+	locations[4] = { NativePBR::kGpuMissingTexture, 0 };
+
+	const auto record = NativePBR::PackGpuMaterialRecord(recipe, locations);
+	CHECK((record.textures[0] == std::array<uint32_t, 4>{ 10, 20, 11, 21 }));
+	CHECK((record.textures[1] == std::array<uint32_t, 4>{ 12, 22, 13, 23 }));
+	CHECK((record.textures[2] == std::array<uint32_t, 4>{ NativePBR::kGpuMissingTexture, 0, 15, 25 }));
+	CHECK((record.textures[3] == std::array<uint32_t, 4>{ 16, 26, NativePBR::kGpuMissingTexture, 0 }));
+	CHECK(record.controls[0] == 0x6fu);
+	CHECK(record.controls[1] == 1u);
+	CHECK(record.properties[3] == recipe.issues);
+	CHECK(record.base[1] == 0.67f);
+	CHECK(record.base[2] == 1.7f);
+	CHECK(record.projected[2] == 0.4f);
+	CHECK((record.identity == std::array<uint32_t, 4>{ 0x55667788u, 0x11223344u, 0xddeeff00u, 0x99aabbccu }));
+}
+
+TEST_CASE("NativePBR GPU records distinguish unresident sources from missing material identities", "[NativePBR][gpu-material]")
+{
+	NativePBR::Recipe recipe;
+	recipe.identity = 25;
+	recipe.revision = 3;
+	NativePBR::GpuTextureLocations locations{};
+	for (auto& location : locations)
+		location = { NativePBR::kGpuMissingTexture, 0 };
+	const auto record = NativePBR::PackGpuMaterialRecord(recipe, locations);
+	CHECK(record.controls[0] == 0u);
+	CHECK(record.identity[0] == 25u);
+	CHECK(record.identity[2] == 3u);
+	CHECK(record.textures[3][2] == NativePBR::kGpuMissingTexture);
+}
+
+TEST_CASE("NativePBR GPU draw bindings preserve full material identity and revision", "[NativePBR][gpu-material]")
+{
+	const auto binding = NativePBR::PackGpuDrawBinding(0x1122334455667788ull,
+		0x99aabbccddeeff00ull, 17u, NativePBR::kGpuDrawProjected | NativePBR::kGpuDrawUsesVertexColor);
+	CHECK((binding.identity == std::array<uint32_t, 2>{ 0x55667788u, 0x11223344u }));
+	CHECK((binding.revision == std::array<uint32_t, 2>{ 0xddeeff00u, 0x99aabbccu }));
+	CHECK(binding.materialIndex == 17u);
+	CHECK(binding.flags == 3u);
+}
+
+TEST_CASE("NativePBR GPU descriptor ABI keeps linear and sRGB views within 512 slots", "[NativePBR][gpu-material]")
+{
+	using namespace NativePBR;
+	CHECK(sizeof(GpuMaterialRecord) == 304);
+	CHECK(sizeof(GpuDrawBinding) == 24);
+	CHECK(GpuMaterialView::kRecordStride == 304);
+	CHECK(GpuMaterialView::kDescriptorCount == 512);
+	CHECK(GpuTextureDescriptorIndex(0, TextureInterpretation::DataLinear) == 0);
+	CHECK(GpuTextureDescriptorIndex(255, TextureInterpretation::DataLinear) == 255);
+	CHECK(GpuTextureDescriptorIndex(0, TextureInterpretation::ColorSrgb) == 256);
+	CHECK(GpuTextureDescriptorIndex(255, TextureInterpretation::ColorSrgb) == 511);
+	CHECK(GpuTextureDescriptorIndex(256, TextureInterpretation::ColorSrgb) == kGpuMissingTexture);
+	CHECK(GpuTextureDescriptorIndex(UINT32_MAX, TextureInterpretation::DataLinear) == kGpuMissingTexture);
+}
+
+TEST_CASE("NativePBR material availability reports missing optional sources separately from unsupported shading", "[NativePBR][gpu-material]")
+{
+	using namespace NativePBR;
+	Recipe recipe;
+	recipe.identity = 11;
+	recipe.issues = UnsupportedDisplacement | UnsupportedFeatureTextures;
+	recipe.textures[4].canonicalPath = "textures/displacement.dds";
+	const auto requested = GpuRequestedTextureRoles(recipe);
+	CHECK(requested == 0x17u);
+	CHECK(ClassifyGpuMaterialAvailability(0x17u, requested) == GpuMaterialAvailability::Resident);
+	CHECK(ClassifyGpuMaterialAvailability(0x07u, requested) == GpuMaterialAvailability::PartiallyResident);
+	CHECK(ClassifyGpuMaterialAvailability(0x04u, requested) == GpuMaterialAvailability::PartiallyResident);
+	CHECK(ClassifyGpuMaterialAvailability(0, requested) == GpuMaterialAvailability::Unavailable);
+	CHECK(recipe.issues == (UnsupportedDisplacement | UnsupportedFeatureTextures));
+}
+
+TEST_CASE("NativePBR retained DDS pages are remapped without copying unrelated pages", "[NativePBR][gpu-material]")
+{
+	const std::unordered_set<std::string> required{ "textures\\base.dds", "textures\\other.dds" };
+	const std::unordered_map<std::string, uint64_t> locations{
+		{ "textures\\base.dds", 101 }, { "textures\\old.dds", 102 },
+		{ "textures\\other.dds", 103 }
+	};
+	const std::unordered_map<uint64_t, std::array<uint32_t, 2>> logical{
+		{ 101, { 2, 0 } }, { 102, { 1, 0 } }, { 103, { 0, 4 } }
+	};
+	const auto remap = NativePBR::PlanGpuMaterialPageRemap(required, locations, logical, 3);
+	CHECK((remap == std::vector<uint32_t>{ 0, UINT32_MAX, 1 }));
+	CHECK((NativePBR::PlanGpuMaterialPageRemap({}, locations, logical, 3) ==
+		std::vector<uint32_t>{ UINT32_MAX, UINT32_MAX, UINT32_MAX }));
+}
+
+TEST_CASE("NativePBR GPU material retirement waits for the consumer fence value", "[NativePBR][gpu-material]")
+{
+	CHECK_FALSE(NativePBR::GpuMaterialRetirement::Completed(4, 5));
+	CHECK(NativePBR::GpuMaterialRetirement::Completed(5, 5));
+	CHECK(NativePBR::GpuMaterialRetirement::Completed(8, 5));
+	CHECK(NativePBR::GpuMaterialRetirement::Completed(UINT64_MAX, 5));
+}
+
+TEST_CASE("NativePBR material generations retain provenance only for active DDS paths", "[NativePBR][gpu-material]")
+{
+	DX12Native::VerifiedTextureSources sources;
+	REQUIRE(sources.Observe("textures/a.dds", std::string(64, 'a'), 256, 256, 7));
+	REQUIRE(sources.Observe("textures/b.dds", std::string(64, 'b'), 512, 512, 8));
+	const auto selected = sources.Select({ "textures/b.dds" });
+	CHECK(sources.Size() == 2);
+	CHECK(selected.Size() == 1);
+	NativePBR::Recipe recipe;
+	recipe.textures[0].canonicalPath = "textures/b.dds";
+	CHECK(selected.Assess(recipe) == DX12Native::LiveTextureSourceStatus::Available);
+	recipe.textures[0].canonicalPath = "textures/a.dds";
+	CHECK(selected.Assess(recipe) == DX12Native::LiveTextureSourceStatus::Missing);
+}
