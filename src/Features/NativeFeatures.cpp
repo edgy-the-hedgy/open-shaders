@@ -197,7 +197,7 @@ std::function<void()> NativePBRFeature::OnRenderPassBegin(const RE::BSRenderPass
 	if ((descriptor & NativePBR::kProjectedUvShaderFlag) == 0)
 		return nullptr;
 	return [this, referenceKey, shape, descriptor]() {
-		const auto* graphicsState = globals::game::graphicsState;
+		auto* graphicsState = globals::game::graphicsState;
 		auto* shadowState = globals::game::shadowState;
 		if (!graphicsState || !shadowState)
 			return;
@@ -1174,6 +1174,7 @@ json NativePBRFeature::GetDiagnostics()
 	const auto materialView = GetMaterialPublication();
 	const auto gpuMaterials = GetNativeGpuMaterials();
 	const auto preparedMaterials = GetPreparedSceneMaterials();
+	const auto snow = GetNativeSnowPublication();
 	const auto rayBindings = GetRayMaterialBindings();
 	const auto catalog = materialCatalog.GetSnapshot();
 	const auto summary = GetMaterialSummary();

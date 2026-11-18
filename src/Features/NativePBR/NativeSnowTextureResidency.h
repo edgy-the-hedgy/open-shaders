@@ -2,6 +2,7 @@
 
 #include "GpuMaterialResources.h"
 #include "NativeSnowPublication.h"
+#include "Features/DX12NativeScene/MaterialTextureLookup.h"
 
 namespace NativePBR
 {
