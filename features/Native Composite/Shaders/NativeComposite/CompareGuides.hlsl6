@@ -34,9 +34,9 @@ cbuffer CompareConstants : register(b0)
 
 float ViewDistance(float2 clip, float depth)
 {
-	float4 point = mul(InverseProjection, float4(clip, depth, 1.0f));
-	if (abs(point.w) <= 1e-8f || !all(isfinite(point))) return 3.402823e38f;
-	return length(point.xyz / point.w);
+	float4 viewPosition = mul(InverseProjection, float4(clip, depth, 1.0f));
+	if (abs(viewPosition.w) <= 1e-8f || !all(isfinite(viewPosition))) return 3.402823e38f;
+	return length(viewPosition.xyz / viewPosition.w);
 }
 
 [numthreads(8, 8, 1)]
