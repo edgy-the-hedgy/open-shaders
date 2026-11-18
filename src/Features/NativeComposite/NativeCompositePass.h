@@ -40,11 +40,22 @@ public:
 		bool enabled = false;
 		float mix = 0.5f, nativeIntensity = 1.0f, rasterIntensity = 1.0f;
 	};
+	enum class Guide : size_t { Depth, Motion, Reactive, Transparency, Count };
+	static constexpr size_t GuideCount = static_cast<size_t>(Guide::Count);
+	using RasterGuideInputs = std::array<ID3D11Texture2D*, GuideCount>;
+	struct GuideSurface
+	{
+		winrt::com_ptr<ID3D12Resource> resource;
+		uint32_t width = 0, height = 0;
+		DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+		bool rasterOrigin = false;
+	};
 	struct Frame
 	{
 		winrt::com_ptr<ID3D12Resource> color;
 		winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
 		winrt::com_ptr<ID3D12Fence> producerFence;
+		std::array<GuideSurface, GuideCount> rasterGuides;
 		uint64_t producerValue = 0;
 		uint64_t validityRevision = 0;
 		uint32_t frame = 0, width = 0, height = 0;
@@ -75,7 +86,7 @@ public:
 		const ShadowSettings& a_shadowSettings,
 		float a_strength, bool a_directSpatialReconstruction, const Policy& a_policy, uint64_t a_revision,
 		uint32_t a_nativeReadinessStage = 0, bool a_includeRasterScene = true, bool a_originPreview = false, bool a_ignoreValidity = false,
-		const SourceBlendSettings& a_sourceBlend = {});
+		const SourceBlendSettings& a_sourceBlend = {}, const RasterGuideInputs& a_rasterGuides = {});
 	/** @brief Retains a frame until a downstream consumer's GPU fence completes. */
 	bool Retain(const std::shared_ptr<const Frame>& a_frame, ID3D12Fence* a_fence, uint64_t a_value);
 	/** @brief Returns a short explanation of the latest capture result. */
@@ -97,6 +108,8 @@ private:
 	{
 		std::shared_ptr<Frame> frame;
 		std::unique_ptr<WrappedResource> shared;
+		std::array<std::unique_ptr<WrappedResource>, GuideCount> guideCopies;
+		std::array<D3D11_TEXTURE2D_DESC, GuideCount> guideDescs{};
 		winrt::com_ptr<ID3D12CommandAllocator> allocator;
 		winrt::com_ptr<ID3D12GraphicsCommandList> commands;
 		winrt::com_ptr<ID3D12DescriptorHeap> lightingDescriptors, shadowDescriptors, originDescriptors;

@@ -3681,10 +3681,21 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 		const auto transfer = globals::state->IsMainOrLoadingMenuOpen()                  ? NativeComposite::Transfer::Unknown :
 		                      globals::features::linearLighting.IsLinearLightingActive() ? NativeComposite::Transfer::Linear :
 		                                                                                   NativeComposite::Transfer::LegacyScene;
+		NativeComposite::RasterGuideInputs rasterGuides{};
+		if (!globals::game::isVR && upscaleMethod == UpscaleMethod::kFSR &&
+			upscaling.nativeUpscaleGuidesReady && upscaling.nativeUpscaleGuidesFrame == globals::state->frameCount &&
+			upscaling.runtimeFsrDepthTexture && upscaling.reactiveMaskTexture && upscaling.transparencyCompositionMaskTexture) {
+			rasterGuides = {
+				upscaling.runtimeFsrDepthTexture->resource.get(),
+				Util::AsReal(renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR].texture),
+				upscaling.reactiveMaskTexture->resource.get(),
+				upscaling.transparencyCompositionMaskTexture->resource.get()
+			};
+		}
 		upscaling.nativeCompositeFrame = globals::features::nativeComposite.Capture(upscaling.dx12SwapChain.d3d11Device.get(),
 			upscaling.dx12SwapChain.d3d11Context.get(), upscaling.dx12SwapChain.d3d12Device.get(),
 			upscaling.dx12SwapChain.commandQueue.get(), scene, globals::state->frameCount,
-			static_cast<uint32_t>(renderSize.x), static_cast<uint32_t>(renderSize.y), transfer);
+			static_cast<uint32_t>(renderSize.x), static_cast<uint32_t>(renderSize.y), transfer, rasterGuides);
 		if (upscaling.nativeCompositeFrame) {
 			++upscaling.nativeCompositeCaptures;
 			upscaling.nativeCompositeFrameId = upscaling.nativeCompositeFrame->frame;

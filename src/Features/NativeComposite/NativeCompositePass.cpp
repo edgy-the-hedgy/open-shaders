@@ -192,7 +192,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 	const ShadowSettings& a_shadowSettings,
 	float a_strength, bool a_directSpatialReconstruction, const Policy& a_policy, uint64_t a_revision,
 	uint32_t a_nativeReadinessStage, bool a_includeRasterScene, bool a_originPreview, bool a_ignoreValidity,
-	const SourceBlendSettings& a_sourceBlend)
+	const SourceBlendSettings& a_sourceBlend, const RasterGuideInputs& a_rasterGuides)
 {
 	CS_GPU_PASS("NativeComposite::RasterPassThrough");
 	status = "Invalid capture input";
@@ -237,6 +237,24 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 	if (a_originPreview && !InitializeOriginPreview(a_device12)) {
 		status = "OriginPreview.dxil missing or preview pipeline initialization failed";
 		return {};
+	}
+	std::array<D3D11_TEXTURE2D_DESC, GuideCount> guideDescs{};
+	for (size_t i = 0; i < GuideCount; ++i) {
+		if (!a_rasterGuides[i])
+			continue;
+		winrt::com_ptr<ID3D11Device> guideDevice;
+		a_rasterGuides[i]->GetDevice(guideDevice.put());
+		if (guideDevice.get() != a_device11) {
+			status = "Raster guide belongs to another DX11 device";
+			return {};
+		}
+		a_rasterGuides[i]->GetDesc(&guideDescs[i]);
+		const auto& info = guideDescs[i];
+		if (info.Width < a_width || info.Height < a_height || info.MipLevels != 1 || info.ArraySize != 1 || info.SampleDesc.Count != 1 ||
+			info.Format == DXGI_FORMAT_UNKNOWN) {
+			status = "Raster guide has incompatible format or dimensions";
+			return {};
+		}
 	}
 	const bool shadowRequested = (a_shadowSettings.contribution * a_shadowSettings.blend > 0.0f) || a_shadowSettings.preview;
 	bool applyShadow = false;
@@ -341,10 +359,17 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 	bool submitted = false;
 	bool producerSignalled = false;
 	try {
+		bool guideDescChanged = false;
+		for (size_t i = 0; i < GuideCount; ++i) {
+			const auto& before = slot->guideDescs[i];
+			const auto& after = guideDescs[i];
+			guideDescChanged |= before.Width != after.Width || before.Height != after.Height || before.Format != after.Format ||
+				before.MipLevels != after.MipLevels || before.ArraySize != after.ArraySize;
+		}
 		const bool recreate = !slot->frame || slot->device != a_device12 || slot->device11 != a_device11 ||
 		                      slot->sourceDesc.Width != desc.Width || slot->sourceDesc.Height != desc.Height || slot->sourceDesc.Format != desc.Format ||
 		                      slot->supportsLighting != supportsLighting || slot->originPreview != a_originPreview ||
-		                      slot->sourceBlendEnabled != a_sourceBlend.enabled;
+		                      slot->sourceBlendEnabled != a_sourceBlend.enabled || guideDescChanged;
 		if (recreate) {
 			// Reserve two full-size images: one DX11/DX12 shared input and
 			// one DX12-owned composited output. Guard incremental slot growth
@@ -361,7 +386,16 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			const uint64_t baseRequired = allocation * imageCount + 2ull * 1024 * 1024;
 			if (originAllocation == UINT64_MAX || originAllocation > UINT64_MAX - baseRequired)
 				throw std::runtime_error("Composite origin-preview allocation size unsupported");
-			const uint64_t required = baseRequired + originAllocation;
+			uint64_t required = baseRequired + originAllocation;
+			for (const auto& guide : guideDescs) {
+				if (!guide.Width)
+					continue;
+				const auto guideAllocationDesc = CD3DX12_RESOURCE_DESC::Tex2D(guide.Format, guide.Width, guide.Height);
+				const uint64_t guideBytes = a_device12->GetResourceAllocationInfo(0, 1, &guideAllocationDesc).SizeInBytes;
+				if (guideBytes == UINT64_MAX || required > UINT64_MAX - guideBytes)
+					throw std::runtime_error("Composite raster guide size overflow");
+				required += guideBytes;
+			}
 			uint64_t retained = 0;
 			for (const auto& candidate : slots)
 				if (candidate && candidate.get() != slot) {
@@ -380,6 +414,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			replacement->device = a_device12;
 			replacement->device11 = a_device11;
 			replacement->sourceDesc = desc;
+			replacement->guideDescs = guideDescs;
 			replacement->supportsLighting = supportsLighting;
 			replacement->originPreview = a_originPreview;
 			replacement->sourceBlendEnabled = a_sourceBlend.enabled;
@@ -389,6 +424,18 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			sharedDesc.CPUAccessFlags = 0;
 			sharedDesc.MiscFlags = 0;
 			replacement->shared = std::make_unique<WrappedResource>(sharedDesc, a_device11, a_device12, "NativeComposite::RasterInput");
+			constexpr const char* guideNames[GuideCount]{ "Depth", "Motion", "Reactive", "Transparency" };
+			for (size_t i = 0; i < GuideCount; ++i) {
+				if (!guideDescs[i].Width)
+					continue;
+				auto copyDesc = guideDescs[i];
+				copyDesc.Usage = D3D11_USAGE_DEFAULT;
+				copyDesc.BindFlags = 0;
+				copyDesc.CPUAccessFlags = 0;
+				copyDesc.MiscFlags = 0;
+				replacement->guideCopies[i] = std::make_unique<WrappedResource>(copyDesc, a_device11, a_device12,
+					std::format("NativeComposite::Raster{}Guide", guideNames[i]));
+			}
 			replacement->fence.Create(a_device12, a_device11, "NativeComposite::Fence");
 			DX::ThrowIfFailed(a_device12->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(replacement->allocator.put())));
 			DX::ThrowIfFailed(a_device12->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, replacement->allocator.get(), nullptr, IID_PPV_ARGS(replacement->commands.put())));
@@ -460,9 +507,19 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			*slot = std::move(*replacement);
 		}
 
-		if (a_includeRasterScene) {
+		const bool hasRasterGuides = std::ranges::any_of(slot->guideCopies, [](const auto& guide) { return !!guide; });
+		if (a_includeRasterScene || hasRasterGuides) {
 			producerSignalled = true;
-			a_context11->CopyResource(slot->shared->resource11, a_source);
+			if (a_includeRasterScene)
+				a_context11->CopyResource(slot->shared->resource11, a_source);
+			for (size_t i = 0; i < GuideCount; ++i) {
+				if (!slot->guideCopies[i] || !a_rasterGuides[i])
+					continue;
+				// Copy exact active footprint; allocation capacity can exceed the
+				// current dynamic resolution in both source and destination.
+				const D3D11_BOX sourceBox{ 0, 0, 0, a_width, a_height, 1 };
+				a_context11->CopySubresourceRegion(slot->guideCopies[i]->resource11, 0, 0, 0, 0, a_rasterGuides[i], 0, &sourceBox);
+			}
 			const uint64_t inputValue = slot->fence.Next();
 			DX::ThrowIfFailed(a_context11->Signal(slot->fence.fence11.get(), inputValue));
 			DX::ThrowIfFailed(a_queue->Wait(slot->fence.fence12.get(), inputValue));
@@ -790,6 +847,14 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 		frame.height = a_height;
 		frame.format = desc.Format;
 		frame.transfer = a_transfer;
+		for (size_t i = 0; i < GuideCount; ++i) {
+			auto& target = frame.rasterGuides[i];
+			target.resource = slot->guideCopies[i] ? slot->guideCopies[i]->resource : nullptr;
+			target.width = slot->guideCopies[i] ? a_width : 0;
+			target.height = slot->guideCopies[i] ? a_height : 0;
+			target.format = slot->guideCopies[i] ? guideDescs[i].Format : DXGI_FORMAT_UNKNOWN;
+			target.rasterOrigin = !!slot->guideCopies[i];
+		}
 		frame.valid = true;
 		frame.lightingSubmitted = blend;
 		frame.shadowSubmitted = applyShadow;

@@ -277,7 +277,8 @@ json NativeCompositeFeature::GetDiagnostics()
 
 std::shared_ptr<const NativeComposite::Frame> NativeCompositeFeature::Capture(ID3D11Device5* a_device11, ID3D11DeviceContext4* a_context11,
 	ID3D12Device* a_device12, ID3D12CommandQueue* a_queue, ID3D11Texture2D* a_source,
-	uint32_t a_frame, uint32_t a_width, uint32_t a_height, NativeComposite::Transfer a_transfer)
+	uint32_t a_frame, uint32_t a_width, uint32_t a_height, NativeComposite::Transfer a_transfer,
+	const NativeComposite::RasterGuideInputs& a_rasterGuides)
 {
 	if (!IsEnabled())
 		return {};
@@ -310,7 +311,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeCompositeFeature::Capture(ID
 		a_transfer, lighting, shadow, raster, shadowSettings, selected.LightingStrength, selected.DirectSpatialReconstruction,
 		selectedPolicy, revision, globals::features::nativePBR.NativeFirstReadinessStage(), selected.IncludeRasterScene || selected.SourceBlendEnabled,
 		selected.OriginPreview, !selected.EnableValidityChecks,
-		{ selected.SourceBlendEnabled, selected.SourceBlend, selected.NativeIntensity, selected.RasterIntensity });
+		{ selected.SourceBlendEnabled, selected.SourceBlend, selected.NativeIntensity, selected.RasterIntensity }, a_rasterGuides);
 	if (frame)
 		++captures;
 	if (frame && frame->lightingSubmitted) {
