@@ -13,6 +13,7 @@ struct NativeCompositeFeature final : Feature
 		bool Enabled = true;
 		bool IncludeRasterScene = true;
 		bool OriginPreview = false;
+		bool EnableValidityChecks = false;
 		bool AddLighting = true;
 		float LightingStrength = 1.0f;
 		bool DirectSpatialReconstruction = true;
@@ -51,13 +52,18 @@ struct NativeCompositeFeature final : Feature
 		return pass.Retain(a_frame, a_fence, a_value);
 	}
 	bool IsEnabled() const;
+	bool ValidityChecksEnabled() const
+	{
+		std::scoped_lock lock(settingsMutex);
+		return settings.EnableValidityChecks;
+	}
 
 private:
 	NativeComposite pass;
 	Settings settings;
 	NativeComposite::Policy policy{ 2u, 2u, 0u };
 	uint64_t validityRevision = 1;
-	std::mutex settingsMutex;
+	mutable std::mutex settingsMutex;
 	std::atomic<bool> enabled{ true };
 	std::atomic<uint64_t> captures{ 0 };
 	std::atomic<uint64_t> lightingSubmissions{ 0 };

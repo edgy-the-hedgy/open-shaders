@@ -81,7 +81,7 @@ bool NativeComposite::InitializeLighting(ID3D12Device* a_device)
 		CD3DX12_ROOT_PARAMETER parameters[3];
 		parameters[0].InitAsDescriptorTable(1, &ranges[0]);
 		parameters[1].InitAsDescriptorTable(1, &ranges[1]);
-		parameters[2].InitAsConstants(43, 0);
+		parameters[2].InitAsConstants(44, 0);
 		const CD3DX12_ROOT_SIGNATURE_DESC desc(3, parameters);
 		winrt::com_ptr<ID3DBlob> serialized, errors;
 		DX::ThrowIfFailed(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, serialized.put(), errors.put()));
@@ -150,7 +150,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 	const std::shared_ptr<const DX12Native::RasterFrame>& a_raster,
 	const ShadowSettings& a_shadowSettings,
 	float a_strength, bool a_directSpatialReconstruction, const Policy& a_policy, uint64_t a_revision,
-	uint32_t a_nativeReadinessStage, bool a_includeRasterScene, bool a_originPreview)
+	uint32_t a_nativeReadinessStage, bool a_includeRasterScene, bool a_originPreview, bool a_ignoreValidity)
 {
 	CS_GPU_PASS("NativeComposite::RasterPassThrough");
 	status = "Invalid capture input";
@@ -573,13 +573,14 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 				uint32_t recordDiagnostics;
 				uint32_t nativeReadinessStage;
 				uint32_t originPreview;
+				uint32_t ignoreValidity;
 			};
-			static_assert(sizeof(Constants) == 43 * sizeof(uint32_t));
+			static_assert(sizeof(Constants) == 44 * sizeof(uint32_t));
 			const auto& camera = a_lighting->scene.raster->camera;
 			const Constants constants{ a_width, a_height, a_strength, a_transfer == Transfer::LegacyScene ? 1u : 0u, a_policy.diffuse, a_policy.specular, a_originPreview ? 0u : a_policy.visual,
 				a_directSpatialReconstruction && a_lighting->traceDensityMode != 0u ? 1u : 0u, camera.CameraProjInverse, camera.CameraViewInverse,
-				recordCounters ? 1u : 0u, std::min(a_nativeReadinessStage, 3u), a_originPreview ? 1u : 0u };
-			slot->commands->SetComputeRoot32BitConstants(2, 43, &constants, 0);
+				recordCounters ? 1u : 0u, std::min(a_nativeReadinessStage, 3u), a_originPreview ? 1u : 0u, a_ignoreValidity ? 1u : 0u };
+			slot->commands->SetComputeRoot32BitConstants(2, 44, &constants, 0);
 			slot->commands->Dispatch((a_width + 7) / 8, (a_height + 7) / 8, 1);
 			if (recordCounters) {
 				const auto counterEnd = CD3DX12_RESOURCE_BARRIER::Transition(slot->counters.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);

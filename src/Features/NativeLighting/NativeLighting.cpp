@@ -468,6 +468,8 @@ void NativeLightingFeature::OnOpaqueRasterReady(const OpaqueRasterInputs&)
 		selectedLab = lab;
 		revision = validityRevision;
 	}
+	if (globals::features::nativeComposite.IsEnabled() && !globals::features::nativeComposite.ValidityChecksEnabled())
+		selected.ForcePositiveValidity = true;
 	if (!selected.Enabled || (!selected.Diffuse && !selected.Specular && selectedLab.MaterialPolicy != 2 && !selectedLab.RunWithoutLighting && !selected.ForcePositiveValidity) || transitionOpen || globals::game::isVR) {
 		current.reset();
 		active = false;

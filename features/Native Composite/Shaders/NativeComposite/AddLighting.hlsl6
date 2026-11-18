@@ -25,7 +25,13 @@ cbuffer CompositeConstants : register(b0)
 	uint RecordDiagnostics;
 	uint NativeReadinessStage;
 	uint OriginPreview;
+	uint IgnoreValidity;
 };
+
+bool AcceptNative(uint policy, uint original, uint effective, uint reason)
+{
+	return IgnoreValidity != 0u || AcceptContribution(policy, original, effective, reason);
+}
 
 void Count(uint index)
 {
@@ -58,8 +64,8 @@ bool ValidDirectNeighbor(uint2 pixel, float targetDistance, out float4 guide)
     uint reason = RejectionReason[pixel];
     if ((reason & 0x10000000u) != 0u) return false;
     uint original = Validity[pixel], effective = EffectiveValidity[pixel];
-    if (!AcceptContribution(DiffusePolicy, original, effective, reason) &&
-        !AcceptContribution(SpecularPolicy, original, effective, reason)) return false;
+    if (!AcceptNative(DiffusePolicy, original, effective, reason) &&
+        !AcceptNative(SpecularPolicy, original, effective, reason)) return false;
     float distance = ReceiverDistance(pixel);
     return distance > 0.0f && abs(distance - targetDistance) <= max(5.0f, targetDistance * 1e-5f);
 }
@@ -102,10 +108,10 @@ bool ReconstructDirect(uint2 pixel, out float3 diffuse, out float3 specular,
             uint original = Validity[uint2(p)], effective = EffectiveValidity[uint2(p)], reason = RejectionReason[uint2(p)];
             float weight = rcp(1.0f + float(dx * dx + dy * dy));
             float3 d = Diffuse[uint2(p)].rgb, sp = Specular[uint2(p)].rgb;
-            if (AcceptContribution(DiffusePolicy, original, effective, reason) && all(isfinite(d))) {
+            if (AcceptNative(DiffusePolicy, original, effective, reason) && all(isfinite(d))) {
                 diffuse += d * weight; diffuseWeight += weight;
             }
-            if (AcceptContribution(SpecularPolicy, original, effective, reason) && all(isfinite(sp))) {
+            if (AcceptNative(SpecularPolicy, original, effective, reason) && all(isfinite(sp))) {
                 specular += sp * weight; specularWeight += weight;
             }
         }
@@ -151,8 +157,8 @@ void main(uint3 id : SV_DispatchThreadID)
 		Scene[id.xy] = float4(display, originalColor.a);
 		return;
 	}
-	bool acceptDiffuse = AcceptContribution(DiffusePolicy, original, effective, reason) && all(isfinite(diffuse));
-	bool acceptSpecular = AcceptContribution(SpecularPolicy, original, effective, reason) && all(isfinite(specular));
+	bool acceptDiffuse = AcceptNative(DiffusePolicy, original, effective, reason) && all(isfinite(diffuse));
+	bool acceptSpecular = AcceptNative(SpecularPolicy, original, effective, reason) && all(isfinite(specular));
 	if (SpatialReconstruction != 0u && (reason & 0x10000000u) != 0u) {
 		bool reconstructedDiffuse, reconstructedSpecular;
 		if (ReconstructDirect(id.xy, diffuse, specular, reconstructedDiffuse, reconstructedSpecular)) {
@@ -169,7 +175,9 @@ void main(uint3 id : SV_DispatchThreadID)
 	// previews intentionally display incomplete pixels, including black output.
 	// No native pixel may cover a closer DX11 fallback receiver: the producer
 	// only sets readiness bits after comparing the traced hit to raster depth.
-	if (NativeFirstReady(NativeReadinessStage, effective, reason, acceptDiffuse || acceptSpecular)) {
+	bool nativeReady = IgnoreValidity != 0u ? guide.x > 0.0f && (reason & 0x10000000u) == 0u :
+		NativeFirstReady(NativeReadinessStage, effective, reason, acceptDiffuse || acceptSpecular);
+	if (nativeReady) {
 		if (OriginPreview != 0u) NativeOwnership[id.xy] = 1u;
 		float4 originalColor = Scene[id.xy];
 		float3 nativeColor = all(isfinite(lighting)) ? lighting * Strength : 0.0f;
