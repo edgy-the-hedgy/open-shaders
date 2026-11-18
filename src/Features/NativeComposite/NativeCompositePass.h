@@ -44,10 +44,16 @@ public:
 	enum class Guide : size_t { Depth, Motion, Reactive, Transparency, Count };
 	static constexpr size_t GuideCount = static_cast<size_t>(Guide::Count);
 	using RasterGuideInputs = std::array<ID3D11Texture2D*, GuideCount>;
+	struct GuideCompareSettings
+	{
+		std::array<float, GuideCount> tolerance{ 2.0f, 0.5f, 0.05f, 0.05f };
+		std::array<uint32_t, GuideCount> priority{};  // 0=native unless within, 1=raster unless within
+	};
 	struct GuideSurface
 	{
 		winrt::com_ptr<ID3D12Resource> resource;
 		winrt::com_ptr<ID3D12Resource> coverage;  // R32_UINT: 1=authoritative native sample, 0=unavailable
+		winrt::com_ptr<ID3D12Resource> origin;    // Selected source per pixel: 0=raster, 1=native
 		uint32_t width = 0, height = 0;
 		DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 		bool rasterOrigin = false;
@@ -60,6 +66,7 @@ public:
 		winrt::com_ptr<ID3D12Fence> producerFence;
 		std::array<GuideSurface, GuideCount> rasterGuides;
 		std::array<GuideSurface, GuideCount> nativeGuides;
+		std::array<GuideSurface, GuideCount> selectedGuides;
 		uint64_t producerValue = 0;
 		uint64_t validityRevision = 0;
 		uint32_t frame = 0, width = 0, height = 0;
@@ -90,7 +97,8 @@ public:
 		const ShadowSettings& a_shadowSettings,
 		float a_strength, bool a_directSpatialReconstruction, const Policy& a_policy, uint64_t a_revision,
 		uint32_t a_nativeReadinessStage = 0, bool a_includeRasterScene = true, bool a_originPreview = false, bool a_ignoreValidity = false,
-		const SourceBlendSettings& a_sourceBlend = {}, const RasterGuideInputs& a_rasterGuides = {});
+		const SourceBlendSettings& a_sourceBlend = {}, const RasterGuideInputs& a_rasterGuides = {},
+		const GuideCompareSettings& a_guideCompare = {});
 	/** @brief Retains a frame until a downstream consumer's GPU fence completes. */
 	bool Retain(const std::shared_ptr<const Frame>& a_frame, ID3D12Fence* a_fence, uint64_t a_value);
 	/** @brief Returns a short explanation of the latest capture result. */
@@ -121,6 +129,7 @@ private:
 		winrt::com_ptr<ID3D12DescriptorHeap> nativeDepthDescriptors;
 		winrt::com_ptr<ID3D12DescriptorHeap> nativeMotionDescriptors;
 		winrt::com_ptr<ID3D12DescriptorHeap> nativeMaskDescriptors;
+		std::array<winrt::com_ptr<ID3D12DescriptorHeap>, GuideCount> guideCompareDescriptors;
 		winrt::com_ptr<ID3D12DescriptorHeap> clearDescriptors;
 		winrt::com_ptr<ID3D12RootSignature> shadowRoot;
 		winrt::com_ptr<ID3D12PipelineState> shadowPipeline;
@@ -134,11 +143,14 @@ private:
 		winrt::com_ptr<ID3D12PipelineState> depthPipeline, motionPipeline;
 		winrt::com_ptr<ID3D12RootSignature> maskRoot;
 		winrt::com_ptr<ID3D12PipelineState> maskPipeline;
+		winrt::com_ptr<ID3D12RootSignature> guideCompareRoot;
+		winrt::com_ptr<ID3D12PipelineState> guideComparePipeline;
 		winrt::com_ptr<ID3D12Resource> originMask;
 		winrt::com_ptr<ID3D12Resource> nativeColor;
 		winrt::com_ptr<ID3D12Resource> nativeDepth, nativeDepthCoverage;
 		winrt::com_ptr<ID3D12Resource> nativeMotion, nativeMotionCoverage;
 		winrt::com_ptr<ID3D12Resource> nativeReactive, nativeTransparency, nativeMaskCoverage;
+		std::array<winrt::com_ptr<ID3D12Resource>, GuideCount> comparedGuides, comparedOrigins;
 		std::shared_ptr<const DX12Native::TopLevel> nativeDepthScene;
 		winrt::com_ptr<ID3D12Resource> counters, counterReset, counterReadback;
 		SharedFence fence;
@@ -152,6 +164,7 @@ private:
 		bool nativeDepthEnabled = false;
 		bool nativeMotionEnabled = false;
 		bool nativeMasksEnabled = false;
+		std::array<bool, GuideCount> comparisonAllocated{};
 		uint64_t frameBytes = 0;
 		bool countersRead = true;
 		bool untracked = false;
@@ -167,7 +180,9 @@ private:
 	winrt::com_ptr<ID3D12PipelineState> nativeMotionPipeline;
 	winrt::com_ptr<ID3D12RootSignature> nativeMaskRoot;
 	winrt::com_ptr<ID3D12PipelineState> nativeMaskPipeline;
-	ID3D12Device *pipelineDevice = nullptr, *shadowPipelineDevice = nullptr, *originPipelineDevice = nullptr, *blendPipelineDevice = nullptr, *nativeDepthPipelineDevice = nullptr, *nativeMotionPipelineDevice = nullptr, *nativeMaskPipelineDevice = nullptr;
+	winrt::com_ptr<ID3D12RootSignature> guideCompareRoot;
+	winrt::com_ptr<ID3D12PipelineState> guideComparePipeline;
+	ID3D12Device *pipelineDevice = nullptr, *shadowPipelineDevice = nullptr, *originPipelineDevice = nullptr, *blendPipelineDevice = nullptr, *nativeDepthPipelineDevice = nullptr, *nativeMotionPipelineDevice = nullptr, *nativeMaskPipelineDevice = nullptr, *guideComparePipelineDevice = nullptr;
 	winrt::com_ptr<ID3D12RootSignature> shadowRoot;
 	winrt::com_ptr<ID3D12PipelineState> shadowPipeline;
 	std::atomic<uint64_t> completedComposites{ 0 }, acceptedPixels{ 0 }, modifiedPixels{ 0 }, visualizationPixels{ 0 }, counterReadFailures{ 0 };
@@ -180,6 +195,7 @@ private:
 	bool InitializeNativeDepth(ID3D12Device* a_device);
 	bool InitializeNativeMotion(ID3D12Device* a_device);
 	bool InitializeNativeMasks(ID3D12Device* a_device);
+	bool InitializeGuideComparator(ID3D12Device* a_device);
 	std::optional<globals::FrameBuffer> previousNativeCamera;
 	std::shared_ptr<const DX12Native::TopLevel> previousMotionScene;
 	uint32_t previousNativeFrame = 0;

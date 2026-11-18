@@ -16,6 +16,8 @@ struct NativeCompositeFeature final : Feature
 		bool EnableValidityChecks = false;
 		bool SourceBlendEnabled = false;
 		float SourceBlend = 0.5f, NativeIntensity = 1.0f, RasterIntensity = 1.0f;
+		std::array<float, NativeComposite::GuideCount> GuideTolerance{ 2.0f, 0.5f, 0.05f, 0.05f };
+		std::array<uint32_t, NativeComposite::GuideCount> GuidePriority{};
 		bool AddLighting = true;
 		float LightingStrength = 1.0f;
 		bool DirectSpatialReconstruction = true;

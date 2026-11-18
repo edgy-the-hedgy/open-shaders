@@ -5,7 +5,7 @@
 #include "State.h"
 #include "Utils/DevBenchUx.h"
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(NativeCompositeFeature::Settings, Enabled, IncludeRasterScene, OriginPreview, EnableValidityChecks, SourceBlendEnabled, SourceBlend, NativeIntensity, RasterIntensity, AddLighting, LightingStrength, DirectSpatialReconstruction, PersistLab, ShadowLayerEnabled, ShadowContribution, ShadowBlend, ShadowRadiusPixels, ShadowReceiverTolerance, ShadowPreview, ShadowAfterLighting, ShadowSpatialReconstruction)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(NativeCompositeFeature::Settings, Enabled, IncludeRasterScene, OriginPreview, EnableValidityChecks, SourceBlendEnabled, SourceBlend, NativeIntensity, RasterIntensity, GuideTolerance, GuidePriority, AddLighting, LightingStrength, DirectSpatialReconstruction, PersistLab, ShadowLayerEnabled, ShadowContribution, ShadowBlend, ShadowRadiusPixels, ShadowReceiverTolerance, ShadowPreview, ShadowAfterLighting, ShadowSpatialReconstruction)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(NativeComposite::Policy, diffuse, specular, visual)
 
 namespace
@@ -63,6 +63,20 @@ void NativeCompositeFeature::DrawSettings()
 		++validityRevision;
 	}
 	ImGui::TextDisabled("Source blend overrides the raster inclusion toggle while active.");
+	ImGui::SeparatorText("Runtime-upscaler guide comparison");
+	const char* names[]{ "Depth", "Motion", "Reactive", "Transparency" };
+	const float ranges[]{ 100.0f, 16.0f, 1.0f, 1.0f };
+	for (size_t i = 0; i < NativeComposite::GuideCount; ++i) {
+		ImGui::PushID(static_cast<int>(i));
+		if (ImGui::SliderFloat(names[i], &settings.GuideTolerance[i], 0.0f, ranges[i], "%.3f"))
+			++validityRevision;
+		int choice = static_cast<int>(settings.GuidePriority[i]);
+		if (ImGui::Combo("Priority", &choice, "Native unless within tolerance\0Raster unless within tolerance\0")) {
+			settings.GuidePriority[i] = static_cast<uint32_t>(choice);
+			++validityRevision;
+		}
+		ImGui::PopID();
+	}
 	enabled = settings.Enabled;
 	ImGui::TextDisabled("%s", pass.Status().c_str());
 	ImGui::TextDisabled("%s", LightingStatus(lightingStatus.load()));
@@ -125,6 +139,11 @@ void NativeCompositeFeature::LoadSettings(json& a_json)
 	settings.SourceBlend = safe(settings.SourceBlend, Settings{}.SourceBlend, 0.0f, 1.0f);
 	settings.NativeIntensity = safe(settings.NativeIntensity, Settings{}.NativeIntensity, 0.0f, 4.0f);
 	settings.RasterIntensity = safe(settings.RasterIntensity, Settings{}.RasterIntensity, 0.0f, 4.0f);
+	for (size_t i = 0; i < NativeComposite::GuideCount; ++i) {
+		const float limit = i == 0 ? 100.0f : i == 1 ? 16.0f : 1.0f;
+		settings.GuideTolerance[i] = safe(settings.GuideTolerance[i], Settings{}.GuideTolerance[i], 0.0f, limit);
+		settings.GuidePriority[i] = std::min(settings.GuidePriority[i], 1u);
+	}
 	settings.ShadowContribution = safe(settings.ShadowContribution, Settings{}.ShadowContribution, 0.0f, 4.0f);
 	settings.ShadowBlend = safe(settings.ShadowBlend, Settings{}.ShadowBlend, 0.0f, 1.0f);
 	settings.ShadowRadiusPixels = safe(settings.ShadowRadiusPixels, Settings{}.ShadowRadiusPixels, 0.0f, 32.0f);
@@ -216,6 +235,19 @@ void NativeCompositeFeature::RegisterUxActions()
 		blendTune("sourceBlend", feature.settings.SourceBlend, 1.0f);
 		blendTune("nativeIntensity", feature.settings.NativeIntensity, 4.0f);
 		blendTune("rasterIntensity", feature.settings.RasterIntensity, 4.0f);
+		if (args.contains("guideTolerance") && args.at("guideTolerance").is_array() && args.at("guideTolerance").size() == NativeComposite::GuideCount) {
+			const auto values = args.at("guideTolerance").get<std::array<float, NativeComposite::GuideCount>>();
+			for (size_t i = 0; i < NativeComposite::GuideCount; ++i)
+				if (std::isfinite(values[i]))
+					feature.settings.GuideTolerance[i] = std::clamp(values[i], 0.0f, i == 0 ? 100.0f : i == 1 ? 16.0f : 1.0f);
+			++feature.validityRevision;
+		}
+		if (args.contains("guidePriority") && args.at("guidePriority").is_array() && args.at("guidePriority").size() == NativeComposite::GuideCount) {
+			const auto values = args.at("guidePriority").get<std::array<uint32_t, NativeComposite::GuideCount>>();
+			for (size_t i = 0; i < NativeComposite::GuideCount; ++i)
+				feature.settings.GuidePriority[i] = std::min(values[i], 1u);
+			++feature.validityRevision;
+		}
 		if (args.contains("addLighting"))
 			feature.settings.AddLighting = args.at("addLighting").get<bool>();
 		if (args.contains("directSpatialReconstruction")) {
@@ -257,7 +289,8 @@ json NativeCompositeFeature::GetDiagnostics()
 	std::scoped_lock lock(settingsMutex);
 	const auto sceneDiagnostics = globals::features::dx12NativeScene.GetDiagnostics();
 	return { { "enabled", IsEnabled() }, { "includeRasterScene", settings.IncludeRasterScene }, { "originPreview", settings.OriginPreview }, { "enableValidityChecks", settings.EnableValidityChecks },
-		{ "sourceBlendEnabled", settings.SourceBlendEnabled }, { "sourceBlend", settings.SourceBlend }, { "nativeIntensity", settings.NativeIntensity }, { "rasterIntensity", settings.RasterIntensity }, { "captures", captures.load() },
+		{ "sourceBlendEnabled", settings.SourceBlendEnabled }, { "sourceBlend", settings.SourceBlend }, { "nativeIntensity", settings.NativeIntensity }, { "rasterIntensity", settings.RasterIntensity },
+		{ "guideTolerance", settings.GuideTolerance }, { "guidePriority", settings.GuidePriority }, { "captures", captures.load() },
 		{ "lightingSubmissions", lightingSubmissions.load() }, { "shadowSubmissions", shadowSubmissions.load() },
 		{ "completedComposites", pass.CompletedComposites() }, { "acceptedPixels", pass.AcceptedPixels() },
 		{ "modifiedPixels", pass.ModifiedPixels() }, { "visualizationPixels", pass.VisualizationPixels() },
@@ -311,7 +344,8 @@ std::shared_ptr<const NativeComposite::Frame> NativeCompositeFeature::Capture(ID
 		a_transfer, lighting, shadow, raster, shadowSettings, selected.LightingStrength, selected.DirectSpatialReconstruction,
 		selectedPolicy, revision, globals::features::nativePBR.NativeFirstReadinessStage(), selected.IncludeRasterScene || selected.SourceBlendEnabled,
 		selected.OriginPreview, !selected.EnableValidityChecks,
-		{ selected.SourceBlendEnabled, selected.SourceBlend, selected.NativeIntensity, selected.RasterIntensity }, a_rasterGuides);
+		{ selected.SourceBlendEnabled, selected.SourceBlend, selected.NativeIntensity, selected.RasterIntensity }, a_rasterGuides,
+		{ selected.GuideTolerance, selected.GuidePriority });
 	if (frame)
 		++captures;
 	if (frame && frame->lightingSubmitted) {

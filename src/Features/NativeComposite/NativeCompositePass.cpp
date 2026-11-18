@@ -305,6 +305,47 @@ bool NativeComposite::InitializeNativeMasks(ID3D12Device* a_device)
 	}
 }
 
+bool NativeComposite::InitializeGuideComparator(ID3D12Device* a_device)
+{
+	if (guideComparePipeline && guideComparePipelineDevice == a_device)
+		return true;
+	try {
+		std::ifstream file("Data/Shaders/NativeComposite/CompareGuides.dxil", std::ios::binary | std::ios::ate);
+		if (!file)
+			return false;
+		const auto size = file.tellg();
+		if (size <= 0 || size > 16 * 1024 * 1024)
+			return false;
+		std::vector<char> shader(static_cast<size_t>(size));
+		file.seekg(0);
+		if (!file.read(shader.data(), size))
+			return false;
+		CD3DX12_DESCRIPTOR_RANGE ranges[2];
+		ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0);
+		ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 2, 0);
+		CD3DX12_ROOT_PARAMETER parameters[3];
+		parameters[0].InitAsDescriptorTable(1, &ranges[0]);
+		parameters[1].InitAsDescriptorTable(1, &ranges[1]);
+		parameters[2].InitAsConstants(24, 0);
+		const CD3DX12_ROOT_SIGNATURE_DESC desc(3, parameters);
+		winrt::com_ptr<ID3DBlob> serialized, errors;
+		DX::ThrowIfFailed(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, serialized.put(), errors.put()));
+		winrt::com_ptr<ID3D12RootSignature> newRoot;
+		DX::ThrowIfFailed(a_device->CreateRootSignature(0, serialized->GetBufferPointer(), serialized->GetBufferSize(), IID_PPV_ARGS(newRoot.put())));
+		D3D12_COMPUTE_PIPELINE_STATE_DESC pso{};
+		pso.pRootSignature = newRoot.get();
+		pso.CS = { shader.data(), shader.size() };
+		winrt::com_ptr<ID3D12PipelineState> newPipeline;
+		DX::ThrowIfFailed(a_device->CreateComputePipelineState(&pso, IID_PPV_ARGS(newPipeline.put())));
+		guideCompareRoot = std::move(newRoot);
+		guideComparePipeline = std::move(newPipeline);
+		guideComparePipelineDevice = a_device;
+		return true;
+	} catch (...) {
+		return false;
+	}
+}
+
 std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Device5* a_device11, ID3D11DeviceContext4* a_context11,
 	ID3D12Device* a_device12, ID3D12CommandQueue* a_queue, ID3D11Texture2D* a_source,
 	uint32_t a_frame, uint32_t a_width, uint32_t a_height, Transfer a_transfer,
@@ -314,7 +355,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 	const ShadowSettings& a_shadowSettings,
 	float a_strength, bool a_directSpatialReconstruction, const Policy& a_policy, uint64_t a_revision,
 	uint32_t a_nativeReadinessStage, bool a_includeRasterScene, bool a_originPreview, bool a_ignoreValidity,
-	const SourceBlendSettings& a_sourceBlend, const RasterGuideInputs& a_rasterGuides)
+	const SourceBlendSettings& a_sourceBlend, const RasterGuideInputs& a_rasterGuides, const GuideCompareSettings& a_guideCompare)
 {
 	CS_GPU_PASS("NativeComposite::RasterPassThrough");
 	status = "Invalid capture input";
@@ -394,6 +435,15 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 		a_lighting->height == a_height && a_lighting->backend.d3d12Device.get() == a_device12 &&
 		a_lighting->readyFence && a_lighting->readyValue && a_lighting->readyValue != UINT64_MAX &&
 		a_lighting->textures[8] && InitializeNativeMasks(a_device12);
+	std::array<bool, GuideCount> comparisonReady{};
+	comparisonReady[static_cast<size_t>(Guide::Depth)] = nativeDepthReady && !!a_rasterGuides[static_cast<size_t>(Guide::Depth)];
+	comparisonReady[static_cast<size_t>(Guide::Motion)] = nativeMotionReady && !!a_rasterGuides[static_cast<size_t>(Guide::Motion)];
+	comparisonReady[static_cast<size_t>(Guide::Reactive)] = nativeMasksReady && !!a_rasterGuides[static_cast<size_t>(Guide::Reactive)];
+	comparisonReady[static_cast<size_t>(Guide::Transparency)] = nativeMasksReady && !!a_rasterGuides[static_cast<size_t>(Guide::Transparency)];
+	if (std::ranges::any_of(comparisonReady, [](bool ready) { return ready; }) && !InitializeGuideComparator(a_device12)) {
+		status = "CompareGuides.dxil missing or comparator pipeline initialization failed";
+		return {};
+	}
 	const bool shadowRequested = (a_shadowSettings.contribution * a_shadowSettings.blend > 0.0f) || a_shadowSettings.preview;
 	bool applyShadow = false;
 	// A raster-only submission must not conceal the exact shadow admission gate
@@ -508,7 +558,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 		                      slot->sourceDesc.Width != desc.Width || slot->sourceDesc.Height != desc.Height || slot->sourceDesc.Format != desc.Format ||
 		                      slot->supportsLighting != supportsLighting || slot->originPreview != a_originPreview ||
 		                      slot->sourceBlendEnabled != a_sourceBlend.enabled || slot->nativeDepthEnabled != nativeDepthReady ||
-		                      slot->nativeMasksEnabled != nativeMasksReady || guideDescChanged;
+		                      slot->nativeMasksEnabled != nativeMasksReady || slot->comparisonAllocated != comparisonReady || guideDescChanged;
 		if (recreate) {
 			// Reserve two full-size images: one DX11/DX12 shared input and
 			// one DX12-owned composited output. Guard incremental slot growth
@@ -565,6 +615,18 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 					required += bytes;
 				}
 			}
+			for (size_t i = 0; i < GuideCount; ++i) {
+				if (!comparisonReady[i])
+					continue;
+				for (const auto format : { guideDescs[i].Format, DXGI_FORMAT_R32_UINT }) {
+					const auto compareDesc = CD3DX12_RESOURCE_DESC::Tex2D(format, desc.Width, desc.Height, 1, 1, 1, 0,
+						D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+					const uint64_t bytes = a_device12->GetResourceAllocationInfo(0, 1, &compareDesc).SizeInBytes;
+					if (bytes == UINT64_MAX || required > UINT64_MAX - bytes)
+						throw std::runtime_error("Guide comparator allocation size overflow");
+					required += bytes;
+				}
+			}
 			uint64_t retained = 0;
 			for (const auto& candidate : slots)
 				if (candidate && candidate.get() != slot) {
@@ -589,6 +651,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			replacement->sourceBlendEnabled = a_sourceBlend.enabled;
 			replacement->nativeDepthEnabled = nativeDepthReady;
 			replacement->nativeMasksEnabled = nativeMasksReady;
+			replacement->comparisonAllocated = comparisonReady;
 			auto sharedDesc = desc;
 			sharedDesc.Usage = D3D11_USAGE_DEFAULT;
 			sharedDesc.BindFlags = 0;
@@ -656,6 +719,18 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 				DX::ThrowIfFailed(a_device12->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &coverageDesc,
 					D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(replacement->nativeMaskCoverage.put())));
 			}
+			for (size_t i = 0; i < GuideCount; ++i) {
+				if (!comparisonReady[i])
+					continue;
+				const auto comparedDesc = CD3DX12_RESOURCE_DESC::Tex2D(guideDescs[i].Format,
+					desc.Width, desc.Height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+				const auto originDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32_UINT,
+					desc.Width, desc.Height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+				DX::ThrowIfFailed(a_device12->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &comparedDesc,
+					D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(replacement->comparedGuides[i].put())));
+				DX::ThrowIfFailed(a_device12->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &originDesc,
+					D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(replacement->comparedOrigins[i].put())));
+			}
 			D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
 			heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 			heapDesc.NumDescriptors = 1;
@@ -720,6 +795,13 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 				heapDesc.NumDescriptors = 4;
 				heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 				DX::ThrowIfFailed(a_device12->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(replacement->nativeMaskDescriptors.put())));
+			}
+			for (size_t i = 0; i < GuideCount; ++i) {
+				if (!comparisonReady[i])
+					continue;
+				heapDesc.NumDescriptors = 5;
+				heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+				DX::ThrowIfFailed(a_device12->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(replacement->guideCompareDescriptors[i].put())));
 			}
 			*slot = std::move(*replacement);
 		}
@@ -1094,6 +1176,81 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			};
 			slot->commands->ResourceBarrier(static_cast<UINT>(end.size()), end.data());
 		}
+		for (size_t i = 0; i < GuideCount; ++i) {
+			if (!comparisonReady[i])
+				continue;
+			CS_GPU_PASS("NativeComposite::CompareUpscalerGuide");
+			slot->guideCompareRoot = guideCompareRoot;
+			slot->guideComparePipeline = guideComparePipeline;
+			ID3D12Resource* nativeResource = i == static_cast<size_t>(Guide::Depth) ? slot->nativeDepth.get() :
+				i == static_cast<size_t>(Guide::Motion) ? slot->nativeMotion.get() :
+				i == static_cast<size_t>(Guide::Reactive) ? slot->nativeReactive.get() : slot->nativeTransparency.get();
+			ID3D12Resource* nativeCoverage = i == static_cast<size_t>(Guide::Depth) ? slot->nativeDepthCoverage.get() :
+				i == static_cast<size_t>(Guide::Motion) ? slot->nativeMotionCoverage.get() : slot->nativeMaskCoverage.get();
+			ID3D12Resource* rasterResource = slot->guideCopies[i]->resource.get();
+			const auto step = a_device12->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+			auto cpu = slot->guideCompareDescriptors[i]->GetCPUDescriptorHandleForHeapStart();
+			D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+			srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+			srv.Texture2D.MipLevels = 1;
+			srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			srv.Format = guideDescs[i].Format;
+			a_device12->CreateShaderResourceView(rasterResource, &srv, cpu);
+			cpu.ptr += step;
+			srv.Format = i == static_cast<size_t>(Guide::Depth) ? DXGI_FORMAT_R32_FLOAT :
+				i == static_cast<size_t>(Guide::Motion) ? DXGI_FORMAT_R16G16_FLOAT : DXGI_FORMAT_R8_UNORM;
+			a_device12->CreateShaderResourceView(nativeResource, &srv, cpu);
+			cpu.ptr += step;
+			srv.Format = DXGI_FORMAT_R32_UINT;
+			a_device12->CreateShaderResourceView(nativeCoverage, &srv, cpu);
+			cpu.ptr += step;
+			D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+			uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+			uav.Format = guideDescs[i].Format;
+			a_device12->CreateUnorderedAccessView(slot->comparedGuides[i].get(), nullptr, &uav, cpu);
+			cpu.ptr += step;
+			uav.Format = DXGI_FORMAT_R32_UINT;
+			a_device12->CreateUnorderedAccessView(slot->comparedOrigins[i].get(), nullptr, &uav, cpu);
+			const std::array start{
+				CD3DX12_RESOURCE_BARRIER::Transition(rasterResource, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+				CD3DX12_RESOURCE_BARRIER::Transition(nativeResource, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+				CD3DX12_RESOURCE_BARRIER::Transition(nativeCoverage, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->comparedGuides[i].get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->comparedOrigins[i].get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+			};
+			slot->commands->ResourceBarrier(static_cast<UINT>(start.size()), start.data());
+			ID3D12DescriptorHeap* heaps[]{ slot->guideCompareDescriptors[i].get() };
+			slot->commands->SetDescriptorHeaps(1, heaps);
+			slot->commands->SetPipelineState(slot->guideComparePipeline.get());
+			slot->commands->SetComputeRootSignature(slot->guideCompareRoot.get());
+			auto gpu = slot->guideCompareDescriptors[i]->GetGPUDescriptorHandleForHeapStart();
+			slot->commands->SetComputeRootDescriptorTable(0, gpu);
+			gpu.ptr += 3ull * step;
+			slot->commands->SetComputeRootDescriptorTable(1, gpu);
+			struct Constants
+			{
+				uint32_t width, height;
+				float tolerance;
+				uint32_t priority, kind, hasNative, hasRaster, padding;
+				DirectX::SimpleMath::Matrix inverseProjection;
+			};
+			static_assert(sizeof(Constants) == 24 * sizeof(uint32_t));
+			const auto& inverseProjection = nativeSceneFrame && nativeSceneFrame->raster ?
+				nativeSceneFrame->raster->camera.CameraProjInverse : a_lighting->scene.raster->camera.CameraProjInverse;
+			const Constants constants{ a_width, a_height, std::isfinite(a_guideCompare.tolerance[i]) ?
+				std::max(0.0f, a_guideCompare.tolerance[i]) : 0.0f, std::min(a_guideCompare.priority[i], 1u),
+				static_cast<uint32_t>(i), 1u, 1u, 0u, inverseProjection };
+			slot->commands->SetComputeRoot32BitConstants(2, 24, &constants, 0);
+			slot->commands->Dispatch((a_width + 7) / 8, (a_height + 7) / 8, 1);
+			const std::array end{
+				CD3DX12_RESOURCE_BARRIER::Transition(rasterResource, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
+				CD3DX12_RESOURCE_BARRIER::Transition(nativeResource, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
+				CD3DX12_RESOURCE_BARRIER::Transition(nativeCoverage, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->comparedGuides[i].get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON),
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->comparedOrigins[i].get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON)
+			};
+			slot->commands->ResourceBarrier(static_cast<UINT>(end.size()), end.data());
+		}
 		if (a_sourceBlend.enabled) {
 			// The raster scene and native result remained independent until this
 			// pre-upscaler operation; neither source is overwritten prematurely.
@@ -1231,6 +1388,19 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 		}
 		for (auto& guide : frame.nativeGuides)
 			guide = {};
+		for (size_t i = 0; i < GuideCount; ++i) {
+			frame.selectedGuides[i] = frame.rasterGuides[i];
+			if (comparisonReady[i]) {
+				auto& target = frame.selectedGuides[i];
+				target.resource = slot->comparedGuides[i];
+				target.origin = slot->comparedOrigins[i];
+				target.width = a_width;
+				target.height = a_height;
+				target.format = guideDescs[i].Format;
+				target.rasterOrigin = true;
+				target.nativeOrigin = true;
+			}
+		}
 		if (nativeDepthReady) {
 			auto& depth = frame.nativeGuides[static_cast<size_t>(Guide::Depth)];
 			depth.resource = slot->nativeDepth;

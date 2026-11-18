@@ -1,0 +1,52 @@
+// Per-element source decision, evaluated at the Native Composite handoff.
+// Pixel provenance: 0 = DX11 raster, 1 = DX12 native.
+Texture2D<float4> Raster : register(t0);
+Texture2D<float4> Native : register(t1);
+Texture2D<uint> NativeCoverage : register(t2);
+RWTexture2D<float4> Selected : register(u0);
+RWTexture2D<uint> SourceOrigin : register(u1);
+
+cbuffer CompareConstants : register(b0)
+{
+	uint2 Size;
+	float Tolerance;
+	uint PriorityMode;  // 0 = native except inside tolerance; 1 = raster except inside tolerance
+	uint GuideKind;     // 0 depth, 1 motion, 2 reactive, 3 transparency
+	uint HasNative;
+	uint HasRaster;
+	uint Padding;
+	row_major float4x4 InverseProjection;
+};
+
+float ViewDistance(float2 clip, float depth)
+{
+	float4 point = mul(InverseProjection, float4(clip, depth, 1.0f));
+	if (abs(point.w) <= 1e-8f || !all(isfinite(point))) return 3.402823e38f;
+	return length(point.xyz / point.w);
+}
+
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+	if (any(id.xy >= Size)) return;
+	float4 raster = HasRaster != 0u ? Raster[id.xy] : 0.0f;
+	bool validNative = HasNative != 0u && NativeCoverage[id.xy] != 0u;
+	float4 native = validNative ? Native[id.xy] : 0.0f;
+	bool chooseNative = validNative;
+	if (HasRaster != 0u && validNative) {
+		float difference;
+		if (GuideKind == 0u) {
+			float2 clip = (float2(id.xy) + 0.5f) * (2.0f / float2(Size)) - 1.0f;
+			clip.y = -clip.y;
+			difference = abs(ViewDistance(clip, native.x) - ViewDistance(clip, raster.x));
+		} else if (GuideKind == 1u) {
+			difference = length((native.xy - raster.xy) * float2(Size));
+		} else {
+			difference = abs(native.x - raster.x);
+		}
+		const bool withinTolerance = isfinite(difference) && difference <= Tolerance;
+		chooseNative = PriorityMode == 0u ? !withinTolerance : withinTolerance;
+	}
+	Selected[id.xy] = chooseNative ? native : raster;
+	SourceOrigin[id.xy] = chooseNative ? 1u : 0u;
+}
