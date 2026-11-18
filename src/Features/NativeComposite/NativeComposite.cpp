@@ -5,7 +5,7 @@
 #include "State.h"
 #include "Utils/DevBenchUx.h"
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(NativeCompositeFeature::Settings, Enabled, AddLighting, LightingStrength, DirectSpatialReconstruction, PersistLab, ShadowLayerEnabled, ShadowContribution, ShadowBlend, ShadowRadiusPixels, ShadowReceiverTolerance, ShadowPreview, ShadowAfterLighting, ShadowSpatialReconstruction)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(NativeCompositeFeature::Settings, Enabled, IncludeRasterScene, AddLighting, LightingStrength, DirectSpatialReconstruction, PersistLab, ShadowLayerEnabled, ShadowContribution, ShadowBlend, ShadowRadiusPixels, ShadowReceiverTolerance, ShadowPreview, ShadowAfterLighting, ShadowSpatialReconstruction)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(NativeComposite::Policy, diffuse, specular, visual)
 
 namespace
@@ -44,6 +44,8 @@ void NativeCompositeFeature::DrawSettings()
 	if (ImGui::Checkbox("Spatially reconstruct missing shadow pixels", &settings.ShadowSpatialReconstruction))
 		++validityRevision;
 	ImGui::TextDisabled("Spatial reconstruction fills missing pixels after native tracing.");
+	if (ImGui::Checkbox("Include raster scene color", &settings.IncludeRasterScene))
+		++validityRevision;
 	enabled = settings.Enabled;
 	ImGui::TextDisabled("%s", pass.Status().c_str());
 	ImGui::TextDisabled("%s", LightingStatus(lightingStatus.load()));
@@ -161,11 +163,15 @@ void NativeCompositeFeature::ConfigureShadowLayer(const json& args)
 
 void NativeCompositeFeature::RegisterUxActions()
 {
-	FEATURE_COMMAND("configure", "Set Native Composite enabled, addLighting, lightingStrength, and directSpatialReconstruction.", [](Feature* self, const json& args) {
+	FEATURE_COMMAND("configure", "Set Native Composite enabled, includeRasterScene, addLighting, lightingStrength, and directSpatialReconstruction.", [](Feature* self, const json& args) {
 		auto& feature = *static_cast<NativeCompositeFeature*>(self);
 		std::scoped_lock lock(feature.settingsMutex);
 		if (args.contains("enabled"))
 			feature.settings.Enabled = args.at("enabled").get<bool>();
+		if (args.contains("includeRasterScene")) {
+			feature.settings.IncludeRasterScene = args.at("includeRasterScene").get<bool>();
+			++feature.validityRevision;
+		}
 		if (args.contains("addLighting"))
 			feature.settings.AddLighting = args.at("addLighting").get<bool>();
 		if (args.contains("directSpatialReconstruction")) {
@@ -206,7 +212,7 @@ json NativeCompositeFeature::GetDiagnostics()
 {
 	std::scoped_lock lock(settingsMutex);
 	const auto sceneDiagnostics = globals::features::dx12NativeScene.GetDiagnostics();
-	return { { "enabled", IsEnabled() }, { "captures", captures.load() },
+	return { { "enabled", IsEnabled() }, { "includeRasterScene", settings.IncludeRasterScene }, { "captures", captures.load() },
 		{ "lightingSubmissions", lightingSubmissions.load() }, { "shadowSubmissions", shadowSubmissions.load() },
 		{ "completedComposites", pass.CompletedComposites() }, { "acceptedPixels", pass.AcceptedPixels() },
 		{ "modifiedPixels", pass.ModifiedPixels() }, { "visualizationPixels", pass.VisualizationPixels() },
@@ -257,7 +263,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeCompositeFeature::Capture(ID
 	const auto raster = shadow ? globals::features::dx12NativeScene.GetRasterFrame(a_frame) : nullptr;
 	auto frame = pass.Capture(a_device11, a_context11, a_device12, a_queue, a_source, a_frame, a_width, a_height,
 		a_transfer, lighting, shadow, raster, shadowSettings, selected.LightingStrength, selected.DirectSpatialReconstruction,
-		selectedPolicy, revision, globals::features::nativePBR.NativeFirstReadinessStage());
+		selectedPolicy, revision, globals::features::nativePBR.NativeFirstReadinessStage(), selected.IncludeRasterScene);
 	if (frame)
 		++captures;
 	if (frame && frame->lightingSubmitted) {

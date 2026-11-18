@@ -109,7 +109,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 	const std::shared_ptr<const DX12Native::RasterFrame>& a_raster,
 	const ShadowSettings& a_shadowSettings,
 	float a_strength, bool a_directSpatialReconstruction, const Policy& a_policy, uint64_t a_revision,
-	uint32_t a_nativeReadinessStage)
+	uint32_t a_nativeReadinessStage, bool a_includeRasterScene)
 {
 	CS_GPU_PASS("NativeComposite::RasterPassThrough");
 	status = "Invalid capture input";
@@ -307,6 +307,19 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			if (supportsLighting) {
 				heapDesc.NumDescriptors = 3;
 				DX::ThrowIfFailed(a_device12->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(replacement->shadowDescriptors.put())));
+				heapDesc.NumDescriptors = 1;
+				heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+				DX::ThrowIfFailed(a_device12->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(replacement->clearDescriptors.put())));
+				D3D12_UNORDERED_ACCESS_VIEW_DESC clearUav{};
+				clearUav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+				clearUav.Format = desc.Format;
+				a_device12->CreateUnorderedAccessView(replacement->frame->color.get(), nullptr, &clearUav,
+					replacement->clearDescriptors->GetCPUDescriptorHandleForHeapStart());
+				const auto clearStep = a_device12->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+				auto shadowCpu = replacement->shadowDescriptors->GetCPUDescriptorHandleForHeapStart();
+				shadowCpu.ptr += 2ull * clearStep;
+				a_device12->CreateUnorderedAccessView(replacement->frame->color.get(), nullptr, &clearUav, shadowCpu);
+				heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 				heapDesc.NumDescriptors = 10;
 				DX::ThrowIfFailed(a_device12->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(replacement->lightingDescriptors.put())));
 				const auto buffer = CD3DX12_RESOURCE_DESC::Buffer(6 * sizeof(uint32_t));
@@ -325,28 +338,48 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			*slot = std::move(*replacement);
 		}
 
-		producerSignalled = true;
-		a_context11->CopyResource(slot->shared->resource11, a_source);
-		const uint64_t inputValue = slot->fence.Next();
-		DX::ThrowIfFailed(a_context11->Signal(slot->fence.fence11.get(), inputValue));
-		DX::ThrowIfFailed(a_queue->Wait(slot->fence.fence12.get(), inputValue));
+		if (a_includeRasterScene) {
+			producerSignalled = true;
+			a_context11->CopyResource(slot->shared->resource11, a_source);
+			const uint64_t inputValue = slot->fence.Next();
+			DX::ThrowIfFailed(a_context11->Signal(slot->fence.fence11.get(), inputValue));
+			DX::ThrowIfFailed(a_queue->Wait(slot->fence.fence12.get(), inputValue));
+		}
 		DX::ThrowIfFailed(slot->allocator->Reset());
 		DX::ThrowIfFailed(slot->commands->Reset(slot->allocator.get(), nullptr));
-		const std::array barriers{
-			CD3DX12_RESOURCE_BARRIER::Transition(slot->shared->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE),
-			CD3DX12_RESOURCE_BARRIER::Transition(slot->frame->color.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST)
-		};
-		slot->commands->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
-		const auto dst = CD3DX12_TEXTURE_COPY_LOCATION(slot->frame->color.get(), 0);
-		const auto src = CD3DX12_TEXTURE_COPY_LOCATION(slot->shared->resource.get(), 0);
-		const D3D12_BOX box{ 0, 0, 0, a_width, a_height, 1 };
-		slot->commands->CopyTextureRegion(&dst, 0, 0, 0, &src, &box);
-		const std::array endBarriers{
-			CD3DX12_RESOURCE_BARRIER::Transition(slot->shared->resource.get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON),
-			CD3DX12_RESOURCE_BARRIER::Transition(slot->frame->color.get(), D3D12_RESOURCE_STATE_COPY_DEST,
-				(blend && !shadowBeforeLighting) ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : D3D12_RESOURCE_STATE_COMMON)
-		};
-		slot->commands->ResourceBarrier(static_cast<UINT>(endBarriers.size()), endBarriers.data());
+		if (a_includeRasterScene) {
+			const std::array barriers{
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->shared->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE),
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->frame->color.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST)
+			};
+			slot->commands->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
+			const auto dst = CD3DX12_TEXTURE_COPY_LOCATION(slot->frame->color.get(), 0);
+			const auto src = CD3DX12_TEXTURE_COPY_LOCATION(slot->shared->resource.get(), 0);
+			const D3D12_BOX box{ 0, 0, 0, a_width, a_height, 1 };
+			slot->commands->CopyTextureRegion(&dst, 0, 0, 0, &src, &box);
+			const std::array endBarriers{
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->shared->resource.get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON),
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->frame->color.get(), D3D12_RESOURCE_STATE_COPY_DEST,
+					(blend && !shadowBeforeLighting) ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : D3D12_RESOURCE_STATE_COMMON)
+			};
+			slot->commands->ResourceBarrier(static_cast<UINT>(endBarriers.size()), endBarriers.data());
+		} else {
+			const auto clearBegin = CD3DX12_RESOURCE_BARRIER::Transition(slot->frame->color.get(),
+				D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+			slot->commands->ResourceBarrier(1, &clearBegin);
+			ID3D12DescriptorHeap* heaps[]{ slot->shadowDescriptors.get() };
+			slot->commands->SetDescriptorHeaps(1, heaps);
+			auto gpu = slot->shadowDescriptors->GetGPUDescriptorHandleForHeapStart();
+			gpu.ptr += 2ull * a_device12->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+			const float black[]{ 0.0f, 0.0f, 0.0f, 1.0f };
+			slot->commands->ClearUnorderedAccessViewFloat(gpu, slot->clearDescriptors->GetCPUDescriptorHandleForHeapStart(),
+				slot->frame->color.get(), black, 0, nullptr);
+			if (!blend || shadowBeforeLighting) {
+				const auto clearEnd = CD3DX12_RESOURCE_BARRIER::Transition(slot->frame->color.get(),
+					D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+				slot->commands->ResourceBarrier(1, &clearEnd);
+			}
+		}
 		auto recordShadow = [&]() {
 			slot->shadowRoot = shadowRoot;
 			slot->shadowPipeline = shadowPipeline;
