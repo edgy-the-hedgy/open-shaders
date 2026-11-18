@@ -46,9 +46,11 @@ public:
 	struct GuideSurface
 	{
 		winrt::com_ptr<ID3D12Resource> resource;
+		winrt::com_ptr<ID3D12Resource> coverage;  // R32_UINT: 1=authoritative native sample, 0=unavailable
 		uint32_t width = 0, height = 0;
 		DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 		bool rasterOrigin = false;
+		bool nativeOrigin = false;
 	};
 	struct Frame
 	{
@@ -56,6 +58,7 @@ public:
 		winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
 		winrt::com_ptr<ID3D12Fence> producerFence;
 		std::array<GuideSurface, GuideCount> rasterGuides;
+		std::array<GuideSurface, GuideCount> nativeGuides;
 		uint64_t producerValue = 0;
 		uint64_t validityRevision = 0;
 		uint32_t frame = 0, width = 0, height = 0;
@@ -114,6 +117,7 @@ private:
 		winrt::com_ptr<ID3D12GraphicsCommandList> commands;
 		winrt::com_ptr<ID3D12DescriptorHeap> lightingDescriptors, shadowDescriptors, originDescriptors;
 		winrt::com_ptr<ID3D12DescriptorHeap> blendDescriptors;
+		winrt::com_ptr<ID3D12DescriptorHeap> nativeDepthDescriptors;
 		winrt::com_ptr<ID3D12DescriptorHeap> clearDescriptors;
 		winrt::com_ptr<ID3D12RootSignature> shadowRoot;
 		winrt::com_ptr<ID3D12PipelineState> shadowPipeline;
@@ -125,6 +129,8 @@ private:
 		winrt::com_ptr<ID3D12PipelineState> blendPipeline;
 		winrt::com_ptr<ID3D12Resource> originMask;
 		winrt::com_ptr<ID3D12Resource> nativeColor;
+		winrt::com_ptr<ID3D12Resource> nativeDepth, nativeDepthCoverage;
+		std::shared_ptr<const DX12Native::TopLevel> nativeDepthScene;
 		winrt::com_ptr<ID3D12Resource> counters, counterReset, counterReadback;
 		SharedFence fence;
 		std::vector<std::pair<winrt::com_ptr<ID3D12Fence>, uint64_t>> consumers;
@@ -134,6 +140,7 @@ private:
 		bool supportsLighting = false;
 		bool originPreview = false;
 		bool sourceBlendEnabled = false;
+		bool nativeDepthEnabled = false;
 		uint64_t frameBytes = 0;
 		bool countersRead = true;
 		bool untracked = false;
@@ -143,7 +150,9 @@ private:
 	winrt::com_ptr<ID3D12PipelineState> pipeline, originPipeline;
 	winrt::com_ptr<ID3D12RootSignature> blendRoot;
 	winrt::com_ptr<ID3D12PipelineState> blendPipeline;
-	ID3D12Device *pipelineDevice = nullptr, *shadowPipelineDevice = nullptr, *originPipelineDevice = nullptr, *blendPipelineDevice = nullptr;
+	winrt::com_ptr<ID3D12RootSignature> nativeDepthRoot;
+	winrt::com_ptr<ID3D12PipelineState> nativeDepthPipeline;
+	ID3D12Device *pipelineDevice = nullptr, *shadowPipelineDevice = nullptr, *originPipelineDevice = nullptr, *blendPipelineDevice = nullptr, *nativeDepthPipelineDevice = nullptr;
 	winrt::com_ptr<ID3D12RootSignature> shadowRoot;
 	winrt::com_ptr<ID3D12PipelineState> shadowPipeline;
 	std::atomic<uint64_t> completedComposites{ 0 }, acceptedPixels{ 0 }, modifiedPixels{ 0 }, visualizationPixels{ 0 }, counterReadFailures{ 0 };
@@ -153,6 +162,7 @@ private:
 	bool InitializeShadow(ID3D12Device* a_device);
 	bool InitializeOriginPreview(ID3D12Device* a_device);
 	bool InitializeSourceBlend(ID3D12Device* a_device);
+	bool InitializeNativeDepth(ID3D12Device* a_device);
 	std::string status = "Not captured";
 	std::string shadowStatus = "Independent shadow layer not captured";
 	std::string shadowPipelineFailure;

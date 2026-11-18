@@ -1,0 +1,50 @@
+// A geometry-originated primary ray. No DX11 texture is sampled by this pass.
+// Coverage is zero for misses; the comparison stage will use raster guides.
+RaytracingAccelerationStructure Scene : register(t0);
+RWTexture2D<float> NativeDepth : register(u0);
+RWTexture2D<uint> NativeCoverage : register(u1);
+
+cbuffer NativeDepthConstants : register(b0)
+{
+	uint2 Size;
+	float3 CameraOrigin;
+	float MinimumDistance;
+	row_major float4x4 InverseProjection;
+	row_major float4x4 InverseView;
+	row_major float4x4 Projection;
+};
+
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+	if (any(id.xy >= Size)) return;
+	NativeDepth[id.xy] = 0.0f;
+	NativeCoverage[id.xy] = 0u;
+	float2 clip = (float2(id.xy) + 0.5f) * (2.0f / float2(Size)) - 1.0f;
+	clip.y = -clip.y;
+	float4 view = mul(InverseProjection, float4(clip, 0.5f, 1.0f));
+	if (!all(isfinite(view)) || abs(view.w) <= 1e-8f) return;
+	float3 viewDirection = view.xyz / view.w;
+	float3 worldDirection = mul((float3x3)InverseView, viewDirection);
+	if (!all(isfinite(worldDirection)) || dot(worldDirection, worldDirection) < 1e-8f) return;
+	RayDesc ray;
+	ray.Origin = CameraOrigin;
+	ray.Direction = normalize(worldDirection);
+	ray.TMin = MinimumDistance;
+	ray.TMax = 60000.0f;
+	// This guide represents an actual native static-geometry intersection.
+	// Alpha-tested/animated material authority is not implied by the hit.
+	RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_CULL_BACK_FACING_TRIANGLES> query;
+	query.TraceRayInline(Scene, RAY_FLAG_NONE, 3u, ray);
+	while (query.Proceed()) { }
+	if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) return;
+	float distance = query.CommittedRayT();
+	if (!isfinite(distance) || distance <= 0.0f) return;
+	float3 viewHit = normalize(viewDirection) * distance;
+	float4 projected = mul(Projection, float4(viewHit, 1.0f));
+	if (!all(isfinite(projected)) || abs(projected.w) <= 1e-8f) return;
+	float normalizedDepth = projected.z / projected.w;
+	if (!isfinite(normalizedDepth) || normalizedDepth < 0.0f || normalizedDepth > 1.0f) return;
+	NativeDepth[id.xy] = normalizedDepth;
+	NativeCoverage[id.xy] = 1u;
+}
