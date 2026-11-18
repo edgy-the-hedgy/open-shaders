@@ -17,12 +17,15 @@
 #include "Features/NativePBR/PreparedSceneMaterials.h"
 #include "Features/NativePBR/RayMaterialBindings.h"
 #include "Features/NativePBR/NativeSnowPublication.h"
+#include "Features/NativePBR/NativeSnowConstantCapture.h"
 #include "Features/NativePBR/NativeSnowTextureResidency.h"
+#include "Utils/Game.h"
 #include "Utils/PointLightFlags.h"
 #include <BS_thread_pool.hpp>
 #include <DirectXTex.h>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <limits>
 #include <stdexcept>
@@ -85,6 +88,68 @@ namespace
 		}
 		return result;
 	}
+
+	std::span<const float> SnowShaderCpuConstants(const RE::BSGraphics::ConstantGroup& a_group)
+	{
+		if (!a_group.data || !a_group.buffer)
+			return {};
+		D3D11_BUFFER_DESC desc{};
+		Util::AsReal(a_group.buffer)->GetDesc(&desc);
+		if (!desc.ByteWidth || desc.ByteWidth > D3D11_REQ_CONSTANT_BUFFER_ELEMENT_COUNT * 16 ||
+			desc.ByteWidth % sizeof(float) != 0)
+			return {};
+		return { static_cast<const float*>(a_group.data), desc.ByteWidth / sizeof(float) };
+	}
+
+	std::optional<NativePBR::ObservedSnowProjection> CaptureSnowProjection(
+		RE::BSGraphics::RendererShadowState* a_shadow, uint32_t a_descriptor, uint32_t a_frame)
+	{
+		if (!a_shadow || (a_descriptor & NativePBR::kProjectedUvShaderFlag) == 0)
+			return std::nullopt;
+		GET_INSTANCE_MEMBER(currentVertexShader, a_shadow)
+		GET_INSTANCE_MEMBER(currentPixelShader, a_shadow)
+		if (!currentVertexShader || !currentPixelShader)
+			return std::nullopt;
+		const auto vsData = SnowShaderCpuConstants(
+			currentVertexShader->constantBuffers[uint32_t(RE::BSGraphics::ConstantGroupLevel::PerGeometry)]);
+		const auto psGeometry = SnowShaderCpuConstants(
+			currentPixelShader->constantBuffers[uint32_t(RE::BSGraphics::ConstantGroupLevel::PerGeometry)]);
+		const auto psMaterial = SnowShaderCpuConstants(
+			currentPixelShader->constantBuffers[uint32_t(RE::BSGraphics::ConstantGroupLevel::PerMaterial)]);
+		const auto& vsTable = currentVertexShader->constantTable;
+		const auto& psTable = currentPixelShader->constantTable;
+		const auto& indices = ShaderConstants::LightingPS::Get();
+		NativePBR::ObservedSnowProjection result;
+		result.frame = a_frame;
+		if (globals::game::isVR) {
+			if (const auto matrix = NativePBR::ReadSnowShaderConstant<24>(vsData, vsTable, 6)) {
+				std::copy_n(matrix->begin(), 12, result.textureProjection[0].emplace().begin());
+				std::copy_n(matrix->begin() + 12, 12, result.textureProjection[1].emplace().begin());
+			}
+		} else {
+			result.textureProjection[0] = NativePBR::ReadSnowShaderConstant<12>(vsData, vsTable, 6);
+		}
+		if (result.textureProjection[0] && (a_descriptor & (1u << 1)) == 0) {
+			const auto& matrix = *result.textureProjection[0];
+			const std::array<float, 3> direction{ matrix[8], matrix[9], matrix[10] };
+			if (std::isfinite(direction[0]) && std::isfinite(direction[1]) && std::isfinite(direction[2]) &&
+				std::hypot(direction[0], direction[1], direction[2]) > 1e-6f) {
+				result.direction = direction;
+				const uint32_t technique = (a_descriptor >> 24) & 0x3fu;
+				result.coordinateSpace = technique == uint32_t(SIE::ShaderCache::LightingShaderTechniques::Envmap) ?
+					NativePBR::SnowProjectionSpace::World : NativePBR::SnowProjectionSpace::Object;
+			}
+		}
+		result.projectedUVParams = NativePBR::ReadSnowShaderConstant<4>(psGeometry, psTable, indices.ProjectedUVParams);
+		result.projectedUVParams2 = NativePBR::ReadSnowShaderConstant<4>(psGeometry, psTable, indices.ProjectedUVParams2);
+		result.projectedUVParams3 = NativePBR::ReadSnowShaderConstant<4>(psGeometry, psTable, indices.ProjectedUVParams3);
+		result.materialObjectRGBScale = NativePBR::ReadSnowShaderConstant<4>(psMaterial, psTable, indices.MaterialObjectRGBScale);
+		result.parallaxOccData = NativePBR::ReadSnowShaderConstant<4>(psMaterial, psTable, indices.ParallaxOccData);
+		if (!result.textureProjection[0] && !result.projectedUVParams && !result.projectedUVParams2 &&
+			!result.projectedUVParams3 && !result.materialObjectRGBScale && !result.parallaxOccData)
+			return std::nullopt;
+		return result;
+	}
 }
 
 struct NativePBRFeature::MaterialWorker
@@ -129,23 +194,26 @@ std::function<void()> NativePBRFeature::OnRenderPassBegin(const RE::BSRenderPass
 	const auto referenceKey = std::format("{:06X}:{}", reference->GetLocalFormID(), file->GetFilename());
 	const std::string shape = geometry->name.c_str();
 	snowObservations.Observe(referenceKey, shape, descriptor, nifFlags);
-	if ((descriptor & NativePBR::kProjectedUvShaderFlag) == 0 &&
-		(nifFlags & NativePBR::kProjectedUvNifFlag) == 0)
+	if ((descriptor & NativePBR::kProjectedUvShaderFlag) == 0)
 		return nullptr;
-	return [this, referenceKey, shape]() {
+	return [this, referenceKey, shape, descriptor]() {
 		const auto* graphicsState = globals::game::graphicsState;
 		auto* shadowState = globals::game::shadowState;
-		if (!graphicsState || !shadowState ||
-			!snowObservations.BeginProjectedTextureProbe(referenceKey, shape, graphicsState->GetFrameCount()))
+		if (!graphicsState || !shadowState)
 			return;
-		const auto& renderer = shadowState->GetRuntimeData();
+		const uint32_t frame = graphicsState->GetFrameCount();
+		if (auto projection = CaptureSnowProjection(shadowState, descriptor, frame))
+			snowObservations.ObserveProjection(referenceKey, shape, *projection);
+		if (!snowObservations.BeginProjectedTextureProbe(referenceKey, shape, frame))
+			return;
+		GET_INSTANCE_MEMBER(PSTexture, shadowState)
 		std::array<NativePBR::ObservedSnowTexture, NativePBR::kSnowProjectedTextureCount> textures;
 		for (size_t i = 0; i < NativePBR::kSnowProjectedTextureSlots.size(); ++i) {
 			const auto slot = NativePBR::kSnowProjectedTextureSlots[i];
 			winrt::com_ptr<ID3D11SamplerState> sampler;
 			if (globals::d3d::context)
 				globals::d3d::context->PSGetSamplers(slot, 1, sampler.put());
-			textures[i] = CaptureSnowTexture(Util::AsReal(renderer.PSTexture[slot]), sampler.get());
+			textures[i] = CaptureSnowTexture(Util::AsReal(PSTexture[slot]), sampler.get());
 		}
 		snowObservations.ObserveProjectedTextures(referenceKey, shape, textures);
 	};
@@ -162,7 +230,7 @@ void NativePBRFeature::DiscoverPreparedAssets()
 	const auto scene = globals::features::dx12NativeScene.GetPublishedScene();
 	if (!scene || !scene->acceleration)
 		return;
-	const auto observations = snowObservations.ExportIfChanged(
+	const auto observations = snowObservations.ExportIfIdentityChanged(
 		discoveredGeometry == scene->acceleration ? snowObservationRevision : UINT64_MAX);
 	if (discoveredGeometry == scene->acceleration) {
 		if (observations) {
@@ -172,12 +240,14 @@ void NativePBRFeature::DiscoverPreparedAssets()
 					continue;
 				for (const auto& source : sources) {
 					auto properties = source.properties;
-					properties.snow = NativePBR::BindSnowSource(properties.shaderFlags, observed->second);
+					auto source = observed->second;
+					source.projection.reset();
+					properties.snow = NativePBR::BindSnowSource(properties.shaderFlags, std::move(source));
 					materialDiscovery.ReplaceInstance(source.materialKey, source.referenceKey, source.shapeName,
 						std::move(properties));
 				}
 			}
-			snowObservationRevision = observations->revision;
+			snowObservationRevision = observations->identityRevision;
 		}
 		return;
 	}
@@ -253,6 +323,7 @@ void NativePBRFeature::DiscoverPreparedAssets()
 				if (const auto found = observations->entries.find(observationKey); found != observations->entries.end())
 					observed = found->second;
 			}
+			observed.projection.reset();
 			properties.snow = NativePBR::BindSnowSource(flags, std::move(observed));
 			properties.opacity = NativePBR::InstanceProperties::Opacity::Opaque;
 			properties.normalMode = (flags1 & (1u << 12)) != 0 ?
@@ -271,7 +342,7 @@ void NativePBRFeature::DiscoverPreparedAssets()
 			materialDiscovery.Retire(key);
 	discoveredMaterialKeys = std::move(currentKeys);
 	discoveredGeometry = scene->acceleration;
-	snowObservationRevision = observations ? observations->revision : 0;
+	snowObservationRevision = observations ? observations->identityRevision : 0;
 }
 
 std::shared_ptr<const NativePBR::RecipeGeneration> NativePBRFeature::GetNativeRecipes() const
@@ -1143,7 +1214,10 @@ json NativePBRFeature::GetDiagnostics()
 			{ "ordinary", snow ? snow->ordinary : 0 }, { "baseObject", snow ? snow->baseObject : 0 },
 			{ "projected", snow ? snow->projected : 0 }, { "landscape", snow ? snow->landscape : 0 },
 			{ "observed", snow ? snow->observed : 0 }, { "nifOnly", snow ? snow->nifOnly : 0 },
+			{ "completeProjection", snow ? snow->completeProjection : 0 },
 			{ "unresolvedProjection", snow ? snow->incompleteProjection : 0 },
+			{ "missingProjectionDirection", snow ? snow->missingProjectionDirection : 0 },
+			{ "missingProjectionParameters", snow ? snow->missingProjectionParameters : 0 },
 			{ "ambiguous", snow ? snow->ambiguous : 0 }, { "missingMaterial", snow ? snow->missing : 0 },
 			{ "projectedTexturesResolved", snow ? snow->projectedTexturesResolved : 0 },
 			{ "projectedTexturesUnresolved", snow ? snow->projectedTexturesUnresolved : 0 },

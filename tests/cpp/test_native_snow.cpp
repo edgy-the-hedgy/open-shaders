@@ -2,8 +2,75 @@
 
 #include "Features/NativePBR/NativeSnowObservations.h"
 #include "Features/NativePBR/NativeSnowPublication.h"
+#include "Features/NativePBR/NativeSnowConstantCapture.h"
 #include "Features/NativePBR/NativeSnowTextureResidency.h"
 #include "Features/DX12NativeScene/LiveLooseTexturePlan.h"
+#include <limits>
+
+TEST_CASE("Native snow reads reflected CPU constants without a GPU readback", "[nativepbr][snow]")
+{
+	std::array<float, 64> data{};
+	std::array<uint8_t, 20> offsets{};
+	offsets[6] = 40;
+	for (size_t index = 0; index < 12; ++index)
+		data[40 + index] = float(index + 1);
+	const auto projection = NativePBR::ReadSnowShaderConstant<12>(data, offsets, 6);
+	REQUIRE(projection);
+	CHECK((*projection)[8] == 9.0f);
+	CHECK_FALSE(NativePBR::ReadSnowShaderConstant<12>(data, offsets, 5));
+	CHECK_FALSE(NativePBR::ReadSnowShaderConstant<12>(std::span<const float>(data).first(50), offsets, 6));
+	CHECK_FALSE(NativePBR::ReadSnowShaderConstant<12>(data, offsets, 21));
+	data[41] = std::numeric_limits<float>::quiet_NaN();
+	CHECK_FALSE(NativePBR::ReadSnowShaderConstant<12>(data, offsets, 6));
+}
+
+TEST_CASE("Native snow projection observations separate camera frames from same-frame ambiguity", "[nativepbr][snow]")
+{
+	using namespace NativePBR;
+	NativeSnowObservations observations;
+	REQUIRE(observations.Observe("Ref", "Shape", kProjectedUvShaderFlag, kProjectedUvNifFlag));
+	ObservedSnowProjection projection;
+	projection.frame = 50;
+	projection.coordinateSpace = SnowProjectionSpace::Object;
+	projection.direction = std::array<float, 3>{ 0.0f, 0.0f, 1.0f };
+	projection.projectedUVParams = std::array<float, 4>{ 1.0f, 2.0f, 3.0f, 4.0f };
+	REQUIRE(observations.ObserveProjection("Ref", "Shape", projection));
+	CHECK_FALSE(observations.ObserveProjection("ref", "shape", projection));
+	const auto identity = observations.ExportIfIdentityChanged(0);
+	REQUIRE(identity);
+	projection.frame = 51;
+	CHECK_FALSE(observations.ObserveProjection("Ref", "Shape", projection));
+	CHECK_FALSE(observations.ExportIfIdentityChanged(identity->identityRevision));
+	projection.projectedUVParams->at(0) = 2.0f;
+	REQUIRE(observations.ObserveProjection("Ref", "Shape", projection));
+	CHECK_FALSE(observations.ExportIfIdentityChanged(identity->identityRevision));
+	const auto snapshot = observations.ExportIfChanged(0);
+	REQUIRE(snapshot);
+	CHECK_FALSE(snapshot->entries.begin()->second.conflictingPasses);
+	CHECK(snapshot->entries.begin()->second.projection->projectedUVParams->at(0) == 2.0f);
+	projection.projectedUVParams->at(0) = 3.0f;
+	REQUIRE(observations.ObserveProjection("Ref", "Shape", projection));
+	const auto ambiguous = observations.ExportIfChanged(snapshot->revision);
+	REQUIRE(ambiguous);
+	CHECK(ambiguous->entries.begin()->second.conflictingPasses);
+}
+
+TEST_CASE("Native snow coverage readiness requires an original projection direction and parameters", "[nativepbr][snow]")
+{
+	using namespace NativePBR;
+	NativeSnowProjection projection;
+	CHECK_FALSE(SnowProjectionCoverageReady(projection));
+	projection.coordinateSpace = SnowProjectionSpace::Object;
+	projection.direction = std::array<float, 3>{ 0.0f, 0.0f, 1.0f };
+	projection.textureProjection = std::array<float, 12>{};
+	projection.projectedUVParams = std::array<float, 4>{};
+	projection.projectedUVParams2 = std::array<float, 4>{};
+	CHECK_FALSE(SnowProjectionCoverageReady(projection));
+	projection.projectedUVParams3 = std::array<float, 4>{};
+	CHECK(SnowProjectionCoverageReady(projection));
+	CHECK(ClassifySnowInput(SnowProjected, true, false, true, true) == SnowInputStatus::Observed);
+	CHECK(ClassifySnowInput(SnowProjected, true, false, true, false) == SnowInputStatus::UnresolvedProjection);
+}
 
 TEST_CASE("Native snow separates NIF and original shader-state authority", "[nativepbr][snow]")
 {

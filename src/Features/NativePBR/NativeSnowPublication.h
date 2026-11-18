@@ -12,7 +12,7 @@
 namespace NativePBR
 {
 	struct GpuMaterialResources;
-	inline constexpr uint32_t kNativeSnowPublicationVersion = 1;
+	inline constexpr uint32_t kNativeSnowPublicationVersion = 2;
 
 	enum class SnowInputStatus : uint8_t
 	{
@@ -24,7 +24,6 @@ namespace NativePBR
 		LandscapeMetadataOnly
 	};
 
-	enum class SnowProjectionSpace : uint8_t { Unresolved, Object, World };
 	enum class SnowTextureRole : uint8_t { Diffuse, Normal, DetailNormal, Noise, Count };
 	enum class SnowTextureStatus : uint8_t { UnresolvedSource, IdentifiedPath, InvalidPath, Resident, Unavailable };
 
@@ -46,10 +45,20 @@ namespace NativePBR
 		SnowProjectionSpace coordinateSpace = SnowProjectionSpace::Unresolved;
 		std::optional<std::array<float, 3>> direction;
 		std::optional<std::array<float, 12>> textureProjection;
+		std::optional<std::array<float, 12>> rightEyeTextureProjection;
 		std::optional<std::array<float, 4>> projectedUVParams, projectedUVParams2, projectedUVParams3;
 		std::optional<std::array<float, 4>> materialObjectRGBScale, parallaxOccData;
+		uint32_t sourceFrame = 0;
 		std::array<SnowTextureReference, static_cast<size_t>(SnowTextureRole::Count)> textures;
 	};
+
+	/** @brief A projected coverage input is complete only when its original shader values exist. */
+	inline bool SnowProjectionCoverageReady(const NativeSnowProjection& a_projection)
+	{
+		return a_projection.coordinateSpace != SnowProjectionSpace::Unresolved &&
+			a_projection.direction && a_projection.textureProjection && a_projection.projectedUVParams &&
+			a_projection.projectedUVParams2 && a_projection.projectedUVParams3;
+	}
 
 	/** @brief Per-layer terrain snow remains unknown until landscape shader inputs are captured. */
 	struct NativeLandscapeSnow
@@ -79,7 +88,8 @@ namespace NativePBR
 		std::shared_ptr<const GpuMaterialResources> gpuMaterials;
 		std::vector<NativeSnowInstance> instances;
 		uint32_t sceneInstances = 0, ordinary = 0, baseObject = 0, projected = 0, landscape = 0;
-		uint32_t observed = 0, nifOnly = 0, incompleteProjection = 0, ambiguous = 0, missing = 0;
+		uint32_t observed = 0, nifOnly = 0, completeProjection = 0, incompleteProjection = 0;
+		uint32_t missingProjectionDirection = 0, missingProjectionParameters = 0, ambiguous = 0, missing = 0;
 		uint32_t projectedTexturesResolved = 0, projectedTexturesUnresolved = 0;
 		uint32_t textureSetsResident = 0, textureSetsPartial = 0, textureSetsUnavailable = 0;
 
@@ -94,13 +104,13 @@ namespace NativePBR
 
 	/** @brief Distinguishes known snow classification from missing projection semantics. */
 	constexpr SnowInputStatus ClassifySnowInput(uint32_t a_classification, bool a_hasRuntimeDescriptor,
-		bool a_ambiguous, bool a_materialAvailable)
+		bool a_ambiguous, bool a_materialAvailable, bool a_projectionReady = false)
 	{
 		if (a_ambiguous)
 			return SnowInputStatus::AmbiguousInstance;
 		if (!a_materialAvailable)
 			return SnowInputStatus::MissingMaterial;
-		if ((a_classification & SnowProjected) != 0)
+		if ((a_classification & SnowProjected) != 0 && !a_projectionReady)
 			return SnowInputStatus::UnresolvedProjection;
 		if ((a_classification & SnowLandscape) != 0)
 			return SnowInputStatus::LandscapeMetadataOnly;
@@ -153,6 +163,19 @@ namespace NativePBR
 			snow.classification = ClassifySnow(snow.source);
 			if (!snow.classification)
 				continue;
+			if (snow.source.projection) {
+				const auto& observed = *snow.source.projection;
+				snow.projection.coordinateSpace = observed.coordinateSpace;
+				snow.projection.direction = observed.direction;
+				snow.projection.textureProjection = observed.textureProjection[0];
+				snow.projection.rightEyeTextureProjection = observed.textureProjection[1];
+				snow.projection.projectedUVParams = observed.projectedUVParams;
+				snow.projection.projectedUVParams2 = observed.projectedUVParams2;
+				snow.projection.projectedUVParams3 = observed.projectedUVParams3;
+				snow.projection.materialObjectRGBScale = observed.materialObjectRGBScale;
+				snow.projection.parallaxOccData = observed.parallaxOccData;
+				snow.projection.sourceFrame = observed.frame;
+			}
 			for (size_t role = 0; role < snow.projection.textures.size(); ++role) {
 				const auto& observed = snow.source.projectedTextures[role];
 				auto& target = snow.projection.textures[role];
@@ -171,18 +194,23 @@ namespace NativePBR
 			}
 			snow.status = ClassifySnowInput(snow.classification, snow.source.renderPassDescriptor.has_value(),
 				snow.source.conflictingPasses || binding.material.status == MaterialLookupStatus::AmbiguousInstance,
-				bool(binding.material));
+				bool(binding.material), SnowProjectionCoverageReady(snow.projection));
 			result->ordinary += (snow.classification & SnowOrdinary) != 0;
 			result->baseObject += (snow.classification & SnowBaseObject) != 0;
 			result->projected += (snow.classification & SnowProjected) != 0;
 			if ((snow.classification & SnowProjected) != 0) {
+				result->completeProjection += SnowProjectionCoverageReady(snow.projection);
+				result->incompleteProjection += !SnowProjectionCoverageReady(snow.projection);
+				result->missingProjectionDirection += !snow.projection.direction ||
+					snow.projection.coordinateSpace == SnowProjectionSpace::Unresolved;
+				result->missingProjectionParameters += !snow.projection.projectedUVParams ||
+					!snow.projection.projectedUVParams2 || !snow.projection.projectedUVParams3;
 				result->projectedTexturesUnresolved += uint32_t(snow.projection.textures.size());
 				++result->textureSetsUnavailable;
 			}
 			result->landscape += (snow.classification & SnowLandscape) != 0;
 			result->observed += snow.status == SnowInputStatus::Observed;
 			result->nifOnly += snow.status == SnowInputStatus::NifOnly;
-			result->incompleteProjection += snow.status == SnowInputStatus::UnresolvedProjection;
 			result->ambiguous += snow.status == SnowInputStatus::AmbiguousInstance;
 			result->missing += snow.status == SnowInputStatus::MissingMaterial;
 			result->instances.push_back(std::move(snow));

@@ -19,7 +19,7 @@ namespace NativePBR
 		static constexpr uint32_t kTextureProbeIntervalFrames = 180;
 		struct Snapshot
 		{
-			uint64_t revision = 0, epoch = 0;
+			uint64_t revision = 0, identityRevision = 0, epoch = 0;
 			std::unordered_map<std::string, SnowSourceState> entries;
 		};
 
@@ -53,6 +53,7 @@ namespace NativePBR
 			if (entry == previous)
 				return false;
 			++observed.revision;
+			++observed.identityRevision;
 			return true;
 		}
 
@@ -91,6 +92,38 @@ namespace NativePBR
 			if (entry == previous)
 				return false;
 			++observed.revision;
+			if (entry.conflictingPasses != previous.conflictingPasses)
+				++observed.identityRevision;
+			return true;
+		}
+
+		/** @brief Tracks per-frame constants and flags contradictory passes within one frame. */
+		bool ObserveProjection(std::string_view a_reference, std::string_view a_shape,
+			const ObservedSnowProjection& a_projection)
+		{
+			if (a_reference.empty() || a_shape.empty())
+				return false;
+			std::scoped_lock lock(mutex);
+			const auto found = observed.entries.find(Key(a_reference, a_shape));
+			if (found == observed.entries.end())
+				return false;
+			auto& entry = found->second;
+			if (entry.projection) {
+				auto sameValues = a_projection;
+				sameValues.frame = entry.projection->frame;
+				if (*entry.projection == sameValues)
+					return false;
+			}
+			if (entry.projection && entry.projection->frame == a_projection.frame &&
+				*entry.projection != a_projection) {
+				if (entry.conflictingPasses)
+					return false;
+				entry.conflictingPasses = true;
+				++observed.identityRevision;
+			} else {
+				entry.projection = a_projection;
+			}
+			++observed.revision;
 			return true;
 		}
 
@@ -116,6 +149,14 @@ namespace NativePBR
 			return observed.revision == a_revision ? nullptr : std::make_shared<const Snapshot>(observed);
 		}
 
+		/** @brief Excludes frame-dynamic projection constants from material registry revisions. */
+		std::shared_ptr<const Snapshot> ExportIfIdentityChanged(uint64_t a_identityRevision) const
+		{
+			std::scoped_lock lock(mutex);
+			return observed.identityRevision == a_identityRevision ? nullptr :
+				std::make_shared<const Snapshot>(observed);
+		}
+
 		void Reset()
 		{
 			std::scoped_lock lock(mutex);
@@ -123,6 +164,7 @@ namespace NativePBR
 			lastProbedFrame.clear();
 			++observed.epoch;
 			++observed.revision;
+			++observed.identityRevision;
 		}
 
 	private:

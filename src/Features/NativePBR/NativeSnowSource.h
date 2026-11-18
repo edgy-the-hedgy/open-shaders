@@ -35,6 +35,20 @@ namespace NativePBR
 		bool operator==(const ObservedSnowTexture&) const = default;
 	};
 
+	enum class SnowProjectionSpace : uint8_t { Unresolved, Object, World };
+
+	/** @brief Original lighting shader constants sampled after the corresponding render pass. */
+	struct ObservedSnowProjection
+	{
+		SnowProjectionSpace coordinateSpace = SnowProjectionSpace::Unresolved;
+		std::array<std::optional<std::array<float, 12>>, 2> textureProjection;
+		std::optional<std::array<float, 3>> direction;
+		std::optional<std::array<float, 4>> projectedUVParams, projectedUVParams2, projectedUVParams3;
+		std::optional<std::array<float, 4>> materialObjectRGBScale, parallaxOccData;
+		uint32_t frame = 0;
+		bool operator==(const ObservedSnowProjection&) const = default;
+	};
+
 	enum SnowClassification : uint32_t
 	{
 		SnowOrdinary = 1u << 0,
@@ -50,6 +64,7 @@ namespace NativePBR
 		std::optional<uint64_t> runtimeNifFlags;
 		std::optional<uint32_t> renderPassDescriptor;
 		std::array<ObservedSnowTexture, kSnowProjectedTextureCount> projectedTextures;
+		std::optional<ObservedSnowProjection> projection;
 		bool conflictingPasses = false;
 		bool operator==(const SnowSourceState&) const = default;
 	};
