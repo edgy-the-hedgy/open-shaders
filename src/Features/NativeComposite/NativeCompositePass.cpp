@@ -748,11 +748,11 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 					continue;
 				const auto comparedDesc = CD3DX12_RESOURCE_DESC::Tex2D(guideDescs[i].Format,
 					desc.Width, desc.Height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-				const auto originDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32_UINT,
+				const auto guideOriginDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32_UINT,
 					desc.Width, desc.Height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 				DX::ThrowIfFailed(a_device12->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &comparedDesc,
 					D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(replacement->comparedGuides[i].put())));
-				DX::ThrowIfFailed(a_device12->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &originDesc,
+				DX::ThrowIfFailed(a_device12->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &guideOriginDesc,
 					D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(replacement->comparedOrigins[i].put())));
 			}
 			D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};

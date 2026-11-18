@@ -213,6 +213,9 @@ void NativeCompositeFeature::ConfigureShadowLayer(const json& args)
 
 void NativeCompositeFeature::RegisterUxActions()
 {
+	// Keep template commas out of FEATURE_COMMAND's function-like macro argument.
+	using GuideToleranceArray = std::array<float, NativeComposite::GuideCount>;
+	using GuidePriorityArray = std::array<uint32_t, NativeComposite::GuideCount>;
 	FEATURE_COMMAND("configure", "Set Native Composite enabled, includeRasterScene, originPreview, enableValidityChecks, sourceBlendEnabled, sourceBlend, nativeIntensity, rasterIntensity, guideTolerance[depth,motion,reactive,transparency], guidePriority[depth,motion,reactive,transparency], addLighting, lightingStrength, and directSpatialReconstruction.", [](Feature* self, const json& args) {
 		auto& feature = *static_cast<NativeCompositeFeature*>(self);
 		std::scoped_lock lock(feature.settingsMutex);
@@ -247,14 +250,14 @@ void NativeCompositeFeature::RegisterUxActions()
 		blendTune("nativeIntensity", feature.settings.NativeIntensity, 4.0f);
 		blendTune("rasterIntensity", feature.settings.RasterIntensity, 4.0f);
 		if (args.contains("guideTolerance") && args.at("guideTolerance").is_array() && args.at("guideTolerance").size() == NativeComposite::GuideCount) {
-			const auto values = args.at("guideTolerance").get<std::array<float, NativeComposite::GuideCount>>();
+			const auto values = args.at("guideTolerance").get<GuideToleranceArray>();
 			for (size_t i = 0; i < NativeComposite::GuideCount; ++i)
 				if (std::isfinite(values[i]))
 					feature.settings.GuideTolerance[i] = std::clamp(values[i], 0.0f, i == 0 ? 100.0f : i == 1 ? 16.0f : 1.0f);
 			++feature.validityRevision;
 		}
 		if (args.contains("guidePriority") && args.at("guidePriority").is_array() && args.at("guidePriority").size() == NativeComposite::GuideCount) {
-			const auto values = args.at("guidePriority").get<std::array<uint32_t, NativeComposite::GuideCount>>();
+			const auto values = args.at("guidePriority").get<GuidePriorityArray>();
 			for (size_t i = 0; i < NativeComposite::GuideCount; ++i)
 				feature.settings.GuidePriority[i] = std::min(values[i], 1u);
 			++feature.validityRevision;
