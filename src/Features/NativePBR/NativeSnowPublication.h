@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PreparedSceneMaterials.h"
+#include "NativeSnowObservations.h"
 
 #include <array>
 #include <memory>
@@ -10,6 +11,7 @@
 
 namespace NativePBR
 {
+	struct GpuMaterialResources;
 	inline constexpr uint32_t kNativeSnowPublicationVersion = 1;
 
 	enum class SnowInputStatus : uint8_t
@@ -31,6 +33,9 @@ namespace NativePBR
 	{
 		SnowTextureStatus status = SnowTextureStatus::UnresolvedSource;
 		std::string canonicalPath;
+		std::optional<bool> srgb;
+		std::optional<ObservedSnowSampler> sampler;
+		uint32_t textureSlot = UINT32_MAX, samplerSlot = UINT32_MAX;
 		uint32_t descriptorIndex = UINT32_MAX, sliceIndex = 0;
 		uint64_t resourceGeneration = 0;
 	};
@@ -69,10 +74,14 @@ namespace NativePBR
 	{
 		uint32_t version = kNativeSnowPublicationVersion, cellID = 0;
 		uint64_t sceneRevision = 0, materialSerial = 0, instanceEpoch = 0;
+		uint64_t observationRevision = 0, observationEpoch = 0;
 		std::shared_ptr<const PreparedSceneMaterials> prepared;
+		std::shared_ptr<const GpuMaterialResources> gpuMaterials;
 		std::vector<NativeSnowInstance> instances;
 		uint32_t sceneInstances = 0, ordinary = 0, baseObject = 0, projected = 0, landscape = 0;
 		uint32_t observed = 0, nifOnly = 0, incompleteProjection = 0, ambiguous = 0, missing = 0;
+		uint32_t projectedTexturesResolved = 0, projectedTexturesUnresolved = 0;
+		uint32_t textureSetsResident = 0, textureSetsPartial = 0, textureSetsUnavailable = 0;
 
 		/** @brief Rejects stale scene, material and contract versions before native consumption. */
 		bool Matches(const PreparedSceneMaterials& a_prepared) const
@@ -100,7 +109,8 @@ namespace NativePBR
 
 	/** @brief Produces bounded metadata without performing or admitting any native shading. */
 	inline std::shared_ptr<const NativeSnowPublication> PrepareNativeSnowPublication(
-		std::shared_ptr<const PreparedSceneMaterials> a_prepared)
+		std::shared_ptr<const PreparedSceneMaterials> a_prepared,
+		std::shared_ptr<const NativeSnowObservations::Snapshot> a_observations = {})
 	{
 		if (!a_prepared || !a_prepared->geometry ||
 			a_prepared->instances.size() != a_prepared->geometry->instances.size() ||
@@ -112,9 +122,11 @@ namespace NativePBR
 		result->sceneRevision = a_prepared->sceneRevision;
 		result->materialSerial = a_prepared->materialSerial;
 		result->instanceEpoch = a_prepared->instanceEpoch;
+		result->observationRevision = a_observations ? a_observations->revision : 0;
+		result->observationEpoch = a_observations ? a_observations->epoch : 0;
 		result->sceneInstances = uint32_t(a_prepared->instances.size());
 		result->prepared = std::move(a_prepared);
-		result->instances.reserve(result->sceneInstances);
+		result->instances.reserve(std::min(result->sceneInstances, 512u));
 		for (const auto& binding : result->prepared->instances) {
 			if (binding.instanceIndex >= result->sceneInstances)
 				return {};
@@ -131,9 +143,27 @@ namespace NativePBR
 				if (first != desc.end() && second != desc.end() && first->is_number_unsigned() && second->is_number_unsigned())
 					snow.source.nifFlags = (uint64_t(second->get<uint32_t>()) << 32) | first->get<uint32_t>();
 			}
+			if (a_observations && !geometry.preparedIdentity.referenceKey.empty() &&
+				!geometry.preparedIdentity.shapeName.empty()) {
+				const auto key = NativeSnowObservations::Key(geometry.preparedIdentity.referenceKey,
+					geometry.preparedIdentity.shapeName);
+				if (const auto found = a_observations->entries.find(key); found != a_observations->entries.end())
+					snow.source = snow.source.nifFlags ? BindSnowSource(*snow.source.nifFlags, found->second) : found->second;
+			}
 			snow.classification = ClassifySnow(snow.source);
 			if (!snow.classification)
 				continue;
+			for (size_t role = 0; role < snow.projection.textures.size(); ++role) {
+				const auto& observed = snow.source.projectedTextures[role];
+				auto& target = snow.projection.textures[role];
+				target.textureSlot = target.samplerSlot = kSnowProjectedTextureSlots[role];
+				target.sampler = observed.sampler;
+				if (observed.canonicalPath.empty())
+					continue;
+				target.canonicalPath = observed.canonicalPath;
+				target.srgb = observed.srgb;
+				target.status = SnowTextureStatus::IdentifiedPath;
+			}
 			if (binding.material.recipe) {
 				snow.materialIdentity = binding.material.recipe->identity;
 				snow.materialRevision = binding.material.recipe->revision;
@@ -145,6 +175,10 @@ namespace NativePBR
 			result->ordinary += (snow.classification & SnowOrdinary) != 0;
 			result->baseObject += (snow.classification & SnowBaseObject) != 0;
 			result->projected += (snow.classification & SnowProjected) != 0;
+			if ((snow.classification & SnowProjected) != 0) {
+				result->projectedTexturesUnresolved += uint32_t(snow.projection.textures.size());
+				++result->textureSetsUnavailable;
+			}
 			result->landscape += (snow.classification & SnowLandscape) != 0;
 			result->observed += snow.status == SnowInputStatus::Observed;
 			result->nifOnly += snow.status == SnowInputStatus::NifOnly;

@@ -16,6 +16,7 @@ namespace NativePBR
 	{
 	public:
 		static constexpr size_t kMaximumObservations = 8192;
+		static constexpr uint32_t kTextureProbeIntervalFrames = 180;
 		struct Snapshot
 		{
 			uint64_t revision = 0, epoch = 0;
@@ -55,6 +56,59 @@ namespace NativePBR
 			return true;
 		}
 
+		/** @brief Accepts only explicitly verified DDS identities from the projected shader bindings. */
+		bool ObserveProjectedTextures(std::string_view a_reference, std::string_view a_shape,
+			const std::array<ObservedSnowTexture, kSnowProjectedTextureCount>& a_textures)
+		{
+			if (a_reference.empty() || a_shape.empty())
+				return false;
+			std::scoped_lock lock(mutex);
+			const auto found = observed.entries.find(Key(a_reference, a_shape));
+			if (found == observed.entries.end())
+				return false;
+			auto& entry = found->second;
+			const auto previous = entry;
+			for (size_t i = 0; i < a_textures.size(); ++i) {
+				if (a_textures[i].canonicalPath.empty() && !a_textures[i].sampler)
+					continue;
+				const auto& incoming = a_textures[i];
+				auto& stored = entry.projectedTextures[i];
+				if ((!incoming.canonicalPath.empty() && !stored.canonicalPath.empty() &&
+					(stored.canonicalPath != incoming.canonicalPath ||
+						(stored.srgb && incoming.srgb && stored.srgb != incoming.srgb))) ||
+					(stored.sampler && incoming.sampler && stored.sampler != incoming.sampler))
+					entry.conflictingPasses = true;
+				else {
+					if (!incoming.canonicalPath.empty()) {
+						stored.canonicalPath = incoming.canonicalPath;
+						if (incoming.srgb)
+							stored.srgb = incoming.srgb;
+					}
+					if (incoming.sampler)
+						stored.sampler = incoming.sampler;
+				}
+			}
+			if (entry == previous)
+				return false;
+			++observed.revision;
+			return true;
+		}
+
+		/** @brief Rechecks projected bindings at a bounded interval to detect changing runtime sources. */
+		bool BeginProjectedTextureProbe(std::string_view a_reference, std::string_view a_shape, uint32_t a_frame)
+		{
+			std::scoped_lock lock(mutex);
+			const auto key = Key(a_reference, a_shape);
+			const auto found = observed.entries.find(key);
+			if (found == observed.entries.end())
+				return false;
+			if (const auto previous = lastProbedFrame.find(key); previous != lastProbedFrame.end() &&
+				a_frame - previous->second < kTextureProbeIntervalFrames)
+				return false;
+			lastProbedFrame.insert_or_assign(key, a_frame);
+			return true;
+		}
+
 		/** @brief Copies observations only when a consumer has missed a revision. */
 		std::shared_ptr<const Snapshot> ExportIfChanged(uint64_t a_revision) const
 		{
@@ -66,6 +120,7 @@ namespace NativePBR
 		{
 			std::scoped_lock lock(mutex);
 			observed.entries.clear();
+			lastProbedFrame.clear();
 			++observed.epoch;
 			++observed.revision;
 		}
@@ -73,5 +128,6 @@ namespace NativePBR
 	private:
 		mutable std::mutex mutex;
 		Snapshot observed;
+		std::unordered_map<std::string, uint32_t> lastProbedFrame;
 	};
 }

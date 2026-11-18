@@ -17,6 +17,31 @@ namespace DX12Native
 		size_t supportedRecipes = 0, featureLimitedRecipes = 0, skippedRecipes = 0;
 	};
 
+	/** @brief Appends verified native-only DDS requests after recipe paths, within the existing upload cap. */
+	inline void AppendNativeTextureRequests(LiveLooseTexturePlan& a_plan,
+		const std::vector<std::string>& a_paths, const std::unordered_set<std::string>& a_present,
+		const std::unordered_set<std::string>& a_attempted, size_t a_maxTextures)
+	{
+		std::unordered_set<std::string> requested(a_plan.paths.begin(), a_plan.paths.end());
+		for (const auto& path : a_paths) {
+			const auto canonical = NativePBR::CanonicalTexturePath(path);
+			if (!canonical || *canonical != path || !path.ends_with(".dds")) {
+				++a_plan.invalid;
+				continue;
+			}
+			if (!requested.insert(path).second)
+				continue;
+			if (a_present.contains(path))
+				++a_plan.alreadyPresent;
+			else if (a_attempted.contains(path))
+				++a_plan.alreadyAttempted;
+			else if (a_plan.paths.size() >= a_maxTextures)
+				++a_plan.deferred;
+			else
+				a_plan.paths.push_back(path);
+		}
+	}
+
 	/** @brief Source acquisition should not be vetoed by unsupported *shading* features.
      *
      * Fully shadable recipes are serviced first. Feature-limited opaque mesh recipes

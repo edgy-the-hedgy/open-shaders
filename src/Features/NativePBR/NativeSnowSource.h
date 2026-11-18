@@ -1,7 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <optional>
+#include <array>
+#include <string>
 
 namespace NativePBR
 {
@@ -11,6 +14,26 @@ namespace NativePBR
 	inline constexpr uint64_t kSnowNifFlag = 1ull << 60;
 	inline constexpr uint64_t kProjectedUvNifFlag = 1ull << 23;
 	inline constexpr uint64_t kLandscapeNifFlag = 1ull << 14;
+	inline constexpr size_t kSnowProjectedTextureCount = 4;
+	inline constexpr std::array<uint32_t, kSnowProjectedTextureCount> kSnowProjectedTextureSlots{ 3, 8, 10, 11 };
+
+	/** @brief Copies the observed D3D11 sampler descriptor without coupling publication to device objects. */
+	struct ObservedSnowSampler
+	{
+		uint32_t filter = 0, addressU = 0, addressV = 0, addressW = 0;
+		uint32_t maxAnisotropy = 0, comparisonFunc = 0;
+		float mipLODBias = 0, minLOD = 0, maxLOD = 0;
+		std::array<float, 4> borderColor{};
+		bool operator==(const ObservedSnowSampler&) const = default;
+	};
+
+	struct ObservedSnowTexture
+	{
+		std::string canonicalPath;
+		std::optional<bool> srgb;
+		std::optional<ObservedSnowSampler> sampler;
+		bool operator==(const ObservedSnowTexture&) const = default;
+	};
 
 	enum SnowClassification : uint32_t
 	{
@@ -26,6 +49,7 @@ namespace NativePBR
 		std::optional<uint64_t> nifFlags;
 		std::optional<uint64_t> runtimeNifFlags;
 		std::optional<uint32_t> renderPassDescriptor;
+		std::array<ObservedSnowTexture, kSnowProjectedTextureCount> projectedTextures;
 		bool conflictingPasses = false;
 		bool operator==(const SnowSourceState&) const = default;
 	};

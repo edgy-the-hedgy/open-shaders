@@ -39,6 +39,7 @@ namespace DX12Native
 		uint64_t uploadBatchBytes = 16ull * 1024 * 1024;
 		bool usePreparedTextureManifest = true;                 // Legacy atlas compatibility. Runtime-source mode may omit it.
 		std::unordered_set<std::string> attemptedRuntimePaths;  // Worker-owned stream history.
+		std::vector<std::string> additionalNativeTexturePaths;
 	};
 	/** @brief Preserves offline material work classes without rediscovering them during traversal. */
 	enum class OfflineMaterialFlags : uint32_t

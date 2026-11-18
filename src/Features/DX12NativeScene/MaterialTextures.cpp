@@ -583,8 +583,10 @@ namespace DX12Native
 			for (const auto& [residentPath, ticket] : a_result.locations)
 				if (const auto canonical = NativePBR::CanonicalTexturePath(residentPath))
 					present.insert(*canonical);
-			const auto planned = PlanLiveLooseTextures(*a_matches, present, 8,
+			auto planned = PlanLiveLooseTextures(*a_matches, present, 8,
 				a_source.attemptedRuntimePaths, a_extendedRoles);
+			AppendNativeTextureRequests(planned, a_source.additionalNativeTexturePaths, present,
+				a_source.attemptedRuntimePaths, 8);
 			a_result.looseDdsAttemptedPaths = planned.paths;
 			a_result.looseDdsPreviouslyAttempted = uint32_t(planned.alreadyAttempted);
 			a_result.looseDdsPlanned = uint32_t(planned.paths.size());
@@ -597,7 +599,7 @@ namespace DX12Native
 			for (const auto& canonical : planned.paths) {
 				bool triedArchive = false;
 				try {
-					// Only canonical relative paths from uniquely matched PBR materials enter here.
+					// Canonical paths come from verified PBR recipes or named native-only shader bindings.
 					const auto looseDdsPath = std::filesystem::path("Data") / std::filesystem::path(canonical);
 					std::vector<uint8_t> bytes;
 					std::string digest;

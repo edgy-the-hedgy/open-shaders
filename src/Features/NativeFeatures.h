@@ -67,6 +67,11 @@ struct NativePBRFeature final : Feature
 	struct MaterialWorker;
 	NativePBR::MaterialDiscovery materialDiscovery;
 	NativePBR::NativeSnowObservations snowObservations;
+	std::shared_ptr<const NativePBR::NativeSnowObservations::Snapshot> publishedSnowObservations;
+	std::vector<std::string> snowTexturePaths;
+	uint64_t plannedSnowObservationRevision = 0;
+	uint32_t lastSnowTextureChangeFrame = 0;
+	bool snowTexturePlanInitialized = false;
 	NativePBR::Registry& materialRegistry = materialDiscovery.MutableRegistry();
 	NativePBR::MaterialCatalog materialCatalog;
 	std::shared_ptr<const DX12Native::TopLevel> discoveredGeometry;
@@ -82,7 +87,7 @@ struct NativePBRFeature final : Feature
 	std::shared_ptr<MaterialWorker> materialWorker;
 	void PollMaterialRegistry();
 	void Prepass() override;
-	bool WantsRenderPassHook() const override { return true; }
+	bool WantsRenderPassHook() const override { return SelectedBackend() == NativePBR::Backend::NativeDX12; }
 	std::function<void()> OnRenderPassBegin(const RE::BSRenderPass* a_pass) override;
 	void OnSceneTransitionReset(bool) override;
 	void SetupResources() override;

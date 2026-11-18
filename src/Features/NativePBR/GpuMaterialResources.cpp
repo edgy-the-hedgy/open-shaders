@@ -41,7 +41,8 @@ namespace NativePBR
 		}
 
 		std::shared_ptr<DX12Native::MaterialResources> SelectActiveResidency(
-			const DX12Native::MaterialResources& a_previous, const RecipeGeneration& a_generation)
+			const DX12Native::MaterialResources& a_previous, const RecipeGeneration& a_generation,
+			const std::vector<std::string>& a_snowTexturePaths)
 		{
 			std::unordered_set<std::string> requested, canonical;
 			for (const auto& [identity, recipe] : a_generation.recipes) {
@@ -52,6 +53,10 @@ namespace NativePBR
 						requested.insert(DX12Native::MaterialTextureLookupKey(texture.canonicalPath));
 						canonical.insert(texture.canonicalPath);
 					}
+			}
+			for (const auto& path : a_snowTexturePaths) {
+				requested.insert(DX12Native::MaterialTextureLookupKey(path));
+				canonical.insert(path);
 			}
 			const auto remap = PlanGpuMaterialPageRemap(requested, a_previous.locations,
 				a_previous.logicalLocations, a_previous.pools.size());
@@ -141,7 +146,7 @@ namespace NativePBR
 		std::shared_ptr<const RecipeGeneration> a_generation, uint64_t a_budgetLimit, uint64_t a_batchLimit,
 		std::shared_ptr<const GpuMaterialResources> a_previous,
 		std::shared_ptr<const DX12Native::MaterialResources> a_sharedResidency,
-		std::unordered_set<std::string> a_attemptedPaths)
+		std::unordered_set<std::string> a_attemptedPaths, std::vector<std::string> a_snowTexturePaths)
 	{
 		if (!a_backend.d3d12Device || !a_backend.commandQueue || !a_generation || !a_generation->batchesComplete)
 			throw std::runtime_error("NativePBR GPU preparation requires a complete immutable recipe generation and DX12 backend");
@@ -161,7 +166,7 @@ namespace NativePBR
 		}
 		std::shared_ptr<DX12Native::MaterialResources> activeResidency;
 		if (inherited) {
-			activeResidency = SelectActiveResidency(*inherited, *result->generation);
+			activeResidency = SelectActiveResidency(*inherited, *result->generation, a_snowTexturePaths);
 			result->reusedPoolCount = uint32_t(activeResidency->pools.size());
 			result->prunedPoolCount = uint32_t(inherited->pools.size() - activeResidency->pools.size());
 			inherited = activeResidency.get();
@@ -188,6 +193,7 @@ namespace NativePBR
 		source.uploadBatchBytes = a_batchLimit;
 		source.usePreparedTextureManifest = false;
 		source.attemptedRuntimePaths = std::move(a_attemptedPaths);
+		source.additionalNativeTexturePaths = std::move(a_snowTexturePaths);
 		LiveMatchResult matches;
 		matches.matches.reserve(identities.size());
 		for (const auto identity : identities)
@@ -251,16 +257,19 @@ namespace NativePBR
 	void GpuMaterialWorker::Request(const GraphicsBackend& a_backend,
 		std::shared_ptr<const RecipeGeneration> a_generation, uint64_t a_budgetLimit,
 		uint64_t a_batchLimit,
-		std::shared_ptr<const DX12Native::MaterialResources> a_sharedResidency)
+		std::shared_ptr<const DX12Native::MaterialResources> a_sharedResidency,
+		std::vector<std::string> a_snowTexturePaths)
 	{
 		if (desired == a_generation && budgetLimit == a_budgetLimit && batchLimit == a_batchLimit &&
 			backend.d3d12Device.get() == a_backend.d3d12Device.get() &&
-			backend.commandQueue.get() == a_backend.commandQueue.get() && initialResidency == a_sharedResidency)
+			backend.commandQueue.get() == a_backend.commandQueue.get() && initialResidency == a_sharedResidency &&
+			desiredSnowTextures == a_snowTexturePaths)
 			return;
 		const bool sameDevice = backend.d3d12Device.get() == a_backend.d3d12Device.get();
 		++requestRevision;
 		desired = std::move(a_generation);
 		initialResidency = std::move(a_sharedResidency);
+		desiredSnowTextures = std::move(a_snowTexturePaths);
 		backend = a_backend;
 		budgetLimit = a_budgetLimit;
 		batchLimit = a_batchLimit;
@@ -331,10 +340,10 @@ namespace NativePBR
 			static BS::thread_pool<> pool{ 1 };
 			pool.detach_task([task, backend = backend, recipes = desired, limit = budgetLimit,
 				batch = batchLimit, previous = published,
-				shared = initialResidency, attempts = textureProgress.Attempted()] {
+				shared = initialResidency, attempts = textureProgress.Attempted(), snowPaths = desiredSnowTextures] {
 				try {
 					task->resources = GpuMaterialResources::Create(backend, recipes, limit, batch,
-						previous, shared, attempts);
+						previous, shared, attempts, snowPaths);
 				} catch (const DX12Native::MaterialUploadBusy& error) {
 					task->failure = error.what();
 					task->deferred = true;
@@ -358,6 +367,7 @@ namespace NativePBR
 		++requestRevision;
 		desired.reset();
 		initialResidency.reset();
+		desiredSnowTextures.clear();
 		published.reset();
 		textureProgress.Reset();
 		nextBatchAtMs = 0;

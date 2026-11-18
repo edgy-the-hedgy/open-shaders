@@ -65,7 +65,8 @@ namespace NativePBR
 			uint64_t a_batchLimit,
 			std::shared_ptr<const GpuMaterialResources> a_previous = {},
 			std::shared_ptr<const DX12Native::MaterialResources> a_sharedResidency = {},
-			std::unordered_set<std::string> a_attemptedPaths = {});
+			std::unordered_set<std::string> a_attemptedPaths = {},
+			std::vector<std::string> a_snowTexturePaths = {});
 	};
 
 	/** @brief Owns background generation preparation and publishes after upload completion. */
@@ -74,7 +75,8 @@ namespace NativePBR
 	public:
 		void Request(const GraphicsBackend& a_backend, std::shared_ptr<const RecipeGeneration> a_generation,
 			uint64_t a_budgetLimit = 0, uint64_t a_batchLimit = 16ull * 1024 * 1024,
-			std::shared_ptr<const DX12Native::MaterialResources> a_sharedResidency = {});
+			std::shared_ptr<const DX12Native::MaterialResources> a_sharedResidency = {},
+			std::vector<std::string> a_snowTexturePaths = {});
 		void Advance();
 		void Reset();
 		std::shared_ptr<const GpuMaterialResources> Get() const { return published; }
@@ -89,6 +91,7 @@ namespace NativePBR
 		std::shared_ptr<State> pending;
 		std::shared_ptr<const RecipeGeneration> desired;
 		std::shared_ptr<const DX12Native::MaterialResources> initialResidency;
+		std::vector<std::string> desiredSnowTextures;
 		std::shared_ptr<const GpuMaterialResources> published;
 		DX12Native::RuntimeTextureProgress textureProgress;
 		GraphicsBackend backend;
