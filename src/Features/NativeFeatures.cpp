@@ -16,6 +16,7 @@
 #include "Features/NativePBR/GpuMaterialResources.h"
 #include "Features/NativePBR/PreparedSceneMaterials.h"
 #include "Features/NativePBR/RayMaterialBindings.h"
+#include "Features/NativePBR/NativeSnowPublication.h"
 #include "Utils/PointLightFlags.h"
 #include <BS_thread_pool.hpp>
 #include <algorithm>
@@ -214,6 +215,11 @@ std::shared_ptr<const NativePBR::PreparedSceneMaterials> NativePBRFeature::GetPr
 	return IsActive() ? preparedSceneMaterials.load(std::memory_order_acquire) : nullptr;
 }
 
+std::shared_ptr<const NativePBR::NativeSnowPublication> NativePBRFeature::GetNativeSnowPublication() const
+{
+	return IsActive() ? nativeSnowPublication.load(std::memory_order_acquire) : nullptr;
+}
+
 std::shared_ptr<const NativePBR::RayMaterialBindings> NativePBRFeature::GetRayMaterialBindings() const
 {
 	return IsActive() ? rayMaterialBindings.load(std::memory_order_acquire) : nullptr;
@@ -297,6 +303,7 @@ void NativePBRFeature::Prepass()
 {
 	if (SelectedBackend() != NativePBR::Backend::NativeDX12 || !enabled.load(std::memory_order_relaxed)) {
 		preparedSceneMaterials.store({}, std::memory_order_release);
+		nativeSnowPublication.store({}, std::memory_order_release);
 		rayMaterialBindings.store({}, std::memory_order_release);
 		return;
 	}
@@ -314,6 +321,10 @@ void NativePBRFeature::Prepass()
 	} else {
 		preparedSceneMaterials.store({}, std::memory_order_release);
 	}
+	const auto preparedForSnow = GetPreparedSceneMaterials();
+	const auto priorSnow = nativeSnowPublication.load(std::memory_order_acquire);
+	if (!priorSnow || priorSnow->prepared != preparedForSnow)
+		nativeSnowPublication.store(NativePBR::PrepareNativeSnowPublication(preparedForSnow), std::memory_order_release);
 	if (auto backend = globals::features::dx12NativeScene.GetGraphicsBackend())
 		if (auto recipes = GetNativeRecipes(); recipes && recipes->batchesComplete)
 			if (const auto prepared = GetPreparedSceneMaterials(); prepared && prepared->sceneResources &&
@@ -335,6 +346,7 @@ void NativePBRFeature::OnSceneTransitionReset(bool)
 {
 	snowObservations.Reset();
 	preparedSceneMaterials.store({}, std::memory_order_release);
+	nativeSnowPublication.store({}, std::memory_order_release);
 	rayMaterialBindings.store({}, std::memory_order_release);
 	discoveredGeometry.reset();
 	materialDiscovery.BeginInstanceEpoch();
@@ -856,6 +868,7 @@ void NativePBRFeature::DrawSettings()
 	const auto materialView = GetMaterialPublication();
 	const auto gpuMaterials = GetNativeGpuMaterials();
 	const auto preparedMaterials = GetPreparedSceneMaterials();
+	const auto snow = GetNativeSnowPublication();
 	const auto rayBindings = GetRayMaterialBindings();
 	ImGui::Text("Material publication: %llu | instance bindings: %zu",
 		materialView ? materialView->serial : 0, materialView ? materialView->instances.size() : 0);
@@ -1006,6 +1019,15 @@ json NativePBRFeature::GetDiagnostics()
 		{ "recipeIssueCounts", std::move(issueCounts) },
 		{ "materialPublicationSerial", materialView ? materialView->serial : 0 },
 		{ "materialInstanceBindings", materialView ? materialView->instances.size() : 0 },
+		{ "nativeSnow", { { "abiVersion", NativePBR::kNativeSnowPublicationVersion },
+			{ "sceneRevision", snow ? snow->sceneRevision : 0 },
+			{ "materialSerial", snow ? snow->materialSerial : 0 },
+			{ "instances", snow ? snow->instances.size() : 0 },
+			{ "ordinary", snow ? snow->ordinary : 0 }, { "baseObject", snow ? snow->baseObject : 0 },
+			{ "projected", snow ? snow->projected : 0 }, { "landscape", snow ? snow->landscape : 0 },
+			{ "observed", snow ? snow->observed : 0 }, { "nifOnly", snow ? snow->nifOnly : 0 },
+			{ "unresolvedProjection", snow ? snow->incompleteProjection : 0 },
+			{ "ambiguous", snow ? snow->ambiguous : 0 }, { "missingMaterial", snow ? snow->missing : 0 } } },
 		{ "preparedSceneHandoff", { { "version", NativePBR::kPreparedSceneMaterialsVersion },
 			{ "sceneRevision", preparedMaterials ? preparedMaterials->sceneRevision : 0 },
 			{ "materialSerial", preparedMaterials ? preparedMaterials->materialSerial : 0 },

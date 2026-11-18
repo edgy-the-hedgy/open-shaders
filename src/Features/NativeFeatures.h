@@ -31,6 +31,7 @@ namespace NativePBR
 	struct GpuMaterialResources;
 	struct PreparedSceneMaterials;
 	struct RayMaterialBindings;
+	struct NativeSnowPublication;
 }
 
 /** Additional DX12 features. The original TruePBR/LLF/SCM implementations are
@@ -92,6 +93,8 @@ struct NativePBRFeature final : Feature
 	/** @brief Returns scene-owned geometry and textures with identity-only material attachments. */
 	std::shared_ptr<const NativePBR::PreparedSceneMaterials> GetPreparedSceneMaterials() const;
 	std::atomic<std::shared_ptr<const NativePBR::PreparedSceneMaterials>> preparedSceneMaterials;
+	std::shared_ptr<const NativePBR::NativeSnowPublication> GetNativeSnowPublication() const;
+	std::atomic<std::shared_ptr<const NativePBR::NativeSnowPublication>> nativeSnowPublication;
 	/** @brief Returns generation-matched material records indexed by TLAS instance ID. */
 	std::shared_ptr<const NativePBR::RayMaterialBindings> GetRayMaterialBindings() const;
 	std::atomic<std::shared_ptr<const NativePBR::RayMaterialBindings>> rayMaterialBindings;
