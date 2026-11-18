@@ -39,6 +39,35 @@ struct NativePBRFeature::MaterialWorker
 NativePBRFeature::NativePBRFeature() : materialWorker(std::make_shared<MaterialWorker>()) {}
 NativePBRFeature::~NativePBRFeature() = default;
 
+std::function<void()> NativePBRFeature::OnRenderPassBegin(const RE::BSRenderPass* a_pass)
+{
+	if (SelectedBackend() != NativePBR::Backend::NativeDX12 || !enabled.load(std::memory_order_relaxed) ||
+		!a_pass || !a_pass->shader || a_pass->shader->shaderType.get() != RE::BSShader::Type::Lighting ||
+		!a_pass->shaderProperty || !a_pass->geometry)
+		return nullptr;
+	constexpr uint32_t kLightingPassBase = 0x4800002D;
+	if (a_pass->passEnum < kLightingPassBase)
+		return nullptr;
+	const uint32_t descriptor = a_pass->passEnum - kLightingPassBase;
+	const uint64_t nifFlags = a_pass->shaderProperty->flags.underlying();
+	constexpr uint32_t snowMask = NativePBR::kSnowShaderFlag | NativePBR::kBaseObjectSnowShaderFlag |
+		NativePBR::kProjectedUvShaderFlag;
+	constexpr uint64_t nifMask = NativePBR::kSnowNifFlag | NativePBR::kProjectedUvNifFlag |
+		NativePBR::kLandscapeNifFlag;
+	if ((descriptor & snowMask) == 0 && (nifFlags & nifMask) == 0)
+		return nullptr;
+	const auto* geometry = a_pass->geometry;
+	const auto* reference = geometry->GetUserData();
+	if (!reference || reference->IsDynamicForm() || geometry->name.empty())
+		return nullptr;
+	const auto* file = reference->GetFile(0);
+	if (!file || file->GetFilename().empty())
+		return nullptr;
+	snowObservations.Observe(std::format("{:06X}:{}", reference->GetLocalFormID(), file->GetFilename()),
+		geometry->name.c_str(), descriptor, nifFlags);
+	return nullptr;
+}
+
 void NativePBRFeature::SetupResources()
 {
 	if (SelectedBackend() == NativePBR::Backend::NativeDX12)
@@ -48,10 +77,30 @@ void NativePBRFeature::SetupResources()
 void NativePBRFeature::DiscoverPreparedAssets()
 {
 	const auto scene = globals::features::dx12NativeScene.GetPublishedScene();
-	if (!scene || !scene->acceleration || discoveredGeometry == scene->acceleration)
+	if (!scene || !scene->acceleration)
 		return;
+	const auto observations = snowObservations.ExportIfChanged(
+		discoveredGeometry == scene->acceleration ? snowObservationRevision : UINT64_MAX);
+	if (discoveredGeometry == scene->acceleration) {
+		if (observations) {
+			for (const auto& [key, sources] : preparedSnowSources) {
+				const auto observed = observations->entries.find(key);
+				if (observed == observations->entries.end())
+					continue;
+				for (const auto& source : sources) {
+					auto properties = source.properties;
+					properties.snow = NativePBR::BindSnowSource(properties.shaderFlags, observed->second);
+					materialDiscovery.ReplaceInstance(source.materialKey, source.referenceKey, source.shapeName,
+						std::move(properties));
+				}
+			}
+			snowObservationRevision = observations->revision;
+		}
+		return;
+	}
 	const auto catalog = materialCatalog.GetSnapshot();
 	std::unordered_set<std::string> currentKeys;
+	preparedSnowSources.clear();
 	materialDiscovery.BeginInstanceEpoch();
 	for (const auto& instance : scene->acceleration->instances) {
 		const auto& identity = instance.preparedIdentity;
@@ -114,11 +163,22 @@ void NativePBRFeature::DiscoverPreparedAssets()
 					continue;
 			}
 			NativePBR::InstanceProperties properties;
+			properties.shaderFlags = flags;
+			const auto observationKey = NativePBR::NativeSnowObservations::Key(identity.referenceKey, identity.shapeName);
+			NativePBR::SnowSourceState observed;
+			if (observations) {
+				if (const auto found = observations->entries.find(observationKey); found != observations->entries.end())
+					observed = found->second;
+			}
+			properties.snow = NativePBR::BindSnowSource(flags, std::move(observed));
 			properties.opacity = NativePBR::InstanceProperties::Opacity::Opaque;
 			properties.normalMode = (flags1 & (1u << 12)) != 0 ?
 				NativePBR::InstanceProperties::NormalMode::ModelSpace : NativePBR::InstanceProperties::NormalMode::TangentSpace;
 			properties.uvAnimation = NativePBR::InstanceProperties::UvAnimation::Static;
-			materialDiscovery.ObserveInstance(key, identity.referenceKey, identity.shapeName, std::move(properties));
+			if (!materialDiscovery.ObserveInstance(key, identity.referenceKey, identity.shapeName, properties))
+				continue;
+			preparedSnowSources[observationKey].push_back({ key, identity.referenceKey, identity.shapeName,
+				std::move(properties) });
 		} catch (const std::exception&) {
 			continue;
 		}
@@ -128,6 +188,7 @@ void NativePBRFeature::DiscoverPreparedAssets()
 			materialDiscovery.Retire(key);
 	discoveredMaterialKeys = std::move(currentKeys);
 	discoveredGeometry = scene->acceleration;
+	snowObservationRevision = observations ? observations->revision : 0;
 }
 
 std::shared_ptr<const NativePBR::RecipeGeneration> NativePBRFeature::GetNativeRecipes() const
@@ -272,6 +333,7 @@ void NativePBRFeature::Prepass()
 
 void NativePBRFeature::OnSceneTransitionReset(bool)
 {
+	snowObservations.Reset();
 	preparedSceneMaterials.store({}, std::memory_order_release);
 	rayMaterialBindings.store({}, std::memory_order_release);
 	discoveredGeometry.reset();
@@ -279,6 +341,8 @@ void NativePBRFeature::OnSceneTransitionReset(bool)
 	for (const auto& key : discoveredMaterialKeys)
 		materialDiscovery.Retire(key);
 	discoveredMaterialKeys.clear();
+	preparedSnowSources.clear();
+	snowObservationRevision = 0;
 }
 
 // Backend selection is the ONLY automatic execution switch. Feature toggles

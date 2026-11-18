@@ -6,6 +6,7 @@
 #include "Features/NativePBR/MaterialRouting.h"
 #include "Features/NativePBR/MaterialDiscovery.h"
 #include "Features/NativePBR/NativePBRRegistry.h"
+#include "Features/NativePBR/NativeSnowObservations.h"
 #include "Features/NativePBR/MaterialCatalog.h"
 #include "Utils/BootSnapshot.h"
 #include <array>
@@ -14,6 +15,7 @@
 #include <mutex>
 #include <span>
 #include <vector>
+#include <unordered_map>
 #include <unordered_set>
 #include <d3d11_4.h>
 #include <d3d12.h>
@@ -63,14 +65,24 @@ struct NativePBRFeature final : Feature
 	};
 	struct MaterialWorker;
 	NativePBR::MaterialDiscovery materialDiscovery;
+	NativePBR::NativeSnowObservations snowObservations;
 	NativePBR::Registry& materialRegistry = materialDiscovery.MutableRegistry();
 	NativePBR::MaterialCatalog materialCatalog;
 	std::shared_ptr<const DX12Native::TopLevel> discoveredGeometry;
 	std::unordered_set<std::string> discoveredMaterialKeys;
+	struct PreparedSnowSource
+	{
+		std::string materialKey, referenceKey, shapeName;
+		NativePBR::InstanceProperties properties;
+	};
+	std::unordered_map<std::string, std::vector<PreparedSnowSource>> preparedSnowSources;
+	uint64_t snowObservationRevision = 0;
 	void DiscoverPreparedAssets();
 	std::shared_ptr<MaterialWorker> materialWorker;
 	void PollMaterialRegistry();
 	void Prepass() override;
+	bool WantsRenderPassHook() const override { return true; }
+	std::function<void()> OnRenderPassBegin(const RE::BSRenderPass* a_pass) override;
 	void OnSceneTransitionReset(bool) override;
 	void SetupResources() override;
 	MaterialSummary GetMaterialSummary() const;

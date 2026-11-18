@@ -97,6 +97,7 @@ add_executable(
     test_cacheinvalidation.cpp
     test_dx12_compact_diagnostics.cpp
     test_native_pbr_registry.cpp
+	    test_native_snow.cpp
     test_native_pbr_gpu_material.cpp
     test_native_pbr_routing.cpp
     test_pbr_nif_material.cpp

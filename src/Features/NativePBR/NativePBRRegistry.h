@@ -1,5 +1,7 @@
 #pragma once
 
+#include "NativeSnowSource.h"
+
 #include <array>
 #include <algorithm>
 #include <cmath>
@@ -136,6 +138,7 @@ namespace NativePBR
 		NormalMode normalMode = NormalMode::Unknown;
 		UvAnimation uvAnimation = UvAnimation::Unknown;
 		std::string materialObjectEditorId;
+		SnowSourceState snow;
 		bool operator==(const InstanceProperties&) const = default;
 	};
 
