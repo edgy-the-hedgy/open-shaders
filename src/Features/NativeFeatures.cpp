@@ -238,12 +238,12 @@ void NativePBRFeature::DiscoverPreparedAssets()
 				const auto observed = observations->entries.find(key);
 				if (observed == observations->entries.end())
 					continue;
-				for (const auto& source : sources) {
-					auto properties = source.properties;
-					auto source = observed->second;
-					source.projection.reset();
-					properties.snow = NativePBR::BindSnowSource(properties.shaderFlags, std::move(source));
-					materialDiscovery.ReplaceInstance(source.materialKey, source.referenceKey, source.shapeName,
+				for (const auto& preparedSource : sources) {
+					auto properties = preparedSource.properties;
+					auto observedSnow = observed->second;
+					observedSnow.projection.reset();
+					properties.snow = NativePBR::BindSnowSource(properties.shaderFlags, std::move(observedSnow));
+					materialDiscovery.ReplaceInstance(preparedSource.materialKey, preparedSource.referenceKey, preparedSource.shapeName,
 						std::move(properties));
 				}
 			}
