@@ -1,0 +1,19 @@
+Texture2D<uint> NativeOwnership : register(t0);
+RWTexture2D<float4> Scene : register(u0);
+
+cbuffer OriginPreviewConstants : register(b0)
+{
+	uint2 Size;
+	uint LightingSubmitted;
+};
+
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+	if (any(id.xy >= Size)) return;
+	bool native = false;
+	[branch] if (LightingSubmitted != 0u)
+		native = NativeOwnership[id.xy] != 0u;
+	float alpha = Scene[id.xy].a;
+	Scene[id.xy] = float4(native ? float3(0.0f, 1.0f, 1.0f) : float3(1.0f, 0.0f, 1.0f), alpha);
+}

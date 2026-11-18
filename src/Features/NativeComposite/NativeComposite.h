@@ -12,6 +12,7 @@ struct NativeCompositeFeature final : Feature
 	{
 		bool Enabled = true;
 		bool IncludeRasterScene = true;
+		bool OriginPreview = false;
 		bool AddLighting = true;
 		float LightingStrength = 1.0f;
 		bool DirectSpatialReconstruction = true;

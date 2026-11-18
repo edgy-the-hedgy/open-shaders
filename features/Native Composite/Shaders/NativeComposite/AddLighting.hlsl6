@@ -8,6 +8,7 @@ Texture2D<float4> ReceiverGuide : register(t6);
 Texture2D<float> RasterDepth : register(t7);
 RWTexture2D<float4> Scene : register(u0);
 RWStructuredBuffer<uint> CompositeCounts : register(u1);
+RWTexture2D<uint> NativeOwnership : register(u2);
 #include "ValidityPolicy.hlsli"
 
 cbuffer CompositeConstants : register(b0)
@@ -23,6 +24,7 @@ cbuffer CompositeConstants : register(b0)
 	row_major float4x4 InverseView;
 	uint RecordDiagnostics;
 	uint NativeReadinessStage;
+	uint OriginPreview;
 };
 
 void Count(uint index)
@@ -119,6 +121,7 @@ bool ReconstructDirect(uint2 pixel, out float3 diffuse, out float3 specular,
 void main(uint3 id : SV_DispatchThreadID)
 {
 	if (any(id.xy >= Size)) return;
+	if (OriginPreview != 0u) NativeOwnership[id.xy] = 0u;
 	uint original = Validity[id.xy], effective = EffectiveValidity[id.xy], reason = RejectionReason[id.xy];
 	float4 guide = LabGuide[id.xy];
 	float3 diffuse = Diffuse[id.xy].rgb, specular = Specular[id.xy].rgb;
@@ -167,6 +170,7 @@ void main(uint3 id : SV_DispatchThreadID)
 	// No native pixel may cover a closer DX11 fallback receiver: the producer
 	// only sets readiness bits after comparing the traced hit to raster depth.
 	if (NativeFirstReady(NativeReadinessStage, effective, reason, acceptDiffuse || acceptSpecular)) {
+		if (OriginPreview != 0u) NativeOwnership[id.xy] = 1u;
 		float4 originalColor = Scene[id.xy];
 		float3 nativeColor = all(isfinite(lighting)) ? lighting * Strength : 0.0f;
 		Scene[id.xy] = float4(LegacyTransfer != 0 ? SignedPower(nativeColor, 1.0f / 1.6f) : nativeColor,
