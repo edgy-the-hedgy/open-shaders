@@ -73,5 +73,6 @@ private:
 	std::atomic<uint64_t> captures{ 0 };
 	std::atomic<uint64_t> lightingSubmissions{ 0 };
 	std::atomic<uint64_t> shadowSubmissions{ 0 };
+	std::atomic<uint32_t> lastGuideSources{ 0 };  // Four 2-bit groups: raster=1, native=2
 	std::atomic<uint32_t> lightingStatus{ 0 };
 };

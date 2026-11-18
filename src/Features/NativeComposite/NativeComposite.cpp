@@ -79,6 +79,17 @@ void NativeCompositeFeature::DrawSettings()
 	}
 	enabled = settings.Enabled;
 	ImGui::TextDisabled("%s", pass.Status().c_str());
+	const uint32_t origins = lastGuideSources.load();
+	const auto guideOrigin = [](uint32_t flags) {
+		switch (flags & 3u) {
+		case 1u: return "raster";
+		case 2u: return "native";
+		case 3u: return "compared";
+		default: return "missing";
+		}
+	};
+	ImGui::TextDisabled("Composite upscale guides (D/M/R/T): %s / %s / %s / %s",
+		guideOrigin(origins >> 0), guideOrigin(origins >> 2), guideOrigin(origins >> 4), guideOrigin(origins >> 6));
 	ImGui::TextDisabled("%s", LightingStatus(lightingStatus.load()));
 	if (settings.ShadowLayerEnabled) {
 		ImGui::TextWrapped("Independent shadow admission: %s", pass.ShadowStatus().c_str());
@@ -202,7 +213,7 @@ void NativeCompositeFeature::ConfigureShadowLayer(const json& args)
 
 void NativeCompositeFeature::RegisterUxActions()
 {
-	FEATURE_COMMAND("configure", "Set Native Composite enabled, includeRasterScene, originPreview, addLighting, lightingStrength, and directSpatialReconstruction.", [](Feature* self, const json& args) {
+	FEATURE_COMMAND("configure", "Set Native Composite enabled, includeRasterScene, originPreview, enableValidityChecks, sourceBlendEnabled, sourceBlend, nativeIntensity, rasterIntensity, guideTolerance[depth,motion,reactive,transparency], guidePriority[depth,motion,reactive,transparency], addLighting, lightingStrength, and directSpatialReconstruction.", [](Feature* self, const json& args) {
 		auto& feature = *static_cast<NativeCompositeFeature*>(self);
 		std::scoped_lock lock(feature.settingsMutex);
 		if (args.contains("enabled"))
@@ -290,7 +301,9 @@ json NativeCompositeFeature::GetDiagnostics()
 	const auto sceneDiagnostics = globals::features::dx12NativeScene.GetDiagnostics();
 	return { { "enabled", IsEnabled() }, { "includeRasterScene", settings.IncludeRasterScene }, { "originPreview", settings.OriginPreview }, { "enableValidityChecks", settings.EnableValidityChecks },
 		{ "sourceBlendEnabled", settings.SourceBlendEnabled }, { "sourceBlend", settings.SourceBlend }, { "nativeIntensity", settings.NativeIntensity }, { "rasterIntensity", settings.RasterIntensity },
-		{ "guideTolerance", settings.GuideTolerance }, { "guidePriority", settings.GuidePriority }, { "captures", captures.load() },
+		{ "guideTolerance", settings.GuideTolerance }, { "guidePriority", settings.GuidePriority },
+		{ "guideSourceFlags", lastGuideSources.load() }, { "guideSourceFlagsLegend", "two bits per guide D/M/R/T: 0=missing 1=raster 2=native 3=per-pixel compared" },
+		{ "captures", captures.load() },
 		{ "lightingSubmissions", lightingSubmissions.load() }, { "shadowSubmissions", shadowSubmissions.load() },
 		{ "completedComposites", pass.CompletedComposites() }, { "acceptedPixels", pass.AcceptedPixels() },
 		{ "modifiedPixels", pass.ModifiedPixels() }, { "visualizationPixels", pass.VisualizationPixels() },
@@ -348,6 +361,13 @@ std::shared_ptr<const NativeComposite::Frame> NativeCompositeFeature::Capture(ID
 		{ selected.GuideTolerance, selected.GuidePriority });
 	if (frame)
 		++captures;
+	uint32_t guideFlags = 0;
+	if (frame)
+		for (size_t i = 0; i < NativeComposite::GuideCount; ++i) {
+			const auto& guide = frame->selectedGuides[i];
+			guideFlags |= ((guide.rasterOrigin ? 1u : 0u) | (guide.nativeOrigin ? 2u : 0u)) << (i * 2u);
+		}
+	lastGuideSources = guideFlags;
 	if (frame && frame->lightingSubmitted) {
 		++lightingSubmissions;
 		lightingStatus = 3;

@@ -181,7 +181,7 @@ private:
 	winrt::com_ptr<ID3D12RootSignature> nativeMaskRoot;
 	winrt::com_ptr<ID3D12PipelineState> nativeMaskPipeline;
 	winrt::com_ptr<ID3D12RootSignature> guideCompareRoot;
-	winrt::com_ptr<ID3D12PipelineState> guideComparePipeline;
+	std::array<winrt::com_ptr<ID3D12PipelineState>, 3> guideComparePipelines;
 	ID3D12Device *pipelineDevice = nullptr, *shadowPipelineDevice = nullptr, *originPipelineDevice = nullptr, *blendPipelineDevice = nullptr, *nativeDepthPipelineDevice = nullptr, *nativeMotionPipelineDevice = nullptr, *nativeMaskPipelineDevice = nullptr, *guideComparePipelineDevice = nullptr;
 	winrt::com_ptr<ID3D12RootSignature> shadowRoot;
 	winrt::com_ptr<ID3D12PipelineState> shadowPipeline;

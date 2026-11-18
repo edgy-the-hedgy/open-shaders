@@ -5,6 +5,10 @@ cbuffer OriginPreviewConstants : register(b0)
 {
 	uint2 Size;
 	uint LightingSubmitted;
+	uint BlendSourcesEnabled;
+	float NativeMix;
+	float NativeIntensity;
+	float RasterIntensity;
 };
 
 [numthreads(8, 8, 1)]
@@ -14,6 +18,8 @@ void main(uint3 id : SV_DispatchThreadID)
 	bool native = false;
 	[branch] if (LightingSubmitted != 0u)
 		native = NativeOwnership[id.xy] != 0u;
+	if (BlendSourcesEnabled != 0u)
+		native = native && NativeMix * NativeIntensity > (1.0f - NativeMix) * RasterIntensity;
 	float alpha = Scene[id.xy].a;
 	Scene[id.xy] = float4(native ? float3(0.0f, 1.0f, 1.0f) : float3(1.0f, 0.0f, 1.0f), alpha);
 }

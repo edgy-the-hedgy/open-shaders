@@ -1,4 +1,5 @@
 #include "../../features/Native Composite/Shaders/NativeComposite/ValidityPolicy.hlsli"
+#include "../../features/Native Composite/Shaders/NativeComposite/GuideDecision.hlsli"
 #include <catch2/catch_test_macros.hpp>
 
 TEST_CASE("Native composite validity policies use initialized lighting only", "[native-composite]")
@@ -13,6 +14,28 @@ TEST_CASE("Native composite validity policies use initialized lighting only", "[
 	CHECK(AcceptContribution(2, 1, 2, radiance | forced | 10));
 	CHECK_FALSE(AcceptContribution(2, 0, 0, 2));
 	CHECK_FALSE(AcceptContribution(3, 1, 1, radiance | 10));
+}
+
+TEST_CASE("Native composite guide comparison uses source priority only when covered", "[native-composite][upscaling]")
+{
+	using NativeCompositeGuide::SelectNativeGuide;
+	SECTION("Native priority switches to raster on agreement, including tolerance equality")
+	{
+		CHECK(SelectNativeGuide(true, true, false, 0));
+		CHECK_FALSE(SelectNativeGuide(true, true, true, 0));
+	}
+	SECTION("Raster priority switches to native on agreement, including tolerance equality")
+	{
+		CHECK_FALSE(SelectNativeGuide(true, true, false, 1));
+		CHECK(SelectNativeGuide(true, true, true, 1));
+	}
+	SECTION("Missing native coverage never selects uninitialized native pixels")
+	{
+		CHECK_FALSE(SelectNativeGuide(false, true, false, 0));
+		CHECK_FALSE(SelectNativeGuide(false, true, true, 1));
+		CHECK(SelectNativeGuide(true, false, false, 0));
+		CHECK(SelectNativeGuide(true, false, false, 1));
+	}
 }
 
 TEST_CASE("Native-first readiness never upgrades incomplete pixels to full ownership", "[native-composite][native-pbr]")

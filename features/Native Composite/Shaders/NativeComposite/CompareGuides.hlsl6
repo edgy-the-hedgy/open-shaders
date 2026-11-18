@@ -1,10 +1,24 @@
 // Per-element source decision, evaluated at the Native Composite handoff.
 // Pixel provenance: 0 = DX11 raster, 1 = DX12 native.
+#ifndef GUIDE_COMPONENTS
+#define GUIDE_COMPONENTS 4
+#endif
+#if GUIDE_COMPONENTS == 1
+Texture2D<float> Raster : register(t0);
+Texture2D<float> Native : register(t1);
+RWTexture2D<float> Selected : register(u0);
+#elif GUIDE_COMPONENTS == 2
+Texture2D<float2> Raster : register(t0);
+Texture2D<float2> Native : register(t1);
+RWTexture2D<float2> Selected : register(u0);
+#else
 Texture2D<float4> Raster : register(t0);
 Texture2D<float4> Native : register(t1);
-Texture2D<uint> NativeCoverage : register(t2);
 RWTexture2D<float4> Selected : register(u0);
+#endif
+Texture2D<uint> NativeCoverage : register(t2);
 RWTexture2D<uint> SourceOrigin : register(u1);
+#include "GuideDecision.hlsli"
 
 cbuffer CompareConstants : register(b0)
 {
@@ -29,10 +43,24 @@ float ViewDistance(float2 clip, float depth)
 void main(uint3 id : SV_DispatchThreadID)
 {
 	if (any(id.xy >= Size)) return;
-	float4 raster = HasRaster != 0u ? Raster[id.xy] : 0.0f;
+	float4 raster = 0.0f;
+	float4 native = 0.0f;
+#if GUIDE_COMPONENTS == 1
+	if (HasRaster != 0u) raster.x = Raster[id.xy];
+#elif GUIDE_COMPONENTS == 2
+	if (HasRaster != 0u) raster.xy = Raster[id.xy];
+#else
+	if (HasRaster != 0u) raster = Raster[id.xy];
+#endif
 	bool validNative = HasNative != 0u && NativeCoverage[id.xy] != 0u;
-	float4 native = validNative ? Native[id.xy] : 0.0f;
-	bool chooseNative = validNative;
+#if GUIDE_COMPONENTS == 1
+	if (validNative) native.x = Native[id.xy];
+#elif GUIDE_COMPONENTS == 2
+	if (validNative) native.xy = Native[id.xy];
+#else
+	if (validNative) native = Native[id.xy];
+#endif
+	bool withinTolerance = false;
 	if (HasRaster != 0u && validNative) {
 		float difference;
 		if (GuideKind == 0u) {
@@ -44,9 +72,16 @@ void main(uint3 id : SV_DispatchThreadID)
 		} else {
 			difference = abs(native.x - raster.x);
 		}
-		const bool withinTolerance = isfinite(difference) && difference <= Tolerance;
-		chooseNative = PriorityMode == 0u ? !withinTolerance : withinTolerance;
+		withinTolerance = isfinite(difference) && difference <= Tolerance;
 	}
-	Selected[id.xy] = chooseNative ? native : raster;
+	bool chooseNative = SelectNativeGuide(validNative, HasRaster != 0u, withinTolerance, PriorityMode);
+	float4 result = chooseNative ? native : raster;
+#if GUIDE_COMPONENTS == 1
+	Selected[id.xy] = result.x;
+#elif GUIDE_COMPONENTS == 2
+	Selected[id.xy] = result.xy;
+#else
+	Selected[id.xy] = result;
+#endif
 	SourceOrigin[id.xy] = chooseNative ? 1u : 0u;
 }

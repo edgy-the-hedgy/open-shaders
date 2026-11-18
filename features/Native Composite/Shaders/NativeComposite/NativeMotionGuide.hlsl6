@@ -34,7 +34,7 @@ void main(uint3 id : SV_DispatchThreadID)
 	float4 previous = mul(PreviousViewProjection, world);
 	if (!all(isfinite(previous)) || previous.w <= 1e-8f) return;
 	float2 previousUV = (previous.xy / previous.w) * float2(0.5f, -0.5f) + 0.5f;
-	if (!all(isfinite(previousUV))) return;
+	if (!all(isfinite(previousUV)) || any(previousUV < 0.0f) || any(previousUV > 1.0f)) return;
 	Motion[id.xy] = previousUV - uv;
 	MotionCoverage[id.xy] = 1u;
 }
