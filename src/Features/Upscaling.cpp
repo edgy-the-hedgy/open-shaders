@@ -3086,36 +3086,11 @@ void Upscaling::FillMenuCameraMotionVectors()
 	menuCameraMVsValid = true;
 }
 
-void Upscaling::Upscale()
+void Upscaling::EncodeUpscalingGuides()
 {
-	ZoneScoped;
-	nativeUpscaleGuidesReady = false;
-	nativeUpscaleSubmittedThisFrame = false;
-	nativeUpscaleRoute = 2;
-	nativeUpscaleFallback = settings.nativeUpscaleEnable ? 7 : 0;
 	auto upscaleMethod = GetUpscaleMethod();
-
 	auto context = globals::d3d::context;
-	auto renderer = globals::game::renderer;
-
-	context->OMSetRenderTargets(0, nullptr, nullptr);  // Unbind all bound render targets
-
-	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
-	auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
-
-	// Camera-only synthesized MVs are only valid for a static flat menu background.
-	// Loading screens and any real scene rendered behind a menu (VR Playroom) have
-	// their own motion the camera-derived MVs can't represent, so keep the reset.
-	if (globals::state->isMainMenuOpen && !globals::state->isLoadingMenuOpen && !globals::state->worldRenderedThisFrame)
-		FillMenuCameraMotionVectors();
-	else
-		menuCameraMVsValid = false;
-
-	// The foveated route encodes its own masks, so the standard encode only runs when it is skipped or fails.
-	const bool foveatedRouteCandidate = FoveatedRenderImpl::Bridge::IsRouteActive() && globals::game::isVR &&
-	                                    !(globals::state && globals::state->IsMainOrLoadingMenuOpen());
-
-	auto encodeTextures = [&]() {
+	context->OMSetRenderTargets(0, nullptr, nullptr);
 		CS_GPU_PASS("Upscaling::EncodeTextures");
 
 		// VR: ensure per-eye intermediate textures exist before the dispatch writes into them
@@ -3176,6 +3151,9 @@ void Upscaling::Upscale()
 				context->Dispatch((eyeRenderWidth + 7) / 8, (eyeRenderHeight + 7) / 8, 1);
 			}
 			nativeUpscaleGuidesReady = true;
+			nativeUpscaleGuidesFrame = globals::state->frameCount;
+		} else {
+			nativeUpscaleGuidesReady = false;
 		}
 
 		ID3D11ShaderResourceView* nullViews[4] = { nullptr, nullptr, nullptr, nullptr };
@@ -3189,10 +3167,32 @@ void Upscaling::Upscale()
 
 		ID3D11ComputeShader* shader = nullptr;
 		context->CSSetShader(shader, nullptr, 0);
-	};
+	}
 
-	if (!foveatedRouteCandidate)
-		encodeTextures();
+void Upscaling::Upscale()
+{
+	ZoneScoped;
+	if (nativeUpscaleGuidesFrame != globals::state->frameCount)
+		nativeUpscaleGuidesReady = false;
+	nativeUpscaleSubmittedThisFrame = false;
+	nativeUpscaleRoute = 2;
+	nativeUpscaleFallback = settings.nativeUpscaleEnable ? 7 : 0;
+	auto upscaleMethod = GetUpscaleMethod();
+	auto context = globals::d3d::context;
+	auto renderer = globals::game::renderer;
+	context->OMSetRenderTargets(0, nullptr, nullptr);
+	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
+	auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
+	// Camera-only motion is restricted to an empty flat menu background.
+	if (globals::state->isMainMenuOpen && !globals::state->isLoadingMenuOpen && !globals::state->worldRenderedThisFrame)
+		FillMenuCameraMotionVectors();
+	else
+		menuCameraMVsValid = false;
+	const bool foveatedRouteCandidate = FoveatedRenderImpl::Bridge::IsRouteActive() && globals::game::isVR &&
+	                                    !(globals::state && globals::state->IsMainOrLoadingMenuOpen());
+
+	if (!foveatedRouteCandidate && !nativeUpscaleGuidesReady)
+		EncodeUpscalingGuides();
 
 	{
 		CS_GPU_PASS("Upscaling::Upscale");
@@ -3206,7 +3206,7 @@ void Upscaling::Upscale()
 			if (!foveatedRouteCandidate)
 				return false;
 			if (!FoveatedRenderImpl::Preprocess::EncodeUpscalingTextures(*this)) {
-				encodeTextures();
+				EncodeUpscalingGuides();
 				return false;
 			}
 			const bool routeHandled = FoveatedRenderImpl::Core::ExecuteFoveatedRoute(streamline,
@@ -3216,7 +3216,7 @@ void Upscaling::Upscale()
 				motionVectorCopyTexture->resource.get());
 			if (!routeHandled) {
 				logger::warn("[FOVEATED] route preflight failed — falling through to standard {} path", a_methodLabel);
-				encodeTextures();
+				EncodeUpscalingGuides();
 			}
 			return routeHandled;
 		};
@@ -3669,6 +3669,12 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 	upscaling.nativeUpscaleOutput = {};
 	upscaling.nativeUpscaleRoute = 0;
 	if (upscaling.loaded && globals::features::nativeComposite.IsEnabled() && upscaling.fidelityFX.EnsureRuntimeUpscalerInterop()) {
+		// Runtime FSR guides must exist before the composite is published. The
+		// normal DX11/VR/Streamline routes retain their original scheduling.
+		if (!globals::game::isVR && upscaleMethod == UpscaleMethod::kFSR &&
+			upscaling.fidelityFX.ShouldUseRuntimeUpscalerForFSR() &&
+			!globals::state->IsMainOrLoadingMenuOpen())
+			upscaling.EncodeUpscalingGuides();
 		auto* renderer = globals::game::renderer;
 		auto* scene = Util::AsReal(renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].texture);
 		const auto renderSize = Util::ConvertToDynamic(globals::state->screenSize);

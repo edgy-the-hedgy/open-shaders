@@ -428,6 +428,7 @@ public:
 	void ConfigureTAA();
 	void ConfigureUpscaling(RE::BSGraphics::State* a_state);
 	void Upscale();
+	void EncodeUpscalingGuides();
 
 	// D3D11 textures
 	Texture2D* reactiveMaskTexture = nullptr;
@@ -446,6 +447,7 @@ public:
 	std::shared_ptr<const NativeComposite::Frame> nativeCompositeFrame;
 	NativeUpscaleOutput nativeUpscaleOutput;
 	bool nativeUpscaleGuidesReady = false;
+	uint32_t nativeUpscaleGuidesFrame = 0;
 	bool nativeUpscaleSubmittedThisFrame = false;
 	std::atomic<uint64_t> nativeHistoryGeneration{ 1 };
 	uint64_t nativeHistoryGenerationUsed = 0;
