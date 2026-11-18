@@ -16,8 +16,11 @@ if(DX12_NATIVE_SCENE_DXC)
     set(NATIVE_COMPOSITE_MOTION_DXIL
         "${NATIVE_COMPOSITE_DXIL_DIR}/NativeMotionGuide.dxil"
     )
+    set(NATIVE_COMPOSITE_MASK_DXIL
+        "${NATIVE_COMPOSITE_DXIL_DIR}/NativeOpaqueMasks.dxil"
+    )
     add_custom_command(
-        OUTPUT "${NATIVE_COMPOSITE_DXIL}" "${NATIVE_COMPOSITE_SHADOW_DXIL}" "${NATIVE_COMPOSITE_ORIGIN_DXIL}" "${NATIVE_COMPOSITE_BLEND_DXIL}" "${NATIVE_COMPOSITE_DEPTH_DXIL}" "${NATIVE_COMPOSITE_MOTION_DXIL}"
+        OUTPUT "${NATIVE_COMPOSITE_DXIL}" "${NATIVE_COMPOSITE_SHADOW_DXIL}" "${NATIVE_COMPOSITE_ORIGIN_DXIL}" "${NATIVE_COMPOSITE_BLEND_DXIL}" "${NATIVE_COMPOSITE_DEPTH_DXIL}" "${NATIVE_COMPOSITE_MOTION_DXIL}" "${NATIVE_COMPOSITE_MASK_DXIL}"
         COMMAND
             ${CMAKE_COMMAND} -E make_directory "${NATIVE_COMPOSITE_DXIL_DIR}"
         COMMAND
@@ -44,6 +47,10 @@ if(DX12_NATIVE_SCENE_DXC)
             "${DX12_NATIVE_SCENE_DXC}" -T cs_6_5 -E main -HV 2021 -O3 -Ges -Gis
             -Fo "${NATIVE_COMPOSITE_MOTION_DXIL}"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/Native Composite/Shaders/NativeComposite/NativeMotionGuide.hlsl6"
+        COMMAND
+            "${DX12_NATIVE_SCENE_DXC}" -T cs_6_5 -E main -HV 2021 -O3 -Ges -Gis
+            -Fo "${NATIVE_COMPOSITE_MASK_DXIL}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/features/Native Composite/Shaders/NativeComposite/NativeOpaqueMasks.hlsl6"
         DEPENDS
             "${CMAKE_CURRENT_SOURCE_DIR}/features/Native Composite/Shaders/NativeComposite/AddLighting.hlsl6"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/Native Composite/Shaders/NativeComposite/ShadowLayer.hlsl6"
@@ -51,6 +58,7 @@ if(DX12_NATIVE_SCENE_DXC)
             "${CMAKE_CURRENT_SOURCE_DIR}/features/Native Composite/Shaders/NativeComposite/BlendSources.hlsl6"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/Native Composite/Shaders/NativeComposite/NativeDepthGuide.hlsl6"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/Native Composite/Shaders/NativeComposite/NativeMotionGuide.hlsl6"
+            "${CMAKE_CURRENT_SOURCE_DIR}/features/Native Composite/Shaders/NativeComposite/NativeOpaqueMasks.hlsl6"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/Native Composite/Shaders/NativeComposite/NativePBRMaterial.hlsli"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/Native Composite/Shaders/NativeComposite/NativePBRBRDF.hlsli"
             "${CMAKE_CURRENT_SOURCE_DIR}/features/Native Composite/Shaders/NativeComposite/ValidityPolicy.hlsli"
@@ -58,12 +66,12 @@ if(DX12_NATIVE_SCENE_DXC)
     )
     add_custom_target(
         NativeCompositeDXIL
-        DEPENDS "${NATIVE_COMPOSITE_DXIL}" "${NATIVE_COMPOSITE_SHADOW_DXIL}" "${NATIVE_COMPOSITE_ORIGIN_DXIL}" "${NATIVE_COMPOSITE_BLEND_DXIL}" "${NATIVE_COMPOSITE_DEPTH_DXIL}" "${NATIVE_COMPOSITE_MOTION_DXIL}"
+        DEPENDS "${NATIVE_COMPOSITE_DXIL}" "${NATIVE_COMPOSITE_SHADOW_DXIL}" "${NATIVE_COMPOSITE_ORIGIN_DXIL}" "${NATIVE_COMPOSITE_BLEND_DXIL}" "${NATIVE_COMPOSITE_DEPTH_DXIL}" "${NATIVE_COMPOSITE_MOTION_DXIL}" "${NATIVE_COMPOSITE_MASK_DXIL}"
     )
     add_dependencies(${PROJECT_NAME} NativeCompositeDXIL)
-    register_feature_payload(NativeComposite FILES "${NATIVE_COMPOSITE_DXIL}" "${NATIVE_COMPOSITE_SHADOW_DXIL}" "${NATIVE_COMPOSITE_ORIGIN_DXIL}" "${NATIVE_COMPOSITE_BLEND_DXIL}" "${NATIVE_COMPOSITE_DEPTH_DXIL}" "${NATIVE_COMPOSITE_MOTION_DXIL}" DESTINATION "Shaders/NativeComposite")
+    register_feature_payload(NativeComposite FILES "${NATIVE_COMPOSITE_DXIL}" "${NATIVE_COMPOSITE_SHADOW_DXIL}" "${NATIVE_COMPOSITE_ORIGIN_DXIL}" "${NATIVE_COMPOSITE_BLEND_DXIL}" "${NATIVE_COMPOSITE_DEPTH_DXIL}" "${NATIVE_COMPOSITE_MOTION_DXIL}" "${NATIVE_COMPOSITE_MASK_DXIL}" DESTINATION "Shaders/NativeComposite")
     install(
-        FILES "${NATIVE_COMPOSITE_DXIL}" "${NATIVE_COMPOSITE_SHADOW_DXIL}" "${NATIVE_COMPOSITE_ORIGIN_DXIL}" "${NATIVE_COMPOSITE_BLEND_DXIL}" "${NATIVE_COMPOSITE_DEPTH_DXIL}" "${NATIVE_COMPOSITE_MOTION_DXIL}"
+        FILES "${NATIVE_COMPOSITE_DXIL}" "${NATIVE_COMPOSITE_SHADOW_DXIL}" "${NATIVE_COMPOSITE_ORIGIN_DXIL}" "${NATIVE_COMPOSITE_BLEND_DXIL}" "${NATIVE_COMPOSITE_DEPTH_DXIL}" "${NATIVE_COMPOSITE_MOTION_DXIL}" "${NATIVE_COMPOSITE_MASK_DXIL}"
         DESTINATION "Shaders/NativeComposite"
         COMPONENT Shaders
     )

@@ -1,0 +1,21 @@
+// A successfully evaluated native opaque prepared material contributes neither
+// reactive alpha nor transparency; other pixels retain raster mask ownership.
+Texture2D<uint> NativeMaterialReasons : register(t0);
+RWTexture2D<float> Reactive : register(u0);
+RWTexture2D<float> Transparency : register(u1);
+RWTexture2D<uint> OpaqueCoverage : register(u2);
+cbuffer MaskConstants : register(b0)
+{
+	uint2 Size;
+};
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+	if (any(id.xy >= Size)) return;
+	Reactive[id.xy] = 0.0f;
+	Transparency[id.xy] = 0.0f;
+	uint reason = NativeMaterialReasons[id.xy];
+	const bool preparedOpaque = (reason & 0x08000000u) != 0u;
+	const bool nativeMaterialEvaluated = (reason & 0x04000000u) != 0u;
+	OpaqueCoverage[id.xy] = preparedOpaque && nativeMaterialEvaluated ? 1u : 0u;
+}

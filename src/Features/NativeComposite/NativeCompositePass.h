@@ -120,6 +120,7 @@ private:
 		winrt::com_ptr<ID3D12DescriptorHeap> blendDescriptors;
 		winrt::com_ptr<ID3D12DescriptorHeap> nativeDepthDescriptors;
 		winrt::com_ptr<ID3D12DescriptorHeap> nativeMotionDescriptors;
+		winrt::com_ptr<ID3D12DescriptorHeap> nativeMaskDescriptors;
 		winrt::com_ptr<ID3D12DescriptorHeap> clearDescriptors;
 		winrt::com_ptr<ID3D12RootSignature> shadowRoot;
 		winrt::com_ptr<ID3D12PipelineState> shadowPipeline;
@@ -131,10 +132,13 @@ private:
 		winrt::com_ptr<ID3D12PipelineState> blendPipeline;
 		winrt::com_ptr<ID3D12RootSignature> depthRoot, motionRoot;
 		winrt::com_ptr<ID3D12PipelineState> depthPipeline, motionPipeline;
+		winrt::com_ptr<ID3D12RootSignature> maskRoot;
+		winrt::com_ptr<ID3D12PipelineState> maskPipeline;
 		winrt::com_ptr<ID3D12Resource> originMask;
 		winrt::com_ptr<ID3D12Resource> nativeColor;
 		winrt::com_ptr<ID3D12Resource> nativeDepth, nativeDepthCoverage;
 		winrt::com_ptr<ID3D12Resource> nativeMotion, nativeMotionCoverage;
+		winrt::com_ptr<ID3D12Resource> nativeReactive, nativeTransparency, nativeMaskCoverage;
 		std::shared_ptr<const DX12Native::TopLevel> nativeDepthScene;
 		winrt::com_ptr<ID3D12Resource> counters, counterReset, counterReadback;
 		SharedFence fence;
@@ -147,6 +151,7 @@ private:
 		bool sourceBlendEnabled = false;
 		bool nativeDepthEnabled = false;
 		bool nativeMotionEnabled = false;
+		bool nativeMasksEnabled = false;
 		uint64_t frameBytes = 0;
 		bool countersRead = true;
 		bool untracked = false;
@@ -160,7 +165,9 @@ private:
 	winrt::com_ptr<ID3D12PipelineState> nativeDepthPipeline;
 	winrt::com_ptr<ID3D12RootSignature> nativeMotionRoot;
 	winrt::com_ptr<ID3D12PipelineState> nativeMotionPipeline;
-	ID3D12Device *pipelineDevice = nullptr, *shadowPipelineDevice = nullptr, *originPipelineDevice = nullptr, *blendPipelineDevice = nullptr, *nativeDepthPipelineDevice = nullptr, *nativeMotionPipelineDevice = nullptr;
+	winrt::com_ptr<ID3D12RootSignature> nativeMaskRoot;
+	winrt::com_ptr<ID3D12PipelineState> nativeMaskPipeline;
+	ID3D12Device *pipelineDevice = nullptr, *shadowPipelineDevice = nullptr, *originPipelineDevice = nullptr, *blendPipelineDevice = nullptr, *nativeDepthPipelineDevice = nullptr, *nativeMotionPipelineDevice = nullptr, *nativeMaskPipelineDevice = nullptr;
 	winrt::com_ptr<ID3D12RootSignature> shadowRoot;
 	winrt::com_ptr<ID3D12PipelineState> shadowPipeline;
 	std::atomic<uint64_t> completedComposites{ 0 }, acceptedPixels{ 0 }, modifiedPixels{ 0 }, visualizationPixels{ 0 }, counterReadFailures{ 0 };
@@ -172,6 +179,7 @@ private:
 	bool InitializeSourceBlend(ID3D12Device* a_device);
 	bool InitializeNativeDepth(ID3D12Device* a_device);
 	bool InitializeNativeMotion(ID3D12Device* a_device);
+	bool InitializeNativeMasks(ID3D12Device* a_device);
 	std::optional<globals::FrameBuffer> previousNativeCamera;
 	std::shared_ptr<const DX12Native::TopLevel> previousMotionScene;
 	uint32_t previousNativeFrame = 0;

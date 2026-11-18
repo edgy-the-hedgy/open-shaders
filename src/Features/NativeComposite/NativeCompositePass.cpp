@@ -264,6 +264,47 @@ bool NativeComposite::InitializeNativeMotion(ID3D12Device* a_device)
 	}
 }
 
+bool NativeComposite::InitializeNativeMasks(ID3D12Device* a_device)
+{
+	if (nativeMaskPipeline && nativeMaskPipelineDevice == a_device)
+		return true;
+	try {
+		std::ifstream file("Data/Shaders/NativeComposite/NativeOpaqueMasks.dxil", std::ios::binary | std::ios::ate);
+		if (!file)
+			return false;
+		const auto size = file.tellg();
+		if (size <= 0 || size > 16 * 1024 * 1024)
+			return false;
+		std::vector<char> shader(static_cast<size_t>(size));
+		file.seekg(0);
+		if (!file.read(shader.data(), size))
+			return false;
+		CD3DX12_DESCRIPTOR_RANGE ranges[2];
+		ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+		ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 3, 0);
+		CD3DX12_ROOT_PARAMETER parameters[3];
+		parameters[0].InitAsDescriptorTable(1, &ranges[0]);
+		parameters[1].InitAsDescriptorTable(1, &ranges[1]);
+		parameters[2].InitAsConstants(2, 0);
+		const CD3DX12_ROOT_SIGNATURE_DESC desc(3, parameters);
+		winrt::com_ptr<ID3DBlob> serialized, errors;
+		DX::ThrowIfFailed(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, serialized.put(), errors.put()));
+		winrt::com_ptr<ID3D12RootSignature> newRoot;
+		DX::ThrowIfFailed(a_device->CreateRootSignature(0, serialized->GetBufferPointer(), serialized->GetBufferSize(), IID_PPV_ARGS(newRoot.put())));
+		D3D12_COMPUTE_PIPELINE_STATE_DESC pso{};
+		pso.pRootSignature = newRoot.get();
+		pso.CS = { shader.data(), shader.size() };
+		winrt::com_ptr<ID3D12PipelineState> newPipeline;
+		DX::ThrowIfFailed(a_device->CreateComputePipelineState(&pso, IID_PPV_ARGS(newPipeline.put())));
+		nativeMaskRoot = std::move(newRoot);
+		nativeMaskPipeline = std::move(newPipeline);
+		nativeMaskPipelineDevice = a_device;
+		return true;
+	} catch (...) {
+		return false;
+	}
+}
+
 std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Device5* a_device11, ID3D11DeviceContext4* a_context11,
 	ID3D12Device* a_device12, ID3D12CommandQueue* a_queue, ID3D11Texture2D* a_source,
 	uint32_t a_frame, uint32_t a_width, uint32_t a_height, Transfer a_transfer,
@@ -349,6 +390,10 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 		!nativeSceneFrame->prepared->acceleration->instances.empty() &&
 		std::ranges::all_of(nativeSceneFrame->prepared->acceleration->instances,
 			[](const auto& instance) { return instance.observationFrame == 0; }) && InitializeNativeMotion(a_device12);
+	const bool nativeMasksReady = a_lighting && a_lighting->frame == a_frame && a_lighting->width == a_width &&
+		a_lighting->height == a_height && a_lighting->backend.d3d12Device.get() == a_device12 &&
+		a_lighting->readyFence && a_lighting->readyValue && a_lighting->readyValue != UINT64_MAX &&
+		a_lighting->textures[8] && InitializeNativeMasks(a_device12);
 	const bool shadowRequested = (a_shadowSettings.contribution * a_shadowSettings.blend > 0.0f) || a_shadowSettings.preview;
 	bool applyShadow = false;
 	// A raster-only submission must not conceal the exact shadow admission gate
@@ -462,7 +507,8 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 		const bool recreate = !slot->frame || slot->device != a_device12 || slot->device11 != a_device11 ||
 		                      slot->sourceDesc.Width != desc.Width || slot->sourceDesc.Height != desc.Height || slot->sourceDesc.Format != desc.Format ||
 		                      slot->supportsLighting != supportsLighting || slot->originPreview != a_originPreview ||
-		                      slot->sourceBlendEnabled != a_sourceBlend.enabled || slot->nativeDepthEnabled != nativeDepthReady || guideDescChanged;
+		                      slot->sourceBlendEnabled != a_sourceBlend.enabled || slot->nativeDepthEnabled != nativeDepthReady ||
+		                      slot->nativeMasksEnabled != nativeMasksReady || guideDescChanged;
 		if (recreate) {
 			// Reserve two full-size images: one DX11/DX12 shared input and
 			// one DX12-owned composited output. Guard incremental slot growth
@@ -509,6 +555,16 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 					required += bytes;
 				}
 			}
+			if (nativeMasksReady) {
+				for (const auto format : { DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R32_UINT }) {
+					const auto maskDesc = CD3DX12_RESOURCE_DESC::Tex2D(format, desc.Width, desc.Height, 1, 1, 1, 0,
+						D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+					const uint64_t bytes = a_device12->GetResourceAllocationInfo(0, 1, &maskDesc).SizeInBytes;
+					if (bytes == UINT64_MAX || required > UINT64_MAX - bytes)
+						throw std::runtime_error("Native opaque mask allocation size overflow");
+					required += bytes;
+				}
+			}
 			uint64_t retained = 0;
 			for (const auto& candidate : slots)
 				if (candidate && candidate.get() != slot) {
@@ -532,6 +588,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			replacement->originPreview = a_originPreview;
 			replacement->sourceBlendEnabled = a_sourceBlend.enabled;
 			replacement->nativeDepthEnabled = nativeDepthReady;
+			replacement->nativeMasksEnabled = nativeMasksReady;
 			auto sharedDesc = desc;
 			sharedDesc.Usage = D3D11_USAGE_DEFAULT;
 			sharedDesc.BindFlags = 0;
@@ -586,6 +643,18 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 					D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(replacement->nativeMotionCoverage.put())));
 				replacement->nativeMotion->SetName(L"NativeComposite::NativeMotionGuide");
 				replacement->nativeMotionCoverage->SetName(L"NativeComposite::NativeMotionCoverage");
+			}
+			if (nativeMasksReady) {
+				const auto maskDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8_UNORM,
+					desc.Width, desc.Height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+				const auto coverageDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32_UINT,
+					desc.Width, desc.Height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+				DX::ThrowIfFailed(a_device12->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &maskDesc,
+					D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(replacement->nativeReactive.put())));
+				DX::ThrowIfFailed(a_device12->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &maskDesc,
+					D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(replacement->nativeTransparency.put())));
+				DX::ThrowIfFailed(a_device12->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &coverageDesc,
+					D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(replacement->nativeMaskCoverage.put())));
 			}
 			D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
 			heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
@@ -646,6 +715,11 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 				DX::ThrowIfFailed(a_device12->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(replacement->nativeDepthDescriptors.put())));
 				heapDesc.NumDescriptors = 4;
 				DX::ThrowIfFailed(a_device12->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(replacement->nativeMotionDescriptors.put())));
+			}
+			if (nativeMasksReady) {
+				heapDesc.NumDescriptors = 4;
+				heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+				DX::ThrowIfFailed(a_device12->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(replacement->nativeMaskDescriptors.put())));
 			}
 			*slot = std::move(*replacement);
 		}
@@ -975,6 +1049,51 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 				slot->commands->ResourceBarrier(1, &ownershipEnd);
 			}
 		}
+		if (nativeMasksReady) {
+			CS_GPU_PASS("NativeComposite::NativeOpaqueMaskGuides");
+			slot->maskRoot = nativeMaskRoot;
+			slot->maskPipeline = nativeMaskPipeline;
+			const auto step = a_device12->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+			auto cpu = slot->nativeMaskDescriptors->GetCPUDescriptorHandleForHeapStart();
+			D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+			srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+			srv.Texture2D.MipLevels = 1;
+			srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			srv.Format = DXGI_FORMAT_R32_UINT;
+			a_device12->CreateShaderResourceView(a_lighting->textures[8].get(), &srv, cpu);
+			D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+			uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+			for (auto* resource : { slot->nativeReactive.get(), slot->nativeTransparency.get(), slot->nativeMaskCoverage.get() }) {
+				cpu.ptr += step;
+				uav.Format = resource == slot->nativeMaskCoverage.get() ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R8_UNORM;
+				a_device12->CreateUnorderedAccessView(resource, nullptr, &uav, cpu);
+			}
+			const std::array start{
+				CD3DX12_RESOURCE_BARRIER::Transition(a_lighting->textures[8].get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->nativeReactive.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->nativeTransparency.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->nativeMaskCoverage.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+			};
+			slot->commands->ResourceBarrier(static_cast<UINT>(start.size()), start.data());
+			ID3D12DescriptorHeap* heaps[]{ slot->nativeMaskDescriptors.get() };
+			slot->commands->SetDescriptorHeaps(1, heaps);
+			slot->commands->SetPipelineState(slot->maskPipeline.get());
+			slot->commands->SetComputeRootSignature(slot->maskRoot.get());
+			auto gpu = slot->nativeMaskDescriptors->GetGPUDescriptorHandleForHeapStart();
+			slot->commands->SetComputeRootDescriptorTable(0, gpu);
+			gpu.ptr += step;
+			slot->commands->SetComputeRootDescriptorTable(1, gpu);
+			const uint32_t constants[]{ a_width, a_height };
+			slot->commands->SetComputeRoot32BitConstants(2, 2, constants, 0);
+			slot->commands->Dispatch((a_width + 7) / 8, (a_height + 7) / 8, 1);
+			const std::array end{
+				CD3DX12_RESOURCE_BARRIER::Transition(a_lighting->textures[8].get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->nativeReactive.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON),
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->nativeTransparency.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON),
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->nativeMaskCoverage.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON)
+			};
+			slot->commands->ResourceBarrier(static_cast<UINT>(end.size()), end.data());
+		}
 		if (a_sourceBlend.enabled) {
 			// The raster scene and native result remained independent until this
 			// pre-upscaler operation; neither source is overwritten prematurely.
@@ -1071,11 +1190,11 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			DX::ThrowIfFailed(a_queue->Wait(a_shadow->readyFence.get(), a_shadow->readyValue));
 			DX::ThrowIfFailed(a_queue->Wait(a_raster->readyFence.get(), a_raster->readyValue));
 		}
-		if (blend)
+		if (blend || nativeMasksReady)
 			DX::ThrowIfFailed(a_queue->Wait(a_lighting->readyFence.get(), a_lighting->readyValue));
 		ID3D12CommandList* lists[]{ slot->commands.get() };
 		const uint64_t done = slot->fence.Next();
-		if (blend && !globals::features::nativeLighting.RetainContribution(a_lighting, slot->fence.fence12.get(), done)) {
+		if ((blend || nativeMasksReady) && !globals::features::nativeLighting.RetainContribution(a_lighting, slot->fence.fence12.get(), done)) {
 			if (applyShadow)
 				shadowStatus = "Shadow submission blocked by native-lighting retention failure";
 			slot->untracked = true;
@@ -1129,6 +1248,17 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			motion.height = a_height;
 			motion.format = DXGI_FORMAT_R16G16_FLOAT;
 			motion.nativeOrigin = true;
+		}
+		if (nativeMasksReady) {
+			for (auto kind : { Guide::Reactive, Guide::Transparency }) {
+				auto& mask = frame.nativeGuides[static_cast<size_t>(kind)];
+				mask.resource = kind == Guide::Reactive ? slot->nativeReactive : slot->nativeTransparency;
+				mask.coverage = slot->nativeMaskCoverage;
+				mask.width = a_width;
+				mask.height = a_height;
+				mask.format = DXGI_FORMAT_R8_UNORM;
+				mask.nativeOrigin = true;
+			}
 		}
 		if (nativeDepthReady) {
 			previousNativeCamera = nativeSceneFrame->raster->camera;
