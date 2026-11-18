@@ -1,0 +1,33 @@
+Texture2D<float4> NativeColor : register(t0);
+RWTexture2D<float4> Scene : register(u0);
+
+cbuffer BlendConstants : register(b0)
+{
+	uint2 Size;
+	float NativeMix;
+	float NativeIntensity;
+	float RasterIntensity;
+	uint LegacyTransfer;
+	uint HasNative;
+};
+
+float3 SignedPower(float3 value, float exponent)
+{
+	return sign(value) * pow(abs(value), exponent);
+}
+
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+	if (any(id.xy >= Size)) return;
+	float4 raster = Scene[id.xy];
+	float3 native = 0.0f;
+	if (HasNative != 0u) native = NativeColor[id.xy].rgb;
+	if (LegacyTransfer != 0u) {
+		raster.rgb = SignedPower(raster.rgb, 1.6f);
+		native = SignedPower(native, 1.6f);
+	}
+	float3 blended = raster.rgb * ((1.0f - NativeMix) * RasterIntensity) + native * (NativeMix * NativeIntensity);
+	if (LegacyTransfer != 0u) blended = SignedPower(blended, 1.0f / 1.6f);
+	Scene[id.xy] = float4(blended, raster.a);
+}

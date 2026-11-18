@@ -26,6 +26,7 @@ cbuffer CompositeConstants : register(b0)
 	uint NativeReadinessStage;
 	uint OriginPreview;
 	uint IgnoreValidity;
+	uint BlendSourcesEnabled;
 };
 
 bool AcceptNative(uint policy, uint original, uint effective, uint reason)
@@ -127,6 +128,7 @@ bool ReconstructDirect(uint2 pixel, out float3 diffuse, out float3 specular,
 void main(uint3 id : SV_DispatchThreadID)
 {
 	if (any(id.xy >= Size)) return;
+	if (BlendSourcesEnabled != 0u) Scene[id.xy] = float4(0.0f, 0.0f, 0.0f, 1.0f);
 	if (OriginPreview != 0u) NativeOwnership[id.xy] = 0u;
 	uint original = Validity[id.xy], effective = EffectiveValidity[id.xy], reason = RejectionReason[id.xy];
 	float4 guide = LabGuide[id.xy];

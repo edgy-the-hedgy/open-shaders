@@ -5,7 +5,7 @@
 #include "State.h"
 #include "Utils/DevBenchUx.h"
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(NativeCompositeFeature::Settings, Enabled, IncludeRasterScene, OriginPreview, EnableValidityChecks, AddLighting, LightingStrength, DirectSpatialReconstruction, PersistLab, ShadowLayerEnabled, ShadowContribution, ShadowBlend, ShadowRadiusPixels, ShadowReceiverTolerance, ShadowPreview, ShadowAfterLighting, ShadowSpatialReconstruction)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(NativeCompositeFeature::Settings, Enabled, IncludeRasterScene, OriginPreview, EnableValidityChecks, SourceBlendEnabled, SourceBlend, NativeIntensity, RasterIntensity, AddLighting, LightingStrength, DirectSpatialReconstruction, PersistLab, ShadowLayerEnabled, ShadowContribution, ShadowBlend, ShadowRadiusPixels, ShadowReceiverTolerance, ShadowPreview, ShadowAfterLighting, ShadowSpatialReconstruction)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(NativeComposite::Policy, diffuse, specular, visual)
 
 namespace
@@ -52,6 +52,17 @@ void NativeCompositeFeature::DrawSettings()
 		++validityRevision;
 	ImGui::TextDisabled("Off: bypasses depth/material admission policy; resource safety remains enforced.");
 	ImGui::TextDisabled("Cyan: native DX12 replacement | Magenta: DX11 fallback region");
+	if (ImGui::Checkbox("Enable source-separated color blend (experimental)", &settings.SourceBlendEnabled))
+		++validityRevision;
+	bool blendChanged = false;
+	blendChanged |= ImGui::SliderFloat("Native / raster blend", &settings.SourceBlend, 0.0f, 1.0f, "%.2f");
+	blendChanged |= ImGui::SliderFloat("Native intensity", &settings.NativeIntensity, 0.0f, 4.0f, "%.2fx");
+	blendChanged |= ImGui::SliderFloat("Raster intensity", &settings.RasterIntensity, 0.0f, 4.0f, "%.2fx");
+	if (blendChanged) {
+		settings.SourceBlend = std::round(settings.SourceBlend * 100.0f) / 100.0f;
+		++validityRevision;
+	}
+	ImGui::TextDisabled("Source blend overrides the raster inclusion toggle while active.");
 	enabled = settings.Enabled;
 	ImGui::TextDisabled("%s", pass.Status().c_str());
 	ImGui::TextDisabled("%s", LightingStatus(lightingStatus.load()));
@@ -111,6 +122,9 @@ void NativeCompositeFeature::LoadSettings(json& a_json)
 	++validityRevision;
 	settings.LightingStrength = std::isfinite(settings.LightingStrength) ? std::clamp(settings.LightingStrength, 0.0f, 2.0f) : 1.0f;
 	const auto safe = [](float v, float fallback, float low, float high) { return std::isfinite(v) ? std::clamp(v, low, high) : fallback; };
+	settings.SourceBlend = safe(settings.SourceBlend, Settings{}.SourceBlend, 0.0f, 1.0f);
+	settings.NativeIntensity = safe(settings.NativeIntensity, Settings{}.NativeIntensity, 0.0f, 4.0f);
+	settings.RasterIntensity = safe(settings.RasterIntensity, Settings{}.RasterIntensity, 0.0f, 4.0f);
 	settings.ShadowContribution = safe(settings.ShadowContribution, Settings{}.ShadowContribution, 0.0f, 4.0f);
 	settings.ShadowBlend = safe(settings.ShadowBlend, Settings{}.ShadowBlend, 0.0f, 1.0f);
 	settings.ShadowRadiusPixels = safe(settings.ShadowRadiusPixels, Settings{}.ShadowRadiusPixels, 0.0f, 32.0f);
@@ -186,6 +200,22 @@ void NativeCompositeFeature::RegisterUxActions()
 			feature.settings.EnableValidityChecks = args.at("enableValidityChecks").get<bool>();
 			++feature.validityRevision;
 		}
+		if (args.contains("sourceBlendEnabled")) {
+			feature.settings.SourceBlendEnabled = args.at("sourceBlendEnabled").get<bool>();
+			++feature.validityRevision;
+		}
+		const auto blendTune = [&](const char* name, float& target, float maximum) {
+			if (args.contains(name)) {
+				const float value = args.at(name).get<float>();
+				if (std::isfinite(value)) {
+					target = std::clamp(value, 0.0f, maximum);
+					++feature.validityRevision;
+				}
+			}
+		};
+		blendTune("sourceBlend", feature.settings.SourceBlend, 1.0f);
+		blendTune("nativeIntensity", feature.settings.NativeIntensity, 4.0f);
+		blendTune("rasterIntensity", feature.settings.RasterIntensity, 4.0f);
 		if (args.contains("addLighting"))
 			feature.settings.AddLighting = args.at("addLighting").get<bool>();
 		if (args.contains("directSpatialReconstruction")) {
@@ -226,7 +256,8 @@ json NativeCompositeFeature::GetDiagnostics()
 {
 	std::scoped_lock lock(settingsMutex);
 	const auto sceneDiagnostics = globals::features::dx12NativeScene.GetDiagnostics();
-	return { { "enabled", IsEnabled() }, { "includeRasterScene", settings.IncludeRasterScene }, { "originPreview", settings.OriginPreview }, { "enableValidityChecks", settings.EnableValidityChecks }, { "captures", captures.load() },
+	return { { "enabled", IsEnabled() }, { "includeRasterScene", settings.IncludeRasterScene }, { "originPreview", settings.OriginPreview }, { "enableValidityChecks", settings.EnableValidityChecks },
+		{ "sourceBlendEnabled", settings.SourceBlendEnabled }, { "sourceBlend", settings.SourceBlend }, { "nativeIntensity", settings.NativeIntensity }, { "rasterIntensity", settings.RasterIntensity }, { "captures", captures.load() },
 		{ "lightingSubmissions", lightingSubmissions.load() }, { "shadowSubmissions", shadowSubmissions.load() },
 		{ "completedComposites", pass.CompletedComposites() }, { "acceptedPixels", pass.AcceptedPixels() },
 		{ "modifiedPixels", pass.ModifiedPixels() }, { "visualizationPixels", pass.VisualizationPixels() },
@@ -277,7 +308,9 @@ std::shared_ptr<const NativeComposite::Frame> NativeCompositeFeature::Capture(ID
 	const auto raster = shadow ? globals::features::dx12NativeScene.GetRasterFrame(a_frame) : nullptr;
 	auto frame = pass.Capture(a_device11, a_context11, a_device12, a_queue, a_source, a_frame, a_width, a_height,
 		a_transfer, lighting, shadow, raster, shadowSettings, selected.LightingStrength, selected.DirectSpatialReconstruction,
-		selectedPolicy, revision, globals::features::nativePBR.NativeFirstReadinessStage(), selected.IncludeRasterScene, selected.OriginPreview, !selected.EnableValidityChecks);
+		selectedPolicy, revision, globals::features::nativePBR.NativeFirstReadinessStage(), selected.IncludeRasterScene || selected.SourceBlendEnabled,
+		selected.OriginPreview, !selected.EnableValidityChecks,
+		{ selected.SourceBlendEnabled, selected.SourceBlend, selected.NativeIntensity, selected.RasterIntensity });
 	if (frame)
 		++captures;
 	if (frame && frame->lightingSubmitted) {

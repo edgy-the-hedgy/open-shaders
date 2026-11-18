@@ -35,6 +35,11 @@ public:
 		uint32_t specular = 1;
 		uint32_t visual = 0;
 	};
+	struct SourceBlendSettings
+	{
+		bool enabled = false;
+		float mix = 0.5f, nativeIntensity = 1.0f, rasterIntensity = 1.0f;
+	};
 	struct Frame
 	{
 		winrt::com_ptr<ID3D12Resource> color;
@@ -69,7 +74,8 @@ public:
 		const std::shared_ptr<const DX12Native::RasterFrame>& a_raster,
 		const ShadowSettings& a_shadowSettings,
 		float a_strength, bool a_directSpatialReconstruction, const Policy& a_policy, uint64_t a_revision,
-		uint32_t a_nativeReadinessStage = 0, bool a_includeRasterScene = true, bool a_originPreview = false, bool a_ignoreValidity = false);
+		uint32_t a_nativeReadinessStage = 0, bool a_includeRasterScene = true, bool a_originPreview = false, bool a_ignoreValidity = false,
+		const SourceBlendSettings& a_sourceBlend = {});
 	/** @brief Retains a frame until a downstream consumer's GPU fence completes. */
 	bool Retain(const std::shared_ptr<const Frame>& a_frame, ID3D12Fence* a_fence, uint64_t a_value);
 	/** @brief Returns a short explanation of the latest capture result. */
@@ -94,6 +100,7 @@ private:
 		winrt::com_ptr<ID3D12CommandAllocator> allocator;
 		winrt::com_ptr<ID3D12GraphicsCommandList> commands;
 		winrt::com_ptr<ID3D12DescriptorHeap> lightingDescriptors, shadowDescriptors, originDescriptors;
+		winrt::com_ptr<ID3D12DescriptorHeap> blendDescriptors;
 		winrt::com_ptr<ID3D12DescriptorHeap> clearDescriptors;
 		winrt::com_ptr<ID3D12RootSignature> shadowRoot;
 		winrt::com_ptr<ID3D12PipelineState> shadowPipeline;
@@ -101,7 +108,10 @@ private:
 		winrt::com_ptr<ID3D12PipelineState> pipeline;
 		winrt::com_ptr<ID3D12RootSignature> originRoot;
 		winrt::com_ptr<ID3D12PipelineState> originPipeline;
+		winrt::com_ptr<ID3D12RootSignature> blendRoot;
+		winrt::com_ptr<ID3D12PipelineState> blendPipeline;
 		winrt::com_ptr<ID3D12Resource> originMask;
+		winrt::com_ptr<ID3D12Resource> nativeColor;
 		winrt::com_ptr<ID3D12Resource> counters, counterReset, counterReadback;
 		SharedFence fence;
 		std::vector<std::pair<winrt::com_ptr<ID3D12Fence>, uint64_t>> consumers;
@@ -110,6 +120,7 @@ private:
 		D3D11_TEXTURE2D_DESC sourceDesc{};
 		bool supportsLighting = false;
 		bool originPreview = false;
+		bool sourceBlendEnabled = false;
 		uint64_t frameBytes = 0;
 		bool countersRead = true;
 		bool untracked = false;
@@ -117,7 +128,9 @@ private:
 	std::array<std::unique_ptr<Slot>, 4> slots;
 	winrt::com_ptr<ID3D12RootSignature> root, originRoot;
 	winrt::com_ptr<ID3D12PipelineState> pipeline, originPipeline;
-	ID3D12Device *pipelineDevice = nullptr, *shadowPipelineDevice = nullptr, *originPipelineDevice = nullptr;
+	winrt::com_ptr<ID3D12RootSignature> blendRoot;
+	winrt::com_ptr<ID3D12PipelineState> blendPipeline;
+	ID3D12Device *pipelineDevice = nullptr, *shadowPipelineDevice = nullptr, *originPipelineDevice = nullptr, *blendPipelineDevice = nullptr;
 	winrt::com_ptr<ID3D12RootSignature> shadowRoot;
 	winrt::com_ptr<ID3D12PipelineState> shadowPipeline;
 	std::atomic<uint64_t> completedComposites{ 0 }, acceptedPixels{ 0 }, modifiedPixels{ 0 }, visualizationPixels{ 0 }, counterReadFailures{ 0 };
@@ -126,6 +139,7 @@ private:
 	bool InitializeLighting(ID3D12Device* a_device);
 	bool InitializeShadow(ID3D12Device* a_device);
 	bool InitializeOriginPreview(ID3D12Device* a_device);
+	bool InitializeSourceBlend(ID3D12Device* a_device);
 	std::string status = "Not captured";
 	std::string shadowStatus = "Independent shadow layer not captured";
 	std::string shadowPipelineFailure;

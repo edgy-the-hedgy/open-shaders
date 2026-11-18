@@ -81,7 +81,7 @@ bool NativeComposite::InitializeLighting(ID3D12Device* a_device)
 		CD3DX12_ROOT_PARAMETER parameters[3];
 		parameters[0].InitAsDescriptorTable(1, &ranges[0]);
 		parameters[1].InitAsDescriptorTable(1, &ranges[1]);
-		parameters[2].InitAsConstants(44, 0);
+		parameters[2].InitAsConstants(45, 0);
 		const CD3DX12_ROOT_SIGNATURE_DESC desc(3, parameters);
 		winrt::com_ptr<ID3DBlob> serialized, errors;
 		DX::ThrowIfFailed(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, serialized.put(), errors.put()));
@@ -142,6 +142,47 @@ bool NativeComposite::InitializeOriginPreview(ID3D12Device* a_device)
 	}
 }
 
+bool NativeComposite::InitializeSourceBlend(ID3D12Device* a_device)
+{
+	if (blendPipeline && blendPipelineDevice == a_device)
+		return true;
+	try {
+		std::ifstream file("Data/Shaders/NativeComposite/BlendSources.dxil", std::ios::binary | std::ios::ate);
+		if (!file)
+			return false;
+		const auto size = file.tellg();
+		if (size <= 0 || size > 16 * 1024 * 1024)
+			return false;
+		std::vector<char> shader(static_cast<size_t>(size));
+		file.seekg(0);
+		if (!file.read(shader.data(), size))
+			return false;
+		CD3DX12_DESCRIPTOR_RANGE ranges[2];
+		ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+		ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
+		CD3DX12_ROOT_PARAMETER parameters[3];
+		parameters[0].InitAsDescriptorTable(1, &ranges[0]);
+		parameters[1].InitAsDescriptorTable(1, &ranges[1]);
+		parameters[2].InitAsConstants(7, 0);
+		const CD3DX12_ROOT_SIGNATURE_DESC desc(3, parameters);
+		winrt::com_ptr<ID3DBlob> serialized, errors;
+		DX::ThrowIfFailed(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, serialized.put(), errors.put()));
+		winrt::com_ptr<ID3D12RootSignature> newRoot;
+		DX::ThrowIfFailed(a_device->CreateRootSignature(0, serialized->GetBufferPointer(), serialized->GetBufferSize(), IID_PPV_ARGS(newRoot.put())));
+		D3D12_COMPUTE_PIPELINE_STATE_DESC pso{};
+		pso.pRootSignature = newRoot.get();
+		pso.CS = { shader.data(), shader.size() };
+		winrt::com_ptr<ID3D12PipelineState> newPipeline;
+		DX::ThrowIfFailed(a_device->CreateComputePipelineState(&pso, IID_PPV_ARGS(newPipeline.put())));
+		blendRoot = std::move(newRoot);
+		blendPipeline = std::move(newPipeline);
+		blendPipelineDevice = a_device;
+		return true;
+	} catch (...) {
+		return false;
+	}
+}
+
 std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Device5* a_device11, ID3D11DeviceContext4* a_context11,
 	ID3D12Device* a_device12, ID3D12CommandQueue* a_queue, ID3D11Texture2D* a_source,
 	uint32_t a_frame, uint32_t a_width, uint32_t a_height, Transfer a_transfer,
@@ -150,7 +191,8 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 	const std::shared_ptr<const DX12Native::RasterFrame>& a_raster,
 	const ShadowSettings& a_shadowSettings,
 	float a_strength, bool a_directSpatialReconstruction, const Policy& a_policy, uint64_t a_revision,
-	uint32_t a_nativeReadinessStage, bool a_includeRasterScene, bool a_originPreview, bool a_ignoreValidity)
+	uint32_t a_nativeReadinessStage, bool a_includeRasterScene, bool a_originPreview, bool a_ignoreValidity,
+	const SourceBlendSettings& a_sourceBlend)
 {
 	CS_GPU_PASS("NativeComposite::RasterPassThrough");
 	status = "Invalid capture input";
@@ -184,6 +226,10 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 	}
 	const bool supportsLighting = (support.Support1 & D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW) &&
 	                              (support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD) && (support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE);
+	if (a_sourceBlend.enabled && (!supportsLighting || !InitializeSourceBlend(a_device12))) {
+		status = "Source blending requires typed scene UAV load/store and BlendSources.dxil";
+		return {};
+	}
 	if (a_originPreview && !supportsLighting) {
 		status = "Origin preview needs a scene format with DX12 typed UAV load/store";
 		return {};
@@ -297,7 +343,8 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 	try {
 		const bool recreate = !slot->frame || slot->device != a_device12 || slot->device11 != a_device11 ||
 		                      slot->sourceDesc.Width != desc.Width || slot->sourceDesc.Height != desc.Height || slot->sourceDesc.Format != desc.Format ||
-		                      slot->supportsLighting != supportsLighting || slot->originPreview != a_originPreview;
+		                      slot->supportsLighting != supportsLighting || slot->originPreview != a_originPreview ||
+		                      slot->sourceBlendEnabled != a_sourceBlend.enabled;
 		if (recreate) {
 			// Reserve two full-size images: one DX11/DX12 shared input and
 			// one DX12-owned composited output. Guard incremental slot growth
@@ -305,12 +352,13 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			const auto allocationDesc = CD3DX12_RESOURCE_DESC::Tex2D(desc.Format, desc.Width, desc.Height, 1, 1, 1, 0,
 				supportsLighting ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE);
 			const auto allocation = a_device12->GetResourceAllocationInfo(0, 1, &allocationDesc).SizeInBytes;
-			if (allocation == UINT64_MAX || allocation > (UINT64_MAX - 2ull * 1024 * 1024) / 2)
+			const uint64_t imageCount = a_sourceBlend.enabled ? 3ull : 2ull;
+			if (allocation == UINT64_MAX || allocation > (UINT64_MAX - 2ull * 1024 * 1024) / imageCount)
 				throw std::runtime_error("Composite allocation size unsupported");
 			const auto originDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32_UINT, desc.Width, desc.Height, 1, 1, 1, 0,
 				D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 			const uint64_t originAllocation = a_originPreview ? a_device12->GetResourceAllocationInfo(0, 1, &originDesc).SizeInBytes : 0;
-			const uint64_t baseRequired = allocation * 2 + 2ull * 1024 * 1024;
+			const uint64_t baseRequired = allocation * imageCount + 2ull * 1024 * 1024;
 			if (originAllocation == UINT64_MAX || originAllocation > UINT64_MAX - baseRequired)
 				throw std::runtime_error("Composite origin-preview allocation size unsupported");
 			const uint64_t required = baseRequired + originAllocation;
@@ -334,6 +382,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			replacement->sourceDesc = desc;
 			replacement->supportsLighting = supportsLighting;
 			replacement->originPreview = a_originPreview;
+			replacement->sourceBlendEnabled = a_sourceBlend.enabled;
 			auto sharedDesc = desc;
 			sharedDesc.Usage = D3D11_USAGE_DEFAULT;
 			sharedDesc.BindFlags = 0;
@@ -350,6 +399,11 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			DX::ThrowIfFailed(a_device12->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &texture,
 				D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(replacement->frame->color.put())));
 			replacement->frame->color->SetName(L"NativeComposite::FinalSceneDX12");
+			if (a_sourceBlend.enabled) {
+				DX::ThrowIfFailed(a_device12->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &texture,
+					D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(replacement->nativeColor.put())));
+				replacement->nativeColor->SetName(L"NativeComposite::NativeSourceColor");
+			}
 			D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
 			heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 			heapDesc.NumDescriptors = 1;
@@ -362,6 +416,10 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			srv.Texture2D.MipLevels = 1;
 			a_device12->CreateShaderResourceView(replacement->frame->color.get(), &srv, replacement->frame->descriptors->GetCPUDescriptorHandleForHeapStart());
 			if (supportsLighting) {
+				if (a_sourceBlend.enabled) {
+					heapDesc.NumDescriptors = 2;
+					DX::ThrowIfFailed(a_device12->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(replacement->blendDescriptors.put())));
+				}
 				heapDesc.NumDescriptors = 3;
 				DX::ThrowIfFailed(a_device12->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(replacement->shadowDescriptors.put())));
 				heapDesc.NumDescriptors = 1;
@@ -424,7 +482,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			const std::array endBarriers{
 				CD3DX12_RESOURCE_BARRIER::Transition(slot->shared->resource.get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON),
 				CD3DX12_RESOURCE_BARRIER::Transition(slot->frame->color.get(), D3D12_RESOURCE_STATE_COPY_DEST,
-					(blend && !shadowBeforeLighting) ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : D3D12_RESOURCE_STATE_COMMON)
+					(blend && !shadowBeforeLighting && !a_sourceBlend.enabled) ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : D3D12_RESOURCE_STATE_COMMON)
 			};
 			slot->commands->ResourceBarrier(static_cast<UINT>(endBarriers.size()), endBarriers.data());
 		} else {
@@ -438,7 +496,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			const float black[]{ 0.0f, 0.0f, 0.0f, 1.0f };
 			slot->commands->ClearUnorderedAccessViewFloat(gpu, slot->clearDescriptors->GetCPUDescriptorHandleForHeapStart(),
 				slot->frame->color.get(), black, 0, nullptr);
-			if (!blend || shadowBeforeLighting) {
+			if (!blend || shadowBeforeLighting || a_sourceBlend.enabled) {
 				const auto clearEnd = CD3DX12_RESOURCE_BARRIER::Transition(slot->frame->color.get(),
 					D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
 				slot->commands->ResourceBarrier(1, &clearEnd);
@@ -505,9 +563,9 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 		if (shadowBeforeLighting)
 			recordShadow();
 		if (blend) {
-			if (shadowBeforeLighting) {
+			if (shadowBeforeLighting || a_sourceBlend.enabled) {
 				// Shadow pass resolved the raster back to COMMON before native direct lighting.
-				const auto startDirect = CD3DX12_RESOURCE_BARRIER::Transition(slot->frame->color.get(),
+				const auto startDirect = CD3DX12_RESOURCE_BARRIER::Transition(a_sourceBlend.enabled ? slot->nativeColor.get() : slot->frame->color.get(),
 					D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 				slot->commands->ResourceBarrier(1, &startDirect);
 			}
@@ -532,7 +590,7 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
 			uav.Format = desc.Format;
 			uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-			a_device12->CreateUnorderedAccessView(slot->frame->color.get(), nullptr, &uav, cpu);
+			a_device12->CreateUnorderedAccessView(a_sourceBlend.enabled ? slot->nativeColor.get() : slot->frame->color.get(), nullptr, &uav, cpu);
 			cpu.ptr += step;
 			D3D12_UNORDERED_ACCESS_VIEW_DESC counterUav{};
 			counterUav.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
@@ -574,13 +632,15 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 				uint32_t nativeReadinessStage;
 				uint32_t originPreview;
 				uint32_t ignoreValidity;
+				uint32_t blendSourcesEnabled;
 			};
-			static_assert(sizeof(Constants) == 44 * sizeof(uint32_t));
+			static_assert(sizeof(Constants) == 45 * sizeof(uint32_t));
 			const auto& camera = a_lighting->scene.raster->camera;
 			const Constants constants{ a_width, a_height, a_strength, a_transfer == Transfer::LegacyScene ? 1u : 0u, a_policy.diffuse, a_policy.specular, a_originPreview ? 0u : a_policy.visual,
 				a_directSpatialReconstruction && a_lighting->traceDensityMode != 0u ? 1u : 0u, camera.CameraProjInverse, camera.CameraViewInverse,
-				recordCounters ? 1u : 0u, std::min(a_nativeReadinessStage, 3u), a_originPreview ? 1u : 0u, a_ignoreValidity ? 1u : 0u };
-			slot->commands->SetComputeRoot32BitConstants(2, 44, &constants, 0);
+				recordCounters ? 1u : 0u, std::min(a_nativeReadinessStage, 3u), a_originPreview ? 1u : 0u, a_ignoreValidity ? 1u : 0u,
+				a_sourceBlend.enabled ? 1u : 0u };
+			slot->commands->SetComputeRoot32BitConstants(2, 45, &constants, 0);
 			slot->commands->Dispatch((a_width + 7) / 8, (a_height + 7) / 8, 1);
 			if (recordCounters) {
 				const auto counterEnd = CD3DX12_RESOURCE_BARRIER::Transition(slot->counters.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -595,12 +655,62 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			for (size_t i = 0; i < resources.size(); ++i)
 				lightingBarriers[i] = CD3DX12_RESOURCE_BARRIER::Transition(resources[i], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
 			slot->commands->ResourceBarrier(static_cast<UINT>(lightingBarriers.size()), lightingBarriers.data());
-			const auto outputBarrier = CD3DX12_RESOURCE_BARRIER::Transition(slot->frame->color.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+			const auto outputBarrier = CD3DX12_RESOURCE_BARRIER::Transition(a_sourceBlend.enabled ? slot->nativeColor.get() : slot->frame->color.get(),
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
 			slot->commands->ResourceBarrier(1, &outputBarrier);
 			if (a_originPreview) {
 				const auto ownershipEnd = CD3DX12_RESOURCE_BARRIER::Transition(slot->originMask.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
 				slot->commands->ResourceBarrier(1, &ownershipEnd);
 			}
+		}
+		if (a_sourceBlend.enabled) {
+			// The raster scene and native result remained independent until this
+			// pre-upscaler operation; neither source is overwritten prematurely.
+			slot->blendRoot = blendRoot;
+			slot->blendPipeline = blendPipeline;
+			const auto step = a_device12->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+			auto cpu = slot->blendDescriptors->GetCPUDescriptorHandleForHeapStart();
+			D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+			srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+			srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			srv.Texture2D.MipLevels = 1;
+			srv.Format = desc.Format;
+			a_device12->CreateShaderResourceView(slot->nativeColor.get(), &srv, cpu);
+			cpu.ptr += step;
+			D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+			uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+			uav.Format = desc.Format;
+			a_device12->CreateUnorderedAccessView(slot->frame->color.get(), nullptr, &uav, cpu);
+			const std::array start{
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->nativeColor.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->frame->color.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+			};
+			slot->commands->ResourceBarrier(static_cast<UINT>(start.size()), start.data());
+			ID3D12DescriptorHeap* heaps[]{ slot->blendDescriptors.get() };
+			slot->commands->SetDescriptorHeaps(1, heaps);
+			slot->commands->SetPipelineState(slot->blendPipeline.get());
+			slot->commands->SetComputeRootSignature(slot->blendRoot.get());
+			auto gpu = slot->blendDescriptors->GetGPUDescriptorHandleForHeapStart();
+			slot->commands->SetComputeRootDescriptorTable(0, gpu);
+			gpu.ptr += step;
+			slot->commands->SetComputeRootDescriptorTable(1, gpu);
+			struct BlendConstants
+			{
+				uint32_t width, height;
+				float nativeMix, nativeIntensity, rasterIntensity;
+				uint32_t legacyTransfer, hasNative;
+			};
+			static_assert(sizeof(BlendConstants) == 7 * sizeof(uint32_t));
+			const BlendConstants constants{ a_width, a_height, std::clamp(a_sourceBlend.mix, 0.0f, 1.0f),
+				std::max(0.0f, a_sourceBlend.nativeIntensity), std::max(0.0f, a_sourceBlend.rasterIntensity),
+				a_transfer == Transfer::LegacyScene ? 1u : 0u, blend ? 1u : 0u };
+			slot->commands->SetComputeRoot32BitConstants(2, 7, &constants, 0);
+			slot->commands->Dispatch((a_width + 7) / 8, (a_height + 7) / 8, 1);
+			const std::array end{
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->nativeColor.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->frame->color.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON)
+			};
+			slot->commands->ResourceBarrier(static_cast<UINT>(end.size()), end.data());
 		}
 		if (applyShadow && !shadowBeforeLighting)
 			recordShadow();
