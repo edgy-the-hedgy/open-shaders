@@ -227,7 +227,7 @@ TEST_CASE("Native snow DDS lookup uses existing page descriptors without allocat
 	SnowTextureReference texture;
 	texture.canonicalPath = "textures/snow/surface.dds";
 	texture.srgb = true;
-	const std::unordered_map<std::string, uint64_t> sources{ { "textures/snow/surface.dds", 123 } };
+	const std::unordered_map<std::string, uint64_t> sources{ { DX12Native::MaterialTextureLookupKey("textures/snow/surface.dds"), 123 } };
 	const std::unordered_map<uint64_t, std::array<uint32_t, 2>> logical{ { 123, { 5, 9 } } };
 	const auto color = FindSnowTextureLocation(texture, sources, logical, 6);
 	REQUIRE(color);

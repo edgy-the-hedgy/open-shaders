@@ -2,6 +2,7 @@
 #include "Features/NativePBR/GpuMaterialResidency.h"
 #include "Features/NativePBR/GpuMaterialResources.h"
 #include "Features/NativePBR/RayMaterialBindings.h"
+#include "Features/NativePBR/NativeSnowTextureResidency.h"
 #include <catch2/catch_test_macros.hpp>
 
 TEST_CASE("NativePBR GPU material ABI preserves all seven texture roles", "[NativePBR][gpu-material]")
@@ -208,6 +209,7 @@ TEST_CASE("NativePBR ray bindings follow the exact scene and resident material g
 	observed.materialIdentity = 42;
 	observed.properties.opacity = InstanceProperties::Opacity::Opaque;
 	observed.properties.normalMode = InstanceProperties::NormalMode::TangentSpace;
+	observed.properties.snow.nifFlags = kSnowNifFlag;
 	DX12Native::Instance instance;
 	instance.identity = 100;
 	instance.preparedIdentity.referenceKey = "Ref";
@@ -236,6 +238,29 @@ TEST_CASE("NativePBR ray bindings follow the exact scene and resident material g
 	CHECK((bound->instances[0].identity == std::array<uint32_t, 2>{ 42, 0 }));
 	CHECK((bound->instances[0].revision == std::array<uint32_t, 2>{ 7, 0 }));
 	CHECK(bound->instances[0].flags == (kGpuDrawUsesVertexColor | kGpuDrawPreparedOpaque));
+	const auto snow = BindNativeSnowTextureResidency(PrepareNativeSnowPublication(prepared), gpu);
+	REQUIRE(snow);
+	const auto snowy = PrepareRayMaterialBindings(prepared, gpu, false, true, snow, 11);
+	REQUIRE(snowy);
+	CHECK(snowy->snowIdentityRevision == 11);
+	CHECK(snowy->ordinarySnow == 1);
+	CHECK(snowy->instances[0].flags == (kGpuDrawUsesVertexColor | kGpuDrawPreparedOpaque | kGpuDrawSnowOrdinary));
+	auto conflictingSnow = std::make_shared<NativeSnowPublication>(*snow);
+	conflictingSnow->instances[0].status = SnowInputStatus::AmbiguousInstance;
+	const auto ambiguous = PrepareRayMaterialBindings(prepared, gpu, false, true, conflictingSnow, 12);
+	REQUIRE(ambiguous);
+	CHECK(ambiguous->ordinarySnow == 0);
+	CHECK((ambiguous->instances[0].flags & kGpuDrawSnowOrdinary) == 0);
+	auto staleSnow = std::make_shared<NativeSnowPublication>(*snow);
+	++staleSnow->sceneRevision;
+	const auto stale = PrepareRayMaterialBindings(prepared, gpu, false, true, staleSnow, 13);
+	REQUIRE(stale);
+	CHECK((stale->instances[0].flags & kGpuDrawSnowOrdinary) == 0);
+	auto projectedSnow = std::make_shared<NativeSnowPublication>(*snow);
+	projectedSnow->instances[0].classification |= SnowProjected;
+	const auto projected = PrepareRayMaterialBindings(prepared, gpu, false, true, projectedSnow, 14);
+	REQUIRE(projected);
+	CHECK((projected->instances[0].flags & kGpuDrawSnowOrdinary) == 0);
 	gpu->entries[0].availability = GpuMaterialAvailability::PartiallyResident;
 	const auto partial = PrepareRayMaterialBindings(prepared, gpu);
 	REQUIRE(partial);

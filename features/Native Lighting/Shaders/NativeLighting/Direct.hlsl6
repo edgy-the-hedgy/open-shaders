@@ -237,6 +237,8 @@ void main(uint2 pixel : SV_DispatchThreadID)
 		Count(29);
 	const bool nativeMaterialValid = LoadNativePBRMaterial(instance, primitive, query.CommittedTriangleBarycentrics(),
 		query.CommittedObjectToWorld3x4(), query.CommittedWorldToObject3x4(), footprint, -direction, material, nativePbrUsedFallback, nativeClearcoat);
+	const bool ordinarySnow = nativeMaterialValid &&
+		(NativePBRInstances[instance].flags & NativePBR::DrawSnowOrdinaryFlag) != 0u;
 	if (nativeMaterialValid)
 		Count(28);
 	if (nativeMaterialValid && preparedOpaque && !rasterOccludesNative)
@@ -352,7 +354,7 @@ void main(uint2 pixel : SV_DispatchThreadID)
 		float3 irradiance = light.radianceSourceRadius.rgb * attenuation * ndotl * shadowVisibility;
 		float3 diffuseResponse = (1 - material.metallic) * material.baseColor *
 			(NormalInfluence == 0u ? 1.0f : (1 - fresnel)) * BRDF::Diffuse_Lambert();
-		if (NormalInfluence != 0u && nativeClearcoat.x > 0.0f) {
+		if (NormalInfluence != 0u && nativeClearcoat.x > 0.0f && !ordinarySnow) {
 			float3 coatFresnel;
 			float3 coatSpecular = PBR::SpecularMicrofacet(nativeClearcoat.y, nativeClearcoat.z.xxx,
 				max(ndotl, 1e-5f), saturate(abs(dot(n, v)) + 1e-5f), saturate(dot(n, h)),
@@ -362,7 +364,7 @@ void main(uint2 pixel : SV_DispatchThreadID)
 			microfacet = microfacet * layerAttenuation + coatSpecular * nativeClearcoat.x;
 		}
 		if (EnabledLobes & 1u) diffuse += diffuseResponse * irradiance;
-		if ((EnabledLobes & 2u) && NormalInfluence != 0u) specular += microfacet * irradiance;
+		if ((EnabledLobes & 2u) && NormalInfluence != 0u && !ordinarySnow) specular += microfacet * irradiance;
 	}
 	if (strictVisibilityRejected && originalReason == 0) originalReason = 7;
 	if (eligibleLights == 0 && NativePBRPadding.x == 0u) { Finish(pixel, 0, 0, originalReason == 0 ? 6 : originalReason); return; }

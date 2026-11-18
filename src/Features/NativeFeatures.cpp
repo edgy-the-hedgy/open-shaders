@@ -520,9 +520,14 @@ void NativePBRFeature::Prepass()
 	const auto previous = rayMaterialBindings.load(std::memory_order_acquire);
 	const bool forceAdmission = forceRayAdmission.load(std::memory_order_relaxed);
 	const bool requireParallax = nativeParallax.load(std::memory_order_relaxed);
+	const auto snowIdentityRevision = publishedSnowObservations ? publishedSnowObservations->identityRevision : 0;
+	const auto currentSnow = nativeSnowPublication.load(std::memory_order_acquire);
+	const auto snowEpoch = currentSnow ? currentSnow->observationEpoch : 0;
 	if (!previous || previous->prepared != prepared || previous->materials != materials ||
-		previous->forcedAdmission != forceAdmission || previous->parallaxRequired != requireParallax)
-		rayMaterialBindings.store(NativePBR::PrepareRayMaterialBindings(prepared, materials, forceAdmission, requireParallax), std::memory_order_release);
+		previous->forcedAdmission != forceAdmission || previous->parallaxRequired != requireParallax ||
+		previous->snowIdentityRevision != snowIdentityRevision || previous->snowObservationEpoch != snowEpoch)
+		rayMaterialBindings.store(NativePBR::PrepareRayMaterialBindings(prepared, materials, forceAdmission,
+			requireParallax, currentSnow, snowIdentityRevision), std::memory_order_release);
 }
 
 void NativePBRFeature::OnSceneTransitionReset(bool)
@@ -1240,6 +1245,7 @@ json NativePBRFeature::GetDiagnostics()
 		{ "rayMaterialBindings", { { "published", bool(rayBindings) },
 			{ "forcedAdmission", forceRayAdmission.load(std::memory_order_relaxed) },
 			{ "eligible", rayBindings ? rayBindings->eligible : 0 },
+			{ "ordinarySnow", rayBindings ? rayBindings->ordinarySnow : 0 },
 			{ "unsupported", rayBindings ? rayBindings->unsupported : 0 },
 			{ "unavailable", rayBindings ? rayBindings->unavailable : 0 } } },
 		{ "gpuMaterialFailure", materialWorker ? materialWorker->gpu.Failure() : std::string{} },
