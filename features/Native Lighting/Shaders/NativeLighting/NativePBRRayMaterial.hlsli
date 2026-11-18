@@ -119,26 +119,27 @@ bool NativePBRParallaxUV(NativePBR::MaterialRecord material, TriangleSurface hit
 	return all(isfinite(uv));
 }
 
-bool LoadNativePBRMaterial(uint instance, uint primitive, float2 barycentric,
-	float3x4 objectToWorld, float3x4 worldToObject, float footprint, float3 viewDirectionWS, out EvaluatedSourceMaterial evaluated,
-	out bool usedFallback, out float3 clearcoat)
+struct NativePBRHitUV
 {
-	evaluated = (EvaluatedSourceMaterial)0;
-	usedFallback = false;
-	clearcoat = 0.0f;
-	if (NativePBRReady == 0u || instance >= InstanceCount)
-		return false;
-	NativePBRRayBinding binding = NativePBRInstances[instance];
-	if (binding.materialIndex == 0xffffffffu)
-		return false;
-	NativePBR::MaterialRecord material = NativePBRRecords[binding.materialIndex];
-	if (any(material.identity.xy != binding.identity) || any(material.identity.zw != binding.revision))
-		return false;
-	TriangleSurface hitSurface;
-	if (!LoadTriangle(instance, primitive, barycentric, hitSurface))
-		return false;
+	float2 originalUV;
+	float2 transformedUV;
+	float2 finalUV;
+	float explicitLOD;
+	bool complexMaskDetected;
+	bool parallaxApplied;
+	bool complexHeightApplied;
+};
+
+bool ResolveNativePBRHitUV(inout NativePBR::MaterialRecord material, TriangleSurface hitSurface,
+	float3x4 objectToWorld, float3x4 worldToObject, float footprint, float3 viewDirectionWS,
+	out NativePBRHitUV resolved)
+{
+	resolved = (NativePBRHitUV)0;
+	resolved.originalUV = hitSurface.uv;
 	float2 uv = hitSurface.uv * material.uv[0].zw + material.uv[0].xy;
 	float lod = NativePBRLod(material, hitSurface, objectToWorld, footprint);
+	resolved.transformedUV = uv;
+	resolved.explicitLOD = lod;
 	if (!all(isfinite(uv)) || !isfinite(lod))
 		return false;
 	const bool enableParallax = (NativePBRMaterialOptions & NativePBR::MaterialOptionParallax) != 0u;
@@ -164,6 +165,7 @@ bool LoadNativePBRMaterial(uint instance, uint primitive, float2 barycentric,
 		if (!NativePBRParallaxUV(material, hitSurface, objectToWorld, worldToObject, viewDirectionWS,
 			material.textures[2].xy, 0u, lod, uv))
 			return false;
+		resolved.parallaxApplied = true;
 	} else if (enableParallax && legacyComplex && complexMaskDetected) {
 		float4 originalMask;
 		if (!SampleNativePBR(material.textures[1].xy, material.properties.z, uv, lod, originalMask))
@@ -173,7 +175,40 @@ bool LoadNativePBRMaterial(uint instance, uint primitive, float2 barycentric,
 			!NativePBRParallaxUV(material, hitSurface, objectToWorld, worldToObject, viewDirectionWS,
 				material.textures[1].xy, 3u, lod, uv))
 			return false;
+		if (originalMask.a > epsilon && originalMask.a < 1.0f - epsilon) {
+			resolved.parallaxApplied = true;
+			resolved.complexHeightApplied = true;
+		}
 	}
+	resolved.finalUV = uv;
+	resolved.complexMaskDetected = complexMaskDetected;
+	return true;
+}
+
+bool LoadNativePBRMaterial(uint instance, uint primitive, float2 barycentric,
+	float3x4 objectToWorld, float3x4 worldToObject, float footprint, float3 viewDirectionWS, out EvaluatedSourceMaterial evaluated,
+	out bool usedFallback, out float3 clearcoat)
+{
+	evaluated = (EvaluatedSourceMaterial)0;
+	usedFallback = false;
+	clearcoat = 0.0f;
+	if (NativePBRReady == 0u || instance >= InstanceCount)
+		return false;
+	NativePBRRayBinding binding = NativePBRInstances[instance];
+	if (binding.materialIndex == 0xffffffffu)
+		return false;
+	NativePBR::MaterialRecord material = NativePBRRecords[binding.materialIndex];
+	if (any(material.identity.xy != binding.identity) || any(material.identity.zw != binding.revision))
+		return false;
+	TriangleSurface hitSurface;
+	if (!LoadTriangle(instance, primitive, barycentric, hitSurface))
+		return false;
+	NativePBRHitUV hitUV;
+	if (!ResolveNativePBRHitUV(material, hitSurface, objectToWorld, worldToObject, footprint, viewDirectionWS, hitUV))
+		return false;
+	const float2 uv = hitUV.finalUV;
+	const float lod = hitUV.explicitLOD;
+	const bool complexMaskDetected = hitUV.complexMaskDetected;
 	float4 base, normal, packed, emission = 0.0f;
 	const bool baseReady = SampleNativePBR(material.textures[0].xy, material.properties.z, uv, lod, base);
 	if (!baseReady && NativePBRPadding.y == 0u) return false;

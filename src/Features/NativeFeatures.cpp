@@ -1214,6 +1214,7 @@ json NativePBRFeature::GetDiagnostics()
 			{ "ordinary", snow ? snow->ordinary : 0 }, { "baseObject", snow ? snow->baseObject : 0 },
 			{ "projected", snow ? snow->projected : 0 }, { "landscape", snow ? snow->landscape : 0 },
 			{ "observed", snow ? snow->observed : 0 }, { "nifOnly", snow ? snow->nifOnly : 0 },
+			{ "projectionCoverageReady", snow ? snow->coverageProjectionReady : 0 },
 			{ "completeProjection", snow ? snow->completeProjection : 0 },
 			{ "unresolvedProjection", snow ? snow->incompleteProjection : 0 },
 			{ "missingProjectionDirection", snow ? snow->missingProjectionDirection : 0 },

@@ -60,6 +60,12 @@ namespace NativePBR
 			a_projection.projectedUVParams2 && a_projection.projectedUVParams3;
 	}
 
+	/** @brief Material layering also requires the shader's original projected tint/scale. */
+	inline bool SnowProjectionMaterialReady(const NativeSnowProjection& a_projection)
+	{
+		return SnowProjectionCoverageReady(a_projection) && a_projection.materialObjectRGBScale.has_value();
+	}
+
 	/** @brief Per-layer terrain snow remains unknown until landscape shader inputs are captured. */
 	struct NativeLandscapeSnow
 	{
@@ -88,7 +94,8 @@ namespace NativePBR
 		std::shared_ptr<const GpuMaterialResources> gpuMaterials;
 		std::vector<NativeSnowInstance> instances;
 		uint32_t sceneInstances = 0, ordinary = 0, baseObject = 0, projected = 0, landscape = 0;
-		uint32_t observed = 0, nifOnly = 0, completeProjection = 0, incompleteProjection = 0;
+		uint32_t observed = 0, nifOnly = 0, coverageProjectionReady = 0;
+		uint32_t completeProjection = 0, incompleteProjection = 0;
 		uint32_t missingProjectionDirection = 0, missingProjectionParameters = 0, ambiguous = 0, missing = 0;
 		uint32_t projectedTexturesResolved = 0, projectedTexturesUnresolved = 0;
 		uint32_t textureSetsResident = 0, textureSetsPartial = 0, textureSetsUnavailable = 0;
@@ -194,17 +201,19 @@ namespace NativePBR
 			}
 			snow.status = ClassifySnowInput(snow.classification, snow.source.renderPassDescriptor.has_value(),
 				snow.source.conflictingPasses || binding.material.status == MaterialLookupStatus::AmbiguousInstance,
-				bool(binding.material), SnowProjectionCoverageReady(snow.projection));
+				bool(binding.material), SnowProjectionMaterialReady(snow.projection));
 			result->ordinary += (snow.classification & SnowOrdinary) != 0;
 			result->baseObject += (snow.classification & SnowBaseObject) != 0;
 			result->projected += (snow.classification & SnowProjected) != 0;
 			if ((snow.classification & SnowProjected) != 0) {
-				result->completeProjection += SnowProjectionCoverageReady(snow.projection);
-				result->incompleteProjection += !SnowProjectionCoverageReady(snow.projection);
+				result->coverageProjectionReady += SnowProjectionCoverageReady(snow.projection);
+				result->completeProjection += SnowProjectionMaterialReady(snow.projection);
+				result->incompleteProjection += !SnowProjectionMaterialReady(snow.projection);
 				result->missingProjectionDirection += !snow.projection.direction ||
 					snow.projection.coordinateSpace == SnowProjectionSpace::Unresolved;
 				result->missingProjectionParameters += !snow.projection.projectedUVParams ||
-					!snow.projection.projectedUVParams2 || !snow.projection.projectedUVParams3;
+					!snow.projection.projectedUVParams2 || !snow.projection.projectedUVParams3 ||
+					!snow.projection.materialObjectRGBScale;
 				result->projectedTexturesUnresolved += uint32_t(snow.projection.textures.size());
 				++result->textureSetsUnavailable;
 			}

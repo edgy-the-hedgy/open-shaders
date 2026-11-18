@@ -68,6 +68,9 @@ TEST_CASE("Native snow coverage readiness requires an original projection direct
 	CHECK_FALSE(SnowProjectionCoverageReady(projection));
 	projection.projectedUVParams3 = std::array<float, 4>{};
 	CHECK(SnowProjectionCoverageReady(projection));
+	CHECK_FALSE(SnowProjectionMaterialReady(projection));
+	projection.materialObjectRGBScale = std::array<float, 4>{};
+	CHECK(SnowProjectionMaterialReady(projection));
 	CHECK(ClassifySnowInput(SnowProjected, true, false, true, true) == SnowInputStatus::Observed);
 	CHECK(ClassifySnowInput(SnowProjected, true, false, true, false) == SnowInputStatus::UnresolvedProjection);
 }
