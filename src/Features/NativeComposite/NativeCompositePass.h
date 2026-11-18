@@ -6,6 +6,7 @@
 #include <array>
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <vector>
 
 /** @brief Copies the completed raster scene into a DX12-owned frame. */
@@ -118,6 +119,7 @@ private:
 		winrt::com_ptr<ID3D12DescriptorHeap> lightingDescriptors, shadowDescriptors, originDescriptors;
 		winrt::com_ptr<ID3D12DescriptorHeap> blendDescriptors;
 		winrt::com_ptr<ID3D12DescriptorHeap> nativeDepthDescriptors;
+		winrt::com_ptr<ID3D12DescriptorHeap> nativeMotionDescriptors;
 		winrt::com_ptr<ID3D12DescriptorHeap> clearDescriptors;
 		winrt::com_ptr<ID3D12RootSignature> shadowRoot;
 		winrt::com_ptr<ID3D12PipelineState> shadowPipeline;
@@ -127,9 +129,12 @@ private:
 		winrt::com_ptr<ID3D12PipelineState> originPipeline;
 		winrt::com_ptr<ID3D12RootSignature> blendRoot;
 		winrt::com_ptr<ID3D12PipelineState> blendPipeline;
+		winrt::com_ptr<ID3D12RootSignature> depthRoot, motionRoot;
+		winrt::com_ptr<ID3D12PipelineState> depthPipeline, motionPipeline;
 		winrt::com_ptr<ID3D12Resource> originMask;
 		winrt::com_ptr<ID3D12Resource> nativeColor;
 		winrt::com_ptr<ID3D12Resource> nativeDepth, nativeDepthCoverage;
+		winrt::com_ptr<ID3D12Resource> nativeMotion, nativeMotionCoverage;
 		std::shared_ptr<const DX12Native::TopLevel> nativeDepthScene;
 		winrt::com_ptr<ID3D12Resource> counters, counterReset, counterReadback;
 		SharedFence fence;
@@ -141,6 +146,7 @@ private:
 		bool originPreview = false;
 		bool sourceBlendEnabled = false;
 		bool nativeDepthEnabled = false;
+		bool nativeMotionEnabled = false;
 		uint64_t frameBytes = 0;
 		bool countersRead = true;
 		bool untracked = false;
@@ -152,7 +158,9 @@ private:
 	winrt::com_ptr<ID3D12PipelineState> blendPipeline;
 	winrt::com_ptr<ID3D12RootSignature> nativeDepthRoot;
 	winrt::com_ptr<ID3D12PipelineState> nativeDepthPipeline;
-	ID3D12Device *pipelineDevice = nullptr, *shadowPipelineDevice = nullptr, *originPipelineDevice = nullptr, *blendPipelineDevice = nullptr, *nativeDepthPipelineDevice = nullptr;
+	winrt::com_ptr<ID3D12RootSignature> nativeMotionRoot;
+	winrt::com_ptr<ID3D12PipelineState> nativeMotionPipeline;
+	ID3D12Device *pipelineDevice = nullptr, *shadowPipelineDevice = nullptr, *originPipelineDevice = nullptr, *blendPipelineDevice = nullptr, *nativeDepthPipelineDevice = nullptr, *nativeMotionPipelineDevice = nullptr;
 	winrt::com_ptr<ID3D12RootSignature> shadowRoot;
 	winrt::com_ptr<ID3D12PipelineState> shadowPipeline;
 	std::atomic<uint64_t> completedComposites{ 0 }, acceptedPixels{ 0 }, modifiedPixels{ 0 }, visualizationPixels{ 0 }, counterReadFailures{ 0 };
@@ -163,6 +171,10 @@ private:
 	bool InitializeOriginPreview(ID3D12Device* a_device);
 	bool InitializeSourceBlend(ID3D12Device* a_device);
 	bool InitializeNativeDepth(ID3D12Device* a_device);
+	bool InitializeNativeMotion(ID3D12Device* a_device);
+	std::optional<globals::FrameBuffer> previousNativeCamera;
+	std::shared_ptr<const DX12Native::TopLevel> previousMotionScene;
+	uint32_t previousNativeFrame = 0;
 	std::string status = "Not captured";
 	std::string shadowStatus = "Independent shadow layer not captured";
 	std::string shadowPipelineFailure;

@@ -223,6 +223,47 @@ bool NativeComposite::InitializeNativeDepth(ID3D12Device* a_device)
 	}
 }
 
+bool NativeComposite::InitializeNativeMotion(ID3D12Device* a_device)
+{
+	if (nativeMotionPipeline && nativeMotionPipelineDevice == a_device)
+		return true;
+	try {
+		std::ifstream file("Data/Shaders/NativeComposite/NativeMotionGuide.dxil", std::ios::binary | std::ios::ate);
+		if (!file)
+			return false;
+		const auto size = file.tellg();
+		if (size <= 0 || size > 16 * 1024 * 1024)
+			return false;
+		std::vector<char> shader(static_cast<size_t>(size));
+		file.seekg(0);
+		if (!file.read(shader.data(), size))
+			return false;
+		CD3DX12_DESCRIPTOR_RANGE ranges[2];
+		ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0);
+		ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 2, 0);
+		CD3DX12_ROOT_PARAMETER parameters[3];
+		parameters[0].InitAsDescriptorTable(1, &ranges[0]);
+		parameters[1].InitAsDescriptorTable(1, &ranges[1]);
+		parameters[2].InitAsConstants(58, 0);
+		const CD3DX12_ROOT_SIGNATURE_DESC desc(3, parameters);
+		winrt::com_ptr<ID3DBlob> serialized, errors;
+		DX::ThrowIfFailed(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, serialized.put(), errors.put()));
+		winrt::com_ptr<ID3D12RootSignature> newRoot;
+		DX::ThrowIfFailed(a_device->CreateRootSignature(0, serialized->GetBufferPointer(), serialized->GetBufferSize(), IID_PPV_ARGS(newRoot.put())));
+		D3D12_COMPUTE_PIPELINE_STATE_DESC pso{};
+		pso.pRootSignature = newRoot.get();
+		pso.CS = { shader.data(), shader.size() };
+		winrt::com_ptr<ID3D12PipelineState> newPipeline;
+		DX::ThrowIfFailed(a_device->CreateComputePipelineState(&pso, IID_PPV_ARGS(newPipeline.put())));
+		nativeMotionRoot = std::move(newRoot);
+		nativeMotionPipeline = std::move(newPipeline);
+		nativeMotionPipelineDevice = a_device;
+		return true;
+	} catch (...) {
+		return false;
+	}
+}
+
 std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Device5* a_device11, ID3D11DeviceContext4* a_context11,
 	ID3D12Device* a_device12, ID3D12CommandQueue* a_queue, ID3D11Texture2D* a_source,
 	uint32_t a_frame, uint32_t a_width, uint32_t a_height, Transfer a_transfer,
@@ -303,6 +344,11 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 	const bool nativeDepthReady = nativeSceneFrame && nativeSceneFrame->raster && nativeSceneFrame->raster->cameraValid &&
 		nativeSceneFrame->prepared && nativeSceneFrame->prepared->acceleration &&
 		nativeSceneFrame->prepared->acceleration->result && InitializeNativeDepth(a_device12);
+	const bool nativeMotionReady = nativeDepthReady && previousNativeCamera && previousNativeFrame + 1u == a_frame &&
+		previousMotionScene && previousMotionScene->result.get() == nativeSceneFrame->prepared->acceleration->result.get() &&
+		!nativeSceneFrame->prepared->acceleration->instances.empty() &&
+		std::ranges::all_of(nativeSceneFrame->prepared->acceleration->instances,
+			[](const auto& instance) { return instance.observationFrame == 0; }) && InitializeNativeMotion(a_device12);
 	const bool shadowRequested = (a_shadowSettings.contribution * a_shadowSettings.blend > 0.0f) || a_shadowSettings.preview;
 	bool applyShadow = false;
 	// A raster-only submission must not conceal the exact shadow admission gate
@@ -454,6 +500,14 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 						throw std::runtime_error("Native depth guide allocation size overflow");
 					required += bytes;
 				}
+				for (const auto format : { DXGI_FORMAT_R16G16_FLOAT, DXGI_FORMAT_R32_UINT }) {
+					const auto motionDesc = CD3DX12_RESOURCE_DESC::Tex2D(format, desc.Width, desc.Height, 1, 1, 1, 0,
+						D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+					const uint64_t bytes = a_device12->GetResourceAllocationInfo(0, 1, &motionDesc).SizeInBytes;
+					if (bytes == UINT64_MAX || required > UINT64_MAX - bytes)
+						throw std::runtime_error("Native motion guide allocation size overflow");
+					required += bytes;
+				}
 			}
 			uint64_t retained = 0;
 			for (const auto& candidate : slots)
@@ -522,6 +576,16 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 					D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(replacement->nativeDepthCoverage.put())));
 				replacement->nativeDepth->SetName(L"NativeComposite::NativeDepthGuide");
 				replacement->nativeDepthCoverage->SetName(L"NativeComposite::NativeDepthCoverage");
+				const auto motionDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R16G16_FLOAT,
+					desc.Width, desc.Height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+				const auto motionCoverageDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32_UINT,
+					desc.Width, desc.Height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+				DX::ThrowIfFailed(a_device12->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &motionDesc,
+					D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(replacement->nativeMotion.put())));
+				DX::ThrowIfFailed(a_device12->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &motionCoverageDesc,
+					D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(replacement->nativeMotionCoverage.put())));
+				replacement->nativeMotion->SetName(L"NativeComposite::NativeMotionGuide");
+				replacement->nativeMotionCoverage->SetName(L"NativeComposite::NativeMotionCoverage");
 			}
 			D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
 			heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
@@ -580,6 +644,8 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 				heapDesc.NumDescriptors = 2;
 				heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 				DX::ThrowIfFailed(a_device12->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(replacement->nativeDepthDescriptors.put())));
+				heapDesc.NumDescriptors = 4;
+				DX::ThrowIfFailed(a_device12->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(replacement->nativeMotionDescriptors.put())));
 			}
 			*slot = std::move(*replacement);
 		}
@@ -639,6 +705,8 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 		if (nativeDepthReady) {
 			CS_GPU_PASS("NativeComposite::NativeDepthGuide");
 			slot->nativeDepthScene = nativeSceneFrame->prepared->acceleration;
+			slot->depthRoot = nativeDepthRoot;
+			slot->depthPipeline = nativeDepthPipeline;
 			const auto step = a_device12->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 			auto cpu = slot->nativeDepthDescriptors->GetCPUDescriptorHandleForHeapStart();
 			D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
@@ -679,6 +747,70 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			const std::array end{
 				CD3DX12_RESOURCE_BARRIER::Transition(slot->nativeDepth.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON),
 				CD3DX12_RESOURCE_BARRIER::Transition(slot->nativeDepthCoverage.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON)
+			};
+			slot->commands->ResourceBarrier(static_cast<UINT>(end.size()), end.data());
+		}
+		if (nativeMotionReady) {
+			CS_GPU_PASS("NativeComposite::NativeMotionGuide");
+			slot->motionRoot = nativeMotionRoot;
+			slot->motionPipeline = nativeMotionPipeline;
+			const auto step = a_device12->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+			auto cpu = slot->nativeMotionDescriptors->GetCPUDescriptorHandleForHeapStart();
+			D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+			srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+			srv.Texture2D.MipLevels = 1;
+			srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			srv.Format = DXGI_FORMAT_R32_FLOAT;
+			a_device12->CreateShaderResourceView(slot->nativeDepth.get(), &srv, cpu);
+			cpu.ptr += step;
+			srv.Format = DXGI_FORMAT_R32_UINT;
+			a_device12->CreateShaderResourceView(slot->nativeDepthCoverage.get(), &srv, cpu);
+			cpu.ptr += step;
+			D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+			uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+			uav.Format = DXGI_FORMAT_R16G16_FLOAT;
+			a_device12->CreateUnorderedAccessView(slot->nativeMotion.get(), nullptr, &uav, cpu);
+			cpu.ptr += step;
+			uav.Format = DXGI_FORMAT_R32_UINT;
+			a_device12->CreateUnorderedAccessView(slot->nativeMotionCoverage.get(), nullptr, &uav, cpu);
+			const std::array start{
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->nativeDepth.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->nativeDepthCoverage.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->nativeMotion.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->nativeMotionCoverage.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+			};
+			slot->commands->ResourceBarrier(static_cast<UINT>(start.size()), start.data());
+			ID3D12DescriptorHeap* heaps[]{ slot->nativeMotionDescriptors.get() };
+			slot->commands->SetDescriptorHeaps(1, heaps);
+			slot->commands->SetPipelineState(slot->motionPipeline.get());
+			slot->commands->SetComputeRootSignature(slot->motionRoot.get());
+			auto gpu = slot->nativeMotionDescriptors->GetGPUDescriptorHandleForHeapStart();
+			slot->commands->SetComputeRootDescriptorTable(0, gpu);
+			gpu.ptr += 2ull * step;
+			slot->commands->SetComputeRootDescriptorTable(1, gpu);
+			struct Constants
+			{
+				uint32_t width, height;
+				DirectX::SimpleMath::Vector3 currentAdjust;
+				float pad0;
+				DirectX::SimpleMath::Vector3 previousAdjust;
+				float pad1;
+				DirectX::SimpleMath::Matrix currentInverseProjection, currentInverseView, previousViewProjection;
+			};
+			static_assert(sizeof(Constants) == 58 * sizeof(uint32_t));
+			const auto& current = nativeSceneFrame->raster->camera;
+			const auto& previous = *previousNativeCamera;
+			const Constants constants{ a_width, a_height,
+				{ current.CameraPosAdjust.x, current.CameraPosAdjust.y, current.CameraPosAdjust.z }, 0.0f,
+				{ previous.CameraPosAdjust.x, previous.CameraPosAdjust.y, previous.CameraPosAdjust.z }, 0.0f,
+				current.CameraProjInverse, current.CameraViewInverse, previous.CameraViewProj };
+			slot->commands->SetComputeRoot32BitConstants(2, 58, &constants, 0);
+			slot->commands->Dispatch((a_width + 7) / 8, (a_height + 7) / 8, 1);
+			const std::array end{
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->nativeDepth.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->nativeDepthCoverage.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->nativeMotion.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON),
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->nativeMotionCoverage.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON)
 			};
 			slot->commands->ResourceBarrier(static_cast<UINT>(end.size()), end.data());
 		}
@@ -988,6 +1120,23 @@ std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(ID3D11Dev
 			depth.height = a_height;
 			depth.format = DXGI_FORMAT_R32_FLOAT;
 			depth.nativeOrigin = true;
+		}
+		if (nativeMotionReady) {
+			auto& motion = frame.nativeGuides[static_cast<size_t>(Guide::Motion)];
+			motion.resource = slot->nativeMotion;
+			motion.coverage = slot->nativeMotionCoverage;
+			motion.width = a_width;
+			motion.height = a_height;
+			motion.format = DXGI_FORMAT_R16G16_FLOAT;
+			motion.nativeOrigin = true;
+		}
+		if (nativeDepthReady) {
+			previousNativeCamera = nativeSceneFrame->raster->camera;
+			previousMotionScene = nativeSceneFrame->prepared->acceleration;
+			previousNativeFrame = a_frame;
+		} else {
+			previousNativeCamera.reset();
+			previousMotionScene.reset();
 		}
 		frame.valid = true;
 		frame.lightingSubmitted = blend;

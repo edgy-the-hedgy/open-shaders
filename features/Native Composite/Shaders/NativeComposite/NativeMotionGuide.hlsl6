@@ -1,0 +1,40 @@
+// Native camera reprojection for a provably unchanged rigid/static TLAS.
+// The host suppresses this pass when topology or instance motion is unknown.
+Texture2D<float> Depth : register(t0);
+Texture2D<uint> DepthCoverage : register(t1);
+RWTexture2D<float2> Motion : register(u0);
+RWTexture2D<uint> MotionCoverage : register(u1);
+
+cbuffer MotionConstants : register(b0)
+{
+	uint2 Size;
+	float3 CurrentPositionAdjust;
+	float Padding0;
+	float3 PreviousPositionAdjust;
+	float Padding1;
+	row_major float4x4 CurrentInverseProjection;
+	row_major float4x4 CurrentInverseView;
+	row_major float4x4 PreviousViewProjection;
+};
+
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+	if (any(id.xy >= Size)) return;
+	Motion[id.xy] = 0.0f;
+	MotionCoverage[id.xy] = 0u;
+	if (DepthCoverage[id.xy] == 0u) return;
+	float2 uv = (float2(id.xy) + 0.5f) / float2(Size);
+	float2 clip = uv * 2.0f - 1.0f;
+	clip.y = -clip.y;
+	float4 view = mul(CurrentInverseProjection, float4(clip, Depth[id.xy], 1.0f));
+	if (!all(isfinite(view)) || abs(view.w) <= 1e-8f) return;
+	float4 world = mul(CurrentInverseView, float4(view.xyz / view.w, 1.0f));
+	world.xyz += CurrentPositionAdjust - PreviousPositionAdjust;
+	float4 previous = mul(PreviousViewProjection, world);
+	if (!all(isfinite(previous)) || previous.w <= 1e-8f) return;
+	float2 previousUV = (previous.xy / previous.w) * float2(0.5f, -0.5f) + 0.5f;
+	if (!all(isfinite(previousUV))) return;
+	Motion[id.xy] = previousUV - uv;
+	MotionCoverage[id.xy] = 1u;
+}
