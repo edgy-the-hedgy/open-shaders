@@ -6,7 +6,6 @@
 #include "Features/NativePBR/MaterialRouting.h"
 #include "Features/NativePBR/MaterialDiscovery.h"
 #include "Features/NativePBR/NativePBRRegistry.h"
-#include "Features/NativePBR/NativeSnowObservations.h"
 #include "Features/NativePBR/MaterialCatalog.h"
 #include "Utils/BootSnapshot.h"
 #include <array>
@@ -66,29 +65,15 @@ struct NativePBRFeature final : Feature
 	};
 	struct MaterialWorker;
 	NativePBR::MaterialDiscovery materialDiscovery;
-	NativePBR::NativeSnowObservations snowObservations;
-	std::shared_ptr<const NativePBR::NativeSnowObservations::Snapshot> publishedSnowObservations;
 	std::vector<std::string> snowTexturePaths;
-	uint64_t plannedSnowObservationRevision = 0;
-	uint32_t lastSnowTextureChangeFrame = 0;
-	bool snowTexturePlanInitialized = false;
 	NativePBR::Registry& materialRegistry = materialDiscovery.MutableRegistry();
 	NativePBR::MaterialCatalog materialCatalog;
 	std::shared_ptr<const DX12Native::TopLevel> discoveredGeometry;
 	std::unordered_set<std::string> discoveredMaterialKeys;
-	struct PreparedSnowSource
-	{
-		std::string materialKey, referenceKey, shapeName;
-		NativePBR::InstanceProperties properties;
-	};
-	std::unordered_map<std::string, std::vector<PreparedSnowSource>> preparedSnowSources;
-	uint64_t snowObservationRevision = 0;
 	void DiscoverPreparedAssets();
 	std::shared_ptr<MaterialWorker> materialWorker;
 	void PollMaterialRegistry();
 	void Prepass() override;
-	bool WantsRenderPassHook() const override { return SelectedBackend() == NativePBR::Backend::NativeDX12; }
-	std::function<void()> OnRenderPassBegin(const RE::BSRenderPass* a_pass) override;
 	void OnSceneTransitionReset(bool) override;
 	void SetupResources() override;
 	MaterialSummary GetMaterialSummary() const;

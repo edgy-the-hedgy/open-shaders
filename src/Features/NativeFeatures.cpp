@@ -17,152 +17,17 @@
 #include "Features/NativePBR/PreparedSceneMaterials.h"
 #include "Features/NativePBR/RayMaterialBindings.h"
 #include "Features/NativePBR/NativeSnowPublication.h"
-#include "Features/NativePBR/NativeSnowConstantCapture.h"
-#include "Features/NativePBR/NativeSnowTextureDiscovery.h"
 #include "Features/NativePBR/NativeSnowGpu.h"
 #include "Features/NativePBR/NativeSnowTextureResidency.h"
 #include "Utils/Game.h"
 #include "Utils/PointLightFlags.h"
 #include <BS_thread_pool.hpp>
-#include <DirectXTex.h>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <limits>
 #include <stdexcept>
-
-namespace
-{
-	NativePBR::SnowTextureViewSource SnowEngineTextureSource(const RE::NiSourceTexture* a_source)
-	{
-		if (!a_source || !a_source->rendererTexture || !a_source->rendererTexture->resourceView)
-			return {};
-		const char* name = a_source->name.c_str();
-		return { Util::AsReal(a_source->rendererTexture->resourceView), name ? std::string_view(name) : std::string_view{} };
-	}
-
-	std::string CanonicalSnowResourceName(ID3D11DeviceChild* a_resource)
-	{
-		if (!a_resource)
-			return {};
-		std::array<char, 1024> name{};
-		UINT bytes = UINT(name.size());
-		if (FAILED(a_resource->GetPrivateData(WKPDID_D3DDebugObjectName, &bytes, name.data())) ||
-			!bytes || bytes > name.size())
-			return {};
-		std::string path(name.data(), size_t(std::find(name.begin(), name.begin() + bytes, '\0') - name.begin()));
-		std::replace(path.begin(), path.end(), '\\', '/');
-		path = Util::ToLowerAscii(path);
-		if (path.starts_with("data/"))
-			path.erase(0, 5);
-		if (!path.starts_with("textures/") || !path.ends_with(".dds"))
-			return {};
-		const auto canonical = NativePBR::CanonicalTexturePath(path);
-		return canonical && *canonical == path ? *canonical : std::string{};
-	}
-
-	NativePBR::ObservedSnowTexture CaptureSnowTexture(ID3D11ShaderResourceView* a_view,
-		ID3D11SamplerState* a_sampler, std::span<const NativePBR::SnowTextureViewSource> a_sources)
-	{
-		NativePBR::ObservedSnowTexture result;
-		if (a_sampler) {
-			D3D11_SAMPLER_DESC state{};
-			a_sampler->GetDesc(&state);
-			NativePBR::ObservedSnowSampler observed;
-			observed.filter = uint32_t(state.Filter);
-			observed.addressU = uint32_t(state.AddressU);
-			observed.addressV = uint32_t(state.AddressV);
-			observed.addressW = uint32_t(state.AddressW);
-			observed.maxAnisotropy = state.MaxAnisotropy;
-			observed.comparisonFunc = uint32_t(state.ComparisonFunc);
-			observed.mipLODBias = state.MipLODBias;
-			observed.minLOD = state.MinLOD;
-			observed.maxLOD = state.MaxLOD;
-			std::copy_n(state.BorderColor, observed.borderColor.size(), observed.borderColor.begin());
-			result.sampler = observed;
-		}
-		if (!a_view)
-			return result;
-		result.canonicalPath = NativePBR::IdentifySnowTextureView(a_view, a_sources).value_or(std::string{});
-		if (result.canonicalPath.empty())
-			result.canonicalPath = CanonicalSnowResourceName(a_view);
-		if (result.canonicalPath.empty()) {
-			winrt::com_ptr<ID3D11Resource> resource;
-			a_view->GetResource(resource.put());
-			result.canonicalPath = CanonicalSnowResourceName(resource.get());
-		}
-		if (!result.canonicalPath.empty()) {
-			D3D11_SHADER_RESOURCE_VIEW_DESC desc{};
-			a_view->GetDesc(&desc);
-			if (desc.Format != DXGI_FORMAT_UNKNOWN)
-				result.srgb = DirectX::IsSRGB(desc.Format);
-		}
-		return result;
-	}
-
-	std::span<const float> SnowShaderCpuConstants(const RE::BSGraphics::ConstantGroup& a_group)
-	{
-		if (!a_group.data || !a_group.buffer)
-			return {};
-		D3D11_BUFFER_DESC desc{};
-		Util::AsReal(a_group.buffer)->GetDesc(&desc);
-		if (!desc.ByteWidth || desc.ByteWidth > D3D11_REQ_CONSTANT_BUFFER_ELEMENT_COUNT * 16 ||
-			desc.ByteWidth % sizeof(float) != 0)
-			return {};
-		return { static_cast<const float*>(a_group.data), desc.ByteWidth / sizeof(float) };
-	}
-
-	std::optional<NativePBR::ObservedSnowProjection> CaptureSnowProjection(
-		RE::BSGraphics::RendererShadowState* a_shadow, uint32_t a_descriptor, uint32_t a_frame)
-	{
-		if (!a_shadow || (a_descriptor & NativePBR::kProjectedUvShaderFlag) == 0)
-			return std::nullopt;
-		GET_INSTANCE_MEMBER(currentVertexShader, a_shadow)
-		GET_INSTANCE_MEMBER(currentPixelShader, a_shadow)
-		if (!currentVertexShader || !currentPixelShader)
-			return std::nullopt;
-		const auto vsData = SnowShaderCpuConstants(
-			currentVertexShader->constantBuffers[uint32_t(RE::BSGraphics::ConstantGroupLevel::PerGeometry)]);
-		const auto psGeometry = SnowShaderCpuConstants(
-			currentPixelShader->constantBuffers[uint32_t(RE::BSGraphics::ConstantGroupLevel::PerGeometry)]);
-		const auto psMaterial = SnowShaderCpuConstants(
-			currentPixelShader->constantBuffers[uint32_t(RE::BSGraphics::ConstantGroupLevel::PerMaterial)]);
-		const auto& vsTable = currentVertexShader->constantTable;
-		const auto& psTable = currentPixelShader->constantTable;
-		const auto& indices = ShaderConstants::LightingPS::Get();
-		NativePBR::ObservedSnowProjection result;
-		result.frame = a_frame;
-		if (globals::game::isVR) {
-			if (const auto matrix = NativePBR::ReadSnowShaderConstant<24>(vsData, vsTable, 6)) {
-				std::copy_n(matrix->begin(), 12, result.textureProjection[0].emplace().begin());
-				std::copy_n(matrix->begin() + 12, 12, result.textureProjection[1].emplace().begin());
-			}
-		} else {
-			result.textureProjection[0] = NativePBR::ReadSnowShaderConstant<12>(vsData, vsTable, 6);
-		}
-		if (result.textureProjection[0] && (a_descriptor & (1u << 1)) == 0) {
-			const auto& matrix = *result.textureProjection[0];
-			const std::array<float, 3> direction{ matrix[8], matrix[9], matrix[10] };
-			if (std::isfinite(direction[0]) && std::isfinite(direction[1]) && std::isfinite(direction[2]) &&
-				std::hypot(direction[0], direction[1], direction[2]) > 1e-6f) {
-				result.direction = direction;
-				const uint32_t technique = (a_descriptor >> 24) & 0x3fu;
-				result.coordinateSpace = technique == uint32_t(SIE::ShaderCache::LightingShaderTechniques::Envmap) ?
-					NativePBR::SnowProjectionSpace::World : NativePBR::SnowProjectionSpace::Object;
-			}
-		}
-		result.projectedUVParams = NativePBR::ReadSnowShaderConstant<4>(psGeometry, psTable, indices.ProjectedUVParams);
-		result.projectedUVParams2 = NativePBR::ReadSnowShaderConstant<4>(psGeometry, psTable, indices.ProjectedUVParams2);
-		result.projectedUVParams3 = NativePBR::ReadSnowShaderConstant<4>(psGeometry, psTable, indices.ProjectedUVParams3);
-		result.materialObjectRGBScale = NativePBR::ReadSnowShaderConstant<4>(psMaterial, psTable, indices.MaterialObjectRGBScale);
-		result.parallaxOccData = NativePBR::ReadSnowShaderConstant<4>(psMaterial, psTable, indices.ParallaxOccData);
-		if (!result.textureProjection[0] && !result.projectedUVParams && !result.projectedUVParams2 &&
-			!result.projectedUVParams3 && !result.materialObjectRGBScale && !result.parallaxOccData)
-			return std::nullopt;
-		return result;
-	}
-}
 
 struct NativePBRFeature::MaterialWorker
 {
@@ -179,73 +44,6 @@ struct NativePBRFeature::MaterialWorker
 NativePBRFeature::NativePBRFeature() : materialWorker(std::make_shared<MaterialWorker>()) {}
 NativePBRFeature::~NativePBRFeature() = default;
 
-std::function<void()> NativePBRFeature::OnRenderPassBegin(const RE::BSRenderPass* a_pass)
-{
-	if (SelectedBackend() != NativePBR::Backend::NativeDX12 || !enabled.load(std::memory_order_relaxed) ||
-		!a_pass || !a_pass->shader || a_pass->shader->shaderType.get() != RE::BSShader::Type::Lighting ||
-		!a_pass->shaderProperty || !a_pass->geometry)
-		return nullptr;
-	constexpr uint32_t kLightingPassBase = 0x4800002D;
-	if (a_pass->passEnum < kLightingPassBase)
-		return nullptr;
-	const uint32_t descriptor = a_pass->passEnum - kLightingPassBase;
-	const uint64_t nifFlags = a_pass->shaderProperty->flags.underlying();
-	constexpr uint32_t snowMask = NativePBR::kSnowShaderFlag | NativePBR::kBaseObjectSnowShaderFlag |
-		NativePBR::kProjectedUvShaderFlag;
-	constexpr uint64_t nifMask = NativePBR::kSnowNifFlag | NativePBR::kProjectedUvNifFlag |
-		NativePBR::kLandscapeNifFlag;
-	if ((descriptor & snowMask) == 0 && (nifFlags & nifMask) == 0)
-		return nullptr;
-	const auto* geometry = a_pass->geometry;
-	const auto* reference = geometry->GetUserData();
-	if (!reference || reference->IsDynamicForm() || geometry->name.empty())
-		return nullptr;
-	const auto* file = reference->GetFile(0);
-	if (!file || file->GetFilename().empty())
-		return nullptr;
-	const auto referenceKey = std::format("{:06X}:{}", reference->GetLocalFormID(), file->GetFilename());
-	const std::string shape = geometry->name.c_str();
-	snowObservations.Observe(referenceKey, shape, descriptor, nifFlags);
-	if ((descriptor & NativePBR::kProjectedUvShaderFlag) == 0)
-		return nullptr;
-	return [this, referenceKey, shape, descriptor, a_pass]() {
-		auto* graphicsState = globals::game::graphicsState;
-		auto* shadowState = globals::game::shadowState;
-		if (!graphicsState || !shadowState)
-			return;
-		const uint32_t frame = graphicsState->GetFrameCount();
-		if (auto projection = CaptureSnowProjection(shadowState, descriptor, frame))
-			snowObservations.ObserveProjection(referenceKey, shape, *projection);
-		if (!snowObservations.BeginProjectedTextureProbe(referenceKey, shape, frame))
-			return;
-		GET_INSTANCE_MEMBER(PSTexture, shadowState)
-		std::array<NativePBR::SnowTextureViewSource, 8> sources{};
-		if (const auto* state = globals::game::graphicsState) {
-			sources[0] = SnowEngineTextureSource(state->defaultTextureProjDiffuseMap.get());
-			sources[1] = SnowEngineTextureSource(state->defaultTextureProjNormalMap.get());
-			sources[2] = SnowEngineTextureSource(state->defaultTextureProjNormalDetailMap.get());
-			sources[3] = SnowEngineTextureSource(state->defaultTextureProjNoiseMap.get());
-		}
-		if (const auto* base = a_pass->shaderProperty->GetBaseMaterial();
-			base && base->GetType() == RE::BSShaderMaterial::Type::kLighting) {
-			const auto* material = static_cast<const RE::BSLightingShaderMaterialBase*>(base);
-			sources[4] = SnowEngineTextureSource(material->diffuseTexture.get());
-			sources[5] = SnowEngineTextureSource(material->normalTexture.get());
-			sources[6] = SnowEngineTextureSource(material->rimSoftLightingTexture.get());
-			sources[7] = SnowEngineTextureSource(material->specularBackLightingTexture.get());
-		}
-		std::array<NativePBR::ObservedSnowTexture, NativePBR::kSnowProjectedTextureCount> textures;
-		for (size_t i = 0; i < NativePBR::kSnowProjectedTextureSlots.size(); ++i) {
-			const auto slot = NativePBR::kSnowProjectedTextureSlots[i];
-			winrt::com_ptr<ID3D11SamplerState> sampler;
-			if (globals::d3d::context)
-				globals::d3d::context->PSGetSamplers(slot, 1, sampler.put());
-			textures[i] = CaptureSnowTexture(Util::AsReal(PSTexture[slot]), sampler.get(), sources);
-		}
-		snowObservations.ObserveProjectedTextures(referenceKey, shape, textures);
-	};
-}
-
 void NativePBRFeature::SetupResources()
 {
 	if (SelectedBackend() == NativePBR::Backend::NativeDX12)
@@ -257,30 +55,10 @@ void NativePBRFeature::DiscoverPreparedAssets()
 	const auto scene = globals::features::dx12NativeScene.GetPublishedScene();
 	if (!scene || !scene->acceleration)
 		return;
-	const auto observations = snowObservations.ExportIfIdentityChanged(
-		discoveredGeometry == scene->acceleration ? snowObservationRevision : UINT64_MAX);
-	if (discoveredGeometry == scene->acceleration) {
-		if (observations) {
-			for (const auto& [key, sources] : preparedSnowSources) {
-				const auto observed = observations->entries.find(key);
-				if (observed == observations->entries.end())
-					continue;
-				for (const auto& preparedSource : sources) {
-					auto properties = preparedSource.properties;
-					auto observedSnow = observed->second;
-					observedSnow.projection.reset();
-					properties.snow = NativePBR::BindSnowSource(properties.shaderFlags, std::move(observedSnow));
-					materialDiscovery.ReplaceInstance(preparedSource.materialKey, preparedSource.referenceKey, preparedSource.shapeName,
-						std::move(properties));
-				}
-			}
-			snowObservationRevision = observations->identityRevision;
-		}
+	if (discoveredGeometry == scene->acceleration)
 		return;
-	}
 	const auto catalog = materialCatalog.GetSnapshot();
 	std::unordered_set<std::string> currentKeys;
-	preparedSnowSources.clear();
 	materialDiscovery.BeginInstanceEpoch();
 	for (const auto& instance : scene->acceleration->instances) {
 		const auto& identity = instance.preparedIdentity;
@@ -344,22 +122,12 @@ void NativePBRFeature::DiscoverPreparedAssets()
 			}
 			NativePBR::InstanceProperties properties;
 			properties.shaderFlags = flags;
-			const auto observationKey = NativePBR::NativeSnowObservations::Key(identity.referenceKey, identity.shapeName);
-			NativePBR::SnowSourceState observed;
-			if (observations) {
-				if (const auto found = observations->entries.find(observationKey); found != observations->entries.end())
-					observed = found->second;
-			}
-			observed.projection.reset();
-			properties.snow = NativePBR::BindSnowSource(flags, std::move(observed));
+			properties.snow = NativePBR::BindSnowSource(flags);
 			properties.opacity = NativePBR::InstanceProperties::Opacity::Opaque;
 			properties.normalMode = (flags1 & (1u << 12)) != 0 ?
 				NativePBR::InstanceProperties::NormalMode::ModelSpace : NativePBR::InstanceProperties::NormalMode::TangentSpace;
 			properties.uvAnimation = NativePBR::InstanceProperties::UvAnimation::Static;
-			if (!materialDiscovery.ObserveInstance(key, identity.referenceKey, identity.shapeName, properties))
-				continue;
-			preparedSnowSources[observationKey].push_back({ key, identity.referenceKey, identity.shapeName,
-				std::move(properties) });
+			materialDiscovery.ObserveInstance(key, identity.referenceKey, identity.shapeName, properties);
 		} catch (const std::exception&) {
 			continue;
 		}
@@ -369,7 +137,6 @@ void NativePBRFeature::DiscoverPreparedAssets()
 			materialDiscovery.Retire(key);
 	discoveredMaterialKeys = std::move(currentKeys);
 	discoveredGeometry = scene->acceleration;
-	snowObservationRevision = observations ? observations->identityRevision : 0;
 }
 
 std::shared_ptr<const NativePBR::RecipeGeneration> NativePBRFeature::GetNativeRecipes() const
@@ -489,33 +256,6 @@ void NativePBRFeature::Prepass()
 	}
 	DiscoverPreparedAssets();
 	PollMaterialRegistry();
-	if (auto observations = snowObservations.ExportIfChanged(
-		publishedSnowObservations ? publishedSnowObservations->revision : UINT64_MAX))
-		publishedSnowObservations = std::move(observations);
-	const uint32_t frame = globals::game::graphicsState ? globals::game::graphicsState->GetFrameCount() : 0;
-	// Batch changes to source DDS identities: otherwise a streamed scene can restart the
-	// GPU texture worker once for every newly observed projected instance.
-	if (publishedSnowObservations && plannedSnowObservationRevision != publishedSnowObservations->revision &&
-		(!snowTexturePlanInitialized || frame - lastSnowTextureChangeFrame >= 120)) {
-		std::unordered_set<std::string> unique;
-		for (const auto& [key, source] : publishedSnowObservations->entries) {
-			if (source.conflictingPasses)
-				continue;
-			for (const auto& texture : source.projectedTextures)
-				if (!texture.canonicalPath.empty() && texture.srgb)
-					unique.insert(texture.canonicalPath);
-		}
-		std::vector<std::string> nextPaths(unique.begin(), unique.end());
-		std::ranges::sort(nextPaths);
-		if (nextPaths.size() > 64)
-			nextPaths.resize(64);
-		plannedSnowObservationRevision = publishedSnowObservations->revision;
-		if (nextPaths != snowTexturePaths) {
-			snowTexturePaths = std::move(nextPaths);
-			lastSnowTextureChangeFrame = frame;
-			snowTexturePlanInitialized = true;
-		}
-	}
 	const auto scene = globals::features::dx12NativeScene.GetPublishedScene();
 	const auto materialPublication = GetMaterialPublication();
 	if (scene && scene->acceleration && scene->materials && materialPublication) {
@@ -540,14 +280,13 @@ void NativePBRFeature::Prepass()
 	const auto snowGpu = materials && prepared && prepared->materialPublication &&
 		materials->generation == prepared->materialPublication->recipes ? materials : nullptr;
 	const auto priorSnow = nativeSnowPublication.load(std::memory_order_acquire);
-	if (!priorSnow || priorSnow->prepared != prepared || priorSnow->gpuMaterials != snowGpu ||
-		priorSnow->observationRevision != (publishedSnowObservations ? publishedSnowObservations->revision : 0))
+	if (!priorSnow || priorSnow->prepared != prepared || priorSnow->gpuMaterials != snowGpu)
 		nativeSnowPublication.store(NativePBR::BindNativeSnowTextureResidency(
-			NativePBR::PrepareNativeSnowPublication(prepared, publishedSnowObservations), snowGpu), std::memory_order_release);
+			NativePBR::PrepareNativeSnowPublication(prepared), snowGpu), std::memory_order_release);
 	const auto previous = rayMaterialBindings.load(std::memory_order_acquire);
 	const bool forceAdmission = forceRayAdmission.load(std::memory_order_relaxed);
 	const bool requireParallax = nativeParallax.load(std::memory_order_relaxed);
-	const auto snowIdentityRevision = publishedSnowObservations ? publishedSnowObservations->identityRevision : 0;
+	const uint64_t snowIdentityRevision = 0;
 	const auto currentSnow = nativeSnowPublication.load(std::memory_order_acquire);
 	const auto snowEpoch = currentSnow ? currentSnow->observationEpoch : 0;
 	if (!previous || previous->prepared != prepared || previous->materials != materials ||
@@ -559,12 +298,7 @@ void NativePBRFeature::Prepass()
 
 void NativePBRFeature::OnSceneTransitionReset(bool)
 {
-	snowObservations.Reset();
-	publishedSnowObservations.reset();
 	snowTexturePaths.clear();
-	plannedSnowObservationRevision = 0;
-	lastSnowTextureChangeFrame = 0;
-	snowTexturePlanInitialized = false;
 	preparedSceneMaterials.store({}, std::memory_order_release);
 	nativeSnowPublication.store({}, std::memory_order_release);
 	rayMaterialBindings.store({}, std::memory_order_release);
@@ -573,8 +307,6 @@ void NativePBRFeature::OnSceneTransitionReset(bool)
 	for (const auto& key : discoveredMaterialKeys)
 		materialDiscovery.Retire(key);
 	discoveredMaterialKeys.clear();
-	preparedSnowSources.clear();
-	snowObservationRevision = 0;
 }
 
 // Backend selection is the ONLY automatic execution switch. Feature toggles
