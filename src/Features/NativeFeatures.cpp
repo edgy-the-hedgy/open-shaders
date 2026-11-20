@@ -1076,6 +1076,17 @@ void NativePBRFeature::DrawSettings()
 	ImGui::Text("NativePBR ray bindings: %u eligible | %u unsupported | %u unavailable%s",
 		rayBindings ? rayBindings->eligible : 0, rayBindings ? rayBindings->unsupported : 0,
 		rayBindings ? rayBindings->unavailable : 0, rayBindings ? "" : " (not published)");
+	ImGui::SeparatorText("Native Snow Diagnostics");
+	ImGui::Text("Ordinary snow: %u detected | %u native ray bindings",
+		snow ? snow->ordinary : 0, rayBindings ? rayBindings->ordinarySnow : 0);
+	ImGui::Text("Projected snow: %u detected | %u projection inputs complete",
+		snow ? snow->projected : 0, snow ? snow->completeProjection : 0);
+	ImGui::Text("Projected texture sets: %u resident | %u partial | %u unavailable",
+		snow ? snow->textureSetsResident : 0, snow ? snow->textureSetsPartial : 0,
+		snow ? snow->textureSetsUnavailable : 0);
+	if (!snow || !rayBindings)
+		ImGui::TextDisabled("Native snow or ray-material publication is not ready.");
+	ImGui::TextDisabled("Projected figures report input readiness, not native projected shading.");
 	if (materialWorker && !materialWorker->gpu.Failure().empty())
 		ImGui::TextDisabled("Native material GPU preparation: %s", materialWorker->gpu.Failure().c_str());
 }
