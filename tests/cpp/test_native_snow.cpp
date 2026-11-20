@@ -260,6 +260,51 @@ TEST_CASE("Native snow DDS lookup uses existing page descriptors without allocat
 	CHECK_FALSE(FindSnowTextureLocation(texture, sources, logical, 6));
 }
 
+TEST_CASE("Native projected snow distinguishes color-only noise from four textured overlay roles", "[nativepbr][snow]")
+{
+	using namespace NativePBR;
+	NativeSnowPublication publication;
+	NativeSnowInstance colorOnly, textured, unknown;
+	colorOnly.classification = textured.classification = unknown.classification = SnowProjected;
+	colorOnly.projection.projectedUVParams3 = std::array<float, 4>{ 1, 1, 0, 0 };
+	textured.projection.projectedUVParams3 = std::array<float, 4>{ 1, 1, 0, 1 };
+	CHECK(GetSnowProjectedTextureMode(colorOnly.projection) == SnowProjectedTextureMode::ColorOnly);
+	CHECK(GetSnowProjectedTextureMode(textured.projection) == SnowProjectedTextureMode::Textured);
+	CHECK(GetSnowProjectedTextureMode(unknown.projection) == SnowProjectedTextureMode::Unknown);
+	CHECK(SnowProjectedRequiredTextureMask(SnowProjectedTextureMode::ColorOnly) == 8u);
+	CHECK(SnowProjectedRequiredTextureMask(SnowProjectedTextureMode::Textured) == 15u);
+	CHECK(SnowProjectedRequiredTextureMask(SnowProjectedTextureMode::Unknown) == 0u);
+	colorOnly.projection.textures[3].canonicalPath = "textures/snow/noise.dds";
+	colorOnly.projection.textures[3].srgb = false;
+	colorOnly.projection.textures[3].status = SnowTextureStatus::Resident;
+	textured.projection.textures[0].canonicalPath = "textures/snow/diffuse.dds";
+	textured.projection.textures[0].srgb = true;
+	textured.projection.textures[0].status = SnowTextureStatus::Resident;
+	textured.projection.textures[1].canonicalPath = "textures/snow/normal.dds";
+	textured.projection.textures[1].status = SnowTextureStatus::IdentifiedPath; // Format not yet known.
+	textured.projection.textures[2].canonicalPath = "textures/snow/detail.dds";
+	textured.projection.textures[2].srgb = false;
+	textured.projection.textures[2].status = SnowTextureStatus::Unavailable;
+	publication.instances = { colorOnly, textured, unknown };
+	RecountNativeSnowTextures(publication);
+	CHECK(publication.projectedColorOnlyMode == 1);
+	CHECK(publication.projectedTexturedMode == 1);
+	CHECK(publication.projectedUnknownMode == 1);
+	CHECK(publication.textureSetsResident == 1);
+	CHECK(publication.textureSetsPartial == 1);
+	CHECK(publication.textureSetsUnavailable == 1);
+	CHECK(publication.requiredTexturesResident == 2);
+	CHECK(publication.requiredTexturesMissingPath == 1);
+	CHECK(publication.requiredTexturesMissingInterpretation == 1);
+	CHECK(publication.requiredTexturesNonresident == 1);
+	CHECK((publication.textureRolePaths == std::array<uint32_t, 4>{ 1, 1, 1, 1 }));
+	CHECK((publication.textureRoleResident == std::array<uint32_t, 4>{ 1, 0, 0, 1 }));
+	CHECK(publication.projectedTexturesResolved == 2);
+	CHECK(publication.projectedTexturesUnresolved == 10);
+	textured.projection.projectedUVParams3->at(3) = std::numeric_limits<float>::quiet_NaN();
+	CHECK(GetSnowProjectedTextureMode(textured.projection) == SnowProjectedTextureMode::Unknown);
+}
+
 TEST_CASE("Native snow residency rejects wrong material generations and retains unresolved roles", "[nativepbr][snow]")
 {
 	using namespace NativePBR;

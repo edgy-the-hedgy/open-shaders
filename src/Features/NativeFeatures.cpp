@@ -1083,11 +1083,25 @@ void NativePBRFeature::DrawSettings()
 	ImGui::Text("Projected snow: %u detected | %u native candidates | %u projection inputs complete",
 		snow ? snow->projected : 0, rayBindings ? rayBindings->projectedSnowObserved : 0,
 		snow ? snow->completeProjection : 0);
+	ImGui::Text("Projected base overlap: %u parallax | %u complex candidates",
+		rayBindings ? rayBindings->projectedParallaxCandidates : 0,
+		rayBindings ? rayBindings->projectedComplexCandidates : 0);
 	ImGui::Text("Projected frame-valid inputs: %u",
 		snow ? NativePBR::CountNativeSnowProjectionReady(*snow, snowFrame, globals::game::isVR) : 0);
-	ImGui::Text("Projected texture sets: %u resident | %u partial | %u unavailable",
+	ImGui::Text("Projected modes: %u textured | %u color-only | %u unknown",
+		snow ? snow->projectedTexturedMode : 0, snow ? snow->projectedColorOnlyMode : 0,
+		snow ? snow->projectedUnknownMode : 0);
+	ImGui::Text("Required projected textures: %u resident | %u unnamed | %u unknown format | %u nonresident",
+		snow ? snow->requiredTexturesResident : 0, snow ? snow->requiredTexturesMissingPath : 0,
+		snow ? snow->requiredTexturesMissingInterpretation : 0,
+		snow ? snow->requiredTexturesNonresident : 0);
+	ImGui::Text("Required projected sets: %u resident | %u partial | %u unavailable",
 		snow ? snow->textureSetsResident : 0, snow ? snow->textureSetsPartial : 0,
 		snow ? snow->textureSetsUnavailable : 0);
+	if (snow)
+		ImGui::Text("Observed paths by slot (diffuse / normal / detail / noise): %u / %u / %u / %u",
+			snow->textureRolePaths[0], snow->textureRolePaths[1],
+			snow->textureRolePaths[2], snow->textureRolePaths[3]);
 	if (!snow || !rayBindings)
 		ImGui::TextDisabled("Native snow or ray-material publication is not ready.");
 	ImGui::TextDisabled("Projected figures report input readiness, not native projected shading.");
@@ -1245,6 +1259,15 @@ json NativePBRFeature::GetDiagnostics()
 			{ "ambiguous", snow ? snow->ambiguous : 0 }, { "missingMaterial", snow ? snow->missing : 0 },
 			{ "projectedTexturesResolved", snow ? snow->projectedTexturesResolved : 0 },
 			{ "projectedTexturesUnresolved", snow ? snow->projectedTexturesUnresolved : 0 },
+			{ "projectedTexturedMode", snow ? snow->projectedTexturedMode : 0 },
+			{ "projectedColorOnlyMode", snow ? snow->projectedColorOnlyMode : 0 },
+			{ "projectedUnknownMode", snow ? snow->projectedUnknownMode : 0 },
+			{ "requiredTexturesResident", snow ? snow->requiredTexturesResident : 0 },
+			{ "requiredTexturesMissingPath", snow ? snow->requiredTexturesMissingPath : 0 },
+			{ "requiredTexturesMissingInterpretation", snow ? snow->requiredTexturesMissingInterpretation : 0 },
+			{ "requiredTexturesNonresident", snow ? snow->requiredTexturesNonresident : 0 },
+			{ "textureRolePaths", snow ? snow->textureRolePaths : decltype(snow->textureRolePaths){} },
+			{ "textureRoleResident", snow ? snow->textureRoleResident : decltype(snow->textureRoleResident){} },
 			{ "textureSetsResident", snow ? snow->textureSetsResident : 0 },
 			{ "textureSetsPartial", snow ? snow->textureSetsPartial : 0 },
 			{ "textureSetsUnavailable", snow ? snow->textureSetsUnavailable : 0 } } },
@@ -1264,6 +1287,8 @@ json NativePBRFeature::GetDiagnostics()
 			{ "eligible", rayBindings ? rayBindings->eligible : 0 },
 			{ "ordinarySnow", rayBindings ? rayBindings->ordinarySnow : 0 },
 			{ "projectedSnowObserved", rayBindings ? rayBindings->projectedSnowObserved : 0 },
+			{ "projectedParallaxCandidates", rayBindings ? rayBindings->projectedParallaxCandidates : 0 },
+			{ "projectedComplexCandidates", rayBindings ? rayBindings->projectedComplexCandidates : 0 },
 			{ "unsupported", rayBindings ? rayBindings->unsupported : 0 },
 			{ "unavailable", rayBindings ? rayBindings->unavailable : 0 } } },
 		{ "gpuMaterialFailure", materialWorker ? materialWorker->gpu.Failure() : std::string{} },

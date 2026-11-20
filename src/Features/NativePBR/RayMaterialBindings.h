@@ -15,6 +15,7 @@ namespace NativePBR
 		std::shared_ptr<const GpuMaterialResources> materials;
 		std::vector<GpuDrawBinding> instances;
 		uint32_t eligible = 0, unsupported = 0, unavailable = 0, ordinarySnow = 0, projectedSnowObserved = 0;
+		uint32_t projectedParallaxCandidates = 0, projectedComplexCandidates = 0;
 		uint64_t snowIdentityRevision = 0, snowObservationEpoch = 0;
 		bool forcedAdmission = false;
 		bool parallaxRequired = true;
@@ -134,6 +135,9 @@ namespace NativePBR
 				if ((snow->classification & SnowProjected) != 0) {
 					flags |= kGpuDrawSnowProjectedObserved;
 					++result->projectedSnowObserved;
+					result->projectedParallaxCandidates += SupportsOpaqueParallax(recipe);
+					result->projectedComplexCandidates += recipe.parameters.legacyComplexMask &&
+						ActiveOpaquePbrFlags(recipe) == 0u;
 				}
 			}
 			result->instances[binding.instanceIndex] = PackGpuDrawBinding(recipe.identity, recipe.revision, gpu->index, flags);

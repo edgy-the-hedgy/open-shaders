@@ -263,8 +263,19 @@ TEST_CASE("NativePBR ray bindings follow the exact scene and resident material g
 	REQUIRE(projected);
 	CHECK(projected->ordinarySnow == 1);
 	CHECK(projected->projectedSnowObserved == 1);
+	CHECK(projected->projectedParallaxCandidates == 0);
+	CHECK(projected->projectedComplexCandidates == 0);
 	CHECK((projected->instances[0].flags & (kGpuDrawSnowOrdinary | kGpuDrawSnowProjectedObserved)) ==
 		(kGpuDrawSnowOrdinary | kGpuDrawSnowProjectedObserved));
+	recipe->parameters.displacementScale = 0.1f;
+	recipe->parameters.legacyComplexMask = true;
+	const auto layered = PrepareRayMaterialBindings(prepared, gpu, false, true, projectedSnow, 17);
+	REQUIRE(layered);
+	CHECK(layered->projectedSnowObserved == 1);
+	CHECK(layered->projectedParallaxCandidates == 1);
+	CHECK(layered->projectedComplexCandidates == 1);
+	recipe->parameters.displacementScale = 0.0f;
+	recipe->parameters.legacyComplexMask = false;
 	projectedSnow->instances[0].classification = SnowProjected;
 	const auto projectedOnly = PrepareRayMaterialBindings(prepared, gpu, false, true, projectedSnow, 15);
 	REQUIRE(projectedOnly);

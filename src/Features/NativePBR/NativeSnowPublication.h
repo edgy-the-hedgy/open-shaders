@@ -28,6 +28,7 @@ namespace NativePBR
 
 	enum class SnowTextureRole : uint8_t { Diffuse, Normal, DetailNormal, Noise, Count };
 	enum class SnowTextureStatus : uint8_t { UnresolvedSource, IdentifiedPath, InvalidPath, Resident, Unavailable };
+	enum class SnowProjectedTextureMode : uint8_t { Unknown, ColorOnly, Textured };
 
 	/** @brief Explicit runtime texture identities; NIF diffuse/normal paths are not projected texture paths. */
 	struct SnowTextureReference
@@ -53,6 +54,21 @@ namespace NativePBR
 		uint32_t sourceFrame = 0;
 		std::array<SnowTextureReference, static_cast<size_t>(SnowTextureRole::Count)> textures;
 	};
+
+	/** @brief The raster shader uses noise in both modes; only textured projection samples the other three slots. */
+	inline SnowProjectedTextureMode GetSnowProjectedTextureMode(const NativeSnowProjection& a_projection)
+	{
+		if (!a_projection.projectedUVParams3 || !std::isfinite(a_projection.projectedUVParams3->at(3)))
+			return SnowProjectedTextureMode::Unknown;
+		return a_projection.projectedUVParams3->at(3) > 0.5f ?
+			SnowProjectedTextureMode::Textured : SnowProjectedTextureMode::ColorOnly;
+	}
+
+	constexpr uint32_t SnowProjectedRequiredTextureMask(SnowProjectedTextureMode a_mode)
+	{
+		return a_mode == SnowProjectedTextureMode::Textured ? 0xFu :
+			a_mode == SnowProjectedTextureMode::ColorOnly ? 1u << uint32_t(SnowTextureRole::Noise) : 0u;
+	}
 
 	/** @brief A projected coverage input is complete only when its original shader values exist. */
 	inline bool SnowProjectionCoverageReady(const NativeSnowProjection& a_projection)
@@ -120,6 +136,11 @@ namespace NativePBR
 		uint32_t completeProjection = 0, incompleteProjection = 0;
 		uint32_t missingProjectionDirection = 0, missingProjectionParameters = 0, ambiguous = 0, missing = 0;
 		uint32_t projectedTexturesResolved = 0, projectedTexturesUnresolved = 0;
+		uint32_t projectedTexturedMode = 0, projectedColorOnlyMode = 0, projectedUnknownMode = 0;
+		uint32_t requiredTexturesResident = 0, requiredTexturesMissingPath = 0;
+		uint32_t requiredTexturesMissingInterpretation = 0, requiredTexturesNonresident = 0;
+		std::array<uint32_t, static_cast<size_t>(SnowTextureRole::Count)> textureRolePaths{};
+		std::array<uint32_t, static_cast<size_t>(SnowTextureRole::Count)> textureRoleResident{};
 		uint32_t textureSetsResident = 0, textureSetsPartial = 0, textureSetsUnavailable = 0;
 
 		/** @brief Rejects stale scene, material and contract versions before native consumption. */
@@ -130,6 +151,49 @@ namespace NativePBR
 				materialSerial == a_prepared.materialSerial && instanceEpoch == a_prepared.instanceEpoch;
 		}
 	};
+
+	/** @brief Reports both role provenance and mode-dependent requirements; no GPU shading admission is implied. */
+	inline void RecountNativeSnowTextures(NativeSnowPublication& a_publication)
+	{
+		a_publication.projectedTexturesResolved = a_publication.projectedTexturesUnresolved = 0;
+		a_publication.projectedTexturedMode = a_publication.projectedColorOnlyMode = a_publication.projectedUnknownMode = 0;
+		a_publication.requiredTexturesResident = a_publication.requiredTexturesMissingPath = 0;
+		a_publication.requiredTexturesMissingInterpretation = a_publication.requiredTexturesNonresident = 0;
+		a_publication.textureRolePaths.fill(0);
+		a_publication.textureRoleResident.fill(0);
+		a_publication.textureSetsResident = a_publication.textureSetsPartial = a_publication.textureSetsUnavailable = 0;
+		for (const auto& instance : a_publication.instances) {
+			if ((instance.classification & SnowProjected) == 0)
+				continue;
+			const auto mode = GetSnowProjectedTextureMode(instance.projection);
+			a_publication.projectedTexturedMode += mode == SnowProjectedTextureMode::Textured;
+			a_publication.projectedColorOnlyMode += mode == SnowProjectedTextureMode::ColorOnly;
+			a_publication.projectedUnknownMode += mode == SnowProjectedTextureMode::Unknown;
+			const uint32_t required = SnowProjectedRequiredTextureMask(mode);
+			uint32_t residentRequired = 0;
+			for (size_t role = 0; role < instance.projection.textures.size(); ++role) {
+				const auto& texture = instance.projection.textures[role];
+				const bool identified = !texture.canonicalPath.empty();
+				const bool resident = texture.status == SnowTextureStatus::Resident;
+				a_publication.textureRolePaths[role] += identified;
+				a_publication.textureRoleResident[role] += resident;
+				a_publication.projectedTexturesResolved += resident;
+				a_publication.projectedTexturesUnresolved += !resident;
+				if ((required & (1u << role)) == 0)
+					continue;
+				residentRequired += resident;
+				a_publication.requiredTexturesResident += resident;
+				a_publication.requiredTexturesMissingPath += !identified;
+				a_publication.requiredTexturesMissingInterpretation += identified && !texture.srgb;
+				a_publication.requiredTexturesNonresident += identified && texture.srgb && !resident;
+			}
+			const uint32_t requiredCount = mode == SnowProjectedTextureMode::Textured ? 4u :
+				mode == SnowProjectedTextureMode::ColorOnly ? 1u : 0u;
+			a_publication.textureSetsResident += requiredCount != 0 && residentRequired == requiredCount;
+			a_publication.textureSetsPartial += residentRequired != 0 && residentRequired < requiredCount;
+			a_publication.textureSetsUnavailable += residentRequired == 0;
+		}
+	}
 
 	inline uint32_t CountNativeSnowProjectionReady(const NativeSnowPublication& a_publication,
 		uint32_t a_frame, bool a_vr)
@@ -246,8 +310,6 @@ namespace NativePBR
 				result->missingProjectionParameters += !snow.projection.projectedUVParams ||
 					!snow.projection.projectedUVParams2 || !snow.projection.projectedUVParams3 ||
 					!snow.projection.materialObjectRGBScale;
-				result->projectedTexturesUnresolved += uint32_t(snow.projection.textures.size());
-				++result->textureSetsUnavailable;
 			}
 			result->landscape += (snow.classification & SnowLandscape) != 0;
 			result->observed += snow.status == SnowInputStatus::Observed;
@@ -256,6 +318,7 @@ namespace NativePBR
 			result->missing += snow.status == SnowInputStatus::MissingMaterial;
 			result->instances.push_back(std::move(snow));
 		}
+		RecountNativeSnowTextures(*result);
 		return result;
 	}
 }

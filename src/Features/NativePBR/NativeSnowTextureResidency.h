@@ -59,24 +59,16 @@ namespace NativePBR
 			return a_source;
 		auto result = std::make_shared<NativeSnowPublication>(*a_source);
 		result->gpuMaterials = std::move(a_gpu);
-		result->projectedTexturesResolved = result->projectedTexturesUnresolved = 0;
-		result->textureSetsResident = result->textureSetsPartial = result->textureSetsUnavailable = 0;
 		for (auto& instance : result->instances) {
 			if ((instance.classification & SnowProjected) == 0)
 				continue;
-			uint32_t resident = 0;
 			for (auto& texture : instance.projection.textures) {
-				if (ResolveSnowTexture(texture, *result->gpuMaterials))
-					++resident;
-				else if (texture.status == SnowTextureStatus::IdentifiedPath)
+				if (!ResolveSnowTexture(texture, *result->gpuMaterials) &&
+					texture.status == SnowTextureStatus::IdentifiedPath)
 					texture.status = SnowTextureStatus::Unavailable;
 			}
-			result->projectedTexturesResolved += resident;
-			result->projectedTexturesUnresolved += uint32_t(instance.projection.textures.size()) - resident;
-			result->textureSetsResident += resident == instance.projection.textures.size();
-			result->textureSetsPartial += resident != 0 && resident < instance.projection.textures.size();
-			result->textureSetsUnavailable += resident == 0;
 		}
+		RecountNativeSnowTextures(*result);
 		return result;
 	}
 }
