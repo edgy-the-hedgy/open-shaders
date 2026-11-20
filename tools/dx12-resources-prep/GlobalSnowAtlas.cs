@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -15,6 +16,10 @@ internal static class GlobalSnowAtlas
     private const long MaximumDdsBytes = 128L * 1024 * 1024;
     private const long MaximumNifBytes = 64L * 1024 * 1024;
     private const int MaximumFailuresReported = 128;
+    private const int ScanIndexVersion = 2;
+    private const int MaximumModelScans = 300000;
+    private const long MaximumScanIndexBytes = 128L * 1024 * 1024;
+    private static readonly TimeSpan MaximumGenerationTime = TimeSpan.FromMinutes(25);
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
@@ -25,9 +30,18 @@ internal static class GlobalSnowAtlas
         string? File, long Bytes, uint Width = 0, uint Height = 0, uint Mips = 0,
         uint FourCC = 0, uint? DxgiFormat = null, string[]? Roles = null);
 
-    private sealed record Binding(string Id, string Model, int ShapeBlock, string ShaderType,
+    internal sealed record Binding(string Id, string Model, int ShapeBlock, string ShaderType,
         uint ShaderFlags1, uint ShaderFlags2, string Classification, string[] Textures,
         string? ClampMode, string? UvOffset, string? UvScale, string ProjectionMetadata);
+
+    internal sealed record ModelScan(string Signature, Binding[] Materials, string? Error);
+
+    internal sealed class ModelScanIndex
+    {
+        public ModelScanIndex() { }
+        public int Version { get; set; } = ScanIndexVersion;
+        public Dictionary<string, ModelScan> Models { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    }
 
     private sealed record Candidate(string Path, string Classification);
 
@@ -36,6 +50,7 @@ internal static class GlobalSnowAtlas
         internal readonly Dictionary<string, List<(string Name, IArchiveFile File)>> Files =
             new(StringComparer.OrdinalIgnoreCase);
         internal readonly List<string> Errors = [];
+        internal readonly Dictionary<string, string> Signatures = new(StringComparer.OrdinalIgnoreCase);
 
         internal void Add(string path, string name, IArchiveFile file)
         {
@@ -45,6 +60,26 @@ internal static class GlobalSnowAtlas
     }
 
     internal static int Run(string dataDirectory, string pluginsFile)
+    {
+        var data = Path.GetFullPath(dataDirectory);
+        var lockId = Digest(Encoding.UTF8.GetBytes(data.ToLowerInvariant()));
+        using var generationGate = new Mutex(false, "Local\\OpenShaders_GlobalSnowAtlas_" + lockId);
+        var acquired = false;
+        try
+        {
+            try { acquired = generationGate.WaitOne(0); }
+            catch (AbandonedMutexException) { acquired = true; }
+            if (!acquired)
+            {
+                Console.Error.WriteLine("Global Snow Atlas: generator already running for this installation.");
+                return 3;
+            }
+            return RunOwned(data, pluginsFile);
+        }
+        finally { if (acquired) generationGate.ReleaseMutex(); }
+    }
+
+    private static int RunOwned(string dataDirectory, string pluginsFile)
     {
         try
         {
@@ -87,53 +122,59 @@ internal static class GlobalSnowAtlas
                 .Where(path => path.StartsWith("meshes\\", StringComparison.OrdinalIgnoreCase) &&
                     path.EndsWith(".nif", StringComparison.OrdinalIgnoreCase))
                 .Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray();
+            if (models.Length > MaximumModelScans)
+                throw new InvalidDataException("Global NIF inventory exceeds the supported scan limit.");
+            var previousScans = ReadModelIndex(cache);
+            var updatedScans = new Dictionary<string, ModelScan>(StringComparer.OrdinalIgnoreCase);
+            var timer = Stopwatch.StartNew();
+            var reusedModels = 0;
             var scratch = Path.Combine(cache, "scan.nif.tmp");
             try
             {
-                foreach (var model in models)
+                for (var modelIndex = 0; modelIndex < models.Length; ++modelIndex)
                 {
-                    try
+                    if (timer.Elapsed > MaximumGenerationTime)
+                        throw new TimeoutException("Global NIF discovery exceeded its 25-minute bound; cached scan checkpoints are retained.");
+                    var model = models[modelIndex];
+                    var signature = ModelSignature(model, loose, archiveIndex, looseEnabled);
+                    ModelScan scan;
+                    if (previousScans.TryGetValue(model, out var previous) && previous.Signature == signature)
                     {
-                        var bytes = ReadAsset(model, data, loose, archiveIndex, looseEnabled, MaximumNifBytes, out _);
-                        File.WriteAllBytes(scratch, bytes);
-                        var nif = new NifFile();
-                        if (nif.Load(scratch) != 0 || !nif.Valid || nif.HasUnknownBlocks) continue;
-                        foreach (var shape in nif.GetShapes())
+                        scan = previous;
+                        ++reusedModels;
+                    }
+                    else
+                    {
+                        try
                         {
-                            var shader = nif.GetShader(shape) as BSLightingShaderProperty;
-                            if (shader == null) continue;
-                            var textures = nif.GetBlock(shader.TextureSetRef)?.Textures?
-                                .Select(value => NormalizeTexture(value.Content)).Where(value => value != null)
-                                .Select(value => value!).ToArray() ?? [];
-                            var flags = shader.ShaderFlags_SSPF1 + " " + shader.ShaderFlags_SSPF2;
-                            var shaderType = shader.GetType().GetProperty("ShaderType")?.GetValue(shader)?.ToString() ?? "unknown";
-                            var explicitSnow = flags.Contains("Snow", StringComparison.OrdinalIgnoreCase) ||
-                                shaderType.Contains("Snow", StringComparison.OrdinalIgnoreCase);
-                            var textureSnow = textures.Any(IsSnowNamed);
-                            if (!explicitSnow && !textureSnow) continue;
-                            nif.GetBlockIndex(shape, out var blockIndex);
-                            var key = model + "#" + blockIndex;
-                            var id = Digest(Encoding.UTF8.GetBytes(key));
-                            var kind = explicitSnow ? "nif-snow-shader" : "texture-name-candidate";
-                            var projection = "unresolved:engine-projected-snow-parameters";
-                            bindings[id] = new Binding(id, model, blockIndex, shaderType,
-                                (uint)shader.ShaderFlags_SSPF1, (uint)shader.ShaderFlags_SSPF2, kind,
-                                textures, Property(shader, "TextureClampMode"), Property(shader, "UVOffset"),
-                                Property(shader, "UVScale"), projection);
-                            for (var slot = 0; slot < textures.Length; ++slot)
-                            {
-                                var path = textures[slot];
-                                if (!roles.TryGetValue(path, out var tags)) roles[path] = tags = new(StringComparer.Ordinal);
-                                tags.Add(slot == 0 ? "base-color:srgb" : slot == 1 ? "normal:linear" :
-                                    "slot-" + slot + ":interpretation-unresolved");
-                            }
+                            var bytes = ReadAsset(model, data, loose, archiveIndex, looseEnabled, MaximumNifBytes, out _);
+                            scan = InspectModel(model, signature, bytes, scratch);
+                        }
+                        catch (Exception error) when (error is not OutOfMemoryException)
+                        {
+                            scan = new(signature, [], error.GetType().Name);
                         }
                     }
-                    catch (Exception error) when (error is not OutOfMemoryException)
+                    updatedScans.Add(model, scan);
+                    if (scan.Error != null) Failure("model:" + model + ":" + scan.Error);
+                    foreach (var binding in scan.Materials)
                     {
-                        Failure("model:" + model + ":" + error.GetType().Name);
+                        bindings[binding.Id] = binding;
+                        for (var slot = 0; slot < binding.Textures.Length; ++slot)
+                        {
+                            var path = binding.Textures[slot];
+                            if (!roles.TryGetValue(path, out var tags)) roles[path] = tags = new(StringComparer.Ordinal);
+                            tags.Add(slot == 0 ? "base-color:srgb" : slot == 1 ? "normal:linear" :
+                                "slot-" + slot + ":interpretation-unresolved");
+                        }
+                    }
+                    if ((modelIndex + 1) % 20000 == 0)
+                    {
+                        Console.WriteLine($"NIF inventory {modelIndex + 1}/{models.Length}; {reusedModels} cache hits.");
+                        WriteModelIndex(cache, updatedScans);
                     }
                 }
+                WriteModelIndex(cache, updatedScans);
             }
             finally { if (File.Exists(scratch)) File.Delete(scratch); }
 
@@ -161,7 +202,7 @@ internal static class GlobalSnowAtlas
                     var relative = "textures/" + sha + ".dds";
                     var destination = Path.Combine(cache, "textures", sha + ".dds");
                     Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-                    if (!File.Exists(destination) || Digest(File.ReadAllBytes(destination)) != sha)
+                    if (!stored.Contains(sha) && (!File.Exists(destination) || DigestFile(destination) != sha))
                     {
                         File.WriteAllBytes(destination + ".tmp", bytes);
                         File.Move(destination + ".tmp", destination, true);
@@ -195,6 +236,7 @@ internal static class GlobalSnowAtlas
                 resolvedTextures = textureList.Count(asset => asset.Status == "cached"),
                 uniqueDdsBlobs = stored.Count,
                 deduplicatedDdsPaths = textureList.Count(asset => asset.Status == "cached") - stored.Count,
+                scannedModels = models.Length, reusedModelScans = reusedModels,
                 unresolvedResources = unresolved, sourceBytes,
                 validation = "DDS original bytes, headers and SHA-256; DX12 GPU residency is separate",
                 incompleteCategories = new[]
@@ -240,7 +282,95 @@ internal static class GlobalSnowAtlas
         path.EndsWith(".dds", StringComparison.OrdinalIgnoreCase) &&
         path.Contains("snow", StringComparison.OrdinalIgnoreCase);
 
+    private static Dictionary<string, ModelScan> ReadModelIndex(string cache)
+    {
+        var location = Path.Combine(cache, "nif-scan-index.json");
+        try
+        {
+            if (!File.Exists(location) || new FileInfo(location).Length > MaximumScanIndexBytes) return [];
+            using var input = File.OpenRead(location);
+            var index = JsonSerializer.Deserialize<ModelScanIndex>(input, JsonOptions);
+            if (index?.Version != ScanIndexVersion || index.Models == null ||
+                index.Models.Count > MaximumModelScans || index.Models.Values.Any(value =>
+                    value == null || string.IsNullOrWhiteSpace(value.Signature) || value.Materials == null)) return [];
+            return new Dictionary<string, ModelScan>(index.Models, StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception error) when (error is not OutOfMemoryException) { return []; }
+    }
+
+    private static void WriteModelIndex(string cache, Dictionary<string, ModelScan> models)
+    {
+        var location = Path.Combine(cache, "nif-scan-index.json");
+        var temporary = location + ".tmp";
+        try
+        {
+            using (var output = File.Create(temporary))
+                JsonSerializer.Serialize(output, new ModelScanIndex { Models = models }, JsonOptions);
+            if (new FileInfo(temporary).Length > MaximumScanIndexBytes)
+            {
+                Console.WriteLine("NIF scan index exceeded its 128 MiB retention limit; preserving the prior index.");
+                return;
+            }
+            File.Move(temporary, location, true);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+
+    private static string ModelSignature(string model, Dictionary<string, string> loose,
+        ArchiveIndex archives, bool looseEnabled)
+    {
+        var source = new StringBuilder("looseOverrides:").Append(looseEnabled).Append('|');
+        if (loose.TryGetValue(model, out var path))
+        {
+            var file = new FileInfo(path);
+            source.Append("loose:").Append(file.FullName).Append(':').Append(file.Length)
+                .Append(':').Append(file.LastWriteTimeUtc.Ticks).Append('|');
+        }
+        if (archives.Files.TryGetValue(model, out var sources))
+            foreach (var entry in sources.OrderBy(value => value.Name, StringComparer.OrdinalIgnoreCase))
+                source.Append("archive:").Append(entry.Name).Append(':')
+                    .Append(archives.Signatures.GetValueOrDefault(entry.Name, "unknown"))
+                    .Append(':').Append(entry.File.Size).Append('|');
+        return Digest(Encoding.UTF8.GetBytes(source.ToString()));
+    }
+
+    private static ModelScan InspectModel(string model, string signature, byte[] bytes, string scratch)
+    {
+        File.WriteAllBytes(scratch, bytes);
+        var nif = new NifFile();
+        if (nif.Load(scratch) != 0 || !nif.Valid || nif.HasUnknownBlocks)
+            return new(signature, [], "unreadable-or-unknown-nif-blocks");
+        var materials = new List<Binding>();
+        foreach (var shape in nif.GetShapes())
+        {
+            var shader = nif.GetShader(shape) as BSLightingShaderProperty;
+            if (shader == null) continue;
+            var textures = nif.GetBlock(shader.TextureSetRef)?.Textures?
+                .Select(value => NormalizeTexture(value.Content)).Where(value => value != null)
+                .Select(value => value!).ToArray() ?? [];
+            var flags = shader.ShaderFlags_SSPF1 + " " + shader.ShaderFlags_SSPF2;
+            var shaderType = shader.GetType().GetProperty("ShaderType")?.GetValue(shader)?.ToString() ?? "unknown";
+            var explicitSnow = flags.Contains("Snow", StringComparison.OrdinalIgnoreCase) ||
+                shaderType.Contains("Snow", StringComparison.OrdinalIgnoreCase);
+            if (!explicitSnow && !textures.Any(IsSnowNamed)) continue;
+            nif.GetBlockIndex(shape, out var blockIndex);
+            var id = Digest(Encoding.UTF8.GetBytes(model + "#" + blockIndex));
+            materials.Add(new Binding(id, model, blockIndex, shaderType,
+                (uint)shader.ShaderFlags_SSPF1, (uint)shader.ShaderFlags_SSPF2,
+                explicitSnow ? "nif-snow-shader" : "texture-name-candidate", textures,
+                Property(shader, "TextureClampMode"), Property(shader, "UVOffset"),
+                Property(shader, "UVScale"), "unresolved:engine-projected-snow-parameters"));
+        }
+        return new(signature, materials.ToArray(), null);
+    }
+
     private static string Digest(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+
+    private static string DigestFile(string path)
+    {
+        using var input = File.OpenRead(path);
+        return Convert.ToHexString(SHA256.HashData(input)).ToLowerInvariant();
+    }
 
     private static ModKey[] GetActivePlugins(string data, string plugins)
     {
@@ -354,6 +484,8 @@ internal static class GlobalSnowAtlas
         {
             try
             {
+                var archiveFile = new FileInfo(path);
+                result.Signatures[archiveFile.Name] = $"{archiveFile.Length}:{archiveFile.LastWriteTimeUtc.Ticks}";
                 var reader = Archive.CreateReader(GameRelease.SkyrimSE, path);
                 foreach (var file in reader.Files)
                 {
@@ -422,6 +554,7 @@ internal static class GlobalSnowAtlas
             if (value.GetProperty("schemaVersion").GetInt32() != SchemaVersion ||
                 value.GetProperty("scope").GetString() != "global" ||
                 value.GetProperty("configurationFingerprint").GetString() != fingerprint) return false;
+            var verified = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var texture in value.GetProperty("textures").EnumerateArray())
             {
                 if (texture.GetProperty("status").GetString() != "cached") continue;
@@ -429,8 +562,9 @@ internal static class GlobalSnowAtlas
                 if (hash == null || hash.Length != 64 || !hash.All(Uri.IsHexDigit)) return false;
                 var expected = "textures/" + hash + ".dds";
                 if (texture.GetProperty("file").GetString() != expected) return false;
+                if (!verified.Add(hash)) continue;
                 var location = Path.Combine(root, "textures", hash + ".dds");
-                if (!File.Exists(location) || Digest(File.ReadAllBytes(location)) != hash) return false;
+                if (!File.Exists(location) || DigestFile(location) != hash) return false;
             }
             return true;
         }

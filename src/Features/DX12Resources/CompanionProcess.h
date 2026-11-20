@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <winrt/base.h>
 
 namespace DX12ResourceService
 {
@@ -103,6 +104,16 @@ namespace DX12ResourceService
 		startup.hStdError = logHandle;
 		PROCESS_INFORMATION process{};
 		const auto working = std::filesystem::absolute(".").wstring();
+		winrt::handle job;
+		job.attach(CreateJobObjectW(nullptr, nullptr));
+		JOBOBJECT_EXTENDED_LIMIT_INFORMATION jobLimits{};
+		jobLimits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+		if (!job || !SetInformationJobObject(job.get(), JobObjectExtendedLimitInformation,
+				&jobLimits, sizeof(jobLimits))) {
+			CloseHandle(logHandle);
+			result.error = "DX12 companion process lifetime guard unavailable";
+			return result;
+		}
 		// A tile prewarm process runs at IDLE priority; mandatory active
 		// geometry uses BELOW_NORMAL. The Skyrim process stays responsive.
 		const DWORD allowed = priorityClass == IDLE_PRIORITY_CLASS ||
@@ -110,7 +121,7 @@ namespace DX12ResourceService
 		                          priorityClass :
 		                          NORMAL_PRIORITY_CLASS;
 		const BOOL launched = CreateProcessW(executable.c_str(), command.data(), nullptr,
-			nullptr, TRUE, CREATE_NO_WINDOW | allowed, nullptr, working.c_str(), &startup, &process);
+			nullptr, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED | allowed, nullptr, working.c_str(), &startup, &process);
 		const DWORD launchError = launched ? ERROR_SUCCESS : GetLastError();
 		CloseHandle(logHandle);
 		if (!launched) {
@@ -118,11 +129,33 @@ namespace DX12ResourceService
 			               std::to_string(launchError) + ")";
 			return result;
 		}
-		CloseHandle(process.hThread);
-		const DWORD wait = WaitForSingleObject(process.hProcess, INFINITE);
-		if (wait != WAIT_OBJECT_0 || !GetExitCodeProcess(process.hProcess, &result.exitCode))
+		winrt::handle child;
+		child.attach(process.hProcess);
+		winrt::handle thread;
+		thread.attach(process.hThread);
+		if (!AssignProcessToJobObject(job.get(), child.get())) {
+			TerminateProcess(child.get(), ERROR_PROCESS_ABORTED);
+			WaitForSingleObject(child.get(), 10000);
+			result.error = "DX12 companion could not be attached to its lifetime guard";
+			return result;
+		}
+		if (ResumeThread(thread.get()) == DWORD(-1)) {
+			TerminateJobObject(job.get(), ERROR_PROCESS_ABORTED);
+			WaitForSingleObject(child.get(), 10000);
+			result.error = "DX12 companion could not start within its lifetime guard";
+			return result;
+		}
+		constexpr DWORD kMaximumCompanionRuntimeMs = 30 * 60 * 1000;
+		const bool snowGeneration = !arguments.empty() && arguments.front() == L"--snow-atlas";
+		const DWORD wait = WaitForSingleObject(child.get(), snowGeneration ? kMaximumCompanionRuntimeMs : INFINITE);
+		if (wait == WAIT_TIMEOUT) {
+			TerminateJobObject(job.get(), ERROR_TIMEOUT);
+			WaitForSingleObject(child.get(), 10000);
+			result.error = "DX12 companion exceeded its 30-minute runtime limit";
+			return result;
+		}
+		if (wait != WAIT_OBJECT_0 || !GetExitCodeProcess(child.get(), &result.exitCode))
 			result.error = "Could not collect DX12 Resources companion exit status";
-		CloseHandle(process.hProcess);
 		std::ifstream stream(logPath, std::ios::binary | std::ios::ate);
 		if (stream) {
 			const auto size = stream.tellg();

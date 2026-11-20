@@ -77,8 +77,10 @@ TEST_CASE("Global snow inventory is independent of CELL cache selection", "[dx12
 TEST_CASE("Global snow catalog rejects tampered cached DDS content", "[dx12_resources][snow_atlas]")
 {
 	SnowAtlasFixture fixture;
-	std::ofstream output(fixture.root / "textures" / (fixture.digest + ".dds"), std::ios::binary | std::ios::trunc);
-	output << "tampered";
+	std::fstream output(fixture.root / "textures" / (fixture.digest + ".dds"), std::ios::binary | std::ios::in | std::ios::out);
+	output.seekp(20);
+	output.put('\x01');
 	output.close();
-	REQUIRE_THROWS(DX12ResourceService::GlobalSnowAtlas::Open(fixture.root));
+	REQUIRE_NOTHROW(DX12ResourceService::GlobalSnowAtlas::Open(fixture.root, false));
+	REQUIRE_THROWS(DX12ResourceService::GlobalSnowAtlas::Open(fixture.root, true));
 }

@@ -22,7 +22,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <vector>
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(DX12Resources::Settings, Enabled, AutoPrepareOnCellEntry, FlushDiskGeometryOnStartup, RetainPreparationDiagnostics, AutoGenerateGlobalSnowAtlas)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(DX12Resources::Settings, Enabled, AutoPrepareOnCellEntry, FlushDiskGeometryOnStartup, RetainPreparationDiagnostics)
 
 struct DX12Resources::ScanJob
 {
@@ -59,6 +59,31 @@ struct DX12Resources::SnowAtlasJob
 	bool cacheHit = false;
 };
 
+void DX12Resources::LoadCachedSnowAtlas()
+{
+	if (snowAtlasJob || snowAtlas)
+		return;
+	auto next = std::make_shared<SnowAtlasJob>();
+	const auto cache = DX12ResourceService::SkyrimDataDirectory() /
+	                   "SKSE/Plugins/CommunityShaders/DX12-cache/global-snow";
+	try {
+		static BS::thread_pool<> pool{ 1 };
+		pool.detach_task([next, cache] {
+			try {
+				next->atlas = DX12ResourceService::GlobalSnowAtlas::Open(cache, false);
+				next->cacheHit = true;
+			} catch (const std::exception& error) {
+				next->error = error.what();
+			}
+			next->done.store(true, std::memory_order_release);
+		});
+		snowAtlasJob = std::move(next);
+		snowAtlasStatus = "Loading the saved global snow atlas; generator is not running";
+	} catch (const std::exception& error) {
+		snowAtlasStatus = "Global snow cache loading failed: " + std::string(error.what());
+	}
+}
+
 void DX12Resources::StartSnowAtlasGeneration()
 {
 	if (snowAtlasJob || !dataLoaded.load(std::memory_order_acquire))
@@ -82,7 +107,7 @@ void DX12Resources::StartSnowAtlasGeneration()
 				if (!result.error.empty())
 					throw std::runtime_error(result.error + ": " + result.log);
 				next->atlas = DX12ResourceService::GlobalSnowAtlas::Open(
-					data / "SKSE/Plugins/CommunityShaders/DX12-cache/global-snow");
+					data / "SKSE/Plugins/CommunityShaders/DX12-cache/global-snow", false);
 				next->cacheHit = result.log.find("verified cache hit") != std::string::npos;
 				std::error_code ignored;
 				std::filesystem::remove(log, ignored);
@@ -106,7 +131,9 @@ void DX12Resources::PollSnowAtlasGeneration()
 		return;
 	const auto completed = std::move(snowAtlasJob);
 	if (!completed->error.empty()) {
-		snowAtlasStatus = "Global snow atlas failed: " + completed->error;
+		snowAtlasStatus = completed->error.find("manifest is missing") != std::string::npos ?
+			"No global snow atlas cached; generate once from the main menu" :
+			"Global snow atlas unavailable: " + completed->error;
 		return;
 	}
 	snowAtlas = completed->atlas;
@@ -509,8 +536,7 @@ void DX12Resources::DataLoaded()
 	// This runs once per Skyrim process, without opening the configuration UI.
 	std::scoped_lock lock(statusMutex);
 	dataLoaded.store(true, std::memory_order_release);
-	if (settings.Enabled && settings.AutoGenerateGlobalSnowAtlas)
-		StartSnowAtlasGeneration();
+	LoadCachedSnowAtlas();
 	if (!settings.FlushDiskGeometryOnStartup || startupFlushTriggered)
 		return;
 	startupFlushTriggered = true;
@@ -786,11 +812,22 @@ void DX12Resources::DrawSettings()
 		RefreshLoadedPlugins();
 	AdvancePluginCellScan();
 	ImGui::SeparatorText("Global native snow resources");
-	ImGui::Checkbox("Generate global snow atlas at startup", &settings.AutoGenerateGlobalSnowAtlas);
-	ImGui::TextDisabled("Main-menu/background asset scan, independent of CELL selection and native TLAS.");
+	ImGui::TextDisabled("Cached global atlas loads at startup; generation runs only when requested here.");
 	ImGui::BeginDisabled(!mainMenu || !dataLoaded.load(std::memory_order_acquire) || bool(snowAtlasJob));
-	if (ImGui::Button("Generate / validate global snow atlas"))
+	if (snowAtlas && !snowAtlasRegenerateConfirm) {
+		if (ImGui::Button("Check / rebuild global snow atlas..."))
+			snowAtlasRegenerateConfirm = true;
+	} else if (snowAtlasRegenerateConfirm) {
+		if (ImGui::Button("Confirm snow atlas validation / rebuild")) {
+			snowAtlasRegenerateConfirm = false;
+			StartSnowAtlasGeneration();
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Cancel snow atlas validation"))
+			snowAtlasRegenerateConfirm = false;
+	} else if (ImGui::Button("Generate global snow atlas")) {
 		StartSnowAtlasGeneration();
+	}
 	ImGui::EndDisabled();
 	ImGui::TextWrapped("%s", snowAtlasStatus.c_str());
 	if (snowAtlas) {

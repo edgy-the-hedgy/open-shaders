@@ -16,6 +16,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace DX12ResourceService
@@ -58,7 +59,8 @@ namespace DX12ResourceService
 		uint64_t unresolved = 0, uniqueDdsBlobs = 0;
 
 		/** @brief Validates the immutable global manifest independently of any CELL or TLAS. */
-		static std::shared_ptr<const GlobalSnowAtlas> Open(const std::filesystem::path& root)
+		static std::shared_ptr<const GlobalSnowAtlas> Open(const std::filesystem::path& root,
+			bool verifyDdsBytes = true)
 		{
 			const auto file = root / "manifest.json";
 			std::error_code ec;
@@ -84,6 +86,7 @@ namespace DX12ResourceService
 			if (!textures.is_array() || textures.size() > 200000 ||
 				!materials.is_array() || materials.size() > 200000)
 				throw std::runtime_error("Global snow inventory count invalid");
+			std::unordered_set<std::string> verifiedBlobs;
 			for (const auto& entry : textures) {
 				Texture texture;
 				texture.path = entry.at("path").get<std::string>();
@@ -101,13 +104,17 @@ namespace DX12ResourceService
 					texture.mips = entry.at("mips").get<uint32_t>();
 					if (texture.sha256.size() != 64 || texture.file != "textures/" + texture.sha256 + ".dds" ||
 						!texture.width || !texture.height || !texture.mips ||
-						!std::filesystem::is_regular_file(root / texture.file, ec) || ec)
+						!std::filesystem::is_regular_file(root / texture.file, ec) || ec ||
+						std::filesystem::file_size(root / texture.file, ec) < 128 || ec ||
+						std::filesystem::file_size(root / texture.file, ec) > 128ull * 1024 * 1024 || ec)
 						throw std::runtime_error("Global snow DDS cache entry invalid");
-					auto digest = Util::FileDigest::Sha256FileHex(root / texture.file);
-					if (digest)
-						std::ranges::transform(*digest, digest->begin(), [](unsigned char c) { return char(std::tolower(c)); });
-					if (!digest || *digest != texture.sha256)
-						throw std::runtime_error("Global snow DDS cache digest mismatch");
+					if (verifyDdsBytes && verifiedBlobs.insert(texture.sha256).second) {
+						auto digest = Util::FileDigest::Sha256FileHex(root / texture.file);
+						if (digest)
+							std::ranges::transform(*digest, digest->begin(), [](unsigned char c) { return char(std::tolower(c)); });
+						if (!digest || *digest != texture.sha256)
+							throw std::runtime_error("Global snow DDS cache digest mismatch");
+					}
 				}
 				if (!result->textures.emplace(texture.path, std::move(texture)).second)
 					throw std::runtime_error("Duplicate global snow DDS path");

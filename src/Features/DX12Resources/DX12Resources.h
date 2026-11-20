@@ -27,7 +27,6 @@ struct DX12Resources final : Feature
 		bool AutoPrepareOnCellEntry = true;
 		bool FlushDiskGeometryOnStartup = false;
 		bool RetainPreparationDiagnostics = false;
-		bool AutoGenerateGlobalSnowAtlas = true;
 	} settings;
 
 	std::string GetName() override { return "DX12 Resources"; }
@@ -65,6 +64,7 @@ private:
 	struct PreparationJob;
 	struct DiskCacheFlushJob;
 	struct SnowAtlasJob;
+	void LoadCachedSnowAtlas();
 	void StartSnowAtlasGeneration();
 	void PollSnowAtlasGeneration();
 	void BeginAutomaticDetection(bool mainMenu);
@@ -86,6 +86,7 @@ private:
 	std::shared_ptr<DiskCacheFlushJob> diskCacheFlushJob;
 	std::shared_ptr<SnowAtlasJob> snowAtlasJob;
 	std::shared_ptr<const DX12ResourceService::GlobalSnowAtlas> snowAtlas;
+	bool snowAtlasRegenerateConfirm = false;
 	std::string snowAtlasStatus = "Waiting for Skyrim data";
 	std::string snowAtlasFingerprint;
 	uint64_t snowAtlasMaterials = 0, snowAtlasTextures = 0, snowAtlasUnique = 0, snowAtlasUnresolved = 0;

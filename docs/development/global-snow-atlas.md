@@ -6,8 +6,11 @@ interior browser selection, streamed subcells, BLAS/TLAS, or DX11 draw hooks.
 
 ## Startup and standalone invocation
 
-`DX12 Resources` starts an optional background companion scan after `DataLoaded`
-(enabled by default). The user can regenerate/validate it from the main menu.
+`DX12 Resources` loads a completed cached atlas after `DataLoaded`, without
+launching the companion or rescanning installed assets. The user initiates
+generation from the main menu. A second confirmed menu action validates the
+cache and regenerates it only if its source configuration has changed or its
+cached blobs no longer pass verification.
 The companion command is:
 
 ```text
@@ -19,12 +22,19 @@ It inspects NIF lighting shader properties and retains their material texture
 paths, shader flags, UV transform and sampler clamp values when available.
 Snow-named textures also enter the inventory as **candidates**, explicitly not
 as proven material matches. Discovery reads no loaded world or CELL records.
+Only one generator process may run for a given Skyrim Data directory; a named
+Windows mutex rejects concurrent launches. The Skyrim launcher retains its
+companion in a kill-on-close Windows Job Object, so closing Skyrim ends an
+unfinished scan. NIF discovery has a 25-minute internal bound and the launcher
+enforces a 30-minute overall bound. Existing CELL preparation uses the same lifetime
+guard, without a new runtime deadline.
 
 ## Cache and ownership
 
 ```text
 Data/SKSE/Plugins/CommunityShaders/DX12-cache/global-snow/
   manifest.json             versioned global material and texture inventory
+  nif-scan-index.json       resumable NIF material classification index
   textures/<sha256>.dds     unchanged source DDS bytes, deduplicated by content
 ```
 
@@ -33,13 +43,18 @@ replaces the manifest after generation. Failed regeneration leaves the previous
 manifest intact. The metadata includes dimensions, mip count, legacy FourCC or
 DX10 DXGI format, source origin, original texture path, sampler/UV hints, role
 interpretation hints and unresolved reasons. It never downsamples/recompresses
-the source DDS. Only `manifest.json` and original DDS bytes persist; a temporary
-NIF scan file is removed after the job. Job logs are normally deleted.
+the source DDS. The manifest, scan index and original DDS bytes persist; a temporary
+NIF scan file is removed after the job. Job logs are normally deleted. The
+NIF index is checkpointed every 20,000 models and capped at 128 MiB; model
+source signatures allow unchanged classifications (including negative matches)
+to be reused on an explicit rebuild. If the index is invalid or exceeds its
+budget the scanner falls back to full classification without discarding any
+snow materials from the final manifest.
 
 `configurationFingerprint` is derived from the enabled plugin listing, INI
 content, installed active BSA and plugin file metadata, loose NIF/DDS file
 metadata, and auxiliary deployment file metadata. A matching configuration
-is reused **only after checking cached DDS SHA-256 contents**. File changes
+is reused **only after checking each unique cached DDS SHA-256 once**. File changes
 whose size and modification timestamp are both deliberately preserved are not
 detectable for large BSA/plugin/loose assets; stronger archive hash indexing
 is required before guaranteeing strict invalidation in that case.
@@ -52,7 +67,10 @@ pages. It should match when processing different cells with unchanged assets.
 
 `DX12ResourceService::GlobalSnowAtlas::Open` publishes an immutable inventory.
 `DX12Resources::GetGlobalSnowAtlas` returns it without consulting the active
-scene. `GlobalSnowAtlas::Resolve` maps logical DDS paths to their status and,
+scene. Startup opens only the manifest and cached-file metadata; requested
+DDS bytes are SHA-256 checked by the native page loader before upload. The
+manual validation/regeneration command performs a full cached-blob check.
+`GlobalSnowAtlas::Resolve` maps logical DDS paths to their status and,
 when a residency generation is supplied, DX12 page/slice and linear/sRGB SRV
 indices. `LoadPages` consumes a bounded requested subset through the existing
 `DX12Native::MaterialResources::LoadResidency` allocator, original-mip DDS
@@ -78,6 +96,9 @@ completed; a descriptor index alone does not own the underlying texture page.
   descriptor validation require an installed Skyrim/Windows DirectX runtime.
 - No SE/AE or VR main-menu verification has yet been run. The feature itself
   currently reports `coverageComplete=false`, `gpuResidencyVerified=false`.
+- Regeneration and source/configuration invalidation are currently explicit
+  main-menu actions. An automatic invalidation notification that performs no
+  material scan has not been implemented.
 - This stage does not associate geometry with snow or evaluate snow shading.
 
 Do not mark Milestone 1 complete until these cases have been addressed and the
