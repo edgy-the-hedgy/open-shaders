@@ -17,44 +17,51 @@ The companion command is:
 DX12ResourcesPrep.exe --snow-atlas <Skyrim Data directory> <Plugins.txt>
 ```
 
-The scanner walks active BSA indices and loose `meshes`/`textures` assets.
-It inspects NIF lighting shader properties and retains their material texture
-paths, shader flags, UV transform and sampler clamp values when available.
-Snow-named textures also enter the inventory as **candidates**, explicitly not
-as proven material matches. Discovery reads no loaded world or CELL records.
+**ParallaxGen outputs are the sole snow discovery authority.** The companion
+requires `Data/ParallaxGen_Diff.json` and `Data/vortex.deployment.json` and
+inspects only CRC-validated NIFs tracked by ParallaxGen, plus generated
+`meshes/_pgpatcher_dups/` models linked to the same deployed PG package.
+Its material candidates come only from snow shader flags or snow texture paths
+on those PG NIFs. Snow-named DDS and projected diffuse/normal/noise/detail DDS
+outputs directly attributed to that PG package enter as unbound candidates.
+No vanilla snow recipe or generic projected-snow texture is added by default.
+Files outside PG outputs are not material discovery inputs, even when their
+names contain `snow`.
+
+To load textures explicitly referenced by a PG snow material, the companion
+checks those exact loose paths and, when required, matching paths in active
+BSA filename tables. It does **not** enumerate all loose textures, scan
+unrelated NIFs, or extract arbitrary game assets. Discovery reads no loaded
+world or CELL records.
 Only one generator process may run for a given Skyrim Data directory; a named
 Windows mutex rejects concurrent launches. The Skyrim launcher retains its
 companion in a kill-on-close Windows Job Object, so closing Skyrim ends an
-unfinished scan. NIF discovery has a 25-minute internal bound and the launcher
-enforces a 30-minute overall bound. Existing CELL preparation uses the same lifetime
-guard, without a new runtime deadline.
+unfinished scan. The launcher enforces a 30-minute overall bound. Existing
+CELL preparation uses the same lifetime guard without a new runtime deadline.
 
 ## Cache and ownership
 
 ```text
 Data/SKSE/Plugins/CommunityShaders/DX12-cache/global-snow/
-  manifest.json             versioned global material and texture inventory
-  nif-scan-index.json       resumable NIF material classification index
+  manifest.json             versioned PG-only snow material and texture inventory
   textures/<sha256>.dds     unchanged source DDS bytes, deduplicated by content
 ```
 
 The companion writes content-addressed blobs with temporary names and atomically
 replaces the manifest after generation. Failed regeneration leaves the previous
-manifest intact. The metadata includes dimensions, mip count, legacy FourCC or
-DX10 DXGI format, source origin, original texture path, sampler/UV hints, role
-interpretation hints and unresolved reasons. It never downsamples/recompresses
-the source DDS. The manifest, scan index and original DDS bytes persist; a temporary
-NIF scan file is removed after the job. Job logs are normally deleted. The
-NIF index is checkpointed every 20,000 models and capped at 128 MiB; model
-source signatures allow unchanged classifications (including negative matches)
-to be reused on an explicit rebuild. If the index is invalid or exceeds its
-budget the scanner falls back to full classification without discarding any
-snow materials from the final manifest.
+manifest intact. Metadata preserves dimensions, mip count, legacy FourCC or
+DX10 DXGI format, resolved texture origin, the PG NIF material source, shader
+flags, original texture paths and roles, available UV hints, projected shader
+flags and unresolved reasons. DDS source bytes are never downsampled or
+recompressed. Generated job logs are normally deleted. Old
+`nif-scan-index.json` files from schema v1 are ignored; no global NIF index
+is read or written by this generator.
 
-`configurationFingerprint` is derived from the enabled plugin listing, INI
-content, installed active BSA and plugin file metadata, loose NIF/DDS file
-metadata, and auxiliary deployment file metadata. A matching configuration
-is reused **only after checking each unique cached DDS SHA-256 once**. File changes
+`configurationFingerprint` is derived from PG manifest contents and the PG
+output NIF metadata, linked PG snow DDS outputs, active plugin/archive/INI
+metadata, and the exact loose DDS paths referenced by PG snow material entries.
+No unrelated mesh or loose texture tree enters this fingerprint. A matching
+configuration is reused **only after checking each unique cached DDS SHA-256 once**. File changes
 whose size and modification timestamp are both deliberately preserved are not
 detectable for large BSA/plugin/loose assets; stronger archive hash indexing
 is required before guaranteeing strict invalidation in that case.
@@ -84,11 +91,13 @@ completed; a descriptor index alone does not own the underlying texture page.
 
 ## Explicitly incomplete (not Milestone 1 acceptance)
 
-- The scanner does **not yet** reconcile resolved LTEX/TXST snow material IDs,
-  effective plugin overrides and all possible custom snow material definitions.
-- Runtime projected-snow texture bindings and projection transforms have not
-  been proven from a main-menu source. NIF projection fields are recorded, but
-  unknown engine projection parameters remain explicitly unresolved.
+- No vanilla, non-PG, LTEX/TXST or MATO snow material source is discovered:
+  this is an explicit PG-output-only scope decision.
+- PG NIF materials with snow shader flags or snow-named texture references are
+  classified; PG materials without these indicators are unclassified.
+- Projected UV shader flags and available NIF UV hints are preserved, but
+  per-material MATO projection parameters and implicit engine texture bindings
+  cannot be proven from PG NIFs alone and remain unresolved.
 - BSA files with competing records are **not guessed** into an asset winner;
   duplicate archive paths are rejected until their active ordering is known.
 - The DDS writer checks original bytes, SHA-256 and header bounds; full DDS
@@ -97,8 +106,7 @@ completed; a descriptor index alone does not own the underlying texture page.
 - No SE/AE or VR main-menu verification has yet been run. The feature itself
   currently reports `coverageComplete=false`, `gpuResidencyVerified=false`.
 - Regeneration and source/configuration invalidation are currently explicit
-  main-menu actions. An automatic invalidation notification that performs no
-  material scan has not been implemented.
+  main-menu actions. An automatic invalidation notification has not been implemented.
 - This stage does not associate geometry with snow or evaluate snow shading.
 
 Do not mark Milestone 1 complete until these cases have been addressed and the

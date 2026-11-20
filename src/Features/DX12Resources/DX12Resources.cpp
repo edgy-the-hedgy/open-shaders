@@ -119,7 +119,7 @@ void DX12Resources::StartSnowAtlasGeneration()
 			next->done.store(true, std::memory_order_release);
 		});
 		snowAtlasJob = std::move(next);
-		snowAtlasStatus = "Generating global snow sources in the background; no CELL or scene required";
+		snowAtlasStatus = "Generating PG-only global snow atlas; no CELL or scene required";
 	} catch (const std::exception& error) {
 		snowAtlasStatus = "Global snow worker launch failed: " + std::string(error.what());
 	}
@@ -142,7 +142,7 @@ void DX12Resources::PollSnowAtlasGeneration()
 	snowAtlasUnique = snowAtlas->uniqueDdsBlobs;
 	snowAtlasUnresolved = snowAtlas->unresolved;
 	snowAtlasFingerprint = snowAtlas->contentFingerprint;
-	snowAtlasStatus = std::format("Global snow {}: {} candidate materials, {} DDS paths, {} unique blobs, {} unresolved; coverage not yet complete",
+	snowAtlasStatus = std::format("PG snow {}: {} material candidates, {} DDS paths, {} unique blobs, {} unresolved; coverage not yet complete",
 		completed->cacheHit ? "cache hit" : "cache generated", snowAtlasMaterials,
 		snowAtlasTextures, snowAtlasUnique, snowAtlasUnresolved);
 }
@@ -812,10 +812,10 @@ void DX12Resources::DrawSettings()
 		RefreshLoadedPlugins();
 	AdvancePluginCellScan();
 	ImGui::SeparatorText("Global native snow resources");
-	ImGui::TextDisabled("Cached global atlas loads at startup; generation runs only when requested here.");
+	ImGui::TextDisabled("PG Patcher outputs only; cached atlas loads on startup without scanning.");
 	ImGui::BeginDisabled(!mainMenu || !dataLoaded.load(std::memory_order_acquire) || bool(snowAtlasJob));
 	if (snowAtlas && !snowAtlasRegenerateConfirm) {
-		if (ImGui::Button("Check / rebuild global snow atlas..."))
+		if (ImGui::Button("Check / rebuild PG snow atlas..."))
 			snowAtlasRegenerateConfirm = true;
 	} else if (snowAtlasRegenerateConfirm) {
 		if (ImGui::Button("Confirm snow atlas validation / rebuild")) {
@@ -825,7 +825,7 @@ void DX12Resources::DrawSettings()
 		ImGui::SameLine();
 		if (ImGui::Button("Cancel snow atlas validation"))
 			snowAtlasRegenerateConfirm = false;
-	} else if (ImGui::Button("Generate global snow atlas")) {
+	} else if (ImGui::Button("Generate PG snow atlas")) {
 		StartSnowAtlasGeneration();
 	}
 	ImGui::EndDisabled();

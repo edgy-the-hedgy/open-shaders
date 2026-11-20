@@ -5,6 +5,8 @@ using ICSharpCode.SharpZipLib.Checksum;
 internal sealed record PgAsset(string Path, string Status, string? SourcePackage, uint? ExpectedPatchedCrc32,
     uint? ActualCrc32, string? Sha256, string? CachedSource, bool CacheHit);
 
+internal sealed record PgOutputMesh(string Path, uint? ExpectedPatchedCrc32, string? SourcePackage);
+
 internal sealed class PgAssets : IDisposable
 {
     private readonly string data;
@@ -15,16 +17,24 @@ internal sealed class PgAssets : IDisposable
     private readonly Dictionary<string, string> sources;
     private readonly string? pgPackage;
 
-    public PgAssets(string dataDirectory, string outputDirectory)
+    public PgAssets(string dataDirectory, string outputDirectory, bool pgOutputOnly = false)
     {
         data = dataDirectory;
         output = outputDirectory;
-        diff = JsonDocument.Parse(File.ReadAllText(System.IO.Path.Combine(data, "ParallaxGen_Diff.json")));
-        deployment = JsonDocument.Parse(File.ReadAllText(System.IO.Path.Combine(data, "vortex.deployment.json")));
+        using var diffInput = File.OpenRead(System.IO.Path.Combine(data, "ParallaxGen_Diff.json"));
+        diff = JsonDocument.Parse(diffInput);
+        using var deploymentInput = File.OpenRead(System.IO.Path.Combine(data, "vortex.deployment.json"));
+        deployment = JsonDocument.Parse(deploymentInput);
         patches = diff.RootElement.EnumerateObject().ToDictionary(p => Normalize(p.Name), p => p.Value, StringComparer.OrdinalIgnoreCase);
-        sources = deployment.RootElement.GetProperty("files").EnumerateArray()
-            .GroupBy(f => Normalize(f.GetProperty("relPath").GetString()!), StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.Last().GetProperty("source").GetString()!, StringComparer.OrdinalIgnoreCase);
+        sources = new(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in deployment.RootElement.GetProperty("files").EnumerateArray())
+        {
+            var path = Normalize(row.GetProperty("relPath").GetString()!);
+            if (!pgOutputOnly || patches.ContainsKey(path) || path == "parallaxgen_diff.json" ||
+                path.StartsWith("meshes\\_pgpatcher_dups\\", StringComparison.Ordinal) ||
+                (path.StartsWith("textures\\", StringComparison.Ordinal) && IsPgSnowTexture(path)))
+                sources[path] = row.GetProperty("source").GetString()!;
+        }
         sources.TryGetValue("parallaxgen_diff.json", out pgPackage);
     }
 
@@ -35,6 +45,43 @@ internal sealed class PgAssets : IDisposable
             throw new InvalidDataException($"Invalid asset path: {path}");
         return normalized;
     }
+
+    public IEnumerable<PgOutputMesh> EnumerateOutputMeshes()
+    {
+        foreach (var (path, metadata) in patches.OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            if (!path.StartsWith("meshes\\", StringComparison.Ordinal) || !path.EndsWith(".nif", StringComparison.Ordinal))
+                continue;
+            sources.TryGetValue(path, out var source);
+            yield return new(path, metadata.GetProperty("crc32patched").GetUInt32(), source);
+        }
+        if (pgPackage == null) yield break;
+        foreach (var (path, source) in sources.OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            if (!path.StartsWith("meshes\\_pgpatcher_dups\\", StringComparison.Ordinal) ||
+                !path.EndsWith(".nif", StringComparison.Ordinal) || patches.ContainsKey(path) ||
+                !source.Equals(pgPackage, StringComparison.OrdinalIgnoreCase)) continue;
+            yield return new(path, null, source);
+        }
+    }
+
+    public IEnumerable<string> EnumerateOutputSnowTextures()
+    {
+        if (pgPackage == null) yield break;
+        foreach (var (path, source) in sources.OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            if (path.StartsWith("textures\\", StringComparison.Ordinal) &&
+                path.EndsWith(".dds", StringComparison.Ordinal) &&
+                IsPgSnowTexture(path) &&
+                source.Equals(pgPackage, StringComparison.OrdinalIgnoreCase))
+                yield return path;
+        }
+    }
+
+    private static bool IsPgSnowTexture(string path) =>
+        path.Contains("snow", StringComparison.OrdinalIgnoreCase) ||
+        path is "textures\\effects\\projecteddiffuse.dds" or "textures\\effects\\projectednormal.dds" or
+            "textures\\effects\\projectednoise.dds" or "textures\\effects\\projectednormaldetail.dds";
 
     public PgAsset Read(string model)
     {

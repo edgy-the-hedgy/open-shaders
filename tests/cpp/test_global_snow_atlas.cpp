@@ -34,14 +34,16 @@ namespace
 		void WriteManifest()
 		{
 			const nlohmann::json value = {
-				{ "kind", "dx12-global-snow-atlas" }, { "schemaVersion", 1 },
+				{ "kind", "dx12-global-snow-atlas" }, { "schemaVersion", 2 },
 				{ "scope", "global" }, { "cellIndependent", true },
 				{ "configurationFingerprint", std::string(64, 'a') },
 				{ "contentFingerprint", std::string(64, 'b') },
 				{ "unresolvedResources", 0 }, { "uniqueDdsBlobs", 1 },
 				{ "materials", nlohmann::json::array({ {
-					{ "id", std::string(64, 'c') }, { "model", "meshes\\sample.nif" },
-					{ "shapeBlock", 0 }, { "textures", { "textures\\landscape\\snow01.dds" } }
+					{ "id", std::string(64, 'c') }, { "model", "meshes\\_pgpatcher_dups\\snow.nif" },
+					{ "classification", "pg-snow-shader" },
+					{ "projectionMetadata", "pg-projected-uv-flag; engine-parameters-unresolved" },
+					{ "textures", { "textures\\landscape\\snow01.dds" } }
 				} }) },
 				{ "textures", nlohmann::json::array({ {
 					{ "path", "textures\\landscape\\snow01.dds" }, { "status", "cached" },
@@ -62,6 +64,9 @@ TEST_CASE("Global snow inventory is independent of CELL cache selection", "[dx12
 	const auto first = DX12ResourceService::GlobalSnowAtlas::Open(fixture.root);
 	REQUIRE(first->textures.size() == 1);
 	REQUIRE(first->materials.size() == 1);
+	REQUIRE(first->materials.at(std::string(64, 'c')).at("classification") == "pg-snow-shader");
+	REQUIRE(first->materials.at(std::string(64, 'c')).at("projectionMetadata") ==
+		"pg-projected-uv-flag; engine-parameters-unresolved");
 	const auto resolved = first->Resolve("Textures/Landscape/Snow01.DDS");
 	REQUIRE(resolved);
 	REQUIRE(resolved->status == "cached");

@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using ICSharpCode.SharpZipLib.Checksum;
 using Mutagen.Bethesda;
 using Mutagen.Bethesda.Archives;
 using Mutagen.Bethesda.Plugins;
@@ -12,14 +13,12 @@ using NiflySharp.Blocks;
 
 internal static class GlobalSnowAtlas
 {
-    private const int SchemaVersion = 1;
+    private const int SchemaVersion = 2;
     private const long MaximumDdsBytes = 128L * 1024 * 1024;
-    private const long MaximumNifBytes = 64L * 1024 * 1024;
+    private const long MaximumManifestBytes = 64L * 1024 * 1024;
+    private const long MaximumPgNifBytes = 64L * 1024 * 1024;
+    private const int MaximumPgModels = 150000;
     private const int MaximumFailuresReported = 128;
-    private const int ScanIndexVersion = 2;
-    private const int MaximumModelScans = 300000;
-    private const long MaximumScanIndexBytes = 128L * 1024 * 1024;
-    private static readonly TimeSpan MaximumGenerationTime = TimeSpan.FromMinutes(25);
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
@@ -30,18 +29,10 @@ internal static class GlobalSnowAtlas
         string? File, long Bytes, uint Width = 0, uint Height = 0, uint Mips = 0,
         uint FourCC = 0, uint? DxgiFormat = null, string[]? Roles = null);
 
-    internal sealed record Binding(string Id, string Model, int ShapeBlock, string ShaderType,
+    private sealed record Binding(string Id, string Model, int ShapeBlock, string ShaderType,
         uint ShaderFlags1, uint ShaderFlags2, string Classification, string[] Textures,
-        string? ClampMode, string? UvOffset, string? UvScale, string ProjectionMetadata);
-
-    internal sealed record ModelScan(string Signature, Binding[] Materials, string? Error);
-
-    internal sealed class ModelScanIndex
-    {
-        public ModelScanIndex() { }
-        public int Version { get; set; } = ScanIndexVersion;
-        public Dictionary<string, ModelScan> Models { get; set; } = new(StringComparer.OrdinalIgnoreCase);
-    }
+        string? ClampMode, string? UvOffset, string? UvScale, string ProjectionMetadata,
+        string? PgSourcePackage);
 
     private sealed record Candidate(string Path, string Classification);
 
@@ -50,8 +41,6 @@ internal static class GlobalSnowAtlas
         internal readonly Dictionary<string, List<(string Name, IArchiveFile File)>> Files =
             new(StringComparer.OrdinalIgnoreCase);
         internal readonly List<string> Errors = [];
-        internal readonly Dictionary<string, string> Signatures = new(StringComparer.OrdinalIgnoreCase);
-
         internal void Add(string path, string name, IArchiveFile file)
         {
             if (!Files.TryGetValue(path, out var entries)) Files[path] = entries = [];
@@ -91,22 +80,27 @@ internal static class GlobalSnowAtlas
             if (Directory.Exists(cache) && File.GetAttributes(cache).HasFlag(FileAttributes.ReparsePoint))
                 throw new IOException("Global snow cache must not be a redirected directory.");
             Directory.CreateDirectory(cache);
+            var clock = Stopwatch.StartNew();
+            using var pg = new PgAssets(data, cache, pgOutputOnly: true);
+            var pgModels = pg.EnumerateOutputMeshes().OrderBy(value => value.Path, StringComparer.OrdinalIgnoreCase).ToArray();
+            var pgSnowDds = pg.EnumerateOutputSnowTextures().ToArray();
+            if (pgModels.Length > MaximumPgModels)
+                throw new InvalidDataException("PG Patcher NIF output exceeds the bounded discovery limit.");
             var activePlugins = GetActivePlugins(data, plugins);
             var iniPaths = GetIniFiles();
             var archives = GetActiveArchives(data, activePlugins, iniPaths);
-            var loose = EnumerateLooseAssets(data);
-            var fingerprint = ConfigurationFingerprint(data, plugins, activePlugins, archives, loose, iniPaths);
+            var inputFingerprint = ConfigurationFingerprint(data, plugins, activePlugins, archives,
+                pgModels, pgSnowDds, iniPaths);
             var manifestPath = Path.Combine(cache, "manifest.json");
+            var previousPaths = ReadCachedTexturePaths(manifestPath);
+            var fingerprint = ReferencedTextureFingerprint(inputFingerprint, data, previousPaths);
             if (ValidCachedManifest(cache, manifestPath, fingerprint))
             {
-                Console.WriteLine("Global Snow Atlas: verified cache hit; no scene or CELL was consulted.");
+                Console.WriteLine("Global Snow Atlas: verified PG-only cache hit; no CELL or game assets were inventoried.");
                 return 0;
             }
 
-            var archiveIndex = IndexArchives(archives);
-            if (archiveIndex.Errors.Count != 0)
-                throw new InvalidDataException("An active BSA could not be indexed; global snow material discovery cannot be trusted.");
-            var looseEnabled = LooseOverridesEnabled(iniPaths);
+            Console.WriteLine($"PG output inventory: {pgModels.Length} NIFs, {pgSnowDds.Length} snow DDS outputs; {clock.ElapsedMilliseconds} ms.");
             var bindings = new SortedDictionary<string, Binding>(StringComparer.Ordinal);
             var candidates = new SortedDictionary<string, Candidate>(StringComparer.OrdinalIgnoreCase);
             var roles = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
@@ -118,46 +112,13 @@ internal static class GlobalSnowAtlas
                 if (failures.Count < MaximumFailuresReported) failures.Add(reason[..Math.Min(reason.Length, 240)]);
             }
 
-            var models = loose.Keys.Concat(archiveIndex.Files.Keys)
-                .Where(path => path.StartsWith("meshes\\", StringComparison.OrdinalIgnoreCase) &&
-                    path.EndsWith(".nif", StringComparison.OrdinalIgnoreCase))
-                .Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray();
-            if (models.Length > MaximumModelScans)
-                throw new InvalidDataException("Global NIF inventory exceeds the supported scan limit.");
-            var previousScans = ReadModelIndex(cache);
-            var updatedScans = new Dictionary<string, ModelScan>(StringComparer.OrdinalIgnoreCase);
-            var timer = Stopwatch.StartNew();
-            var reusedModels = 0;
-            var scratch = Path.Combine(cache, "scan.nif.tmp");
-            try
+            for (var index = 0; index < pgModels.Length; ++index)
             {
-                for (var modelIndex = 0; modelIndex < models.Length; ++modelIndex)
+                var model = pgModels[index];
+                try
                 {
-                    if (timer.Elapsed > MaximumGenerationTime)
-                        throw new TimeoutException("Global NIF discovery exceeded its 25-minute bound; cached scan checkpoints are retained.");
-                    var model = models[modelIndex];
-                    var signature = ModelSignature(model, loose, archiveIndex, looseEnabled);
-                    ModelScan scan;
-                    if (previousScans.TryGetValue(model, out var previous) && previous.Signature == signature)
-                    {
-                        scan = previous;
-                        ++reusedModels;
-                    }
-                    else
-                    {
-                        try
-                        {
-                            var bytes = ReadAsset(model, data, loose, archiveIndex, looseEnabled, MaximumNifBytes, out _);
-                            scan = InspectModel(model, signature, bytes, scratch);
-                        }
-                        catch (Exception error) when (error is not OutOfMemoryException)
-                        {
-                            scan = new(signature, [], error.GetType().Name);
-                        }
-                    }
-                    updatedScans.Add(model, scan);
-                    if (scan.Error != null) Failure("model:" + model + ":" + scan.Error);
-                    foreach (var binding in scan.Materials)
+                    var source = ValidPgModelPath(data, model);
+                    foreach (var binding in InspectPgModel(model, source))
                     {
                         bindings[binding.Id] = binding;
                         for (var slot = 0; slot < binding.Textures.Length; ++slot)
@@ -168,26 +129,38 @@ internal static class GlobalSnowAtlas
                                 "slot-" + slot + ":interpretation-unresolved");
                         }
                     }
-                    if ((modelIndex + 1) % 20000 == 0)
-                    {
-                        Console.WriteLine($"NIF inventory {modelIndex + 1}/{models.Length}; {reusedModels} cache hits.");
-                        WriteModelIndex(cache, updatedScans);
-                    }
                 }
-                WriteModelIndex(cache, updatedScans);
+                catch (Exception error) when (error is not OutOfMemoryException)
+                {
+                    Failure("pg-model:" + model.Path + ":" + error.GetType().Name + ":" + error.Message);
+                }
+                if ((index + 1) % 10000 == 0)
+                    Console.WriteLine($"PG snow inspection: {index + 1}/{pgModels.Length} models; {bindings.Count} snow material candidates.");
             }
-            finally { if (File.Exists(scratch)) File.Delete(scratch); }
-
-            foreach (var path in loose.Keys.Concat(archiveIndex.Files.Keys)
-                .Where(path => path.StartsWith("textures\\", StringComparison.OrdinalIgnoreCase) && IsSnowNamed(path))
-                .Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase))
+            foreach (var path in pgSnowDds)
             {
-                candidates[path] = new Candidate(path,
-                    path.Contains("projected", StringComparison.OrdinalIgnoreCase) ?
-                        "projected-snow-path-candidate" : "snow-path-candidate");
+                candidates[path] = new Candidate(path, "pg-generated-snow-dds-candidate");
                 if (!roles.TryGetValue(path, out var tags)) roles[path] = tags = new(StringComparer.Ordinal);
-                tags.Add("unbound:interpretation-unresolved");
+                if (tags.Count == 0)
+                    tags.Add(path switch
+                    {
+                        "textures\\effects\\projecteddiffuse.dds" => "unbound:projected-diffuse:srgb",
+                        "textures\\effects\\projectednormal.dds" => "unbound:projected-normal:linear",
+                        "textures\\effects\\projectednoise.dds" => "unbound:projected-noise:linear",
+                        "textures\\effects\\projectednormaldetail.dds" => "unbound:projected-detail-normal:linear",
+                        _ => "unbound:interpretation-unresolved"
+                    });
             }
+
+            var needed = roles.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var loose = EnumerateReferencedLooseAssets(data, needed);
+            var looseEnabled = LooseOverridesEnabled(iniPaths);
+            var archived = needed.Where(path => !looseEnabled || !loose.ContainsKey(path))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var archiveIndex = IndexArchives(archives, archived);
+            if (archiveIndex.Errors.Count != 0)
+                throw new InvalidDataException("An active archive needed by PG-referenced snow textures could not be indexed.");
+            Console.WriteLine($"PG snow textures: {needed.Count} references, {loose.Count} loose paths, {archiveIndex.Files.Count} archived paths; {clock.ElapsedMilliseconds} ms.");
 
             var assets = new List<Asset>();
             long sourceBytes = 0;
@@ -223,6 +196,7 @@ internal static class GlobalSnowAtlas
 
             var materialList = bindings.Values.OrderBy(value => value.Id, StringComparer.Ordinal).ToArray();
             var textureList = assets.OrderBy(value => value.Path, StringComparer.Ordinal).ToArray();
+            var manifestFingerprint = ReferencedTextureFingerprint(inputFingerprint, data, roles.Keys);
             var contentFingerprint = Digest(JsonSerializer.SerializeToUtf8Bytes(new
             {
                 materials = materialList, textures = textureList, candidates = candidates.Values
@@ -230,36 +204,114 @@ internal static class GlobalSnowAtlas
             var document = new
             {
                 kind = "dx12-global-snow-atlas", schemaVersion = SchemaVersion,
-                scope = "global", cellIndependent = true, configurationFingerprint = fingerprint,
+                scope = "global", cellIndependent = true, configurationFingerprint = manifestFingerprint,
                 contentFingerprint, generatedUtc = DateTimeOffset.UtcNow,
                 materialCount = materialList.Length, textureCount = textureList.Length,
                 resolvedTextures = textureList.Count(asset => asset.Status == "cached"),
                 uniqueDdsBlobs = stored.Count,
                 deduplicatedDdsPaths = textureList.Count(asset => asset.Status == "cached") - stored.Count,
-                scannedModels = models.Length, reusedModelScans = reusedModels,
+                pgOutputModels = pgModels.Length, inspectedNonPgModels = 0,
+                discoveryScope = "parallaxgen-output-meshes-and-pg-produced-snow-dds-only",
                 unresolvedResources = unresolved, sourceBytes,
                 validation = "DDS original bytes, headers and SHA-256; DX12 GPU residency is separate",
                 incompleteCategories = new[]
                 {
-                    "landscape material ID and TXST override bindings not yet classified",
-                    "projected snow engine parameters and texture binding precedence not yet verified",
-                    "modded snow materials with neither a snow shader flag nor a snow-named texture cannot be inferred",
-                    "archive duplicates and unverified loose overrides are rejected until exact engine precedence is available",
+                    "all materials and textures outside verified ParallaxGen outputs are excluded by design",
+                    "PG output shapes lacking explicit snow indicators cannot be classified reliably",
+                    "engine projected snow defaults are not assumed unless referenced by PG output",
+                    "per-material projected UVs and engine MATO interpretation remain unresolved",
+                    "ambiguous BSA texture override precedence remains unresolved",
                     "native DX12 upload and descriptor validation requires a running Windows renderer"
                 },
                 archiveErrors = archiveIndex.Errors.Take(MaximumFailuresReported).ToArray(),
                 failedCount = unresolved, failures, materials = materialList,
                 textures = textureList, pathCandidates = candidates.Values.ToArray()
             };
-            File.WriteAllText(manifestPath + ".tmp", JsonSerializer.Serialize(document, JsonOptions));
+            var manifest = JsonSerializer.Serialize(document, JsonOptions);
+            if (Encoding.UTF8.GetByteCount(manifest) > MaximumManifestBytes)
+                throw new InvalidDataException("PG snow manifest exceeds its bounded native inventory budget.");
+            File.WriteAllText(manifestPath + ".tmp", manifest);
             File.Move(manifestPath + ".tmp", manifestPath, true);
-            Console.WriteLine($"Global Snow Atlas: {materialList.Length} material candidates, {textureList.Count(item => item.Status == "cached")} DDS resolved, {stored.Count} unique, {textureList.Count(item => item.Status == "cached") - stored.Count} deduplicated, {unresolved} unresolved; {sourceBytes} bytes.");
+            Console.WriteLine($"Global Snow Atlas (PG only): {materialList.Length} snow material candidates from {pgModels.Length} PG NIFs, {textureList.Count(item => item.Status == "cached")} DDS resolved, {stored.Count} unique, {textureList.Count(item => item.Status == "cached") - stored.Count} deduplicated, {unresolved} unresolved; {sourceBytes} bytes; {clock.ElapsedMilliseconds} ms.");
             return 0;
         }
         catch (Exception error) when (error is not OutOfMemoryException)
         {
             Console.Error.WriteLine("Global Snow Atlas failed: " + error.Message);
             return 1;
+        }
+    }
+
+    private static bool IsSnowNamed(string path) =>
+        path.EndsWith(".dds", StringComparison.OrdinalIgnoreCase) &&
+        path.Contains("snow", StringComparison.OrdinalIgnoreCase);
+
+    private static string[] ReadCachedTexturePaths(string manifest)
+    {
+        try
+        {
+            if (!File.Exists(manifest) || new FileInfo(manifest).Length > 64L * 1024 * 1024) return [];
+            using var document = JsonDocument.Parse(File.ReadAllText(manifest));
+            var root = document.RootElement;
+            if (root.GetProperty("schemaVersion").GetInt32() != SchemaVersion ||
+                root.GetProperty("discoveryScope").GetString() != "parallaxgen-output-meshes-and-pg-produced-snow-dds-only") return [];
+            return root.GetProperty("textures").EnumerateArray().Select(value => value.GetProperty("path").GetString())
+                .Where(value => value != null && value.StartsWith("textures\\", StringComparison.Ordinal) &&
+                    value.EndsWith(".dds", StringComparison.OrdinalIgnoreCase) && !value.Contains("..", StringComparison.Ordinal))
+                .Select(value => value!).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        }
+        catch (Exception error) when (error is not OutOfMemoryException) { return []; }
+    }
+
+    private static string ValidPgModelPath(string data, PgOutputMesh model)
+    {
+        var fullPath = Path.GetFullPath(Path.Combine(data, model.Path));
+        if (!fullPath.StartsWith(data + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+            !File.Exists(fullPath))
+            throw new InvalidDataException("PG mesh is missing or lies outside Data.");
+        var length = new FileInfo(fullPath).Length;
+        if (length < 40 || length > MaximumPgNifBytes)
+            throw new InvalidDataException("PG mesh is empty or exceeds the NIF input limit.");
+        if (model.ExpectedPatchedCrc32.HasValue)
+        {
+            var crc = new Crc32();
+            using var input = File.OpenRead(fullPath);
+            var buffer = new byte[64 * 1024];
+            int count;
+            while ((count = input.Read(buffer)) != 0)
+                crc.Update(buffer, 0, count);
+            if (checked((uint)crc.Value) != model.ExpectedPatchedCrc32.Value)
+                throw new InvalidDataException("Deployed PG mesh does not match the patcher's CRC.");
+        }
+        return fullPath;
+    }
+
+    private static IEnumerable<Binding> InspectPgModel(PgOutputMesh model, string fullPath)
+    {
+        var nif = new NifFile();
+        if (nif.Load(fullPath) != 0 || !nif.Valid || nif.HasUnknownBlocks)
+            throw new InvalidDataException("PG mesh contains unreadable or unknown NIF blocks.");
+        foreach (var shape in nif.GetShapes())
+        {
+            var shader = nif.GetShader(shape) as BSLightingShaderProperty;
+            if (shader == null) continue;
+            var textures = nif.GetBlock(shader.TextureSetRef)?.Textures?
+                .Select(value => NormalizeTexture(value.Content)).Where(value => value != null)
+                .Select(value => value!).ToArray() ?? [];
+            var flags = shader.ShaderFlags_SSPF1 + " " + shader.ShaderFlags_SSPF2;
+            var shaderType = shader.GetType().GetProperty("ShaderType")?.GetValue(shader)?.ToString() ?? "unknown";
+            var explicitSnow = flags.Contains("Snow", StringComparison.OrdinalIgnoreCase) ||
+                shaderType.Contains("Snow", StringComparison.OrdinalIgnoreCase);
+            if (!explicitSnow && !textures.Any(IsSnowNamed)) continue;
+            var projected = flags.Contains("Projected", StringComparison.OrdinalIgnoreCase);
+            nif.GetBlockIndex(shape, out var blockIndex);
+            var id = Digest(Encoding.UTF8.GetBytes("pg-snow:v2:" + model.Path + "#" + blockIndex));
+            yield return new Binding(id, model.Path, blockIndex, shaderType,
+                (uint)shader.ShaderFlags_SSPF1, (uint)shader.ShaderFlags_SSPF2,
+                explicitSnow ? "pg-snow-shader" : "pg-snow-texture-candidate", textures,
+                Property(shader, "TextureClampMode"), Property(shader, "UVOffset"),
+                Property(shader, "UVScale"), projected ? "pg-projected-uv-flag; engine-parameters-unresolved" :
+                "unresolved:pg-snow-projection-parameters", model.SourcePackage);
         }
     }
 
@@ -276,92 +328,6 @@ internal static class GlobalSnowAtlas
             return path.EndsWith(".dds", StringComparison.OrdinalIgnoreCase) ? path : null;
         }
         catch (InvalidDataException) { return null; }
-    }
-
-    private static bool IsSnowNamed(string path) =>
-        path.EndsWith(".dds", StringComparison.OrdinalIgnoreCase) &&
-        path.Contains("snow", StringComparison.OrdinalIgnoreCase);
-
-    private static Dictionary<string, ModelScan> ReadModelIndex(string cache)
-    {
-        var location = Path.Combine(cache, "nif-scan-index.json");
-        try
-        {
-            if (!File.Exists(location) || new FileInfo(location).Length > MaximumScanIndexBytes) return [];
-            using var input = File.OpenRead(location);
-            var index = JsonSerializer.Deserialize<ModelScanIndex>(input, JsonOptions);
-            if (index?.Version != ScanIndexVersion || index.Models == null ||
-                index.Models.Count > MaximumModelScans || index.Models.Values.Any(value =>
-                    value == null || string.IsNullOrWhiteSpace(value.Signature) || value.Materials == null)) return [];
-            return new Dictionary<string, ModelScan>(index.Models, StringComparer.OrdinalIgnoreCase);
-        }
-        catch (Exception error) when (error is not OutOfMemoryException) { return []; }
-    }
-
-    private static void WriteModelIndex(string cache, Dictionary<string, ModelScan> models)
-    {
-        var location = Path.Combine(cache, "nif-scan-index.json");
-        var temporary = location + ".tmp";
-        try
-        {
-            using (var output = File.Create(temporary))
-                JsonSerializer.Serialize(output, new ModelScanIndex { Models = models }, JsonOptions);
-            if (new FileInfo(temporary).Length > MaximumScanIndexBytes)
-            {
-                Console.WriteLine("NIF scan index exceeded its 128 MiB retention limit; preserving the prior index.");
-                return;
-            }
-            File.Move(temporary, location, true);
-        }
-        finally { if (File.Exists(temporary)) File.Delete(temporary); }
-    }
-
-    private static string ModelSignature(string model, Dictionary<string, string> loose,
-        ArchiveIndex archives, bool looseEnabled)
-    {
-        var source = new StringBuilder("looseOverrides:").Append(looseEnabled).Append('|');
-        if (loose.TryGetValue(model, out var path))
-        {
-            var file = new FileInfo(path);
-            source.Append("loose:").Append(file.FullName).Append(':').Append(file.Length)
-                .Append(':').Append(file.LastWriteTimeUtc.Ticks).Append('|');
-        }
-        if (archives.Files.TryGetValue(model, out var sources))
-            foreach (var entry in sources.OrderBy(value => value.Name, StringComparer.OrdinalIgnoreCase))
-                source.Append("archive:").Append(entry.Name).Append(':')
-                    .Append(archives.Signatures.GetValueOrDefault(entry.Name, "unknown"))
-                    .Append(':').Append(entry.File.Size).Append('|');
-        return Digest(Encoding.UTF8.GetBytes(source.ToString()));
-    }
-
-    private static ModelScan InspectModel(string model, string signature, byte[] bytes, string scratch)
-    {
-        File.WriteAllBytes(scratch, bytes);
-        var nif = new NifFile();
-        if (nif.Load(scratch) != 0 || !nif.Valid || nif.HasUnknownBlocks)
-            return new(signature, [], "unreadable-or-unknown-nif-blocks");
-        var materials = new List<Binding>();
-        foreach (var shape in nif.GetShapes())
-        {
-            var shader = nif.GetShader(shape) as BSLightingShaderProperty;
-            if (shader == null) continue;
-            var textures = nif.GetBlock(shader.TextureSetRef)?.Textures?
-                .Select(value => NormalizeTexture(value.Content)).Where(value => value != null)
-                .Select(value => value!).ToArray() ?? [];
-            var flags = shader.ShaderFlags_SSPF1 + " " + shader.ShaderFlags_SSPF2;
-            var shaderType = shader.GetType().GetProperty("ShaderType")?.GetValue(shader)?.ToString() ?? "unknown";
-            var explicitSnow = flags.Contains("Snow", StringComparison.OrdinalIgnoreCase) ||
-                shaderType.Contains("Snow", StringComparison.OrdinalIgnoreCase);
-            if (!explicitSnow && !textures.Any(IsSnowNamed)) continue;
-            nif.GetBlockIndex(shape, out var blockIndex);
-            var id = Digest(Encoding.UTF8.GetBytes(model + "#" + blockIndex));
-            materials.Add(new Binding(id, model, blockIndex, shaderType,
-                (uint)shader.ShaderFlags_SSPF1, (uint)shader.ShaderFlags_SSPF2,
-                explicitSnow ? "nif-snow-shader" : "texture-name-candidate", textures,
-                Property(shader, "TextureClampMode"), Property(shader, "UVOffset"),
-                Property(shader, "UVScale"), "unresolved:engine-projected-snow-parameters"));
-        }
-        return new(signature, materials.ToArray(), null);
     }
 
     private static string Digest(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
@@ -433,37 +399,36 @@ internal static class GlobalSnowAtlas
         return enabled;
     }
 
-    private static Dictionary<string, string> EnumerateLooseAssets(string data)
+    private static Dictionary<string, string> EnumerateReferencedLooseAssets(string data, HashSet<string> references)
     {
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var folder in new[] { "textures", "meshes" })
+        foreach (var path in references)
         {
-            var root = Path.Combine(data, folder);
-            if (!Directory.Exists(root)) continue;
-            foreach (var path in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
-            {
-                if (!path.EndsWith(".dds", StringComparison.OrdinalIgnoreCase) &&
-                    !path.EndsWith(".nif", StringComparison.OrdinalIgnoreCase)) continue;
-                var relative = Path.GetRelativePath(data, path);
-                try { result[PgAssets.Normalize(relative)] = path; }
-                catch (InvalidDataException) { }
-            }
+            var source = Path.Combine(data, path);
+            if (File.Exists(source)) result[path] = source;
         }
         return result;
     }
 
     private static string ConfigurationFingerprint(string data, string plugins, ModKey[] mods,
-        string[] archives, Dictionary<string, string> loose, string[] iniFiles)
+        string[] archives, PgOutputMesh[] pgModels, string[] pgSnowDds, string[] iniFiles)
     {
         var modFiles = mods.Select(mod => Path.Combine(data, mod.ToString())).Where(File.Exists);
+        var pgManifests = new[] { Path.Combine(data, "ParallaxGen_Diff.json"),
+            Path.Combine(data, "vortex.deployment.json") };
+        var pgSources = pgModels.Select(model => Path.Combine(data, model.Path)).Where(File.Exists);
         var ccc = Path.Combine(Path.GetDirectoryName(data)!, "Skyrim.ccc");
-        var special = new[] { ccc, Path.Combine(data, "vortex.deployment.json"),
-            Path.Combine(data, "ParallaxGen_Diff.json") }.Where(File.Exists);
         var sources = new[] { plugins }.Concat(iniFiles).Concat(archives).Concat(modFiles)
-            .Concat(special).Concat(loose.Values).Distinct(StringComparer.OrdinalIgnoreCase)
+            .Concat(pgManifests).Concat(pgSources)
+            .Concat(File.Exists(ccc) ? new[] { ccc } : Array.Empty<string>())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .Order(StringComparer.OrdinalIgnoreCase);
-        var config = new StringBuilder("global-snow-v1\n").Append(Path.GetFullPath(data)).Append('\n');
+        var config = new StringBuilder("global-snow-v2-pg-only\n").Append(Path.GetFullPath(data)).Append('\n');
         foreach (var mod in mods) config.Append("plugin:").Append(mod).Append('\n');
+        foreach (var model in pgModels)
+            config.Append("pg-mesh:").Append(model.Path).Append(':')
+                .Append(model.ExpectedPatchedCrc32).Append(':').Append(model.SourcePackage).Append('\n');
+        foreach (var path in pgSnowDds) config.Append("pg-dds:").Append(path).Append('\n');
         foreach (var source in sources)
         {
             var file = new FileInfo(source);
@@ -471,29 +436,45 @@ internal static class GlobalSnowAtlas
                 .Append(file.LastWriteTimeUtc.Ticks).Append('\n');
             if (source.Equals(plugins, StringComparison.OrdinalIgnoreCase) ||
                 iniFiles.Contains(source, StringComparer.OrdinalIgnoreCase) ||
+                pgManifests.Contains(source, StringComparer.OrdinalIgnoreCase) ||
                 source.Equals(ccc, StringComparison.OrdinalIgnoreCase))
-                config.Append("sha256:").Append(Digest(File.ReadAllBytes(source))).Append('\n');
+                config.Append("sha256:").Append(DigestFile(source)).Append('\n');
         }
         return Digest(Encoding.UTF8.GetBytes(config.ToString()));
     }
 
-    private static ArchiveIndex IndexArchives(string[] paths)
+    private static string ReferencedTextureFingerprint(string inputFingerprint, string data,
+        IEnumerable<string> referencedTextures)
+    {
+        var content = new StringBuilder(inputFingerprint).Append('\n');
+        foreach (var path in referencedTextures.Distinct(StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.OrdinalIgnoreCase))
+        {
+            content.Append("reference:").Append(path).Append('\n');
+            var full = Path.Combine(data, path);
+            if (!File.Exists(full)) continue;
+            var file = new FileInfo(full);
+            content.Append(file.Length).Append(':').Append(file.LastWriteTimeUtc.Ticks).Append('\n');
+        }
+        return Digest(Encoding.UTF8.GetBytes(content.ToString()));
+    }
+
+    private static ArchiveIndex IndexArchives(string[] paths, HashSet<string> referenced)
     {
         var result = new ArchiveIndex();
+        if (referenced.Count == 0) return result;
         foreach (var path in paths)
         {
             try
             {
-                var archiveFile = new FileInfo(path);
-                result.Signatures[archiveFile.Name] = $"{archiveFile.Length}:{archiveFile.LastWriteTimeUtc.Ticks}";
                 var reader = Archive.CreateReader(GameRelease.SkyrimSE, path);
                 foreach (var file in reader.Files)
                 {
+                    if (!file.Path.EndsWith(".dds", StringComparison.OrdinalIgnoreCase)) continue;
                     try
                     {
                         var normalized = PgAssets.Normalize(file.Path);
-                        if ((normalized.StartsWith("textures\\", StringComparison.Ordinal) && normalized.EndsWith(".dds")) ||
-                            (normalized.StartsWith("meshes\\", StringComparison.Ordinal) && normalized.EndsWith(".nif")))
+                        if (referenced.Contains(normalized))
                             result.Add(normalized, Path.GetFileName(path), file);
                     }
                     catch (InvalidDataException) { }
@@ -553,6 +534,7 @@ internal static class GlobalSnowAtlas
             var value = document.RootElement;
             if (value.GetProperty("schemaVersion").GetInt32() != SchemaVersion ||
                 value.GetProperty("scope").GetString() != "global" ||
+                value.GetProperty("discoveryScope").GetString() != "parallaxgen-output-meshes-and-pg-produced-snow-dds-only" ||
                 value.GetProperty("configurationFingerprint").GetString() != fingerprint) return false;
             var verified = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var texture in value.GetProperty("textures").EnumerateArray())

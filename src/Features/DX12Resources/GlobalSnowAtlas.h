@@ -22,10 +22,10 @@
 namespace DX12ResourceService
 {
 	using SnowJson = nlohmann::json;
-	/** @brief Scene-independent, versioned inventory of original snow DDS assets and NIF bindings. */
+	/** @brief Scene-independent, versioned inventory of PG-derived snow material bindings and DDS assets. */
 	struct GlobalSnowAtlas
 	{
-		static constexpr uint32_t kSchemaVersion = 1;
+		static constexpr uint32_t kSchemaVersion = 2;
 		static constexpr size_t kMaximumManifestBytes = 64ull * 1024 * 1024;
 		static constexpr size_t kMaximumBatchTextures = 64;
 		static constexpr uint32_t kSrgbDescriptorOffset = DX12Native::kMaximumTexturePools;
