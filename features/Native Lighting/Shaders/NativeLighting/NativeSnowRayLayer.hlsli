@@ -30,7 +30,7 @@ bool SampleNativeSnowTriplanar(uint2 location, uint samplerMode, float3 position
 	return all(isfinite(sampled));
 }
 
-bool ApplyNativeProjectedSnow(uint instance, uint flags, TriangleSurface triangle, float2 barycentric,
+bool ApplyNativeProjectedSnow(uint instance, uint flags, TriangleSurface hitSurface, float2 barycentric,
 	float3x4 objectToWorld, float footprint, bool pbrColorScale, NativePBR::SurfaceInput surface,
 	inout NativePBR::SurfaceMaterial material)
 {
@@ -45,8 +45,8 @@ bool ApplyNativeProjectedSnow(uint instance, uint flags, TriangleSurface triangl
 	if (!all(isfinite(projectionDirection)) || dot(projectionDirection, projectionDirection) < 1e-8f)
 		return false;
 	projectionDirection = normalize(projectionDirection);
-	float3 edge0 = mul((float3x3)objectToWorld, triangle.position1 - triangle.position0);
-	float3 edge1 = mul((float3x3)objectToWorld, triangle.position2 - triangle.position0);
+	float3 edge0 = mul((float3x3)objectToWorld, hitSurface.position1 - hitSurface.position0);
+	float3 edge1 = mul((float3x3)objectToWorld, hitSurface.position2 - hitSurface.position0);
 	float3 faceNormal = cross(edge0, edge1);
 	if (!all(isfinite(faceNormal)) || dot(faceNormal, faceNormal) < 1e-8f)
 		return false;
@@ -66,8 +66,8 @@ bool ApplyNativeProjectedSnow(uint instance, uint flags, TriangleSurface triangl
 		weightSum = weights.x + weights.y + weights.z;
 	}
 	weights /= max(weightSum, 1e-6f);
-	float3 localPosition = triangle.position0 * (1.0f - barycentric.x - barycentric.y) +
-		triangle.position1 * barycentric.x + triangle.position2 * barycentric.y;
+	float3 localPosition = hitSurface.position0 * (1.0f - barycentric.x - barycentric.y) +
+		hitSurface.position1 * barycentric.x + hitSurface.position2 * barycentric.y;
 	float3 worldPosition = mul(objectToWorld, float4(localPosition, 1.0f));
 	if (!all(isfinite(worldPosition)))
 		return false;
@@ -75,7 +75,7 @@ bool ApplyNativeProjectedSnow(uint instance, uint flags, TriangleSurface triangl
 	if (!SampleNativeSnowTriplanar(snow.textures[1].zw, (snow.flags.w >> 6u) & 3u,
 		worldPosition, weights, snow.projectedUVParams.z, footprint, noise))
 		return false;
-	float vertexAlpha = (flags & NativePBR::DrawVertexColorFlag) != 0u ? saturate(triangle.color.a) : 1.0f;
+	float vertexAlpha = (flags & NativePBR::DrawVertexColorFlag) != 0u ? saturate(hitSurface.color.a) : 1.0f;
 	float coverage = -snow.projectedUVParams.x * noise.x +
 		(dot(normal, projectionDirection) * vertexAlpha - snow.projectedUVParams.w);
 	if (!isfinite(coverage))
