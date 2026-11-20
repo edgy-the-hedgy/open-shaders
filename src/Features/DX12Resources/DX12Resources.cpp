@@ -861,7 +861,7 @@ void DX12Resources::DrawSettings()
 	if (ImGui::Button("Process Selected Cell") && canPrepareChosen)
 		StartCellPreparation(*chosenInterior);
 	ImGui::EndDisabled();
-	ImGui::TextDisabled("Quality 1; off-thread Mutagen/Nifly extraction; no atlas.");
+	ImGui::TextDisabled("Quality 1; off-thread geometry and Snow Atlas source preparation.");
 	if (preparationJob)
 		ImGui::TextUnformatted("DX12ResourcesPrep is processing the requested CELL...");
 	ImGui::TextWrapped("%s", preparationStatus.c_str());
@@ -873,6 +873,26 @@ void DX12Resources::DrawSettings()
 			preparationReport.value("placedShapeInstances", 0),
 			preparationReport.value("unresolvedAssets", 0));
 	}
+	ImGui::SeparatorText("Snow Atlas (DX12 Resources)");
+	ImGui::BeginDisabled(!canPrepareChosen);
+	if (ImGui::Button("Process selected cell snow resources") && canPrepareChosen)
+		StartCellPreparation(*chosenInterior);
+	ImGui::SameLine();
+	if (ImGui::Button("Rebuild selected cell Snow Atlas") && canPrepareChosen)
+		StartCellPreparation(*chosenInterior);
+	ImGui::EndDisabled();
+	if (preparationReport.contains("snowAtlas") && preparationReport.at("snowAtlas").is_object()) {
+		const auto& snow = preparationReport.at("snowAtlas");
+		ImGui::Text("Ordinary: %d | Projected: %d | Landscape: %d",
+			snow.value("ordinary", 0), snow.value("projected", 0), snow.value("landscape", 0));
+		ImGui::Text("DDS loaded: %d / %d | Logical pages: %d | Source bytes: %lld",
+			snow.value("cachedTextures", 0), snow.value("texturePaths", 0),
+			snow.value("pages", 0), static_cast<long long>(snow.value("sourceBytes", 0ll)));
+		ImGui::Text("Missing textures: %d | Missing native projection: %d",
+			snow.value("unresolvedTextures", 0), snow.value("unresolvedProjections", 0));
+		ImGui::TextDisabled("Disk cache: published with CELL | GPU residency: not yet published");
+	} else
+		ImGui::TextDisabled("Snow Atlas: no completed preparation report");
 	if (!preparationLogPath.empty())
 		ImGui::TextWrapped("Preparation log: %s", preparationLogPath.c_str());
 	ImGui::EndDisabled();

@@ -272,6 +272,7 @@ try
     var layout = CellLayout.Write(output, cellKey.ToString(), scopeEditorId,
         inputDigest, rows, compiledAssets, options, subcellSize, requestedSubcell,
         worldspace ? "worldspace" : "cell");
+    var snowAtlas = SnowAtlas.Write(data, output, listings, options);
     File.WriteAllText(Path.Combine(output, "cell-records.json"), JsonSerializer.Serialize(new
     {
         schemaVersion = 1, tool = "DX12ResourcesPrep", recordReader = "Mutagen.Bethesda.Skyrim/0.54.4",
@@ -301,6 +302,7 @@ try
         compiledShapes = compiledShapes.Length, compiledTriangles = compiledShapes.Sum(shape => (long)shape.IndexCount / 3),
         previewOnlyShapes = compiledAssets.SelectMany(asset => asset.Shapes).Count(shape => shape.Status.StartsWith("preview-only:", StringComparison.Ordinal)),
         placedReferences = layout.PlacedReferences, placedShapeInstances = layout.Instances, placedTriangles = layout.Triangles,
+        snowAtlas,
         layoutDigest = layout.Digest, placementMatricesComposed = true,
         stage = "cell-packed-partial", geometryCompiled = compiledShapes.Length > 0, accelerationBuilt = false, runtimeCoverageValid = false,
         outstanding = new[] { "Runtime placement/state comparison", "Excluded mesh/material coverage", "Shader coordinator and DX12 integration" }

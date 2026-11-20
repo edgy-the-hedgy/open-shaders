@@ -167,13 +167,33 @@ namespace DX12ResourceService
 				path.find(':') != std::string::npos || path.find("//") != std::string::npos)
 				throw std::runtime_error("Invalid prepared external DDS reference");
 		}
+		const auto snow = ReadPreparationJson(output / "cell-snow-atlas.json");
+		if (snow.value("schemaVersion", 0u) != 1 || !SamePluginName(snow.value("cell", std::string{}), request.Key()) ||
+			snow.value("layoutDigest", std::string{}) != digest || snow.value("gpuReady", true) ||
+			!snow.contains("textures") || !snow.at("textures").is_array() ||
+			snow.at("textures").size() > 4096 || !snow.contains("pages") ||
+			!snow.at("pages").is_array() || snow.at("pages").size() > 256)
+			throw std::runtime_error("Prepared snow atlas identity or bounded-resource contract invalid");
+		for (const auto& entry : snow.at("textures")) {
+			const auto& path = entry.at("path").get_ref<const std::string&>();
+			if (path.size() > 1024 || !path.starts_with("textures/") || !path.ends_with(".dds") ||
+				path.find("..") != std::string::npos || path.find('\\') != std::string::npos ||
+				path.find(':') != std::string::npos || path.find("//") != std::string::npos)
+				throw std::runtime_error("Invalid snow atlas source path");
+			if (entry.at("status") == "cached") {
+				const auto& hash = entry.at("sha256").get_ref<const std::string&>();
+				VerifyPreparedBlob(output, entry.at("file").get<std::string>(), hash, "textures", ".dds", checked);
+			} else if (!entry.at("file").is_null() || !entry.at("sha256").is_null()) {
+				throw std::runtime_error("Unresolved snow source cannot claim a cached DDS");
+			}
+		}
 		if (prep.at("runtimeCoverageValid") != false ||
 			prep.at("accelerationBuilt") != false)
 			throw std::runtime_error("Stage A coverage claims do not match the agreed partial format");
 		return prep;
 	}
 
-	/** @brief Keep the published CELL to three files; retain only compact JSON diagnostics. */
+	/** @brief Publish verified geometry and bounded snow DDS inputs atomically. */
 	inline std::filesystem::path PublishPreparedCell(const std::filesystem::path& staging,
 		const std::filesystem::path& data, const CellRequest& request,
 		std::optional<PreparedSubcellAddress> subcell = std::nullopt, bool retainDiagnostics = false)
@@ -205,8 +225,24 @@ namespace DX12ResourceService
 			throw std::runtime_error("Prepared CELL publication staging already exists");
 		bool hadPrevious = false;
 		try {
-			for (const char* resource : { "cell-layout.json", "cell-geometry.rsgp", "cell-shading.rssp" })
+			for (const char* resource : { "cell-layout.json", "cell-geometry.rsgp", "cell-shading.rssp", "cell-snow-atlas.json" })
 				std::filesystem::copy_file(staging / resource, incoming / resource);
+			const auto snow = ReadPreparationJson(incoming / "cell-snow-atlas.json");
+			std::unordered_set<std::string> copiedSnow;
+			for (const auto& entry : snow.at("textures")) {
+				if (entry.at("status") != "cached")
+					continue;
+				const auto hash = entry.at("sha256").get<std::string>();
+				const auto relative = entry.at("file").get<std::string>();
+				if (!copiedSnow.insert(relative).second)
+					continue;
+				std::unordered_set<std::string> verified;
+				VerifyPreparedBlob(staging, relative, hash, "textures", ".dds", verified);
+				std::filesystem::create_directories(incoming / "textures");
+				std::filesystem::copy_file(staging / relative, incoming / relative);
+				verified.clear();
+				VerifyPreparedBlob(incoming, relative, hash, "textures", ".dds", verified);
+			}
 
 			// Verify the actual published bytes before making them visible to the DX12 loader.
 			const auto manifest = ReadPreparationJson(incoming / "cell-layout.json");

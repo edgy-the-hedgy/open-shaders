@@ -27,6 +27,13 @@ internal static class TextureSources
             layout.RootElement.GetProperty("layoutDigest").GetString()!, "cell-textures.json", MaximumCellBytes);
     }
 
+    public static void WriteSnow(string data, string output, ModKey[] plugins, JsonSerializerOptions options,
+        string?[][] materials, string cell, string layoutDigest)
+    {
+        WriteSources(data, output, plugins, options, materials, cell, layoutDigest,
+            "snow-textures.json", MaximumCellBytes);
+    }
+
     private static void WriteSources(string data, string output, ModKey[] plugins, JsonSerializerOptions options,
         string?[][] materials, string identity, string digest, string manifestName, long byteBudget)
     {
