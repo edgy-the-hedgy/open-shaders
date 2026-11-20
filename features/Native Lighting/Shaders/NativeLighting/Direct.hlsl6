@@ -232,11 +232,14 @@ void main(uint2 pixel : SV_DispatchThreadID)
 	EvaluatedSourceMaterial material;
 	float footprint = max(distance * 2.0f / max(float(Size.x), 1.0f), 1e-6f);
 	bool nativePbrUsedFallback = false;
+	bool projectedSnowApplied = false;
 	float3 nativeClearcoat = 0.0f;
 	if (NativePBRReady != 0u && NativePBRInstances[instance].materialIndex != 0xffffffffu)
 		Count(29);
 	const bool nativeMaterialValid = LoadNativePBRMaterial(instance, primitive, query.CommittedTriangleBarycentrics(),
-		query.CommittedObjectToWorld3x4(), query.CommittedWorldToObject3x4(), footprint, -direction, material, nativePbrUsedFallback, nativeClearcoat);
+		query.CommittedObjectToWorld3x4(), query.CommittedWorldToObject3x4(), footprint, -direction, material, nativePbrUsedFallback, nativeClearcoat, projectedSnowApplied);
+	if (nativeMaterialValid && projectedSnowApplied)
+		Count(31);
 	const bool ordinarySnow = nativeMaterialValid &&
 		(NativePBRInstances[instance].flags & NativePBR::DrawSnowOrdinaryFlag) != 0u;
 	if (nativeMaterialValid)

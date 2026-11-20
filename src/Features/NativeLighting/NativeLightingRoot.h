@@ -23,7 +23,7 @@ namespace NativeLighting
 		ranges[4] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 6, 0, 0 };
 		ranges[5] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 11, 0, 0, 0 };
 		ranges[6] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 512, 0, 4, 0 };
-		D3D12_ROOT_PARAMETER params[17]{};
+		D3D12_ROOT_PARAMETER params[18]{};
 		constexpr std::array rootSrvRegisters{ 0u, 2u, 3u, 4u, 5u };
 		constexpr std::array rootSrvIndices{ 0u, 2u, 3u, 5u, 6u };
 		for (size_t i = 0; i < rootSrvIndices.size(); ++i) {
@@ -49,6 +49,8 @@ namespace NativeLighting
 		params[15].Descriptor.ShaderRegister = 9;
 		params[16].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 		params[16].DescriptorTable = { 1, &ranges[6] };
+		params[17].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+		params[17].Descriptor.ShaderRegister = 10;
 		D3D12_STATIC_SAMPLER_DESC samplers[4]{};
 		for (uint32_t i = 0; i < 4; ++i) {
 			samplers[i].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;

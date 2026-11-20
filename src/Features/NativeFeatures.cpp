@@ -18,6 +18,8 @@
 #include "Features/NativePBR/RayMaterialBindings.h"
 #include "Features/NativePBR/NativeSnowPublication.h"
 #include "Features/NativePBR/NativeSnowConstantCapture.h"
+#include "Features/NativePBR/NativeSnowTextureDiscovery.h"
+#include "Features/NativePBR/NativeSnowGpu.h"
 #include "Features/NativePBR/NativeSnowTextureResidency.h"
 #include "Utils/Game.h"
 #include "Utils/PointLightFlags.h"
@@ -32,6 +34,14 @@
 
 namespace
 {
+	NativePBR::SnowTextureViewSource SnowEngineTextureSource(const RE::NiSourceTexture* a_source)
+	{
+		if (!a_source || !a_source->rendererTexture || !a_source->rendererTexture->resourceView)
+			return {};
+		const char* name = a_source->name.c_str();
+		return { Util::AsReal(a_source->rendererTexture->resourceView), name ? std::string_view(name) : std::string_view{} };
+	}
+
 	std::string CanonicalSnowResourceName(ID3D11DeviceChild* a_resource)
 	{
 		if (!a_resource)
@@ -53,7 +63,7 @@ namespace
 	}
 
 	NativePBR::ObservedSnowTexture CaptureSnowTexture(ID3D11ShaderResourceView* a_view,
-		ID3D11SamplerState* a_sampler)
+		ID3D11SamplerState* a_sampler, std::span<const NativePBR::SnowTextureViewSource> a_sources)
 	{
 		NativePBR::ObservedSnowTexture result;
 		if (a_sampler) {
@@ -74,7 +84,9 @@ namespace
 		}
 		if (!a_view)
 			return result;
-		result.canonicalPath = CanonicalSnowResourceName(a_view);
+		result.canonicalPath = NativePBR::IdentifySnowTextureView(a_view, a_sources).value_or(std::string{});
+		if (result.canonicalPath.empty())
+			result.canonicalPath = CanonicalSnowResourceName(a_view);
 		if (result.canonicalPath.empty()) {
 			winrt::com_ptr<ID3D11Resource> resource;
 			a_view->GetResource(resource.put());
@@ -196,7 +208,7 @@ std::function<void()> NativePBRFeature::OnRenderPassBegin(const RE::BSRenderPass
 	snowObservations.Observe(referenceKey, shape, descriptor, nifFlags);
 	if ((descriptor & NativePBR::kProjectedUvShaderFlag) == 0)
 		return nullptr;
-	return [this, referenceKey, shape, descriptor]() {
+	return [this, referenceKey, shape, descriptor, a_pass]() {
 		auto* graphicsState = globals::game::graphicsState;
 		auto* shadowState = globals::game::shadowState;
 		if (!graphicsState || !shadowState)
@@ -207,13 +219,28 @@ std::function<void()> NativePBRFeature::OnRenderPassBegin(const RE::BSRenderPass
 		if (!snowObservations.BeginProjectedTextureProbe(referenceKey, shape, frame))
 			return;
 		GET_INSTANCE_MEMBER(PSTexture, shadowState)
+		std::array<NativePBR::SnowTextureViewSource, 8> sources{};
+		if (const auto* state = globals::game::graphicsState) {
+			sources[0] = SnowEngineTextureSource(state->defaultTextureProjDiffuseMap.get());
+			sources[1] = SnowEngineTextureSource(state->defaultTextureProjNormalMap.get());
+			sources[2] = SnowEngineTextureSource(state->defaultTextureProjNormalDetailMap.get());
+			sources[3] = SnowEngineTextureSource(state->defaultTextureProjNoiseMap.get());
+		}
+		if (const auto* base = a_pass->shaderProperty->GetBaseMaterial();
+			base && base->GetType() == RE::BSShaderMaterial::Type::kLighting) {
+			const auto* material = static_cast<const RE::BSLightingShaderMaterialBase*>(base);
+			sources[4] = SnowEngineTextureSource(material->diffuseTexture.get());
+			sources[5] = SnowEngineTextureSource(material->normalTexture.get());
+			sources[6] = SnowEngineTextureSource(material->rimSoftLightingTexture.get());
+			sources[7] = SnowEngineTextureSource(material->specularBackLightingTexture.get());
+		}
 		std::array<NativePBR::ObservedSnowTexture, NativePBR::kSnowProjectedTextureCount> textures;
 		for (size_t i = 0; i < NativePBR::kSnowProjectedTextureSlots.size(); ++i) {
 			const auto slot = NativePBR::kSnowProjectedTextureSlots[i];
 			winrt::com_ptr<ID3D11SamplerState> sampler;
 			if (globals::d3d::context)
 				globals::d3d::context->PSGetSamplers(slot, 1, sampler.put());
-			textures[i] = CaptureSnowTexture(Util::AsReal(PSTexture[slot]), sampler.get());
+			textures[i] = CaptureSnowTexture(Util::AsReal(PSTexture[slot]), sampler.get(), sources);
 		}
 		snowObservations.ObserveProjectedTextures(referenceKey, shape, textures);
 	};
@@ -1077,6 +1104,9 @@ void NativePBRFeature::DrawSettings()
 		rayBindings ? rayBindings->eligible : 0, rayBindings ? rayBindings->unsupported : 0,
 		rayBindings ? rayBindings->unavailable : 0, rayBindings ? "" : " (not published)");
 	ImGui::SeparatorText("Native Snow Diagnostics");
+	ImGui::Text("Snow source status: %u observed | %u NIF-only | %u ambiguous | %u missing material",
+		snow ? snow->observed : 0, snow ? snow->nifOnly : 0,
+		snow ? snow->ambiguous : 0, snow ? snow->missing : 0);
 	ImGui::Text("Ordinary snow: %u detected | %u native ray bindings",
 		snow ? snow->ordinary : 0, rayBindings ? rayBindings->ordinarySnow : 0);
 	const auto snowFrame = globals::game::graphicsState ? globals::game::graphicsState->GetFrameCount() : 0u;
@@ -1098,13 +1128,17 @@ void NativePBRFeature::DrawSettings()
 	ImGui::Text("Required projected sets: %u resident | %u partial | %u unavailable",
 		snow ? snow->textureSetsResident : 0, snow ? snow->textureSetsPartial : 0,
 		snow ? snow->textureSetsUnavailable : 0);
+	ImGui::Text("Projected DX12 layer inputs ready: %u",
+		snow && snow->gpuMaterials && snow->gpuMaterials->generation ?
+			NativePBR::CountNativeSnowGpuReady(*snow, snowFrame, globals::game::isVR,
+				snow->gpuMaterials->generation->revision) : 0u);
 	if (snow)
 		ImGui::Text("Observed paths by slot (diffuse / normal / detail / noise): %u / %u / %u / %u",
 			snow->textureRolePaths[0], snow->textureRolePaths[1],
 			snow->textureRolePaths[2], snow->textureRolePaths[3]);
 	if (!snow || !rayBindings)
 		ImGui::TextDisabled("Native snow or ray-material publication is not ready.");
-	ImGui::TextDisabled("Projected figures report input readiness, not native projected shading.");
+	ImGui::TextDisabled("GPU-ready inputs feed Native Lighting's projected layer; ray-hit shading is separate.");
 	if (materialWorker && !materialWorker->gpu.Failure().empty())
 		ImGui::TextDisabled("Native material GPU preparation: %s", materialWorker->gpu.Failure().c_str());
 }
@@ -1245,6 +1279,9 @@ json NativePBRFeature::GetDiagnostics()
 		{ "materialInstanceBindings", materialView ? materialView->instances.size() : 0 },
 		{ "nativeSnow", { { "abiVersion", NativePBR::kNativeSnowPublicationVersion },
 			{ "projectionFrameReady", snow ? NativePBR::CountNativeSnowProjectionReady(*snow, snowFrame, globals::game::isVR) : 0 },
+			{ "gpuLayerInputsReady", snow && snow->gpuMaterials && snow->gpuMaterials->generation ?
+				NativePBR::CountNativeSnowGpuReady(*snow, snowFrame, globals::game::isVR,
+					snow->gpuMaterials->generation->revision) : 0u },
 			{ "sceneRevision", snow ? snow->sceneRevision : 0 },
 			{ "materialSerial", snow ? snow->materialSerial : 0 },
 			{ "instances", snow ? snow->instances.size() : 0 },

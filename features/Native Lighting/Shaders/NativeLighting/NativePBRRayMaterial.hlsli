@@ -37,6 +37,8 @@ bool SampleNativePBR(uint2 location, uint clampMode, float2 uv, float lod, out f
 	return all(isfinite(value));
 }
 
+#include "NativeSnowRayLayer.hlsli"
+
 float NativePBRLod(NativePBR::MaterialRecord material, TriangleSurface hitSurface,
 	float3x4 objectToWorld, float footprint)
 {
@@ -187,11 +189,12 @@ bool ResolveNativePBRHitUV(inout NativePBR::MaterialRecord material, TriangleSur
 
 bool LoadNativePBRMaterial(uint instance, uint primitive, float2 barycentric,
 	float3x4 objectToWorld, float3x4 worldToObject, float footprint, float3 viewDirectionWS, out EvaluatedSourceMaterial evaluated,
-	out bool usedFallback, out float3 clearcoat)
+	out bool usedFallback, out float3 clearcoat, out bool snowApplied)
 {
 	evaluated = (EvaluatedSourceMaterial)0;
 	usedFallback = false;
 	clearcoat = 0.0f;
+	snowApplied = false;
 	if (NativePBRReady == 0u || instance >= InstanceCount)
 		return false;
 	NativePBRRayBinding binding = NativePBRInstances[instance];
@@ -247,6 +250,9 @@ bool LoadNativePBRMaterial(uint instance, uint primitive, float2 barycentric,
 		return false;
 	NativePBR::SurfaceMaterial result = NativePBR::EvaluateOpaque(material, surface, base, normal, packed, emission,
 		coat, complexMaskDetected, binding.flags);
+	snowApplied = ApplyNativeProjectedSnow(instance, binding.flags, hitSurface, barycentric, objectToWorld, footprint,
+		material.controls.w != 0u,
+		surface, result);
 	evaluated.baseColor = result.baseColor;
 	evaluated.normal = result.normal;
 	evaluated.f0 = result.f0;

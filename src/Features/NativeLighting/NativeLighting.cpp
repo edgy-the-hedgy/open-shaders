@@ -114,6 +114,10 @@ void NativeLightingFeature::DrawSettings()
 			static_cast<unsigned long long>(diagnostics.value("nativePbrEvaluated", uint64_t{ 0 })));
 		ImGui::TextDisabled("NativePBR forced missing-texture fallbacks: %llu",
 			static_cast<unsigned long long>(diagnostics.value("nativePbrForcedTextures", uint64_t{ 0 })));
+		ImGui::TextDisabled("DX12 projected snow layers (resident, frame-valid): %u",
+			diagnostics.value("nativeSnowLayers", 0u));
+		ImGui::TextDisabled("Projected snow pixels shaded (GPU completed, cumulative): %llu",
+			static_cast<unsigned long long>(diagnostics.value("nativeSnowShadedPixels", uint64_t{ 0 })));
 	}
 	if (ImGui::Checkbox("Early shadow-mask culling", &settings.EarlyShadowCull))
 		++validityRevision;
@@ -258,6 +262,8 @@ void NativeLightingFeature::PublishDiagnostics()
 		{ "materials", totals[6] }, { "shadowQueries", totals[7] }, { "lights", totals[8] },
 		{ "nativePbrEvaluated", totals[28] }, { "nativePbrCandidates", totals[29] },
 		{ "nativePbrForcedTextures", totals[30] },
+		{ "nativeSnowShadedPixels", totals[31] },
+		{ "nativeSnowLayers", current ? current->nativeProjectedLayers : 0u },
 		{ "forcePositiveValidity", current && current->forcePositiveValidity },
 		{ "validDiffuse", totals[9] }, { "unsupported", totals[10] }, { "validSpecular", totals[11] },
 		{ "currentMaskAuthoritative", false }, { "comparisonFrames", comparisonFrames }, { "visualConsumptionVerified", false } };
@@ -552,9 +558,12 @@ void NativeLightingFeature::Dispatch(DX12NativeScene::SceneFrame a_scene, const 
 		uint64_t bytes = 2 * 1024 * 1024;
 		const auto rayTable = CD3DX12_RESOURCE_DESC::Buffer(NativeLighting::kMaximumInstances * sizeof(NativePBR::GpuDrawBinding));
 		const auto rayBytes = backend.d3d12Device->GetResourceAllocationInfo(0, 1, &rayTable).SizeInBytes;
-		if (rayBytes == UINT64_MAX || rayBytes > budget || bytes > budget - rayBytes)
+		const auto snowTable = CD3DX12_RESOURCE_DESC::Buffer(NativeLighting::kMaximumInstances * sizeof(NativePBR::GpuSnowLayerRecord));
+		const auto snowBytes = backend.d3d12Device->GetResourceAllocationInfo(0, 1, &snowTable).SizeInBytes;
+		if (rayBytes == UINT64_MAX || snowBytes == UINT64_MAX || rayBytes > budget ||
+			snowBytes > budget - rayBytes || bytes > budget - rayBytes - snowBytes)
 			throw std::runtime_error("Native lighting PBR binding budget exceeded");
-		bytes += rayBytes;
+		bytes += rayBytes + snowBytes;
 		for (size_t i = 0; i < formats.size(); ++i) {
 			if (!a_settings.CompareCulling && (i == 5 || i == 6))
 				continue;
@@ -602,6 +611,7 @@ void NativeLightingFeature::Dispatch(DX12NativeScene::SceneFrame a_scene, const 
 			created->counterReadback = make(plain, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST, L"NativeLighting::CounterReadback");
 			created->lights = make(CD3DX12_RESOURCE_DESC::Buffer(DX12Native::kMaximumNativePointLights * 48), D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ, L"NativeLighting::Lights");
 			created->rayBindings = make(rayTable, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ, L"NativeLighting::RayMaterialBindings");
+			created->snowLayers = make(snowTable, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ, L"NativeLighting::SnowLayers");
 			// 288-byte Trace ABI rounds to 512 for the D3D12 CBV 256-byte alignment.
 			created->constants = make(CD3DX12_RESOURCE_DESC::Buffer(512), D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ, L"NativeLighting::Constants");
 			void* zeros = nullptr;
@@ -726,6 +736,28 @@ void NativeLightingFeature::Dispatch(DX12NativeScene::SceneFrame a_scene, const 
 			std::memcpy(mapped, slot->rayMaterials->instances.data(),
 				slot->rayMaterials->instances.size() * sizeof(NativePBR::GpuDrawBinding));
 		slot->rayBindings->Unmap(0, nullptr);
+		DX::ThrowIfFailed(slot->snowLayers->Map(0, &noRead, &mapped));
+		std::memset(mapped, 0, NativeLighting::kMaximumInstances * sizeof(NativePBR::GpuSnowLayerRecord));
+		slot->nativeProjectedLayers = 0;
+		if (slot->rayMaterials) {
+			const auto snow = globals::features::nativePBR.GetNativeSnowPublication();
+			if (snow && snow->Matches(*slot->rayMaterials->prepared) &&
+				snow->gpuMaterials == slot->rayMaterials->materials) {
+				auto* layers = static_cast<NativePBR::GpuSnowLayerRecord*>(mapped);
+				for (const auto& instance : snow->instances) {
+					if (instance.sceneIndex >= slot->rayMaterials->instances.size() ||
+						(slot->rayMaterials->instances[instance.sceneIndex].flags & NativePBR::kGpuDrawSnowProjectedObserved) == 0)
+						continue;
+					const auto layer = NativePBR::PackNativeSnowLayer(instance, slot->scene.frame,
+						globals::game::isVR, slot->rayMaterials->materials->generation->revision);
+					if (layer.flags[0] == 0)
+						continue;
+					layers[instance.sceneIndex] = layer;
+					++slot->nativeProjectedLayers;
+				}
+			}
+		}
+		slot->snowLayers->Unmap(0, nullptr);
 		const auto step = backend.d3d12Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		constexpr uint32_t kGeometry = 13;
 		constexpr uint32_t kAttributes = kGeometry + DX12Native::ShadowBindings::kMaximumInstances;
@@ -845,6 +877,7 @@ void NativeLightingFeature::Dispatch(DX12NativeScene::SceneFrame a_scene, const 
 		commands->SetComputeRootShaderResourceView(15, slot->rayMaterials ?
 			slot->rayMaterials->materials->records->GetGPUVirtualAddress() :
 			scene.materials->materials->materials->GetGPUVirtualAddress());
+		commands->SetComputeRootShaderResourceView(17, slot->snowLayers->GetGPUVirtualAddress());
 		commands->SetComputeRootConstantBufferView(11, slot->constants->GetGPUVirtualAddress());
 		auto gpu = slot->heap->GetGPUDescriptorHandleForHeapStart();
 		commands->SetComputeRootDescriptorTable(1, gpu);

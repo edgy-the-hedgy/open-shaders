@@ -4,6 +4,8 @@
 #include "Features/NativePBR/NativeSnowPublication.h"
 #include "Features/NativePBR/NativeSnowConstantCapture.h"
 #include "Features/NativePBR/NativeSnowTextureResidency.h"
+#include "Features/NativePBR/NativeSnowTextureDiscovery.h"
+#include "Features/NativePBR/NativeSnowGpu.h"
 #include "Features/DX12NativeScene/LiveLooseTexturePlan.h"
 #include <limits>
 
@@ -258,6 +260,74 @@ TEST_CASE("Native snow DDS lookup uses existing page descriptors without allocat
 	CHECK_FALSE(FindSnowTextureLocation(texture, sources, logical, 5));
 	texture.canonicalPath = "textures/snow/missing.dds";
 	CHECK_FALSE(FindSnowTextureLocation(texture, sources, logical, 6));
+}
+
+TEST_CASE("Projected snow identifies exact renderer-bound DDS sources without guessing paths", "[nativepbr][snow]")
+{
+	using namespace NativePBR;
+	int diffuseView = 1, normalView = 2;
+	const std::array sources{
+		SnowTextureViewSource{ &diffuseView, "Data\\Textures\\Snow\\projected_d.dds" },
+		SnowTextureViewSource{ &normalView, "Textures\\Snow\\projected_n.dds" }
+	};
+	const auto diffuse = IdentifySnowTextureView(&diffuseView, sources);
+	REQUIRE(diffuse);
+	CHECK(*diffuse == "textures/snow/projected_d.dds");
+	CHECK_FALSE(IdentifySnowTextureView(nullptr, sources));
+	int otherView = 3;
+	CHECK_FALSE(IdentifySnowTextureView(&otherView, sources));
+	const std::array invalid{ SnowTextureViewSource{ &diffuseView, "C:\\Game\\Textures\\snow.dds" } };
+	CHECK_FALSE(IdentifySnowTextureView(&diffuseView, invalid));
+	const std::array conflicting{
+		SnowTextureViewSource{ &diffuseView, "textures/snow/one.dds" },
+		SnowTextureViewSource{ &diffuseView, "textures/snow/two.dds" }
+	};
+	CHECK_FALSE(IdentifySnowTextureView(&diffuseView, conflicting));
+}
+
+TEST_CASE("Native projected snow packs only fresh fully resident roles and preserves layered base admission", "[nativepbr][snow]")
+{
+	using namespace NativePBR;
+	NativeSnowInstance instance;
+	instance.classification = SnowOrdinary | SnowProjected;
+	instance.status = SnowInputStatus::Observed;
+	auto& projection = instance.projection;
+	projection.coordinateSpace = SnowProjectionSpace::Object;
+	projection.direction = std::array<float, 3>{ 0, 0, 1 };
+	projection.textureProjection = std::array<float, 12>{};
+	projection.projectedUVParams = std::array<float, 4>{ 0.2f, 0, 0.01f, 0 };
+	projection.projectedUVParams2 = std::array<float, 4>{ 1, 1, 1, 0 };
+	projection.projectedUVParams3 = std::array<float, 4>{ 1, 1, 0, 1 };
+	projection.materialObjectRGBScale = std::array<float, 4>{ 1, 1, 1, 1 };
+	projection.sourceFrame = 44;
+	for (size_t role = 0; role < projection.textures.size(); ++role) {
+		auto& texture = projection.textures[role];
+		texture.status = SnowTextureStatus::Resident;
+		texture.descriptorIndex = uint32_t(role) + 256u;
+		texture.sliceIndex = uint32_t(role);
+		texture.resourceGeneration = 7;
+		ObservedSnowSampler sampler;
+		sampler.addressU = sampler.addressV = 1;
+		texture.sampler = sampler;
+	}
+	const auto packed = PackNativeSnowLayer(instance, 44, false, 7);
+	CHECK(packed.flags[0] == kGpuSnowLayerEnabled);
+	CHECK(packed.flags[1] == kGpuSnowLayerTextured);
+	CHECK((packed.textures[0] == std::array<uint32_t, 4>{ 256, 0, 257, 1 }));
+	CHECK((packed.textures[1] == std::array<uint32_t, 4>{ 258, 2, 259, 3 }));
+	CHECK(packed.flags[3] == 0xffu);
+	CHECK(PackNativeSnowLayer(instance, 46, false, 7).flags[0] == 0);
+	CHECK(PackNativeSnowLayer(instance, 44, true, 7).flags[0] == 0);
+	CHECK(PackNativeSnowLayer(instance, 44, false, 6).flags[0] == 0);
+	projection.textures[1].status = SnowTextureStatus::Unavailable;
+	CHECK(PackNativeSnowLayer(instance, 44, false, 7).flags[0] == 0);
+	projection.projectedUVParams3->at(3) = 0;
+	const auto colorOnly = PackNativeSnowLayer(instance, 44, false, 7);
+	CHECK(colorOnly.flags[1] == kGpuSnowLayerColorOnly);
+	CHECK(colorOnly.textures[0][0] == kGpuMissingTexture);
+	CHECK(colorOnly.textures[1][2] == 259);
+	instance.source.conflictingPasses = true;
+	CHECK(PackNativeSnowLayer(instance, 44, false, 7).flags[0] == 0);
 }
 
 TEST_CASE("Native projected snow distinguishes color-only noise from four textured overlay roles", "[nativepbr][snow]")

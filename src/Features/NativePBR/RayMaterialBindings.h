@@ -126,9 +126,9 @@ namespace NativePBR
 					flags |= kGpuDrawUsesVertexColor;
 			}
 			const auto* snow = snowInstances[binding.instanceIndex];
-			if (snow && recipe.parameters.pbrFlags == 0 && snow->geometryIdentity == binding.geometryIdentity &&
+			if (snow && snow->geometryIdentity == binding.geometryIdentity &&
 				snow->materialIdentity == recipe.identity && snow->materialRevision == recipe.revision) {
-				if ((snow->classification & SnowOrdinary) != 0) {
+				if ((snow->classification & SnowOrdinary) != 0 && recipe.parameters.pbrFlags == 0) {
 					flags |= kGpuDrawSnowOrdinary;
 					++result->ordinarySnow;
 				}
