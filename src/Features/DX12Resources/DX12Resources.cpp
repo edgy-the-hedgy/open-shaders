@@ -1,5 +1,6 @@
 #include "DX12Resources.h"
 #include "CompanionProcess.h"
+#include "GlobalSnowAtlas.h"
 #include "Features/DX12NativeScene/DX12NativeScene.h"
 #include "Features/DX12NativeScene/SpatialSubcells.h"
 #include "Globals.h"
@@ -21,7 +22,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <vector>
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(DX12Resources::Settings, Enabled, AutoPrepareOnCellEntry, FlushDiskGeometryOnStartup, RetainPreparationDiagnostics)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(DX12Resources::Settings, Enabled, AutoPrepareOnCellEntry, FlushDiskGeometryOnStartup, RetainPreparationDiagnostics, AutoGenerateGlobalSnowAtlas)
 
 struct DX12Resources::ScanJob
 {
@@ -49,6 +50,82 @@ struct DX12Resources::PreparationJob
 	json report;
 	double elapsedMs = 0;
 };
+
+struct DX12Resources::SnowAtlasJob
+{
+	std::atomic<bool> done{ false };
+	std::shared_ptr<const DX12ResourceService::GlobalSnowAtlas> atlas;
+	std::string error, log;
+	bool cacheHit = false;
+};
+
+void DX12Resources::StartSnowAtlasGeneration()
+{
+	if (snowAtlasJob || !dataLoaded.load(std::memory_order_acquire))
+		return;
+	const auto data = DX12ResourceService::SkyrimDataDirectory();
+	const auto plugins = DX12ResourceService::SkyrimPluginsFile();
+	if (plugins.empty() || !std::filesystem::is_regular_file(plugins)) {
+		snowAtlasStatus = "Cannot generate global snow atlas: Plugins.txt unavailable";
+		return;
+	}
+	const auto log = data / "SKSE/Plugins/CommunityShaders/DX12-cache/logs" /
+	                 std::format("snow-{}-{}.log", GetCurrentProcessId(), GetTickCount64());
+	auto next = std::make_shared<SnowAtlasJob>();
+	try {
+		static BS::thread_pool<> pool{ 1 };
+		pool.detach_task([next, data, plugins, log] {
+			try {
+				const auto result = DX12ResourceService::RunCompanion(
+					{ L"--snow-atlas", data.wstring(), plugins.wstring() },
+					log, BELOW_NORMAL_PRIORITY_CLASS);
+				if (!result.error.empty())
+					throw std::runtime_error(result.error + ": " + result.log);
+				next->atlas = DX12ResourceService::GlobalSnowAtlas::Open(
+					data / "SKSE/Plugins/CommunityShaders/DX12-cache/global-snow");
+				next->cacheHit = result.log.find("verified cache hit") != std::string::npos;
+				std::error_code ignored;
+				std::filesystem::remove(log, ignored);
+			} catch (const std::exception& error) {
+				next->error = error.what();
+				next->log = log.string();
+			}
+			(void)DX12ResourceService::PruneGeneratedJobFiles(log.parent_path());
+			next->done.store(true, std::memory_order_release);
+		});
+		snowAtlasJob = std::move(next);
+		snowAtlasStatus = "Generating global snow sources in the background; no CELL or scene required";
+	} catch (const std::exception& error) {
+		snowAtlasStatus = "Global snow worker launch failed: " + std::string(error.what());
+	}
+}
+
+void DX12Resources::PollSnowAtlasGeneration()
+{
+	if (!snowAtlasJob || !snowAtlasJob->done.load(std::memory_order_acquire))
+		return;
+	const auto completed = std::move(snowAtlasJob);
+	if (!completed->error.empty()) {
+		snowAtlasStatus = "Global snow atlas failed: " + completed->error;
+		return;
+	}
+	snowAtlas = completed->atlas;
+	snowAtlasMaterials = snowAtlas->materials.size();
+	snowAtlasTextures = snowAtlas->textures.size();
+	snowAtlasUnique = snowAtlas->uniqueDdsBlobs;
+	snowAtlasUnresolved = snowAtlas->unresolved;
+	snowAtlasFingerprint = snowAtlas->contentFingerprint;
+	snowAtlasStatus = std::format("Global snow {}: {} candidate materials, {} DDS paths, {} unique blobs, {} unresolved; coverage not yet complete",
+		completed->cacheHit ? "cache hit" : "cache generated", snowAtlasMaterials,
+		snowAtlasTextures, snowAtlasUnique, snowAtlasUnresolved);
+}
+
+std::shared_ptr<const DX12ResourceService::GlobalSnowAtlas> DX12Resources::GetGlobalSnowAtlas()
+{
+	std::scoped_lock lock(statusMutex);
+	PollSnowAtlasGeneration();
+	return snowAtlas;
+}
 
 /** Only exact generated cache folders are deleted; diagnostics and geometry are separate targets. */
 struct DX12Resources::DiskCacheFlushJob
@@ -432,6 +509,8 @@ void DX12Resources::DataLoaded()
 	// This runs once per Skyrim process, without opening the configuration UI.
 	std::scoped_lock lock(statusMutex);
 	dataLoaded.store(true, std::memory_order_release);
+	if (settings.Enabled && settings.AutoGenerateGlobalSnowAtlas)
+		StartSnowAtlasGeneration();
 	if (!settings.FlushDiskGeometryOnStartup || startupFlushTriggered)
 		return;
 	startupFlushTriggered = true;
@@ -685,6 +764,7 @@ void DX12Resources::AdvanceStreamingScene(const DX12ResourceService::CellRequest
 void DX12Resources::DrawSettings()
 {
 	std::scoped_lock lock(statusMutex);
+	PollSnowAtlasGeneration();
 	PollCellPreparation();
 	PollDiskCacheFlush();
 	auto* ui = RE::UI::GetSingleton();
@@ -705,6 +785,22 @@ void DX12Resources::DrawSettings()
 	if (!pluginListReady && dataLoaded.load(std::memory_order_acquire))
 		RefreshLoadedPlugins();
 	AdvancePluginCellScan();
+	ImGui::SeparatorText("Global native snow resources");
+	ImGui::Checkbox("Generate global snow atlas at startup", &settings.AutoGenerateGlobalSnowAtlas);
+	ImGui::TextDisabled("Main-menu/background asset scan, independent of CELL selection and native TLAS.");
+	ImGui::BeginDisabled(!mainMenu || !dataLoaded.load(std::memory_order_acquire) || bool(snowAtlasJob));
+	if (ImGui::Button("Generate / validate global snow atlas"))
+		StartSnowAtlasGeneration();
+	ImGui::EndDisabled();
+	ImGui::TextWrapped("%s", snowAtlasStatus.c_str());
+	if (snowAtlas) {
+		ImGui::Text("Material candidates: %llu | DDS entries: %llu | unique: %llu | unresolved: %llu",
+			static_cast<unsigned long long>(snowAtlasMaterials),
+			static_cast<unsigned long long>(snowAtlasTextures),
+			static_cast<unsigned long long>(snowAtlasUnique),
+			static_cast<unsigned long long>(snowAtlasUnresolved));
+		ImGui::TextDisabled("Inventory only; GPU residency and projected bindings are not verified yet.");
+	}
 	ImGui::SeparatorText("DX12 disk geometry cache (testing)");
 	ImGui::TextDisabled("Clears generated DX12-cache/cells and DX12-cache/worldspaces, including subcells.");
 	ImGui::TextDisabled("Does not delete original meshes, staging work, logs, reports or NativePBRCache.");
@@ -895,9 +991,15 @@ void DX12Resources::RestoreDefaultSettings()
 json DX12Resources::GetDiagnostics()
 {
 	std::scoped_lock lock(statusMutex);
+	PollSnowAtlasGeneration();
 	PollCellPreparation();
 	PollDiskCacheFlush();
 	return { { "enabled", settings.Enabled },
+		{ "globalSnowAtlas", { { "running", bool(snowAtlasJob) }, { "status", snowAtlasStatus },
+			{ "contentFingerprint", snowAtlasFingerprint }, { "global", true },
+			{ "materialCandidates", snowAtlasMaterials }, { "textureEntries", snowAtlasTextures },
+			{ "uniqueDdsBlobs", snowAtlasUnique }, { "unresolved", snowAtlasUnresolved },
+			{ "gpuResidencyVerified", false }, { "coverageComplete", false } } },
 		{ "retainPreparationDiagnostics", settings.RetainPreparationDiagnostics },
 		{ "diskGeometryCache", { { "flushRunning", bool(diskCacheFlushJob) },
 								   { "flushOnStartup", settings.FlushDiskGeometryOnStartup },

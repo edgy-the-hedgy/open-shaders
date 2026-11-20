@@ -16,6 +16,8 @@
 #include <unordered_set>
 #include <vector>
 
+namespace DX12ResourceService { struct GlobalSnowAtlas; }
+
 /** @brief Standalone interior preparation service with automatic CELL identification. */
 struct DX12Resources final : Feature
 {
@@ -25,6 +27,7 @@ struct DX12Resources final : Feature
 		bool AutoPrepareOnCellEntry = true;
 		bool FlushDiskGeometryOnStartup = false;
 		bool RetainPreparationDiagnostics = false;
+		bool AutoGenerateGlobalSnowAtlas = true;
 	} settings;
 
 	std::string GetName() override { return "DX12 Resources"; }
@@ -42,13 +45,16 @@ struct DX12Resources final : Feature
 	void AdvanceStreamingScene(const DX12ResourceService::CellRequest& request,
 		uint32_t size, double x, double y, double velocityX, double velocityY);
 	void DataLoaded() override;
+	/** @brief Acquires the immutable global snow inventory without referencing a selected CELL. */
+	std::shared_ptr<const DX12ResourceService::GlobalSnowAtlas> GetGlobalSnowAtlas();
 	/** Block native cache consumers while a startup flush is pending/failed. */
 	bool DiskGeometryCacheReady();
 	json GetDiagnostics() override;
 	std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
 	{
-		return { "Automatic interior identification and companion-based CELL processing.",
+		return { "Scene-independent snow asset inventory and companion-based CELL processing.",
 			{ "Latest-save or current interior detection", "Plugin-scoped interior selection",
+				"Global source DDS snow inventory (coverage incomplete)",
 				"Independent on-disk CELL preparation job",
 				"Versioned DX12-cache reports" } };
 	}
@@ -58,6 +64,9 @@ private:
 	struct CatalogJob;
 	struct PreparationJob;
 	struct DiskCacheFlushJob;
+	struct SnowAtlasJob;
+	void StartSnowAtlasGeneration();
+	void PollSnowAtlasGeneration();
 	void BeginAutomaticDetection(bool mainMenu);
 	void PollAutomaticDetection();
 	void RefreshLoadedPlugins();
@@ -75,6 +84,11 @@ private:
 	std::shared_ptr<CatalogJob> pluginScanJob;
 	std::shared_ptr<PreparationJob> preparationJob;
 	std::shared_ptr<DiskCacheFlushJob> diskCacheFlushJob;
+	std::shared_ptr<SnowAtlasJob> snowAtlasJob;
+	std::shared_ptr<const DX12ResourceService::GlobalSnowAtlas> snowAtlas;
+	std::string snowAtlasStatus = "Waiting for Skyrim data";
+	std::string snowAtlasFingerprint;
+	uint64_t snowAtlasMaterials = 0, snowAtlasTextures = 0, snowAtlasUnique = 0, snowAtlasUnresolved = 0;
 	// Session-only barrier: if opted in, the first native cache read must
 	// follow a successful disk deletion, never a stale cached scene.
 	bool startupFlushTriggered = false, startupFlushComplete = false;

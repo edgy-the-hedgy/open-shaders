@@ -8,7 +8,8 @@ using Mutagen.Bethesda.Plugins.Order;
 using Mutagen.Bethesda.Plugins.Cache;
 using Mutagen.Bethesda.Skyrim;
 
-return args.Length == 5 && args[0] == "--list-cells" ? PluginCellIndex.Run(args[1..]) :
+return args.Length == 3 && args[0] == "--snow-atlas" ? GlobalSnowAtlas.Run(args[1], args[2]) :
+    args.Length == 5 && args[0] == "--list-cells" ? PluginCellIndex.Run(args[1..]) :
     args.Length == 9 && args[0] == "--worldspace-subcell" ? ScenePreparation.Run(args[1..5],
         int.Parse(args[5], System.Globalization.CultureInfo.InvariantCulture),
         int.Parse(args[6], System.Globalization.CultureInfo.InvariantCulture),
