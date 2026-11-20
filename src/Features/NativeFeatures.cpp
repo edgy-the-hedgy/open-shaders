@@ -1079,9 +1079,12 @@ void NativePBRFeature::DrawSettings()
 	ImGui::SeparatorText("Native Snow Diagnostics");
 	ImGui::Text("Ordinary snow: %u detected | %u native ray bindings",
 		snow ? snow->ordinary : 0, rayBindings ? rayBindings->ordinarySnow : 0);
+	const auto snowFrame = globals::game::graphicsState ? globals::game::graphicsState->GetFrameCount() : 0u;
 	ImGui::Text("Projected snow: %u detected | %u native candidates | %u projection inputs complete",
 		snow ? snow->projected : 0, rayBindings ? rayBindings->projectedSnowObserved : 0,
 		snow ? snow->completeProjection : 0);
+	ImGui::Text("Projected frame-valid inputs: %u",
+		snow ? NativePBR::CountNativeSnowProjectionReady(*snow, snowFrame, globals::game::isVR) : 0);
 	ImGui::Text("Projected texture sets: %u resident | %u partial | %u unavailable",
 		snow ? snow->textureSetsResident : 0, snow ? snow->textureSetsPartial : 0,
 		snow ? snow->textureSetsUnavailable : 0);
@@ -1193,6 +1196,7 @@ json NativePBRFeature::GetDiagnostics()
 	const auto preparedMaterials = GetPreparedSceneMaterials();
 	const auto snow = GetNativeSnowPublication();
 	const auto rayBindings = GetRayMaterialBindings();
+	const auto snowFrame = globals::game::graphicsState ? globals::game::graphicsState->GetFrameCount() : 0u;
 	const auto catalog = materialCatalog.GetSnapshot();
 	const auto summary = GetMaterialSummary();
 	json issueCounts = json::object();
@@ -1226,6 +1230,7 @@ json NativePBRFeature::GetDiagnostics()
 		{ "materialPublicationSerial", materialView ? materialView->serial : 0 },
 		{ "materialInstanceBindings", materialView ? materialView->instances.size() : 0 },
 		{ "nativeSnow", { { "abiVersion", NativePBR::kNativeSnowPublicationVersion },
+			{ "projectionFrameReady", snow ? NativePBR::CountNativeSnowProjectionReady(*snow, snowFrame, globals::game::isVR) : 0 },
 			{ "sceneRevision", snow ? snow->sceneRevision : 0 },
 			{ "materialSerial", snow ? snow->materialSerial : 0 },
 			{ "instances", snow ? snow->instances.size() : 0 },

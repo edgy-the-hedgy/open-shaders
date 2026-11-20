@@ -111,8 +111,13 @@ namespace NativePBR
 			if (entry.projection) {
 				auto sameValues = a_projection;
 				sameValues.frame = entry.projection->frame;
-				if (*entry.projection == sameValues)
-					return false;
+				if (*entry.projection == sameValues) {
+					if (entry.projection->frame == a_projection.frame)
+						return false;
+					entry.projection->frame = a_projection.frame;
+					++observed.revision;
+					return true;
+				}
 			}
 			if (entry.projection && entry.projection->frame == a_projection.frame &&
 				*entry.projection != a_projection) {

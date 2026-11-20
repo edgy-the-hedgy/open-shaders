@@ -39,8 +39,13 @@ TEST_CASE("Native snow projection observations separate camera frames from same-
 	const auto identity = observations.ExportIfIdentityChanged(0);
 	REQUIRE(identity);
 	projection.frame = 51;
+	REQUIRE(observations.ObserveProjection("Ref", "Shape", projection));
 	CHECK_FALSE(observations.ObserveProjection("Ref", "Shape", projection));
 	CHECK_FALSE(observations.ExportIfIdentityChanged(identity->identityRevision));
+	const auto advancedFrame = observations.ExportIfChanged(0);
+	REQUIRE(advancedFrame);
+	CHECK(advancedFrame->entries.begin()->second.projection->frame == 51);
+	projection.frame = 52;
 	projection.projectedUVParams->at(0) = 2.0f;
 	REQUIRE(observations.ObserveProjection("Ref", "Shape", projection));
 	CHECK_FALSE(observations.ExportIfIdentityChanged(identity->identityRevision));
@@ -73,6 +78,16 @@ TEST_CASE("Native snow coverage readiness requires an original projection direct
 	CHECK(SnowProjectionMaterialReady(projection));
 	CHECK(ClassifySnowInput(SnowProjected, true, false, true, true) == SnowInputStatus::Observed);
 	CHECK(ClassifySnowInput(SnowProjected, true, false, true, false) == SnowInputStatus::UnresolvedProjection);
+	projection.sourceFrame = 50;
+	CHECK(SnowProjectionReadyForFrame(projection, 50, false));
+	CHECK(SnowProjectionReadyForFrame(projection, 51, false));
+	CHECK_FALSE(SnowProjectionReadyForFrame(projection, 52, false));
+	CHECK_FALSE(SnowProjectionReadyForFrame(projection, 49, false));
+	CHECK_FALSE(SnowProjectionReadyForFrame(projection, 50, true));
+	projection.rightEyeTextureProjection = std::array<float, 12>{};
+	CHECK(SnowProjectionReadyForFrame(projection, 50, true));
+	projection.projectedUVParams->at(0) = std::numeric_limits<float>::quiet_NaN();
+	CHECK_FALSE(SnowProjectionReadyForFrame(projection, 50, false));
 }
 
 TEST_CASE("Native snow separates NIF and original shader-state authority", "[nativepbr][snow]")

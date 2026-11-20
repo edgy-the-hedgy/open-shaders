@@ -3,7 +3,9 @@
 #include "PreparedSceneMaterials.h"
 #include "NativeSnowObservations.h"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <memory>
 #include <optional>
 #include <string>
@@ -66,6 +68,26 @@ namespace NativePBR
 		return SnowProjectionCoverageReady(a_projection) && a_projection.materialObjectRGBScale.has_value();
 	}
 
+	/** @brief Rejects stale, nonfinite and incomplete eye-specific inputs before GPU projection. */
+	inline bool SnowProjectionReadyForFrame(const NativeSnowProjection& a_projection,
+		uint32_t a_frame, bool a_vr)
+	{
+		if (!SnowProjectionMaterialReady(a_projection) || !a_projection.sourceFrame ||
+			a_frame < a_projection.sourceFrame || a_frame - a_projection.sourceFrame > 1 ||
+			(a_vr && !a_projection.rightEyeTextureProjection))
+			return false;
+		const auto finite = [](const auto& values) {
+			return std::ranges::all_of(values, [](float v) { return std::isfinite(v); });
+		};
+		const auto& direction = *a_projection.direction;
+		return finite(direction) && std::hypot(direction[0], direction[1], direction[2]) > 1e-6f &&
+			finite(*a_projection.textureProjection) &&
+			(!a_projection.rightEyeTextureProjection || finite(*a_projection.rightEyeTextureProjection)) &&
+			finite(*a_projection.projectedUVParams) && finite(*a_projection.projectedUVParams2) &&
+			finite(*a_projection.projectedUVParams3) && finite(*a_projection.materialObjectRGBScale) &&
+			(!a_projection.parallaxOccData || finite(*a_projection.parallaxOccData));
+	}
+
 	/** @brief Per-layer terrain snow remains unknown until landscape shader inputs are captured. */
 	struct NativeLandscapeSnow
 	{
@@ -108,6 +130,16 @@ namespace NativePBR
 				materialSerial == a_prepared.materialSerial && instanceEpoch == a_prepared.instanceEpoch;
 		}
 	};
+
+	inline uint32_t CountNativeSnowProjectionReady(const NativeSnowPublication& a_publication,
+		uint32_t a_frame, bool a_vr)
+	{
+		uint32_t count = 0;
+		for (const auto& instance : a_publication.instances)
+			count += (instance.classification & SnowProjected) != 0 &&
+				SnowProjectionReadyForFrame(instance.projection, a_frame, a_vr);
+		return count;
+	}
 
 	/** @brief Distinguishes known snow classification from missing projection semantics. */
 	constexpr SnowInputStatus ClassifySnowInput(uint32_t a_classification, bool a_hasRuntimeDescriptor,
