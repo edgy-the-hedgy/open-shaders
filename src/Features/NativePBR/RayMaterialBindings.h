@@ -14,7 +14,7 @@ namespace NativePBR
 		std::shared_ptr<const PreparedSceneMaterials> prepared;
 		std::shared_ptr<const GpuMaterialResources> materials;
 		std::vector<GpuDrawBinding> instances;
-		uint32_t eligible = 0, unsupported = 0, unavailable = 0, ordinarySnow = 0;
+		uint32_t eligible = 0, unsupported = 0, unavailable = 0, ordinarySnow = 0, projectedSnowObserved = 0;
 		uint64_t snowIdentityRevision = 0, snowObservationEpoch = 0;
 		bool forcedAdmission = false;
 		bool parallaxRequired = true;
@@ -83,14 +83,14 @@ namespace NativePBR
 		result->snowIdentityRevision = a_snowIdentityRevision;
 		result->snowObservationEpoch = a_snow ? a_snow->observationEpoch : 0;
 		result->instances.resize(result->prepared->instances.size(), PackGpuDrawBinding(0, 0, UINT32_MAX, 0));
-		std::vector<const NativeSnowInstance*> ordinarySnow(result->instances.size(), nullptr);
+		std::vector<const NativeSnowInstance*> snowInstances(result->instances.size(), nullptr);
 		if (a_snow && a_snow->Matches(*result->prepared) && a_snow->gpuMaterials == result->materials)
 			for (const auto& snow : a_snow->instances)
-				if (snow.sceneIndex < ordinarySnow.size() &&
-					(snow.classification & SnowOrdinary) != 0 &&
-					(snow.classification & (SnowProjected | SnowLandscape)) == 0 &&
-					(snow.status == SnowInputStatus::Observed || snow.status == SnowInputStatus::NifOnly))
-					ordinarySnow[snow.sceneIndex] = &snow;
+				if (snow.sceneIndex < snowInstances.size() &&
+					snow.status != SnowInputStatus::AmbiguousInstance &&
+					snow.status != SnowInputStatus::MissingMaterial &&
+					(snow.classification & SnowLandscape) == 0 && !snow.source.conflictingPasses)
+					snowInstances[snow.sceneIndex] = &snow;
 		for (size_t index = 0; index < result->instances.size(); ++index) {
 			const auto& instance = result->prepared->geometry->instances[index];
 			const auto& identity = instance.preparedIdentity;
@@ -124,11 +124,17 @@ namespace NativePBR
 					(shaderFlags->get<uint32_t>() & (1u << 5)) != 0)
 					flags |= kGpuDrawUsesVertexColor;
 			}
-			const auto* snow = ordinarySnow[binding.instanceIndex];
+			const auto* snow = snowInstances[binding.instanceIndex];
 			if (snow && recipe.parameters.pbrFlags == 0 && snow->geometryIdentity == binding.geometryIdentity &&
 				snow->materialIdentity == recipe.identity && snow->materialRevision == recipe.revision) {
-				flags |= kGpuDrawSnowOrdinary;
-				++result->ordinarySnow;
+				if ((snow->classification & SnowOrdinary) != 0) {
+					flags |= kGpuDrawSnowOrdinary;
+					++result->ordinarySnow;
+				}
+				if ((snow->classification & SnowProjected) != 0) {
+					flags |= kGpuDrawSnowProjectedObserved;
+					++result->projectedSnowObserved;
+				}
 			}
 			result->instances[binding.instanceIndex] = PackGpuDrawBinding(recipe.identity, recipe.revision, gpu->index, flags);
 			++result->eligible;

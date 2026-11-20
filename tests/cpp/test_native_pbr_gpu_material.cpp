@@ -258,9 +258,24 @@ TEST_CASE("NativePBR ray bindings follow the exact scene and resident material g
 	CHECK((stale->instances[0].flags & kGpuDrawSnowOrdinary) == 0);
 	auto projectedSnow = std::make_shared<NativeSnowPublication>(*snow);
 	projectedSnow->instances[0].classification |= SnowProjected;
+	projectedSnow->instances[0].status = SnowInputStatus::UnresolvedProjection;
 	const auto projected = PrepareRayMaterialBindings(prepared, gpu, false, true, projectedSnow, 14);
 	REQUIRE(projected);
-	CHECK((projected->instances[0].flags & kGpuDrawSnowOrdinary) == 0);
+	CHECK(projected->ordinarySnow == 1);
+	CHECK(projected->projectedSnowObserved == 1);
+	CHECK((projected->instances[0].flags & (kGpuDrawSnowOrdinary | kGpuDrawSnowProjectedObserved)) ==
+		(kGpuDrawSnowOrdinary | kGpuDrawSnowProjectedObserved));
+	projectedSnow->instances[0].classification = SnowProjected;
+	const auto projectedOnly = PrepareRayMaterialBindings(prepared, gpu, false, true, projectedSnow, 15);
+	REQUIRE(projectedOnly);
+	CHECK(projectedOnly->ordinarySnow == 0);
+	CHECK(projectedOnly->projectedSnowObserved == 1);
+	CHECK((projectedOnly->instances[0].flags & kGpuDrawSnowOrdinary) == 0);
+	projectedSnow->instances[0].classification = SnowOrdinary | SnowProjected | SnowLandscape;
+	const auto landscape = PrepareRayMaterialBindings(prepared, gpu, false, true, projectedSnow, 16);
+	REQUIRE(landscape);
+	CHECK(landscape->ordinarySnow == 0);
+	CHECK(landscape->projectedSnowObserved == 0);
 	gpu->entries[0].availability = GpuMaterialAvailability::PartiallyResident;
 	const auto partial = PrepareRayMaterialBindings(prepared, gpu);
 	REQUIRE(partial);

@@ -1079,8 +1079,9 @@ void NativePBRFeature::DrawSettings()
 	ImGui::SeparatorText("Native Snow Diagnostics");
 	ImGui::Text("Ordinary snow: %u detected | %u native ray bindings",
 		snow ? snow->ordinary : 0, rayBindings ? rayBindings->ordinarySnow : 0);
-	ImGui::Text("Projected snow: %u detected | %u projection inputs complete",
-		snow ? snow->projected : 0, snow ? snow->completeProjection : 0);
+	ImGui::Text("Projected snow: %u detected | %u native candidates | %u projection inputs complete",
+		snow ? snow->projected : 0, rayBindings ? rayBindings->projectedSnowObserved : 0,
+		snow ? snow->completeProjection : 0);
 	ImGui::Text("Projected texture sets: %u resident | %u partial | %u unavailable",
 		snow ? snow->textureSetsResident : 0, snow ? snow->textureSetsPartial : 0,
 		snow ? snow->textureSetsUnavailable : 0);
@@ -1257,6 +1258,7 @@ json NativePBRFeature::GetDiagnostics()
 			{ "forcedAdmission", forceRayAdmission.load(std::memory_order_relaxed) },
 			{ "eligible", rayBindings ? rayBindings->eligible : 0 },
 			{ "ordinarySnow", rayBindings ? rayBindings->ordinarySnow : 0 },
+			{ "projectedSnowObserved", rayBindings ? rayBindings->projectedSnowObserved : 0 },
 			{ "unsupported", rayBindings ? rayBindings->unsupported : 0 },
 			{ "unavailable", rayBindings ? rayBindings->unavailable : 0 } } },
 		{ "gpuMaterialFailure", materialWorker ? materialWorker->gpu.Failure() : std::string{} },

@@ -31,6 +31,7 @@ namespace NativePBR
 	/** @brief A companion-prepared opaque instance may only use an authoritative NativePBR material. */
 	inline constexpr uint32_t kGpuDrawPreparedOpaque = 4u;
 	inline constexpr uint32_t kGpuDrawSnowOrdinary = 8u;
+	inline constexpr uint32_t kGpuDrawSnowProjectedObserved = 16u;
 	/** @brief Controls.y bit 8 switches the packed map from PBR RMAOS to legacy environment/complex channels. */
 	inline constexpr uint32_t kGpuLegacyComplexMask = 1u << 8;
 	inline constexpr uint32_t kRayMaterialOptionParallax = 1u << 0;
