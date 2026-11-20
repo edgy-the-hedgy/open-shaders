@@ -11,16 +11,40 @@ internal sealed class PgAssets : IDisposable
 {
     private readonly string data;
     private readonly string output;
-    private readonly JsonDocument diff;
-    private readonly JsonDocument deployment;
+    private readonly JsonDocument? diff;
+    private readonly JsonDocument? deployment;
     private readonly Dictionary<string, JsonElement> patches;
     private readonly Dictionary<string, string> sources;
     private readonly string? pgPackage;
+    private readonly Dictionary<string, (string Sha256, string? SourcePackage)>? indexedMeshes;
+    public string IndexSourceDigest { get; } = "";
 
-    public PgAssets(string dataDirectory, string outputDirectory, bool pgOutputOnly = false)
+    public PgAssets(string dataDirectory, string outputDirectory, bool pgOutputOnly = false, bool indexOnly = false)
     {
         data = dataDirectory;
         output = outputDirectory;
+        if (indexOnly)
+        {
+            var file = System.IO.Path.Combine(data, "SKSE", "Plugins", "CommunityShaders", "DX12-cache", "pg-references", "index-v2.json");
+            if (!File.Exists(file) || new FileInfo(file).Length > 128L * 1024 * 1024)
+                throw new InvalidDataException("Prepare the PG Reference Index manually from the DX12 Resources main menu first.");
+            using var index = JsonDocument.Parse(File.ReadAllBytes(file));
+            var root = index.RootElement;
+            if (root.GetProperty("kind").GetString() != "dx12-pg-references" ||
+                root.GetProperty("schemaVersion").GetInt32() != 2 ||
+                root.GetProperty("discoveryScope").GetString() != "pg-patcher-outputs-only")
+                throw new InvalidDataException("Cached PG Reference Index contract mismatch.");
+            IndexSourceDigest = root.GetProperty("pgDiffSha256").GetString()!;
+            indexedMeshes = root.GetProperty("meshes").EnumerateArray().ToDictionary(
+                row => Normalize(row.GetProperty("path").GetString()!),
+                row => (row.GetProperty("sha256").GetString()!,
+                    row.GetProperty("sourcePackage").ValueKind == JsonValueKind.String ?
+                        row.GetProperty("sourcePackage").GetString() : null),
+                StringComparer.OrdinalIgnoreCase);
+            patches = new(StringComparer.OrdinalIgnoreCase);
+            sources = new(StringComparer.OrdinalIgnoreCase);
+            return;
+        }
         using var diffInput = File.OpenRead(System.IO.Path.Combine(data, "ParallaxGen_Diff.json"));
         diff = JsonDocument.Parse(diffInput);
         using var deploymentInput = File.OpenRead(System.IO.Path.Combine(data, "vortex.deployment.json"));
@@ -87,6 +111,23 @@ internal sealed class PgAssets : IDisposable
     {
         var path = Normalize(model);
         if (!path.StartsWith("meshes\\", StringComparison.Ordinal)) path = "meshes\\" + path;
+        if (indexedMeshes != null)
+        {
+            if (!indexedMeshes.TryGetValue(path, out var indexed))
+                return new(path, "outside-manually-built-pg-index", null, null, null, null, null, false);
+            var indexedSource = System.IO.Path.GetFullPath(System.IO.Path.Combine(data, path));
+            if (!indexedSource.StartsWith(data + System.IO.Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Indexed mesh path escaped Data directory.");
+            if (!File.Exists(indexedSource))
+                return new(path, "pg-index-source-missing", indexed.SourcePackage, null, null, null, null, false);
+            if (new FileInfo(indexedSource).Length > 64L * 1024 * 1024)
+                return new(path, "pg-index-source-oversized", indexed.SourcePackage, null, null, null, null, false);
+            var bytes = File.ReadAllBytes(indexedSource);
+            var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+            if (!hash.Equals(indexed.Sha256, StringComparison.OrdinalIgnoreCase))
+                return new(path, "pg-index-stale-manual-refresh-required", indexed.SourcePackage, null, null, null, null, false);
+            return CacheSource(path, bytes, hash, "pg-index-verified", indexed.SourcePackage, null, null);
+        }
         sources.TryGetValue(path, out var source);
         var tracked = patches.TryGetValue(path, out var metadata);
         uint? expected = tracked ? metadata.GetProperty("crc32patched").GetUInt32() : null;
@@ -105,6 +146,13 @@ internal sealed class PgAssets : IDisposable
         if (expected.HasValue && actual != expected)
             return new(path, "pg-patched-crc-mismatch", source, expected, actual, null, null, false);
         var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        return CacheSource(path, bytes, hash, tracked ? "pg-patched-crc-verified" : "pg-generated-deployment-linked",
+            source, expected, actual);
+    }
+
+    private PgAsset CacheSource(string path, byte[] bytes, string hash, string status,
+        string? source, uint? expected, uint? actual)
+    {
         var relative = $"source-cache/{hash}.nif";
         var cached = System.IO.Path.Combine(output, relative);
         var hit = File.Exists(cached) && Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(cached))).Equals(hash, StringComparison.OrdinalIgnoreCase);
@@ -114,12 +162,12 @@ internal sealed class PgAssets : IDisposable
             File.WriteAllBytes(cached + ".tmp", bytes);
             File.Move(cached + ".tmp", cached, true);
         }
-        return new(path, tracked ? "pg-patched-crc-verified" : "pg-generated-deployment-linked", source, expected, actual, hash, relative, hit);
+        return new(path, status, source, expected, actual, hash, relative, hit);
     }
 
     public void Dispose()
     {
-        diff.Dispose();
-        deployment.Dispose();
+        diff?.Dispose();
+        deployment?.Dispose();
     }
 }

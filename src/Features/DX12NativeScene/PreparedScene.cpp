@@ -297,6 +297,23 @@ namespace DX12Native
 						!shape.empty() && shape.size() <= 1024 && IsDigest(digest) && block < UINT32_MAX)
 						instance.preparedIdentity = { std::move(reference), std::move(model), std::move(shape), std::move(digest), uint32_t(block) };
 				}
+				if (row.contains("pgMaterialId") && row.at("pgMaterialId").is_string() &&
+					row.contains("pgClassification") && row.at("pgClassification").is_string() &&
+					row.contains("snowCoverage") && row.at("snowCoverage").is_string()) {
+					const auto id = row.at("pgMaterialId").get<std::string>();
+					const auto classification = row.at("pgClassification").get<std::string>();
+					const auto coverage = row.at("snowCoverage").get<std::string>();
+					const bool validClassification = classification == "ordinary" || classification == "snow" ||
+						classification == "ice" || classification == "ambiguous";
+					const bool validCoverage = coverage == "none" || coverage == "native-snow-material" ||
+						coverage == "projected-eligible";
+					if (instance.preparedIdentity.blockIndex != UINT32_MAX && IsDigest(id) &&
+						validClassification && validCoverage) {
+						instance.preparedIdentity.pgMaterialId = id;
+						instance.preparedIdentity.pgClassification = classification;
+						instance.preparedIdentity.snowCoverage = coverage;
+					}
+				}
 				instance.mesh = found->second->source;
 				instance.indexCount = row.at("indexCount").get<uint32_t>();
 				if (uint64_t(instance.indexCount) * 4 != found->second->validationOffset - found->second->indexOffset)

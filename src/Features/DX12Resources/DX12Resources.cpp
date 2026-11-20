@@ -1,6 +1,7 @@
 #include "DX12Resources.h"
 #include "CompanionProcess.h"
 #include "GlobalSnowAtlas.h"
+#include "PgReferenceRegistry.h"
 #include "Features/DX12NativeScene/DX12NativeScene.h"
 #include "Features/DX12NativeScene/SpatialSubcells.h"
 #include "Globals.h"
@@ -152,6 +153,107 @@ std::shared_ptr<const DX12ResourceService::GlobalSnowAtlas> DX12Resources::GetGl
 	std::scoped_lock lock(statusMutex);
 	PollSnowAtlasGeneration();
 	return snowAtlas;
+}
+
+struct DX12Resources::PgIndexJob
+{
+	std::atomic<bool> done{ false };
+	std::shared_ptr<const DX12ResourceService::PgReferenceRegistry> index;
+	std::string error;
+};
+
+void DX12Resources::LoadCachedPgReferenceIndex()
+{
+	if (pgIndexJob || pgIndex)
+		return;
+	const auto cache = DX12ResourceService::SkyrimDataDirectory() /
+	                   "SKSE/Plugins/CommunityShaders/DX12-cache/pg-references";
+	if (!std::filesystem::is_regular_file(cache / "index-v2.json")) {
+		pgIndexStatus = "No saved PG v2 index; build it manually in the main menu";
+		return;
+	}
+	auto next = std::make_shared<PgIndexJob>();
+	try {
+		static BS::thread_pool<> pool{ 1 };
+		pool.detach_task([next, cache] {
+			try {
+				next->index = DX12ResourceService::PgReferenceRegistry::Open(cache);
+			} catch (const std::exception& error) {
+				next->error = error.what();
+			}
+			next->done.store(true, std::memory_order_release);
+		});
+		pgIndexJob = std::move(next);
+		pgIndexStatus = "Loading cached PG references; no PG outputs are being inspected";
+	} catch (const std::exception& error) {
+		pgIndexStatus = "Cannot load cached PG references: " + std::string(error.what());
+	}
+}
+
+void DX12Resources::StartPgReferenceIndexGeneration()
+{
+	if (pgIndexJob || !dataLoaded.load(std::memory_order_acquire))
+		return;
+	const auto data = DX12ResourceService::SkyrimDataDirectory();
+	const auto plugins = DX12ResourceService::SkyrimPluginsFile();
+	if (plugins.empty() || !std::filesystem::is_regular_file(plugins)) {
+		pgIndexStatus = "Cannot build PG references: Plugins.txt unavailable";
+		return;
+	}
+	const auto log = data / "SKSE/Plugins/CommunityShaders/DX12-cache/logs" /
+	                 std::format("pg-index-{}-{}.log", GetCurrentProcessId(), GetTickCount64());
+	auto next = std::make_shared<PgIndexJob>();
+	try {
+		static BS::thread_pool<> pool{ 1 };
+		pool.detach_task([next, data, plugins, log] {
+			try {
+				const auto result = DX12ResourceService::RunCompanion(
+					{ L"--pg-reference-index", data.wstring(), plugins.wstring() },
+					log, BELOW_NORMAL_PRIORITY_CLASS);
+				if (!result.error.empty())
+					throw std::runtime_error(result.error + ": " + result.log);
+				next->index = DX12ResourceService::PgReferenceRegistry::Open(
+					data / "SKSE/Plugins/CommunityShaders/DX12-cache/pg-references");
+				std::error_code ignored;
+				std::filesystem::remove(log, ignored);
+			} catch (const std::exception& error) {
+				next->error = error.what();
+			}
+			(void)DX12ResourceService::PruneGeneratedJobFiles(log.parent_path());
+			next->done.store(true, std::memory_order_release);
+		});
+		pgIndexJob = std::move(next);
+		pgIndexStatus = "Building PG reference index from verified PG outputs (manual action)";
+	} catch (const std::exception& error) {
+		pgIndexStatus = "Cannot launch PG index builder: " + std::string(error.what());
+	}
+}
+
+void DX12Resources::PollPgReferenceIndex()
+{
+	if (!pgIndexJob || !pgIndexJob->done.load(std::memory_order_acquire))
+		return;
+	const auto completed = std::move(pgIndexJob);
+	if (!completed->error.empty()) {
+		pgIndexStatus = "PG index failed; previous cache retained: " + completed->error;
+		return;
+	}
+	pgIndex = completed->index;
+	pgIndexGeneratedUtc = pgIndex->generatedUtc;
+	pgIndexMeshes = pgIndex->meshes.size();
+	pgIndexShapes = pgIndex->shapeCount;
+	pgIndexMaterials = pgIndex->materials.size();
+	pgIndexTextures = pgIndex->textures.size();
+	pgIndexUnresolved = pgIndex->unresolved;
+	pgIndexStatus = std::format("Cached PG v2 references: {} meshes, {} shapes, {} materials, {} texture paths; {} unresolved",
+		pgIndexMeshes, pgIndexShapes, pgIndexMaterials, pgIndexTextures, pgIndexUnresolved);
+}
+
+std::shared_ptr<const DX12ResourceService::PgReferenceRegistry> DX12Resources::GetPgReferenceRegistry()
+{
+	std::scoped_lock lock(statusMutex);
+	PollPgReferenceIndex();
+	return pgIndex;
 }
 
 /** Only exact generated cache folders are deleted; diagnostics and geometry are separate targets. */
@@ -536,7 +638,7 @@ void DX12Resources::DataLoaded()
 	// This runs once per Skyrim process, without opening the configuration UI.
 	std::scoped_lock lock(statusMutex);
 	dataLoaded.store(true, std::memory_order_release);
-	LoadCachedSnowAtlas();
+	LoadCachedPgReferenceIndex();
 	if (!settings.FlushDiskGeometryOnStartup || startupFlushTriggered)
 		return;
 	startupFlushTriggered = true;
@@ -790,7 +892,7 @@ void DX12Resources::AdvanceStreamingScene(const DX12ResourceService::CellRequest
 void DX12Resources::DrawSettings()
 {
 	std::scoped_lock lock(statusMutex);
-	PollSnowAtlasGeneration();
+	PollPgReferenceIndex();
 	PollCellPreparation();
 	PollDiskCacheFlush();
 	auto* ui = RE::UI::GetSingleton();
@@ -811,32 +913,33 @@ void DX12Resources::DrawSettings()
 	if (!pluginListReady && dataLoaded.load(std::memory_order_acquire))
 		RefreshLoadedPlugins();
 	AdvancePluginCellScan();
-	ImGui::SeparatorText("Global native snow resources");
-	ImGui::TextDisabled("PG Patcher outputs only; cached atlas loads on startup without scanning.");
-	ImGui::BeginDisabled(!mainMenu || !dataLoaded.load(std::memory_order_acquire) || bool(snowAtlasJob));
-	if (snowAtlas && !snowAtlasRegenerateConfirm) {
-		if (ImGui::Button("Check / rebuild PG snow atlas..."))
-			snowAtlasRegenerateConfirm = true;
-	} else if (snowAtlasRegenerateConfirm) {
-		if (ImGui::Button("Confirm snow atlas validation / rebuild")) {
-			snowAtlasRegenerateConfirm = false;
-			StartSnowAtlasGeneration();
+	ImGui::SeparatorText("PG Reference Registry (manual)");
+	ImGui::TextDisabled("Loads saved index only; no automatic PG discovery, comparison or refresh.");
+	if (!mainMenu)
+		pgIndexBuildConfirm = false;
+	ImGui::BeginDisabled(!mainMenu || !dataLoaded.load(std::memory_order_acquire) || bool(pgIndexJob));
+	if (!pgIndexBuildConfirm) {
+		if (ImGui::Button("Build / Refresh PG Reference Index..."))
+			pgIndexBuildConfirm = true;
+	} else {
+		if (ImGui::Button("Confirm PG output indexing")) {
+			pgIndexBuildConfirm = false;
+			StartPgReferenceIndexGeneration();
 		}
 		ImGui::SameLine();
-		if (ImGui::Button("Cancel snow atlas validation"))
-			snowAtlasRegenerateConfirm = false;
-	} else if (ImGui::Button("Generate PG snow atlas")) {
-		StartSnowAtlasGeneration();
+		if (ImGui::Button("Cancel PG indexing"))
+			pgIndexBuildConfirm = false;
 	}
 	ImGui::EndDisabled();
-	ImGui::TextWrapped("%s", snowAtlasStatus.c_str());
-	if (snowAtlas) {
-		ImGui::Text("Material candidates: %llu | DDS entries: %llu | unique: %llu | unresolved: %llu",
-			static_cast<unsigned long long>(snowAtlasMaterials),
-			static_cast<unsigned long long>(snowAtlasTextures),
-			static_cast<unsigned long long>(snowAtlasUnique),
-			static_cast<unsigned long long>(snowAtlasUnresolved));
-		ImGui::TextDisabled("Inventory only; GPU residency and projected bindings are not verified yet.");
+	ImGui::TextWrapped("%s", pgIndexStatus.c_str());
+	if (pgIndex) {
+		ImGui::Text("Meshes: %llu | Shapes: %llu | Materials: %llu | DDS paths: %llu | unresolved: %llu",
+			static_cast<unsigned long long>(pgIndexMeshes),
+			static_cast<unsigned long long>(pgIndexShapes),
+			static_cast<unsigned long long>(pgIndexMaterials),
+			static_cast<unsigned long long>(pgIndexTextures),
+			static_cast<unsigned long long>(pgIndexUnresolved));
+		ImGui::TextWrapped("Last built: %s (PG source changes are not checked automatically)", pgIndexGeneratedUtc.c_str());
 	}
 	ImGui::SeparatorText("DX12 disk geometry cache (testing)");
 	ImGui::TextDisabled("Clears generated DX12-cache/cells and DX12-cache/worldspaces, including subcells.");
@@ -1028,15 +1131,15 @@ void DX12Resources::RestoreDefaultSettings()
 json DX12Resources::GetDiagnostics()
 {
 	std::scoped_lock lock(statusMutex);
-	PollSnowAtlasGeneration();
+	PollPgReferenceIndex();
 	PollCellPreparation();
 	PollDiskCacheFlush();
 	return { { "enabled", settings.Enabled },
-		{ "globalSnowAtlas", { { "running", bool(snowAtlasJob) }, { "status", snowAtlasStatus },
-			{ "contentFingerprint", snowAtlasFingerprint }, { "global", true },
-			{ "materialCandidates", snowAtlasMaterials }, { "textureEntries", snowAtlasTextures },
-			{ "uniqueDdsBlobs", snowAtlasUnique }, { "unresolved", snowAtlasUnresolved },
-			{ "gpuResidencyVerified", false }, { "coverageComplete", false } } },
+		{ "pgReferenceIndex", { { "running", bool(pgIndexJob) }, { "status", pgIndexStatus },
+			{ "generatedUtc", pgIndexGeneratedUtc }, { "schemaVersion", 2 }, { "manualOnly", true },
+			{ "meshes", pgIndexMeshes }, { "shapes", pgIndexShapes },
+			{ "materials", pgIndexMaterials }, { "texturePaths", pgIndexTextures },
+			{ "unresolved", pgIndexUnresolved }, { "nativePbrBindingsComplete", false } } },
 		{ "retainPreparationDiagnostics", settings.RetainPreparationDiagnostics },
 		{ "diskGeometryCache", { { "flushRunning", bool(diskCacheFlushJob) },
 								   { "flushOnStartup", settings.FlushDiskGeometryOnStartup },

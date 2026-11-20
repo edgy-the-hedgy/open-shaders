@@ -4,18 +4,20 @@ using System.Text.Json;
 internal sealed record PlacedShape(string ReferenceKey, string? BaseKey, string Model, string SourceSha256,
     int BlockIndex, string ShapeName, string GeometryFile, string GeometrySha256, int IndexCount,
     float[] ModelToCell, float[] ShapeToCell, float[] CellBounds, string? BaseEditorId, string RecordClassification, string? RoomReferenceKey,
-    bool OpaqueOccluderCandidate, string GeometryStatus, bool TwoSided, string ShadingStatus, string? ShadingFile, string? ShadingSha256, CompiledMaterial? Material, string TangentStatus);
+    bool OpaqueOccluderCandidate, string GeometryStatus, bool TwoSided, string ShadingStatus, string? ShadingFile, string? ShadingSha256, CompiledMaterial? Material, string TangentStatus,
+    string? PgMaterialId, string? PgClassification, string SnowCoverage);
 internal sealed record LayoutOmission(string ReferenceKey, string? Model, string Reason, int? BlockIndex);
 internal sealed record LayoutResult(int PlacedReferences, int Instances, long Triangles, int OmittedReferences, string Digest);
 
 internal static class CellLayout
 {
-    public static LayoutResult Write(string output, string cell, string? editorId, string inputDigest,
+    public static LayoutResult Write(string data, string output, string cell, string? editorId, string inputDigest,
         List<object> rows, CompiledNif[] assets, JsonSerializerOptions options, int subcellSize = 4096,
         (long X, long Y)? requestedSubcell = null, string scopeType = "cell")
     {
         var records = JsonSerializer.SerializeToElement(rows, options).EnumerateArray().ToArray();
         var models = assets.ToDictionary(asset => asset.SourcePath, StringComparer.OrdinalIgnoreCase);
+        var pgIndex = PgCoverageIndex.ReadCached(data, assets);
         var instances = new List<PlacedShape>();
         var omissions = new List<LayoutOmission>();
         foreach (var row in records)
@@ -55,11 +57,13 @@ internal static class CellLayout
                     var transform = PlacementTransform.FromRows(shape.ShapeToModel!) * placement;
                     var matrix = PlacementTransform.ToRows(transform);
                     if (!matrix.All(float.IsFinite)) throw new InvalidDataException("Non-finite composed placement.");
+                    var pg = pgIndex.Find(asset.SourcePath, shape.BlockIndex);
                     placed.Add(new(key, row.GetProperty("baseKey").GetString(), asset.SourcePath, asset.SourceSha256,
                         shape.BlockIndex, shape.Name, shape.GeometryFile!, shape.GeometrySha256!, shape.IndexCount,
                         PlacementTransform.ToRows(placement), matrix, PlacementTransform.Bounds(shape.LocalBounds!, transform),
                         row.GetProperty("baseEditorId").GetString(), classification, row.GetProperty("roomReferenceKey").GetString(), shape.OpaqueOccluderCandidate, shape.Status, shape.Material?.TwoSided ?? false,
-                        shape.ShadingStatus, shape.ShadingFile, shape.ShadingSha256, shape.Material, shape.TangentStatus));
+                        shape.ShadingStatus, shape.ShadingFile, shape.ShadingSha256, shape.Material, shape.TangentStatus,
+                        pg?.MaterialId, pg?.Classification, pg?.SnowCoverage ?? "unindexed"));
                     if (!shape.OpaqueOccluderCandidate) omissions.Add(new(key, model, shape.Status, shape.BlockIndex));
                 }
                 instances.AddRange(placed);

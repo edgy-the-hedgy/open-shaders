@@ -1,4 +1,11 @@
-# DX12 Resources: Global Snow Atlas (Milestone 1, incomplete)
+# Retired design: DX12 Resources Global Snow Atlas
+
+Historical implementation notes only. The Snow Atlas command and menu path
+are no longer active. The PG-only, manually refreshed reference system is
+documented in [PG Reference Registry](pg-reference-registry.md). No DDS atlas
+generation is required for NativePBR's on-demand texture loader.
+
+## Previous implementation (inactive)
 
 The snow atlas is a **global asset inventory**, not a prepared CELL, a scene,
 or a snow-rendering feature. Its contents never depend on the latest save,

@@ -100,6 +100,7 @@ namespace DX12Native
 	{
 		std::string referenceKey, model, shapeName, sourceDigest;
 		uint32_t blockIndex = UINT32_MAX;
+		std::string pgMaterialId, pgClassification, snowCoverage = "unindexed";
 	};
 
 	/** @brief Records a rigid instance separately from retained mesh bytes. */

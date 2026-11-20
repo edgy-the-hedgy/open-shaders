@@ -1,5 +1,7 @@
 #include "NativeFeatures.h"
 #include "Features/DX12NativeScene/DX12NativeScene.h"
+#include "Features/DX12Resources/DX12Resources.h"
+#include "Features/DX12Resources/PgReferenceRegistry.h"
 #include "Features/LightLimitFix.h"
 #include "Features/LightLimitFix/ShadowCasterManager.h"
 #include "Features/NativePBR/MaterialRouting.h"
@@ -51,6 +53,7 @@ void NativePBRFeature::DiscoverPreparedAssets()
 	if (!scene || !scene->acceleration || discoveredGeometry == scene->acceleration)
 		return;
 	const auto catalog = materialCatalog.GetSnapshot();
+	const auto pgIndex = globals::features::dx12Resources.GetPgReferenceRegistry();
 	std::unordered_set<std::string> currentKeys;
 	materialDiscovery.BeginInstanceEpoch();
 	for (const auto& instance : scene->acceleration->instances) {
@@ -71,6 +74,16 @@ void NativePBRFeature::DiscoverPreparedAssets()
 		if (uv.size() != 4 || textures.size() < 8)
 			continue;
 		try {
+			const bool pgSurface = identity.pgClassification == "snow" || identity.pgClassification == "ice";
+			std::optional<DX12ResourceService::PgReferenceRegistry::Lookup> pgMaterial;
+			if (pgSurface) {
+				if (!pgIndex) continue;
+				pgMaterial = pgIndex->Find(identity.model, int32_t(identity.blockIndex));
+				if (!pgMaterial || pgMaterial->mesh->sha256 != identity.sourceDigest ||
+					pgMaterial->material->id != identity.pgMaterialId ||
+					pgMaterial->material->classification != identity.pgClassification)
+					continue;
+			}
 			const auto flags1 = source.at("shaderFlags1").get<uint32_t>();
 			const auto flags2 = source.at("shaderFlags2").get<uint32_t>();
 			const auto clamp = source.at("textureClampMode").get<uint32_t>();
@@ -88,6 +101,12 @@ void NativePBRFeature::DiscoverPreparedAssets()
 				(flags & uint64_t(RE::BSShaderProperty::EShaderPropertyFlag::kEnvMap)) != 0;
 			constexpr std::array<size_t, 7> nifSlots{ 0, 1, 5, 2, 3, 7, 6 };
 			for (size_t role = 0; role < nifSlots.size(); ++role) {
+				if (pgSurface) {
+					const auto slot = pgMaterial->material->textureSlots[nifSlots[role]];
+					if (slot >= 0)
+						materialSource.base.texturePaths[role] = pgIndex->textures[size_t(slot)];
+					continue;
+				}
 				const auto& value = textures.at(nifSlots[role]);
 				if (!value.is_string())
 					continue;

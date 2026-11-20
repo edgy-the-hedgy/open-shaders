@@ -8,7 +8,7 @@ using Mutagen.Bethesda.Plugins.Order;
 using Mutagen.Bethesda.Plugins.Cache;
 using Mutagen.Bethesda.Skyrim;
 
-return args.Length == 3 && args[0] == "--snow-atlas" ? GlobalSnowAtlas.Run(args[1], args[2]) :
+return args.Length == 3 && args[0] == "--pg-reference-index" ? PgReferenceIndex.Run(args[1], args[2]) :
     args.Length == 5 && args[0] == "--list-cells" ? PluginCellIndex.Run(args[1..]) :
     args.Length == 9 && args[0] == "--worldspace-subcell" ? ScenePreparation.Run(args[1..5],
         int.Parse(args[5], System.Globalization.CultureInfo.InvariantCulture),
@@ -244,8 +244,12 @@ try
     Directory.CreateDirectory(output);
     var options = new JsonSerializerOptions { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
     var pgAssets = new List<PgAsset>();
-    using (var pg = new PgAssets(data, output))
+    string pgIndexSourceDigest;
+    using (var pg = new PgAssets(data, output, indexOnly: true))
+    {
+        pgIndexSourceDigest = pg.IndexSourceDigest;
         foreach (var path in paths) pgAssets.Add(pg.Read(path));
+    }
     // Cache verified mesh products across separate companion sessions; the
     // current work package is still independently validated and published.
     SharedMeshCache? shared = null;
@@ -267,10 +271,10 @@ try
     {
         schemaVersion = 1, pluginSources, cell = cellKey.ToString(),
         scopeType = worldspace ? "worldspace" : "cell", requestedSubcell, subcellSize,
-        pgDiffSha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(Path.Combine(data, "ParallaxGen_Diff.json")))),
+        pgIndexSourceDigest,
         assets = pgAssets.Select(asset => new { asset.Path, asset.Status, asset.Sha256 })
     }))).ToLowerInvariant();
-    var layout = CellLayout.Write(output, cellKey.ToString(), scopeEditorId,
+    var layout = CellLayout.Write(data, output, cellKey.ToString(), scopeEditorId,
         inputDigest, rows, compiledAssets, options, subcellSize, requestedSubcell,
         worldspace ? "worldspace" : "cell");
     File.WriteAllText(Path.Combine(output, "cell-records.json"), JsonSerializer.Serialize(new
@@ -295,7 +299,7 @@ try
         assetProvider = "PGPatcher deployed output; no conflict re-resolution", references = rows.Count, staticRecordCandidates = staticCount,
         furnitureRecordCandidates = furnitureCount, placedLights = lightCount, unresolvedBases, assets = pgAssets,
         sourceCacheHits = pgAssets.Count(asset => asset.CacheHit),
-        pgVerifiedSources = pgAssets.Count(asset => asset.Status == "pg-patched-crc-verified"),
+        pgVerifiedSources = pgAssets.Count(asset => asset.Status == "pg-index-verified"),
         pgGeneratedSources = pgAssets.Count(asset => asset.Status == "pg-generated-deployment-linked"),
         unresolvedAssets = pgAssets.Count(asset => asset.CachedSource == null),
         compiledAssets = compiledAssets.Length, compiledCacheHits = compiledAssets.Count(asset => asset.CacheHit),

@@ -16,7 +16,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace DX12ResourceService { struct GlobalSnowAtlas; }
+namespace DX12ResourceService { struct GlobalSnowAtlas; struct PgReferenceRegistry; }
 
 /** @brief Standalone interior preparation service with automatic CELL identification. */
 struct DX12Resources final : Feature
@@ -46,14 +46,16 @@ struct DX12Resources final : Feature
 	void DataLoaded() override;
 	/** @brief Acquires the immutable global snow inventory without referencing a selected CELL. */
 	std::shared_ptr<const DX12ResourceService::GlobalSnowAtlas> GetGlobalSnowAtlas();
+	/** @brief Returns only the last explicitly built, cached PG reference generation. */
+	std::shared_ptr<const DX12ResourceService::PgReferenceRegistry> GetPgReferenceRegistry();
 	/** Block native cache consumers while a startup flush is pending/failed. */
 	bool DiskGeometryCacheReady();
 	json GetDiagnostics() override;
 	std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
 	{
-		return { "Scene-independent snow asset inventory and companion-based CELL processing.",
+		return { "Manually indexed PG references and companion-based CELL processing.",
 			{ "Latest-save or current interior detection", "Plugin-scoped interior selection",
-				"Global source DDS snow inventory (coverage incomplete)",
+				"Explicit PG reference index refresh (no automatic scans)",
 				"Independent on-disk CELL preparation job",
 				"Versioned DX12-cache reports" } };
 	}
@@ -64,9 +66,13 @@ private:
 	struct PreparationJob;
 	struct DiskCacheFlushJob;
 	struct SnowAtlasJob;
+	struct PgIndexJob;
 	void LoadCachedSnowAtlas();
 	void StartSnowAtlasGeneration();
 	void PollSnowAtlasGeneration();
+	void LoadCachedPgReferenceIndex();
+	void StartPgReferenceIndexGeneration();
+	void PollPgReferenceIndex();
 	void BeginAutomaticDetection(bool mainMenu);
 	void PollAutomaticDetection();
 	void RefreshLoadedPlugins();
@@ -86,6 +92,12 @@ private:
 	std::shared_ptr<DiskCacheFlushJob> diskCacheFlushJob;
 	std::shared_ptr<SnowAtlasJob> snowAtlasJob;
 	std::shared_ptr<const DX12ResourceService::GlobalSnowAtlas> snowAtlas;
+	std::shared_ptr<PgIndexJob> pgIndexJob;
+	std::shared_ptr<const DX12ResourceService::PgReferenceRegistry> pgIndex;
+	bool pgIndexBuildConfirm = false;
+	std::string pgIndexStatus = "No cached PG reference index loaded";
+	std::string pgIndexGeneratedUtc;
+	uint64_t pgIndexMeshes = 0, pgIndexShapes = 0, pgIndexMaterials = 0, pgIndexTextures = 0, pgIndexUnresolved = 0;
 	bool snowAtlasRegenerateConfirm = false;
 	std::string snowAtlasStatus = "Waiting for Skyrim data";
 	std::string snowAtlasFingerprint;

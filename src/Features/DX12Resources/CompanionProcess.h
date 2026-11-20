@@ -146,8 +146,9 @@ namespace DX12ResourceService
 			return result;
 		}
 		constexpr DWORD kMaximumCompanionRuntimeMs = 30 * 60 * 1000;
-		const bool snowGeneration = !arguments.empty() && arguments.front() == L"--snow-atlas";
-		const DWORD wait = WaitForSingleObject(child.get(), snowGeneration ? kMaximumCompanionRuntimeMs : INFINITE);
+		const bool boundedIndexing = !arguments.empty() &&
+			arguments.front() == L"--pg-reference-index";
+		const DWORD wait = WaitForSingleObject(child.get(), boundedIndexing ? kMaximumCompanionRuntimeMs : INFINITE);
 		if (wait == WAIT_TIMEOUT) {
 			TerminateJobObject(job.get(), ERROR_TIMEOUT);
 			WaitForSingleObject(child.get(), 10000);
