@@ -76,6 +76,18 @@ namespace DX12
 		std::array<std::shared_ptr<const Tile>, kPredictiveCapacity> predictiveResident{};
 	};
 
+	struct PreparationTiming
+	{
+		uint64_t completed = 0, failed = 0;  // Finished publication attempts, including incomplete tiles.
+		double lastMs = 0.0, totalMs = 0.0;
+		double AverageMs() const { return completed ? totalMs / double(completed) : 0.0; }
+	};
+
+	struct PreparationStats
+	{
+		PreparationTiming active, predictive;
+	};
+
 	class ResourceGrid
 	{
 	public:
@@ -139,6 +151,11 @@ struct DX12Resources final : Feature
 	bool IsActive() const;
 	/** @brief Returns the most recent prepared-light publication. */
 	std::vector<DX12::PreparedLight> GetPreparedLights() const;
+	/** @brief Bounded in-memory generation timings for the active 3x3 and outer 5x5 ring. */
+	std::shared_ptr<const DX12::PreparationStats> GetPreparationStats() const
+	{
+		return generationStats.load(std::memory_order_acquire);
+	}
 
 private:
 	void ResetPreparation();
@@ -147,5 +164,7 @@ private:
 	std::unique_ptr<DX12::CompanionResult> adopting;
 	size_t lightAdoptionOffset = 0;
 	std::optional<DX12::SubcellKey> inFlight;
+	std::atomic<std::shared_ptr<const DX12::PreparationStats>> generationStats{
+		std::make_shared<const DX12::PreparationStats>() };
 	Settings settings;
 };

@@ -32,6 +32,8 @@ namespace DX12
 	{
 		CompanionPublication publication;
 		std::vector<CompanionLight> lights;
+		bool predictive = false;
+		double preparationMs = 0.0;  // Complete worker-side preparation, including companion IPC and parsing.
 	};
 
 	/** @brief Single bounded producer; engine form resolution is performed by the caller on the game thread. */

@@ -26,16 +26,56 @@ void DX12NativeScene::DrawSettings()
 	const auto resolved = GetLights();
 	const auto coverage = GetCoveredLightIDs();
 	const uint32_t scope = grid ? grid->requested.front().scope : 0u;
-	uint32_t resident = 0;
-	if (grid)
-		for (const auto& tile : grid->resident)
-			if (tile && tile->state == DX12::Tile::State::Ready)
-				++resident;
+	const auto timings = globals::features::dx12Resources.GetPreparationStats();
+	struct Progress { uint32_t ready = 0, preparing = 0, waiting = 0, incomplete = 0; };
+	const auto progress = [](const auto& residents) {
+		Progress values;
+		for (const auto& tile : residents) {
+			if (!tile)
+				continue;
+			switch (tile->state) {
+			case DX12::Tile::State::Ready: ++values.ready; break;
+			case DX12::Tile::State::Preparing: ++values.preparing; break;
+			case DX12::Tile::State::RetryWaiting: ++values.waiting; break;
+			case DX12::Tile::State::Incomplete: ++values.incomplete; break;
+			case DX12::Tile::State::Deferred: ++values.waiting; break;
+			default: break;
+			}
+		}
+		return values;
+	};
+	const auto active = grid ? progress(grid->resident) : Progress{};
+	const auto outer = grid ? progress(grid->predictiveResident) : Progress{};
 	const bool currentScene = active && published && grid && scope &&
 		published->scope == scope && published->geometryRevision == grid->geometryRevision;
 	ImGui::Text("Runtime: %s", active ? "Automatic (DX12 master enabled)" : "Inactive (DX12 master or Resources unavailable)");
-	ImGui::Text("Active subcells: %u / 9", resident);
 	ImGui::Text("Subcell size: %u game units", grid ? grid->size : DX12::kSubcellSizes.front());
+	ImGui::SeparatorText("Companion subcell generation");
+	ImGui::TextUnformatted("Active 3x3");
+	ImGui::ProgressBar(float(active.ready) / float(DX12::kGridCapacity), ImVec2(-1.0f, 0),
+		std::format("{}/{} ready", active.ready, DX12::kGridCapacity).c_str());
+	ImGui::TextDisabled("Preparing: %u | Retry/deferred: %u | Incomplete: %u",
+		active.preparing, active.waiting, active.incomplete);
+	ImGui::TextUnformatted("Predictive outer ring (5x5 excluding 3x3)");
+	ImGui::ProgressBar(float(outer.ready) / float(DX12::kPredictiveCapacity), ImVec2(-1.0f, 0),
+		std::format("{}/{} ready", outer.ready, DX12::kPredictiveCapacity).c_str());
+	ImGui::TextDisabled("Preparing: %u | Retry/deferred: %u | Incomplete: %u",
+		outer.preparing, outer.waiting, outer.incomplete);
+	const auto displayTiming = [](const char* label, const DX12::PreparationTiming& timing) {
+		if (timing.completed)
+			ImGui::Text("%s: last %.1f ms | average %.1f ms | attempts %llu | failed %llu",
+				label, timing.lastMs, timing.AverageMs(),
+				static_cast<unsigned long long>(timing.completed),
+				static_cast<unsigned long long>(timing.failed));
+		else
+			ImGui::Text("%s: last -- | average -- | no completed attempts", label);
+	};
+	if (timings) {
+		displayTiming("Active 3x3 preparation", timings->active);
+		displayTiming("Predictive ring preparation", timings->predictive);
+	}
+	ImGui::TextDisabled("Times include companion IPC and worker parsing; canceled requests are excluded.");
+	ImGui::SeparatorText("Native acceleration and lighting");
 	ImGui::Text("Acceleration scene: %s", currentScene ? "Published" :
 		(active && scope ? "Waiting for prepared geometry / BLAS / TLAS" : "Not available"));
 	if (currentScene) {

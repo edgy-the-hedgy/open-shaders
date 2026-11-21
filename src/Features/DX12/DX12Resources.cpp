@@ -264,6 +264,7 @@ void DX12Resources::ResetPreparation()
 	adopting.reset();
 	lightAdoptionOffset = 0;
 	grid.Clear();
+	generationStats.store(std::make_shared<const DX12::PreparationStats>(), std::memory_order_release);
 }
 
 void DX12Resources::DrawSettings()
@@ -377,7 +378,23 @@ void DX12Resources::PreShadowMaps()
 				adopting->publication.lights.push_back(record.value);
 			}
 			if (lightAdoptionOffset == adopting->lights.size()) {
-				grid.Publish(std::move(adopting->publication));
+				const auto& publication = adopting->publication;
+				const bool prepared = publication.validated && publication.enumerationComplete &&
+					publication.failedShapes == 0 && publication.eligibleShapes == publication.shapes.size();
+				const bool predictive = adopting->predictive;
+				const double elapsedMs = adopting->preparationMs;
+				if (grid.Publish(std::move(adopting->publication))) {
+					// This snapshot only counts accepted, finished worker requests; canceled
+					// and superseded work is not misreported as generated geometry.
+					auto next = std::make_shared<DX12::PreparationStats>(
+						*generationStats.load(std::memory_order_acquire));
+					auto& timing = predictive ? next->predictive : next->active;
+					++timing.completed;
+					timing.failed += prepared ? 0u : 1u;
+					timing.lastMs = elapsedMs;
+					timing.totalMs += elapsedMs;
+					generationStats.store(std::move(next), std::memory_order_release);
+				}
 				adopting.reset();
 				lightAdoptionOffset = 0;
 			}
