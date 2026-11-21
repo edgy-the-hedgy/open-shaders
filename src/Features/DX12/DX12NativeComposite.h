@@ -53,9 +53,11 @@ struct DX12NativeComposite final : Feature
 	void OnRuntimeDisabled() override;
 	void OnSceneTransitionReset(bool opening) override;
 	bool IsActive() const;
+	/** @brief Test-only suppression gate. Only fresh successful full-resolution DXR previews qualify. */
+	bool ShouldDisableMatchedRasterShadows() const;
 	std::optional<Submission> Dispatch(ID3D12GraphicsCommandList4* commands, ID3D12Resource* rasterColor,
 		ID3D12Resource* depth, uint32_t width, uint32_t height);
-	void OnSubmitted(ID3D12Fence* fence, uint64_t value, Submission submission);
+	void OnSubmitted(ID3D12Fence* fence, uint64_t value, Submission submission, bool upscalerSucceeded);
 
 private:
 	struct PipelineState
@@ -108,6 +110,10 @@ private:
 	std::atomic<float> shadowIntensity{ 1.0f };
 	std::atomic<bool> diagnosticDarkenEnabled{ false };
 	std::atomic<float> diagnosticDarkenStrength{ 1.0f };
+	std::atomic<bool> disableMatchedRasterStatic{ false };
+	std::atomic<uint32_t> lastValidDiagnosticFrame{ 0 };
+	bool previousRasterSuppressionArmed = false;
+	uint64_t previousRasterRefreshRevision = 0;
 	std::atomic<uint32_t> samplingPhase{ 0 };
 	enum class DispatchStatus : uint8_t
 	{

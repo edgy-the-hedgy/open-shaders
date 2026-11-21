@@ -1046,6 +1046,8 @@ namespace ShadowCasterManager
 	bool NativeStaticCovered(const RE::BSShadowLight* light);
 	/** @brief The composite confirms an independent shadow mask can replace the static atlas. */
 	void SetNativeStaticMaskActive(bool active);
+	/** @brief Invalidate cached static tiles after per-mesh preview filtering changes. */
+	void InvalidateNativePreviewStaticBakes(std::span<const uintptr_t> matchedLightPointers);
 	/** @brief True only while native masking and this light's static coverage are both valid. */
 	bool NativeStaticOffloaded(const RE::BSShadowLight* light);
 

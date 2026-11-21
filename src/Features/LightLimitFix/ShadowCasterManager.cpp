@@ -478,6 +478,21 @@ namespace ShadowCasterManager
 		}
 	}
 
+	void InvalidateNativePreviewStaticBakes(std::span<const uintptr_t> matchedLightPointers)
+	{
+		if (!s_lights.Lights || matchedLightPointers.empty())
+			return;
+		for (int32_t i = 0; i < s_lights.Size; ++i) {
+			auto& entry = s_lights.Lights[i];
+			if (entry.Light && std::ranges::binary_search(matchedLightPointers,
+				reinterpret_cast<uintptr_t>(entry.Light))) {
+				InvalidateSlotStaticBake(i);
+				InvalidateSlotTileContent(i);
+				entry.LastDrawnFrame = -1;
+			}
+		}
+	}
+
 	bool NativeStaticOffloaded(const RE::BSShadowLight* light)
 	{
 		return s_nativeStaticMaskActive.load(std::memory_order_acquire) && NativeStaticCovered(light);

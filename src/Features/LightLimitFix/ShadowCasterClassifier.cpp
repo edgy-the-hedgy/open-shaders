@@ -7,6 +7,8 @@
 
 #include "../../Feature.h"
 #include "../../Globals.h"
+#include "../DX12/DX12NativeComposite.h"
+#include "../DX12/DX12NativeScene.h"
 #include "../../State.h"
 #include "../../Utils/ActorUtils.h"
 #include "../../Utils/FileSystem.h"
@@ -444,7 +446,8 @@ namespace ShadowCasterManager
 	static bool CasterFilteredByPass(RE::BSGeometry& geom)
 	{
 		const bool nativeStaticOffloaded = NativeStaticOffloaded(CurrentCullLight());
-		if (!AtlasActive() && !nativeStaticOffloaded)
+		const bool nativePreview = globals::features::dx12NativeComposite.ShouldDisableMatchedRasterShadows();
+		if (!AtlasActive() && !nativeStaticOffloaded && !nativePreview)
 			return false;
 		if (const auto passless = ShadowMapPassless(geom); passless != PasslessReason::kNone) {
 			s_passlessCasterSkipTotal.fetch_add(1, std::memory_order_relaxed);
@@ -458,6 +461,13 @@ namespace ShadowCasterManager
 		                          &ClassifyCaster(geom);
 		const bool dynamic = !rec || rec->dynamic;
 		if (!dynamic && nativeStaticOffloaded)
+			return true;
+		// Only suppress an actual rigid shape in the published TLAS, and only
+		// for a prepared point light represented in the diagnostic shadowmask.
+		// Never infer geometry coverage merely from a partially prepared subcell.
+		if (!dynamic && nativePreview &&
+			globals::features::dx12NativeScene.HasMatchedPreparedLight(CurrentCullLight()) &&
+			globals::features::dx12NativeScene.HasCurrentRuntimeGeometry(geom))
 			return true;
 		// Every static caster folds into the hash regardless of pass, so a
 		// static-set change is seen during whichever accumulate runs this frame.
