@@ -3,6 +3,7 @@
 #include "DX12NativeScene.h"
 
 #include <atomic>
+#include <cstdint>
 #include <d3d12.h>
 #include <deque>
 #include <memory>
@@ -99,5 +100,21 @@ private:
 	std::atomic<int> samplingMode{ 0 };
 	std::atomic<float> shadowIntensity{ 1.0f };
 	std::atomic<uint32_t> samplingPhase{ 0 };
+	enum class DispatchStatus : uint8_t
+	{
+		NeverCalled,
+		InactiveOrInputsMissing,
+		PipelineNotReady,
+		SceneNotReady,
+		NoPreparedLights,
+		SurfacesUnavailable,
+		UploadBudgetExhausted,
+		UploadFailed,
+		Recorded,
+		Submitted
+	};
+	std::atomic<DispatchStatus> lastDispatchStatus{ DispatchStatus::NeverCalled };
+	std::atomic<uint64_t> dispatchCalls{ 0 };
+	std::atomic<uint32_t> lastPreparedLightCount{ 0 };
 	std::atomic<uint64_t> submittedMasks{ 0 };
 };

@@ -136,6 +136,23 @@ void DX12NativeComposite::DrawSettings()
 	ImGui::Text("Runtime: %s", IsActive() ? "Automatic (DX12 master enabled)" : "Inactive");
 	ImGui::Text("Shadowmask submissions: %llu",
 		static_cast<unsigned long long>(submittedMasks.load(std::memory_order_acquire)));
+	ImGui::Text("Runtime FSR dispatch callbacks: %llu",
+		static_cast<unsigned long long>(dispatchCalls.load(std::memory_order_relaxed)));
+	ImGui::Text("Prepared mask lights: %u", lastPreparedLightCount.load(std::memory_order_relaxed));
+	const char* lastStatus = "Unknown";
+	switch (lastDispatchStatus.load(std::memory_order_acquire)) {
+	case DispatchStatus::NeverCalled: lastStatus = "Waiting for runtime FSR upscaler callback"; break;
+	case DispatchStatus::InactiveOrInputsMissing: lastStatus = "Inactive or missing DX12 inputs"; break;
+	case DispatchStatus::PipelineNotReady: lastStatus = "DXR pipeline pending or failed"; break;
+	case DispatchStatus::SceneNotReady: lastStatus = "Current TLAS, lights or grid unavailable"; break;
+	case DispatchStatus::NoPreparedLights: lastStatus = "No valid prepared lights"; break;
+	case DispatchStatus::SurfacesUnavailable: lastStatus = "Depth/color surface unavailable"; break;
+	case DispatchStatus::UploadBudgetExhausted: lastStatus = "Upload pairs awaiting GPU fences"; break;
+	case DispatchStatus::UploadFailed: lastStatus = "GPU upload allocation failed"; break;
+	case DispatchStatus::Recorded: lastStatus = "Mask recorded, pending GPU submission"; break;
+	case DispatchStatus::Submitted: lastStatus = "Mask submitted on DX12 queue"; break;
+	}
+	ImGui::TextWrapped("Last mask dispatch: %s", lastStatus);
 	if (pipelineFailed.load(std::memory_order_acquire)) {
 		const auto failure = pipelineFailureReason.load(std::memory_order_acquire);
 		ImGui::TextWrapped("DXR shadowmask initialization failed: %s",
@@ -348,43 +365,66 @@ std::optional<DX12NativeComposite::Submission> DX12NativeComposite::Dispatch(
 	uint32_t width, uint32_t height)
 {
 	CS_GPU_PASS("DX12NativeComposite::Dispatch");
-	if (!IsActive() || !commands || !rasterColor || !depth ||
-		!EnsurePipelines(globals::features::upscaling.dx12SwapChain.d3d12Device.get()))
+	dispatchCalls.fetch_add(1, std::memory_order_relaxed);
+	lastPreparedLightCount.store(0, std::memory_order_relaxed);
+	if (!IsActive() || !commands || !rasterColor || !depth) {
+		lastDispatchStatus.store(DispatchStatus::InactiveOrInputsMissing, std::memory_order_release);
 		return std::nullopt;
+	}
+	if (!EnsurePipelines(globals::features::upscaling.dx12SwapChain.d3d12Device.get())) {
+		lastDispatchStatus.store(DispatchStatus::PipelineNotReady, std::memory_order_release);
+		return std::nullopt;
+	}
 	const auto scene = globals::features::dx12NativeScene.GetScene();
 	const auto lightSnapshot = globals::features::dx12NativeScene.GetLights();
-	const auto covered = globals::features::dx12NativeScene.GetCoveredLightIDs();
 	const auto grid = globals::features::dx12Resources.GetGrid();
-	if (!scene || !scene->acceleration || !lightSnapshot || !covered || covered->empty() || !grid ||
-		scene->geometryRevision != grid->geometryRevision || scene->scope != grid->requested.front().scope)
+	// A diagnostic DXR mask only needs a current acceleration structure and
+	// prepared lights. Verified complete coverage belongs exclusively to the
+	// future raster-shadow suppression decision, NOT mask generation.
+	if (!scene || !scene->acceleration || !lightSnapshot || !grid ||
+		scene->geometryRevision != grid->geometryRevision || scene->scope != grid->requested.front().scope) {
+		lastDispatchStatus.store(DispatchStatus::SceneNotReady, std::memory_order_release);
 		return std::nullopt;
+	}
 	std::array<GpuLight, DX12::kMaximumShadowLights> lightUpload{};
 	uint32_t count = 0;
 	for (uint32_t index = 0; index < lightSnapshot->count; ++index) {
-		const auto& resolved = lightSnapshot->values[index];
-		if (!resolved.matched || !std::ranges::binary_search(*covered, resolved.light.referenceID) ||
-			resolved.runtimeShadowSlot == UINT32_MAX || resolved.light.fade <= 0 ||
-			(resolved.light.color.x <= 0 && resolved.light.color.y <= 0 && resolved.light.color.z <= 0))
+		const auto& light = lightSnapshot->values[index].light;
+		// These are companion-discovered, bounded prepared lights; runtime SCM
+		// shadow slots and raster-coverage certification are not prerequisites.
+		if (!light.referenceID || !std::isfinite(light.radius) || light.radius <= 0 ||
+			!std::isfinite(light.fade) || light.fade <= 0 ||
+			!std::isfinite(light.emitterRadius) || !std::isfinite(light.falloffExponent) ||
+			!std::isfinite(light.position.x) || !std::isfinite(light.position.y) ||
+			!std::isfinite(light.position.z) || !std::isfinite(light.color.x) ||
+			!std::isfinite(light.color.y) || !std::isfinite(light.color.z) ||
+			(light.color.x <= 0 && light.color.y <= 0 && light.color.z <= 0))
 			continue;
-		const auto& light = resolved.light;
 		lightUpload[count++] = { { light.position.x, light.position.y, light.position.z, light.radius },
 			{ light.color.x, light.color.y, light.color.z, light.fade },
 			{ light.emitterRadius, light.falloffExponent, 0, 0 } };
 	}
-	if (!count)
+	lastPreparedLightCount.store(count, std::memory_order_relaxed);
+	if (!count) {
+		lastDispatchStatus.store(DispatchStatus::NoPreparedLights, std::memory_order_release);
 		return std::nullopt;
+	}
 	Collect();
 	const auto target = MakeSurfaces(rasterColor, depth, width, height);
-	if (!target)
+	if (!target) {
+		lastDispatchStatus.store(DispatchStatus::SurfacesUnavailable, std::memory_order_release);
 		return std::nullopt;
+	}
 	MaskCamera camera{ globals::game::frameBufferCached.GetCameraProjInverse(),
 		globals::game::frameBufferCached.GetCameraViewInverse(),
 		globals::game::frameBufferCached.GetCameraPosAdjust(), width, height, count,
 		shadowIntensity.load(std::memory_order_acquire),
 		uint32_t(std::clamp(samplingMode.load(std::memory_order_acquire), 0, 7)),
 		samplingPhase.load(std::memory_order_relaxed) };
-	if (availableUploads.empty() && uploadPairs == kMaximumUploadPairs)
+	if (availableUploads.empty() && uploadPairs == kMaximumUploadPairs) {
+		lastDispatchStatus.store(DispatchStatus::UploadBudgetExhausted, std::memory_order_release);
 		return std::nullopt;
+	}
 	UploadPair buffers;
 	if (!availableUploads.empty()) {
 		buffers = std::move(availableUploads.front());
@@ -395,6 +435,7 @@ std::optional<DX12NativeComposite::Submission> DX12NativeComposite::Dispatch(
 	if (!Upload(buffers.camera, &camera, sizeof(camera), sizeof(camera)) ||
 		!Upload(buffers.lights, lightUpload.data(), count * sizeof(GpuLight), sizeof(lightUpload))) {
 		availableUploads.push_back(std::move(buffers));
+		lastDispatchStatus.store(DispatchStatus::UploadFailed, std::memory_order_release);
 		return std::nullopt;
 	}
 	Submission submission;
@@ -423,6 +464,7 @@ std::optional<DX12NativeComposite::Submission> DX12NativeComposite::Dispatch(
 	const auto shadowDone = CD3DX12_RESOURCE_BARRIER::Transition(target->shadowMask.get(),
 		D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
 	commands->ResourceBarrier(1, &shadowDone);
+	lastDispatchStatus.store(DispatchStatus::Recorded, std::memory_order_release);
 	return submission;
 }
 
@@ -436,5 +478,6 @@ void DX12NativeComposite::OnSubmitted(ID3D12Fence* fence, uint64_t value, Submis
 	frame.submission = std::move(submission);
 	pending.push_back(std::move(frame));
 	submittedMasks.fetch_add(1, std::memory_order_relaxed);
+	lastDispatchStatus.store(DispatchStatus::Submitted, std::memory_order_release);
 	Collect();
 }
