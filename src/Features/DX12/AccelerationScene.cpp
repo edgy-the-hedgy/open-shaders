@@ -289,7 +289,7 @@ namespace DX12
 			uint64_t sourceBytes = 0;
 			bool complete = std::ranges::all_of(grid->resident, [](const auto& tile) {
 				return tile && tile->state == Tile::State::Ready;
-			});
+			}); // ReadyPartial geometry is usable but never certifies complete static coverage.
 			for (const auto& tile : grid->resident) {
 				if (!tile)
 					continue;

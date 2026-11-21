@@ -37,7 +37,8 @@ namespace DX12
 		{
 			Requested,
 			Preparing,
-			Ready,
+			Ready,        // Geometry prepared and authoritative coverage verified.
+			ReadyPartial, // Valid geometry/lights, but shadow-offload coverage not certified.
 			RetryWaiting,
 			Incomplete,
 			Deferred  // Predictive geometry exceeded its CPU residency allowance; retry if promoted active.
@@ -78,7 +79,7 @@ namespace DX12
 
 	struct PreparationTiming
 	{
-		uint64_t completed = 0, failed = 0;  // Finished publication attempts, including incomplete tiles.
+		uint64_t completed = 0, failed = 0, partial = 0;  // Completed, invalid and incomplete-coverage publications.
 		double lastMs = 0.0, totalMs = 0.0;
 		double AverageMs() const { return completed ? totalMs / double(completed) : 0.0; }
 	};

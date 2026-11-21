@@ -28,7 +28,7 @@ void DX12NativeScene::DrawSettings()
 	const auto coverage = GetCoveredLightIDs();
 	const uint32_t scope = grid ? grid->requested.front().scope : 0u;
 	const auto timings = globals::features::dx12Resources.GetPreparationStats();
-	struct Progress { uint32_t ready = 0, preparing = 0, waiting = 0, incomplete = 0; };
+	struct Progress { uint32_t ready = 0, partial = 0, preparing = 0, waiting = 0, incomplete = 0; };
 	const auto progress = [](const auto& residents) {
 		Progress values;
 		for (const auto& tile : residents) {
@@ -36,6 +36,7 @@ void DX12NativeScene::DrawSettings()
 				continue;
 			switch (tile->state) {
 			case DX12::Tile::State::Ready: ++values.ready; break;
+			case DX12::Tile::State::ReadyPartial: ++values.partial; break;
 			case DX12::Tile::State::Preparing: ++values.preparing; break;
 			case DX12::Tile::State::RetryWaiting: ++values.waiting; break;
 			case DX12::Tile::State::Incomplete: ++values.incomplete; break;
@@ -53,21 +54,24 @@ void DX12NativeScene::DrawSettings()
 	ImGui::Text("Subcell size: %u game units", grid ? grid->size : DX12::kSubcellSizes.front());
 	ImGui::SeparatorText("Companion subcell generation");
 	ImGui::TextUnformatted("Active 3x3");
-	ImGui::ProgressBar(float(activeProgress.ready) / float(DX12::kGridCapacity), ImVec2(-1.0f, 0),
-		std::format("{}/{} ready", activeProgress.ready, DX12::kGridCapacity).c_str());
+	ImGui::ProgressBar(float(activeProgress.ready + activeProgress.partial) / float(DX12::kGridCapacity), ImVec2(-1.0f, 0),
+		std::format("{}/{} prepared", activeProgress.ready + activeProgress.partial, DX12::kGridCapacity).c_str());
+	ImGui::TextDisabled("Complete coverage: %u | Partial geometry: %u", activeProgress.ready, activeProgress.partial);
 	ImGui::TextDisabled("Preparing: %u | Retry/deferred: %u | Incomplete: %u",
 		activeProgress.preparing, activeProgress.waiting, activeProgress.incomplete);
 	ImGui::TextUnformatted("Predictive outer ring (5x5 excluding 3x3)");
-	ImGui::ProgressBar(float(outerProgress.ready) / float(DX12::kPredictiveCapacity), ImVec2(-1.0f, 0),
-		std::format("{}/{} ready", outerProgress.ready, DX12::kPredictiveCapacity).c_str());
+	ImGui::ProgressBar(float(outerProgress.ready + outerProgress.partial) / float(DX12::kPredictiveCapacity), ImVec2(-1.0f, 0),
+		std::format("{}/{} prepared", outerProgress.ready + outerProgress.partial, DX12::kPredictiveCapacity).c_str());
+	ImGui::TextDisabled("Complete coverage: %u | Partial geometry: %u", outerProgress.ready, outerProgress.partial);
 	ImGui::TextDisabled("Preparing: %u | Retry/deferred: %u | Incomplete: %u",
 		outerProgress.preparing, outerProgress.waiting, outerProgress.incomplete);
 	const auto displayTiming = [](const char* label, const DX12::PreparationTiming& timing) {
 		if (timing.completed)
-			ImGui::Text("%s: last %.1f ms | average %.1f ms | attempts %llu | failed %llu",
+			ImGui::Text("%s: last %.1f ms | average %.1f ms | attempts %llu | invalid %llu | partial %llu",
 				label, timing.lastMs, timing.AverageMs(),
 				static_cast<unsigned long long>(timing.completed),
-				static_cast<unsigned long long>(timing.failed));
+				static_cast<unsigned long long>(timing.failed),
+				static_cast<unsigned long long>(timing.partial));
 		else
 			ImGui::Text("%s: last -- | average -- | no completed attempts", label);
 	};
@@ -75,6 +79,7 @@ void DX12NativeScene::DrawSettings()
 		displayTiming("Active 3x3 preparation", timings->active);
 		displayTiming("Predictive ring preparation", timings->predictive);
 	}
+	ImGui::TextDisabled("Partial subcells can build BLAS/TLAS, but cannot certify static-shadow offloading.");
 	ImGui::TextDisabled("Times include companion IPC and worker parsing; canceled requests are excluded.");
 	ImGui::SeparatorText("Native acceleration and lighting");
 	ImGui::Text("Acceleration scene: %s", currentScene ? "Published" :

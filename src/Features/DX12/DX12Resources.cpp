@@ -168,10 +168,13 @@ namespace DX12
 		tile->lights = std::move(publication.lights);
 		const bool complete = publication.validated && publication.enumerationComplete &&
 		                      publication.failedShapes == 0 && publication.eligibleShapes == tile->shapes.size();
-		if (complete) {
-			tile->state = Tile::State::Ready;
+		if (publication.validated) {
+			// Geometry validity and complete static-shadow coverage are different contracts.
+			// Allow valid partial subcells into BLAS/TLAS and prepared-light streaming,
+			// but only Ready (certified complete) subcells can offload raster shadows.
+			tile->state = complete ? Tile::State::Ready : Tile::State::ReadyPartial;
 		} else {
-			// Incomplete geometry must not remain resident or enter BLAS/TLAS construction.
+			// Malformed companion payloads never reach BLAS/TLAS construction.
 			tile->shapes.clear();
 			tile->lights.clear();
 			tile->bytes = 0;
@@ -379,7 +382,8 @@ void DX12Resources::PreShadowMaps()
 			}
 			if (lightAdoptionOffset == adopting->lights.size()) {
 				const auto& publication = adopting->publication;
-				const bool prepared = publication.validated && publication.enumerationComplete &&
+				const bool valid = publication.validated;
+				const bool prepared = valid && publication.enumerationComplete &&
 					publication.failedShapes == 0 && publication.eligibleShapes == publication.shapes.size();
 				const bool wasPredictiveRequest = adopting->predictive;
 				const double elapsedMs = adopting->preparationMs;
@@ -390,7 +394,8 @@ void DX12Resources::PreShadowMaps()
 						*generationStats.load(std::memory_order_acquire));
 					auto& timing = wasPredictiveRequest ? next->predictive : next->active;
 					++timing.completed;
-					timing.failed += prepared ? 0u : 1u;
+					timing.failed += valid ? 0u : 1u;
+					timing.partial += valid && !prepared ? 1u : 0u;
 					timing.lastMs = elapsedMs;
 					timing.totalMs += elapsedMs;
 					generationStats.store(std::move(next), std::memory_order_release);
@@ -440,7 +445,7 @@ std::vector<DX12::PreparedLight> DX12Resources::GetPreparedLights() const
 	std::vector<DX12::PreparedLight> lights;
 	const auto current = grid.Snapshot();
 	for (const auto& tile : current->resident)
-		if (tile && tile->state == DX12::Tile::State::Ready)
+		if (tile && (tile->state == DX12::Tile::State::Ready || tile->state == DX12::Tile::State::ReadyPartial))
 			lights.insert(lights.end(), tile->lights.begin(), tile->lights.end());
 	return lights;
 }
