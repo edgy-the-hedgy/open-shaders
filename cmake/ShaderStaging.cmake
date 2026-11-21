@@ -123,8 +123,11 @@ if(TARGET DX12NativeCompositeDXIL)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${_dx12_mask}"
             "${AIO_DIR}/Shaders/DX12NativeComposite/PreparedShadowMask.dxil"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${_dx12_visual}"
+            "${AIO_DIR}/Shaders/DX12NativeComposite/VisualizeShadowMask.dxil"
     )
-    list(APPEND _dx12_native_mask_files "${_dx12_mask}")
+    list(APPEND _dx12_native_mask_files "${_dx12_mask}" "${_dx12_visual}")
 endif()
 
 add_custom_command(

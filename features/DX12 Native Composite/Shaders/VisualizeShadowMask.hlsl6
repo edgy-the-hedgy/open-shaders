@@ -1,0 +1,26 @@
+// Diagnostic only: darken the recorded DXR shadow-mask occlusion in a
+// separate color resource. This is NOT a per-light lighting compositor.
+// The original raster source is never modified and remains the fallback.
+Texture2D<float4> RasterColor : register(t0);
+Texture2D<float> NativeShadowMask : register(t1);
+RWTexture2D<float4> DebugColor : register(u0);
+
+cbuffer DiagnosticOptions : register(b0)
+{
+    uint2 RenderSize;
+    float Darkening;
+    float Padding;
+};
+
+[numthreads(8, 8, 1)]
+void main(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    const uint2 pixel = dispatchThreadId.xy;
+    if (any(pixel >= RenderSize))
+        return;
+
+    const float4 raster = RasterColor.Load(int3(pixel, 0));
+    const float visibility = saturate(NativeShadowMask.Load(int3(pixel, 0)));
+    const float darkening = saturate((1.0 - visibility) * clamp(Darkening, 0.0, 4.0));
+    DebugColor[pixel] = float4(raster.rgb * (1.0 - darkening), raster.a);
+}
