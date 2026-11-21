@@ -23,7 +23,7 @@ namespace
 		Matrix projectionInverse, viewInverse;
 		float4 adjust;
 		uint32_t width, height, count;
-		float padding = 0;
+		float shadowIntensity = 1.0f;
 	};
 	struct GpuLight
 	{
@@ -92,7 +92,10 @@ void DX12NativeComposite::DrawSettings()
 {
 	if (ImGui::Checkbox("Enable DXR shadowmask generation", &settings.Enabled) && !settings.Enabled)
 		OnRuntimeDisabled();
-	ImGui::SliderFloat("Shadow-mask sampling gate (reserved)", &settings.ShadowStrength, 0.0f, 1.0f, "%.2f");
+	ImGui::SliderFloat("Shadowmask generation gate (0 = off)", &settings.ShadowStrength, 0.0f, 1.0f, "%.2f");
+	ImGui::TextDisabled("Generation gate: any value above zero enables DXR mask dispatch.");
+	ImGui::SliderFloat("Shadowmask intensity", &settings.ShadowMaskIntensity, 0.0f, 1.0f, "%.2f");
+	ImGui::TextDisabled("Mask value: 0 = neutral visibility, 1 = full calculated shadows.");
 	ImGui::TextDisabled("Shadowmask-only: per-light raster composition is not yet available.");
 	ImGui::TextDisabled("Raster static shadows remain enabled; final raster color is unchanged.");
 }
@@ -102,11 +105,14 @@ void DX12NativeComposite::LoadSettings(json& input)
 	settings.Enabled = input.value("Enabled", true);
 	const float strength = input.value("ShadowStrength", 1.0f);
 	settings.ShadowStrength = std::clamp(std::isfinite(strength) ? strength : 1.0f, 0.0f, 1.0f);
+	const float intensity = input.value("ShadowMaskIntensity", 1.0f);
+	settings.ShadowMaskIntensity = std::clamp(std::isfinite(intensity) ? intensity : 1.0f, 0.0f, 1.0f);
 }
 
 void DX12NativeComposite::SaveSettings(json& output)
 {
-	output = { { "Enabled", settings.Enabled }, { "ShadowStrength", settings.ShadowStrength } };
+	output = { { "Enabled", settings.Enabled }, { "ShadowStrength", settings.ShadowStrength },
+		{ "ShadowMaskIntensity", settings.ShadowMaskIntensity } };
 }
 
 void DX12NativeComposite::RestoreDefaultSettings()
@@ -321,7 +327,7 @@ std::optional<DX12NativeComposite::Submission> DX12NativeComposite::Dispatch(
 		return std::nullopt;
 	MaskCamera camera{ globals::game::frameBufferCached.GetCameraProjInverse(),
 		globals::game::frameBufferCached.GetCameraViewInverse(),
-		globals::game::frameBufferCached.GetCameraPosAdjust(), width, height, count };
+		globals::game::frameBufferCached.GetCameraPosAdjust(), width, height, count, settings.ShadowMaskIntensity };
 	if (availableUploads.empty() && uploadPairs == kMaximumUploadPairs)
 		return std::nullopt;
 	UploadPair buffers;

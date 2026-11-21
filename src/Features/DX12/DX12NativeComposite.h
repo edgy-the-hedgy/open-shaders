@@ -18,7 +18,8 @@ struct DX12NativeComposite final : Feature
 	struct Settings
 	{
 		bool Enabled = true;
-		float ShadowStrength = 1.0f;
+		float ShadowStrength = 1.0f;  // Legacy dispatch gate: zero = off, otherwise on.
+		float ShadowMaskIntensity = 1.0f;  // Independent visibility-mask intensity, 0..1.
 	};
 
 	struct Surfaces

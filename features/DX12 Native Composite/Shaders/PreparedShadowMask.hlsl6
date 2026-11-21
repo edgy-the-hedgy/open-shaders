@@ -17,7 +17,7 @@ cbuffer Camera : register(b0)
 	float4 CameraAdjust;
 	uint2 Size;
 	uint LightCount;
-	float Padding;
+	float ShadowIntensity;
 };
 
 [numthreads(8, 8, 1)]
@@ -73,5 +73,7 @@ void main(uint3 dispatchThread : SV_DispatchThreadID)
 		if (query.CommittedStatus() == COMMITTED_NOTHING)
 			visibleWeight += weight;
 	}
-	ShadowMask[pixel] = totalWeight > 0.001 ? saturate(visibleWeight / totalWeight) : 1.0;
+	const float rawVisibility = totalWeight > 0.001 ? saturate(visibleWeight / totalWeight) : 1.0;
+	// A mask-only strength control: preserve ambient/raster scene color untouched.
+	ShadowMask[pixel] = lerp(1.0, rawVisibility, saturate(ShadowIntensity));
 }
