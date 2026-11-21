@@ -14,6 +14,8 @@
 #include <d3dcompiler.h>
 #include <directx/d3dx12.h>
 #include <fstream>
+#include <format>
+#include <string>
 #include <vector>
 
 namespace
@@ -50,26 +52,52 @@ namespace
 	}
 
 	bool CreateSignature(ID3D12Device* device, std::span<const D3D12_ROOT_PARAMETER> parameters,
-		winrt::com_ptr<ID3D12RootSignature>& output)
+		winrt::com_ptr<ID3D12RootSignature>& output, std::string& reason)
 	{
 		D3D12_ROOT_SIGNATURE_DESC desc{};
 		desc.NumParameters = UINT(parameters.size());
 		desc.pParameters = parameters.data();
 		winrt::com_ptr<ID3DBlob> serialized, errors;
-		return SUCCEEDED(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, serialized.put(), errors.put())) &&
-		       SUCCEEDED(device->CreateRootSignature(0, serialized->GetBufferPointer(), serialized->GetBufferSize(), IID_PPV_ARGS(output.put())));
+		const HRESULT hr = D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1,
+			serialized.put(), errors.put());
+		if (FAILED(hr)) {
+			std::string diagnostic;
+			if (errors && errors->GetBufferPointer() && errors->GetBufferSize()) {
+				const auto length = std::min<size_t>(errors->GetBufferSize(), 512);
+				diagnostic.assign(static_cast<const char*>(errors->GetBufferPointer()), length);
+			}
+			reason = std::format("Root signature serialization failed (0x{:08X}): {}",
+				static_cast<uint32_t>(hr), diagnostic);
+			return false;
+		}
+		const HRESULT create = device->CreateRootSignature(0, serialized->GetBufferPointer(),
+			serialized->GetBufferSize(), IID_PPV_ARGS(output.put()));
+		if (FAILED(create)) {
+			reason = std::format("D3D12 CreateRootSignature failed (0x{:08X})",
+				static_cast<uint32_t>(create));
+			return false;
+		}
+		return true;
 	}
 
 	bool CreatePipeline(ID3D12Device* device, ID3D12RootSignature* root, const char* filename,
-		winrt::com_ptr<ID3D12PipelineState>& output)
+		winrt::com_ptr<ID3D12PipelineState>& output, std::string& reason)
 	{
 		const auto bytes = ReadShader(filename);
-		if (bytes.empty())
+		if (bytes.empty()) {
+			reason = std::format("Compiled DXIL is missing or unreadable: {}. Rebuild and deploy the AIO shader payload.", filename);
 			return false;
+		}
 		D3D12_COMPUTE_PIPELINE_STATE_DESC pipeline{};
 		pipeline.pRootSignature = root;
 		pipeline.CS = { bytes.data(), bytes.size() };
-		return SUCCEEDED(device->CreateComputePipelineState(&pipeline, IID_PPV_ARGS(output.put())));
+		const HRESULT create = device->CreateComputePipelineState(&pipeline, IID_PPV_ARGS(output.put()));
+		if (FAILED(create)) {
+			reason = std::format("D3D12 CreateComputePipelineState failed (0x{:08X}); DXIL bytes: {}",
+				static_cast<uint32_t>(create), bytes.size());
+			return false;
+		}
+		return true;
 	}
 }
 
@@ -108,8 +136,11 @@ void DX12NativeComposite::DrawSettings()
 	ImGui::Text("Runtime: %s", IsActive() ? "Automatic (DX12 master enabled)" : "Inactive");
 	ImGui::Text("Shadowmask submissions: %llu",
 		static_cast<unsigned long long>(submittedMasks.load(std::memory_order_acquire)));
-	if (pipelineFailed.load(std::memory_order_acquire))
-		ImGui::TextDisabled("DXR shadowmask pipeline initialization failed.");
+	if (pipelineFailed.load(std::memory_order_acquire)) {
+		const auto failure = pipelineFailureReason.load(std::memory_order_acquire);
+		ImGui::TextWrapped("DXR shadowmask initialization failed: %s",
+			failure ? failure->c_str() : "Unknown D3D12 initialization error");
+	}
 	ImGui::TextDisabled("Sampling modes skip ray queries; untraced pixels receive neutral visibility.");
 	ImGui::TextDisabled("Intensity: 0 = neutral, 1 = raw, above 1 deepens partial shadows.");
 	ImGui::TextDisabled("Mask only: raster color and raster static shadows are unchanged.");
@@ -205,14 +236,18 @@ bool DX12NativeComposite::EnsurePipelines(ID3D12Device* candidate)
 		shadow[3].DescriptorTable = { 1, &maskRange };
 		shadow[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
 		shadow[4].Descriptor.ShaderRegister = 0;
-		if (!CreateSignature(built->device.get(), shadow, built->shadowRoot) ||
+		std::string failure;
+		if (!CreateSignature(built->device.get(), shadow, built->shadowRoot, failure) ||
 			!CreatePipeline(built->device.get(), built->shadowRoot.get(),
-				"Data/Shaders/DX12NativeComposite/PreparedShadowMask.dxil", built->shadowPipeline)) {
+				"Data/Shaders/DX12NativeComposite/PreparedShadowMask.dxil", built->shadowPipeline, failure)) {
+			pipelineFailureReason.store(std::make_shared<const std::string>(std::move(failure)), std::memory_order_release);
 			pipelineFailed.store(true, std::memory_order_release);
 			return;
 		}
 		built->descriptorSize = built->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		if (!built->descriptorSize) {
+			pipelineFailureReason.store(std::make_shared<const std::string>("Zero CBV/SRV/UAV descriptor increment size"),
+				std::memory_order_release);
 			pipelineFailed.store(true, std::memory_order_release);
 			return;
 		}

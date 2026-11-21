@@ -87,6 +87,7 @@ private:
 	std::shared_ptr<Surfaces> surfaces;
 	std::atomic<std::shared_ptr<const PipelineState>> preparedPipelines;
 	std::atomic<bool> pipelineFailed = false;
+	std::atomic<std::shared_ptr<const std::string>> pipelineFailureReason;
 	std::jthread pipelineWorker;
 	winrt::com_ptr<ID3D12Device> device;
 	winrt::com_ptr<ID3D12RootSignature> shadowRoot;
