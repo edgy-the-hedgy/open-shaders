@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <format>
 
 bool DX12NativeScene::IsActive() const
 {
@@ -44,23 +45,23 @@ void DX12NativeScene::DrawSettings()
 		}
 		return values;
 	};
-	const auto active = grid ? progress(grid->resident) : Progress{};
-	const auto outer = grid ? progress(grid->predictiveResident) : Progress{};
+	const auto activeProgress = grid ? progress(grid->resident) : Progress{};
+	const auto outerProgress = grid ? progress(grid->predictiveResident) : Progress{};
 	const bool currentScene = active && published && grid && scope &&
 		published->scope == scope && published->geometryRevision == grid->geometryRevision;
 	ImGui::Text("Runtime: %s", active ? "Automatic (DX12 master enabled)" : "Inactive (DX12 master or Resources unavailable)");
 	ImGui::Text("Subcell size: %u game units", grid ? grid->size : DX12::kSubcellSizes.front());
 	ImGui::SeparatorText("Companion subcell generation");
 	ImGui::TextUnformatted("Active 3x3");
-	ImGui::ProgressBar(float(active.ready) / float(DX12::kGridCapacity), ImVec2(-1.0f, 0),
-		std::format("{}/{} ready", active.ready, DX12::kGridCapacity).c_str());
+	ImGui::ProgressBar(float(activeProgress.ready) / float(DX12::kGridCapacity), ImVec2(-1.0f, 0),
+		std::format("{}/{} ready", activeProgress.ready, DX12::kGridCapacity).c_str());
 	ImGui::TextDisabled("Preparing: %u | Retry/deferred: %u | Incomplete: %u",
-		active.preparing, active.waiting, active.incomplete);
+		activeProgress.preparing, activeProgress.waiting, activeProgress.incomplete);
 	ImGui::TextUnformatted("Predictive outer ring (5x5 excluding 3x3)");
-	ImGui::ProgressBar(float(outer.ready) / float(DX12::kPredictiveCapacity), ImVec2(-1.0f, 0),
-		std::format("{}/{} ready", outer.ready, DX12::kPredictiveCapacity).c_str());
+	ImGui::ProgressBar(float(outerProgress.ready) / float(DX12::kPredictiveCapacity), ImVec2(-1.0f, 0),
+		std::format("{}/{} ready", outerProgress.ready, DX12::kPredictiveCapacity).c_str());
 	ImGui::TextDisabled("Preparing: %u | Retry/deferred: %u | Incomplete: %u",
-		outer.preparing, outer.waiting, outer.incomplete);
+		outerProgress.preparing, outerProgress.waiting, outerProgress.incomplete);
 	const auto displayTiming = [](const char* label, const DX12::PreparationTiming& timing) {
 		if (timing.completed)
 			ImGui::Text("%s: last %.1f ms | average %.1f ms | attempts %llu | failed %llu",
