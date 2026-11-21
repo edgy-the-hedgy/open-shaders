@@ -110,7 +110,8 @@ struct DX12Resources final : Feature
 	~DX12Resources();
 	struct Settings
 	{
-		bool Enabled = true;
+		// The only Resources setting. Companion generation is automatic when
+		// DX12 is active; no separate toggles for workers or GPU residency.
 		uint32_t SubcellSize = DX12::kSubcellSizes.front();
 	};
 
@@ -118,6 +119,8 @@ struct DX12Resources final : Feature
 	std::string GetShortName() override { return "DX12Resources"; }
 	std::string_view GetCategory() const override { return FeatureCategories::kDX12; }
 	bool IsCore() const override { return true; }
+	// Resources follows the DX12 master and must not be separately disabled.
+	bool IsAlwaysEnabled() const override { return true; }
 	bool SupportsVR() override { return false; }
 	void DrawSettings() override;
 	void LoadSettings(json& input) override;
@@ -138,6 +141,7 @@ struct DX12Resources final : Feature
 	std::vector<DX12::PreparedLight> GetPreparedLights() const;
 
 private:
+	void ResetPreparation();
 	DX12::ResourceGrid grid;
 	std::unique_ptr<DX12::CompanionWorker> companion;
 	std::unique_ptr<DX12::CompanionResult> adopting;

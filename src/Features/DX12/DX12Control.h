@@ -16,6 +16,9 @@ struct DX12Control final : Feature
 	std::string GetShortName() override { return "DX12"; }
 	std::string_view GetCategory() const override { return FeatureCategories::kDX12; }
 	bool IsCore() const override { return true; }
+	// The master checkbox is the only DX12 activation control; do not offer a
+	// separate Disable-at-Boot switch that can silently override it.
+	bool IsAlwaysEnabled() const override { return true; }
 	bool SupportsVR() override { return false; }
 	/** @brief Whether native work may be submitted this frame. */
 	bool IsActive() const { return loaded && active.load(std::memory_order_acquire); }

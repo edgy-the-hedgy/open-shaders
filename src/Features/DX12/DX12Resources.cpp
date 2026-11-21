@@ -248,79 +248,70 @@ namespace DX12
 
 bool DX12Resources::IsActive() const
 {
-	return loaded && settings.Enabled && globals::features::dx12Control.IsActive() && !globals::game::isVR;
+	return loaded && globals::features::dx12Control.IsActive() && !globals::game::isVR;
 }
 
 DX12Resources::DX12Resources() = default;
 DX12Resources::~DX12Resources() = default;
 
+void DX12Resources::ResetPreparation()
+{
+	// A new subcell size or world-scene epoch invalidates the grid and all
+	// companion work. Keep this off the normal settings-load path when unchanged.
+	if (companion)
+		companion->Cancel();
+	inFlight.reset();
+	adopting.reset();
+	lightAdoptionOffset = 0;
+	grid.Clear();
+}
+
 void DX12Resources::DrawSettings()
 {
-	if (ImGui::Checkbox("Enable companion geometry and lights", &settings.Enabled) && !settings.Enabled) {
-		if (companion)
-			companion->Cancel();
-		inFlight.reset();
-		adopting.reset();
-		lightAdoptionOffset = 0;
-		grid.Clear();
-	}
 	int index = int(std::ranges::find(DX12::kSubcellSizes, settings.SubcellSize) - DX12::kSubcellSizes.begin());
 	if (index >= int(DX12::kSubcellSizes.size()))
 		index = 0;
 	constexpr const char* labels[] = { "4096", "6144", "8192", "10240", "12288", "14336", "16384" };
 	if (ImGui::Combo("Subcell size (game units)", &index, labels, int(std::size(labels)))) {
-		settings.SubcellSize = DX12::kSubcellSizes[index];
-		if (companion)
-			companion->Cancel();
-		inFlight.reset();
-		adopting.reset();
-		lightAdoptionOffset = 0;
-		grid.Clear();
+		const uint32_t selected = DX12::kSubcellSizes[index];
+		if (settings.SubcellSize != selected) {
+			settings.SubcellSize = selected;
+			ResetPreparation();
+		}
 	}
-	ImGui::TextDisabled("5x5 companion: active 3x3, then 12 predictive sides and 4 corners; no persistent cache.");
 }
 
 void DX12Resources::LoadSettings(json& input)
 {
-	settings.Enabled = input.value("Enabled", true);
-	const uint32_t size = input.value("SubcellSize", DX12::kSubcellSizes.front());
-	settings.SubcellSize = std::ranges::contains(DX12::kSubcellSizes, size) ? size : DX12::kSubcellSizes.front();
-	if (companion)
-		companion->Cancel();
-	inFlight.reset();
-	adopting.reset();
-	lightAdoptionOffset = 0;
-	grid.Clear();
+	const uint32_t requested = input.value("SubcellSize", DX12::kSubcellSizes.front());
+	const uint32_t selected = std::ranges::contains(DX12::kSubcellSizes, requested) ?
+		requested : DX12::kSubcellSizes.front();
+	if (settings.SubcellSize != selected) {
+		settings.SubcellSize = selected;
+		ResetPreparation();
+	}
 }
 
 void DX12Resources::SaveSettings(json& output)
 {
-	output = { { "Enabled", settings.Enabled }, { "SubcellSize", settings.SubcellSize } };
+	output = { { "SubcellSize", settings.SubcellSize } };
 }
 
 void DX12Resources::RestoreDefaultSettings()
 {
-	settings = {};
-	if (companion)
-		companion->Cancel();
-	inFlight.reset();
-	adopting.reset();
-	lightAdoptionOffset = 0;
-	grid.Clear();
+	const uint32_t defaultSize = DX12::kSubcellSizes.front();
+	if (settings.SubcellSize != defaultSize) {
+		settings.SubcellSize = defaultSize;
+		ResetPreparation();
+	}
 }
 
 void DX12Resources::PreShadowMaps()
 {
 	CS_GPU_PASS("DX12Resources::Grid");
 	if (!IsActive()) {
-		if (grid.Snapshot()->requested.front().scope) {
-			if (companion)
-				companion->Cancel();
-			inFlight.reset();
-			adopting.reset();
-			lightAdoptionOffset = 0;
-			grid.Clear();
-		}
+		if (grid.Snapshot()->requested.front().scope || inFlight || adopting)
+			ResetPreparation();
 		return;
 	}
 	const auto* player = globals::game::player;
@@ -418,24 +409,13 @@ void DX12Resources::PreShadowMaps()
 
 void DX12Resources::OnSceneTransitionReset(bool opening)
 {
-	if (opening) {
-		if (companion)
-			companion->Cancel();
-		inFlight.reset();
-		adopting.reset();
-		lightAdoptionOffset = 0;
-		grid.Clear();
-	}
+	if (opening)
+		ResetPreparation();
 }
 
 void DX12Resources::OnRuntimeDisabled()
 {
-	if (companion)
-		companion->Cancel();
-	inFlight.reset();
-	adopting.reset();
-	lightAdoptionOffset = 0;
-	grid.Clear();
+	ResetPreparation();
 }
 
 std::vector<DX12::PreparedLight> DX12Resources::GetPreparedLights() const
