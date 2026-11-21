@@ -11,7 +11,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <format>
+#include <string_view>
 
 bool DX12NativeScene::IsActive() const
 {
@@ -96,7 +98,124 @@ void DX12NativeScene::DrawSettings()
 			matched += resolved->values[i].matched ? 1u : 0u;
 	ImGui::Text("Matched prepared lights: %u", matched);
 	ImGui::Text("Verified covered lights: %zu", coverage ? coverage->size() : size_t(0));
+	ImGui::SeparatorText("Live renderer geometry");
+	const size_t captured = grid ? grid->runtimeShapes.size() : 0;
+	size_t built = 0;
+	if (grid && currentScene)
+		for (const auto& observed : grid->runtimeShapes)
+			if (observed.shape && published->shapeIDs.contains(observed.shape->identity))
+				++built;
+	ImGui::Text("Observed static shapes: %zu | BLAS-ready in TLAS: %zu", captured, built);
+	ImGui::Text("Runtime CPU geometry: %.2f MiB", grid ? double(grid->runtimeBytes) / (1024.0 * 1024.0) : 0.0);
+	ImGui::TextDisabled("Only rigid opaque CPU meshes; bounded to 128 shapes / 24 MiB in active 3x3.");
+	ImGui::TextDisabled("Automatically evicted on recenter; no disk cache or authority to suppress raster shadows.");
 	ImGui::TextDisabled("BLAS/TLAS construction and light matching are automatic; no user controls here.");
+}
+
+void DX12NativeScene::ObserveRuntimeGeometry(RE::BSGeometry* geometry)
+{
+	if (!geometry || !IsActive() || geometry->name.empty())
+		return;
+	const auto* reference = geometry->GetUserData();
+	if (!reference || reference->IsDynamicForm())
+		return;
+	const auto* tri = geometry->AsTriShape();
+	if (!tri || geometry->AsDynamicTriShape())
+		return;
+	const auto& runtime = geometry->GetGeometryRuntimeData();
+	const auto* renderer = runtime.rendererData;
+	if (runtime.skinInstance || runtime.alphaProperty || !renderer ||
+		!renderer->rawVertexData || !renderer->rawIndexData ||
+		!runtime.vertexDesc.HasFlag(RE::BSGraphics::Vertex::VF_VERTEX))
+		return;
+	const auto& counts = tri->GetTrishapeRuntimeData();
+	const uint32_t stride = runtime.vertexDesc.GetSize();
+	if (!counts.vertexCount || counts.vertexCount > 65535 || !counts.triangleCount ||
+		counts.triangleCount > 65535 || stride < 16 || stride > 256)
+		return;
+	const uint64_t vertexBytes = uint64_t(counts.vertexCount) * stride;
+	const uint64_t indexCount = uint64_t(counts.triangleCount) * 3;
+	const uint64_t bytes = vertexBytes + indexCount * sizeof(uint16_t);
+	if (bytes > 256ull * 1024)
+		return;
+	const auto bound = geometry->worldBound;
+	if (!std::isfinite(bound.center.x) || !std::isfinite(bound.center.y) ||
+		!std::isfinite(bound.center.z) || !std::isfinite(bound.radius) || bound.radius <= 0)
+		return;
+	const auto grid = globals::features::dx12Resources.GetGrid();
+	if (!grid || !grid->requested.front().scope || grid->runtimeShapes.size() >= 128)
+		return;
+	const auto tileX = DX12::Coordinate(bound.center.x, grid->size);
+	const auto tileY = DX12::Coordinate(bound.center.y, grid->size);
+	if (!tileX || !tileY || !std::ranges::contains(grid->requested,
+		DX12::SubcellKey{ grid->requested.front().scope, *tileX, *tileY }))
+		return;
+
+	// Renderer object identity is scoped to the live scene. Include the owner,
+	// renderer object address, and shape name to avoid merging distinct placed
+	// shapes with identical names. Only the numeric identity leaves this hook.
+	uint64_t identity = 14695981039346656037ull;
+	const auto mix = [&](uint64_t value) {
+		identity ^= value;
+		identity *= 1099511628211ull;
+	};
+	mix(reference->GetFormID());
+	mix(uint64_t(reinterpret_cast<uintptr_t>(geometry)));
+	const std::string_view shapeName{ geometry->name.c_str() };
+	if (shapeName.size() > 1024)
+		return;
+	for (const unsigned char ch : shapeName)
+		mix(ch);
+	identity |= 0x8000000000000000ull;
+	if (std::ranges::any_of(grid->runtimeShapes, [&](const DX12::RuntimeShape& item) {
+		return item.shape && item.shape->identity == identity;
+	}))
+		return;
+
+	const uint32_t frame = globals::game::graphicsState ?
+		globals::game::graphicsState->GetFrameCount() : 0;
+	{
+		std::scoped_lock lock(captureMutex);
+		if (frame != captureFrame) {
+			captureFrame = frame;
+			captureFrameBytes = 0;
+			captureFrameShapes = 0;
+		}
+		if (captureFrameShapes >= 4 || bytes > 512ull * 1024 - captureFrameBytes)
+			return;
+		++captureFrameShapes;
+		captureFrameBytes += uint32_t(bytes);
+	}
+
+	auto shape = std::make_shared<DX12::Shape>();
+	shape->identity = identity;
+	shape->positions.reserve(counts.vertexCount);
+	shape->indices.reserve(size_t(indexCount));
+	for (uint32_t i = 0; i < counts.vertexCount; ++i) {
+		float xyz[3];
+		std::memcpy(xyz, renderer->rawVertexData + size_t(i) * stride, sizeof(xyz));
+		if (!std::isfinite(xyz[0]) || !std::isfinite(xyz[1]) || !std::isfinite(xyz[2]))
+			return;
+		shape->positions.push_back({ xyz[0], xyz[1], xyz[2] });
+	}
+	for (size_t i = 0; i < indexCount; ++i) {
+		const uint32_t index = renderer->rawIndexData[i];
+		if (index >= counts.vertexCount)
+			return;
+		shape->indices.push_back(index);
+	}
+	for (uint32_t row = 0; row < 3; ++row)
+		for (uint32_t col = 0; col < 3; ++col)
+			shape->transform[4 * row + col] = geometry->world.rotate.entry[row][col] * geometry->world.scale;
+	shape->transform[3] = geometry->world.translate.x;
+	shape->transform[7] = geometry->world.translate.y;
+	shape->transform[11] = geometry->world.translate.z;
+	if (!std::ranges::all_of(shape->transform, [](float value) { return std::isfinite(value); }))
+		return;
+	// The ResourceGrid verifies current 3x3 ownership and unique identity
+	// again under its lock, then publishes an owned immutable geometry snapshot.
+	(void)globals::features::dx12Resources.PublishRuntimeShape(
+		std::move(shape), bound.center.x, bound.center.y);
 }
 
 void DX12NativeScene::PreShadowMaps()
@@ -219,6 +338,11 @@ void DX12NativeScene::OnSceneTransitionReset(bool opening)
 
 void DX12NativeScene::OnRuntimeDisabled()
 {
+	{
+		std::scoped_lock lock(captureMutex);
+		captureFrame = UINT32_MAX;
+		captureFrameBytes = captureFrameShapes = 0;
+	}
 	scene.Clear();
 	preparedCache.clear();
 	preparedCacheRevision = std::numeric_limits<uint64_t>::max();

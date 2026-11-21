@@ -4,6 +4,7 @@
 #include "TruePBR/BSLightingShaderMaterialPBRLandscape.h"
 
 #include "Features/InteriorSun.h"
+#include "Features/DX12/DX12NativeScene.h"
 #include "Hooks.h"
 #include "I18n/I18n.h"
 #include "ShaderCache.h"
@@ -945,6 +946,9 @@ struct BSLightingShaderProperty_GetRenderPasses
 		if (renderPasses == nullptr) {
 			return renderPasses;
 		}
+		// Reuse the preexisting lighting render-pass hook: copy eligible rigid,
+		// opaque CPU mesh data for DX12 without altering any TruePBR/raster draws.
+		globals::features::dx12NativeScene.ObserveRuntimeGeometry(geometry);
 
 		const auto issEnabledAndInteriorWithSun = globals::features::interiorSun.loaded && globals::features::interiorSun.isInteriorWithSun;
 

@@ -4,7 +4,9 @@
 #include "PreparedLightMatching.h"
 
 #include <atomic>
+#include <cstdint>
 #include <limits>
+#include <mutex>
 
 /** @brief Prepared-light-only DXR scene with deferred publication of completed geometry. */
 struct DX12NativeScene final : Feature
@@ -19,6 +21,8 @@ struct DX12NativeScene final : Feature
 	bool IsAlwaysEnabled() const override { return true; }
 	bool UsesMainSettings() const override { return false; }
 	void DrawSettings() override;
+	/** @brief Borrow static CPU mesh inputs only within the already installed renderer hook. */
+	void ObserveRuntimeGeometry(RE::BSGeometry* geometry);
 	bool WantsPreShadowMapsHook() const override { return true; }
 	void PreShadowMaps() override;
 	void OnSceneTransitionReset(bool opening) override;
@@ -39,4 +43,8 @@ private:
 	uint64_t preparedCacheRevision = std::numeric_limits<uint64_t>::max();
 	uint32_t preparedCacheScope = 0;
 	std::atomic<std::shared_ptr<const std::vector<uint32_t>>> coveredLightIDs;
+	// The old experimental renderer capture, bounded to 512 KiB and four
+	// observations per frame. Only owned Shape values reach DX12 workers.
+	std::mutex captureMutex;
+	uint32_t captureFrame = UINT32_MAX, captureFrameBytes = 0, captureFrameShapes = 0;
 };
