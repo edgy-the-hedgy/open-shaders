@@ -168,13 +168,14 @@ namespace DX12
 		tile->lights = std::move(publication.lights);
 		const bool complete = publication.validated && publication.enumerationComplete &&
 		                      publication.failedShapes == 0 && publication.eligibleShapes == tile->shapes.size();
-		if (publication.validated) {
+		if (publication.validated && (complete || !tile->shapes.empty() || !tile->lights.empty())) {
 			// Geometry validity and complete static-shadow coverage are different contracts.
-			// Allow valid partial subcells into BLAS/TLAS and prepared-light streaming,
-			// but only Ready (certified complete) subcells can offload raster shadows.
+			// Keep real partial geometry and placed lights available for native scene building.
+			// Empty incomplete results must not be mislabeled as prepared subcells.
+			// Only Ready (certified complete) subcells can offload raster shadows.
 			tile->state = complete ? Tile::State::Ready : Tile::State::ReadyPartial;
 		} else {
-			// Malformed companion payloads never reach BLAS/TLAS construction.
+			// Malformed or empty-incomplete companion payloads must not claim native scene readiness.
 			tile->shapes.clear();
 			tile->lights.clear();
 			tile->bytes = 0;
