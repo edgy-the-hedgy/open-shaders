@@ -129,7 +129,10 @@ void DX12NativeScene::ObserveRuntimeGeometry(RE::BSGeometry* geometry)
 		!runtime.vertexDesc.HasFlag(RE::BSGraphics::Vertex::VF_VERTEX))
 		return;
 	const auto& counts = tri->GetTrishapeRuntimeData();
-	const uint32_t stride = runtime.vertexDesc.GetSize();
+	// CommonLibSSE VertexDesc::GetSize is non-const; inspect a local copy
+	// rather than mutating or casting away const on live renderer data.
+	auto vertexDesc = runtime.vertexDesc;
+	const uint32_t stride = vertexDesc.GetSize();
 	if (!counts.vertexCount || counts.vertexCount > 65535 || !counts.triangleCount ||
 		counts.triangleCount > 65535 || stride < 16 || stride > 256)
 		return;
