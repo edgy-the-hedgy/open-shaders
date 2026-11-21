@@ -30,5 +30,12 @@ if(DX12_NATIVE_DXC)
         DESTINATION "Shaders/DX12NativeComposite"
     )
 else()
+    # This is a required binary for DX12 shadowmask initialization, and not
+    # shipping it produces a permanent in-game pipeline failure.
+    if(AIO_ZIP_TO_DIST OR AUTO_PLUGIN_DEPLOYMENT)
+        message(FATAL_ERROR
+            "DXC (dxc.exe) is required to compile and package DX12 Native Composite. "
+            "Install the Windows SDK DirectX Shader Compiler and re-run CMake configuration.")
+    endif()
     message(WARNING "DXC not found; native DXR shadowmask remains disabled")
 endif()

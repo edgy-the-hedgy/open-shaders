@@ -136,6 +136,26 @@ add_custom_target(
     COMMENT "Preparing shaders for validation"
 )
 
+# The compiled DXIL is generated under the build tree, not under a feature's
+# Shaders/ directory. The normal shader copier only stages source .hlsl6 files.
+# Stage the binary AFTER shader cleanup so CleanupStaleEntries cannot erase it.
+# This target is deliberately cheap on incremental builds and does not rely on
+# an output stamp that may survive when staging was manually cleared.
+if(TARGET DX12NativeCompositeDXIL)
+    set(DX12_NATIVE_AIO_MASK
+        "${AIO_DIR}/Shaders/DX12NativeComposite/PreparedShadowMask.dxil")
+    add_custom_target(STAGE_DX12_NATIVE_SHADOWMASK
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "${AIO_DIR}/Shaders/DX12NativeComposite"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${_dx12_mask}" "${DX12_NATIVE_AIO_MASK}"
+        DEPENDS DX12NativeCompositeDXIL
+        COMMENT "Staging compiled DX12 native shadowmask DXIL in AIO"
+        VERBATIM
+    )
+    add_dependencies(STAGE_DX12_NATIVE_SHADOWMASK prepare_shaders PREPARE_AIO)
+endif()
+
 # Incremental local validation: compile only the shaders affected by the
 # current working-tree diff (vs HEAD). Mirrors the CI incremental path but
 # derives the change set from git instead of a precomputed list. Override
