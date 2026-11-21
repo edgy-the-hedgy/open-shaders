@@ -3,6 +3,7 @@
 #include <Windows.h>
 
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <format>
 #include <fstream>
