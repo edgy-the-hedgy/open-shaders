@@ -381,14 +381,14 @@ void DX12Resources::PreShadowMaps()
 				const auto& publication = adopting->publication;
 				const bool prepared = publication.validated && publication.enumerationComplete &&
 					publication.failedShapes == 0 && publication.eligibleShapes == publication.shapes.size();
-				const bool predictive = adopting->predictive;
+				const bool wasPredictiveRequest = adopting->predictive;
 				const double elapsedMs = adopting->preparationMs;
 				if (grid.Publish(std::move(adopting->publication))) {
 					// This snapshot only counts accepted, finished worker requests; canceled
 					// and superseded work is not misreported as generated geometry.
 					auto next = std::make_shared<DX12::PreparationStats>(
 						*generationStats.load(std::memory_order_acquire));
-					auto& timing = predictive ? next->predictive : next->active;
+					auto& timing = wasPredictiveRequest ? next->predictive : next->active;
 					++timing.completed;
 					timing.failed += prepared ? 0u : 1u;
 					timing.lastMs = elapsedMs;
