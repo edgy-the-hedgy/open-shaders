@@ -18,7 +18,33 @@ cbuffer Camera : register(b0)
 	uint2 Size;
 	uint LightCount;
 	float ShadowIntensity;
+	uint SamplingMode;
+	uint SamplingPhase;
+	uint2 SamplingPadding;
 };
+
+bool TraceShadowAtPixel(uint2 pixel, uint mode, uint phase)
+{
+	// Frame-dependent sparse sampling changes which pixel is traced without
+	// adding an uninitialized or misleading shadow value to skipped pixels.
+	if (mode == 0)
+		return true;
+	if (mode == 1 || mode == 4) {
+		const uint slot = (pixel.x + 2u * pixel.y + phase) % 3u;
+		return mode == 1 ? slot < 2u : slot == 0u;
+	}
+	if (mode == 2)
+		return ((pixel.x + pixel.y + phase) & 1u) == 0u;
+	if (mode == 3 || mode == 7) {
+		const uint slot = (pixel.x % 3u + 3u * (pixel.y % 3u) + phase) % 9u;
+		return slot < (mode == 3 ? 4u : 1u);
+	}
+	if (mode == 5)
+		return ((pixel.x & 1u) + 2u * (pixel.y & 1u) + phase) % 4u == 0u;
+	if (mode == 6)
+		return ((pixel.x % 3u) + 3u * (pixel.y & 1u) + phase) % 6u == 0u;
+	return true;
+}
 
 [numthreads(8, 8, 1)]
 void main(uint3 dispatchThread : SV_DispatchThreadID)
@@ -26,6 +52,10 @@ void main(uint3 dispatchThread : SV_DispatchThreadID)
 	uint2 pixel = dispatchThread.xy;
 	if (any(pixel >= Size))
 		return;
+	if (!TraceShadowAtPixel(pixel, SamplingMode, SamplingPhase)) {
+		ShadowMask[pixel] = 1.0;
+		return;
+	}
 	const float depth = SceneDepth.Load(int3(pixel, 0));
 	const float2 uv = (float2(pixel) + 0.5) / float2(Size);
 	float4 view = mul(ProjectionInverse, float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0));
@@ -74,6 +104,7 @@ void main(uint3 dispatchThread : SV_DispatchThreadID)
 			visibleWeight += weight;
 	}
 	const float rawVisibility = totalWeight > 0.001 ? saturate(visibleWeight / totalWeight) : 1.0;
-	// A mask-only strength control: preserve ambient/raster scene color untouched.
-	ShadowMask[pixel] = lerp(1.0, rawVisibility, saturate(ShadowIntensity));
+	// Strength above 1 is meaningful: deepen partial visibility and clamp to
+	// a physically valid [0,1] mask. Final raster color remains untouched.
+	ShadowMask[pixel] = saturate(1.0 - (1.0 - rawVisibility) * clamp(ShadowIntensity, 0.0, 4.0));
 }

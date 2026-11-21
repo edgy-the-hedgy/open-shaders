@@ -39,11 +39,13 @@ struct DX12NativeComposite final : Feature
 	std::string_view GetCategory() const override { return FeatureCategories::kDX12; }
 	bool IsCore() const override { return true; }
 	bool SupportsVR() override { return false; }
-	// Internal DXR mask producer: stays active with the master toggle and
-	// native scene, but exposes no separate settings or boot state.
-	bool IsInMenu() const override { return false; }
+	// Automatic producer with user-selectable ray sampling and mask strength.
+	// No separate enable or boot switch: DX12 master controls operation.
 	bool IsAlwaysEnabled() const override { return true; }
-	bool UsesMainSettings() const override { return false; }
+	void DrawSettings() override;
+	void LoadSettings(json& input) override;
+	void SaveSettings(json& output) override;
+	void RestoreDefaultSettings() override;
 	bool WantsPreShadowMapsHook() const override { return true; }
 	void PreShadowMaps() override;
 	void OnRuntimeDisabled() override;
@@ -91,4 +93,10 @@ private:
 	winrt::com_ptr<ID3D12PipelineState> shadowPipeline;
 	uint32_t descriptorSize = 0;
 	bool unavailable = false;
+	// Sample only a fraction of pixels (no reconstruction). 0 = full,
+	// 1 = 2/3, 2 = 1/2, 3 = 4/9, 4 = 1/3, 5 = 1/4, 6 = 1/6, 7 = 1/9.
+	std::atomic<int> samplingMode{ 0 };
+	std::atomic<float> shadowIntensity{ 1.0f };
+	std::atomic<uint32_t> samplingPhase{ 0 };
+	std::atomic<uint64_t> submittedMasks{ 0 };
 };

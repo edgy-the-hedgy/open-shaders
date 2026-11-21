@@ -24,6 +24,8 @@ namespace
 		float4 adjust;
 		uint32_t width, height, count;
 		float shadowIntensity = 1.0f;
+		uint32_t samplingMode = 0, samplingPhase = 0;
+		uint32_t padding0 = 0, padding1 = 0;
 	};
 	struct GpuLight
 	{
@@ -31,7 +33,7 @@ namespace
 		float4 colorFade;
 		float4 emitterFalloff;
 	};
-	static_assert(sizeof(MaskCamera) == 160);
+	static_assert(sizeof(MaskCamera) == 176);
 	static_assert(sizeof(GpuLight) == 48);
 
 	std::vector<char> ReadShader(const char* path)
@@ -86,6 +88,54 @@ bool DX12NativeComposite::IsActive() const
 {
 	return loaded && !globals::game::isVR &&
 	       globals::features::dx12Control.IsActive() && globals::features::dx12NativeScene.IsActive();
+}
+
+void DX12NativeComposite::DrawSettings()
+{
+	const char* modes[] = {
+		"Full resolution (1/1)", "Two-thirds (2/3)", "Half checkerboard (1/2)",
+		"Four-ninths (4/9)", "One-third (1/3)", "Quarter (1/4)",
+		"One-sixth (1/6)", "One-ninth (1/9)"
+	};
+	int mode = std::clamp(samplingMode.load(std::memory_order_relaxed), 0, 7);
+	if (ImGui::Combo("Shadowmask ray sampling", &mode, modes, int(std::size(modes)))) {
+		samplingMode.store(mode, std::memory_order_release);
+		samplingPhase.store(0, std::memory_order_release);
+	}
+	float intensity = shadowIntensity.load(std::memory_order_relaxed);
+	if (ImGui::SliderFloat("Shadowmask intensity", &intensity, 0.0f, 4.0f, "%.2fx"))
+		shadowIntensity.store(intensity, std::memory_order_release);
+	ImGui::Text("Runtime: %s", IsActive() ? "Automatic (DX12 master enabled)" : "Inactive");
+	ImGui::Text("Shadowmask submissions: %llu",
+		static_cast<unsigned long long>(submittedMasks.load(std::memory_order_acquire)));
+	if (pipelineFailed.load(std::memory_order_acquire))
+		ImGui::TextDisabled("DXR shadowmask pipeline initialization failed.");
+	ImGui::TextDisabled("Sampling modes skip ray queries; untraced pixels receive neutral visibility.");
+	ImGui::TextDisabled("Intensity: 0 = neutral, 1 = raw, above 1 deepens partial shadows.");
+	ImGui::TextDisabled("Mask only: raster color and raster static shadows are unchanged.");
+}
+
+void DX12NativeComposite::LoadSettings(json& input)
+{
+	const int mode = std::clamp(input.value("SamplingMode", 0), 0, 7);
+	const float requested = input.value("ShadowMaskIntensity", 1.0f);
+	const float intensity = std::clamp(std::isfinite(requested) ? requested : 1.0f, 0.0f, 4.0f);
+	samplingMode.store(mode, std::memory_order_release);
+	shadowIntensity.store(intensity, std::memory_order_release);
+	samplingPhase.store(0, std::memory_order_release);
+}
+
+void DX12NativeComposite::SaveSettings(json& output)
+{
+	output = { { "SamplingMode", samplingMode.load(std::memory_order_acquire) },
+		{ "ShadowMaskIntensity", shadowIntensity.load(std::memory_order_acquire) } };
+}
+
+void DX12NativeComposite::RestoreDefaultSettings()
+{
+	samplingMode.store(0, std::memory_order_release);
+	shadowIntensity.store(1.0f, std::memory_order_release);
+	samplingPhase.store(0, std::memory_order_release);
 }
 
 void DX12NativeComposite::PreShadowMaps()
@@ -294,7 +344,10 @@ std::optional<DX12NativeComposite::Submission> DX12NativeComposite::Dispatch(
 		return std::nullopt;
 	MaskCamera camera{ globals::game::frameBufferCached.GetCameraProjInverse(),
 		globals::game::frameBufferCached.GetCameraViewInverse(),
-		globals::game::frameBufferCached.GetCameraPosAdjust(), width, height, count, 1.0f };
+		globals::game::frameBufferCached.GetCameraPosAdjust(), width, height, count,
+		shadowIntensity.load(std::memory_order_acquire),
+		uint32_t(std::clamp(samplingMode.load(std::memory_order_acquire), 0, 7)),
+		samplingPhase.load(std::memory_order_relaxed) };
 	if (availableUploads.empty() && uploadPairs == kMaximumUploadPairs)
 		return std::nullopt;
 	UploadPair buffers;
@@ -329,6 +382,7 @@ std::optional<DX12NativeComposite::Submission> DX12NativeComposite::Dispatch(
 	commands->SetComputeRootDescriptorTable(3, Descriptor(*target, 1));
 	commands->SetComputeRootConstantBufferView(4, submission.camera->GetGPUVirtualAddress());
 	commands->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
+	samplingPhase.fetch_add(1, std::memory_order_relaxed);
 	// Mask-only: the FSR color source remains the original raster input.
 	// No final-color composition pass is submitted and no RGBA color UAV is allocated.
 	const auto shadowDone = CD3DX12_RESOURCE_BARRIER::Transition(target->shadowMask.get(),
@@ -346,5 +400,6 @@ void DX12NativeComposite::OnSubmitted(ID3D12Fence* fence, uint64_t value, Submis
 	frame.value = value;
 	frame.submission = std::move(submission);
 	pending.push_back(std::move(frame));
+	submittedMasks.fetch_add(1, std::memory_order_relaxed);
 	Collect();
 }
