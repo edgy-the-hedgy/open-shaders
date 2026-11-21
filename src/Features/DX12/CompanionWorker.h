@@ -32,6 +32,7 @@ namespace DX12
 	{
 		CompanionPublication publication;
 		std::vector<CompanionLight> lights;
+		std::string failure;
 		bool predictive = false;
 		double preparationMs = 0.0;  // Complete worker-side preparation, including companion IPC and parsing.
 	};

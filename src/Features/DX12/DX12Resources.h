@@ -157,6 +157,10 @@ struct DX12Resources final : Feature
 	{
 		return generationStats.load(std::memory_order_acquire);
 	}
+	std::shared_ptr<const std::string> GetPreparationStatus() const
+	{
+		return preparationStatus.load(std::memory_order_acquire);
+	}
 
 private:
 	void ResetPreparation();
@@ -165,6 +169,7 @@ private:
 	std::unique_ptr<DX12::CompanionResult> adopting;
 	size_t lightAdoptionOffset = 0;
 	std::optional<DX12::SubcellKey> inFlight;
+	std::atomic<std::shared_ptr<const std::string>> preparationStatus{ std::make_shared<const std::string>("Awaiting preparation") };
 	std::atomic<std::shared_ptr<const DX12::PreparationStats>> generationStats{
 		std::make_shared<const DX12::PreparationStats>() };
 	Settings settings;

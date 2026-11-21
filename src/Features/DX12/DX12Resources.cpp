@@ -267,6 +267,7 @@ void DX12Resources::ResetPreparation()
 	adopting.reset();
 	lightAdoptionOffset = 0;
 	grid.Clear();
+	preparationStatus.store(std::make_shared<const std::string>("Awaiting preparation"), std::memory_order_release);
 	generationStats.store(std::make_shared<const DX12::PreparationStats>(), std::memory_order_release);
 }
 
@@ -345,6 +346,9 @@ void DX12Resources::PreShadowMaps()
 	}
 	if (auto result = companion->Take()) {
 		inFlight.reset();
+		preparationStatus.store(std::make_shared<const std::string>(
+			result->failure.empty() ? "Companion returned valid geometry and light data" : result->failure),
+			std::memory_order_release);
 		adopting = std::make_unique<DX12::CompanionResult>(std::move(*result));
 		adopting->publication.lights.reserve(adopting->lights.size());
 		lightAdoptionOffset = 0;

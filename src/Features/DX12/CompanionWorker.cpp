@@ -164,23 +164,31 @@ namespace DX12
 		}
 
 		bool InvokeCompanion(const CompanionRequest& task, const std::filesystem::path& destination,
-			uint64_t expectedGeneration, const std::atomic<uint64_t>& generation, std::stop_token stop)
+			uint64_t expectedGeneration, const std::atomic<uint64_t>& generation, std::stop_token stop,
+			std::string& failure)
 		{
 			const auto executable = std::filesystem::absolute(
 				L"Data/SKSE/Plugins/CommunityShaders/DX12Resources/bin/DX12ResourcesPrep.exe");
 			const auto data = std::filesystem::absolute(L"Data");
 			const auto plugins = PluginsFile();
 			std::error_code ec;
-			if (!std::filesystem::is_regular_file(executable, ec) ||
-				!std::filesystem::is_regular_file(plugins, ec))
+			if (!std::filesystem::is_regular_file(executable, ec)) {
+				failure = "Missing DX12ResourcesPrep.exe in DX12Resources/bin (AIO installation required)";
 				return false;
+			}
+			if (!std::filesystem::is_regular_file(plugins, ec)) {
+				failure = "Skyrim SE plugins.txt is unavailable in LocalAppData";
+				return false;
+			}
 			// Host-owned per-session mailbox; no persistent geometry output or diagnostics.
 			auto& service = CurrentCompanionProcess();
 			if (service.epoch && service.epoch != expectedGeneration)
 				service.Close();
 			const auto work = destination.parent_path().parent_path();
-			if (!service.Start(executable, data, plugins, work))
+			if (!service.Start(executable, data, plugins, work)) {
+				failure = "Could not launch persistent .NET companion process";
 				return false;
+			}
 			service.epoch = expectedGeneration;
 			SetPriorityClass(service.process, task.predictive ? IDLE_PRIORITY_CLASS : BELOW_NORMAL_PRIORITY_CLASS);
 			const auto requestTmp = service.root / L"request.tmp";
@@ -197,18 +205,21 @@ namespace DX12
 			{
 				std::ofstream stream(requestTmp, std::ios::binary | std::ios::trunc);
 				if (!stream) {
+					failure = "Cannot open companion request mailbox";
 					service.Close();
 					return false;
 				}
 				stream << message.dump();
 				stream.flush();
 				if (!stream) {
+					failure = "Cannot write companion request mailbox";
 					service.Close();
 					return false;
 				}
 			}
 			std::filesystem::rename(requestTmp, request, ec);
 			if (ec) {
+				failure = "Cannot publish companion request mailbox";
 				service.Close();
 				return false;
 			}
@@ -224,8 +235,21 @@ namespace DX12
 				if (WaitForSingleObject(service.process, 25) != WAIT_TIMEOUT)
 					break;
 			}
+			// Catch a startup-error reply even when the .NET service exits just
+			// after finishing its atomic reply and before the host polls again.
+			if (std::filesystem::is_regular_file(reply, ec)) {
+				ec.clear();
+				std::filesystem::rename(reply, destination, ec);
+				if (!ec)
+					return true;
+			}
+			if (stop.stop_requested() || generation.load(std::memory_order_acquire) != expectedGeneration)
+				failure = "Companion request canceled by scene change";
+			else if (GetTickCount64() - started >= kPreparationDeadlineMs)
+				failure = "Companion preparation timed out (load order or NIF traversal too slow)";
+			else
+				failure = "Companion exited before returning a tile";
 			// A superseded or timed-out request kills only the companion job, not Skyrim.
-			// The worker starts a clean session for the next currently prioritized tile.
 			service.Close();
 			return false;
 		}
@@ -324,12 +348,16 @@ namespace DX12
 		const auto work = std::filesystem::absolute(L"Data/SKSE/Plugins/CommunityShaders/DX12Resources/work");
 		std::error_code ec;
 		std::filesystem::create_directories(work, ec);
-		if (ec)
+		if (ec) {
+			result.failure = "Cannot create companion temporary work directory";
 			return result;
+		}
 		RemoveStaleSessions(work);
 		const auto folder = work / std::format(L"session-{}-{}", GetCurrentProcessId(), GetTickCount64());
-		if (!std::filesystem::create_directory(folder, ec) || ec)
+		if (!std::filesystem::create_directory(folder, ec) || ec) {
+			result.failure = "Cannot create companion temporary session";
 			return result;
+		}
 		struct Cleanup
 		{
 			std::filesystem::path folder, parent;
@@ -342,18 +370,27 @@ namespace DX12
 			}
 		} cleanup{ folder, work };
 		const auto file = folder / L"tile.json";
-		if (!InvokeCompanion(task, file, epoch, generation, stop))
+		if (!InvokeCompanion(task, file, epoch, generation, stop, result.failure))
 			return result;
 		try {
 			std::ifstream stream(file, std::ios::binary | std::ios::ate);
-			if (!stream || stream.tellg() <= 0 || uint64_t(stream.tellg()) > kMaximumTransferBytes)
+			if (!stream || stream.tellg() <= 0 || uint64_t(stream.tellg()) > kMaximumTransferBytes) {
+				result.failure = "Companion reply missing, empty, or over transfer size limit";
 				return result;
+			}
 			stream.seekg(0);
 			const auto root = json::parse(stream);
+			if (const auto entry = root.find("failure"); entry != root.end() && entry->is_string()) {
+				result.failure = entry->get<std::string>().substr(0, 320);
+				if (!result.failure.empty())
+					return result;
+			}
 			if (root.at("version").get<uint32_t>() != 1 ||
 				!root.at("shapes").is_array() || root.at("shapes").size() > 384 ||
-				!root.at("lights").is_array() || root.at("lights").size() > 2048)
+				!root.at("lights").is_array() || root.at("lights").size() > 2048) {
+				result.failure = "Companion reply schema/shape/light-count invalid";
 				return result;
+			}
 			auto& publication = result.publication;
 			constexpr uint64_t kMaximumTileBytes = 64ull * 1024 * 1024;
 			std::unordered_set<uint64_t> identities;
@@ -414,7 +451,13 @@ namespace DX12
 				result.lights.push_back(std::move(record));
 			}
 			publication.validated = true;
-		} catch (const std::exception&) {
+			if (!publication.enumerationComplete || publication.failedShapes ||
+				publication.eligibleShapes != publication.shapes.size())
+				result.failure = std::format("Partial coverage: {} eligible shapes, {} extracted, {} unsupported; complete enumeration: {}",
+					publication.eligibleShapes, publication.shapes.size(), publication.failedShapes,
+					publication.enumerationComplete ? "yes" : "no");
+		} catch (const std::exception& error) {
+			result.failure = std::format("Companion payload rejected: {}", std::string(error.what()).substr(0, 240));
 			result.publication.shapes.clear();
 			result.publication.validated = false;
 			result.publication.geometryBytes = 0;

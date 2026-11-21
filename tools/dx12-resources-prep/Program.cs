@@ -93,7 +93,9 @@ static async Task<int> ServeAsync(string[] arguments)
                 }
                 catch (Exception error) when (error is not OutOfMemoryException)
                 {
-                    // Incomplete response: the native host must fail closed, never certify shadows.
+                    // Return the reason through the ephemeral mailbox, never a persistent log.
+                    // Native geometry publication must fail closed on a request failure.
+                    result = new TileResult(1, 0, 1, false, [], [], DescribeFailure("Request", error));
                 }
                 // Publish only after serialization completes; the host adopts reply.json atomically.
                 await using (var stream = new FileStream(replyTemp, FileMode.Create, FileAccess.Write, FileShare.None))
@@ -104,15 +106,44 @@ static async Task<int> ServeAsync(string[] arguments)
     }
     catch (Exception error) when (error is not OutOfMemoryException)
     {
+        // Load-order initialization can fail before the request loop starts.
+        // Publish a bounded error response so the in-game status page can explain why.
+        try
+        {
+            if (arguments.Length == 4)
+            {
+                var sessionRoot = Path.GetFullPath(arguments[3]);
+                if (Directory.Exists(sessionRoot))
+                {
+                    var temp = Path.Combine(sessionRoot, "reply.tmp");
+                    var reply = Path.Combine(sessionRoot, "reply.json");
+                    var failure = new TileResult(1, 0, 1, false, [], [],
+                        DescribeFailure("Initialize", error));
+                    await using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
+                        await JsonSerializer.SerializeAsync(stream, failure, new JsonSerializerOptions
+                        {
+                            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+                        });
+                    File.Move(temp, reply, true);
+                }
+            }
+        }
+        catch (Exception) { /* No persistent diagnostics and no failed-output retention. */ }
         return 1;
     }
+}
+
+static string DescribeFailure(string stage, Exception error)
+{
+    var detail = $"{stage}: {error.GetType().Name}: {error.Message}";
+    return detail.Length <= 320 ? detail : detail[..320];
 }
 
 internal sealed record TileShape(ulong Identity, float[][] Positions, uint[] Indices, float[] Transform);
 internal sealed record TileLight(string ReferencePlugin, uint ReferenceLocal, string BasePlugin, uint BaseLocal,
     float[] Position, float[] Color, float Radius, float Fade, float EmitterRadius, float FalloffExponent, uint Flags);
 internal sealed record TileResult(uint Version, uint EligibleShapes, uint FailedShapes, bool EnumerationComplete,
-    List<TileShape> Shapes, List<TileLight> Lights);
+    List<TileShape> Shapes, List<TileLight> Lights, string Failure = "");
 internal sealed record ModelShape(int Index, Vector3[] Positions, uint[] Indices, Matrix4x4 ToModel);
 
 internal static class SceneTile

@@ -28,6 +28,7 @@ void DX12NativeScene::DrawSettings()
 	const auto coverage = GetCoveredLightIDs();
 	const uint32_t scope = grid ? grid->requested.front().scope : 0u;
 	const auto timings = globals::features::dx12Resources.GetPreparationStats();
+	const auto preparationStatus = globals::features::dx12Resources.GetPreparationStatus();
 	struct Progress { uint32_t ready = 0, partial = 0, preparing = 0, waiting = 0, incomplete = 0; };
 	const auto progress = [](const auto& residents) {
 		Progress values;
@@ -53,6 +54,8 @@ void DX12NativeScene::DrawSettings()
 	ImGui::Text("Runtime: %s", active ? "Automatic (DX12 master enabled)" : "Inactive (DX12 master or Resources unavailable)");
 	ImGui::Text("Subcell size: %u game units", grid ? grid->size : DX12::kSubcellSizes.front());
 	ImGui::SeparatorText("Companion subcell generation");
+	if (preparationStatus)
+		ImGui::TextWrapped("Last companion result: %s", preparationStatus->c_str());
 	ImGui::TextUnformatted("Active 3x3");
 	ImGui::ProgressBar(float(activeProgress.ready + activeProgress.partial) / float(DX12::kGridCapacity), ImVec2(-1.0f, 0),
 		std::format("{}/{} prepared", activeProgress.ready + activeProgress.partial, DX12::kGridCapacity).c_str());
