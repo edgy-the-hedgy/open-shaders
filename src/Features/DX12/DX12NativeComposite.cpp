@@ -135,13 +135,16 @@ void DX12NativeComposite::DrawSettings()
 	if (ImGui::Combo("Shadowmask ray sampling", &mode, modes, int(std::size(modes)))) {
 		samplingMode.store(mode, std::memory_order_release);
 		samplingPhase.store(0, std::memory_order_release);
+		lastValidDiagnosticFrame.store(0, std::memory_order_release);
 	}
 	float intensity = shadowIntensity.load(std::memory_order_relaxed);
 	if (ImGui::SliderFloat("Shadowmask intensity", &intensity, 0.0f, 4.0f, "%.2fx"))
 		shadowIntensity.store(intensity, std::memory_order_release);
 	bool show = diagnosticDarkenEnabled.load(std::memory_order_relaxed);
-	if (ImGui::Checkbox("Diagnostic: darken shadowmask areas", &show))
+	if (ImGui::Checkbox("Diagnostic: darken shadowmask areas", &show)) {
 		diagnosticDarkenEnabled.store(show, std::memory_order_release);
+		lastValidDiagnosticFrame.store(0, std::memory_order_release);
+	}
 	if (show) {
 		float power = diagnosticDarkenStrength.load(std::memory_order_relaxed);
 		if (ImGui::SliderFloat("Test darkening", &power, 0.0f, 4.0f, "%.2fx"))
@@ -149,8 +152,11 @@ void DX12NativeComposite::DrawSettings()
 	}
 	ImGui::TextDisabled("TEST ONLY: multiplies final raster color (including ambient); not per-light shading.");
 	bool rasterOff = disableMatchedRasterStatic.load(std::memory_order_relaxed);
-	if (ImGui::Checkbox("Test: disable raster shadows for matched static geometry", &rasterOff))
+	if (ImGui::Checkbox("Test: disable raster shadows for matched static geometry", &rasterOff)) {
 		disableMatchedRasterStatic.store(rasterOff, std::memory_order_release);
+		if (!rasterOff)
+			lastValidDiagnosticFrame.store(0, std::memory_order_release);
+	}
 	if (rasterOff) {
 		ImGui::TextDisabled("Requires full ray sampling, diagnostic darkening, successful runtime FSR and SCM.");
 		ImGui::TextDisabled("Only live-captured rigid meshes in the current TLAS are eligible.");
@@ -160,6 +166,10 @@ void DX12NativeComposite::DrawSettings()
 	ImGui::Text("Runtime: %s", IsActive() ? "Automatic (DX12 master enabled)" : "Inactive");
 	ImGui::Text("Shadowmask submissions: %llu",
 		static_cast<unsigned long long>(submittedMasks.load(std::memory_order_acquire)));
+	ImGui::Text("Diagnostic FSR submissions: %llu",
+		static_cast<unsigned long long>(submittedDiagnosticFrames.load(std::memory_order_relaxed)));
+	ImGui::Text("Raster static caster append skips: %llu",
+		static_cast<unsigned long long>(ShadowCasterManager::GetNativePreviewStaticSkipCount()));
 	ImGui::Text("Runtime FSR dispatch callbacks: %llu",
 		static_cast<unsigned long long>(dispatchCalls.load(std::memory_order_relaxed)));
 	ImGui::Text("Prepared mask lights: %u", lastPreparedLightCount.load(std::memory_order_relaxed));
@@ -624,8 +634,11 @@ void DX12NativeComposite::OnSubmitted(ID3D12Fence* fence, uint64_t value, Submis
 {
 	if (!fence || !value)
 		return;
-	if (upscalerSucceeded && submission.usedDiagnostic && globals::game::graphicsState)
-		lastValidDiagnosticFrame.store(globals::game::graphicsState->GetFrameCount(), std::memory_order_release);
+	if (upscalerSucceeded && submission.usedDiagnostic) {
+		submittedDiagnosticFrames.fetch_add(1, std::memory_order_relaxed);
+		if (globals::game::graphicsState)
+			lastValidDiagnosticFrame.store(globals::game::graphicsState->GetFrameCount(), std::memory_order_release);
+	}
 	Pending frame;
 	frame.fence.copy_from(fence);
 	frame.value = value;

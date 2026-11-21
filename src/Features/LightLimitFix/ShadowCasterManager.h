@@ -1048,6 +1048,8 @@ namespace ShadowCasterManager
 	void SetNativeStaticMaskActive(bool active);
 	/** @brief Invalidate cached static tiles after per-mesh preview filtering changes. */
 	void InvalidateNativePreviewStaticBakes(std::span<const uintptr_t> matchedLightPointers);
+	/** @brief Total static caster append calls skipped by the experimental preview. */
+	uint64_t GetNativePreviewStaticSkipCount();
 	/** @brief True only while native masking and this light's static coverage are both valid. */
 	bool NativeStaticOffloaded(const RE::BSShadowLight* light);
 

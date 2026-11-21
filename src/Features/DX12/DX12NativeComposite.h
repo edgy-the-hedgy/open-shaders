@@ -132,4 +132,5 @@ private:
 	std::atomic<uint64_t> dispatchCalls{ 0 };
 	std::atomic<uint32_t> lastPreparedLightCount{ 0 };
 	std::atomic<uint64_t> submittedMasks{ 0 };
+	std::atomic<uint64_t> submittedDiagnosticFrames{ 0 };
 };

@@ -258,6 +258,11 @@ namespace ShadowCasterManager
 
 	/// Static/dynamic caster draws classified last frame (Tracy plots for A/B).
 	std::atomic<uint32_t> s_staticCasterDraws{ 0 };
+	std::atomic<uint64_t> s_nativePreviewStaticSkips{ 0 };
+	uint64_t GetNativePreviewStaticSkipCount()
+	{
+		return s_nativePreviewStaticSkips.load(std::memory_order_relaxed);
+	}
 	std::atomic<uint32_t> s_dynamicCasterDraws{ 0 };
 
 	// Per-caster movement history: stays dynamic until it has held still for
@@ -467,8 +472,10 @@ namespace ShadowCasterManager
 		// Never infer geometry coverage merely from a partially prepared subcell.
 		if (!dynamic && nativePreview &&
 			globals::features::dx12NativeScene.HasMatchedPreparedLight(CurrentCullLight()) &&
-			globals::features::dx12NativeScene.HasCurrentRuntimeGeometry(geom))
+			globals::features::dx12NativeScene.HasCurrentRuntimeGeometry(geom)) {
+			s_nativePreviewStaticSkips.fetch_add(1, std::memory_order_relaxed);
 			return true;
+		}
 		// Every static caster folds into the hash regardless of pass, so a
 		// static-set change is seen during whichever accumulate runs this frame.
 		if (!dynamic)
