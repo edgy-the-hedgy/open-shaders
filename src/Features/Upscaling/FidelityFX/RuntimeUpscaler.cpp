@@ -1219,11 +1219,15 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 
 			ffx::DispatchDescUpscale dispatchParameters{};
 			dispatchParameters.commandList = commandList;
-			// Do not feed final-color shadow multiplication into FSR until a true
-			// per-light direct-light input and same-frame failure fallback exist.
-			// Native Composite may still calculate a shadowmask for validation.
+			// When explicitly enabled, visualize native occlusion using a
+			// separate diagnostic color UAV. This is NOT final per-light
+			// composition and never modifies the original DX11 raster color.
+			ID3D12Resource* fsrInput = runtimeColorShared[a_contextIndex]->resource.get();
+			if (nativeComposite && nativeComposite->usedDiagnostic && nativeComposite->surfaces &&
+				nativeComposite->surfaces->diagnosticColor)
+				fsrInput = nativeComposite->surfaces->diagnosticColor.get();
 			dispatchParameters.color = ffxApiGetResourceDX12(
-				runtimeColorShared[a_contextIndex]->resource.get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
+				fsrInput, FFX_API_RESOURCE_STATE_COMPUTE_READ);
 			dispatchParameters.depth = ffxApiGetResourceDX12(runtimeDepthShared[a_contextIndex]->resource.get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
 			dispatchParameters.motionVectors = ffxApiGetResourceDX12(runtimeMotionShared[a_contextIndex]->resource.get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
 			dispatchParameters.exposure = FfxApiResource({});
@@ -1283,6 +1287,15 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 				CD3DX12_RESOURCE_BARRIER::Transition(runtimeOutputShared[a_contextIndex]->resource.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON),
 			};
 			commandList->ResourceBarrier(static_cast<UINT>(endBarriers.size()), endBarriers.data());
+			// A reusable diagnostic texture returns to COMMON before the next
+			// frame; FFX only borrows it for this same-frame dispatch.
+			if (nativeComposite && nativeComposite->usedDiagnostic && nativeComposite->surfaces &&
+				nativeComposite->surfaces->diagnosticColor) {
+				const auto visualDone = CD3DX12_RESOURCE_BARRIER::Transition(
+					nativeComposite->surfaces->diagnosticColor.get(),
+					D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+				commandList->ResourceBarrier(1, &visualDone);
+			}
 
 			DX::ThrowIfFailed(commandList->Close());
 

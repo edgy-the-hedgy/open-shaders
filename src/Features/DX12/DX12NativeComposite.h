@@ -18,7 +18,7 @@ struct DX12NativeComposite final : Feature
 
 	struct Surfaces
 	{
-		winrt::com_ptr<ID3D12Resource> shadowMask;
+		winrt::com_ptr<ID3D12Resource> shadowMask, diagnosticColor;
 		winrt::com_ptr<ID3D12Resource> rasterSource, depthSource;
 		winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
 		uint32_t width = 0, height = 0;
@@ -33,6 +33,7 @@ struct DX12NativeComposite final : Feature
 		winrt::com_ptr<ID3D12Resource> camera;
 		winrt::com_ptr<ID3D12Resource> lights;
 		uint64_t geometryRevision = 0, lightRevision = 0;
+		bool usedDiagnostic = false;
 	};
 
 	std::string GetName() override { return "DX12 Native Composite"; }
@@ -62,11 +63,13 @@ private:
 		winrt::com_ptr<ID3D12Device> device;
 		winrt::com_ptr<ID3D12RootSignature> shadowRoot;
 		winrt::com_ptr<ID3D12PipelineState> shadowPipeline;
+		winrt::com_ptr<ID3D12RootSignature> diagnosticRoot;
+		winrt::com_ptr<ID3D12PipelineState> diagnosticPipeline;
 		uint32_t descriptorSize = 0;
 	};
 	struct UploadPair
 	{
-		winrt::com_ptr<ID3D12Resource> camera, lights;
+		winrt::com_ptr<ID3D12Resource> camera, lights, diagnostic;
 	};
 	static constexpr size_t kMaximumUploadPairs = 8;
 
@@ -89,16 +92,22 @@ private:
 	std::atomic<std::shared_ptr<const PipelineState>> preparedPipelines;
 	std::atomic<bool> pipelineFailed = false;
 	std::atomic<std::shared_ptr<const std::string>> pipelineFailureReason;
+	std::atomic<std::shared_ptr<const std::string>> diagnosticFailureReason;
+	std::atomic<bool> diagnosticUnavailable{ false };
 	std::jthread pipelineWorker;
 	winrt::com_ptr<ID3D12Device> device;
 	winrt::com_ptr<ID3D12RootSignature> shadowRoot;
 	winrt::com_ptr<ID3D12PipelineState> shadowPipeline;
+	winrt::com_ptr<ID3D12RootSignature> diagnosticRoot;
+	winrt::com_ptr<ID3D12PipelineState> diagnosticPipeline;
 	uint32_t descriptorSize = 0;
 	bool unavailable = false;
 	// Sample only a fraction of pixels (no reconstruction). 0 = full,
 	// 1 = 2/3, 2 = 1/2, 3 = 4/9, 4 = 1/3, 5 = 1/4, 6 = 1/6, 7 = 1/9.
 	std::atomic<int> samplingMode{ 0 };
 	std::atomic<float> shadowIntensity{ 1.0f };
+	std::atomic<bool> diagnosticDarkenEnabled{ false };
+	std::atomic<float> diagnosticDarkenStrength{ 1.0f };
 	std::atomic<uint32_t> samplingPhase{ 0 };
 	enum class DispatchStatus : uint8_t
 	{

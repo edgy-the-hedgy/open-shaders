@@ -29,6 +29,11 @@ namespace
 		uint32_t samplingMode = 0, samplingPhase = 0;
 		uint32_t padding0 = 0, padding1 = 0;
 	};
+	struct alignas(16) DiagnosticOptions
+	{
+		uint32_t width = 0, height = 0;
+		float darkening = 1.0f, padding = 0.0f;
+	};
 	struct GpuLight
 	{
 		float4 positionRadius;
@@ -37,6 +42,7 @@ namespace
 	};
 	static_assert(sizeof(MaskCamera) == 176);
 	static_assert(sizeof(GpuLight) == 48);
+	static_assert(sizeof(DiagnosticOptions) == 16);
 
 	std::vector<char> ReadShader(const char* path)
 	{
@@ -133,6 +139,15 @@ void DX12NativeComposite::DrawSettings()
 	float intensity = shadowIntensity.load(std::memory_order_relaxed);
 	if (ImGui::SliderFloat("Shadowmask intensity", &intensity, 0.0f, 4.0f, "%.2fx"))
 		shadowIntensity.store(intensity, std::memory_order_release);
+	bool show = diagnosticDarkenEnabled.load(std::memory_order_relaxed);
+	if (ImGui::Checkbox("Diagnostic: darken shadowmask areas", &show))
+		diagnosticDarkenEnabled.store(show, std::memory_order_release);
+	if (show) {
+		float power = diagnosticDarkenStrength.load(std::memory_order_relaxed);
+		if (ImGui::SliderFloat("Test darkening", &power, 0.0f, 4.0f, "%.2fx"))
+			diagnosticDarkenStrength.store(power, std::memory_order_release);
+	}
+	ImGui::TextDisabled("TEST ONLY: multiplies final raster color (including ambient); not per-light shading.");
 	ImGui::Text("Runtime: %s", IsActive() ? "Automatic (DX12 master enabled)" : "Inactive");
 	ImGui::Text("Shadowmask submissions: %llu",
 		static_cast<unsigned long long>(submittedMasks.load(std::memory_order_acquire)));
@@ -158,9 +173,13 @@ void DX12NativeComposite::DrawSettings()
 		ImGui::TextWrapped("DXR shadowmask initialization failed: %s",
 			failure ? failure->c_str() : "Unknown D3D12 initialization error");
 	}
+	if (show && diagnosticUnavailable.load(std::memory_order_acquire)) {
+		const auto failure = diagnosticFailureReason.load(std::memory_order_acquire);
+		ImGui::TextWrapped("Diagnostic overlay unavailable: %s", failure ? failure->c_str() : "Unsupported color format");
+	}
 	ImGui::TextDisabled("Sampling modes skip ray queries; untraced pixels receive neutral visibility.");
 	ImGui::TextDisabled("Intensity: 0 = neutral, 1 = raw, above 1 deepens partial shadows.");
-	ImGui::TextDisabled("Mask only: raster color and raster static shadows are unchanged.");
+	ImGui::TextDisabled("With diagnostic OFF: original raster color is unchanged.");
 }
 
 void DX12NativeComposite::LoadSettings(json& input)
@@ -170,19 +189,26 @@ void DX12NativeComposite::LoadSettings(json& input)
 	const float intensity = std::clamp(std::isfinite(requested) ? requested : 1.0f, 0.0f, 4.0f);
 	samplingMode.store(mode, std::memory_order_release);
 	shadowIntensity.store(intensity, std::memory_order_release);
+	diagnosticDarkenEnabled.store(input.value("DiagnosticDarken", false), std::memory_order_release);
+	const float test = input.value("DiagnosticDarkening", 1.0f);
+	diagnosticDarkenStrength.store(std::clamp(std::isfinite(test) ? test : 1.0f, 0.0f, 4.0f), std::memory_order_release);
 	samplingPhase.store(0, std::memory_order_release);
 }
 
 void DX12NativeComposite::SaveSettings(json& output)
 {
 	output = { { "SamplingMode", samplingMode.load(std::memory_order_acquire) },
-		{ "ShadowMaskIntensity", shadowIntensity.load(std::memory_order_acquire) } };
+		{ "ShadowMaskIntensity", shadowIntensity.load(std::memory_order_acquire) },
+		{ "DiagnosticDarken", diagnosticDarkenEnabled.load(std::memory_order_acquire) },
+		{ "DiagnosticDarkening", diagnosticDarkenStrength.load(std::memory_order_acquire) } };
 }
 
 void DX12NativeComposite::RestoreDefaultSettings()
 {
 	samplingMode.store(0, std::memory_order_release);
 	shadowIntensity.store(1.0f, std::memory_order_release);
+	diagnosticDarkenEnabled.store(false, std::memory_order_release);
+	diagnosticDarkenStrength.store(1.0f, std::memory_order_release);
 	samplingPhase.store(0, std::memory_order_release);
 }
 
@@ -226,6 +252,8 @@ bool DX12NativeComposite::EnsurePipelines(ID3D12Device* candidate)
 		device = built->device;
 		shadowRoot = built->shadowRoot;
 		shadowPipeline = built->shadowPipeline;
+		diagnosticRoot = built->diagnosticRoot;
+		diagnosticPipeline = built->diagnosticPipeline;
 		descriptorSize = built->descriptorSize;
 		return true;
 	}
@@ -261,6 +289,21 @@ bool DX12NativeComposite::EnsurePipelines(ID3D12Device* candidate)
 			pipelineFailed.store(true, std::memory_order_release);
 			return;
 		}
+		D3D12_DESCRIPTOR_RANGE visualSources{ D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0, 0, 0 };
+		D3D12_DESCRIPTOR_RANGE visualTarget{ D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 0 };
+		std::array<D3D12_ROOT_PARAMETER, 3> visual{};
+		visual[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+		visual[0].DescriptorTable = { 1, &visualSources };
+		visual[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+		visual[1].DescriptorTable = { 1, &visualTarget };
+		visual[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+		visual[2].Descriptor.ShaderRegister = 0;
+		if (!CreateSignature(built->device.get(), visual, built->diagnosticRoot, failure) ||
+			!CreatePipeline(built->device.get(), built->diagnosticRoot.get(),
+				"Data/Shaders/DX12NativeComposite/VisualizeShadowMask.dxil", built->diagnosticPipeline, failure)) {
+			diagnosticFailureReason.store(std::make_shared<const std::string>(std::move(failure)), std::memory_order_release);
+			diagnosticUnavailable.store(true, std::memory_order_release);
+		}
 		built->descriptorSize = built->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		if (!built->descriptorSize) {
 			pipelineFailureReason.store(std::make_shared<const std::string>("Zero CBV/SRV/UAV descriptor increment size"),
@@ -285,10 +328,27 @@ std::shared_ptr<DX12NativeComposite::Surfaces> DX12NativeComposite::MakeSurfaces
 		width > z.Width || height > z.Height ||
 		depthSrv != DXGI_FORMAT_R32_FLOAT || raster.Format == DXGI_FORMAT_UNKNOWN)
 		return nullptr;
+
+	bool wantDebug = diagnosticDarkenEnabled.load(std::memory_order_acquire) &&
+		diagnosticDarkenStrength.load(std::memory_order_acquire) > 0.0f &&
+		diagnosticPipeline && !diagnosticUnavailable.load(std::memory_order_acquire);
+	if (wantDebug) {
+		D3D12_FEATURE_DATA_FORMAT_SUPPORT support{};
+		support.Format = raster.Format;
+		if (FAILED(device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support))) ||
+			!(support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE)) {
+			diagnosticFailureReason.store(std::make_shared<const std::string>("Source color format does not support typed UAV stores"),
+				std::memory_order_release);
+			diagnosticUnavailable.store(true, std::memory_order_release);
+			wantDebug = false;
+		}
+	}
 	if (surfaces && surfaces->rasterSource.get() == rasterColor && surfaces->depthSource.get() == depth &&
 		surfaces->width == width && surfaces->height == height &&
-		surfaces->rasterFormat == raster.Format && surfaces->depthFormat == z.Format)
+		surfaces->rasterFormat == raster.Format && surfaces->depthFormat == z.Format &&
+		bool(surfaces->diagnosticColor) == wantDebug)
 		return surfaces;
+
 	const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
 	const auto maskDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R16_FLOAT, width, height, 1, 1, 1, 0,
 		D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
@@ -299,12 +359,24 @@ std::shared_ptr<DX12NativeComposite::Surfaces> DX12NativeComposite::MakeSurfaces
 	next->rasterSource.copy_from(rasterColor);
 	next->depthSource.copy_from(depth);
 	next->shadowMask->SetName(L"DX12NativeComposite::ShadowMask");
+	if (wantDebug) {
+		const auto debugDesc = CD3DX12_RESOURCE_DESC::Tex2D(raster.Format, raster.Width, raster.Height,
+			1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+		if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &debugDesc,
+				D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(next->diagnosticColor.put())))) {
+			diagnosticFailureReason.store(std::make_shared<const std::string>("Could not allocate diagnostic DX12 color UAV"),
+				std::memory_order_release);
+			diagnosticUnavailable.store(true, std::memory_order_release);
+			wantDebug = false;
+		} else
+			next->diagnosticColor->SetName(L"DX12NativeComposite::DiagnosticColor");
+	}
 	D3D12_DESCRIPTOR_HEAP_DESC descriptorDesc{};
 	descriptorDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-	descriptorDesc.NumDescriptors = 2;
+	descriptorDesc.NumDescriptors = wantDebug ? 5 : 2;
 	descriptorDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 	if (FAILED(device->CreateDescriptorHeap(&descriptorDesc, IID_PPV_ARGS(next->descriptors.put()))))
-		return {};
+		return nullptr;
 	const auto base = next->descriptors->GetCPUDescriptorHandleForHeapStart();
 	const auto cpu = [&](uint32_t index) { return CD3DX12_CPU_DESCRIPTOR_HANDLE(base, int(index), descriptorSize); };
 	D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
@@ -317,6 +389,14 @@ std::shared_ptr<DX12NativeComposite::Surfaces> DX12NativeComposite::MakeSurfaces
 	uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
 	uav.Format = DXGI_FORMAT_R16_FLOAT;
 	device->CreateUnorderedAccessView(next->shadowMask.get(), nullptr, &uav, cpu(1));
+	if (wantDebug) {
+		srv.Format = raster.Format;
+		device->CreateShaderResourceView(rasterColor, &srv, cpu(2));
+		srv.Format = DXGI_FORMAT_R16_FLOAT;
+		device->CreateShaderResourceView(next->shadowMask.get(), &srv, cpu(3));
+		uav.Format = raster.Format;
+		device->CreateUnorderedAccessView(next->diagnosticColor.get(), nullptr, &uav, cpu(4));
+	}
 	next->width = width;
 	next->height = height;
 	next->rasterFormat = raster.Format;
@@ -355,7 +435,7 @@ void DX12NativeComposite::Collect()
 	while (!pending.empty() && pending.front().fence &&
 		   pending.front().fence->GetCompletedValue() >= pending.front().value) {
 		auto& completed = pending.front().submission;
-		availableUploads.push_back({ std::move(completed.camera), std::move(completed.lights) });
+		availableUploads.push_back({ std::move(completed.camera), std::move(completed.lights), std::move(completed.diagnostic) });
 		pending.pop_front();
 	}
 }
@@ -432,8 +512,12 @@ std::optional<DX12NativeComposite::Submission> DX12NativeComposite::Dispatch(
 	} else {
 		++uploadPairs;
 	}
+	const bool makeDiagnostic = target->diagnosticColor && diagnosticPipeline;
+	const DiagnosticOptions diagnostic{ width, height,
+		diagnosticDarkenStrength.load(std::memory_order_acquire), 0.0f };
 	if (!Upload(buffers.camera, &camera, sizeof(camera), sizeof(camera)) ||
-		!Upload(buffers.lights, lightUpload.data(), count * sizeof(GpuLight), sizeof(lightUpload))) {
+		!Upload(buffers.lights, lightUpload.data(), count * sizeof(GpuLight), sizeof(lightUpload)) ||
+		(makeDiagnostic && !Upload(buffers.diagnostic, &diagnostic, sizeof(diagnostic), sizeof(diagnostic)))) {
 		availableUploads.push_back(std::move(buffers));
 		lastDispatchStatus.store(DispatchStatus::UploadFailed, std::memory_order_release);
 		return std::nullopt;
@@ -445,6 +529,7 @@ std::optional<DX12NativeComposite::Submission> DX12NativeComposite::Dispatch(
 	submission.lightRevision = grid->lightRevision;
 	submission.camera = std::move(buffers.camera);
 	submission.lights = std::move(buffers.lights);
+	submission.diagnostic = std::move(buffers.diagnostic);
 	ID3D12DescriptorHeap* heaps[]{ target->descriptors.get() };
 	commands->SetDescriptorHeaps(1, heaps);
 	const auto begin = CD3DX12_RESOURCE_BARRIER::Transition(target->shadowMask.get(),
@@ -459,11 +544,35 @@ std::optional<DX12NativeComposite::Submission> DX12NativeComposite::Dispatch(
 	commands->SetComputeRootConstantBufferView(4, submission.camera->GetGPUVirtualAddress());
 	commands->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
 	samplingPhase.fetch_add(1, std::memory_order_relaxed);
-	// Mask-only: the FSR color source remains the original raster input.
-	// No final-color composition pass is submitted and no RGBA color UAV is allocated.
-	const auto shadowDone = CD3DX12_RESOURCE_BARRIER::Transition(target->shadowMask.get(),
-		D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
-	commands->ResourceBarrier(1, &shadowDone);
+	if (makeDiagnostic) {
+		// The raster source was transitioned to NON_PIXEL_SHADER_RESOURCE by the
+		// FSR caller. Write ONLY to a separate output so failures preserve it.
+		const std::array<D3D12_RESOURCE_BARRIER, 2> beginVisual{
+			CD3DX12_RESOURCE_BARRIER::Transition(target->shadowMask.get(),
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+			CD3DX12_RESOURCE_BARRIER::Transition(target->diagnosticColor.get(),
+				D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+		};
+		commands->ResourceBarrier(UINT(beginVisual.size()), beginVisual.data());
+		commands->SetComputeRootSignature(diagnosticRoot.get());
+		commands->SetPipelineState(diagnosticPipeline.get());
+		commands->SetComputeRootDescriptorTable(0, Descriptor(*target, 2));
+		commands->SetComputeRootDescriptorTable(1, Descriptor(*target, 4));
+		commands->SetComputeRootConstantBufferView(2, submission.diagnostic->GetGPUVirtualAddress());
+		commands->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
+		const std::array<D3D12_RESOURCE_BARRIER, 2> endVisual{
+			CD3DX12_RESOURCE_BARRIER::Transition(target->shadowMask.get(),
+				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
+			CD3DX12_RESOURCE_BARRIER::Transition(target->diagnosticColor.get(),
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
+		};
+		commands->ResourceBarrier(UINT(endVisual.size()), endVisual.data());
+		submission.usedDiagnostic = true;
+	} else {
+		const auto shadowDone = CD3DX12_RESOURCE_BARRIER::Transition(target->shadowMask.get(),
+			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+		commands->ResourceBarrier(1, &shadowDone);
+	}
 	lastDispatchStatus.store(DispatchStatus::Recorded, std::memory_order_release);
 	return submission;
 }
