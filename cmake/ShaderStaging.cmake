@@ -110,6 +110,23 @@ foreach(_fpath IN LISTS AIO_LOCAL_FEATURE_PATHS)
     endif()
 endforeach()
 
+# The standalone DXC compiler emits a build-tree .dxil, which is not
+# discovered by the source shader glob. Copy the compiled binary only AFTER
+# CleanupStaleEntries in this same shader-copy command. This avoids a competing
+# staging target and does not pull run_shader_tests into AIO_ZIP_PACKAGE.
+set(_dx12_native_mask_files)
+if(TARGET DX12NativeCompositeDXIL)
+    list(
+        APPEND _shader_copy_cmds
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "${AIO_DIR}/Shaders/DX12NativeComposite"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${_dx12_mask}"
+            "${AIO_DIR}/Shaders/DX12NativeComposite/PreparedShadowMask.dxil"
+    )
+    list(APPEND _dx12_native_mask_files "${_dx12_mask}")
+endif()
+
 add_custom_command(
     OUTPUT copy_shaders.stamp
     COMMAND
@@ -123,6 +140,7 @@ add_custom_command(
         ${STREAMLINE_RUNTIME_DX12_FILES}
         ${_package_shaders}
         ${_all_feature_shader_files}
+        ${_dx12_native_mask_files}
         ${CMAKE_SOURCE_DIR}/cmake/CleanupStaleEntries.cmake
         ${CMAKE_SOURCE_DIR}/cmake/PreservedRuntimePaths.cmake
     COMMENT "Copying changed shaders into AIO/Shaders"
@@ -135,26 +153,6 @@ add_custom_target(
     DEPENDS copy_shaders.stamp
     COMMENT "Preparing shaders for validation"
 )
-
-# The compiled DXIL is generated under the build tree, not under a feature's
-# Shaders/ directory. The normal shader copier only stages source .hlsl6 files.
-# Stage the binary AFTER shader cleanup so CleanupStaleEntries cannot erase it.
-# This target is deliberately cheap on incremental builds and does not rely on
-# an output stamp that may survive when staging was manually cleared.
-if(TARGET DX12NativeCompositeDXIL)
-    set(DX12_NATIVE_AIO_MASK
-        "${AIO_DIR}/Shaders/DX12NativeComposite/PreparedShadowMask.dxil")
-    add_custom_target(STAGE_DX12_NATIVE_SHADOWMASK
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-            "${AIO_DIR}/Shaders/DX12NativeComposite"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${_dx12_mask}" "${DX12_NATIVE_AIO_MASK}"
-        DEPENDS DX12NativeCompositeDXIL
-        COMMENT "Staging compiled DX12 native shadowmask DXIL in AIO"
-        VERBATIM
-    )
-    add_dependencies(STAGE_DX12_NATIVE_SHADOWMASK prepare_shaders PREPARE_AIO)
-endif()
 
 # Incremental local validation: compile only the shaders affected by the
 # current working-tree diff (vs HEAD). Mirrors the CI incremental path but

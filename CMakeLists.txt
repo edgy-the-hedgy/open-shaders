@@ -1349,9 +1349,6 @@ if(AUTO_PLUGIN_DEPLOYMENT)
         DEPENDS prepare_shaders ${DEPLOY_TARGET_HASHES}
         COMMENT "Full deployment: DLL + shaders + all files to game directory"
     )
-    if(TARGET STAGE_DX12_NATIVE_SHADOWMASK)
-        add_dependencies(DEPLOY_ALL STAGE_DX12_NATIVE_SHADOWMASK)
-    endif()
 endif()
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/DX12ResourcesCompanion.cmake")
@@ -1589,11 +1586,6 @@ if(AIO_ZIP_TO_DIST)
     if(TARGET STAGE_DX12_RESOURCES_COMPANION)
         add_dependencies(AIO_ZIP_PACKAGE STAGE_DX12_RESOURCES_COMPANION)
     endif()
-    if(TARGET STAGE_DX12_NATIVE_SHADOWMASK)
-        # Order DXIL staging ahead of AIO archive creation. Removing the
-        # archive stamp rebuilds the package with the compiled DXR shader.
-        add_dependencies(AIO_ZIP_PACKAGE STAGE_DX12_NATIVE_SHADOWMASK)
-    endif()
 endif()
 
 if(NOT DEFINED ENV{CommunityShadersOutputDir})
@@ -1705,9 +1697,6 @@ else()
 endif()
 if(TARGET STAGE_DX12_RESOURCES_COMPANION)
     add_dependencies(AIO STAGE_DX12_RESOURCES_COMPANION)
-endif()
-if(TARGET STAGE_DX12_NATIVE_SHADOWMASK)
-    add_dependencies(AIO STAGE_DX12_NATIVE_SHADOWMASK)
 endif()
 
 # Manual AIO package target. Strips non-autoupload features at archive
