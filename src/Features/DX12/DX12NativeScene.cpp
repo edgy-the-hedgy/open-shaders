@@ -221,6 +221,52 @@ void DX12NativeScene::ObserveRuntimeGeometry(RE::BSGeometry* geometry)
 		std::move(shape), bound.center.x, bound.center.y);
 }
 
+bool DX12NativeScene::HasCurrentRuntimeGeometry(const RE::BSGeometry& geometry) const
+{
+	if (!IsActive() || geometry.name.empty() || geometry.name.size() > 1024 ||
+		geometry.GetGeometryRuntimeData().skinInstance || geometry.GetGeometryRuntimeData().alphaProperty)
+		return false;
+	const auto* owner = geometry.GetUserData();
+	if (!owner || owner->IsDynamicForm())
+		return false;
+	const auto grid = globals::features::dx12Resources.GetGrid();
+	const auto built = scene.Ready();
+	if (!grid || !built || !built->acceleration || !grid->requested.front().scope ||
+		built->geometryRevision != grid->geometryRevision || built->scope != grid->requested.front().scope)
+		return false;
+	uint64_t identity = 14695981039346656037ull;
+	const auto mix = [&](uint64_t value) {
+		identity ^= value;
+		identity *= 1099511628211ull;
+	};
+	mix(owner->GetFormID());
+	mix(uint64_t(reinterpret_cast<uintptr_t>(&geometry)));
+	for (const unsigned char ch : std::string_view{ geometry.name.c_str() })
+		mix(ch);
+	identity |= 0x8000000000000000ull;
+	if (!built->shapeIDs.contains(identity))
+		return false;
+	return std::ranges::any_of(grid->runtimeShapes, [&](const DX12::RuntimeShape& observed) {
+		if (!observed.shape || observed.shape->identity != identity)
+			return false;
+		const auto& transform = observed.shape->transform;
+		for (int row = 0; row < 3; ++row)
+			for (int col = 0; col < 3; ++col)
+				if (std::abs(transform[4 * row + col] -
+					geometry.world.rotate.entry[row][col] * geometry.world.scale) > 0.01f)
+					return false;
+		return std::abs(transform[3] - geometry.world.translate.x) <= 0.01f &&
+			std::abs(transform[7] - geometry.world.translate.y) <= 0.01f &&
+			std::abs(transform[11] - geometry.world.translate.z) <= 0.01f;
+	});
+}
+
+bool DX12NativeScene::HasMatchedPreparedLight(const RE::BSShadowLight* light) const
+{
+	const auto match = matchedShadowLightPointers.load(std::memory_order_acquire);
+	return light && match && std::ranges::binary_search(*match, reinterpret_cast<uintptr_t>(light));
+}
+
 void DX12NativeScene::PreShadowMaps()
 {
 	CS_GPU_PASS("DX12NativeScene::Update");
@@ -284,6 +330,7 @@ void DX12NativeScene::PublishCoverage(const DX12::Grid& grid)
 {
 	std::vector<RE::BSShadowLight*> covered;
 	std::vector<uint32_t> coveredReferences;
+	std::vector<uintptr_t> matchedPointers;
 	const auto currentScene = scene.Ready();
 	const auto currentLights = lights.load(std::memory_order_acquire);
 	if (currentScene && currentLights && currentScene->geometryRevision == grid.geometryRevision &&
@@ -296,6 +343,10 @@ void DX12NativeScene::PublishCoverage(const DX12::Grid& grid)
 				resolved.runtimeShadowSlot >= uint32_t(std::max(active.Size, 0)) ||
 				!active.Lights || currentScene->shapeIDs.empty())
 				continue;
+			auto* runtimeShadow = active.Lights[resolved.runtimeShadowSlot].Light;
+			if (!runtimeShadow)
+				continue;
+			matchedPointers.push_back(reinterpret_cast<uintptr_t>(runtimeShadow));
 			const auto& light = resolved.light;
 			const auto x0 = DX12::Coordinate(double(light.position.x) - light.radius, grid.size);
 			const auto x1 = DX12::Coordinate(double(light.position.x) + light.radius, grid.size);
@@ -327,6 +378,10 @@ void DX12NativeScene::PublishCoverage(const DX12::Grid& grid)
 				}
 		}
 	}
+	std::ranges::sort(matchedPointers);
+	matchedPointers.erase(std::unique(matchedPointers.begin(), matchedPointers.end()), matchedPointers.end());
+	matchedShadowLightPointers.store(std::make_shared<const std::vector<uintptr_t>>(std::move(matchedPointers)),
+		std::memory_order_release);
 	std::ranges::sort(coveredReferences);
 	coveredReferences.erase(std::unique(coveredReferences.begin(), coveredReferences.end()), coveredReferences.end());
 	coveredLightIDs.store(std::make_shared<const std::vector<uint32_t>>(std::move(coveredReferences)), std::memory_order_release);
@@ -352,6 +407,7 @@ void DX12NativeScene::OnRuntimeDisabled()
 	preparedCacheScope = 0;
 	lights.store(nullptr, std::memory_order_release);
 	coveredLightIDs.store(nullptr, std::memory_order_release);
+	matchedShadowLightPointers.store(nullptr, std::memory_order_release);
 	ShadowCasterManager::SetNativeStaticMaskActive(false);
 	ShadowCasterManager::PublishNativeStaticCoverage({});
 }
