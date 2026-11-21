@@ -15,13 +15,6 @@ struct DX12NativeComposite final : Feature
 {
 	~DX12NativeComposite();
 
-	struct Settings
-	{
-		bool Enabled = true;
-		float ShadowStrength = 1.0f;  // Legacy dispatch gate: zero = off, otherwise on.
-		float ShadowMaskIntensity = 1.0f;  // Independent visibility-mask intensity, 0..1.
-	};
-
 	struct Surfaces
 	{
 		winrt::com_ptr<ID3D12Resource> shadowMask;
@@ -46,10 +39,11 @@ struct DX12NativeComposite final : Feature
 	std::string_view GetCategory() const override { return FeatureCategories::kDX12; }
 	bool IsCore() const override { return true; }
 	bool SupportsVR() override { return false; }
-	void DrawSettings() override;
-	void LoadSettings(json& input) override;
-	void SaveSettings(json& output) override;
-	void RestoreDefaultSettings() override;
+	// Internal DXR mask producer: stays active with the master toggle and
+	// native scene, but exposes no separate settings or boot state.
+	bool IsInMenu() const override { return false; }
+	bool IsAlwaysEnabled() const override { return true; }
+	bool UsesMainSettings() const override { return false; }
 	bool WantsPreShadowMapsHook() const override { return true; }
 	void PreShadowMaps() override;
 	void OnRuntimeDisabled() override;
@@ -97,5 +91,4 @@ private:
 	winrt::com_ptr<ID3D12PipelineState> shadowPipeline;
 	uint32_t descriptorSize = 0;
 	bool unavailable = false;
-	Settings settings;
 };

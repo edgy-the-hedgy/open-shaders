@@ -14,47 +14,8 @@
 
 bool DX12NativeScene::IsActive() const
 {
-	return loaded && settings.Enabled && globals::features::dx12Resources.IsActive() &&
+	return loaded && globals::features::dx12Resources.IsActive() &&
 	       globals::features::dx12Control.IsActive() && !globals::game::isVR;
-}
-
-void DX12NativeScene::DrawSettings()
-{
-	if (ImGui::Checkbox("Enable native acceleration scene", &settings.Enabled) && !settings.Enabled)
-		OnRuntimeDisabled();
-	ImGui::Checkbox("Inherit matched runtime light values", &settings.lights.inheritRuntime);
-	ImGui::SliderFloat("Light match distance", &settings.lights.matchDistance, 1.0f, 256.0f, "%.0f");
-	ImGui::SliderFloat("Light intensity multiplier", &settings.lights.intensity, 0.0f, 8.0f, "%.2f");
-	ImGui::SliderFloat("Light reach multiplier", &settings.lights.reach, 0.1f, 4.0f, "%.2f");
-	ImGui::SliderFloat("Light emitter multiplier", &settings.lights.emitterSize, 0.1f, 8.0f, "%.2f");
-}
-
-void DX12NativeScene::LoadSettings(json& input)
-{
-	settings.Enabled = input.value("Enabled", true);
-	settings.lights.inheritRuntime = input.value("InheritRuntime", true);
-	settings.lights.matchDistance = input.value("MatchDistance", 64.0f);
-	settings.lights.intensity = input.value("Intensity", 1.0f);
-	settings.lights.reach = input.value("Reach", 1.0f);
-	settings.lights.emitterSize = input.value("EmitterSize", 1.0f);
-}
-
-void DX12NativeScene::SaveSettings(json& output)
-{
-	output = {
-		{ "Enabled", settings.Enabled },
-		{ "InheritRuntime", settings.lights.inheritRuntime },
-		{ "MatchDistance", settings.lights.matchDistance },
-		{ "Intensity", settings.lights.intensity },
-		{ "Reach", settings.lights.reach },
-		{ "EmitterSize", settings.lights.emitterSize }
-	};
-}
-
-void DX12NativeScene::RestoreDefaultSettings()
-{
-	settings = {};
-	OnRuntimeDisabled();
 }
 
 void DX12NativeScene::PreShadowMaps()
@@ -112,7 +73,7 @@ void DX12NativeScene::UpdateLights()
 	}
 	const auto camera = globals::game::player ? globals::game::player->GetPosition() : RE::NiPoint3{};
 	const float3 cameraPosition{ camera.x, camera.y, camera.z };
-	auto resolved = DX12::MatchPreparedLights(preparedCache, runtime, settings.lights, cameraPosition);
+	auto resolved = DX12::MatchPreparedLights(preparedCache, runtime, DX12::LightTuning{}, cameraPosition);
 	lights.store(std::make_shared<const DX12::ResolvedLights>(std::move(resolved)), std::memory_order_release);
 }
 

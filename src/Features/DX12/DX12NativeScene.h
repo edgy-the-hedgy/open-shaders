@@ -9,21 +9,16 @@
 /** @brief Prepared-light-only DXR scene with deferred publication of completed geometry. */
 struct DX12NativeScene final : Feature
 {
-	struct Settings
-	{
-		bool Enabled = true;
-		DX12::LightTuning lights;
-	};
-
 	std::string GetName() override { return "DX12 Native Scene"; }
 	std::string GetShortName() override { return "DX12NativeScene"; }
 	std::string_view GetCategory() const override { return FeatureCategories::kDX12; }
 	bool IsCore() const override { return true; }
 	bool SupportsVR() override { return false; }
-	void DrawSettings() override;
-	void LoadSettings(json& input) override;
-	void SaveSettings(json& output) override;
-	void RestoreDefaultSettings() override;
+	// Internal GPU consumer: automatically follows DX12 master/Resources.
+	// Remains registered and hooked, but has no independent menu or boot gate.
+	bool IsInMenu() const override { return false; }
+	bool IsAlwaysEnabled() const override { return true; }
+	bool UsesMainSettings() const override { return false; }
 	bool WantsPreShadowMapsHook() const override { return true; }
 	void PreShadowMaps() override;
 	void OnSceneTransitionReset(bool opening) override;
@@ -44,5 +39,4 @@ private:
 	uint64_t preparedCacheRevision = std::numeric_limits<uint64_t>::max();
 	uint32_t preparedCacheScope = 0;
 	std::atomic<std::shared_ptr<const std::vector<uint32_t>>> coveredLightIDs;
-	Settings settings;
 };
