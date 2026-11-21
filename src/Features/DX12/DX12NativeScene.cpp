@@ -221,13 +221,13 @@ void DX12NativeScene::ObserveRuntimeGeometry(RE::BSGeometry* geometry)
 		std::move(shape), bound.center.x, bound.center.y);
 }
 
-bool DX12NativeScene::HasCurrentRuntimeGeometry(const RE::BSGeometry& geometry) const
+bool DX12NativeScene::HasCurrentRuntimeGeometry(RE::BSGeometry& geometry) const
 {
-	if (!IsActive() || geometry.name.empty() || geometry.name.size() > 1024 ||
+	if (!IsActive() || geometry.name.empty() ||
 		geometry.GetGeometryRuntimeData().skinInstance || geometry.GetGeometryRuntimeData().alphaProperty)
 		return false;
 	const auto* owner = geometry.GetUserData();
-	if (!owner || owner->IsDynamicForm())
+	if (!owner || owner->IsDynamicForm() || std::string_view{ geometry.name.c_str() }.size() > 1024)
 		return false;
 	const auto grid = globals::features::dx12Resources.GetGrid();
 	const auto built = scene.Ready();

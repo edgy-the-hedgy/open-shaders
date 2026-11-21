@@ -24,9 +24,13 @@ struct DX12NativeScene final : Feature
 	/** @brief Borrow static CPU mesh inputs only within the already installed renderer hook. */
 	void ObserveRuntimeGeometry(RE::BSGeometry* geometry);
 	/** @brief Exact runtime-observed static mesh confirmed in the current GPU TLAS. */
-	bool HasCurrentRuntimeGeometry(const RE::BSGeometry& geometry) const;
+	bool HasCurrentRuntimeGeometry(RE::BSGeometry& geometry) const;
 	/** @brief Point light with a prepared-light match, independent of complete coverage. */
 	bool HasMatchedPreparedLight(const RE::BSShadowLight* light) const;
+	std::shared_ptr<const std::vector<uintptr_t>> GetMatchedLightPointers() const
+	{
+		return matchedShadowLightPointers.load(std::memory_order_acquire);
+	}
 	bool WantsPreShadowMapsHook() const override { return true; }
 	void PreShadowMaps() override;
 	void OnSceneTransitionReset(bool opening) override;
