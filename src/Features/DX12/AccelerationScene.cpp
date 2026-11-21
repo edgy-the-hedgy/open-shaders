@@ -290,22 +290,29 @@ namespace DX12
 			bool complete = std::ranges::all_of(grid->resident, [](const auto& tile) {
 				return tile && tile->state == Tile::State::Ready;
 			}); // ReadyPartial geometry is usable but never certifies complete static coverage.
-			for (const auto& tile : grid->resident) {
-				if (!tile)
-					continue;
-				for (const auto& shape : tile->shapes) {
-					if (!shape || !seen.insert(shape->identity).second)
-						continue;
-					const uint64_t bytes = uint64_t(shape->positions.size()) * sizeof(float3) +
+			const auto admit = [&](const std::shared_ptr<const Shape>& shape) {
+				if (!shape || !seen.insert(shape->identity).second)
+					return;
+				const uint64_t bytes = uint64_t(shape->positions.size()) * sizeof(float3) +
 					                       uint64_t(shape->indices.size()) * sizeof(uint32_t);
-					if (shapes.size() >= kMaximumShapes || bytes > kMaximumSourceBytes - sourceBytes) {
-						complete = false;
-						continue;
-					}
-					shapes.push_back(shape);
-					sourceBytes += bytes;
+				if (shapes.size() >= kMaximumShapes || bytes > kMaximumSourceBytes - sourceBytes) {
+					complete = false;
+					return;
 				}
-			}
+				shapes.push_back(shape);
+				sourceBytes += bytes;
+			};
+			for (const auto& tile : grid->resident)
+				if (tile)
+					for (const auto& shape : tile->shapes)
+						admit(shape);
+			// Observations are supplementary opaque intersection geometry, not
+			// authoritative companion coverage. Never certify an RT scene as complete
+			// solely because a runtime mesh has been observed.
+			if (!grid->runtimeShapes.empty())
+				complete = false;
+			for (const auto& observed : grid->runtimeShapes)
+				admit(observed.shape);
 			// Evict obsolete BLAS before attempting a replacement TLAS. The
 			// published scene retains any BLAS still referenced by pending GPU work.
 			std::erase_if(cache, [&](const auto& entry) {

@@ -67,6 +67,13 @@ namespace DX12
 			}
 			for (size_t i = 0; i < kPredictiveCapacity; ++i)
 				next->predictiveResident[i] = lookup(next->predictive[i]);
+			// Runtime-only geometry follows the active neighborhood. Prune tiles
+			// that leave 3x3 without a disk flush or stale GPU ownership.
+			for (const auto& observed : current->runtimeShapes)
+				if (std::ranges::contains(next->requested, observed.tile)) {
+					next->runtimeShapes.push_back(observed);
+					next->runtimeBytes += observed.bytes;
+				}
 		}
 		if (pending && std::ranges::find(next->requested, *pending) == next->requested.end() &&
 			std::ranges::find(next->predictive, *pending) == next->predictive.end())
@@ -205,6 +212,43 @@ namespace DX12
 			// Speculative preparation must never force BLAS/TLAS work or change active light revisions.
 			next->predictiveResident[std::distance(current->predictive.begin(), predictive)] = std::move(tile);
 		}
+		snapshot.store(std::move(next), std::memory_order_release);
+		return true;
+	}
+
+	bool ResourceGrid::PublishRuntimeShape(std::shared_ptr<const Shape> shape, float centerX, float centerY)
+	{
+		constexpr size_t kMaximumRuntimeShapes = 128;
+		constexpr uint64_t kMaximumRuntimeBytes = 24ull * 1024 * 1024;
+		constexpr uint64_t kMaximumSingleShapeBytes = 256ull * 1024;
+		if (!shape || !shape->identity || shape->positions.empty() || shape->indices.empty() ||
+			shape->indices.size() % 3)
+			return false;
+		const uint64_t shapeBytes = uint64_t(shape->positions.size()) * sizeof(float3) +
+			uint64_t(shape->indices.size()) * sizeof(uint32_t);
+		if (!shapeBytes || shapeBytes > kMaximumSingleShapeBytes)
+			return false;
+		std::scoped_lock lock(mutex);
+		const auto current = snapshot.load(std::memory_order_acquire);
+		if (!current->requested.front().scope || current->runtimeShapes.size() >= kMaximumRuntimeShapes ||
+			shapeBytes > kMaximumRuntimeBytes - current->runtimeBytes)
+			return false;
+		const auto x = Coordinate(centerX, current->size);
+		const auto y = Coordinate(centerY, current->size);
+		if (!x || !y)
+			return false;
+		const SubcellKey key{ current->requested.front().scope, *x, *y };
+		if (!std::ranges::contains(current->requested, key))
+			return false;
+		if (std::ranges::any_of(current->runtimeShapes, [&](const RuntimeShape& item) {
+			return item.shape && item.shape->identity == shape->identity;
+		}))
+			return false;
+		auto next = std::make_shared<Grid>(*current);
+		next->runtimeShapes.push_back({ key, std::move(shape), shapeBytes });
+		next->runtimeBytes += shapeBytes;
+		++next->revision;
+		++next->geometryRevision;
 		snapshot.store(std::move(next), std::memory_order_release);
 		return true;
 	}

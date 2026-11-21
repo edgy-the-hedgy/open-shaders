@@ -65,6 +65,14 @@ namespace DX12
 		bool enumerationComplete = false;
 	};
 
+	/** @brief Renderer-observed static geometry, never proof of full shadow coverage. */
+	struct RuntimeShape
+	{
+		SubcellKey tile;
+		std::shared_ptr<const Shape> shape;
+		uint64_t bytes = 0;
+	};
+
 	/** @brief Immutable view of the nine resident runtime cells. */
 	struct Grid
 	{
@@ -75,6 +83,10 @@ namespace DX12
 		std::array<std::shared_ptr<const Tile>, kGridCapacity> resident{};
 		std::array<SubcellKey, kPredictiveCapacity> predictive{};  // Companion-only outer 5x5 ring.
 		std::array<std::shared_ptr<const Tile>, kPredictiveCapacity> predictiveResident{};
+		// Bounded, transient observations from existing engine render passes.
+		// No persistent cache, materials, or raster-shadow coverage authority.
+		std::vector<RuntimeShape> runtimeShapes;
+		uint64_t runtimeBytes = 0;
 	};
 
 	struct PreparationTiming
@@ -98,6 +110,8 @@ namespace DX12
 		std::optional<SubcellKey> NextRequest();
 		/** @brief Publishes one fully enumerated companion subcell, otherwise marks it incomplete. */
 		bool Publish(CompanionPublication publication);
+		/** @brief Accept an observed static shape within the active 3x3 without caching it on disk. */
+		bool PublishRuntimeShape(std::shared_ptr<const Shape> shape, float centerX, float centerY);
 		/** @brief Releases every in-memory tile at scene transition. */
 		void Clear();
 		/** @brief Cancel a superseded predictive request and allow active work to preempt it. */
@@ -149,6 +163,11 @@ struct DX12Resources final : Feature
 	std::optional<DX12::SubcellKey> NextRequest() { return grid.NextRequest(); }
 	/** @brief Accepts an authoritative in-memory geometry and light publication from the companion. */
 	bool Publish(DX12::CompanionPublication publication) { return grid.Publish(std::move(publication)); }
+	/** @brief Accepts a bounded, static renderer observation for native geometry (never for raster suppression). */
+	bool PublishRuntimeShape(std::shared_ptr<const DX12::Shape> shape, float centerX, float centerY)
+	{
+		return grid.PublishRuntimeShape(std::move(shape), centerX, centerY);
+	}
 	bool IsActive() const;
 	/** @brief Returns the most recent prepared-light publication. */
 	std::vector<DX12::PreparedLight> GetPreparedLights() const;
