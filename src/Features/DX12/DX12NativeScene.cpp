@@ -18,6 +18,38 @@ bool DX12NativeScene::IsActive() const
 	       globals::features::dx12Control.IsActive() && !globals::game::isVR;
 }
 
+void DX12NativeScene::DrawSettings()
+{
+	const bool active = IsActive();
+	const auto grid = globals::features::dx12Resources.GetGrid();
+	const auto published = scene.Ready();
+	const auto resolved = GetLights();
+	const auto coverage = GetCoveredLightIDs();
+	const uint32_t scope = grid ? grid->requested.front().scope : 0u;
+	uint32_t resident = 0;
+	if (grid)
+		for (const auto& tile : grid->resident)
+			if (tile && tile->state == DX12::Tile::State::Ready)
+				++resident;
+	const bool currentScene = active && published && grid && scope &&
+		published->scope == scope && published->geometryRevision == grid->geometryRevision;
+	ImGui::Text("Runtime: %s", active ? "Automatic (DX12 master enabled)" : "Inactive (DX12 master or Resources unavailable)");
+	ImGui::Text("Active subcells: %u / 9", resident);
+	ImGui::Text("Subcell size: %u game units", grid ? grid->size : DX12::kSubcellSizes.front());
+	ImGui::Text("Acceleration scene: %s", currentScene ? "Published" :
+		(active && scope ? "Waiting for prepared geometry / BLAS / TLAS" : "Not available"));
+	if (currentScene) {
+		ImGui::Text("BLAS: %zu  |  TLAS: %s", published->bottoms.size(), published->complete ? "Complete" : "Partial");
+	}
+	uint32_t matched = 0;
+	if (resolved)
+		for (uint32_t i = 0; i < resolved->count; ++i)
+			matched += resolved->values[i].matched ? 1u : 0u;
+	ImGui::Text("Matched prepared lights: %u", matched);
+	ImGui::Text("Verified covered lights: %zu", coverage ? coverage->size() : size_t(0));
+	ImGui::TextDisabled("BLAS/TLAS construction and light matching are automatic; no user controls here.");
+}
+
 void DX12NativeScene::PreShadowMaps()
 {
 	CS_GPU_PASS("DX12NativeScene::Update");

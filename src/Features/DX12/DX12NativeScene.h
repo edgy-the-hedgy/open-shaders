@@ -14,11 +14,11 @@ struct DX12NativeScene final : Feature
 	std::string_view GetCategory() const override { return FeatureCategories::kDX12; }
 	bool IsCore() const override { return true; }
 	bool SupportsVR() override { return false; }
-	// Internal GPU consumer: automatically follows DX12 master/Resources.
-	// Remains registered and hooked, but has no independent menu or boot gate.
-	bool IsInMenu() const override { return false; }
+	// Visible for read-only progress and acceleration-scene status; not a
+	// separate enable switch or performance-tuning surface.
 	bool IsAlwaysEnabled() const override { return true; }
 	bool UsesMainSettings() const override { return false; }
+	void DrawSettings() override;
 	bool WantsPreShadowMapsHook() const override { return true; }
 	void PreShadowMaps() override;
 	void OnSceneTransitionReset(bool opening) override;
