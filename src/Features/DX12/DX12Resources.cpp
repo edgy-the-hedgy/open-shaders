@@ -396,6 +396,28 @@ void DX12Resources::PreShadowMaps()
 			ResetPreparation();
 		return;
 	}
+	// The DX12 device/queue belong to the enabled native backend, not to FSR.
+	// Reuse the existing DX12SwapChain device and shared-resource implementation.
+	auto& nativeDevice = globals::features::upscaling.dx12SwapChain;
+	if (!nativeDevice.d3d12Device || !nativeDevice.d3d11Device || !nativeDevice.d3d11Context) {
+		try {
+			if (!nativeDevice.d3d11Device)
+				nativeDevice.SetD3D11Device(globals::d3d::device);
+			if (!nativeDevice.d3d11Context)
+				nativeDevice.SetD3D11DeviceContext(globals::d3d::context);
+			if (!nativeDevice.d3d12Device) {
+				winrt::com_ptr<IDXGIDevice> dxgi;
+				DX::ThrowIfFailed(globals::d3d::device->QueryInterface(IID_PPV_ARGS(dxgi.put())));
+				winrt::com_ptr<IDXGIAdapter> adapter;
+				DX::ThrowIfFailed(dxgi->GetAdapter(adapter.put()));
+				nativeDevice.CreateD3D12Device(adapter.get());
+			}
+		} catch (const std::exception&) {
+			// Missing GPU infrastructure is a resource failure, not a lighting,
+			// camera, FSR, or prepared-light admission gate.
+			return;
+		}
+	}
 	const auto* player = globals::game::player;
 	const auto* cell = player ? player->GetParentCell() : nullptr;
 	if (!cell)
