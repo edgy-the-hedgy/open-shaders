@@ -28,7 +28,6 @@ void DX12NativeScene::DrawSettings()
 	const auto grid = globals::features::dx12Resources.GetGrid();
 	const auto published = scene.Ready();
 	const auto resolved = GetLights();
-	const auto coverage = GetCoveredLightIDs();
 	const uint32_t scope = grid ? grid->requested.front().scope : 0u;
 	const auto timings = globals::features::dx12Resources.GetPreparationStats();
 	const auto preparationStatus = globals::features::dx12Resources.GetPreparationStatus();
@@ -85,7 +84,7 @@ void DX12NativeScene::DrawSettings()
 		displayTiming("Active 3x3 preparation", timings->active);
 		displayTiming("Predictive ring preparation", timings->predictive);
 	}
-	ImGui::TextDisabled("Partial subcells can build BLAS/TLAS, but cannot certify static-shadow offloading.");
+	ImGui::TextDisabled("Partial subcells remain usable for RayQuery; no per-light coverage certification is required.");
 	ImGui::TextDisabled("Times include companion IPC and worker parsing; canceled requests are excluded.");
 	ImGui::SeparatorText("Native acceleration and prepared lights");
 	ImGui::Text("Acceleration scene: %s", currentScene ? "Published" :
@@ -118,7 +117,7 @@ void DX12NativeScene::DrawSettings()
 	ImGui::Text("Matched LLF/SCM lights: %u", matched);
 	ImGui::TextDisabled("Matched lights inherit SCM values except when authored flicker/pulse is forced static.");
 	ImGui::TextDisabled("Unmatched prepared lights retain companion values; no native direct-light pass required.");
-	ImGui::Text("Verified covered lights: %zu", coverage ? coverage->size() : size_t(0));
+	ImGui::Text("Prepared lights for native tracing: %u", resolved ? resolved->count : 0u);
 	ImGui::SeparatorText("Live renderer geometry");
 	const size_t captured = grid ? grid->runtimeShapes.size() : 0;
 	size_t built = 0;
@@ -346,8 +345,7 @@ void DX12NativeScene::PreShadowMaps()
 		UpdateLights();
 		lastLightsRefresh = now;
 	}
-	if (grid)
-		PublishCoverage(*grid);
+	PublishMatchedLights();
 }
 
 void DX12NativeScene::UpdateLights()
@@ -400,58 +398,28 @@ void DX12NativeScene::UpdateLights()
 	lights.store(std::make_shared<const DX12::ResolvedLights>(std::move(resolved)), std::memory_order_release);
 }
 
-void DX12NativeScene::PublishCoverage(const DX12::Grid& grid)
+void DX12NativeScene::PublishMatchedLights()
 {
-	std::vector<RE::BSShadowLight*> covered;
-	std::vector<uint32_t> coveredReferences;
+	// Matching helps SCM identify a prepared light. It never admits or
+	// rejects native RayQuery lights: those come directly from the complete
+	// prepared-light snapshot, including off-screen and predictive emitters.
 	std::vector<uintptr_t> matchedPointers;
 	std::vector<uintptr_t> flickeringPointers;
-	const auto currentScene = scene.Ready();
 	const auto currentLights = lights.load(std::memory_order_acquire);
-	if (currentScene && currentLights && currentScene->scope == grid.requested.front().scope &&
-		ShadowCasterManager::IsActive()) {
+	if (currentLights && ShadowCasterManager::IsActive()) {
 		const auto& active = ShadowCasterManager::GetLights();
-		for (uint32_t i = 0; i < currentLights->count; ++i) {
-			const auto& resolved = currentLights->values[i];
-			if (!resolved.matched ||
-				resolved.runtimeShadowSlot >= uint32_t(std::max(active.Size, 0)) ||
-				!active.Lights || currentScene->shapeIDs.empty())
-				continue;
-			auto* runtimeShadow = active.Lights[resolved.runtimeShadowSlot].Light;
-			if (!runtimeShadow)
-				continue;
-			matchedPointers.push_back(reinterpret_cast<uintptr_t>(runtimeShadow));
-			if (resolved.flickeringOrMoving)
-				flickeringPointers.push_back(reinterpret_cast<uintptr_t>(runtimeShadow));
-			const auto& light = resolved.light;
-			const auto x0 = DX12::Coordinate(double(light.position.x) - light.radius, grid.size);
-			const auto x1 = DX12::Coordinate(double(light.position.x) + light.radius, grid.size);
-			const auto y0 = DX12::Coordinate(double(light.position.y) - light.radius, grid.size);
-			const auto y1 = DX12::Coordinate(double(light.position.y) + light.radius, grid.size);
-			if (!x0 || !x1 || !y0 || !y1 || *x1 - *x0 > 2 || *y1 - *y0 > 2)
-				continue;
-			bool fullyCovered = true;
-			for (int64_t y = *y0; y <= *y1 && fullyCovered; ++y)
-				for (int64_t x = *x0; x <= *x1; ++x) {
-					const auto tile = std::ranges::find(grid.requested, DX12::SubcellKey{ grid.requested.front().scope, x, y });
-					if (tile == grid.requested.end()) {
-						fullyCovered = false;
-						break;
-					}
-					const auto& resident = grid.resident[std::distance(grid.requested.begin(), tile)];
-					if (!resident || resident->state != DX12::Tile::State::Ready ||
-						!std::ranges::all_of(resident->shapes, [&](const auto& shape) {
-							return currentScene->shapeIDs.contains(shape->identity);
-						})) {
-						fullyCovered = false;
-						break;
-					}
-				}
-			if (fullyCovered)
-				if (auto* shadow = active.Lights[resolved.runtimeShadowSlot].Light) {
-					covered.push_back(shadow);
-					coveredReferences.push_back(light.referenceID);
-				}
+		if (active.Lights) {
+			for (const auto& resolved : currentLights->values) {
+				if (!resolved.matched ||
+					resolved.runtimeShadowSlot >= uint32_t(std::max(active.Size, 0)))
+					continue;
+				auto* shadow = active.Lights[resolved.runtimeShadowSlot].Light;
+				if (!shadow)
+					continue;
+				matchedPointers.push_back(reinterpret_cast<uintptr_t>(shadow));
+				if (resolved.flickeringOrMoving)
+					flickeringPointers.push_back(reinterpret_cast<uintptr_t>(shadow));
+			}
 		}
 	}
 	std::ranges::sort(matchedPointers);
@@ -462,10 +430,10 @@ void DX12NativeScene::PublishCoverage(const DX12::Grid& grid)
 	flickeringPointers.erase(std::unique(flickeringPointers.begin(), flickeringPointers.end()), flickeringPointers.end());
 	flickeringShadowLightPointers.store(std::make_shared<const std::vector<uintptr_t>>(std::move(flickeringPointers)),
 		std::memory_order_release);
-	std::ranges::sort(coveredReferences);
-	coveredReferences.erase(std::unique(coveredReferences.begin(), coveredReferences.end()), coveredReferences.end());
-	coveredLightIDs.store(std::make_shared<const std::vector<uint32_t>>(std::move(coveredReferences)), std::memory_order_release);
-	ShadowCasterManager::PublishNativeStaticCoverage(covered);
+	// This legacy SCM coverage list is not a native light-admission test.
+	// Do not certify raster-shadow suppression until native per-light composition
+	// can replace the static shadow contribution in the output image.
+	ShadowCasterManager::PublishNativeStaticCoverage({});
 }
 
 void DX12NativeScene::OnSceneTransitionReset(bool /*opening*/)
@@ -486,7 +454,6 @@ void DX12NativeScene::OnRuntimeDisabled()
 	preparedCacheScope = 0;
 	lastLightsRefresh = {};
 	lights.store(nullptr, std::memory_order_release);
-	coveredLightIDs.store(nullptr, std::memory_order_release);
 	matchedShadowLightPointers.store(nullptr, std::memory_order_release);
 	flickeringShadowLightPointers.store(nullptr, std::memory_order_release);
 	ShadowCasterManager::SetNativeStaticMaskActive(false);

@@ -46,12 +46,10 @@ struct DX12NativeScene final : Feature
 	bool IsActive() const;
 	std::shared_ptr<const DX12::AccelerationSceneReady> GetScene() const { return scene.Ready(); }
 	std::shared_ptr<const DX12::ResolvedLights> GetLights() const { return lights.load(std::memory_order_acquire); }
-	/** @brief Prepared-reference identities with verified per-light static coverage in the published TLAS. */
-	std::shared_ptr<const std::vector<uint32_t>> GetCoveredLightIDs() const { return coveredLightIDs.load(std::memory_order_acquire); }
 
 private:
 	void UpdateLights();
-	void PublishCoverage(const DX12::Grid& grid);
+	void PublishMatchedLights();
 	DX12::AccelerationScene scene;
 	std::atomic<std::shared_ptr<const DX12::ResolvedLights>> lights;
 	// Immutable companion lights are re-collected only when grid publications change.
@@ -63,7 +61,6 @@ private:
 	std::atomic<bool> inheritRuntime{ true };
 	std::atomic<float> lightReach{ 1.0f }, lightIntensity{ 1.0f }, emitterSize{ 1.0f };
 	std::atomic<float> lightMatchDistance{ 64.0f };
-	std::atomic<std::shared_ptr<const std::vector<uint32_t>>> coveredLightIDs;
 	std::atomic<std::shared_ptr<const std::vector<uintptr_t>>> matchedShadowLightPointers;
 	std::atomic<std::shared_ptr<const std::vector<uintptr_t>>> flickeringShadowLightPointers;
 	// The old experimental renderer capture, bounded to 512 KiB and four
