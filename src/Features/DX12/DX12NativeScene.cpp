@@ -287,11 +287,21 @@ void DX12NativeScene::PreShadowMaps()
 			OnRuntimeDisabled();
 		return;
 	}
+	const uint64_t flush = globals::features::dx12Resources.GetFlushGeneration();
+	if (knownFlushGeneration != flush) {
+		scene.Clear();
+		knownFlushGeneration = flush;
+	}
 	const auto grid = globals::features::dx12Resources.GetGrid();
 	const auto& swapChain = globals::features::upscaling.dx12SwapChain;
 	if (grid && scene.Start(swapChain.d3d12Device.get()))
 		scene.Request(grid);
-	UpdateLights();
+	const auto now = std::chrono::steady_clock::now();
+	if (lastLightsRefresh.time_since_epoch().count() == 0 ||
+		now - lastLightsRefresh >= std::chrono::milliseconds(150)) {
+		UpdateLights();
+		lastLightsRefresh = now;
+	}
 	if (grid)
 		PublishCoverage(*grid);
 }
@@ -407,10 +417,9 @@ void DX12NativeScene::PublishCoverage(const DX12::Grid& grid)
 	ShadowCasterManager::PublishNativeStaticCoverage(covered);
 }
 
-void DX12NativeScene::OnSceneTransitionReset(bool opening)
+void DX12NativeScene::OnSceneTransitionReset(bool /*opening*/)
 {
-	if (opening)
-		OnRuntimeDisabled();
+	// Preserve the last completed TLAS until the replacement is published.
 }
 
 void DX12NativeScene::OnRuntimeDisabled()
@@ -424,6 +433,7 @@ void DX12NativeScene::OnRuntimeDisabled()
 	preparedCache.clear();
 	preparedCacheRevision = std::numeric_limits<uint64_t>::max();
 	preparedCacheScope = 0;
+	lastLightsRefresh = {};
 	lights.store(nullptr, std::memory_order_release);
 	coveredLightIDs.store(nullptr, std::memory_order_release);
 	matchedShadowLightPointers.store(nullptr, std::memory_order_release);

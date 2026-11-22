@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -114,6 +115,7 @@ namespace DX12
 		bool PublishRuntimeShape(std::shared_ptr<const Shape> shape, float centerX, float centerY);
 		/** @brief Releases every in-memory tile at scene transition. */
 		void Clear();
+		void FlushRetiredCache();  // DRAM only; caller decides transition policy.
 		/** @brief Cancel a superseded predictive request and allow active work to preempt it. */
 		void CancelPending();
 		/** @brief Retains an immutable render-consumer snapshot. */
@@ -123,6 +125,7 @@ namespace DX12
 		std::mutex mutex;
 		std::atomic<std::shared_ptr<const Grid>> snapshot{ std::make_shared<const Grid>() };
 		std::optional<SubcellKey> pending;
+		std::deque<std::shared_ptr<const Tile>> recentTiles;
 		double previousX = 0, previousY = 0, movementX = 0, movementY = 0;
 		uint32_t previousScope = 0, previousSize = 0;
 	};
@@ -171,6 +174,7 @@ struct DX12Resources final : Feature
 		return grid.PublishRuntimeShape(std::move(shape), centerX, centerY);
 	}
 	bool IsActive() const;
+	uint64_t GetFlushGeneration() const { return flushGeneration.load(std::memory_order_acquire); }
 	/** @brief Returns the most recent prepared-light publication. */
 	std::vector<DX12::PreparedLight> GetPreparedLights() const;
 	/** @brief Bounded in-memory generation timings for the active 3x3 and outer 5x5 ring. */
@@ -189,6 +193,8 @@ private:
 	std::unique_ptr<DX12::CompanionWorker> companion;
 	std::unique_ptr<DX12::CompanionResult> adopting;
 	size_t lightAdoptionOffset = 0;
+	uint32_t lastVisitedCell = 0, previousVisitedCell = 0, distinctTransitions = 0;
+	std::atomic<uint64_t> flushGeneration{ 0 };
 	std::optional<DX12::SubcellKey> inFlight;
 	std::atomic<std::shared_ptr<const std::string>> preparationStatus{ std::make_shared<const std::string>("Awaiting preparation") };
 	std::atomic<std::shared_ptr<const DX12::PreparationStats>> generationStats{

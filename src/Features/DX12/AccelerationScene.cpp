@@ -71,6 +71,11 @@ namespace DX12
 		std::scoped_lock lock(mutex);
 		if (requestedRevision == grid->geometryRevision)
 			return;
+		// Coalesce new geometry revisions instead of rebuilding BLAS each frame.
+		const auto now = std::chrono::steady_clock::now();
+		if (requestedRevision && now - lastRequest < std::chrono::milliseconds(300))
+			return;
+		lastRequest = now;
 		requestedRevision = grid->geometryRevision;
 		requested = std::move(grid);
 		++generation;

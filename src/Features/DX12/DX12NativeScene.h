@@ -4,6 +4,7 @@
 #include "PreparedLightMatching.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <mutex>
@@ -54,6 +55,8 @@ private:
 	std::vector<DX12::PreparedLight> preparedCache;
 	uint64_t preparedCacheRevision = std::numeric_limits<uint64_t>::max();
 	uint32_t preparedCacheScope = 0;
+	uint64_t knownFlushGeneration = 0;
+	std::chrono::steady_clock::time_point lastLightsRefresh{};
 	std::atomic<std::shared_ptr<const std::vector<uint32_t>>> coveredLightIDs;
 	std::atomic<std::shared_ptr<const std::vector<uintptr_t>>> matchedShadowLightPointers;
 	std::atomic<std::shared_ptr<const std::vector<uintptr_t>>> flickeringShadowLightPointers;

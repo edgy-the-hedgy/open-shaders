@@ -3,6 +3,7 @@
 #include "DX12Resources.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <d3d12.h>
 #include <memory>
@@ -60,6 +61,7 @@ namespace DX12
 		std::condition_variable_any wake;
 		std::shared_ptr<const Grid> requested;
 		uint64_t requestedRevision = 0;
+		std::chrono::steady_clock::time_point lastRequest{};
 		uint64_t generation = 0;
 		bool purgeCacheRequested = false;
 		std::atomic<std::shared_ptr<const AccelerationSceneReady>> ready;

@@ -54,6 +54,9 @@ namespace DX12
 				for (const auto& old : current->predictiveResident)
 					if (old && old->key == key)
 						return old;
+				for (const auto& old : recentTiles)
+					if (old && old->key == key)
+						return old;
 				return {};
 			};
 			for (size_t i = 0; i < kGridCapacity; ++i) {
@@ -74,6 +77,21 @@ namespace DX12
 					next->runtimeShapes.push_back(observed);
 					next->runtimeBytes += observed.bytes;
 				}
+		}
+		// Keep recently retired immutable cell publications in bounded DRAM.
+		// A -> B -> A must not repeat companion processing.
+		if (current->size == size) {
+			const auto retain = [&](const auto& tile) {
+				if (!tile || (tile->state != Tile::State::Ready && tile->state != Tile::State::ReadyPartial))
+					return;
+				if (std::ranges::contains(next->requested, tile->key) || std::ranges::contains(next->predictive, tile->key))
+					return;
+				std::erase_if(recentTiles, [&](const auto& cached) { return cached && cached->key == tile->key; });
+				recentTiles.push_back(tile);
+			};
+			for (const auto& tile : current->resident) retain(tile);
+			for (const auto& tile : current->predictiveResident) retain(tile);
+			while (recentTiles.size() > 32) recentTiles.pop_front();
 		}
 		if (pending && std::ranges::find(next->requested, *pending) == next->requested.end() &&
 			std::ranges::find(next->predictive, *pending) == next->predictive.end())
@@ -253,10 +271,17 @@ namespace DX12
 		return true;
 	}
 
+	void ResourceGrid::FlushRetiredCache()
+	{
+		std::scoped_lock lock(mutex);
+		recentTiles.clear();
+	}
+
 	void ResourceGrid::Clear()
 	{
 		std::scoped_lock lock(mutex);
 		pending.reset();
+		recentTiles.clear();
 		previousScope = previousSize = 0;
 		movementX = movementY = 0;
 		const auto current = snapshot.load(std::memory_order_acquire);
@@ -312,6 +337,8 @@ void DX12Resources::ResetPreparation()
 	adopting.reset();
 	lightAdoptionOffset = 0;
 	grid.Clear();
+	lastVisitedCell = previousVisitedCell = distinctTransitions = 0;
+	flushGeneration.fetch_add(1, std::memory_order_release);
 	preparationStatus.store(std::make_shared<const std::string>("Awaiting preparation"), std::memory_order_release);
 	generationStats.store(std::make_shared<const DX12::PreparationStats>(), std::memory_order_release);
 }
@@ -369,6 +396,19 @@ void DX12Resources::PreShadowMaps()
 	if (!cell)
 		return;
 	const auto* world = cell->IsExteriorCell() ? player->GetWorldspace() : nullptr;
+	const uint32_t cellID = cell->GetFormID();
+	if (lastVisitedCell && cellID && cellID != lastVisitedCell) {
+		if (cellID == previousVisitedCell)
+			distinctTransitions = 0; // Returning to a visited cell.
+		else if (++distinctTransitions >= 2) {
+			grid.FlushRetiredCache();
+			flushGeneration.fetch_add(1, std::memory_order_release);
+			distinctTransitions = 0;
+		}
+		previousVisitedCell = lastVisitedCell;
+	}
+	if (cellID)
+		lastVisitedCell = cellID;
 	const uint32_t scope = world ? world->GetFormID() : cell->GetFormID();
 	const auto position = player->GetPosition();
 	grid.Advance(scope, settings.SubcellSize, position.x, position.y);
@@ -478,10 +518,10 @@ void DX12Resources::PreShadowMaps()
 	}
 }
 
-void DX12Resources::OnSceneTransitionReset(bool opening)
+void DX12Resources::OnSceneTransitionReset(bool /*opening*/)
 {
-	if (opening)
-		ResetPreparation();
+	// Loading-menu transitions do not flush the DRAM cache.
+	// The next observed cell ID determines whether this is a return trip.
 }
 
 void DX12Resources::OnRuntimeDisabled()
