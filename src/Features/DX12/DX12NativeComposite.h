@@ -2,6 +2,8 @@
 
 #include "DX12NativeScene.h"
 
+#include "Features/Upscaling/DX12SwapChain.h"
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <d3d12.h>
@@ -26,6 +28,21 @@ struct DX12NativeComposite final : Feature
 		DXGI_FORMAT depthFormat = DXGI_FORMAT_UNKNOWN;
 	};
 
+
+	struct FinalFrame
+	{
+		std::shared_ptr<WrappedResource> color;
+		winrt::com_ptr<ID3D12Fence> producerFence;
+		uint64_t producerValue = 0;
+		uint32_t frame = 0, width = 0, height = 0;
+		DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+	};
+	std::shared_ptr<const FinalFrame> CaptureAndApply(ID3D11Texture2D* raster,
+		uint32_t frame, uint32_t width, uint32_t height);
+	std::shared_ptr<const FinalFrame> GetFinishedColor(uint32_t frame) const
+	{ return finishedColor && finishedColor->frame == frame ? finishedColor : nullptr; }
+	bool RetainFinishedColor(const std::shared_ptr<const FinalFrame>& frame,
+		ID3D12Fence* consumer, uint64_t value);
 	struct Submission
 	{
 		std::shared_ptr<Surfaces> surfaces;
@@ -67,6 +84,28 @@ struct DX12NativeComposite final : Feature
 	void OnSubmitted(ID3D12Fence* fence, uint64_t value, Submission submission, bool upscalerSucceeded);
 
 private:
+
+	struct CompositeSlot
+	{
+		std::unique_ptr<WrappedResource> input;
+		std::shared_ptr<WrappedResource> output;
+		std::shared_ptr<FinalFrame> frame;
+		std::shared_ptr<const DX12::RawShadowFrame> raw;
+		winrt::com_ptr<ID3D12Resource> filtered, camera;
+		winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
+		winrt::com_ptr<ID3D12CommandAllocator> allocator;
+		winrt::com_ptr<ID3D12GraphicsCommandList4> commands;
+		SharedFence handoff;
+		D3D11_TEXTURE2D_DESC desc{};
+		uint32_t maskBatches = 0, renderWidth = 0, renderHeight = 0;
+		std::vector<std::pair<winrt::com_ptr<ID3D12Fence>, uint64_t>> consumers;
+	};
+	std::array<std::shared_ptr<CompositeSlot>, 4> compositeSlots;
+	std::shared_ptr<FinalFrame> finishedColor;
+	winrt::com_ptr<ID3D12RootSignature> applyRoot;
+	winrt::com_ptr<ID3D12PipelineState> applyPipeline;
+	ID3D12Device* applyDevice = nullptr;
+	bool EnsureApplyPipeline(ID3D12Device* device);
 	struct PipelineState
 	{
 		winrt::com_ptr<ID3D12Device> device;

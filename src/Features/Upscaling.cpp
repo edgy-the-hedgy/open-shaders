@@ -3645,6 +3645,17 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 	upscaling.neuralRendering.DrawBeforeUpscaling(upscaling.loaded && upscaling.settings.neuralRenderingEnabled, upscaling.settings.neuralRenderingContexts, upscaling.settings.neuralRenderingTuning, uint32_t(a_target), nrRenderSize);
 	upscaling.neuralRendering.CaptureBeforeUpscaling();
 
+	// The native shadow layer is produced at the opaque boundary and applied
+	// to completed scene color before any upscale/FG/presentation path.
+	if (globals::features::dx12NativeComposite.IsActive() && globals::game::renderer) {
+		auto* rasterScene = Util::AsReal(globals::game::renderer->GetRuntimeData()
+			.renderTargets[RE::RENDER_TARGETS::kMAIN].texture);
+		if (rasterScene && globals::game::graphicsState)
+			globals::features::dx12NativeComposite.CaptureAndApply(rasterScene,
+				globals::game::graphicsState->GetFrameCount(),
+				uint32_t(nrRenderSize.x), uint32_t(nrRenderSize.y));
+	}
+
 	upscaling.frameGenerationPrepared = false;
 	if (upscaling.ShouldPrepareFrameGeneration()) {
 		if (postProcessing.loaded)

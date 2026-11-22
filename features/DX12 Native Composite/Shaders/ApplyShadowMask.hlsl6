@@ -1,0 +1,45 @@
+// Native Composite reference shadow layer adapted to batched per-light visibility.
+Texture2DArray<uint4> ShadowBits : register(t0);
+RWTexture2D<float4> Scene : register(u0);
+cbuffer ApplyOptions : register(b0)
+{
+    uint2 Size;
+    uint BatchCount;
+    int SelectedLight;
+    float Strength, Blend;
+    uint Preview, LegacyTransfer;
+};
+float3 SignedPower(float3 v, float e) { return sign(v) * pow(abs(v), e); }
+[numthreads(8,8,1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+    uint2 p = id.xy;
+    if (any(p >= Size)) return;
+    uint valid = 0, blocked = 0;
+    if (SelectedLight >= 0) {
+        uint index = uint(SelectedLight), layer = index / 64u;
+        if (layer < BatchCount) {
+            uint4 bits = ShadowBits.Load(int4(p, layer, 0));
+            uint mask = 1u << (index & 31u);
+            bool high = (index & 63u) >= 32u;
+            valid = ((high ? bits.w : bits.z) & mask) != 0u ? 1u : 0u;
+            blocked = ((high ? bits.y : bits.x) & mask) != 0u ? 1u : 0u;
+        }
+    } else {
+        [loop] for (uint layer = 0; layer < BatchCount; ++layer) {
+            uint4 bits = ShadowBits.Load(int4(p, layer, 0));
+            valid += countbits(bits.z) + countbits(bits.w);
+            blocked += countbits(bits.x & bits.z) + countbits(bits.y & bits.w);
+        }
+    }
+    if (valid == 0u) return;
+    float visibility = 1.0f - float(blocked) / float(valid);
+    float4 color = Scene[p];
+    if (Preview != 0u) { Scene[p] = float4(visibility.xxx, color.a); return; }
+    float occlusion = saturate((1.0f - visibility) * clamp(Strength, 0.0f, 4.0f));
+    float multiplier = 1.0f - occlusion * saturate(Blend);
+    if (multiplier >= 1.0f) return;
+    float3 linear = LegacyTransfer != 0u ? SignedPower(color.rgb, 1.6f) : color.rgb;
+    linear *= multiplier;
+    Scene[p] = float4(LegacyTransfer != 0u ? SignedPower(linear, 1.0f/1.6f) : linear, color.a);
+}
