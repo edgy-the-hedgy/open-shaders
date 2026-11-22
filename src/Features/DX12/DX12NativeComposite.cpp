@@ -612,7 +612,8 @@ std::optional<DX12NativeComposite::Submission> DX12NativeComposite::Dispatch(
     } else ++uploadPairs;
     const bool makeDiagnostic = target->diagnosticColor && diagnosticPipeline;
     const DiagnosticOptions diagnostic{width, height,
-        diagnosticDarkenStrength.load(std::memory_order_acquire), 0.0f};
+        diagnosticDarkenStrength.load(std::memory_order_acquire) *
+            shadowIntensity.load(std::memory_order_acquire), 0.0f};
     if (!Upload(buffers.camera, &camera, sizeof(camera), sizeof(camera)) ||
         !Upload(buffers.lights, lightUpload.data(), count * sizeof(GpuLight), sizeof(lightUpload)) ||
         (makeDiagnostic && !Upload(buffers.diagnostic, &diagnostic, sizeof(diagnostic), sizeof(diagnostic)))) {
