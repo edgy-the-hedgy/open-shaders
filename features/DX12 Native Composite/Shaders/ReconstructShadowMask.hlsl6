@@ -1,0 +1,72 @@
+// Depth-aware reconstruction of sparse per-light occlusion and coverage.
+// This is a separate Native Composite stage, not part of light-space tracing.
+// Skipped receivers never masquerade as valid unshadowed pixels.
+Texture2D<float> SceneDepth : register(t1);
+Texture2D<uint4> RawShadowBits : register(t4);
+RWTexture2D<uint4> ReconstructedBits : register(u0);
+cbuffer Camera : register(b0)
+{
+    row_major float4x4 ProjectionInverse;
+    row_major float4x4 ViewInverse;
+    float4 CameraAdjust;
+    uint2 Size;
+    uint LightCount;
+    float ShadowIntensity;
+    uint SamplingMode;
+    uint SamplingPhase;
+    uint SpatialReconstruction;
+    uint Padding;
+};
+bool Traced(uint2 p)
+{
+    uint m = SamplingMode, ph = SamplingPhase;
+    if (m == 0) return true;
+    if (m == 1 || m == 4) {
+        uint s = (p.x + 2u * p.y + ph) % 3u;
+        return m == 1 ? s < 2u : s == 0u;
+    }
+    if (m == 2) return ((p.x + p.y + ph) & 1u) == 0u;
+    if (m == 3 || m == 7) {
+        uint s = (p.x % 3u + 3u * (p.y % 3u) + ph) % 9u;
+        return s < (m == 3 ? 4u : 1u);
+    }
+    if (m == 5) return ((p.x & 1u) + 2u * (p.y & 1u) + ph) % 4u == 0u;
+    if (m == 6) return ((p.x % 3u) + 3u * (p.y & 1u) + ph) % 6u == 0u;
+    return true;
+}
+[numthreads(8,8,1)]
+void main(uint3 tid : SV_DispatchThreadID)
+{
+    uint2 pixel = tid.xy;
+    if (any(pixel >= Size)) return;
+    if (Traced(pixel) || SpatialReconstruction == 0u) {
+        ReconstructedBits[pixel] = RawShadowBits.Load(int3(pixel,0));
+        return;
+    }
+    float targetDepth = SceneDepth.Load(int3(pixel,0));
+    float best = 1e30;
+    uint4 selected = uint4(0,0,0,0);
+    bool found = false;
+    [loop] for (int radius = 1; radius <= 5; ++radius) {
+        [loop] for (int y = -radius; y <= radius; ++y) {
+            [loop] for (int x = -radius; x <= radius; ++x) {
+                if (abs(x) != radius && abs(y) != radius) continue;
+                int2 p = int2(pixel) + int2(x,y);
+                if (any(p < 0) || any(p >= int2(Size)) || !Traced(uint2(p))) continue;
+                float candidateDepth = SceneDepth.Load(int3(p,0));
+                float delta = abs(candidateDepth - targetDepth);
+                // Protect depth discontinuities from casting borrowed shadows.
+                if (delta > max(0.0002, abs(targetDepth) * 0.015)) continue;
+                float score = delta + float(x*x+y*y) * 0.00001;
+                if (score < best) {
+                    best = score;
+                    selected = RawShadowBits.Load(int3(p,0));
+                    found = true;
+                }
+            }
+        }
+        if (found) break;
+    }
+    // No depth-compatible sample: leave coverage absent rather than invent occlusion.
+    ReconstructedBits[pixel] = selected;
+}

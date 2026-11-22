@@ -1,114 +1,85 @@
-// The per-light shadow field is generated independently in LightSpaceShadows.
- // Camera depth is used ONLY to resolve it onto the present frame for display.
- // No RayQuery, light placement, or shadowmap lifetime depends on view direction.
+// DX12 screen-space receiver resolve, direct RayQuery per prepared light.
+// No depth atlas, screen-facing light culling or raster direct-light dependency.
+// One uint4 contains 64 per-light coverage bits and 64 occlusion bits.
+RaytracingAccelerationStructure StaticScene : register(t0);
 Texture2D<float> SceneDepth : register(t1);
-Texture2DArray<float> LightSpaceDepth : register(t3);
 
-struct PreparedLight
-{
-	float4 positionRadius;
-	float4 colorFade;
-	float4 emitterFalloff;
-};
+struct PreparedLight { float4 positionRadius; float4 colorFade; float4 emitterFalloff; };
 StructuredBuffer<PreparedLight> Lights : register(t2);
-RWTexture2D<float> ShadowMask : register(u0);
+RWTexture2D<uint4> ShadowBits : register(u0);
 
 cbuffer Camera : register(b0)
 {
-	row_major float4x4 ProjectionInverse;
-	row_major float4x4 ViewInverse;
-	float4 CameraAdjust;
-	uint2 Size;
-	uint LightCount;
-	float ShadowIntensity;
-	uint SamplingMode;
-	uint SamplingPhase;
-	uint2 SamplingPadding;
+    row_major float4x4 ProjectionInverse;
+    row_major float4x4 ViewInverse;
+    float4 CameraAdjust;
+    uint2 Size;
+    uint LightCount;
+    float ShadowIntensity;
+    uint SamplingMode;
+    uint SamplingPhase;
+    uint SpatialReconstruction;
+    uint Padding;
 };
 
-float2 OctEncode(float3 direction)
+bool TraceShadowAtPixel(uint2 p, uint mode, uint phase)
 {
-    float3 n = direction / max(abs(direction.x) + abs(direction.y) + abs(direction.z), 1e-6);
-    if (n.z < 0.0)
-        n.xy = (1.0 - abs(n.yx)) * sign(n.xy);
-    return n.xy * 0.5 + 0.5;
+    if (mode == 0) return true;
+    if (mode == 1 || mode == 4) {
+        uint s = (p.x + 2u * p.y + phase) % 3u;
+        return mode == 1 ? s < 2u : s == 0u;
+    }
+    if (mode == 2) return ((p.x + p.y + phase) & 1u) == 0u;
+    if (mode == 3 || mode == 7) {
+        uint s = (p.x % 3u + 3u * (p.y % 3u) + phase) % 9u;
+        return s < (mode == 3 ? 4u : 1u);
+    }
+    if (mode == 5) return ((p.x & 1u) + 2u * (p.y & 1u) + phase) % 4u == 0u;
+    if (mode == 6) return ((p.x % 3u) + 3u * (p.y & 1u) + phase) % 6u == 0u;
+    return true;
 }
 
-bool TraceShadowAtPixel(uint2 pixel, uint mode, uint phase)
+[numthreads(8,8,1)]
+void main(uint3 tid : SV_DispatchThreadID)
 {
-	// Frame-dependent sparse sampling changes which pixel is traced without
-	// adding an uninitialized or misleading shadow value to skipped pixels.
-	if (mode == 0)
-		return true;
-	if (mode == 1 || mode == 4) {
-		const uint slot = (pixel.x + 2u * pixel.y + phase) % 3u;
-		return mode == 1 ? slot < 2u : slot == 0u;
-	}
-	if (mode == 2)
-		return ((pixel.x + pixel.y + phase) & 1u) == 0u;
-	if (mode == 3 || mode == 7) {
-		const uint slot = (pixel.x % 3u + 3u * (pixel.y % 3u) + phase) % 9u;
-		return slot < (mode == 3 ? 4u : 1u);
-	}
-	if (mode == 5)
-		return ((pixel.x & 1u) + 2u * (pixel.y & 1u) + phase) % 4u == 0u;
-	if (mode == 6)
-		return ((pixel.x % 3u) + 3u * (pixel.y & 1u) + phase) % 6u == 0u;
-	return true;
-}
-
-[numthreads(8, 8, 1)]
-void main(uint3 dispatchThread : SV_DispatchThreadID)
-{
-	uint2 pixel = dispatchThread.xy;
-	if (any(pixel >= Size))
-		return;
-	if (!TraceShadowAtPixel(pixel, SamplingMode, SamplingPhase)) {
-		ShadowMask[pixel] = 1.0;
-		return;
-	}
-	const float depth = SceneDepth.Load(int3(pixel, 0));
-	const float2 uv = (float2(pixel) + 0.5) / float2(Size);
-	float4 view = mul(ProjectionInverse, float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0));
-	if (abs(view.w) < 1e-6) {
-		ShadowMask[pixel] = 1.0;
-		return;
-	}
-	view /= view.w;
-	const float3 receiver = mul(ViewInverse, float4(view.xyz, 1.0)).xyz + CameraAdjust.xyz;
-	float visibleWeight = 0.0;
-	float totalWeight = 0.0;
-	[loop]
-	for (uint index = 0; index < LightCount; ++index) {
-		const PreparedLight light = Lights[index];
-		const float3 centerOffset = light.positionRadius.xyz - receiver;
-		const float distance = length(centerOffset);
-		const float radius = light.positionRadius.w;
-		if (distance <= 4.0 || distance >= radius)
-			continue;
-		const float range = saturate(1.0 - distance / radius);
-		// Shadow visibility must not disappear when raster/native direct lighting
-		// has no color contribution. Direct-light composition is a separate layer.
-		const float weight = pow(range, clamp(light.emitterFalloff.y, 0.01, 8.0));
-		if (weight < 0.001)
-			continue;
-		totalWeight += weight;
-		// Sample the omnidirectional field cast FROM the light, not a ray
-		// launched from the current camera's depth-buffer receiver.
-		const float3 lightToReceiver = -centerOffset / distance;
-		const float2 uvLight = saturate(OctEncode(lightToReceiver));
-		// The independent producer uses 64x64 octahedral depth per light.
-		// Use the same fixed resolution here rather than querying dimensions
-		// inside every prepared-light resolve loop.
-		const uint2 samplePixel = min(uint2(uvLight * 64.0), uint2(63u, 63u));
-		const float nearestDepth = LightSpaceDepth.Load(int4(samplePixel, index, 0));
-		// Shadow receiver bias is relative to the light radius; this is a
-		// diagnostic resolve until proper per-light raster shading consumes it.
-		if (distance / radius <= nearestDepth + max(2.0 / radius, 0.005))
-			visibleWeight += weight;
-	}
-	const float rawVisibility = totalWeight > 0.001 ? saturate(visibleWeight / totalWeight) : 1.0;
-	// Strength above 1 is meaningful: deepen partial visibility and clamp to
-	// a physically valid [0,1] mask. Final raster color remains untouched.
-	ShadowMask[pixel] = saturate(1.0 - (1.0 - rawVisibility) * clamp(ShadowIntensity, 0.0, 4.0));
+    uint2 pixel = tid.xy;
+    if (any(pixel >= Size)) return;
+    if (!TraceShadowAtPixel(pixel, SamplingMode, SamplingPhase)) {
+        ShadowBits[pixel] = uint4(0,0,0,0);
+        return;
+    }
+    const float depth = SceneDepth.Load(int3(pixel, 0));
+    const float2 uv = (float2(pixel) + 0.5) / float2(Size);
+    float4 view = mul(ProjectionInverse, float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0));
+    if (abs(view.w) < 1e-6) {
+        ShadowBits[pixel] = uint4(0,0,0,0);
+        return;
+    }
+    view /= view.w;
+    const float3 receiver = mul(ViewInverse, float4(view.xyz, 1.0)).xyz + CameraAdjust.xyz;
+    uint4 results = uint4(0,0,0,0);
+    [loop] for (uint i = 0; i < LightCount && i < 64u; ++i) {
+        const PreparedLight light = Lights[i];
+        const float3 toLight = light.positionRadius.xyz - receiver;
+        const float distance = length(toLight);
+        const float radius = light.positionRadius.w;
+        if (distance <= 4.0 || distance >= radius) continue;
+        const float weight = pow(saturate(1.0 - distance / radius), clamp(light.emitterFalloff.y, 0.01, 8.0));
+        if (weight < 0.001) continue;
+        const uint bit = 1u << (i & 31u);
+        if (i < 32u) results.z |= bit; else results.w |= bit;
+        RayDesc ray;
+        ray.Origin = receiver;
+        ray.Direction = toLight / distance;
+        ray.TMin = max(1.0, distance * 0.001);
+        ray.TMax = distance - ray.TMin;
+        if (ray.TMax <= ray.TMin) continue;
+        RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
+        query.TraceRayInline(StaticScene, RAY_FLAG_NONE, 1, ray);
+        while (query.Proceed()) {}
+        if (query.CommittedStatus() != COMMITTED_NOTHING) {
+            if (i < 32u) results.x |= bit; else results.y |= bit;
+        }
+    }
+    ShadowBits[pixel] = results;
 }
