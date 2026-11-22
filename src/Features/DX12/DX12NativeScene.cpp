@@ -22,7 +22,7 @@ bool DX12NativeScene::IsActive() const
 	       globals::features::dx12Control.IsActive() && !globals::game::isVR;
 }
 
-void DX12NativeScene::DrawSettings()
+void DX12NativeScene::DrawGeometryDiagnostics()
 {
 	const bool active = IsActive();
 	const auto grid = globals::features::dx12Resources.GetGrid();
@@ -92,6 +92,23 @@ void DX12NativeScene::DrawSettings()
 	if (currentScene) {
 		ImGui::Text("BLAS: %zu  |  TLAS: %s", published->bottoms.size(), published->complete ? "Complete" : "Partial");
 	}
+	ImGui::SeparatorText("Live renderer geometry");
+	const size_t captured = grid ? grid->runtimeShapes.size() : 0;
+	size_t built = 0;
+	if (grid && currentScene)
+		for (const auto& observed : grid->runtimeShapes)
+			if (observed.shape && published->shapeIDs.contains(observed.shape->identity))
+				++built;
+	ImGui::Text("Observed static shapes: %zu | BLAS-ready in TLAS: %zu", captured, built);
+	ImGui::Text("Runtime CPU geometry: %.2f MiB", grid ? double(grid->runtimeBytes) / (1024.0 * 1024.0) : 0.0);
+	ImGui::TextDisabled("Only rigid opaque CPU meshes; bounded to 128 shapes / 24 MiB in active 3x3.");
+	ImGui::TextDisabled("Automatically evicted on recenter; no disk cache or authority to suppress raster shadows.");
+	ImGui::TextDisabled("BLAS/TLAS construction and light matching are automatic; no user controls here.");
+}
+
+void DX12NativeScene::DrawSettings()
+{
+	const auto resolved = GetLights();
 	uint32_t matched = 0;
 	if (resolved)
 		for (uint32_t i = 0; i < resolved->count; ++i)
@@ -118,20 +135,8 @@ void DX12NativeScene::DrawSettings()
 	ImGui::TextDisabled("Matched lights inherit SCM values except when authored flicker/pulse is forced static.");
 	ImGui::TextDisabled("Unmatched prepared lights retain companion values; no native direct-light pass required.");
 	ImGui::Text("Prepared lights for native tracing: %u", resolved ? resolved->count : 0u);
-	ImGui::SeparatorText("Live renderer geometry");
-	const size_t captured = grid ? grid->runtimeShapes.size() : 0;
-	size_t built = 0;
-	if (grid && currentScene)
-		for (const auto& observed : grid->runtimeShapes)
-			if (observed.shape && published->shapeIDs.contains(observed.shape->identity))
-				++built;
-	ImGui::Text("Observed static shapes: %zu | BLAS-ready in TLAS: %zu", captured, built);
-	ImGui::Text("Runtime CPU geometry: %.2f MiB", grid ? double(grid->runtimeBytes) / (1024.0 * 1024.0) : 0.0);
-	ImGui::TextDisabled("Only rigid opaque CPU meshes; bounded to 128 shapes / 24 MiB in active 3x3.");
-	ImGui::TextDisabled("Automatically evicted on recenter; no disk cache or authority to suppress raster shadows.");
-	ImGui::TextDisabled("BLAS/TLAS construction and light matching are automatic; no user controls here.");
-}
 
+}
 void DX12NativeScene::LoadSettings(json& input)
 {
     inheritRuntime.store(input.value("InheritRuntime", true), std::memory_order_release);

@@ -24,6 +24,8 @@ struct DX12NativeScene final : Feature
 	bool IsInFeatureList() const override { return false; }
 	bool UsesMainSettings() const override { return true; }
 	void DrawSettings() override;
+	/** @brief Geometry, BLAS/TLAS residency and preparation diagnostics are owned by Resources UI. */
+	void DrawGeometryDiagnostics();
 	void LoadSettings(json& input) override;
 	void SaveSettings(json& output) override;
 	void RestoreDefaultSettings() override;

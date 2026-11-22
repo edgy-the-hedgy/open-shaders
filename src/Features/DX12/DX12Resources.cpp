@@ -2,6 +2,7 @@
 
 #include "CompanionWorker.h"
 #include "DX12Control.h"
+#include "DX12NativeScene.h"
 #include "Globals.h"
 #include "GpuPass.h"
 #include "RE/T/TESDataHandler.h"
@@ -359,6 +360,7 @@ void DX12Resources::DrawSettings()
 			ResetPreparation();
 		}
 	}
+	globals::features::dx12NativeScene.DrawGeometryDiagnostics();
 }
 
 void DX12Resources::LoadSettings(json& input)
