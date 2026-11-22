@@ -327,6 +327,8 @@ bool DX12NativeComposite::EnsurePipelines(ID3D12Device* candidate)
 		device = built->device;
 		shadowRoot = built->shadowRoot;
 		shadowPipeline = built->shadowPipeline;
+		lightSpaceRoot = built->lightSpaceRoot;
+		lightSpacePipeline = built->lightSpacePipeline;
 		diagnosticRoot = built->diagnosticRoot;
 		diagnosticPipeline = built->diagnosticPipeline;
 		descriptorSize = built->descriptorSize;
@@ -345,7 +347,8 @@ bool DX12NativeComposite::EnsurePipelines(ID3D12Device* candidate)
 		built->device = std::move(owned);
 		D3D12_DESCRIPTOR_RANGE depthRange{ D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1, 0, 0 };
 		D3D12_DESCRIPTOR_RANGE maskRange{ D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 0 };
-		std::array<D3D12_ROOT_PARAMETER, 5> shadow{};
+		D3D12_DESCRIPTOR_RANGE lightSpaceRead{ D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 3, 0, 0 };
+		std::array<D3D12_ROOT_PARAMETER, 6> shadow{};
 		shadow[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
 		shadow[0].Descriptor.ShaderRegister = 0;
 		shadow[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -354,10 +357,30 @@ bool DX12NativeComposite::EnsurePipelines(ID3D12Device* candidate)
 		shadow[2].Descriptor.ShaderRegister = 2;
 		shadow[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 		shadow[3].DescriptorTable = { 1, &maskRange };
-		shadow[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-		shadow[4].Descriptor.ShaderRegister = 0;
+		shadow[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+		shadow[4].DescriptorTable = { 1, &lightSpaceRead };
+		shadow[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+		shadow[5].Descriptor.ShaderRegister = 0;
+
+		// Light-space map producer: no camera, depth-buffer, raster color or
+		// direct-light dependency. Every slice spans all directions around a light.
+		D3D12_DESCRIPTOR_RANGE lightSpaceWrite{ D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 0 };
+		std::array<D3D12_ROOT_PARAMETER, 4> lightSpace{};
+		lightSpace[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+		lightSpace[0].Descriptor.ShaderRegister = 0;
+		lightSpace[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+		lightSpace[1].Descriptor.ShaderRegister = 2;
+		lightSpace[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+		lightSpace[2].DescriptorTable = { 1, &lightSpaceWrite };
+		lightSpace[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+		lightSpace[3].Constants.ShaderRegister = 0;
+		lightSpace[3].Constants.Num32BitValues = 4;
+
 		std::string failure;
-		if (!CreateSignature(built->device.get(), shadow, built->shadowRoot, failure) ||
+		if (!CreateSignature(built->device.get(), lightSpace, built->lightSpaceRoot, failure) ||
+			!CreatePipeline(built->device.get(), built->lightSpaceRoot.get(),
+				"Data/Shaders/DX12NativeComposite/LightSpaceShadows.dxil", built->lightSpacePipeline, failure) ||
+			!CreateSignature(built->device.get(), shadow, built->shadowRoot, failure) ||
 			!CreatePipeline(built->device.get(), built->shadowRoot.get(),
 				"Data/Shaders/DX12NativeComposite/PreparedShadowMask.dxil", built->shadowPipeline, failure)) {
 			pipelineFailureReason.store(std::make_shared<const std::string>(std::move(failure)), std::memory_order_release);
