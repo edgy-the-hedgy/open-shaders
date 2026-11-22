@@ -14,6 +14,7 @@
 #include <d3dcompiler.h>
 #include <directx/d3dx12.h>
 #include <fstream>
+#include <ranges>
 #include <format>
 #include <string>
 #include <vector>

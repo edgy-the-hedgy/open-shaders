@@ -51,8 +51,9 @@ namespace DX12
 			const auto completed = producer.fence12->GetCompletedValue();
 			auto slot = std::find_if(slots.begin(), slots.end(), [&](const auto& entry) {
 				if (!entry) return true;
-				if (entry.use_count() != 1 || completed == UINT64_MAX ||
-					!entry->readyValue || completed < entry->readyValue) return false;
+				if (entry.use_count() != 1 || completed == UINT64_MAX) return false;
+			if (!entry->readyValue) return true; // Reuse an unpublished slot after a failed capture.
+			if (completed < entry->readyValue) return false;
 				return std::ranges::all_of(entry->consumers, [](const auto& consumer) {
 					const auto done = consumer.first->GetCompletedValue();
 					return done != UINT64_MAX && done >= consumer.second;

@@ -1,5 +1,6 @@
 #include "DX12NativeComposite.h"
 #include "Features/Upscaling.h"
+#include "Features/LinearLighting.h"
 #include "Globals.h"
 #include "GpuPass.h"
 #include "Utils/D3D.h"
@@ -300,10 +301,15 @@ DX12NativeComposite::CaptureAndApply(ID3D11Texture2D* raster, uint32_t frame,
         // GPU wait only: all upscale routes see native-composited DX11 kMAIN.
         DX::ThrowIfFailed(backend.d3d11Context->Wait(slot->handoff.fence11.get(), done));
         backend.d3d11Context->CopyResource(raster, slot->output->resource11);
+        // The DX11 read-back is queued after the DX12 producer fence. Publish
+        // a second shared-fence signal so the next DX12/FSR consumer cannot
+        // race with this DX11 read of the same shared color resource.
+        const uint64_t readbackDone = slot->handoff.Next();
+        DX::ThrowIfFailed(backend.d3d11Context->Signal(slot->handoff.fence11.get(), readbackDone));
         auto published = std::make_shared<FinalFrame>();
         published->color = slot->output;
         published->producerFence = slot->handoff.fence12;
-        published->producerValue = done;
+        published->producerValue = readbackDone;
         published->frame = frame;
         published->width = width;
         published->height = height;

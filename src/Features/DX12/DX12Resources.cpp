@@ -3,6 +3,8 @@
 #include "CompanionWorker.h"
 #include "DX12Control.h"
 #include "DX12NativeScene.h"
+#include "Features/Upscaling.h"
+#include "Utils/D3D.h"
 #include "Globals.h"
 #include "GpuPass.h"
 #include "RE/T/TESDataHandler.h"

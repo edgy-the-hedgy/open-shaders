@@ -149,8 +149,9 @@ namespace DX12
 		const auto done = completion->GetCompletedValue();
 		const auto available = std::find_if(slots.begin(), slots.end(), [&](const auto& slot) {
 			if (!slot) return true;
-			if (slot.use_count() != 1 || done == UINT64_MAX || !slot->readyValue ||
-				done < slot->readyValue) return false;
+			if (slot.use_count() != 1 || done == UINT64_MAX) return false;
+			if (!slot->readyValue) return true; // Reuse a slot that never reached submission.
+			if (done < slot->readyValue) return false;
 			return std::ranges::all_of(slot->consumers, [](const auto& consumer) {
 				const auto value = consumer.first->GetCompletedValue();
 				return value != UINT64_MAX && value >= consumer.second;
