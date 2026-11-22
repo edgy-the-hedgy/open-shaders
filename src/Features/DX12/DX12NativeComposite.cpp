@@ -34,6 +34,9 @@ namespace
 		uint32_t width = 0, height = 0;
 		float darkening = 1.0f, padding = 0.0f;
 	};
+	// One 64x64 octahedral omnidirectional map per admitted prepared light.
+	// 64 * 64 * 64 * R32_FLOAT = 1 MiB maximum per surface set.
+	constexpr uint32_t kLightSpaceMapSize = 64;
 	struct GpuLight
 	{
 		float4 positionRadius;
@@ -137,6 +140,12 @@ void DX12NativeComposite::DrawSettings()
 		samplingPhase.store(0, std::memory_order_release);
 		lastValidDiagnosticFrame.store(0, std::memory_order_release);
 	}
+	bool staticLights = includeStationaryLights.load(std::memory_order_relaxed);
+	if (ImGui::Checkbox("Native static shadows: stationary lights", &staticLights))
+		includeStationaryLights.store(staticLights, std::memory_order_release);
+	bool flickerLights = includeFlickeringLights.load(std::memory_order_relaxed);
+	if (ImGui::Checkbox("Native static shadows: flickering / moving lights", &flickerLights))
+		includeFlickeringLights.store(flickerLights, std::memory_order_release);
 	float intensity = shadowIntensity.load(std::memory_order_relaxed);
 	if (ImGui::SliderFloat("Shadowmask intensity", &intensity, 0.0f, 4.0f, "%.2fx"))
 		shadowIntensity.store(intensity, std::memory_order_release);
@@ -155,12 +164,12 @@ void DX12NativeComposite::DrawSettings()
 	if (ImGui::Checkbox("Test: disable raster shadows for matched static geometry", &rasterOff)) {
 		disableMatchedRasterStatic.store(rasterOff, std::memory_order_release);
 		if (!rasterOff)
-			lastValidDiagnosticFrame.store(0, std::memory_order_release);
+			lastNativeShadowFrame.store(0, std::memory_order_release);
 	}
 	if (rasterOff) {
-		ImGui::TextDisabled("Requires full ray sampling, diagnostic darkening, successful runtime FSR and SCM.");
+		ImGui::TextDisabled("Requires a recent native light-space atlas, published TLAS, matched geometry, and SCM.");
 		ImGui::TextDisabled("Only live-captured rigid meshes in the current TLAS are eligible.");
-		ImGui::TextDisabled("EXPERIMENTAL: direct-light-only composition is absent; missing/incorrect shadows possible.");
+		ImGui::TextDisabled("EXPERIMENTAL: native direct-light composition is absent; missing raster shadows possible.");
 		ImGui::Text("Raster offload: %s", ShouldDisableMatchedRasterShadows() ? "Armed" : "Waiting for safe conditions");
 	}
 	ImGui::Text("Runtime: %s", IsActive() ? "Automatic (DX12 master enabled)" : "Inactive");
@@ -172,7 +181,10 @@ void DX12NativeComposite::DrawSettings()
 		static_cast<unsigned long long>(ShadowCasterManager::GetNativePreviewStaticSkipCount()));
 	ImGui::Text("Runtime FSR dispatch callbacks: %llu",
 		static_cast<unsigned long long>(dispatchCalls.load(std::memory_order_relaxed)));
-	ImGui::Text("Prepared mask lights: %u", lastPreparedLightCount.load(std::memory_order_relaxed));
+	ImGui::Text("Prepared native lights: %u (stationary %u | flicker/moving %u)",
+		lastPreparedLightCount.load(std::memory_order_relaxed),
+		lastStationaryCount.load(std::memory_order_relaxed),
+		lastFlickeringCount.load(std::memory_order_relaxed));
 	const char* lastStatus = "Unknown";
 	switch (lastDispatchStatus.load(std::memory_order_acquire)) {
 	case DispatchStatus::NeverCalled: lastStatus = "Waiting for runtime FSR upscaler callback"; break;
@@ -196,7 +208,9 @@ void DX12NativeComposite::DrawSettings()
 		const auto failure = diagnosticFailureReason.load(std::memory_order_acquire);
 		ImGui::TextWrapped("Diagnostic overlay unavailable: %s", failure ? failure->c_str() : "Unsupported color format");
 	}
-	ImGui::TextDisabled("Sampling modes skip ray queries; untraced pixels receive neutral visibility.");
+	ImGui::TextDisabled("Omnidirectional light-space maps trace independent of camera facing.");
+	ImGui::TextDisabled("Sampling modes affect the screen-space debug resolve, not the light-space atlas.");
+	ImGui::TextDisabled("Current dispatch remains on the runtime FSR DX12 callback.");
 	ImGui::TextDisabled("Intensity: 0 = neutral, 1 = raw, above 1 deepens partial shadows.");
 	ImGui::TextDisabled("With diagnostic OFF: original raster color is unchanged.");
 }
@@ -204,21 +218,19 @@ void DX12NativeComposite::DrawSettings()
 bool DX12NativeComposite::ShouldDisableMatchedRasterShadows() const
 {
 	if (!disableMatchedRasterStatic.load(std::memory_order_acquire) || !IsActive() ||
-		!diagnosticDarkenEnabled.load(std::memory_order_acquire) ||
-		diagnosticDarkenStrength.load(std::memory_order_acquire) <= 0.0f ||
-		samplingMode.load(std::memory_order_acquire) != 0 ||
+		(!includeStationaryLights.load(std::memory_order_acquire) &&
+		 !includeFlickeringLights.load(std::memory_order_acquire)) ||
 		pipelineFailed.load(std::memory_order_acquire) ||
 		!ShadowCasterManager::IsActive())
 		return false;
 	auto* state = globals::game::graphicsState;
 	if (!state)
 		return false;
-	const uint32_t last = lastValidDiagnosticFrame.load(std::memory_order_acquire);
-	// CommonLibSSE GetFrameCount() is a non-const member returning uint32_t&.
+	const uint32_t last = lastNativeShadowFrame.load(std::memory_order_acquire);
 	const uint32_t now = state->GetFrameCount();
-	// Shadow culling happens BEFORE this frame's native FSR dispatch. A recent
-	// successful prior frame is the strongest usable readiness signal here;
-	// this remains an explicitly experimental, opt-in test mode.
+	// This experimental pre-raster filter uses a recently submitted world-space
+	// native shadow atlas as its readiness signal, not native direct lighting,
+	// diagnostic darkening, camera orientation or a chosen sampling mode.
 	return last && now >= last && now - last <= 2;
 }
 
@@ -233,6 +245,9 @@ void DX12NativeComposite::LoadSettings(json& input)
 	const float test = input.value("DiagnosticDarkening", 1.0f);
 	diagnosticDarkenStrength.store(std::clamp(std::isfinite(test) ? test : 1.0f, 0.0f, 4.0f), std::memory_order_release);
 	disableMatchedRasterStatic.store(input.value("DisableMatchedRasterStatic", false), std::memory_order_release);
+	includeStationaryLights.store(input.value("NativeStationaryShadows", true), std::memory_order_release);
+	includeFlickeringLights.store(input.value("NativeFlickeringShadows", true), std::memory_order_release);
+	lastNativeShadowFrame.store(0, std::memory_order_release);
 	samplingPhase.store(0, std::memory_order_release);
 }
 
@@ -242,7 +257,9 @@ void DX12NativeComposite::SaveSettings(json& output)
 		{ "ShadowMaskIntensity", shadowIntensity.load(std::memory_order_acquire) },
 		{ "DiagnosticDarken", diagnosticDarkenEnabled.load(std::memory_order_acquire) },
 		{ "DiagnosticDarkening", diagnosticDarkenStrength.load(std::memory_order_acquire) },
-		{ "DisableMatchedRasterStatic", disableMatchedRasterStatic.load(std::memory_order_acquire) } };
+		{ "DisableMatchedRasterStatic", disableMatchedRasterStatic.load(std::memory_order_acquire) },
+		{ "NativeStationaryShadows", includeStationaryLights.load(std::memory_order_acquire) },
+		{ "NativeFlickeringShadows", includeFlickeringLights.load(std::memory_order_acquire) } };
 }
 
 void DX12NativeComposite::RestoreDefaultSettings()
@@ -252,6 +269,9 @@ void DX12NativeComposite::RestoreDefaultSettings()
 	diagnosticDarkenEnabled.store(false, std::memory_order_release);
 	diagnosticDarkenStrength.store(1.0f, std::memory_order_release);
 	disableMatchedRasterStatic.store(false, std::memory_order_release);
+	includeStationaryLights.store(true, std::memory_order_release);
+	includeFlickeringLights.store(true, std::memory_order_release);
+	lastNativeShadowFrame.store(0, std::memory_order_release);
 	lastValidDiagnosticFrame.store(0, std::memory_order_release);
 	samplingPhase.store(0, std::memory_order_release);
 }
@@ -284,6 +304,7 @@ void DX12NativeComposite::OnRuntimeDisabled()
 {
 	ShadowCasterManager::SetNativeStaticMaskActive(false);
 	lastValidDiagnosticFrame.store(0, std::memory_order_release);
+	lastNativeShadowFrame.store(0, std::memory_order_release);
 	previousRasterSuppressionArmed = false;
 	previousRasterRefreshRevision = 0;
 }

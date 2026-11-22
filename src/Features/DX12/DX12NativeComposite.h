@@ -18,7 +18,9 @@ struct DX12NativeComposite final : Feature
 
 	struct Surfaces
 	{
-		winrt::com_ptr<ID3D12Resource> shadowMask, diagnosticColor;
+		winrt::com_ptr<ID3D12Resource> shadowMask, diagnosticColor, lightSpaceAtlas;
+		uint64_t atlasSignature = 0;
+		bool atlasValid = false;
 		winrt::com_ptr<ID3D12Resource> rasterSource, depthSource;
 		winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
 		uint32_t width = 0, height = 0;
@@ -36,6 +38,8 @@ struct DX12NativeComposite final : Feature
 		winrt::com_ptr<ID3D12Resource> diagnostic;
 		uint64_t geometryRevision = 0, lightRevision = 0;
 		bool usedDiagnostic = false;
+		bool updatedLightSpaceAtlas = false;
+		uint64_t atlasSignature = 0;
 	};
 
 	std::string GetName() override { return "DX12 Native Composite"; }
@@ -65,8 +69,8 @@ private:
 	struct PipelineState
 	{
 		winrt::com_ptr<ID3D12Device> device;
-		winrt::com_ptr<ID3D12RootSignature> shadowRoot;
-		winrt::com_ptr<ID3D12PipelineState> shadowPipeline;
+		winrt::com_ptr<ID3D12RootSignature> shadowRoot, lightSpaceRoot;
+		winrt::com_ptr<ID3D12PipelineState> shadowPipeline, lightSpacePipeline;
 		winrt::com_ptr<ID3D12RootSignature> diagnosticRoot;
 		winrt::com_ptr<ID3D12PipelineState> diagnosticPipeline;
 		uint32_t descriptorSize = 0;
@@ -100,8 +104,8 @@ private:
 	std::atomic<bool> diagnosticUnavailable{ false };
 	std::jthread pipelineWorker;
 	winrt::com_ptr<ID3D12Device> device;
-	winrt::com_ptr<ID3D12RootSignature> shadowRoot;
-	winrt::com_ptr<ID3D12PipelineState> shadowPipeline;
+	winrt::com_ptr<ID3D12RootSignature> shadowRoot, lightSpaceRoot;
+	winrt::com_ptr<ID3D12PipelineState> shadowPipeline, lightSpacePipeline;
 	winrt::com_ptr<ID3D12RootSignature> diagnosticRoot;
 	winrt::com_ptr<ID3D12PipelineState> diagnosticPipeline;
 	uint32_t descriptorSize = 0;
@@ -113,6 +117,12 @@ private:
 	std::atomic<bool> diagnosticDarkenEnabled{ false };
 	std::atomic<float> diagnosticDarkenStrength{ 1.0f };
 	std::atomic<bool> disableMatchedRasterStatic{ false };
+	// Classify using the companion's TES_LIGHT_FLAGS and live SCM movement state.
+	std::atomic<bool> includeStationaryLights{ true };
+	std::atomic<bool> includeFlickeringLights{ true };
+	std::atomic<uint32_t> lastStationaryCount{ 0 }, lastFlickeringCount{ 0 };
+	// A submitted light-space atlas, not a diagnostic color pass, arms test offload.
+	std::atomic<uint32_t> lastNativeShadowFrame{ 0 };
 	std::atomic<uint32_t> lastValidDiagnosticFrame{ 0 };
 	bool previousRasterSuppressionArmed = false;
 	uint64_t previousRasterRefreshRevision = 0;
