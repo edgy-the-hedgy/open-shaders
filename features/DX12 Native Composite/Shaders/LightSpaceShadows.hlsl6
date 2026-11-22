@@ -1,0 +1,58 @@
+// World-space octahedral shadow depth, independent of camera view and of
+// direct lighting. Each array slice is a complete omni directional light.
+// No screen-space receiver, view matrix, or raster lighting input is used.
+RaytracingAccelerationStructure StaticScene : register(t0);
+struct PreparedLight
+{
+    float4 positionRadius;
+    float4 colorFade;
+    float4 emitterFalloff;
+};
+StructuredBuffer<PreparedLight> Lights : register(t2);
+RWTexture2DArray<float> LightSpaceDepth : register(u0);
+
+cbuffer LightSpaceParameters : register(b0)
+{
+    uint LightCount;
+    uint MapSize;
+    uint Pad0;
+    uint Pad1;
+};
+
+float3 OctDecode(float2 xy)
+{
+    float3 v = float3(xy, 1.0 - abs(xy.x) - abs(xy.y));
+    if (v.z < 0.0) {
+        const float2 unfolded = (1.0 - abs(v.yx)) * sign(v.xy);
+        v.xy = unfolded;
+    }
+    return normalize(v);
+}
+
+[numthreads(8, 8, 1)]
+void main(uint3 dispatchThread : SV_DispatchThreadID)
+{
+    uint3 cell = dispatchThread;
+    if (cell.z >= LightCount || cell.x >= MapSize || cell.y >= MapSize)
+        return;
+
+    const PreparedLight light = Lights[cell.z];
+    const float radius = light.positionRadius.w;
+    if (radius <= 4.0) {
+        LightSpaceDepth[cell] = 1.0;
+        return;
+    }
+    const float2 directionUV = ((float2(cell.xy) + 0.5) / float(MapSize)) * 2.0 - 1.0;
+    const float3 direction = OctDecode(directionUV);
+    RayDesc ray;
+    ray.Origin = light.positionRadius.xyz;
+    ray.Direction = direction;
+    ray.TMin = 2.0;
+    ray.TMax = radius;
+    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
+    query.TraceRayInline(StaticScene, RAY_FLAG_NONE, 1, ray);
+    while (query.Proceed()) {}
+    const float nearest = query.CommittedStatus() == COMMITTED_NOTHING ?
+        radius : query.CommittedRayT();
+    LightSpaceDepth[cell] = saturate(nearest / radius);
+}

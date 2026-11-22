@@ -35,10 +35,22 @@ if(DX12_NATIVE_DXC)
             "${CMAKE_CURRENT_SOURCE_DIR}/features/DX12 Native Composite/Shaders/VisualizeShadowMask.hlsl6"
         VERBATIM
     )
-    add_custom_target(DX12NativeCompositeDXIL DEPENDS "${_dx12_mask}" "${_dx12_visual}")
+    set(_dx12_lightspace "${_dx12_native_dir}/LightSpaceShadows.dxil")
+    add_custom_command(
+        OUTPUT "${_dx12_lightspace}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${_dx12_native_dir}"
+        COMMAND
+            "${DX12_NATIVE_DXC}" -T cs_6_5 -E main -HV 2021 -O3 -Ges -Gis -Fo
+            "${_dx12_lightspace}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/features/DX12 Native Composite/Shaders/LightSpaceShadows.hlsl6"
+        DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/features/DX12 Native Composite/Shaders/LightSpaceShadows.hlsl6"
+        VERBATIM
+    )
+    add_custom_target(DX12NativeCompositeDXIL DEPENDS "${_dx12_mask}" "${_dx12_visual}" "${_dx12_lightspace}")
     add_dependencies(${PROJECT_NAME} DX12NativeCompositeDXIL)
     register_feature_payload("DX12 Native Composite"
-        FILES "${_dx12_mask}" "${_dx12_visual}"
+        FILES "${_dx12_mask}" "${_dx12_visual}" "${_dx12_lightspace}"
         DESTINATION "Shaders/DX12NativeComposite"
     )
 else()
