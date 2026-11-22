@@ -1328,6 +1328,9 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 			try {
 				const uint64_t rescueFence = runtimeFence.Next();
 				DX::ThrowIfFailed(swapChain.commandQueue->Signal(runtimeFence.fence12.get(), rescueFence));
+				if (nativeColor)
+					globals::features::dx12NativeComposite.RetainFinishedColor(
+						nativeFrame, runtimeFence.fence12.get(), rescueFence);
 				commandContext->fenceValue = rescueFence;
 			} catch (...) {
 				commandContext->fenceValue = 0;
@@ -1342,6 +1345,9 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 			try {
 				const uint64_t rescueFence = runtimeFence.Next();
 				DX::ThrowIfFailed(swapChain.commandQueue->Signal(runtimeFence.fence12.get(), rescueFence));
+				if (nativeColor)
+					globals::features::dx12NativeComposite.RetainFinishedColor(
+						nativeFrame, runtimeFence.fence12.get(), rescueFence);
 				commandContext->fenceValue = rescueFence;
 			} catch (...) {
 				commandContext->fenceValue = 0;

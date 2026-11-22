@@ -88,6 +88,7 @@ namespace DX12
 			context->CSSetShaderResources(0, 1, &depth);
 			context->CSSetUnorderedAccessViews(0, 1, &write, nullptr);
 			context->CSSetShader(depthShader.get(), nullptr, 0);
+			captured->readyValue = UINT64_MAX;
 			context->Dispatch((source.Width + 7) / 8, (source.Height + 7) / 8, 1);
 			write = oldWrite.get();
 			context->CSSetUnorderedAccessViews(0, 1, &write, nullptr);

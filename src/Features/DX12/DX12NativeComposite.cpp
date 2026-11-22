@@ -117,7 +117,12 @@ DX12NativeComposite::~DX12NativeComposite()
     if (pipelineWorker.joinable()) pipelineWorker.join();
     finishedColor.reset();
     for (auto& slot : compositeSlots) {
-        if (!slot || !slot->frame || !slot->frame->producerFence) continue;
+        if (!slot) continue;
+        if (slot->untrackedSubmission) {
+            (void)new std::shared_ptr<CompositeSlot>(std::move(slot));
+            continue;
+        }
+        if (!slot->frame || !slot->frame->producerFence) continue;
         const auto done = slot->frame->producerFence->GetCompletedValue();
         const bool pending = done == UINT64_MAX || done < slot->frame->producerValue ||
             std::ranges::any_of(slot->consumers, [](const auto& c) {

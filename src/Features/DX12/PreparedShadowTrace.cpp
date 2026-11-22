@@ -253,6 +253,8 @@ namespace DX12
 			DX::ThrowIfFailed(backend.commandQueue->Wait(slot->raster->readyFence.get(),
 				slot->raster->readyValue));
 			ID3D12CommandList* lists[]{cmd};
+			// An untracked GPU submission must not be recycled.
+			slot->readyValue = UINT64_MAX;
 			backend.commandQueue->ExecuteCommandLists(1, lists);
 			const uint64_t ready = ++nextFence;
 			DX::ThrowIfFailed(backend.commandQueue->Signal(completion.get(), ready));

@@ -62,6 +62,7 @@ private:
         SharedFence handoff;
         D3D11_TEXTURE2D_DESC desc{};
         uint32_t maskBatches = 0, renderWidth = 0, renderHeight = 0;
+        bool untrackedSubmission = false;
         std::vector<std::pair<winrt::com_ptr<ID3D12Fence>, uint64_t>> consumers;
     };
     std::array<std::shared_ptr<CompositeSlot>, 4> compositeSlots;

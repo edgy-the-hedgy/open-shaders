@@ -115,7 +115,9 @@ DX12NativeComposite::CaptureAndApply(ID3D11Texture2D* raster, uint32_t frame,
         !(support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD) ||
         !(support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE)) return {};
     auto it = std::find_if(compositeSlots.begin(), compositeSlots.end(), [](const auto& slot) {
-        if (!slot || !slot->frame) return true;
+        if (!slot) return true;
+        if (slot->untrackedSubmission) return false;
+        if (!slot->frame) return true;
         const auto done = slot->frame->producerFence ?
             slot->frame->producerFence->GetCompletedValue() : 0ull;
         if (slot->frame.use_count() != 1 || !slot->frame->producerValue ||
@@ -295,6 +297,8 @@ DX12NativeComposite::CaptureAndApply(ID3D11Texture2D* raster, uint32_t frame,
         cmd->ResourceBarrier(UINT(workEnd.size()), workEnd.data());
         DX::ThrowIfFailed(cmd->Close());
         ID3D12CommandList* lists[]{cmd};
+        // A failed signal after ExecuteCommandLists cannot be treated as a free slot.
+        slot->untrackedSubmission = true;
         backend.commandQueue->ExecuteCommandLists(1, lists);
         const uint64_t done = slot->handoff.Next();
         DX::ThrowIfFailed(backend.commandQueue->Signal(slot->handoff.fence12.get(), done));
@@ -317,6 +321,7 @@ DX12NativeComposite::CaptureAndApply(ID3D11Texture2D* raster, uint32_t frame,
         slot->frame = published;
         slot->raw = std::move(raw);
         slot->consumers.clear();
+        slot->untrackedSubmission = false;
         finishedColor = published;
         return published;
     } catch (const std::exception&) { return {}; }
