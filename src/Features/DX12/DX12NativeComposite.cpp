@@ -568,6 +568,8 @@ std::optional<DX12NativeComposite::Submission> DX12NativeComposite::Dispatch(
 	CS_GPU_PASS("DX12NativeComposite::Dispatch");
 	dispatchCalls.fetch_add(1, std::memory_order_relaxed);
 	lastPreparedLightCount.store(0, std::memory_order_relaxed);
+	lastStationaryCount.store(0, std::memory_order_relaxed);
+	lastFlickeringCount.store(0, std::memory_order_relaxed);
 	if (!IsActive() || !commands || !rasterColor || !depth) {
 		lastDispatchStatus.store(DispatchStatus::InactiveOrInputsMissing, std::memory_order_release);
 		return std::nullopt;
@@ -588,24 +590,44 @@ std::optional<DX12NativeComposite::Submission> DX12NativeComposite::Dispatch(
 		return std::nullopt;
 	}
 	std::array<GpuLight, DX12::kMaximumShadowLights> lightUpload{};
-	uint32_t count = 0;
+	const bool stationary = includeStationaryLights.load(std::memory_order_acquire);
+	const bool flickering = includeFlickeringLights.load(std::memory_order_acquire);
+	uint64_t atlasSignature = 14695981039346656037ull;
+	const auto mixAtlas = [&](uint64_t part) {
+		atlasSignature = (atlasSignature ^ part) * 1099511628211ull;
+	};
+	mixAtlas(scene->geometryRevision);
+	mixAtlas(scene->scope);
+	uint32_t count = 0, stationaryCount = 0, flickeringCount = 0;
 	for (uint32_t index = 0; index < lightSnapshot->count; ++index) {
-		const auto& light = lightSnapshot->values[index].light;
-		// These are companion-discovered, bounded prepared lights; runtime SCM
-		// shadow slots and raster-coverage certification are not prerequisites.
-		if (!light.referenceID || !std::isfinite(light.radius) || light.radius <= 0 ||
-			!std::isfinite(light.fade) || light.fade <= 0 ||
+		const auto& resolved = lightSnapshot->values[index];
+		const auto& light = resolved.light;
+		if (resolved.flickeringOrMoving ? !flickering : !stationary)
+			continue;
+		// Visibility is independent of direct-light color/fade, current
+		// raster shadow slot and the camera's orientation.
+		if (!light.referenceID || !std::isfinite(light.radius) || light.radius <= 4.0f ||
 			!std::isfinite(light.emitterRadius) || !std::isfinite(light.falloffExponent) ||
 			!std::isfinite(light.position.x) || !std::isfinite(light.position.y) ||
-			!std::isfinite(light.position.z) || !std::isfinite(light.color.x) ||
-			!std::isfinite(light.color.y) || !std::isfinite(light.color.z) ||
-			(light.color.x <= 0 && light.color.y <= 0 && light.color.z <= 0))
+			!std::isfinite(light.position.z))
 			continue;
+		if (resolved.flickeringOrMoving)
+			++flickeringCount;
+		else
+			++stationaryCount;
 		lightUpload[count++] = { { light.position.x, light.position.y, light.position.z, light.radius },
 			{ light.color.x, light.color.y, light.color.z, light.fade },
 			{ light.emitterRadius, light.falloffExponent, 0, 0 } };
+		mixAtlas(light.referenceID);
+		mixAtlas(std::bit_cast<uint32_t>(light.position.x));
+		mixAtlas(std::bit_cast<uint32_t>(light.position.y));
+		mixAtlas(std::bit_cast<uint32_t>(light.position.z));
+		mixAtlas(std::bit_cast<uint32_t>(light.radius));
 	}
+	mixAtlas(count);
 	lastPreparedLightCount.store(count, std::memory_order_relaxed);
+	lastStationaryCount.store(stationaryCount, std::memory_order_relaxed);
+	lastFlickeringCount.store(flickeringCount, std::memory_order_relaxed);
 	if (!count) {
 		lastDispatchStatus.store(DispatchStatus::NoPreparedLights, std::memory_order_release);
 		return std::nullopt;
@@ -651,18 +673,41 @@ std::optional<DX12NativeComposite::Submission> DX12NativeComposite::Dispatch(
 	submission.camera = std::move(buffers.camera);
 	submission.lights = std::move(buffers.lights);
 	submission.diagnostic = std::move(buffers.diagnostic);
+	submission.atlasSignature = atlasSignature;
 	ID3D12DescriptorHeap* heaps[]{ target->descriptors.get() };
 	commands->SetDescriptorHeaps(1, heaps);
-	const auto begin = CD3DX12_RESOURCE_BARRIER::Transition(target->shadowMask.get(),
+	// The light-space atlas is world-space and is reused when geometry and
+	// light position/radius are unchanged; camera turning never invalidates it.
+	const bool updateAtlas = !target->atlasValid || target->atlasSignature != atlasSignature;
+	if (updateAtlas) {
+		const auto atlasWritable = CD3DX12_RESOURCE_BARRIER::Transition(target->lightSpaceAtlas.get(),
+			D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+		commands->ResourceBarrier(1, &atlasWritable);
+		commands->SetComputeRootSignature(lightSpaceRoot.get());
+		commands->SetPipelineState(lightSpacePipeline.get());
+		commands->SetComputeRootShaderResourceView(0, scene->acceleration->GetGPUVirtualAddress());
+		commands->SetComputeRootShaderResourceView(1, submission.lights->GetGPUVirtualAddress());
+		commands->SetComputeRootDescriptorTable(2, Descriptor(*target, 2));
+		const uint32_t atlasParameters[4]{ count, kLightSpaceMapSize, 0, 0 };
+		commands->SetComputeRoot32BitConstants(3, 4, atlasParameters, 0);
+		commands->Dispatch((kLightSpaceMapSize + 7) / 8, (kLightSpaceMapSize + 7) / 8, count);
+		submission.updatedLightSpaceAtlas = true;
+	}
+	const auto atlasReadable = CD3DX12_RESOURCE_BARRIER::Transition(target->lightSpaceAtlas.get(),
+		updateAtlas ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : D3D12_RESOURCE_STATE_COMMON,
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+	commands->ResourceBarrier(1, &atlasReadable);
+	const auto maskWritable = CD3DX12_RESOURCE_BARRIER::Transition(target->shadowMask.get(),
 		D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-	commands->ResourceBarrier(1, &begin);
+	commands->ResourceBarrier(1, &maskWritable);
 	commands->SetComputeRootSignature(shadowRoot.get());
 	commands->SetPipelineState(shadowPipeline.get());
 	commands->SetComputeRootShaderResourceView(0, scene->acceleration->GetGPUVirtualAddress());
 	commands->SetComputeRootDescriptorTable(1, Descriptor(*target, 0));
 	commands->SetComputeRootShaderResourceView(2, submission.lights->GetGPUVirtualAddress());
 	commands->SetComputeRootDescriptorTable(3, Descriptor(*target, 1));
-	commands->SetComputeRootConstantBufferView(4, submission.camera->GetGPUVirtualAddress());
+	commands->SetComputeRootDescriptorTable(4, Descriptor(*target, 3));
+	commands->SetComputeRootConstantBufferView(5, submission.camera->GetGPUVirtualAddress());
 	commands->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
 	samplingPhase.fetch_add(1, std::memory_order_relaxed);
 	if (makeDiagnostic) {
@@ -677,8 +722,8 @@ std::optional<DX12NativeComposite::Submission> DX12NativeComposite::Dispatch(
 		commands->ResourceBarrier(UINT(beginVisual.size()), beginVisual.data());
 		commands->SetComputeRootSignature(diagnosticRoot.get());
 		commands->SetPipelineState(diagnosticPipeline.get());
-		commands->SetComputeRootDescriptorTable(0, Descriptor(*target, 2));
-		commands->SetComputeRootDescriptorTable(1, Descriptor(*target, 4));
+		commands->SetComputeRootDescriptorTable(0, Descriptor(*target, 4));
+		commands->SetComputeRootDescriptorTable(1, Descriptor(*target, 6));
 		commands->SetComputeRootConstantBufferView(2, submission.diagnostic->GetGPUVirtualAddress());
 		commands->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
 		const std::array<D3D12_RESOURCE_BARRIER, 2> endVisual{
@@ -694,6 +739,9 @@ std::optional<DX12NativeComposite::Submission> DX12NativeComposite::Dispatch(
 			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
 		commands->ResourceBarrier(1, &shadowDone);
 	}
+	const auto atlasDone = CD3DX12_RESOURCE_BARRIER::Transition(target->lightSpaceAtlas.get(),
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+	commands->ResourceBarrier(1, &atlasDone);
 	lastDispatchStatus.store(DispatchStatus::Recorded, std::memory_order_release);
 	return submission;
 }
@@ -702,6 +750,14 @@ void DX12NativeComposite::OnSubmitted(ID3D12Fence* fence, uint64_t value, Submis
 {
 	if (!fence || !value)
 		return;
+	// A recorded native shadow field is independent of the diagnostic overlay
+	// or success of the downstream FSR color operation.
+	if (submission.updatedLightSpaceAtlas && submission.surfaces) {
+		submission.surfaces->atlasSignature = submission.atlasSignature;
+		submission.surfaces->atlasValid = true;
+	}
+	if (globals::game::graphicsState)
+		lastNativeShadowFrame.store(globals::game::graphicsState->GetFrameCount(), std::memory_order_release);
 	if (upscalerSucceeded && submission.usedDiagnostic) {
 		submittedDiagnosticFrames.fetch_add(1, std::memory_order_relaxed);
 		if (globals::game::graphicsState)
