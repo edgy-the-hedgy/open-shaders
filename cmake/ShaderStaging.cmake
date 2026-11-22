@@ -110,27 +110,31 @@ foreach(_fpath IN LISTS AIO_LOCAL_FEATURE_PATHS)
     endif()
 endforeach()
 
-# The standalone DXC compiler emits a build-tree .dxil, which is not
-# discovered by the source shader glob. Copy the compiled binary only AFTER
-# CleanupStaleEntries in this same shader-copy command. This avoids a competing
-# staging target and does not pull run_shader_tests into AIO_ZIP_PACKAGE.
-set(_dx12_native_mask_files)
+# Standalone DXC emits build-tree .dxil binaries that source shader globs
+# cannot discover. Stage exactly the outputs registered by Shaders.cmake,
+# after stale shader cleanup, so packaging never references retired names.
+# _native_shaders contains PreparedShadowMask, ReconstructShadowMask and
+# VisualizeShadowMask (and remains correct if the DXC target gains more outputs).
+set(_dx12_native_binary_files)
 if(TARGET DX12NativeCompositeDXIL)
+    if(NOT _native_shaders)
+        message(FATAL_ERROR "DX12NativeCompositeDXIL has no compiled shader outputs to stage")
+    endif()
     list(
         APPEND _shader_copy_cmds
         COMMAND ${CMAKE_COMMAND} -E make_directory
             "${AIO_DIR}/Shaders/DX12NativeComposite"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${_dx12_mask}"
-            "${AIO_DIR}/Shaders/DX12NativeComposite/PreparedShadowMask.dxil"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${_dx12_visual}"
-            "${AIO_DIR}/Shaders/DX12NativeComposite/VisualizeShadowMask.dxil"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${_dx12_lightspace}"
-            "${AIO_DIR}/Shaders/DX12NativeComposite/LightSpaceShadows.dxil"
     )
-    list(APPEND _dx12_native_mask_files "${_dx12_mask}" "${_dx12_visual}" "${_dx12_lightspace}")
+    foreach(_dx12_native_binary IN LISTS _native_shaders)
+        get_filename_component(_dx12_native_filename "${_dx12_native_binary}" NAME)
+        list(
+            APPEND _shader_copy_cmds
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_dx12_native_binary}"
+                "${AIO_DIR}/Shaders/DX12NativeComposite/${_dx12_native_filename}"
+        )
+        list(APPEND _dx12_native_binary_files "${_dx12_native_binary}")
+    endforeach()
 endif()
 
 add_custom_command(
@@ -146,7 +150,7 @@ add_custom_command(
         ${STREAMLINE_RUNTIME_DX12_FILES}
         ${_package_shaders}
         ${_all_feature_shader_files}
-        ${_dx12_native_mask_files}
+        ${_dx12_native_binary_files}
         ${CMAKE_SOURCE_DIR}/cmake/CleanupStaleEntries.cmake
         ${CMAKE_SOURCE_DIR}/cmake/PreservedRuntimePaths.cmake
     COMMENT "Copying changed shaders into AIO/Shaders"
