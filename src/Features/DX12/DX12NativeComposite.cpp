@@ -507,6 +507,11 @@ std::shared_ptr<DX12NativeComposite::Surfaces> DX12NativeComposite::MakeSurfaces
     device->CreateUnorderedAccessView(next->shadowMask.get(), nullptr, &uav, cpu(3));
     device->CreateShaderResourceView(next->shadowMask.get(), &srv, cpu(4));
     if (wantDebug) {
+        // The mask is a 2D array, but diagnosticColor is a plain 2D texture.
+        // Reusing the array UAV descriptor here would be an invalid resource view.
+        uav = {};
+        uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        uav.Texture2D.MipSlice = 0;
         uav.Format = raster.Format;
         device->CreateUnorderedAccessView(next->diagnosticColor.get(), nullptr, &uav, cpu(5));
     }
