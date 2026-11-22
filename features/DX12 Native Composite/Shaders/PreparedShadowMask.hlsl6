@@ -1,5 +1,8 @@
-RaytracingAccelerationStructure StaticScene : register(t0);
+// The per-light shadow field is generated independently in LightSpaceShadows.
+ // Camera depth is used ONLY to resolve it onto the present frame for display.
+ // No RayQuery, light placement, or shadowmap lifetime depends on view direction.
 Texture2D<float> SceneDepth : register(t1);
+Texture2DArray<float> LightSpaceDepth : register(t3);
 
 struct PreparedLight
 {
@@ -22,6 +25,14 @@ cbuffer Camera : register(b0)
 	uint SamplingPhase;
 	uint2 SamplingPadding;
 };
+
+float2 OctEncode(float3 direction)
+{
+    float3 n = direction / max(abs(direction.x) + abs(direction.y) + abs(direction.z), 1e-6);
+    if (n.z < 0.0)
+        n.xy = (1.0 - abs(n.yx)) * sign(n.xy);
+    return n.xy * 0.5 + 0.5;
+}
 
 bool TraceShadowAtPixel(uint2 pixel, uint mode, uint phase)
 {
@@ -76,31 +87,23 @@ void main(uint3 dispatchThread : SV_DispatchThreadID)
 		if (distance <= 4.0 || distance >= radius)
 			continue;
 		const float range = saturate(1.0 - distance / radius);
-		const float energy = max(dot(light.colorFade.rgb, float3(0.2126, 0.7152, 0.0722)) * light.colorFade.a, 0.0);
-		const float weight = pow(range, clamp(light.emitterFalloff.y, 0.01, 8.0)) * energy;
+		// Shadow visibility must not disappear when raster/native direct lighting
+		// has no color contribution. Direct-light composition is a separate layer.
+		const float weight = pow(range, clamp(light.emitterFalloff.y, 0.01, 8.0));
 		if (weight < 0.001)
 			continue;
 		totalWeight += weight;
-		float3 direction = centerOffset / distance;
-		const float emitterRadius = min(max(light.emitterFalloff.x, 0.0), distance * 0.25);
-		if (emitterRadius > 0.01) {
-			uint seed = pixel.x * 747796405u + pixel.y * 2891336453u + index * 277803737u;
-			seed = (seed ^ (seed >> 16)) * 2246822519u;
-			const float a = float(seed & 65535u) * (6.28318530718 / 65536.0);
-			const float r = emitterRadius * sqrt(float(seed >> 16) / 65535.0);
-			const float3 tangent = normalize(cross(abs(direction.z) < 0.9 ? float3(0, 0, 1) : float3(0, 1, 0), direction));
-			const float3 bitangent = cross(direction, tangent);
-			direction = normalize(centerOffset + r * (cos(a) * tangent + sin(a) * bitangent));
-		}
-		RayDesc ray;
-		ray.Direction = direction;
-		ray.Origin = receiver + ray.Direction * 2.0;
-		ray.TMin = 0.0;
-		ray.TMax = distance - 4.0;
-		RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
-		query.TraceRayInline(StaticScene, RAY_FLAG_NONE, 1, ray);
-		while (query.Proceed()) {}
-		if (query.CommittedStatus() == COMMITTED_NOTHING)
+		// Sample the omnidirectional field cast FROM the light, not a ray
+		// launched from the current camera's depth-buffer receiver.
+		const float3 lightToReceiver = -centerOffset / distance;
+		const float2 uvLight = saturate(OctEncode(lightToReceiver));
+		uint3 dimensions;
+		LightSpaceDepth.GetDimensions(dimensions.x, dimensions.y, dimensions.z);
+		const uint2 samplePixel = min(uint2(uvLight * float2(dimensions.xy)), dimensions.xy - 1u);
+		const float nearestDepth = LightSpaceDepth.Load(int4(samplePixel, index, 0));
+		// Shadow receiver bias is relative to the light radius; this is a
+		// diagnostic resolve until proper per-light raster shading consumes it.
+		if (distance / radius <= nearestDepth + 0.015)
 			visibleWeight += weight;
 	}
 	const float rawVisibility = totalWeight > 0.001 ? saturate(visibleWeight / totalWeight) : 1.0;
