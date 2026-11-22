@@ -22,8 +22,11 @@ struct DX12NativeScene final : Feature
 	bool IsAlwaysEnabled() const override { return true; }
 	bool IsInMenu() const override { return false; }
 	bool IsInFeatureList() const override { return false; }
-	bool UsesMainSettings() const override { return false; }
+	bool UsesMainSettings() const override { return true; }
 	void DrawSettings() override;
+	void LoadSettings(json& input) override;
+	void SaveSettings(json& output) override;
+	void RestoreDefaultSettings() override;
 	/** @brief Borrow static CPU mesh inputs only within the already installed renderer hook. */
 	void ObserveRuntimeGeometry(RE::BSGeometry* geometry);
 	/** @brief Exact runtime-observed static mesh confirmed in the current GPU TLAS. */
@@ -57,6 +60,9 @@ private:
 	uint32_t preparedCacheScope = 0;
 	uint64_t knownFlushGeneration = 0;
 	std::chrono::steady_clock::time_point lastLightsRefresh{};
+	std::atomic<bool> inheritRuntime{ true };
+	std::atomic<float> lightReach{ 1.0f }, lightIntensity{ 1.0f }, emitterSize{ 1.0f };
+	std::atomic<float> lightMatchDistance{ 64.0f };
 	std::atomic<std::shared_ptr<const std::vector<uint32_t>>> coveredLightIDs;
 	std::atomic<std::shared_ptr<const std::vector<uintptr_t>>> matchedShadowLightPointers;
 	std::atomic<std::shared_ptr<const std::vector<uintptr_t>>> flickeringShadowLightPointers;

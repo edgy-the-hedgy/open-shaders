@@ -120,7 +120,7 @@ private:
 	std::atomic<bool> disableMatchedRasterStatic{ false };
 	// Classify using the companion's TES_LIGHT_FLAGS and live SCM movement state.
 	std::atomic<bool> includeStationaryLights{ true };
-	std::atomic<bool> includeFlickeringLights{ true };
+	std::atomic<bool> includeFlickeringLights{ false };
 	std::atomic<uint32_t> lastStationaryCount{ 0 }, lastFlickeringCount{ 0 };
 	// A successfully submitted native per-frame receiver trace arms candidate offload.
 	std::atomic<uint32_t> lastNativeShadowFrame{ 0 };

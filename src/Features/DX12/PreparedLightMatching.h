@@ -117,7 +117,8 @@ namespace DX12
 				claimed[match] = true;
 				resolved.matched = true;
 				resolved.runtimeShadowSlot = runtime[match].shadowSlot;
-				resolved.flickeringOrMoving |= runtime[match].moving;
+				// Prepared flicker/pulse flags define this category. SCM's dynamic
+				// shadow flag is not proof of an animated prepared-light position.
 				if (tuning.inheritRuntime) {
 					resolved.light.position = runtime[match].position;
 					if (finitePoint(runtime[match].color))

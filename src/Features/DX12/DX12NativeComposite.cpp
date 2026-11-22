@@ -140,16 +140,14 @@ void DX12NativeComposite::DrawSettings()
 	bool spatial = spatialReconstruction.load(std::memory_order_relaxed);
 	if (ImGui::Checkbox("Spatial shadow reconstruction (depth-aware)", &spatial))
 		spatialReconstruction.store(spatial, std::memory_order_release);
-	bool staticLights = includeStationaryLights.load(std::memory_order_relaxed);
-	if (ImGui::Checkbox("Native static shadows: stationary lights", &staticLights)) {
-		includeStationaryLights.store(staticLights, std::memory_order_release);
+	// Stationary prepared lights are always eligible. Authored flicker/pulse
+	// remains entirely vanilla unless explicitly forced to a static native shadow.
+	bool forceStatic = includeFlickeringLights.load(std::memory_order_relaxed);
+	if (ImGui::Checkbox("Prepared flicker/pulse: force static native shadow", &forceStatic)) {
+		includeFlickeringLights.store(forceStatic, std::memory_order_release);
 		lastNativeShadowFrame.store(0, std::memory_order_release);
 	}
-	bool flickerLights = includeFlickeringLights.load(std::memory_order_relaxed);
-	if (ImGui::Checkbox("Native static shadows: flickering / moving lights", &flickerLights)) {
-		includeFlickeringLights.store(flickerLights, std::memory_order_release);
-		lastNativeShadowFrame.store(0, std::memory_order_release);
-	}
+	ImGui::TextDisabled("Off = preserve vanilla flickering shadow behavior; no moving-light observer is installed.");
 	float intensity = shadowIntensity.load(std::memory_order_relaxed);
 	if (ImGui::SliderFloat("Shadowmask intensity", &intensity, 0.0f, 4.0f, "%.2fx"))
 		shadowIntensity.store(intensity, std::memory_order_release);
@@ -187,7 +185,7 @@ void DX12NativeComposite::DrawSettings()
 		static_cast<unsigned long long>(ShadowCasterManager::GetNativePreviewStaticSkipCount()));
 	ImGui::Text("Runtime FSR dispatch callbacks: %llu",
 		static_cast<unsigned long long>(dispatchCalls.load(std::memory_order_relaxed)));
-	ImGui::Text("Prepared native lights: %u (stationary %u | flicker/moving %u)",
+	ImGui::Text("Prepared native lights: %u (stationary %u | prepared flicker/pulse %u)",
 		lastPreparedLightCount.load(std::memory_order_relaxed),
 		lastStationaryCount.load(std::memory_order_relaxed),
 		lastFlickeringCount.load(std::memory_order_relaxed));
@@ -265,8 +263,8 @@ void DX12NativeComposite::LoadSettings(json& input)
 	const float test = input.value("DiagnosticDarkening", 1.0f);
 	diagnosticDarkenStrength.store(std::clamp(std::isfinite(test) ? test : 1.0f, 0.0f, 4.0f), std::memory_order_release);
 	disableMatchedRasterStatic.store(input.value("DisableMatchedRasterStatic", false), std::memory_order_release);
-	includeStationaryLights.store(input.value("NativeStationaryShadows", true), std::memory_order_release);
-	includeFlickeringLights.store(input.value("NativeFlickeringShadows", true), std::memory_order_release);
+	includeStationaryLights.store(true, std::memory_order_release);
+	includeFlickeringLights.store(input.value("ForcePreparedFlickerStatic", false), std::memory_order_release);
 	lastNativeShadowFrame.store(0, std::memory_order_release);
 	spatialReconstruction.store(input.value("SpatialReconstruction", true), std::memory_order_release);
 	samplingPhase.store(0, std::memory_order_release);
@@ -280,8 +278,7 @@ void DX12NativeComposite::SaveSettings(json& output)
 		{ "DiagnosticDarken", diagnosticDarkenEnabled.load(std::memory_order_acquire) },
 		{ "DiagnosticDarkening", diagnosticDarkenStrength.load(std::memory_order_acquire) },
 		{ "DisableMatchedRasterStatic", disableMatchedRasterStatic.load(std::memory_order_acquire) },
-		{ "NativeStationaryShadows", includeStationaryLights.load(std::memory_order_acquire) },
-		{ "NativeFlickeringShadows", includeFlickeringLights.load(std::memory_order_acquire) } };
+		{ "ForcePreparedFlickerStatic", includeFlickeringLights.load(std::memory_order_acquire) } };
 }
 
 void DX12NativeComposite::RestoreDefaultSettings()
@@ -293,7 +290,7 @@ void DX12NativeComposite::RestoreDefaultSettings()
 	diagnosticDarkenStrength.store(1.0f, std::memory_order_release);
 	disableMatchedRasterStatic.store(false, std::memory_order_release);
 	includeStationaryLights.store(true, std::memory_order_release);
-	includeFlickeringLights.store(true, std::memory_order_release);
+	includeFlickeringLights.store(false, std::memory_order_release);
 	lastNativeShadowFrame.store(0, std::memory_order_release);
 	lastValidDiagnosticFrame.store(0, std::memory_order_release);
 	samplingPhase.store(0, std::memory_order_release);

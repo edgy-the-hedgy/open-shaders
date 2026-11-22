@@ -96,6 +96,24 @@ void DX12NativeScene::DrawSettings()
 	if (resolved)
 		for (uint32_t i = 0; i < resolved->count; ++i)
 			matched += resolved->values[i].matched ? 1u : 0u;
+	ImGui::SeparatorText("Prepared-light characteristics");
+	bool inherit = inheritRuntime.load(std::memory_order_relaxed);
+	if (ImGui::Checkbox("Inherit matched LLF/SCM characteristics", &inherit))
+		inheritRuntime.store(inherit, std::memory_order_release);
+	ImGui::TextDisabled("With inheritance off, prepared positions and user-defined multipliers take precedence.");
+	float reach = lightReach.load(std::memory_order_relaxed);
+	if (ImGui::SliderFloat("Native shadow reach", &reach, 0.1f, 4.0f, "%.2fx"))
+		lightReach.store(reach, std::memory_order_release);
+	float intensity = lightIntensity.load(std::memory_order_relaxed);
+	if (ImGui::SliderFloat("Prepared light intensity", &intensity, 0.0f, 8.0f, "%.2fx"))
+		lightIntensity.store(intensity, std::memory_order_release);
+	float emitter = emitterSize.load(std::memory_order_relaxed);
+	if (ImGui::SliderFloat("Prepared emitter size", &emitter, 0.1f, 8.0f, "%.2fx"))
+		emitterSize.store(emitter, std::memory_order_release);
+	float match = lightMatchDistance.load(std::memory_order_relaxed);
+	if (ImGui::SliderFloat("Runtime light matching distance", &match, 1.0f, 256.0f, "%.0f"))
+		lightMatchDistance.store(match, std::memory_order_release);
+	ImGui::SeparatorText("Diagnostics");
 	ImGui::Text("Matched LLF/SCM lights: %u", matched);
 	ImGui::TextDisabled("Native shadowing inherits live SCM position, radius, fade, color and emitter when matched.");
 	ImGui::TextDisabled("Unmatched prepared lights retain companion values; no native direct-light pass required.");
@@ -112,6 +130,31 @@ void DX12NativeScene::DrawSettings()
 	ImGui::TextDisabled("Only rigid opaque CPU meshes; bounded to 128 shapes / 24 MiB in active 3x3.");
 	ImGui::TextDisabled("Automatically evicted on recenter; no disk cache or authority to suppress raster shadows.");
 	ImGui::TextDisabled("BLAS/TLAS construction and light matching are automatic; no user controls here.");
+}
+
+void DX12NativeScene::LoadSettings(json& input)
+{
+    inheritRuntime.store(input.value("InheritRuntime", true), std::memory_order_release);
+    lightReach.store(std::clamp(input.value("Reach", 1.0f), 0.1f, 4.0f), std::memory_order_release);
+    lightIntensity.store(std::clamp(input.value("Intensity", 1.0f), 0.0f, 8.0f), std::memory_order_release);
+    emitterSize.store(std::clamp(input.value("EmitterSize", 1.0f), 0.1f, 8.0f), std::memory_order_release);
+    lightMatchDistance.store(std::clamp(input.value("MatchDistance", 64.0f), 1.0f, 256.0f), std::memory_order_release);
+}
+void DX12NativeScene::SaveSettings(json& output)
+{
+    output = {{"InheritRuntime", inheritRuntime.load(std::memory_order_acquire)},
+        {"Reach", lightReach.load(std::memory_order_acquire)},
+        {"Intensity", lightIntensity.load(std::memory_order_acquire)},
+        {"EmitterSize", emitterSize.load(std::memory_order_acquire)},
+        {"MatchDistance", lightMatchDistance.load(std::memory_order_acquire)}};
+}
+void DX12NativeScene::RestoreDefaultSettings()
+{
+    inheritRuntime.store(true, std::memory_order_release);
+    lightReach.store(1.0f, std::memory_order_release);
+    lightIntensity.store(1.0f, std::memory_order_release);
+    emitterSize.store(1.0f, std::memory_order_release);
+    lightMatchDistance.store(64.0f, std::memory_order_release);
 }
 
 void DX12NativeScene::ObserveRuntimeGeometry(RE::BSGeometry* geometry)
@@ -345,7 +388,13 @@ void DX12NativeScene::UpdateLights()
 	}
 	const auto camera = globals::game::player ? globals::game::player->GetPosition() : RE::NiPoint3{};
 	const float3 cameraPosition{ camera.x, camera.y, camera.z };
-	auto resolved = DX12::MatchPreparedLights(preparedCache, runtime, DX12::LightTuning{}, cameraPosition);
+	DX12::LightTuning tuning{};
+	tuning.inheritRuntime = inheritRuntime.load(std::memory_order_acquire);
+	tuning.matchDistance = lightMatchDistance.load(std::memory_order_acquire);
+	tuning.reach = lightReach.load(std::memory_order_acquire);
+	tuning.intensity = lightIntensity.load(std::memory_order_acquire);
+	tuning.emitterSize = emitterSize.load(std::memory_order_acquire);
+	auto resolved = DX12::MatchPreparedLights(preparedCache, runtime, tuning, cameraPosition);
 	lights.store(std::make_shared<const DX12::ResolvedLights>(std::move(resolved)), std::memory_order_release);
 }
 
