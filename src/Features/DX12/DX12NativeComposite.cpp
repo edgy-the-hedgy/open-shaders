@@ -215,6 +215,13 @@ void DX12NativeComposite::DrawSettings()
 	ImGui::TextDisabled("With diagnostic OFF: original raster color is unchanged.");
 }
 
+bool DX12NativeComposite::MatchesNativeShadowMode(const RE::BSShadowLight* light) const
+{
+	return globals::features::dx12NativeScene.IsMatchedLightInShadowMode(light,
+		includeStationaryLights.load(std::memory_order_acquire),
+		includeFlickeringLights.load(std::memory_order_acquire));
+}
+
 bool DX12NativeComposite::ShouldDisableMatchedRasterShadows() const
 {
 	if (!disableMatchedRasterStatic.load(std::memory_order_acquire) || !IsActive() ||

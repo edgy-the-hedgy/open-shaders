@@ -267,6 +267,16 @@ bool DX12NativeScene::HasMatchedPreparedLight(const RE::BSShadowLight* light) co
 	return light && match && std::ranges::binary_search(*match, reinterpret_cast<uintptr_t>(light));
 }
 
+bool DX12NativeScene::IsMatchedLightInShadowMode(const RE::BSShadowLight* light, bool stationary, bool flickering) const
+{
+	if (!light || (!stationary && !flickering) || !HasMatchedPreparedLight(light))
+		return false;
+	const auto knownFlickering = flickeringShadowLightPointers.load(std::memory_order_acquire);
+	const bool flickers = knownFlickering && std::ranges::binary_search(*knownFlickering,
+		reinterpret_cast<uintptr_t>(light));
+	return flickers ? flickering : stationary;
+}
+
 void DX12NativeScene::PreShadowMaps()
 {
 	CS_GPU_PASS("DX12NativeScene::Update");
@@ -332,6 +342,7 @@ void DX12NativeScene::PublishCoverage(const DX12::Grid& grid)
 	std::vector<RE::BSShadowLight*> covered;
 	std::vector<uint32_t> coveredReferences;
 	std::vector<uintptr_t> matchedPointers;
+	std::vector<uintptr_t> flickeringPointers;
 	const auto currentScene = scene.Ready();
 	const auto currentLights = lights.load(std::memory_order_acquire);
 	if (currentScene && currentLights && currentScene->geometryRevision == grid.geometryRevision &&
@@ -339,8 +350,7 @@ void DX12NativeScene::PublishCoverage(const DX12::Grid& grid)
 		const auto& active = ShadowCasterManager::GetLights();
 		for (uint32_t i = 0; i < currentLights->count; ++i) {
 			const auto& resolved = currentLights->values[i];
-			if (!resolved.matched || resolved.light.fade <= 0 ||
-				(resolved.light.color.x <= 0 && resolved.light.color.y <= 0 && resolved.light.color.z <= 0) ||
+			if (!resolved.matched ||
 				resolved.runtimeShadowSlot >= uint32_t(std::max(active.Size, 0)) ||
 				!active.Lights || currentScene->shapeIDs.empty())
 				continue;
@@ -348,6 +358,8 @@ void DX12NativeScene::PublishCoverage(const DX12::Grid& grid)
 			if (!runtimeShadow)
 				continue;
 			matchedPointers.push_back(reinterpret_cast<uintptr_t>(runtimeShadow));
+			if (resolved.flickeringOrMoving)
+				flickeringPointers.push_back(reinterpret_cast<uintptr_t>(runtimeShadow));
 			const auto& light = resolved.light;
 			const auto x0 = DX12::Coordinate(double(light.position.x) - light.radius, grid.size);
 			const auto x1 = DX12::Coordinate(double(light.position.x) + light.radius, grid.size);
@@ -383,6 +395,10 @@ void DX12NativeScene::PublishCoverage(const DX12::Grid& grid)
 	matchedPointers.erase(std::unique(matchedPointers.begin(), matchedPointers.end()), matchedPointers.end());
 	matchedShadowLightPointers.store(std::make_shared<const std::vector<uintptr_t>>(std::move(matchedPointers)),
 		std::memory_order_release);
+	std::ranges::sort(flickeringPointers);
+	flickeringPointers.erase(std::unique(flickeringPointers.begin(), flickeringPointers.end()), flickeringPointers.end());
+	flickeringShadowLightPointers.store(std::make_shared<const std::vector<uintptr_t>>(std::move(flickeringPointers)),
+		std::memory_order_release);
 	std::ranges::sort(coveredReferences);
 	coveredReferences.erase(std::unique(coveredReferences.begin(), coveredReferences.end()), coveredReferences.end());
 	coveredLightIDs.store(std::make_shared<const std::vector<uint32_t>>(std::move(coveredReferences)), std::memory_order_release);
@@ -409,6 +425,7 @@ void DX12NativeScene::OnRuntimeDisabled()
 	lights.store(nullptr, std::memory_order_release);
 	coveredLightIDs.store(nullptr, std::memory_order_release);
 	matchedShadowLightPointers.store(nullptr, std::memory_order_release);
+	flickeringShadowLightPointers.store(nullptr, std::memory_order_release);
 	ShadowCasterManager::SetNativeStaticMaskActive(false);
 	ShadowCasterManager::PublishNativeStaticCoverage({});
 }

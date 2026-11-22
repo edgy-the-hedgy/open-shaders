@@ -27,6 +27,8 @@ struct DX12NativeScene final : Feature
 	bool HasCurrentRuntimeGeometry(RE::BSGeometry& geometry) const;
 	/** @brief Point light with a prepared-light match, independent of complete coverage. */
 	bool HasMatchedPreparedLight(const RE::BSShadowLight* light) const;
+	/** @brief An exact SCM light whose current prepared record belongs to an enabled mode. */
+	bool IsMatchedLightInShadowMode(const RE::BSShadowLight* light, bool stationary, bool flickering) const;
 	std::shared_ptr<const std::vector<uintptr_t>> GetMatchedLightPointers() const
 	{
 		return matchedShadowLightPointers.load(std::memory_order_acquire);
@@ -52,6 +54,7 @@ private:
 	uint32_t preparedCacheScope = 0;
 	std::atomic<std::shared_ptr<const std::vector<uint32_t>>> coveredLightIDs;
 	std::atomic<std::shared_ptr<const std::vector<uintptr_t>>> matchedShadowLightPointers;
+	std::atomic<std::shared_ptr<const std::vector<uintptr_t>>> flickeringShadowLightPointers;
 	// The old experimental renderer capture, bounded to 512 KiB and four
 	// observations per frame. Only owned Shape values reach DX12 workers.
 	std::mutex captureMutex;

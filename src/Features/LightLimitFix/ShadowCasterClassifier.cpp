@@ -471,7 +471,7 @@ namespace ShadowCasterManager
 		// for a prepared point light represented in the diagnostic shadowmask.
 		// Never infer geometry coverage merely from a partially prepared subcell.
 		if (!dynamic && nativePreview &&
-			globals::features::dx12NativeScene.HasMatchedPreparedLight(CurrentCullLight()) &&
+			globals::features::dx12NativeComposite.MatchesNativeShadowMode(CurrentCullLight()) &&
 			globals::features::dx12NativeScene.HasCurrentRuntimeGeometry(geom)) {
 			s_nativePreviewStaticSkips.fetch_add(1, std::memory_order_relaxed);
 			return true;

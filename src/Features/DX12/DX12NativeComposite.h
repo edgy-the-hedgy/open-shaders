@@ -61,6 +61,7 @@ struct DX12NativeComposite final : Feature
 	bool IsActive() const;
 	/** @brief Test-only suppression gate. Only fresh successful full-resolution DXR previews qualify. */
 	bool ShouldDisableMatchedRasterShadows() const;
+	bool MatchesNativeShadowMode(const RE::BSShadowLight* light) const;
 	std::optional<Submission> Dispatch(ID3D12GraphicsCommandList4* commands, ID3D12Resource* rasterColor,
 		ID3D12Resource* depth, uint32_t width, uint32_t height);
 	void OnSubmitted(ID3D12Fence* fence, uint64_t value, Submission submission, bool upscalerSucceeded);
