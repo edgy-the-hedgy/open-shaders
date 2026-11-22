@@ -169,7 +169,7 @@ void DX12NativeComposite::DrawSettings()
 			lastNativeShadowFrame.store(0, std::memory_order_release);
 	}
 	if (rasterOff) {
-		ImGui::TextDisabled("Requires a recent native light-space atlas, published TLAS, matched geometry, and SCM.");
+		ImGui::TextDisabled("Requires a completed current-frame mask, retained TLAS, matched rigid geometry, and SCM.");
 		ImGui::TextDisabled("Only live-captured rigid meshes in the current TLAS are eligible.");
 		ImGui::TextDisabled("EXPERIMENTAL: native direct-light composition is absent; missing raster shadows possible.");
 		ImGui::Text("Raster offload: %s", ShouldDisableMatchedRasterShadows() ? "Armed" : "Waiting for safe conditions");
@@ -242,13 +242,13 @@ bool DX12NativeComposite::ShouldDisableMatchedRasterShadows() const
 	const auto scene = globals::features::dx12NativeScene.GetScene();
 	const auto grid = globals::features::dx12Resources.GetGrid();
 	if (!scene || !scene->acceleration || !grid ||
-		scene->geometryRevision != grid->geometryRevision ||
+		scene->scope != grid->requested.front().scope ||
 		scene->geometryRevision != lastNativeGeometryRevision.load(std::memory_order_acquire) ||
 		grid->lightRevision != lastNativeLightRevision.load(std::memory_order_acquire))
 		return false;
-	// This experimental pre-raster filter uses a recently submitted world-space
-	// native shadow atlas as its readiness signal, not native direct lighting,
-	// diagnostic darkening, camera orientation or a chosen sampling mode.
+	// Only the last successfully submitted RayQuery scene may certify candidate
+	// offloading; current scene identity must match even while a replacement builds.
+	// No atlas or direct-light dependency is permitted.
 	return last && now >= last && now - last <= 2;
 }
 
@@ -335,10 +335,10 @@ void DX12NativeComposite::OnRuntimeDisabled()
 	lastNativeLightRevision.store(0, std::memory_order_release);
 }
 
-void DX12NativeComposite::OnSceneTransitionReset(bool opening)
+void DX12NativeComposite::OnSceneTransitionReset(bool /*opening*/)
 {
-	if (opening)
-		OnRuntimeDisabled();
+	// Keep current TLAS and last ready native mask state during return travel.
+	// Resources performs the eventual two-transition cache flush.
 }
 
 bool DX12NativeComposite::EnsurePipelines(ID3D12Device* candidate)

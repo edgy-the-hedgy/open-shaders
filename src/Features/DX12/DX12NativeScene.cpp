@@ -277,7 +277,7 @@ bool DX12NativeScene::HasCurrentRuntimeGeometry(RE::BSGeometry& geometry) const
 	const auto grid = globals::features::dx12Resources.GetGrid();
 	const auto built = scene.Ready();
 	if (!grid || !built || !built->acceleration || !grid->requested.front().scope ||
-		built->geometryRevision != grid->geometryRevision || built->scope != grid->requested.front().scope)
+		built->scope != grid->requested.front().scope)
 		return false;
 	uint64_t identity = 14695981039346656037ull;
 	const auto mix = [&](uint64_t value) {
@@ -406,8 +406,8 @@ void DX12NativeScene::PublishCoverage(const DX12::Grid& grid)
 	std::vector<uintptr_t> flickeringPointers;
 	const auto currentScene = scene.Ready();
 	const auto currentLights = lights.load(std::memory_order_acquire);
-	if (currentScene && currentLights && currentScene->geometryRevision == grid.geometryRevision &&
-		currentScene->scope == grid.requested.front().scope && ShadowCasterManager::IsActive()) {
+	if (currentScene && currentLights && currentScene->scope == grid.requested.front().scope &&
+		ShadowCasterManager::IsActive()) {
 		const auto& active = ShadowCasterManager::GetLights();
 		for (uint32_t i = 0; i < currentLights->count; ++i) {
 			const auto& resolved = currentLights->values[i];
