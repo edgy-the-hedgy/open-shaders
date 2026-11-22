@@ -141,11 +141,15 @@ void DX12NativeComposite::DrawSettings()
 		lastValidDiagnosticFrame.store(0, std::memory_order_release);
 	}
 	bool staticLights = includeStationaryLights.load(std::memory_order_relaxed);
-	if (ImGui::Checkbox("Native static shadows: stationary lights", &staticLights))
+	if (ImGui::Checkbox("Native static shadows: stationary lights", &staticLights)) {
 		includeStationaryLights.store(staticLights, std::memory_order_release);
+		lastNativeShadowFrame.store(0, std::memory_order_release);
+	}
 	bool flickerLights = includeFlickeringLights.load(std::memory_order_relaxed);
-	if (ImGui::Checkbox("Native static shadows: flickering / moving lights", &flickerLights))
+	if (ImGui::Checkbox("Native static shadows: flickering / moving lights", &flickerLights)) {
 		includeFlickeringLights.store(flickerLights, std::memory_order_release);
+		lastNativeShadowFrame.store(0, std::memory_order_release);
+	}
 	float intensity = shadowIntensity.load(std::memory_order_relaxed);
 	if (ImGui::SliderFloat("Shadowmask intensity", &intensity, 0.0f, 4.0f, "%.2fx"))
 		shadowIntensity.store(intensity, std::memory_order_release);
@@ -175,6 +179,9 @@ void DX12NativeComposite::DrawSettings()
 	ImGui::Text("Runtime: %s", IsActive() ? "Automatic (DX12 master enabled)" : "Inactive");
 	ImGui::Text("Shadowmask submissions: %llu",
 		static_cast<unsigned long long>(submittedMasks.load(std::memory_order_acquire)));
+	ImGui::Text("Independent light-space builds: %llu | Reused frames: %llu",
+		static_cast<unsigned long long>(submittedAtlasRebuilds.load(std::memory_order_relaxed)),
+		static_cast<unsigned long long>(reusedAtlasFrames.load(std::memory_order_relaxed)));
 	ImGui::Text("Diagnostic FSR submissions: %llu",
 		static_cast<unsigned long long>(submittedDiagnosticFrames.load(std::memory_order_relaxed)));
 	ImGui::Text("Raster static caster append skips: %llu",
@@ -235,6 +242,13 @@ bool DX12NativeComposite::ShouldDisableMatchedRasterShadows() const
 		return false;
 	const uint32_t last = lastNativeShadowFrame.load(std::memory_order_acquire);
 	const uint32_t now = state->GetFrameCount();
+	const auto scene = globals::features::dx12NativeScene.GetScene();
+	const auto grid = globals::features::dx12Resources.GetGrid();
+	if (!scene || !scene->acceleration || !grid ||
+		scene->geometryRevision != grid->geometryRevision ||
+		scene->geometryRevision != lastNativeGeometryRevision.load(std::memory_order_acquire) ||
+		grid->lightRevision != lastNativeLightRevision.load(std::memory_order_acquire))
+		return false;
 	// This experimental pre-raster filter uses a recently submitted world-space
 	// native shadow atlas as its readiness signal, not native direct lighting,
 	// diagnostic darkening, camera orientation or a chosen sampling mode.
@@ -291,8 +305,10 @@ void DX12NativeComposite::PreShadowMaps()
 	const bool armed = ShouldDisableMatchedRasterShadows();
 	const auto currentScene = globals::features::dx12NativeScene.GetScene();
 	const uint64_t revision = currentScene ? currentScene->geometryRevision : 0;
+	const uint32_t policy = (includeStationaryLights.load(std::memory_order_acquire) ? 1u : 0u) |
+		(includeFlickeringLights.load(std::memory_order_acquire) ? 2u : 0u);
 	if (armed != previousRasterSuppressionArmed ||
-		(armed && revision != previousRasterRefreshRevision)) {
+		(armed && (revision != previousRasterRefreshRevision || policy != previousRasterPolicyFlags))) {
 		// Flush any baked static content whenever the experimental filter starts,
 		// stops, or changes geometry generation. Otherwise old static atlas data
 		// could remain despite successfully filtering new caster draws.
@@ -301,6 +317,7 @@ void DX12NativeComposite::PreShadowMaps()
 			ShadowCasterManager::InvalidateNativePreviewStaticBakes(*matched);
 		previousRasterSuppressionArmed = armed;
 		previousRasterRefreshRevision = revision;
+		previousRasterPolicyFlags = policy;
 	}
 	if (IsActive())
 		(void)EnsurePipelines(globals::features::upscaling.dx12SwapChain.d3d12Device.get());
@@ -314,6 +331,9 @@ void DX12NativeComposite::OnRuntimeDisabled()
 	lastNativeShadowFrame.store(0, std::memory_order_release);
 	previousRasterSuppressionArmed = false;
 	previousRasterRefreshRevision = 0;
+	previousRasterPolicyFlags = 0;
+	lastNativeGeometryRevision.store(0, std::memory_order_release);
+	lastNativeLightRevision.store(0, std::memory_order_release);
 }
 
 void DX12NativeComposite::OnSceneTransitionReset(bool opening)
@@ -762,7 +782,12 @@ void DX12NativeComposite::OnSubmitted(ID3D12Fence* fence, uint64_t value, Submis
 	if (submission.updatedLightSpaceAtlas && submission.surfaces) {
 		submission.surfaces->atlasSignature = submission.atlasSignature;
 		submission.surfaces->atlasValid = true;
+		submittedAtlasRebuilds.fetch_add(1, std::memory_order_relaxed);
+	} else {
+		reusedAtlasFrames.fetch_add(1, std::memory_order_relaxed);
 	}
+	lastNativeGeometryRevision.store(submission.geometryRevision, std::memory_order_release);
+	lastNativeLightRevision.store(submission.lightRevision, std::memory_order_release);
 	if (globals::game::graphicsState)
 		lastNativeShadowFrame.store(globals::game::graphicsState->GetFrameCount(), std::memory_order_release);
 	if (upscalerSucceeded && submission.usedDiagnostic) {

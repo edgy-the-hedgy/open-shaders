@@ -124,9 +124,12 @@ private:
 	std::atomic<uint32_t> lastStationaryCount{ 0 }, lastFlickeringCount{ 0 };
 	// A submitted light-space atlas, not a diagnostic color pass, arms test offload.
 	std::atomic<uint32_t> lastNativeShadowFrame{ 0 };
+	std::atomic<uint64_t> lastNativeGeometryRevision{ 0 }, lastNativeLightRevision{ 0 };
+	std::atomic<uint64_t> submittedAtlasRebuilds{ 0 }, reusedAtlasFrames{ 0 };
 	std::atomic<uint32_t> lastValidDiagnosticFrame{ 0 };
 	bool previousRasterSuppressionArmed = false;
 	uint64_t previousRasterRefreshRevision = 0;
+	uint32_t previousRasterPolicyFlags = 0;
 	std::atomic<uint32_t> samplingPhase{ 0 };
 	enum class DispatchStatus : uint8_t
 	{
