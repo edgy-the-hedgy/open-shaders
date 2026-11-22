@@ -2,6 +2,8 @@
 
 #include "AccelerationScene.h"
 #include "PreparedLightMatching.h"
+#include "RasterCapture.h"
+#include "PreparedShadowTrace.h"
 
 #include <atomic>
 #include <chrono>
@@ -43,6 +45,8 @@ struct DX12NativeScene final : Feature
 	}
 	bool WantsPreShadowMapsHook() const override { return true; }
 	void PreShadowMaps() override;
+	void OnOpaqueRasterReady(const OpaqueRasterInputs& inputs) override;
+	std::shared_ptr<const DX12::RawShadowFrame> GetRawShadow(uint32_t frame) const { return shadowTrace.Get(frame); }
 	void OnSceneTransitionReset(bool opening) override;
 	void OnRuntimeDisabled() override;
 	bool IsActive() const;
@@ -53,6 +57,10 @@ private:
 	void UpdateLights();
 	void PublishMatchedLights();
 	DX12::AccelerationScene scene;
+	DX12::RasterCapture raster;
+	DX12::PreparedShadowTrace shadowTrace;
+	std::atomic<int> shadowSamplingMode{ 0 };
+	std::atomic<uint32_t> shadowSamplingPhase{ 0 };
 	std::atomic<std::shared_ptr<const DX12::ResolvedLights>> lights;
 	// Immutable companion lights are re-collected only when grid publications change.
 	std::vector<DX12::PreparedLight> preparedCache;

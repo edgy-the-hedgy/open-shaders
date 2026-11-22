@@ -130,6 +130,12 @@ void DX12NativeScene::DrawSettings()
 	float match = lightMatchDistance.load(std::memory_order_relaxed);
 	if (ImGui::SliderFloat("Runtime light matching distance", &match, 1.0f, 256.0f, "%.0f"))
 		lightMatchDistance.store(match, std::memory_order_release);
+	ImGui::SeparatorText("Raw RayQuery generation");
+	int sample = shadowSamplingMode.load(std::memory_order_relaxed);
+	if (ImGui::Combo("RayQuery sample density", &sample,
+		"Full\\0Two-thirds\\0Half\\0Four-ninths\\0One-third\\0Quarter\\0One-sixth\\0One-ninth\\0"))
+		shadowSamplingMode.store(sample, std::memory_order_release);
+	ImGui::TextDisabled("Raw per-light shadowmask is submitted by Native Scene before Composite and FSR.");
 	ImGui::SeparatorText("Diagnostics");
 	ImGui::Text("Matched LLF/SCM lights: %u", matched);
 	ImGui::TextDisabled("Matched lights inherit SCM values except when authored flicker/pulse is forced static.");
@@ -144,6 +150,7 @@ void DX12NativeScene::LoadSettings(json& input)
     lightIntensity.store(std::clamp(input.value("Intensity", 1.0f), 0.0f, 8.0f), std::memory_order_release);
     emitterSize.store(std::clamp(input.value("EmitterSize", 1.0f), 0.1f, 8.0f), std::memory_order_release);
     lightMatchDistance.store(std::clamp(input.value("MatchDistance", 64.0f), 1.0f, 256.0f), std::memory_order_release);
+    shadowSamplingMode.store(std::clamp(input.value("RawSamplingMode", 0), 0, 7), std::memory_order_release);
 }
 void DX12NativeScene::SaveSettings(json& output)
 {
@@ -151,7 +158,8 @@ void DX12NativeScene::SaveSettings(json& output)
         {"Reach", lightReach.load(std::memory_order_acquire)},
         {"Intensity", lightIntensity.load(std::memory_order_acquire)},
         {"EmitterSize", emitterSize.load(std::memory_order_acquire)},
-        {"MatchDistance", lightMatchDistance.load(std::memory_order_acquire)}};
+        {"MatchDistance", lightMatchDistance.load(std::memory_order_acquire)},
+        {"RawSamplingMode", shadowSamplingMode.load(std::memory_order_acquire)}};
 }
 void DX12NativeScene::RestoreDefaultSettings()
 {
@@ -160,6 +168,7 @@ void DX12NativeScene::RestoreDefaultSettings()
     lightIntensity.store(1.0f, std::memory_order_release);
     emitterSize.store(1.0f, std::memory_order_release);
     lightMatchDistance.store(64.0f, std::memory_order_release);
+    shadowSamplingMode.store(0, std::memory_order_release);
 }
 
 void DX12NativeScene::ObserveRuntimeGeometry(RE::BSGeometry* geometry)
@@ -353,6 +362,27 @@ void DX12NativeScene::PreShadowMaps()
 	PublishMatchedLights();
 }
 
+void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*inputs*/)
+{
+	// This hook is installed at the same deferred boundary as open-RT.
+	// No upscaler, SCM matching, coverage certification or diagnostic preview
+	// controls admission of the raw prepared-light RayQuery producer.
+	if (!IsActive() || !globals::game::graphicsState || !globals::game::frameBufferCachedValid)
+		return;
+	const uint32_t frame = globals::game::graphicsState->GetFrameCount();
+	raster.Capture(Util::GetCurrentSceneDepthSRV(false), globals::game::frameBufferCached.nonVR, frame);
+	const auto captured = raster.Get(frame);
+	if (!captured)
+		return;
+	const auto prepared = GetLights();
+	const auto geometry = GetScene();
+	if (prepared && geometry && geometry->acceleration) {
+		shadowTrace.Dispatch(captured, geometry, prepared,
+			uint32_t(shadowSamplingMode.load(std::memory_order_acquire)),
+			shadowSamplingPhase.fetch_add(1, std::memory_order_relaxed));
+	}
+}
+
 void DX12NativeScene::UpdateLights()
 {
 	const auto grid = globals::features::dx12Resources.GetGrid();
@@ -453,6 +483,8 @@ void DX12NativeScene::OnRuntimeDisabled()
 		captureFrame = UINT32_MAX;
 		captureFrameBytes = captureFrameShapes = 0;
 	}
+	raster.Reset();
+	shadowTrace.Reset();
 	scene.Clear();
 	preparedCache.clear();
 	preparedCacheRevision = std::numeric_limits<uint64_t>::max();
