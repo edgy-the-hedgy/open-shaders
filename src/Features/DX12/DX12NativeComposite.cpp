@@ -457,6 +457,15 @@ std::shared_ptr<DX12NativeComposite::Surfaces> DX12NativeComposite::MakeSurfaces
 	next->rasterSource.copy_from(rasterColor);
 	next->depthSource.copy_from(depth);
 	next->shadowMask->SetName(L"DX12NativeComposite::ShadowMask");
+	// A persistent R32_FLOAT 2D array, one octahedral omnidirectional depth
+	// map per prepared light. It stays resident across camera turns.
+	const auto atlasDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32_FLOAT,
+		kLightSpaceMapSize, kLightSpaceMapSize, UINT16(DX12::kMaximumShadowLights), 1, 1, 0,
+		D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+	if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &atlasDesc,
+			D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(next->lightSpaceAtlas.put()))))
+		return nullptr;
+	next->lightSpaceAtlas->SetName(L"DX12NativeComposite::IndependentLightSpaceShadows");
 	if (wantDebug) {
 		const auto debugDesc = CD3DX12_RESOURCE_DESC::Tex2D(raster.Format, raster.Width, raster.Height,
 			1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
@@ -471,7 +480,9 @@ std::shared_ptr<DX12NativeComposite::Surfaces> DX12NativeComposite::MakeSurfaces
 	}
 	D3D12_DESCRIPTOR_HEAP_DESC descriptorDesc{};
 	descriptorDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-	descriptorDesc.NumDescriptors = wantDebug ? 5 : 2;
+	// [0] depth SRV, [1] visibility-mask UAV, [2] per-light depth UAV,
+	// [3] per-light depth SRV, [4..6] optional diagnostic color/mask/output.
+	descriptorDesc.NumDescriptors = wantDebug ? 7 : 4;
 	descriptorDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 	if (FAILED(device->CreateDescriptorHeap(&descriptorDesc, IID_PPV_ARGS(next->descriptors.put()))))
 		return nullptr;
@@ -487,13 +498,25 @@ std::shared_ptr<DX12NativeComposite::Surfaces> DX12NativeComposite::MakeSurfaces
 	uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
 	uav.Format = DXGI_FORMAT_R16_FLOAT;
 	device->CreateUnorderedAccessView(next->shadowMask.get(), nullptr, &uav, cpu(1));
+	D3D12_UNORDERED_ACCESS_VIEW_DESC atlasUav{};
+	atlasUav.Format = DXGI_FORMAT_R32_FLOAT;
+	atlasUav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+	atlasUav.Texture2DArray.ArraySize = DX12::kMaximumShadowLights;
+	device->CreateUnorderedAccessView(next->lightSpaceAtlas.get(), nullptr, &atlasUav, cpu(2));
+	D3D12_SHADER_RESOURCE_VIEW_DESC atlasSrv{};
+	atlasSrv.Format = DXGI_FORMAT_R32_FLOAT;
+	atlasSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	atlasSrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+	atlasSrv.Texture2DArray.ArraySize = DX12::kMaximumShadowLights;
+	atlasSrv.Texture2DArray.MipLevels = 1;
+	device->CreateShaderResourceView(next->lightSpaceAtlas.get(), &atlasSrv, cpu(3));
 	if (wantDebug) {
 		srv.Format = raster.Format;
-		device->CreateShaderResourceView(rasterColor, &srv, cpu(2));
+		device->CreateShaderResourceView(rasterColor, &srv, cpu(4));
 		srv.Format = DXGI_FORMAT_R16_FLOAT;
-		device->CreateShaderResourceView(next->shadowMask.get(), &srv, cpu(3));
+		device->CreateShaderResourceView(next->shadowMask.get(), &srv, cpu(5));
 		uav.Format = raster.Format;
-		device->CreateUnorderedAccessView(next->diagnosticColor.get(), nullptr, &uav, cpu(4));
+		device->CreateUnorderedAccessView(next->diagnosticColor.get(), nullptr, &uav, cpu(6));
 	}
 	next->width = width;
 	next->height = height;
