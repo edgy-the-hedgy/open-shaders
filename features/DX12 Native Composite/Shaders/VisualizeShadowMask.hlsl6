@@ -1,18 +1,48 @@
-// Monochrome visibility inspection only; never darken scene RGB.
+// Per-light visibility preview. No camera-facing light test and no coverage
+// certification: -1 combines every prepared light's occlusion in every batch.
+// This is a diagnostic field, not a substitute for correct raster-light composition.
 Texture2DArray<uint4> NativeShadowBits : register(t1);
 RWTexture2D<float4> DebugColor : register(u0);
-cbuffer DiagnosticOptions : register(b0) { uint2 RenderSize; float Darkening; uint BatchCount; };
-[numthreads(8,8,1)]
+cbuffer DiagnosticOptions : register(b0)
+{
+    uint2 RenderSize;
+    float Darkening;
+    uint BatchCount;
+    int SelectedLight;
+    uint3 Padding;
+};
+
+[numthreads(8, 8, 1)]
 void main(uint3 tid : SV_DispatchThreadID)
 {
     uint2 p = tid.xy;
     if (any(p >= RenderSize)) return;
-    uint coverage = 0, blocked = 0;
-    [loop] for (uint batch = 0; batch < BatchCount; ++batch) {
-        uint4 bits = NativeShadowBits.Load(int4(p, batch, 0));
-        coverage += countbits(bits.z) + countbits(bits.w);
-        blocked += countbits(bits.x) + countbits(bits.y);
+
+    bool hasCoverage = false;
+    bool hasOcclusion = false;
+    if (SelectedLight >= 0) {
+        const uint index = uint(SelectedLight);
+        const uint layer = index / 64u;
+        if (layer < BatchCount) {
+            uint4 bits = NativeShadowBits.Load(int4(p, layer, 0));
+            uint mask = 1u << (index & 31u);
+            if ((index & 63u) < 32u) {
+                hasCoverage = (bits.z & mask) != 0u;
+                hasOcclusion = (bits.x & mask) != 0u;
+            } else {
+                hasCoverage = (bits.w & mask) != 0u;
+                hasOcclusion = (bits.y & mask) != 0u;
+            }
+        }
+    } else {
+        // Union, not an average: a shadow from one light must not fade away
+        // merely because more prepared lights illuminate that same receiver.
+        [loop] for (uint layer = 0; layer < BatchCount; ++layer) {
+            uint4 bits = NativeShadowBits.Load(int4(p, layer, 0));
+            hasCoverage = hasCoverage || any(bits.zw != uint2(0, 0));
+            hasOcclusion = hasOcclusion || any(bits.xy != uint2(0, 0));
+        }
     }
-    float visibility = coverage ? saturate(1.0 - (float(blocked) / coverage) * Darkening) : 1.0;
-    DebugColor[p] = float4(visibility, visibility, visibility, 1.0);
+    float visibility = hasCoverage && hasOcclusion ? saturate(1.0 - Darkening) : 1.0;
+    DebugColor[p] = float4(visibility.xxx, 1.0);
 }

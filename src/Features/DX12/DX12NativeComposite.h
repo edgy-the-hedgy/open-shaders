@@ -118,6 +118,7 @@ private:
 	std::atomic<float> shadowIntensity{ 1.0f };
 	std::atomic<bool> diagnosticDarkenEnabled{ false };
 	std::atomic<float> diagnosticDarkenStrength{ 1.0f };
+	std::atomic<int> diagnosticSelectedLight{ -1 };
 	std::atomic<bool> disableMatchedRasterStatic{ false };
 	// Classify using the companion's TES_LIGHT_FLAGS and live SCM movement state.
 	std::atomic<bool> includeStationaryLights{ true };

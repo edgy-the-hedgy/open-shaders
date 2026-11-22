@@ -34,6 +34,8 @@ namespace
 		uint32_t width = 0, height = 0;
 		float darkening = 1.0f;
 		uint32_t batchCount = 0;
+		int32_t selectedLight = -1; // -1: union across every prepared emitter
+		uint32_t padding[3]{};
 	};
 	struct GpuLight
 	{
@@ -43,7 +45,7 @@ namespace
 	};
 	static_assert(sizeof(MaskCamera) == 176);
 	static_assert(sizeof(GpuLight) == 48);
-	static_assert(sizeof(DiagnosticOptions) == 16);
+	static_assert(sizeof(DiagnosticOptions) == 32);
 
 	std::vector<char> ReadShader(const char* path)
 	{
@@ -162,6 +164,11 @@ void DX12NativeComposite::DrawSettings()
 		float power = diagnosticDarkenStrength.load(std::memory_order_relaxed);
 		if (ImGui::SliderFloat("Visibility contrast", &power, 0.0f, 4.0f, "%.2fx"))
 			diagnosticDarkenStrength.store(power, std::memory_order_release);
+		int selected = diagnosticSelectedLight.load(std::memory_order_relaxed);
+		const int maxIndex = std::max(0, int(lastPreparedLightCount.load(std::memory_order_relaxed)) - 1);
+		if (ImGui::SliderInt("Preview prepared light (-1 = all)", &selected, -1, maxIndex))
+			diagnosticSelectedLight.store(selected, std::memory_order_release);
+		ImGui::TextDisabled("All = union of occlusion from every prepared light, even off-screen emitters.");
 	}
 	ImGui::TextDisabled("Debug shows monochrome occlusion; never multiplies raster lighting.");
 	bool rasterOff = disableMatchedRasterStatic.load(std::memory_order_relaxed);
@@ -264,6 +271,7 @@ void DX12NativeComposite::LoadSettings(json& input)
 	diagnosticDarkenEnabled.store(input.value("DiagnosticDarken", false), std::memory_order_release);
 	const float test = input.value("DiagnosticDarkening", 1.0f);
 	diagnosticDarkenStrength.store(std::clamp(std::isfinite(test) ? test : 1.0f, 0.0f, 4.0f), std::memory_order_release);
+	diagnosticSelectedLight.store(std::max(-1, input.value("DiagnosticSelectedLight", -1)), std::memory_order_release);
 	disableMatchedRasterStatic.store(input.value("DisableMatchedRasterStatic", false), std::memory_order_release);
 	includeStationaryLights.store(true, std::memory_order_release);
 	includeFlickeringLights.store(input.value("ForcePreparedFlickerStatic", false), std::memory_order_release);
@@ -279,6 +287,7 @@ void DX12NativeComposite::SaveSettings(json& output)
 		{ "ShadowMaskIntensity", shadowIntensity.load(std::memory_order_acquire) },
 		{ "DiagnosticDarken", diagnosticDarkenEnabled.load(std::memory_order_acquire) },
 		{ "DiagnosticDarkening", diagnosticDarkenStrength.load(std::memory_order_acquire) },
+		{ "DiagnosticSelectedLight", diagnosticSelectedLight.load(std::memory_order_acquire) },
 		{ "DisableMatchedRasterStatic", disableMatchedRasterStatic.load(std::memory_order_acquire) },
 		{ "ForcePreparedFlickerStatic", includeFlickeringLights.load(std::memory_order_acquire) } };
 }
@@ -290,6 +299,7 @@ void DX12NativeComposite::RestoreDefaultSettings()
 	shadowIntensity.store(1.0f, std::memory_order_release);
 	diagnosticDarkenEnabled.store(false, std::memory_order_release);
 	diagnosticDarkenStrength.store(1.0f, std::memory_order_release);
+	diagnosticSelectedLight.store(-1, std::memory_order_release);
 	disableMatchedRasterStatic.store(false, std::memory_order_release);
 	includeStationaryLights.store(true, std::memory_order_release);
 	includeFlickeringLights.store(false, std::memory_order_release);
@@ -439,12 +449,16 @@ std::shared_ptr<DX12NativeComposite::Surfaces> DX12NativeComposite::MakeSurfaces
         raster.Format == DXGI_FORMAT_UNKNOWN) return nullptr;
     bool wantDebug = diagnosticDarkenEnabled.load(std::memory_order_acquire) &&
         diagnosticPipeline && !diagnosticUnavailable.load(std::memory_order_acquire);
+    // The raster input is often R10G10B10A2, which may lack typed UAV store
+    // support. Preview into a dedicated 16-bit float target instead; FSR reads
+    // this target only when the diagnostic is enabled.
+    constexpr DXGI_FORMAT debugFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
     if (wantDebug) {
         D3D12_FEATURE_DATA_FORMAT_SUPPORT support{};
-        support.Format = raster.Format;
+        support.Format = debugFormat;
         if (FAILED(device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support))) ||
             !(support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE)) {
-            diagnosticFailureReason.store(std::make_shared<const std::string>("Debug color UAV format not supported"), std::memory_order_release);
+            diagnosticFailureReason.store(std::make_shared<const std::string>("R16G16B16A16_FLOAT diagnostic UAV unsupported"), std::memory_order_release);
             diagnosticUnavailable.store(true, std::memory_order_release);
             wantDebug = false;
         }
@@ -469,7 +483,7 @@ std::shared_ptr<DX12NativeComposite::Surfaces> DX12NativeComposite::MakeSurfaces
     next->rasterSource.copy_from(rasterColor);
     next->depthSource.copy_from(depth);
     if (wantDebug) {
-        const auto debugDesc = CD3DX12_RESOURCE_DESC::Tex2D(raster.Format, raster.Width, raster.Height,
+        const auto debugDesc = CD3DX12_RESOURCE_DESC::Tex2D(debugFormat, width, height,
             1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
         if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &debugDesc,
                 D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(next->diagnosticColor.put())))) {
@@ -512,7 +526,7 @@ std::shared_ptr<DX12NativeComposite::Surfaces> DX12NativeComposite::MakeSurfaces
         uav = {};
         uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
         uav.Texture2D.MipSlice = 0;
-        uav.Format = raster.Format;
+        uav.Format = debugFormat;
         device->CreateUnorderedAccessView(next->diagnosticColor.get(), nullptr, &uav, cpu(5));
     }
     next->width = width;
@@ -653,9 +667,11 @@ std::optional<DX12NativeComposite::Submission> DX12NativeComposite::Dispatch(
         availableUploads.pop_front();
     } else ++uploadPairs;
     const bool makeDiagnostic = target->diagnosticColor && diagnosticPipeline;
+    const int selected = diagnosticSelectedLight.load(std::memory_order_acquire);
     const DiagnosticOptions diagnostic{width, height,
         diagnosticDarkenStrength.load(std::memory_order_acquire) *
-            shadowIntensity.load(std::memory_order_acquire), batches};
+            shadowIntensity.load(std::memory_order_acquire), batches,
+        selected >= 0 && uint32_t(selected) < count ? selected : -1};
     if (!Upload(buffers.camera, cameras.data(), cameras.size() * sizeof(cameras[0]),
                 cameras.size() * sizeof(cameras[0])) ||
         !Upload(buffers.lights, lightUpload.data(), lightUpload.size() * sizeof(GpuLight),
