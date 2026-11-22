@@ -1,15 +1,18 @@
 // Monochrome visibility inspection only; never darken scene RGB.
-Texture2D<uint4> NativeShadowBits : register(t1);
+Texture2DArray<uint4> NativeShadowBits : register(t1);
 RWTexture2D<float4> DebugColor : register(u0);
-cbuffer DiagnosticOptions : register(b0) { uint2 RenderSize; float Darkening; float Padding; };
+cbuffer DiagnosticOptions : register(b0) { uint2 RenderSize; float Darkening; uint BatchCount; };
 [numthreads(8,8,1)]
 void main(uint3 tid : SV_DispatchThreadID)
 {
     uint2 p = tid.xy;
     if (any(p >= RenderSize)) return;
-    uint4 bits = NativeShadowBits.Load(int3(p,0));
-    uint coverage = countbits(bits.z) + countbits(bits.w);
-    uint blocked = countbits(bits.x) + countbits(bits.y);
+    uint coverage = 0, blocked = 0;
+    [loop] for (uint batch = 0; batch < BatchCount; ++batch) {
+        uint4 bits = NativeShadowBits.Load(int4(p, batch, 0));
+        coverage += countbits(bits.z) + countbits(bits.w);
+        blocked += countbits(bits.x) + countbits(bits.y);
+    }
     float visibility = coverage ? saturate(1.0 - (float(blocked) / coverage) * Darkening) : 1.0;
     DebugColor[p] = float4(visibility, visibility, visibility, 1.0);
 }

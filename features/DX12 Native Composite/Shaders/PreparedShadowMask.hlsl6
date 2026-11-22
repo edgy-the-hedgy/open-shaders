@@ -6,7 +6,7 @@ Texture2D<float> SceneDepth : register(t1);
 
 struct PreparedLight { float4 positionRadius; float4 colorFade; float4 emitterFalloff; };
 StructuredBuffer<PreparedLight> Lights : register(t2);
-RWTexture2D<uint4> ShadowBits : register(u0);
+RWTexture2DArray<uint4> ShadowBits : register(u0);
 
 cbuffer Camera : register(b0)
 {
@@ -19,7 +19,7 @@ cbuffer Camera : register(b0)
     uint SamplingMode;
     uint SamplingPhase;
     uint SpatialReconstruction;
-    uint Padding;
+    uint BatchIndex;
 };
 
 bool TraceShadowAtPixel(uint2 p, uint mode, uint phase)
@@ -45,7 +45,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     uint2 pixel = tid.xy;
     if (any(pixel >= Size)) return;
     if (!TraceShadowAtPixel(pixel, SamplingMode, SamplingPhase)) {
-        ShadowBits[pixel] = uint4(0,0,0,0);
+        ShadowBits[uint3(pixel, BatchIndex)] = uint4(0,0,0,0);
         return;
     }
     const float depth = SceneDepth.Load(int3(pixel, 0));
@@ -58,12 +58,14 @@ void main(uint3 tid : SV_DispatchThreadID)
     view /= view.w;
     const float3 receiver = mul(ViewInverse, float4(view.xyz, 1.0)).xyz + CameraAdjust.xyz;
     uint4 results = uint4(0,0,0,0);
-    [loop] for (uint i = 0; i < LightCount && i < 64u; ++i) {
-        const PreparedLight light = Lights[i];
+    // Ray from visible receiver to world-space emitter: emitters never have
+    // to be on-screen. Each batch contributes its own per-light bitset layer.
+    [loop] for (uint i = 0; i < 64u && BatchIndex * 64u + i < LightCount; ++i) {
+        const PreparedLight light = Lights[BatchIndex * 64u + i];
         const float3 toLight = light.positionRadius.xyz - receiver;
         const float distance = length(toLight);
         const float radius = light.positionRadius.w;
-        if (distance <= 4.0 || distance >= radius) continue;
+        if (distance <= max(0.01, radius * 0.0001) || distance >= radius) continue;
         const float weight = pow(saturate(1.0 - distance / radius), clamp(light.emitterFalloff.y, 0.01, 8.0));
         if (weight < 0.001) continue;
         const uint bit = 1u << (i & 31u);
@@ -71,7 +73,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         RayDesc ray;
         ray.Origin = receiver;
         ray.Direction = toLight / distance;
-        ray.TMin = max(1.0, distance * 0.001);
+        ray.TMin = max(0.01, distance * 0.001);
         ray.TMax = distance - ray.TMin;
         if (ray.TMax <= ray.TMin) continue;
         RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
@@ -81,5 +83,5 @@ void main(uint3 tid : SV_DispatchThreadID)
             if (i < 32u) results.x |= bit; else results.y |= bit;
         }
     }
-    ShadowBits[pixel] = results;
+    ShadowBits[uint3(pixel, BatchIndex)] = results;
 }

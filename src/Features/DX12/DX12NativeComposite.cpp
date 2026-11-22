@@ -27,12 +27,13 @@ namespace
 		uint32_t width, height, count;
 		float shadowIntensity = 1.0f;
 		uint32_t samplingMode = 0, samplingPhase = 0;
-		uint32_t spatialReconstruction = 1, padding1 = 0;
+		uint32_t spatialReconstruction = 1, batchIndex = 0;
 	};
 	struct alignas(16) DiagnosticOptions
 	{
 		uint32_t width = 0, height = 0;
-		float darkening = 1.0f, padding = 0.0f;
+		float darkening = 1.0f;
+		uint32_t batchCount = 0;
 	};
 	struct GpuLight
 	{
@@ -147,7 +148,8 @@ void DX12NativeComposite::DrawSettings()
 		includeFlickeringLights.store(forceStatic, std::memory_order_release);
 		lastNativeShadowFrame.store(0, std::memory_order_release);
 	}
-	ImGui::TextDisabled("Off = preserve vanilla flickering shadow behavior; no moving-light observer is installed.");
+	ImGui::TextDisabled("All prepared lights are traced. Off preserves vanilla flicker/pulse raster shadow behavior.");
+	ImGui::TextDisabled("Force static overrides inherited SCM values for authored flicker/pulse emitters.");
 	float intensity = shadowIntensity.load(std::memory_order_relaxed);
 	if (ImGui::SliderFloat("Shadowmask intensity", &intensity, 0.0f, 4.0f, "%.2fx"))
 		shadowIntensity.store(intensity, std::memory_order_release);
@@ -424,12 +426,14 @@ bool DX12NativeComposite::EnsurePipelines(ID3D12Device* candidate)
 }
 
 std::shared_ptr<DX12NativeComposite::Surfaces> DX12NativeComposite::MakeSurfaces(
-    ID3D12Resource* rasterColor, ID3D12Resource* depth, uint32_t width, uint32_t height)
+    ID3D12Resource* rasterColor, ID3D12Resource* depth, uint32_t width, uint32_t height, uint32_t batches)
 {
     const auto raster = rasterColor->GetDesc();
     const auto z = depth->GetDesc();
     const DXGI_FORMAT depthSrv = z.Format == DXGI_FORMAT_R32_TYPELESS ? DXGI_FORMAT_R32_FLOAT : z.Format;
-    if (!width || !height || raster.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+    if (!width || !height || !batches ||
+        batches > D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION ||
+        raster.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
         z.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || width > raster.Width || height > raster.Height ||
         width > z.Width || height > z.Height || depthSrv != DXGI_FORMAT_R32_FLOAT ||
         raster.Format == DXGI_FORMAT_UNKNOWN) return nullptr;
@@ -447,12 +451,15 @@ std::shared_ptr<DX12NativeComposite::Surfaces> DX12NativeComposite::MakeSurfaces
     }
     if (surfaces && surfaces->rasterSource.get() == rasterColor && surfaces->depthSource.get() == depth &&
         surfaces->width == width && surfaces->height == height &&
+        surfaces->batchCount == batches &&
         surfaces->rasterFormat == raster.Format && surfaces->depthFormat == z.Format &&
         bool(surfaces->diagnosticColor) == wantDebug) return surfaces;
     auto next = std::make_shared<Surfaces>();
     const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+    // Each array slice preserves independent coverage/occlusion for 64 lights.
+    // Neither camera-frustum emitter culling nor a single 64-light truncation applies.
     const auto bitsDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32G32B32A32_UINT,
-        width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+        width, height, static_cast<UINT16>(batches), 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
     if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &bitsDesc,
             D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(next->rawShadowMask.put()))) ||
         FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &bitsDesc,
@@ -485,10 +492,17 @@ std::shared_ptr<DX12NativeComposite::Surfaces> DX12NativeComposite::MakeSurfaces
     srv.Format = depthSrv;
     device->CreateShaderResourceView(depth, &srv, cpu(0));
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
-    uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+    uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+    uav.Texture2DArray.ArraySize = batches;
+    uav.Texture2DArray.FirstArraySlice = 0;
     uav.Format = DXGI_FORMAT_R32G32B32A32_UINT;
     device->CreateUnorderedAccessView(next->rawShadowMask.get(), nullptr, &uav, cpu(1));
     srv.Format = DXGI_FORMAT_R32G32B32A32_UINT;
+    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+    srv.Texture2DArray.MostDetailedMip = 0;
+    srv.Texture2DArray.MipLevels = 1;
+    srv.Texture2DArray.FirstArraySlice = 0;
+    srv.Texture2DArray.ArraySize = batches;
     device->CreateShaderResourceView(next->rawShadowMask.get(), &srv, cpu(2));
     device->CreateUnorderedAccessView(next->shadowMask.get(), nullptr, &uav, cpu(3));
     device->CreateShaderResourceView(next->shadowMask.get(), &srv, cpu(4));
@@ -498,6 +512,7 @@ std::shared_ptr<DX12NativeComposite::Surfaces> DX12NativeComposite::MakeSurfaces
     }
     next->width = width;
     next->height = height;
+    next->batchCount = batches;
     next->rasterFormat = raster.Format;
     next->depthFormat = z.Format;
     surfaces = next;
@@ -507,8 +522,12 @@ std::shared_ptr<DX12NativeComposite::Surfaces> DX12NativeComposite::MakeSurfaces
 bool DX12NativeComposite::Upload(winrt::com_ptr<ID3D12Resource>& buffer, const void* source,
 	size_t bytes, size_t capacity)
 {
-	if (!source || !bytes || bytes > capacity || capacity > 64 * 1024)
+	if (!source || !bytes || bytes > capacity || capacity > 64ull * 1024 * 1024)
 		return false;
+	// A previously fenced upload pair can be reused for larger light sets only
+	// after allocating sufficient upload storage; never overrun the old buffer.
+	if (buffer && buffer->GetDesc().Width < capacity)
+		buffer = nullptr;
 	if (!buffer) {
 		const auto desc = CD3DX12_RESOURCE_DESC::Buffer((capacity + 255) & ~size_t(255));
 		const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
@@ -564,23 +583,31 @@ std::optional<DX12NativeComposite::Submission> DX12NativeComposite::Dispatch(
         lastDispatchStatus.store(DispatchStatus::SceneNotReady, std::memory_order_release);
         return std::nullopt;
     }
-    std::array<GpuLight, DX12::kMaximumShadowLights> lightUpload{};
-    const bool stationary = includeStationaryLights.load(std::memory_order_acquire);
-    const bool flickering = includeFlickeringLights.load(std::memory_order_acquire);
-    uint32_t count = 0, stationaryCount = 0, flickeringCount = 0;
-    for (uint32_t index = 0; index < lightSnapshot->count; ++index) {
-        const auto& resolved = lightSnapshot->values[index];
+    std::vector<GpuLight> lightUpload;
+    lightUpload.reserve(lightSnapshot->values.size());
+    uint32_t stationaryCount = 0, flickeringCount = 0;
+    for (const auto& resolved : lightSnapshot->values) {
         const auto& light = resolved.light;
-        if (resolved.flickeringOrMoving ? !flickering : !stationary) continue;
-        if (!light.referenceID || !std::isfinite(light.radius) || light.radius <= 4.0f ||
+        // Include all valid prepared lights, even if off-screen or flickering.
+        // The force-static toggle controls raster inheritance/offloading only.
+        if (!std::isfinite(light.radius) || light.radius <= 0.0f ||
             !std::isfinite(light.emitterRadius) || !std::isfinite(light.falloffExponent) ||
             !std::isfinite(light.position.x) || !std::isfinite(light.position.y) ||
             !std::isfinite(light.position.z)) continue;
         if (resolved.flickeringOrMoving) ++flickeringCount; else ++stationaryCount;
-        lightUpload[count++] = { {light.position.x, light.position.y, light.position.z, light.radius},
+        lightUpload.push_back({ {light.position.x, light.position.y, light.position.z, light.radius},
             {light.color.x, light.color.y, light.color.z, light.fade},
-            {light.emitterRadius, light.falloffExponent, 0, 0} };
+            {light.emitterRadius, light.falloffExponent, 0, 0} });
     }
+    // The D3D12 array-slice limit is a hardware constraint. Never silently drop
+    // unrepresented prepared lights: fail this submission and keep raster fallback.
+    if (lightUpload.size() > size_t(D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION) *
+                                  DX12::kMaximumShadowLights) {
+        lastDispatchStatus.store(DispatchStatus::SurfacesUnavailable, std::memory_order_release);
+        return std::nullopt;
+    }
+    const uint32_t count = static_cast<uint32_t>(lightUpload.size());
+    const uint32_t batches = count ? 1u + (count - 1u) / DX12::kMaximumShadowLights : 0u;
     lastPreparedLightCount.store(count, std::memory_order_relaxed);
     lastStationaryCount.store(stationaryCount, std::memory_order_relaxed);
     lastFlickeringCount.store(flickeringCount, std::memory_order_relaxed);
@@ -589,18 +616,28 @@ std::optional<DX12NativeComposite::Submission> DX12NativeComposite::Dispatch(
         return std::nullopt;
     }
     Collect();
-    auto target = MakeSurfaces(rasterColor, depth, width, height);
+    auto target = MakeSurfaces(rasterColor, depth, width, height, batches);
     if (!target) {
         lastDispatchStatus.store(DispatchStatus::SurfacesUnavailable, std::memory_order_release);
         return std::nullopt;
     }
-    const MaskCamera camera{globals::game::frameBufferCached.GetCameraProjInverse(),
+    MaskCamera camera{globals::game::frameBufferCached.GetCameraProjInverse(),
         globals::game::frameBufferCached.GetCameraViewInverse(),
         globals::game::frameBufferCached.GetCameraPosAdjust(), width, height, count,
         shadowIntensity.load(std::memory_order_acquire),
         uint32_t(std::clamp(samplingMode.load(std::memory_order_acquire), 0, 7)),
         samplingPhase.load(std::memory_order_relaxed),
         spatialReconstruction.load(std::memory_order_acquire) ? 1u : 0u};
+    // D3D12 root CBV addresses must be aligned to 256 bytes. Each dispatch
+    // has its own immutable camera constants (batch index), avoiding GPU reads
+    // from CPU-overwritten constants while command lists are in flight.
+    constexpr size_t kCameraStride = D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
+    static_assert(sizeof(MaskCamera) <= kCameraStride);
+    std::vector<std::array<uint8_t, kCameraStride>> cameras(batches);
+    for (uint32_t batch = 0; batch < batches; ++batch) {
+        camera.batchIndex = batch;
+        std::memcpy(cameras[batch].data(), &camera, sizeof(camera));
+    }
     if (availableUploads.empty() && uploadPairs == kMaximumUploadPairs) {
         lastDispatchStatus.store(DispatchStatus::UploadBudgetExhausted, std::memory_order_release);
         return std::nullopt;
@@ -613,9 +650,11 @@ std::optional<DX12NativeComposite::Submission> DX12NativeComposite::Dispatch(
     const bool makeDiagnostic = target->diagnosticColor && diagnosticPipeline;
     const DiagnosticOptions diagnostic{width, height,
         diagnosticDarkenStrength.load(std::memory_order_acquire) *
-            shadowIntensity.load(std::memory_order_acquire), 0.0f};
-    if (!Upload(buffers.camera, &camera, sizeof(camera), sizeof(camera)) ||
-        !Upload(buffers.lights, lightUpload.data(), count * sizeof(GpuLight), sizeof(lightUpload)) ||
+            shadowIntensity.load(std::memory_order_acquire), batches};
+    if (!Upload(buffers.camera, cameras.data(), cameras.size() * sizeof(cameras[0]),
+                cameras.size() * sizeof(cameras[0])) ||
+        !Upload(buffers.lights, lightUpload.data(), lightUpload.size() * sizeof(GpuLight),
+                lightUpload.size() * sizeof(GpuLight)) ||
         (makeDiagnostic && !Upload(buffers.diagnostic, &diagnostic, sizeof(diagnostic), sizeof(diagnostic)))) {
         availableUploads.push_back(std::move(buffers));
         lastDispatchStatus.store(DispatchStatus::UploadFailed, std::memory_order_release);
@@ -640,9 +679,12 @@ std::optional<DX12NativeComposite::Submission> DX12NativeComposite::Dispatch(
     commands->SetComputeRootDescriptorTable(1, Descriptor(*target,0));
     commands->SetComputeRootShaderResourceView(2, submission.lights->GetGPUVirtualAddress());
     commands->SetComputeRootDescriptorTable(3, Descriptor(*target,1));
-    commands->SetComputeRootConstantBufferView(4, submission.camera->GetGPUVirtualAddress());
-    commands->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
-    // The sparse raw field is read only after the full RayQuery dispatch.
+    for (uint32_t batch = 0; batch < batches; ++batch) {
+        commands->SetComputeRootConstantBufferView(4,
+            submission.camera->GetGPUVirtualAddress() + uint64_t(batch) * kCameraStride);
+        commands->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
+    }
+    // The sparse raw field is read only after all RayQuery batches finish.
     std::array<D3D12_RESOURCE_BARRIER, 2> beginReconstruction{
         CD3DX12_RESOURCE_BARRIER::Transition(target->rawShadowMask.get(),
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
@@ -654,8 +696,11 @@ std::optional<DX12NativeComposite::Submission> DX12NativeComposite::Dispatch(
     commands->SetComputeRootDescriptorTable(0, Descriptor(*target,0));
     commands->SetComputeRootDescriptorTable(1, Descriptor(*target,2));
     commands->SetComputeRootDescriptorTable(2, Descriptor(*target,3));
-    commands->SetComputeRootConstantBufferView(3, submission.camera->GetGPUVirtualAddress());
-    commands->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
+    for (uint32_t batch = 0; batch < batches; ++batch) {
+        commands->SetComputeRootConstantBufferView(3,
+            submission.camera->GetGPUVirtualAddress() + uint64_t(batch) * kCameraStride);
+        commands->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
+    }
     const auto rawDone = CD3DX12_RESOURCE_BARRIER::Transition(target->rawShadowMask.get(),
         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
     commands->ResourceBarrier(1, &rawDone);

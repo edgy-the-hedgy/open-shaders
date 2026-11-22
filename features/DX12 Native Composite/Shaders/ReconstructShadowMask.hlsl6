@@ -2,8 +2,8 @@
 // This is a separate Native Composite stage, not part of light-space tracing.
 // Skipped receivers never masquerade as valid unshadowed pixels.
 Texture2D<float> SceneDepth : register(t1);
-Texture2D<uint4> RawShadowBits : register(t4);
-RWTexture2D<uint4> ReconstructedBits : register(u0);
+Texture2DArray<uint4> RawShadowBits : register(t4);
+RWTexture2DArray<uint4> ReconstructedBits : register(u0);
 cbuffer Camera : register(b0)
 {
     row_major float4x4 ProjectionInverse;
@@ -15,7 +15,7 @@ cbuffer Camera : register(b0)
     uint SamplingMode;
     uint SamplingPhase;
     uint SpatialReconstruction;
-    uint Padding;
+    uint BatchIndex;
 };
 bool Traced(uint2 p)
 {
@@ -40,7 +40,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     uint2 pixel = tid.xy;
     if (any(pixel >= Size)) return;
     if (Traced(pixel) || SpatialReconstruction == 0u) {
-        ReconstructedBits[pixel] = RawShadowBits.Load(int3(pixel,0));
+        ReconstructedBits[uint3(pixel, BatchIndex)] = RawShadowBits.Load(int4(pixel, BatchIndex, 0));
         return;
     }
     float targetDepth = SceneDepth.Load(int3(pixel,0));
@@ -60,7 +60,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                 float score = delta + float(x*x+y*y) * 0.00001;
                 if (score < best) {
                     best = score;
-                    selected = RawShadowBits.Load(int3(p,0));
+                    selected = RawShadowBits.Load(int4(p, BatchIndex, 0));
                     found = true;
                 }
             }
@@ -68,5 +68,5 @@ void main(uint3 tid : SV_DispatchThreadID)
         if (found) break;
     }
     // No depth-compatible sample: leave coverage absent rather than invent occlusion.
-    ReconstructedBits[pixel] = selected;
+    ReconstructedBits[uint3(pixel, BatchIndex)] = selected;
 }
