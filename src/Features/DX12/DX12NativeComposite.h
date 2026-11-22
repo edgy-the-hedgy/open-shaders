@@ -32,6 +32,8 @@ struct DX12NativeComposite final : Feature
 		std::shared_ptr<const DX12::AccelerationSceneReady> scene;
 		winrt::com_ptr<ID3D12Resource> camera;
 		winrt::com_ptr<ID3D12Resource> lights;
+		// Lifetime of diagnostic CBV is tied to the same DX12 GPU fence as the mask.
+		winrt::com_ptr<ID3D12Resource> diagnostic;
 		uint64_t geometryRevision = 0, lightRevision = 0;
 		bool usedDiagnostic = false;
 	};

@@ -210,10 +210,11 @@ bool DX12NativeComposite::ShouldDisableMatchedRasterShadows() const
 		pipelineFailed.load(std::memory_order_acquire) ||
 		!ShadowCasterManager::IsActive())
 		return false;
-	const auto* state = globals::game::graphicsState;
+	auto* state = globals::game::graphicsState;
 	if (!state)
 		return false;
 	const uint32_t last = lastValidDiagnosticFrame.load(std::memory_order_acquire);
+	// CommonLibSSE GetFrameCount() is a non-const member returning uint32_t&.
 	const uint32_t now = state->GetFrameCount();
 	// Shadow culling happens BEFORE this frame's native FSR dispatch. A recent
 	// successful prior frame is the strongest usable readiness signal here;
