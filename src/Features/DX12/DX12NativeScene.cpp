@@ -310,6 +310,7 @@ void DX12NativeScene::UpdateLights()
 			light.referenceID = reference ? reference->GetFormID() : 0;
 			light.baseID = properties ? properties->lighFormId : 0;
 			light.shadowSlot = slot >= 0 ? uint32_t(slot) : UINT32_MAX;
+			light.moving = shadow->dynamic;
 			light.position = { origin.x, origin.y, origin.z };
 			if (properties) {
 				light.color = { properties->diffuse.red, properties->diffuse.green, properties->diffuse.blue };

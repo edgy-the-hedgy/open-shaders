@@ -17,7 +17,10 @@ namespace DX12
 	{
 		uint32_t referenceID = 0, baseID = 0, shadowSlot = std::numeric_limits<uint32_t>::max();
 		float3 position{}, color{};
-		float radius = 0, fade = 1, emitterRadius = 0, falloffExponent = 1;
+		float radius = 0, fade = 1, emitterRadius = 0;
+		// Runtime SCM does not always supply a falloff exponent: preserve the prepared LIGH record.
+		float falloffExponent = std::numeric_limits<float>::quiet_NaN();
+		bool moving = false;
 	};
 
 	struct LightTuning
@@ -32,6 +35,7 @@ namespace DX12
 		PreparedLight light;
 		uint32_t runtimeShadowSlot = std::numeric_limits<uint32_t>::max();
 		bool matched = false;
+		bool flickeringOrMoving = false;
 	};
 
 	struct ResolvedLights
@@ -51,8 +55,8 @@ namespace DX12
 		const auto finitePoint = [&](const float3& point) {
 			return valid(point.x) && valid(point.y) && valid(point.z);
 		};
-		if (!finitePoint(camera))
-			return output;
+		// Keep legacy call ABI but do not use camera orientation or position to select shadow lights.
+		(void)camera;
 		const auto bounded = [&](float value, float fallback, float low, float high) {
 			return std::clamp(valid(value) ? value : fallback, low, high);
 		};
@@ -71,21 +75,23 @@ namespace DX12
 				valid(light.radius) && light.radius > 0 && valid(light.fade) &&
 				valid(light.emitterRadius) && valid(light.falloffExponent))
 				candidates.push_back(&light);
-		const auto nearer = [&](const auto* a, const auto* b) {
-			const auto da = squaredDistance(a->position, camera), db = squaredDistance(b->position, camera);
-			return da == db ? a->referenceID < b->referenceID : da < db;
+		const auto stableLight = [](const PreparedLight* a, const PreparedLight* b) {
+			return a->referenceID == b->referenceID ? a->baseID < b->baseID : a->referenceID < b->referenceID;
 		};
 		if (candidates.size() > kMaximumShadowLights) {
-			std::nth_element(candidates.begin(), candidates.begin() + kMaximumShadowLights, candidates.end(), nearer);
+			std::nth_element(candidates.begin(), candidates.begin() + kMaximumShadowLights, candidates.end(), stableLight);
 			candidates.resize(kMaximumShadowLights);
 		}
-		std::ranges::sort(candidates, nearer);
+		std::ranges::sort(candidates, stableLight);
 		std::vector<bool> claimed(runtime.size(), false);
 		for (const auto* candidate : candidates) {
 			if (output.count == kMaximumShadowLights)
 				break;
 			ResolvedLight resolved{};
 			resolved.light = *candidate;
+			// TES_LIGHT_FLAGS: Flicker, FlickerSlow, Pulse and PulseSlow from companion LIGH flags.
+			constexpr uint32_t kFlickerOrPulseFlags = (1u << 3) | (1u << 6) | (1u << 7) | (1u << 8);
+			resolved.flickeringOrMoving = (candidate->flags & kFlickerOrPulseFlags) != 0;
 			size_t match = runtime.size();
 			float best = tuning.matchDistance * tuning.matchDistance;
 			for (size_t i = 0; i < runtime.size(); ++i) {
@@ -111,6 +117,7 @@ namespace DX12
 				claimed[match] = true;
 				resolved.matched = true;
 				resolved.runtimeShadowSlot = runtime[match].shadowSlot;
+				resolved.flickeringOrMoving |= runtime[match].moving;
 				if (tuning.inheritRuntime) {
 					resolved.light.position = runtime[match].position;
 					if (finitePoint(runtime[match].color))
