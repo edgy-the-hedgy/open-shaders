@@ -21,7 +21,7 @@ struct DX12Control final : Feature
 	bool IsAlwaysEnabled() const override { return true; }
 	bool SupportsVR() override { return false; }
 	/** @brief Whether native work may be submitted this frame. */
-	bool IsActive() const { return loaded && active.load(std::memory_order_acquire); }
+	bool IsActive() const { return loaded && bootActive.load(std::memory_order_acquire); }
 	void DrawSettings() override;
 	void LoadSettings(json& input) override;
 	void SaveSettings(json& output) override;
@@ -29,6 +29,8 @@ struct DX12Control final : Feature
 	void OnRuntimeDisabled() override;
 
 private:
-	std::atomic<bool> active{ false };
+	std::atomic<bool> bootActive{ false };
+	bool bootCaptured = false;
+	int selectedTab = 0;
 	Settings settings;
 };

@@ -19,6 +19,8 @@ struct DX12NativeScene final : Feature
 	// Visible for read-only progress and acceleration-scene status; not a
 	// separate enable switch or performance-tuning surface.
 	bool IsAlwaysEnabled() const override { return true; }
+	bool IsInMenu() const override { return false; }
+	bool IsInFeatureList() const override { return false; }
 	bool UsesMainSettings() const override { return false; }
 	void DrawSettings() override;
 	/** @brief Borrow static CPU mesh inputs only within the already installed renderer hook. */

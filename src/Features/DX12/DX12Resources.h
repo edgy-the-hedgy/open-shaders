@@ -148,6 +148,8 @@ struct DX12Resources final : Feature
 	bool IsCore() const override { return true; }
 	// Resources follows the DX12 master and must not be separately disabled.
 	bool IsAlwaysEnabled() const override { return true; }
+	bool IsInMenu() const override { return false; }
+	bool IsInFeatureList() const override { return false; }
 	bool SupportsVR() override { return false; }
 	void DrawSettings() override;
 	void LoadSettings(json& input) override;

@@ -1,15 +1,50 @@
 #include "DX12Control.h"
+#include "DX12Resources.h"
+#include "DX12NativeScene.h"
+#include "DX12NativeComposite.h"
+#include "Globals.h"
+#include "Utils/UI.h"
 
 void DX12Control::DrawSettings()
 {
-	if (ImGui::Checkbox("Enable native DX12 features", &settings.Enabled))
-		active.store(settings.Enabled, std::memory_order_release);
+	// The boot-latched master is the only visible control when DX12 was off at startup.
+	if (!IsActive()) {
+		ImGui::Checkbox("Enable native DX12 features (restart required)", &settings.Enabled);
+		if (settings.Enabled)
+			ImGui::TextDisabled("Restart the game to initialize DX12 Resources, Native Scene and Native Composite.");
+		return;
+	}
+	if (!Util::BeginPillTabBar("##DX12Tabs"))
+		return;
+	// Persistent choice between openings of the settings page; the active selection is
+	// tracked by the pill-tab widget itself while this control stays loaded.
+	const char* labels[] = { "Resources", "Native Scene", "Native Composite", "Master Switch" };
+	for (int index = 0; index < 4; ++index) {
+		if (!Util::BeginPillTabItem(labels[index]))
+			continue;
+		selectedTab = index;
+		switch (index) {
+		case 0: globals::features::dx12Resources.DrawSettings(); break;
+		case 1: globals::features::dx12NativeScene.DrawSettings(); break;
+		case 2: globals::features::dx12NativeComposite.DrawSettings(); break;
+		case 3:
+			ImGui::Checkbox("Enable native DX12 features (restart required)", &settings.Enabled);
+			if (settings.Enabled != bootActive.load(std::memory_order_acquire))
+				ImGui::TextDisabled("A game restart is required; all DX12 features retain their boot state until then.");
+			break;
+		}
+		Util::EndPillTabItem();
+	}
+	Util::EndPillTabBar();
 }
 
 void DX12Control::LoadSettings(json& input)
 {
 	settings.Enabled = input.value("Enabled", false);
-	active.store(settings.Enabled, std::memory_order_release);
+	if (!bootCaptured) {
+		bootActive.store(settings.Enabled, std::memory_order_release);
+		bootCaptured = true;
+	}
 }
 
 void DX12Control::SaveSettings(json& output)
@@ -20,10 +55,9 @@ void DX12Control::SaveSettings(json& output)
 void DX12Control::RestoreDefaultSettings()
 {
 	settings = {};
-	active.store(false, std::memory_order_release);
 }
 
 void DX12Control::OnRuntimeDisabled()
 {
-	active.store(false, std::memory_order_release);
+	bootActive.store(false, std::memory_order_release);
 }

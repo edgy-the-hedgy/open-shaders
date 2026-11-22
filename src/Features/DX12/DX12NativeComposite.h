@@ -50,6 +50,8 @@ struct DX12NativeComposite final : Feature
 	// Automatic producer with user-selectable ray sampling and mask strength.
 	// No separate enable or boot switch: DX12 master controls operation.
 	bool IsAlwaysEnabled() const override { return true; }
+	bool IsInMenu() const override { return false; }
+	bool IsInFeatureList() const override { return false; }
 	void DrawSettings() override;
 	void LoadSettings(json& input) override;
 	void SaveSettings(json& output) override;
