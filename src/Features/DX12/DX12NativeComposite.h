@@ -21,7 +21,7 @@ struct DX12NativeComposite final : Feature
 		winrt::com_ptr<ID3D12Resource> shadowMask, rawShadowMask, diagnosticColor;
 		winrt::com_ptr<ID3D12Resource> rasterSource, depthSource;
 		winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
-		uint32_t width = 0, height = 0;
+		uint32_t width = 0, height = 0, batchCount = 0;
 		DXGI_FORMAT rasterFormat = DXGI_FORMAT_UNKNOWN;
 		DXGI_FORMAT depthFormat = DXGI_FORMAT_UNKNOWN;
 	};
@@ -61,6 +61,7 @@ struct DX12NativeComposite final : Feature
 	/** @brief Test-only suppression gate. Only fresh successful full-resolution DXR previews qualify. */
 	bool ShouldDisableMatchedRasterShadows() const;
 	bool MatchesNativeShadowMode(const RE::BSShadowLight* light) const;
+	bool ForceStaticPreparedFlicker() const { return includeFlickeringLights.load(std::memory_order_acquire); }
 	std::optional<Submission> Dispatch(ID3D12GraphicsCommandList4* commands, ID3D12Resource* rasterColor,
 		ID3D12Resource* depth, uint32_t width, uint32_t height);
 	void OnSubmitted(ID3D12Fence* fence, uint64_t value, Submission submission, bool upscalerSucceeded);
@@ -82,7 +83,7 @@ private:
 	static constexpr size_t kMaximumUploadPairs = 8;
 
 	bool EnsurePipelines(ID3D12Device* device);
-	std::shared_ptr<Surfaces> MakeSurfaces(ID3D12Resource* color, ID3D12Resource* depth, uint32_t width, uint32_t height);
+	std::shared_ptr<Surfaces> MakeSurfaces(ID3D12Resource* color, ID3D12Resource* depth, uint32_t width, uint32_t height, uint32_t batches);
 	bool Upload(winrt::com_ptr<ID3D12Resource>& buffer, const void* source, size_t bytes, size_t capacity);
 	D3D12_GPU_DESCRIPTOR_HANDLE Descriptor(const Surfaces& surfaces, uint32_t index) const;
 	void Collect();

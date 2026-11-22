@@ -1,6 +1,7 @@
 #include "DX12NativeScene.h"
 
 #include "DX12Control.h"
+#include "DX12NativeComposite.h"
 #include "Features/LightLimitFix/Common.h"
 #include "Features/LightLimitFix/ShadowCasterManager.h"
 #include "Features/Upscaling.h"
@@ -115,7 +116,7 @@ void DX12NativeScene::DrawSettings()
 		lightMatchDistance.store(match, std::memory_order_release);
 	ImGui::SeparatorText("Diagnostics");
 	ImGui::Text("Matched LLF/SCM lights: %u", matched);
-	ImGui::TextDisabled("Native shadowing inherits live SCM position, radius, fade, color and emitter when matched.");
+	ImGui::TextDisabled("Matched lights inherit SCM values except when authored flicker/pulse is forced static.");
 	ImGui::TextDisabled("Unmatched prepared lights retain companion values; no native direct-light pass required.");
 	ImGui::Text("Verified covered lights: %zu", coverage ? coverage->size() : size_t(0));
 	ImGui::SeparatorText("Live renderer geometry");
@@ -390,6 +391,7 @@ void DX12NativeScene::UpdateLights()
 	const float3 cameraPosition{ camera.x, camera.y, camera.z };
 	DX12::LightTuning tuning{};
 	tuning.inheritRuntime = inheritRuntime.load(std::memory_order_acquire);
+	tuning.forceStaticFlicker = globals::features::dx12NativeComposite.ForceStaticPreparedFlicker();
 	tuning.matchDistance = lightMatchDistance.load(std::memory_order_acquire);
 	tuning.reach = lightReach.load(std::memory_order_acquire);
 	tuning.intensity = lightIntensity.load(std::memory_order_acquire);

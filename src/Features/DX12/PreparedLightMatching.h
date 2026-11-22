@@ -11,7 +11,7 @@
 
 namespace DX12
 {
-	inline constexpr uint32_t kMaximumShadowLights = 64;
+	inline constexpr uint32_t kMaximumShadowLights = 64; // Per GPU batch, never a global light cap.
 
 	struct RuntimeLight
 	{
@@ -26,6 +26,7 @@ namespace DX12
 	struct LightTuning
 	{
 		bool inheritRuntime = true;
+		bool forceStaticFlicker = false; // Explicit static override takes priority.
 		float matchDistance = 64.0f;
 		float intensity = 1.0f, reach = 1.0f, emitterSize = 1.0f;
 	};
@@ -40,7 +41,7 @@ namespace DX12
 
 	struct ResolvedLights
 	{
-		std::array<ResolvedLight, kMaximumShadowLights> values{};
+		std::vector<ResolvedLight> values;
 		uint32_t count = 0;
 	};
 
@@ -71,22 +72,18 @@ namespace DX12
 		std::vector<const PreparedLight*> candidates;
 		candidates.reserve(prepared.size());
 		for (const auto& light : prepared)
-			if (light.referenceID && finitePoint(light.position) && finitePoint(light.color) &&
+			if (finitePoint(light.position) && finitePoint(light.color) &&
 				valid(light.radius) && light.radius > 0 && valid(light.fade) &&
 				valid(light.emitterRadius) && valid(light.falloffExponent))
 				candidates.push_back(&light);
 		const auto stableLight = [](const PreparedLight* a, const PreparedLight* b) {
 			return a->referenceID == b->referenceID ? a->baseID < b->baseID : a->referenceID < b->referenceID;
 		};
-		if (candidates.size() > kMaximumShadowLights) {
-			std::nth_element(candidates.begin(), candidates.begin() + kMaximumShadowLights, candidates.end(), stableLight);
-			candidates.resize(kMaximumShadowLights);
-		}
+		// Keep every valid prepared light; the renderer traces all of them in GPU batches.
 		std::ranges::sort(candidates, stableLight);
+		output.values.reserve(candidates.size());
 		std::vector<bool> claimed(runtime.size(), false);
 		for (const auto* candidate : candidates) {
-			if (output.count == kMaximumShadowLights)
-				break;
 			ResolvedLight resolved{};
 			resolved.light = *candidate;
 			// TES_LIGHT_FLAGS: Flicker, FlickerSlow, Pulse and PulseSlow from companion LIGH flags.
@@ -119,7 +116,7 @@ namespace DX12
 				resolved.runtimeShadowSlot = runtime[match].shadowSlot;
 				// Prepared flicker/pulse flags define this category. SCM's dynamic
 				// shadow flag is not proof of an animated prepared-light position.
-				if (tuning.inheritRuntime) {
+				if (tuning.inheritRuntime && !(tuning.forceStaticFlicker && resolved.flickeringOrMoving)) {
 					resolved.light.position = runtime[match].position;
 					if (finitePoint(runtime[match].color))
 						resolved.light.color = runtime[match].color;
@@ -135,8 +132,9 @@ namespace DX12
 			resolved.light.radius = std::clamp(resolved.light.radius * tuning.reach, 0.01f, 65536.0f);
 			resolved.light.fade = std::clamp(resolved.light.fade * tuning.intensity, 0.0f, 64.0f);
 			resolved.light.emitterRadius = std::clamp(resolved.light.emitterRadius * tuning.emitterSize, 0.0f, 512.0f);
-			output.values[output.count++] = resolved;
+			output.values.push_back(std::move(resolved));
 		}
+		output.count = static_cast<uint32_t>(output.values.size());
 		return output;
 	}
 }

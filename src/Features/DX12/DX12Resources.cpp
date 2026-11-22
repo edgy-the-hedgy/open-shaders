@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <ranges>
+#include <unordered_set>
 
 namespace DX12
 {
@@ -227,7 +228,9 @@ namespace DX12
 				tile->bytes = 0;
 				tile->state = Tile::State::Deferred;
 			}
-			// Speculative preparation must never force BLAS/TLAS work or change active light revisions.
+			// A ready predictive emitter can cast toward visible receivers even when
+			// the emitter is off-screen. Update lights, never BLAS/TLAS for this tile.
+			++next->lightRevision;
 			next->predictiveResident[std::distance(current->predictive.begin(), predictive)] = std::move(tile);
 		}
 		snapshot.store(std::move(next), std::memory_order_release);
@@ -533,8 +536,22 @@ std::vector<DX12::PreparedLight> DX12Resources::GetPreparedLights() const
 {
 	std::vector<DX12::PreparedLight> lights;
 	const auto current = grid.Snapshot();
-	for (const auto& tile : current->resident)
-		if (tile && (tile->state == DX12::Tile::State::Ready || tile->state == DX12::Tile::State::ReadyPartial))
-			lights.insert(lights.end(), tile->lights.begin(), tile->lights.end());
+	std::unordered_set<uint32_t> seen;
+	const auto append = [&](const auto& tiles) {
+		for (const auto& tile : tiles) {
+			if (!tile || (tile->state != DX12::Tile::State::Ready &&
+			                 tile->state != DX12::Tile::State::ReadyPartial))
+				continue;
+			for (const auto& light : tile->lights) {
+				if (light.referenceID && !seen.insert(light.referenceID).second)
+					continue;
+				lights.push_back(light);
+			}
+		}
+	};
+	append(current->resident);
+	// Screen-space receivers can be shadowed by emitters in the predictive ring.
+	// Source visibility inside the camera frustum is not a light-admission test.
+	append(current->predictiveResident);
 	return lights;
 }
