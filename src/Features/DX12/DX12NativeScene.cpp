@@ -86,7 +86,7 @@ void DX12NativeScene::DrawSettings()
 	}
 	ImGui::TextDisabled("Partial subcells can build BLAS/TLAS, but cannot certify static-shadow offloading.");
 	ImGui::TextDisabled("Times include companion IPC and worker parsing; canceled requests are excluded.");
-	ImGui::SeparatorText("Native acceleration and lighting");
+	ImGui::SeparatorText("Native acceleration and prepared lights");
 	ImGui::Text("Acceleration scene: %s", currentScene ? "Published" :
 		(active && scope ? "Waiting for prepared geometry / BLAS / TLAS" : "Not available"));
 	if (currentScene) {
@@ -96,7 +96,9 @@ void DX12NativeScene::DrawSettings()
 	if (resolved)
 		for (uint32_t i = 0; i < resolved->count; ++i)
 			matched += resolved->values[i].matched ? 1u : 0u;
-	ImGui::Text("Matched prepared lights: %u", matched);
+	ImGui::Text("Matched LLF/SCM lights: %u", matched);
+	ImGui::TextDisabled("Native shadowing inherits live SCM position, radius, fade, color and emitter when matched.");
+	ImGui::TextDisabled("Unmatched prepared lights retain companion values; no native direct-light pass required.");
 	ImGui::Text("Verified covered lights: %zu", coverage ? coverage->size() : size_t(0));
 	ImGui::SeparatorText("Live renderer geometry");
 	const size_t captured = grid ? grid->runtimeShapes.size() : 0;

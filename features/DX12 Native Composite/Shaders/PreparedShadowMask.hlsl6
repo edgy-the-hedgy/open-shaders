@@ -97,13 +97,14 @@ void main(uint3 dispatchThread : SV_DispatchThreadID)
 		// launched from the current camera's depth-buffer receiver.
 		const float3 lightToReceiver = -centerOffset / distance;
 		const float2 uvLight = saturate(OctEncode(lightToReceiver));
-		uint3 dimensions;
-		LightSpaceDepth.GetDimensions(dimensions.x, dimensions.y, dimensions.z);
-		const uint2 samplePixel = min(uint2(uvLight * float2(dimensions.xy)), dimensions.xy - 1u);
+		// The independent producer uses 64x64 octahedral depth per light.
+		// Use the same fixed resolution here rather than querying dimensions
+		// inside every prepared-light resolve loop.
+		const uint2 samplePixel = min(uint2(uvLight * 64.0), uint2(63u, 63u));
 		const float nearestDepth = LightSpaceDepth.Load(int4(samplePixel, index, 0));
 		// Shadow receiver bias is relative to the light radius; this is a
 		// diagnostic resolve until proper per-light raster shading consumes it.
-		if (distance / radius <= nearestDepth + 0.015)
+		if (distance / radius <= nearestDepth + max(2.0 / radius, 0.005))
 			visibleWeight += weight;
 	}
 	const float rawVisibility = totalWeight > 0.001 ? saturate(visibleWeight / totalWeight) : 1.0;
