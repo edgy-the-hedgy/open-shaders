@@ -6,7 +6,7 @@ find_program(DX12_NATIVE_DXC NAMES dxc.exe dxc HINTS
 if(DX12_NATIVE_DXC)
     set(_native_dir "${CMAKE_CURRENT_BINARY_DIR}/DX12NativeComposite")
     set(_native_shaders "")
-    foreach(_shader PreparedShadowMask ReconstructShadowMask VisualizeShadowMask ApplyShadowMask)
+    foreach(_shader PreparedShadowMask ReconstructShadowMask ApplyShadowMask)
         set(_output "${_native_dir}/${_shader}.dxil")
         add_custom_command(
             OUTPUT "${_output}"

@@ -112,669 +112,202 @@ namespace
 
 DX12NativeComposite::~DX12NativeComposite()
 {
-	pipelineWorker.request_stop();
-	if (pipelineWorker.joinable())
-		pipelineWorker.join();
-	Collect();
-	for (auto& frame : pending)
-		if (frame.fence && frame.fence->GetCompletedValue() < frame.value)
-			(void)new Pending(std::move(frame));
+    pipelineWorker.request_stop();
+    if (pipelineWorker.joinable()) pipelineWorker.join();
+    finishedColor.reset();
+    for (auto& slot : compositeSlots) {
+        if (!slot || !slot->frame || !slot->frame->producerFence) continue;
+        const auto done = slot->frame->producerFence->GetCompletedValue();
+        const bool pending = done == UINT64_MAX || done < slot->frame->producerValue ||
+            std::ranges::any_of(slot->consumers, [](const auto& c) {
+                const auto done = c.first->GetCompletedValue();
+                return done == UINT64_MAX || done < c.second;
+            });
+        if (pending) (void)new std::shared_ptr<CompositeSlot>(std::move(slot));
+    }
 }
 
 bool DX12NativeComposite::IsActive() const
 {
-	return loaded && !globals::game::isVR &&
-	       globals::features::dx12Control.IsActive() && globals::features::dx12NativeScene.IsActive();
+    return loaded && !globals::game::isVR &&
+        globals::features::dx12Control.IsActive() &&
+        globals::features::dx12NativeScene.IsActive();
 }
 
 void DX12NativeComposite::DrawSettings()
 {
-	const char* modes[] = {
-		"Full resolution (1/1)", "Two-thirds (2/3)", "Half checkerboard (1/2)",
-		"Four-ninths (4/9)", "One-third (1/3)", "Quarter (1/4)",
-		"One-sixth (1/6)", "One-ninth (1/9)"
-	};
-	int mode = std::clamp(samplingMode.load(std::memory_order_relaxed), 0, 7);
-	if (ImGui::Combo("Shadowmask ray sampling", &mode, modes, int(std::size(modes)))) {
-		samplingMode.store(mode, std::memory_order_release);
-		samplingPhase.store(0, std::memory_order_release);
-		lastValidDiagnosticFrame.store(0, std::memory_order_release);
-	}
-	bool spatial = spatialReconstruction.load(std::memory_order_relaxed);
-	if (ImGui::Checkbox("Spatial shadow reconstruction (depth-aware)", &spatial))
-		spatialReconstruction.store(spatial, std::memory_order_release);
-	// Stationary prepared lights are always eligible. Authored flicker/pulse
-	// remains entirely vanilla unless explicitly forced to a static native shadow.
-	bool forceStatic = includeFlickeringLights.load(std::memory_order_relaxed);
-	if (ImGui::Checkbox("Prepared flicker/pulse: force static native shadow", &forceStatic)) {
-		includeFlickeringLights.store(forceStatic, std::memory_order_release);
-		lastNativeShadowFrame.store(0, std::memory_order_release);
-	}
-	ImGui::TextDisabled("All prepared lights are traced. Off preserves vanilla flicker/pulse raster shadow behavior.");
-	ImGui::TextDisabled("Force static overrides inherited SCM values for authored flicker/pulse emitters.");
-	float intensity = shadowIntensity.load(std::memory_order_relaxed);
-	if (ImGui::SliderFloat("Shadowmask intensity", &intensity, 0.0f, 4.0f, "%.2fx"))
-		shadowIntensity.store(intensity, std::memory_order_release);
-	bool show = diagnosticDarkenEnabled.load(std::memory_order_relaxed);
-	if (ImGui::Checkbox("Diagnostic: monochrome shadow visibility", &show)) {
-		diagnosticDarkenEnabled.store(show, std::memory_order_release);
-		lastValidDiagnosticFrame.store(0, std::memory_order_release);
-	}
-	if (show) {
-		float power = diagnosticDarkenStrength.load(std::memory_order_relaxed);
-		if (ImGui::SliderFloat("Visibility contrast", &power, 0.0f, 4.0f, "%.2fx"))
-			diagnosticDarkenStrength.store(power, std::memory_order_release);
-		int selected = diagnosticSelectedLight.load(std::memory_order_relaxed);
-		const int maxIndex = std::max(0, int(lastPreparedLightCount.load(std::memory_order_relaxed)) - 1);
-		if (ImGui::SliderInt("Preview prepared light (-1 = all)", &selected, -1, maxIndex))
-			diagnosticSelectedLight.store(selected, std::memory_order_release);
-		ImGui::TextDisabled("All = union of occlusion from every prepared light, even off-screen emitters.");
-	}
-	ImGui::TextDisabled("Debug shows monochrome occlusion; never multiplies raster lighting.");
-	bool rasterOff = disableMatchedRasterStatic.load(std::memory_order_relaxed);
-	if (ImGui::Checkbox("Test: disable raster shadows for matched static geometry", &rasterOff)) {
-		disableMatchedRasterStatic.store(rasterOff, std::memory_order_release);
-		if (!rasterOff)
-			lastNativeShadowFrame.store(0, std::memory_order_release);
-	}
-	if (rasterOff) {
-		ImGui::TextDisabled("Requires a completed current-frame mask, retained TLAS, matched rigid geometry, and SCM.");
-		ImGui::TextDisabled("Only live-captured rigid meshes in the current TLAS are eligible.");
-		ImGui::TextDisabled("EXPERIMENTAL: native direct-light composition is absent; missing raster shadows possible.");
-		ImGui::Text("Raster offload: %s", ShouldDisableMatchedRasterShadows() ? "Armed" : "Waiting for safe conditions");
-	}
-	ImGui::Text("Runtime: %s", IsActive() ? "Automatic (DX12 master enabled)" : "Inactive");
-	ImGui::Text("Shadowmask submissions: %llu",
-		static_cast<unsigned long long>(submittedMasks.load(std::memory_order_acquire)));
-	ImGui::Text("Independent receiver RayQuery frames: %llu",
-		static_cast<unsigned long long>(submittedMasks.load(std::memory_order_relaxed)));
-	ImGui::Text("Diagnostic FSR submissions: %llu",
-		static_cast<unsigned long long>(submittedDiagnosticFrames.load(std::memory_order_relaxed)));
-	ImGui::Text("Raster static caster append skips: %llu",
-		static_cast<unsigned long long>(ShadowCasterManager::GetNativePreviewStaticSkipCount()));
-	ImGui::Text("Runtime FSR dispatch callbacks: %llu",
-		static_cast<unsigned long long>(dispatchCalls.load(std::memory_order_relaxed)));
-	ImGui::Text("Prepared native lights: %u (stationary %u | prepared flicker/pulse %u)",
-		lastPreparedLightCount.load(std::memory_order_relaxed),
-		lastStationaryCount.load(std::memory_order_relaxed),
-		lastFlickeringCount.load(std::memory_order_relaxed));
-	const char* lastStatus = "Unknown";
-	switch (lastDispatchStatus.load(std::memory_order_acquire)) {
-	case DispatchStatus::NeverCalled: lastStatus = "Waiting for runtime FSR upscaler callback"; break;
-	case DispatchStatus::InactiveOrInputsMissing: lastStatus = "Inactive or missing DX12 inputs"; break;
-	case DispatchStatus::PipelineNotReady: lastStatus = "DXR pipeline pending or failed"; break;
-	case DispatchStatus::SceneNotReady: lastStatus = "Current TLAS, lights or grid unavailable"; break;
-	case DispatchStatus::NoPreparedLights: lastStatus = "No valid prepared lights"; break;
-	case DispatchStatus::SurfacesUnavailable: lastStatus = "Depth/color surface unavailable"; break;
-	case DispatchStatus::UploadBudgetExhausted: lastStatus = "Upload pairs awaiting GPU fences"; break;
-	case DispatchStatus::UploadFailed: lastStatus = "GPU upload allocation failed"; break;
-	case DispatchStatus::Recorded: lastStatus = "Mask recorded, pending GPU submission"; break;
-	case DispatchStatus::Submitted: lastStatus = "Mask submitted on DX12 queue"; break;
-	}
-	ImGui::TextWrapped("Last mask dispatch: %s", lastStatus);
-	if (pipelineFailed.load(std::memory_order_acquire)) {
-		const auto failure = pipelineFailureReason.load(std::memory_order_acquire);
-		ImGui::TextWrapped("DXR shadowmask initialization failed: %s",
-			failure ? failure->c_str() : "Unknown D3D12 initialization error");
-	}
-	if (show && diagnosticUnavailable.load(std::memory_order_acquire)) {
-		const auto failure = diagnosticFailureReason.load(std::memory_order_acquire);
-		ImGui::TextWrapped("Diagnostic overlay unavailable: %s", failure ? failure->c_str() : "Unsupported color format");
-	}
-	ImGui::TextDisabled("Prepared lights and TLAS remain camera-independent; receiver queries use current depth.");
-	ImGui::TextDisabled("Sampling modes control per-frame RayQuery density; reconstruction fills skipped receivers.");
-	ImGui::TextDisabled("Current dispatch remains on the runtime FSR DX12 callback.");
-	ImGui::TextDisabled("Intensity: 0 = neutral, 1 = raw, above 1 deepens partial shadows.");
-	ImGui::TextDisabled("With diagnostic OFF: original raster color is unchanged until safe per-light composition is available.");
+    bool reconstruct = spatialReconstruction.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Depth-aware spatial shadow reconstruction", &reconstruct))
+        spatialReconstruction.store(reconstruct, std::memory_order_release);
+    float strength = shadowIntensity.load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("Native shadow contribution", &strength, 0.0f, 4.0f, "%.2fx"))
+        shadowIntensity.store(strength, std::memory_order_release);
+    float blend = shadowBlend.load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("Native shadow blend", &blend, 0.0f, 1.0f, "%.2f"))
+        shadowBlend.store(blend, std::memory_order_release);
+    bool preview = diagnosticDarkenEnabled.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Preview reconstructed native shadowmask", &preview))
+        diagnosticDarkenEnabled.store(preview, std::memory_order_release);
+    if (preview) {
+        int light = diagnosticSelectedLight.load(std::memory_order_relaxed);
+        const auto source = globals::features::dx12NativeScene.GetLights();
+        const int maximum = std::max(0, int(source ? source->count : 0u) - 1);
+        if (ImGui::SliderInt("Prepared light (-1 = all)", &light, -1, maximum))
+            diagnosticSelectedLight.store(light, std::memory_order_release);
+        ImGui::TextDisabled("-1 averages occlusion across covered prepared lights.");
+    }
+    bool staticFlicker = includeFlickeringLights.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Prepared flicker/pulse: force static shadow", &staticFlicker))
+        includeFlickeringLights.store(staticFlicker, std::memory_order_release);
+    bool suppress = disableMatchedRasterStatic.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Experimental: suppress matched raster static casters", &suppress))
+        disableMatchedRasterStatic.store(suppress, std::memory_order_release);
+    if (suppress)
+        ImGui::TextDisabled("No coverage certification. Unrepresented raster casters may lose shadows.");
+    const auto frame = globals::game::graphicsState ?
+        globals::game::graphicsState->GetFrameCount() : 0u;
+    const auto raw = globals::features::dx12NativeScene.GetRawShadow(frame);
+    const auto final = GetFinishedColor(frame);
+    ImGui::Text("Native shadow producer: %s", raw ? "Submitted" : "Waiting for scene/depth/lights");
+    ImGui::Text("Prepared lights in raw mask: %u", raw ? raw->lightCount : 0u);
+    ImGui::Text("Raw shadow batches: %u", raw ? raw->batchCount : 0u);
+    ImGui::Text("Native Composite final color: %s", final ? "Published" : "Not published");
+    ImGui::Text("Raster static caster skips: %llu",
+        static_cast<unsigned long long>(ShadowCasterManager::GetNativePreviewStaticSkipCount()));
+    if (pipelineFailed.load(std::memory_order_acquire)) {
+        const auto reason = pipelineFailureReason.load(std::memory_order_acquire);
+        ImGui::TextWrapped("Reconstruction shader unavailable: %s",
+            reason ? reason->c_str() : "Unknown shader error");
+    }
+    ImGui::TextDisabled("RayQuery runs in Native Scene. Final color is composed before upscaling.");
 }
 
 bool DX12NativeComposite::MatchesNativeShadowMode(const RE::BSShadowLight* light) const
 {
-	return globals::features::dx12NativeScene.IsMatchedLightInShadowMode(light,
-		includeStationaryLights.load(std::memory_order_acquire),
-		includeFlickeringLights.load(std::memory_order_acquire));
+    return globals::features::dx12NativeScene.IsMatchedLightInShadowMode(light,
+        true, includeFlickeringLights.load(std::memory_order_acquire));
 }
 
 bool DX12NativeComposite::ShouldDisableMatchedRasterShadows() const
 {
-	if (!disableMatchedRasterStatic.load(std::memory_order_acquire) || !IsActive() ||
-		(!includeStationaryLights.load(std::memory_order_acquire) &&
-		 !includeFlickeringLights.load(std::memory_order_acquire)) ||
-		pipelineFailed.load(std::memory_order_acquire) ||
-		!ShadowCasterManager::IsActive())
-		return false;
-	auto* state = globals::game::graphicsState;
-	if (!state)
-		return false;
-	const uint32_t last = lastNativeShadowFrame.load(std::memory_order_acquire);
-	const uint32_t now = state->GetFrameCount();
-	const auto scene = globals::features::dx12NativeScene.GetScene();
-	const auto grid = globals::features::dx12Resources.GetGrid();
-	if (!scene || !scene->acceleration || !grid ||
-		scene->scope != grid->requested.front().scope ||
-		scene->geometryRevision != lastNativeGeometryRevision.load(std::memory_order_acquire) ||
-		grid->lightRevision != lastNativeLightRevision.load(std::memory_order_acquire))
-		return false;
-	// Only the last successfully submitted RayQuery scene may certify candidate
-	// offloading; current scene identity must match even while a replacement builds.
-	// No atlas or direct-light dependency is permitted.
-	return last && now >= last && now - last <= 2;
+    // An opt-in raster classifier decision only. No frame/geometry/light
+    // revisions, coverage certification, diagnostic, or FSR admission.
+    return IsActive() && disableMatchedRasterStatic.load(std::memory_order_acquire) &&
+        ShadowCasterManager::IsActive();
 }
 
 void DX12NativeComposite::LoadSettings(json& input)
 {
-	const int mode = std::clamp(input.value("SamplingMode", 0), 0, 7);
-	const float requested = input.value("ShadowMaskIntensity", 1.0f);
-	const float intensity = std::clamp(std::isfinite(requested) ? requested : 1.0f, 0.0f, 4.0f);
-	samplingMode.store(mode, std::memory_order_release);
-	shadowIntensity.store(intensity, std::memory_order_release);
-	diagnosticDarkenEnabled.store(input.value("DiagnosticDarken", false), std::memory_order_release);
-	const float test = input.value("DiagnosticDarkening", 1.0f);
-	diagnosticDarkenStrength.store(std::clamp(std::isfinite(test) ? test : 1.0f, 0.0f, 4.0f), std::memory_order_release);
-	diagnosticSelectedLight.store(std::max(-1, input.value("DiagnosticSelectedLight", -1)), std::memory_order_release);
-	disableMatchedRasterStatic.store(input.value("DisableMatchedRasterStatic", false), std::memory_order_release);
-	includeStationaryLights.store(true, std::memory_order_release);
-	includeFlickeringLights.store(input.value("ForcePreparedFlickerStatic", false), std::memory_order_release);
-	lastNativeShadowFrame.store(0, std::memory_order_release);
-	spatialReconstruction.store(input.value("SpatialReconstruction", true), std::memory_order_release);
-	samplingPhase.store(0, std::memory_order_release);
+    const float intensity = input.value("ShadowMaskIntensity", 1.0f);
+    shadowIntensity.store(std::clamp(std::isfinite(intensity) ? intensity : 1.0f,
+        0.0f, 4.0f), std::memory_order_release);
+    shadowBlend.store(std::clamp(input.value("ShadowBlend", 1.0f),
+        0.0f, 1.0f), std::memory_order_release);
+    spatialReconstruction.store(input.value("SpatialReconstruction", true),
+        std::memory_order_release);
+    diagnosticDarkenEnabled.store(input.value("DiagnosticDarken", false),
+        std::memory_order_release);
+    diagnosticSelectedLight.store(std::max(-1, input.value("DiagnosticSelectedLight", -1)),
+        std::memory_order_release);
+    disableMatchedRasterStatic.store(input.value("DisableMatchedRasterStatic", false),
+        std::memory_order_release);
+    includeFlickeringLights.store(input.value("ForcePreparedFlickerStatic", false),
+        std::memory_order_release);
 }
 
 void DX12NativeComposite::SaveSettings(json& output)
 {
-	output = { { "SamplingMode", samplingMode.load(std::memory_order_acquire) },
-		{ "SpatialReconstruction", spatialReconstruction.load(std::memory_order_acquire) },
-		{ "ShadowMaskIntensity", shadowIntensity.load(std::memory_order_acquire) },
-		{ "DiagnosticDarken", diagnosticDarkenEnabled.load(std::memory_order_acquire) },
-		{ "DiagnosticDarkening", diagnosticDarkenStrength.load(std::memory_order_acquire) },
-		{ "DiagnosticSelectedLight", diagnosticSelectedLight.load(std::memory_order_acquire) },
-		{ "DisableMatchedRasterStatic", disableMatchedRasterStatic.load(std::memory_order_acquire) },
-		{ "ForcePreparedFlickerStatic", includeFlickeringLights.load(std::memory_order_acquire) } };
+    output = {
+        {"SpatialReconstruction", spatialReconstruction.load(std::memory_order_acquire)},
+        {"ShadowMaskIntensity", shadowIntensity.load(std::memory_order_acquire)},
+        {"ShadowBlend", shadowBlend.load(std::memory_order_acquire)},
+        {"DiagnosticDarken", diagnosticDarkenEnabled.load(std::memory_order_acquire)},
+        {"DiagnosticSelectedLight", diagnosticSelectedLight.load(std::memory_order_acquire)},
+        {"DisableMatchedRasterStatic", disableMatchedRasterStatic.load(std::memory_order_acquire)},
+        {"ForcePreparedFlickerStatic", includeFlickeringLights.load(std::memory_order_acquire)}
+    };
 }
 
 void DX12NativeComposite::RestoreDefaultSettings()
 {
-	samplingMode.store(0, std::memory_order_release);
-	spatialReconstruction.store(true, std::memory_order_release);
-	shadowIntensity.store(1.0f, std::memory_order_release);
-	diagnosticDarkenEnabled.store(false, std::memory_order_release);
-	diagnosticDarkenStrength.store(1.0f, std::memory_order_release);
-	diagnosticSelectedLight.store(-1, std::memory_order_release);
-	disableMatchedRasterStatic.store(false, std::memory_order_release);
-	includeStationaryLights.store(true, std::memory_order_release);
-	includeFlickeringLights.store(false, std::memory_order_release);
-	lastNativeShadowFrame.store(0, std::memory_order_release);
-	lastValidDiagnosticFrame.store(0, std::memory_order_release);
-	samplingPhase.store(0, std::memory_order_release);
+    shadowIntensity.store(1.0f, std::memory_order_release);
+    shadowBlend.store(1.0f, std::memory_order_release);
+    spatialReconstruction.store(true, std::memory_order_release);
+    diagnosticDarkenEnabled.store(false, std::memory_order_release);
+    diagnosticSelectedLight.store(-1, std::memory_order_release);
+    disableMatchedRasterStatic.store(false, std::memory_order_release);
+    includeFlickeringLights.store(false, std::memory_order_release);
 }
 
 void DX12NativeComposite::PreShadowMaps()
 {
-	// Keep SCM's broad whole-light offload disabled. Experimental suppression
-	// operates on individually verified, static runtime geometry only.
-	ShadowCasterManager::SetNativeStaticMaskActive(false);
-	const bool armed = ShouldDisableMatchedRasterShadows();
-	const auto currentScene = globals::features::dx12NativeScene.GetScene();
-	const uint64_t revision = currentScene ? currentScene->geometryRevision : 0;
-	const uint32_t policy = (includeStationaryLights.load(std::memory_order_acquire) ? 1u : 0u) |
-		(includeFlickeringLights.load(std::memory_order_acquire) ? 2u : 0u);
-	if (armed != previousRasterSuppressionArmed ||
-		(armed && (revision != previousRasterRefreshRevision || policy != previousRasterPolicyFlags))) {
-		// Flush any baked static content whenever the experimental filter starts,
-		// stops, or changes geometry generation. Otherwise old static atlas data
-		// could remain despite successfully filtering new caster draws.
-		if (const auto matched = globals::features::dx12NativeScene.GetMatchedLightPointers();
-			matched && !matched->empty())
-			ShadowCasterManager::InvalidateNativePreviewStaticBakes(*matched);
-		previousRasterSuppressionArmed = armed;
-		previousRasterRefreshRevision = revision;
-		previousRasterPolicyFlags = policy;
-	}
-	if (IsActive())
-		(void)EnsurePipelines(globals::features::upscaling.dx12SwapChain.d3d12Device.get());
-	Collect();
+    // SCM's broad whole-light suppression is not used for this independent layer.
+    ShadowCasterManager::SetNativeStaticMaskActive(false);
+    const bool armed = ShouldDisableMatchedRasterShadows();
+    if (armed != previousRasterSuppressionArmed) {
+        if (const auto matched = globals::features::dx12NativeScene.GetMatchedLightPointers();
+            matched && !matched->empty())
+            ShadowCasterManager::InvalidateNativePreviewStaticBakes(*matched);
+        previousRasterSuppressionArmed = armed;
+    }
+    if (IsActive())
+        (void)EnsurePipelines(globals::features::upscaling.dx12SwapChain.d3d12Device.get());
 }
 
 void DX12NativeComposite::OnRuntimeDisabled()
 {
-	ShadowCasterManager::SetNativeStaticMaskActive(false);
-	lastValidDiagnosticFrame.store(0, std::memory_order_release);
-	lastNativeShadowFrame.store(0, std::memory_order_release);
-	previousRasterSuppressionArmed = false;
-	previousRasterRefreshRevision = 0;
-	previousRasterPolicyFlags = 0;
-	lastNativeGeometryRevision.store(0, std::memory_order_release);
-	lastNativeLightRevision.store(0, std::memory_order_release);
+    ShadowCasterManager::SetNativeStaticMaskActive(false);
+    finishedColor.reset();
+    previousRasterSuppressionArmed = false;
 }
 
 void DX12NativeComposite::OnSceneTransitionReset(bool /*opening*/)
 {
-	// Keep current TLAS and last ready native mask state during return travel.
-	// Resources performs the eventual two-transition cache flush.
+    // Current TLAS remains retained until the next native scene publication.
 }
 
 bool DX12NativeComposite::EnsurePipelines(ID3D12Device* candidate)
 {
-    if (!candidate || unavailable || (device && device.get() != candidate)) return false;
-    if (shadowPipeline && reconstructionPipeline) return true;
+    if (!candidate) return false;
+    if (reconstructionPipeline && device.get() == candidate) return true;
     if (const auto built = preparedPipelines.load(std::memory_order_acquire)) {
         if (built->device.get() != candidate) return false;
         device = built->device;
-        shadowRoot = built->shadowRoot;
-        shadowPipeline = built->shadowPipeline;
         reconstructionRoot = built->reconstructionRoot;
         reconstructionPipeline = built->reconstructionPipeline;
-        diagnosticRoot = built->diagnosticRoot;
-        diagnosticPipeline = built->diagnosticPipeline;
-        descriptorSize = built->descriptorSize;
         return true;
     }
-    if (pipelineFailed.load(std::memory_order_acquire)) { unavailable = true; return false; }
+    if (pipelineFailed.load(std::memory_order_acquire)) return false;
     if (pipelineWorker.joinable()) return false;
-    winrt::com_ptr<ID3D12Device> held;
-    held.copy_from(candidate);
-    pipelineWorker = std::jthread([this, owned = std::move(held)](std::stop_token stop) mutable {
+    winrt::com_ptr<ID3D12Device> retained;
+    retained.copy_from(candidate);
+    pipelineWorker = std::jthread([this, held = std::move(retained)](std::stop_token stop) mutable {
         auto built = std::make_shared<PipelineState>();
-        built->device = std::move(owned);
-        D3D12_DESCRIPTOR_RANGE depthRange{ D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1, 0, 0 };
-        D3D12_DESCRIPTOR_RANGE rawRead{ D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 4, 0, 0 };
-        D3D12_DESCRIPTOR_RANGE filteredRead{ D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1, 0, 0 };
-        D3D12_DESCRIPTOR_RANGE writeRange{ D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 0 };
-        std::array<D3D12_ROOT_PARAMETER, 5> shadow{};
-        shadow[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-        shadow[0].Descriptor.ShaderRegister = 0;
-        shadow[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        shadow[1].DescriptorTable = { 1, &depthRange };
-        shadow[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-        shadow[2].Descriptor.ShaderRegister = 2;
-        shadow[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        shadow[3].DescriptorTable = { 1, &writeRange };
-        shadow[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-        shadow[4].Descriptor.ShaderRegister = 0;
-        std::array<D3D12_ROOT_PARAMETER, 4> reconstruct{};
-        reconstruct[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        reconstruct[0].DescriptorTable = { 1, &depthRange };
-        reconstruct[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        reconstruct[1].DescriptorTable = { 1, &rawRead };
-        reconstruct[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        reconstruct[2].DescriptorTable = { 1, &writeRange };
-        reconstruct[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-        reconstruct[3].Descriptor.ShaderRegister = 0;
-        std::array<D3D12_ROOT_PARAMETER, 3> diagnostic{};
-        diagnostic[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        diagnostic[0].DescriptorTable = { 1, &filteredRead };
-        diagnostic[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        diagnostic[1].DescriptorTable = { 1, &writeRange };
-        diagnostic[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-        diagnostic[2].Descriptor.ShaderRegister = 0;
+        built->device = std::move(held);
+        D3D12_DESCRIPTOR_RANGE depth{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1, 0, 0};
+        D3D12_DESCRIPTOR_RANGE raw{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 4, 0, 0};
+        D3D12_DESCRIPTOR_RANGE output{D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 0};
+        std::array<D3D12_ROOT_PARAMETER, 4> params{};
+        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[0].DescriptorTable = {1, &depth};
+        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[1].DescriptorTable = {1, &raw};
+        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[2].DescriptorTable = {1, &output};
+        params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        params[3].Descriptor.ShaderRegister = 0;
         std::string failure;
-        if (!CreateSignature(built->device.get(), shadow, built->shadowRoot, failure) ||
-            !CreatePipeline(built->device.get(), built->shadowRoot.get(),
-                "Data/Shaders/DX12NativeComposite/PreparedShadowMask.dxil", built->shadowPipeline, failure) ||
-            !CreateSignature(built->device.get(), reconstruct, built->reconstructionRoot, failure) ||
+        if (!CreateSignature(built->device.get(), params, built->reconstructionRoot, failure) ||
             !CreatePipeline(built->device.get(), built->reconstructionRoot.get(),
-                "Data/Shaders/DX12NativeComposite/ReconstructShadowMask.dxil", built->reconstructionPipeline, failure)) {
-            pipelineFailureReason.store(std::make_shared<const std::string>(std::move(failure)), std::memory_order_release);
+                "Data/Shaders/DX12NativeComposite/ReconstructShadowMask.dxil",
+                built->reconstructionPipeline, failure)) {
+            pipelineFailureReason.store(std::make_shared<const std::string>(std::move(failure)),
+                std::memory_order_release);
             pipelineFailed.store(true, std::memory_order_release);
             return;
         }
-        if (!CreateSignature(built->device.get(), diagnostic, built->diagnosticRoot, failure) ||
-            !CreatePipeline(built->device.get(), built->diagnosticRoot.get(),
-                "Data/Shaders/DX12NativeComposite/VisualizeShadowMask.dxil", built->diagnosticPipeline, failure)) {
-            diagnosticFailureReason.store(std::make_shared<const std::string>(std::move(failure)), std::memory_order_release);
-            diagnosticUnavailable.store(true, std::memory_order_release);
-        }
-        built->descriptorSize = built->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-        if (!built->descriptorSize) {
-            pipelineFailureReason.store(std::make_shared<const std::string>("Zero descriptor increment"), std::memory_order_release);
-            pipelineFailed.store(true, std::memory_order_release);
-            return;
-        }
-        if (!stop.stop_requested()) preparedPipelines.store(std::move(built), std::memory_order_release);
+        if (!stop.stop_requested())
+            preparedPipelines.store(std::move(built), std::memory_order_release);
     });
     return false;
-}
-
-std::shared_ptr<DX12NativeComposite::Surfaces> DX12NativeComposite::MakeSurfaces(
-    ID3D12Resource* rasterColor, ID3D12Resource* depth, uint32_t width, uint32_t height, uint32_t batches)
-{
-    const auto raster = rasterColor->GetDesc();
-    const auto z = depth->GetDesc();
-    const DXGI_FORMAT depthSrv = z.Format == DXGI_FORMAT_R32_TYPELESS ? DXGI_FORMAT_R32_FLOAT : z.Format;
-    if (!width || !height || !batches ||
-        batches > D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION ||
-        raster.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
-        z.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || width > raster.Width || height > raster.Height ||
-        width > z.Width || height > z.Height || depthSrv != DXGI_FORMAT_R32_FLOAT ||
-        raster.Format == DXGI_FORMAT_UNKNOWN) return nullptr;
-    bool wantDebug = diagnosticDarkenEnabled.load(std::memory_order_acquire) &&
-        diagnosticPipeline && !diagnosticUnavailable.load(std::memory_order_acquire);
-    // The raster input is often R10G10B10A2, which may lack typed UAV store
-    // support. Preview into a dedicated 16-bit float target instead; FSR reads
-    // this target only when the diagnostic is enabled.
-    constexpr DXGI_FORMAT debugFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
-    if (wantDebug) {
-        D3D12_FEATURE_DATA_FORMAT_SUPPORT support{};
-        support.Format = debugFormat;
-        if (FAILED(device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support))) ||
-            !(support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE)) {
-            diagnosticFailureReason.store(std::make_shared<const std::string>("R16G16B16A16_FLOAT diagnostic UAV unsupported"), std::memory_order_release);
-            diagnosticUnavailable.store(true, std::memory_order_release);
-            wantDebug = false;
-        }
-    }
-    if (surfaces && surfaces->rasterSource.get() == rasterColor && surfaces->depthSource.get() == depth &&
-        surfaces->width == width && surfaces->height == height &&
-        surfaces->batchCount == batches &&
-        surfaces->rasterFormat == raster.Format && surfaces->depthFormat == z.Format &&
-        bool(surfaces->diagnosticColor) == wantDebug) return surfaces;
-    auto next = std::make_shared<Surfaces>();
-    const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
-    // Each array slice preserves independent coverage/occlusion for 64 lights.
-    // Neither camera-frustum emitter culling nor a single 64-light truncation applies.
-    const auto bitsDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32G32B32A32_UINT,
-        width, height, static_cast<UINT16>(batches), 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-    if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &bitsDesc,
-            D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(next->rawShadowMask.put()))) ||
-        FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &bitsDesc,
-            D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(next->shadowMask.put())))) return nullptr;
-    next->rawShadowMask->SetName(L"DX12NativeComposite::RawPerLightShadowBits");
-    next->shadowMask->SetName(L"DX12NativeComposite::ReconstructedPerLightShadowBits");
-    next->rasterSource.copy_from(rasterColor);
-    next->depthSource.copy_from(depth);
-    if (wantDebug) {
-        const auto debugDesc = CD3DX12_RESOURCE_DESC::Tex2D(debugFormat, width, height,
-            1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-        if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &debugDesc,
-                D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(next->diagnosticColor.put())))) {
-            diagnosticUnavailable.store(true, std::memory_order_release);
-            wantDebug = false;
-        }
-    }
-    D3D12_DESCRIPTOR_HEAP_DESC descriptorDesc{};
-    descriptorDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    descriptorDesc.NumDescriptors = wantDebug ? 6 : 5;
-    descriptorDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    if (FAILED(device->CreateDescriptorHeap(&descriptorDesc, IID_PPV_ARGS(next->descriptors.put())))) return nullptr;
-    const auto cpu = [&](uint32_t index) {
-        return CD3DX12_CPU_DESCRIPTOR_HANDLE(next->descriptors->GetCPUDescriptorHandleForHeapStart(), int(index), descriptorSize);
-    };
-    D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
-    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    srv.Texture2D.MipLevels = 1;
-    srv.Format = depthSrv;
-    device->CreateShaderResourceView(depth, &srv, cpu(0));
-    D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
-    uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
-    uav.Texture2DArray.ArraySize = batches;
-    uav.Texture2DArray.FirstArraySlice = 0;
-    uav.Format = DXGI_FORMAT_R32G32B32A32_UINT;
-    device->CreateUnorderedAccessView(next->rawShadowMask.get(), nullptr, &uav, cpu(1));
-    srv.Format = DXGI_FORMAT_R32G32B32A32_UINT;
-    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
-    srv.Texture2DArray.MostDetailedMip = 0;
-    srv.Texture2DArray.MipLevels = 1;
-    srv.Texture2DArray.FirstArraySlice = 0;
-    srv.Texture2DArray.ArraySize = batches;
-    device->CreateShaderResourceView(next->rawShadowMask.get(), &srv, cpu(2));
-    device->CreateUnorderedAccessView(next->shadowMask.get(), nullptr, &uav, cpu(3));
-    device->CreateShaderResourceView(next->shadowMask.get(), &srv, cpu(4));
-    if (wantDebug) {
-        // The mask is a 2D array, but diagnosticColor is a plain 2D texture.
-        // Reusing the array UAV descriptor here would be an invalid resource view.
-        uav = {};
-        uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-        uav.Texture2D.MipSlice = 0;
-        uav.Format = debugFormat;
-        device->CreateUnorderedAccessView(next->diagnosticColor.get(), nullptr, &uav, cpu(5));
-    }
-    next->width = width;
-    next->height = height;
-    next->batchCount = batches;
-    next->rasterFormat = raster.Format;
-    next->depthFormat = z.Format;
-    surfaces = next;
-    return next;
-}
-
-bool DX12NativeComposite::Upload(winrt::com_ptr<ID3D12Resource>& buffer, const void* source,
-	size_t bytes, size_t capacity)
-{
-	if (!source || !bytes || bytes > capacity || capacity > 64ull * 1024 * 1024)
-		return false;
-	// A previously fenced upload pair can be reused for larger light sets only
-	// after allocating sufficient upload storage; never overrun the old buffer.
-	if (buffer && buffer->GetDesc().Width < capacity)
-		buffer = nullptr;
-	if (!buffer) {
-		const auto desc = CD3DX12_RESOURCE_DESC::Buffer((capacity + 255) & ~size_t(255));
-		const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-		if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
-				D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(buffer.put()))))
-			return false;
-	}
-	void* mapped = nullptr;
-	if (FAILED(buffer->Map(0, nullptr, &mapped)) || !mapped)
-		return false;
-	std::memcpy(mapped, source, bytes);
-	buffer->Unmap(0, nullptr);
-	return true;
-}
-
-D3D12_GPU_DESCRIPTOR_HANDLE DX12NativeComposite::Descriptor(const Surfaces& target, uint32_t index) const
-{
-	return CD3DX12_GPU_DESCRIPTOR_HANDLE(target.descriptors->GetGPUDescriptorHandleForHeapStart(), int(index), descriptorSize);
-}
-
-void DX12NativeComposite::Collect()
-{
-	while (!pending.empty() && pending.front().fence &&
-		   pending.front().fence->GetCompletedValue() >= pending.front().value) {
-		auto& completed = pending.front().submission;
-		availableUploads.push_back({ std::move(completed.camera), std::move(completed.lights), std::move(completed.diagnostic) });
-		pending.pop_front();
-	}
-}
-
-std::optional<DX12NativeComposite::Submission> DX12NativeComposite::Dispatch(
-    ID3D12GraphicsCommandList4* commands, ID3D12Resource* rasterColor, ID3D12Resource* depth,
-    uint32_t width, uint32_t height)
-{
-    CS_GPU_PASS("DX12NativeComposite::Dispatch");
-    dispatchCalls.fetch_add(1, std::memory_order_relaxed);
-    lastPreparedLightCount.store(0, std::memory_order_relaxed);
-    lastStationaryCount.store(0, std::memory_order_relaxed);
-    lastFlickeringCount.store(0, std::memory_order_relaxed);
-    if (!IsActive() || !commands || !rasterColor || !depth) {
-        lastDispatchStatus.store(DispatchStatus::InactiveOrInputsMissing, std::memory_order_release);
-        return std::nullopt;
-    }
-    if (!EnsurePipelines(globals::features::upscaling.dx12SwapChain.d3d12Device.get())) {
-        lastDispatchStatus.store(DispatchStatus::PipelineNotReady, std::memory_order_release);
-        return std::nullopt;
-    }
-    const auto scene = globals::features::dx12NativeScene.GetScene();
-    const auto lightSnapshot = globals::features::dx12NativeScene.GetLights();
-    const auto grid = globals::features::dx12Resources.GetGrid();
-    if (!scene || !scene->acceleration || !lightSnapshot || !grid ||
-        scene->scope != grid->requested.front().scope) {
-        lastDispatchStatus.store(DispatchStatus::SceneNotReady, std::memory_order_release);
-        return std::nullopt;
-    }
-    std::vector<GpuLight> lightUpload;
-    lightUpload.reserve(lightSnapshot->values.size());
-    uint32_t stationaryCount = 0, flickeringCount = 0;
-    for (const auto& resolved : lightSnapshot->values) {
-        const auto& light = resolved.light;
-        // Include all valid prepared lights, even if off-screen or flickering.
-        // The force-static toggle controls raster inheritance/offloading only.
-        if (!std::isfinite(light.radius) || light.radius <= 0.0f ||
-            !std::isfinite(light.emitterRadius) || !std::isfinite(light.falloffExponent) ||
-            !std::isfinite(light.position.x) || !std::isfinite(light.position.y) ||
-            !std::isfinite(light.position.z)) continue;
-        if (resolved.flickeringOrMoving) ++flickeringCount; else ++stationaryCount;
-        lightUpload.push_back({ {light.position.x, light.position.y, light.position.z, light.radius},
-            {light.color.x, light.color.y, light.color.z, light.fade},
-            {light.emitterRadius, light.falloffExponent, 0, 0} });
-    }
-    // The D3D12 array-slice limit is a hardware constraint. Never silently drop
-    // unrepresented prepared lights: fail this submission and keep raster fallback.
-    if (lightUpload.size() > size_t(D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION) *
-                                  DX12::kMaximumShadowLights) {
-        lastDispatchStatus.store(DispatchStatus::SurfacesUnavailable, std::memory_order_release);
-        return std::nullopt;
-    }
-    const uint32_t count = static_cast<uint32_t>(lightUpload.size());
-    const uint32_t batches = count ? 1u + (count - 1u) / DX12::kMaximumShadowLights : 0u;
-    lastPreparedLightCount.store(count, std::memory_order_relaxed);
-    lastStationaryCount.store(stationaryCount, std::memory_order_relaxed);
-    lastFlickeringCount.store(flickeringCount, std::memory_order_relaxed);
-    if (!count) {
-        lastDispatchStatus.store(DispatchStatus::NoPreparedLights, std::memory_order_release);
-        return std::nullopt;
-    }
-    Collect();
-    auto target = MakeSurfaces(rasterColor, depth, width, height, batches);
-    if (!target) {
-        lastDispatchStatus.store(DispatchStatus::SurfacesUnavailable, std::memory_order_release);
-        return std::nullopt;
-    }
-    MaskCamera camera{globals::game::frameBufferCached.GetCameraProjInverse(),
-        globals::game::frameBufferCached.GetCameraViewInverse(),
-        globals::game::frameBufferCached.GetCameraPosAdjust(), width, height, count,
-        shadowIntensity.load(std::memory_order_acquire),
-        uint32_t(std::clamp(samplingMode.load(std::memory_order_acquire), 0, 7)),
-        samplingPhase.load(std::memory_order_relaxed),
-        spatialReconstruction.load(std::memory_order_acquire) ? 1u : 0u};
-    // D3D12 root CBV addresses must be aligned to 256 bytes. Each dispatch
-    // has its own immutable camera constants (batch index), avoiding GPU reads
-    // from CPU-overwritten constants while command lists are in flight.
-    constexpr size_t kCameraStride = D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
-    static_assert(sizeof(MaskCamera) <= kCameraStride);
-    std::vector<std::array<uint8_t, kCameraStride>> cameras(batches);
-    for (uint32_t batch = 0; batch < batches; ++batch) {
-        camera.batchIndex = batch;
-        std::memcpy(cameras[batch].data(), &camera, sizeof(camera));
-    }
-    if (availableUploads.empty() && uploadPairs == kMaximumUploadPairs) {
-        lastDispatchStatus.store(DispatchStatus::UploadBudgetExhausted, std::memory_order_release);
-        return std::nullopt;
-    }
-    UploadPair buffers;
-    if (!availableUploads.empty()) {
-        buffers = std::move(availableUploads.front());
-        availableUploads.pop_front();
-    } else ++uploadPairs;
-    const bool makeDiagnostic = target->diagnosticColor && diagnosticPipeline;
-    const int selected = diagnosticSelectedLight.load(std::memory_order_acquire);
-    const DiagnosticOptions diagnostic{width, height,
-        diagnosticDarkenStrength.load(std::memory_order_acquire) *
-            shadowIntensity.load(std::memory_order_acquire), batches,
-        selected >= 0 && uint32_t(selected) < count ? selected : -1};
-    if (!Upload(buffers.camera, cameras.data(), cameras.size() * sizeof(cameras[0]),
-                cameras.size() * sizeof(cameras[0])) ||
-        !Upload(buffers.lights, lightUpload.data(), lightUpload.size() * sizeof(GpuLight),
-                lightUpload.size() * sizeof(GpuLight)) ||
-        (makeDiagnostic && !Upload(buffers.diagnostic, &diagnostic, sizeof(diagnostic), sizeof(diagnostic)))) {
-        availableUploads.push_back(std::move(buffers));
-        lastDispatchStatus.store(DispatchStatus::UploadFailed, std::memory_order_release);
-        return std::nullopt;
-    }
-    Submission submission;
-    submission.scene = scene;
-    submission.surfaces = target;
-    submission.geometryRevision = scene->geometryRevision;
-    submission.lightRevision = grid->lightRevision;
-    submission.camera = std::move(buffers.camera);
-    submission.lights = std::move(buffers.lights);
-    submission.diagnostic = std::move(buffers.diagnostic);
-    ID3D12DescriptorHeap* heaps[]{target->descriptors.get()};
-    commands->SetDescriptorHeaps(1, heaps);
-    const auto beginRaw = CD3DX12_RESOURCE_BARRIER::Transition(target->rawShadowMask.get(),
-        D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    commands->ResourceBarrier(1, &beginRaw);
-    commands->SetComputeRootSignature(shadowRoot.get());
-    commands->SetPipelineState(shadowPipeline.get());
-    commands->SetComputeRootShaderResourceView(0, scene->acceleration->GetGPUVirtualAddress());
-    commands->SetComputeRootDescriptorTable(1, Descriptor(*target,0));
-    commands->SetComputeRootShaderResourceView(2, submission.lights->GetGPUVirtualAddress());
-    commands->SetComputeRootDescriptorTable(3, Descriptor(*target,1));
-    for (uint32_t batch = 0; batch < batches; ++batch) {
-        commands->SetComputeRootConstantBufferView(4,
-            submission.camera->GetGPUVirtualAddress() + uint64_t(batch) * kCameraStride);
-        commands->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
-    }
-    // The sparse raw field is read only after all RayQuery batches finish.
-    std::array<D3D12_RESOURCE_BARRIER, 2> beginReconstruction{
-        CD3DX12_RESOURCE_BARRIER::Transition(target->rawShadowMask.get(),
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-        CD3DX12_RESOURCE_BARRIER::Transition(target->shadowMask.get(),
-            D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)};
-    commands->ResourceBarrier(UINT(beginReconstruction.size()), beginReconstruction.data());
-    commands->SetComputeRootSignature(reconstructionRoot.get());
-    commands->SetPipelineState(reconstructionPipeline.get());
-    commands->SetComputeRootDescriptorTable(0, Descriptor(*target,0));
-    commands->SetComputeRootDescriptorTable(1, Descriptor(*target,2));
-    commands->SetComputeRootDescriptorTable(2, Descriptor(*target,3));
-    for (uint32_t batch = 0; batch < batches; ++batch) {
-        commands->SetComputeRootConstantBufferView(3,
-            submission.camera->GetGPUVirtualAddress() + uint64_t(batch) * kCameraStride);
-        commands->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
-    }
-    const auto rawDone = CD3DX12_RESOURCE_BARRIER::Transition(target->rawShadowMask.get(),
-        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
-    commands->ResourceBarrier(1, &rawDone);
-    samplingPhase.fetch_add(1, std::memory_order_relaxed);
-    if (makeDiagnostic) {
-        std::array<D3D12_RESOURCE_BARRIER, 2> beginVisual{
-            CD3DX12_RESOURCE_BARRIER::Transition(target->shadowMask.get(),
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-            CD3DX12_RESOURCE_BARRIER::Transition(target->diagnosticColor.get(),
-                D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)};
-        commands->ResourceBarrier(UINT(beginVisual.size()), beginVisual.data());
-        commands->SetComputeRootSignature(diagnosticRoot.get());
-        commands->SetPipelineState(diagnosticPipeline.get());
-        commands->SetComputeRootDescriptorTable(0, Descriptor(*target,4));
-        commands->SetComputeRootDescriptorTable(1, Descriptor(*target,5));
-        commands->SetComputeRootConstantBufferView(2, submission.diagnostic->GetGPUVirtualAddress());
-        commands->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
-        std::array<D3D12_RESOURCE_BARRIER, 2> endVisual{
-            CD3DX12_RESOURCE_BARRIER::Transition(target->shadowMask.get(),
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
-            CD3DX12_RESOURCE_BARRIER::Transition(target->diagnosticColor.get(),
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)};
-        commands->ResourceBarrier(UINT(endVisual.size()), endVisual.data());
-        submission.usedDiagnostic = true;
-    } else {
-        const auto shadowDone = CD3DX12_RESOURCE_BARRIER::Transition(target->shadowMask.get(),
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
-        commands->ResourceBarrier(1, &shadowDone);
-    }
-    lastDispatchStatus.store(DispatchStatus::Recorded, std::memory_order_release);
-    return submission;
-}
-
-void DX12NativeComposite::OnSubmitted(ID3D12Fence* fence, uint64_t value, Submission submission, bool upscalerSucceeded)
-{
-	if (!fence || !value)
-		return;
-	// A recorded native shadow mask is independent of diagnostic visualization.
-	lastNativeGeometryRevision.store(submission.geometryRevision, std::memory_order_release);
-	lastNativeLightRevision.store(submission.lightRevision, std::memory_order_release);
-	if (globals::game::graphicsState)
-		lastNativeShadowFrame.store(globals::game::graphicsState->GetFrameCount(), std::memory_order_release);
-	if (upscalerSucceeded && submission.usedDiagnostic) {
-		submittedDiagnosticFrames.fetch_add(1, std::memory_order_relaxed);
-		if (globals::game::graphicsState)
-			lastValidDiagnosticFrame.store(globals::game::graphicsState->GetFrameCount(), std::memory_order_release);
-	}
-	Pending frame;
-	frame.fence.copy_from(fence);
-	frame.value = value;
-	frame.submission = std::move(submission);
-	pending.push_back(std::move(frame));
-	submittedMasks.fetch_add(1, std::memory_order_relaxed);
-	lastDispatchStatus.store(DispatchStatus::Submitted, std::memory_order_release);
-	Collect();
 }

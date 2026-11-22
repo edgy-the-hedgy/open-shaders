@@ -275,7 +275,8 @@ DX12NativeComposite::CaptureAndApply(ID3D11Texture2D* raster, uint32_t frame,
         const int selected = diagnosticSelectedLight.load(std::memory_order_acquire);
         const ApplyOptions apply{width, height, raw->batchCount,
             selected >= 0 && uint32_t(selected) < raw->lightCount ? selected : -1,
-            shadowIntensity.load(std::memory_order_acquire), 1.0f,
+            shadowIntensity.load(std::memory_order_acquire),
+            shadowBlend.load(std::memory_order_acquire),
             diagnosticDarkenEnabled.load(std::memory_order_acquire) ? 1u : 0u,
             globals::features::linearLighting.IsLinearLightingActive() ? 0u : 1u};
         cmd->SetComputeRoot32BitConstants(2, 8, &apply, 0);

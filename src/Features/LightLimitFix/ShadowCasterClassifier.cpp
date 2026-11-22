@@ -467,12 +467,10 @@ namespace ShadowCasterManager
 		const bool dynamic = !rec || rec->dynamic;
 		if (!dynamic && nativeStaticOffloaded)
 			return true;
-		// Only suppress an actual rigid shape in the published TLAS, and only
-		// for a prepared point light represented in the diagnostic shadowmask.
-		// Never infer geometry coverage merely from a partially prepared subcell.
+		// Offloading is an explicit matching/mode decision, never a geometry
+		// coverage certification or FSR/diagnostic freshness gate.
 		if (!dynamic && nativePreview &&
-			globals::features::dx12NativeComposite.MatchesNativeShadowMode(CurrentCullLight()) &&
-			globals::features::dx12NativeScene.HasCurrentRuntimeGeometry(geom)) {
+			globals::features::dx12NativeComposite.MatchesNativeShadowMode(CurrentCullLight())) {
 			s_nativePreviewStaticSkips.fetch_add(1, std::memory_order_relaxed);
 			return true;
 		}
