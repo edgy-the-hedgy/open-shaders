@@ -181,6 +181,7 @@ void DynamicCubemaps::PostPostLoad()
 
 void DynamicCubemaps::OnSceneTransitionReset(bool opening)
 {
+	SetNativeCaptureContext({});
 	// On LoadingMenu close (new cell loaded) re-trigger the cubemap capture. Dispatched on the
 	// render thread by Feature::DrainSceneTransitions; resetCapture is consumed there too.
 	if (!opening) {
@@ -191,6 +192,7 @@ void DynamicCubemaps::OnSceneTransitionReset(bool opening)
 
 void DynamicCubemaps::ClearShaderCache()
 {
+	SetNativeCaptureContext({});
 	resetCapture[0] = resetCapture[1] = true;
 	cubemapValid[0] = cubemapValid[1] = false;
 	nextTask = NextTask::kCaptureInferAndIrradianceA;
@@ -248,6 +250,21 @@ ID3D11ComputeShader* DynamicCubemaps::GetComputeShaderSpecularIrradiance()
 ID3D11ComputeShader* DynamicCubemaps::GetComputeShaderBC6HEncode()
 {
 	return bc6hEncodeCS.Get(L"Data\\Shaders\\DynamicCubemaps\\BC6HEncodeCS.hlsl", {}, "cs_5_0");
+}
+
+void DynamicCubemaps::SetNativeCaptureContext(const DX12Native::EnvironmentStamp& stamp)
+{
+	if (!nativeCaptureContext.SameEnvironment(stamp)) {
+		for (auto& pending : nativePendingCapture) pending = {};
+		for (auto& completed : nativeCompleted) completed = {};
+	}
+	nativeCaptureContext = stamp;
+}
+
+DX12Native::EnvironmentSource DynamicCubemaps::GetNativeEnvironment(bool reflections) const
+{
+	const auto& source = nativeCompleted[reflections ? 1 : 0];
+	return source.IsValidFor(nativeCaptureContext) ? source : DX12Native::EnvironmentSource{};
 }
 
 bool DynamicCubemaps::UpdateCubemapCapture(bool a_reflections)
@@ -332,6 +349,12 @@ bool DynamicCubemaps::UpdateCubemapCapture(bool a_reflections)
 	ID3D11SamplerState* nullSampler = { nullptr };
 	context->CSSetSamplers(0, 1, &nullSampler);
 
+	if (shader && detectShader && nativeCaptureContext.epoch && globals::game::graphicsState &&
+		nativeCaptureContext.engineFrame == globals::game::graphicsState->GetFrameCount() &&
+		nativeCaptureContext.pluginFrame == globals::state->frameCount)
+		nativePendingCapture[index] = nativeCaptureContext;
+	else
+		nativePendingCapture[index] = {};
 	return shader && detectShader;
 }
 
@@ -533,6 +556,13 @@ bool DynamicCubemaps::CompressToBC6H(bool a_reflections)
 		}
 		context->CopyResource((a_reflections ? envReflectionsTexture : envTexture)->resource.get(), envFilteredTexture->resource.get());
 		cubemapValid[a_reflections ? 1 : 0] = true;
+		const uint32_t index = a_reflections ? 1u : 0u;
+		const auto& capture = nativePendingCapture[index];
+		const auto* texture = a_reflections ? envReflectionsTexture : envTexture;
+		nativeCompleted[index] = capture.SameEnvironment(nativeCaptureContext) && texture ?
+			DX12Native::EnvironmentSource{ texture->resource.get(), ++nativeEnvironmentRevision, capture } :
+			DX12Native::EnvironmentSource{};
+		nativePendingCapture[index] = {};
 	}
 
 	return true;
@@ -628,6 +658,7 @@ void DynamicCubemaps::PostDeferred()
 
 void DynamicCubemaps::SetupResources()
 {
+	SetNativeCaptureContext({});
 	GetComputeShaderDetectLighting();
 	GetComputeShaderUpdate();
 	GetComputeShaderUpdateReflections();

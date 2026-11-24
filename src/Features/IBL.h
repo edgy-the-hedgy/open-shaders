@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Buffer.h"
+#include "DX12/DX12EnvironmentSource.h"
 #include "Utils/LazyShader.h"
 
 struct IBL : Feature
@@ -109,6 +110,10 @@ public:
 	bool IsManagedByENB() const;
 	/** @brief Returns the diffuse IBL spherical harmonics compute shader, compiling it on first use. */
 	ID3D11ComputeShader* GetDiffuseIBLCS();
+	/** @brief Requests scoped unshadowed sky radiance using the existing reflection capture. */
+	void SetNativeCaptureContext(const DX12Native::EnvironmentStamp& stamp);
+	/** @brief Borrows sky radiance only after all six scoped faces have been captured. */
+	DX12Native::EnvironmentSource GetNativeSkyRadiance() const;
 
 private:
 	static constexpr UINT kRadianceTarget = D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT - 1;
@@ -120,6 +125,9 @@ private:
 	std::array<uint, 2> captureColorSpace{};
 	UINT clearedFaces = 0;
 	UINT validFaces = 0;
+	DX12Native::EnvironmentStamp nativeCaptureContext{}, nativeSkyStamp{};
+	uint64_t nativeSkyRevision = 0;
+	UINT nativeSkyFaces = 0;
 	bool capturingRadiance = false;
 	bool captureFailed = false;
 	bool captureTargetBound = false;
