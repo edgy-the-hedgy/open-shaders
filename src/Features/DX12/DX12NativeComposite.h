@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DX12NativeShadowTrace.h"
+#include "DX12NativeDirectLighting.h"
 #include "GraphicsInterop.h"
 #include "VideoMemoryBudget.h"
 
@@ -43,7 +44,9 @@ namespace DX12Native
 			ID3D12CommandQueue* queue, ID3D11Texture2D* source,
 			uint32_t frame, uint32_t width, uint32_t height, Transfer transfer,
 			const std::shared_ptr<const ShadowMaskFrame>& shadow,
-			bool returnColorToDX11);
+			bool returnColorToDX11, bool coverageRequested = false,
+			const std::shared_ptr<const NativeScreenProbe::MaterialFrame>& materialPreview = {},
+			const std::shared_ptr<const DirectLightingFrame>& direct = {});
 		bool Retain(const std::shared_ptr<const Frame>& frame, ID3D12Fence* fence, uint64_t value);
 		~NativeComposite();
 
@@ -54,6 +57,8 @@ namespace DX12Native
 			// Retain producer textures until the composite GPU work completes.
 			std::shared_ptr<const ShadowMaskFrame> shadowInput;
 			std::shared_ptr<const RasterFrame> rasterInput;
+			std::shared_ptr<const NativeScreenProbe::MaterialFrame> materialInput;
+			std::shared_ptr<const DirectLightingFrame> lightingInput;
 			std::unique_ptr<WrappedResource> shared;
 			std::unique_ptr<WrappedResource> returned;
 			winrt::com_ptr<ID3D12CommandAllocator> allocator;

@@ -1312,6 +1312,9 @@ if(AUTO_PLUGIN_DEPLOYMENT)
                     COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     "${_native_pbr_screen_dxil}"
                     "${DEPLOY_TARGET}/Shaders/NativeComposite/NativePBRScreenProbe.dxil"
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${_native_direct_dxil}"
+                    "${DEPLOY_TARGET}/Shaders/NativeComposite/DirectLighting.dxil"
                 )
             endif()
             # Content-based copies preserve the destination mtime when DXIL

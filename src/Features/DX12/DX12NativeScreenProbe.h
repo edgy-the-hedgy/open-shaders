@@ -113,6 +113,8 @@ namespace DX12Native
 		{
 			// Keep the entire MaterialFrame alive until consumer fence retirement.
 			std::shared_ptr<const OutputAllocation> allocation;
+			std::shared_ptr<const RasterFrame> raster;
+			std::shared_ptr<const TopLevel> scene;
 			winrt::com_ptr<ID3D12Resource> samples;
 			uint32_t sampleStride=kSampleStride, rowPitch=0;
 			winrt::com_ptr<ID3D12Fence> producerFence;
@@ -272,12 +274,12 @@ namespace DX12Native
 					D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 				command->ResourceBarrier(1,&begin);
 				if (slot->output->shaderReadable) {
-					const auto outputBarrier=CD3DX12_RESOURCE_BARRIER::Transition(slot->output->resource.get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+					const auto outputBarrier=CD3DX12_RESOURCE_BARRIER::Transition(slot->output->resource.get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 					command->ResourceBarrier(1,&outputBarrier);
 				}
 				command->Dispatch((gridWidth+7)/8,(gridHeight+7)/8,1);
 				const std::array end{
-					CD3DX12_RESOURCE_BARRIER::Transition(slot->output->resource.get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+					CD3DX12_RESOURCE_BARRIER::Transition(slot->output->resource.get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COMMON),
 					CD3DX12_RESOURCE_BARRIER::Transition(slot->counters.get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COPY_SOURCE),
 					CD3DX12_RESOURCE_BARRIER::Transition(slot->raster->depth->resource.get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COMMON)};
 				command->ResourceBarrier(UINT(end.size()),end.data());
@@ -297,6 +299,7 @@ namespace DX12Native
 				if (pending->fullResolution) {
 					auto materialFrame=std::make_shared<MaterialFrame>();
 					materialFrame->allocation=pending->output; materialFrame->samples=pending->output->resource; materialFrame->producerFence=pending->fence;
+					materialFrame->raster=pending->raster; materialFrame->scene=pending->scene;
 					materialFrame->producerValue=value; materialFrame->geometryRevision=pending->scene->geometryRevision;
 					materialFrame->frame=frame; materialFrame->scope=pending->scene->scope;
 					materialFrame->width=gridWidth; materialFrame->height=gridHeight; materialFrame->rowPitch=pitchPixels*kSampleStride;

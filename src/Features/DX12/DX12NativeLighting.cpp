@@ -112,10 +112,8 @@ namespace DX12Native
 		}
 	}
 
-	void NativeLighting::DispatchShadows(const GraphicsBackend& backend, std::shared_ptr<const RasterFrame> captured,
-		std::shared_ptr<const TopLevel> built, uint32_t frame, const ShadowTraceControls& controls)
+	std::vector<DX12::PreparedLight> NativeLighting::GetUnifiedLights(uint32_t frame) const
 	{
-		CS_GPU_PASS("NativeLighting::IndependentShadows");
 		const auto lights = shadowLights.load(std::memory_order_acquire);
 		std::vector<DX12::PreparedLight> liveLights = lights ? *lights : std::vector<DX12::PreparedLight>{};
 		if (!liveLights.empty()) {
@@ -130,7 +128,24 @@ namespace DX12Native
 				}
 			}
 		}
-		shadows.Dispatch(backend, std::move(captured), std::move(built), liveLights, frame, controls);
+		return liveLights;
+	}
+
+	void NativeLighting::DispatchShadows(const GraphicsBackend& backend, std::shared_ptr<const RasterFrame> captured,
+		std::shared_ptr<const TopLevel> built, uint32_t frame, const ShadowTraceControls& controls)
+	{
+		CS_GPU_PASS("NativeLighting::IndependentShadows");
+		const auto lights = GetUnifiedLights(frame);
+		shadows.Dispatch(backend, std::move(captured), std::move(built), lights, frame, controls);
+	}
+
+	void NativeLighting::DispatchDirect(const GraphicsBackend& backend, std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
+		const ShadowTraceControls& controls)
+	{
+		if (!material)
+			return;
+		const auto lights = GetUnifiedLights(material->frame);
+		direct.Dispatch(backend, std::move(material), lights, controls);
 	}
 
 	void NativeLighting::ClearFrozenLights()
@@ -149,5 +164,6 @@ namespace DX12Native
 			frozenNativeLights.clear();
 		}
 		shadows.Reset();
+		direct.Reset();
 	}
 }

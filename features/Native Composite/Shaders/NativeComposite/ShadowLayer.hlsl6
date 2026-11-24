@@ -2,6 +2,8 @@
 // coupling the native direct BRDF or its RR-ready raw signals to shadow history.
 Texture2D<float4> ShadowMask : register(t0);
 Texture2D<float> RasterDepth : register(t1);
+ByteAddressBuffer MaterialSamples : register(t2);
+ByteAddressBuffer DirectSamples : register(t3);
 RWTexture2D<float4> Scene : register(u0);
 
 cbuffer ShadowConstants : register(b0)
@@ -17,11 +19,33 @@ cbuffer ShadowConstants : register(b0)
     row_major float4x4 InverseView;
     uint SpatialReconstruction;
     uint ReconstructionGridSize;
+    uint MaterialPitch;
+    uint LightingPitch;
+    uint ApplyShadow;
+    uint ApplyDirect;
+    uint PreviewCoverage;
+    uint Padding;
 };
 
 float3 SignedPower(float3 value, float exponent)
 {
     return sign(value) * pow(abs(value), exponent);
+}
+float4 UnpackHalf4(uint2 value)
+{
+    return f16tof32(uint4(value.x & 65535u, value.x >> 16, value.y & 65535u, value.y >> 16));
+}
+float3 CoverageColor(float status)
+{
+    if (status == 1.0) return float3(0.04,0.85,0.13);
+    if (status == -1.0) return float3(0.95,0.48,0.04);
+    if (status == -2.0) return float3(0.56,0.10,0.90);
+    if (status == -3.0) return float3(0.92,0.04,0.05);
+    return float3(0.22,0.22,0.22);
+}
+float3 EncodeScene(float3 color)
+{
+    return LegacyTransfer != 0u ? SignedPower(color, 1.0f / 1.6f) : color;
 }
 bool ValidMask(float4 mask)
 {
@@ -41,6 +65,32 @@ float SampleVisibility(int2 samplePixel, float4 center)
 void main(uint3 id : SV_DispatchThreadID)
 {
     if (any(id.xy >= Size)) return;
+    if (PreviewCoverage != 0u) {
+        float status = 0.0;
+        if (PreviewCoverage == 1u)
+            status = UnpackHalf4(MaterialSamples.Load2(id.y*MaterialPitch+id.x*32u)).a;
+        float4 color = Scene[id.xy];
+        color.rgb = EncodeScene(CoverageColor(status));
+        Scene[id.xy] = color;
+        return;
+    }
+    if (ApplyDirect != 0u) {
+        uint materialOffset = id.y*MaterialPitch + id.x*32u;
+        uint lightingOffset = id.y*LightingPitch + id.x*16u;
+        float4 base = UnpackHalf4(MaterialSamples.Load2(materialOffset));
+        float4 emission = UnpackHalf4(MaterialSamples.Load2(materialOffset+24u));
+        float4 diffuse = UnpackHalf4(DirectSamples.Load2(lightingOffset));
+        float4 specular = UnpackHalf4(DirectSamples.Load2(lightingOffset+8u));
+        if (base.a == 1.0 && diffuse.a == 1.0 && specular.a == 1.0 &&
+            all(isfinite(emission)) && all(isfinite(diffuse)) && all(isfinite(specular))) {
+            float4 color = Scene[id.xy];
+            // Direct output already includes ray visibility; never multiply it by the independent mask again.
+            color.rgb = EncodeScene(max(0.0, diffuse.rgb + specular.rgb + emission.rgb));
+            Scene[id.xy] = color;
+            return;
+        }
+    }
+    if (ApplyShadow == 0u) return;
     const float4 center = ShadowMask[id.xy];
     const bool traced = ValidMask(center);
     if (!traced && !(SpatialReconstruction != 0u && center.y == -1.0f))

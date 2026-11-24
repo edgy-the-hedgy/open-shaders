@@ -1,0 +1,56 @@
+#pragma once
+
+#include "DX12NativeScreenProbe.h"
+#include "DX12NativeShadowTrace.h"
+#include "VideoMemoryBudget.h"
+
+#include <array>
+#include <memory>
+#include <span>
+#include <string>
+
+namespace DX12Native
+{
+	/** @brief Fenced packed diffuse/specular radiance with explicit pixel ownership. */
+	struct DirectLightingFrame
+	{
+		std::shared_ptr<const NativeScreenProbe::MaterialFrame> material;
+		winrt::com_ptr<ID3D12Resource> samples, lights, camera;
+		winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
+		winrt::com_ptr<ID3D12CommandAllocator> allocator;
+		winrt::com_ptr<ID3D12GraphicsCommandList> commands;
+		winrt::com_ptr<ID3D12RootSignature> root;
+		winrt::com_ptr<ID3D12PipelineState> pipeline;
+		winrt::com_ptr<ID3D12Fence> readyFence;
+		uint64_t readyValue = 0, allocationBytes = 0;
+		uint32_t frame = 0, width = 0, height = 0, rowPitch = 0;
+	};
+
+	/** @brief Consumes the published material frame without retracing primary rays. */
+	class DirectLightingTrace
+	{
+	public:
+		~DirectLightingTrace();
+		void Poll(uint32_t frame);
+		void Reset() { current.reset(); Poll(UINT32_MAX); }
+		void Dispatch(const GraphicsBackend& backend, std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
+			std::span<const DX12::PreparedLight> lights, const ShadowTraceControls& controls);
+		std::shared_ptr<const DirectLightingFrame> Get(uint32_t frame) const
+		{
+			return current && current->frame == frame ? current : nullptr;
+		}
+		const std::string& Failure() const { return failure; }
+
+	private:
+		void Initialize(const GraphicsBackend& backend);
+		GraphicsBackend owner;
+		winrt::com_ptr<ID3D12RootSignature> root;
+		winrt::com_ptr<ID3D12PipelineState> pipeline;
+		winrt::com_ptr<ID3D12Fence> completion;
+		std::array<std::shared_ptr<DirectLightingFrame>, 3> slots;
+		std::shared_ptr<DirectLightingFrame> current;
+		VideoMemoryBudget videoBudget;
+		uint64_t nextFence = 0;
+		std::string failure;
+	};
+}

@@ -67,6 +67,19 @@ struct DX12NativeScene final : Feature
 	/** @brief Completed full-resolution native material outputs; immutable and fenced. */
 	std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> GetNativeMaterialFrame(uint32_t frame) const { return screenProbe.GetMaterialFrame(frame); }
 
+	/** @brief Whether the coverage visualization is requested for this frame. */
+	bool IsCoveragePreviewEnabled() const { return materialCoveragePreview; }
+	/** @brief Returns an optional same-frame coverage visualization input. */
+	std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> GetMaterialCoverageFrame(uint32_t frame) const
+	{
+		return materialCoveragePreview ? screenProbe.GetMaterialFrame(frame) : nullptr;
+	}
+	/** @brief Returns an optional same-frame direct lighting contribution. */
+	std::shared_ptr<const DX12Native::DirectLightingFrame> GetNativeLightingFrame(uint32_t frame) const
+	{
+		return directLightingEnabled ? lighting.GetDirect(frame) : nullptr;
+	}
+
 private:
 	/** @brief Gates only native shadow replacement; never disables DX11 baseline shadows. */
 	bool CanOffloadShadowsInCurrentCell() const;
@@ -77,6 +90,8 @@ private:
 	DX12Native::NativeLighting lighting;
 	DX12Native::NativeScreenProbe screenProbe;
 	bool screenProbeEnabled = false;
+	bool materialCoveragePreview = false;
+	bool directLightingEnabled = false;
 	bool fullResolutionMaterialProbe = false;
 	bool continuousMaterialProbe = false;
 	bool shadowMaskEnabled = true;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DX12NativeShadowTrace.h"
+#include "DX12NativeDirectLighting.h"
 
 #include <atomic>
 #include <memory>
@@ -28,6 +29,14 @@ namespace DX12Native
 		/** @brief Consumes the existing scene and raster snapshot for independent shadows. */
 		void DispatchShadows(const GraphicsBackend& backend, std::shared_ptr<const RasterFrame> captured,
 			std::shared_ptr<const TopLevel> built, uint32_t frame, const ShadowTraceControls& controls);
+		/** @brief Dispatches direct lighting using the exact material producer snapshot. */
+		void DispatchDirect(const GraphicsBackend& backend, std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
+			const ShadowTraceControls& controls);
+		/** @brief Retires previous lighting inputs without blocking. */
+		void PollDirect(uint32_t frame) { direct.Poll(frame); }
+		/** @brief Borrows the same-frame fenced diffuse and specular output. */
+		std::shared_ptr<const DirectLightingFrame> GetDirect(uint32_t frame) const { return direct.Get(frame); }
+		const std::string& DirectFailure() const { return direct.Failure(); }
 		/** @brief Borrows the same-frame fenced shadow contribution for Native Composite. */
 		std::shared_ptr<const ShadowMaskFrame> GetShadowMask(uint32_t frame) const { return shadows.Get(frame); }
 		/** @brief Keeps the shadow contribution alive through a consumer fence. */
@@ -41,7 +50,10 @@ namespace DX12Native
 		void Reset();
 
 	private:
+		/** @brief Builds one ordered prepared/live selection for both lighting passes. */
+		std::vector<DX12::PreparedLight> GetUnifiedLights(uint32_t frame) const;
 		ShadowMaskTrace shadows;
+		DirectLightingTrace direct;
 		std::atomic<std::shared_ptr<const std::vector<DX12::PreparedLight>>> shadowLights;
 		struct RuntimeLightSample
 		{

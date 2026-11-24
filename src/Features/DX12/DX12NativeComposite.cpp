@@ -31,12 +31,12 @@ namespace DX12Native
 			if (!file.read(shader.data(), std::streamsize(shader.size())))
 				return false;
 			CD3DX12_DESCRIPTOR_RANGE ranges[2];
-			ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0);
+			ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0);
 			ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
 			CD3DX12_ROOT_PARAMETER parameters[3];
 			parameters[0].InitAsDescriptorTable(1, &ranges[0]);
 			parameters[1].InitAsDescriptorTable(1, &ranges[1]);
-			parameters[2].InitAsConstants(42, 0);
+			parameters[2].InitAsConstants(48, 0);
 			const CD3DX12_ROOT_SIGNATURE_DESC desc(3, parameters);
 			winrt::com_ptr<ID3DBlob> serialized, errors;
 			DX::ThrowIfFailed(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, serialized.put(), errors.put()));
@@ -61,7 +61,9 @@ namespace DX12Native
 		ID3D12Device* device12, ID3D12CommandQueue* queue, ID3D11Texture2D* source,
 		uint32_t frame, uint32_t width, uint32_t height, Transfer transfer,
 		const std::shared_ptr<const ShadowMaskFrame>& shadow,
-		bool returnColorToDX11)
+		bool returnColorToDX11, bool coverageRequested,
+		const std::shared_ptr<const NativeScreenProbe::MaterialFrame>& materialPreview,
+		const std::shared_ptr<const DirectLightingFrame>& direct)
 	{
 		if (!device11 || !context11 || !device12 || !queue || !source || !width || !height)
 			return {};
@@ -87,18 +89,38 @@ namespace DX12Native
 		                            (support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD) &&
 		                            (support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE);
 		const auto raster = shadow ? shadow->raster : nullptr;
-		// The native scene's frame counter is used when fetching the mask; the
-		// compositor frame number is the upscaler's existing frame counter.
-		const bool applyShadow = supportsShadow && transfer != Transfer::Unknown &&
-		                         shadow && shadow->mask && shadow->readyFence && shadow->readyValue &&
-		                         shadow->readyValue != UINT64_MAX &&
-		                         shadow->width >= width && shadow->height >= height &&
-		                         raster && raster->depth && raster->depth->resource &&
-		                         raster->cameraValid && raster->readyFence && raster->readyValue &&
-		                         raster->readyValue != UINT64_MAX &&
-		                         raster->width >= width && raster->height >= height &&
-		                         InitializeShadow(device12);
-		if (!applyShadow)
+		const auto material = coverageRequested ? materialPreview : (direct ? direct->material : nullptr);
+		const auto bufferMatches = [device12](ID3D12Resource* buffer, uint64_t bytes) {
+			if (!buffer || !bytes) return false;
+			const auto desc = buffer->GetDesc();
+			winrt::com_ptr<ID3D12Device> device;
+			return desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER && desc.Width >= bytes &&
+				SUCCEEDED(buffer->GetDevice(IID_PPV_ARGS(device.put()))) && device.get() == device12;
+		};
+		const auto fenceValid = [](ID3D12Fence* fence, uint64_t value) {
+			return fence && value && value != UINT64_MAX && fence->GetCompletedValue() != UINT64_MAX;
+		};
+		const bool materialValid = material && material->width == width && material->height == height &&
+			material->sampleStride == 32u && uint64_t(material->rowPitch) >= uint64_t(width) * 32u &&
+			bufferMatches(material->samples.get(), uint64_t(material->rowPitch) * height) &&
+			fenceValid(material->producerFence.get(), material->producerValue);
+		const bool directValid = direct && materialValid && direct->material == material &&
+			direct->frame == material->frame && direct->width == width && direct->height == height &&
+			uint64_t(direct->rowPitch) >= uint64_t(width) * 16u &&
+			bufferMatches(direct->samples.get(), uint64_t(direct->rowPitch) * height) &&
+			fenceValid(direct->readyFence.get(), direct->readyValue);
+		const bool canCompose = supportsShadow && transfer != Transfer::Unknown &&
+			(coverageRequested || directValid || shadow) && InitializeShadow(device12);
+		const bool applyCoverage = canCompose && coverageRequested;
+		const bool applyDirect = canCompose && !applyCoverage && directValid;
+		const bool applyShadow = canCompose && !applyCoverage &&
+			shadow && shadow->mask && fenceValid(shadow->readyFence.get(), shadow->readyValue) &&
+			shadow->width >= width && shadow->height >= height &&
+			raster && raster->depth && raster->depth->resource && raster->cameraValid &&
+			fenceValid(raster->readyFence.get(), raster->readyValue) && raster->width >= width && raster->height >= height;
+		const bool applyPass = applyCoverage || applyDirect || applyShadow;
+		const bool useMaterial = (applyCoverage || applyDirect) && materialValid;
+		if (!applyPass)
 			returnColorToDX11 = false;
 
 		Slot* slot = nullptr;
@@ -106,6 +128,13 @@ namespace DX12Native
 			if (!candidate)
 				candidate = std::make_unique<Slot>();
 			auto& value = *candidate;
+			if (!value.untracked && value.frame && value.frame->producerValue &&
+				GpuFenceRetired(value.fence.fence12.get(), value.frame->producerValue)) {
+				value.shadowInput.reset();
+				value.rasterInput.reset();
+				value.materialInput.reset();
+				value.lightingInput.reset();
+			}
 			if (value.untracked || (value.frame && value.frame.use_count() != 1))
 				continue;
 			if (value.frame && value.frame->producerValue) {
@@ -189,7 +218,7 @@ namespace DX12Native
 				if (supportsShadow) {
 					D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
 					heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-					heapDesc.NumDescriptors = 3;
+					heapDesc.NumDescriptors = 5;
 					heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 					DX::ThrowIfFailed(device12->CreateDescriptorHeap(&heapDesc,
 						IID_PPV_ARGS(replacement->shadowDescriptors.put())));
@@ -205,6 +234,8 @@ namespace DX12Native
 			// without registering a fence that could be abandoned on failure.
 			slot->shadowInput = applyShadow ? shadow : nullptr;
 			slot->rasterInput = applyShadow ? raster : nullptr;
+			slot->materialInput = useMaterial ? material : nullptr;
+			slot->lightingInput = applyDirect ? direct : nullptr;
 			slot->frame->valid = false;
 			slot->frame->producerFence = nullptr;
 			slot->frame->producerValue = 0;
@@ -230,7 +261,8 @@ namespace DX12Native
 			};
 			slot->commands->ResourceBarrier(static_cast<UINT>(endCopy.size()), endCopy.data());
 
-			if (applyShadow) {
+			if (applyPass) {
+				CS_GPU_PASS("NativeComposite::LightingAndShadows");
 				slot->shadowRoot = shadowRoot;
 				slot->shadowPipeline = shadowPipeline;
 				const auto step = device12->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -240,28 +272,43 @@ namespace DX12Native
 				srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 				srv.Texture2D.MipLevels = 1;
 				srv.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-				device12->CreateShaderResourceView(shadow->mask.get(), &srv, cpu);
+				device12->CreateShaderResourceView(applyShadow ? shadow->mask.get() : nullptr, &srv, cpu);
 				cpu.ptr += step;
 				srv.Format = DXGI_FORMAT_R32_FLOAT;
-				device12->CreateShaderResourceView(raster->depth->resource.get(), &srv, cpu);
+				device12->CreateShaderResourceView(applyShadow ? raster->depth->resource.get() : nullptr, &srv, cpu);
 				cpu.ptr += step;
+				const auto writeRawSRV = [&](ID3D12Resource* resource) {
+					D3D12_SHADER_RESOURCE_VIEW_DESC raw{};
+					raw.Format = DXGI_FORMAT_R32_TYPELESS;
+					raw.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+					raw.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+					raw.Buffer.NumElements = resource ? UINT(resource->GetDesc().Width / 4u) : 1u;
+					raw.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+					device12->CreateShaderResourceView(resource, &raw, cpu);
+					cpu.ptr += step;
+				};
+				writeRawSRV(useMaterial ? material->samples.get() : nullptr);
+				writeRawSRV(applyDirect ? direct->samples.get() : nullptr);
 				D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
 				uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
 				uav.Format = desc.Format;
 				device12->CreateUnorderedAccessView(slot->frame->color.get(), nullptr, &uav, cpu);
-				const std::array start{
-					CD3DX12_RESOURCE_BARRIER::Transition(slot->frame->color.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-					CD3DX12_RESOURCE_BARRIER::Transition(shadow->mask.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-					CD3DX12_RESOURCE_BARRIER::Transition(raster->depth->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
-				};
-				slot->commands->ResourceBarrier(static_cast<UINT>(start.size()), start.data());
+				const auto colorStart = CD3DX12_RESOURCE_BARRIER::Transition(slot->frame->color.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+				slot->commands->ResourceBarrier(1, &colorStart);
+				if (applyShadow) {
+					const std::array start{
+						CD3DX12_RESOURCE_BARRIER::Transition(shadow->mask.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+						CD3DX12_RESOURCE_BARRIER::Transition(raster->depth->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
+					};
+					slot->commands->ResourceBarrier(UINT(start.size()), start.data());
+				}
 				ID3D12DescriptorHeap* heaps[]{ slot->shadowDescriptors.get() };
 				slot->commands->SetDescriptorHeaps(1, heaps);
 				slot->commands->SetPipelineState(slot->shadowPipeline.get());
 				slot->commands->SetComputeRootSignature(slot->shadowRoot.get());
 				auto gpu = slot->shadowDescriptors->GetGPUDescriptorHandleForHeapStart();
 				slot->commands->SetComputeRootDescriptorTable(0, gpu);
-				gpu.ptr += 2ull * step;
+				gpu.ptr += 4ull * step;
 				slot->commands->SetComputeRootDescriptorTable(1, gpu);
 				struct Constants
 				{
@@ -271,29 +318,36 @@ namespace DX12Native
 					float strength, blend;
 					DirectX::SimpleMath::Matrix inverseProjection, inverseView;
 					uint32_t spatialReconstruction, reconstructionGridSize;
+					uint32_t materialPitch, lightingPitch, applyShadow, applyDirect, previewCoverage, padding;
 				};
-				static_assert(sizeof(Constants) == 42 * sizeof(uint32_t));
-				const auto& camera = raster->camera;
+				static_assert(sizeof(Constants) == 48 * sizeof(uint32_t));
 				// Exactly the open-RT default independent shadow settings.
 				const Constants constants{ width, height, 16.0f, 2.0f,
 					transfer == Transfer::LegacyScene ? 1u : 0u,
 					0u,  // padding: matrices retain 16-byte alignment.
 					globals::features::dx12Control.GetShadowStrength(),
 					globals::features::dx12Control.GetShadowBlend(),
-					camera.CameraProjInverse, camera.CameraViewInverse,
+					applyShadow ? raster->camera.CameraProjInverse : DirectX::SimpleMath::Matrix{},
+					applyShadow ? raster->camera.CameraViewInverse : DirectX::SimpleMath::Matrix{},
 					globals::features::dx12Control.UseSpatialReconstruction() ? 1u : 0u,
-					globals::features::dx12Control.GetReconstructionGridSize() };
-				slot->commands->SetComputeRoot32BitConstants(2, 42, &constants, 0);
+					globals::features::dx12Control.GetReconstructionGridSize(),
+					useMaterial ? material->rowPitch : 0u, applyDirect ? direct->rowPitch : 0u,
+					applyShadow ? 1u : 0u, applyDirect ? 1u : 0u,
+					applyCoverage ? (useMaterial ? 1u : 2u) : 0u, 0u };
+				slot->commands->SetComputeRoot32BitConstants(2, 48, &constants, 0);
 				slot->commands->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
-				const std::array end{
-					CD3DX12_RESOURCE_BARRIER::Transition(slot->frame->color.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON),
-					CD3DX12_RESOURCE_BARRIER::Transition(shadow->mask.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
-					CD3DX12_RESOURCE_BARRIER::Transition(raster->depth->resource.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON)
-				};
-				slot->commands->ResourceBarrier(static_cast<UINT>(end.size()), end.data());
+				const auto colorEnd = CD3DX12_RESOURCE_BARRIER::Transition(slot->frame->color.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+				slot->commands->ResourceBarrier(1, &colorEnd);
+				if (applyShadow) {
+					const std::array end{
+						CD3DX12_RESOURCE_BARRIER::Transition(shadow->mask.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
+						CD3DX12_RESOURCE_BARRIER::Transition(raster->depth->resource.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON)
+					};
+					slot->commands->ResourceBarrier(UINT(end.size()), end.data());
+				}
 			}
 
-			if (applyShadow && returnColorToDX11 && slot->returned) {
+			if (applyPass && returnColorToDX11 && slot->returned) {
 				const std::array beginReturn{
 					CD3DX12_RESOURCE_BARRIER::Transition(slot->frame->color.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE),
 					CD3DX12_RESOURCE_BARRIER::Transition(slot->returned->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST)
@@ -314,6 +368,10 @@ namespace DX12Native
 				DX::ThrowIfFailed(queue->Wait(shadow->readyFence.get(), shadow->readyValue));
 				DX::ThrowIfFailed(queue->Wait(raster->readyFence.get(), raster->readyValue));
 			}
+			if (useMaterial)
+				DX::ThrowIfFailed(queue->Wait(material->producerFence.get(), material->producerValue));
+			if (applyDirect)
+				DX::ThrowIfFailed(queue->Wait(direct->readyFence.get(), direct->readyValue));
 			const uint64_t done = slot->fence.Next();
 			ID3D12CommandList* lists[]{ slot->commands.get() };
 			queue->ExecuteCommandLists(1, lists);
@@ -322,7 +380,7 @@ namespace DX12Native
 			auto& output = *slot->frame;
 			output.producerFence = slot->fence.fence12;
 			output.producerValue = done;
-			if (applyShadow && returnColorToDX11 && slot->returned) {
+			if (applyPass && returnColorToDX11 && slot->returned) {
 				CS_GPU_PASS("NativeComposite::SceneReturn");
 				// The slot is reused only once this second signal completes, so the return texture outlives the DX11 copy.
 				DX::ThrowIfFailed(context11->Wait(slot->fence.fence11.get(), done));

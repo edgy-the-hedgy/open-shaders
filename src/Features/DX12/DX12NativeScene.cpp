@@ -54,7 +54,13 @@ void DX12NativeScene::DrawSettings()
 
 void DX12NativeScene::DrawLightingSettings(bool /*developer*/)
 {
-	ImGui::TextWrapped("%s", T("menu.dx12.lighting.raster_active", "Raster lighting remains active."));
+	const bool exclusive = globals::features::dx12Control.UsesExclusiveMaterials();
+	ImGui::BeginDisabled(!exclusive);
+	ImGui::Checkbox(T("menu.dx12.lighting.direct", "Direct lighting"), &directLightingEnabled);
+	ImGui::EndDisabled();
+	ImGui::TextWrapped("%s", exclusive ?
+		T("menu.dx12.lighting.native_direct_info", "Direct lighting replaces covered opaque pixels; uncovered pixels retain raster color. Independent shadows are controlled in Shadows.") :
+		T("menu.dx12.lighting.raster_active", "Raster lighting remains active."));
 }
 
 void DX12NativeScene::DrawMaterialSettings(bool developer)
@@ -62,6 +68,9 @@ void DX12NativeScene::DrawMaterialSettings(bool developer)
 	ImGui::TextWrapped("%s", globals::features::dx12Control.UsesExclusiveMaterials() ?
 		T("menu.dx12.materials.native_selected", "Full-resolution material evaluation is active. Uncovered surfaces may render incorrectly.") :
 		T("menu.dx12.materials.raster_active", "Raster material rendering remains active. DX12 material evaluation is experimental."));
+	ImGui::Checkbox(T("menu.dx12.materials.coverage", "Material coverage visualization"), &materialCoveragePreview);
+	if (materialCoveragePreview)
+		ImGui::TextWrapped("%s", T("menu.dx12.materials.coverage_legend", "Green: evaluated | Red: missing material | Amber: no hit | Purple: depth mismatch | Gray: invalid depth"));
 	if (!developer)
 		return;
 	if (ImGui::Checkbox(T("menu.dx12.materials.probe", "Visible-pixel material probe"), &screenProbeEnabled) && !screenProbeEnabled)
@@ -81,7 +90,8 @@ void DX12NativeScene::DrawDevStats()
 		if (stats.submittedFrames) ImGui::Text("Material submissions: %u | Reused output allocations: %u", stats.submittedFrames, stats.reusedAllocations);
 		if (stats.sampled) ImGui::Text("Screen frame %u | Evaluated %u / %u | No hit %u | Depth mismatch %u | Missing material %u | Invalid depth %u",
 			stats.frame, stats.evaluated, stats.sampled, stats.noHit, stats.depthMismatch, stats.missingMaterial, stats.invalid);
-		if ((screenProbeEnabled || globals::features::dx12Control.UsesExclusiveMaterials()) && !screenProbe.failure.empty()) ImGui::TextWrapped("%s", screenProbe.failure.c_str());
+		if ((screenProbeEnabled || materialCoveragePreview || globals::features::dx12Control.UsesExclusiveMaterials()) && !screenProbe.failure.empty()) ImGui::TextWrapped("%s", screenProbe.failure.c_str());
+		if (directLightingEnabled && !lighting.DirectFailure().empty()) ImGui::TextWrapped("%s", lighting.DirectFailure().c_str());
 	}
 	const auto built = acceleration.GetScene();
 	if (!built || !built->inputs) {
@@ -135,6 +145,7 @@ void DX12NativeScene::DrawDevStats()
 
 void DX12NativeScene::LoadSettings(json& input)
 {
+	directLightingEnabled = input.value("DirectLighting", false);
 	shadowMaskEnabled = input.value("ShadowMask", true);
 	outdoorShadowOffloading = input.value("OutdoorShadowOffloading", false);
 	offloadStaticShadows = input.value("OffloadSCMStatic", true);
@@ -153,7 +164,7 @@ void DX12NativeScene::LoadSettings(json& input)
 
 void DX12NativeScene::SaveSettings(json& output)
 {
-	output = { { "ShadowMask", shadowMaskEnabled }, { "OutdoorShadowOffloading", outdoorShadowOffloading }, { "ShadowTraceDensityMode", densityMode },
+	output = { { "DirectLighting", directLightingEnabled }, { "ShadowMask", shadowMaskEnabled }, { "OutdoorShadowOffloading", outdoorShadowOffloading }, { "ShadowTraceDensityMode", densityMode },
 		{ "OffloadSCMStatic", offloadStaticShadows },
 		{ "OffloadFlickeringStatic", offloadFlickeringStatic },
 		{ "FreezeNativeFlickering", freezeNativeFlickering },
@@ -166,6 +177,8 @@ void DX12NativeScene::SaveSettings(json& output)
 
 void DX12NativeScene::RestoreDefaultSettings()
 {
+	directLightingEnabled = false;
+	materialCoveragePreview = false;
 	shadowMaskEnabled = true;
 	outdoorShadowOffloading = false;
 	offloadStaticShadows = true;
@@ -196,7 +209,7 @@ bool DX12NativeScene::OwnsStaticForLight(RE::BSShadowLight* light, int32_t slot)
 	// in the current frame; a nearby prepared light is not sufficient proof.
 	if (!light || slot < 0 || !loaded || globals::game::isVR ||
 		!globals::features::dx12Control.IsActive() ||
-		!globals::features::dx12Control.IsShadowOffloadMode() ||
+		!(globals::features::dx12Control.IsShadowOffloadMode() || globals::features::dx12Control.UsesExclusiveMaterials()) ||
 		!shadowMaskEnabled || !offloadStaticShadows || !CanOffloadShadowsInCurrentCell() ||
 		light->GetIsFrustumOrDirectionalLight() || !globals::game::graphicsState)
 		return false;
@@ -250,51 +263,53 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/
 			static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
 		return;
 	screenProbe.Poll();
-	const bool exclusiveMaterials = globals::features::dx12Control.UsesExclusiveMaterials();
-	const bool fullProbe = globals::features::dx12Control.IsFullNativeMode() && (screenProbeEnabled || exclusiveMaterials);
-	const bool shadowTrace = shadowMaskEnabled && globals::features::dx12Control.IsShadowOffloadMode() && CanOffloadShadowsInCurrentCell();
+	const uint32_t frame = globals::game::graphicsState->GetFrameCount();
+	lighting.PollDirect(frame);
+	const auto& control = globals::features::dx12Control;
+	const bool fullNative = control.IsFullNativeMode();
+	const bool exclusiveMaterials = control.UsesExclusiveMaterials();
+	const bool directEnabled = fullNative && exclusiveMaterials && directLightingEnabled;
+	const bool materialRequired = exclusiveMaterials || materialCoveragePreview;
+	const bool fullProbe = fullNative && (screenProbeEnabled || materialRequired) &&
+		screenProbe.WantsFrame(frame, continuousMaterialProbe || materialRequired);
+	const bool shadowTrace = shadowMaskEnabled && (control.IsShadowOffloadMode() || (fullNative && exclusiveMaterials)) && CanOffloadShadowsInCurrentCell();
 	if (!fullProbe && !shadowTrace) return;
-	if (fullProbe && !screenProbe.WantsFrame(globals::game::graphicsState->GetFrameCount(), continuousMaterialProbe || exclusiveMaterials)) return;
 
 	if (!backend) {
 		std::string reason;
 		backend = GraphicsBackend::Create(globals::d3d::device, globals::d3d::context, reason);
-		if (!backend) {
-			return;
-		}
+		if (!backend) return;
 	}
 
-	const uint32_t frame = globals::game::graphicsState->GetFrameCount();
 	raster.Capture(*backend, Util::GetCurrentSceneDepthSRV(false),
 		&globals::game::frameBufferCached.nonVR, frame);
-	// The active view may occupy only a subrect of the full-size raster allocation.
 	const auto viewport = Util::ConvertToDynamic(globals::state->screenSize);
 	const uint32_t viewportWidth = std::isfinite(viewport.x) && viewport.x > 0.0f ? uint32_t(viewport.x) : 0u;
 	const uint32_t viewportHeight = std::isfinite(viewport.y) && viewport.y > 0.0f ? uint32_t(viewport.y) : 0u;
-	if (fullProbe) {
-		auto built = acceleration.GetScene();
+	const auto captured = raster.Get(frame);
+	auto built = acceleration.GetScene();
+	if (fullNative) {
 		const auto grid = globals::features::dx12Resources.GetGrid();
-		if (!grid || !built || built->scope != grid->requested.front().scope) built.reset();
-		screenProbe.Dispatch(*backend, raster.Get(frame), std::move(built), frame, viewportWidth, viewportHeight, fullResolutionMaterialProbe || exclusiveMaterials, continuousMaterialProbe || exclusiveMaterials);
-		return;
+		if (!grid || grid->requested.empty() || !built || built->scope != grid->requested.front().scope)
+			built.reset();
 	}
-	{
-		const auto captured = raster.Get(frame);
-		const auto built = acceleration.GetScene();
-		// The native trace handles unavailable inputs without affecting raster
-		// rendering. RayQuery dispatch remains in DX12NativeShadowTrace.
-		const DX12Native::ShadowTraceControls controls{
-			.viewportWidth = viewportWidth,
-			.viewportHeight = viewportHeight,
-			.densityMode = densityMode,
-			.nearLightExclusion = nearLightShadowExclusion,
-			.nearLightRadius = float(nearLightExclusionUnits),
-			.reachMultiplier = shadowReachMultiplier,
-			.fadeRange = shadowFadeRange,
-			.falloffCurve = shadowFalloffCurve
-		};
+	const DX12Native::ShadowTraceControls controls{
+		.viewportWidth = viewportWidth,
+		.viewportHeight = viewportHeight,
+		.densityMode = densityMode,
+		.nearLightExclusion = nearLightShadowExclusion,
+		.nearLightRadius = float(nearLightExclusionUnits),
+		.reachMultiplier = shadowReachMultiplier,
+		.fadeRange = shadowFadeRange,
+		.falloffCurve = shadowFalloffCurve
+	};
+	if (fullProbe)
+		screenProbe.Dispatch(*backend, captured, built, frame, viewportWidth, viewportHeight,
+			fullResolutionMaterialProbe || materialRequired, continuousMaterialProbe || materialRequired);
+	if (directEnabled)
+		lighting.DispatchDirect(*backend, screenProbe.GetMaterialFrame(frame), controls);
+	if (shadowTrace)
 		lighting.DispatchShadows(*backend, captured, built, frame, controls);
-	}
 }
 
 std::function<void()> DX12NativeScene::OnRenderPassBegin(const RE::BSRenderPass* pass)

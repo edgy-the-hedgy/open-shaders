@@ -1,0 +1,109 @@
+RaytracingAccelerationStructure Scene : register(t0);
+ByteAddressBuffer Materials : register(t1);
+StructuredBuffer<float4> Lights : register(t2);
+Texture2D<float> RasterDepth : register(t3);
+RWByteAddressBuffer Lighting : register(u0);
+
+cbuffer DirectInputs : register(b0)
+{
+    row_major float4x4 InverseProjection;
+    row_major float4x4 InverseView;
+    float4 PositionAdjust;
+    uint2 Size;
+    uint MaterialPitch;
+    uint LightCount;
+    float NearLightRadius;
+    uint NearLightExclusion;
+    uint2 Padding;
+};
+
+float4 UnpackHalf4(uint2 value)
+{
+    return f16tof32(uint4(value.x & 65535u, value.x >> 16, value.y & 65535u, value.y >> 16));
+}
+
+uint2 PackHalf4(float4 value)
+{
+    uint4 bits = f32tof16(clamp(value, -65504.0, 65504.0));
+    return uint2(bits.x | (bits.y << 16), bits.z | (bits.w << 16));
+}
+
+bool Visible(float3 world, float3 direction, float distance)
+{
+    const float bias = 0.5;
+    float limit = distance - 2.0 * bias;
+    if (NearLightExclusion != 0u)
+        limit = min(limit, distance - NearLightRadius - bias);
+    if (limit <= bias) return true;
+    RayDesc ray;
+    ray.Origin = world + direction * bias;
+    ray.Direction = direction;
+    ray.TMin = bias;
+    ray.TMax = limit;
+    // Alpha-tested geometry requires the material-aware candidate path.
+    RayQuery<RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
+    query.TraceRayInline(Scene, RAY_FLAG_NONE, 0xff, ray);
+    while (query.Proceed()) {}
+    return query.CommittedStatus() == COMMITTED_NOTHING;
+}
+
+[numthreads(8,8,1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id.xy >= Size)) return;
+    const uint outputOffset = (id.y * Size.x + id.x) * 16u;
+    Lighting.Store4(outputOffset, uint4(0,0,0,0));
+    const uint offset = id.y * MaterialPitch + id.x * 32u;
+    float4 base = UnpackHalf4(Materials.Load2(offset));
+    float4 normal = UnpackHalf4(Materials.Load2(offset + 8u));
+    float4 f0 = UnpackHalf4(Materials.Load2(offset + 16u));
+    if (base.a != 1.0 || !all(isfinite(base)) || !all(isfinite(normal)) || !all(isfinite(f0)) ||
+        dot(normal.xyz, normal.xyz) < 1e-8) return;
+    float z = RasterDepth.Load(int3(id.xy,0));
+    if (!isfinite(z) || z <= 0 || z >= 1) return;
+    float2 clip = 2.0 * (float2(id.xy) + 0.5) / float2(Size) - 1.0;
+    clip.y = -clip.y;
+    float4 v = mul(InverseProjection, float4(clip,z,1));
+    if (!all(isfinite(v)) || abs(v.w) < 1e-8) return;
+    float4 w = mul(InverseView, float4(v.xyz/v.w,1));
+    float4 camera = mul(InverseView,float4(0,0,0,1));
+    if (!all(isfinite(w)) || !all(isfinite(camera)) || abs(w.w) < 1e-8 || abs(camera.w) < 1e-8) return;
+    float3 world = w.xyz/w.w + PositionAdjust.xyz;
+    float3 deltaView = camera.xyz/camera.w + PositionAdjust.xyz - world;
+    if (dot(deltaView,deltaView) < 1e-8) return;
+    float3 n = normalize(normal.xyz), view = normalize(deltaView);
+    float ndv = max(saturate(dot(n,view)), 1e-4);
+    float roughness = clamp(normal.w, 0.045, 1.0);
+    float alpha = roughness * roughness, a2 = alpha * alpha;
+    float3 diffuse = 0, specular = 0;
+    [loop] for (uint i = 0; i < LightCount; ++i) {
+        float4 light = Lights[i*3u], color = Lights[i*3u+1u], params = Lights[i*3u+2u];
+        float3 delta = light.xyz - world;
+        float d2 = dot(delta,delta);
+        if (!isfinite(d2) || d2 <= 0.25 || d2 >= light.w*light.w) continue;
+        float distance = sqrt(d2);
+        float3 l = delta/distance;
+        float ndl = saturate(dot(n,l));
+        if (ndl <= 0) continue;
+        float fade = saturate((light.w-distance)/max(light.w*0.1,0.5));
+        fade = pow(max(fade*fade*(3.0-2.0*fade),1e-6),max(params.y,0.01));
+        float attenuation = fade * max(color.a,0.0) / max(d2 + params.x*params.x,1.0);
+        if (attenuation <= 0.0 || !isfinite(attenuation) || !any(color.rgb > 0.0)) continue;
+        if (!Visible(world,l,distance)) continue;
+        float3 halfDelta = view + l;
+        if (dot(halfDelta,halfDelta) < 1e-8) continue;
+        float3 h = normalize(halfDelta);
+        float ndh = saturate(dot(n,h)), vdh = saturate(dot(view,h));
+        float3 fresnel = saturate(f0.rgb) + (1.0-saturate(f0.rgb))*pow(1.0-vdh,5.0);
+        float dDenom = ndh*ndh*(a2-1.0)+1.0;
+        float distribution = a2 / max(3.14159265*dDenom*dDenom,1e-7);
+        float gV = ndl*sqrt(ndv*ndv*(1.0-a2)+a2);
+        float gL = ndv*sqrt(ndl*ndl*(1.0-a2)+a2);
+        float visibility = 0.5/max(gV+gL,1e-5);
+        float3 irradiance = max(color.rgb,0.0)*attenuation*ndl;
+        diffuse += max(base.rgb,0.0)*(1.0-saturate(f0.a))*(1.0-fresnel)*(1.0/3.14159265)*irradiance;
+        specular += fresnel*distribution*visibility*irradiance;
+    }
+    if (!all(isfinite(diffuse)) || !all(isfinite(specular))) return;
+    Lighting.Store4(outputOffset,uint4(PackHalf4(float4(diffuse,1.0)),PackHalf4(float4(specular,1.0))));
+}
