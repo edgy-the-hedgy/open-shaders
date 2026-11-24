@@ -19,6 +19,7 @@
 
 #include "Deferred.h"
 #include "Features/DX12/DX12Control.h"
+#include "Features/DX12/DX12LightMath.h"
 #include "Features/DX12/DX12NativeScene.h"
 #include "Menu/ThemeManager.h"
 #include "ShaderCache.h"
@@ -1540,13 +1541,12 @@ void LightLimitFix::UpdateLights()
 				!std::isfinite(source.radius) || source.radius <= 0) continue;
 			const bool linear = source.lightFlags.any(LightFlags::Linear);
 			const bool inverseSquare = source.lightFlags.any(LightFlags::InverseSquare);
-			const auto toLinear = [linear](float v) {
-				v = std::max(v, 0.0f);
-				return linear ? v : (v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f));
-			};
-			constexpr float kInverseSquareIntensity = 0.8f * 70.0f * 70.0f;
-			const float scale = source.fade * (inverseSquare ? kInverseSquareIntensity : 1.0f);
+			const auto toLinear = [linear](float v) { return DX12Native::LightMath::ToLinear(v, linear); };
+			const float scale = source.fade * (inverseSquare ? ISLMath::ScaledUnitsSq : 1.0f);
 			const auto& p = source.positionWS[0].data;
+			if (!std::isfinite(p.x + eye.x) || !std::isfinite(p.y + eye.y) || !std::isfinite(p.z + eye.z) ||
+				!std::isfinite(source.color.x) || !std::isfinite(source.color.y) || !std::isfinite(source.color.z) ||
+				(inverseSquare && (!std::isfinite(source.sizeBias) || !std::isfinite(source.fadeZone)))) continue;
 			nativeLights.push_back({ { p.x + eye.x, p.y + eye.y, p.z + eye.z },
 				{ toLinear(source.color.x)*scale, toLinear(source.color.y)*scale, toLinear(source.color.z)*scale },
 				source.radius, inverseSquare ? std::sqrt(std::max(source.sizeBias, 0.0f)) : 0.0f,

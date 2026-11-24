@@ -39,7 +39,7 @@ namespace DX12Native
 	public:
 		~DirectLightingTrace();
 		void Poll(uint32_t frame);
-		void Reset() { current.reset(); Poll(UINT32_MAX); }
+		void Reset() { current.reset(); for (auto& slot : slots) if (slot) slot->statsPending = false; Poll(UINT32_MAX); stats = {}; dispatchedLights = 0; failure.clear(); }
 		void Dispatch(const GraphicsBackend& backend, std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
 			std::span<const DirectPointLight> lights, bool inputsAvailable, const ShadowTraceControls& controls);
 		std::shared_ptr<const DirectLightingFrame> Get(uint32_t frame) const
@@ -50,7 +50,7 @@ namespace DX12Native
 		uint32_t DispatchedLights() const { return dispatchedLights; }
 		struct Stats {
 			uint32_t frame = 0;
-			std::array<uint32_t, 6> counts{};
+			std::array<uint32_t, 8> counts{};
 		};
 		const Stats& GetStats() const { return stats; }
 

@@ -1,4 +1,5 @@
 #include "DX12NativeLighting.h"
+#include "DX12LightMath.h"
 
 #include "Globals.h"
 #include "GpuPass.h"
@@ -152,10 +153,8 @@ namespace DX12Native
 		if (!material)
 			return;
 		const auto prepared = GetUnifiedLights(material->frame);
-		const auto toLinear = [](float value) {
-			value = std::max(value, 0.0f);
-			return value <= 0.04045f ? value / 12.92f : std::pow((value + 0.055f) / 1.055f, 2.4f);
-		};
+		selectionStats = {};
+		const auto toLinear = [](float value) { return LightMath::ToLinear(value, false); };
 		std::vector<DirectPointLight> lights;
 		lights.reserve(kMaxShadowLights);
 		for (const auto& source : prepared) {
@@ -165,11 +164,14 @@ namespace DX12Native
 				source.radius, source.emitterRadius, 0.0f, false });
 		}
 		const auto preparedCount = lights.size();
+		selectionStats.prepared = uint32_t(preparedCount);
 		bool runtimeAvailable = false;
 		{
 			std::scoped_lock lock(runtimeLightMutex);
 			runtimeAvailable = directRuntimeFrame == material->frame;
+			selectionStats.runtimeAvailable = runtimeAvailable;
 			if (runtimeAvailable) {
+				selectionStats.observed = uint32_t(directRuntimeLights.size());
 				std::vector<bool> matched(preparedCount, false);
 				for (const auto& live : directRuntimeLights) {
 					size_t best = preparedCount;
@@ -181,15 +183,17 @@ namespace DX12Native
 						const float dy = live.position.y - candidate.position.y;
 						const float dz = live.position.z - candidate.position.z;
 						const float d2 = dx*dx + dy*dy + dz*dz;
-						const float tolerance = std::clamp(candidate.radius * 0.01f, 4.0f, 32.0f);
+						const float tolerance = LightMath::MatchTolerance(candidate.radius);
 						if (d2 <= tolerance*tolerance && d2 < bestDistance) { best = i; bestDistance = d2; }
 					}
 					if (best != preparedCount) {
 						lights[best] = live;
 						matched[best] = true;
+						++selectionStats.matched;
 					} else if (lights.size() < kMaxShadowLights) {
 						lights.push_back(live);
-					}
+						++selectionStats.supplemented;
+					} else ++selectionStats.overflow;
 				}
 			}
 		}
@@ -216,5 +220,6 @@ namespace DX12Native
 		}
 		shadows.Reset();
 		direct.Reset();
+		selectionStats = {};
 	}
 }

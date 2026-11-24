@@ -23,6 +23,11 @@ namespace DX12Native
 		}
 		/** @brief Publishes the runtime LLF light list without mutating raster data. */
 		void PublishRuntimeDirectLights(uint32_t frame, std::vector<DirectPointLight> lights);
+		struct SelectionStats {
+			uint32_t prepared = 0, observed = 0, matched = 0, supplemented = 0, overflow = 0;
+			bool runtimeAvailable = false;
+		};
+		const SelectionStats& GetSelectionStats() const { return selectionStats; }
 		uint32_t DirectLightCount() const { return direct.DispatchedLights(); }
 		const DirectLightingTrace::Stats& DirectStats() const { return direct.GetStats(); }
 		/** @brief Determines whether the observed SCM light is selected for native shadows. */
@@ -58,6 +63,7 @@ namespace DX12Native
 		std::vector<DX12::PreparedLight> GetUnifiedLights(uint32_t frame) const;
 		ShadowMaskTrace shadows;
 		DirectLightingTrace direct;
+		SelectionStats selectionStats;
 		std::atomic<std::shared_ptr<const std::vector<DX12::PreparedLight>>> shadowLights;
 		struct RuntimeLightSample
 		{

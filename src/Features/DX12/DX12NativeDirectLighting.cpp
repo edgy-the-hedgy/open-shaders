@@ -17,7 +17,7 @@ namespace DX12Native
 	{
 		using Eval = NativeMaterialEvaluation;
 		constexpr uint32_t kLightingStride = 16;
-		constexpr uint64_t kCounterBytes = 6 * sizeof(uint32_t);
+		constexpr uint64_t kCounterBytes = 8 * sizeof(uint32_t);
 		struct Constants
 		{
 			Matrix projectionInverse, viewInverse;
@@ -161,7 +161,7 @@ namespace DX12Native
 					if (slot && slot->width == width && slot->height == height) break;
 				}
 			}
-			if (!selected) return;
+			if (!selected) { failure = "Direct lighting frame pool busy"; return; }
 			auto& slot = *selected;
 			auto* device = backend.d3d12Device.get();
 			const bool fresh = !slot || slot->width != width || slot->height != height;
@@ -186,7 +186,7 @@ namespace DX12Native
 				replacement->counters = Eval::Buffer(device, kCounterBytes, D3D12_HEAP_TYPE_DEFAULT,
 					D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 				replacement->readback = Eval::Buffer(device, kCounterBytes, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST);
-				replacement->counterInit = Eval::Table(device, std::vector<uint32_t>(6, 0));
+				replacement->counterInit = Eval::Table(device, std::vector<uint32_t>(8, 0));
 				Eval::Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(replacement->allocator.put())));
 				Eval::Check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, replacement->allocator.get(), pipeline.get(), IID_PPV_ARGS(replacement->commands.put())));
 				slot = std::move(replacement);
@@ -211,6 +211,7 @@ namespace DX12Native
 				records.push_back({ light.sourceRadius, light.fadeZone, light.inverseSquare ? 1.0f : 0.0f, 0 });
 			}
 			const uint32_t lightCount = uint32_t(records.size() / 3);
+			if (!lights.empty() && records.empty()) throw std::runtime_error("No valid direct light records");
 			if (records.empty()) records.resize(3);
 			slot->lights = Eval::Table(device, records);
 			const Constants constants{ raster.camera.CameraProjInverse, raster.camera.CameraViewInverse,

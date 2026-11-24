@@ -106,10 +106,15 @@ void DX12NativeScene::DrawDevStats()
 		if ((screenProbeEnabled || materialCoveragePreview || globals::features::dx12Control.UsesExclusiveMaterials()) && !screenProbe.failure.empty()) ImGui::TextWrapped("%s", screenProbe.failure.c_str());
 		if (directLightingEnabled) {
 			const auto& lightStats = lighting.DirectStats();
+			const auto& selection = lighting.GetSelectionStats();
+			ImGui::Text("Prepared: %u | Runtime: %u%s | Matched: %u | Supplemented: %u | Overflow: %u",
+				selection.prepared, selection.observed, selection.runtimeAvailable ? "" : " (unavailable)",
+				selection.matched, selection.supplemented, selection.overflow);
 			ImGui::Text("Direct lights dispatched: %u | GPU frame: %u", lighting.DirectLightCount(), lightStats.frame);
 			ImGui::Text("Lighting valid: %u | No influence: %u | Occluded: %u | Visible: %u",
 				lightStats.counts[0], lightStats.counts[1], lightStats.counts[2], lightStats.counts[3]);
-			ImGui::Text("Tile candidates: %u | Tiles: %u", lightStats.counts[4], lightStats.counts[5]);
+			ImGui::Text("Tile candidates: %u | Tiles: %u | Visibility rays: %llu", lightStats.counts[4], lightStats.counts[5],
+				static_cast<unsigned long long>((uint64_t(lightStats.counts[7]) << 32) | lightStats.counts[6]));
 		}
 		if (directLightingEnabled && !lighting.DirectFailure().empty()) ImGui::TextWrapped("%s", lighting.DirectFailure().c_str());
 	}
@@ -261,7 +266,7 @@ void DX12NativeScene::PreShadowMaps()
 		return;
 	}
 	auto grid = globals::features::dx12Resources.GetGrid();
-	if (!grid || !grid->requested.front().scope) {
+	if (!grid || grid->requested.empty() || !grid->requested.front().scope) {
 		lighting.PublishPreparedLights(nullptr);
 		return;
 	}

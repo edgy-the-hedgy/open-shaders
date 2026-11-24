@@ -147,10 +147,8 @@ namespace DX12Native
 				const auto completed = consumer.first ? consumer.first->GetCompletedValue() : UINT64_MAX;
 				return completed != UINT64_MAX && completed >= consumer.second;
 			});
-			if (value.consumers.empty()) {
+			if (!slot && value.consumers.empty())
 				slot = &value;
-				break;
-			}
 		}
 		if (!slot)
 			return {};

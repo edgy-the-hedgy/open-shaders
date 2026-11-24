@@ -47,6 +47,7 @@ namespace DX12Native
 		};
 		std::shared_ptr<Submission> pending;
 		std::array<std::shared_ptr<OutputAllocation>, 4> outputPool;
+		VideoMemoryBudget videoBudget;
 		GraphicsBackend owner;
 		winrt::com_ptr<ID3D12RootSignature> root;
 		winrt::com_ptr<ID3D12PipelineState> pipeline;
@@ -199,7 +200,6 @@ namespace DX12Native
 			try {
 				Initialize(backend);
 				auto* device=backend.d3d12Device.get();
-				VideoMemoryBudget budget;
 				const uint32_t gridWidth=fullResolution?width:kWidth, gridHeight=fullResolution?height:kHeight;
 				const uint64_t count=uint64_t(gridWidth)*gridHeight;
 				if (count>UINT32_MAX || gridWidth>16384 || gridHeight>16384) { failure="Screen material dimensions unsupported"; return; }
@@ -218,7 +218,7 @@ namespace DX12Native
 				if (!selected) { failure="Material frame pool busy"; return; }
 				auto& reusableOutput = *selected;
 				const bool reuse = reusableOutput && reusableOutput->bytes == bytes;
-				const auto available = budget.Query(device, tracked);
+				const auto available = videoBudget.Query(device, tracked);
 				const auto desc=CD3DX12_RESOURCE_DESC::Buffer(bytes,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 				const auto allocation=reuse?0:device->GetResourceAllocationInfo(0,1,&desc).SizeInBytes;
 				if (!available.dxgiAvailable || allocation==UINT64_MAX || tracked>available.effectiveBytes || allocation>available.effectiveBytes-tracked || available.effectiveBytes-tracked-allocation<6ull*65536) {

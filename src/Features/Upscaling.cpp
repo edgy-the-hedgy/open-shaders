@@ -3689,7 +3689,7 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 		const auto shadow = nativeScene.GetShadowMask(nativeFrame);
 		const bool coverageRequested = globals::features::dx12Control.IsFullNativeMode() && nativeScene.IsCoveragePreviewEnabled();
 		const auto materialPreview = coverageRequested ? nativeScene.GetMaterialCoverageFrame(nativeFrame) : nullptr;
-		const uint32_t lightingView = globals::features::dx12Control.IsFullNativeMode() && !coverageRequested ? nativeScene.GetLightingView() : 0u;
+		const uint32_t lightingView = globals::features::dx12Control.UsesExclusiveMaterials() && !coverageRequested ? nativeScene.GetLightingView() : 0u;
 		const auto direct = lightingView ? nativeScene.GetNativeLightingFrame(nativeFrame) : nullptr;
 		const bool runtimeFSRReads = upscaleMethod == UpscaleMethod::kFSR && upscaling.fidelityFX.RuntimeUpscalerReadsComposite();
 		// The return also covers a frame DX12 DLSS hands to DX11, so its shadows do not drop for that frame.

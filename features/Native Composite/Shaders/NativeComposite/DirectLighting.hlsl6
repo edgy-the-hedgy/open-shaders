@@ -35,18 +35,23 @@ uint2 PackHalf4(float4 value)
     return uint2(bits.x | (bits.y << 16), bits.z | (bits.w << 16));
 }
 
-bool Visible(float3 world, float3 normal, float3 direction, float distance)
+bool Visible(float3 world, float3 normal, float3 direction, float distance, out bool traced)
 {
+    traced = false;
     const float bias = 0.5;
-    float limit = distance - 2.0 * bias;
+    const float3 origin = world + normal * bias + direction * bias;
+    const float3 delta = world + direction * distance - origin;
+    const float lengthToLight = length(delta);
+    float limit = lengthToLight - bias;
     if (NearLightExclusion != 0u)
-        limit = min(limit, distance - NearLightRadius - bias);
-    if (limit <= bias) return true;
+        limit = min(limit, lengthToLight - NearLightRadius - bias);
+    if (limit <= bias || lengthToLight <= bias) return true;
     RayDesc ray;
-    ray.Origin = world + normal * bias + direction * bias;
-    ray.Direction = direction;
+    ray.Origin = origin;
+    ray.Direction = delta / lengthToLight;
     ray.TMin = bias;
     ray.TMax = limit;
+    traced = true;
     RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
     query.TraceRayInline(Scene, RAY_FLAG_NONE, 0xff, ray);
     while (query.Proceed()) {
@@ -62,6 +67,7 @@ groupshared float3 TileMax[64];
 groupshared uint TileLights[2048];
 groupshared uint TileCount;
 groupshared uint TileStats[4];
+groupshared uint TileRays;
 
 bool Reconstruct(uint2 pixel, out float3 world, out float3 cameraWorld)
 {
@@ -81,8 +87,9 @@ bool Reconstruct(uint2 pixel, out float3 world, out float3 cameraWorld)
     return all(isfinite(world)) && all(isfinite(cameraWorld));
 }
 
-uint Shade(uint2 pixel, float3 world, float3 cameraWorld)
+uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
 {
+    rays = 0u;
     const uint outputOffset = (pixel.y * Size.x + pixel.x) * 16u;
     Lighting.Store4(outputOffset, uint4(0,0,0,0));
     const uint offset = pixel.y * MaterialPitch + pixel.x * 32u;
@@ -116,7 +123,10 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld)
             1.0-saturate(relativeDistance*relativeDistance);
         if (attenuation <= 0.0 || !isfinite(attenuation) || !any(color.rgb > 0.0)) continue;
         ++inReach;
-        if (!Visible(world,n,l,distance)) continue;
+        bool traced;
+        bool unoccluded = Visible(world,n,l,distance,traced);
+        if (traced) ++rays;
+        if (!unoccluded) continue;
         ++visible;
         float3 halfDelta = view + l;
         if (dot(halfDelta,halfDelta) < 1e-8) continue;
@@ -133,7 +143,7 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld)
         specular += fresnel*distribution*visibility*irradiance;
     }
     if (!all(isfinite(diffuse)) || !all(isfinite(specular))) return 0u;
-    // Alpha channels store exact counts (the maximum is 2048) plus one for validity.
+    // Half precision stores counts up to 2047 plus one for validity.
     Lighting.Store4(outputOffset,uint4(PackHalf4(float4(diffuse,float(min(inReach,2047u))+1.0)),PackHalf4(float4(specular,float(min(visible,2047u))+1.0))));
     return visible > 0u ? 3u : (inReach > 0u ? 2u : 1u);
 }
@@ -146,7 +156,7 @@ void main(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
     bool receiver = Reconstruct(id.xy, world, cameraWorld);
     TileMin[lane] = receiver ? world : float3(3.402823e38,3.402823e38,3.402823e38);
     TileMax[lane] = receiver ? world : float3(-3.402823e38,-3.402823e38,-3.402823e38);
-    if (lane == 0u) TileCount = 0u;
+    if (lane == 0u) { TileCount = 0u; TileRays = 0u; }
     if (lane < 4u) TileStats[lane] = 0u;
     GroupMemoryBarrierWithGroupSync();
     [unroll] for (uint step=32u; step>0u; step>>=1u) {
@@ -171,9 +181,11 @@ void main(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
     GroupMemoryBarrierWithGroupSync();
     if (all(id.xy < Size)) {
         uint category = 0u;
-        if (receiver) category = Shade(id.xy,world,cameraWorld);
+        uint rays = 0u;
+        if (receiver) category = Shade(id.xy,world,cameraWorld,rays);
         else Lighting.Store4((id.y*Size.x+id.x)*16u,uint4(0,0,0,0));
         InterlockedAdd(TileStats[category],1u);
+        InterlockedAdd(TileRays,rays);
     }
     GroupMemoryBarrierWithGroupSync();
     uint ignored;
@@ -181,6 +193,9 @@ void main(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
         Counters.InterlockedAdd(0u,TileStats[1]+TileStats[2]+TileStats[3],ignored);
         Counters.InterlockedAdd(16u,TileCount,ignored);
         Counters.InterlockedAdd(20u,1u,ignored);
+        uint previous;
+        Counters.InterlockedAdd(24u,TileRays,previous);
+        if (previous > 0xffffffffu - TileRays) Counters.InterlockedAdd(28u,1u,ignored);
     }
     if (lane > 0u && lane < 4u)
         Counters.InterlockedAdd(lane*4u,TileStats[lane],ignored);
