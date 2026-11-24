@@ -31,55 +31,110 @@ float3 SrgbToLinear(float3 v)
     v = max(v,0);
     return lerp(v/12.92, pow((v+0.055)/1.055,2.4), v>0.04045);
 }
-[numthreads(64,1,1)]
-void main(uint3 id : SV_DispatchThreadID)
+Sample EvaluateMaterial(uint instance, uint primitive, float3 weights)
 {
-    uint instance = id.x;
-    if (instance >= InstanceCount) return;
     Sample result = (Sample)0;
-    Output[instance] = result;
+    if (instance >= InstanceCount) return result;
     Binding binding = Bindings[instance];
     uint4 offsets = Geometry.Load4(instance*32);
     uint4 counts = Geometry.Load4(instance*32+16);
-    if (binding.materialIndex == 0xffffffffu || offsets.z == 0xffffffffu || offsets.w != 60u || counts.y < 3u) return;
+    if (binding.materialIndex == 0xffffffffu || offsets.z == 0xffffffffu || offsets.w != 60u || counts.y < 3u || primitive >= counts.y / 3u) return result;
     MaterialRecord material = Materials[binding.materialIndex];
-    if (any(material.identity.xy != binding.identity) || any(material.identity.zw != binding.revision)) return;
-    uint3 ix = Geometry.Load3(offsets.y);
-    if (any(ix >= counts.x)) return;
+    if (any(material.identity.xy != binding.identity) || any(material.identity.zw != binding.revision)) return result;
+    uint3 ix = Geometry.Load3(offsets.y + primitive*12u);
+    if (any(ix >= counts.x)) return result;
     float3 n = 0, t = 0, b = 0, color = 0;
     float2 uv = 0;
     [unroll] for (uint i = 0; i < 3u; ++i) {
         uint a = offsets.z + ix[i]*offsets.w;
-        n += asfloat(Geometry.Load3(a));
-        uv += asfloat(Geometry.Load2(a+12));
-        color += asfloat(Geometry.Load3(a+20));
-        t += asfloat(Geometry.Load3(a+36));
-        b += asfloat(Geometry.Load3(a+48));
+        n += weights[i]*asfloat(Geometry.Load3(a));
+        uv += weights[i]*asfloat(Geometry.Load2(a+12));
+        color += weights[i]*asfloat(Geometry.Load3(a+20));
+        t += weights[i]*asfloat(Geometry.Load3(a+36));
+        b += weights[i]*asfloat(Geometry.Load3(a+48));
     }
-    uv = (uv/3.0)*material.uv[0].zw+material.uv[0].xy;
+    uv = uv*material.uv[0].zw+material.uv[0].xy;
     float4 baseTexel = Tex(material.textures[0].x,uv,material.properties.z);
     float4 normalTexel = Tex(material.textures[0].z,uv,material.properties.z);
     float4 packed = Tex(material.textures[1].x,uv,material.properties.z);
     float3 sampled = normalTexel.xyz*2.0-1.0;
     if ((binding.flags & 256u) != 0u) sampled.z = sqrt(saturate(1.0-dot(sampled.xy,sampled.xy)));
-    if (dot(n,n) < 1e-8 || dot(sampled,sampled) < 1e-8) return;
+    if (dot(n,n) < 1e-8 || dot(sampled,sampled) < 1e-8) return result;
     n = normalize(n);
     t -= n*dot(n,t);
-    if (dot(t,t) < 1e-8) return;
+    if (dot(t,t) < 1e-8) return result;
     t = normalize(t);
     b = cross(n,t)*(dot(cross(n,t),b)<0.0 ? -1.0 : 1.0);
     float3 normal = (binding.flags & 512u) != 0u ? normalize(sampled) : normalize(t*sampled.x+b*sampled.y+n*sampled.z);
     float3 base = baseTexel.rgb;
-    if ((binding.flags & 1u) != 0u) base *= SrgbToLinear(color/3.0);
+    if ((binding.flags & 1u) != 0u) base *= SrgbToLinear(color);
     float metallic = saturate(packed.g);
     float roughness = clamp(packed.r*material.base.y,0.045,1.0);
     float3 f0 = lerp(saturate(packed.a*material.base.w).xxx,base,metallic);
     float3 emission = 0;
     if (material.textures[1].z != 0xffffffffu) emission = Tex(material.textures[1].z,uv,material.properties.z).rgb;
-    if (!all(isfinite(base)) || !all(isfinite(normal)) || !all(isfinite(f0)) || !all(isfinite(emission))) return;
+    if (!all(isfinite(base)) || !all(isfinite(normal)) || !all(isfinite(f0)) || !all(isfinite(emission))) return result;
     result.color = float4(base,1.0);
     result.normal = float4(normal,roughness);
     result.f0 = float4(f0,metallic);
     result.emission = float4(emission,saturate(packed.b));
-    Output[instance] = result;
+    return result;
+}
+
+[numthreads(64,1,1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= InstanceCount) return;
+    Output[id.x] = EvaluateMaterial(id.x, 0u, float3(1.0/3.0,1.0/3.0,1.0/3.0));
+}
+
+Texture2D<float> ProbeDepth : register(t515);
+RaytracingAccelerationStructure ProbeScene : register(t516);
+cbuffer ProbeCamera : register(b1)
+{
+    row_major float4x4 InverseProjection;
+    row_major float4x4 InverseView;
+    float4 PositionAdjust;
+    uint2 ViewSize;
+    uint2 GridSize;
+};
+[numthreads(8,8,1)]
+void screenMain(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id.xy >= GridSize)) return;
+    uint index = id.y*GridSize.x+id.x;
+    Sample result = (Sample)0;
+    Output[index] = result;
+    uint2 pixel = min(uint2((float2(id.xy)+0.5)*float2(ViewSize)/float2(GridSize)),ViewSize-1u);
+    float z = ProbeDepth.Load(int3(pixel,0));
+    if (!isfinite(z) || z <= 0.0 || z >= 1.0) return;
+    float2 clip = 2.0*(float2(pixel)+0.5)/float2(ViewSize)-1.0;
+    clip.y = -clip.y;
+    float4 v = mul(InverseProjection,float4(clip,z,1));
+    if (!all(isfinite(v)) || abs(v.w)<1e-8) return;
+    float4 w = mul(InverseView,float4(v.xyz/v.w,1));
+    float4 camera = mul(InverseView,float4(0,0,0,1));
+    if (!all(isfinite(w)) || !all(isfinite(camera)) || abs(w.w)<1e-8 || abs(camera.w)<1e-8) return;
+    float3 origin = camera.xyz/camera.w+PositionAdjust.xyz;
+    float3 delta = w.xyz/w.w+PositionAdjust.xyz-origin;
+    float distance = length(delta);
+    if (!isfinite(distance) || distance <= 0.5 || distance > 60000.0) return;
+    // Only accept the closest native hit when it agrees with raster visibility.
+    // Unprepared foreground surfaces must not expose native geometry behind them.
+    result.color.a = -1.0;
+    Output[index] = result;
+    float tolerance = max(2.0, distance*0.002);
+    RayDesc ray;
+    ray.Origin=origin; ray.Direction=delta/distance; ray.TMin=0.5; ray.TMax=distance+tolerance;
+    RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
+    query.TraceRayInline(ProbeScene,RAY_FLAG_NONE,0xff,ray);
+    while(query.Proceed()) {}
+    if(query.CommittedStatus()!=COMMITTED_TRIANGLE_HIT) return;
+    if(abs(query.CommittedRayT()-distance)>tolerance) {
+        result.color.a=-2.0; Output[index]=result; return;
+    }
+    float2 bary=query.CommittedTriangleBarycentrics();
+    result=EvaluateMaterial(query.CommittedInstanceID(),query.CommittedPrimitiveIndex(),float3(1.0-bary.x-bary.y,bary));
+    if(result.color.a==0.0) result.color.a=-3.0;
+    Output[index]=result;
 }

@@ -4,6 +4,7 @@
 #include "DX12NativeRasterCapture.h"
 #include "DX12NativeRuntimeCapture.h"
 #include "DX12NativeShadowTrace.h"
+#include "DX12NativeScreenProbe.h"
 #include "Feature.h"
 
 #include <atomic>
@@ -67,6 +68,8 @@ private:
 	DX12Native::RuntimeGeometryCapture geometryCapture;
 	DX12Native::AccelerationWorker acceleration;
 	DX12Native::ShadowMaskTrace shadows;
+	DX12Native::NativeScreenProbe screenProbe;
+	bool screenProbeEnabled = false;
 	// One immutable, ordered light selection shared by SCM and the RayQuery dispatch.
 	std::atomic<std::shared_ptr<const std::vector<DX12::PreparedLight>>> shadowLights;
 	bool shadowMaskEnabled = true;

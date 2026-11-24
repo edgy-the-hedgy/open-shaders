@@ -55,6 +55,13 @@ void DX12NativeScene::DrawSettings()
 void DX12NativeScene::DrawDevStats()
 {
 	ImGui::SeparatorText("Native Scene / NativePBR preparation");
+	if (globals::features::dx12Control.IsFullNativeMode()) {
+		if (ImGui::Checkbox("Visible-pixel material probe (64x36)", &screenProbeEnabled) && !screenProbeEnabled) screenProbe.Reset();
+		const auto& stats = screenProbe.stats;
+		if (stats.sampled) ImGui::Text("Screen frame %u | Evaluated %u / %u | No hit %u | Depth mismatch %u | Missing material %u | Invalid depth %u",
+			stats.frame, stats.evaluated, stats.sampled, stats.noHit, stats.depthMismatch, stats.missingMaterial, stats.invalid);
+		if (screenProbeEnabled && !screenProbe.failure.empty()) ImGui::TextWrapped("%s", screenProbe.failure.c_str());
+	}
 	const auto built = acceleration.GetScene();
 	if (!built || !built->inputs) {
 		ImGui::TextDisabled("No completed native scene");
@@ -295,10 +302,11 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/
 		(globals::state->permutationData.ExtraShaderDescriptor &
 			static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
 		return;
-	// Only capture the depth and camera used by the independent shadow layer.
-	if (!shadowMaskEnabled || !globals::features::dx12Control.IsShadowOffloadMode() ||
-		!CanOffloadShadowsInCurrentCell())
-		return;
+	screenProbe.Poll();
+	const bool fullProbe = globals::features::dx12Control.IsFullNativeMode() && screenProbeEnabled;
+	const bool shadowTrace = shadowMaskEnabled && globals::features::dx12Control.IsShadowOffloadMode() && CanOffloadShadowsInCurrentCell();
+	if (!fullProbe && !shadowTrace) return;
+	if (fullProbe && !screenProbe.WantsFrame(globals::game::graphicsState->GetFrameCount())) return;
 
 	if (!backend) {
 		std::string reason;
@@ -315,6 +323,13 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/
 	const auto viewport = Util::ConvertToDynamic(globals::state->screenSize);
 	const uint32_t viewportWidth = std::isfinite(viewport.x) && viewport.x > 0.0f ? uint32_t(viewport.x) : 0u;
 	const uint32_t viewportHeight = std::isfinite(viewport.y) && viewport.y > 0.0f ? uint32_t(viewport.y) : 0u;
+	if (fullProbe) {
+		auto built = acceleration.GetScene();
+		const auto grid = globals::features::dx12Resources.GetGrid();
+		if (!grid || !built || built->scope != grid->requested.front().scope) built.reset();
+		screenProbe.Dispatch(*backend, raster.Get(frame), std::move(built), frame, viewportWidth, viewportHeight);
+		return;
+	}
 	{
 		const auto captured = raster.Get(frame);
 		const auto built = acceleration.GetScene();
@@ -453,6 +468,7 @@ void DX12NativeScene::OnSceneTransitionReset(bool a_opening)
 			frozenNativeLights.clear();
 		}
 		raster.Reset();
+		screenProbe.Reset();
 		shadows.Reset();
 		acceleration.Reset();
 		geometryCapture.Reset();
@@ -469,6 +485,7 @@ void DX12NativeScene::OnRuntimeDisabled()
 		frozenNativeLights.clear();
 	}
 	raster.Reset();
+	screenProbe.Reset();
 	shadows.Reset();
 	acceleration.Reset();
 	geometryCapture.Reset();

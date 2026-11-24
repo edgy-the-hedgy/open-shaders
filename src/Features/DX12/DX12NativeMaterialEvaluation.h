@@ -40,6 +40,7 @@ namespace DX12Native
 		using TextureCache = std::unordered_map<std::string, std::shared_ptr<const Texture>>;
 
 		TextureCache textures;
+		std::vector<std::shared_ptr<const Texture>> poolTextures;
 		winrt::com_ptr<ID3D12Resource> records, bindings, output, readback;
 		winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
 		winrt::com_ptr<ID3D12RootSignature> root;
@@ -307,6 +308,7 @@ namespace DX12Native
 						write(pool + NativePBR::kGpuTexturePoolCapacity, texture.get(), true);
 						result->textureBytes += texture->bytes;
 						if (texture->archiveBacked) ++result->archiveTextures;
+						result->poolTextures.push_back(texture);
 						result->textures.emplace(path, std::move(texture));
 						found = indices.emplace(path, pool).first;
 					}

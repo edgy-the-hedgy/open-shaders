@@ -128,3 +128,10 @@ Native DDS acquisition prefers loose files and can fall back to the engine's
 resource stream for archive-backed assets, with the same bounded decode and
 DXGI budget checks. No DDS extraction is persisted. Dev reports archive
 residency and separates runtime material omissions from Companion omissions.
+
+The optional Dev visible-pixel diagnostic samples a 64x36 grid of actual raster
+pixels at most once per 30 frames. It traces closest native hits against raster
+receiver depth, uses committed primitive and barycentric coordinates, and
+shares the triangle probe material evaluation. A single fenced submission
+retains the immutable scene and raster inputs, with a small readback for counts.
+It does not write to the final image or transfer material authority.

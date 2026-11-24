@@ -25,6 +25,7 @@ if(EXCLUDE_NATIVE_DXIL)
         "DX12NativeScene/ShadowMask.dxil"
         "NativeComposite/ShadowLayer.dxil"
         "NativeComposite/NativePBRProbe.dxil"
+        "NativeComposite/NativePBRScreenProbe.dxil"
     )
 endif()
 
