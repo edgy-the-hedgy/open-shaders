@@ -87,7 +87,7 @@ namespace DX12Native
 		{
 			switch (format) {
 			case DXGI_FORMAT_BC1_UNORM: case DXGI_FORMAT_BC2_UNORM: case DXGI_FORMAT_BC3_UNORM:
-			case DXGI_FORMAT_BC5_UNORM: case DXGI_FORMAT_BC7_UNORM:
+			case DXGI_FORMAT_BC4_UNORM: case DXGI_FORMAT_BC5_UNORM: case DXGI_FORMAT_BC7_UNORM:
 			case DXGI_FORMAT_R8G8B8A8_UNORM: case DXGI_FORMAT_B8G8R8A8_UNORM:
 			case DXGI_FORMAT_B8G8R8X8_UNORM:
 				return true;
@@ -96,7 +96,7 @@ namespace DX12Native
 		}
 
 		static std::optional<Upload> LoadTexture(ID3D12Device* device, const std::string& canonical,
-			uint64_t& remaining, std::string& reason)
+			uint64_t& remaining, std::string& reason, bool allowBc4, bool& incompatibleBc4)
 		{
 			const auto reject = [&](std::string why) -> std::optional<Upload> { reason = std::move(why); return {}; };
 			if (canonical.empty() || !canonical.starts_with("textures/")) return reject("invalid canonical path");
@@ -140,6 +140,10 @@ namespace DX12Native
 				return reject("unsupported DDS dimensions");
 			const auto format = DirectX::MakeLinear(meta.format);
 			if (!SupportedFormat(format)) return reject("unsupported DXGI format " + std::to_string(unsigned(format)));
+			if (format == DXGI_FORMAT_BC4_UNORM && !allowBc4) {
+				incompatibleBc4 = true;
+				return reject("BC4 lacks required material channels");
+			}
 			const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(DirectX::MakeTypeless(format), meta.width,
 				uint32_t(meta.height), 1, uint16_t(meta.mipLevels));
 			const auto allocation = device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
@@ -275,7 +279,7 @@ namespace DX12Native
 			};
 			for (uint32_t i = 0; i < NativePBR::kGpuTextureDescriptorCapacity; ++i) write(i, nullptr, false);
 			std::unordered_map<std::string, uint32_t> indices;
-			std::unordered_set<std::string> failed, invalidSrgb;
+			std::unordered_set<std::string> failed, invalidSrgb, invalidBc4;
 			std::unordered_map<uint64_t, uint32_t> ready;
 			std::unordered_set<uint64_t> missingBaseTextures;
 			std::vector<NativePBR::GpuMaterialRecord> recordTable;
@@ -302,7 +306,18 @@ namespace DX12Native
 						if (specialized) ++result->specializedRequested;
 						const auto& request = recipe.textures[role];
 						const auto& path = request.canonicalPath;
-						if (path.empty() || failed.contains(path)) continue;
+						const bool allowBc4 = NativePBR::GpuAcceptsRedOnlyTexture(recipe, static_cast<NativePBR::TextureRole>(role)) &&
+							request.interpretation == NativePBR::TextureInterpretation::DataLinear;
+						if (path.empty() || failed.contains(path) || (!allowBc4 && invalidBc4.contains(path))) continue;
+						const auto rejectBc4 = [&] {
+							if (invalidBc4.insert(path).second) {
+								const char* reason = request.interpretation == NativePBR::TextureInterpretation::ColorSrgb ?
+									"no compatible sRGB view" : "BC4 lacks required material channels";
+								++result->failedTextures;
+								++result->failureReasons[reason];
+								if (result->failedExamples.size() < 32) result->failedExamples.emplace_back(path, reason);
+							}
+						};
 						auto found = indices.find(path);
 						if (found == indices.end()) {
 							if (indices.size() >= NativePBR::kGpuTexturePoolCapacity) {
@@ -330,19 +345,28 @@ namespace DX12Native
 									}
 								}
 							}
+							if (texture && texture->format == DXGI_FORMAT_BC4_UNORM && !allowBc4) {
+								rejectBc4();
+								continue;
+							}
 							std::string reason;
+							bool incompatibleBc4 = false;
 							if (!texture) {
 								// Re-query global headroom before each new allocation.
 								const auto current = budget.Query(device, 0);
 								remaining = std::min(remaining, current.effectiveBytes);
 								try {
-									if (auto upload = LoadTexture(device, path, remaining, reason)) {
+									if (auto upload = LoadTexture(device, path, remaining, reason, allowBc4, incompatibleBc4)) {
 										uploads.push_back(std::move(*upload));
 										texture = uploads.back().texture;
 									}
 								} catch (const std::exception&) { reason = "GPU allocation/upload setup"; }
 							}
 							if (!texture) {
+								if (incompatibleBc4) {
+									rejectBc4();
+									continue;
+								}
 								failed.insert(path);
 								++result->failedTextures;
 								if (reason.empty()) reason = "unknown texture failure";
@@ -363,6 +387,10 @@ namespace DX12Native
 							++result->sharedTextureReferences;
 						}
 						const auto format = result->poolTextures[found->second]->format;
+						if (format == DXGI_FORMAT_BC4_UNORM && !allowBc4) {
+							rejectBc4();
+							continue;
+						}
 						if (request.interpretation == NativePBR::TextureInterpretation::ColorSrgb && DirectX::MakeSRGB(format) == format) {
 							if (invalidSrgb.insert(path).second) {
 								++result->failedTextures;
