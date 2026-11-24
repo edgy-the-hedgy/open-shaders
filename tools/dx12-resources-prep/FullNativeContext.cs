@@ -19,9 +19,9 @@ internal sealed class FullNativeContext
     private int cacheEntries;
     private ulong hits, misses, evictions;
 
-    internal CompanionTelemetry Telemetry() => new(deployment is MO2ProfileResolver ? "MO2" : "Vortex",
+    internal CompanionTelemetry Telemetry(int exteriorIndexed, int exteriorTotal, bool exteriorFinished, bool exteriorIncomplete) => new(deployment is MO2ProfileResolver ? "MO2" : "Vortex",
         deployment is MO2ProfileResolver ? Path.GetFileName(Path.GetDirectoryName(deployment.PluginsPath)) ?? "" : "",
-        pg.Count, cacheBytes, cacheEntries, hits, misses, evictions);
+        pg.Count, cacheBytes, cacheEntries, hits, misses, evictions, exteriorIndexed, exteriorTotal, exteriorFinished, exteriorIncomplete);
 
     internal FullNativeContext(string data, DeploymentContext deployment)
     {

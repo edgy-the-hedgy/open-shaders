@@ -159,7 +159,8 @@ static string DescribeFailure(string stage, Exception error)
 internal sealed record TileShape(ulong Identity, Vector3[] Positions, uint[] Indices, float[] Transform,
     byte[]? Shading = null, MaterialSource? Material = null, string ReferencePlugin = "", uint ReferenceLocal = 0, PlacementMaterial? Override = null);
 internal sealed record CompanionTelemetry(string Manager, string Profile, int PgEntries, long CacheBytes, int CacheEntries,
-    ulong CacheHits, ulong CacheMisses, ulong CacheEvictions);
+    ulong CacheHits, ulong CacheMisses, ulong CacheEvictions, int ExteriorIndexed, int ExteriorTotal,
+    bool ExteriorFinished, bool ExteriorIncomplete);
 internal sealed record PlacementMaterial(string TextureSet, string MaterialObject, string[]? Textures, bool Ambiguous);
 internal sealed record TileNifSource(string ReferencePlugin, uint ReferenceLocal, string NifPath);
 internal sealed record TileMissingNifShape(string ReferencePlugin, uint ReferenceLocal, string NifPath,
@@ -218,6 +219,10 @@ internal static class SceneTile
         long placementMinX = 0, placementMinY = 0, placementMaxX = 0, placementMaxY = 0;
         FullNativeContext? native = null;
         var placementBounds = new Dictionary<FormKey, (Vector2 Low, Vector2 High)>();
+        var modelBounds = new Dictionary<string, (Vector3 Low, Vector3 High)?>(StringComparer.OrdinalIgnoreCase);
+        FormKey[] exteriorKeys = [];
+        int exteriorCursor = 0;
+        bool exteriorIncomplete = false;
 
         // Keep Mutagen and archive readers alive across the 5x5 request stream.
         // Model triangles remain per-tile and are not stored between preparations.
@@ -232,12 +237,16 @@ internal static class SceneTile
         // Reload only when movement escapes the previous bounded window.
         var reuseWindow = placementWindow != null && placementScope == scope &&
             placementSize == size && placementWorldspace == isWorldspace &&
-            (!isWorldspace || (tileX - 2 >= placementMinX && tileY - 2 >= placementMinY &&
+            (!isWorldspace || fullNative || (tileX - 2 >= placementMinX && tileY - 2 >= placementMinY &&
                 tileX + 3 <= placementMaxX && tileY + 3 <= placementMaxY));
         if (!reuseWindow)
         {
             placementWindow = new Dictionary<FormKey, IPlacedGetter>();
             placementBounds.Clear();
+            modelBounds.Clear();
+            exteriorKeys = [];
+            exteriorCursor = 0;
+            exteriorIncomplete = false;
             placementScope = scope;
             placementSize = size;
             placementWorldspace = isWorldspace;
@@ -249,13 +258,22 @@ internal static class SceneTile
             foreach (var listing in environment.LoadOrder.ListedOrder)
             {
                 if (listing.Mod is not { } mod) continue;
-                foreach (var cell in mod.EnumerateMajorRecords<ICellGetter>())
+                IEnumerable<ICellGetter> cells;
+                if (fullNative && isWorldspace)
+                {
+                    var worlds = mod.EnumerateMajorRecords<IWorldspaceGetter>().Where(world => world.FormKey == scope).ToArray();
+                    if (worlds.Length != 0) placementFoundScope = true;
+                    cells = worlds.SelectMany(world => world.EnumerateMajorRecords<ICellGetter>()
+                        .Concat(world.TopCell is { } top ? new[] { top } : Array.Empty<ICellGetter>()));
+                }
+                else cells = mod.EnumerateMajorRecords<ICellGetter>();
+                foreach (var cell in cells)
                 {
                     if (!isWorldspace && cell.FormKey != scope) continue;
                     if (cell.FormKey == scope) placementFoundScope = true;
                     foreach (var reference in cell.Persistent.Concat(cell.Temporary))
                     {
-                        if (isWorldspace)
+                        if (isWorldspace && !fullNative)
                         {
                             if (reference.Placement is not { } p) continue;
                             var px = p.Position.X;
@@ -268,7 +286,7 @@ internal static class SceneTile
                         placementWindow[reference.FormKey] = reference;
                         // Bound reference metadata independently of NIF/triangle budgets.
                         // A heavy scope cannot silently become authoritative coverage.
-                        if (placementWindow.Count > 150_000)
+                        if (placementWindow.Count > (fullNative && isWorldspace ? 1_000_000 : 150_000))
                         {
                             placementWindow = null;
                             return new TileResult(1, 0, 1, false, [], [], FullNative: fullNative);
@@ -276,8 +294,71 @@ internal static class SceneTile
                     }
                 }
             }
+            if (fullNative && isWorldspace)
+                exteriorKeys = placementWindow.Keys.ToArray();
         }
         var candidates = placementWindow!;
+        if (fullNative && isWorldspace)
+        {
+            // Advance the world bounds catalog incrementally within each tile
+            // request. Decode only one temporary model at a time, retaining its
+            // conservative model-space AABB, not triangles, textures or a disk
+            // package. The normal tile path still has active priority.
+            var timer = System.Diagnostics.Stopwatch.StartNew();
+            var indexModels = new Dictionary<string, ModelExtraction>(StringComparer.OrdinalIgnoreCase);
+            long indexBytes = 0;
+            int decoded = 0;
+            while (exteriorCursor < exteriorKeys.Length && timer.ElapsedMilliseconds < 1200 && decoded < 32)
+            {
+                var key = exteriorKeys[exteriorCursor++];
+                try
+                {
+                    var context = environment.LinkCache.ResolveContext<IPlaced, IPlacedGetter>(key);
+                    if (!context.TryGetParent<IWorldspaceGetter>(out var world) || world.FormKey != scope ||
+                        context.Record.IsDeleted) continue;
+                    if (context.Record is not IPlacedObjectGetter obj) continue;
+                    var baseRecord = obj.Base.TryResolve(environment.LinkCache);
+                    if (baseRecord == null) { exteriorIncomplete = true; continue; }
+                    if (baseRecord is ILightGetter) continue;
+                    if (baseRecord is not (IStaticGetter or IFurnitureGetter or IMoveableStaticGetter))
+                    {
+                        if (baseRecord is IModeledGetter) exteriorIncomplete = true;
+                        continue;
+                    }
+                    if (obj.Placement is not { } placement || (obj.MajorRecordFlagsRaw & 0x800) != 0 ||
+                        obj.EnableParent != null || obj.VirtualMachineAdapter != null || baseRecord is IMoveableStaticGetter)
+                    {
+                        exteriorIncomplete = true;
+                        continue;
+                    }
+                    var model = (baseRecord as IModeledGetter)?.Model?.File.ToString();
+                    if (string.IsNullOrWhiteSpace(model)) { exteriorIncomplete = true; continue; }
+                    var path = NormalizeNifPath(model);
+                    if (!modelBounds.TryGetValue(path, out var bounds))
+                    {
+                        ++decoded;
+                        // No FullNativeContext here: an exterior metadata index
+                        // must never populate the persistent compiled mesh cache.
+                        indexModels.Clear(); indexBytes = 0;
+                        var extraction = LoadModel(data, path, indexModels, ref indexBytes, archives, scratch, null);
+                        bounds = ModelBounds(extraction);
+                        modelBounds[path] = bounds;
+                        if (extraction.Rejections.Count != 0 || bounds == null) exteriorIncomplete = true;
+                        indexModels.Clear(); indexBytes = 0;
+                    }
+                    if (bounds is not { } box) { exteriorIncomplete = true; continue; }
+                    var worldTransform = PlacementTransform.FromRecord(
+                        [placement.Position.X, placement.Position.Y, placement.Position.Z],
+                        [placement.Rotation.X, placement.Rotation.Y, placement.Rotation.Z], obj.Scale ?? 1.0f);
+                    placementBounds[key] = TransformBounds(box, worldTransform);
+                }
+                catch (Exception error) when (error is not OutOfMemoryException)
+                {
+                    exteriorIncomplete = true;
+                }
+            }
+        }
+
         var foundScope = placementFoundScope;
         var shapes = new List<TileShape>();
         var lights = new List<TileLight>();
@@ -331,7 +412,11 @@ internal static class SceneTile
                 if (candidate.Placement is not { } placement) continue;
                 var px = placement.Position.X;
                 var py = placement.Position.Y;
-                if (px < (tileX - 2) * (double)size || px >= (tileX + 3) * (double)size ||
+                if (fullNative && placementBounds.TryGetValue(candidate.FormKey, out var indexed))
+                {
+                    if (!BoundsOverlap(indexed.Low, indexed.High, tileX, tileY, size)) continue;
+                }
+                else if (px < (tileX - 2) * (double)size || px >= (tileX + 3) * (double)size ||
                     py < (tileY - 2) * (double)size || py >= (tileY + 3) * (double)size)
                     continue;
             }
@@ -506,10 +591,40 @@ internal static class SceneTile
         // an authoritative bounds index is available; never offload on a guess.
         if (lightCapacityExceeded && rejections.Count < 12)
             rejections["tile light capacity"] = 1;
-        return new TileResult(1, eligible, failed, !isWorldspace && foundScope && !lightCapacityExceeded,
-            shapes, lights, "", rejections, nifSources, missingShapes, fullNative, full?.Telemetry());
+        var indexFinished = fullNative && isWorldspace && exteriorCursor == exteriorKeys.Length;
+        var complete = foundScope && !lightCapacityExceeded && (!isWorldspace || indexFinished && !exteriorIncomplete);
+        return new TileResult(1, eligible, failed, complete,
+            shapes, lights, "", rejections, nifSources, missingShapes, fullNative,
+            full?.Telemetry(exteriorCursor, exteriorKeys.Length, indexFinished, exteriorIncomplete));
         }
         return (Run, environment);
+    }
+
+    private static (Vector3 Low, Vector3 High)? ModelBounds(ModelExtraction extraction)
+    {
+        if (extraction.Shapes.Length == 0) return null;
+        var low = new Vector3(float.PositiveInfinity);
+        var high = new Vector3(float.NegativeInfinity);
+        foreach (var shape in extraction.Shapes)
+            foreach (var vertex in shape.Positions)
+            {
+                var point = Vector3.Transform(vertex, shape.ToModel);
+                if (!float.IsFinite(point.X) || !float.IsFinite(point.Y) || !float.IsFinite(point.Z))
+                    return null;
+                low = Vector3.Min(low, point); high = Vector3.Max(high, point);
+            }
+        return (low, high);
+    }
+
+    private static (Vector2 Low, Vector2 High) TransformBounds((Vector3 Low, Vector3 High) box, Matrix4x4 transform)
+    {
+        // All eight corners are required: a model's Z extent may rotate into
+        // XY, and a reference's origin can lie arbitrarily far from its mesh.
+        var corners = new Vector3[8];
+        for (int i = 0; i < corners.Length; ++i)
+            corners[i] = new((i & 1) == 0 ? box.Low.X : box.High.X,
+                (i & 2) == 0 ? box.Low.Y : box.High.Y, (i & 4) == 0 ? box.Low.Z : box.High.Z);
+        return Bounds(corners, transform);
     }
 
     private static bool Inside(float x, float y, long tx, long ty, int size) =>

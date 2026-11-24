@@ -465,6 +465,10 @@ namespace DX12
 						telemetry.cacheHits = entry->at("cacheHits").get<uint64_t>();
 						telemetry.cacheMisses = entry->at("cacheMisses").get<uint64_t>();
 						telemetry.cacheEvictions = entry->at("cacheEvictions").get<uint64_t>();
+						telemetry.exteriorIndexed = entry->value("exteriorIndexed", 0u);
+						telemetry.exteriorTotal = entry->value("exteriorTotal", 0u);
+						telemetry.exteriorFinished = entry->value("exteriorFinished", false);
+						telemetry.exteriorIncomplete = entry->value("exteriorIncomplete", false);
 						publication.telemetry = std::move(telemetry);
 					}
 				} catch (const std::exception&) {}  // Diagnostics never invalidate geometry.

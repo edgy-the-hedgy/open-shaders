@@ -229,9 +229,9 @@ namespace DX12Native
 			std::unordered_map<std::string, uint32_t> indices;
 			std::unordered_set<std::string> failed;
 			std::unordered_map<uint64_t, uint32_t> ready;
-			std::vector<NativePBR::GpuMaterialRecord> records;
-			records.reserve(prepared.recipes.size());
-			auto bindings = prepared.bindings;
+			std::vector<NativePBR::GpuMaterialRecord> recordTable;
+			recordTable.reserve(prepared.recipes.size());
+			auto bindingTable = prepared.bindings;
 			for (const auto& recipe : prepared.recipes) {
 				NativePBR::GpuTextureLocations locations{};
 				for (auto& location : locations) location = { NativePBR::kGpuMissingTexture, 0 };
@@ -281,8 +281,8 @@ namespace DX12Native
 					locations[role] = { NativePBR::GpuTextureDescriptorIndex(found->second, request.interpretation), 0 };
 				}
 				auto record = NativePBR::PackGpuMaterialRecord(recipe, locations);
-				const uint32_t index = uint32_t(records.size());
-				records.push_back(record);
+				const uint32_t index = uint32_t(recordTable.size());
+				recordTable.push_back(record);
 				const uint32_t required = NativePBR::GpuRequestedTextureRoles(recipe) & 15u;
 				if ((record.controls[0] & required) == required &&
 					!(recipe.issues & (NativePBR::InvalidSnapshot | NativePBR::InvalidTexturePath | NativePBR::MissingRequiredTextures))) {
@@ -290,8 +290,8 @@ namespace DX12Native
 					++result->residentRecipes;
 				}
 			}
-			for (size_t i = 0; i < bindings.size(); ++i) {
-				auto& binding = bindings[i];
+			for (size_t i = 0; i < bindingTable.size(); ++i) {
+				auto& binding = bindingTable[i];
 				const uint64_t identity = uint64_t(binding.identity[0]) | (uint64_t(binding.identity[1]) << 32);
 				const auto it = ready.find(identity);
 				if (it == ready.end() || !scene.geometry[i].shape || !scene.geometry[i].shape->shading) continue;
@@ -303,8 +303,8 @@ namespace DX12Native
 					normal->second->format == DXGI_FORMAT_BC5_UNORM) binding.flags |= 1u << 8;
 				if (source.shaderFlags1 & (1u << 12)) binding.flags |= 1u << 9;
 			}
-			result->records = Table(device, records);
-			result->bindings = Table(device, bindings);
+			result->records = Table(device, recordTable);
+			result->bindings = Table(device, bindingTable);
 			result->output = Buffer(device, resultBytes, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
 				D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 			result->readback = Buffer(device, resultBytes, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST);

@@ -65,6 +65,8 @@ namespace DX12
 		std::string manager, profile;
 		uint64_t cacheBytes = 0, cacheHits = 0, cacheMisses = 0, cacheEvictions = 0;
 		uint32_t cacheEntries = 0, pgEntries = 0;
+		uint32_t exteriorIndexed = 0, exteriorTotal = 0;
+		bool exteriorFinished = false, exteriorIncomplete = false;
 	};
 
 	struct PlacementMaterial

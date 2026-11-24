@@ -45,6 +45,8 @@ namespace DX12
 		next->revision = current->revision + 1;
 		next->geometryRevision = current->geometryRevision + 1;
 		next->size = size;
+		next->fullNative = current->fullNative;
+		if (current->requested.front().scope == scope) next->telemetry = current->telemetry;
 		next->requested = *desired;
 		next->predictive = *predictive;
 		// A failed neighbor may be attempted at most three times while the player
@@ -579,6 +581,9 @@ void DX12Resources::DrawDevStats()
 		if (const auto& telemetry = snapshot->telemetry; snapshot->fullNative && telemetry) {
 			ImGui::SeparatorText("Full Native deployment and cache");
 			ImGui::Text("Mod manager: %s | Profile: %s | PG entries: %u", telemetry->manager.c_str(), telemetry->profile.empty() ? "--" : telemetry->profile.c_str(), telemetry->pgEntries);
+			if (telemetry->exteriorTotal)
+				ImGui::Text("Exterior bounds: %u / %u | %s", telemetry->exteriorIndexed, telemetry->exteriorTotal,
+					!telemetry->exteriorFinished ? "indexing" : telemetry->exteriorIncomplete ? "unsupported sources remain" : "indexed");
 			ImGui::Text("Cache: %.2f MiB | Entries: %u", double(telemetry->cacheBytes)/1048576.0, telemetry->cacheEntries);
 			ImGui::Text("Session cache hits: %llu | Misses: %llu | Evictions: %llu",
 				static_cast<unsigned long long>(telemetry->cacheHits), static_cast<unsigned long long>(telemetry->cacheMisses), static_cast<unsigned long long>(telemetry->cacheEvictions));
