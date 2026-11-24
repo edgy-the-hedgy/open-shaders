@@ -26,6 +26,7 @@ if(EXCLUDE_NATIVE_DXIL)
         "NativeComposite/ShadowLayer.dxil"
         "NativeComposite/NativePBRProbe.dxil"
         "NativeComposite/NativePBRScreenProbe.dxil"
+        "NativeComposite/DirectLighting.dxil"
     )
 endif()
 

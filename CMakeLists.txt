@@ -1147,6 +1147,7 @@ if(TARGET DX12NativeShadowDXIL AND TARGET DX12NativeCompositeDXIL)
         "${_native_composite_dxil}"
         "${_native_pbr_probe_dxil}"
         "${_native_pbr_screen_dxil}"
+        "${_native_direct_dxil}"
     )
 endif()
 
