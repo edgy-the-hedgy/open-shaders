@@ -198,7 +198,7 @@ internal static class SceneTile
         var club = File.Exists(ccc) ? File.ReadLines(ccc).Select(line => line.Trim()).Where(line => line.Length != 0) : [];
         var implicitPlugins = official.Concat(club).Where(name => File.Exists(Path.Combine(data, name)))
             .Select(name => ModKey.FromFileName(name));
-        var order = deployment?.OrderedPlugins.Select(ModKey.FromFileName).ToArray() ??
+        var order = deployment?.OrderedPlugins.Select(name => ModKey.FromFileName(name)).ToArray() ??
             implicitPlugins.Concat(PluginListings.LoadOrderListingsFromPath(pluginsPath, GameRelease.SkyrimSE, data)
                 .Where(entry => entry.Enabled).Select(entry => entry.ModKey)).Distinct().ToArray();
         var environment = GameEnvironment.Typical.Builder<ISkyrimMod, ISkyrimModGetter>(GameRelease.SkyrimSE)
