@@ -51,6 +51,7 @@ namespace DX12Native
 		uint64_t revision = 0, textureBytes = 0;
 		uint32_t instanceCount = 0, residentRecipes = 0, failedTextures = 0, reusedTextures = 0, archiveTextures = 0;
 		uint32_t evaluated = 0, baseOnlyBindings = 0;
+		uint32_t specializedRequested = 0, specializedResident = 0, sharedTextureReferences = 0;
 		std::map<std::string, uint32_t> failureReasons;
 		std::vector<std::pair<std::string, std::string>> failedExamples;
 		Sample firstSample{};
@@ -297,6 +298,7 @@ namespace DX12Native
 					const auto requested = specialized ? NativePBR::GpuSpecializedTextureRoles(recipe) : base;
 					for (size_t role = 0; role < locations.size(); ++role) {
 						if (!(requested & (1u << role))) continue;
+						if (specialized) ++result->specializedRequested;
 						const auto& request = recipe.textures[role];
 						const auto& path = request.canonicalPath;
 						if (path.empty() || failed.contains(path)) continue;
@@ -356,6 +358,8 @@ namespace DX12Native
 							result->poolTextures.push_back(texture);
 							result->textures.emplace(path, std::move(texture));
 							found = indices.emplace(path, pool).first;
+						} else {
+							++result->sharedTextureReferences;
 						}
 						const auto format = result->poolTextures[found->second]->format;
 						if (request.interpretation == NativePBR::TextureInterpretation::ColorSrgb && DirectX::MakeSRGB(format) == format) {
@@ -367,6 +371,7 @@ namespace DX12Native
 							continue;
 						}
 						locations[role] = { NativePBR::GpuTextureDescriptorIndex(found->second, request.interpretation), 0 };
+						if (specialized) ++result->specializedResident;
 					}
 				}
 			}
