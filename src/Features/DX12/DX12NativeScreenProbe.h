@@ -119,29 +119,38 @@ namespace DX12Native
 			std::shared_ptr<const TopLevel> scene;
 			winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
 			winrt::com_ptr<ID3D12Resource> samples;
-			uint32_t sampleStride=kSampleStride, rowPitch=0;
+			uint32_t abiVersion=MaterialFrameContract::kMaterialAbiVersion, sampleStride=kSampleStride, rowPitch=0;
+			static constexpr D3D12_RESOURCE_STATES publishedState = D3D12_RESOURCE_STATE_COMMON;
 			winrt::com_ptr<ID3D12Fence> producerFence;
-			uint64_t producerValue=0, geometryRevision=0;
+			uint64_t producerValue=0, geometryRevision=0, materialRevision=0;
 			uint32_t frame=0, width=0, height=0, scope=0;
 			/** @brief Validates the immutable full-resolution producer contract. */
 			bool IsCoherent(uint32_t requestedFrame, uint32_t requestedWidth, uint32_t requestedHeight) const
 			{
 				if (frame != requestedFrame || width != requestedWidth || height != requestedHeight ||
-					sampleStride != kSampleStride || !MaterialFrameContract::ValidLayout(width, height, rowPitch, kSampleStride) ||
-					!allocation || !samples ||
-					!producerFence || !producerValue || producerValue == UINT64_MAX ||
-					producerFence->GetCompletedValue() == UINT64_MAX || !raster || raster->frame != frame ||
+					!MaterialFrameContract::ValidMaterialABI(abiVersion, sampleStride) ||
+					!MaterialFrameContract::ValidLayout(width, height, rowPitch, sampleStride) ||
+					!allocation || !samples || allocation->resource.get() != samples.get() ||
+					!allocation->shaderReadable || !descriptors ||
+					!producerFence || !MaterialFrameContract::ValidProducerSignal(producerValue, producerFence->GetCompletedValue()) ||
+					!raster || raster->frame != frame || !raster->cameraValid || !raster->depth || !raster->depth->resource ||
+					!raster->readyFence || !MaterialFrameContract::ValidProducerSignal(raster->readyValue, raster->readyFence->GetCompletedValue()) ||
 					raster->width < width || raster->height < height || !scene || !scope ||
 					scene->scope != scope || scene->geometryRevision != geometryRevision ||
-					!scene->materialEvaluation || scene->materialEvaluation->revision != geometryRevision)
+					!scene->acceleration || !scene->producerFence ||
+					!MaterialFrameContract::ValidProducerSignal(scene->producerValue, scene->producerFence->GetCompletedValue()) ||
+					!scene->shadingGeometry || scene->shadingGeometry->revision != geometryRevision ||
+					!scene->materialEvaluation || scene->materialEvaluation->revision != materialRevision ||
+					materialRevision != geometryRevision)
 					return false;
 				const auto desc = samples->GetDesc();
-				return desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER && desc.Width >= uint64_t(rowPitch) * height;
+				return desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
+					desc.Width >= uint64_t(rowPitch) * height && allocation->bytes >= uint64_t(rowPitch) * height;
 			}
 		};
 		std::shared_ptr<const MaterialFrame> GetMaterialFrame(uint32_t frame) const
 		{
-			return published && published->frame==frame ? published : nullptr;
+			return published && published->IsCoherent(frame, published->width, published->height) ? published : nullptr;
 		}
 	private:
 		std::shared_ptr<const MaterialFrame> published;
@@ -168,7 +177,16 @@ namespace DX12Native
 			if (!pending) return;
 			const auto done=pending->fence->GetCompletedValue();
 			if (done==UINT64_MAX) { pending.reset(); published.reset(); outputPool = {}; failure="Screen probe device removed"; return; }
-			if (pending->value==UINT64_MAX || done<pending->value) return;
+			if (pending->value==UINT64_MAX) {
+				if (pending->discard && owner.commandQueue) {
+					const auto rescue=nextValue+1;
+					if (SUCCEEDED(owner.commandQueue->Signal(pending->fence.get(),rescue))) {
+						nextValue=rescue; pending->value=rescue;
+					}
+				}
+				return;
+			}
+			if (done<pending->value) return;
 			if (!pending->discard) {
 				Stats result{};
 				result.frame=pending->frame; result.width=pending->width; result.height=pending->height;
@@ -203,13 +221,17 @@ namespace DX12Native
 			// consumer may retain its own immutable output reference.
 			published.reset();
 			if (!raster || raster->frame != frame || !raster->depth || !raster->depth->resource || !raster->cameraValid || !raster->readyFence ||
-				!scene || !scene->acceleration || !scene->producerFence || !scene->shadingGeometry || !scene->materialEvaluation ||
+				!MaterialFrameContract::ValidProducerSignal(raster->readyValue, raster->readyFence->GetCompletedValue()) ||
+				!scene || !scene->scope || !scene->acceleration || !scene->producerFence ||
+				!MaterialFrameContract::ValidProducerSignal(scene->producerValue, scene->producerFence->GetCompletedValue()) ||
+				!scene->shadingGeometry || !scene->shadingGeometry->buffer || !scene->materialEvaluation ||
 				!width || !height || width>raster->width || height>raster->height) {
 				failure="Waiting for matching raster and native material generation"; return;
 			}
 			const auto& evaluation=*scene->materialEvaluation;
 			if (evaluation.revision!=scene->shadingGeometry->revision || evaluation.revision!=scene->geometryRevision ||
-				evaluation.instanceCount!=scene->shadingGeometry->instanceCount || !evaluation.residentRecipes) {
+				evaluation.instanceCount!=scene->shadingGeometry->instanceCount || !evaluation.residentRecipes ||
+				!evaluation.records || !evaluation.bindings) {
 				failure="No coherent resident material generation"; return;
 			}
 			bool submitted=false;
@@ -328,6 +350,7 @@ namespace DX12Native
 					materialFrame->raster=pending->raster; materialFrame->scene=pending->scene;
 					materialFrame->descriptors=pending->descriptors;
 					materialFrame->producerValue=value; materialFrame->geometryRevision=pending->scene->geometryRevision;
+					materialFrame->materialRevision=pending->scene->materialEvaluation->revision;
 					materialFrame->frame=frame; materialFrame->scope=pending->scene->scope;
 					materialFrame->width=gridWidth; materialFrame->height=gridHeight; materialFrame->rowPitch=pitchPixels*kSampleStride;
 					published=std::move(materialFrame);

@@ -52,7 +52,16 @@ namespace DX12Native
 	{
 		if (current && current->frame != frame) current.reset();
 		for (auto& slot : slots) {
-			if (!slot || !GpuFenceRetired(slot->readyFence.get(), slot->readyValue)) continue;
+			if (!slot) continue;
+			if (slot->readyValue == UINT64_MAX && slot->readyFence && owner.commandQueue &&
+				slot->readyFence->GetCompletedValue() != UINT64_MAX) {
+				const uint64_t rescue = nextFence + 1;
+				if (SUCCEEDED(owner.commandQueue->Signal(slot->readyFence.get(), rescue))) {
+					nextFence = rescue;
+					slot->readyValue = rescue;
+				}
+			}
+			if (!GpuFenceRetired(slot->readyFence.get(), slot->readyValue)) continue;
 			if (slot->statsPending) {
 				slot->statsPending = false;
 				if (slot->readyFence->GetCompletedValue() != UINT64_MAX &&
