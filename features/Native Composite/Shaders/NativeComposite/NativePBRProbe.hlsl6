@@ -103,6 +103,7 @@ cbuffer ProbeCamera : register(b1)
     float4 PositionAdjust;
     uint2 ViewSize;
     uint2 GridSize;
+    uint CollectStats;
 };
 RWByteAddressBuffer ProbeCounts : register(u1);
 RWByteAddressBuffer ScreenOutput : register(u2);
@@ -177,8 +178,10 @@ Sample EvaluateScreen(uint2 pixelIndex)
 [numthreads(8,8,1)]
 void screenMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
 {
-    if (lane < 8) GroupCounts[lane]=0;
-    GroupMemoryBarrierWithGroupSync();
+    if (CollectStats != 0u) {
+        if (lane < 8) GroupCounts[lane]=0;
+        GroupMemoryBarrierWithGroupSync();
+    }
     if (all(id.xy < GridSize)) {
         Sample result=EvaluateScreen(id.xy);
         uint offset=(id.y*((GridSize.x+7u)&~7u)+id.x)*NativeSurfaceStride;
@@ -188,11 +191,13 @@ void screenMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
             result.color.a==SurfaceDepthMismatch ? 2 : result.color.a==SurfaceEvaluationFailed ? 3 :
             result.color.a==SurfaceFeatureLimited ? 5 : result.color.a==SurfaceUnsupportedMaterial ? 6 :
             result.color.a==SurfaceMissingTextures ? 7 : 4;
-        InterlockedAdd(GroupCounts[category],1u);
+        if (CollectStats != 0u) InterlockedAdd(GroupCounts[category],1u);
     }
-    GroupMemoryBarrierWithGroupSync();
-    if (lane < 8) {
-        uint ignored;
-        ProbeCounts.InterlockedAdd(lane*4,GroupCounts[lane],ignored);
+    if (CollectStats != 0u) {
+        GroupMemoryBarrierWithGroupSync();
+        if (lane < 8) {
+            uint ignored;
+            ProbeCounts.InterlockedAdd(lane*4,GroupCounts[lane],ignored);
+        }
     }
 }

@@ -100,7 +100,7 @@ void DX12NativeScene::DrawDevStats()
 	if (globals::features::dx12Control.IsFullNativeMode()) {
 		const auto& stats = screenProbe.stats;
 		if (stats.sampled) ImGui::Text("Material output: %u x %u | %.2f MiB GPU | 32-byte counter readback", stats.width, stats.height, double(stats.outputBytes)/1048576.0);
-		if (stats.submittedFrames) ImGui::Text("Material submissions: %u | Reused output allocations: %u", stats.submittedFrames, stats.reusedAllocations);
+		if (screenProbe.submittedFrames) ImGui::Text("Material submissions: %u | Reused output allocations: %u", screenProbe.submittedFrames, screenProbe.reusedAllocations);
 		if (stats.sampled) ImGui::Text("Screen frame %u | Evaluated %u / %u | No hit %u | Depth mismatch %u | Evaluation failed %u | Invalid depth %u",
 			stats.frame, stats.evaluated + stats.baseOnly, stats.sampled, stats.noHit, stats.depthMismatch, stats.missingMaterial, stats.invalid);
 		if (stats.sampled) ImGui::Text("Base-only %u | Evaluated base %u | Unsupported %u | Missing textures %u", stats.baseOnly, stats.evaluated, stats.unsupportedMaterial, stats.missingTextures);
@@ -340,7 +340,7 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/
 	};
 	if (fullProbe)
 		screenProbe.Dispatch(*backend, captured, built, frame, viewportWidth, viewportHeight,
-			fullResolutionMaterialProbe || materialRequired, continuousMaterialProbe || materialRequired);
+			fullResolutionMaterialProbe || materialRequired, continuousMaterialProbe || materialRequired, screenProbeEnabled || materialCoveragePreview);
 	if (directEnabled)
 		lighting.DispatchDirect(*backend, screenProbe.GetMaterialFrame(frame), controls);
 	if (shadowTrace)

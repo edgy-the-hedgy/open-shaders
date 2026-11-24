@@ -20,7 +20,7 @@ namespace DX12Native
 		{
 			Matrix projectionInverse, viewInverse;
 			float4 positionAdjust;
-			uint32_t width, height, gridWidth, gridHeight;
+			uint32_t width, height, gridWidth, gridHeight, collectStats;
 		};
 		static_assert(sizeof(Camera) <= 256);
 		struct OutputAllocation
@@ -43,7 +43,7 @@ namespace DX12Native
 			winrt::com_ptr<ID3D12Fence> fence;
 			uint64_t value = UINT64_MAX;
 			uint32_t frame = 0, width = 0, height = 0;
-			bool fullResolution = false;
+			bool fullResolution = false, collectStats = false;
 			bool discard = false;
 		};
 		std::array<std::shared_ptr<Submission>, 3> submissions;
@@ -196,7 +196,7 @@ namespace DX12Native
 				return;
 			}
 			if (done<pending->value) return;
-			if (!pending->discard && (!stats.sampled || uint32_t(pending->frame-stats.frame)<0x80000000u)) {
+			if (pending->collectStats && !pending->discard && (!stats.sampled || uint32_t(pending->frame-stats.frame)<0x80000000u)) {
 				Stats result{};
 				result.frame=pending->frame; result.width=pending->width; result.height=pending->height;
 				result.sampled=result.width*result.height;
@@ -229,7 +229,7 @@ namespace DX12Native
 			return free && (lastFrame==UINT32_MAX || frame-lastFrame>=(continuous?1u:30u));
 		}
 		void Dispatch(const GraphicsBackend& backend,std::shared_ptr<const RasterFrame> raster,
-			std::shared_ptr<const TopLevel> scene,uint32_t frame,uint32_t width,uint32_t height,bool fullResolution,bool continuous=false)
+			std::shared_ptr<const TopLevel> scene,uint32_t frame,uint32_t width,uint32_t height,bool fullResolution,bool continuous=false,bool collectStats=false)
 		{
 			if (!WantsFrame(frame,continuous)) return;
 			lastFrame=frame;
@@ -283,19 +283,23 @@ namespace DX12Native
 				}
 				auto slot=std::make_shared<Submission>();
 				slot->raster=std::move(raster); slot->scene=std::move(scene);
-				slot->frame=frame; slot->width=gridWidth; slot->height=gridHeight; slot->fullResolution=fullResolution; slot->fence=fence; slot->root=root; slot->pipeline=pipeline;
+				slot->frame=frame; slot->width=gridWidth; slot->height=gridHeight; slot->fullResolution=fullResolution; slot->collectStats=collectStats; slot->fence=fence; slot->root=root; slot->pipeline=pipeline;
 				if (!reuse) {
 					reusableOutput=std::make_shared<OutputAllocation>();
 					reusableOutput->resource=Eval::Buffer(device,bytes,D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 					reusableOutput->bytes=bytes;
 				}
 				slot->output=reusableOutput;
-				slot->readback=Eval::Buffer(device,kCounterBytes,D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_STATE_COPY_DEST);
-				slot->counters=Eval::Buffer(device,kCounterBytes,D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-				slot->counterInit=Eval::Table(device,std::vector<uint32_t>(8,0));
+				slot->counters=Eval::Buffer(device,kCounterBytes,D3D12_HEAP_TYPE_DEFAULT,
+					collectStats ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+					D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+				if (collectStats) {
+					slot->readback=Eval::Buffer(device,kCounterBytes,D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_STATE_COPY_DEST);
+					slot->counterInit=Eval::Table(device,std::vector<uint32_t>(8,0));
+				}
 				slot->camera=Eval::Buffer(device,256,D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ);
 				const Camera constants{slot->raster->camera.CameraProjInverse,slot->raster->camera.CameraViewInverse,
-					slot->raster->camera.CameraPosAdjust,width,height,gridWidth,gridHeight};
+					slot->raster->camera.CameraPosAdjust,width,height,gridWidth,gridHeight,collectStats ? 1u : 0u};
 				void* mapped=nullptr; const D3D12_RANGE noRead{};
 				Eval::Check(slot->camera->Map(0,&noRead,&mapped));
 				std::memcpy(mapped,&constants,sizeof(constants)); slot->camera->Unmap(0,nullptr);
@@ -335,9 +339,11 @@ namespace DX12Native
 				command->SetComputeRootShaderResourceView(6,slot->scene->acceleration->GetGPUVirtualAddress());
 				command->SetComputeRootConstantBufferView(7,slot->camera->GetGPUVirtualAddress());
 				command->SetComputeRootUnorderedAccessView(8,slot->counters->GetGPUVirtualAddress());
-				command->CopyBufferRegion(slot->counters.get(),0,slot->counterInit.get(),0,kCounterBytes);
-				const auto counterBarrier=CD3DX12_RESOURCE_BARRIER::Transition(slot->counters.get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-				command->ResourceBarrier(1,&counterBarrier);
+				if (collectStats) {
+					command->CopyBufferRegion(slot->counters.get(),0,slot->counterInit.get(),0,kCounterBytes);
+					const auto counterBarrier=CD3DX12_RESOURCE_BARRIER::Transition(slot->counters.get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+					command->ResourceBarrier(1,&counterBarrier);
+				}
 				const auto begin=CD3DX12_RESOURCE_BARRIER::Transition(slot->raster->depth->resource.get(),
 					D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 				command->ResourceBarrier(1,&begin);
@@ -348,10 +354,13 @@ namespace DX12Native
 				command->Dispatch((gridWidth+7)/8,(gridHeight+7)/8,1);
 				const std::array end{
 					CD3DX12_RESOURCE_BARRIER::Transition(slot->output->resource.get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COMMON),
-					CD3DX12_RESOURCE_BARRIER::Transition(slot->counters.get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COPY_SOURCE),
 					CD3DX12_RESOURCE_BARRIER::Transition(slot->raster->depth->resource.get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COMMON)};
 				command->ResourceBarrier(UINT(end.size()),end.data());
-				command->CopyBufferRegion(slot->readback.get(),0,slot->counters.get(),0,kCounterBytes);
+				if (collectStats) {
+					const auto counterBarrier=CD3DX12_RESOURCE_BARRIER::Transition(slot->counters.get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COPY_SOURCE);
+					command->ResourceBarrier(1,&counterBarrier);
+					command->CopyBufferRegion(slot->readback.get(),0,slot->counters.get(),0,kCounterBytes);
+				}
 				Eval::Check(command->Close());
 				Eval::Check(backend.commandQueue->Wait(slot->raster->readyFence.get(),slot->raster->readyValue));
 				Eval::Check(backend.commandQueue->Wait(slot->scene->producerFence.get(),slot->scene->producerValue));
