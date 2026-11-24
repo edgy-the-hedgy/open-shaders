@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DX12NativeSceneInputs.h"
+#include "DX12PreparedMaterials.h"
 #include "GraphicsBackend.h"
 
 #include <array>
@@ -25,6 +26,7 @@ namespace DX12Native
 	struct TopLevel
 	{
 		std::shared_ptr<const SceneInputs> inputs;
+		std::shared_ptr<const PreparedMaterials> preparedMaterials;
 		std::vector<std::shared_ptr<const BottomLevel>> bottoms;
 		winrt::com_ptr<ID3D12Resource> acceleration;
 		winrt::com_ptr<ID3D12Fence> producerFence;

@@ -15,6 +15,7 @@
 #include <format>
 #include <limits>
 #include <ranges>
+#include <unordered_set>
 
 void DX12NativeScene::DrawSettings()
 {
@@ -49,6 +50,24 @@ void DX12NativeScene::DrawSettings()
 	if (ImGui::SliderFloat(T("menu.dx12.scene.shadow_fade_fraction", "Shadow fade range fraction"), &fade, 0.0f, 1.0f, "%.2f"))
 		shadowFadeRange = std::round(fade * 50.0f) / 50.0f;
 	ImGui::SliderFloat(T("menu.dx12.scene.shadow_falloff_curve", "Shadow falloff curve"), &shadowFalloffCurve, 0.0f, 2.5f, "%.2f");
+}
+
+void DX12NativeScene::DrawDevStats()
+{
+	ImGui::SeparatorText("Native Scene / NativePBR preparation");
+	const auto built = acceleration.GetScene();
+	if (!built || !built->inputs) {
+		ImGui::TextDisabled("No completed native scene");
+		return;
+	}
+	std::unordered_set<const DX12Native::BottomLevel*> unique;
+	for (const auto& bottom : built->bottoms)
+		if (bottom) unique.insert(bottom.get());
+	ImGui::Text("TLAS instances: %zu | Unique BLAS: %zu", built->inputs->geometry.size(), unique.size());
+	if (const auto& materials = built->preparedMaterials) {
+		ImGui::Text("Preliminary recipes: %zu | Missing sources: %u | Unsupported: %u", materials->recipes.size(), materials->missing, materials->unsupported);
+		ImGui::TextDisabled("CPU recipes only; no native texture residency or rendering authority");
+	}
 }
 
 void DX12NativeScene::LoadSettings(json& input)

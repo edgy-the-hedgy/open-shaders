@@ -49,7 +49,7 @@ namespace DX12
 	{
 		uint32_t stride = 0;  // RSGA v1: 36, v2: 60 bytes
 		std::vector<float> attributes;
-		std::string sourceNif, sourceHash, provenance;
+		std::string sourceNif, sourceHash, provenance, shapeName;
 		int32_t blockIndex = -1;
 		uint32_t shaderFlags1 = 0, shaderFlags2 = 0;
 		float alpha = 1.0f;
@@ -69,6 +69,8 @@ namespace DX12
 	struct Shape
 	{
 		uint64_t identity = 0;
+		std::string referencePlugin;
+		uint32_t referenceLocal = 0;
 		uint64_t runtimeObjectKey = 0;  // Stable across transform changes; zero for companion shapes.
 		std::vector<float3> positions;
 		std::vector<uint32_t> indices;
@@ -114,6 +116,7 @@ namespace DX12
 		std::vector<PreparedLight> lights;
 		uint64_t geometryBytes = 0;
 		bool validated = false;
+		bool fullNative = false;
 		uint32_t eligibleShapes = 0;
 		uint32_t failedShapes = 0;
 		uint32_t rejectedLights = 0;  // Invalid light records are skipped without losing valid geometry.
@@ -137,6 +140,7 @@ namespace DX12
 	{
 		uint64_t revision = 0;
 		uint64_t geometryRevision = 0;
+		bool fullNative = false;
 		uint32_t size = kSubcellSizes.front();
 		std::array<SubcellKey, kGridCapacity> requested{};  // Active 3x3, available to future native consumers.
 		std::array<std::shared_ptr<const Tile>, kGridCapacity> resident{};
@@ -213,6 +217,7 @@ struct DX12Resources final : Feature
 	bool IsInFeatureList() const override { return false; }
 	bool SupportsVR() override { return false; }
 	void DrawSettings() override;
+	void DrawDevStats();
 	void LoadSettings(json& input) override;
 	void SaveSettings(json& output) override;
 	void RestoreDefaultSettings() override;

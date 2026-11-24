@@ -157,7 +157,7 @@ static string DescribeFailure(string stage, Exception error)
 }
 
 internal sealed record TileShape(ulong Identity, Vector3[] Positions, uint[] Indices, float[] Transform,
-    byte[]? Shading = null, MaterialSource? Material = null);
+    byte[]? Shading = null, MaterialSource? Material = null, string ReferencePlugin = "", uint ReferenceLocal = 0);
 internal sealed record TileNifSource(string ReferencePlugin, uint ReferenceLocal, string NifPath);
 internal sealed record TileMissingNifShape(string ReferencePlugin, uint ReferenceLocal, string NifPath,
     int BlockIndex, string Reason);
@@ -459,7 +459,8 @@ internal static class SceneTile
                     }
                     shapes.Add(new TileShape(Identity(placed.FormKey.ToString(), shape.Index),
                         shape.Positions, shape.Indices, PlacementTransform.ToRows(transform),
-                        shading, shading != null ? shape.Material : null));
+                        shading, shading != null ? shape.Material : null,
+                        fullNative ? placed.FormKey.ModKey.ToString() : "", fullNative ? placed.FormKey.ID : 0));
                 }
             }
             catch (Exception error) when (error is not OutOfMemoryException)

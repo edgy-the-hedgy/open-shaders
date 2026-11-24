@@ -249,6 +249,7 @@ namespace DX12
 		}
 		auto next = std::make_shared<Grid>(*current);
 		++next->revision;
+		if (publication.validated) next->fullNative = publication.fullNative;
 		if (active != current->requested.end()) {
 			++next->geometryRevision;
 			next->resident[std::distance(current->requested.begin(), active)] = std::move(tile);
@@ -530,75 +531,61 @@ void DX12Resources::DrawSettings()
 
 	ImGui::SeparatorText(T("menu.dx12.resources.subcell_status", "Subcell status (5x5)"));
 	const auto snapshot = GetGrid();
-	const auto timing = GetPreparationStats();
+	if (snapshot)
+		DrawSubcellMap(*snapshot);
+	ImGui::TextColored(ImVec4(0.95f, 0.79f, 0.29f, 1.0f), T("menu.dx12.resources.legend.yellow", "Yellow: loaded 3x3"));
+	ImGui::TextColored(ImVec4(0.46f, 0.77f, 0.90f, 1.0f), T("menu.dx12.resources.legend.light_blue", "Light blue: loaded predictive ring"));
+	ImGui::TextColored(ImVec4(0.83f, 0.30f, 0.30f, 1.0f), T("menu.dx12.resources.legend.red", "Red: failed (retry pending)"));
+	ImGui::TextDisabled(T("menu.dx12.resources.legend.diagonal", "Diagonal: partially loaded  |  Center dot: player subcell"));
+}
 
-	const auto drawSubcellDetails = [&]() {
-		if (snapshot) {
-			size_t activeLoaded = 0, predictiveLoaded = 0;
-			const auto classify = [&](const auto& tile, bool active) {
-				if (tile && (tile->state == DX12::Tile::State::Ready || tile->state == DX12::Tile::State::ReadyPartial))
-					(active ? activeLoaded : predictiveLoaded)++;
-			};
-			for (const auto& tile : snapshot->resident)
-				classify(tile, true);
-			for (const auto& tile : snapshot->predictiveResident)
-				classify(tile, false);
-			ImGui::Text(T("menu.dx12.resources.loaded_counts", "Loaded: active %zu / 9, predictive %zu / 16"), activeLoaded, predictiveLoaded);
-		}
-		ImGui::TextColored(ImVec4(0.95f, 0.79f, 0.29f, 1.0f), T("menu.dx12.resources.legend.yellow", "Yellow: loaded 3x3"));
-		ImGui::TextColored(ImVec4(0.46f, 0.77f, 0.94f, 1.0f), T("menu.dx12.resources.legend.light_blue", "Light blue: loaded predictive ring"));
-		ImGui::TextColored(ImVec4(0.83f, 0.30f, 0.30f, 1.0f), T("menu.dx12.resources.legend.red", "Red: failed (retry pending)"));
-		ImGui::TextDisabled(T("menu.dx12.resources.legend.diagonal", "Diagonal: partially loaded  |  Center dot: player subcell"));
-	};
-
-	const auto drawGenerationStats = [&]() {
-		ImGui::TextColored(ImVec4(0.40f, 0.77f, 0.49f, 1.0f), T("menu.dx12.resources.stats.title", "Subcell generation stats"));
-		ImGui::TextDisabled(T("menu.dx12.resources.stats.timing_head", "Last / Avg / Worst (milliseconds)"));
-		const auto show = [](const char* label, const DX12::PreparationTiming& value) {
-			if (value.completed)
-				ImGui::Text("%s: %.1f / %.1f / %.1f ms", label, value.lastMs, value.AverageMs(), value.worstMs);
-			else
-				ImGui::TextDisabled("%s: -- / -- / --", label);
+void DX12Resources::DrawDevStats()
+{
+	ImGui::SeparatorText(T("menu.dx12.resources.subcell_status", "Subcell status (5x5)"));
+	const auto snapshot = GetGrid();
+	if (snapshot) {
+		size_t activeLoaded = 0, predictiveLoaded = 0, placements = 0, shaded = 0, missing = 0;
+		uint64_t chargedBytes = 0, uniqueGeometryBytes = 0, uniqueShadingBytes = 0;
+		std::unordered_set<const void*> uniqueGeometry;
+		std::unordered_set<const DX12::PreparedShading*> uniqueShading;
+		const auto visit = [&](const auto& tile, bool active) {
+			if (!tile) return;
+			if (tile->state == DX12::Tile::State::Ready || tile->state == DX12::Tile::State::ReadyPartial)
+				(active ? activeLoaded : predictiveLoaded)++;
+			chargedBytes += tile->bytes;
+			missing += tile->missingShapes.size();
+			for (const auto& shape : tile->shapes) {
+				if (!shape) continue;
+				++placements;
+				if (uniqueGeometry.insert(shape->GeometryKey()).second)
+					uniqueGeometryBytes += uint64_t(shape->Positions().size()) * sizeof(float3) + uint64_t(shape->Indices().size()) * sizeof(uint32_t);
+				if (shape->shading) {
+					++shaded;
+					if (uniqueShading.insert(shape->shading.get()).second)
+						uniqueShadingBytes += shape->shading->attributes.size() * sizeof(float);
+				}
+			}
 		};
-		if (timing) {
-			show(T("menu.dx12.resources.stats.main", "Main"), timing->active);
-			show(T("menu.dx12.resources.predictive", "Predictive"), timing->predictive);
-			show(T("menu.dx12.resources.stats.corners", "Corners"), timing->corners);
-		}
+		for (const auto& tile : snapshot->resident) visit(tile, true);
+		for (const auto& tile : snapshot->predictiveResident) visit(tile, false);
+		ImGui::Text(T("menu.dx12.resources.loaded_counts", "Loaded: active %zu / 9, predictive %zu / 16"), activeLoaded, predictiveLoaded);
+		ImGui::Text("Placements: %zu | Unique geometry: %zu | Shaded: %zu | Missing records: %zu", placements, uniqueGeometry.size(), shaded, missing);
+		ImGui::Text("CPU geometry: %.2f MiB | Shading: %.2f MiB | Charged: %.2f MiB", double(uniqueGeometryBytes)/1048576.0, double(uniqueShadingBytes)/1048576.0, double(chargedBytes)/1048576.0);
+		ImGui::Text("Runtime supplements: %zu | %.2f MiB", snapshot->runtimeShapes.size(), double(snapshot->runtimeBytes)/1048576.0);
+	}
+	ImGui::SeparatorText(T("menu.dx12.resources.stats.title", "Subcell generation stats"));
+	ImGui::TextDisabled(T("menu.dx12.resources.stats.timing_head", "Last / Avg / Worst (milliseconds)"));
+	const auto timing = GetPreparationStats();
+	const auto show = [](const char* label, const DX12::PreparationTiming& value) {
+		if (value.completed)
+			ImGui::Text("%s: %.1f / %.1f / %.1f ms", label, value.lastMs, value.AverageMs(), value.worstMs);
+		else
+			ImGui::TextDisabled("%s: -- / -- / --", label);
 	};
-
-	const float available = ImGui::GetContentRegionAvail().x;
-	if (available >= 1050.0f &&
-		ImGui::BeginTable("##SubcellStatusLayout", 3, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoPadOuterX)) {
-		ImGui::TableSetupColumn("##SubcellMap", ImGuiTableColumnFlags_WidthFixed, 290.0f);
-		ImGui::TableSetupColumn("##SubcellDetails", ImGuiTableColumnFlags_WidthFixed, 375.0f);
-		ImGui::TableSetupColumn("##SubcellGenerationStats", ImGuiTableColumnFlags_WidthStretch);
-		ImGui::TableNextRow();
-		ImGui::TableSetColumnIndex(0);
-		if (snapshot)
-			DrawSubcellMap(*snapshot);
-		ImGui::TableSetColumnIndex(1);
-		drawSubcellDetails();
-		ImGui::TableSetColumnIndex(2);
-		drawGenerationStats();
-		ImGui::EndTable();
-	} else if (available >= 680.0f &&
-			   ImGui::BeginTable("##SubcellStatusLayout", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoPadOuterX)) {
-		ImGui::TableSetupColumn("##SubcellMap", ImGuiTableColumnFlags_WidthFixed, 290.0f);
-		ImGui::TableSetupColumn("##SubcellDetails", ImGuiTableColumnFlags_WidthStretch);
-		ImGui::TableNextRow();
-		ImGui::TableSetColumnIndex(0);
-		if (snapshot)
-			DrawSubcellMap(*snapshot);
-		ImGui::TableSetColumnIndex(1);
-		drawSubcellDetails();
-		ImGui::EndTable();
-		drawGenerationStats();
-	} else {
-		if (snapshot)
-			DrawSubcellMap(*snapshot);
-		drawSubcellDetails();
-		drawGenerationStats();
+	if (timing) {
+		show(T("menu.dx12.resources.stats.main", "Main"), timing->active);
+		show(T("menu.dx12.resources.predictive", "Predictive"), timing->predictive);
+		show(T("menu.dx12.resources.stats.corners", "Corners"), timing->corners);
 	}
 }
 

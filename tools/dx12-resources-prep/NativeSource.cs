@@ -5,7 +5,7 @@ using NiflySharp.Enums;
 
 internal sealed record MaterialSource(string SourceNif, string SourceHash, string Provenance,
     int BlockIndex, uint ShaderFlags1, uint ShaderFlags2, float Alpha, bool TwoSided,
-    int ClampMode, float[]? UvTransform, string[] Textures);
+    int ClampMode, float[]? UvTransform, string[] Textures, string ShapeName);
 
 internal static class NativeSource
 {
@@ -18,7 +18,7 @@ internal static class NativeSource
         return new(path, hash, provenance, index, (uint)shader.ShaderFlags_SSPF1,
             (uint)shader.ShaderFlags_SSPF2, shader.Alpha,
             shader.ShaderFlags_SSPF2.HasFlag(SkyrimShaderPropertyFlags2.Double_Sided),
-            (int?)ReadTextureClampMode(shader) ?? -1, ReadUvTransform(shader), textures);
+            (int?)ReadTextureClampMode(shader) ?? -1, ReadUvTransform(shader), textures, shape.Name?.String ?? "");
     }
 
     private static string NormalizeTexture(string? value)

@@ -452,6 +452,7 @@ namespace DX12
 				return result;
 			}
 			auto& publication = result.publication;
+			publication.fullNative = task.fullNative;
 			constexpr uint64_t kMaximumTileBytes = 64ull * 1024 * 1024;
 			const auto geometryCount = root.at("geometryCount").get<uint32_t>();
 			if (geometryCount > root.at("shapes").size() || geometryCount > kMaxPreparedShapes)
@@ -528,6 +529,7 @@ namespace DX12
 						const auto& item = materials[index];
 						auto shading = std::const_pointer_cast<PreparedShading>(geometry.shading);
 						shading->sourceNif = item.at("sourceNif").get<std::string>();
+						shading->shapeName = item.value("shapeName", std::string{});
 						shading->sourceHash = item.at("sourceHash").get<std::string>();
 						shading->provenance = item.at("provenance").get<std::string>();
 						shading->blockIndex = item.at("blockIndex").get<int32_t>();
@@ -540,7 +542,7 @@ namespace DX12
 							shading->uvTransform = item.at("uvTransform").get<std::vector<float>>();
 						shading->textures = item.at("textures").get<std::vector<std::string>>();
 						if (!shading->sourceNif.starts_with("meshes\\") || shading->sourceNif.size() > 260 ||
-							shading->sourceHash.size() != 64 || shading->provenance.size() > 260 ||
+							shading->sourceHash.size() != 64 || shading->provenance.size() > 260 || shading->shapeName.size() > 256 ||
 							shading->blockIndex < 0 || !std::isfinite(shading->alpha) ||
 							shading->clampMode < -1 || shading->clampMode > 3 ||
 							(!shading->uvTransform.empty() && shading->uvTransform.size() != 4) ||
@@ -628,6 +630,14 @@ namespace DX12
 					throw std::invalid_argument("Companion placement failed validation");
 				// Full Native shares immutable assets; retain conservative expanded
 				// budget accounting until the grid has unique-asset accounting.
+				if (task.fullNative) {
+					shape->referencePlugin = item.value("referencePlugin", std::string{});
+					shape->referenceLocal = item.value("referenceLocal", 0u);
+					if (shape->referencePlugin.size() > 128) {
+						shape->referencePlugin.clear();
+						shape->referenceLocal = 0;
+					}
+				}
 				shape->shading = geometry.shading;
 				shape->geometry = geometry.geometry;
 				if (!shape->geometry) {

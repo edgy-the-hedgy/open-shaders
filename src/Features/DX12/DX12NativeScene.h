@@ -27,6 +27,7 @@ struct DX12NativeScene final : Feature
 	bool SupportsVR() override { return false; }
 
 	void DrawSettings() override;
+	void DrawDevStats();
 	bool WantsRenderPassHook() const override { return true; }
 	std::function<void()> OnRenderPassBegin(const RE::BSRenderPass* pass) override;
 	bool WantsPreShadowMapsHook() const override { return true; }

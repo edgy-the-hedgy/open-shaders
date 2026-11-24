@@ -71,3 +71,12 @@ No deployment metadata is persisted. Explicit CS_MO2_PROFILE/CS_MO2_MODS and
 optional CS_MO2_OVERWRITE remain supported. USVFS inheritance and portable/global
 runtime behavior require Windows testing. Archive/profile-local INI changes are
 detected, but archive enumeration continues to use the existing Mutagen resolver.
+
+## NativePBR preparation foundation
+Full Native placements carry source plugin/local form and NIF shape name. The
+compiled cache payload now checks an explicit native-model-v2 marker; previous
+entries are replaced lazily within the same bounded cache directory. Completed
+TLAS generations own preliminary NativePBR CPU recipes and per-instance binding
+metadata. All descriptor and binding indices are invalid until native residency
+exists. These recipes do not change TruePBR ownership or final color. The
+developer-only Dev tab exposes aggregate scene/resource counters and timing.
