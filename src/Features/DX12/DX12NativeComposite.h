@@ -11,6 +11,37 @@
 
 namespace DX12Native
 {
+	/** @brief Complete, linear, pre-forward opaque color with per-pixel contribution validity. */
+	struct OpaqueLightingFrame
+	{
+		std::shared_ptr<const NativeScreenProbe::MaterialFrame> material;
+		std::shared_ptr<const void> allocationOwner;
+		winrt::com_ptr<ID3D12Resource> samples;
+		winrt::com_ptr<ID3D12Fence> readyFence;
+		MaterialFrameContract::TemporalIdentity temporal;
+		MaterialFrameContract::LightingCoverage coverage = MaterialFrameContract::LightingCoverage::SelectedPointLights;
+		MaterialFrameContract::SignalEncoding encoding = MaterialFrameContract::SignalEncoding::MaterialModulated;
+		MaterialFrameContract::SamplingLayout sampling = MaterialFrameContract::SamplingLayout::Sparse;
+		uint64_t readyValue = 0;
+		uint32_t available = 0, rowPitch = 0;
+
+		bool IsCoherent(const std::shared_ptr<const NativeScreenProbe::MaterialFrame>& expected) const
+		{
+			using namespace MaterialFrameContract;
+			return expected && material == expected && allocationOwner && samples && readyFence &&
+				ValidProducerSignal(readyValue, readyFence->GetCompletedValue()) &&
+				material->IsCoherent(temporal.nativeFrame, temporal.width, temporal.height) &&
+				temporal.SameFrame(material->raster->temporal) &&
+				coverage == LightingCoverage::CompleteRasterReplacement &&
+				encoding == SignalEncoding::FinalLinearOpaqueColor && sampling == SamplingLayout::FullResolution &&
+				ValidLayout(temporal.width, temporal.height, rowPitch, kOpaqueRadianceStride) &&
+				samples->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
+				samples->GetDesc().Width >= uint64_t(rowPitch) * temporal.height &&
+				ResolveOpaqueOwner(SurfaceStatus::EvaluatedBase, material->correspondence,
+					{ available, available }, true, true, false) == OpaqueOwner::Native;
+		}
+	};
+
 	/** @brief Native Composite owns the final pre-upscale DX12 color, as in open-RT. */
 	class NativeComposite
 	{
@@ -22,7 +53,7 @@ namespace DX12Native
 			LegacyScene
 		};
 
-		enum class ColorAuthority { Raster, RasterWithShadowMask, Diagnostic };
+		enum class ColorAuthority { Raster, RasterWithShadowMask, Diagnostic, MixedOpaque };
 
 		struct Frame
 		{
@@ -49,7 +80,8 @@ namespace DX12Native
 			const std::shared_ptr<const ShadowMaskFrame>& shadow,
 			bool returnColorToDX11, bool coverageRequested = false,
 			const std::shared_ptr<const NativeScreenProbe::MaterialFrame>& material = {},
-			const std::shared_ptr<const DirectLightingFrame>& direct = {}, uint32_t lightingView = 0);
+			const std::shared_ptr<const DirectLightingFrame>& direct = {}, uint32_t lightingView = 0,
+			const std::shared_ptr<const OpaqueLightingFrame>& opaque = {});
 		bool Retain(const std::shared_ptr<const Frame>& frame, ID3D12Fence* fence, uint64_t value);
 		~NativeComposite();
 
@@ -62,6 +94,7 @@ namespace DX12Native
 			std::shared_ptr<const RasterFrame> rasterInput;
 			std::shared_ptr<const NativeScreenProbe::MaterialFrame> materialInput;
 			std::shared_ptr<const DirectLightingFrame> lightingInput;
+			std::shared_ptr<const OpaqueLightingFrame> opaqueInput;
 			std::unique_ptr<WrappedResource> shared;
 			std::unique_ptr<WrappedResource> returned;
 			winrt::com_ptr<ID3D12CommandAllocator> allocator;

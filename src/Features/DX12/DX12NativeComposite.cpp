@@ -31,12 +31,12 @@ namespace DX12Native
 			if (!file.read(shader.data(), std::streamsize(shader.size())))
 				return false;
 			CD3DX12_DESCRIPTOR_RANGE ranges[2];
-			ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0);
+			ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 5, 0);
 			ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
 			CD3DX12_ROOT_PARAMETER parameters[3];
 			parameters[0].InitAsDescriptorTable(1, &ranges[0]);
 			parameters[1].InitAsDescriptorTable(1, &ranges[1]);
-			parameters[2].InitAsConstants(48, 0);
+			parameters[2].InitAsConstants(52, 0);
 			const CD3DX12_ROOT_SIGNATURE_DESC desc(3, parameters);
 			winrt::com_ptr<ID3DBlob> serialized, errors;
 			DX::ThrowIfFailed(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, serialized.put(), errors.put()));
@@ -63,7 +63,8 @@ namespace DX12Native
 		const std::shared_ptr<const ShadowMaskFrame>& shadow,
 		bool returnColorToDX11, bool coverageRequested,
 		const std::shared_ptr<const NativeScreenProbe::MaterialFrame>& material,
-		const std::shared_ptr<const DirectLightingFrame>& direct, uint32_t lightingView)
+		const std::shared_ptr<const DirectLightingFrame>& direct, uint32_t lightingView,
+		const std::shared_ptr<const OpaqueLightingFrame>& opaque)
 	{
 		if (!device11 || !context11 || !device12 || !queue || !source || !width || !height)
 			return {};
@@ -107,9 +108,16 @@ namespace DX12Native
 			MaterialFrameContract::ValidLayout(width, height, direct->rowPitch, MaterialFrameContract::kLightingStride) &&
 			bufferMatches(direct->samples.get(), uint64_t(direct->rowPitch) * height) &&
 			fenceValid(direct->readyFence.get(), direct->readyValue);
+		const bool opaqueValid = opaque && materialValid && opaque->IsCoherent(material) &&
+			opaque->temporal.pluginFrame == frame && opaque->temporal.nativeFrame == nativeFrame &&
+			bufferMatches(opaque->samples.get(), uint64_t(opaque->rowPitch) * height);
+		if (opaque && (!opaqueValid || shadow || coverageRequested || lightingView || !returnColorToDX11))
+			return {};
 		if (lightingView > 7u) lightingView = 0u;
 		const bool canCompose = supportsShadow && transfer != Transfer::Unknown &&
-			(coverageRequested || (lightingView != 0u) || shadow) && InitializeShadow(device12);
+			(coverageRequested || (lightingView != 0u) || shadow || opaqueValid) && InitializeShadow(device12);
+		const bool applyOpaque = canCompose && opaqueValid;
+		if (opaque && !applyOpaque) return {};
 		const bool applyCoverage = canCompose && coverageRequested;
 		const bool applyDirect = canCompose && !applyCoverage && directValid && lightingView != 0u;
 		const bool missingPreview = canCompose && !applyCoverage && lightingView > 0u && lightingView < 8u && !directValid;
@@ -118,8 +126,8 @@ namespace DX12Native
 			shadow->width >= width && shadow->height >= height &&
 			raster && raster->frame == nativeFrame && raster->depth && raster->depth->resource && raster->cameraValid &&
 			fenceValid(raster->readyFence.get(), raster->readyValue) && raster->width >= width && raster->height >= height;
-		const bool applyPass = applyCoverage || applyDirect || applyShadow || missingPreview;
-		const bool useMaterial = (applyCoverage || applyDirect) && materialValid;
+		const bool applyPass = applyCoverage || applyDirect || applyShadow || missingPreview || applyOpaque;
+		const bool useMaterial = (applyCoverage || applyDirect || applyOpaque) && materialValid;
 		if (!applyPass)
 			returnColorToDX11 = false;
 
@@ -134,6 +142,7 @@ namespace DX12Native
 				value.rasterInput.reset();
 				value.materialInput.reset();
 				value.lightingInput.reset();
+				value.opaqueInput.reset();
 			}
 			if (value.untracked || (value.frame && value.frame.use_count() != 1))
 				continue;
@@ -217,7 +226,7 @@ namespace DX12Native
 				if (supportsShadow) {
 					D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
 					heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-					heapDesc.NumDescriptors = 5;
+					heapDesc.NumDescriptors = 6;
 					heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 					DX::ThrowIfFailed(device12->CreateDescriptorHeap(&heapDesc,
 						IID_PPV_ARGS(replacement->shadowDescriptors.put())));
@@ -235,6 +244,7 @@ namespace DX12Native
 			slot->rasterInput = applyShadow ? raster : nullptr;
 			slot->materialInput = useMaterial ? material : nullptr;
 			slot->lightingInput = applyDirect ? direct : nullptr;
+			slot->opaqueInput = applyOpaque ? opaque : nullptr;
 			slot->frame->valid = false;
 			slot->frame->producerFence = nullptr;
 			slot->frame->producerValue = 0;
@@ -288,6 +298,7 @@ namespace DX12Native
 				};
 				writeRawSRV(useMaterial ? material->samples.get() : nullptr);
 				writeRawSRV(applyDirect ? direct->samples.get() : nullptr);
+				writeRawSRV(applyOpaque ? opaque->samples.get() : nullptr);
 				D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
 				uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
 				uav.Format = desc.Format;
@@ -307,7 +318,7 @@ namespace DX12Native
 				slot->commands->SetComputeRootSignature(slot->shadowRoot.get());
 				auto gpu = slot->shadowDescriptors->GetGPUDescriptorHandleForHeapStart();
 				slot->commands->SetComputeRootDescriptorTable(0, gpu);
-				gpu.ptr += 4ull * step;
+				gpu.ptr += 5ull * step;
 				slot->commands->SetComputeRootDescriptorTable(1, gpu);
 				struct Constants
 				{
@@ -317,9 +328,10 @@ namespace DX12Native
 					float strength, blend;
 					DirectX::SimpleMath::Matrix inverseProjection, inverseView;
 					uint32_t spatialReconstruction, reconstructionGridSize;
-					uint32_t materialPitch, lightingPitch, applyShadow, applyDirect, previewCoverage, padding;
+					uint32_t materialPitch, lightingPitch, applyShadow, applyDirect, previewCoverage, lightingView;
+					uint32_t opaquePitch, opaqueAvailable, opaqueRequired, applyOpaque;
 				};
-				static_assert(sizeof(Constants) == 48 * sizeof(uint32_t));
+				static_assert(sizeof(Constants) == 52 * sizeof(uint32_t));
 				// Exactly the open-RT default independent shadow settings.
 				const Constants constants{ width, height, 16.0f, 2.0f,
 					transfer == Transfer::LegacyScene ? 1u : 0u,
@@ -332,8 +344,10 @@ namespace DX12Native
 					globals::features::dx12Control.GetReconstructionGridSize(),
 					useMaterial ? material->rowPitch : 0u, applyDirect ? direct->rowPitch : 0u,
 					applyShadow ? 1u : 0u, applyDirect ? 1u : 0u,
-					applyCoverage ? (useMaterial ? 1u : 2u) : 0u, missingPreview ? 9u : (applyDirect ? lightingView : 0u) };
-				slot->commands->SetComputeRoot32BitConstants(2, 48, &constants, 0);
+					applyCoverage ? (useMaterial ? 1u : 2u) : 0u, missingPreview ? 9u : (applyDirect ? lightingView : 0u),
+					applyOpaque ? opaque->rowPitch : 0u, applyOpaque ? opaque->available : 0u,
+					MaterialFrameContract::kOpaqueRequired, applyOpaque ? 1u : 0u };
+				slot->commands->SetComputeRoot32BitConstants(2, 52, &constants, 0);
 				slot->commands->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
 				const auto colorEnd = CD3DX12_RESOURCE_BARRIER::Transition(slot->frame->color.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
 				slot->commands->ResourceBarrier(1, &colorEnd);
@@ -371,6 +385,8 @@ namespace DX12Native
 				DX::ThrowIfFailed(queue->Wait(material->producerFence.get(), material->producerValue));
 			if (applyDirect)
 				DX::ThrowIfFailed(queue->Wait(direct->readyFence.get(), direct->readyValue));
+			if (applyOpaque)
+				DX::ThrowIfFailed(queue->Wait(opaque->readyFence.get(), opaque->readyValue));
 			const uint64_t done = slot->fence.Next();
 			ID3D12CommandList* lists[]{ slot->commands.get() };
 			queue->ExecuteCommandLists(1, lists);
@@ -393,7 +409,7 @@ namespace DX12Native
 			}
 			output.frame = frame;
 			output.nativeFrame = nativeFrame;
-			output.colorAuthority = (applyCoverage || applyDirect || missingPreview) ? ColorAuthority::Diagnostic :
+			output.colorAuthority = applyOpaque ? ColorAuthority::MixedOpaque : (applyCoverage || applyDirect || missingPreview) ? ColorAuthority::Diagnostic :
 				applyShadow ? ColorAuthority::RasterWithShadowMask : ColorAuthority::Raster;
 			output.width = width;
 			output.height = height;

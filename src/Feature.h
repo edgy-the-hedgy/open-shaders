@@ -386,6 +386,12 @@ public:
 	/** @brief Offers completed opaque inputs before deferred composition. */
 	virtual void OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/) {}
 
+	/** @brief Borrowed radiance inputs after SSS, before environment capture and deferred composite. */
+	virtual void OnOpaqueRadianceReady(const OpaqueRasterInputs& /*a_inputs*/) {}
+
+	/** @brief Completed opaque color, before forward and secondary drawing; inputs are callback-scoped. */
+	virtual void OnOpaqueCompositeReady(const OpaqueRasterInputs& /*a_inputs*/) {}
+
 	/** @brief Called before a post-processing implementation consumes the scene target. */
 	virtual void OnBeforePostProcessing(RE::RENDER_TARGET /*a_renderTarget*/) {}
 

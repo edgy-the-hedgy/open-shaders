@@ -435,6 +435,9 @@ void Deferred::DeferredPasses()
 	if (sss.loaded)
 		sss.DrawSSS();
 
+	if (!globals::game::isVR)
+		Feature::ForEachLoadedFeature("OnOpaqueRadianceReady", [&](Feature* feature) { feature->OnOpaqueRadianceReady(opaqueInputs); }, true);
+
 	auto& dynamicCubemaps = globals::features::dynamicCubemaps;
 	if (dynamicCubemaps.loaded)
 		dynamicCubemaps.UpdateCubemap();
@@ -444,6 +447,7 @@ void Deferred::DeferredPasses()
 	// Matches SKYLIGHTING_COVERAGE_REGISTER in DeferredCompositeCS.hlsl; t17 is SharedData::DepthTexture
 	constexpr UINT SKYLIGHTING_COVERAGE_SLOT = 18;
 
+	bool opaqueCompositeDispatched = false;
 	// Deferred Composite
 	{
 		CS_GPU_PASS("Deferred::DeferredComposite");
@@ -493,6 +497,7 @@ void Deferred::DeferredPasses()
 		if (auto* shader = interior ? GetComputeMainCompositeInterior() : GetComputeMainComposite()) {
 			context->CSSetShader(shader, nullptr, 0);
 			context->Dispatch(dispatchCount.x, dispatchCount.y, 1);
+			opaqueCompositeDispatched = true;
 		}
 
 		// Unbind mode texture SRV
@@ -522,6 +527,9 @@ void Deferred::DeferredPasses()
 
 		context->CSSetShader(nullptr, nullptr, 0);
 	}
+
+	if (opaqueCompositeDispatched && !globals::game::isVR)
+		Feature::ForEachLoadedFeature("OnOpaqueCompositeReady", [&](Feature* feature) { feature->OnOpaqueCompositeReady(opaqueInputs); }, true);
 
 	if (dynamicCubemaps.loaded)
 		dynamicCubemaps.PostDeferred();

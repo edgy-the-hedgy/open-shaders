@@ -2,6 +2,7 @@
 
 #include "../Upscaling.h"
 #include "../ReverseZ.h"
+#include "../LinearLighting.h"
 #include "DX12Control.h"
 #include "DX12Resources.h"
 #include "Globals.h"
@@ -292,6 +293,8 @@ void DX12NativeScene::PreShadowMaps()
 void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/)
 {
 	CS_GPU_PASS("DX12NativeScene::OpaqueRasterReady");
+	opaqueLighting.reset();
+	opaqueRaster.reset();
 	if (!loaded || globals::game::isVR || !globals::features::dx12Control.IsActive())
 		return;
 	if (!globals::game::graphicsState || !globals::state || globals::state->isMapMenuOpen ||
@@ -328,7 +331,7 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/
 	}
 	using DX12Native::MaterialFrameContract::TemporalIdentity;
 	TemporalIdentity temporal{ frame, globals::state->frameCount, viewportWidth, viewportHeight,
-		built ? built->scope : 0u, historyRevision, ReverseZ::IsActive(), false };
+		built ? built->scope : 0u, historyRevision, globals::features::reverseZ.IsActive(), false };
 	if (globals::state->ShouldResetHistory() || !temporal.CanReuseHistory(lastTemporal)) {
 		temporal.historyRevision = ++historyRevision;
 		temporal.resetHistory = true;
@@ -337,6 +340,7 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/
 	raster.Capture(*backend, Util::GetCurrentSceneDepthSRV(false),
 		&globals::game::frameBufferCached.nonVR, temporal);
 	const auto captured = raster.Get(frame);
+	opaqueRaster = captured;
 	const DX12Native::ShadowTraceControls controls{
 		.viewportWidth = viewportWidth,
 		.viewportHeight = viewportHeight,
@@ -354,6 +358,36 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/
 		lighting.DispatchDirect(*backend, screenProbe.GetMaterialFrame(frame), controls);
 	if (shadowTrace)
 		lighting.DispatchShadows(*backend, captured, built, frame, controls);
+}
+
+bool DX12NativeScene::PublishOpaqueLighting(std::shared_ptr<const DX12Native::OpaqueLightingFrame> frame)
+{
+	if (!frame || !opaqueRaster || !globals::features::dx12Control.UsesExclusiveMaterials() ||
+		shadowMaskEnabled || frame->material != screenProbe.GetMaterialFrame(opaqueRaster->frame) ||
+		!frame->material || frame->material->raster != opaqueRaster || !frame->IsCoherent(frame->material))
+		return false;
+	opaqueLighting = std::move(frame);
+	return true;
+}
+
+void DX12NativeScene::OnOpaqueCompositeReady(const OpaqueRasterInputs& inputs)
+{
+	CS_GPU_PASS("DX12NativeScene::OpaqueCompositeReady");
+	auto complete = std::exchange(opaqueLighting, {});
+	auto captured = std::exchange(opaqueRaster, {});
+	if (!complete || !captured || !backend || !inputs.litColor || !globals::state ||
+		!globals::game::graphicsState || globals::game::isVR || shadowMaskEnabled ||
+		!globals::features::dx12Control.UsesExclusiveMaterials() ||
+		complete->material->raster != captured ||
+		complete->temporal.nativeFrame != globals::game::graphicsState->GetFrameCount() ||
+		complete->temporal.pluginFrame != globals::state->frameCount)
+		return;
+	const auto transfer = globals::features::linearLighting.IsLinearLightingActive() ?
+		DX12Native::NativeComposite::Transfer::Linear : DX12Native::NativeComposite::Transfer::LegacyScene;
+	(void)opaqueComposite.Capture(backend->d3d11Device.get(), backend->d3d11Context.get(),
+		backend->d3d12Device.get(), backend->commandQueue.get(), inputs.litColor,
+		complete->temporal.pluginFrame, complete->temporal.nativeFrame, complete->temporal.width,
+		complete->temporal.height, transfer, {}, true, false, complete->material, {}, 0, complete);
 }
 
 std::function<void()> DX12NativeScene::OnRenderPassBegin(const RE::BSRenderPass* pass)
@@ -466,6 +500,8 @@ void DX12NativeScene::OnSceneTransitionReset(bool a_opening)
 	if (a_opening) {
 		++historyRevision;
 		lastTemporal = {};
+		opaqueRaster.reset();
+		opaqueLighting.reset();
 		lighting.Reset();
 		raster.Reset();
 		screenProbe.Reset();
@@ -478,6 +514,8 @@ void DX12NativeScene::OnRuntimeDisabled()
 {
 	++historyRevision;
 	lastTemporal = {};
+	opaqueRaster.reset();
+	opaqueLighting.reset();
 	lighting.Reset();
 	raster.Reset();
 	screenProbe.Reset();

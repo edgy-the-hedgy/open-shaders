@@ -4,6 +4,7 @@
 #include "DX12NativeRasterCapture.h"
 #include "DX12NativeRuntimeCapture.h"
 #include "DX12NativeLighting.h"
+#include "DX12NativeComposite.h"
 #include "DX12NativeScreenProbe.h"
 #include "Feature.h"
 
@@ -41,6 +42,9 @@ struct DX12NativeScene final : Feature
 	void SaveSettings(json& a_output) override;
 	void RestoreDefaultSettings() override;
 	void OnOpaqueRasterReady(const OpaqueRasterInputs& a_inputs) override;
+	void OnOpaqueCompositeReady(const OpaqueRasterInputs& a_inputs) override;
+	/** @brief Accepts one complete, same-opaque-pass lighting publication before forward drawing. */
+	bool PublishOpaqueLighting(std::shared_ptr<const DX12Native::OpaqueLightingFrame> frame);
 	/** @brief Observe CPU-backed opaque rigid geometry from SCM or normal render passes. */
 	void ObserveSCMRigidCaster(RE::BSGeometry& geometry, bool requireStability = false);
 	/** @brief SCM hands native-owned lights' static casters to RayQuery and retains movers. */
@@ -92,6 +96,9 @@ private:
 	bool CanOffloadShadowsInCurrentCell() const;
 	std::optional<GraphicsBackend> backend;
 	DX12Native::RasterCapture raster;
+	DX12Native::NativeComposite opaqueComposite;
+	std::shared_ptr<const DX12Native::RasterFrame> opaqueRaster;
+	std::shared_ptr<const DX12Native::OpaqueLightingFrame> opaqueLighting;
 	DX12Native::MaterialFrameContract::TemporalIdentity lastTemporal{};
 	uint64_t historyRevision = 1;
 	DX12Native::RuntimeGeometryCapture geometryCapture;
