@@ -1,0 +1,92 @@
+#include "NativeSurface.hlsli"
+#include "NativeIndirectBRDF.hlsli"
+
+ByteAddressBuffer Materials : register(t0);
+Texture2D<float> RasterDepth : register(t1);
+StructuredBuffer<float4> EnvironmentSH : register(t2);
+StructuredBuffer<float4> SkySH : register(t3);
+TextureCube<float4> Environment : register(t4);
+TextureCube<float4> Reflections : register(t5);
+SamplerState LinearSampler : register(s0);
+RWByteAddressBuffer Lighting : register(u0);
+
+cbuffer IndirectInputs : register(b0)
+{
+    row_major float4x4 InverseProjection;
+    row_major float4x4 InverseView;
+    uint2 Size;
+    uint MaterialPitch;
+    uint LightingPitch;
+    uint EnabledContributions;
+    uint AvailableContributions;
+    uint EnvironmentMipCount;
+    uint ReflectionMipCount;
+    float EnvironmentScale;
+    float SkyScale;
+    uint Interior;
+    uint Padding;
+};
+
+float4 UnpackHalf4(uint2 value)
+{
+    return f16tof32(uint4(value.x & 65535u, value.x >> 16, value.y & 65535u, value.y >> 16));
+}
+
+bool ViewDirection(uint2 pixel, out float3 view)
+{
+    view = 0.0;
+    float depth = RasterDepth.Load(int3(pixel, 0));
+    if (!isfinite(depth) || depth <= 0.0 || depth >= 1.0) return false;
+    float2 clip = 2.0 * (float2(pixel) + 0.5) / float2(Size) - 1.0;
+    clip.y = -clip.y;
+    float4 p = mul(InverseProjection, float4(clip, depth, 1.0));
+    if (!all(isfinite(p)) || abs(p.w) < 1e-8) return false;
+    float3 delta = mul((float3x3)InverseView, -p.xyz / p.w);
+    float lengthSquared = dot(delta, delta);
+    if (!all(isfinite(delta)) || !isfinite(lengthSquared) || lengthSquared < 1e-8) return false;
+    view = delta * rsqrt(lengthSquared);
+    return true;
+}
+
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id.xy >= Size)) return;
+    uint offset = id.y * MaterialPitch + id.x * NativeSurfaceStride;
+    uint outputOffset = id.y * LightingPitch + id.x * 16u;
+    Lighting.Store4(outputOffset, uint4(0, 0, 0, 0));
+    float4 base = UnpackHalf4(Materials.Load2(offset));
+    float4 normal = UnpackHalf4(Materials.Load2(offset + 8u));
+    float4 f0 = UnpackHalf4(Materials.Load2(offset + 16u));
+    float4 emissionAO = UnpackHalf4(Materials.Load2(offset + 24u));
+    if (!HasEvaluatedNativeBase(base.a) || !all(isfinite(base)) || !all(isfinite(normal)) ||
+        !all(isfinite(f0)) || !all(isfinite(emissionAO)) || dot(normal.xyz, normal.xyz) < 1e-8) return;
+    float3 view;
+    if (!ViewDirection(id.xy, view)) return;
+    float3 n = normalize(normal.xyz);
+    float roughness = clamp(normal.w, 0.045, 1.0);
+    NativeIndirect::LobeWeights lobes = NativeIndirect::EvaluateLobes(base.rgb, f0.rgb, f0.a,
+        roughness, emissionAO.a, saturate(dot(n, view)));
+    uint active = EnabledContributions & AvailableContributions;
+    if ((active & ContributionIndirectDiffuse) != 0u)
+    {
+        float3 radiance = NativeIndirect::EvaluateIrradiance(EnvironmentSH[0], EnvironmentSH[1], EnvironmentSH[2], n) * EnvironmentScale;
+        if (Interior == 0u)
+            radiance += NativeIndirect::EvaluateIrradiance(SkySH[0], SkySH[1], SkySH[2], n) * SkyScale;
+        Lighting.Store2(outputOffset, PackOpaqueRadiance(radiance * lobes.diffuse, ContributionIndirectDiffuse));
+    }
+    if ((active & ContributionIndirectSpecular) != 0u && EnvironmentMipCount != 0u &&
+        (Interior != 0u || ReflectionMipCount != 0u))
+    {
+        float3 r = reflect(-view, n);
+        float level = roughness * float(EnvironmentMipCount - 1u);
+        float3 env = Environment.SampleLevel(LinearSampler, r, level).rgb;
+        float3 radiance = env * EnvironmentScale;
+        if (Interior == 0u)
+        {
+            float3 full = Reflections.SampleLevel(LinearSampler, r, roughness * float(ReflectionMipCount - 1u)).rgb;
+            radiance += max(0.0, full - env) * SkyScale;
+        }
+        Lighting.Store2(outputOffset + 8u, PackOpaqueRadiance(radiance * lobes.specular, ContributionIndirectSpecular));
+    }
+}
