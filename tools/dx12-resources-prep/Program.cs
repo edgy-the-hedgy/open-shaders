@@ -157,9 +157,10 @@ static string DescribeFailure(string stage, Exception error)
 }
 
 internal sealed record TileShape(ulong Identity, Vector3[] Positions, uint[] Indices, float[] Transform,
-    byte[]? Shading = null, MaterialSource? Material = null, string ReferencePlugin = "", uint ReferenceLocal = 0);
+    byte[]? Shading = null, MaterialSource? Material = null, string ReferencePlugin = "", uint ReferenceLocal = 0, PlacementMaterial? Override = null);
 internal sealed record CompanionTelemetry(string Manager, string Profile, int PgEntries, long CacheBytes, int CacheEntries,
     ulong CacheHits, ulong CacheMisses, ulong CacheEvictions);
+internal sealed record PlacementMaterial(string TextureSet, string MaterialObject, string[]? Textures, bool Ambiguous);
 internal sealed record TileNifSource(string ReferencePlugin, uint ReferenceLocal, string NifPath);
 internal sealed record TileMissingNifShape(string ReferencePlugin, uint ReferenceLocal, string NifPath,
     int BlockIndex, string Reason);
@@ -459,10 +460,37 @@ internal static class SceneTile
                         }
                         else { admittedShading.Add(shading); shadingBytes += shading.Length; }
                     }
+                    PlacementMaterial? materialOverride = null;
+                    if (fullNative && shading != null && shape.Material is { } original)
+                    {
+                        try
+                        {
+                            var alternates = (baseRecord as IModeledGetter)?.Model?.AlternateTextures;
+                            var matches = alternates?.Where(a => a.Index == original.ShapeOrdinal &&
+                                a.Name == original.ShapeName).ToArray() ?? [];
+                            var ambiguous = matches.Length > 1 || (matches.Length == 0 &&
+                                alternates?.Any(a => a.Name == original.ShapeName || a.Index == original.ShapeOrdinal) == true);
+                            var txst = matches.Length == 1 ? matches[0].NewTexture.TryResolve(environment.LinkCache) : null;
+                            if (matches.Length == 1 && txst == null) ambiguous = true;
+                            var mato = baseRecord is IStaticGetter stat ? stat.Material.TryResolve(environment.LinkCache) : null;
+                            var matoId = mato != null && mato.Flags.HasFlag(MaterialObject.Flag.SinglePass) ? mato.EditorID ?? "" : "";
+                            string[]? paths = txst == null ? null : new[] {
+                                txst.Diffuse?.ToString(), txst.NormalOrGloss?.ToString(), txst.EnvironmentMaskOrSubsurfaceTint?.ToString(),
+                                txst.GlowOrDetailMap?.ToString(), txst.Height?.ToString(), txst.Environment?.ToString(),
+                                txst.Multilayer?.ToString(), txst.BacklightMaskOrSpecular?.ToString()
+                            }.Select(NativeSource.NormalizeTexture).ToArray();
+                            if (txst != null || matoId.Length != 0 || ambiguous)
+                                materialOverride = new(txst?.EditorID ?? "", matoId, paths, ambiguous);
+                        }
+                        catch (Exception error) when (error is not OutOfMemoryException)
+                        {
+                            materialOverride = new("", "", null, true);
+                        }
+                    }
                     shapes.Add(new TileShape(Identity(placed.FormKey.ToString(), shape.Index),
                         shape.Positions, shape.Indices, PlacementTransform.ToRows(transform),
                         shading, shading != null ? shape.Material : null,
-                        fullNative ? placed.FormKey.ModKey.ToString() : "", fullNative ? placed.FormKey.ID : 0));
+                        fullNative ? placed.FormKey.ModKey.ToString() : "", fullNative ? placed.FormKey.ID : 0, materialOverride));
                 }
             }
             catch (Exception error) when (error is not OutOfMemoryException)
@@ -583,8 +611,10 @@ internal static class SceneTile
         // supported shapes, but never certify complete shadow coverage.
         if (nif.HasUnknownBlocks)
             Skip("unknown NIF blocks (incomplete coverage)", -1);
-        foreach (var entry in nif.GetShapes())
+        var shapeOrdinal = -1;
+    foreach (var entry in nif.GetShapes())
         {
+            ++shapeOrdinal;
             nif.GetBlockIndex(entry, out var index);
             // Retain safe opaque rigid triangles even if a NIF contains unsupported shapes.
             if (entry is not BSTriShape shape || shape.HasSkinInstance || shape.IsSkinned ||
@@ -623,7 +653,7 @@ internal static class SceneTile
                 {
                     try
                     {
-                        material = NativeSource.ReadMaterial(nif, shape, path, sourceHash, provenance!, index);
+                        material = NativeSource.ReadMaterial(nif, shape, path, sourceHash, provenance!, index, shapeOrdinal);
                         if (material != null) shading = ShadingBlob.Build(shape);
                     }
                     catch (Exception error) when (error is not OutOfMemoryException)

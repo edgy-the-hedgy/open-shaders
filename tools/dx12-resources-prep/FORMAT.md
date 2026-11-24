@@ -100,3 +100,13 @@ per eligible instance. The bounded readback is aggregated after the producer
 fence and exposed in Dev. This is not screen-space evaluation or authority
 transfer: TXST/MATO and live material overrides, archive DDS, and unsupported
 formats/features still require integration. The final color remains untouched.
+
+Placement-local alternate TXST and static single-pass MATO identities are
+published separately from cached model geometry. TXST matching requires both
+shape traversal ordinal and name; ambiguous matches are not evaluated. The
+NativePBR catalog owns a separate immutable interpretation of the existing
+PBRTextureSets/PBRMaterialObjects JSON schemas. Projected MATO values are kept
+in the recipe but are not rendered by the opaque diagnostic. Cache payload v3
+includes the shape ordinal and replaces old entries lazily. Deployment and
+cache counters are cumulative for the Companion session, transferred as small
+optional metadata, and shown exclusively in the Dev tab.

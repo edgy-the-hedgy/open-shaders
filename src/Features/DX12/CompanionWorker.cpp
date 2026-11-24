@@ -655,6 +655,28 @@ namespace DX12
 					}
 				}
 				shape->shading = geometry.shading;
+				if (task.fullNative && shape->shading) {
+					try {
+						if (const auto entry = item.find("materialOverride"); entry != item.end() && !entry->is_null()) {
+							PlacementMaterial material;
+							material.textureSet = entry->at("textureSet").get<std::string>();
+							material.materialObject = entry->at("materialObject").get<std::string>();
+							material.ambiguous = entry->at("ambiguous").get<bool>();
+							if (!entry->at("textures").is_null())
+								material.textures = entry->at("textures").get<std::vector<std::string>>();
+							if (material.textureSet.size() > 256 || material.materialObject.size() > 256 ||
+								(!material.textures.empty() && material.textures.size() != 8) ||
+								!std::ranges::all_of(material.textures, [](const auto& path) {
+									return path.empty() || (path.starts_with("textures\\") && path.size() <= 260 &&
+										path.find("..") == std::string::npos);
+								}))
+								throw std::invalid_argument("Invalid per-placement material");
+							shape->materialOverride = std::move(material);
+						}
+					} catch (const std::exception&) {
+						shape->shading.reset();  // Keep valid geometry, reject malformed material.
+					}
+				}
 				shape->geometry = geometry.geometry;
 				if (!shape->geometry) {
 					shape->positions = geometry.positions;

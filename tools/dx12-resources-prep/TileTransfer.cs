@@ -24,7 +24,7 @@ internal static class TileTransfer
                 lookup.Add(key, index);
                 geometry.Add(key);
             }
-            return new { shape.Identity, Geometry = index, shape.Transform, shape.ReferencePlugin, shape.ReferenceLocal };
+            return new { shape.Identity, Geometry = index, shape.Transform, shape.ReferencePlugin, shape.ReferenceLocal, MaterialOverride = shape.Override };
         }).ToArray();
         var metadata = JsonSerializer.SerializeToUtf8Bytes(new
         {

@@ -2,6 +2,8 @@
 
 #include "DX12NativeSceneInputs.h"
 #include "Features/NativePBR/GpuMaterialAbi.h"
+#include "Features/NativePBR/MaterialCatalog.h"
+#include "Features/NativePBR/MaterialInterpretation.h"
 #include <string_view>
 
 namespace DX12Native
@@ -17,7 +19,7 @@ namespace DX12Native
 		uint32_t missing = 0, unsupported = 0;
 	};
 
-	inline std::shared_ptr<const PreparedMaterials> CompilePreparedMaterials(const SceneInputs& inputs)
+	inline std::shared_ptr<const PreparedMaterials> CompilePreparedMaterials(const SceneInputs& inputs, const std::shared_ptr<const NativePBR::MaterialCatalogSnapshot>& catalog)
 	{
 		auto result = std::make_shared<PreparedMaterials>();
 		result->sceneRevision = inputs.geometryRevision;
@@ -39,13 +41,18 @@ namespace DX12Native
 				result->bindings.push_back(missingBinding);
 				continue;
 			}
-			if (!(source->shaderFlags2 & pbrSource) || source->alpha != 1.0f ||
+			const auto& placementMaterial = instance.shape->materialOverride;
+			if ((placementMaterial && placementMaterial->ambiguous) || !(source->shaderFlags2 & pbrSource) || source->alpha != 1.0f ||
 				source->stride != 60 || source->clampMode < 0 || source->uvTransform.size() != 4) {
 				++result->unsupported;
 				result->bindings.push_back(missingBinding);
 				continue;
 			}
-			const auto key = source->sourceNif + ":" + source->sourceHash + ":" + std::to_string(source->blockIndex);
+			auto key = source->sourceNif + ":" + source->sourceHash + ":" + std::to_string(source->blockIndex);
+			if (placementMaterial) {
+				key += ":TXST:" + placementMaterial->textureSet + ":MATO:" + placementMaterial->materialObject;
+				for (const auto& path : placementMaterial->textures) key += ":" + path;
+			}
 			auto it = sources.find(key);
 			uint32_t index = 0;
 			if (it == sources.end()) {
@@ -60,9 +67,20 @@ namespace DX12Native
 				material.clampMode = uint32_t(source->clampMode);
 				std::copy_n(source->uvTransform.begin(), 4, material.uvOffsetScale[0].begin());
 				material.uvOffsetScale[1] = material.uvOffsetScale[0];
+				const auto& textures = placementMaterial && !placementMaterial->textures.empty() ? placementMaterial->textures : source->textures;
 				for (size_t role = 0; role < slots.size(); ++role)
-					if (slots[role] < source->textures.size())
-						material.texturePaths[role] = source->textures[slots[role]];
+					if (slots[role] < textures.size()) material.texturePaths[role] = textures[slots[role]];
+				if (placementMaterial && catalog) {
+					if (const auto* config = catalog->FindTextureSet(std::string_view(placementMaterial->textureSet)))
+						material = NativePBR::InterpretTextureSet(material, *config);
+					if (const auto* config = catalog->FindMaterialObject(std::string_view(placementMaterial->materialObject))) {
+						const auto projected = NativePBR::InterpretMaterialObject(placementMaterial->materialObject, *config);
+						material.projectedColor = projected.baseColorScale;
+						material.projectedRoughness = projected.roughness;
+						material.projectedSpecularLevel = projected.specularLevel;
+						material.projectedGlint = projected.glint;
+					}
+				}
 				material.texturePathsComplete = true;
 				auto recipe = NativePBR::CompileRecipe({ identity, 1, std::move(material) });
 				NativePBR::GpuTextureLocations locations{};

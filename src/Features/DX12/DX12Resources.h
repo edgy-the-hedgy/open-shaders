@@ -67,6 +67,13 @@ namespace DX12
 		uint32_t cacheEntries = 0, pgEntries = 0;
 	};
 
+	struct PlacementMaterial
+	{
+		std::string textureSet, materialObject;
+		std::vector<std::string> textures;
+		bool ambiguous = false;
+	};
+
 	struct GeometryAsset
 	{
 		std::vector<float3> positions;
@@ -85,6 +92,7 @@ namespace DX12
 		std::array<float, 12> transform{};
 		std::string sourceNif;  // Populated for runtime-supplemented shapes when NIF provenance is known.
 		std::shared_ptr<const PreparedShading> shading;  // Full Native only; no GPU ownership.
+		std::optional<PlacementMaterial> materialOverride;
 		std::shared_ptr<const GeometryAsset> geometry;  // Shared immutable rigid asset in Full Native.
 		const std::vector<float3>& Positions() const { return geometry ? geometry->positions : positions; }
 		const std::vector<uint32_t>& Indices() const { return geometry ? geometry->indices : indices; }

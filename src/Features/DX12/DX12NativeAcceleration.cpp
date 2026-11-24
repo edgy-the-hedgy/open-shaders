@@ -295,8 +295,11 @@ namespace DX12Native
 		std::vector<D3D12_RAYTRACING_INSTANCE_DESC> instances;
 		auto top = std::make_shared<TopLevel>();
 		top->inputs = target;
-		if (target->residency && target->residency->fullNative)
-			top->preparedMaterials = CompilePreparedMaterials(*target);
+		if (target->residency && target->residency->fullNative) {
+			if (!materialCatalog.GetSnapshot())
+				materialCatalog.Load();
+			top->preparedMaterials = CompilePreparedMaterials(*target, materialCatalog.GetSnapshot());
+		}
 		top->geometryRevision = targetRevision;
 		top->scope = targetScope;
 		top->producerFence = completion;

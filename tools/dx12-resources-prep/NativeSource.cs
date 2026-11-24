@@ -5,23 +5,28 @@ using NiflySharp.Enums;
 
 internal sealed record MaterialSource(string SourceNif, string SourceHash, string Provenance,
     int BlockIndex, uint ShaderFlags1, uint ShaderFlags2, float Alpha, bool TwoSided,
-    int ClampMode, float[]? UvTransform, string[] Textures, string ShapeName);
+    int ClampMode, float[]? UvTransform, string[] Textures, string ShapeName, int ShapeOrdinal);
 
 internal static class NativeSource
 {
     internal static MaterialSource? ReadMaterial(NifFile file, BSTriShape shape,
-        string path, string hash, string provenance, int index)
+        string path, string hash, string provenance, int index, int ordinal)
     {
         if (file.GetShader(shape) is not BSLightingShaderProperty shader || !float.IsFinite(shader.Alpha)) return null;
+        if (shader.Controller != null && !shader.Controller.IsEmpty() ||
+            shader.HasVertexAlpha || shader.HasGreyscaleToPaletteAlpha ||
+            (shader.ShaderFlags_SSPF1 & (SkyrimShaderPropertyFlags1.Refraction | SkyrimShaderPropertyFlags1.Temp_Refraction | SkyrimShaderPropertyFlags1.Fire_Refraction)) != 0 ||
+            (shader.ShaderFlags_SSPF2 & (SkyrimShaderPropertyFlags2.Tree_Anim | SkyrimShaderPropertyFlags2.LOD_Landscape)) != 0)
+            return null;
         var textures = file.GetBlock(shader.TextureSetRef)?.Textures?.Select(texture => NormalizeTexture(texture.Content)).ToArray() ?? [];
         if (textures.Length > 16) return null;
         return new(path, hash, provenance, index, (uint)shader.ShaderFlags_SSPF1,
             (uint)shader.ShaderFlags_SSPF2, shader.Alpha,
             shader.ShaderFlags_SSPF2.HasFlag(SkyrimShaderPropertyFlags2.Double_Sided),
-            (int?)ReadTextureClampMode(shader) ?? -1, ReadUvTransform(shader), textures, shape.Name?.String ?? "");
+            (int?)ReadTextureClampMode(shader) ?? -1, ReadUvTransform(shader), textures, shape.Name?.String ?? "", ordinal);
     }
 
-    private static string NormalizeTexture(string? value)
+    internal static string NormalizeTexture(string? value)
     {
         if (string.IsNullOrWhiteSpace(value)) return "";
         var path = value.Replace('/', '\\').ToLowerInvariant();
