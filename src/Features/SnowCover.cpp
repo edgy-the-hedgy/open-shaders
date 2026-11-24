@@ -3,7 +3,9 @@
 #include "Profiler.h"
 #include "SnowCoverMath.h"
 #include "TruePBR.h"
-#include "TruePBR/BSLightingShaderMaterialPBR.h"
+#include "Materials/SharedMaterialHooks.h"
+#include "RE/B/BSLightingShaderMaterialBase.h"
+#include "RE/B/BSLightingShaderProperty.h"
 #include "Utils/D3D.h"
 #include "Utils/DevBenchUx.h"
 #include "Utils/FileSystem.h"
@@ -104,7 +106,7 @@ RE::BSEventNotifyControl SnowCover::ProcessEvent(const RE::TESCellFullyLoadedEve
 void SnowCover::UpdateLandscapeGrid()
 {
 	auto& grid = perFrame.landscapeGrid;
-	const auto exterior = globals::features::truePBR.loaded ? Util::GetExteriorGrid() : std::nullopt;
+	const auto exterior = SharedMaterialHooks::UsesLegacyNifMarkers() && globals::features::truePBR.loaded ? Util::GetExteriorGrid() : std::nullopt;
 	if (!exterior) {
 		grid = {};
 		return;
@@ -777,8 +779,16 @@ bool SnowCover::IsSnowFree(const RE::BSRenderPass* pass, uint32_t flags) const
 	if (!tree && (flags & static_cast<uint32_t>(State::ExtraShaderDescriptors::NoSnow)) != 0)
 		return true;
 	float displacement = 0.5f;
-	if (feature == Material::kDefault && property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kVertexLighting))
-		displacement = 0.5f * std::max(0.0f, static_cast<const BSLightingShaderMaterialPBR*>(material)->GetDisplacementScale());
+	if (feature == Material::kDefault && material->GetType() == RE::BSShaderMaterial::Type::kLighting) {
+		if (SharedMaterialHooks::UsesLegacyNifMarkers() && property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kVertexLighting)) {
+			displacement = 0.5f * std::max(0.0f, static_cast<const RE::BSLightingShaderMaterialBase*>(material)->rimLightPower);
+		} else if (!SharedMaterialHooks::UsesLegacyNifMarkers()) {
+			const auto* lighting = netimmerse_cast<const RE::BSLightingShaderProperty*>(property);
+			// Authored PBR displacement is not known to the raster snow bounds test.
+			if (lighting && SharedMaterialHooks::OriginalNativePbrFlags(lighting))
+				return false;
+		}
+	}
 	const auto& bound = pass->geometry->worldBound;
 	const float radius = std::max(bound.radius, 0.0f);
 	const auto mapMaximum = snowMap.Maximum((bound.center.x - radius) * wsettings.mapScale.x + wsettings.mapOffset.x,
