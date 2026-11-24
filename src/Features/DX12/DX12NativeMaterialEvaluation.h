@@ -279,10 +279,22 @@ namespace DX12Native
 			std::vector<NativePBR::GpuMaterialRecord> recordTable;
 			recordTable.reserve(prepared.recipes.size());
 			auto bindingTable = prepared.bindings;
-			for (const auto& recipe : prepared.recipes) {
-				NativePBR::GpuTextureLocations locations{};
+			std::vector<NativePBR::GpuTextureLocations> recipeLocations(prepared.recipes.size());
+			for (auto& locations : recipeLocations)
 				for (auto& location : locations) location = { NativePBR::kGpuMissingTexture, 0 };
-				for (size_t role = 0; role < 4; ++role) {
+			for (size_t role = 0; role < static_cast<size_t>(NativePBR::TextureRole::Count); ++role) {
+				const auto roleBit = NativePBR::TextureRoleBit(static_cast<NativePBR::TextureRole>(role));
+				for (size_t recipeIndex = 0; recipeIndex < prepared.recipes.size(); ++recipeIndex) {
+					const auto& recipe = prepared.recipes[recipeIndex];
+					auto& locations = recipeLocations[recipeIndex];
+					const auto base = NativePBR::GpuBaseRequestedTextureRoles(recipe);
+					if (!(base & roleBit)) {
+						if (!(NativePBR::GpuSpecializedTextureRoles(recipe) & roleBit)) continue;
+						bool baseReady = true;
+						for (size_t i = 0; i < locations.size(); ++i)
+							if ((base & (1u << i)) && locations[i][0] == NativePBR::kGpuMissingTexture) baseReady = false;
+						if (!baseReady || (recipe.issues & (NativePBR::InvalidSnapshot | NativePBR::InvalidTexturePath | NativePBR::MissingRequiredTextures))) continue;
+					}
 					const auto& request = recipe.textures[role];
 					const auto& path = request.canonicalPath;
 					if (path.empty() || failed.contains(path)) continue;
@@ -335,7 +347,8 @@ namespace DX12Native
 						}
 						const uint32_t pool = uint32_t(indices.size());
 						write(pool, texture.get(), false);
-						write(pool + NativePBR::kGpuTexturePoolCapacity, texture.get(), true);
+						if (DirectX::MakeSRGB(texture->format) != texture->format)
+							write(pool + NativePBR::kGpuTexturePoolCapacity, texture.get(), true);
 						result->textureBytes += texture->bytes;
 						if (texture->archiveBacked) ++result->archiveTextures;
 						result->poolTextures.push_back(texture);
@@ -353,10 +366,13 @@ namespace DX12Native
 					}
 					locations[role] = { NativePBR::GpuTextureDescriptorIndex(found->second, request.interpretation), 0 };
 				}
-				auto record = NativePBR::PackGpuMaterialRecord(recipe, locations);
+			}
+			for (size_t recipeIndex = 0; recipeIndex < prepared.recipes.size(); ++recipeIndex) {
+				const auto& recipe = prepared.recipes[recipeIndex];
+				auto record = NativePBR::PackGpuMaterialRecord(recipe, recipeLocations[recipeIndex]);
 				const uint32_t index = uint32_t(recordTable.size());
 				recordTable.push_back(record);
-				const uint32_t required = NativePBR::GpuRequestedTextureRoles(recipe) & 15u;
+				const uint32_t required = NativePBR::GpuBaseRequestedTextureRoles(recipe);
 				if ((record.controls[0] & required) == required &&
 					!(recipe.issues & (NativePBR::InvalidSnapshot | NativePBR::InvalidTexturePath | NativePBR::MissingRequiredTextures))) {
 					ready.emplace(recipe.identity, index);
