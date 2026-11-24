@@ -3,7 +3,7 @@
 #include "DX12NativeAcceleration.h"
 #include "DX12NativeRasterCapture.h"
 #include "DX12NativeRuntimeCapture.h"
-#include "DX12NativeShadowTrace.h"
+#include "DX12NativeLighting.h"
 #include "DX12NativeScreenProbe.h"
 #include "Feature.h"
 
@@ -52,9 +52,9 @@ struct DX12NativeScene final : Feature
 	void OnRuntimeDisabled() override;
 
 	/** @brief Raw full-resolution shadow output, independently fenced for Native Composite. */
-	std::shared_ptr<const DX12Native::ShadowMaskFrame> GetShadowMask(uint32_t frame) const { return shadows.Get(frame); }
+	std::shared_ptr<const DX12Native::ShadowMaskFrame> GetShadowMask(uint32_t frame) const { return lighting.GetShadowMask(frame); }
 	bool RetainShadowMask(const std::shared_ptr<const DX12Native::ShadowMaskFrame>& frame,
-		ID3D12Fence* fence, uint64_t value) { return shadows.RetainThrough(frame, fence, value); }
+		ID3D12Fence* fence, uint64_t value) { return lighting.RetainShadowMask(frame, fence, value); }
 
 	/** @brief Gets the early raster frame without waiting for GPU completion. */
 	std::shared_ptr<const DX12Native::RasterFrame> GetRasterFrame(uint32_t a_frame) const { return raster.Get(a_frame); }
@@ -77,14 +77,12 @@ private:
 	DX12Native::RasterCapture raster;
 	DX12Native::RuntimeGeometryCapture geometryCapture;
 	DX12Native::AccelerationWorker acceleration;
-	DX12Native::ShadowMaskTrace shadows;
+	DX12Native::NativeLighting lighting;
 	DX12Native::NativeScreenProbe screenProbe;
 	bool screenProbeEnabled = false;
 	bool fullResolutionMaterialProbe = false;
 	bool continuousMaterialProbe = false;
 	bool deferredNativeMaterials = false;
-	// One immutable, ordered light selection shared by SCM and the RayQuery dispatch.
-	std::atomic<std::shared_ptr<const std::vector<DX12::PreparedLight>>> shadowLights;
 	bool shadowMaskEnabled = true;
 	bool outdoorShadowOffloading = false;  // Off by default; vanilla raster shadows are unaffected.
 	bool offloadStaticShadows = true;
@@ -96,15 +94,4 @@ private:
 	float shadowReachMultiplier = 1.0f;  // Native only. Vanilla lights stay unchanged.
 	float shadowFadeRange = 0.66f;
 	float shadowFalloffCurve = 1.0f;
-	struct RuntimeLightSample
-	{
-		const RE::NiLight* source = nullptr;  // Identity of the SCM light actually observed.
-		uint32_t referenceID = 0;             // Corresponding prepared native-scene emitter.
-		DX12::PreparedLight value;
-		bool flickers = false;
-	};
-	mutable std::mutex runtimeLightMutex;
-	uint32_t runtimeLightFrame = UINT32_MAX;
-	std::vector<RuntimeLightSample> runtimeLightSamples;
-	std::unordered_map<uint32_t, DX12::PreparedLight> frozenNativeLights;
 };
