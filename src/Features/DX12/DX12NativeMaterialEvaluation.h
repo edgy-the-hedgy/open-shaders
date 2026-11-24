@@ -274,7 +274,7 @@ namespace DX12Native
 			};
 			for (uint32_t i = 0; i < NativePBR::kGpuTextureDescriptorCapacity; ++i) write(i, nullptr, false);
 			std::unordered_map<std::string, uint32_t> indices;
-			std::unordered_set<std::string> failed;
+			std::unordered_set<std::string> failed, invalidSrgb;
 			std::unordered_map<uint64_t, uint32_t> ready;
 			std::vector<NativePBR::GpuMaterialRecord> recordTable;
 			recordTable.reserve(prepared.recipes.size());
@@ -341,6 +341,15 @@ namespace DX12Native
 						result->poolTextures.push_back(texture);
 						result->textures.emplace(path, std::move(texture));
 						found = indices.emplace(path, pool).first;
+					}
+					const auto format = result->poolTextures[found->second]->format;
+					if (request.interpretation == NativePBR::TextureInterpretation::ColorSrgb && DirectX::MakeSRGB(format) == format) {
+						if (invalidSrgb.insert(path).second) {
+							++result->failedTextures;
+							++result->failureReasons["no compatible sRGB view"];
+							if (result->failedExamples.size() < 32) result->failedExamples.emplace_back(path, "no compatible sRGB view");
+						}
+						continue;
 					}
 					locations[role] = { NativePBR::GpuTextureDescriptorIndex(found->second, request.interpretation), 0 };
 				}
