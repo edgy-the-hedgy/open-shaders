@@ -43,18 +43,8 @@ namespace DX12
 			return result;
 		}
 
-		std::filesystem::path PluginsFile(bool fullNative)
+		std::filesystem::path PluginsFile()
 		{
-			if (fullNative) {
-				const DWORD profileLength = GetEnvironmentVariableW(L"CS_MO2_PROFILE", nullptr, 0);
-				if (profileLength > 1 && profileLength <= 32768) {
-					std::wstring profile(profileLength, L'\0');
-					if (GetEnvironmentVariableW(L"CS_MO2_PROFILE", profile.data(), profileLength) == profileLength - 1) {
-						profile.resize(profileLength - 1);
-						return std::filesystem::path(profile) / L"plugins.txt";
-					}
-				}
-			}
 			const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
 			if (length < 2 || length > 32768)
 				return {};
@@ -183,13 +173,13 @@ namespace DX12
 			const auto executable = std::filesystem::absolute(
 				L"Data/SKSE/Plugins/CommunityShaders/DX12Resources/bin/DX12ResourcesPrep.exe");
 			const auto data = std::filesystem::absolute(L"Data");
-			const auto plugins = PluginsFile(task.fullNative);
+			const auto plugins = PluginsFile();
 			std::error_code ec;
 			if (!std::filesystem::is_regular_file(executable, ec)) {
 				failure = "Missing DX12ResourcesPrep.exe in DX12Resources/bin (AIO installation required)";
 				return false;
 			}
-			if (!std::filesystem::is_regular_file(plugins, ec)) {
+			if (!task.fullNative && !std::filesystem::is_regular_file(plugins, ec)) {
 				failure = "Skyrim SE plugins.txt is unavailable (LocalAppData or configured MO2 profile)";
 				return false;
 			}
@@ -214,7 +204,10 @@ namespace DX12
 				{ "y", task.key.y },
 				{ "size", task.size },
 				{ "worldspace", task.worldspace },
-				{ "fullNative", task.fullNative }
+				{ "fullNative", task.fullNative },
+				{ "loadedPlugins", task.loadedPlugins },
+				{ "loadedLightPlugins", task.loadedLightPlugins },
+				{ "mo2Vfs", task.fullNative && GetModuleHandleW(L"usvfs_x64.dll") != nullptr }
 			};
 			{
 				std::ofstream stream(requestTmp, std::ios::binary | std::ios::trunc);

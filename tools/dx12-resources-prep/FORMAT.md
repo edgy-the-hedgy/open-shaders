@@ -36,7 +36,7 @@ provenance are the only sources of material-aware preparation. Other geometry
 continues to be admitted through the existing loose/BSA resolver. Vortex reads
 vortex.deployment.json. For MO2, set CS_MO2_PROFILE and CS_MO2_MODS (and optionally
 CS_MO2_OVERWRITE) in Skyrim's inherited environment; the game and Companion must
-see the effective USVFS Data view. Explicit profile support, not autodetection.
+see the effective USVFS Data view. Automatic profile discovery is described below; explicit overrides remain supported.
 
 The Full Native cache stores only verified compiled model products keyed by NIF
 SHA-256, with Brotli compression, integrity checks, 512 MiB / 8192 entry limits
@@ -50,3 +50,24 @@ receiver and shares a BLAS for instances referencing the same resident asset.
 Weak interning does not pin residency. Existing expanded byte accounting stays
 conservative. Lightweight modes keep their existing placed-vector ownership.
 The explicit MO2 profile also supplies its plugins.txt to the Companion.
+
+## Automatic mod manager resolution
+
+Full Native selects a deployment context before initializing Mutagen. The host
+supplies the runtime full-plugin and light-plugin index sequences. The profile's
+active set and each sequence must match; the profile supplies interleaving.
+MO2 discovery checks explicit directory overrides, CS_MO2_INI, portable INIs
+beside running ModOrganizer.exe instances, and global instance INIs under
+LocalAppData. It validates game path, profile order and the physical PG diff
+winner against the effective virtual Data bytes. Ambiguity fails closed.
+When the game has no observed usvfs_x64.dll module and Vortex deployment exists,
+Vortex is preferred (explicit MO2 overrides still take precedence). A running
+MO2 process alone is not evidence that this game was launched through MO2.
+MO2 file provenance uses enabled mods in descending priority, with overwrite
+first. The existing CRC checks remain; untracked PG duplicates must match their
+physical winner's bytes. Configuration stamps are checked before every tile;
+changes require restarting Skyrim, not reinterpreting the running load order.
+No deployment metadata is persisted. Explicit CS_MO2_PROFILE/CS_MO2_MODS and
+optional CS_MO2_OVERWRITE remain supported. USVFS inheritance and portable/global
+runtime behavior require Windows testing. Archive/profile-local INI changes are
+detected, but archive enumeration continues to use the existing Mutagen resolver.

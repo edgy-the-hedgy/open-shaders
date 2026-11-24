@@ -12,49 +12,21 @@ internal sealed class FullNativeContext
     private const int MaxDecodedBytes = 96 * 1024 * 1024;
     private readonly string root;
     private readonly Dictionary<string, uint> pg = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, string> vortex = new(StringComparer.OrdinalIgnoreCase);
+    private readonly DeploymentContext deployment;
     private readonly string? pgMod;
-    private readonly string? mo2Mods;
-    private readonly string[] mo2Order = [];
-    private readonly string? mo2Overwrite;
     private readonly JsonSerializerOptions json = new() { IncludeFields = true };
     private long cacheBytes;
     private int cacheEntries;
 
-    internal FullNativeContext(string data)
+    internal FullNativeContext(string data, DeploymentContext deployment)
     {
         using (var diff = JsonDocument.Parse(File.ReadAllText(Path.Combine(data, "ParallaxGen_Diff.json"))))
             foreach (var item in diff.RootElement.EnumerateObject())
                 if (item.Value.TryGetProperty("crc32patched", out var crc) && crc.TryGetUInt32(out var expected))
                     pg[item.Name.Replace('/', '\\')] = expected;
 
-        // MO2 can be explicitly selected by passing its active profile and mods
-        // directories in the environment inherited by Skyrim (and USVFS).
-        var profile = Environment.GetEnvironmentVariable("CS_MO2_PROFILE");
-        var configuredMods = Environment.GetEnvironmentVariable("CS_MO2_MODS");
-        if (!string.IsNullOrWhiteSpace(profile) != !string.IsNullOrWhiteSpace(configuredMods))
-            throw new InvalidDataException("MO2 requires both CS_MO2_PROFILE and CS_MO2_MODS");
-        mo2Mods = string.IsNullOrWhiteSpace(configuredMods) ? null : configuredMods;
-        mo2Overwrite = Environment.GetEnvironmentVariable("CS_MO2_OVERWRITE");
-        if (!string.IsNullOrWhiteSpace(profile) && !string.IsNullOrWhiteSpace(mo2Mods))
-        {
-            mo2Order = File.ReadLines(Path.Combine(profile, "modlist.txt"))
-                .Where(line => line.StartsWith('+')).Select(line => line[1..].Trim())
-                .Where(name => name.Length > 0 && name.IndexOfAny(Path.GetInvalidFileNameChars()) < 0 && name is not "." and not "..")
-                .ToArray(); // MO2 modlist is highest priority first.
-            pgMod = Winner("ParallaxGen_Diff.json");
-        }
-        else
-        {
-            using var deployment = JsonDocument.Parse(File.ReadAllText(Path.Combine(data, "vortex.deployment.json")));
-            foreach (var entry in deployment.RootElement.GetProperty("files").EnumerateArray())
-            {
-                var path = entry.GetProperty("relPath").GetString();
-                var source = entry.GetProperty("source").GetString();
-                if (path != null && source != null) vortex[path.Replace('/', '\\')] = source;
-            }
-            vortex.TryGetValue("ParallaxGen_Diff.json", out pgMod);
-        }
+        this.deployment = deployment;
+        pgMod = deployment.Winner("ParallaxGen_Diff.json")?.Origin;
 
         root = Path.Combine(data, "SKSE", "Plugins", "CommunityShaders", "DX12-cache", "full-native-v1");
         try
@@ -68,25 +40,19 @@ internal sealed class FullNativeContext
         catch (UnauthorizedAccessException) { }
     }
 
-    private string? Winner(string path)
-    {
-        if (mo2Mods == null) return vortex.GetValueOrDefault(path);
-        if (!string.IsNullOrWhiteSpace(mo2Overwrite) && File.Exists(Path.Combine(mo2Overwrite, path))) return "MO2:overwrite";
-        foreach (var mod in mo2Order)
-            if (File.Exists(Path.Combine(mo2Mods, mod, path))) return "MO2:" + mod;
-        return null;
-    }
-
     internal (string? Hash, string? Provenance) Verify(string path, string filename, bool loose)
     {
         if (!loose || new FileInfo(filename).Length > 16L * 1024 * 1024) return (null, null);
-        var winner = Winner(path);
+        var resolved = deployment.Winner(path);
+        var winner = resolved?.Origin;
         var tracked = pg.TryGetValue(path, out var expected);
         var generated = path.StartsWith("meshes\\_pgpatcher_dups\\", StringComparison.OrdinalIgnoreCase) &&
             pgMod != null && winner != null && string.Equals(winner, pgMod, StringComparison.OrdinalIgnoreCase);
         if (!tracked && !generated) return (null, null);
         var bytes = File.ReadAllBytes(filename);
         if (tracked && Crc32(bytes) != expected) return (null, null);
+        if (!tracked && generated && resolved?.PhysicalPath is { } physical &&
+            !DeploymentContext.SameBytes(physical, bytes)) return (null, null);
         return (Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),
             (winner ?? "PG:crc-verified")[..Math.Min((winner ?? "PG:crc-verified").Length, 260)]);
     }

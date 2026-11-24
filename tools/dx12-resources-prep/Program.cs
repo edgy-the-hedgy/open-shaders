@@ -56,14 +56,17 @@ static async Task<int> ServeAsync(string[] arguments)
         var data = Path.GetFullPath(arguments[1]);
         var plugins = Path.GetFullPath(arguments[2]);
         var sessionRoot = Path.GetFullPath(arguments[3]);
-        if (!File.Exists(plugins) || !Directory.Exists(sessionRoot) ||
+        if (!Directory.Exists(sessionRoot) ||
             !File.Exists(Path.Combine(data, "Skyrim.esm"))) return 2;
         var requestFile = Path.Combine(sessionRoot, "request.json");
         var replyFile = Path.Combine(sessionRoot, "reply.tile");
         var replyTemp = Path.Combine(sessionRoot, "reply.tmp");
         var options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
-        var (prepare, owner) = SceneTile.OpenSession(data, plugins);
-        using (owner)
+        Func<FormKey, long, long, int, bool, string, bool, TileResult>? prepare = null;
+        IDisposable? owner = null;
+        DeploymentContext? deployment = null;
+        bool? sessionProfile = null;
+        try
         {
             while (true)
             {
@@ -89,6 +92,21 @@ static async Task<int> ServeAsync(string[] arguments)
                         Math.Abs(x) > 1_000_000 || Math.Abs(y) > 1_000_000 ||
                         !File.Exists(Path.Combine(data, scope.ModKey.ToString())))
                         throw new InvalidDataException("Invalid companion scope");
+                    if (sessionProfile.HasValue && sessionProfile.Value != fullNative)
+                        throw new InvalidDataException("Companion profile changed; restart its session");
+                    if (prepare == null)
+                    {
+                        if (fullNative)
+                        {
+                            var loaded = root.GetProperty("loadedPlugins").Deserialize<string[]>() ?? [];
+                            var light = root.GetProperty("loadedLightPlugins").Deserialize<string[]>() ?? [];
+                            var mo2Vfs = root.TryGetProperty("mo2Vfs", out var vfs) && vfs.GetBoolean();
+                            deployment = DeploymentContext.Discover(data, plugins, loaded, light, mo2Vfs);
+                        }
+                        (prepare, owner) = SceneTile.OpenSession(data, deployment?.PluginsPath ?? plugins, deployment);
+                        sessionProfile = fullNative;
+                    }
+                    deployment?.VerifyUnchanged();
                     result = prepare(scope, x, y, size, worldspace, sessionRoot, fullNative);
                 }
                 catch (Exception error) when (error is not OutOfMemoryException)
@@ -102,6 +120,7 @@ static async Task<int> ServeAsync(string[] arguments)
                 File.Move(replyTemp, replyFile, true);
             }
         }
+        finally { owner?.Dispose(); }
     }
     catch (Exception error) when (error is not OutOfMemoryException)
     {
@@ -172,15 +191,16 @@ internal static class SceneTile
     }
 
     internal static (Func<FormKey, long, long, int, bool, string, bool, TileResult> Run, IDisposable Owner)
-        OpenSession(string data, string pluginsPath)
+        OpenSession(string data, string pluginsPath, DeploymentContext? deployment = null)
     {
         var official = new[] { "Skyrim.esm", "Update.esm", "Dawnguard.esm", "HearthFires.esm", "Dragonborn.esm" };
         var ccc = Path.Combine(Path.GetDirectoryName(data)!, "Skyrim.ccc");
         var club = File.Exists(ccc) ? File.ReadLines(ccc).Select(line => line.Trim()).Where(line => line.Length != 0) : [];
         var implicitPlugins = official.Concat(club).Where(name => File.Exists(Path.Combine(data, name)))
             .Select(name => ModKey.FromFileName(name));
-        var order = implicitPlugins.Concat(PluginListings.LoadOrderListingsFromPath(pluginsPath, GameRelease.SkyrimSE, data)
-            .Where(entry => entry.Enabled).Select(entry => entry.ModKey)).Distinct().ToArray();
+        var order = deployment?.OrderedPlugins.Select(ModKey.FromFileName).ToArray() ??
+            implicitPlugins.Concat(PluginListings.LoadOrderListingsFromPath(pluginsPath, GameRelease.SkyrimSE, data)
+                .Where(entry => entry.Enabled).Select(entry => entry.ModKey)).Distinct().ToArray();
         var environment = GameEnvironment.Typical.Builder<ISkyrimMod, ISkyrimModGetter>(GameRelease.SkyrimSE)
             .WithTargetDataFolder(data).WithLoadOrder(order).Build();
         var archives = new Lazy<IArchiveReader[]>(() => Archive.GetApplicableArchivePaths(GameRelease.SkyrimSE, data)
@@ -201,7 +221,7 @@ internal static class SceneTile
         TileResult Run(FormKey scope, long tileX, long tileY, int size, bool isWorldspace, string scratch, bool fullNative)
         {
         // Never initialize the persistent cache or PG resolver for a lightweight request.
-        var full = fullNative ? (native ??= new FullNativeContext(data)) : null;
+        var full = fullNative ? (native ??= new FullNativeContext(data, deployment ?? throw new InvalidDataException("Missing Full Native deployment context"))) : null;
         // Last override wins. No mesh processing occurs outside the requested
         // scope; for exterior tiles even candidates are bounded by a halo.
         // A 9x9 placement window contains the complete candidate origin halo
