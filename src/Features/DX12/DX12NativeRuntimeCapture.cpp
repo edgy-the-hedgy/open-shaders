@@ -13,6 +13,7 @@
 #include <string_view>
 #include <DirectXPackedVector.h>
 #include "RE/B/BSLightingShaderMaterialBase.h"
+#include "RE/B/BSLightingShaderProperty.h"
 #include "RE/B/BSTextureSet.h"
 #include "RE/N/NiFloatsExtraData.h"
 #include "Features/NativePBR/NativePBRCompiler.h"

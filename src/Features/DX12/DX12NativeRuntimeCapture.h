@@ -29,7 +29,7 @@ namespace DX12Native
 		bool requiresStability = false;  // Render-pass-only shapes must be stationary for several frames.
 		bool fullNative = false, alphaTest = false;
 		uint8_t alphaThreshold = 0, alphaFunction = 0;
-		const RE::BSShaderProperty* shadingProperty = nullptr;  // Borrowed only during Observe.
+		const RE::BSLightingShaderProperty* shadingProperty = nullptr;  // Borrowed only during Observe.
 		uint32_t uvOffset = UINT32_MAX, normalOffset = UINT32_MAX, tangentOffset = UINT32_MAX, colorOffset = UINT32_MAX;
 		uint64_t objectIdentity = 0;     // Per-session BSGeometry identity independent of NIF shape names.
 	};
