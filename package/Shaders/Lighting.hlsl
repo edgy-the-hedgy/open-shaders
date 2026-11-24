@@ -1287,6 +1287,22 @@ bool UseSkylightingShadowVisibility()
 
 FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 {
+#	if defined(NATIVE_PBR_INPUT) && defined(DEFERRED) && !defined(SKINNED) && !defined(MODELSPACENORMALS) && !defined(LANDSCAPE)
+	PS_OUTPUT psout = (PS_OUTPUT)0;
+	uint eyeIndex = Stereo::GetEyeIndexPS(input.Position, VPOSOffset);
+	float3 normalWS = normalize(float3(input.TBN0.z, input.TBN1.z, input.TBN2.z));
+	if (!frontFace) normalWS = -normalWS;
+	float3 normalVS = normalize(FrameBuffer::WorldToView(normalWS, false, eyeIndex));
+	psout.Diffuse.w = 1.0;
+	psout.MotionVectors = float4(MotionBlur::GetSSMotionVector(input.WorldPosition, input.PreviousWorldPosition, eyeIndex), 0.0, 1.0);
+	psout.NormalGlossiness = float4(GBuffer::EncodeNormal(normalVS), 0.0, 1.0);
+	psout.Albedo.w = 1.0;
+	psout.Specular.w = 1.0;
+	psout.Reflectance.w = 1.0;
+	psout.Masks.w = 1.0;
+	psout.Masks2.w = 1.0;
+	return psout;
+#	else
 	PS_OUTPUT psout;
 	uint eyeIndex = Stereo::GetEyeIndexPS(input.Position, VPOSOffset);
 
@@ -4428,6 +4444,7 @@ FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFro
 #	endif
 
 	return psout;
+#	endif  // NATIVE_PBR_INPUT
 }
 
 #endif  // PSHADER

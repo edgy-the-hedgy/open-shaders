@@ -12,6 +12,7 @@
 #include "Feature.h"
 #include "Globals.h"
 #include "Menu.h"
+#include "Materials/SharedMaterialHooks.h"
 #include "Menu/BackgroundBlur.h"
 #include "ShaderCache.h"
 #include "State.h"
@@ -240,6 +241,14 @@ bool Hooks::BSShader_BeginTechnique::thunk(RE::BSShader* shader, uint32_t vertex
 
 	NormalizeLegacyUtilityDescriptors(*shader, state->modifiedVertexDescriptor, state->modifiedPixelDescriptor);
 	state->ModifyShaderLookup(*shader, state->modifiedVertexDescriptor, state->modifiedPixelDescriptor);
+	constexpr auto nativeInput = static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::NativePbrInput);
+	if (shader->shaderType.get() == RE::BSShader::Type::Lighting && (state->modifiedPixelDescriptor & nativeInput)) {
+		if (skipPixelShader || !shaderCache->IsEnabled() || !state->ShaderEnabled(RE::BSShader::Type::Lighting) ||
+			!shaderCache->GetVertexShader(*shader, state->modifiedVertexDescriptor) ||
+			!shaderCache->GetPixelShader(*shader, state->modifiedPixelDescriptor))
+			state->modifiedPixelDescriptor &= ~nativeInput;
+	}
+	SharedMaterialHooks::StripNativeRasterRoute(shader->shaderType.get(), vertexDescriptor, pixelDescriptor);
 
 	// Only check against non-shader bits
 	state->permutationData.PixelShaderDescriptor = Util::ShaderDescriptor::UploadedPixelDescriptor(state->permutationData.PixelShaderDescriptor, state->modifiedPixelDescriptor, State::GetRuntimePixelBits(*shader));

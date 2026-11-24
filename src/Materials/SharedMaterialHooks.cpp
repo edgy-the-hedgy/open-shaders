@@ -1,4 +1,5 @@
 #include "SharedMaterialHooks.h"
+#include "NativeRasterPolicy.h"
 #include "Features/InteriorSun.h"
 #include "Features/NativePBR/MaterialCatalog.h"
 #include "ShaderCache.h"
@@ -210,6 +211,49 @@ namespace
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
+	bool EligibleNativeRaster(const RE::BSLightingShaderProperty* property, RE::BSGeometry* geometry)
+	{
+		using F = RE::BSShaderProperty::EShaderPropertyFlag;
+		const auto original = SharedMaterialHooks::OriginalNativePbrFlags(property);
+		if (!original || !geometry || !geometry->AsTriShape() || geometry->AsDynamicTriShape() ||
+			!HasBasePbrTextures(property) || property->alpha != 1.0f ||
+			property->flags.any(F::kProjectedUV, F::kVertexAlpha, F::kRefraction, F::kTempRefraction,
+				F::kTreeAnim, F::kLODLandscape, F::kMultiTextureLandscape, F::kFace, F::kHairTint)) return false;
+		constexpr uint64_t specialized = static_cast<uint64_t>(F::kMultiLayerParallax) | static_cast<uint64_t>(F::kBackLighting) |
+			static_cast<uint64_t>(F::kSoftLighting) | static_cast<uint64_t>(F::kRimLighting) |
+			static_cast<uint64_t>(F::kAnisotropicLighting) | static_cast<uint64_t>(F::kEffectLighting) | static_cast<uint64_t>(F::kFitSlope);
+		if (*original & specialized) return false;
+		const auto* material = static_cast<const RE::BSLightingShaderMaterialBase*>(property->material);
+		const auto& runtime = geometry->GetGeometryRuntimeData();
+		using V = RE::BSGraphics::Vertex;
+		if (material->materialAlpha != 1.0f || runtime.skinInstance || runtime.alphaProperty ||
+			!runtime.vertexDesc.HasFlag(V::VF_UV) || !runtime.vertexDesc.HasFlag(V::VF_NORMAL) ||
+			!runtime.vertexDesc.HasFlag(V::VF_TANGENT)) return false;
+		for (auto* node = static_cast<RE::NiAVObject*>(geometry); node; node = node->parent) {
+			if (const auto* owner = node->GetUserData())
+				return !owner->IsDynamicForm() && !owner->IsActor();
+		}
+		return false;
+	}
+
+	void RouteNativeRasterPasses(RE::BSLightingShaderProperty* property, RE::BSGeometry* geometry,
+		RE::BSShaderProperty::RenderPassArray* passes)
+	{
+		if (!globals::features::dx12Control.UsesNativeRasterInputs()) return;
+		const bool eligible = EligibleNativeRaster(property, geometry);
+		using Flags = SIE::ShaderCache::LightingShaderFlags;
+		constexpr uint32_t incompatible = uint32_t(Flags::Skinned) | uint32_t(Flags::ModelSpaceNormals) |
+			uint32_t(Flags::ProjectedUV) | uint32_t(Flags::WorldMap) | uint32_t(Flags::DoAlphaTest) |
+			uint32_t(Flags::AdditionalAlphaMask) | uint32_t(Flags::FurShells) | uint32_t(Flags::FurShellsDepth);
+		constexpr uint32_t start = 0x4800002D;
+		for (auto* pass = passes->head; pass; pass = pass->next) {
+			if (!pass->shader || pass->shader->shaderType != RE::BSShader::Type::Lighting) continue;
+			uint32_t descriptor = pass->passEnum - start;
+			descriptor = NativeRasterPolicy::RoutePass(descriptor, eligible, incompatible);
+			pass->passEnum = descriptor + start;
+		}
+	}
+
 	struct LightingRenderPasses
 	{
 		static RE::BSShaderProperty::RenderPassArray* thunk(RE::BSLightingShaderProperty* property,
@@ -219,6 +263,7 @@ namespace
 			if (passes) {
 				globals::features::truePBR.RewriteLightingRenderPasses(property, passes);
 				globals::features::interiorSun.RewriteLightingRenderPasses(passes);
+				RouteNativeRasterPasses(property, geometry, passes);
 			}
 			return passes;
 		}
@@ -281,19 +326,27 @@ std::string SharedMaterialHooks::ResolveTextureSetEditorID(RE::BSTextureSet* tex
 		it->second.editorId : std::string{};
 }
 
-void SharedMaterialHooks::NormalizeRasterDescriptors(RE::BSShader::Type type, uint32_t& vertex, uint32_t& pixel)
+void SharedMaterialHooks::NormalizeRasterDescriptors(RE::BSShader::Type type, uint32_t& vertex, uint32_t& pixel, bool deferred)
 {
 	if (!globals::features::dx12Control.UsesExclusiveMaterials()) return;
 	using Cache = SIE::ShaderCache;
+	static_assert(uint32_t(Cache::LightingShaderFlags::TruePbr) == NativeRasterPolicy::kRouteBit);
+	static_assert(uint32_t(Cache::LightingShaderFlags::NativePbrInput) == NativeRasterPolicy::kInputBit);
 	if (type == RE::BSShader::Type::Lighting) {
-		const auto flag = static_cast<uint32_t>(Cache::LightingShaderFlags::TruePbr);
-		vertex &= ~flag;
-		pixel &= ~flag;
+		vertex &= ~(NativeRasterPolicy::kRouteBit | NativeRasterPolicy::kInputBit);
+		pixel = NativeRasterPolicy::NormalizePixel(pixel, globals::features::dx12Control.UsesNativeRasterInputs(), deferred);
 	} else if (type == RE::BSShader::Type::Utility) {
 		const auto flag = static_cast<uint32_t>(Cache::UtilityShaderFlags::TruePbr);
 		vertex &= ~flag;
 		pixel &= ~flag;
 	}
+}
+
+void SharedMaterialHooks::StripNativeRasterRoute(RE::BSShader::Type type, uint32_t& vertex, uint32_t& pixel)
+{
+	if (type != RE::BSShader::Type::Lighting || !globals::features::dx12Control.UsesNativeRasterInputs()) return;
+	vertex &= ~(NativeRasterPolicy::kRouteBit | NativeRasterPolicy::kInputBit);
+	pixel &= ~(NativeRasterPolicy::kRouteBit | NativeRasterPolicy::kInputBit);
 }
 
 std::optional<std::array<float, 3>> SharedMaterialHooks::ProjectedColorScale(const RE::TESForm* form)

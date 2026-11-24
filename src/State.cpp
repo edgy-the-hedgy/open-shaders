@@ -2235,8 +2235,8 @@ void State::SetupResources()
 
 void State::ModifyShaderLookup(const RE::BSShader& a_shader, uint& a_vertexDescriptor, uint& a_pixelDescriptor, bool a_forceDeferred)
 {
-	SharedMaterialHooks::NormalizeRasterDescriptors(a_shader.shaderType.get(), a_vertexDescriptor, a_pixelDescriptor);
 	auto deferred = globals::deferred;
+	SharedMaterialHooks::NormalizeRasterDescriptors(a_shader.shaderType.get(), a_vertexDescriptor, a_pixelDescriptor, deferred->deferredPass && !a_forceDeferred);
 
 	if (a_shader.shaderType.get() != RE::BSShader::Type::Utility && a_shader.shaderType.get() != RE::BSShader::Type::ImageSpace) {
 		switch (a_shader.shaderType.get()) {

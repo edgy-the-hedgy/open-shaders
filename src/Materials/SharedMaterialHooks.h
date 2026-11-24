@@ -16,7 +16,9 @@ namespace SharedMaterialHooks
 	/** @brief Resolves a live texture set only when its record association is unambiguous. */
 	std::string ResolveTextureSetEditorID(RE::BSTextureSet* textures);
 	/** @brief Prevents exclusive mode from selecting legacy PBR shader permutations. */
-	void NormalizeRasterDescriptors(RE::BSShader::Type type, uint32_t& vertex, uint32_t& pixel);
+	void NormalizeRasterDescriptors(RE::BSShader::Type type, uint32_t& vertex, uint32_t& pixel, bool deferred = false);
+	/** @brief Removes the native route marker before engine shader lookup. */
+	void StripNativeRasterRoute(RE::BSShader::Type type, uint32_t& vertex, uint32_t& pixel);
 	/** @brief Obtains projected color metadata from the selected material authority. */
 	std::optional<std::array<float, 3>> ProjectedColorScale(const RE::TESForm* form);
 	struct LegacyResidencyStats { size_t meshes = 0, landscapes = 0; bool glints = false; };

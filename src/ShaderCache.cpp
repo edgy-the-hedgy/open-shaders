@@ -760,14 +760,17 @@ namespace SIE
 
 		static void GetLightingShaderDefines(uint32_t descriptor, std::span<D3D_SHADER_MACRO> defines)
 		{
-			RE::GetLightingShaderDefines(descriptor, reinterpret_cast<REX::W32::D3D_SHADER_MACRO*>(defines.data()));
+			constexpr auto nativeInput = static_cast<uint32_t>(ShaderCache::LightingShaderFlags::NativePbrInput);
+			RE::GetLightingShaderDefines(descriptor & ~nativeInput, reinterpret_cast<REX::W32::D3D_SHADER_MACRO*>(defines.data()));
 
 			size_t lastIndex = std::ranges::find_if(defines, [](const D3D_SHADER_MACRO& macro) { return macro.Name == nullptr; }) - defines.begin();
 
 			if (descriptor & static_cast<uint32_t>(ShaderCache::LightingShaderFlags::Deferred)) {
 				defines[lastIndex++] = { "DEFERRED", nullptr };
 			}
-			if ((descriptor & static_cast<uint32_t>(ShaderCache::LightingShaderFlags::TruePbr)) != 0) {
+			if ((descriptor & nativeInput) != 0 && (descriptor & static_cast<uint32_t>(ShaderCache::LightingShaderFlags::Deferred)) != 0) {
+				defines[lastIndex++] = { "NATIVE_PBR_INPUT", nullptr };
+			} else if ((descriptor & static_cast<uint32_t>(ShaderCache::LightingShaderFlags::TruePbr)) != 0) {
 				defines[lastIndex++] = { "TRUE_PBR", nullptr };
 				if ((descriptor & static_cast<uint32_t>(ShaderCache::LightingShaderFlags::AnisoLighting)) != 0) {
 					defines[lastIndex++] = { "GLINT", nullptr };

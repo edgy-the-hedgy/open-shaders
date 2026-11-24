@@ -1069,6 +1069,7 @@ namespace SIE
 			TruePbr = 1 << 3,
 			Deferred = 1 << 4,
 			LandscapeSeams = 1 << 5,
+			NativePbrInput = 1 << 6,
 			// Community Shaders end
 			Specular = 1 << 9,
 			SoftLighting = 1 << 10,

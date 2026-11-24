@@ -101,6 +101,13 @@ void DX12Control::DrawSettings()
 					T("menu.dx12.materials.exclusive_inactive", "TruePBR remains the raster material authority."));
 				if (settings.ExclusiveMaterials != UsesExclusiveMaterials())
 					ImGui::TextWrapped("%s", T("menu.dx12.materials.exclusive_restart", "Restart Skyrim to apply the material authority setting."));
+				ImGui::BeginDisabled(!settings.ExclusiveMaterials);
+				ImGui::Checkbox(T("menu.dx12.materials.input_only", "Raster inputs only (experimental, restart required)"), &settings.RasterInputsOnly);
+				ImGui::EndDisabled();
+				if (settings.RasterInputsOnly || UsesNativeRasterInputs())
+					ImGui::TextWrapped("%s", T("menu.dx12.materials.input_only_warning", "Testing only: eligible opaque draws omit raster lighting. Native material integration is not complete."));
+				if (settings.RasterInputsOnly != UsesNativeRasterInputs())
+					ImGui::TextWrapped("%s", T("menu.dx12.materials.input_only_restart", "Restart Skyrim to apply raster input mode."));
 				globals::features::dx12NativeScene.DrawMaterialSettings(developer);
 			} else
 				ImGui::TextWrapped("%s", T("menu.dx12.mode.restart_native", "Restart Skyrim to enter or leave Full Native mode."));
@@ -129,6 +136,7 @@ void DX12Control::LoadSettings(json& input)
 	settings.Enabled = input.value("Enabled", false);
 	settings.Mode = std::clamp(input.value("Mode", 0), 0, 2);
 	settings.ExclusiveMaterials = input.value("ExclusiveMaterials", false);
+	settings.RasterInputsOnly = input.value("RasterInputsOnly", false);
 	settings.SpatialReconstruction = input.value("SpatialReconstruction", true);
 	const uint32_t requestedGrid = std::clamp(input.value("ReconstructionGridSize", 5u), 3u, 9u);
 	settings.ReconstructionGridSize = requestedGrid - ((requestedGrid & 1u) == 0u ? 1u : 0u);
@@ -141,6 +149,7 @@ void DX12Control::LoadSettings(json& input)
 	shadowBlend.store(settings.ShadowBlend, std::memory_order_relaxed);
 	if (!bootCaptured) {
 		exclusiveMaterials.store(settings.Enabled && settings.Mode == 2 && settings.ExclusiveMaterials && !globals::game::isVR, std::memory_order_release);
+		rasterInputsOnly.store(settings.RasterInputsOnly && UsesExclusiveMaterials(), std::memory_order_release);
 		bootActive.store(settings.Enabled, std::memory_order_release);
 		bootCaptured = true;
 	}
@@ -148,7 +157,7 @@ void DX12Control::LoadSettings(json& input)
 
 void DX12Control::SaveSettings(json& output)
 {
-	output = { { "Enabled", settings.Enabled }, { "Mode", settings.Mode }, { "ExclusiveMaterials", settings.ExclusiveMaterials },
+	output = { { "Enabled", settings.Enabled }, { "Mode", settings.Mode }, { "ExclusiveMaterials", settings.ExclusiveMaterials }, { "RasterInputsOnly", settings.RasterInputsOnly },
 		{ "SpatialReconstruction", settings.SpatialReconstruction },
 		{ "ReconstructionGridSize", settings.ReconstructionGridSize },
 		{ "ShadowStrength", settings.ShadowStrength }, { "ShadowBlend", settings.ShadowBlend } };
