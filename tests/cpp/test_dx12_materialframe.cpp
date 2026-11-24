@@ -143,3 +143,22 @@ TEST_CASE("Fence retirement never treats an untracked submission as complete", "
 	REQUIRE(FenceRetired(UINT64_MAX, UINT64_MAX));
 	REQUIRE_FALSE(ValidProducerSignal(5, UINT64_MAX));
 }
+
+TEST_CASE("Red-only native texture bindings require height-only data", "[dx12][materials]")
+{
+	using namespace NativePBR;
+	Recipe recipe{};
+	for (size_t i = 0; i < static_cast<size_t>(TextureRole::Count); ++i) {
+		const auto role = static_cast<TextureRole>(i);
+		REQUIRE(GpuAcceptsRedOnlyTexture(recipe, role) == (role == TextureRole::Displacement));
+	}
+	recipe.parameters.pbrFlags = uint32_t(PBRFlags::Fuzz);
+	recipe.parameters.fuzzWeight = 1.0f;
+	recipe.parameters.fuzzRoughnessTexture = true;
+	REQUIRE_FALSE(GpuAcceptsRedOnlyTexture(recipe, TextureRole::Displacement));
+	recipe.parameters.fuzzRoughnessTexture = false;
+	REQUIRE(GpuAcceptsRedOnlyTexture(recipe, TextureRole::Displacement));
+	recipe.parameters.fuzzRoughnessTexture = true;
+	recipe.parameters.fuzzWeight = 0.0f;
+	REQUIRE(GpuAcceptsRedOnlyTexture(recipe, TextureRole::Displacement));
+}
