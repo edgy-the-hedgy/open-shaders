@@ -52,11 +52,9 @@ void DX12NativeScene::DrawSettings()
 	ImGui::SliderFloat(T("menu.dx12.scene.shadow_falloff_curve", "Shadow falloff curve"), &shadowFalloffCurve, 0.0f, 2.5f, "%.2f");
 }
 
-void DX12NativeScene::DrawLightingSettings(bool developer)
+void DX12NativeScene::DrawLightingSettings(bool /*developer*/)
 {
-	ImGui::TextWrapped("%s", T("menu.dx12.lighting.raster_active", "Raster lighting remains active. DX12 indirect lighting is experimental."));
-	if (developer && ImGui::Checkbox(T("menu.dx12.lighting.deferred_materials", "Use DX12 materials in deferred indirect lighting (experimental)"), &deferredNativeMaterials))
-		screenProbe.Reset();
+	ImGui::TextWrapped("%s", T("menu.dx12.lighting.raster_active", "Raster lighting remains active."));
 }
 
 void DX12NativeScene::DrawMaterialSettings(bool developer)
@@ -79,7 +77,6 @@ void DX12NativeScene::DrawDevStats()
 		const auto& stats = screenProbe.stats;
 		if (stats.sampled) ImGui::Text("Material output: %u x %u | %.2f MiB GPU | 20-byte counter readback", stats.width, stats.height, double(stats.outputBytes)/1048576.0);
 		if (stats.submittedFrames) ImGui::Text("Material submissions: %u | Reused output allocations: %u", stats.submittedFrames, stats.reusedAllocations);
-		if (deferredNativeMaterials) ImGui::Text("Deferred indirect frames: %u | Bridge: %.2f MiB", stats.deferredFrames, double(stats.deferredBytes)/1048576.0);
 		if (stats.sampled) ImGui::Text("Screen frame %u | Evaluated %u / %u | No hit %u | Depth mismatch %u | Missing material %u | Invalid depth %u",
 			stats.frame, stats.evaluated, stats.sampled, stats.noHit, stats.depthMismatch, stats.missingMaterial, stats.invalid);
 		if (screenProbeEnabled && !screenProbe.failure.empty()) ImGui::TextWrapped("%s", screenProbe.failure.c_str());
@@ -250,10 +247,10 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/
 			static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
 		return;
 	screenProbe.Poll();
-	const bool fullProbe = globals::features::dx12Control.IsFullNativeMode() && (screenProbeEnabled || deferredNativeMaterials);
+	const bool fullProbe = globals::features::dx12Control.IsFullNativeMode() && screenProbeEnabled;
 	const bool shadowTrace = shadowMaskEnabled && globals::features::dx12Control.IsShadowOffloadMode() && CanOffloadShadowsInCurrentCell();
 	if (!fullProbe && !shadowTrace) return;
-	if (fullProbe && !screenProbe.WantsFrame(globals::game::graphicsState->GetFrameCount(), continuousMaterialProbe || deferredNativeMaterials)) return;
+	if (fullProbe && !screenProbe.WantsFrame(globals::game::graphicsState->GetFrameCount(), continuousMaterialProbe)) return;
 
 	if (!backend) {
 		std::string reason;
@@ -274,7 +271,7 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/
 		auto built = acceleration.GetScene();
 		const auto grid = globals::features::dx12Resources.GetGrid();
 		if (!grid || !built || built->scope != grid->requested.front().scope) built.reset();
-		screenProbe.Dispatch(*backend, raster.Get(frame), std::move(built), frame, viewportWidth, viewportHeight, fullResolutionMaterialProbe || deferredNativeMaterials, continuousMaterialProbe || deferredNativeMaterials, deferredNativeMaterials);
+		screenProbe.Dispatch(*backend, raster.Get(frame), std::move(built), frame, viewportWidth, viewportHeight, fullResolutionMaterialProbe, continuousMaterialProbe);
 		return;
 	}
 	{
