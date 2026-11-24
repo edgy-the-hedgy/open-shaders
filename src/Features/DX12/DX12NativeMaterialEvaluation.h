@@ -163,6 +163,12 @@ namespace DX12Native
 			const auto& loaded = image.GetMetadata();
 			if (loaded.width != meta.width || loaded.height != meta.height || loaded.format != meta.format ||
 				loaded.mipLevels != meta.mipLevels || loaded.arraySize != 1) return reject("DDS changed during read");
+			if (loose) {
+				const auto currentSize = std::filesystem::file_size(path, ec);
+				if (ec || currentSize != size) return reject("DDS changed during read");
+				const auto currentStamp = std::filesystem::last_write_time(path, ec);
+				if (ec || currentStamp != stamp) return reject("DDS changed during read");
+			}
 			for (uint32_t mip = 0; mip < uint32_t(meta.mipLevels); ++mip) {
 				const auto* sub = image.GetImage(mip, 0, 0);
 				if (!sub || sub->rowPitch < rowBytes[mip] || sub->slicePitch < sub->rowPitch * rows[mip])
@@ -290,20 +296,20 @@ namespace DX12Native
 						std::shared_ptr<const Texture> texture;
 						if (const auto old = previous.find(path); old != previous.end() && old->second && old->second->resource) {
 							winrt::com_ptr<ID3D12Device> textureDevice;
-							if (FAILED(old->second->resource->GetDevice(IID_PPV_ARGS(textureDevice.put()))) || textureDevice.get() != device)
-								throw std::runtime_error("Native texture cache device mismatch");
-							std::error_code ec;
-							const auto filename = Util::JoinRelativePath("Data", std::filesystem::path(path));
-							const auto size = std::filesystem::file_size(filename, ec);
-							if (old->second->archiveBacked && ec == std::errc::no_such_file_or_directory) {
-								// Archive load order is immutable during the running game session.
-								texture = old->second;
-								++result->reusedTextures;
-							} else if (!old->second->archiveBacked && !ec && size == old->second->fileBytes) {
-								const auto stamp = std::filesystem::last_write_time(filename, ec);
-								if (!ec && stamp == old->second->fileStamp) {
+							if (SUCCEEDED(old->second->resource->GetDevice(IID_PPV_ARGS(textureDevice.put()))) && textureDevice.get() == device) {
+								std::error_code ec;
+								const auto filename = Util::JoinRelativePath("Data", std::filesystem::path(path));
+								const auto size = std::filesystem::file_size(filename, ec);
+								if (old->second->archiveBacked && ec == std::errc::no_such_file_or_directory) {
+									// Archive load order is immutable during the running game session.
 									texture = old->second;
 									++result->reusedTextures;
+								} else if (!old->second->archiveBacked && !ec && size == old->second->fileBytes) {
+									const auto stamp = std::filesystem::last_write_time(filename, ec);
+									if (!ec && stamp == old->second->fileStamp) {
+										texture = old->second;
+										++result->reusedTextures;
+									}
 								}
 							}
 						}
