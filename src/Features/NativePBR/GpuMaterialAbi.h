@@ -77,6 +77,14 @@ namespace NativePBR
 			(recipe.textures[static_cast<size_t>(TextureRole::Emission)].canonicalPath.empty() ? 0u : TextureRoleBit(TextureRole::Emission));
 	}
 
+	/** @brief A red-only height map cannot supply the packed green fuzz roughness channel. */
+	inline bool GpuAcceptsRedOnlyTexture(const Recipe& recipe, TextureRole role)
+	{
+		return role == TextureRole::Displacement &&
+			!((ActiveOpaquePbrFlags(recipe) & uint32_t(PBRFlags::Fuzz)) != 0 &&
+				recipe.parameters.fuzzRoughnessTexture);
+	}
+
 	/** @brief Authored feature resources admitted after base surfaces for native integration. */
 	inline uint32_t GpuSpecializedTextureRoles(const Recipe& recipe)
 	{
