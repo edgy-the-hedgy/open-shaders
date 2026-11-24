@@ -122,6 +122,12 @@ cbuffer ProbeCamera : register(b1)
     uint2 GridSize;
 };
 RWByteAddressBuffer ProbeCounts : register(u1);
+RWByteAddressBuffer ScreenOutput : register(u2);
+uint2 PackHalf4(float4 value)
+{
+    uint4 bits=f32tof16(clamp(value,-65504.0,65504.0));
+    return uint2(bits.x | (bits.y<<16),bits.z | (bits.w<<16));
+}
 groupshared uint GroupCounts[5];
 
 Sample EvaluateScreen(uint2 pixelIndex)
@@ -174,7 +180,9 @@ void screenMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
     GroupMemoryBarrierWithGroupSync();
     if (all(id.xy < GridSize)) {
         Sample result=EvaluateScreen(id.xy);
-        Output[id.y*GridSize.x+id.x]=result;
+        uint offset=(id.y*GridSize.x+id.x)*32u;
+        ScreenOutput.Store4(offset,uint4(PackHalf4(result.color),PackHalf4(result.normal)));
+        ScreenOutput.Store4(offset+16u,uint4(PackHalf4(result.f0),PackHalf4(result.emission)));
         uint category = result.color.a==1.0 ? 0 : result.color.a==-1.0 ? 1 :
             result.color.a==-2.0 ? 2 : result.color.a==-3.0 ? 3 : 4;
         InterlockedAdd(GroupCounts[category],1u);

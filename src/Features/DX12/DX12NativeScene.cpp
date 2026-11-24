@@ -58,8 +58,10 @@ void DX12NativeScene::DrawDevStats()
 	if (globals::features::dx12Control.IsFullNativeMode()) {
 		if (ImGui::Checkbox("Visible-pixel material probe", &screenProbeEnabled) && !screenProbeEnabled) screenProbe.Reset();
 		if (screenProbeEnabled && ImGui::Checkbox("Full native render resolution", &fullResolutionMaterialProbe)) screenProbe.Reset();
+		if (screenProbeEnabled && ImGui::Checkbox("Continuous material probe (when GPU slot is free)", &continuousMaterialProbe)) screenProbe.Reset();
 		const auto& stats = screenProbe.stats;
 		if (stats.sampled) ImGui::Text("Material output: %u x %u | %.2f MiB GPU | 20-byte counter readback", stats.width, stats.height, double(stats.outputBytes)/1048576.0);
+		if (stats.submittedFrames) ImGui::Text("Material submissions: %u | Reused output allocations: %u", stats.submittedFrames, stats.reusedAllocations);
 		if (stats.sampled) ImGui::Text("Screen frame %u | Evaluated %u / %u | No hit %u | Depth mismatch %u | Missing material %u | Invalid depth %u",
 			stats.frame, stats.evaluated, stats.sampled, stats.noHit, stats.depthMismatch, stats.missingMaterial, stats.invalid);
 		if (screenProbeEnabled && !screenProbe.failure.empty()) ImGui::TextWrapped("%s", screenProbe.failure.c_str());
@@ -314,7 +316,7 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/
 	const bool fullProbe = globals::features::dx12Control.IsFullNativeMode() && screenProbeEnabled;
 	const bool shadowTrace = shadowMaskEnabled && globals::features::dx12Control.IsShadowOffloadMode() && CanOffloadShadowsInCurrentCell();
 	if (!fullProbe && !shadowTrace) return;
-	if (fullProbe && !screenProbe.WantsFrame(globals::game::graphicsState->GetFrameCount())) return;
+	if (fullProbe && !screenProbe.WantsFrame(globals::game::graphicsState->GetFrameCount(), continuousMaterialProbe)) return;
 
 	if (!backend) {
 		std::string reason;
@@ -335,7 +337,7 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/
 		auto built = acceleration.GetScene();
 		const auto grid = globals::features::dx12Resources.GetGrid();
 		if (!grid || !built || built->scope != grid->requested.front().scope) built.reset();
-		screenProbe.Dispatch(*backend, raster.Get(frame), std::move(built), frame, viewportWidth, viewportHeight, fullResolutionMaterialProbe);
+		screenProbe.Dispatch(*backend, raster.Get(frame), std::move(built), frame, viewportWidth, viewportHeight, fullResolutionMaterialProbe, continuousMaterialProbe);
 		return;
 	}
 	{

@@ -137,7 +137,7 @@ retains the immutable scene and raster inputs, with a small readback for counts.
 It does not write to the final image or transfer material authority.
 
 The opt-in visible-pixel Dev probe supports native render resolution. It keeps
-64-byte material records per pixel on the GPU, in an immutable frame carrying
+32-byte packed binary16 material records per pixel on the GPU, in an immutable frame carrying
 scope, geometry revision, dimensions and the signaled producer fence. Consumers must wait on that fence. The
 shader aggregates five status counters in thread groups; CPU readback is only
 20 bytes, regardless of resolution. Allocation is checked against current
@@ -150,3 +150,5 @@ its previous geometry published until a valid replacement arrives; stalled
 index advancement is bounded to three failures. Once the catalog finishes,
 resident tiles built against older index progress are refreshed. This is not a
 claim of complete coverage for unsupported records or failed model bounds.
+
+The screen probe uses 16 half-float components (color/status, world normal/roughness, F0/metallic, emission/AO), unlike the triangle probe's 64-byte FP32 output. The optional continuous Dev mode attempts one submission per frame when the previous producer retires; it does not block the CPU. Output allocation reuse requires producer completion and release of every prior MaterialFrame owner. Consumers must retain the complete MaterialFrame through their own fence, not just its raw buffer.

@@ -74,6 +74,7 @@ private:
 	DX12Native::NativeScreenProbe screenProbe;
 	bool screenProbeEnabled = false;
 	bool fullResolutionMaterialProbe = false;
+	bool continuousMaterialProbe = false;
 	// One immutable, ordered light selection shared by SCM and the RayQuery dispatch.
 	std::atomic<std::shared_ptr<const std::vector<DX12::PreparedLight>>> shadowLights;
 	bool shadowMaskEnabled = true;

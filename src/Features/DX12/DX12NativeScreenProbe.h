@@ -14,6 +14,7 @@ namespace DX12Native
 		using Eval = NativeMaterialEvaluation;
 		static constexpr uint32_t kWidth = 64, kHeight = 36;
 		static constexpr uint64_t kCounterBytes = 5 * sizeof(uint32_t);
+		static constexpr uint32_t kSampleStride = 32; // 16 IEEE binary16 values, same component ordering as Eval::Sample.
 		struct Camera
 		{
 			Matrix projectionInverse, viewInverse;
@@ -21,11 +22,18 @@ namespace DX12Native
 			uint32_t width, height, gridWidth, gridHeight;
 		};
 		static_assert(sizeof(Camera) <= 256);
+		struct OutputAllocation
+		{
+			winrt::com_ptr<ID3D12Resource> resource;
+			uint64_t bytes=0;
+			bool shaderReadable=false;
+		};
 		struct Submission
 		{
 			std::shared_ptr<const RasterFrame> raster;
 			std::shared_ptr<const TopLevel> scene;
-			winrt::com_ptr<ID3D12Resource> output, readback, camera, counters, counterInit;
+			std::shared_ptr<OutputAllocation> output;
+			winrt::com_ptr<ID3D12Resource> readback, camera, counters, counterInit;
 			winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
 			winrt::com_ptr<ID3D12RootSignature> root;
 			winrt::com_ptr<ID3D12PipelineState> pipeline;
@@ -38,6 +46,7 @@ namespace DX12Native
 			bool discard = false;
 		};
 		std::shared_ptr<Submission> pending;
+		std::shared_ptr<OutputAllocation> reusableOutput;
 		GraphicsBackend owner;
 		winrt::com_ptr<ID3D12RootSignature> root;
 		winrt::com_ptr<ID3D12PipelineState> pipeline;
@@ -68,7 +77,7 @@ namespace DX12Native
 			parameters[1].InitAsShaderResourceView(1);
 			parameters[2].InitAsShaderResourceView(2);
 			parameters[3].InitAsDescriptorTable(1, &range);
-			parameters[4].InitAsUnorderedAccessView(0);
+			parameters[4].InitAsUnorderedAccessView(2);
 			parameters[5].InitAsConstants(1, 0);
 			parameters[6].InitAsShaderResourceView(516);
 			parameters[7].InitAsConstantBufferView(1);
@@ -98,10 +107,14 @@ namespace DX12Native
 			uint32_t frame=0, sampled=0, evaluated=0, noHit=0, depthMismatch=0, missingMaterial=0, invalid=0;
 			uint32_t width=0, height=0;
 			uint64_t outputBytes=0;
+			uint32_t reusedAllocations=0, submittedFrames=0;
 		};
 		struct MaterialFrame
 		{
+			// Keep the entire MaterialFrame alive until consumer fence retirement.
+			std::shared_ptr<const OutputAllocation> allocation;
 			winrt::com_ptr<ID3D12Resource> samples;
+			uint32_t sampleStride=kSampleStride;
 			winrt::com_ptr<ID3D12Fence> producerFence;
 			uint64_t producerValue=0, geometryRevision=0;
 			uint32_t frame=0, width=0, height=0, scope=0;
@@ -114,6 +127,7 @@ namespace DX12Native
 		std::shared_ptr<const MaterialFrame> published;
 	public:
 		Stats stats{};
+		uint32_t reusedAllocations=0, submittedFrames=0;
 		std::string failure;
 
 		~NativeScreenProbe()
@@ -125,20 +139,22 @@ namespace DX12Native
 		}
 		void Reset()
 		{
-			stats={}; failure.clear(); lastFrame=UINT32_MAX; published.reset();
+			stats={}; failure.clear(); lastFrame=UINT32_MAX; published.reset(); reusableOutput.reset();
+			reusedAllocations=0; submittedFrames=0;
 			if (pending) pending->discard=true;
 		}
 		void Poll()
 		{
 			if (!pending) return;
 			const auto done=pending->fence->GetCompletedValue();
-			if (done==UINT64_MAX) { pending.reset(); failure="Screen probe device removed"; return; }
+			if (done==UINT64_MAX) { pending.reset(); published.reset(); reusableOutput.reset(); failure="Screen probe device removed"; return; }
 			if (pending->value==UINT64_MAX || done<pending->value) return;
 			if (!pending->discard) {
 				Stats result{};
 				result.frame=pending->frame; result.width=pending->width; result.height=pending->height;
 				result.sampled=result.width*result.height;
-				result.outputBytes=uint64_t(result.sampled)*sizeof(Eval::Sample);
+				result.outputBytes=uint64_t(result.sampled)*kSampleStride;
+				result.reusedAllocations=reusedAllocations; result.submittedFrames=submittedFrames;
 				const D3D12_RANGE read{0,SIZE_T(kCounterBytes)};
 				void* mapped=nullptr;
 				if (SUCCEEDED(pending->readback->Map(0,&read,&mapped))) {
@@ -154,14 +170,14 @@ namespace DX12Native
 			}
 			pending.reset();
 		}
-		bool WantsFrame(uint32_t frame) const
+		bool WantsFrame(uint32_t frame,bool continuous=false) const
 		{
-			return !pending && (lastFrame==UINT32_MAX || frame-lastFrame>=30u);
+			return !pending && (lastFrame==UINT32_MAX || frame-lastFrame>=(continuous?1u:30u));
 		}
 		void Dispatch(const GraphicsBackend& backend,std::shared_ptr<const RasterFrame> raster,
-			std::shared_ptr<const TopLevel> scene,uint32_t frame,uint32_t width,uint32_t height,bool fullResolution)
+			std::shared_ptr<const TopLevel> scene,uint32_t frame,uint32_t width,uint32_t height,bool fullResolution,bool continuous=false)
 		{
-			if (!WantsFrame(frame)) return;
+			if (!WantsFrame(frame,continuous)) return;
 			lastFrame=frame;
 			// Keep at most one completed frame and one pending submission; an external
 			// consumer may retain its own immutable output reference.
@@ -185,16 +201,25 @@ namespace DX12Native
 				const uint32_t gridWidth=fullResolution?width:kWidth, gridHeight=fullResolution?height:kHeight;
 				const uint64_t count=uint64_t(gridWidth)*gridHeight;
 				if (count>UINT32_MAX || gridWidth>16384 || gridHeight>16384) { failure="Screen material dimensions unsupported"; return; }
-				const uint64_t bytes=count*sizeof(Eval::Sample);
+				const uint64_t bytes=count*kSampleStride;
+				// ByteAddressBuffer uses 32-bit byte offsets.
+				if (bytes>UINT32_MAX) { failure="Screen material byte address range exceeded"; return; }
+				const bool reuse=reusableOutput && reusableOutput.use_count()==1 && reusableOutput->bytes==bytes;
+				if (!reuse) reusableOutput.reset();
 				const auto desc=CD3DX12_RESOURCE_DESC::Buffer(bytes,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-				const auto allocation=device->GetResourceAllocationInfo(0,1,&desc).SizeInBytes;
+				const auto allocation=reuse?0:device->GetResourceAllocationInfo(0,1,&desc).SizeInBytes;
 				if (!available.dxgiAvailable || allocation==UINT64_MAX || allocation>available.effectiveBytes || available.effectiveBytes-allocation<6ull*65536) {
 					failure="Screen probe deferred by DXGI budget"; return;
 				}
 				auto slot=std::make_shared<Submission>();
 				slot->raster=std::move(raster); slot->scene=std::move(scene);
 				slot->frame=frame; slot->width=gridWidth; slot->height=gridHeight; slot->fullResolution=fullResolution; slot->fence=fence; slot->root=root; slot->pipeline=pipeline;
-				slot->output=Eval::Buffer(device,bytes,D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+				if (!reuse) {
+					reusableOutput=std::make_shared<OutputAllocation>();
+					reusableOutput->resource=Eval::Buffer(device,bytes,D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+					reusableOutput->bytes=bytes;
+				}
+				slot->output=reusableOutput;
 				slot->readback=Eval::Buffer(device,kCounterBytes,D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_STATE_COPY_DEST);
 				slot->counters=Eval::Buffer(device,kCounterBytes,D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 				slot->counterInit=Eval::Table(device,std::vector<uint32_t>(5,0));
@@ -234,7 +259,7 @@ namespace DX12Native
 				command->SetComputeRootShaderResourceView(1,evaluation.records->GetGPUVirtualAddress());
 				command->SetComputeRootShaderResourceView(2,evaluation.bindings->GetGPUVirtualAddress());
 				command->SetComputeRootDescriptorTable(3,slot->descriptors->GetGPUDescriptorHandleForHeapStart());
-				command->SetComputeRootUnorderedAccessView(4,slot->output->GetGPUVirtualAddress());
+				command->SetComputeRootUnorderedAccessView(4,slot->output->resource->GetGPUVirtualAddress());
 				command->SetComputeRoot32BitConstant(5,evaluation.instanceCount,0);
 				command->SetComputeRootShaderResourceView(6,slot->scene->acceleration->GetGPUVirtualAddress());
 				command->SetComputeRootConstantBufferView(7,slot->camera->GetGPUVirtualAddress());
@@ -245,9 +270,13 @@ namespace DX12Native
 				const auto begin=CD3DX12_RESOURCE_BARRIER::Transition(slot->raster->depth->resource.get(),
 					D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 				command->ResourceBarrier(1,&begin);
+				if (slot->output->shaderReadable) {
+					const auto outputBarrier=CD3DX12_RESOURCE_BARRIER::Transition(slot->output->resource.get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+					command->ResourceBarrier(1,&outputBarrier);
+				}
 				command->Dispatch((gridWidth+7)/8,(gridHeight+7)/8,1);
 				const std::array end{
-					CD3DX12_RESOURCE_BARRIER::Transition(slot->output.get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+					CD3DX12_RESOURCE_BARRIER::Transition(slot->output->resource.get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
 					CD3DX12_RESOURCE_BARRIER::Transition(slot->counters.get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COPY_SOURCE),
 					CD3DX12_RESOURCE_BARRIER::Transition(slot->raster->depth->resource.get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COMMON)};
 				command->ResourceBarrier(UINT(end.size()),end.data());
@@ -258,12 +287,15 @@ namespace DX12Native
 				pending=std::move(slot);
 				ID3D12CommandList* lists[]{command}; backend.commandQueue->ExecuteCommandLists(1,lists);
 				submitted=true;
+				pending->output->shaderReadable=true;
+				++submittedFrames;
+				if (reuse) ++reusedAllocations;
 				const auto value=nextValue+1;
 				Eval::Check(backend.commandQueue->Signal(fence.get(),value));
 				nextValue=value; pending->value=value;
 				if (pending->fullResolution) {
 					auto materialFrame=std::make_shared<MaterialFrame>();
-					materialFrame->samples=pending->output; materialFrame->producerFence=pending->fence;
+					materialFrame->allocation=pending->output; materialFrame->samples=pending->output->resource; materialFrame->producerFence=pending->fence;
 					materialFrame->producerValue=value; materialFrame->geometryRevision=pending->scene->geometryRevision;
 					materialFrame->frame=frame; materialFrame->scope=pending->scene->scope;
 					materialFrame->width=gridWidth; materialFrame->height=gridHeight;
