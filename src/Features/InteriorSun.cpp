@@ -82,6 +82,17 @@ void InteriorSun::PostPostLoad()
 	logger::info("[Interior Sun] Installed hooks");
 }
 
+void InteriorSun::RewriteLightingRenderPasses(RE::BSShaderProperty::RenderPassArray* passes) const
+{
+	if (!loaded || !isInteriorWithSun || !passes) return;
+	constexpr uint32_t start = 0x4800002D;
+	constexpr uint32_t flags = static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ShadowDir) |
+		static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::DefShadow);
+	for (auto* pass = passes->head; pass; pass = pass->next)
+		if (pass->shader && pass->shader->shaderType == RE::BSShader::Type::Lighting)
+			pass->passEnum = ((pass->passEnum - start) | flags) + start;
+}
+
 void InteriorSun::EarlyPrepass()
 {
 	isInteriorWithSun = IsInteriorWithSun(RE::TES::GetSingleton()->interiorCell);

@@ -4,7 +4,6 @@
 #include "TruePBR/BSLightingShaderMaterialPBRLandscape.h"
 
 #include "Features/DX12/DX12Control.h"
-#include "Features/InteriorSun.h"
 #include "Hooks.h"
 #include "I18n/I18n.h"
 #include "ShaderCache.h"
@@ -961,56 +960,42 @@ struct BSLightingShaderProperty_PostLinkObject
 	static inline REL::Relocation<decltype(thunk)> func;
 };
 
-struct BSLightingShaderProperty_GetRenderPasses
+void TruePBR::RewriteLightingRenderPasses(RE::BSLightingShaderProperty* property, RE::BSShaderProperty::RenderPassArray* renderPasses)
 {
-	static RE::BSShaderProperty::RenderPassArray* thunk(RE::BSLightingShaderProperty* property, RE::BSGeometry* geometry, std::uint32_t renderFlags, RE::BSShaderAccumulator* accumulator)
-	{
-		auto renderPasses = func(property, geometry, renderFlags, accumulator);
-		if (renderPasses == nullptr) {
-			return renderPasses;
-		}
+	if (!loaded || UsesNativeMaterialAuthority() || !renderPasses) return;
+	const bool isPbr = IsPBRShaderProperty(property);
 
-		const auto issEnabledAndInteriorWithSun = globals::features::interiorSun.loaded && globals::features::interiorSun.isInteriorWithSun;
-
-		const bool isPbr = IsPBRShaderProperty(property);
-
-		auto currentPass = renderPasses->head;
-		while (currentPass != nullptr) {
-			if (currentPass->shader->shaderType == RE::BSShader::Type::Lighting) {
-				constexpr uint32_t LightingTechniqueStart = 0x4800002D;
-				auto lightingTechnique = currentPass->passEnum - LightingTechniqueStart;
-				auto lightingFlags = lightingTechnique & ~(~0u << 24);
-				auto lightingType = static_cast<SIE::ShaderCache::LightingShaderTechniques>((lightingTechnique >> 24) & 0x3F);
-				lightingFlags &= ~(static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::TruePbr) | static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Deferred));
-				if (isPbr) {
-					lightingFlags |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::TruePbr);
-					lightingFlags &= ~static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Specular);
-					if (property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape)) {
-						auto* material = static_cast<BSLightingShaderMaterialPBRLandscape*>(property->material);
-						if (material->HasGlint()) {
-							lightingFlags |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::AnisoLighting);
-						}
-					} else {
-						auto* material = static_cast<BSLightingShaderMaterialPBR*>(property->material);
-						if (material->glintParameters.enabled || (property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kProjectedUV) && material->projectedMaterialGlintParameters.enabled)) {
-							lightingFlags |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::AnisoLighting);
-						}
+	auto currentPass = renderPasses->head;
+	while (currentPass != nullptr) {
+		if (currentPass->shader->shaderType == RE::BSShader::Type::Lighting) {
+			constexpr uint32_t LightingTechniqueStart = 0x4800002D;
+			auto lightingTechnique = currentPass->passEnum - LightingTechniqueStart;
+			auto lightingFlags = lightingTechnique & ~(~0u << 24);
+			auto lightingType = static_cast<SIE::ShaderCache::LightingShaderTechniques>((lightingTechnique >> 24) & 0x3F);
+			lightingFlags &= ~(static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::TruePbr) | static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Deferred));
+			if (isPbr) {
+				lightingFlags |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::TruePbr);
+				lightingFlags &= ~static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Specular);
+				if (property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape)) {
+					auto* material = static_cast<BSLightingShaderMaterialPBRLandscape*>(property->material);
+					if (material->HasGlint()) {
+						lightingFlags |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::AnisoLighting);
+					}
+				} else {
+					auto* material = static_cast<BSLightingShaderMaterialPBR*>(property->material);
+					if (material->glintParameters.enabled || (property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kProjectedUV) && material->projectedMaterialGlintParameters.enabled)) {
+						lightingFlags |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::AnisoLighting);
 					}
 				}
-
-				if (issEnabledAndInteriorWithSun)
-					lightingFlags |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ShadowDir) | static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::DefShadow);
-
-				lightingTechnique = (static_cast<uint32_t>(lightingType) << 24) | lightingFlags;
-				currentPass->passEnum = lightingTechnique + LightingTechniqueStart;
 			}
-			currentPass = currentPass->next;
-		}
 
-		return renderPasses;
+			lightingTechnique = (static_cast<uint32_t>(lightingType) << 24) | lightingFlags;
+			currentPass->passEnum = lightingTechnique + LightingTechniqueStart;
+		}
+		currentPass = currentPass->next;
 	}
-	static inline REL::Relocation<decltype(thunk)> func;
-};
+
+}
 
 struct BSLightingShaderProperty_GetRenderPasses_LocalMap
 {
@@ -1687,31 +1672,6 @@ TruePBR::GrassPBRConstants TruePBR::GetGrassPBRConstants(const BSLightingShaderM
 	};
 }
 
-struct TESForm_GetFormEditorID
-{
-	static const char* thunk(const RE::TESForm* form)
-	{
-		auto* singleton = &globals::features::truePBR;
-		auto it = singleton->editorIDs.find(form->GetFormID());
-		if (it == singleton->editorIDs.cend()) {
-			return "";
-		}
-		return it->second.c_str();
-	}
-	static inline REL::Relocation<decltype(thunk)> func;
-};
-
-struct TESForm_SetFormEditorID
-{
-	static bool thunk(RE::TESForm* form, const char* editorId)
-	{
-		auto* singleton = &globals::features::truePBR;
-		singleton->editorIDs[form->GetFormID()] = editorId;
-		return func(form, editorId);
-	}
-	static inline REL::Relocation<decltype(thunk)> func;
-};
-
 // Probes textureSet on a disposable PBR material; returns true if the required
 // diffuse/normal/rmaos slots populated. Caller reuses the probe for SetMaterial.
 //
@@ -2039,18 +1999,6 @@ struct PBR_BSLightingShader_SetupMaterial
 
 void TruePBR::PostPostLoad()
 {
-	logger::info("[TruePBR] Hooking TESLandTexture");
-	stl::write_vfunc<0x32, TESForm_GetFormEditorID>(RE::VTABLE_TESLandTexture[0]);
-	stl::write_vfunc<0x33, TESForm_SetFormEditorID>(RE::VTABLE_TESLandTexture[0]);
-	stl::write_vfunc<0x32, TESForm_GetFormEditorID>(RE::VTABLE_BGSTextureSet[0]);
-	stl::write_vfunc<0x33, TESForm_SetFormEditorID>(RE::VTABLE_BGSTextureSet[0]);
-	stl::write_vfunc<0x32, TESForm_GetFormEditorID>(RE::VTABLE_BGSMaterialObject[0]);
-	stl::write_vfunc<0x33, TESForm_SetFormEditorID>(RE::VTABLE_BGSMaterialObject[0]);
-	stl::write_vfunc<0x32, TESForm_GetFormEditorID>(RE::VTABLE_BGSLightingTemplate[0]);
-	stl::write_vfunc<0x33, TESForm_SetFormEditorID>(RE::VTABLE_BGSLightingTemplate[0]);
-	stl::write_vfunc<0x32, TESForm_GetFormEditorID>(RE::VTABLE_TESWeather[0]);
-	stl::write_vfunc<0x33, TESForm_SetFormEditorID>(RE::VTABLE_TESWeather[0]);
-
 	if (UsesNativeMaterialAuthority()) {
 		loaded = false;
 		logger::info("[TruePBR] Disabled for exclusive DX12 material authority");
@@ -2063,7 +2011,6 @@ void TruePBR::PostPostLoad()
 	logger::info("[TruePBR] Hooking BSLightingShaderProperty");
 	stl::write_vfunc<0x18, BSLightingShaderProperty_LoadBinary>(RE::VTABLE_BSLightingShaderProperty[0]);
 	stl::write_vfunc<0x1E, BSLightingShaderProperty_PostLinkObject>(RE::VTABLE_BSLightingShaderProperty[0]);
-	stl::write_vfunc<0x2A, BSLightingShaderProperty_GetRenderPasses>(RE::VTABLE_BSLightingShaderProperty[0]);
 	stl::write_vfunc<0x2C, BSLightingShaderProperty_GetRenderPasses_LocalMap>(RE::VTABLE_BSLightingShaderProperty[0]);
 	stl::detour_thunk<BSLightingShaderProperty_OnLoadTextureSet>(REL::RelocationID(99865, 106510));
 

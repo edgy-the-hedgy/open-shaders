@@ -7,6 +7,7 @@
 #include "Hooks.h"
 #include "I18n/I18n.h"
 #include "Menu.h"
+#include "Materials/SharedMaterialHooks.h"
 #include "Menu/ThemeManager.h"
 #include "NativeMenu/NativeMenu.h"
 #include "ShaderCache.h"
@@ -105,6 +106,7 @@ void MessageHandler(SKSE::MessagingInterface::Message* message)
 				Hooks::Install();
 				EngineFix::InstallOnPostPostLoadFixes();
 				FrameAnnotations::OnPostPostLoad();
+				SharedMaterialHooks::Install();
 
 				globals::state->flatWorldMapLoaded = GetModuleHandleW(L"FlatMapMarkersSSE.dll") != nullptr;
 				if (globals::state->flatWorldMapLoaded)
