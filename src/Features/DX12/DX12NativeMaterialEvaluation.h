@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <map>
 
 namespace DX12Native
 {
@@ -48,6 +49,8 @@ namespace DX12Native
 		uint64_t revision = 0, textureBytes = 0;
 		uint32_t instanceCount = 0, residentRecipes = 0, failedTextures = 0, reusedTextures = 0, archiveTextures = 0;
 		uint32_t evaluated = 0;
+		std::map<std::string, uint32_t> failureReasons;
+		std::vector<std::pair<std::string, std::string>> failedExamples;
 		Sample firstSample{};
 
 		static void Check(HRESULT hr)
@@ -90,46 +93,50 @@ namespace DX12Native
 		}
 
 		static std::optional<Upload> LoadTexture(ID3D12Device* device, const std::string& canonical,
-			uint64_t& remaining)
+			uint64_t& remaining, std::string& reason)
 		{
-			if (canonical.empty() || !canonical.starts_with("textures/")) return {};
+			const auto reject = [&](std::string why) -> std::optional<Upload> { reason = std::move(why); return {}; };
+			if (canonical.empty() || !canonical.starts_with("textures/")) return reject("invalid canonical path");
 			const auto path = Util::JoinRelativePath("Data", std::filesystem::path(canonical));
 			std::error_code ec;
 			const bool loose = std::filesystem::is_regular_file(path, ec);
-			if (ec && ec != std::errc::no_such_file_or_directory) return {};
+			if (ec && ec != std::errc::no_such_file_or_directory) return reject("file access");
 			uint64_t size = 0;
 			std::filesystem::file_time_type stamp{};
 			std::vector<uint8_t> archiveBytes;
 			constexpr uint64_t maxSource = 128ull * 1024 * 1024;
 			if (loose) {
 				size = std::filesystem::file_size(path, ec);
-				if (ec || !size || size > remaining || size > maxSource) return {};
+				if (ec || !size) return reject("empty or unreadable loose file");
+				if (size > remaining || size > maxSource) return reject("source budget");
 				stamp = std::filesystem::last_write_time(path, ec);
-				if (ec) return {};
+				if (ec) return reject("file timestamp");
 			} else {
 				// Use the engine's effective archive order; no extraction to disk.
 				// Each worker request owns its own stream.
 				auto asset = canonical;
 				std::ranges::replace(asset, '/', '\\');
 				RE::BSResourceNiBinaryStream stream(asset.c_str());
-				if (!stream.good() || !stream.stream) return {};
+				if (!stream.good() || !stream.stream) return reject("missing loose/archive asset");
 				size = stream.stream->totalSize;
-				if (!size || size > remaining || size > maxSource) return {};
+				if (!size) return reject("empty archive asset");
+				if (size > remaining || size > maxSource) return reject("source budget");
 				archiveBytes.resize(size_t(size));
-				if (!stream.read(archiveBytes.data(), uint32_t(size))) return {};
+				if (!stream.read(archiveBytes.data(), uint32_t(size))) return reject("archive read");
 			}
 			// Inspect header before decoding; reject non-2D and oversized input.
 			DirectX::TexMetadata meta{};
 			const auto metadataResult = loose ?
 				DirectX::GetMetadataFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NONE, meta) :
 				DirectX::GetMetadataFromDDSMemory(archiveBytes.data(), archiveBytes.size(), DirectX::DDS_FLAGS_NONE, meta);
-			if (FAILED(metadataResult) ||
+			if (FAILED(metadataResult)) return reject("invalid DDS metadata");
+			if (
 				meta.dimension != DirectX::TEX_DIMENSION_TEXTURE2D || meta.arraySize != 1 ||
 				meta.IsCubemap() || !meta.width || !meta.height || meta.width > 16384 || meta.height > 16384 ||
 				!meta.mipLevels || meta.mipLevels > 15)
-				return {};
+				return reject("unsupported DDS dimensions");
 			const auto format = DirectX::MakeLinear(meta.format);
-			if (!SupportedFormat(format)) return {};
+			if (!SupportedFormat(format)) return reject("unsupported DXGI format " + std::to_string(unsigned(format)));
 			const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(DirectX::MakeTypeless(format), meta.width,
 				uint32_t(meta.height), 1, uint16_t(meta.mipLevels));
 			const auto allocation = device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
@@ -141,19 +148,19 @@ namespace DX12Native
 			device->GetCopyableFootprints(&desc, 0, uint32_t(meta.mipLevels), 0, upload.footprints.data(),
 				rows.data(), rowBytes.data(), &stagingBytes);
 			if (allocation == UINT64_MAX || !stagingBytes || allocation > remaining || stagingBytes > remaining - allocation)
-				return {};
+				return reject("DXGI upload budget");
 			DirectX::ScratchImage image;
 			const auto decode = loose ? DirectX::LoadFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NO_LEGACY_EXPANSION, nullptr, image) :
 				DirectX::LoadFromDDSMemory(archiveBytes.data(), archiveBytes.size(), DirectX::DDS_FLAGS_NO_LEGACY_EXPANSION, nullptr, image);
 			if (FAILED(decode))
-				return {};
+				return reject("DDS decode");
 			const auto& loaded = image.GetMetadata();
 			if (loaded.width != meta.width || loaded.height != meta.height || loaded.format != meta.format ||
-				loaded.mipLevels != meta.mipLevels || loaded.arraySize != 1) return {};
+				loaded.mipLevels != meta.mipLevels || loaded.arraySize != 1) return reject("DDS changed during read");
 			for (uint32_t mip = 0; mip < uint32_t(meta.mipLevels); ++mip) {
 				const auto* sub = image.GetImage(mip, 0, 0);
 				if (!sub || sub->rowPitch < rowBytes[mip] || sub->slicePitch < sub->rowPitch * rows[mip])
-					return {};
+					return reject("invalid DDS row layout");
 			}
 			auto texture = std::make_shared<Texture>();
 			texture->format = format;
@@ -269,7 +276,11 @@ namespace DX12Native
 					if (path.empty() || failed.contains(path)) continue;
 					auto found = indices.find(path);
 					if (found == indices.end()) {
-						if (indices.size() >= NativePBR::kGpuTexturePoolCapacity) continue;
+						if (indices.size() >= NativePBR::kGpuTexturePoolCapacity) {
+							failed.insert(path); ++result->failedTextures; ++result->failureReasons["descriptor capacity"];
+							if (result->failedExamples.size() < 32) result->failedExamples.emplace_back(path, "descriptor capacity");
+							continue;
+						}
 						std::shared_ptr<const Texture> texture;
 						if (const auto old = previous.find(path); old != previous.end()) {
 							std::error_code ec;
@@ -287,20 +298,24 @@ namespace DX12Native
 								}
 							}
 						}
+						std::string reason;
 						if (!texture) {
 							// Re-query global headroom before each new allocation.
 							const auto current = budget.Query(device, 0);
 							remaining = std::min(remaining, current.effectiveBytes);
 							try {
-								if (auto upload = LoadTexture(device, path, remaining)) {
+								if (auto upload = LoadTexture(device, path, remaining, reason)) {
 									texture = upload->texture;
 									uploads.push_back(std::move(*upload));
 								}
-							} catch (const std::exception&) {}
+							} catch (const std::exception&) { reason = "GPU allocation/upload setup"; }
 						}
 						if (!texture) {
 							failed.insert(path);
 							++result->failedTextures;
+							if (reason.empty()) reason = "unknown texture failure";
+							++result->failureReasons[reason];
+							if (result->failedExamples.size() < 32) result->failedExamples.emplace_back(path, reason);
 							continue;
 						}
 						const uint32_t pool = uint32_t(indices.size());

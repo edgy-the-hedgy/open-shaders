@@ -86,6 +86,11 @@ void DX12NativeScene::DrawDevStats()
 		if (const auto& evaluation = built->materialEvaluation) {
 			ImGui::Text("Resident recipes: %u | DDS: %zu (archive %u) | Reused: %u | Failed: %u", evaluation->residentRecipes,
 				evaluation->textures.size(), evaluation->archiveTextures, evaluation->reusedTextures, evaluation->failedTextures);
+			if (ImGui::TreeNode("DDS failure details")) {
+				for (const auto& [reason, count] : evaluation->failureReasons) ImGui::Text("%s: %u", reason.c_str(), count);
+				for (const auto& [path, reason] : evaluation->failedExamples) ImGui::TextWrapped("%s: %s", reason.c_str(), path.c_str());
+				ImGui::TreePop();
+			}
 			ImGui::Text("Native DDS VRAM: %.2f MiB | Evaluated triangles: %u / %u", double(evaluation->textureBytes) / 1048576.0,
 				evaluation->evaluated, evaluation->instanceCount);
 			if (evaluation->evaluated) {

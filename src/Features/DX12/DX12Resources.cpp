@@ -618,6 +618,7 @@ void DX12Resources::DrawDevStats()
 		std::unordered_set<const DX12::PreparedShading*> uniqueShading;
 		std::unordered_set<std::string> uniqueMissing, missingReferences;
 		std::unordered_map<std::string, size_t> missingReasons;
+		std::vector<std::pair<std::string, std::string>> missingExamples;
 		const auto visit = [&](const auto& tile, bool active) {
 			if (!tile) { ++(active ? activeStates : predictiveStates)[0]; return; }
 			++(active ? activeStates : predictiveStates)[size_t(tile->state)];
@@ -628,8 +629,10 @@ void DX12Resources::DrawDevStats()
 			for (const auto& item : tile->missingShapes) {
 				const auto reference = std::format("{}:{:06X}", item.referencePlugin, item.referenceLocal);
 				missingReferences.insert(reference);
-				if (uniqueMissing.insert(std::format("{}:{}:{}", reference, item.nifPath, item.blockIndex)).second)
+				if (uniqueMissing.insert(std::format("{}:{}:{}", reference, item.nifPath, item.blockIndex)).second) {
 					++missingReasons[item.reason];
+					if (missingExamples.size() < 64) missingExamples.emplace_back(item.reason, std::format("{} | {} | block {}", reference, item.nifPath, item.blockIndex));
+				}
 			}
 			for (const auto& shape : tile->shapes) {
 				if (!shape) continue;
@@ -657,6 +660,10 @@ void DX12Resources::DrawDevStats()
 			std::vector<std::pair<std::string, size_t>> reasons(missingReasons.begin(), missingReasons.end());
 			std::ranges::sort(reasons, [](const auto& a, const auto& b) { return a.second > b.second; });
 			for (const auto& [reason, count] : reasons) ImGui::Text("%s: %zu", reason.c_str(), count);
+			if (ImGui::TreeNode("Missing descriptor examples (up to 64)")) {
+				for (const auto& [reason, detail] : missingExamples) ImGui::TextWrapped("%s: %s", reason.c_str(), detail.c_str());
+				ImGui::TreePop();
+			}
 			ImGui::TreePop();
 		}
 		size_t shadedRuntime = 0;
