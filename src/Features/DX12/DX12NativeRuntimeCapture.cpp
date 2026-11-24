@@ -1,6 +1,7 @@
 #include "DX12NativeRuntimeCapture.h"
 
 #include "Globals.h"
+#include "DX12Control.h"
 #include "Materials/SharedMaterialHooks.h"
 
 #include <algorithm>
@@ -102,6 +103,8 @@ namespace DX12Native
 			const auto liveFlags = static_cast<uint64_t>(property->flags.underlying());
 			const bool originalFlags = !SharedMaterialHooks::UsesLegacyNifMarkers();
 			const auto preserved = originalFlags ? SharedMaterialHooks::OriginalNativePbrFlags(property) : std::nullopt;
+			if (globals::features::dx12Control.UsesExclusiveMaterials() && !preserved)
+				return reject(Failure::NonPbrMarker);
 			const auto flags = preserved.value_or(liveFlags);
 			if (originalFlags ? !(flags & static_cast<uint64_t>(F::kMenuScreen)) : !property->flags.any(F::kVertexLighting))
 				return reject(Failure::NonPbrMarker);
