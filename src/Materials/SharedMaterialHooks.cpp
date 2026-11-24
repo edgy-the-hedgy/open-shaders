@@ -344,7 +344,7 @@ void SharedMaterialHooks::NormalizeRasterDescriptors(RE::BSShader::Type type, ui
 
 void SharedMaterialHooks::StripNativeRasterRoute(RE::BSShader::Type type, uint32_t& vertex, uint32_t& pixel)
 {
-	if (type != RE::BSShader::Type::Lighting || !globals::features::dx12Control.UsesNativeRasterInputs()) return;
+	if (type != RE::BSShader::Type::Lighting || !globals::features::dx12Control.UsesExclusiveMaterials()) return;
 	vertex &= ~(NativeRasterPolicy::kRouteBit | NativeRasterPolicy::kInputBit);
 	pixel &= ~(NativeRasterPolicy::kRouteBit | NativeRasterPolicy::kInputBit);
 }
