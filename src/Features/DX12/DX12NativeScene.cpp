@@ -67,6 +67,10 @@ void DX12NativeScene::DrawDevStats()
 	if (const auto& materials = built->preparedMaterials) {
 		ImGui::Text("Preliminary recipes: %zu | Missing sources: %u | Unsupported: %u", materials->recipes.size(), materials->missing, materials->unsupported);
 		ImGui::TextDisabled("CPU recipes only; no native texture residency or rendering authority");
+		if (const auto& shading = built->shadingGeometry)
+			ImGui::Text("GPU shading geometry: %u / %u instances | %.2f MiB", shading->readyInstances, shading->instanceCount, double(shading->bytes) / 1048576.0);
+		else if (!built->shadingFailure.empty())
+			ImGui::TextWrapped("%s", built->shadingFailure.c_str());
 	}
 }
 

@@ -23,10 +23,28 @@ namespace DX12Native
 		winrt::com_ptr<ID3D12Resource> acceleration;
 	};
 
+	// ByteAddressBuffer ABI: each TLAS instance has one 32-byte record.
+	// UINT32_MAX offsets denote unavailable native shading data.
+	struct ShadingGeometryBinding
+	{
+		uint32_t positionOffset = UINT32_MAX, indexOffset = UINT32_MAX, attributeOffset = UINT32_MAX, stride = 0;
+		uint32_t vertexCount = 0, indexCount = 0, positionStride = 0, reserved = 0;
+	};
+	static_assert(sizeof(ShadingGeometryBinding) == 32);
+
+	struct ShadingGeometry
+	{
+		winrt::com_ptr<ID3D12Resource> buffer;
+		uint64_t bytes = 0, revision = 0;
+		uint32_t instanceCount = 0, readyInstances = 0;
+	};
+
 	struct TopLevel
 	{
 		std::shared_ptr<const SceneInputs> inputs;
 		std::shared_ptr<const PreparedMaterials> preparedMaterials;
+		std::shared_ptr<const ShadingGeometry> shadingGeometry;
+		std::string shadingFailure;
 		std::vector<std::shared_ptr<const BottomLevel>> bottoms;
 		winrt::com_ptr<ID3D12Resource> acceleration;
 		winrt::com_ptr<ID3D12Fence> producerFence;
@@ -69,6 +87,7 @@ namespace DX12Native
 			winrt::com_ptr<ID3D12CommandAllocator> allocator;
 			winrt::com_ptr<ID3D12GraphicsCommandList4> commands;
 			winrt::com_ptr<ID3D12Resource> sourceUpload;
+			winrt::com_ptr<ID3D12Resource> shadingUpload;
 			winrt::com_ptr<ID3D12Resource> scratch;
 			std::shared_ptr<BottomLevel> bottom;
 			std::shared_ptr<TopLevel> top;
@@ -87,6 +106,7 @@ namespace DX12Native
 		void Retire();
 		bool BuildBottom(Build& a_build, const std::shared_ptr<const DX12::Shape>& a_shape);
 		bool BuildTop(Build& a_build);
+		void PrepareShadingGeometry(Build& a_build, TopLevel& a_top);
 		bool HasPendingBottom(const void* a_key) const;
 
 		GraphicsBackend backend;

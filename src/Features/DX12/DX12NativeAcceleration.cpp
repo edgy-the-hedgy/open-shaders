@@ -1,4 +1,5 @@
 #include "DX12NativeAcceleration.h"
+#include "VideoMemoryBudget.h"
 
 #include <algorithm>
 #include <chrono>
@@ -195,6 +196,98 @@ namespace DX12Native
 		return true;
 	}
 
+	void AccelerationScene::PrepareShadingGeometry(Build& a_build, TopLevel& a_top)
+	{
+		// Native-only, optional shader geometry. Leave the completed shadow TLAS
+		// usable if residency is unavailable. One immutable buffer per published
+		// generation, with offsets shared by all identical resident assets.
+		if (!a_top.preparedMaterials || !a_top.inputs)
+			return;
+		const auto& geometry = a_top.inputs->geometry;
+		if (geometry.size() > UINT32_MAX / sizeof(ShadingGeometryBinding))
+			return;
+		std::vector<ShadingGeometryBinding> table(geometry.size());
+		struct CopyRange { const void* data; uint64_t offset, bytes; };
+		std::vector<CopyRange> copies;
+		struct Offsets { uint32_t position, index; };
+		std::unordered_map<const void*, Offsets> meshes;
+		std::unordered_map<const DX12::PreparedShading*, uint32_t> attributes;
+		uint64_t bytes = uint64_t(table.size()) * sizeof(ShadingGeometryBinding);
+		uint32_t ready = 0;
+		const auto append = [&](const void* data, uint64_t length) -> uint32_t {
+			if (!length || bytes >= UINT32_MAX || length >= UINT32_MAX - bytes)
+				throw std::runtime_error("Native shading geometry address space exhausted");
+			const auto offset = uint32_t(bytes);
+			copies.push_back({ data, bytes, length });
+			bytes += length;
+			return offset;
+		};
+		for (size_t i = 0; i < geometry.size(); ++i) {
+			const auto& shape = geometry[i].shape;
+			if (!shape || !shape->shading || shape->shading->stride != 60)
+				continue;
+			const auto& positions = shape->Positions();
+			const auto& indices = shape->Indices();
+			const auto& shading = *shape->shading;
+			if (positions.empty() || indices.empty() || positions.size() > UINT32_MAX || indices.size() > UINT32_MAX ||
+				uint64_t(shading.attributes.size()) * sizeof(float) != uint64_t(positions.size()) * shading.stride)
+				continue;
+			// Only stage geometry with a preliminary material identity.
+			const auto& material = a_top.preparedMaterials->bindings[i];
+			if (material.identity[0] == 0 && material.identity[1] == 0)
+				continue;
+			auto mesh = meshes.find(shape->GeometryKey());
+			if (mesh == meshes.end()) {
+				const Offsets offsets{
+					append(positions.data(), uint64_t(positions.size()) * sizeof(float3)),
+					append(indices.data(), uint64_t(indices.size()) * sizeof(uint32_t)) };
+				mesh = meshes.emplace(shape->GeometryKey(), offsets).first;
+			}
+			auto attr = attributes.find(&shading);
+			if (attr == attributes.end()) {
+				const auto offset = append(shading.attributes.data(), uint64_t(shading.attributes.size()) * sizeof(float));
+				attr = attributes.emplace(&shading, offset).first;
+			}
+			table[i] = { mesh->second.position, mesh->second.index, attr->second, shading.stride,
+				uint32_t(positions.size()), uint32_t(indices.size()), uint32_t(sizeof(float3)), 0 };
+			++ready;
+		}
+		if (!ready) {
+			a_top.shadingFailure = "No supported shading geometry";
+			return;
+		}
+		const auto desc = CD3DX12_RESOURCE_DESC::Buffer(bytes);
+		const auto allocation = device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
+		VideoMemoryBudget budget;
+		const auto available = budget.Query(device.get(), 0);
+		// Conservatively allow for both staging and resident allocation, even on
+		// UMA. Never assume headroom when DXGI telemetry is absent.
+		if (allocation == UINT64_MAX || !available.dxgiAvailable || allocation > available.effectiveBytes / 2) {
+			a_top.shadingFailure = "Native shading geometry deferred by DXGI budget";
+			return;
+		}
+		auto resident = std::make_shared<ShadingGeometry>();
+		resident->bytes = bytes;
+		resident->revision = a_top.geometryRevision;
+		resident->instanceCount = uint32_t(table.size());
+		resident->readyInstances = ready;
+		const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+		Check(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+			D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(resident->buffer.put())));
+		resident->buffer->SetName(L"DX12NativeScene::ShadingGeometry");
+		auto staging = Buffer(bytes, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ,
+			L"DX12NativeScene::ShadingGeometryUpload");
+		void* mapped = nullptr;
+		const D3D12_RANGE noRead{ 0, 0 };
+		Check(staging->Map(0, &noRead, &mapped));
+		std::memcpy(mapped, table.data(), table.size() * sizeof(table.front()));
+		for (const auto& range : copies)
+			std::memcpy(static_cast<uint8_t*>(mapped) + size_t(range.offset), range.data, size_t(range.bytes));
+		staging->Unmap(0, nullptr);
+		a_build.shadingUpload = std::move(staging);
+		a_top.shadingGeometry = std::move(resident);
+	}
+
 	bool AccelerationScene::BuildTop(Build& a_build)
 	{
 		if (!target || target->geometry.empty() || target->geometry.size() > kMaximumInstances)
@@ -248,8 +341,21 @@ namespace DX12Native
 			D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, L"DX12NativeScene::TLAS");
 		a_build.scratch = Buffer(info.ScratchDataSizeInBytes, D3D12_HEAP_TYPE_DEFAULT,
 			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"DX12NativeScene::TLASScratch");
+		try {
+			PrepareShadingGeometry(a_build, *top);
+		} catch (const std::exception& error) {
+			top->shadingFailure = error.what();
+			top->shadingGeometry.reset();
+			a_build.shadingUpload = nullptr;
+		}
 		a_build.top = std::move(top);
 		Begin(a_build);
+		if (const auto& shading = a_build.top->shadingGeometry) {
+			a_build.commands->CopyBufferRegion(shading->buffer.get(), 0, a_build.shadingUpload.get(), 0, shading->bytes);
+			const auto shadingBarrier = CD3DX12_RESOURCE_BARRIER::Transition(shading->buffer.get(),
+				D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+			a_build.commands->ResourceBarrier(1, &shadingBarrier);
+		}
 		D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build{};
 		build.Inputs = inputs;
 		build.DestAccelerationStructureData = a_build.top->acceleration->GetGPUVirtualAddress();

@@ -80,3 +80,13 @@ TLAS generations own preliminary NativePBR CPU recipes and per-instance binding
 metadata. All descriptor and binding indices are invalid until native residency
 exists. These recipes do not change TruePBR ownership or final color. The
 developer-only Dev tab exposes aggregate scene/resource counters and timing.
+
+Full Native completed TLAS generations may carry a shader-readable geometry
+buffer with a 32-byte binding table at byte offset zero, indexed by TLAS
+InstanceID. Each record has position, index, attribute byte offsets, attribute
+stride, vertex count, index count, position stride, and reserved uint32. The
+payload references unique resident geometry and shading once within a generation.
+Unavailable records use UINT32_MAX offsets. The upload and TLAS share a producer
+fence; the immutable TopLevel retains the buffer through consumer retirement.
+Allocation is optional and uses current DXGI headroom; no such buffer is created
+in lightweight modes. GPU texture residency and material evaluation are separate.
