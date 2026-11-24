@@ -445,6 +445,9 @@ namespace DX12Native
 		void Complete()
 		{
 			output = nullptr;
+			descriptors = nullptr;
+			root = nullptr;
+			pipeline = nullptr;
 			if (!readback) return;
 			const D3D12_RANGE range{ 0, SIZE_T(instanceCount) * sizeof(Sample) };
 			void* mapped = nullptr;
