@@ -3,6 +3,7 @@
 #include "DX12PreparedMaterials.h"
 #include "VideoMemoryBudget.h"
 #include <DirectXTex.h>
+#include "RE/B/BSResourceNiBinaryStream.h"
 #include <directx/d3dx12.h>
 #include <cstring>
 #include <filesystem>
@@ -22,6 +23,7 @@ namespace DX12Native
 			uint32_t mips = 0;
 			uint64_t bytes = 0;
 			uintmax_t fileBytes = 0;
+			bool archiveBacked = false;
 			std::filesystem::file_time_type fileStamp{};
 		};
 		struct Upload
@@ -43,7 +45,7 @@ namespace DX12Native
 		winrt::com_ptr<ID3D12RootSignature> root;
 		winrt::com_ptr<ID3D12PipelineState> pipeline;
 		uint64_t revision = 0, textureBytes = 0;
-		uint32_t instanceCount = 0, residentRecipes = 0, failedTextures = 0, reusedTextures = 0;
+		uint32_t instanceCount = 0, residentRecipes = 0, failedTextures = 0, reusedTextures = 0, archiveTextures = 0;
 		uint32_t evaluated = 0;
 		Sample firstSample{};
 
@@ -92,13 +94,35 @@ namespace DX12Native
 			if (canonical.empty() || !canonical.starts_with("textures/")) return {};
 			const auto path = Util::JoinRelativePath("Data", std::filesystem::path(canonical));
 			std::error_code ec;
-			const auto size = std::filesystem::file_size(path, ec);
-			if (ec || !size || size > remaining || size > 128ull * 1024 * 1024) return {};
-			const auto stamp = std::filesystem::last_write_time(path, ec);
-			if (ec) return {};
+			const bool loose = std::filesystem::is_regular_file(path, ec);
+			if (ec && ec != std::errc::no_such_file_or_directory) return {};
+			uint64_t size = 0;
+			std::filesystem::file_time_type stamp{};
+			std::vector<uint8_t> archiveBytes;
+			constexpr uint64_t maxSource = 128ull * 1024 * 1024;
+			if (loose) {
+				size = std::filesystem::file_size(path, ec);
+				if (ec || !size || size > remaining || size > maxSource) return {};
+				stamp = std::filesystem::last_write_time(path, ec);
+				if (ec) return {};
+			} else {
+				// Use the engine's effective archive order; no extraction to disk.
+				// Each worker request owns its own stream.
+				auto asset = canonical;
+				std::ranges::replace(asset, '/', '\\');
+				RE::BSResourceNiBinaryStream stream(asset.c_str());
+				if (!stream.good() || !stream.stream) return {};
+				size = stream.stream->totalSize;
+				if (!size || size > remaining || size > maxSource) return {};
+				archiveBytes.resize(size_t(size));
+				if (!stream.read(archiveBytes.data(), uint32_t(size))) return {};
+			}
 			// Inspect header before decoding; reject non-2D and oversized input.
 			DirectX::TexMetadata meta{};
-			if (FAILED(DirectX::GetMetadataFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NONE, meta)) ||
+			const auto metadataResult = loose ?
+				DirectX::GetMetadataFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NONE, meta) :
+				DirectX::GetMetadataFromDDSMemory(archiveBytes.data(), archiveBytes.size(), DirectX::DDS_FLAGS_NONE, meta);
+			if (FAILED(metadataResult) ||
 				meta.dimension != DirectX::TEX_DIMENSION_TEXTURE2D || meta.arraySize != 1 ||
 				meta.IsCubemap() || !meta.width || !meta.height || meta.width > 16384 || meta.height > 16384 ||
 				!meta.mipLevels || meta.mipLevels > 15)
@@ -118,7 +142,9 @@ namespace DX12Native
 			if (allocation == UINT64_MAX || !stagingBytes || allocation > remaining || stagingBytes > remaining - allocation)
 				return {};
 			DirectX::ScratchImage image;
-			if (FAILED(DirectX::LoadFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NO_LEGACY_EXPANSION, nullptr, image)))
+			const auto decode = loose ? DirectX::LoadFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NO_LEGACY_EXPANSION, nullptr, image) :
+				DirectX::LoadFromDDSMemory(archiveBytes.data(), archiveBytes.size(), DirectX::DDS_FLAGS_NO_LEGACY_EXPANSION, nullptr, image);
+			if (FAILED(decode))
 				return {};
 			const auto& loaded = image.GetMetadata();
 			if (loaded.width != meta.width || loaded.height != meta.height || loaded.format != meta.format ||
@@ -133,6 +159,7 @@ namespace DX12Native
 			texture->mips = uint32_t(meta.mipLevels);
 			texture->bytes = allocation;
 			texture->fileBytes = size;
+			texture->archiveBacked = !loose;
 			texture->fileStamp = stamp;
 			const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
 			Check(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST,
@@ -247,7 +274,11 @@ namespace DX12Native
 							std::error_code ec;
 							const auto filename = Util::JoinRelativePath("Data", std::filesystem::path(path));
 							const auto size = std::filesystem::file_size(filename, ec);
-							if (!ec && size == old->second->fileBytes) {
+							if (old->second->archiveBacked && ec == std::errc::no_such_file_or_directory) {
+								// Archive load order is immutable during the running game session.
+								texture = old->second;
+								++result->reusedTextures;
+							} else if (!old->second->archiveBacked && !ec && size == old->second->fileBytes) {
 								const auto stamp = std::filesystem::last_write_time(filename, ec);
 								if (!ec && stamp == old->second->fileStamp) {
 									texture = old->second;
@@ -275,6 +306,7 @@ namespace DX12Native
 						write(pool, texture.get(), false);
 						write(pool + NativePBR::kGpuTexturePoolCapacity, texture.get(), true);
 						result->textureBytes += texture->bytes;
+						if (texture->archiveBacked) ++result->archiveTextures;
 						result->textures.emplace(path, std::move(texture));
 						found = indices.emplace(path, pool).first;
 					}

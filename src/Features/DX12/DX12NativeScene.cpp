@@ -76,8 +76,8 @@ void DX12NativeScene::DrawDevStats()
 		else if (!built->shadingFailure.empty())
 			ImGui::TextWrapped("%s", built->shadingFailure.c_str());
 		if (const auto& evaluation = built->materialEvaluation) {
-			ImGui::Text("Resident recipes: %u | DDS: %zu | Reused: %u | Failed: %u", evaluation->residentRecipes,
-				evaluation->textures.size(), evaluation->reusedTextures, evaluation->failedTextures);
+			ImGui::Text("Resident recipes: %u | DDS: %zu (archive %u) | Reused: %u | Failed: %u", evaluation->residentRecipes,
+				evaluation->textures.size(), evaluation->archiveTextures, evaluation->reusedTextures, evaluation->failedTextures);
 			ImGui::Text("Native DDS VRAM: %.2f MiB | Evaluated triangles: %u / %u", double(evaluation->textureBytes) / 1048576.0,
 				evaluation->evaluated, evaluation->instanceCount);
 			if (evaluation->evaluated) {
