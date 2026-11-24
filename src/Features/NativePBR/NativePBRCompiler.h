@@ -123,6 +123,109 @@ namespace NativePBR
 		return effective;
 	}
 
+	/** @brief Screen evaluator limitations, independent of optional DDS residency or historical ray capabilities. */
+	enum ScreenSurfaceIssue : uint32_t
+	{
+		ScreenPbrFeatures = 1u << 0,
+		ScreenGlint = 1u << 1,
+		ScreenDisplacement = 1u << 2,
+		ScreenProjection = 1u << 3,
+		ScreenFeatureTextures = 1u << 4,
+		ScreenUnknownMetadata = 1u << 5
+	};
+	inline constexpr std::array<std::string_view, 6> kScreenSurfaceIssueNames{
+		"lobes", "glint", "displacement", "projection", "feature maps", "unknown metadata"
+	};
+
+	struct ScreenSurfaceCapability
+	{
+		uint32_t issues = 0, activeFlags = 0;
+		bool projectedUv = false, inactiveProjectedRecipe = false;
+	};
+
+	/** @brief Classify the actual base-only screen evaluator, not the historical ray-material path. */
+	inline ScreenSurfaceCapability ClassifyScreenSurface(const Recipe& recipe, bool projectedUv, bool authoredFlagsKnown = true)
+	{
+		ScreenSurfaceCapability result;
+		const auto& material = recipe.parameters;
+		const auto hasTexture = [&](TextureRole role) {
+			return !recipe.textures[static_cast<size_t>(role)].assetPath.empty();
+		};
+		constexpr uint32_t subsurface = uint32_t(PBRFlags::Subsurface);
+		constexpr uint32_t fuzz = uint32_t(PBRFlags::Fuzz);
+		constexpr uint32_t coat = uint32_t(PBRFlags::TwoLayer);
+		constexpr uint32_t hair = uint32_t(PBRFlags::HairMarschner);
+		constexpr uint32_t interlayer = uint32_t(PBRFlags::InterlayerParallax);
+		constexpr uint32_t coatFlags = uint32_t(PBRFlags::ColoredCoat) | interlayer | uint32_t(PBRFlags::CoatNormal);
+		constexpr uint32_t thin = uint32_t(PBRFlags::ThinSurface) | uint32_t(PBRFlags::Foliage);
+		const uint32_t authored = material.pbrFlags;
+		uint32_t active = authored;
+		if (authored & coat)
+			active &= ~(hair | subsurface | fuzz | thin);
+		else {
+			active &= ~coatFlags;
+			if (authored & hair) active &= ~(subsurface | fuzz | thin);
+		}
+		// Zero-initialized NIF parameters are not evidence that a lobe is inactive.
+		if (material.textureSetParametersResolved) {
+			if (material.fuzzWeight == 0.0f) active &= ~fuzz;
+			if (material.subsurfaceOpacity == 1.0f && !(active & thin) && !hasTexture(TextureRole::Features0))
+				active &= ~subsurface;
+			if (material.coatStrength == 0.0f && !(active & interlayer))
+				active &= ~(coat | coatFlags);
+		}
+		result.activeFlags = active;
+		if (active) result.issues |= ScreenPbrFeatures;
+		// The legacy shader selects base glint only outside coat, hair and fuzz permutations.
+		if ((material.glint.enabled && !(authored & (coat | hair | fuzz))) ||
+			(projectedUv && material.projectedGlint.enabled))
+			result.issues |= ScreenGlint;
+		// Keep all authored height maps gated until displacement and its shadow effects are integrated.
+		if (hasTexture(TextureRole::Displacement)) result.issues |= ScreenDisplacement;
+		if (((active & (subsurface | coat)) && hasTexture(TextureRole::Features0)) ||
+			((active & (fuzz | coat)) && hasTexture(TextureRole::Features1)) ||
+			((active & fuzz) && material.fuzzRoughnessTexture && hasTexture(TextureRole::Displacement)))
+			result.issues |= ScreenFeatureTextures;
+		result.projectedUv = projectedUv;
+		result.inactiveProjectedRecipe = !projectedUv && (recipe.issues & UnsupportedProjection) != 0;
+		if (projectedUv) result.issues |= ScreenProjection;
+		if (!authoredFlagsKnown) result.issues |= ScreenUnknownMetadata;
+		return result;
+	}
+
+	/** @brief Counts overlapping reasons once per resident draw binding. */
+	struct ScreenSurfaceTally
+	{
+		std::array<uint32_t, kScreenSurfaceIssueNames.size()> reasons{}, soleReasons{};
+		std::array<uint32_t, 9> authoredFlags{}, activeFlags{};
+		uint32_t resident = 0, limited = 0, overlapping = 0, projectedUv = 0, inactiveProjectedRecipes = 0;
+		uint32_t formerlyLimitedNowBase = 0, formerlyBaseNowLimited = 0;
+
+		void Observe(const Recipe& recipe, const ScreenSurfaceCapability& capability)
+		{
+			++resident;
+			if (capability.projectedUv) ++projectedUv;
+			if (capability.inactiveProjectedRecipe) ++inactiveProjectedRecipes;
+			constexpr uint32_t oldIncomplete = UnsupportedPbrFeatures | UnsupportedGlint | UnsupportedDisplacement | UnsupportedProjection;
+			const bool oldLimited = (recipe.issues & oldIncomplete) != 0 || capability.projectedUv;
+			if (oldLimited && !capability.issues) ++formerlyLimitedNowBase;
+			if (!oldLimited && capability.issues) ++formerlyBaseNowLimited;
+			if (capability.issues) {
+				++limited;
+				if ((capability.issues & (capability.issues - 1)) != 0) ++overlapping;
+			}
+			for (size_t i = 0; i < reasons.size(); ++i) {
+				const uint32_t bit = 1u << i;
+				if (capability.issues & bit) ++reasons[i];
+				if (capability.issues == bit) ++soleReasons[i];
+			}
+			for (size_t i = 0; i < authoredFlags.size(); ++i) {
+				if (recipe.parameters.pbrFlags & (1u << i)) ++authoredFlags[i];
+				if (capability.activeFlags & (1u << i)) ++activeFlags[i];
+			}
+		}
+	};
+
 	/** @brief Per-bit nonexclusive reasons for runtime PBR incompatibility.
      * Recipe bits 4, 9, 10 and 11 are baseline unknowns resolved by
      * static instance inspection and are intentionally not tallied here.

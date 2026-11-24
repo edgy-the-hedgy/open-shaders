@@ -77,6 +77,7 @@ add_executable(
     test_dx12_lightmath.cpp
     test_dx12_materialframe.cpp
     test_native_raster_policy.cpp
+    test_native_surface_capability.cpp
     test_shadowcaster_math.cpp
     test_lodshadow_update_budget.cpp
     test_gpupassnames.cpp

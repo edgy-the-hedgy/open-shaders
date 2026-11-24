@@ -84,6 +84,7 @@ namespace NativePBR
 		std::array<TextureResourceInfo, static_cast<size_t>(TextureRole::Count)> textureResources{};
 		std::array<LandscapeTile, 6> landscapeTiles{};
 		bool texturePathsComplete = false;
+		bool textureSetParametersResolved = false;
 		bool operator==(const MaterialData&) const = default;
 	};
 

@@ -44,6 +44,7 @@ namespace NativePBR
 		std::optional<std::array<float, 4>> a_nifThinSurface = {}, std::optional<std::array<float, 2>> a_nifFuzz = {})
 	{
 		MaterialData result = a_base;
+		result.textureSetParametersResolved = true;
 		result.roughnessScale = a_config.roughnessScale;
 		result.displacementScale = a_config.displacementScale;
 		result.specularLevel = a_config.specularLevel;

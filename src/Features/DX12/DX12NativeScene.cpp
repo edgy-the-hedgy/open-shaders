@@ -173,7 +173,24 @@ void DX12NativeScene::DrawDevStats()
 		if (const auto& evaluation = built->materialEvaluation) {
 			ImGui::Text("Resident recipes: %u | DDS: %zu (archive %u) | Reused: %u | Failed: %u", evaluation->residentRecipes,
 				evaluation->textures.size(), evaluation->archiveTextures, evaluation->reusedTextures, evaluation->failedTextures);
-			ImGui::Text("Base-only material bindings: %u", evaluation->baseOnlyBindings);
+			const auto& capability = evaluation->surfaceCapabilities;
+			ImGui::Text("Base-only bindings: %u / %u | Base complete: %u | Multiple reasons: %u",
+				evaluation->baseOnlyBindings, capability.resident, capability.resident - capability.limited, capability.overlapping);
+			ImGui::Text("Classification changes: %u now base-complete | %u now limited",
+				capability.formerlyLimitedNowBase, capability.formerlyBaseNowLimited);
+			if (ImGui::TreeNode("Base-only reasons (overlapping)")) {
+				for (size_t i = 0; i < capability.reasons.size(); ++i)
+					ImGui::Text("%s: %u (sole: %u)", NativePBR::kScreenSurfaceIssueNames[i].data(),
+						capability.reasons[i], capability.soleReasons[i]);
+				ImGui::Text("Projected UV: %u | Inactive projected recipe: %u",
+					capability.projectedUv, capability.inactiveProjectedRecipes);
+				constexpr std::array names{ "Subsurface", "TwoLayer", "ColoredCoat", "InterlayerParallax",
+					"CoatNormal", "Fuzz", "HairMarschner", "Foliage", "ThinSurface" };
+				for (size_t i = 0; i < names.size(); ++i)
+					if (capability.authoredFlags[i]) ImGui::Text("%s: %u active / %u authored",
+						names[i], capability.activeFlags[i], capability.authoredFlags[i]);
+				ImGui::TreePop();
+			}
 			ImGui::Text("Specialized DDS roles: %u / %u | Shared references: %u | Texture slots: %zu / %u",
 				evaluation->specializedResident, evaluation->specializedRequested, evaluation->sharedTextureReferences,
 				evaluation->poolTextures.size(), NativePBR::kGpuTexturePoolCapacity);

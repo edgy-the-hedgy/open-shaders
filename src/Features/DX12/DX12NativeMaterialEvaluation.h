@@ -51,6 +51,7 @@ namespace DX12Native
 		uint64_t revision = 0, textureBytes = 0;
 		uint32_t instanceCount = 0, residentRecipes = 0, failedTextures = 0, reusedTextures = 0, archiveTextures = 0;
 		uint32_t evaluated = 0, baseOnlyBindings = 0;
+		NativePBR::ScreenSurfaceTally surfaceCapabilities;
 		uint32_t specializedRequested = 0, specializedResident = 0, sharedTextureReferences = 0;
 		uint32_t specializedBlockedByBase = 0;
 		std::array<uint32_t, static_cast<size_t>(NativePBR::TextureRole::Count)> specializedRoleRequested{}, specializedRoleResident{};
@@ -444,10 +445,11 @@ namespace DX12Native
 				binding.materialIndex = it->second;
 				binding.flags = (source.shaderFlags2 & (1u << 5)) ? NativePBR::kGpuDrawUsesVertexColor : 0;
 				const auto& recipe = prepared.recipes[it->second];
-				constexpr uint32_t incomplete = NativePBR::UnsupportedPbrFeatures | NativePBR::UnsupportedGlint |
-					NativePBR::UnsupportedDisplacement | NativePBR::UnsupportedProjection;
 				const uint64_t nifFlags = uint64_t(source.shaderFlags1) | (uint64_t(source.shaderFlags2) << 32);
-				if ((recipe.issues & incomplete) || (nifFlags & static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kProjectedUV))) {
+				const bool projectedUv = (nifFlags & static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kProjectedUV)) != 0;
+				const auto capability = NativePBR::ClassifyScreenSurface(recipe, projectedUv, !source.runtimeObserved || source.originalPbrFlags);
+				result->surfaceCapabilities.Observe(recipe, capability);
+				if (capability.issues) {
 					binding.flags |= MaterialFrameContract::kBaseOnlyBinding;
 					++result->baseOnlyBindings;
 				}
