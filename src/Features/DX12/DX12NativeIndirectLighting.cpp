@@ -64,7 +64,7 @@ namespace DX12Native
             view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
             view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
             view.TextureCube.MipLevels = cube.mipCount;
-            device->CreateShaderResourceView(cube.texture->resource.get(), &view, handle);
+            device->CreateShaderResourceView(cube.resource.get(), &view, handle);
         }
     }
 
@@ -258,7 +258,7 @@ namespace DX12Native
                 sh->cube = cube; sh->allocationBytes = shAllocation;
                 sh->coefficients = Eval::Buffer(device, kSHBytes, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                     D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-                auto* resource = cube->texture->resource.get();
+                auto* resource = cube->resource.get();
                 Transition(cmd, resource, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
                 cmd->SetPipelineState(projectionPipeline.get()); cmd->SetComputeRootSignature(projectionRoot.get());
                 cmd->SetComputeRootDescriptorTable(0, gpu(descriptor));
@@ -280,8 +280,8 @@ namespace DX12Native
             void* mapped = nullptr; const D3D12_RANGE noRead{};
             Eval::Check(slot->constants->Map(0, &noRead, &mapped));
             std::memcpy(mapped, &constants, sizeof(constants)); slot->constants->Unmap(0, nullptr);
-            auto* base = env.base->texture->resource.get();
-            auto* reflection = env.reflection ? env.reflection->texture->resource.get() : base;
+            auto* base = env.base->resource.get();
+            auto* reflection = env.reflection ? env.reflection->resource.get() : base;
             Transition(cmd, depth, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             Transition(cmd, base, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             if (reflection != base) Transition(cmd, reflection, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);

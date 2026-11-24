@@ -14,7 +14,12 @@ namespace DX12Native
 	/** @brief Immutable copy of one completed environment revision. */
 	struct EnvironmentCube
 	{
-		std::unique_ptr<WrappedResource> texture;
+		std::unique_ptr<WrappedResource> staging;
+        winrt::com_ptr<ID3D12Resource> resource;
+        winrt::com_ptr<ID3D12CommandAllocator> allocator;
+        winrt::com_ptr<ID3D12GraphicsCommandList> commands;
+        winrt::com_ptr<ID3D12Fence> sourceFence;
+        uint64_t sourceValue = 0;
 		EnvironmentStamp stamp{};
 		uint64_t revision = 0, allocationBytes = 0;
 		winrt::com_ptr<ID3D12Fence> readyFence;
@@ -22,6 +27,7 @@ namespace DX12Native
 		DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 		uint32_t width = 0, mipCount = 0;
 		bool IsReadyFor(const EnvironmentStamp& requested) const;
+		bool Retired() const;
 	};
 
 	/** @brief One environment publication, independent of material or display frame lifetime. */
@@ -58,6 +64,8 @@ namespace DX12Native
 			const EnvironmentStamp& requested, const char* name);
 		GraphicsBackend owner;
 		SharedFence producer;
+		winrt::com_ptr<ID3D12Fence> copyFence;
+		uint64_t nextCopyValue = 0;
 		VideoMemoryBudget videoBudget;
 		std::array<CubePool, 3> pools;
 		std::shared_ptr<const EnvironmentFrame> current;
