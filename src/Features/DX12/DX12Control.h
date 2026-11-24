@@ -33,7 +33,7 @@ struct DX12Control final : Feature
 	/** @brief Session-latched material authority, never changed by live settings. */
 	bool UsesExclusiveMaterials() const { return exclusiveMaterials.load(std::memory_order_acquire); }
 	/** @brief Boot-latched input-only raster experiment, only in exclusive Full Native. */
-	bool UsesNativeRasterInputs() const { return UsesExclusiveMaterials() && rasterInputsOnly.load(std::memory_order_acquire); }
+	bool UsesNativeRasterInputs() const { return IsActive() && UsesExclusiveMaterials() && rasterInputsOnly.load(std::memory_order_acquire); }
 	bool IsShadowOffloadMode() const { return selectedMode.load(std::memory_order_relaxed) == 0; }
 	bool UseSpatialReconstruction() const { return spatialReconstruction.load(std::memory_order_relaxed); }
 	uint32_t GetReconstructionGridSize() const { return reconstructionGrid.load(std::memory_order_relaxed); }
