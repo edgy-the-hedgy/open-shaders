@@ -149,7 +149,11 @@ namespace DX12Native
 			uint64_t stagingBytes = 0;
 			device->GetCopyableFootprints(&desc, 0, uint32_t(meta.mipLevels), 0, upload.footprints.data(),
 				rows.data(), rowBytes.data(), &stagingBytes);
-			if (allocation == UINT64_MAX || !stagingBytes || allocation > remaining || stagingBytes > remaining - allocation)
+			if (allocation == UINT64_MAX || !stagingBytes || allocation > remaining)
+				return reject("DXGI upload budget");
+			const auto stagingDesc = CD3DX12_RESOURCE_DESC::Buffer(stagingBytes);
+			const auto stagingAllocation = device->GetResourceAllocationInfo(0, 1, &stagingDesc).SizeInBytes;
+			if (stagingAllocation == UINT64_MAX || stagingAllocation > remaining - allocation)
 				return reject("DXGI upload budget");
 			DirectX::ScratchImage image;
 			const auto decode = loose ? DirectX::LoadFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NO_LEGACY_EXPANSION, nullptr, image) :
@@ -187,7 +191,7 @@ namespace DX12Native
 			}
 			upload.staging->Unmap(0, nullptr);
 			upload.texture = std::move(texture);
-			remaining -= allocation + stagingBytes;
+			remaining -= allocation + stagingAllocation;
 			return upload;
 		}
 
@@ -406,9 +410,14 @@ namespace DX12Native
 		// Only the acceleration worker calls this after its producer fence signals.
 		void Complete()
 		{
+			output = nullptr;
+			if (!readback) return;
 			const D3D12_RANGE range{ 0, SIZE_T(instanceCount) * sizeof(Sample) };
 			void* mapped = nullptr;
-			if (FAILED(readback->Map(0, &range, &mapped))) return;
+			if (FAILED(readback->Map(0, &range, &mapped))) {
+				readback = nullptr;
+				return;
+			}
 			const auto* samples = static_cast<const Sample*>(mapped);
 			for (uint32_t i = 0; i < instanceCount; ++i) {
 				if (samples[i].color[3] > 0.0f && std::isfinite(samples[i].color[3])) {
