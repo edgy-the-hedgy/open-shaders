@@ -75,6 +75,7 @@ void DX12NativeScene::DrawDevStats()
 		ImGui::Text("Preliminary recipes: %zu | Missing sources: %u | Unsupported: %u", materials->recipes.size(), materials->missing, materials->unsupported);
 		ImGui::Text("Missing: runtime %u | Companion %u | Runtime material sources: %u",
 			materials->runtimeMissing, materials->companionMissing, materials->runtimeSources);
+		ImGui::Text("Companion materials recovered from matching live geometry: %u", materials->recoveredPlacements);
 		ImGui::Text("Unsupported (overlapping): ambiguous %u | non-PBR %u | alpha %u | basis %u | UV/clamp %u",
 			materials->rejected[0], materials->rejected[1], materials->rejected[2], materials->rejected[3], materials->rejected[4]);
 		ImGui::TextDisabled("Diagnostic material evaluation only; raster rendering authority unchanged");

@@ -553,8 +553,12 @@ internal static class SceneTile
                             var alternates = (baseRecord as IModeledGetter)?.Model?.AlternateTextures;
                             var matches = alternates?.Where(a => a.Index == original.ShapeOrdinal &&
                                 a.Name == original.ShapeName).ToArray() ?? [];
+                            // Name and index are a joint identity. A matching index
+                            // with a different nonempty name is not sufficient to
+                            // apply an override, nor to reject an unrelated sibling.
                             var ambiguous = matches.Length > 1 || (matches.Length == 0 &&
-                                alternates?.Any(a => a.Name == original.ShapeName || a.Index == original.ShapeOrdinal) == true);
+                                alternates?.Any(a => a.Name == original.ShapeName ||
+                                    (string.IsNullOrEmpty(a.Name) && a.Index == original.ShapeOrdinal)) == true);
                             var txst = matches.Length == 1 ? matches[0].NewTexture.TryResolve(environment.LinkCache) : null;
                             if (matches.Length == 1 && txst == null) ambiguous = true;
                             var mato = baseRecord is IStaticGetter stat ? stat.Material.TryResolve(environment.LinkCache) : null;

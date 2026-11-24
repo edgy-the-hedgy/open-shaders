@@ -237,6 +237,10 @@ namespace DX12
 			// Empty incomplete results must not be mislabeled as prepared subcells.
 			// Only Ready (certified complete) subcells can offload raster shadows.
 			tile->state = complete ? Tile::State::Ready : Tile::State::ReadyPartial;
+		} else if (publication.fullNative && publication.validated && publication.enumerationComplete) {
+			// An interior-wide unresolved record can make an otherwise empty tile
+			// uncertifiable. Repeating the same valid enumeration will not fix it.
+			tile->state = Tile::State::EmptyUncertified;
 		} else {
 			// Malformed or empty-incomplete companion payloads must not claim native scene readiness.
 			tile->shapes.clear();
@@ -271,6 +275,57 @@ namespace DX12
 			// the emitter is off-screen. Update lights, never BLAS/TLAS for this tile.
 			next->predictiveResident[std::distance(current->predictive.begin(), predictive)] = std::move(tile);
 		}
+		snapshot.store(std::move(next), std::memory_order_release);
+		return true;
+	}
+
+	bool ResourceGrid::RecoverMaterial(uint32_t scope, const std::shared_ptr<const Shape>& matched,
+		const std::shared_ptr<const PreparedShading>& shading)
+	{
+		if (!matched || !shading || !shading->runtimeObserved || !matched->identity ||
+			shading->stride != 60 || shading->attributes.size() != matched->Positions().size() * 15u)
+			return false;
+		std::scoped_lock lock(mutex);
+		const auto current = snapshot.load(std::memory_order_acquire);
+		if (!current->fullNative || current->requested.front().scope != scope)
+			return false;
+		const uint64_t extra = uint64_t(shading->attributes.size()) * sizeof(float);
+		// Charge replacement conservatively without freeing the old attributes
+		// until all prior immutable generations retire. Do not grow predictive tiles.
+		constexpr uint64_t maxTileBytes = 112ull * 1024 * 1024;
+		auto next = std::make_shared<Grid>(*current);
+		std::shared_ptr<const Shape> replacement;
+		for (auto& tile : next->resident) {
+			if (!tile || tile->bytes > maxTileBytes || extra > maxTileBytes - tile->bytes) continue;
+			std::shared_ptr<Tile> changed;
+			for (size_t i = 0; i < tile->shapes.size(); ++i) {
+				const auto& original = tile->shapes[i];
+				if (!original || original->identity != matched->identity ||
+					original->referencePlugin != matched->referencePlugin ||
+					original->referenceLocal != matched->referenceLocal ||
+					original->GeometryKey() != matched->GeometryKey() || original->transform != matched->transform ||
+					(original->shading && !(original->materialOverride && original->materialOverride->ambiguous)))
+					continue;
+				if (!replacement) {
+					auto copy = std::make_shared<Shape>(*original);
+					auto live = std::make_shared<PreparedShading>(*shading);
+					live->recoveredPlacement = true;
+					copy->shading = std::move(live);
+					// The observed engine texture set is the winning binding. Do
+					// not reapply the unresolved offline alternate to it.
+					copy->materialOverride.reset();
+					replacement = std::move(copy);
+				}
+				if (!changed) changed = std::make_shared<Tile>(*tile);
+				changed->shapes[i] = replacement;
+				changed->bytes += extra;
+				break;
+			}
+			if (changed) tile = std::move(changed);
+		}
+		if (!replacement) return false;
+		++next->revision;
+		++next->geometryRevision;
 		snapshot.store(std::move(next), std::memory_order_release);
 		return true;
 	}
@@ -390,6 +445,8 @@ namespace
 			return T("menu.dx12.resources.status.processing", "Processing");
 		case DX12::Tile::State::RetryWaiting:
 			return T("menu.dx12.resources.status.retry_pending", "Failed (retry pending)");
+		case DX12::Tile::State::EmptyUncertified:
+			return "Empty (coverage unverified)";
 		case DX12::Tile::State::Incomplete:
 			return T("menu.dx12.resources.status.retry_exhausted", "Skipped (retry exhausted)");
 		case DX12::Tile::State::Deferred:
@@ -413,6 +470,7 @@ namespace
 			return IM_COL32(182, 140, 91, 255);
 		case DX12::Tile::State::RetryWaiting:
 			return IM_COL32(211, 76, 76, 255);
+		case DX12::Tile::State::EmptyUncertified:
 		case DX12::Tile::State::Incomplete:
 			return IM_COL32(123, 129, 139, 255);
 		case DX12::Tile::State::Deferred:
@@ -554,13 +612,15 @@ void DX12Resources::DrawDevStats()
 	if (snapshot) {
 		DrawSubcellMap(*snapshot, true);
 		size_t activeLoaded = 0, predictiveLoaded = 0, placements = 0, shaded = 0, missing = 0;
+		std::array<size_t, 8> activeStates{}, predictiveStates{};
 		uint64_t chargedBytes = 0, uniqueGeometryBytes = 0, uniqueShadingBytes = 0;
 		std::unordered_set<const void*> uniqueGeometry;
 		std::unordered_set<const DX12::PreparedShading*> uniqueShading;
 		std::unordered_set<std::string> uniqueMissing, missingReferences;
 		std::unordered_map<std::string, size_t> missingReasons;
 		const auto visit = [&](const auto& tile, bool active) {
-			if (!tile) return;
+			if (!tile) { ++(active ? activeStates : predictiveStates)[0]; return; }
+			++(active ? activeStates : predictiveStates)[size_t(tile->state)];
 			if (tile->state == DX12::Tile::State::Ready || tile->state == DX12::Tile::State::ReadyPartial)
 				(active ? activeLoaded : predictiveLoaded)++;
 			chargedBytes += tile->bytes;
@@ -586,6 +646,10 @@ void DX12Resources::DrawDevStats()
 		for (const auto& tile : snapshot->resident) visit(tile, true);
 		for (const auto& tile : snapshot->predictiveResident) visit(tile, false);
 		ImGui::Text(T("menu.dx12.resources.loaded_counts", "Loaded: active %zu / 9, predictive %zu / 16"), activeLoaded, predictiveLoaded);
+		ImGui::Text("Active / predictive: empty unverified %zu / %zu | exhausted %zu / %zu | budget deferred %zu / %zu",
+			activeStates[size_t(DX12::Tile::State::EmptyUncertified)], predictiveStates[size_t(DX12::Tile::State::EmptyUncertified)],
+			activeStates[size_t(DX12::Tile::State::Incomplete)], predictiveStates[size_t(DX12::Tile::State::Incomplete)],
+			activeStates[size_t(DX12::Tile::State::Deferred)], predictiveStates[size_t(DX12::Tile::State::Deferred)]);
 		ImGui::Text("Placements: %zu | Unique geometry: %zu | Shaded: %zu | Missing records: %zu", placements, uniqueGeometry.size(), shaded, missing);
 		ImGui::Text("CPU geometry: %.2f MiB | Shading: %.2f MiB | Charged: %.2f MiB", double(uniqueGeometryBytes)/1048576.0, double(uniqueShadingBytes)/1048576.0, double(chargedBytes)/1048576.0);
 		ImGui::Text("Unique missing descriptors: %zu | References: %zu", uniqueMissing.size(), missingReferences.size());

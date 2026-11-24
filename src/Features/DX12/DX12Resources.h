@@ -56,6 +56,7 @@ namespace DX12
 		float alpha = 1.0f;
 		bool twoSided = false;
 		bool runtimeObserved = false;  // Live engine texture set, not PG-certified offline provenance.
+		bool recoveredPlacement = false;
 		int32_t clampMode = -1;
 		std::vector<float> uvTransform;
 		std::vector<std::string> textures;
@@ -112,6 +113,7 @@ namespace DX12
 			ReadyPartial,  // Valid geometry/lights, but shadow-offload coverage not certified.
 			RetryWaiting,
 			Incomplete,
+			EmptyUncertified,  // Validated enumeration, no admitted local geometry; not proof of coverage.
 			Deferred  // Predictive geometry exceeded its CPU residency allowance; retry if promoted active.
 		};
 		SubcellKey key;
@@ -196,6 +198,7 @@ namespace DX12
 		bool Publish(CompanionPublication publication);
 		/** @brief Accept an observed static shape within the active 3x3 without caching it on disk. */
 		bool PublishRuntimeShape(std::shared_ptr<const Shape> shape, float centerX, float centerY);
+		bool RecoverMaterial(uint32_t scope, const std::shared_ptr<const Shape>& matched, const std::shared_ptr<const PreparedShading>& shading);
 		/** @brief Releases every in-memory tile at scene transition. */
 		void Clear();
 		void FlushRetiredCache();  // DRAM only; caller decides transition policy.
@@ -256,6 +259,10 @@ struct DX12Resources final : Feature
 	bool PublishRuntimeShape(std::shared_ptr<const DX12::Shape> shape, float centerX, float centerY)
 	{
 		return grid.PublishRuntimeShape(std::move(shape), centerX, centerY);
+	}
+	bool RecoverMaterial(uint32_t scope, const std::shared_ptr<const DX12::Shape>& matched, const std::shared_ptr<const DX12::PreparedShading>& shading)
+	{
+		return grid.RecoverMaterial(scope, matched, shading);
 	}
 	bool IsActive() const;
 	uint64_t GetFlushGeneration() const { return flushGeneration.load(std::memory_order_acquire); }

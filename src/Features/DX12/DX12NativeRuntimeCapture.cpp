@@ -340,20 +340,32 @@ namespace DX12Native
 				releaseIfCurrent();
 				continue;
 			}
-			bool companionOwns = false;
+			bool companionOwns = false, ambiguousMatch = false;
+			std::shared_ptr<const DX12::Shape> materialMatch;
 			for (const auto& tile : grid->resident) {
-				if (!tile)
-					continue;
-				for (const auto& prepared : tile->shapes)
-					if (prepared && SameShape(*prepared, *shape)) {
-						companionOwns = true;
-						break;
-					}
-				if (companionOwns)
-					break;
+				if (!tile) continue;
+				for (const auto& prepared : tile->shapes) {
+					if (!prepared || !SameShape(*prepared, *shape)) continue;
+					companionOwns = true;
+					if (!grid->fullNative || !shape->shading || prepared->referencePlugin.empty()) continue;
+					const auto reference = std::format("{:06X}:{}", prepared->referenceLocal, prepared->referencePlugin);
+					if (!std::equal(reference.begin(), reference.end(), packet.referenceKey.begin(), packet.referenceKey.end(),
+						[](char a, char b) { return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b)); }))
+						continue;
+					// Match exact geometry and reference; if multiple distinct
+					// blocks are indistinguishable, do not guess their materials.
+					if (prepared->shading && prepared->shading->shapeName != shape->shading->shapeName) continue;
+					if (materialMatch && materialMatch->identity != prepared->identity) ambiguousMatch = true;
+					else materialMatch = prepared;
+				}
 			}
-			if (companionOwns)
+			if (companionOwns) {
+				if (materialMatch && !ambiguousMatch &&
+					(!materialMatch->shading || (materialMatch->materialOverride && materialMatch->materialOverride->ambiguous))) {
+					globals::features::dx12Resources.RecoverMaterial(packet.sourceCenter.scope, materialMatch, shape->shading);
+				}
 				continue;
+			}
 			// The companion may have retained the original NIF even when a block
 			// was unsupported. Preserve that provenance on the runtime supplement.
 			// Block indices are NOT inferred from runtime shape names.

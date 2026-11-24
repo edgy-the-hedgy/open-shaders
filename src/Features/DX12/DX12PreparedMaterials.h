@@ -19,7 +19,7 @@ namespace DX12Native
 		std::vector<NativePBR::GpuDrawBinding> bindings;
 		std::vector<NativePBR::GpuMaterialRecord> records;
 		uint32_t missing = 0, unsupported = 0;
-		uint32_t runtimeMissing = 0, runtimeSources = 0, companionMissing = 0;
+		uint32_t runtimeMissing = 0, runtimeSources = 0, companionMissing = 0, recoveredPlacements = 0;
 		std::array<uint32_t, 5> rejected{};
 	};
 
@@ -48,6 +48,7 @@ namespace DX12Native
 				continue;
 			}
 			if (source->runtimeObserved) ++result->runtimeSources;
+			if (source->recoveredPlacement) ++result->recoveredPlacements;
 			const auto& placementMaterial = instance.shape->materialOverride;
 			if ((placementMaterial && placementMaterial->ambiguous) || !(source->shaderFlags2 & pbrSource) || source->alpha != 1.0f ||
 				source->stride != 60 || source->clampMode < 0 || source->uvTransform.size() != 4) {
