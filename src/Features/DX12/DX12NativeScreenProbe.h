@@ -288,6 +288,7 @@ namespace DX12Native
 				for (uint32_t i=0;i<NativePBR::kGpuTextureDescriptorCapacity;++i) {
 					const auto pool=i%NativePBR::kGpuTexturePoolCapacity;
 					const auto* texture=pool<evaluation.poolTextures.size()?evaluation.poolTextures[pool].get():nullptr;
+					if (texture && i>=NativePBR::kGpuTexturePoolCapacity && DirectX::MakeSRGB(texture->format)==texture->format) texture=nullptr;
 					D3D12_SHADER_RESOURCE_VIEW_DESC view{};
 					view.Format=texture?(i>=NativePBR::kGpuTexturePoolCapacity?DirectX::MakeSRGB(texture->format):texture->format):DXGI_FORMAT_R8G8B8A8_UNORM;
 					view.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
