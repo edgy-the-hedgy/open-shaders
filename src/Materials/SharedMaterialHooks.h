@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <optional>
 #include <string>
 
@@ -10,6 +11,8 @@ namespace SharedMaterialHooks
 	void Install();
 	/** @brief Reports whether the session uses the legacy NIF flag remapping hooks. */
 	bool UsesLegacyNifMarkers();
+	/** @brief Returns preserved source flags for a normalized native NIF property. */
+	std::optional<uint64_t> OriginalNativePbrFlags(const RE::BSLightingShaderProperty* property);
 	/** @brief Resolves a live texture set only when its record association is unambiguous. */
 	std::string ResolveTextureSetEditorID(RE::BSTextureSet* textures);
 	/** @brief Prevents exclusive mode from selecting legacy PBR shader permutations. */

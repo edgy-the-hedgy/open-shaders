@@ -14,6 +14,7 @@
 #include <DirectXPackedVector.h>
 #include "RE/B/BSLightingShaderMaterialBase.h"
 #include "RE/B/BSTextureSet.h"
+#include "RE/N/NiFloatsExtraData.h"
 #include "Features/NativePBR/NativePBRCompiler.h"
 
 namespace DX12Native
@@ -74,6 +75,17 @@ namespace DX12Native
 				});
 		}
 
+		template <size_t N>
+		std::optional<std::array<float, N>> ReadNifFloats(const RE::BSLightingShaderProperty* property, const char* name)
+		{
+			const auto* data = netimmerse_cast<const RE::NiFloatsExtraData*>(property->GetExtraData(name));
+			if (!data || data->size != N || !data->value) return {};
+			std::array<float, N> values{};
+			std::copy_n(data->value, N, values.begin());
+			if (!std::ranges::all_of(values, [](float value) { return std::isfinite(value); })) return {};
+			return values;
+		}
+
 		std::shared_ptr<DX12::PreparedShading> SnapshotMaterial(const RuntimeGeometryCandidate& source, DX12::RuntimeMaterialFailure& failure)
 		{
 			using Failure = DX12::RuntimeMaterialFailure;
@@ -86,9 +98,11 @@ namespace DX12Native
 				(source.tangentOffset != UINT32_MAX && (source.tangentOffset < 16 || source.tangentOffset > source.stride - 4)) || (source.colorOffset != UINT32_MAX &&
 				(source.colorOffset < 16 || source.colorOffset > source.stride - 4))) return reject(Failure::MissingVertexInputs);
 			using F = RE::BSShaderProperty::EShaderPropertyFlag;
-			const auto flags = static_cast<uint64_t>(property->flags.underlying());
+			const auto liveFlags = static_cast<uint64_t>(property->flags.underlying());
 			const bool originalFlags = !SharedMaterialHooks::UsesLegacyNifMarkers();
-			if (originalFlags ? !property->flags.any(F::kMenuScreen) : !property->flags.any(F::kVertexLighting))
+			const auto preserved = originalFlags ? SharedMaterialHooks::OriginalNativePbrFlags(property) : std::nullopt;
+			const auto flags = preserved.value_or(liveFlags);
+			if (originalFlags ? !(flags & static_cast<uint64_t>(F::kMenuScreen)) : !property->flags.any(F::kVertexLighting))
 				return reject(Failure::NonPbrMarker);
 			if (property->flags.any(F::kVertexAlpha, F::kGrayscaleToPaletteAlpha, F::kRefraction, F::kTempRefraction,
 					F::kTreeAnim, F::kLODLandscape, F::kMultiTextureLandscape, F::kFace, F::kHairTint)) return reject(Failure::UnsupportedShaderFlags);
@@ -110,6 +124,10 @@ namespace DX12Native
 			shading->shaderFlags1 = uint32_t(flags);
 			shading->shaderFlags2 = uint32_t(flags >> 32);
 			shading->originalPbrFlags = originalFlags;
+			if (originalFlags) {
+				shading->nifThinSurface = ReadNifFloats<4>(property, "PBRThinSurface");
+				shading->nifFuzz = ReadNifFloats<2>(property, "PBRFuzz");
+			}
 			shading->runtimeTextureSet = SharedMaterialHooks::ResolveTextureSetEditorID(textures);
 			shading->runtimeMaterialObject = source.materialObjectEditorID;
 			shading->twoSided = property->flags.any(F::kTwoSided);

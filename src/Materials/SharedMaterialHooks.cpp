@@ -4,12 +4,14 @@
 #include "ShaderCache.h"
 #include "Features/DX12/DX12Control.h"
 #include "RE/B/BSTextureSet.h"
+#include "RE/N/NiIntegersExtraData.h"
 #include "Utils/StringUtils.h"
 #include "Globals.h"
 #include "TruePBR.h"
 #include "TruePBR/BSLightingShaderMaterialPBR.h"
 #include "TruePBR/BSLightingShaderMaterialPBRLandscape.h"
 
+#include <bit>
 #include <list>
 #include <mutex>
 #include <string>
@@ -98,6 +100,51 @@ namespace
 			else if (entry.editorId != id)
 				entry.ambiguous = true;
 			return result;
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
+	constexpr auto kNativeNifFlags = "OS.NativePBR.OriginalFlags.v1";
+
+	bool HasBasePbrTextures(const RE::BSLightingShaderProperty* property)
+	{
+		if (!property || !property->material || property->material->GetType() != RE::BSShaderMaterial::Type::kLighting ||
+			property->material->GetFeature() != RE::BSShaderMaterial::Feature::kDefault) return false;
+		const auto* material = static_cast<const RE::BSLightingShaderMaterialBase*>(property->material);
+		auto* textures = material->textureSet.get();
+		const auto* expected = REL::Relocation<const RE::NiRTTI*>{ RE::BSTextureSet::Ni_RTTI }.get();
+		if (!textures || !expected || !textures->GetRTTI() || !textures->GetRTTI()->IsKindOf(expected)) return false;
+		for (uint32_t slot : { 0u, 1u, 5u }) {
+			const auto* path = textures->GetTexturePath(static_cast<RE::BSTextureSet::Texture>(slot));
+			if (!path || !*path) return false;
+		}
+		return true;
+	}
+
+	struct NativeNifPostLink
+	{
+		static void thunk(RE::BSLightingShaderProperty* property, RE::NiStream& stream)
+		{
+			func(property, stream);
+			using enum RE::BSShaderProperty::EShaderPropertyFlag;
+			if (!property || !property->flags.any(kMenuScreen) ||
+				property->flags.any(kLODLandscape, kMultiTextureLandscape, kFace, kHairTint, kTreeAnim,
+					kRefraction, kTempRefraction, kVertexAlpha, kGrayscaleToPaletteAlpha) ||
+				!HasBasePbrTextures(property) || property->HasExtraData(kNativeNifFlags)) return;
+			auto path = Util::ToLowerAscii(stream.inputFilePath);
+			std::ranges::replace(path, '\\', '/');
+			if (path.find("worldmap") != std::string::npos || path.find("mapmenu") != std::string::npos ||
+				path.find("interface/") != std::string::npos) return;
+			const auto original = static_cast<uint64_t>(property->flags.underlying());
+			const std::vector<int32_t> words{
+				std::bit_cast<int32_t>(uint32_t(original)),
+				std::bit_cast<int32_t>(uint32_t(original >> 32))
+			};
+			RE::NiPointer<RE::NiIntegersExtraData> metadata{ RE::NiIntegersExtraData::Create(kNativeNifFlags, words) };
+			if (!metadata || !property->AddExtraData(metadata.get())) return;
+			// The native recipe retains the authored flags; vanilla raster must not interpret the repurposed bits.
+			property->flags.reset(kMenuScreen, kSpecular, kGlowMap, kEnvMap, kMultiLayerParallax,
+				kSoftLighting, kRimLighting, kBackLighting, kAnisotropicLighting, kEffectLighting, kFitSlope);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -195,6 +242,7 @@ void SharedMaterialHooks::Install()
 			globals::features::truePBR.loaded = false;
 			logger::info("[TruePBR] Disabled for exclusive DX12 material authority");
 			stl::detour_thunk<NativeTextureSetConversion>(REL::RelocationID(20905, 21361));
+			stl::write_vfunc<0x1E, NativeNifPostLink>(RE::VTABLE_BSLightingShaderProperty[0]);
 		}
 		if (exclusive || globals::features::truePBR.loaded) {
 			stl::write_vfunc<0x6, BSLightingShader_SetupGeometry>(RE::VTABLE_BSLightingShader[0]);
@@ -207,6 +255,16 @@ void SharedMaterialHooks::Install()
 bool SharedMaterialHooks::UsesLegacyNifMarkers()
 {
 	return legacyNifMarkers.load(std::memory_order_acquire);
+}
+
+std::optional<uint64_t> SharedMaterialHooks::OriginalNativePbrFlags(const RE::BSLightingShaderProperty* property)
+{
+	if (!property) return {};
+	const auto* data = netimmerse_cast<const RE::NiIntegersExtraData*>(property->GetExtraData(kNativeNifFlags));
+	if (!data || data->size != 2 || !data->value) return {};
+	const uint64_t flags = uint64_t(uint32_t(data->value[0])) | (uint64_t(uint32_t(data->value[1])) << 32);
+	if (!(flags & static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kMenuScreen))) return {};
+	return flags;
 }
 
 std::string SharedMaterialHooks::ResolveTextureSetEditorID(RE::BSTextureSet* textures)

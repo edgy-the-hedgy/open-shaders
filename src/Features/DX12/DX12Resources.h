@@ -3,6 +3,7 @@
 #include "Feature.h"
 #include "SpatialGrid.h"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <deque>
@@ -64,6 +65,8 @@ namespace DX12
 		bool twoSided = false;
 		bool runtimeObserved = false;  // Live engine texture set, not PG-certified offline provenance.
 		bool originalPbrFlags = false;
+		std::optional<std::array<float, 4>> nifThinSurface;
+		std::optional<std::array<float, 2>> nifFuzz;
 		std::string runtimeTextureSet, runtimeMaterialObject;
 		bool recoveredPlacement = false;
 		bool alphaTest = false;

@@ -78,6 +78,14 @@ namespace DX12Native
 				key = std::format("runtime:{}:{}:{}", source->shaderFlags1, source->shaderFlags2, source->clampMode);
 				for (float value : source->uvTransform) key += std::format(":{:08x}", std::bit_cast<uint32_t>(value));
 				for (const auto& path : source->textures) key += std::format(":{}:{}", path.size(), path);
+				if (source->nifThinSurface) {
+					key += ":thin";
+					for (float value : *source->nifThinSurface) key += std::format(":{:08x}", std::bit_cast<uint32_t>(value));
+				}
+				if (source->nifFuzz) {
+					key += ":fuzz";
+					for (float value : *source->nifFuzz) key += std::format(":{:08x}", std::bit_cast<uint32_t>(value));
+				}
 			}
 			key += std::format(":TXST:{}:{}:MATO:{}:{}", txst.size(), txst, mato.size(), mato);
 			if (placementMaterial) {
@@ -132,6 +140,10 @@ namespace DX12Native
 						material.projectedSpecularLevel = projected.specularLevel;
 						material.projectedGlint = projected.glint;
 					}
+				}
+				if (!(material.pbrFlags & (uint32_t(PBRFlags::TwoLayer) | uint32_t(PBRFlags::HairMarschner)))) {
+					if (source->nifThinSurface) NativePBR::InterpretNifThinSurface(*source->nifThinSurface, material);
+					if (source->nifFuzz) NativePBR::InterpretNifFuzz(*source->nifFuzz, material);
 				}
 				material.texturePathsComplete = true;
 				auto recipe = NativePBR::CompileRecipe({ identity, 1, std::move(material) });
