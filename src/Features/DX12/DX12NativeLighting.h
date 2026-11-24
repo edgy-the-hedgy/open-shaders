@@ -2,6 +2,7 @@
 
 #include "DX12NativeShadowTrace.h"
 #include "DX12NativeDirectLighting.h"
+#include "DX12NativeIndirectLighting.h"
 
 #include <atomic>
 #include <memory>
@@ -42,7 +43,15 @@ namespace DX12Native
 		void DispatchDirect(const GraphicsBackend& backend, std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
 			const ShadowTraceControls& controls);
 		/** @brief Retires previous lighting inputs without blocking. */
-		void Poll(uint32_t frame) { direct.Poll(frame); shadows.Poll(frame); }
+		void Poll(uint32_t frame) { direct.Poll(frame); shadows.Poll(frame); indirect.Poll(frame); environment.Poll(); }
+        void DispatchIndirect(const GraphicsBackend& backend, std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
+            const EnvironmentStamp& stamp, const EnvironmentSource& base, const EnvironmentSource& reflection,
+            const EnvironmentSource& sky, uint32_t enabled, float environmentScale, float skyScale);
+        void ResetIndirect() { indirect.Reset(); environment.Reset(); }
+        std::shared_ptr<const IndirectLightingFrame> GetIndirect(uint32_t frame) const { return indirect.Get(frame); }
+        std::shared_ptr<const EnvironmentFrame> GetEnvironment() const { return environment.Get(); }
+        const NativeEnvironment& EnvironmentStats() const { return environment; }
+        const NativeIndirectLighting& IndirectStats() const { return indirect; }
 		/** @brief Borrows the same-frame fenced diffuse and specular output. */
 		std::shared_ptr<const DirectLightingFrame> GetDirect(uint32_t frame) const { return direct.Get(frame); }
 		const std::string& DirectFailure() const { return direct.Failure(); }
@@ -63,6 +72,8 @@ namespace DX12Native
 		std::vector<DX12::PreparedLight> GetUnifiedLights(uint32_t frame) const;
 		ShadowMaskTrace shadows;
 		DirectLightingTrace direct;
+		NativeEnvironment environment;
+		NativeIndirectLighting indirect;
 		SelectionStats selectionStats;
 		std::atomic<std::shared_ptr<const std::vector<DX12::PreparedLight>>> shadowLights;
 		struct RuntimeLightSample

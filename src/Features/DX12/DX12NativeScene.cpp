@@ -3,6 +3,8 @@
 #include "../Upscaling.h"
 #include "../ReverseZ.h"
 #include "../LinearLighting.h"
+#include "../DynamicCubemaps.h"
+#include "../IBL.h"
 #include "DX12Control.h"
 #include "DX12Resources.h"
 #include "Globals.h"
@@ -60,6 +62,8 @@ void DX12NativeScene::DrawLightingSettings(bool /*developer*/)
 	const bool exclusive = globals::features::dx12Control.UsesExclusiveMaterials();
 	ImGui::BeginDisabled(!exclusive);
 	ImGui::Checkbox(T("menu.dx12.lighting.direct", "Direct lighting"), &directLightingEnabled);
+	ImGui::Checkbox(T("menu.dx12.lighting.indirect_diffuse", "Indirect diffuse"), &indirectDiffuseEnabled);
+	ImGui::Checkbox(T("menu.dx12.lighting.indirect_specular", "Indirect specular"), &indirectSpecularEnabled);
 	if (directLightingEnabled) {
 		const char* views[] = {
 			T("menu.dx12.lighting.view_raster", "Raster composite (preserve illumination)"),
@@ -74,7 +78,7 @@ void DX12NativeScene::DrawLightingSettings(bool /*developer*/)
 	}
 	ImGui::EndDisabled();
 	ImGui::TextWrapped("%s", exclusive ?
-		T("menu.dx12.lighting.native_direct_info", "Direct signals are evaluated independently. Raster composite preserves ambient and indirect light; lighting outputs are previews only.") :
+		T("menu.dx12.lighting.native_direct_info", "Direct and indirect signals are evaluated independently. Whole-pixel replacement remains gated; the raster composite preserves illumination.") :
 		T("menu.dx12.lighting.raster_active", "Raster lighting remains active."));
 }
 
@@ -120,6 +124,20 @@ void DX12NativeScene::DrawDevStats()
 				static_cast<unsigned long long>((uint64_t(lightStats.counts[7]) << 32) | lightStats.counts[6]));
 		}
 		if (directLightingEnabled && !lighting.DirectFailure().empty()) ImGui::TextWrapped("%s", lighting.DirectFailure().c_str());
+        if (indirectDiffuseEnabled || indirectSpecularEnabled) {
+            const auto env = lighting.GetEnvironment();
+            const auto& es = lighting.EnvironmentStats();
+            const auto& is = lighting.IndirectStats();
+            ImGui::Text("Environment publications: %llu | Shared cubes: %.2f MiB",
+                static_cast<unsigned long long>(es.Publications()), double(es.AllocationBytes()) / 1048576.0);
+            if (env) ImGui::Text("Base: %s | Reflection: %s | Sky: %s",
+                env->base ? "ready" : "missing", env->reflection ? "ready" : "missing", env->sky ? "ready" : "missing");
+            ImGui::Text("Indirect submissions: %llu | SH projections: %llu | Pool: %.2f MiB",
+                static_cast<unsigned long long>(is.Submissions()), static_cast<unsigned long long>(is.Projections()),
+                double(is.AllocationBytes()) / 1048576.0);
+            if (!es.Failure().empty()) ImGui::TextWrapped("%s", es.Failure().c_str());
+            if (!is.Failure().empty()) ImGui::TextWrapped("%s", is.Failure().c_str());
+        }
 	}
 	const auto built = acceleration.GetScene();
 	if (!built || !built->inputs) {
@@ -180,6 +198,8 @@ void DX12NativeScene::DrawDevStats()
 void DX12NativeScene::LoadSettings(json& input)
 {
 	directLightingEnabled = input.value("DirectLighting", false);
+	indirectDiffuseEnabled = input.value("IndirectDiffuse", false);
+	indirectSpecularEnabled = input.value("IndirectSpecular", false);
 	lightingView = input.value("LightingView", 0);
 	if (lightingView < 0 || lightingView > 7) lightingView = 0;
 	shadowMaskEnabled = input.value("ShadowMask", true);
@@ -200,7 +220,7 @@ void DX12NativeScene::LoadSettings(json& input)
 
 void DX12NativeScene::SaveSettings(json& output)
 {
-	output = { { "DirectLighting", directLightingEnabled }, { "LightingView", lightingView }, { "ShadowMask", shadowMaskEnabled }, { "OutdoorShadowOffloading", outdoorShadowOffloading }, { "ShadowTraceDensityMode", densityMode },
+	output = { { "DirectLighting", directLightingEnabled }, { "IndirectDiffuse", indirectDiffuseEnabled }, { "IndirectSpecular", indirectSpecularEnabled }, { "LightingView", lightingView }, { "ShadowMask", shadowMaskEnabled }, { "OutdoorShadowOffloading", outdoorShadowOffloading }, { "ShadowTraceDensityMode", densityMode },
 		{ "OffloadSCMStatic", offloadStaticShadows },
 		{ "OffloadFlickeringStatic", offloadFlickeringStatic },
 		{ "FreezeNativeFlickering", freezeNativeFlickering },
@@ -214,6 +234,8 @@ void DX12NativeScene::SaveSettings(json& output)
 void DX12NativeScene::RestoreDefaultSettings()
 {
 	directLightingEnabled = false;
+	indirectDiffuseEnabled = false;
+	indirectSpecularEnabled = false;
 	lightingView = 0;
 	materialCoveragePreview = false;
 	shadowMaskEnabled = true;
@@ -379,6 +401,66 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/
 		lighting.DispatchShadows(*backend, captured, built, frame, controls);
 }
 
+void DX12NativeScene::ResetEnvironmentCapture()
+{
+    if (environmentStamp.epoch) ++environmentEpoch;
+    environmentStamp = {};
+    globals::features::dynamicCubemaps.SetNativeCaptureContext({});
+    globals::features::ibl.SetNativeCaptureContext({});
+    lighting.ResetIndirect();
+}
+
+void DX12NativeScene::OnOpaqueRadianceReady(const OpaqueRasterInputs& inputs)
+{
+    using namespace DX12Native;
+    using namespace DX12Native::MaterialFrameContract;
+    const auto& control = globals::features::dx12Control;
+    const uint32_t enabled = (indirectDiffuseEnabled ? uint32_t(IndirectDiffuse) : 0u) |
+        (indirectSpecularEnabled ? uint32_t(IndirectSpecular) : 0u);
+    if (!loaded || globals::game::isVR || !control.IsActive() || !control.IsFullNativeMode() ||
+        !control.UsesExclusiveMaterials() || control.UsesNativeRasterInputs() || !enabled) {
+        ResetEnvironmentCapture();
+        return;
+    }
+    if (!backend || !opaqueRaster || !opaqueRaster->temporal.scope || !inputs.litColor || !inputs.litSpecular ||
+        !globals::state || !globals::game::graphicsState || globals::state->isMapMenuOpen ||
+        (globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)) ||
+        opaqueRaster->frame != globals::game::graphicsState->GetFrameCount() ||
+        opaqueRaster->temporal.pluginFrame != globals::state->frameCount)
+        return;
+    auto* renderer = RE::BSGraphics::Renderer::GetSingleton();
+    if (!renderer || inputs.litColor != Util::AsReal(renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].texture))
+        return;
+
+    // Dynamic Cubemaps runs immediately after this callback, on the same lit
+    // raster diffuse target and copied opaque depth. Never feed native specular
+    // or the later opaque composite back into environment capture.
+    const auto color = globals::features::linearLighting.GetCommonBufferData();
+    const auto encoding = color.enableLinearLighting ?
+        (color.enableACEScg ? EnvironmentEncoding::LinearAP1 : EnvironmentEncoding::LinearRec709) :
+        EnvironmentEncoding::LegacyScene;
+    EnvironmentStamp stamp{ environmentEpoch, opaqueRaster->temporal.scope, opaqueRaster->frame,
+        opaqueRaster->temporal.pluginFrame, encoding, Util::IsInterior() };
+    const float hours = globals::game::calendar ? globals::game::calendar->GetHoursPassed() : previousEnvironmentHours;
+    if (environmentStamp.epoch && (!environmentStamp.SameEnvironment(stamp) ||
+        (std::isfinite(hours) && std::abs(hours - previousEnvironmentHours) > 0.01f))) {
+        ResetEnvironmentCapture();
+        stamp.epoch = environmentEpoch;
+    }
+    environmentStamp = stamp;
+    if (std::isfinite(hours)) previousEnvironmentHours = hours;
+    auto& cubes = globals::features::dynamicCubemaps;
+    auto& ibl = globals::features::ibl;
+    cubes.SetNativeCaptureContext(stamp);
+    ibl.SetNativeCaptureContext(stamp);
+    const auto settings = ibl.GetCommonBufferData();
+    lighting.DispatchIndirect(*backend, GetOpaqueMaterialFrame(), stamp,
+        cubes.loaded ? cubes.GetNativeEnvironment(false) : EnvironmentSource{},
+        cubes.loaded && !stamp.interior && indirectSpecularEnabled ? cubes.GetNativeEnvironment(true) : EnvironmentSource{},
+        ibl.loaded && !stamp.interior && indirectDiffuseEnabled ? ibl.GetNativeSkyRadiance() : EnvironmentSource{},
+        enabled, settings.EnvIBLScale, settings.SkyIBLScale);
+}
+
 bool DX12NativeScene::PublishOpaqueLighting(std::shared_ptr<const DX12Native::OpaqueLightingFrame> frame)
 {
 	if (!frame || !opaqueRaster || !globals::features::dx12Control.UsesExclusiveMaterials() ||
@@ -524,6 +606,7 @@ void DX12NativeScene::OnSceneTransitionReset(bool a_opening)
 		lastTemporal = {};
 		opaqueRaster.reset();
 		opaqueLighting.reset();
+		ResetEnvironmentCapture();
 		lighting.Reset();
 		raster.Reset();
 		screenProbe.Reset();
@@ -538,6 +621,7 @@ void DX12NativeScene::OnRuntimeDisabled()
 	lastTemporal = {};
 	opaqueRaster.reset();
 	opaqueLighting.reset();
+	ResetEnvironmentCapture();
 	lighting.Reset();
 	raster.Reset();
 	screenProbe.Reset();

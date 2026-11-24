@@ -42,6 +42,7 @@ struct DX12NativeScene final : Feature
 	void SaveSettings(json& a_output) override;
 	void RestoreDefaultSettings() override;
 	void OnOpaqueRasterReady(const OpaqueRasterInputs& a_inputs) override;
+	void OnOpaqueRadianceReady(const OpaqueRasterInputs& a_inputs) override;
 	void OnOpaqueCompositeReady(const OpaqueRasterInputs& a_inputs) override;
 	/** @brief Accepts one complete, same-opaque-pass lighting publication before forward drawing. */
 	bool PublishOpaqueLighting(std::shared_ptr<const DX12Native::OpaqueLightingFrame> frame);
@@ -58,6 +59,13 @@ struct DX12NativeScene final : Feature
 		const auto direct = material && directLightingEnabled ? lighting.GetDirect(material->frame) : nullptr;
 		return direct && direct->material == material ? direct : nullptr;
 	}
+    /** @brief Same-pass environment-only signals, not sufficient for color ownership. */
+    std::shared_ptr<const DX12Native::IndirectLightingFrame> GetOpaqueIndirectLightingFrame() const
+    {
+        const auto material = GetOpaqueMaterialFrame();
+        const auto indirect = material ? lighting.GetIndirect(material->frame) : nullptr;
+        return indirect && indirect->material == material ? indirect : nullptr;
+    }
 	/** @brief Observe CPU-backed opaque rigid geometry from SCM or normal render passes. */
 	void ObserveSCMRigidCaster(RE::BSGeometry& geometry, bool requireStability = false);
 	/** @brief SCM hands native-owned lights' static casters to RayQuery and retains movers. */
@@ -130,6 +138,11 @@ private:
 	bool screenProbeEnabled = false;
 	bool materialCoveragePreview = false;
 	bool directLightingEnabled = false;
+    bool indirectDiffuseEnabled = false, indirectSpecularEnabled = false;
+    DX12Native::EnvironmentStamp environmentStamp{};
+    uint64_t environmentEpoch = 1;
+    float previousEnvironmentHours = 0.0f;
+    void ResetEnvironmentCapture();
 	int lightingView = 0;
 	bool fullResolutionMaterialProbe = false;
 	bool continuousMaterialProbe = false;

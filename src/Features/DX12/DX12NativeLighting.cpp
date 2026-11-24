@@ -201,6 +201,14 @@ namespace DX12Native
 		direct.Dispatch(backend, std::move(material), lights, inputsAvailable, controls);
 	}
 
+    void NativeLighting::DispatchIndirect(const GraphicsBackend& backend, std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
+        const EnvironmentStamp& stamp, const EnvironmentSource& base, const EnvironmentSource& reflection,
+        const EnvironmentSource& sky, uint32_t enabled, float environmentScale, float skyScale)
+    {
+        environment.Capture(backend, stamp, base, reflection, sky);
+        indirect.Dispatch(backend, std::move(material), environment.Get(), enabled, environmentScale, skyScale);
+    }
+
 	void NativeLighting::ClearFrozenLights()
 	{
 		std::scoped_lock lock(runtimeLightMutex);
@@ -220,6 +228,7 @@ namespace DX12Native
 		}
 		shadows.Reset();
 		direct.Reset();
+		ResetIndirect();
 		selectionStats = {};
 	}
 }
