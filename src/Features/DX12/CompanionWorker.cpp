@@ -5,6 +5,7 @@
 #include <charconv>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <format>
 #include <fstream>
 #include <ranges>
@@ -42,8 +43,18 @@ namespace DX12
 			return result;
 		}
 
-		std::filesystem::path PluginsFile()
+		std::filesystem::path PluginsFile(bool fullNative)
 		{
+			if (fullNative) {
+				const DWORD profileLength = GetEnvironmentVariableW(L"CS_MO2_PROFILE", nullptr, 0);
+				if (profileLength > 1 && profileLength <= 32768) {
+					std::wstring profile(profileLength, L'\0');
+					if (GetEnvironmentVariableW(L"CS_MO2_PROFILE", profile.data(), profileLength) == profileLength - 1) {
+						profile.resize(profileLength - 1);
+						return std::filesystem::path(profile) / L"plugins.txt";
+					}
+				}
+			}
 			const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
 			if (length < 2 || length > 32768)
 				return {};
@@ -172,14 +183,14 @@ namespace DX12
 			const auto executable = std::filesystem::absolute(
 				L"Data/SKSE/Plugins/CommunityShaders/DX12Resources/bin/DX12ResourcesPrep.exe");
 			const auto data = std::filesystem::absolute(L"Data");
-			const auto plugins = PluginsFile();
+			const auto plugins = PluginsFile(task.fullNative);
 			std::error_code ec;
 			if (!std::filesystem::is_regular_file(executable, ec)) {
 				failure = "Missing DX12ResourcesPrep.exe in DX12Resources/bin (AIO installation required)";
 				return false;
 			}
 			if (!std::filesystem::is_regular_file(plugins, ec)) {
-				failure = "Skyrim SE plugins.txt is unavailable in LocalAppData";
+				failure = "Skyrim SE plugins.txt is unavailable (LocalAppData or configured MO2 profile)";
 				return false;
 			}
 			// Host-owned per-session mailbox; no persistent geometry output or diagnostics.
@@ -202,7 +213,8 @@ namespace DX12
 				{ "x", task.key.x },
 				{ "y", task.key.y },
 				{ "size", task.size },
-				{ "worldspace", task.worldspace }
+				{ "worldspace", task.worldspace },
+				{ "fullNative", task.fullNative }
 			};
 			{
 				std::ofstream stream(requestTmp, std::ios::binary | std::ios::trunc);
@@ -254,6 +266,35 @@ namespace DX12
 			// A superseded or timed-out request kills only the companion job, not Skyrim.
 			service.Close();
 			return false;
+		}
+
+		std::shared_ptr<const GeometryAsset> InternGeometry(Shape& shape)
+		{
+			// This registry belongs to the single Companion worker thread. Weak
+			// references cannot pin CPU or GPU residency. Hash collisions require
+			// an exact comparison before sharing.
+			static thread_local std::unordered_multimap<uint64_t, std::weak_ptr<const GeometryAsset>> assets;
+			uint64_t hash = 14695981039346656037ull;
+			const auto mix = [&](const void* data, size_t bytes) {
+				const auto* p = static_cast<const unsigned char*>(data);
+				for (size_t i = 0; i < bytes; ++i) { hash ^= p[i]; hash *= 1099511628211ull; }
+			};
+			mix(shape.positions.data(), shape.positions.size() * sizeof(float3));
+			mix(shape.indices.data(), shape.indices.size() * sizeof(uint32_t));
+			const auto [first, last] = assets.equal_range(hash);
+			for (auto it = first; it != last; ++it)
+				if (auto asset = it->second.lock(); asset && asset->positions.size() == shape.positions.size() &&
+					asset->indices == shape.indices &&
+					std::memcmp(asset->positions.data(), shape.positions.data(), shape.positions.size() * sizeof(float3)) == 0)
+					return asset;
+			if (assets.size() >= 8192)
+				std::erase_if(assets, [](const auto& entry) { return entry.second.expired(); });
+			auto asset = std::make_shared<GeometryAsset>();
+			asset->positions = std::move(shape.positions);
+			asset->indices = std::move(shape.indices);
+			if (assets.size() < 8192)
+				assets.emplace(hash, asset);
+			return asset;
 		}
 
 		std::array<float, 3> Triple(const json& values)
@@ -412,7 +453,8 @@ namespace DX12
 			}
 			if (root.at("version").get<uint32_t>() != 2 ||
 				!root.at("shapes").is_array() || root.at("shapes").size() > kMaxPreparedShapes ||
-				!root.at("lights").is_array() || root.at("lights").size() > kMaxPreparedLights) {
+				!root.at("lights").is_array() || root.at("lights").size() > kMaxPreparedLights ||
+				root.value("fullNative", false) != task.fullNative) {
 				result.failure = "Companion reply schema/shape/light-count invalid";
 				return result;
 			}
@@ -422,6 +464,8 @@ namespace DX12
 			if (geometryCount > root.at("shapes").size() || geometryCount > kMaxPreparedShapes)
 				throw std::invalid_argument("Companion geometry count invalid");
 			std::vector<Shape> geometries;
+			uint64_t shadingBytes = 0;
+			constexpr uint64_t kMaximumShadingBytes = 48ull * 1024 * 1024;
 			geometries.reserve(geometryCount);
 			uint64_t uniqueGeometryBytes = 0;
 			for (uint32_t i = 0; i < geometryCount; ++i) {
@@ -448,7 +492,74 @@ namespace DX12
 				if (!std::ranges::all_of(geometry.indices, [&](uint32_t index) { return index < vertexCount; }))
 					throw std::invalid_argument("Invalid RSGM index");
 				uniqueGeometryBytes += length;
+				if (task.fullNative) {
+					const auto shadingLength = readU32();
+					if (shadingLength > kMaximumShadingBytes - shadingBytes)
+						throw std::invalid_argument("Companion shading byte budget exceeded");
+					if (shadingLength) {
+						std::vector<char> raw(shadingLength);
+						readExact(raw.data(), raw.size());
+						shadingBytes += shadingLength;
+						// Invalid optional shading is not grounds to discard valid geometry.
+						if (raw.size() >= 16) {
+							std::array<uint32_t, 4> header{};
+							std::memcpy(header.data(), raw.data(), 16);
+							if (header[0] == 0x41475352 && header[2] == vertexCount &&
+								((header[1] == 1 && header[3] == 36) || (header[1] == 2 && header[3] == 60)) &&
+								uint64_t(header[2]) * header[3] == raw.size() - 16) {
+								auto shading = std::make_shared<PreparedShading>();
+								shading->stride = header[3];
+								shading->attributes.resize((raw.size() - 16) / sizeof(float));
+								std::memcpy(shading->attributes.data(), raw.data() + 16, raw.size() - 16);
+								if (std::ranges::all_of(shading->attributes, [](float v) { return std::isfinite(v); }))
+									geometry.shading = std::move(shading);
+							}
+						}
+					}
+				}
+				if (task.fullNative)
+					geometry.geometry = InternGeometry(geometry);
 				geometries.push_back(std::move(geometry));
+			}
+			if (task.fullNative) {
+				const auto& materials = root.at("materials");
+				if (!materials.is_array() || materials.size() != geometries.size())
+					throw std::invalid_argument("Companion material table count invalid");
+				for (size_t index = 0; index < geometries.size(); ++index) {
+					auto& geometry = geometries[index];
+					if (!geometry.shading || materials[index].is_null()) {
+						geometry.shading.reset();
+						continue;
+					}
+					try {
+						const auto& item = materials[index];
+						auto shading = std::const_pointer_cast<PreparedShading>(geometry.shading);
+						shading->sourceNif = item.at("sourceNif").get<std::string>();
+						shading->sourceHash = item.at("sourceHash").get<std::string>();
+						shading->provenance = item.at("provenance").get<std::string>();
+						shading->blockIndex = item.at("blockIndex").get<int32_t>();
+						shading->shaderFlags1 = item.at("shaderFlags1").get<uint32_t>();
+						shading->shaderFlags2 = item.at("shaderFlags2").get<uint32_t>();
+						shading->alpha = item.at("alpha").get<float>();
+						shading->twoSided = item.at("twoSided").get<bool>();
+						shading->clampMode = item.at("clampMode").get<int32_t>();
+						if (!item.at("uvTransform").is_null())
+							shading->uvTransform = item.at("uvTransform").get<std::vector<float>>();
+						shading->textures = item.at("textures").get<std::vector<std::string>>();
+						if (!shading->sourceNif.starts_with("meshes\\") || shading->sourceNif.size() > 260 ||
+							shading->sourceHash.size() != 64 || shading->provenance.size() > 260 ||
+							shading->blockIndex < 0 || !std::isfinite(shading->alpha) ||
+							shading->clampMode < -1 || shading->clampMode > 3 ||
+							(!shading->uvTransform.empty() && shading->uvTransform.size() != 4) ||
+							!std::ranges::all_of(shading->uvTransform, [](float v) { return std::isfinite(v); }) ||
+							shading->textures.size() > 16 || !std::ranges::all_of(shading->textures, [](const auto& p) {
+								return p.empty() || (p.size() <= 260 && p.starts_with("textures\\") && p.find("..") == std::string::npos);
+							}))
+							throw std::invalid_argument("Invalid prepared material");
+					} catch (const std::exception&) {
+						geometry.shading.reset();
+					}
+				}
 			}
 			if (stream.peek() != std::char_traits<char>::eof())
 				throw std::invalid_argument("Unexpected trailing companion payload");
@@ -510,8 +621,8 @@ namespace DX12
 				if (geometryIndex >= geometries.size())
 					throw std::invalid_argument("Invalid companion geometry reference");
 				const auto& geometry = geometries[geometryIndex];
-				const uint64_t length = uint64_t(geometry.positions.size()) * sizeof(float3) +
-				                        uint64_t(geometry.indices.size()) * sizeof(uint32_t);
+				const uint64_t length = uint64_t(geometry.Positions().size()) * sizeof(float3) +
+				                        uint64_t(geometry.Indices().size()) * sizeof(uint32_t);
 				if (length > kMaximumTileBytes - publication.geometryBytes)
 					throw std::invalid_argument("Companion expanded geometry budget exceeded");
 				const auto& transform = item.at("transform");
@@ -522,10 +633,14 @@ namespace DX12
 				if (!shape->identity || !identities.insert(shape->identity).second ||
 					!std::ranges::all_of(shape->transform, [](float value) { return std::isfinite(value); }))
 					throw std::invalid_argument("Companion placement failed validation");
-				// The existing scene ABI owns placed vectors. Deduplicate the transfer
-				// only for now; the expanded resident budget still applies.
-				shape->positions = geometry.positions;
-				shape->indices = geometry.indices;
+				// Full Native shares immutable assets; retain conservative expanded
+				// budget accounting until the grid has unique-asset accounting.
+				shape->shading = geometry.shading;
+				shape->geometry = geometry.geometry;
+				if (!shape->geometry) {
+					shape->positions = geometry.positions;
+					shape->indices = geometry.indices;
+				}
 				publication.geometryBytes += length;
 				publication.shapes.push_back(std::move(shape));
 			}
@@ -557,6 +672,7 @@ namespace DX12
 					++publication.rejectedLights;
 				}
 			}
+			publication.geometryBytes += shadingBytes;  // Includes optional resident attributes for CPU residency accounting.
 			publication.validated = true;
 			if (!publication.enumerationComplete || publication.failedShapes ||
 				publication.eligibleShapes != publication.shapes.size())

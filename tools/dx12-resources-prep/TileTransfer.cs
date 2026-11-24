@@ -12,12 +12,12 @@ internal static class TileTransfer
 
     internal static void Write(string path, TileResult result, JsonSerializerOptions options, FileMode mode)
     {
-        var geometry = new List<(Vector3[] Positions, uint[] Indices)>();
-        var lookup = new Dictionary<(Vector3[], uint[]), int>();
+        var geometry = new List<(Vector3[] Positions, uint[] Indices, byte[]? Shading, MaterialSource? Material)>();
+        var lookup = new Dictionary<(Vector3[], uint[], byte[]?, MaterialSource?), int>();
         var placements = result.Shapes.Select(shape =>
         {
             // Decoded NIF arrays are immutable and shared across placements in a tile.
-            var key = (shape.Positions, shape.Indices);
+            var key = (shape.Positions, shape.Indices, shape.Shading, shape.Material);
             if (!lookup.TryGetValue(key, out var index))
             {
                 index = geometry.Count;
@@ -30,6 +30,7 @@ internal static class TileTransfer
         {
             Version = 2, result.EligibleShapes, result.FailedShapes, result.EnumerationComplete,
             Shapes = placements, GeometryCount = geometry.Count, result.Lights, result.Failure,
+            result.FullNative, Materials = result.FullNative ? geometry.Select(blob => blob.Material).ToArray() : null,
             result.RejectionReasons, result.NifSources, result.MissingShapes
         }, options);
         if (metadata.Length > MaximumMetadataBytes)
@@ -53,6 +54,11 @@ internal static class TileTransfer
                 writer.Write(position.Z);
             }
             foreach (var index in blob.Indices) writer.Write(index);
+            if (result.FullNative)
+            {
+                writer.Write((uint)(blob.Shading?.Length ?? 0));
+                if (blob.Shading != null) writer.Write(blob.Shading);
+            }
         }
     }
 }

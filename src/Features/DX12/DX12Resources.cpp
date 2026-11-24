@@ -275,11 +275,11 @@ namespace DX12
 		constexpr size_t kMaximumRuntimeShapes = 2048;
 		constexpr uint64_t kMaximumRuntimeBytes = 64ull * 1024 * 1024;
 		constexpr uint64_t kMaximumSingleShapeBytes = 1024ull * 1024;
-		if (!shape || !shape->identity || shape->positions.empty() || shape->indices.empty() ||
-			shape->indices.size() % 3)
+		if (!shape || !shape->identity || shape->Positions().empty() || shape->Indices().empty() ||
+			shape->Indices().size() % 3)
 			return false;
-		const uint64_t shapeBytes = uint64_t(shape->positions.size()) * sizeof(float3) +
-		                            uint64_t(shape->indices.size()) * sizeof(uint32_t);
+		const uint64_t shapeBytes = uint64_t(shape->Positions().size()) * sizeof(float3) +
+		                            uint64_t(shape->Indices().size()) * sizeof(uint32_t);
 		if (!shapeBytes || shapeBytes > kMaximumSingleShapeBytes)
 			return false;
 		std::scoped_lock lock(mutex);
@@ -636,6 +636,11 @@ void DX12Resources::PreShadowMaps()
 			ResetPreparation();
 		return;
 	}
+	const bool selectedProfile = globals::features::dx12Control.IsFullNativeMode();
+	if (selectedProfile != fullNativeProfile) {
+		ResetPreparation();
+		fullNativeProfile = selectedProfile;
+	}
 	const auto* player = globals::game::player;
 	const auto* cell = player ? player->GetParentCell() : nullptr;
 	if (!cell)
@@ -753,6 +758,7 @@ void DX12Resources::PreShadowMaps()
 				task.localScopeID = source->GetLocalFormID();
 				task.scopePlugin = file->GetFilename();
 				task.worldspace = world != nullptr;
+				task.fullNative = fullNativeProfile;
 				if (companion->Enqueue(std::move(task))) {
 					inFlight = *request;
 					return;

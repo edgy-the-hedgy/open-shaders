@@ -85,13 +85,13 @@ namespace DX12Native
 		void Retire();
 		bool BuildBottom(Build& a_build, const std::shared_ptr<const DX12::Shape>& a_shape);
 		bool BuildTop(Build& a_build);
-		bool HasPendingBottom(uint64_t a_identity, const DX12::Shape* a_shape) const;
+		bool HasPendingBottom(const void* a_key) const;
 
 		GraphicsBackend backend;
 		winrt::com_ptr<ID3D12Device5> device;
 		winrt::com_ptr<ID3D12Fence> completion;
 		std::array<Build, 2> builds;
-		std::unordered_map<uint64_t, std::shared_ptr<const BottomLevel>> bottoms;
+		std::unordered_map<const void*, std::shared_ptr<const BottomLevel>> bottoms;
 		std::vector<Consumer> consumers;
 		std::shared_ptr<const SceneInputs> target;
 		std::shared_ptr<const TopLevel> published;

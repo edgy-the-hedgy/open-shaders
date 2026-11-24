@@ -73,14 +73,14 @@ namespace DX12Native
 		// Companion-produced shapes take precedence over equivalent runtime shapes.
 		bool SameShape(const DX12::Shape& a, const DX12::Shape& b)
 		{
-			if (a.positions.size() != b.positions.size() || a.indices != b.indices)
+			if (a.Positions().size() != b.Positions().size() || a.Indices() != b.Indices())
 				return false;
 			for (size_t i = 0; i < a.transform.size(); ++i)
 				if (std::abs(a.transform[i] - b.transform[i]) > 0.01f)
 					return false;
-			for (size_t i = 0; i < a.positions.size(); ++i) {
-				const auto& x = a.positions[i];
-				const auto& y = b.positions[i];
+			for (size_t i = 0; i < a.Positions().size(); ++i) {
+				const auto& x = a.Positions()[i];
+				const auto& y = b.Positions()[i];
 				if (std::abs(x.x - y.x) > 0.01f ||
 					std::abs(x.y - y.y) > 0.01f ||
 					std::abs(x.z - y.z) > 0.01f)

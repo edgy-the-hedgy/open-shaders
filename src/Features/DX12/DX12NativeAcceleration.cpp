@@ -141,29 +141,29 @@ namespace DX12Native
 
 	bool AccelerationScene::BuildBottom(Build& a_build, const std::shared_ptr<const DX12::Shape>& a_shape)
 	{
-		if (!a_shape || !a_shape->identity || a_shape->positions.empty() ||
-			a_shape->indices.empty() || a_shape->indices.size() % 3u ||
-			a_shape->positions.size() > UINT32_MAX || a_shape->indices.size() > UINT32_MAX)
+		if (!a_shape || !a_shape->identity || a_shape->Positions().empty() ||
+			a_shape->Indices().empty() || a_shape->Indices().size() % 3u ||
+			a_shape->Positions().size() > UINT32_MAX || a_shape->Indices().size() > UINT32_MAX)
 			return false;
-		const uint64_t vertexBytes = uint64_t(a_shape->positions.size()) * sizeof(float3);
-		const uint64_t indexBytes = uint64_t(a_shape->indices.size()) * sizeof(uint32_t);
+		const uint64_t vertexBytes = uint64_t(a_shape->Positions().size()) * sizeof(float3);
+		const uint64_t indexBytes = uint64_t(a_shape->Indices().size()) * sizeof(uint32_t);
 		a_build.sourceUpload = Buffer(vertexBytes + indexBytes, D3D12_HEAP_TYPE_UPLOAD,
 			D3D12_RESOURCE_STATE_GENERIC_READ, L"DX12NativeScene::RigidGeometryUpload");
 		void* mapped = nullptr;
 		const D3D12_RANGE noRead{ 0, 0 };
 		Check(a_build.sourceUpload->Map(0, &noRead, &mapped));
-		std::memcpy(mapped, a_shape->positions.data(), size_t(vertexBytes));
-		std::memcpy(static_cast<uint8_t*>(mapped) + vertexBytes, a_shape->indices.data(), size_t(indexBytes));
+		std::memcpy(mapped, a_shape->Positions().data(), size_t(vertexBytes));
+		std::memcpy(static_cast<uint8_t*>(mapped) + vertexBytes, a_shape->Indices().data(), size_t(indexBytes));
 		a_build.sourceUpload->Unmap(0, nullptr);
 
 		D3D12_RAYTRACING_GEOMETRY_DESC triangle{};
 		triangle.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
 		triangle.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
 		triangle.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
-		triangle.Triangles.VertexCount = UINT(a_shape->positions.size());
+		triangle.Triangles.VertexCount = UINT(a_shape->Positions().size());
 		triangle.Triangles.VertexBuffer = { a_build.sourceUpload->GetGPUVirtualAddress(), sizeof(float3) };
 		triangle.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
-		triangle.Triangles.IndexCount = UINT(a_shape->indices.size());
+		triangle.Triangles.IndexCount = UINT(a_shape->Indices().size());
 		triangle.Triangles.IndexBuffer = a_build.sourceUpload->GetGPUVirtualAddress() + vertexBytes;
 
 		D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs{};
@@ -209,8 +209,8 @@ namespace DX12Native
 		top->bottoms.reserve(target->geometry.size());
 
 		for (const auto& input : target->geometry) {
-			const auto found = bottoms.find(input.shape->identity);
-			if (found == bottoms.end() || found->second->shape.get() != input.shape.get())
+			const auto found = bottoms.find(input.shape->GeometryKey());
+			if (found == bottoms.end() || found->second->shape->GeometryKey() != input.shape->GeometryKey())
 				return false;
 			D3D12_RAYTRACING_INSTANCE_DESC desc{};
 			std::memcpy(desc.Transform, input.shape->transform.data(), sizeof(desc.Transform));
@@ -260,11 +260,11 @@ namespace DX12Native
 		return true;
 	}
 
-	bool AccelerationScene::HasPendingBottom(uint64_t a_identity, const DX12::Shape* a_shape) const
+	bool AccelerationScene::HasPendingBottom(const void* a_key) const
 	{
 		return std::ranges::any_of(builds, [&](const auto& build) {
 			return build.generation == generation && build.bottom &&
-			       build.bottom->shape->identity == a_identity && build.bottom->shape.get() == a_shape;
+			       build.bottom->shape->GeometryKey() == a_key;
 		});
 	}
 
@@ -280,7 +280,7 @@ namespace DX12Native
 				continue;
 			if (build.generation == generation) {
 				if (build.bottom)
-					bottoms[build.bottom->shape->identity] = build.bottom;
+					bottoms[build.bottom->shape->GeometryKey()] = build.bottom;
 				if (build.top)
 					published = build.top;
 			}
@@ -319,10 +319,10 @@ namespace DX12Native
 			target = std::move(a_inputs);
 			targetRevision = target->geometryRevision;
 			targetScope = scope;
-			std::unordered_set<uint64_t> wanted;
+			std::unordered_set<const void*> wanted;
 			for (const auto& input : target->geometry)
 				if (input.shape)
-					wanted.insert(input.shape->identity);
+					wanted.insert(input.shape->GeometryKey());
 			std::erase_if(bottoms, [&](const auto& pair) {
 				return !wanted.contains(pair.first);
 			});
@@ -344,10 +344,10 @@ namespace DX12Native
 			for (const auto& input : target->geometry) {
 				if (!input.shape)
 					continue;
-				const auto found = bottoms.find(input.shape->identity);
-				if (found != bottoms.end() && found->second->shape.get() == input.shape.get())
+				const auto found = bottoms.find(input.shape->GeometryKey());
+				if (found != bottoms.end() && found->second->shape->GeometryKey() == input.shape->GeometryKey())
 					continue;
-				if (HasPendingBottom(input.shape->identity, input.shape.get()))
+				if (HasPendingBottom(input.shape->GeometryKey()))
 					return;
 				if (!BuildBottom(*available, input.shape))
 					*available = {};

@@ -84,11 +84,12 @@ static async Task<int> ServeAsync(string[] arguments)
                     var y = root.GetProperty("y").GetInt64();
                     var size = root.GetProperty("size").GetInt32();
                     var worldspace = root.GetProperty("worldspace").GetBoolean();
+                    var fullNative = root.TryGetProperty("fullNative", out var profile) && profile.GetBoolean();
                     if (size is not (4096 or 6144 or 8192 or 10240 or 12288 or 14336 or 16384) ||
                         Math.Abs(x) > 1_000_000 || Math.Abs(y) > 1_000_000 ||
                         !File.Exists(Path.Combine(data, scope.ModKey.ToString())))
                         throw new InvalidDataException("Invalid companion scope");
-                    result = prepare(scope, x, y, size, worldspace, sessionRoot);
+                    result = prepare(scope, x, y, size, worldspace, sessionRoot, fullNative);
                 }
                 catch (Exception error) when (error is not OutOfMemoryException)
                 {
@@ -136,7 +137,8 @@ static string DescribeFailure(string stage, Exception error)
     return detail.Length <= 320 ? detail : detail[..320];
 }
 
-internal sealed record TileShape(ulong Identity, Vector3[] Positions, uint[] Indices, float[] Transform);
+internal sealed record TileShape(ulong Identity, Vector3[] Positions, uint[] Indices, float[] Transform,
+    byte[]? Shading = null, MaterialSource? Material = null);
 internal sealed record TileNifSource(string ReferencePlugin, uint ReferenceLocal, string NifPath);
 internal sealed record TileMissingNifShape(string ReferencePlugin, uint ReferenceLocal, string NifPath,
     int BlockIndex, string Reason);
@@ -145,8 +147,9 @@ internal sealed record TileLight(string ReferencePlugin, uint ReferenceLocal, st
 internal sealed record TileResult(uint Version, uint EligibleShapes, uint FailedShapes, bool EnumerationComplete,
     List<TileShape> Shapes, List<TileLight> Lights, string Failure = "",
     Dictionary<string, uint>? RejectionReasons = null,
-    List<TileNifSource>? NifSources = null, List<TileMissingNifShape>? MissingShapes = null);
-internal sealed record ModelShape(int Index, Vector3[] Positions, uint[] Indices, Matrix4x4 ToModel);
+    List<TileNifSource>? NifSources = null, List<TileMissingNifShape>? MissingShapes = null, bool FullNative = false);
+internal sealed record ModelShape(int Index, Vector3[] Positions, uint[] Indices, Matrix4x4 ToModel,
+    byte[]? Shading = null, MaterialSource? Material = null);
 internal sealed record MissingModelShape(int Index, string Reason);
 internal sealed record ModelExtraction(ModelShape[] Shapes, MissingModelShape[] Missing,
     Dictionary<string, uint> Rejections);
@@ -165,10 +168,10 @@ internal static class SceneTile
         bool isWorldspace, string scratch)
     {
         var (run, owner) = OpenSession(data, pluginsPath);
-        using (owner) return run(scope, tileX, tileY, size, isWorldspace, scratch);
+        using (owner) return run(scope, tileX, tileY, size, isWorldspace, scratch, false);
     }
 
-    internal static (Func<FormKey, long, long, int, bool, string, TileResult> Run, IDisposable Owner)
+    internal static (Func<FormKey, long, long, int, bool, string, bool, TileResult> Run, IDisposable Owner)
         OpenSession(string data, string pluginsPath)
     {
         var official = new[] { "Skyrim.esm", "Update.esm", "Dawnguard.esm", "HearthFires.esm", "Dragonborn.esm" };
@@ -190,11 +193,15 @@ internal static class SceneTile
         bool placementWorldspace = false, placementFoundScope = false;
         int placementSize = 0;
         long placementMinX = 0, placementMinY = 0, placementMaxX = 0, placementMaxY = 0;
+        FullNativeContext? native = null;
+        var placementBounds = new Dictionary<FormKey, (Vector2 Low, Vector2 High)>();
 
         // Keep Mutagen and archive readers alive across the 5x5 request stream.
         // Model triangles remain per-tile and are not stored between preparations.
-        TileResult Run(FormKey scope, long tileX, long tileY, int size, bool isWorldspace, string scratch)
+        TileResult Run(FormKey scope, long tileX, long tileY, int size, bool isWorldspace, string scratch, bool fullNative)
         {
+        // Never initialize the persistent cache or PG resolver for a lightweight request.
+        var full = fullNative ? (native ??= new FullNativeContext(data)) : null;
         // Last override wins. No mesh processing occurs outside the requested
         // scope; for exterior tiles even candidates are bounded by a halo.
         // A 9x9 placement window contains the complete candidate origin halo
@@ -207,6 +214,7 @@ internal static class SceneTile
         if (!reuseWindow)
         {
             placementWindow = new Dictionary<FormKey, IPlacedGetter>();
+            placementBounds.Clear();
             placementScope = scope;
             placementSize = size;
             placementWorldspace = isWorldspace;
@@ -240,7 +248,7 @@ internal static class SceneTile
                         if (placementWindow.Count > 150_000)
                         {
                             placementWindow = null;
-                            return new TileResult(1, 0, 1, false, [], []);
+                            return new TileResult(1, 0, 1, false, [], [], FullNative: fullNative);
                         }
                     }
                 }
@@ -288,7 +296,9 @@ internal static class SceneTile
                 Reject("NIF source manifest capacity");
             AddMissing(reference, nifPath, -1, reason);
         }
-        long bytes = 0;
+        long bytes = 0, shadingBytes = 0;
+        var admittedShading = new HashSet<byte[]>();
+        var deferredShading = new HashSet<byte[]>();
         foreach (var candidate in candidates.Values)
         {
             // The cached placement window is wider than one subcell's origin
@@ -379,7 +389,9 @@ internal static class SceneTile
                         placed.FormKey.ID, unresolvedNif));
                 else
                     Reject("NIF source manifest capacity");
-                var extraction = LoadModel(data, unresolvedNif, models, ref cachedModelBytes, archives, scratch);
+                if (placementBounds.TryGetValue(placed.FormKey, out var known) &&
+                    !BoundsOverlap(known.Low, known.High, tileX, tileY, size)) continue;
+                var extraction = LoadModel(data, unresolvedNif, models, ref cachedModelBytes, archives, scratch, full);
                 foreach (var (reason, count) in extraction.Rejections)
                     Reject(reason, count);
                 foreach (var missing in extraction.Missing)
@@ -387,6 +399,17 @@ internal static class SceneTile
                 var mesh = extraction.Shapes;
                 var rotation = new[] { placement.Rotation.X, placement.Rotation.Y, placement.Rotation.Z };
                 var toWorld = PlacementTransform.FromRecord(position, rotation, obj.Scale ?? 1.0f);
+                if (mesh.Length > 0 && extraction.Rejections.Count == 0 && !placementBounds.ContainsKey(placed.FormKey))
+                {
+                    var low = new Vector2(float.PositiveInfinity);
+                    var high = new Vector2(float.NegativeInfinity);
+                    foreach (var item in mesh)
+                    {
+                        var bounds = Bounds(item.Positions, item.ToModel * toWorld);
+                        low = Vector2.Min(low, bounds.Low); high = Vector2.Max(high, bounds.High);
+                    }
+                    placementBounds[placed.FormKey] = (low, high);
+                }
                 foreach (var shape in mesh)
                 {
                     var transform = shape.ToModel * toWorld;
@@ -402,9 +425,21 @@ internal static class SceneTile
                         continue;
                     }
                     bytes += shapeBytes;
+                    var shading = shape.Shading;
+                    if (shading != null && deferredShading.Contains(shading)) shading = null;
+                    if (shading != null && !admittedShading.Contains(shading))
+                    {
+                        if (shading.Length > MaxGeometryBytes - shadingBytes)
+                        {
+                            deferredShading.Add(shading);
+                            shading = null;
+                            Reject("tile shading byte budget exceeded");
+                        }
+                        else { admittedShading.Add(shading); shadingBytes += shading.Length; }
+                    }
                     shapes.Add(new TileShape(Identity(placed.FormKey.ToString(), shape.Index),
-                        shape.Positions, shape.Indices,
-                        PlacementTransform.ToRows(transform)));
+                        shape.Positions, shape.Indices, PlacementTransform.ToRows(transform),
+                        shading, shading != null ? shape.Material : null));
                 }
             }
             catch (Exception error) when (error is not OutOfMemoryException)
@@ -421,7 +456,7 @@ internal static class SceneTile
         if (lightCapacityExceeded && rejections.Count < 12)
             rejections["tile light capacity"] = 1;
         return new TileResult(1, eligible, failed, !isWorldspace && foundScope && !lightCapacityExceeded,
-            shapes, lights, "", rejections, nifSources, missingShapes);
+            shapes, lights, "", rejections, nifSources, missingShapes, fullNative);
         }
         return (Run, environment);
     }
@@ -430,7 +465,7 @@ internal static class SceneTile
         x >= tx * (double)size && x < (tx + 1) * (double)size &&
         y >= ty * (double)size && y < (ty + 1) * (double)size;
 
-    private static bool Overlaps(Vector3[] vertices, Matrix4x4 transform, long tx, long ty, int size)
+    private static (Vector2 Low, Vector2 High) Bounds(Vector3[] vertices, Matrix4x4 transform)
     {
         var low = new Vector2(float.PositiveInfinity);
         var high = new Vector2(float.NegativeInfinity);
@@ -441,8 +476,17 @@ internal static class SceneTile
             low = Vector2.Min(low, new Vector2(p.X, p.Y));
             high = Vector2.Max(high, new Vector2(p.X, p.Y));
         }
-        return low.X < (tx + 1) * (double)size && high.X >= tx * (double)size &&
-            low.Y < (ty + 1) * (double)size && high.Y >= ty * (double)size;
+        return (low, high);
+    }
+
+    private static bool BoundsOverlap(Vector2 low, Vector2 high, long tx, long ty, int size) =>
+        low.X < (tx + 1) * (double)size && high.X >= tx * (double)size &&
+        low.Y < (ty + 1) * (double)size && high.Y >= ty * (double)size;
+
+    private static bool Overlaps(Vector3[] vertices, Matrix4x4 transform, long tx, long ty, int size)
+    {
+        var b = Bounds(vertices, transform);
+        return BoundsOverlap(b.Low, b.High, tx, ty, size);
     }
 
     private static string NormalizeNifPath(string path)
@@ -453,7 +497,7 @@ internal static class SceneTile
     }
 
     private static ModelExtraction LoadModel(string data, string path, Dictionary<string, ModelExtraction> cache,
-        ref long cachedBytes, Lazy<IArchiveReader[]> archives, string scratch)
+        ref long cachedBytes, Lazy<IArchiveReader[]> archives, string scratch, FullNativeContext? full)
     {
         path = NormalizeNifPath(path);
         if (Path.IsPathRooted(path) || path.Split('\\').Any(part => part is ".." or "." or ""))
@@ -464,6 +508,7 @@ internal static class SceneTile
             throw new InvalidDataException("Mesh escaped Data");
         var nif = new NifFile();
         var temporary = string.Empty;
+        string? sourceHash = null, provenance = null;
         try
         {
             if (!File.Exists(filename))
@@ -480,6 +525,16 @@ internal static class SceneTile
                     File.WriteAllBytes(temporary, entry.GetBytes());
                     filename = temporary;
                     break;
+                }
+            }
+            if (full != null && File.Exists(filename))
+            {
+                (sourceHash, provenance) = full.Verify(path, filename, temporary.Length == 0);
+                if (sourceHash != null && full.TryRead(sourceHash, path, provenance!, out var prior))
+                {
+                    // Use the same bounded per-tile cache accounting as a fresh decode.
+                    RememberDecoded(path, prior, cache, ref cachedBytes);
+                    return prior;
                 }
             }
             if (nif.Load(filename) != 0)
@@ -539,7 +594,23 @@ internal static class SceneTile
                     indices[i * 3 + 1] = t.V2;
                     indices[i * 3 + 2] = t.V3;
                 }
-                output.Add(new ModelShape(index, vertices, indices, hierarchy.ForShape(index)));
+                byte[]? shading = null;
+                MaterialSource? material = null;
+                if (full != null && sourceHash != null)
+                {
+                    try
+                    {
+                        material = NativeSource.ReadMaterial(nif, shape, path, sourceHash, provenance!, index);
+                        if (material != null) shading = ShadingBlob.Build(shape);
+                    }
+                    catch (Exception error) when (error is not OutOfMemoryException)
+                    {
+                        // Optional shading failures cannot remove independently valid geometry.
+                        shading = null;
+                        material = null;
+                    }
+                }
+                output.Add(new ModelShape(index, vertices, indices, hierarchy.ForShape(index), shading, material));
             }
             catch (Exception error) when (error is not OutOfMemoryException)
             {
@@ -549,11 +620,20 @@ internal static class SceneTile
         if (output.Count == 0 && missing.Count == 0)
             Skip("no supported opaque rigid triangles", -1);
         var extracted = new ModelExtraction(output.ToArray(), missing.ToArray(), rejected);
+        if (full != null && sourceHash != null)
+            full.Store(sourceHash, extracted);
+        RememberDecoded(path, extracted, cache, ref cachedBytes);
+        return extracted;
+    }
+
+    private static void RememberDecoded(string path, ModelExtraction extracted,
+        Dictionary<string, ModelExtraction> cache, ref long cachedBytes)
+    {
         // Decoded model geometry has an independent per-tile RAM cap. Bypassing
         // the cache does not discard a valid model or alter tile coverage.
         long decodedBytes = 256L + (long)path.Length * 2;
         foreach (var shape in extracted.Shapes)
-            decodedBytes += 128L + (long)shape.Positions.Length * 12 + (long)shape.Indices.Length * 4;
+            decodedBytes += 128L + (long)shape.Positions.Length * 12 + (long)shape.Indices.Length * 4 + (shape.Shading?.Length ?? 0);
         foreach (var unresolved in extracted.Missing)
             decodedBytes += 64L + (long)unresolved.Reason.Length * 2;
         foreach (var reason in extracted.Rejections.Keys)
@@ -563,7 +643,6 @@ internal static class SceneTile
             cache[path] = extracted;
             cachedBytes += decodedBytes;
         }
-        return extracted;
     }
 
     private static ulong Identity(string formKey, int blockIndex)

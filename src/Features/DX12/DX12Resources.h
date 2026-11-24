@@ -44,7 +44,28 @@ namespace DX12
 		int32_t blockIndex = -1;  // -1: entire NIF/model unresolved.
 	};
 
-	/** @brief The companion publishes triangle geometry without textures or materials. */
+	/** @brief Immutable unevaluated material inputs; absent in the lightweight profile. */
+	struct PreparedShading
+	{
+		uint32_t stride = 0;  // RSGA v1: 36, v2: 60 bytes
+		std::vector<float> attributes;
+		std::string sourceNif, sourceHash, provenance;
+		int32_t blockIndex = -1;
+		uint32_t shaderFlags1 = 0, shaderFlags2 = 0;
+		float alpha = 1.0f;
+		bool twoSided = false;
+		int32_t clampMode = -1;
+		std::vector<float> uvTransform;
+		std::vector<std::string> textures;
+	};
+
+	struct GeometryAsset
+	{
+		std::vector<float3> positions;
+		std::vector<uint32_t> indices;
+	};
+
+	/** @brief Triangle geometry and optional native material source attributes. */
 	struct Shape
 	{
 		uint64_t identity = 0;
@@ -53,6 +74,11 @@ namespace DX12
 		std::vector<uint32_t> indices;
 		std::array<float, 12> transform{};
 		std::string sourceNif;  // Populated for runtime-supplemented shapes when NIF provenance is known.
+		std::shared_ptr<const PreparedShading> shading;  // Full Native only; no GPU ownership.
+		std::shared_ptr<const GeometryAsset> geometry;  // Shared immutable rigid asset in Full Native.
+		const std::vector<float3>& Positions() const { return geometry ? geometry->positions : positions; }
+		const std::vector<uint32_t>& Indices() const { return geometry ? geometry->indices : indices; }
+		const void* GeometryKey() const { return geometry ? static_cast<const void*>(geometry.get()) : static_cast<const void*>(this); }
 	};
 
 	struct Tile
@@ -224,6 +250,7 @@ private:
 	uint32_t lastVisitedCell = 0, previousVisitedCell = 0, distinctTransitions = 0;
 	std::atomic<uint64_t> flushGeneration{ 0 };
 	std::optional<DX12::SubcellKey> inFlight;
+	bool fullNativeProfile = false;
 	std::atomic<std::shared_ptr<const DX12::PreparationStats>> generationStats{
 		std::make_shared<const DX12::PreparationStats>()
 	};
