@@ -24,8 +24,9 @@ namespace DX12Native
             uint32_t enabled, available, environmentMips, reflectionMips;
             float environmentScale, skyScale;
             uint32_t interior, colorEncoding;
+            NativeAmbientParameters ambient;
         };
-        static_assert(sizeof(Constants) == 176);
+        static_assert(sizeof(Constants) == 272);
         constexpr uint64_t kSHBytes = 48;
 
         void BuildPipeline(ID3D12Device* device, const char* path, UINT count, CD3DX12_ROOT_PARAMETER* parameters,
@@ -163,7 +164,7 @@ namespace DX12Native
 
     void NativeIndirectLighting::Dispatch(const GraphicsBackend& backend,
         std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
-        std::shared_ptr<const EnvironmentFrame> environment, uint32_t enabled, float environmentScale, float skyScale)
+        std::shared_ptr<const EnvironmentFrame> environment, uint32_t enabled, float environmentScale, float skyScale, const NativeAmbientParameters& ambient)
     {
         CS_GPU_PASS("NativeLighting::Indirect");
         if (!material || !environment || !enabled) return;
@@ -175,8 +176,11 @@ namespace DX12Native
             !std::isfinite(environmentScale) || !std::isfinite(skyScale)) {
             failure = "Incoherent indirect inputs"; return;
         }
+        if ((!ambient.iblEnabled || ambient.dalcMode >= 2 || ambient.dalcAmount != 0) && !ambient.dalcValid) {
+            failure = "Waiting for same-frame engine DALC"; return;
+        }
         uint32_t available = 0;
-        if ((enabled & IndirectDiffuse) && (environment->stamp.interior || environment->sky)) available |= IndirectDiffuse;
+        if ((enabled & IndirectDiffuse) && (!ambient.iblEnabled || environment->stamp.interior || environment->sky)) available |= IndirectDiffuse;
         if ((enabled & IndirectSpecular) && (environment->stamp.interior || environment->reflection)) available |= IndirectSpecular;
         if (!available) { failure = "Waiting for completed environment inputs"; return; }
         const uint32_t width = material->width, height = material->height;
@@ -200,8 +204,12 @@ namespace DX12Native
                 const auto desc = CD3DX12_RESOURCE_DESC::Buffer(size, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
                 return device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
             };
-            const bool projectBase = (available & IndirectDiffuse) && (!baseCache || baseCache->cube != environment->base);
-            const bool projectSky = (available & IndirectDiffuse) && !environment->stamp.interior &&
+            const bool needsBaseSH = ambient.iblEnabled && ambient.dalcMode < 2;
+            const bool needsSkySH = ambient.iblEnabled && (available & IndirectDiffuse) && !environment->stamp.interior;
+            if (!needsBaseSH) baseCache.reset();
+            if (!needsSkySH) skyCache.reset();
+            const bool projectBase = needsBaseSH && (!baseCache || baseCache->cube != environment->base);
+            const bool projectSky = needsSkySH &&
                 (!skyCache || skyCache->cube != environment->sky);
             const uint64_t outputAllocation = fresh ? allocation(bytes) : 0;
             const uint64_t shAllocation = (projectBase || projectSky) ? allocation(kSHBytes) : 0;
@@ -221,7 +229,7 @@ namespace DX12Native
                 replacement->samples = Eval::Buffer(device, bytes, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON,
                     D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
                 replacement->samples->SetName(L"NativeLighting::IndirectDiffuseSpecular");
-                replacement->constants = Eval::Buffer(device, 256, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
+                replacement->constants = Eval::Buffer(device, 512, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
                 D3D12_DESCRIPTOR_HEAP_DESC heap{};
                 heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; heap.NumDescriptors = 4; heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
                 Eval::Check(device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(replacement->descriptors.put())));
@@ -269,14 +277,12 @@ namespace DX12Native
                 Transition(cmd, resource, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
                 return sh;
             };
-            if (available & IndirectDiffuse) {
-                slot->baseSH = projectBase ? project(env.base, 1) : baseCache;
-                if (!env.stamp.interior) slot->skySH = projectSky ? project(env.sky, 3) : skyCache;
-            }
+            slot->baseSH = needsBaseSH ? (projectBase ? project(env.base, 1) : baseCache) : nullptr;
+            slot->skySH = needsSkySH ? (projectSky ? project(env.sky, 3) : skyCache) : nullptr;
             const Constants constants{ raster.camera.CameraProjInverse, raster.camera.CameraViewInverse,
                 width, height, slot->material->rowPitch, slot->rowPitch, enabled, available, env.base->mipCount,
                 env.reflection ? env.reflection->mipCount : 0u, environmentScale, skyScale,
-                env.stamp.interior ? 1u : 0u, uint32_t(env.stamp.encoding) };
+                env.stamp.interior ? 1u : 0u, uint32_t(env.stamp.encoding), ambient };
             void* mapped = nullptr; const D3D12_RANGE noRead{};
             Eval::Check(slot->constants->Map(0, &noRead, &mapped));
             std::memcpy(mapped, &constants, sizeof(constants)); slot->constants->Unmap(0, nullptr);

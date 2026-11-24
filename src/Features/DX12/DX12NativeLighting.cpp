@@ -203,10 +203,10 @@ namespace DX12Native
 
     void NativeLighting::DispatchIndirect(const GraphicsBackend& backend, std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
         const EnvironmentStamp& stamp, const EnvironmentSource& base, const EnvironmentSource& reflection,
-        const EnvironmentSource& sky, uint32_t enabled, float environmentScale, float skyScale)
+        const EnvironmentSource& sky, uint32_t enabled, float environmentScale, float skyScale, const NativeAmbientParameters& ambient)
     {
         environment.Capture(backend, stamp, base, reflection, sky);
-        indirect.Dispatch(backend, std::move(material), environment.Get(), enabled, environmentScale, skyScale);
+        indirect.Dispatch(backend, std::move(material), environment.Get(), enabled, environmentScale, skyScale, ambient);
     }
 
 	void NativeLighting::ClearFrozenLights()

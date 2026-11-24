@@ -2637,6 +2637,11 @@ void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] b
 		data.AmbientSHR = float4{ dalcSH.r.c0, dalcSH.r.c1[0], dalcSH.r.c1[1], dalcSH.r.c1[2] };
 		data.AmbientSHG = float4{ dalcSH.g.c0, dalcSH.g.c1[0], dalcSH.g.c1[1], dalcSH.g.c1[2] };
 		data.AmbientSHB = float4{ dalcSH.b.c0, dalcSH.b.c1[0], dalcSH.b.c1[1], dalcSH.b.c1[2] };
+		if (a_inWorld && globals::game::graphicsState &&
+			!(permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(ExtraShaderDescriptors::IsReflections))) {
+			ambientSHSnapshot = { { data.AmbientSHR, data.AmbientSHG, data.AmbientSHB },
+				globals::game::graphicsState->GetFrameCount(), frameCount };
+		}
 
 		data.HDRData = globals::features::hdrDisplay.GetSharedDataHDR();
 		data.RefractionScale = refractionScale;

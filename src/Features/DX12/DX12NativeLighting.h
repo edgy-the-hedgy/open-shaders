@@ -46,7 +46,7 @@ namespace DX12Native
 		void Poll(uint32_t frame) { direct.Poll(frame); shadows.Poll(frame); indirect.Poll(frame); environment.Poll(); }
         void DispatchIndirect(const GraphicsBackend& backend, std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
             const EnvironmentStamp& stamp, const EnvironmentSource& base, const EnvironmentSource& reflection,
-            const EnvironmentSource& sky, uint32_t enabled, float environmentScale, float skyScale);
+            const EnvironmentSource& sky, uint32_t enabled, float environmentScale, float skyScale, const NativeAmbientParameters& ambient);
         void ResetIndirect() { indirect.Reset(); environment.Reset(); }
         std::shared_ptr<const IndirectLightingFrame> GetIndirect(uint32_t frame) const { return indirect.Get(frame); }
         std::shared_ptr<const EnvironmentFrame> GetEnvironment() const { return environment.Get(); }

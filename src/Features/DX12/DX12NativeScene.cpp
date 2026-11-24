@@ -5,6 +5,7 @@
 #include "../LinearLighting.h"
 #include "../DynamicCubemaps.h"
 #include "../IBL.h"
+#include "../CSUtility.h"
 #include "DX12Control.h"
 #include "DX12Resources.h"
 #include "Globals.h"
@@ -454,11 +455,23 @@ void DX12NativeScene::OnOpaqueRadianceReady(const OpaqueRasterInputs& inputs)
     cubes.SetNativeCaptureContext(stamp);
     ibl.SetNativeCaptureContext(stamp);
     const auto settings = ibl.GetCommonBufferData();
+    const auto utility = globals::features::csUtility.GetCommonBufferData();
+    NativeAmbientParameters ambient;
+    ambient.dalcValid = globals::state->GetAmbientSH(stamp.engineFrame, stamp.pluginFrame, ambient.dalc);
+    ambient.environmentSaturation = settings.EnvIBLSaturation;
+    ambient.skySaturation = settings.SkyIBLSaturation;
+    ambient.dalcMode = settings.DALCMode;
+    ambient.dalcAmount = settings.DALCAmount;
+    ambient.iblEnabled = settings.EnableIBL;
+    ambient.ambientMultiplier = utility.ambientLightMult * (color.enableLinearLighting ? color.ambientMult : 1.0f);
+    ambient.conversionSaturation = color.conversionSaturation;
+    ambient.utilitySaturation = utility.ambientLightColor.saturation;
+    ambient.utilityGammaOffset = utility.ambientLightColor.gammaOffset;
     lighting.DispatchIndirect(*backend, GetOpaqueMaterialFrame(), stamp,
         cubes.loaded ? cubes.GetNativeEnvironment(false) : EnvironmentSource{},
         cubes.loaded && !stamp.interior && indirectSpecularEnabled ? cubes.GetNativeEnvironment(true) : EnvironmentSource{},
         ibl.loaded && !stamp.interior && indirectDiffuseEnabled ? ibl.GetNativeSkyRadiance() : EnvironmentSource{},
-        enabled, settings.EnvIBLScale, settings.SkyIBLScale);
+        enabled, settings.EnvIBLScale, settings.SkyIBLScale, ambient);
 }
 
 bool DX12NativeScene::PublishOpaqueLighting(std::shared_ptr<const DX12Native::OpaqueLightingFrame> frame)

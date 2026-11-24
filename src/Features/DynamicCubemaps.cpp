@@ -255,6 +255,7 @@ ID3D11ComputeShader* DynamicCubemaps::GetComputeShaderBC6HEncode()
 void DynamicCubemaps::SetNativeCaptureContext(const DX12Native::EnvironmentStamp& stamp)
 {
 	if (!nativeCaptureContext.SameEnvironment(stamp)) {
+		if (stamp.epoch) resetCapture[0] = resetCapture[1] = true;
 		for (auto& pending : nativePendingCapture) pending = {};
 		for (auto& completed : nativeCompleted) completed = {};
 	}

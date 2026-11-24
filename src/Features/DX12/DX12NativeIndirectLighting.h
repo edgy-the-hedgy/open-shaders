@@ -7,6 +7,16 @@
 
 namespace DX12Native
 {
+    struct NativeAmbientParameters
+    {
+        std::array<float4, 3> dalc{};
+        float environmentSaturation = 1, skySaturation = 1, dalcAmount = 0, ambientMultiplier = 1;
+        float conversionSaturation = 1, utilitySaturation = 1, utilityGammaOffset = 0;
+        uint32_t dalcMode = 0;
+        uint32_t iblEnabled = 0, dalcValid = 0, pad0 = 0, pad1 = 0;
+    };
+    static_assert(sizeof(NativeAmbientParameters) == 96);
+
     // SH is immutable after projection. Every consumer retains the source revision.
     struct EnvironmentIrradiance
     {
@@ -43,7 +53,7 @@ namespace DX12Native
         void Poll(uint32_t frame, bool release = false);
         void Reset();
         void Dispatch(const GraphicsBackend&, std::shared_ptr<const NativeScreenProbe::MaterialFrame>,
-            std::shared_ptr<const EnvironmentFrame>, uint32_t enabled, float environmentScale, float skyScale);
+            std::shared_ptr<const EnvironmentFrame>, uint32_t enabled, float environmentScale, float skyScale, const NativeAmbientParameters& ambient);
         std::shared_ptr<const IndirectLightingFrame> Get(uint32_t frame) const;
         const std::string& Failure() const { return failure; }
         uint64_t AllocationBytes() const;
