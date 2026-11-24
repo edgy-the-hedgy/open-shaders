@@ -1,7 +1,6 @@
 #include "DX12NativeRuntimeCapture.h"
 
 #include "Globals.h"
-#include "DX12Control.h"
 #include "Materials/SharedMaterialHooks.h"
 
 #include <algorithm>
@@ -88,8 +87,8 @@ namespace DX12Native
 				(source.colorOffset < 16 || source.colorOffset > source.stride - 4))) return reject(Failure::MissingVertexInputs);
 			using F = RE::BSShaderProperty::EShaderPropertyFlag;
 			const auto flags = static_cast<uint64_t>(property->flags.underlying());
-			const bool exclusive = globals::features::dx12Control.UsesExclusiveMaterials();
-			if (exclusive ? !property->flags.any(F::kMenuScreen) : !property->flags.any(F::kVertexLighting))
+			const bool originalFlags = !SharedMaterialHooks::UsesLegacyNifMarkers();
+			if (originalFlags ? !property->flags.any(F::kMenuScreen) : !property->flags.any(F::kVertexLighting))
 				return reject(Failure::NonPbrMarker);
 			if (property->flags.any(F::kVertexAlpha, F::kGrayscaleToPaletteAlpha, F::kRefraction, F::kTempRefraction,
 					F::kTreeAnim, F::kLODLandscape, F::kMultiTextureLandscape, F::kFace, F::kHairTint)) return reject(Failure::UnsupportedShaderFlags);
@@ -110,7 +109,7 @@ namespace DX12Native
 			shading->provenance = "runtime engine material";
 			shading->shaderFlags1 = uint32_t(flags);
 			shading->shaderFlags2 = uint32_t(flags >> 32);
-			shading->originalPbrFlags = exclusive;
+			shading->originalPbrFlags = originalFlags;
 			shading->runtimeTextureSet = SharedMaterialHooks::ResolveTextureSetEditorID(textures);
 			shading->runtimeMaterialObject = source.materialObjectEditorID;
 			shading->twoSided = property->flags.any(F::kTwoSided);
@@ -181,7 +180,7 @@ namespace DX12Native
 	void RuntimeGeometryCapture::Observe(const RuntimeGeometryCandidate& candidate, uint32_t frame,
 		const std::shared_ptr<const DX12::Grid>& grid)
 	{
-		if (!grid || !grid->requested.front().scope || !candidate.vertices || !candidate.indices ||
+		if (!grid || grid->requested.empty() || !grid->requested.front().scope || !candidate.vertices || !candidate.indices ||
 			candidate.referenceKey.empty() || candidate.shapeName.empty() ||
 			candidate.stride < 16 || candidate.stride > 256 ||
 			!candidate.vertexCount || !candidate.triangleCount)
@@ -350,7 +349,7 @@ namespace DX12Native
 					captured.erase(packet.identity);
 			};
 			const auto grid = globals::features::dx12Resources.GetGrid();
-			if (!grid || !grid->requested.front().scope ||
+			if (!grid || grid->requested.empty() || !grid->requested.front().scope ||
 				grid->requested.front().scope != packet.sourceCenter.scope) {
 				releaseIfCurrent();
 				continue;

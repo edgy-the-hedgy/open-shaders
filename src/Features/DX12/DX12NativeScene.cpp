@@ -376,6 +376,7 @@ void DX12NativeScene::ObserveSCMRigidCaster(RE::BSGeometry& geometry, bool requi
 		!runtime.rendererData->rawVertexData || !runtime.rendererData->rawIndexData)
 		return;
 	const bool fullNative = globals::features::dx12Control.IsFullNativeMode();
+	if (fullNative && globals::state && globals::state->isMapMenuOpen) return;
 	const auto* alpha = runtime.alphaProperty.get();
 	// Only the full-native material query understands non-opaque candidates.
 	// Blending, animated opacity and unsupported compare operations remain excluded.

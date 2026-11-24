@@ -154,8 +154,7 @@ Sample EvaluateScreen(uint2 pixelIndex)
     // The native output is consumed in world space, including rotated instances.
     if (result.color.a == 1.0) {
         float3 worldNormal = mul(result.normal.xyz, (float3x3)query.CommittedWorldToObject3x4());
-        if (all(isfinite(worldNormal)) && dot(worldNormal,worldNormal)>1e-8)
-            {
+        if (all(isfinite(worldNormal)) && dot(worldNormal,worldNormal)>1e-8) {
             result.normal.xyz = normalize(worldNormal);
             if ((Bindings[query.CommittedInstanceID()].flags & 2048u) != 0u) result.color.a = 2.0;
         }

@@ -75,6 +75,7 @@ add_executable(
     test_stringutils.cpp
     test_isl_radiusmath.cpp
     test_dx12_lightmath.cpp
+    test_dx12_materialframe.cpp
     test_shadowcaster_math.cpp
     test_lodshadow_update_budget.cpp
     test_gpupassnames.cpp

@@ -101,12 +101,11 @@ namespace DX12Native
 			return fence && value && value != UINT64_MAX && fence->GetCompletedValue() != UINT64_MAX;
 		};
 		const bool materialValid = material && material->IsCoherent(frame, width, height) &&
-			material->sampleStride == 32u && uint64_t(material->rowPitch) >= uint64_t(width) * 32u &&
 			bufferMatches(material->samples.get(), uint64_t(material->rowPitch) * height) &&
 			fenceValid(material->producerFence.get(), material->producerValue);
 		const bool directValid = direct && materialValid && direct->material == material &&
 			direct->frame == material->frame && direct->width == width && direct->height == height &&
-			uint64_t(direct->rowPitch) >= uint64_t(width) * 16u &&
+			MaterialFrameContract::ValidLayout(width, height, direct->rowPitch, MaterialFrameContract::kLightingStride) &&
 			bufferMatches(direct->samples.get(), uint64_t(direct->rowPitch) * height) &&
 			fenceValid(direct->readyFence.get(), direct->readyValue);
 		const bool canCompose = supportsShadow && transfer != Transfer::Unknown &&

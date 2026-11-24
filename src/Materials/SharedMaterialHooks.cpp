@@ -18,6 +18,7 @@
 namespace
 {
 	std::mutex editorMutex;
+	std::atomic<bool> legacyNifMarkers{ false };
 	std::list<std::string> editorStrings;
 	std::unordered_map<uint32_t, const char*> editorIDs;
 
@@ -189,14 +190,23 @@ void SharedMaterialHooks::Install()
 		InstallEditorID<RE::TESWeather>(RE::VTABLE_TESWeather);
 		stl::write_vfunc<0x2A, LightingRenderPasses>(RE::VTABLE_BSLightingShaderProperty[0]);
 		const bool exclusive = globals::features::dx12Control.UsesExclusiveMaterials();
-		if (exclusive)
+		legacyNifMarkers.store(!exclusive && globals::features::truePBR.loaded, std::memory_order_release);
+		if (exclusive) {
+			globals::features::truePBR.loaded = false;
+			logger::info("[TruePBR] Disabled for exclusive DX12 material authority");
 			stl::detour_thunk<NativeTextureSetConversion>(REL::RelocationID(20905, 21361));
+		}
 		if (exclusive || globals::features::truePBR.loaded) {
 			stl::write_vfunc<0x6, BSLightingShader_SetupGeometry>(RE::VTABLE_BSLightingShader[0]);
 			stl::detour_thunk_ignore_func<BSLightingShader_GetPixelTechnique>(REL::RelocationID(101633, 108700));
 			stl::write_vfunc<0x4, PBR_BSLightingShader_SetupMaterial>(RE::VTABLE_BSLightingShader[0]);
 		}
 	});
+}
+
+bool SharedMaterialHooks::UsesLegacyNifMarkers()
+{
+	return legacyNifMarkers.load(std::memory_order_acquire);
 }
 
 std::string SharedMaterialHooks::ResolveTextureSetEditorID(RE::BSTextureSet* textures)

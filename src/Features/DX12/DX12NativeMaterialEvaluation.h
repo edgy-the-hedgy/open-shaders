@@ -1,5 +1,7 @@
 #pragma once
 
+#include "DX12MaterialFrameContract.h"
+
 #include "DX12PreparedMaterials.h"
 #include "VideoMemoryBudget.h"
 #include <DirectXTex.h>
@@ -355,7 +357,7 @@ namespace DX12Native
 					NativePBR::UnsupportedDisplacement | NativePBR::UnsupportedProjection;
 				const uint64_t nifFlags = uint64_t(source.shaderFlags1) | (uint64_t(source.shaderFlags2) << 32);
 				if ((recipe.issues & incomplete) || (nifFlags & static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kProjectedUV))) {
-					binding.flags |= 1u << 11;
+					binding.flags |= MaterialFrameContract::kBaseOnlyBinding;
 					++result->baseOnlyBindings;
 				}
 				const auto& normalPath = prepared.recipes[it->second].textures[1].canonicalPath;

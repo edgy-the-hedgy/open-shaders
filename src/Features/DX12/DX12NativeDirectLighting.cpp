@@ -16,7 +16,7 @@ namespace DX12Native
 	namespace
 	{
 		using Eval = NativeMaterialEvaluation;
-		constexpr uint32_t kLightingStride = 16;
+		constexpr uint32_t kLightingStride = MaterialFrameContract::kLightingStride;
 		constexpr uint64_t kCounterBytes = 8 * sizeof(uint32_t);
 		struct Constants
 		{
@@ -137,14 +137,11 @@ namespace DX12Native
 		dispatchedLights = 0;
 		if (!inputsAvailable) { failure = "Waiting for native light inputs"; return; }
 		if (!material->IsCoherent(material->frame, controls.viewportWidth, controls.viewportHeight) ||
-			!material->scene || !material->scene->acceleration || !material->scene->shadingGeometry ||
-			!material->scene->materialEvaluation || !material->descriptors || !material->raster ||
-			!material->raster->depth || !material->raster->depth->resource ||
-			!material->raster->cameraValid || material->raster->frame != material->frame ||
-			material->scene->geometryRevision != material->geometryRevision ||
-			material->scene->scope != material->scope || material->sampleStride != 32 ||
-			material->width != controls.viewportWidth || material->height != controls.viewportHeight)
+			!material->scene->acceleration || !material->scene->shadingGeometry || !material->descriptors ||
+			!material->raster->depth || !material->raster->depth->resource || !material->raster->cameraValid) {
+			failure = "Incompatible native material frame";
 			return;
+		}
 		const uint32_t width = material->width, height = material->height;
 		const uint64_t bytes = uint64_t(width) * height * kLightingStride;
 		if (!bytes || bytes > UINT32_MAX) return;

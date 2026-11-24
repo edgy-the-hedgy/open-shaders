@@ -3,6 +3,7 @@
 #include "DX12NativeAcceleration.h"
 #include "DX12NativeRasterCapture.h"
 #include "DX12GpuRetirement.h"
+#include "DX12MaterialFrameContract.h"
 #include <fstream>
 
 namespace DX12Native
@@ -14,7 +15,7 @@ namespace DX12Native
 		using Eval = NativeMaterialEvaluation;
 		static constexpr uint32_t kWidth = 64, kHeight = 36;
 		static constexpr uint64_t kCounterBytes = 6 * sizeof(uint32_t);
-		static constexpr uint32_t kSampleStride = 32; // 16 IEEE binary16 values, same component ordering as Eval::Sample.
+		static constexpr uint32_t kSampleStride = MaterialFrameContract::kMaterialStride; // 16 IEEE binary16 values, same component ordering as Eval::Sample.
 		struct Camera
 		{
 			Matrix projectionInverse, viewInverse;
@@ -126,9 +127,8 @@ namespace DX12Native
 			bool IsCoherent(uint32_t requestedFrame, uint32_t requestedWidth, uint32_t requestedHeight) const
 			{
 				if (frame != requestedFrame || width != requestedWidth || height != requestedHeight ||
-					!width || !height || sampleStride != kSampleStride || rowPitch % kSampleStride ||
-					uint64_t(rowPitch) < uint64_t(width) * kSampleStride ||
-					uint64_t(rowPitch) * height > UINT32_MAX || !allocation || !samples ||
+					sampleStride != kSampleStride || !MaterialFrameContract::ValidLayout(width, height, rowPitch, kSampleStride) ||
+					!allocation || !samples ||
 					!producerFence || !producerValue || producerValue == UINT64_MAX ||
 					producerFence->GetCompletedValue() == UINT64_MAX || !raster || raster->frame != frame ||
 					raster->width < width || raster->height < height || !scene || !scope ||
