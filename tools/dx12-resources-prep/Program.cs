@@ -158,6 +158,8 @@ static string DescribeFailure(string stage, Exception error)
 
 internal sealed record TileShape(ulong Identity, Vector3[] Positions, uint[] Indices, float[] Transform,
     byte[]? Shading = null, MaterialSource? Material = null, string ReferencePlugin = "", uint ReferenceLocal = 0);
+internal sealed record CompanionTelemetry(string Manager, string Profile, int PgEntries, long CacheBytes, int CacheEntries,
+    ulong CacheHits, ulong CacheMisses, ulong CacheEvictions);
 internal sealed record TileNifSource(string ReferencePlugin, uint ReferenceLocal, string NifPath);
 internal sealed record TileMissingNifShape(string ReferencePlugin, uint ReferenceLocal, string NifPath,
     int BlockIndex, string Reason);
@@ -166,7 +168,7 @@ internal sealed record TileLight(string ReferencePlugin, uint ReferenceLocal, st
 internal sealed record TileResult(uint Version, uint EligibleShapes, uint FailedShapes, bool EnumerationComplete,
     List<TileShape> Shapes, List<TileLight> Lights, string Failure = "",
     Dictionary<string, uint>? RejectionReasons = null,
-    List<TileNifSource>? NifSources = null, List<TileMissingNifShape>? MissingShapes = null, bool FullNative = false);
+    List<TileNifSource>? NifSources = null, List<TileMissingNifShape>? MissingShapes = null, bool FullNative = false, CompanionTelemetry? Telemetry = null);
 internal sealed record ModelShape(int Index, Vector3[] Positions, uint[] Indices, Matrix4x4 ToModel,
     byte[]? Shading = null, MaterialSource? Material = null);
 internal sealed record MissingModelShape(int Index, string Reason);
@@ -477,7 +479,7 @@ internal static class SceneTile
         if (lightCapacityExceeded && rejections.Count < 12)
             rejections["tile light capacity"] = 1;
         return new TileResult(1, eligible, failed, !isWorldspace && foundScope && !lightCapacityExceeded,
-            shapes, lights, "", rejections, nifSources, missingShapes, fullNative);
+            shapes, lights, "", rejections, nifSources, missingShapes, fullNative, full?.Telemetry());
         }
         return (Run, environment);
     }

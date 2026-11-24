@@ -453,6 +453,22 @@ namespace DX12
 			}
 			auto& publication = result.publication;
 			publication.fullNative = task.fullNative;
+			if (task.fullNative) {
+				try {
+					if (const auto entry = root.find("telemetry"); entry != root.end() && entry->is_object()) {
+						CompanionTelemetry telemetry;
+						telemetry.manager = entry->at("manager").get<std::string>().substr(0, 32);
+						telemetry.profile = entry->at("profile").get<std::string>().substr(0, 256);
+						telemetry.pgEntries = entry->at("pgEntries").get<uint32_t>();
+						telemetry.cacheBytes = entry->at("cacheBytes").get<uint64_t>();
+						telemetry.cacheEntries = entry->at("cacheEntries").get<uint32_t>();
+						telemetry.cacheHits = entry->at("cacheHits").get<uint64_t>();
+						telemetry.cacheMisses = entry->at("cacheMisses").get<uint64_t>();
+						telemetry.cacheEvictions = entry->at("cacheEvictions").get<uint64_t>();
+						publication.telemetry = std::move(telemetry);
+					}
+				} catch (const std::exception&) {}  // Diagnostics never invalidate geometry.
+			}
 			constexpr uint64_t kMaximumTileBytes = 64ull * 1024 * 1024;
 			const auto geometryCount = root.at("geometryCount").get<uint32_t>();
 			if (geometryCount > root.at("shapes").size() || geometryCount > kMaxPreparedShapes)

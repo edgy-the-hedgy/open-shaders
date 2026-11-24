@@ -31,7 +31,7 @@ internal static class TileTransfer
             Version = 2, result.EligibleShapes, result.FailedShapes, result.EnumerationComplete,
             Shapes = placements, GeometryCount = geometry.Count, result.Lights, result.Failure,
             result.FullNative, Materials = result.FullNative ? geometry.Select(blob => blob.Material).ToArray() : null,
-            result.RejectionReasons, result.NifSources, result.MissingShapes
+            result.RejectionReasons, result.NifSources, result.MissingShapes, result.Telemetry
         }, options);
         if (metadata.Length > MaximumMetadataBytes)
             throw new InvalidDataException("Companion metadata size exceeded");

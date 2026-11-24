@@ -17,6 +17,11 @@ internal sealed class FullNativeContext
     private readonly JsonSerializerOptions json = new() { IncludeFields = true };
     private long cacheBytes;
     private int cacheEntries;
+    private ulong hits, misses, evictions;
+
+    internal CompanionTelemetry Telemetry() => new(deployment is MO2ProfileResolver ? "MO2" : "Vortex",
+        deployment is MO2ProfileResolver ? Path.GetFileName(Path.GetDirectoryName(deployment.PluginsPath)) ?? "" : "",
+        pg.Count, cacheBytes, cacheEntries, hits, misses, evictions);
 
     internal FullNativeContext(string data, DeploymentContext deployment)
     {
@@ -73,6 +78,7 @@ internal sealed class FullNativeContext
     internal bool TryRead(string hash, string path, string provenance, out ModelExtraction value)
     {
         value = null!;
+        ++misses;
         try
         {
             var file = CachePath(hash);
@@ -120,6 +126,7 @@ internal sealed class FullNativeContext
             var rejections = JsonSerializer.Deserialize<Dictionary<string,uint>>(payload.ReadString(), json);
             if (missing == null || rejections == null || payload.BaseStream.Position != raw.Length) return false;
             value = new(shapes.ToArray(),missing,rejections);
+            --misses; ++hits;
             try { File.SetLastWriteTimeUtc(file, DateTime.UtcNow); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             return true;
         }
@@ -186,7 +193,7 @@ internal sealed class FullNativeContext
         {
             if (cacheBytes + incoming <= MaxCacheBytes && cacheEntries + entries <= MaxEntries) break;
             var length = f.Length;
-            f.Delete(); cacheBytes -= length; --cacheEntries;
+            f.Delete(); cacheBytes -= length; --cacheEntries; ++evictions;
         }
     }
 }

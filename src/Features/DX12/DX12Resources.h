@@ -8,6 +8,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -57,6 +58,13 @@ namespace DX12
 		int32_t clampMode = -1;
 		std::vector<float> uvTransform;
 		std::vector<std::string> textures;
+	};
+
+	struct CompanionTelemetry
+	{
+		std::string manager, profile;
+		uint64_t cacheBytes = 0, cacheHits = 0, cacheMisses = 0, cacheEvictions = 0;
+		uint32_t cacheEntries = 0, pgEntries = 0;
 	};
 
 	struct GeometryAsset
@@ -117,6 +125,7 @@ namespace DX12
 		uint64_t geometryBytes = 0;
 		bool validated = false;
 		bool fullNative = false;
+		std::optional<CompanionTelemetry> telemetry;
 		uint32_t eligibleShapes = 0;
 		uint32_t failedShapes = 0;
 		uint32_t rejectedLights = 0;  // Invalid light records are skipped without losing valid geometry.
@@ -141,6 +150,7 @@ namespace DX12
 		uint64_t revision = 0;
 		uint64_t geometryRevision = 0;
 		bool fullNative = false;
+		std::optional<CompanionTelemetry> telemetry;
 		uint32_t size = kSubcellSizes.front();
 		std::array<SubcellKey, kGridCapacity> requested{};  // Active 3x3, available to future native consumers.
 		std::array<std::shared_ptr<const Tile>, kGridCapacity> resident{};

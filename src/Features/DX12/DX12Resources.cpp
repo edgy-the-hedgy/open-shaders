@@ -249,7 +249,10 @@ namespace DX12
 		}
 		auto next = std::make_shared<Grid>(*current);
 		++next->revision;
-		if (publication.validated) next->fullNative = publication.fullNative;
+		if (publication.validated) {
+			next->fullNative = publication.fullNative;
+			if (publication.telemetry) next->telemetry = std::move(publication.telemetry);
+		}
 		if (active != current->requested.end()) {
 			++next->geometryRevision;
 			next->resident[std::distance(current->requested.begin(), active)] = std::move(tile);
@@ -430,7 +433,7 @@ namespace
 		return {};
 	}
 
-	void DrawSubcellMap(const DX12::Grid& grid)
+	void DrawSubcellMap(const DX12::Grid& grid, bool diagnostics = false)
 	{
 		const auto center = grid.requested.front();
 		const float available = std::max(1.0f, ImGui::GetContentRegionAvail().x);
@@ -476,14 +479,14 @@ namespace
 				ImGui::BeginTooltip();
 				ImGui::Text(T("menu.dx12.resources.tooltip.subcell", "%s subcell (%lld, %lld): %s"), active ? T("menu.dx12.resources.active", "Active") : T("menu.dx12.resources.predictive", "Predictive"),
 					static_cast<long long>(key.x), static_cast<long long>(key.y), TileStatus(tile));
-				if (tile && tile->preparationAttempts)
+				if (diagnostics && tile && tile->preparationAttempts)
 					ImGui::Text(T("menu.dx12.resources.tooltip.attempts", "Attempts: %u / 3"), unsigned(tile->preparationAttempts));
-				if (tile && (!tile->nifSources.empty() || !tile->missingShapes.empty()))
+				if (diagnostics && tile && (!tile->nifSources.empty() || !tile->missingShapes.empty()))
 					ImGui::Text(T("menu.dx12.resources.tooltip.nif_sources", "NIF sources: %zu | Missing shape references: %zu"),
 						tile->nifSources.size(), tile->missingShapes.size());
-				if (tile && !tile->failureReason.empty())
+				if (diagnostics && tile && !tile->failureReason.empty())
 					ImGui::TextWrapped(T("menu.dx12.resources.tooltip.last_reason", "Last reason: %s"), tile->failureReason.c_str());
-				if (tile)
+				if (diagnostics && tile)
 					for (const auto& [reason, count] : tile->rejectionReasons)
 						ImGui::Text("%s: %u", reason.c_str(), count);
 				ImGui::EndTooltip();
@@ -544,6 +547,7 @@ void DX12Resources::DrawDevStats()
 	ImGui::SeparatorText(T("menu.dx12.resources.subcell_status", "Subcell status (5x5)"));
 	const auto snapshot = GetGrid();
 	if (snapshot) {
+		DrawSubcellMap(*snapshot, true);
 		size_t activeLoaded = 0, predictiveLoaded = 0, placements = 0, shaded = 0, missing = 0;
 		uint64_t chargedBytes = 0, uniqueGeometryBytes = 0, uniqueShadingBytes = 0;
 		std::unordered_set<const void*> uniqueGeometry;
@@ -572,6 +576,13 @@ void DX12Resources::DrawDevStats()
 		ImGui::Text("Placements: %zu | Unique geometry: %zu | Shaded: %zu | Missing records: %zu", placements, uniqueGeometry.size(), shaded, missing);
 		ImGui::Text("CPU geometry: %.2f MiB | Shading: %.2f MiB | Charged: %.2f MiB", double(uniqueGeometryBytes)/1048576.0, double(uniqueShadingBytes)/1048576.0, double(chargedBytes)/1048576.0);
 		ImGui::Text("Runtime supplements: %zu | %.2f MiB", snapshot->runtimeShapes.size(), double(snapshot->runtimeBytes)/1048576.0);
+		if (const auto& telemetry = snapshot->telemetry; snapshot->fullNative && telemetry) {
+			ImGui::SeparatorText("Full Native deployment and cache");
+			ImGui::Text("Mod manager: %s | Profile: %s | PG entries: %u", telemetry->manager.c_str(), telemetry->profile.empty() ? "--" : telemetry->profile.c_str(), telemetry->pgEntries);
+			ImGui::Text("Cache: %.2f MiB | Entries: %u", double(telemetry->cacheBytes)/1048576.0, telemetry->cacheEntries);
+			ImGui::Text("Session cache hits: %llu | Misses: %llu | Evictions: %llu",
+				static_cast<unsigned long long>(telemetry->cacheHits), static_cast<unsigned long long>(telemetry->cacheMisses), static_cast<unsigned long long>(telemetry->cacheEvictions));
+		}
 	}
 	ImGui::SeparatorText(T("menu.dx12.resources.stats.title", "Subcell generation stats"));
 	ImGui::TextDisabled(T("menu.dx12.resources.stats.timing_head", "Last / Avg / Worst (milliseconds)"));
