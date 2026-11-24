@@ -100,9 +100,10 @@ namespace DX12Native
 				(source.tangentOffset != UINT32_MAX && (source.tangentOffset < 16 || source.tangentOffset > source.stride - 4)) || (source.colorOffset != UINT32_MAX &&
 				(source.colorOffset < 16 || source.colorOffset > source.stride - 4))) return reject(Failure::MissingVertexInputs);
 			using F = RE::BSShaderProperty::EShaderPropertyFlag;
-			const auto liveFlags = static_cast<uint64_t>(property->flags.underlying());
+			const auto metadata = SharedMaterialHooks::ClassifyMaterial(property);
+			const auto liveFlags = metadata.runtimeFlags;
 			const bool originalFlags = !SharedMaterialHooks::UsesLegacyNifMarkers();
-			const auto preserved = originalFlags ? SharedMaterialHooks::OriginalNativePbrFlags(property) : std::nullopt;
+			const auto preserved = originalFlags ? metadata.authoredPbrFlags : std::nullopt;
 			if (globals::features::dx12Control.UsesExclusiveMaterials() && !preserved)
 				return reject(Failure::NonPbrMarker);
 			const auto flags = preserved.value_or(liveFlags);

@@ -2,9 +2,7 @@
 
 #include "Profiler.h"
 #include "SnowCoverMath.h"
-#include "TruePBR.h"
 #include "Materials/SharedMaterialHooks.h"
-#include "RE/B/BSLightingShaderMaterialBase.h"
 #include "RE/B/BSLightingShaderProperty.h"
 #include "Utils/D3D.h"
 #include "Utils/DevBenchUx.h"
@@ -106,7 +104,7 @@ RE::BSEventNotifyControl SnowCover::ProcessEvent(const RE::TESCellFullyLoadedEve
 void SnowCover::UpdateLandscapeGrid()
 {
 	auto& grid = perFrame.landscapeGrid;
-	const auto exterior = SharedMaterialHooks::UsesLegacyNifMarkers() && globals::features::truePBR.loaded ? Util::GetExteriorGrid() : std::nullopt;
+	const auto exterior = SharedMaterialHooks::UsesLegacyMaterialRendering() ? Util::GetExteriorGrid() : std::nullopt;
 	if (!exterior) {
 		grid = {};
 		return;
@@ -129,7 +127,7 @@ void SnowCover::UpdateLandscapeGrid()
 	for (uint32_t y = 0; y < width; ++y) {
 		for (uint32_t x = 0; x < width; ++x) {
 			if (const auto* land = Util::GetLoadedLand(*exterior, x, y)) {
-				const uint32_t pbr = globals::features::truePBR.IsPBRLand(land);
+				const uint32_t pbr = SharedMaterialHooks::ClassifyLandscape(land).rasterPbr.value_or(false);
 				samples.push_back({ static_cast<int32_t>(x), static_cast<int32_t>(y), pbr });
 				materials[y * width + x] = pbr;
 			} else {
@@ -780,13 +778,13 @@ bool SnowCover::IsSnowFree(const RE::BSRenderPass* pass, uint32_t flags) const
 		return true;
 	float displacement = 0.5f;
 	if (feature == Material::kDefault && material->GetType() == RE::BSShaderMaterial::Type::kLighting) {
-		if (SharedMaterialHooks::UsesLegacyNifMarkers() && property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kVertexLighting)) {
-			displacement = 0.5f * std::max(0.0f, static_cast<const RE::BSLightingShaderMaterialBase*>(material)->rimLightPower);
-		} else if (!SharedMaterialHooks::UsesLegacyNifMarkers()) {
-			const auto* lighting = netimmerse_cast<const RE::BSLightingShaderProperty*>(property);
-			// Authored PBR displacement is not known to the raster snow bounds test.
-			if (lighting && SharedMaterialHooks::OriginalNativePbrFlags(lighting))
-				return false;
+		const auto* lighting = netimmerse_cast<const RE::BSLightingShaderProperty*>(property);
+		const auto metadata = SharedMaterialHooks::ClassifyMaterial(lighting);
+		using Class = SharedMaterialHooks::MaterialClass;
+		if (metadata.classification == Class::LegacyPbrMesh || metadata.classification == Class::NativePbrMesh) {
+			const auto scale = SharedMaterialHooks::PbrDisplacementScale(lighting);
+			if (!scale) return false;
+			displacement = 0.5f * std::max(metadata.classification == Class::NativePbrMesh ? 1.0f : 0.0f, *scale);
 		}
 	}
 	const auto& bound = pass->geometry->worldBound;

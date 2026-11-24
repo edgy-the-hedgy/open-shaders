@@ -8,11 +8,13 @@
 #include "RE/N/NiIntegersExtraData.h"
 #include "Utils/StringUtils.h"
 #include "Globals.h"
+#include "Util.h"
 #include "TruePBR.h"
 #include "TruePBR/BSLightingShaderMaterialPBR.h"
 #include "TruePBR/BSLightingShaderMaterialPBRLandscape.h"
 
 #include <bit>
+#include <cmath>
 #include <list>
 #include <mutex>
 #include <string>
@@ -314,7 +316,8 @@ std::optional<uint64_t> SharedMaterialHooks::OriginalNativePbrFlags(const RE::BS
 
 std::string SharedMaterialHooks::ResolveTextureSetEditorID(RE::BSTextureSet* textures)
 {
-	if (!textures) return {};
+	const auto* expected = REL::Relocation<const RE::NiRTTI*>{ RE::BSTextureSet::Ni_RTTI }.get();
+	if (!textures || !expected || !textures->GetRTTI() || !textures->GetRTTI()->IsKindOf(expected)) return {};
 	if (const auto* record = skyrim_cast<RE::BGSTextureSet*>(textures)) {
 		const char* id = record->GetFormEditorID();
 		if (id && *id) return id;
@@ -324,6 +327,99 @@ std::string SharedMaterialHooks::ResolveTextureSetEditorID(RE::BSTextureSet* tex
 	const auto it = textureSources.find(textures);
 	return it != textureSources.end() && !it->second.ambiguous && it->second.signature == signature ?
 		it->second.editorId : std::string{};
+}
+
+bool SharedMaterialHooks::UsesLegacyMaterialRendering()
+{
+	return UsesLegacyNifMarkers() && globals::features::truePBR.loaded &&
+		!globals::features::dx12Control.UsesExclusiveMaterials();
+}
+
+SharedMaterialHooks::MaterialMetadata SharedMaterialHooks::ClassifyMaterial(const RE::BSLightingShaderProperty* property)
+{
+	MaterialMetadata result;
+	if (!property) return result;
+	result.runtimeFlags = static_cast<uint64_t>(property->flags.underlying());
+	result.authoredPbrFlags = OriginalNativePbrFlags(property);
+	if (!property->material || property->material->GetType() != RE::BSShaderMaterial::Type::kLighting)
+		return result;
+	using Feature = RE::BSShaderMaterial::Feature;
+	const auto feature = property->material->GetFeature();
+	result.classification = MaterialClass::Legacy;
+	if (globals::features::dx12Control.UsesExclusiveMaterials()) {
+		if (result.authoredPbrFlags && feature == Feature::kDefault)
+			result.classification = MaterialClass::NativePbrMesh;
+	} else if (UsesLegacyMaterialRendering() &&
+		property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kVertexLighting)) {
+		if (feature == Feature::kDefault)
+			result.classification = MaterialClass::LegacyPbrMesh;
+		else if (feature == Feature::kMultiTexLandLODBlend)
+			result.classification = MaterialClass::LegacyPbrLandscape;
+	}
+	return result;
+}
+
+std::string SharedMaterialHooks::ResolveMaterialObjectEditorID(const RE::TESObjectREFR* reference)
+{
+	if (!reference || !reference->data.objectReference ||
+		reference->data.objectReference->formType != RE::FormType::Static) return {};
+	const auto* stat = static_cast<const RE::TESObjectSTAT*>(reference->data.objectReference);
+	const auto* mato = stat->data.materialObj;
+	if (!mato || !mato->directionalData.singlePass) return {};
+	const char* id = mato->GetFormEditorID();
+	return id ? id : "";
+}
+
+std::optional<PBRRecords::TextureSetData> SharedMaterialHooks::ResolveNativeTextureSet(std::string_view editorId)
+{
+	const auto catalog = NativePBR::MaterialCatalog::Shared().GetSnapshot();
+	if (catalog && !editorId.empty())
+		if (const auto* record = catalog->FindTextureSet(editorId)) return *record;
+	return {};
+}
+
+std::optional<PBRRecords::MaterialObjectData> SharedMaterialHooks::ResolveNativeMaterialObject(std::string_view editorId)
+{
+	const auto catalog = NativePBR::MaterialCatalog::Shared().GetSnapshot();
+	if (catalog && !editorId.empty())
+		if (const auto* record = catalog->FindMaterialObject(editorId)) return *record;
+	return {};
+}
+
+SharedMaterialHooks::LandscapeClassification SharedMaterialHooks::ClassifyLandscape(const RE::TESObjectLAND* land)
+{
+	if (!land || !land->loadedData) return {};
+	if (UsesLegacyMaterialRendering()) {
+		const bool pbr = globals::features::truePBR.IsPBRLand(land);
+		return { pbr, pbr };
+	}
+	if (!globals::features::dx12Control.UsesExclusiveMaterials()) return { {}, false };
+	const auto catalog = NativePBR::MaterialCatalog::Shared().GetSnapshot();
+	if (!catalog) return { {}, false };
+	const auto isPbr = [&](const RE::TESLandTexture* texture) {
+		return texture && catalog->FindTextureSet(Util::GetSeasonalSwap(texture->textureSet));
+	};
+	for (uint32_t quad = 0; quad < 4; ++quad) {
+		const auto* base = land->loadedData->defQuadTextures[quad];
+		if (base ? isPbr(base) : (RE::TESForm::LookupByEditorID<RE::BGSTextureSet>("DefaultPBRLand") != nullptr ||
+			isPbr(RE::TESLandTexture::GetDefaultLandTexture()))) return { true, false };
+		for (uint32_t tile = 0; tile < 6; ++tile)
+			if (isPbr(land->loadedData->quadTextures[quad][tile])) return { true, false };
+	}
+	return { false, false };
+}
+
+std::optional<float> SharedMaterialHooks::PbrDisplacementScale(const RE::BSLightingShaderProperty* property)
+{
+	const auto metadata = ClassifyMaterial(property);
+	if (metadata.classification != MaterialClass::LegacyPbrMesh &&
+		metadata.classification != MaterialClass::NativePbrMesh) return {};
+	const auto* material = static_cast<const RE::BSLightingShaderMaterialBase*>(property->material);
+	if (metadata.classification == MaterialClass::LegacyPbrMesh)
+		return std::isfinite(material->rimLightPower) ? std::optional<float>{ material->rimLightPower } : std::nullopt;
+	const auto recipe = ResolveNativeTextureSet(ResolveTextureSetEditorID(material->textureSet.get()));
+	if (recipe && std::isfinite(recipe->displacementScale)) return recipe->displacementScale;
+	return {};
 }
 
 void SharedMaterialHooks::NormalizeRasterDescriptors(RE::BSShader::Type type, uint32_t& vertex, uint32_t& pixel, bool deferred)
@@ -353,9 +449,9 @@ std::optional<std::array<float, 3>> SharedMaterialHooks::ProjectedColorScale(con
 {
 	if (!form) return {};
 	if (globals::features::dx12Control.UsesExclusiveMaterials()) {
-		const auto catalog = NativePBR::MaterialCatalog::Shared().GetSnapshot();
-		if (catalog)
-			if (const auto* record = catalog->FindMaterialObject(form)) return record->baseColorScale;
+		const char* id = form->GetFormEditorID();
+		if (id)
+			if (const auto record = ResolveNativeMaterialObject(id)) return record->baseColorScale;
 	} else if (globals::features::truePBR.loaded) {
 		if (const auto* record = globals::features::truePBR.GetPBRMaterialObjectData(form))
 			return record->baseColorScale;
