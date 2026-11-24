@@ -40,6 +40,7 @@ struct DX12Control final : Feature
 	void OnRuntimeDisabled() override;
 
 private:
+	void ApplyModeRequest();
 	std::atomic<bool> bootActive{ false };
 	bool bootCaptured = false;
 	std::atomic<int> selectedMode{ 0 };

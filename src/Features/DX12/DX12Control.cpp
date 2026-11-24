@@ -14,12 +14,15 @@ void DX12Control::DrawSettings()
 	int mode = settings.Mode;
 	if (ImGui::Combo(T("menu.dx12.mode.label", "Mode"), &mode, modes, int(std::size(modes)))) {
 		settings.Mode = mode;
-		selectedMode.store(mode, std::memory_order_relaxed);
+		ApplyModeRequest();
 	}
 	ImGui::TextDisabled(settings.Mode == 0 ?
 							T("menu.dx12.mode.shadow_offload_description", "Native shadows replace matched raster static shadows.") :
 							settings.Mode == 1 ? T("menu.dx12.mode.raster_comparison_description", "Raster shadows remain unchanged; native shadow dispatch is paused for comparison.") :
-							T("menu.dx12.mode.full_native_description", "Full Native resource preparation only; raster rendering remains active."));
+							T("menu.dx12.mode.full_native_description", "Full Native resource preparation and diagnostic material evaluation; raster rendering remains active."));
+
+	if (settings.Mode != selectedMode.load(std::memory_order_relaxed))
+		ImGui::TextDisabled(T("menu.dx12.mode.restart_native", "Restart Skyrim to enter or leave Full Native mode."));
 
 	if (!IsActive()) {
 		ImGui::Checkbox(T("menu.dx12.master.enable", "Enable native DX12 features (restart required)"), &settings.Enabled);
@@ -78,6 +81,15 @@ void DX12Control::DrawSettings()
 	Util::EndPillTabBar();
 }
 
+void DX12Control::ApplyModeRequest()
+{
+	const int active = selectedMode.load(std::memory_order_relaxed);
+	// Preserve live switching between the two existing lightweight modes.
+	// Crossing the Full Native boundary is a session-level backend change.
+	if (!bootCaptured || (active != 2 && settings.Mode != 2))
+		selectedMode.store(settings.Mode, std::memory_order_relaxed);
+}
+
 void DX12Control::LoadSettings(json& input)
 {
 	settings.Enabled = input.value("Enabled", false);
@@ -87,7 +99,7 @@ void DX12Control::LoadSettings(json& input)
 	settings.ReconstructionGridSize = requestedGrid - ((requestedGrid & 1u) == 0u ? 1u : 0u);
 	settings.ShadowStrength = std::clamp(input.value("ShadowStrength", 1.0f), 0.0f, 4.0f);
 	settings.ShadowBlend = std::clamp(input.value("ShadowBlend", 0.70f), 0.0f, 1.0f);
-	selectedMode.store(settings.Mode, std::memory_order_relaxed);
+	ApplyModeRequest();
 	spatialReconstruction.store(settings.SpatialReconstruction, std::memory_order_relaxed);
 	reconstructionGrid.store(settings.ReconstructionGridSize, std::memory_order_relaxed);
 	shadowStrength.store(settings.ShadowStrength, std::memory_order_relaxed);
@@ -109,7 +121,7 @@ void DX12Control::SaveSettings(json& output)
 void DX12Control::RestoreDefaultSettings()
 {
 	settings = {};
-	selectedMode.store(settings.Mode, std::memory_order_relaxed);
+	ApplyModeRequest();
 	spatialReconstruction.store(settings.SpatialReconstruction, std::memory_order_relaxed);
 	reconstructionGrid.store(settings.ReconstructionGridSize, std::memory_order_relaxed);
 	shadowStrength.store(settings.ShadowStrength, std::memory_order_relaxed);
