@@ -31,6 +31,8 @@ namespace SharedMaterialHooks
 	bool UsesLegacyMaterialRendering();
 	/** @brief Checks tracked legacy mesh material identity without dereferencing a downcast. */
 	bool IsLegacyPbrMeshMaterial(const RE::BSShaderMaterial* material);
+	/** @brief Checks tracked legacy landscape material identity without a downcast. */
+	bool IsLegacyPbrLandscapeMaterial(const RE::BSShaderMaterial* material);
 	/** @brief Checks both the generated-grass marker and actual legacy material identity. */
 	bool IsLegacyPbrGrass(const RE::BSShaderProperty* property);
 	/** @brief Resolves reference-local projected MATO identity without consulting TruePBR. */

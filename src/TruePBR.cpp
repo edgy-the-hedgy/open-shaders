@@ -891,7 +891,9 @@ struct BSLightingShaderProperty_LoadBinary
 
 static bool IsPBRShaderProperty(const RE::BSShaderProperty* property)
 {
-	return property->material != nullptr && property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kVertexLighting) && (property->material->GetFeature() == RE::BSShaderMaterial::Feature::kDefault || property->material->GetFeature() == RE::BSShaderMaterial::Feature::kMultiTexLandLODBlend);
+	return property && property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kVertexLighting) &&
+		(SharedMaterialHooks::IsLegacyPbrMeshMaterial(property->material) ||
+		 SharedMaterialHooks::IsLegacyPbrLandscapeMaterial(property->material));
 }
 
 /** @brief Returns the values of a NiFloatsExtraData block, or an empty span when it is absent or malformed. */
@@ -977,7 +979,7 @@ void TruePBR::RewriteLightingRenderPasses(RE::BSLightingShaderProperty* property
 			if (isPbr) {
 				lightingFlags |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::TruePbr);
 				lightingFlags &= ~static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Specular);
-				if (property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape)) {
+				if (property->material->GetFeature() == RE::BSShaderMaterial::Feature::kMultiTexLandLODBlend) {
 					auto* material = static_cast<BSLightingShaderMaterialPBRLandscape*>(property->material);
 					if (material->HasGlint()) {
 						lightingFlags |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::AnisoLighting);
@@ -1046,6 +1048,8 @@ bool TruePBR::BSLightingShader_SetupMaterial(RE::BSLightingShader* shader, RE::B
 	auto lightingType = static_cast<SIE::ShaderCache::LightingShaderTechniques>((shader->currentRawTechnique >> 24) & 0x3F);
 	const bool isObjectTechnique = lightingType == None || lightingType == TreeAnim || lightingType == LODObjects || lightingType == LODObjectHD;
 	if (!(lightingType == LODLand || lightingType == LODLandNoise) && (lightingFlags & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::TruePbr))) {
+		if ((isObjectTechnique && !SharedMaterialHooks::IsLegacyPbrMeshMaterial(material)) ||
+			((lightingType == MTLand || lightingType == MTLandLODBlend) && !SharedMaterialHooks::IsLegacyPbrLandscapeMaterial(material))) return false;
 		auto shadowState = globals::game::shadowState;
 		auto renderer = globals::game::renderer;
 		auto graphicsState = globals::game::graphicsState;
@@ -1848,8 +1852,8 @@ struct TESBoundObject_Clone3D
 			if (pbrData != nullptr) {
 				RE::BSVisit::TraverseScenegraphGeometries(result, [pbrData, ref](RE::BSGeometry* geometry) {
 					if (auto* shaderProperty = static_cast<RE::BSShaderProperty*>(geometry->GetGeometryRuntimeData().shaderProperty.get())) {
-						if (shaderProperty->GetMaterialType() == RE::BSShaderMaterial::Type::kLighting &&
-							shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kVertexLighting)) {
+						if (shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kVertexLighting) &&
+							SharedMaterialHooks::IsLegacyPbrMeshMaterial(shaderProperty->material)) {
 							if (auto* material = static_cast<BSLightingShaderMaterialPBR*>(shaderProperty->material)) {
 								auto& ext = BSLightingShaderMaterialPBR::GetExtensions(material);
 								const auto prevOwnerRefID = ext.lastOwnerRefFormID;
@@ -1875,11 +1879,11 @@ struct TESBoundObject_Clone3D
 										srcMaterial.CopyMembers(material);
 										shaderProperty->SetMaterial(&srcMaterial, true);
 									}
-									targetMat = static_cast<BSLightingShaderMaterialPBR*>(shaderProperty->material);
-									if (!targetMat) {
+									if (!SharedMaterialHooks::IsLegacyPbrMeshMaterial(shaderProperty->material)) {
 										logger::warn("[TruePBR] failed to clone PBR material for ref {:08X}; skipping to avoid contamination", ref->GetFormID());
 										return RE::BSVisit::BSVisitControl::kContinue;
 									}
+									targetMat = static_cast<BSLightingShaderMaterialPBR*>(shaderProperty->material);
 								}
 
 								targetMat->ApplyMaterialObjectData(*pbrData);

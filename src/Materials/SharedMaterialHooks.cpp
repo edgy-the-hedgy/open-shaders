@@ -345,6 +345,16 @@ bool SharedMaterialHooks::IsLegacyPbrMeshMaterial(const RE::BSShaderMaterial* ma
 		reinterpret_cast<BSLightingShaderMaterialPBR*>(const_cast<RE::BSShaderMaterial*>(material)));
 }
 
+bool SharedMaterialHooks::IsLegacyPbrLandscapeMaterial(const RE::BSShaderMaterial* material)
+{
+	if (!UsesLegacyMaterialRendering() || !material ||
+		material->GetType() != RE::BSShaderMaterial::Type::kLighting ||
+		material->GetFeature() != RE::BSShaderMaterial::Feature::kMultiTexLandLODBlend) return false;
+	std::scoped_lock lock(BSLightingShaderMaterialPBRLandscape::AllMutex);
+	return BSLightingShaderMaterialPBRLandscape::All.contains(
+		reinterpret_cast<BSLightingShaderMaterialPBRLandscape*>(const_cast<RE::BSShaderMaterial*>(material)));
+}
+
 bool SharedMaterialHooks::IsLegacyPbrGrass(const RE::BSShaderProperty* property)
 {
 	return property && property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMenuScreen) &&
@@ -356,7 +366,7 @@ SharedMaterialHooks::MaterialMetadata SharedMaterialHooks::ClassifyMaterial(cons
 	MaterialMetadata result;
 	if (!property) return result;
 	result.runtimeFlags = static_cast<uint64_t>(property->flags.underlying());
-	result.authoredPbrFlags = OriginalNativePbrFlags(property);
+	if (!UsesLegacyNifMarkers()) result.authoredPbrFlags = OriginalNativePbrFlags(property);
 	if (!property->material || property->material->GetType() != RE::BSShaderMaterial::Type::kLighting)
 		return result;
 	using Feature = RE::BSShaderMaterial::Feature;
@@ -367,9 +377,9 @@ SharedMaterialHooks::MaterialMetadata SharedMaterialHooks::ClassifyMaterial(cons
 			result.classification = MaterialClass::NativePbrMesh;
 	} else if (UsesLegacyMaterialRendering() &&
 		property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kVertexLighting)) {
-		if (feature == Feature::kDefault)
+		if (IsLegacyPbrMeshMaterial(property->material))
 			result.classification = MaterialClass::LegacyPbrMesh;
-		else if (feature == Feature::kMultiTexLandLODBlend)
+		else if (IsLegacyPbrLandscapeMaterial(property->material))
 			result.classification = MaterialClass::LegacyPbrLandscape;
 	}
 	return result;
