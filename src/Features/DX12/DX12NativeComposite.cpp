@@ -62,7 +62,7 @@ namespace DX12Native
 		uint32_t frame, uint32_t width, uint32_t height, Transfer transfer,
 		const std::shared_ptr<const ShadowMaskFrame>& shadow,
 		bool returnColorToDX11, bool coverageRequested,
-		const std::shared_ptr<const NativeScreenProbe::MaterialFrame>& materialPreview,
+		const std::shared_ptr<const NativeScreenProbe::MaterialFrame>& material,
 		const std::shared_ptr<const DirectLightingFrame>& direct, uint32_t lightingView)
 	{
 		if (!device11 || !context11 || !device12 || !queue || !source || !width || !height)
@@ -89,7 +89,6 @@ namespace DX12Native
 		                            (support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD) &&
 		                            (support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE);
 		const auto raster = shadow ? shadow->raster : nullptr;
-		const auto material = coverageRequested ? materialPreview : (direct ? direct->material : nullptr);
 		const auto bufferMatches = [device12](ID3D12Resource* buffer, uint64_t bytes) {
 			if (!buffer || !bytes) return false;
 			const auto desc = buffer->GetDesc();

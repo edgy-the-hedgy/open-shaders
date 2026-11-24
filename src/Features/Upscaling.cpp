@@ -3688,7 +3688,8 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 		const auto& nativeScene = globals::features::dx12NativeScene;
 		const auto shadow = nativeScene.GetShadowMask(nativeFrame);
 		const bool coverageRequested = globals::features::dx12Control.IsFullNativeMode() && nativeScene.IsCoveragePreviewEnabled();
-		const auto materialPreview = coverageRequested ? nativeScene.GetMaterialCoverageFrame(nativeFrame) : nullptr;
+		const auto material = (coverageRequested || globals::features::dx12Control.UsesExclusiveMaterials()) ?
+			nativeScene.GetNativeMaterialFrame(nativeFrame) : nullptr;
 		const uint32_t lightingView = globals::features::dx12Control.UsesExclusiveMaterials() && !coverageRequested ? nativeScene.GetLightingView() : 0u;
 		const auto direct = lightingView ? nativeScene.GetNativeLightingFrame(nativeFrame) : nullptr;
 		const bool runtimeFSRReads = upscaleMethod == UpscaleMethod::kFSR && upscaling.fidelityFX.RuntimeUpscalerReadsComposite();
@@ -3701,7 +3702,7 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 				upscaling.dx12SwapChain.d3d12Device.get(),
 				upscaling.dx12SwapChain.commandQueue.get(), scene, globals::state->frameCount,
 				static_cast<uint32_t>(renderSize.x), static_cast<uint32_t>(renderSize.y),
-				transfer, shadow, !runtimeFSRReads, coverageRequested, materialPreview, direct, lightingView);
+				transfer, shadow, !runtimeFSRReads, coverageRequested, material, direct, lightingView);
 	}
 
 	if (upscaleMethod != UpscaleMethod::kNONE && upscaleMethod != UpscaleMethod::kTAA) {
