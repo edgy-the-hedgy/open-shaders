@@ -3,6 +3,7 @@
 #include "TruePBR/BSLightingShaderMaterialPBR.h"
 #include "TruePBR/BSLightingShaderMaterialPBRLandscape.h"
 
+#include "Features/DX12/DX12Control.h"
 #include "Features/InteriorSun.h"
 #include "Hooks.h"
 #include "I18n/I18n.h"
@@ -13,6 +14,11 @@
 #include "Utils/UI.h"
 
 #define I18N_KEY_PREFIX "feature.true_pbr."
+
+static bool UsesNativeMaterialAuthority()
+{
+	return globals::features::dx12Control.UsesExclusiveMaterials();
+}
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	GlintParameters,
@@ -425,12 +431,16 @@ void TruePBR::SaveSettings(json& o_json)
 
 void TruePBR::LoadSettings(json& o_json)
 {
+	if (UsesNativeMaterialAuthority())
+		loaded = false;
 	settings = o_json;
 	enableVerboseJsonLogging = o_json.value("EnableVerboseJsonLogging", false);
 }
 
 void TruePBR::RestoreDefaultSettings()
 {
+	if (UsesNativeMaterialAuthority())
+		loaded = false;
 	settings = {};
 	enableVerboseJsonLogging = false;
 }
@@ -439,12 +449,16 @@ void TruePBR::RestoreDefaultSettings()
 
 void TruePBR::SetupResources()
 {
+	if (UsesNativeMaterialAuthority())
+		return;
 	SetupTextureSetData();
 	SetupMaterialObjectData();
 }
 
 void TruePBR::Prepass()
 {
+	if (UsesNativeMaterialAuthority())
+		return;
 	SetupDefaultPBRLandTextureSet();
 
 	auto context = globals::d3d::context;
@@ -456,6 +470,8 @@ void TruePBR::Prepass()
 
 void TruePBR::SetupGlintsTexture()
 {
+	if (UsesNativeMaterialAuthority())
+		return;
 	constexpr uint noiseTexSize = 128;
 
 	D3D11_TEXTURE2D_DESC tex_desc{
@@ -534,6 +550,8 @@ void TruePBR::SetupGlintsTexture()
 
 void TruePBR::SetupTextureSetData()
 {
+	if (UsesNativeMaterialAuthority())
+		return;
 	if (enableVerboseJsonLogging) {
 		logger::info("[TruePBR] loading PBR texture set configs");
 	}
@@ -552,6 +570,8 @@ void TruePBR::SetupTextureSetData()
 
 void TruePBR::ReloadTextureSetData()
 {
+	if (UsesNativeMaterialAuthority())
+		return;
 	if (enableVerboseJsonLogging) {
 		logger::info("[TruePBR] reloading PBR texture set configs");
 	}
@@ -585,7 +605,7 @@ void TruePBR::ReloadTextureSetData()
 
 TruePBR::PBRTextureSetData* TruePBR::GetPBRTextureSetData(const RE::TESForm* textureSet)
 {
-	if (textureSet == nullptr) {
+	if (UsesNativeMaterialAuthority() || textureSet == nullptr) {
 		return nullptr;
 	}
 
@@ -603,6 +623,8 @@ bool TruePBR::IsPBRTextureSet(const RE::TESForm* textureSet)
 
 void TruePBR::SetupMaterialObjectData()
 {
+	if (UsesNativeMaterialAuthority())
+		return;
 	if (enableVerboseJsonLogging) {
 		logger::info("[TruePBR] loading PBR material object configs");
 	}
@@ -621,7 +643,7 @@ void TruePBR::SetupMaterialObjectData()
 
 TruePBR::PBRMaterialObjectData* TruePBR::GetPBRMaterialObjectData(const RE::TESForm* materialObject)
 {
-	if (materialObject == nullptr) {
+	if (UsesNativeMaterialAuthority() || materialObject == nullptr) {
 		return nullptr;
 	}
 
@@ -715,6 +737,8 @@ namespace Permutations
 
 void TruePBR::GenerateShaderPermutations(RE::BSShader* shader)
 {
+	if (UsesNativeMaterialAuthority())
+		return;
 	auto state = globals::state;
 	auto shaderCache = globals::shaderCache;
 	if (shader->shaderType == RE::BSShader::Type::Lighting) {
@@ -1026,6 +1050,8 @@ static bool HasFuzzRoughnessTexture(const BSLightingShaderMaterialPBR* material)
 
 bool TruePBR::BSLightingShader_SetupMaterial(RE::BSLightingShader* shader, RE::BSLightingShaderMaterialBase const* material)
 {
+	if (UsesNativeMaterialAuthority())
+		return false;
 	using enum SIE::ShaderCache::LightingShaderTechniques;
 
 	const auto& lightingPSConstants = ShaderConstants::LightingPS::Get();
@@ -1435,6 +1461,8 @@ RE::TESLandTexture* GetDefaultLandTexture()
 
 bool TruePBR::IsPBRLand(const RE::TESObjectLAND* land)
 {
+	if (UsesNativeMaterialAuthority())
+		return false;
 	if (land == nullptr || land->loadedData == nullptr) {
 		return false;
 	}
@@ -1537,7 +1565,7 @@ bool TruePBR::TESObjectLAND_SetupMaterial(RE::TESObjectLAND* land)
 
 void TruePBR::SetupGrassMaterial(RE::BSLightingShaderProperty* sourceProperty, RE::BSLightingShaderProperty* grassProperty)
 {
-	if (!loaded || sourceProperty == nullptr || grassProperty == nullptr ||
+	if (UsesNativeMaterialAuthority() || !loaded || sourceProperty == nullptr || grassProperty == nullptr ||
 		!sourceProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kVertexLighting)) {
 		return;
 	}
@@ -2011,6 +2039,24 @@ struct PBR_BSLightingShader_SetupMaterial
 
 void TruePBR::PostPostLoad()
 {
+	logger::info("[TruePBR] Hooking TESLandTexture");
+	stl::write_vfunc<0x32, TESForm_GetFormEditorID>(RE::VTABLE_TESLandTexture[0]);
+	stl::write_vfunc<0x33, TESForm_SetFormEditorID>(RE::VTABLE_TESLandTexture[0]);
+	stl::write_vfunc<0x32, TESForm_GetFormEditorID>(RE::VTABLE_BGSTextureSet[0]);
+	stl::write_vfunc<0x33, TESForm_SetFormEditorID>(RE::VTABLE_BGSTextureSet[0]);
+	stl::write_vfunc<0x32, TESForm_GetFormEditorID>(RE::VTABLE_BGSMaterialObject[0]);
+	stl::write_vfunc<0x33, TESForm_SetFormEditorID>(RE::VTABLE_BGSMaterialObject[0]);
+	stl::write_vfunc<0x32, TESForm_GetFormEditorID>(RE::VTABLE_BGSLightingTemplate[0]);
+	stl::write_vfunc<0x33, TESForm_SetFormEditorID>(RE::VTABLE_BGSLightingTemplate[0]);
+	stl::write_vfunc<0x32, TESForm_GetFormEditorID>(RE::VTABLE_TESWeather[0]);
+	stl::write_vfunc<0x33, TESForm_SetFormEditorID>(RE::VTABLE_TESWeather[0]);
+
+	if (UsesNativeMaterialAuthority()) {
+		loaded = false;
+		logger::info("[TruePBR] Disabled for exclusive DX12 material authority");
+		return;
+	}
+
 	logger::info("[TruePBR] Hooking BGSTextureSet");
 	stl::detour_thunk<BGSTextureSet_ToShaderTextureSet>(REL::RelocationID(20905, 21361));
 
@@ -2024,18 +2070,6 @@ void TruePBR::PostPostLoad()
 	logger::info("[TruePBR] Hooking BSLightingShader");
 	stl::write_vfunc<0x6, BSLightingShader_SetupGeometry>(RE::VTABLE_BSLightingShader[0]);
 	stl::detour_thunk_ignore_func<BSLightingShader_GetPixelTechnique>(REL::RelocationID(101633, 108700));
-
-	logger::info("[TruePBR] Hooking TESLandTexture");
-	stl::write_vfunc<0x32, TESForm_GetFormEditorID>(RE::VTABLE_TESLandTexture[0]);
-	stl::write_vfunc<0x33, TESForm_SetFormEditorID>(RE::VTABLE_TESLandTexture[0]);
-	stl::write_vfunc<0x32, TESForm_GetFormEditorID>(RE::VTABLE_BGSTextureSet[0]);
-	stl::write_vfunc<0x33, TESForm_SetFormEditorID>(RE::VTABLE_BGSTextureSet[0]);
-	stl::write_vfunc<0x32, TESForm_GetFormEditorID>(RE::VTABLE_BGSMaterialObject[0]);
-	stl::write_vfunc<0x33, TESForm_SetFormEditorID>(RE::VTABLE_BGSMaterialObject[0]);
-	stl::write_vfunc<0x32, TESForm_GetFormEditorID>(RE::VTABLE_BGSLightingTemplate[0]);
-	stl::write_vfunc<0x33, TESForm_SetFormEditorID>(RE::VTABLE_BGSLightingTemplate[0]);
-	stl::write_vfunc<0x32, TESForm_GetFormEditorID>(RE::VTABLE_TESWeather[0]);
-	stl::write_vfunc<0x33, TESForm_SetFormEditorID>(RE::VTABLE_TESWeather[0]);
 
 	logger::info("[TruePBR] Hooking BSTempEffectSimpleDecal");
 	stl::detour_thunk<BSTempEffectSimpleDecal_SetupGeometry>(REL::RelocationID(29253, 30108));
@@ -2062,12 +2096,16 @@ void TruePBR::PostPostLoad()
 
 void TruePBR::DataLoaded()
 {
+	if (UsesNativeMaterialAuthority())
+		return;
 	defaultPbrLandTextureSet = RE::TESForm::LookupByEditorID<RE::BGSTextureSet>("DefaultPBRLand");
 	SetupDefaultPBRLandTextureSet();
 }
 
 void TruePBR::SetupDefaultPBRLandTextureSet()
 {
+	if (UsesNativeMaterialAuthority())
+		return;
 	if (!defaultLandTextureSetReplaced && defaultPbrLandTextureSet != nullptr) {
 		if (auto* defaultLandTexture = GetDefaultLandTexture()) {
 			logger::info("[TruePBR] replacing default land texture set record with {}", defaultPbrLandTextureSet->GetFormEditorID());
@@ -2079,6 +2117,8 @@ void TruePBR::SetupDefaultPBRLandTextureSet()
 
 void TruePBR::SetShaderResources(ID3D11DeviceContext* a_context)
 {
+	if (UsesNativeMaterialAuthority())
+		return;
 	uint32_t mask = extendedRendererState.PSResourceModifiedBits;
 
 	if (mask == 0) [[likely]] {

@@ -59,7 +59,9 @@ void DX12NativeScene::DrawLightingSettings(bool /*developer*/)
 
 void DX12NativeScene::DrawMaterialSettings(bool developer)
 {
-	ImGui::TextWrapped("%s", T("menu.dx12.materials.raster_active", "Raster material rendering remains active. DX12 material evaluation is experimental."));
+	ImGui::TextWrapped("%s", globals::features::dx12Control.UsesExclusiveMaterials() ?
+		T("menu.dx12.materials.native_selected", "Full-resolution material evaluation is active. Uncovered surfaces may render incorrectly.") :
+		T("menu.dx12.materials.raster_active", "Raster material rendering remains active. DX12 material evaluation is experimental."));
 	if (!developer)
 		return;
 	if (ImGui::Checkbox(T("menu.dx12.materials.probe", "Visible-pixel material probe"), &screenProbeEnabled) && !screenProbeEnabled)
@@ -79,7 +81,7 @@ void DX12NativeScene::DrawDevStats()
 		if (stats.submittedFrames) ImGui::Text("Material submissions: %u | Reused output allocations: %u", stats.submittedFrames, stats.reusedAllocations);
 		if (stats.sampled) ImGui::Text("Screen frame %u | Evaluated %u / %u | No hit %u | Depth mismatch %u | Missing material %u | Invalid depth %u",
 			stats.frame, stats.evaluated, stats.sampled, stats.noHit, stats.depthMismatch, stats.missingMaterial, stats.invalid);
-		if (screenProbeEnabled && !screenProbe.failure.empty()) ImGui::TextWrapped("%s", screenProbe.failure.c_str());
+		if ((screenProbeEnabled || globals::features::dx12Control.UsesExclusiveMaterials()) && !screenProbe.failure.empty()) ImGui::TextWrapped("%s", screenProbe.failure.c_str());
 	}
 	const auto built = acceleration.GetScene();
 	if (!built || !built->inputs) {
@@ -105,7 +107,8 @@ void DX12NativeScene::DrawDevStats()
 		}
 		ImGui::Text("Unsupported (overlapping): ambiguous %u | non-PBR %u | alpha %u | basis %u | UV/clamp %u",
 			materials->rejected[0], materials->rejected[1], materials->rejected[2], materials->rejected[3], materials->rejected[4]);
-		ImGui::TextDisabled("Diagnostic material evaluation only; raster rendering authority unchanged");
+		ImGui::TextDisabled("%s", globals::features::dx12Control.UsesExclusiveMaterials() ?
+			"Exclusive DX12 material authority selected" : "Diagnostic material evaluation only; raster rendering authority unchanged");
 		if (const auto& shading = built->shadingGeometry)
 			ImGui::Text("GPU shading geometry: %u / %u instances | %.2f MiB", shading->readyInstances, shading->instanceCount, double(shading->bytes) / 1048576.0);
 		else if (!built->shadingFailure.empty())
@@ -247,10 +250,11 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/
 			static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
 		return;
 	screenProbe.Poll();
-	const bool fullProbe = globals::features::dx12Control.IsFullNativeMode() && screenProbeEnabled;
+	const bool exclusiveMaterials = globals::features::dx12Control.UsesExclusiveMaterials();
+	const bool fullProbe = globals::features::dx12Control.IsFullNativeMode() && (screenProbeEnabled || exclusiveMaterials);
 	const bool shadowTrace = shadowMaskEnabled && globals::features::dx12Control.IsShadowOffloadMode() && CanOffloadShadowsInCurrentCell();
 	if (!fullProbe && !shadowTrace) return;
-	if (fullProbe && !screenProbe.WantsFrame(globals::game::graphicsState->GetFrameCount(), continuousMaterialProbe)) return;
+	if (fullProbe && !screenProbe.WantsFrame(globals::game::graphicsState->GetFrameCount(), continuousMaterialProbe || exclusiveMaterials)) return;
 
 	if (!backend) {
 		std::string reason;
@@ -271,7 +275,7 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/
 		auto built = acceleration.GetScene();
 		const auto grid = globals::features::dx12Resources.GetGrid();
 		if (!grid || !built || built->scope != grid->requested.front().scope) built.reset();
-		screenProbe.Dispatch(*backend, raster.Get(frame), std::move(built), frame, viewportWidth, viewportHeight, fullResolutionMaterialProbe, continuousMaterialProbe);
+		screenProbe.Dispatch(*backend, raster.Get(frame), std::move(built), frame, viewportWidth, viewportHeight, fullResolutionMaterialProbe || exclusiveMaterials, continuousMaterialProbe || exclusiveMaterials);
 		return;
 	}
 	{

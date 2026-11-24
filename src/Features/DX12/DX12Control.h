@@ -11,6 +11,7 @@ struct DX12Control final : Feature
 	{
 		bool Enabled = false;
 		int Mode = 0;  // 0: shadow offload, 1: raster comparison, 2: Full Native preparation
+		bool ExclusiveMaterials = false;
 		bool SpatialReconstruction = true;
 		uint32_t ReconstructionGridSize = 5;  // Odd, 3x3 through 9x9.
 		float ShadowStrength = 1.0f;
@@ -28,6 +29,8 @@ struct DX12Control final : Feature
 	/** @brief Whether native work may be submitted this frame. */
 	bool IsActive() const { return loaded && bootActive.load(std::memory_order_acquire); }
 	bool IsFullNativeMode() const { return selectedMode.load(std::memory_order_relaxed) == 2; }
+	/** @brief Session-latched material authority, never changed by live settings. */
+	bool UsesExclusiveMaterials() const { return exclusiveMaterials.load(std::memory_order_acquire); }
 	bool IsShadowOffloadMode() const { return selectedMode.load(std::memory_order_relaxed) == 0; }
 	bool UseSpatialReconstruction() const { return spatialReconstruction.load(std::memory_order_relaxed); }
 	uint32_t GetReconstructionGridSize() const { return reconstructionGrid.load(std::memory_order_relaxed); }
@@ -42,6 +45,7 @@ struct DX12Control final : Feature
 private:
 	void ApplyModeRequest();
 	std::atomic<bool> bootActive{ false };
+	std::atomic<bool> exclusiveMaterials{ false };
 	bool bootCaptured = false;
 	std::atomic<int> selectedMode{ 0 };
 	std::atomic<bool> spatialReconstruction{ true };
