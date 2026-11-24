@@ -27,6 +27,8 @@ namespace DX12Native
 		uint32_t stride = 0, vertexCount = 0, triangleCount = 0;
 		float centerX = 0, centerY = 0;
 		bool requiresStability = false;  // Render-pass-only shapes must be stationary for several frames.
+		const RE::BSShaderProperty* shadingProperty = nullptr;  // Borrowed only during Observe.
+		uint32_t uvOffset = UINT32_MAX, normalOffset = UINT32_MAX, tangentOffset = UINT32_MAX, colorOffset = UINT32_MAX;
 		uint64_t objectIdentity = 0;     // Per-session BSGeometry identity independent of NIF shape names.
 	};
 
@@ -53,6 +55,8 @@ namespace DX12Native
 			std::array<float, 12> transform{};
 			uint32_t stride = 0, vertexCount = 0;
 			float centerX = 0, centerY = 0;
+			std::shared_ptr<DX12::PreparedShading> shading;
+			uint32_t uvOffset = UINT32_MAX, normalOffset = UINT32_MAX, tangentOffset = UINT32_MAX, colorOffset = UINT32_MAX;
 			std::vector<uint8_t> vertices;
 			std::vector<uint16_t> indices;
 		};

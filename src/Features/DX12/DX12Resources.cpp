@@ -288,6 +288,8 @@ namespace DX12
 		                            uint64_t(shape->Indices().size()) * sizeof(uint32_t);
 		if (!shapeBytes || shapeBytes > kMaximumSingleShapeBytes)
 			return false;
+		const uint64_t shadingBytes = shape->shading ? uint64_t(shape->shading->attributes.size()) * sizeof(float) : 0;
+		const uint64_t residentBytes = shapeBytes + shadingBytes;
 		std::scoped_lock lock(mutex);
 		const auto current = snapshot.load(std::memory_order_acquire);
 		if (!current->requested.front().scope)
@@ -315,10 +317,10 @@ namespace DX12
 			});
 		}
 		if (next->runtimeShapes.size() >= kMaximumRuntimeShapes ||
-			shapeBytes > kMaximumRuntimeBytes - next->runtimeBytes)
+			residentBytes > kMaximumRuntimeBytes - next->runtimeBytes)
 			return false;
-		next->runtimeShapes.push_back({ key, std::move(shape), shapeBytes });
-		next->runtimeBytes += shapeBytes;
+		next->runtimeShapes.push_back({ key, std::move(shape), residentBytes });
+		next->runtimeBytes += residentBytes;
 		++next->revision;
 		++next->geometryRevision;
 		snapshot.store(std::move(next), std::memory_order_release);
@@ -554,12 +556,20 @@ void DX12Resources::DrawDevStats()
 		uint64_t chargedBytes = 0, uniqueGeometryBytes = 0, uniqueShadingBytes = 0;
 		std::unordered_set<const void*> uniqueGeometry;
 		std::unordered_set<const DX12::PreparedShading*> uniqueShading;
+		std::unordered_set<std::string> uniqueMissing, missingReferences;
+		std::unordered_map<std::string, size_t> missingReasons;
 		const auto visit = [&](const auto& tile, bool active) {
 			if (!tile) return;
 			if (tile->state == DX12::Tile::State::Ready || tile->state == DX12::Tile::State::ReadyPartial)
 				(active ? activeLoaded : predictiveLoaded)++;
 			chargedBytes += tile->bytes;
 			missing += tile->missingShapes.size();
+			for (const auto& item : tile->missingShapes) {
+				const auto reference = std::format("{}:{:06X}", item.referencePlugin, item.referenceLocal);
+				missingReferences.insert(reference);
+				if (uniqueMissing.insert(std::format("{}:{}:{}", reference, item.nifPath, item.blockIndex)).second)
+					++missingReasons[item.reason];
+			}
 			for (const auto& shape : tile->shapes) {
 				if (!shape) continue;
 				++placements;
@@ -577,7 +587,17 @@ void DX12Resources::DrawDevStats()
 		ImGui::Text(T("menu.dx12.resources.loaded_counts", "Loaded: active %zu / 9, predictive %zu / 16"), activeLoaded, predictiveLoaded);
 		ImGui::Text("Placements: %zu | Unique geometry: %zu | Shaded: %zu | Missing records: %zu", placements, uniqueGeometry.size(), shaded, missing);
 		ImGui::Text("CPU geometry: %.2f MiB | Shading: %.2f MiB | Charged: %.2f MiB", double(uniqueGeometryBytes)/1048576.0, double(uniqueShadingBytes)/1048576.0, double(chargedBytes)/1048576.0);
-		ImGui::Text("Runtime supplements: %zu | %.2f MiB", snapshot->runtimeShapes.size(), double(snapshot->runtimeBytes)/1048576.0);
+		ImGui::Text("Unique missing descriptors: %zu | References: %zu", uniqueMissing.size(), missingReferences.size());
+		if (ImGui::TreeNode("Missing descriptor reasons (deduplicated)")) {
+			std::vector<std::pair<std::string, size_t>> reasons(missingReasons.begin(), missingReasons.end());
+			std::ranges::sort(reasons, [](const auto& a, const auto& b) { return a.second > b.second; });
+			for (const auto& [reason, count] : reasons) ImGui::Text("%s: %zu", reason.c_str(), count);
+			ImGui::TreePop();
+		}
+		size_t shadedRuntime = 0;
+		for (const auto& observed : snapshot->runtimeShapes)
+			if (observed.shape && observed.shape->shading) ++shadedRuntime;
+		ImGui::Text("Runtime supplements: %zu | Shaded: %zu | %.2f MiB", snapshot->runtimeShapes.size(), shadedRuntime, double(snapshot->runtimeBytes)/1048576.0);
 		if (const auto& telemetry = snapshot->telemetry; snapshot->fullNative && telemetry) {
 			ImGui::SeparatorText("Full Native deployment and cache");
 			ImGui::Text("Mod manager: %s | Profile: %s | PG entries: %u", telemetry->manager.c_str(), telemetry->profile.empty() ? "--" : telemetry->profile.c_str(), telemetry->pgEntries);

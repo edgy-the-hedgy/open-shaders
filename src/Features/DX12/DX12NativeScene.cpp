@@ -66,6 +66,10 @@ void DX12NativeScene::DrawDevStats()
 	ImGui::Text("TLAS instances: %zu | Unique BLAS: %zu", built->inputs->geometry.size(), unique.size());
 	if (const auto& materials = built->preparedMaterials) {
 		ImGui::Text("Preliminary recipes: %zu | Missing sources: %u | Unsupported: %u", materials->recipes.size(), materials->missing, materials->unsupported);
+		ImGui::Text("Missing: runtime %u | Companion %u | Runtime material sources: %u",
+			materials->runtimeMissing, materials->companionMissing, materials->runtimeSources);
+		ImGui::Text("Unsupported (overlapping): ambiguous %u | non-PBR %u | alpha %u | basis %u | UV/clamp %u",
+			materials->rejected[0], materials->rejected[1], materials->rejected[2], materials->rejected[3], materials->rejected[4]);
 		ImGui::TextDisabled("Diagnostic material evaluation only; raster rendering authority unchanged");
 		if (const auto& shading = built->shadingGeometry)
 			ImGui::Text("GPU shading geometry: %u / %u instances | %.2f MiB", shading->readyInstances, shading->instanceCount, double(shading->bytes) / 1048576.0);
@@ -348,11 +352,13 @@ std::function<void()> DX12NativeScene::OnRenderPassBegin(const RE::BSRenderPass*
 {
 	// Observe visible static geometry already drawn by the existing opaque
 	// render path. This does not change render-pass state or DX11 draw behavior.
+	const auto& control = globals::features::dx12Control;
+	const bool fullNative = control.IsFullNativeMode();
 	if (!pass || !pass->geometry || !loaded || globals::game::isVR ||
-		!shadowMaskEnabled || !globals::features::dx12Control.IsActive() ||
-		!globals::features::dx12Control.IsShadowOffloadMode() ||
-		!globals::features::upscaling.loaded ||
-		globals::features::upscaling.GetUpscaleMethod() != Upscaling::UpscaleMethod::kFSR ||
+		!control.IsActive() ||
+		(!fullNative && (!shadowMaskEnabled || !control.IsShadowOffloadMode() ||
+			!globals::features::upscaling.loaded ||
+			globals::features::upscaling.GetUpscaleMethod() != Upscaling::UpscaleMethod::kFSR)) ||
 		!globals::state || globals::state->isMapMenuOpen ||
 		(globals::state->permutationData.ExtraShaderDescriptor &
 			static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
@@ -412,6 +418,16 @@ void DX12NativeScene::ObserveSCMRigidCaster(RE::BSGeometry& geometry, bool requi
 	candidate.triangleCount = counts.triangleCount;
 	candidate.vertices = runtime.rendererData->rawVertexData;
 	candidate.indices = runtime.rendererData->rawIndexData;
+	if (globals::features::dx12Control.IsFullNativeMode()) {
+		using V = RE::BSGraphics::Vertex;
+		if (desc.HasFlag(V::VF_UV) && desc.HasFlag(V::VF_NORMAL) && desc.HasFlag(V::VF_TANGENT)) {
+			candidate.shadingProperty = static_cast<const RE::BSLightingShaderProperty*>(property);
+			candidate.uvOffset = desc.GetAttributeOffset(V::VA_TEXCOORD0);
+			candidate.normalOffset = desc.GetAttributeOffset(V::VA_NORMAL);
+			candidate.tangentOffset = desc.GetAttributeOffset(V::VA_BINORMAL);
+			if (desc.HasFlag(V::VF_COLORS)) candidate.colorOffset = desc.GetAttributeOffset(V::VA_COLOR);
+		}
+	}
 	for (uint32_t row = 0; row < 3; ++row)
 		for (uint32_t col = 0; col < 3; ++col)
 			candidate.transform[4 * row + col] = geometry.world.rotate.entry[row][col] * geometry.world.scale;

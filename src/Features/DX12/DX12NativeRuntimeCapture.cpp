@@ -10,6 +10,9 @@
 #include <format>
 #include <ranges>
 #include <string_view>
+#include <DirectXPackedVector.h>
+#include "RE/B/BSLightingShaderMaterialBase.h"
+#include "RE/B/BSTextureSet.h"
 
 namespace DX12Native
 {
@@ -67,6 +70,51 @@ namespace DX12Native
 					return std::tolower(static_cast<unsigned char>(a)) ==
 					       std::tolower(static_cast<unsigned char>(b));
 				});
+		}
+
+		// Copy only generic engine material inputs, never TruePBR extension state.
+		// The live PBR marker may be original (menu-screen) or remapped by the
+		// active raster backend (vertex-lighting). This is diagnostic observation.
+		std::shared_ptr<DX12::PreparedShading> SnapshotMaterial(const RuntimeGeometryCandidate& source)
+		{
+			const auto* property = source.shadingProperty;
+			if (!property || !property->material || property->material->GetType() != RE::BSShaderMaterial::Type::kLighting ||
+				source.uvOffset < 16 || source.normalOffset < 16 || source.tangentOffset < 16 ||
+				source.uvOffset > source.stride - 4 || source.normalOffset > source.stride - 4 ||
+				source.tangentOffset > source.stride - 4 || (source.colorOffset != UINT32_MAX &&
+				(source.colorOffset < 16 || source.colorOffset > source.stride - 4))) return {};
+			using F = RE::BSShaderProperty::EShaderPropertyFlag;
+			const auto flags = static_cast<uint64_t>(property->flags.underlying());
+			if (!property->flags.any(F::kMenuScreen, F::kVertexLighting) ||
+				property->flags.any(F::kVertexAlpha, F::kGrayscaleToPaletteAlpha, F::kRefraction, F::kTempRefraction,
+					F::kTreeAnim, F::kLODLandscape, F::kMultiTextureLandscape, F::kFace, F::kHairTint) ||
+				property->alpha != 1.0f) return {};
+			const auto* material = static_cast<const RE::BSLightingShaderMaterialBase*>(property->material);
+			if (material->materialAlpha != 1.0f || material->textureClampMode < 0 || material->textureClampMode > 3)
+				return {};
+			auto* textures = material->textureSet.get();
+			const auto* expected = REL::Relocation<const RE::NiRTTI*>{ RE::BSTextureSet::Ni_RTTI }.get();
+			if (!textures || !expected || !textures->GetRTTI() || !textures->GetRTTI()->IsKindOf(expected)) return {};
+			auto shading = std::make_shared<DX12::PreparedShading>();
+			shading->runtimeObserved = true;
+			shading->stride = 60;
+			shading->shapeName = source.shapeName;
+			shading->provenance = "runtime engine material";
+			shading->shaderFlags1 = uint32_t(flags);
+			shading->shaderFlags2 = uint32_t(flags >> 32) | (1u << 23);
+			shading->twoSided = property->flags.any(F::kTwoSided);
+			shading->clampMode = material->textureClampMode;
+			shading->uvTransform = { material->texCoordOffset[0].x, material->texCoordOffset[0].y,
+				material->texCoordScale[0].x, material->texCoordScale[0].y };
+			if (!std::ranges::all_of(shading->uvTransform, [](float x) { return std::isfinite(x); })) return {};
+			for (uint32_t i = 0; i < 8; ++i) {
+				const char* path = textures->GetTexturePath(static_cast<RE::BSTextureSet::Texture>(i));
+				std::string name = path ? path : "";
+				if (name.size() > 260) return {};
+				shading->textures.push_back(std::move(name));
+			}
+			if (shading->textures[0].empty() || shading->textures[1].empty() || shading->textures[5].empty()) return {};
+			return shading;
 		}
 
 		// Compare actual rigid geometry, not subcell readiness or camera coverage.
@@ -191,6 +239,13 @@ namespace DX12Native
 			packet.vertices.resize(static_cast<size_t>(vertexBytes));
 			std::memcpy(packet.vertices.data(), candidate.vertices, packet.vertices.size());
 			packet.indices.assign(candidate.indices, candidate.indices + indexCount);
+			if (candidate.shadingProperty) {
+				packet.shading = SnapshotMaterial(candidate);
+				packet.uvOffset = candidate.uvOffset;
+				packet.normalOffset = candidate.normalOffset;
+				packet.tangentOffset = candidate.tangentOffset;
+				packet.colorOffset = candidate.colorOffset;
+			}
 			{
 				std::scoped_lock lock(mutex);
 				if (activeCenter != center || activeSize != grid->size) {
@@ -238,6 +293,35 @@ namespace DX12Native
 							   [&](uint16_t index) { return index < packet.vertexCount; }))
 				continue;
 			shape->indices.assign(packet.indices.begin(), packet.indices.end());
+			if (packet.shading) {
+				// Skyrim rigid vertex layout: float3 position + bitangent X,
+				// half2 UV, packed normal.xyz/bitangent Y, packed tangent.xyz/
+				// bitangent Z, optional RGBA8 color. Decode on the CPU worker.
+				auto& attributes = packet.shading->attributes;
+				attributes.reserve(size_t(packet.vertexCount) * 15);
+				const auto sn = [](uint8_t v) { return float(v) * (2.0f / 255.0f) - 1.0f; };
+				for (uint32_t i = 0; i < packet.vertexCount; ++i) {
+					const auto* vertex = packet.vertices.data() + size_t(i) * packet.stride;
+					uint16_t uv[2];
+					float bx;
+					std::memcpy(uv, vertex + packet.uvOffset, sizeof(uv));
+					std::memcpy(&bx, vertex + 12, sizeof(bx));
+					const auto* n = vertex + packet.normalOffset;
+					const auto* t = vertex + packet.tangentOffset;
+					const auto* color = packet.colorOffset == UINT32_MAX ? nullptr : vertex + packet.colorOffset;
+					const float u = DirectX::PackedVector::XMConvertHalfToFloat(uv[0]);
+					const float v = DirectX::PackedVector::XMConvertHalfToFloat(uv[1]);
+					if (!std::isfinite(bx) || !std::isfinite(u) || !std::isfinite(v)) {
+						attributes.clear();
+						break;
+					}
+					attributes.insert(attributes.end(), { sn(n[0]), sn(n[1]), sn(n[2]), u, v,
+						color ? float(color[0])/255.0f : 1.0f, color ? float(color[1])/255.0f : 1.0f,
+						color ? float(color[2])/255.0f : 1.0f, color ? float(color[3])/255.0f : 1.0f,
+						sn(t[0]), sn(t[1]), sn(t[2]), bx, sn(n[3]), sn(t[3]) });
+				}
+				if (!attributes.empty()) shape->shading = std::move(packet.shading);
+			}
 
 			const auto releaseIfCurrent = [&]() {
 				std::scoped_lock lock(mutex);

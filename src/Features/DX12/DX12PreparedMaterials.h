@@ -5,6 +5,8 @@
 #include "Features/NativePBR/MaterialCatalog.h"
 #include "Features/NativePBR/MaterialInterpretation.h"
 #include <string_view>
+#include <bit>
+#include <format>
 
 namespace DX12Native
 {
@@ -17,6 +19,8 @@ namespace DX12Native
 		std::vector<NativePBR::GpuDrawBinding> bindings;
 		std::vector<NativePBR::GpuMaterialRecord> records;
 		uint32_t missing = 0, unsupported = 0;
+		uint32_t runtimeMissing = 0, runtimeSources = 0, companionMissing = 0;
+		std::array<uint32_t, 5> rejected{};
 	};
 
 	inline std::shared_ptr<const PreparedMaterials> CompilePreparedMaterials(const SceneInputs& inputs, const std::shared_ptr<const NativePBR::MaterialCatalogSnapshot>& catalog)
@@ -38,17 +42,30 @@ namespace DX12Native
 			const auto missingBinding = NativePBR::PackGpuDrawBinding(0, 0, UINT32_MAX, 0);
 			if (!source) {
 				++result->missing;
+				if (instance.shape && instance.shape->runtimeObjectKey) ++result->runtimeMissing;
+				else ++result->companionMissing;
 				result->bindings.push_back(missingBinding);
 				continue;
 			}
+			if (source->runtimeObserved) ++result->runtimeSources;
 			const auto& placementMaterial = instance.shape->materialOverride;
 			if ((placementMaterial && placementMaterial->ambiguous) || !(source->shaderFlags2 & pbrSource) || source->alpha != 1.0f ||
 				source->stride != 60 || source->clampMode < 0 || source->uvTransform.size() != 4) {
 				++result->unsupported;
+				if (placementMaterial && placementMaterial->ambiguous) ++result->rejected[0];
+				if (!(source->shaderFlags2 & pbrSource)) ++result->rejected[1];
+				if (source->alpha != 1.0f) ++result->rejected[2];
+				if (source->stride != 60) ++result->rejected[3];
+				if (source->clampMode < 0 || source->uvTransform.size() != 4) ++result->rejected[4];
 				result->bindings.push_back(missingBinding);
 				continue;
 			}
 			auto key = source->sourceNif + ":" + source->sourceHash + ":" + std::to_string(source->blockIndex);
+			if (source->runtimeObserved) {
+				key = std::format("runtime:{}:{}:{}", source->shaderFlags1, source->shaderFlags2, source->clampMode);
+				for (float value : source->uvTransform) key += std::format(":{:08x}", std::bit_cast<uint32_t>(value));
+				for (const auto& path : source->textures) key += std::format(":{}:{}", path.size(), path);
+			}
 			if (placementMaterial) {
 				key += ":TXST:" + placementMaterial->textureSet + ":MATO:" + placementMaterial->materialObject;
 				for (const auto& path : placementMaterial->textures) key += ":" + path;

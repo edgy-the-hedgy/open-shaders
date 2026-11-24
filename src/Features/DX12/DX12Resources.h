@@ -55,6 +55,7 @@ namespace DX12
 		uint32_t shaderFlags1 = 0, shaderFlags2 = 0;
 		float alpha = 1.0f;
 		bool twoSided = false;
+		bool runtimeObserved = false;  // Live engine texture set, not PG-certified offline provenance.
 		int32_t clampMode = -1;
 		std::vector<float> uvTransform;
 		std::vector<std::string> textures;
