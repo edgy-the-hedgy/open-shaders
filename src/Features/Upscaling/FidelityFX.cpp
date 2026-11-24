@@ -363,10 +363,13 @@ void FidelityFX::CreateFSRResources()
 
 	// Tear down any live runtime-upscaler contexts/resources so a resolution/mode change
 	// doesn't leave them sized for the previous configuration (see RuntimeUpscaler.cpp).
-	WaitForRuntimeUpscalerIdle();
-	DestroyRuntimeUpscalerContexts(false);
-	DestroyRuntimeUpscalerResources(false);
-	ResetRuntimeUpscalerTracking(true);
+	if (WaitForRuntimeUpscalerIdle()) {
+		DestroyRuntimeUpscalerContexts(false);
+		DestroyRuntimeUpscalerResources(false);
+		ResetRuntimeUpscalerTracking(true);
+	} else {
+		QuarantineRuntimeUpscalerForSession("runtime recreation deferred until retirement");
+	}
 
 	// Prevent multiple allocations
 	if (fsrScratchBuffer) {
@@ -461,7 +464,10 @@ void FidelityFX::DestroyFSRResources()
 	// Reset crash logging flag when resources are destroyed
 	fsrDispatchCrashLogged.Reset();
 
-	WaitForRuntimeUpscalerIdle();
+	if (!WaitForRuntimeUpscalerIdle()) {
+		QuarantineRuntimeUpscalerForSession("runtime destruction deferred until retirement");
+		return;
+	}
 	DestroyRuntimeUpscalerContexts(false);
 	DestroyRuntimeUpscalerResources(false);
 	ResetRuntimeCommandContexts();

@@ -682,46 +682,27 @@ bool FidelityFX::WaitForRuntimeD3D12Fence(uint64_t a_value)
 	return runtimeFence.CpuWait(a_value, SharedFence::kFenceTimeoutMs);
 }
 
-void FidelityFX::WaitForRuntimeUpscalerIdle()
+bool FidelityFX::WaitForRuntimeUpscalerIdle()
 {
-	auto& swapChain = globals::features::upscaling.dx12SwapChain;
-	if (!runtimeFence.fence12 && !runtimeFence.fence11)
-		return;
-
-	try {
-		if (swapChain.d3d11Context && runtimeFence.fence11 && runtimeFence.fence12) {
-			const uint64_t d3d11FenceValue = runtimeFence.Next();
-			DX::ThrowIfFailed(swapChain.d3d11Context->Signal(runtimeFence.fence11.get(), d3d11FenceValue));
-			swapChain.d3d11Context->Flush();
-			(void)WaitForRuntimeD3D12Fence(d3d11FenceValue);
-		} else if (globals::d3d::context) {
-			globals::d3d::context->Flush();
+	for (uint32_t attempt = 0; attempt < 3; ++attempt) {
+		if (PollRuntimeUpscalerTeardownIdle()) {
+			for (auto& context : runtimeCommandContexts) context.fenceValue = 0;
+			return true;
 		}
-
-		if (swapChain.commandQueue && runtimeFence.fence12) {
-			const uint64_t d3d12FenceValue = runtimeFence.Next();
-			DX::ThrowIfFailed(swapChain.commandQueue->Signal(runtimeFence.fence12.get(), d3d12FenceValue));
-			(void)WaitForRuntimeD3D12Fence(d3d12FenceValue);
-		}
-
-		if (runtimeFence.fence12) {
-			const uint64_t completedValue = runtimeFence.fence12->GetCompletedValue();
-			for (auto& commandContext : runtimeCommandContexts) {
-				if (commandContext.fenceValue != 0 && completedValue >= commandContext.fenceValue)
-					commandContext.fenceValue = 0;
-			}
-		}
-	} catch (const std::exception& e) {
-		logger::debug("[FidelityFX] Runtime upscaler idle wait failed: {}", e.what());
-	} catch (...) {
-		logger::debug("[FidelityFX] Runtime upscaler idle wait failed with an unknown exception");
+		const uint64_t pending = pendingRuntimeTeardownD3D12FenceValue ?
+			pendingRuntimeTeardownD3D12FenceValue : pendingRuntimeTeardownD3D11FenceValue;
+		if (!pending || !WaitForRuntimeD3D12Fence(pending))
+			return runtimeFence.fence12 && runtimeFence.fence12->GetCompletedValue() == UINT64_MAX;
 	}
+	return false;
 }
 
-void FidelityFX::DestroyRuntimeUpscalerContexts(bool a_waitForIdle)
+bool FidelityFX::DestroyRuntimeUpscalerContexts(bool a_waitForIdle)
 {
-	if (a_waitForIdle)
-		WaitForRuntimeUpscalerIdle();
+	if (a_waitForIdle && !WaitForRuntimeUpscalerIdle()) {
+		QuarantineRuntimeUpscalerForSession("runtime retirement is not complete");
+		return false;
+	}
 
 	for (uint32_t i = 0; i < std::size(runtimeUpscalerContexts); ++i) {
 		if (runtimeUpscalerContexts[i])
@@ -735,12 +716,15 @@ void FidelityFX::DestroyRuntimeUpscalerContexts(bool a_waitForIdle)
 	runtimeUpscalerMaxDisplayWidth = 0;
 	runtimeUpscalerMaxDisplayHeight = 0;
 	runtimeUpscalerRequestedVersion = 0;
+	return true;
 }
 
-void FidelityFX::DestroyRuntimeUpscalerResources(bool a_waitForIdle)
+bool FidelityFX::DestroyRuntimeUpscalerResources(bool a_waitForIdle)
 {
-	if (a_waitForIdle)
-		WaitForRuntimeUpscalerIdle();
+	if (a_waitForIdle && !WaitForRuntimeUpscalerIdle()) {
+		QuarantineRuntimeUpscalerForSession("runtime retirement is not complete");
+		return false;
+	}
 
 	DeleteWrappedResourceArray(runtimeColorShared);
 	DeleteWrappedResourceArray(runtimeDepthShared);
@@ -755,6 +739,7 @@ void FidelityFX::DestroyRuntimeUpscalerResources(bool a_waitForIdle)
 	runtimeReactiveSharedDesc = {};
 	runtimeTransparencySharedDesc = {};
 	runtimeOutputSharedDesc = {};
+	return true;
 }
 
 bool FidelityFX::HasRuntimeUpscalerResources() const
@@ -827,7 +812,10 @@ bool FidelityFX::PollRuntimeUpscalerTeardownReady()
 
 void FidelityFX::ResetRuntimeUpscalerResources(bool a_invalidateProviderCache)
 {
-	WaitForRuntimeUpscalerIdle();
+	if (!WaitForRuntimeUpscalerIdle()) {
+		QuarantineRuntimeUpscalerForSession("runtime reset deferred until retirement");
+		return;
+	}
 	DestroyRuntimeUpscalerContexts(false);
 	DestroyRuntimeUpscalerResources(false);
 	ResetRuntimeUpscalerTracking(a_invalidateProviderCache);
@@ -835,8 +823,10 @@ void FidelityFX::ResetRuntimeUpscalerResources(bool a_invalidateProviderCache)
 
 void FidelityFX::ReleaseRuntimeUpscalerResourcesForRelatch(bool a_waitForIdle)
 {
-	if (a_waitForIdle)
-		WaitForRuntimeUpscalerIdle();
+	if (a_waitForIdle && !WaitForRuntimeUpscalerIdle()) {
+		QuarantineRuntimeUpscalerForSession("runtime relatch deferred until retirement");
+		return;
+	}
 
 	DestroyRuntimeUpscalerContexts(false);
 	DestroyRuntimeUpscalerResources(false);
@@ -880,7 +870,7 @@ bool FidelityFX::EnsureRuntimeUpscalerContexts(uint32_t a_fullRenderWidth, uint3
 	if (!needsRecreate && runtimeUpscalerContextCount == a_contextCount)
 		return true;
 
-	DestroyRuntimeUpscalerContexts();
+	if (!DestroyRuntimeUpscalerContexts()) return false;
 
 	auto& swapChain = globals::features::upscaling.dx12SwapChain;
 
@@ -1023,6 +1013,9 @@ bool FidelityFX::EnsureRuntimeUpscalerSharedResources(uint32_t a_contextCount, u
 
 	if (!needsRecreate) {
 		for (uint32_t i = a_contextCount; i < std::size(runtimeColorShared); ++i) {
+			if ((runtimeColorShared[i] || runtimeDepthShared[i] || runtimeMotionShared[i] ||
+				runtimeReactiveShared[i] || runtimeTransparencyShared[i] || runtimeOutputShared[i]) &&
+				!WaitForRuntimeUpscalerIdle()) return false;
 			delete runtimeColorShared[i];
 			runtimeColorShared[i] = nullptr;
 			delete runtimeDepthShared[i];
@@ -1039,7 +1032,7 @@ bool FidelityFX::EnsureRuntimeUpscalerSharedResources(uint32_t a_contextCount, u
 		return true;
 	}
 
-	DestroyRuntimeUpscalerResources();
+	if (!DestroyRuntimeUpscalerResources()) return false;
 
 	auto& swapChain = globals::features::upscaling.dx12SwapChain;
 
