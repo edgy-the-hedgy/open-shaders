@@ -1130,6 +1130,8 @@ if(TARGET DX12NativeShadowAIO AND TARGET DX12NativeCompositeAIO)
         DX12NativeCompositeAIO
         "${_shadow_aio_dxil}"
         "${_native_composite_aio_dxil}"
+        "${_native_pbr_probe_aio_dxil}"
+        "${_native_pbr_screen_aio_dxil}"
     )
 endif()
 
@@ -1143,6 +1145,8 @@ if(TARGET DX12NativeShadowDXIL AND TARGET DX12NativeCompositeDXIL)
         DX12NativeCompositeDXIL
         "${_shadow_dxil}"
         "${_native_composite_dxil}"
+        "${_native_pbr_probe_dxil}"
+        "${_native_pbr_screen_dxil}"
     )
 endif()
 
@@ -1302,6 +1306,12 @@ if(AUTO_PLUGIN_DEPLOYMENT)
                     copy_if_different
                     "${_native_composite_dxil}"
                     "${DEPLOY_TARGET}/Shaders/NativeComposite/ShadowLayer.dxil"
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${_native_pbr_probe_dxil}"
+                    "${DEPLOY_TARGET}/Shaders/NativeComposite/NativePBRProbe.dxil"
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${_native_pbr_screen_dxil}"
+                    "${DEPLOY_TARGET}/Shaders/NativeComposite/NativePBRScreenProbe.dxil"
                 )
             endif()
             # Content-based copies preserve the destination mtime when DXIL
@@ -1658,6 +1668,8 @@ if(AIO_ZIP_TO_DIST)
             ${_dx12_aio_zip_deps}
             ${_shadow_aio_dxil}
             ${_native_composite_aio_dxil}
+            ${_native_pbr_probe_aio_dxil}
+            ${_native_pbr_screen_aio_dxil}
             ${CMAKE_SOURCE_DIR}/cmake/VerifyAioPayload.cmake
         COMMENT "Creating AIO archive ${AIO_ARCHIVE}"
     )
@@ -1890,6 +1902,8 @@ add_custom_command(
         ${DX12_RESOURCES_AIO_EXE}
         ${_shadow_dxil}
         ${_native_composite_dxil}
+        ${_native_pbr_probe_dxil}
+        ${_native_pbr_screen_dxil}
         ${CMAKE_SOURCE_DIR}/cmake/VerifyAioPayload.cmake
         ${_aio_manual_cmds}
     COMMENT "Creating AIO zip package (manual)"

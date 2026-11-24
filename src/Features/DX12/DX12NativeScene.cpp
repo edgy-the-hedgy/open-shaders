@@ -15,6 +15,7 @@
 #include <format>
 #include <limits>
 #include <ranges>
+#include <unordered_set>
 
 void DX12NativeScene::DrawSettings()
 {
@@ -49,6 +50,59 @@ void DX12NativeScene::DrawSettings()
 	if (ImGui::SliderFloat(T("menu.dx12.scene.shadow_fade_fraction", "Shadow fade range fraction"), &fade, 0.0f, 1.0f, "%.2f"))
 		shadowFadeRange = std::round(fade * 50.0f) / 50.0f;
 	ImGui::SliderFloat(T("menu.dx12.scene.shadow_falloff_curve", "Shadow falloff curve"), &shadowFalloffCurve, 0.0f, 2.5f, "%.2f");
+}
+
+void DX12NativeScene::DrawDevStats()
+{
+	ImGui::SeparatorText("Native Scene / NativePBR preparation");
+	if (globals::features::dx12Control.IsFullNativeMode()) {
+		if (ImGui::Checkbox("Visible-pixel material probe", &screenProbeEnabled) && !screenProbeEnabled) screenProbe.Reset();
+		if (screenProbeEnabled && ImGui::Checkbox("Full native render resolution", &fullResolutionMaterialProbe)) screenProbe.Reset();
+		const auto& stats = screenProbe.stats;
+		if (stats.sampled) ImGui::Text("Material output: %u x %u | %.2f MiB GPU | 20-byte counter readback", stats.width, stats.height, double(stats.outputBytes)/1048576.0);
+		if (stats.sampled) ImGui::Text("Screen frame %u | Evaluated %u / %u | No hit %u | Depth mismatch %u | Missing material %u | Invalid depth %u",
+			stats.frame, stats.evaluated, stats.sampled, stats.noHit, stats.depthMismatch, stats.missingMaterial, stats.invalid);
+		if (screenProbeEnabled && !screenProbe.failure.empty()) ImGui::TextWrapped("%s", screenProbe.failure.c_str());
+	}
+	const auto built = acceleration.GetScene();
+	if (!built || !built->inputs) {
+		ImGui::TextDisabled("No completed native scene");
+		return;
+	}
+	std::unordered_set<const DX12Native::BottomLevel*> unique;
+	for (const auto& bottom : built->bottoms)
+		if (bottom) unique.insert(bottom.get());
+	ImGui::Text("TLAS instances: %zu | Unique BLAS: %zu", built->inputs->geometry.size(), unique.size());
+	if (const auto& materials = built->preparedMaterials) {
+		ImGui::Text("Preliminary recipes: %zu | Missing sources: %u | Unsupported: %u", materials->recipes.size(), materials->missing, materials->unsupported);
+		ImGui::Text("Missing: runtime %u | Companion %u | Runtime material sources: %u",
+			materials->runtimeMissing, materials->companionMissing, materials->runtimeSources);
+		ImGui::Text("Companion materials recovered from matching live geometry: %u", materials->recoveredPlacements);
+		ImGui::Text("Unsupported (overlapping): ambiguous %u | non-PBR %u | alpha %u | basis %u | UV/clamp %u",
+			materials->rejected[0], materials->rejected[1], materials->rejected[2], materials->rejected[3], materials->rejected[4]);
+		ImGui::TextDisabled("Diagnostic material evaluation only; raster rendering authority unchanged");
+		if (const auto& shading = built->shadingGeometry)
+			ImGui::Text("GPU shading geometry: %u / %u instances | %.2f MiB", shading->readyInstances, shading->instanceCount, double(shading->bytes) / 1048576.0);
+		else if (!built->shadingFailure.empty())
+			ImGui::TextWrapped("%s", built->shadingFailure.c_str());
+		if (const auto& evaluation = built->materialEvaluation) {
+			ImGui::Text("Resident recipes: %u | DDS: %zu (archive %u) | Reused: %u | Failed: %u", evaluation->residentRecipes,
+				evaluation->textures.size(), evaluation->archiveTextures, evaluation->reusedTextures, evaluation->failedTextures);
+			if (ImGui::TreeNode("DDS failure details")) {
+				for (const auto& [reason, count] : evaluation->failureReasons) ImGui::Text("%s: %u", reason.c_str(), count);
+				for (const auto& [path, reason] : evaluation->failedExamples) ImGui::TextWrapped("%s: %s", reason.c_str(), path.c_str());
+				ImGui::TreePop();
+			}
+			ImGui::Text("Native DDS VRAM: %.2f MiB | Evaluated triangles: %u / %u", double(evaluation->textureBytes) / 1048576.0,
+				evaluation->evaluated, evaluation->instanceCount);
+			if (evaluation->evaluated) {
+				const auto& sample = evaluation->firstSample;
+				ImGui::Text("Sample base RGB: %.3f %.3f %.3f | Roughness %.3f | Metal %.3f | AO %.3f",
+					sample.color[0], sample.color[1], sample.color[2], sample.normal[3], sample.f0[3], sample.emission[3]);
+			}
+		} else if (!built->materialFailure.empty())
+			ImGui::TextWrapped("%s", built->materialFailure.c_str());
+	}
 }
 
 void DX12NativeScene::LoadSettings(json& input)
@@ -256,10 +310,11 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/
 		(globals::state->permutationData.ExtraShaderDescriptor &
 			static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
 		return;
-	// Only capture the depth and camera used by the independent shadow layer.
-	if (!shadowMaskEnabled || !globals::features::dx12Control.IsShadowOffloadMode() ||
-		!CanOffloadShadowsInCurrentCell())
-		return;
+	screenProbe.Poll();
+	const bool fullProbe = globals::features::dx12Control.IsFullNativeMode() && screenProbeEnabled;
+	const bool shadowTrace = shadowMaskEnabled && globals::features::dx12Control.IsShadowOffloadMode() && CanOffloadShadowsInCurrentCell();
+	if (!fullProbe && !shadowTrace) return;
+	if (fullProbe && !screenProbe.WantsFrame(globals::game::graphicsState->GetFrameCount())) return;
 
 	if (!backend) {
 		std::string reason;
@@ -276,6 +331,13 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/
 	const auto viewport = Util::ConvertToDynamic(globals::state->screenSize);
 	const uint32_t viewportWidth = std::isfinite(viewport.x) && viewport.x > 0.0f ? uint32_t(viewport.x) : 0u;
 	const uint32_t viewportHeight = std::isfinite(viewport.y) && viewport.y > 0.0f ? uint32_t(viewport.y) : 0u;
+	if (fullProbe) {
+		auto built = acceleration.GetScene();
+		const auto grid = globals::features::dx12Resources.GetGrid();
+		if (!grid || !built || built->scope != grid->requested.front().scope) built.reset();
+		screenProbe.Dispatch(*backend, raster.Get(frame), std::move(built), frame, viewportWidth, viewportHeight, fullResolutionMaterialProbe);
+		return;
+	}
 	{
 		const auto captured = raster.Get(frame);
 		const auto built = acceleration.GetScene();
@@ -313,10 +375,12 @@ std::function<void()> DX12NativeScene::OnRenderPassBegin(const RE::BSRenderPass*
 {
 	// Observe visible static geometry already drawn by the existing opaque
 	// render path. This does not change render-pass state or DX11 draw behavior.
+	const auto& control = globals::features::dx12Control;
+	const bool fullNative = control.IsFullNativeMode();
 	if (!pass || !pass->geometry || !loaded || globals::game::isVR ||
-		!shadowMaskEnabled || !globals::features::dx12Control.IsActive() ||
-		!globals::features::dx12Control.IsShadowOffloadMode() ||
-		!globals::features::upscaling.loaded ||
+		!control.IsActive() ||
+		(!fullNative && (!shadowMaskEnabled || !control.IsShadowOffloadMode() ||
+			!globals::features::upscaling.loaded)) ||
 		!globals::state || globals::state->isMapMenuOpen ||
 		(globals::state->permutationData.ExtraShaderDescriptor &
 			static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
@@ -376,6 +440,16 @@ void DX12NativeScene::ObserveSCMRigidCaster(RE::BSGeometry& geometry, bool requi
 	candidate.triangleCount = counts.triangleCount;
 	candidate.vertices = runtime.rendererData->rawVertexData;
 	candidate.indices = runtime.rendererData->rawIndexData;
+	if (globals::features::dx12Control.IsFullNativeMode()) {
+		using V = RE::BSGraphics::Vertex;
+		if (desc.HasFlag(V::VF_UV) && desc.HasFlag(V::VF_NORMAL)) {
+			candidate.shadingProperty = static_cast<const RE::BSLightingShaderProperty*>(property);
+			candidate.uvOffset = desc.GetAttributeOffset(V::VA_TEXCOORD0);
+			candidate.normalOffset = desc.GetAttributeOffset(V::VA_NORMAL);
+			if (desc.HasFlag(V::VF_TANGENT)) candidate.tangentOffset = desc.GetAttributeOffset(V::VA_BINORMAL);
+			if (desc.HasFlag(V::VF_COLORS)) candidate.colorOffset = desc.GetAttributeOffset(V::VA_COLOR);
+		}
+	}
 	for (uint32_t row = 0; row < 3; ++row)
 		for (uint32_t col = 0; col < 3; ++col)
 			candidate.transform[4 * row + col] = geometry.world.rotate.entry[row][col] * geometry.world.scale;
@@ -401,6 +475,7 @@ void DX12NativeScene::OnSceneTransitionReset(bool a_opening)
 			frozenNativeLights.clear();
 		}
 		raster.Reset();
+		screenProbe.Reset();
 		shadows.Reset();
 		acceleration.Reset();
 		geometryCapture.Reset();
@@ -417,6 +492,7 @@ void DX12NativeScene::OnRuntimeDisabled()
 		frozenNativeLights.clear();
 	}
 	raster.Reset();
+	screenProbe.Reset();
 	shadows.Reset();
 	acceleration.Reset();
 	geometryCapture.Reset();

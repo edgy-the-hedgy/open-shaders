@@ -8,6 +8,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -17,6 +18,7 @@ namespace DX12
 {
 	// Shared upper bound for companion light records and the native shadow consumer.
 	inline constexpr uint32_t kMaxPreparedLights = 2048;
+	inline constexpr uint32_t kMaxPreparedShapes = 4096;
 
 	class CompanionWorker;
 	struct CompanionResult;
@@ -43,15 +45,62 @@ namespace DX12
 		int32_t blockIndex = -1;  // -1: entire NIF/model unresolved.
 	};
 
-	/** @brief The companion publishes triangle geometry without textures or materials. */
+	/** @brief Immutable unevaluated material inputs; absent in the lightweight profile. */
+	struct PreparedShading
+	{
+		uint32_t stride = 0;  // RSGA v1: 36, v2: 60 bytes
+		std::vector<float> attributes;
+		std::string sourceNif, sourceHash, provenance, shapeName;
+		int32_t blockIndex = -1;
+		uint32_t shaderFlags1 = 0, shaderFlags2 = 0;
+		float alpha = 1.0f;
+		bool twoSided = false;
+		bool runtimeObserved = false;  // Live engine texture set, not PG-certified offline provenance.
+		bool recoveredPlacement = false;
+		int32_t clampMode = -1;
+		std::vector<float> uvTransform;
+		std::vector<std::string> textures;
+	};
+
+	struct CompanionTelemetry
+	{
+		std::string manager, profile;
+		uint64_t cacheBytes = 0, cacheHits = 0, cacheMisses = 0, cacheEvictions = 0;
+		uint32_t cacheEntries = 0, pgEntries = 0;
+		uint32_t exteriorIndexed = 0, exteriorTotal = 0;
+		bool exteriorFinished = false, exteriorIncomplete = false;
+	};
+
+	struct PlacementMaterial
+	{
+		std::string textureSet, materialObject;
+		std::vector<std::string> textures;
+		bool ambiguous = false;
+	};
+
+	struct GeometryAsset
+	{
+		std::vector<float3> positions;
+		std::vector<uint32_t> indices;
+	};
+
+	/** @brief Triangle geometry and optional native material source attributes. */
 	struct Shape
 	{
 		uint64_t identity = 0;
+		std::string referencePlugin;
+		uint32_t referenceLocal = 0;
 		uint64_t runtimeObjectKey = 0;  // Stable across transform changes; zero for companion shapes.
 		std::vector<float3> positions;
 		std::vector<uint32_t> indices;
 		std::array<float, 12> transform{};
 		std::string sourceNif;  // Populated for runtime-supplemented shapes when NIF provenance is known.
+		std::shared_ptr<const PreparedShading> shading;  // Full Native only; no GPU ownership.
+		std::optional<PlacementMaterial> materialOverride;
+		std::shared_ptr<const GeometryAsset> geometry;  // Shared immutable rigid asset in Full Native.
+		const std::vector<float3>& Positions() const { return geometry ? geometry->positions : positions; }
+		const std::vector<uint32_t>& Indices() const { return geometry ? geometry->indices : indices; }
+		const void* GeometryKey() const { return geometry ? static_cast<const void*>(geometry.get()) : static_cast<const void*>(this); }
 	};
 
 	struct Tile
@@ -64,6 +113,7 @@ namespace DX12
 			ReadyPartial,  // Valid geometry/lights, but shadow-offload coverage not certified.
 			RetryWaiting,
 			Incomplete,
+			EmptyUncertified,  // Validated enumeration, no admitted local geometry; not proof of coverage.
 			Deferred  // Predictive geometry exceeded its CPU residency allowance; retry if promoted active.
 		};
 		SubcellKey key;
@@ -87,6 +137,8 @@ namespace DX12
 		std::vector<PreparedLight> lights;
 		uint64_t geometryBytes = 0;
 		bool validated = false;
+		bool fullNative = false;
+		std::optional<CompanionTelemetry> telemetry;
 		uint32_t eligibleShapes = 0;
 		uint32_t failedShapes = 0;
 		uint32_t rejectedLights = 0;  // Invalid light records are skipped without losing valid geometry.
@@ -110,6 +162,8 @@ namespace DX12
 	{
 		uint64_t revision = 0;
 		uint64_t geometryRevision = 0;
+		bool fullNative = false;
+		std::optional<CompanionTelemetry> telemetry;
 		uint32_t size = kSubcellSizes.front();
 		std::array<SubcellKey, kGridCapacity> requested{};  // Active 3x3, available to future native consumers.
 		std::array<std::shared_ptr<const Tile>, kGridCapacity> resident{};
@@ -144,6 +198,7 @@ namespace DX12
 		bool Publish(CompanionPublication publication);
 		/** @brief Accept an observed static shape within the active 3x3 without caching it on disk. */
 		bool PublishRuntimeShape(std::shared_ptr<const Shape> shape, float centerX, float centerY);
+		bool RecoverMaterial(uint32_t scope, const std::shared_ptr<const Shape>& matched, const std::shared_ptr<const PreparedShading>& shading);
 		/** @brief Releases every in-memory tile at scene transition. */
 		void Clear();
 		void FlushRetiredCache();  // DRAM only; caller decides transition policy.
@@ -186,6 +241,7 @@ struct DX12Resources final : Feature
 	bool IsInFeatureList() const override { return false; }
 	bool SupportsVR() override { return false; }
 	void DrawSettings() override;
+	void DrawDevStats();
 	void LoadSettings(json& input) override;
 	void SaveSettings(json& output) override;
 	void RestoreDefaultSettings() override;
@@ -203,6 +259,10 @@ struct DX12Resources final : Feature
 	bool PublishRuntimeShape(std::shared_ptr<const DX12::Shape> shape, float centerX, float centerY)
 	{
 		return grid.PublishRuntimeShape(std::move(shape), centerX, centerY);
+	}
+	bool RecoverMaterial(uint32_t scope, const std::shared_ptr<const DX12::Shape>& matched, const std::shared_ptr<const DX12::PreparedShading>& shading)
+	{
+		return grid.RecoverMaterial(scope, matched, shading);
 	}
 	bool IsActive() const;
 	uint64_t GetFlushGeneration() const { return flushGeneration.load(std::memory_order_acquire); }
@@ -223,6 +283,7 @@ private:
 	uint32_t lastVisitedCell = 0, previousVisitedCell = 0, distinctTransitions = 0;
 	std::atomic<uint64_t> flushGeneration{ 0 };
 	std::optional<DX12::SubcellKey> inFlight;
+	bool fullNativeProfile = false;
 	std::atomic<std::shared_ptr<const DX12::PreparationStats>> generationStats{
 		std::make_shared<const DX12::PreparationStats>()
 	};

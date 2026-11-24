@@ -10,15 +10,19 @@
 void DX12Control::DrawSettings()
 {
 	// Keep pipeline mode directly below the DX12 heading and above subfeature tabs.
-	const char* modes[] = { T("menu.dx12.mode.shadow_offload", "Shadow offload"), T("menu.dx12.mode.raster_comparison", "Raster comparison") };
+	const char* modes[] = { T("menu.dx12.mode.shadow_offload", "Shadow offload"), T("menu.dx12.mode.raster_comparison", "Raster comparison"), T("menu.dx12.mode.full_native", "Full Native") };
 	int mode = settings.Mode;
 	if (ImGui::Combo(T("menu.dx12.mode.label", "Mode"), &mode, modes, int(std::size(modes)))) {
 		settings.Mode = mode;
-		selectedMode.store(mode, std::memory_order_relaxed);
+		ApplyModeRequest();
 	}
 	ImGui::TextDisabled(settings.Mode == 0 ?
 							T("menu.dx12.mode.shadow_offload_description", "Native shadows replace matched raster static shadows.") :
-							T("menu.dx12.mode.raster_comparison_description", "Raster shadows remain unchanged; native shadow dispatch is paused for comparison."));
+							settings.Mode == 1 ? T("menu.dx12.mode.raster_comparison_description", "Raster shadows remain unchanged; native shadow dispatch is paused for comparison.") :
+							T("menu.dx12.mode.full_native_description", "Full Native resource preparation and diagnostic material evaluation; raster rendering remains active."));
+
+	if (settings.Mode != selectedMode.load(std::memory_order_relaxed))
+		ImGui::TextDisabled(T("menu.dx12.mode.restart_native", "Restart Skyrim to enter or leave Full Native mode."));
 
 	if (!IsActive()) {
 		ImGui::Checkbox(T("menu.dx12.master.enable", "Enable native DX12 features (restart required)"), &settings.Enabled);
@@ -28,8 +32,9 @@ void DX12Control::DrawSettings()
 	}
 	if (!Util::BeginPillTabBar("##DX12Tabs"))
 		return;
-	const char* labels[] = { T("menu.dx12.tab.resources", "Resources"), T("menu.dx12.tab.native_scene", "Native Scene"), T("menu.dx12.tab.native_composite", "Native Composite"), T("menu.dx12.tab.master_switch", "Master Switch") };
-	for (int index = 0; index < 4; ++index) {
+	const char* labels[] = { T("menu.dx12.tab.resources", "Resources"), T("menu.dx12.tab.native_scene", "Native Scene"), T("menu.dx12.tab.native_composite", "Native Composite"), T("menu.dx12.tab.master_switch", "Master Switch"), T("menu.dx12.tab.dev", "Dev") };
+	const int tabCount = globals::state && globals::state->IsDeveloperMode() ? 5 : 4;
+	for (int index = 0; index < tabCount; ++index) {
 		if (!Util::BeginPillTabItem(labels[index]))
 			continue;
 		switch (index) {
@@ -66,22 +71,35 @@ void DX12Control::DrawSettings()
 			if (settings.Enabled != bootActive.load(std::memory_order_acquire))
 				ImGui::TextDisabled(T("menu.dx12.master.restart_boot_state", "A game restart is required; DX12 Resources retains its boot state until then."));
 			break;
+		case 4:
+			globals::features::dx12Resources.DrawDevStats();
+			globals::features::dx12NativeScene.DrawDevStats();
+			break;
 		}
 		Util::EndPillTabItem();
 	}
 	Util::EndPillTabBar();
 }
 
+void DX12Control::ApplyModeRequest()
+{
+	const int active = selectedMode.load(std::memory_order_relaxed);
+	// Preserve live switching between the two existing lightweight modes.
+	// Crossing the Full Native boundary is a session-level backend change.
+	if (!bootCaptured || (active != 2 && settings.Mode != 2))
+		selectedMode.store(settings.Mode, std::memory_order_relaxed);
+}
+
 void DX12Control::LoadSettings(json& input)
 {
 	settings.Enabled = input.value("Enabled", false);
-	settings.Mode = std::clamp(input.value("Mode", 0), 0, 1);
+	settings.Mode = std::clamp(input.value("Mode", 0), 0, 2);
 	settings.SpatialReconstruction = input.value("SpatialReconstruction", true);
 	const uint32_t requestedGrid = std::clamp(input.value("ReconstructionGridSize", 5u), 3u, 9u);
 	settings.ReconstructionGridSize = requestedGrid - ((requestedGrid & 1u) == 0u ? 1u : 0u);
 	settings.ShadowStrength = std::clamp(input.value("ShadowStrength", 1.0f), 0.0f, 4.0f);
 	settings.ShadowBlend = std::clamp(input.value("ShadowBlend", 0.70f), 0.0f, 1.0f);
-	selectedMode.store(settings.Mode, std::memory_order_relaxed);
+	ApplyModeRequest();
 	spatialReconstruction.store(settings.SpatialReconstruction, std::memory_order_relaxed);
 	reconstructionGrid.store(settings.ReconstructionGridSize, std::memory_order_relaxed);
 	shadowStrength.store(settings.ShadowStrength, std::memory_order_relaxed);
@@ -103,7 +121,7 @@ void DX12Control::SaveSettings(json& output)
 void DX12Control::RestoreDefaultSettings()
 {
 	settings = {};
-	selectedMode.store(settings.Mode, std::memory_order_relaxed);
+	ApplyModeRequest();
 	spatialReconstruction.store(settings.SpatialReconstruction, std::memory_order_relaxed);
 	reconstructionGrid.store(settings.ReconstructionGridSize, std::memory_order_relaxed);
 	shadowStrength.store(settings.ShadowStrength, std::memory_order_relaxed);

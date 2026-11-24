@@ -5,6 +5,7 @@
 #include <charconv>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <format>
 #include <fstream>
 #include <ranges>
@@ -178,8 +179,8 @@ namespace DX12
 				failure = "Missing DX12ResourcesPrep.exe in DX12Resources/bin (AIO installation required)";
 				return false;
 			}
-			if (!std::filesystem::is_regular_file(plugins, ec)) {
-				failure = "Skyrim SE plugins.txt is unavailable in LocalAppData";
+			if (!task.fullNative && !std::filesystem::is_regular_file(plugins, ec)) {
+				failure = "Skyrim SE plugins.txt is unavailable (LocalAppData or configured MO2 profile)";
 				return false;
 			}
 			// Host-owned per-session mailbox; no persistent geometry output or diagnostics.
@@ -195,14 +196,18 @@ namespace DX12
 			SetPriorityClass(service.process, task.predictive ? IDLE_PRIORITY_CLASS : BELOW_NORMAL_PRIORITY_CLASS);
 			const auto requestTmp = service.root / L"request.tmp";
 			const auto request = service.root / L"request.json";
-			const auto reply = service.root / L"reply.json";
+			const auto reply = service.root / L"reply.tile";
 			const json message = {
 				{ "scopePlugin", task.scopePlugin },
 				{ "localScopeID", task.localScopeID },
 				{ "x", task.key.x },
 				{ "y", task.key.y },
 				{ "size", task.size },
-				{ "worldspace", task.worldspace }
+				{ "worldspace", task.worldspace },
+				{ "fullNative", task.fullNative },
+				{ "loadedPlugins", task.loadedPlugins },
+				{ "loadedLightPlugins", task.loadedLightPlugins },
+				{ "mo2Vfs", task.fullNative && GetModuleHandleW(L"usvfs_x64.dll") != nullptr }
 			};
 			{
 				std::ofstream stream(requestTmp, std::ios::binary | std::ios::trunc);
@@ -254,6 +259,35 @@ namespace DX12
 			// A superseded or timed-out request kills only the companion job, not Skyrim.
 			service.Close();
 			return false;
+		}
+
+		std::shared_ptr<const GeometryAsset> InternGeometry(Shape& shape)
+		{
+			// This registry belongs to the single Companion worker thread. Weak
+			// references cannot pin CPU or GPU residency. Hash collisions require
+			// an exact comparison before sharing.
+			static thread_local std::unordered_multimap<uint64_t, std::weak_ptr<const GeometryAsset>> assets;
+			uint64_t hash = 14695981039346656037ull;
+			const auto mix = [&](const void* data, size_t bytes) {
+				const auto* p = static_cast<const unsigned char*>(data);
+				for (size_t i = 0; i < bytes; ++i) { hash ^= p[i]; hash *= 1099511628211ull; }
+			};
+			mix(shape.positions.data(), shape.positions.size() * sizeof(float3));
+			mix(shape.indices.data(), shape.indices.size() * sizeof(uint32_t));
+			const auto [first, last] = assets.equal_range(hash);
+			for (auto it = first; it != last; ++it)
+				if (auto asset = it->second.lock(); asset && asset->positions.size() == shape.positions.size() &&
+					asset->indices == shape.indices &&
+					std::memcmp(asset->positions.data(), shape.positions.data(), shape.positions.size() * sizeof(float3)) == 0)
+					return asset;
+			if (assets.size() >= 8192)
+				std::erase_if(assets, [](const auto& entry) { return entry.second.expired(); });
+			auto asset = std::make_shared<GeometryAsset>();
+			asset->positions = std::move(shape.positions);
+			asset->indices = std::move(shape.indices);
+			if (assets.size() < 8192)
+				assets.emplace(hash, asset);
+			return asset;
 		}
 
 		std::array<float, 3> Triple(const json& values)
@@ -373,7 +407,7 @@ namespace DX12
 				std::filesystem::remove(parent, ignored);  // Only when empty.
 			}
 		} cleanup{ folder, work };
-		const auto file = folder / L"tile.json";
+		const auto file = folder / L"tile.bin";
 		if (!InvokeCompanion(task, file, epoch, generation, stop, result.failure))
 			return result;
 		try {
@@ -383,20 +417,167 @@ namespace DX12
 				return result;
 			}
 			stream.seekg(0);
-			const auto root = json::parse(stream);
+			// RSGT v2: bounded JSON metadata followed by RSGM v1 geometry blobs.
+			// No paths or external files from the reply are trusted.
+			const auto readExact = [&](void* destination, size_t bytes) {
+				if (!stream.read(static_cast<char*>(destination), static_cast<std::streamsize>(bytes)))
+					throw std::invalid_argument("Truncated companion binary reply");
+			};
+			const auto readU32 = [&]() {
+				uint32_t value = 0;
+				readExact(&value, sizeof(value));
+				return value;
+			};
+			constexpr uint32_t kTileMagic = 0x54475352;
+			constexpr uint32_t kGeometryMagic = 0x4d475352;
+			constexpr uint32_t kMaximumMetadataBytes = 16u * 1024 * 1024;
+			if (readU32() != kTileMagic || readU32() != 2)
+				throw std::invalid_argument("Companion binary protocol mismatch (reinstall matching AIO)");
+			const auto metadataBytes = readU32();
+			if (!metadataBytes || metadataBytes > kMaximumMetadataBytes)
+				throw std::invalid_argument("Companion metadata size invalid");
+			std::string metadata(metadataBytes, '\0');
+			readExact(metadata.data(), metadata.size());
+			const auto root = json::parse(metadata);
 			if (const auto entry = root.find("failure"); entry != root.end() && entry->is_string()) {
 				result.failure = entry->get<std::string>().substr(0, 320);
 				if (!result.failure.empty())
 					return result;
 			}
-			if (root.at("version").get<uint32_t>() != 1 ||
-				!root.at("shapes").is_array() || root.at("shapes").size() > 384 ||
-				!root.at("lights").is_array() || root.at("lights").size() > kMaxPreparedLights) {
+			if (root.at("version").get<uint32_t>() != 2 ||
+				!root.at("shapes").is_array() || root.at("shapes").size() > kMaxPreparedShapes ||
+				!root.at("lights").is_array() || root.at("lights").size() > kMaxPreparedLights ||
+				root.value("fullNative", false) != task.fullNative) {
 				result.failure = "Companion reply schema/shape/light-count invalid";
 				return result;
 			}
 			auto& publication = result.publication;
+			publication.fullNative = task.fullNative;
+			if (task.fullNative) {
+				try {
+					if (const auto entry = root.find("telemetry"); entry != root.end() && entry->is_object()) {
+						CompanionTelemetry telemetry;
+						telemetry.manager = entry->at("manager").get<std::string>().substr(0, 32);
+						telemetry.profile = entry->at("profile").get<std::string>().substr(0, 256);
+						telemetry.pgEntries = entry->at("pgEntries").get<uint32_t>();
+						telemetry.cacheBytes = entry->at("cacheBytes").get<uint64_t>();
+						telemetry.cacheEntries = entry->at("cacheEntries").get<uint32_t>();
+						telemetry.cacheHits = entry->at("cacheHits").get<uint64_t>();
+						telemetry.cacheMisses = entry->at("cacheMisses").get<uint64_t>();
+						telemetry.cacheEvictions = entry->at("cacheEvictions").get<uint64_t>();
+						telemetry.exteriorIndexed = entry->value("exteriorIndexed", 0u);
+						telemetry.exteriorTotal = entry->value("exteriorTotal", 0u);
+						telemetry.exteriorFinished = entry->value("exteriorFinished", false);
+						telemetry.exteriorIncomplete = entry->value("exteriorIncomplete", false);
+						publication.telemetry = std::move(telemetry);
+					}
+				} catch (const std::exception&) {}  // Diagnostics never invalidate geometry.
+			}
 			constexpr uint64_t kMaximumTileBytes = 64ull * 1024 * 1024;
+			const auto geometryCount = root.at("geometryCount").get<uint32_t>();
+			if (geometryCount > root.at("shapes").size() || geometryCount > kMaxPreparedShapes)
+				throw std::invalid_argument("Companion geometry count invalid");
+			std::vector<Shape> geometries;
+			uint64_t shadingBytes = 0;
+			constexpr uint64_t kMaximumShadingBytes = 48ull * 1024 * 1024;
+			geometries.reserve(geometryCount);
+			uint64_t uniqueGeometryBytes = 0;
+			for (uint32_t i = 0; i < geometryCount; ++i) {
+				if (readU32() != kGeometryMagic || readU32() != 1)
+					throw std::invalid_argument("Invalid RSGM geometry header");
+				const auto vertexCount = readU32();
+				const auto indexCount = readU32();
+				const uint64_t length = uint64_t(vertexCount) * sizeof(float3) + uint64_t(indexCount) * sizeof(uint32_t);
+				if (!vertexCount || vertexCount > 4'000'000 || !indexCount || indexCount % 3 ||
+					length > kMaximumTileBytes - uniqueGeometryBytes)
+					throw std::invalid_argument("Invalid RSGM geometry counts or budget");
+				std::vector<std::array<float, 3>> positions(vertexCount);
+				static_assert(sizeof(std::array<float, 3>) == 12);
+				readExact(positions.data(), positions.size() * sizeof(positions.front()));
+				Shape geometry;
+				geometry.positions.reserve(vertexCount);
+				for (const auto& p : positions) {
+					if (!std::isfinite(p[0]) || !std::isfinite(p[1]) || !std::isfinite(p[2]))
+						throw std::invalid_argument("Non-finite RSGM vertex");
+					geometry.positions.push_back({ p[0], p[1], p[2] });
+				}
+				geometry.indices.resize(indexCount);
+				readExact(geometry.indices.data(), geometry.indices.size() * sizeof(uint32_t));
+				if (!std::ranges::all_of(geometry.indices, [&](uint32_t index) { return index < vertexCount; }))
+					throw std::invalid_argument("Invalid RSGM index");
+				uniqueGeometryBytes += length;
+				if (task.fullNative) {
+					const auto shadingLength = readU32();
+					if (shadingLength > kMaximumShadingBytes - shadingBytes)
+						throw std::invalid_argument("Companion shading byte budget exceeded");
+					if (shadingLength) {
+						std::vector<char> raw(shadingLength);
+						readExact(raw.data(), raw.size());
+						shadingBytes += shadingLength;
+						// Invalid optional shading is not grounds to discard valid geometry.
+						if (raw.size() >= 16) {
+							std::array<uint32_t, 4> header{};
+							std::memcpy(header.data(), raw.data(), 16);
+							if (header[0] == 0x41475352 && header[2] == vertexCount &&
+								((header[1] == 1 && header[3] == 36) || (header[1] == 2 && header[3] == 60)) &&
+								uint64_t(header[2]) * header[3] == raw.size() - 16) {
+								auto shading = std::make_shared<PreparedShading>();
+								shading->stride = header[3];
+								shading->attributes.resize((raw.size() - 16) / sizeof(float));
+								std::memcpy(shading->attributes.data(), raw.data() + 16, raw.size() - 16);
+								if (std::ranges::all_of(shading->attributes, [](float v) { return std::isfinite(v); }))
+									geometry.shading = std::move(shading);
+							}
+						}
+					}
+				}
+				if (task.fullNative)
+					geometry.geometry = InternGeometry(geometry);
+				geometries.push_back(std::move(geometry));
+			}
+			if (task.fullNative) {
+				const auto& materials = root.at("materials");
+				if (!materials.is_array() || materials.size() != geometries.size())
+					throw std::invalid_argument("Companion material table count invalid");
+				for (size_t index = 0; index < geometries.size(); ++index) {
+					auto& geometry = geometries[index];
+					if (!geometry.shading || materials[index].is_null()) {
+						geometry.shading.reset();
+						continue;
+					}
+					try {
+						const auto& item = materials[index];
+						auto shading = std::const_pointer_cast<PreparedShading>(geometry.shading);
+						shading->sourceNif = item.at("sourceNif").get<std::string>();
+						shading->shapeName = item.value("shapeName", std::string{});
+						shading->sourceHash = item.at("sourceHash").get<std::string>();
+						shading->provenance = item.at("provenance").get<std::string>();
+						shading->blockIndex = item.at("blockIndex").get<int32_t>();
+						shading->shaderFlags1 = item.at("shaderFlags1").get<uint32_t>();
+						shading->shaderFlags2 = item.at("shaderFlags2").get<uint32_t>();
+						shading->alpha = item.at("alpha").get<float>();
+						shading->twoSided = item.at("twoSided").get<bool>();
+						shading->clampMode = item.at("clampMode").get<int32_t>();
+						if (!item.at("uvTransform").is_null())
+							shading->uvTransform = item.at("uvTransform").get<std::vector<float>>();
+						shading->textures = item.at("textures").get<std::vector<std::string>>();
+						if (!shading->sourceNif.starts_with("meshes\\") || shading->sourceNif.size() > 260 ||
+							shading->sourceHash.size() != 64 || shading->provenance.size() > 260 || shading->shapeName.size() > 256 ||
+							shading->blockIndex < 0 || !std::isfinite(shading->alpha) ||
+							shading->clampMode < -1 || shading->clampMode > 3 ||
+							(!shading->uvTransform.empty() && shading->uvTransform.size() != 4) ||
+							!std::ranges::all_of(shading->uvTransform, [](float v) { return std::isfinite(v); }) ||
+							shading->textures.size() > 16 || !std::ranges::all_of(shading->textures, [](const auto& p) {
+								return p.empty() || (p.size() <= 260 && p.starts_with("textures\\") && p.find("..") == std::string::npos);
+							}))
+							throw std::invalid_argument("Invalid prepared material");
+					} catch (const std::exception&) {
+						geometry.shading.reset();
+					}
+				}
+			}
+			if (stream.peek() != std::char_traits<char>::eof())
+				throw std::invalid_argument("Unexpected trailing companion payload");
 			std::unordered_set<uint64_t> identities;
 			publication.eligibleShapes = root.at("eligibleShapes").get<uint32_t>();
 			publication.failedShapes = root.at("failedShapes").get<uint32_t>();
@@ -451,30 +632,60 @@ namespace DX12
 			for (const auto& item : root.at("shapes")) {
 				auto shape = std::make_shared<Shape>();
 				shape->identity = item.at("identity").get<uint64_t>();
-				const auto& positions = item.at("positions");
-				if (!positions.is_array() || positions.empty() || positions.size() > 4'000'000)
-					throw std::invalid_argument("Invalid vertex count");
-				shape->positions.reserve(positions.size());
-				for (const auto& entry : positions) {
-					const auto p = Triple(entry);
-					shape->positions.push_back({ p[0], p[1], p[2] });
-				}
-				shape->indices = item.at("indices").get<std::vector<uint32_t>>();
+				const auto geometryIndex = item.at("geometry").get<uint32_t>();
+				if (geometryIndex >= geometries.size())
+					throw std::invalid_argument("Invalid companion geometry reference");
+				const auto& geometry = geometries[geometryIndex];
+				const uint64_t length = uint64_t(geometry.Positions().size()) * sizeof(float3) +
+				                        uint64_t(geometry.Indices().size()) * sizeof(uint32_t);
+				if (length > kMaximumTileBytes - publication.geometryBytes)
+					throw std::invalid_argument("Companion expanded geometry budget exceeded");
 				const auto& transform = item.at("transform");
 				if (!transform.is_array() || transform.size() != shape->transform.size())
 					throw std::invalid_argument("Invalid transform");
 				for (size_t i = 0; i < shape->transform.size(); ++i)
 					shape->transform[i] = transform[i].get<float>();
-				const uint64_t length = uint64_t(shape->positions.size()) * sizeof(float3) +
-				                        uint64_t(shape->indices.size()) * sizeof(uint32_t);
 				if (!shape->identity || !identities.insert(shape->identity).second ||
-					shape->indices.empty() || shape->indices.size() % 3 ||
-					length > kMaximumTileBytes - publication.geometryBytes ||
-					!std::ranges::all_of(shape->positions, [](const float3& p) {
-						return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
-					}) ||
-					!std::ranges::all_of(shape->transform, [](float value) { return std::isfinite(value); }) || !std::ranges::all_of(shape->indices, [&](uint32_t index) { return index < shape->positions.size(); }))
-					throw std::invalid_argument("Companion geometry failed validation");
+					!std::ranges::all_of(shape->transform, [](float value) { return std::isfinite(value); }))
+					throw std::invalid_argument("Companion placement failed validation");
+				// Full Native shares immutable assets; retain conservative expanded
+				// budget accounting until the grid has unique-asset accounting.
+				if (task.fullNative) {
+					shape->referencePlugin = item.value("referencePlugin", std::string{});
+					shape->referenceLocal = item.value("referenceLocal", 0u);
+					if (shape->referencePlugin.size() > 128) {
+						shape->referencePlugin.clear();
+						shape->referenceLocal = 0;
+					}
+				}
+				shape->shading = geometry.shading;
+				if (task.fullNative && shape->shading) {
+					try {
+						if (const auto entry = item.find("materialOverride"); entry != item.end() && !entry->is_null()) {
+							PlacementMaterial material;
+							material.textureSet = entry->at("textureSet").get<std::string>();
+							material.materialObject = entry->at("materialObject").get<std::string>();
+							material.ambiguous = entry->at("ambiguous").get<bool>();
+							if (!entry->at("textures").is_null())
+								material.textures = entry->at("textures").get<std::vector<std::string>>();
+							if (material.textureSet.size() > 256 || material.materialObject.size() > 256 ||
+								(!material.textures.empty() && material.textures.size() != 8) ||
+								!std::ranges::all_of(material.textures, [](const auto& path) {
+									return path.empty() || (path.starts_with("textures\\") && path.size() <= 260 &&
+										path.find("..") == std::string::npos);
+								}))
+								throw std::invalid_argument("Invalid per-placement material");
+							shape->materialOverride = std::move(material);
+						}
+					} catch (const std::exception&) {
+						shape->shading.reset();  // Keep valid geometry, reject malformed material.
+					}
+				}
+				shape->geometry = geometry.geometry;
+				if (!shape->geometry) {
+					shape->positions = geometry.positions;
+					shape->indices = geometry.indices;
+				}
 				publication.geometryBytes += length;
 				publication.shapes.push_back(std::move(shape));
 			}
@@ -506,6 +717,7 @@ namespace DX12
 					++publication.rejectedLights;
 				}
 			}
+			publication.geometryBytes += shadingBytes;  // Includes optional resident attributes for CPU residency accounting.
 			publication.validated = true;
 			if (!publication.enumerationComplete || publication.failedShapes ||
 				publication.eligibleShapes != publication.shapes.size())

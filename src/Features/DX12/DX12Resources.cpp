@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <format>
 #include <ranges>
 #include <unordered_set>
 
@@ -45,6 +46,8 @@ namespace DX12
 		next->revision = current->revision + 1;
 		next->geometryRevision = current->geometryRevision + 1;
 		next->size = size;
+		next->fullNative = current->fullNative;
+		if (current->requested.front().scope == scope) next->telemetry = current->telemetry;
 		next->requested = *desired;
 		next->predictive = *predictive;
 		// A failed neighbor may be attempted at most three times while the player
@@ -234,6 +237,10 @@ namespace DX12
 			// Empty incomplete results must not be mislabeled as prepared subcells.
 			// Only Ready (certified complete) subcells can offload raster shadows.
 			tile->state = complete ? Tile::State::Ready : Tile::State::ReadyPartial;
+		} else if (publication.fullNative && publication.validated && publication.enumerationComplete) {
+			// An interior-wide unresolved record can make an otherwise empty tile
+			// uncertifiable. Repeating the same valid enumeration will not fix it.
+			tile->state = Tile::State::EmptyUncertified;
 		} else {
 			// Malformed or empty-incomplete companion payloads must not claim native scene readiness.
 			tile->shapes.clear();
@@ -249,6 +256,10 @@ namespace DX12
 		}
 		auto next = std::make_shared<Grid>(*current);
 		++next->revision;
+		if (publication.validated) {
+			next->fullNative = publication.fullNative;
+			if (publication.telemetry) next->telemetry = std::move(publication.telemetry);
+		}
 		if (active != current->requested.end()) {
 			++next->geometryRevision;
 			next->resident[std::distance(current->requested.begin(), active)] = std::move(tile);
@@ -268,20 +279,74 @@ namespace DX12
 		return true;
 	}
 
+	bool ResourceGrid::RecoverMaterial(uint32_t scope, const std::shared_ptr<const Shape>& matched,
+		const std::shared_ptr<const PreparedShading>& shading)
+	{
+		if (!matched || !shading || !shading->runtimeObserved || !matched->identity ||
+			(shading->stride != 60 && shading->stride != 36) ||
+			shading->attributes.size() != matched->Positions().size() * (shading->stride / sizeof(float)))
+			return false;
+		std::scoped_lock lock(mutex);
+		const auto current = snapshot.load(std::memory_order_acquire);
+		if (!current->fullNative || current->requested.front().scope != scope)
+			return false;
+		const uint64_t extra = uint64_t(shading->attributes.size()) * sizeof(float);
+		// Charge replacement conservatively without freeing the old attributes
+		// until all prior immutable generations retire. Do not grow predictive tiles.
+		constexpr uint64_t maxTileBytes = 112ull * 1024 * 1024;
+		auto next = std::make_shared<Grid>(*current);
+		std::shared_ptr<const Shape> replacement;
+		for (auto& tile : next->resident) {
+			if (!tile || tile->bytes > maxTileBytes || extra > maxTileBytes - tile->bytes) continue;
+			std::shared_ptr<Tile> changed;
+			for (size_t i = 0; i < tile->shapes.size(); ++i) {
+				const auto& original = tile->shapes[i];
+				if (!original || original->identity != matched->identity ||
+					original->referencePlugin != matched->referencePlugin ||
+					original->referenceLocal != matched->referenceLocal ||
+					original->GeometryKey() != matched->GeometryKey() || original->transform != matched->transform ||
+					(original->shading && !(original->materialOverride && original->materialOverride->ambiguous)))
+					continue;
+				if (!replacement) {
+					auto copy = std::make_shared<Shape>(*original);
+					auto live = std::make_shared<PreparedShading>(*shading);
+					live->recoveredPlacement = true;
+					copy->shading = std::move(live);
+					// The observed engine texture set is the winning binding. Do
+					// not reapply the unresolved offline alternate to it.
+					copy->materialOverride.reset();
+					replacement = std::move(copy);
+				}
+				if (!changed) changed = std::make_shared<Tile>(*tile);
+				changed->shapes[i] = replacement;
+				changed->bytes += extra;
+				break;
+			}
+			if (changed) tile = std::move(changed);
+		}
+		if (!replacement) return false;
+		++next->revision;
+		++next->geometryRevision;
+		snapshot.store(std::move(next), std::memory_order_release);
+		return true;
+	}
+
 	bool ResourceGrid::PublishRuntimeShape(std::shared_ptr<const Shape> shape, float centerX, float centerY)
 	{
 		// Larger interior furniture and room pieces often exceed 256 KiB.
 		// Keep the whole runtime supplement transient and strictly budgeted.
-		constexpr size_t kMaximumRuntimeShapes = 384;
+		constexpr size_t kMaximumRuntimeShapes = 2048;
 		constexpr uint64_t kMaximumRuntimeBytes = 64ull * 1024 * 1024;
 		constexpr uint64_t kMaximumSingleShapeBytes = 1024ull * 1024;
-		if (!shape || !shape->identity || shape->positions.empty() || shape->indices.empty() ||
-			shape->indices.size() % 3)
+		if (!shape || !shape->identity || shape->Positions().empty() || shape->Indices().empty() ||
+			shape->Indices().size() % 3)
 			return false;
-		const uint64_t shapeBytes = uint64_t(shape->positions.size()) * sizeof(float3) +
-		                            uint64_t(shape->indices.size()) * sizeof(uint32_t);
+		const uint64_t shapeBytes = uint64_t(shape->Positions().size()) * sizeof(float3) +
+		                            uint64_t(shape->Indices().size()) * sizeof(uint32_t);
 		if (!shapeBytes || shapeBytes > kMaximumSingleShapeBytes)
 			return false;
+		const uint64_t shadingBytes = shape->shading ? uint64_t(shape->shading->attributes.size()) * sizeof(float) : 0;
+		const uint64_t residentBytes = shapeBytes + shadingBytes;
 		std::scoped_lock lock(mutex);
 		const auto current = snapshot.load(std::memory_order_acquire);
 		if (!current->requested.front().scope)
@@ -309,10 +374,10 @@ namespace DX12
 			});
 		}
 		if (next->runtimeShapes.size() >= kMaximumRuntimeShapes ||
-			shapeBytes > kMaximumRuntimeBytes - next->runtimeBytes)
+			residentBytes > kMaximumRuntimeBytes - next->runtimeBytes)
 			return false;
-		next->runtimeShapes.push_back({ key, std::move(shape), shapeBytes });
-		next->runtimeBytes += shapeBytes;
+		next->runtimeShapes.push_back({ key, std::move(shape), residentBytes });
+		next->runtimeBytes += residentBytes;
 		++next->revision;
 		++next->geometryRevision;
 		snapshot.store(std::move(next), std::memory_order_release);
@@ -381,6 +446,8 @@ namespace
 			return T("menu.dx12.resources.status.processing", "Processing");
 		case DX12::Tile::State::RetryWaiting:
 			return T("menu.dx12.resources.status.retry_pending", "Failed (retry pending)");
+		case DX12::Tile::State::EmptyUncertified:
+			return "Empty (coverage unverified)";
 		case DX12::Tile::State::Incomplete:
 			return T("menu.dx12.resources.status.retry_exhausted", "Skipped (retry exhausted)");
 		case DX12::Tile::State::Deferred:
@@ -404,6 +471,7 @@ namespace
 			return IM_COL32(182, 140, 91, 255);
 		case DX12::Tile::State::RetryWaiting:
 			return IM_COL32(211, 76, 76, 255);
+		case DX12::Tile::State::EmptyUncertified:
 		case DX12::Tile::State::Incomplete:
 			return IM_COL32(123, 129, 139, 255);
 		case DX12::Tile::State::Deferred:
@@ -429,7 +497,7 @@ namespace
 		return {};
 	}
 
-	void DrawSubcellMap(const DX12::Grid& grid)
+	void DrawSubcellMap(const DX12::Grid& grid, bool diagnostics = false)
 	{
 		const auto center = grid.requested.front();
 		const float available = std::max(1.0f, ImGui::GetContentRegionAvail().x);
@@ -475,14 +543,14 @@ namespace
 				ImGui::BeginTooltip();
 				ImGui::Text(T("menu.dx12.resources.tooltip.subcell", "%s subcell (%lld, %lld): %s"), active ? T("menu.dx12.resources.active", "Active") : T("menu.dx12.resources.predictive", "Predictive"),
 					static_cast<long long>(key.x), static_cast<long long>(key.y), TileStatus(tile));
-				if (tile && tile->preparationAttempts)
+				if (diagnostics && tile && tile->preparationAttempts)
 					ImGui::Text(T("menu.dx12.resources.tooltip.attempts", "Attempts: %u / 3"), unsigned(tile->preparationAttempts));
-				if (tile && (!tile->nifSources.empty() || !tile->missingShapes.empty()))
+				if (diagnostics && tile && (!tile->nifSources.empty() || !tile->missingShapes.empty()))
 					ImGui::Text(T("menu.dx12.resources.tooltip.nif_sources", "NIF sources: %zu | Missing shape references: %zu"),
 						tile->nifSources.size(), tile->missingShapes.size());
-				if (tile && !tile->failureReason.empty())
+				if (diagnostics && tile && !tile->failureReason.empty())
 					ImGui::TextWrapped(T("menu.dx12.resources.tooltip.last_reason", "Last reason: %s"), tile->failureReason.c_str());
-				if (tile)
+				if (diagnostics && tile)
 					for (const auto& [reason, count] : tile->rejectionReasons)
 						ImGui::Text("%s: %u", reason.c_str(), count);
 				ImGui::EndTooltip();
@@ -530,75 +598,103 @@ void DX12Resources::DrawSettings()
 
 	ImGui::SeparatorText(T("menu.dx12.resources.subcell_status", "Subcell status (5x5)"));
 	const auto snapshot = GetGrid();
-	const auto timing = GetPreparationStats();
+	if (snapshot)
+		DrawSubcellMap(*snapshot);
+	ImGui::TextColored(ImVec4(0.95f, 0.79f, 0.29f, 1.0f), T("menu.dx12.resources.legend.yellow", "Yellow: loaded 3x3"));
+	ImGui::TextColored(ImVec4(0.46f, 0.77f, 0.90f, 1.0f), T("menu.dx12.resources.legend.light_blue", "Light blue: loaded predictive ring"));
+	ImGui::TextColored(ImVec4(0.83f, 0.30f, 0.30f, 1.0f), T("menu.dx12.resources.legend.red", "Red: failed (retry pending)"));
+	ImGui::TextDisabled(T("menu.dx12.resources.legend.diagonal", "Diagonal: partially loaded  |  Center dot: player subcell"));
+}
 
-	const auto drawSubcellDetails = [&]() {
-		if (snapshot) {
-			size_t activeLoaded = 0, predictiveLoaded = 0;
-			const auto classify = [&](const auto& tile, bool active) {
-				if (tile && (tile->state == DX12::Tile::State::Ready || tile->state == DX12::Tile::State::ReadyPartial))
-					(active ? activeLoaded : predictiveLoaded)++;
-			};
-			for (const auto& tile : snapshot->resident)
-				classify(tile, true);
-			for (const auto& tile : snapshot->predictiveResident)
-				classify(tile, false);
-			ImGui::Text(T("menu.dx12.resources.loaded_counts", "Loaded: active %zu / 9, predictive %zu / 16"), activeLoaded, predictiveLoaded);
-		}
-		ImGui::TextColored(ImVec4(0.95f, 0.79f, 0.29f, 1.0f), T("menu.dx12.resources.legend.yellow", "Yellow: loaded 3x3"));
-		ImGui::TextColored(ImVec4(0.46f, 0.77f, 0.94f, 1.0f), T("menu.dx12.resources.legend.light_blue", "Light blue: loaded predictive ring"));
-		ImGui::TextColored(ImVec4(0.83f, 0.30f, 0.30f, 1.0f), T("menu.dx12.resources.legend.red", "Red: failed (retry pending)"));
-		ImGui::TextDisabled(T("menu.dx12.resources.legend.diagonal", "Diagonal: partially loaded  |  Center dot: player subcell"));
-	};
-
-	const auto drawGenerationStats = [&]() {
-		ImGui::TextColored(ImVec4(0.40f, 0.77f, 0.49f, 1.0f), T("menu.dx12.resources.stats.title", "Subcell generation stats"));
-		ImGui::TextDisabled(T("menu.dx12.resources.stats.timing_head", "Last / Avg / Worst (milliseconds)"));
-		const auto show = [](const char* label, const DX12::PreparationTiming& value) {
-			if (value.completed)
-				ImGui::Text("%s: %.1f / %.1f / %.1f ms", label, value.lastMs, value.AverageMs(), value.worstMs);
-			else
-				ImGui::TextDisabled("%s: -- / -- / --", label);
+void DX12Resources::DrawDevStats()
+{
+	ImGui::SeparatorText(T("menu.dx12.resources.subcell_status", "Subcell status (5x5)"));
+	const auto snapshot = GetGrid();
+	if (snapshot) {
+		DrawSubcellMap(*snapshot, true);
+		size_t activeLoaded = 0, predictiveLoaded = 0, placements = 0, shaded = 0, missing = 0;
+		std::array<size_t, 8> activeStates{}, predictiveStates{};
+		uint64_t chargedBytes = 0, uniqueGeometryBytes = 0, uniqueShadingBytes = 0;
+		std::unordered_set<const void*> uniqueGeometry;
+		std::unordered_set<const DX12::PreparedShading*> uniqueShading;
+		std::unordered_set<std::string> uniqueMissing, missingReferences;
+		std::unordered_map<std::string, size_t> missingReasons;
+		std::vector<std::pair<std::string, std::string>> missingExamples;
+		const auto visit = [&](const auto& tile, bool active) {
+			if (!tile) { ++(active ? activeStates : predictiveStates)[0]; return; }
+			++(active ? activeStates : predictiveStates)[size_t(tile->state)];
+			if (tile->state == DX12::Tile::State::Ready || tile->state == DX12::Tile::State::ReadyPartial)
+				(active ? activeLoaded : predictiveLoaded)++;
+			chargedBytes += tile->bytes;
+			missing += tile->missingShapes.size();
+			for (const auto& item : tile->missingShapes) {
+				const auto reference = std::format("{}:{:06X}", item.referencePlugin, item.referenceLocal);
+				missingReferences.insert(reference);
+				if (uniqueMissing.insert(std::format("{}:{}:{}", reference, item.nifPath, item.blockIndex)).second) {
+					++missingReasons[item.reason];
+					if (missingExamples.size() < 64) missingExamples.emplace_back(item.reason, std::format("{} | {} | block {}", reference, item.nifPath, item.blockIndex));
+				}
+			}
+			for (const auto& shape : tile->shapes) {
+				if (!shape) continue;
+				++placements;
+				if (uniqueGeometry.insert(shape->GeometryKey()).second)
+					uniqueGeometryBytes += uint64_t(shape->Positions().size()) * sizeof(float3) + uint64_t(shape->Indices().size()) * sizeof(uint32_t);
+				if (shape->shading) {
+					++shaded;
+					if (uniqueShading.insert(shape->shading.get()).second)
+						uniqueShadingBytes += shape->shading->attributes.size() * sizeof(float);
+				}
+			}
 		};
-		if (timing) {
-			show(T("menu.dx12.resources.stats.main", "Main"), timing->active);
-			show(T("menu.dx12.resources.predictive", "Predictive"), timing->predictive);
-			show(T("menu.dx12.resources.stats.corners", "Corners"), timing->corners);
+		for (const auto& tile : snapshot->resident) visit(tile, true);
+		for (const auto& tile : snapshot->predictiveResident) visit(tile, false);
+		ImGui::Text(T("menu.dx12.resources.loaded_counts", "Loaded: active %zu / 9, predictive %zu / 16"), activeLoaded, predictiveLoaded);
+		ImGui::Text("Active / predictive: empty unverified %zu / %zu | exhausted %zu / %zu | budget deferred %zu / %zu",
+			activeStates[size_t(DX12::Tile::State::EmptyUncertified)], predictiveStates[size_t(DX12::Tile::State::EmptyUncertified)],
+			activeStates[size_t(DX12::Tile::State::Incomplete)], predictiveStates[size_t(DX12::Tile::State::Incomplete)],
+			activeStates[size_t(DX12::Tile::State::Deferred)], predictiveStates[size_t(DX12::Tile::State::Deferred)]);
+		ImGui::Text("Placements: %zu | Unique geometry: %zu | Shaded: %zu | Missing records: %zu", placements, uniqueGeometry.size(), shaded, missing);
+		ImGui::Text("CPU geometry: %.2f MiB | Shading: %.2f MiB | Charged: %.2f MiB", double(uniqueGeometryBytes)/1048576.0, double(uniqueShadingBytes)/1048576.0, double(chargedBytes)/1048576.0);
+		ImGui::Text("Unique missing descriptors: %zu | References: %zu", uniqueMissing.size(), missingReferences.size());
+		if (ImGui::TreeNode("Missing descriptor reasons (deduplicated)")) {
+			std::vector<std::pair<std::string, size_t>> reasons(missingReasons.begin(), missingReasons.end());
+			std::ranges::sort(reasons, [](const auto& a, const auto& b) { return a.second > b.second; });
+			for (const auto& [reason, count] : reasons) ImGui::Text("%s: %zu", reason.c_str(), count);
+			if (ImGui::TreeNode("Missing descriptor examples (up to 64)")) {
+				for (const auto& [reason, detail] : missingExamples) ImGui::TextWrapped("%s: %s", reason.c_str(), detail.c_str());
+				ImGui::TreePop();
+			}
+			ImGui::TreePop();
 		}
+		size_t shadedRuntime = 0;
+		for (const auto& observed : snapshot->runtimeShapes)
+			if (observed.shape && observed.shape->shading) ++shadedRuntime;
+		ImGui::Text("Runtime supplements: %zu | Shaded: %zu | %.2f MiB", snapshot->runtimeShapes.size(), shadedRuntime, double(snapshot->runtimeBytes)/1048576.0);
+		if (const auto& telemetry = snapshot->telemetry; snapshot->fullNative && telemetry) {
+			ImGui::SeparatorText("Full Native deployment and cache");
+			ImGui::Text("Mod manager: %s | Profile: %s | PG entries: %u", telemetry->manager.c_str(), telemetry->profile.empty() ? "--" : telemetry->profile.c_str(), telemetry->pgEntries);
+			if (telemetry->exteriorTotal)
+				ImGui::Text("Exterior bounds: %u / %u | %s", telemetry->exteriorIndexed, telemetry->exteriorTotal,
+					!telemetry->exteriorFinished ? "indexing" : telemetry->exteriorIncomplete ? "unsupported sources remain" : "indexed");
+			ImGui::Text("Cache: %.2f MiB | Entries: %u", double(telemetry->cacheBytes)/1048576.0, telemetry->cacheEntries);
+			ImGui::Text("Session cache hits: %llu | Misses: %llu | Evictions: %llu",
+				static_cast<unsigned long long>(telemetry->cacheHits), static_cast<unsigned long long>(telemetry->cacheMisses), static_cast<unsigned long long>(telemetry->cacheEvictions));
+		}
+	}
+	ImGui::SeparatorText(T("menu.dx12.resources.stats.title", "Subcell generation stats"));
+	ImGui::TextDisabled(T("menu.dx12.resources.stats.timing_head", "Last / Avg / Worst (milliseconds)"));
+	const auto timing = GetPreparationStats();
+	const auto show = [](const char* label, const DX12::PreparationTiming& value) {
+		if (value.completed)
+			ImGui::Text("%s: %.1f / %.1f / %.1f ms", label, value.lastMs, value.AverageMs(), value.worstMs);
+		else
+			ImGui::TextDisabled("%s: -- / -- / --", label);
 	};
-
-	const float available = ImGui::GetContentRegionAvail().x;
-	if (available >= 1050.0f &&
-		ImGui::BeginTable("##SubcellStatusLayout", 3, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoPadOuterX)) {
-		ImGui::TableSetupColumn("##SubcellMap", ImGuiTableColumnFlags_WidthFixed, 290.0f);
-		ImGui::TableSetupColumn("##SubcellDetails", ImGuiTableColumnFlags_WidthFixed, 375.0f);
-		ImGui::TableSetupColumn("##SubcellGenerationStats", ImGuiTableColumnFlags_WidthStretch);
-		ImGui::TableNextRow();
-		ImGui::TableSetColumnIndex(0);
-		if (snapshot)
-			DrawSubcellMap(*snapshot);
-		ImGui::TableSetColumnIndex(1);
-		drawSubcellDetails();
-		ImGui::TableSetColumnIndex(2);
-		drawGenerationStats();
-		ImGui::EndTable();
-	} else if (available >= 680.0f &&
-			   ImGui::BeginTable("##SubcellStatusLayout", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoPadOuterX)) {
-		ImGui::TableSetupColumn("##SubcellMap", ImGuiTableColumnFlags_WidthFixed, 290.0f);
-		ImGui::TableSetupColumn("##SubcellDetails", ImGuiTableColumnFlags_WidthStretch);
-		ImGui::TableNextRow();
-		ImGui::TableSetColumnIndex(0);
-		if (snapshot)
-			DrawSubcellMap(*snapshot);
-		ImGui::TableSetColumnIndex(1);
-		drawSubcellDetails();
-		ImGui::EndTable();
-		drawGenerationStats();
-	} else {
-		if (snapshot)
-			DrawSubcellMap(*snapshot);
-		drawSubcellDetails();
-		drawGenerationStats();
+	if (timing) {
+		show(T("menu.dx12.resources.stats.main", "Main"), timing->active);
+		show(T("menu.dx12.resources.predictive", "Predictive"), timing->predictive);
+		show(T("menu.dx12.resources.stats.corners", "Corners"), timing->corners);
 	}
 }
 
@@ -635,6 +731,11 @@ void DX12Resources::PreShadowMaps()
 		if (grid.Snapshot()->requested.front().scope || inFlight || adopting)
 			ResetPreparation();
 		return;
+	}
+	const bool selectedProfile = globals::features::dx12Control.IsFullNativeMode();
+	if (selectedProfile != fullNativeProfile) {
+		ResetPreparation();
+		fullNativeProfile = selectedProfile;
 	}
 	const auto* player = globals::game::player;
 	const auto* cell = player ? player->GetParentCell() : nullptr;
@@ -753,6 +854,17 @@ void DX12Resources::PreShadowMaps()
 				task.localScopeID = source->GetLocalFormID();
 				task.scopePlugin = file->GetFilename();
 				task.worldspace = world != nullptr;
+				task.fullNative = fullNativeProfile;
+				if (task.fullNative) {
+					if (auto* handler = RE::TESDataHandler::GetSingleton()) {
+						for (uint32_t i = 0; i < handler->GetLoadedModCount(); ++i)
+							if (const auto* loadedPlugin = handler->LookupLoadedModByIndex(static_cast<uint8_t>(i)))
+								task.loadedPlugins.emplace_back(loadedPlugin->GetFilename());
+						for (uint32_t i = 0; i < handler->GetLoadedLightModCount(); ++i)
+							if (const auto* loadedLightPlugin = handler->LookupLoadedLightModByIndex(static_cast<uint16_t>(i)))
+								task.loadedLightPlugins.emplace_back(loadedLightPlugin->GetFilename());
+					}
+				}
 				if (companion->Enqueue(std::move(task))) {
 					inFlight = *request;
 					return;

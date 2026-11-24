@@ -8,6 +8,7 @@
 #include <stop_token>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace DX12
 {
@@ -18,6 +19,8 @@ namespace DX12
 		uint32_t localScopeID = 0;
 		std::string scopePlugin;
 		bool worldspace = false;
+		bool fullNative = false;
+		std::vector<std::string> loadedPlugins, loadedLightPlugins;
 		bool predictive = false;
 		bool corner = false;  // Predictive ring corners have separate generation timing.
 	};

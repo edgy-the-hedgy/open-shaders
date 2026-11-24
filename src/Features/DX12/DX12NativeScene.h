@@ -4,6 +4,7 @@
 #include "DX12NativeRasterCapture.h"
 #include "DX12NativeRuntimeCapture.h"
 #include "DX12NativeShadowTrace.h"
+#include "DX12NativeScreenProbe.h"
 #include "Feature.h"
 
 #include <atomic>
@@ -27,6 +28,7 @@ struct DX12NativeScene final : Feature
 	bool SupportsVR() override { return false; }
 
 	void DrawSettings() override;
+	void DrawDevStats();
 	bool WantsRenderPassHook() const override { return true; }
 	std::function<void()> OnRenderPassBegin(const RE::BSRenderPass* pass) override;
 	bool WantsPreShadowMapsHook() const override { return true; }
@@ -58,6 +60,9 @@ struct DX12NativeScene final : Feature
 		return raster.RetainThrough(a_frame, a_fence, a_value);
 	}
 
+	/** @brief Completed full-resolution native material outputs; immutable and fenced. */
+	std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> GetNativeMaterialFrame(uint32_t frame) const { return screenProbe.GetMaterialFrame(frame); }
+
 private:
 	/** @brief Gates only native shadow replacement; never disables DX11 baseline shadows. */
 	bool CanOffloadShadowsInCurrentCell() const;
@@ -66,6 +71,9 @@ private:
 	DX12Native::RuntimeGeometryCapture geometryCapture;
 	DX12Native::AccelerationWorker acceleration;
 	DX12Native::ShadowMaskTrace shadows;
+	DX12Native::NativeScreenProbe screenProbe;
+	bool screenProbeEnabled = false;
+	bool fullResolutionMaterialProbe = false;
 	// One immutable, ordered light selection shared by SCM and the RayQuery dispatch.
 	std::atomic<std::shared_ptr<const std::vector<DX12::PreparedLight>>> shadowLights;
 	bool shadowMaskEnabled = true;
