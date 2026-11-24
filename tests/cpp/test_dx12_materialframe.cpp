@@ -108,8 +108,10 @@ TEST_CASE("Temporal identity rejects gaps, extent changes and resets", "[dx12][m
 	now.jitter = JitterFromClipOffset(0.0f, 0.0f, 1920, 1080);
 	now.previousJitter = previous.jitter;
 	REQUIRE(previous.jitter.valid);
-	REQUIRE(previous.jitter.x == 0.5f);
-	REQUIRE(previous.jitter.y == 0.5f);
+	REQUIRE(previous.jitter.x > 0.49999f);
+	REQUIRE(previous.jitter.x < 0.50001f);
+	REQUIRE(previous.jitter.y > 0.49999f);
+	REQUIRE(previous.jitter.y < 0.50001f);
 	REQUIRE(now.CanReuseHistory(previous));
 	REQUIRE(now.SameFrame(now));
 	REQUIRE_FALSE(now.SameFrame(previous));

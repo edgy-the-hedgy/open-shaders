@@ -176,8 +176,9 @@ namespace DX12Native
 			reusedAllocations=0; submittedFrames=0;
 			for (auto& pending : submissions) if (pending) pending->discard=true;
 		}
-		void Poll()
+		void Poll(uint32_t frame)
 		{
+			if (published && published->frame != frame) published.reset();
 			if (fence && fence->GetCompletedValue()==UINT64_MAX) {
 				submissions = {}; published.reset(); outputPool = {}; failure="Screen probe device removed"; return;
 			}

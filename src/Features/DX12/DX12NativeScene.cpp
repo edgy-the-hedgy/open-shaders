@@ -302,10 +302,10 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/
 		(globals::state->permutationData.ExtraShaderDescriptor &
 			static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
 		return;
-	screenProbe.Poll();
-	raster.Reset();
 	const uint32_t frame = globals::game::graphicsState->GetFrameCount();
-	lighting.PollDirect(frame);
+	screenProbe.Poll(frame);
+	raster.Reset();
+	lighting.Poll(frame);
 	const auto& control = globals::features::dx12Control;
 	const bool fullNative = control.IsFullNativeMode();
 	const bool exclusiveMaterials = control.UsesExclusiveMaterials();

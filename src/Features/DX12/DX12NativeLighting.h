@@ -42,7 +42,7 @@ namespace DX12Native
 		void DispatchDirect(const GraphicsBackend& backend, std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
 			const ShadowTraceControls& controls);
 		/** @brief Retires previous lighting inputs without blocking. */
-		void PollDirect(uint32_t frame) { direct.Poll(frame); }
+		void Poll(uint32_t frame) { direct.Poll(frame); shadows.Poll(frame); }
 		/** @brief Borrows the same-frame fenced diffuse and specular output. */
 		std::shared_ptr<const DirectLightingFrame> GetDirect(uint32_t frame) const { return direct.Get(frame); }
 		const std::string& DirectFailure() const { return direct.Failure(); }

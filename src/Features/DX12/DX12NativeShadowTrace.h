@@ -58,7 +58,8 @@ namespace DX12Native
 				MaterialFrameContract::ValidProducerSignal(current->readyValue, current->readyFence->GetCompletedValue()) ? current : nullptr;
 		}
 		bool RetainThrough(const std::shared_ptr<const ShadowMaskFrame>& frame, ID3D12Fence* fence, uint64_t value);
-		void Reset() { current.reset(); }
+		void Poll(uint32_t frame);
+		void Reset() { current.reset(); Poll(UINT32_MAX); }
 
 	private:
 		void Initialize(const GraphicsBackend& backend);

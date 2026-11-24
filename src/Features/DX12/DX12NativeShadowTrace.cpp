@@ -119,6 +119,28 @@ namespace DX12Native
 		completion = std::move(newCompletion);
 	}
 
+	void ShadowMaskTrace::Poll(uint32_t frame)
+	{
+		if (current && current->frame != frame) current.reset();
+		for (auto& slot : slots) {
+			if (!slot) continue;
+			if (slot->readyValue == UINT64_MAX && slot->readyFence && backend.commandQueue &&
+				slot->readyFence->GetCompletedValue() != UINT64_MAX) {
+				const uint64_t rescue = nextFence + 1;
+				if (SUCCEEDED(backend.commandQueue->Signal(slot->readyFence.get(), rescue))) {
+					nextFence = rescue;
+					slot->readyValue = rescue;
+				}
+			}
+			if (slot.use_count() == 1 && GpuFenceRetired(slot->readyFence.get(), slot->readyValue) &&
+				std::ranges::all_of(slot->consumers, [](const auto& c) { return GpuFenceRetired(c.first.get(), c.second); })) {
+				slot->raster.reset();
+				slot->scene.reset();
+				slot->consumers.clear();
+			}
+		}
+	}
+
 	void ShadowMaskTrace::Dispatch(const GraphicsBackend& requested,
 		std::shared_ptr<const RasterFrame> raster, std::shared_ptr<const TopLevel> scene,
 		std::span<const DX12::PreparedLight> lights, uint32_t frame, const ShadowTraceControls& controls)
@@ -126,6 +148,7 @@ namespace DX12Native
 		if (current && current->frame == frame && current->raster == raster && current->scene == scene)
 			return;
 		current.reset();
+		Poll(frame);
 		if (!raster || !raster->depth || !raster->depth->resource || !raster->readyFence ||
 			!raster->cameraValid || raster->frame != frame ||
 			!MaterialFrameContract::ValidProducerSignal(raster->readyValue, raster->readyFence->GetCompletedValue())) {
@@ -144,14 +167,6 @@ namespace DX12Native
 			Initialize(requested);
 			const uint64_t finished = completion->GetCompletedValue();
 			if (finished == UINT64_MAX) return;
-			for (auto& slot : slots) {
-				if (!slot || slot->readyValue != UINT64_MAX) continue;
-				const uint64_t rescue = nextFence + 1;
-				if (SUCCEEDED(backend.commandQueue->Signal(completion.get(), rescue))) {
-					nextFence = rescue;
-					slot->readyValue = rescue;
-				}
-			}
 			auto it = std::ranges::find_if(slots, [&](const auto& slot) {
 				if (!slot)
 					return true;

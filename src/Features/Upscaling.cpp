@@ -703,6 +703,7 @@ namespace
 
 void Upscaling::Prepass()
 {
+	nativeComposite.PollRetirement();
 	foveatedRender.UpdateGaze();
 }
 
