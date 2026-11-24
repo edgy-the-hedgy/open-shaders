@@ -46,7 +46,7 @@ namespace DX12Native
 			bool fullResolution = false;
 			bool discard = false;
 		};
-		std::shared_ptr<Submission> pending;
+		std::array<std::shared_ptr<Submission>, 3> submissions;
 		std::array<std::shared_ptr<OutputAllocation>, 4> outputPool;
 		VideoMemoryBudget videoBudget;
 		GraphicsBackend owner;
@@ -161,22 +161,30 @@ namespace DX12Native
 
 		~NativeScreenProbe()
 		{
-			if (pending && !GpuFenceRetired(pending->fence.get(),pending->value))
-				RetireWhenGpuDone(std::move(pending),owner.d3d12Device,[](const Submission& submission) {
-					return GpuFenceRetired(submission.fence.get(),submission.value);
-				});
+			for (auto& pending : submissions)
+				if (pending && !GpuFenceRetired(pending->fence.get(),pending->value))
+					RetireWhenGpuDone(std::move(pending),owner.d3d12Device,[](const Submission& submission) {
+						return GpuFenceRetired(submission.fence.get(),submission.value);
+					});
 		}
 		void Reset()
 		{
 			stats={}; failure.clear(); lastFrame=UINT32_MAX; published.reset();
 			reusedAllocations=0; submittedFrames=0;
-			if (pending) pending->discard=true;
+			for (auto& pending : submissions) if (pending) pending->discard=true;
 		}
 		void Poll()
 		{
+			if (fence && fence->GetCompletedValue()==UINT64_MAX) {
+				submissions = {}; published.reset(); outputPool = {}; failure="Screen probe device removed"; return;
+			}
+			for (auto& pending : submissions) PollSubmission(pending);
+		}
+	private:
+		void PollSubmission(std::shared_ptr<Submission>& pending)
+		{
 			if (!pending) return;
 			const auto done=pending->fence->GetCompletedValue();
-			if (done==UINT64_MAX) { pending.reset(); published.reset(); outputPool = {}; failure="Screen probe device removed"; return; }
 			if (pending->value==UINT64_MAX) {
 				if (pending->discard && owner.commandQueue) {
 					const auto rescue=nextValue+1;
@@ -187,7 +195,7 @@ namespace DX12Native
 				return;
 			}
 			if (done<pending->value) return;
-			if (!pending->discard) {
+			if (!pending->discard && (!stats.sampled || uint32_t(pending->frame-stats.frame)<0x80000000u)) {
 				Stats result{};
 				result.frame=pending->frame; result.width=pending->width; result.height=pending->height;
 				result.sampled=result.width*result.height;
@@ -202,24 +210,31 @@ namespace DX12Native
 					const D3D12_RANGE noWrite{};
 					pending->readback->Unmap(0,&noWrite);
 					if (uint64_t(result.evaluated)+result.noHit+result.depthMismatch+result.missingMaterial+result.invalid+result.baseOnly==result.sampled) {
-						stats=result; failure.clear();
+						stats=result;
 					} else failure="Screen material counter mismatch";
 				} else failure="Screen material counter readback failed";
 			}
 			pending.reset();
 		}
+	public:
 		bool WantsFrame(uint32_t frame,bool continuous=false) const
 		{
-			return !pending && (lastFrame==UINT32_MAX || frame-lastFrame>=(continuous?1u:30u));
+			bool free = false;
+			for (const auto& pending : submissions) {
+				if (!pending) free = true;
+				else if (pending->value==UINT64_MAX) return false;
+			}
+			return free && (lastFrame==UINT32_MAX || frame-lastFrame>=(continuous?1u:30u));
 		}
 		void Dispatch(const GraphicsBackend& backend,std::shared_ptr<const RasterFrame> raster,
 			std::shared_ptr<const TopLevel> scene,uint32_t frame,uint32_t width,uint32_t height,bool fullResolution,bool continuous=false)
 		{
 			if (!WantsFrame(frame,continuous)) return;
 			lastFrame=frame;
-			// Keep at most one completed frame and one pending submission; an external
-			// consumer may retain its own immutable output reference.
 			published.reset();
+			auto availableSlot = std::find_if(submissions.begin(), submissions.end(), [](const auto& entry) { return !entry; });
+			if (availableSlot==submissions.end()) return;
+			auto& pending = *availableSlot;
 			if (!raster || raster->frame != frame || !raster->depth || !raster->depth->resource || !raster->cameraValid || !raster->readyFence ||
 				!MaterialFrameContract::ValidProducerSignal(raster->readyValue, raster->readyFence->GetCompletedValue()) ||
 				!scene || !scene->scope || !scene->acceleration || !scene->producerFence ||
@@ -256,6 +271,8 @@ namespace DX12Native
 				if (!selected) { failure="Material frame pool busy"; return; }
 				auto& reusableOutput = *selected;
 				const bool reuse = reusableOutput && reusableOutput->bytes == bytes;
+				for (const auto& inFlight : submissions)
+					if (inFlight) tracked += 6ull*65536;
 				const auto available = videoBudget.Query(device, tracked);
 				const auto desc=CD3DX12_RESOURCE_DESC::Buffer(bytes,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 				const auto allocation=reuse?0:device->GetResourceAllocationInfo(0,1,&desc).SizeInBytes;
@@ -356,6 +373,7 @@ namespace DX12Native
 					materialFrame->width=gridWidth; materialFrame->height=gridHeight; materialFrame->rowPitch=pitchPixels*kSampleStride;
 					published=std::move(materialFrame);
 				}
+				failure.clear();
 			} catch (const std::exception& error) {
 				failure=error.what();
 				published.reset();
