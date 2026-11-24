@@ -87,7 +87,8 @@ namespace NativePBR
 				result |= TextureRoleBit(role);
 		};
 		request(TextureRole::Displacement, SupportsOpaqueParallax(recipe) ||
-			(active & uint32_t(PBRFlags::InterlayerParallax)) != 0);
+			(active & uint32_t(PBRFlags::InterlayerParallax)) != 0 ||
+			((active & uint32_t(PBRFlags::Fuzz)) != 0 && recipe.parameters.fuzzRoughnessTexture));
 		request(TextureRole::Features0, (active & (uint32_t(PBRFlags::Subsurface) | uint32_t(PBRFlags::TwoLayer))) != 0);
 		request(TextureRole::Features1, (active & (uint32_t(PBRFlags::Fuzz) | uint32_t(PBRFlags::TwoLayer))) != 0);
 		return result;
