@@ -81,3 +81,41 @@ TEST_CASE("Evaluated native base is distinct from raster replacement eligibility
 	REQUIRE_FALSE(CanReplaceRaster(SurfaceStatus::EvaluatedBase, SurfaceCorrespondence::ExactRasterIdentity, LightingCoverage::SelectedPointLights));
 	REQUIRE(CanReplaceRaster(SurfaceStatus::EvaluatedBase, SurfaceCorrespondence::ExactRasterIdentity, LightingCoverage::CompleteRasterReplacement));
 }
+
+TEST_CASE("Opaque ownership requires every contribution and exact identity", "[dx12][materials]")
+{
+	const auto exact = SurfaceCorrespondence::ExactRasterIdentity;
+	const auto base = SurfaceStatus::EvaluatedBase;
+	const ContributionAdmission full{ kOpaqueRequired, kOpaqueRequired };
+	REQUIRE(ResolveOpaqueOwner(base, exact, full, true, true, false) == OpaqueOwner::Native);
+	for (uint32_t bit = 1; bit <= RemainingOpaque; bit <<= 1) {
+		REQUIRE_FALSE(CompleteOpaque({ kOpaqueRequired, kOpaqueRequired & ~bit }));
+		REQUIRE(ResolveOpaqueOwner(base, exact, { kOpaqueRequired, kOpaqueRequired & ~bit }, true, true, false) == OpaqueOwner::Raster);
+	}
+	REQUIRE_FALSE(CompleteOpaque({ DirectDiffuse, kOpaqueRequired }));
+	REQUIRE(ResolveOpaqueOwner(base, SurfaceCorrespondence::DepthOnly, full, true, true, false) == OpaqueOwner::Raster);
+	REQUIRE(ResolveOpaqueOwner(SurfaceStatus::FeatureLimited, exact, full, true, true, false) == OpaqueOwner::Raster);
+	REQUIRE(ResolveOpaqueOwner(base, exact, full, false, true, false) == OpaqueOwner::Raster);
+	REQUIRE(ResolveOpaqueOwner(base, exact, full, true, false, false) == OpaqueOwner::Raster);
+	REQUIRE(ResolveOpaqueOwner(base, exact, full, true, true, true) == OpaqueOwner::Raster);
+}
+
+TEST_CASE("Temporal identity rejects gaps, extent changes and resets", "[dx12][materials]")
+{
+	const TemporalIdentity previous{ 5, 100, 1920, 1080, 7, 3, true, true };
+	TemporalIdentity now{ 6, 101, 1920, 1080, 7, 3, true, false };
+	REQUIRE(now.CanReuseHistory(previous));
+	REQUIRE(now.SameFrame(now));
+	REQUIRE_FALSE(now.SameFrame(previous));
+	now.resetHistory = true;
+	REQUIRE_FALSE(now.CanReuseHistory(previous));
+	now.resetHistory = false;
+	++now.nativeFrame;
+	REQUIRE_FALSE(now.CanReuseHistory(previous));
+	--now.nativeFrame;
+	++now.width;
+	REQUIRE_FALSE(now.CanReuseHistory(previous));
+	--now.width;
+	++now.scope;
+	REQUIRE_FALSE(now.CanReuseHistory(previous));
+}

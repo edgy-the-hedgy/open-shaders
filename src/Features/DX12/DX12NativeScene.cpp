@@ -1,6 +1,7 @@
 #include "DX12NativeScene.h"
 
 #include "../Upscaling.h"
+#include "../ReverseZ.h"
 #include "DX12Control.h"
 #include "DX12Resources.h"
 #include "Globals.h"
@@ -316,18 +317,26 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/
 		if (!backend) return;
 	}
 
-	raster.Capture(*backend, Util::GetCurrentSceneDepthSRV(false),
-		&globals::game::frameBufferCached.nonVR, frame);
 	const auto viewport = Util::ConvertToDynamic(globals::state->screenSize);
 	const uint32_t viewportWidth = std::isfinite(viewport.x) && viewport.x > 0.0f ? uint32_t(viewport.x) : 0u;
 	const uint32_t viewportHeight = std::isfinite(viewport.y) && viewport.y > 0.0f ? uint32_t(viewport.y) : 0u;
-	const auto captured = raster.Get(frame);
 	auto built = acceleration.GetScene();
 	if (fullNative) {
 		const auto grid = globals::features::dx12Resources.GetGrid();
 		if (!grid || grid->requested.empty() || !built || built->scope != grid->requested.front().scope)
 			built.reset();
 	}
+	using DX12Native::MaterialFrameContract::TemporalIdentity;
+	TemporalIdentity temporal{ frame, globals::state->frameCount, viewportWidth, viewportHeight,
+		built ? built->scope : 0u, historyRevision, ReverseZ::IsActive(), false };
+	if (globals::state->ShouldResetHistory() || !temporal.CanReuseHistory(lastTemporal)) {
+		temporal.historyRevision = ++historyRevision;
+		temporal.resetHistory = true;
+	}
+	lastTemporal = temporal;
+	raster.Capture(*backend, Util::GetCurrentSceneDepthSRV(false),
+		&globals::game::frameBufferCached.nonVR, temporal);
+	const auto captured = raster.Get(frame);
 	const DX12Native::ShadowTraceControls controls{
 		.viewportWidth = viewportWidth,
 		.viewportHeight = viewportHeight,
@@ -455,6 +464,8 @@ void DX12NativeScene::ObserveSCMRigidCaster(RE::BSGeometry& geometry, bool requi
 void DX12NativeScene::OnSceneTransitionReset(bool a_opening)
 {
 	if (a_opening) {
+		++historyRevision;
+		lastTemporal = {};
 		lighting.Reset();
 		raster.Reset();
 		screenProbe.Reset();
@@ -465,6 +476,8 @@ void DX12NativeScene::OnSceneTransitionReset(bool a_opening)
 
 void DX12NativeScene::OnRuntimeDisabled()
 {
+	++historyRevision;
+	lastTemporal = {};
 	lighting.Reset();
 	raster.Reset();
 	screenProbe.Reset();

@@ -31,6 +31,64 @@ namespace DX12Native::MaterialFrameContract
 	enum class SurfaceCorrespondence { DepthOnly, ExactRasterIdentity };
 	enum class LightingCoverage { SelectedPointLights, CompleteRasterReplacement };
 
+	enum class SignalEncoding { MaterialModulated, Demodulated, Reconstructed, FinalLinearOpaqueColor, Visibility };
+	enum class SamplingLayout { FullResolution, Sparse };
+
+	enum Contribution : uint32_t
+	{
+		DirectDiffuse = 1u << 0, DirectSpecular = 1u << 1,
+		IndirectDiffuse = 1u << 2, IndirectSpecular = 1u << 3,
+		Transmission = 1u << 4, Emission = 1u << 5,
+		RemainingOpaque = 1u << 6, IndependentVisibility = 1u << 7
+	};
+	inline constexpr uint32_t kOpaqueRequired = DirectDiffuse | DirectSpecular | IndirectDiffuse |
+		IndirectSpecular | Transmission | Emission | RemainingOpaque;
+	inline constexpr uint32_t kKnownContributions = kOpaqueRequired | IndependentVisibility;
+	inline constexpr uint32_t kOpaqueRadianceStride = 8;
+
+	struct ContributionAdmission
+	{
+		uint32_t available = 0, valid = 0;
+	};
+
+	/** @brief A zero contribution still needs an explicit valid bit. */
+	constexpr bool CompleteOpaque(ContributionAdmission admission)
+	{
+		return !(admission.available & ~kKnownContributions) &&
+			!(admission.valid & ~admission.available) &&
+			(admission.valid & kOpaqueRequired) == kOpaqueRequired;
+	}
+
+	enum class OpaqueOwner { Raster, Native };
+	constexpr OpaqueOwner ResolveOpaqueOwner(SurfaceStatus status, SurfaceCorrespondence correspondence,
+		ContributionAdmission admission, bool coherent, bool earlyOpaqueStage, bool independentShadowActive)
+	{
+		return coherent && earlyOpaqueStage && !independentShadowActive &&
+			status == SurfaceStatus::EvaluatedBase && correspondence == SurfaceCorrespondence::ExactRasterIdentity &&
+			CompleteOpaque(admission) ? OpaqueOwner::Native : OpaqueOwner::Raster;
+	}
+
+	struct TemporalIdentity
+	{
+		uint32_t nativeFrame = 0, pluginFrame = 0, width = 0, height = 0, scope = 0;
+		uint64_t historyRevision = 0;
+		bool reverseDepth = false, resetHistory = true;
+
+		constexpr bool SameFrame(const TemporalIdentity& other) const
+		{
+			return nativeFrame == other.nativeFrame && pluginFrame == other.pluginFrame &&
+				width && height && width == other.width && height == other.height &&
+				scope == other.scope && historyRevision == other.historyRevision && reverseDepth == other.reverseDepth;
+		}
+		constexpr bool CanReuseHistory(const TemporalIdentity& previous) const
+		{
+			return !resetHistory && nativeFrame - previous.nativeFrame == 1u &&
+				pluginFrame - previous.pluginFrame == 1u && width && height && width == previous.width &&
+				height == previous.height && scope && scope == previous.scope &&
+				historyRevision == previous.historyRevision && reverseDepth == previous.reverseDepth;
+		}
+	};
+
 	/** @brief Replacement requires exact raster correspondence and complete lighting. */
 	constexpr bool CanReplaceRaster(SurfaceStatus status, SurfaceCorrespondence correspondence, LightingCoverage coverage)
 	{

@@ -121,7 +121,7 @@ namespace DX12Native
 			winrt::com_ptr<ID3D12Resource> samples;
 			uint32_t abiVersion=MaterialFrameContract::kMaterialAbiVersion, sampleStride=kSampleStride, rowPitch=0;
 			static constexpr D3D12_RESOURCE_STATES publishedState = D3D12_RESOURCE_STATE_COMMON;
-			static constexpr auto correspondence = MaterialFrameContract::SurfaceCorrespondence::DepthOnly;
+			MaterialFrameContract::SurfaceCorrespondence correspondence = MaterialFrameContract::SurfaceCorrespondence::DepthOnly;
 			winrt::com_ptr<ID3D12Fence> producerFence;
 			uint64_t producerValue=0, geometryRevision=0, materialRevision=0;
 			uint32_t frame=0, width=0, height=0, scope=0;
@@ -136,7 +136,8 @@ namespace DX12Native
 					!producerFence || !MaterialFrameContract::ValidProducerSignal(producerValue, producerFence->GetCompletedValue()) ||
 					!raster || raster->frame != frame || !raster->cameraValid || !raster->depth || !raster->depth->resource ||
 					!raster->readyFence || !MaterialFrameContract::ValidProducerSignal(raster->readyValue, raster->readyFence->GetCompletedValue()) ||
-					raster->width < width || raster->height < height || !scene || !scope ||
+					raster->width < width || raster->height < height || raster->temporal.nativeFrame != frame ||
+					raster->temporal.width != width || raster->temporal.height != height || raster->temporal.scope != scope || !scene || !scope ||
 					scene->scope != scope || scene->geometryRevision != geometryRevision ||
 					!scene->acceleration || !scene->producerFence ||
 					!MaterialFrameContract::ValidProducerSignal(scene->producerValue, scene->producerFence->GetCompletedValue()) ||

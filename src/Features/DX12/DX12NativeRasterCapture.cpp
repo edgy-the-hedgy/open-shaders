@@ -25,7 +25,7 @@ namespace DX12Native
 				RetireWhenGpuDone(std::move(slot), backend.d3d12Device, ready);
 	}
 
-	void RasterCapture::Capture(const GraphicsBackend& a_backend, ID3D11ShaderResourceView* a_depth, const globals::FrameBuffer* a_camera, uint32_t a_frame)
+	void RasterCapture::Capture(const GraphicsBackend& a_backend, ID3D11ShaderResourceView* a_depth, const globals::FrameBuffer* a_camera, const MaterialFrameContract::TemporalIdentity& a_temporal)
 	{
 		CS_GPU_PASS("DX12NativeScene::CaptureOpaqueRaster");
 		current.reset();
@@ -142,7 +142,8 @@ namespace DX12Native
 				slot->camera = *a_camera;
 			slot->readyFence = producer.fence12;
 			slot->readyValue = ready;
-			slot->frame = a_frame;
+			slot->frame = a_temporal.nativeFrame;
+			slot->temporal = a_temporal;
 			current = slot;
 		} catch (const std::exception&) {
 			// A DX11 dispatch may still be queued if a later step fails.

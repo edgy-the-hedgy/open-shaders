@@ -92,6 +92,8 @@ private:
 	bool CanOffloadShadowsInCurrentCell() const;
 	std::optional<GraphicsBackend> backend;
 	DX12Native::RasterCapture raster;
+	DX12Native::MaterialFrameContract::TemporalIdentity lastTemporal{};
+	uint64_t historyRevision = 1;
 	DX12Native::RuntimeGeometryCapture geometryCapture;
 	DX12Native::AccelerationWorker acceleration;
 	DX12Native::NativeLighting lighting;
