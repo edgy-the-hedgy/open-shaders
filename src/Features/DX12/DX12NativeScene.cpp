@@ -393,8 +393,7 @@ std::function<void()> DX12NativeScene::OnRenderPassBegin(const RE::BSRenderPass*
 	if (!pass || !pass->geometry || !loaded || globals::game::isVR ||
 		!control.IsActive() ||
 		(!fullNative && (!shadowMaskEnabled || !control.IsShadowOffloadMode() ||
-			!globals::features::upscaling.loaded ||
-			globals::features::upscaling.GetUpscaleMethod() != Upscaling::UpscaleMethod::kFSR)) ||
+			!globals::features::upscaling.loaded)) ||
 		!globals::state || globals::state->isMapMenuOpen ||
 		(globals::state->permutationData.ExtraShaderDescriptor &
 			static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
