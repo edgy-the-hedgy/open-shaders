@@ -79,9 +79,9 @@ namespace DX12Native
 		{
 			const auto* property = source.shadingProperty;
 			if (!property || !property->material || property->material->GetType() != RE::BSShaderMaterial::Type::kLighting ||
-				source.uvOffset < 16 || source.normalOffset < 16 || source.tangentOffset < 16 ||
+				source.uvOffset < 16 || source.normalOffset < 16 ||
 				source.uvOffset > source.stride - 4 || source.normalOffset > source.stride - 4 ||
-				source.tangentOffset > source.stride - 4 || (source.colorOffset != UINT32_MAX &&
+				(source.tangentOffset != UINT32_MAX && (source.tangentOffset < 16 || source.tangentOffset > source.stride - 4)) || (source.colorOffset != UINT32_MAX &&
 				(source.colorOffset < 16 || source.colorOffset > source.stride - 4))) return {};
 			using F = RE::BSShaderProperty::EShaderPropertyFlag;
 			const auto flags = static_cast<uint64_t>(property->flags.underlying());
@@ -97,7 +97,7 @@ namespace DX12Native
 			if (!textures || !expected || !textures->GetRTTI() || !textures->GetRTTI()->IsKindOf(expected)) return {};
 			auto shading = std::make_shared<DX12::PreparedShading>();
 			shading->runtimeObserved = true;
-			shading->stride = 60;
+			shading->stride = source.tangentOffset == UINT32_MAX ? 36 : 60;
 			shading->shapeName = source.shapeName;
 			shading->provenance = "runtime engine material";
 			shading->shaderFlags1 = uint32_t(flags);
@@ -298,7 +298,7 @@ namespace DX12Native
 				// half2 UV, packed normal.xyz/bitangent Y, packed tangent.xyz/
 				// bitangent Z, optional RGBA8 color. Decode on the CPU worker.
 				auto& attributes = packet.shading->attributes;
-				attributes.reserve(size_t(packet.vertexCount) * 15);
+				attributes.reserve(size_t(packet.vertexCount) * (packet.shading->stride / sizeof(float)));
 				const auto sn = [](uint8_t v) { return float(v) * (2.0f / 255.0f) - 1.0f; };
 				for (uint32_t i = 0; i < packet.vertexCount; ++i) {
 					const auto* vertex = packet.vertices.data() + size_t(i) * packet.stride;
@@ -307,18 +307,18 @@ namespace DX12Native
 					std::memcpy(uv, vertex + packet.uvOffset, sizeof(uv));
 					std::memcpy(&bx, vertex + 12, sizeof(bx));
 					const auto* n = vertex + packet.normalOffset;
-					const auto* t = vertex + packet.tangentOffset;
+					const auto* t = packet.tangentOffset == UINT32_MAX ? nullptr : vertex + packet.tangentOffset;
 					const auto* color = packet.colorOffset == UINT32_MAX ? nullptr : vertex + packet.colorOffset;
 					const float u = DirectX::PackedVector::XMConvertHalfToFloat(uv[0]);
 					const float v = DirectX::PackedVector::XMConvertHalfToFloat(uv[1]);
-					if (!std::isfinite(bx) || !std::isfinite(u) || !std::isfinite(v)) {
+					if ((t && !std::isfinite(bx)) || !std::isfinite(u) || !std::isfinite(v)) {
 						attributes.clear();
 						break;
 					}
 					attributes.insert(attributes.end(), { sn(n[0]), sn(n[1]), sn(n[2]), u, v,
 						color ? float(color[0])/255.0f : 1.0f, color ? float(color[1])/255.0f : 1.0f,
-						color ? float(color[2])/255.0f : 1.0f, color ? float(color[3])/255.0f : 1.0f,
-						sn(t[0]), sn(t[1]), sn(t[2]), bx, sn(n[3]), sn(t[3]) });
+						color ? float(color[2])/255.0f : 1.0f, color ? float(color[3])/255.0f : 1.0f });
+					if (t) attributes.insert(attributes.end(), { sn(t[0]), sn(t[1]), sn(t[2]), bx, sn(n[3]), sn(t[3]) });
 				}
 				if (!attributes.empty()) shape->shading = std::move(packet.shading);
 			}

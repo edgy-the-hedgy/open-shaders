@@ -51,12 +51,12 @@ namespace DX12Native
 			if (source->recoveredPlacement) ++result->recoveredPlacements;
 			const auto& placementMaterial = instance.shape->materialOverride;
 			if ((placementMaterial && placementMaterial->ambiguous) || !(source->shaderFlags2 & pbrSource) || source->alpha != 1.0f ||
-				source->stride != 60 || source->clampMode < 0 || source->uvTransform.size() != 4) {
+				(source->stride != 60 && source->stride != 36) || source->clampMode < 0 || source->uvTransform.size() != 4) {
 				++result->unsupported;
 				if (placementMaterial && placementMaterial->ambiguous) ++result->rejected[0];
 				if (!(source->shaderFlags2 & pbrSource)) ++result->rejected[1];
 				if (source->alpha != 1.0f) ++result->rejected[2];
-				if (source->stride != 60) ++result->rejected[3];
+				if (source->stride != 60 && source->stride != 36) ++result->rejected[3];
 				if (source->clampMode < 0 || source->uvTransform.size() != 4) ++result->rejected[4];
 				result->bindings.push_back(missingBinding);
 				continue;

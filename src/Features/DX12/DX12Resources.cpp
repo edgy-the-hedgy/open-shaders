@@ -283,7 +283,8 @@ namespace DX12
 		const std::shared_ptr<const PreparedShading>& shading)
 	{
 		if (!matched || !shading || !shading->runtimeObserved || !matched->identity ||
-			shading->stride != 60 || shading->attributes.size() != matched->Positions().size() * 15u)
+			(shading->stride != 60 && shading->stride != 36) ||
+			shading->attributes.size() != matched->Positions().size() * (shading->stride / sizeof(float)))
 			return false;
 		std::scoped_lock lock(mutex);
 		const auto current = snapshot.load(std::memory_order_acquire);

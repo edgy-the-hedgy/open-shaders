@@ -224,7 +224,7 @@ namespace DX12Native
 		};
 		for (size_t i = 0; i < geometry.size(); ++i) {
 			const auto& shape = geometry[i].shape;
-			if (!shape || !shape->shading || shape->shading->stride != 60)
+			if (!shape || !shape->shading || (shape->shading->stride != 60 && shape->shading->stride != 36))
 				continue;
 			const auto& positions = shape->Positions();
 			const auto& indices = shape->Indices();

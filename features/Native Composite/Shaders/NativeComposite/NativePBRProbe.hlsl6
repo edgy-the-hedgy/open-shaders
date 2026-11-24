@@ -38,20 +38,24 @@ Sample EvaluateMaterial(uint instance, uint primitive, float3 weights)
     Binding binding = Bindings[instance];
     uint4 offsets = Geometry.Load4(instance*32);
     uint4 counts = Geometry.Load4(instance*32+16);
-    if (binding.materialIndex == 0xffffffffu || offsets.z == 0xffffffffu || offsets.w != 60u || counts.y < 3u || primitive >= counts.y / 3u) return result;
+    if (binding.materialIndex == 0xffffffffu || offsets.z == 0xffffffffu || (offsets.w != 60u && offsets.w != 36u) || counts.y < 3u || primitive >= counts.y / 3u) return result;
     MaterialRecord material = Materials[binding.materialIndex];
     if (any(material.identity.xy != binding.identity) || any(material.identity.zw != binding.revision)) return result;
     uint3 ix = Geometry.Load3(offsets.y + primitive*12u);
     if (any(ix >= counts.x)) return result;
     float3 n = 0, t = 0, b = 0, color = 0;
     float2 uv = 0;
+    float2 triangleUV[3];
     [unroll] for (uint i = 0; i < 3u; ++i) {
         uint a = offsets.z + ix[i]*offsets.w;
         n += weights[i]*asfloat(Geometry.Load3(a));
-        uv += weights[i]*asfloat(Geometry.Load2(a+12));
+        triangleUV[i]=asfloat(Geometry.Load2(a+12));
+        uv += weights[i]*triangleUV[i];
         color += weights[i]*asfloat(Geometry.Load3(a+20));
-        t += weights[i]*asfloat(Geometry.Load3(a+36));
-        b += weights[i]*asfloat(Geometry.Load3(a+48));
+        if (offsets.w == 60u) {
+            t += weights[i]*asfloat(Geometry.Load3(a+36));
+            b += weights[i]*asfloat(Geometry.Load3(a+48));
+        }
     }
     uv = uv*material.uv[0].zw+material.uv[0].xy;
     float4 baseTexel = Tex(material.textures[0].x,uv,material.properties.z);
@@ -61,6 +65,25 @@ Sample EvaluateMaterial(uint instance, uint primitive, float3 weights)
     if ((binding.flags & 256u) != 0u) sampled.z = sqrt(saturate(1.0-dot(sampled.xy,sampled.xy)));
     if (dot(n,n) < 1e-8 || dot(sampled,sampled) < 1e-8) return result;
     n = normalize(n);
+    // Legacy 36-byte RSGA and rigid meshes without stored tangents can
+    // derive a local basis from the actual triangle and its UV gradients.
+    if (offsets.w == 36u || dot(t,t) < 1e-8 || dot(b,b) < 1e-8) {
+        if (counts.z < 12u) return result;
+        float3 p0=asfloat(Geometry.Load3(offsets.x+ix.x*counts.z));
+        float3 e1=asfloat(Geometry.Load3(offsets.x+ix.y*counts.z))-p0;
+        float3 e2=asfloat(Geometry.Load3(offsets.x+ix.z*counts.z))-p0;
+        float2 duv1=triangleUV[1]-triangleUV[0], duv2=triangleUV[2]-triangleUV[0];
+        float determinant=duv1.x*duv2.y-duv1.y*duv2.x;
+        if (!isfinite(determinant) || abs(determinant)<1e-10) {
+            // Object-space normal maps do not need a UV-derived basis.
+            if ((binding.flags & 512u)==0u) return result;
+            t=abs(n.z)<0.99 ? cross(float3(0,0,1),n) : cross(float3(0,1,0),n);
+            b=cross(n,t);
+        } else {
+            t=(e1*duv2.y-e2*duv1.y)/determinant;
+            b=(e2*duv1.x-e1*duv2.x)/determinant;
+        }
+    }
     t -= n*dot(n,t);
     if (dot(t,t) < 1e-8) return result;
     t = normalize(t);

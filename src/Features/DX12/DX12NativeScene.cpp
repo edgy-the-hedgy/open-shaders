@@ -443,11 +443,11 @@ void DX12NativeScene::ObserveSCMRigidCaster(RE::BSGeometry& geometry, bool requi
 	candidate.indices = runtime.rendererData->rawIndexData;
 	if (globals::features::dx12Control.IsFullNativeMode()) {
 		using V = RE::BSGraphics::Vertex;
-		if (desc.HasFlag(V::VF_UV) && desc.HasFlag(V::VF_NORMAL) && desc.HasFlag(V::VF_TANGENT)) {
+		if (desc.HasFlag(V::VF_UV) && desc.HasFlag(V::VF_NORMAL)) {
 			candidate.shadingProperty = static_cast<const RE::BSLightingShaderProperty*>(property);
 			candidate.uvOffset = desc.GetAttributeOffset(V::VA_TEXCOORD0);
 			candidate.normalOffset = desc.GetAttributeOffset(V::VA_NORMAL);
-			candidate.tangentOffset = desc.GetAttributeOffset(V::VA_BINORMAL);
+			if (desc.HasFlag(V::VF_TANGENT)) candidate.tangentOffset = desc.GetAttributeOffset(V::VA_BINORMAL);
 			if (desc.HasFlag(V::VF_COLORS)) candidate.colorOffset = desc.GetAttributeOffset(V::VA_COLOR);
 		}
 	}
