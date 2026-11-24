@@ -356,10 +356,20 @@ namespace DX12Native
 		}
 		if (top->shadingGeometry && top->preparedMaterials) {
 			try {
+				std::unordered_set<std::string> requestedTextures;
+				for (const auto& recipe : top->preparedMaterials->recipes) {
+					if (recipe.issues & (NativePBR::InvalidSnapshot | NativePBR::InvalidTexturePath | NativePBR::MissingRequiredTextures)) continue;
+					const auto roles = NativePBR::GpuBaseRequestedTextureRoles(recipe) | NativePBR::GpuSpecializedTextureRoles(recipe);
+					for (size_t i = 0; i < recipe.textures.size(); ++i)
+						if ((roles & (1u << i)) && !recipe.textures[i].canonicalPath.empty())
+							requestedTextures.insert(recipe.textures[i].canonicalPath);
+				}
+				std::erase_if(materialTextures, [&](const auto& entry) { return !requestedTextures.contains(entry.first); });
 				std::erase_if(retiredMaterialTextures, [](const auto& entry) { return entry.second.expired(); });
 				auto reusable = materialTextures;
 				for (const auto& [path, weak] : retiredMaterialTextures)
-					if (auto texture = weak.lock()) reusable.try_emplace(path, std::move(texture));
+						if (requestedTextures.contains(path))
+						if (auto texture = weak.lock()) reusable.try_emplace(path, std::move(texture));
 				a_build.materialEvaluation = NativeMaterialEvaluation::Prepare(device.get(), *top->preparedMaterials, *top->inputs,
 					reusable, a_build.materialUploads);
 				if (!a_build.materialEvaluation)
@@ -433,6 +443,7 @@ namespace DX12Native
 		std::erase_if(consumers, [](const Consumer& consumer) {
 			return consumer.fence->GetCompletedValue() >= consumer.value;
 		});
+		std::erase_if(retiredMaterialTextures, [](const auto& entry) { return entry.second.expired(); });
 	}
 
 	void AccelerationScene::Reset()
