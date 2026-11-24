@@ -159,6 +159,14 @@ namespace NativePBR
 			return std::nullopt;
 		auto normalized = Util::ToLowerAscii(a_path);
 		std::replace(normalized.begin(), normalized.end(), '\\', '/');
+		// Mutagen asset links may already include Data/Textures. Older
+		// Companion cache entries can also contain Textures/Data/Textures.
+		// Validate the original path before stripping only leading namespaces.
+		if (normalized.starts_with('/') || normalized.ends_with('/'))
+			return std::nullopt;
+		for (const auto& part : std::filesystem::path(normalized))
+			if (part == ".." || part == ".")
+				return std::nullopt;
 		const std::filesystem::path path(normalized);
 		try {
 			Util::JoinRelativePath({}, path);
@@ -168,9 +176,11 @@ namespace NativePBR
 		normalized = path.lexically_normal().generic_string();
 		if (normalized.empty() || normalized == "." || normalized.starts_with('/'))
 			return std::nullopt;
-		if (!normalized.starts_with("textures/"))
-			normalized = "textures/" + normalized;
-		return normalized;
+		while (normalized.starts_with("data/") || normalized.starts_with("textures/"))
+			normalized.erase(0, normalized.starts_with("data/") ? 5 : 9);
+		if (normalized.empty() || normalized.starts_with('/') || normalized == "data" || normalized == "textures")
+			return std::nullopt;
+		return "textures/" + normalized;
 	}
 
 	/** @brief Compiles an owned snapshot without accessing game objects or GPU resources. */

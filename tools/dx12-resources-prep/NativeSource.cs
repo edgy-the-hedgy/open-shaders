@@ -30,10 +30,14 @@ internal static class NativeSource
     {
         if (string.IsNullOrWhiteSpace(value)) return "";
         var path = value.Replace('/', '\\').ToLowerInvariant();
-        if (!path.StartsWith("textures\\")) path = "textures\\" + path;
-        if (path.Length > 260 || path.Contains(':') || path.Split('\\').Any(p => p is "" or "." or ".."))
+        if (path.Length > 1024 || path.Contains(':') || path.Any(char.IsControl) ||
+            path.Split('\\').Any(p => p is "" or "." or ".."))
             throw new InvalidDataException("Invalid material texture path");
-        return path;
+        while (path.StartsWith("data\\", StringComparison.Ordinal) || path.StartsWith("textures\\", StringComparison.Ordinal))
+            path = path[(path.StartsWith("data\\", StringComparison.Ordinal) ? 5 : 9)..];
+        if (path is "" or "data" or "textures" || path.Length > 251)
+            throw new InvalidDataException("Invalid material texture path");
+        return "textures\\" + path;
     }
 
     private static uint? ReadTextureClampMode(BSLightingShaderProperty shader)
