@@ -282,89 +282,92 @@ namespace DX12Native
 			std::vector<NativePBR::GpuTextureLocations> recipeLocations(prepared.recipes.size());
 			for (auto& locations : recipeLocations)
 				for (auto& location : locations) location = { NativePBR::kGpuMissingTexture, 0 };
-			for (size_t role = 0; role < static_cast<size_t>(NativePBR::TextureRole::Count); ++role) {
-				const auto roleBit = NativePBR::TextureRoleBit(static_cast<NativePBR::TextureRole>(role));
+			for (const bool specialized : { false, true }) {
 				for (size_t recipeIndex = 0; recipeIndex < prepared.recipes.size(); ++recipeIndex) {
 					const auto& recipe = prepared.recipes[recipeIndex];
 					auto& locations = recipeLocations[recipeIndex];
 					const auto base = NativePBR::GpuBaseRequestedTextureRoles(recipe);
-					if (!(base & roleBit)) {
-						if (!(NativePBR::GpuSpecializedTextureRoles(recipe) & roleBit)) continue;
+					if (recipe.issues & (NativePBR::InvalidSnapshot | NativePBR::InvalidTexturePath | NativePBR::MissingRequiredTextures)) continue;
+					if (specialized) {
 						bool baseReady = true;
 						for (size_t i = 0; i < locations.size(); ++i)
 							if ((base & (1u << i)) && locations[i][0] == NativePBR::kGpuMissingTexture) baseReady = false;
-						if (!baseReady || (recipe.issues & (NativePBR::InvalidSnapshot | NativePBR::InvalidTexturePath | NativePBR::MissingRequiredTextures))) continue;
+						if (!baseReady) continue;
 					}
-					const auto& request = recipe.textures[role];
-					const auto& path = request.canonicalPath;
-					if (path.empty() || failed.contains(path)) continue;
-					auto found = indices.find(path);
-					if (found == indices.end()) {
-						if (indices.size() >= NativePBR::kGpuTexturePoolCapacity) {
-							failed.insert(path); ++result->failedTextures; ++result->failureReasons["descriptor capacity"];
-							if (result->failedExamples.size() < 32) result->failedExamples.emplace_back(path, "descriptor capacity");
-							continue;
-						}
-						std::shared_ptr<const Texture> texture;
-						if (const auto old = previous.find(path); old != previous.end() && old->second && old->second->resource) {
-							winrt::com_ptr<ID3D12Device> textureDevice;
-							if (SUCCEEDED(old->second->resource->GetDevice(IID_PPV_ARGS(textureDevice.put()))) && textureDevice.get() == device) {
-								std::error_code ec;
-								const auto filename = Util::JoinRelativePath("Data", std::filesystem::path(path));
-								const auto size = std::filesystem::file_size(filename, ec);
-								if (old->second->archiveBacked && ec == std::errc::no_such_file_or_directory) {
-									// Archive load order is immutable during the running game session.
-									texture = old->second;
-									++result->reusedTextures;
-								} else if (!old->second->archiveBacked && !ec && size == old->second->fileBytes) {
-									const auto stamp = std::filesystem::last_write_time(filename, ec);
-									if (!ec && stamp == old->second->fileStamp) {
+					const auto requested = specialized ? NativePBR::GpuSpecializedTextureRoles(recipe) : base;
+					for (size_t role = 0; role < locations.size(); ++role) {
+						if (!(requested & (1u << role))) continue;
+						const auto& request = recipe.textures[role];
+						const auto& path = request.canonicalPath;
+						if (path.empty() || failed.contains(path)) continue;
+						auto found = indices.find(path);
+						if (found == indices.end()) {
+							if (indices.size() >= NativePBR::kGpuTexturePoolCapacity) {
+								failed.insert(path); ++result->failedTextures; ++result->failureReasons["descriptor capacity"];
+								if (result->failedExamples.size() < 32) result->failedExamples.emplace_back(path, "descriptor capacity");
+								continue;
+							}
+							std::shared_ptr<const Texture> texture;
+							if (const auto old = previous.find(path); old != previous.end() && old->second && old->second->resource) {
+								winrt::com_ptr<ID3D12Device> textureDevice;
+								if (SUCCEEDED(old->second->resource->GetDevice(IID_PPV_ARGS(textureDevice.put()))) && textureDevice.get() == device) {
+									std::error_code ec;
+									const auto filename = Util::JoinRelativePath("Data", std::filesystem::path(path));
+									const auto size = std::filesystem::file_size(filename, ec);
+									if (old->second->archiveBacked && ec == std::errc::no_such_file_or_directory) {
+										// Archive load order is immutable during the running game session.
 										texture = old->second;
 										++result->reusedTextures;
+									} else if (!old->second->archiveBacked && !ec && size == old->second->fileBytes) {
+										const auto stamp = std::filesystem::last_write_time(filename, ec);
+										if (!ec && stamp == old->second->fileStamp) {
+											texture = old->second;
+											++result->reusedTextures;
+										}
 									}
 								}
 							}
+							std::string reason;
+							if (!texture) {
+								// Re-query global headroom before each new allocation.
+								const auto current = budget.Query(device, 0);
+								remaining = std::min(remaining, current.effectiveBytes);
+								try {
+									if (auto upload = LoadTexture(device, path, remaining, reason)) {
+										texture = upload->texture;
+										uploads.push_back(std::move(*upload));
+									}
+								} catch (const std::exception&) { reason = "GPU allocation/upload setup"; }
+							}
+							if (!texture) {
+								failed.insert(path);
+								++result->failedTextures;
+								if (reason.empty()) reason = "unknown texture failure";
+								++result->failureReasons[reason];
+								if (result->failedExamples.size() < 32) result->failedExamples.emplace_back(path, reason);
+								continue;
+							}
+							const uint32_t pool = uint32_t(indices.size());
+							write(pool, texture.get(), false);
+							if (DirectX::MakeSRGB(texture->format) != texture->format)
+								write(pool + NativePBR::kGpuTexturePoolCapacity, texture.get(), true);
+							result->textureBytes += texture->bytes;
+							if (texture->archiveBacked) ++result->archiveTextures;
+							result->poolTextures.push_back(texture);
+							result->textures.emplace(path, std::move(texture));
+							found = indices.emplace(path, pool).first;
 						}
-						std::string reason;
-						if (!texture) {
-							// Re-query global headroom before each new allocation.
-							const auto current = budget.Query(device, 0);
-							remaining = std::min(remaining, current.effectiveBytes);
-							try {
-								if (auto upload = LoadTexture(device, path, remaining, reason)) {
-									texture = upload->texture;
-									uploads.push_back(std::move(*upload));
-								}
-							} catch (const std::exception&) { reason = "GPU allocation/upload setup"; }
-						}
-						if (!texture) {
-							failed.insert(path);
-							++result->failedTextures;
-							if (reason.empty()) reason = "unknown texture failure";
-							++result->failureReasons[reason];
-							if (result->failedExamples.size() < 32) result->failedExamples.emplace_back(path, reason);
+						const auto format = result->poolTextures[found->second]->format;
+						if (request.interpretation == NativePBR::TextureInterpretation::ColorSrgb && DirectX::MakeSRGB(format) == format) {
+							if (invalidSrgb.insert(path).second) {
+								++result->failedTextures;
+								++result->failureReasons["no compatible sRGB view"];
+								if (result->failedExamples.size() < 32) result->failedExamples.emplace_back(path, "no compatible sRGB view");
+							}
 							continue;
 						}
-						const uint32_t pool = uint32_t(indices.size());
-						write(pool, texture.get(), false);
-						if (DirectX::MakeSRGB(texture->format) != texture->format)
-							write(pool + NativePBR::kGpuTexturePoolCapacity, texture.get(), true);
-						result->textureBytes += texture->bytes;
-						if (texture->archiveBacked) ++result->archiveTextures;
-						result->poolTextures.push_back(texture);
-						result->textures.emplace(path, std::move(texture));
-						found = indices.emplace(path, pool).first;
+						locations[role] = { NativePBR::GpuTextureDescriptorIndex(found->second, request.interpretation), 0 };
 					}
-					const auto format = result->poolTextures[found->second]->format;
-					if (request.interpretation == NativePBR::TextureInterpretation::ColorSrgb && DirectX::MakeSRGB(format) == format) {
-						if (invalidSrgb.insert(path).second) {
-							++result->failedTextures;
-							++result->failureReasons["no compatible sRGB view"];
-							if (result->failedExamples.size() < 32) result->failedExamples.emplace_back(path, "no compatible sRGB view");
-						}
-						continue;
-					}
-					locations[role] = { NativePBR::GpuTextureDescriptorIndex(found->second, request.interpretation), 0 };
 				}
 			}
 			for (size_t recipeIndex = 0; recipeIndex < prepared.recipes.size(); ++recipeIndex) {
