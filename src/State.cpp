@@ -46,6 +46,7 @@
 #include "Features/Wind/Wind.h"
 #include "HiZPyramid.h"
 #include "Menu.h"
+#include "Materials/SharedMaterialHooks.h"
 #include "PostProcessingMode.h"
 #include "Presets/BaseSettingsCustomization.h"
 #include "Presets/PresetPreferences.h"
@@ -2234,6 +2235,7 @@ void State::SetupResources()
 
 void State::ModifyShaderLookup(const RE::BSShader& a_shader, uint& a_vertexDescriptor, uint& a_pixelDescriptor, bool a_forceDeferred)
 {
+	SharedMaterialHooks::NormalizeRasterDescriptors(a_shader.shaderType.get(), a_vertexDescriptor, a_pixelDescriptor);
 	auto deferred = globals::deferred;
 
 	if (a_shader.shaderType.get() != RE::BSShader::Type::Utility && a_shader.shaderType.get() != RE::BSShader::Type::ImageSpace) {

@@ -122,7 +122,6 @@ namespace DX12Native
 		std::shared_ptr<const SceneInputs> target;
 		std::shared_ptr<const TopLevel> published;
 		NativeMaterialEvaluation::TextureCache materialTextures;
-		NativePBR::MaterialCatalog materialCatalog;
 		uint64_t generation = 0, nextFence = 0;
 		uint64_t targetRevision = 0;
 		uint32_t targetScope = 0;

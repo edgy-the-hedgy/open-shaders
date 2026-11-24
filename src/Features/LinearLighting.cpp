@@ -8,7 +8,7 @@
 #include "PostProcessingMode.h"
 #include "ShaderCache.h"
 #include "State.h"
-#include "TruePBR.h"
+#include "Materials/SharedMaterialHooks.h"
 #include "Util.h"
 
 #if defined(ENABLE_EFFECTS11)
@@ -272,13 +272,13 @@ void LinearLighting::Prepass()
 		return;
 
 	lodProjectedMaterialColorScales.fill(kNoProjectedMaterialColorScale);
-	if (auto* defaultObjects = RE::BGSDefaultObjectManager::GetSingleton(); defaultObjects && globals::features::truePBR.loaded) {
+	if (auto* defaultObjects = RE::BGSDefaultObjectManager::GetSingleton(); defaultObjects) {
 		constexpr std::array materialObjects{ RE::DefaultObjectID::kSnowLODMaterial, RE::DefaultObjectID::kSnowLODMaterialHD };
 		for (size_t index = 0; index < materialObjects.size(); ++index) {
 			auto** materialObject = defaultObjects->GetObject<RE::BGSMaterialObject>(materialObjects[index]);
-			auto* materialData = globals::features::truePBR.GetPBRMaterialObjectData(materialObject ? *materialObject : nullptr);
-			if (materialData && std::ranges::all_of(materialData->baseColorScale, [](float value) { return std::isfinite(value); })) {
-				std::ranges::transform(materialData->baseColorScale, lodProjectedMaterialColorScales[index].begin(), [](float value) { return std::max(value, 0.0f); });
+			const auto scale = SharedMaterialHooks::ProjectedColorScale(materialObject ? *materialObject : nullptr);
+			if (scale && std::ranges::all_of(*scale, [](float value) { return std::isfinite(value); })) {
+				std::ranges::transform(*scale, lodProjectedMaterialColorScales[index].begin(), [](float value) { return std::max(value, 0.0f); });
 			}
 		}
 	}

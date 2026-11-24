@@ -59,3 +59,9 @@ std::shared_ptr<const NativePBR::MaterialCatalogSnapshot> NativePBR::MaterialCat
 {
 	return published.load(std::memory_order_acquire);
 }
+
+NativePBR::MaterialCatalog& NativePBR::MaterialCatalog::Shared()
+{
+	static MaterialCatalog catalog;
+	return catalog;
+}

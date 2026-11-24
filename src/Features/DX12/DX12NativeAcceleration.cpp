@@ -296,6 +296,7 @@ namespace DX12Native
 		auto top = std::make_shared<TopLevel>();
 		top->inputs = target;
 		if (target->residency && target->residency->fullNative) {
+			auto& materialCatalog = NativePBR::MaterialCatalog::Shared();
 			if (!materialCatalog.GetSnapshot())
 				materialCatalog.Load();
 			top->preparedMaterials = CompilePreparedMaterials(*target, materialCatalog.GetSnapshot());

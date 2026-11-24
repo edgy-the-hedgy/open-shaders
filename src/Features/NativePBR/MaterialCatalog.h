@@ -26,6 +26,8 @@ namespace NativePBR
 	public:
 		/** @brief Read legacy-compatible PBR asset configs into NativePBR-owned storage. */
 		void Load(bool a_verbose = false);
+		/** @brief Session-wide NativePBR catalog shared by native consumers. */
+		static MaterialCatalog& Shared();
 		/** @brief Obtain the current immutable material-source catalog. */
 		std::shared_ptr<const MaterialCatalogSnapshot> GetSnapshot() const;
 

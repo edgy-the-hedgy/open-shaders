@@ -1362,43 +1362,6 @@ bool TruePBR::BSLightingShader_SetupMaterial(RE::BSLightingShader* shader, RE::B
 	return false;
 }
 
-struct BSLightingShader_SetupGeometry
-{
-	static void thunk(RE::BSLightingShader* shader, RE::BSRenderPass* pass, uint32_t renderFlags)
-	{
-		const auto originalTechnique = shader->currentRawTechnique;
-
-		if ((shader->currentRawTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::TruePbr)) != 0) {
-			shader->currentRawTechnique |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::AmbientSpecular);
-			shader->currentRawTechnique ^= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::AnisoLighting);
-		}
-
-		shader->currentRawTechnique &= ~0b111000u;
-		shader->currentRawTechnique |= (std::min((pass->numLights - 1), 7) << 3);
-
-		func(shader, pass, renderFlags);
-
-		shader->currentRawTechnique = originalTechnique;
-	}
-	static inline REL::Relocation<decltype(thunk)> func;
-};
-
-struct BSLightingShader_GetPixelTechnique
-{
-	static uint32_t thunk(uint32_t rawTechnique)
-	{
-		uint32_t pixelTechnique = rawTechnique;
-
-		pixelTechnique &= ~0b111000000u;
-		if ((pixelTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ModelSpaceNormals)) == 0) {
-			pixelTechnique &= ~static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Skinned);
-		}
-		pixelTechnique |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::VC);
-
-		return pixelTechnique;
-	}
-};
-
 void SetupPBRLandscapeTextureParameters(BSLightingShaderMaterialPBRLandscape& material, const TruePBR::PBRTextureSetData& textureSetData, uint32_t textureIndex)
 {
 	material.displacementScales[textureIndex] = textureSetData.displacementScale;
@@ -1975,28 +1938,6 @@ struct PBR_TESObjectLAND_SetupMaterial
 	static inline REL::Relocation<decltype(thunk)> func;
 };
 
-struct PBR_BSLightingShader_SetupMaterial
-{
-	static void thunk(RE::BSLightingShader* shader, RE::BSLightingShaderMaterialBase const* material)
-	{
-		if (!material) {
-			return;
-		}
-
-		if (globals::features::truePBR.BSLightingShader_SetupMaterial(shader, material)) {
-			return;
-		}
-
-		// Vanilla dereferences these unconditionally; they are null when the texture set never loaded or was cleared.
-		if ((material->diffuseRenderTargetSourceIndex == -1 && !material->diffuseTexture) || !material->normalTexture) {
-			return;
-		}
-
-		func(shader, material);
-	}
-	static inline REL::Relocation<decltype(thunk)> func;
-};
-
 void TruePBR::PostPostLoad()
 {
 	if (UsesNativeMaterialAuthority()) {
@@ -2013,10 +1954,6 @@ void TruePBR::PostPostLoad()
 	stl::write_vfunc<0x1E, BSLightingShaderProperty_PostLinkObject>(RE::VTABLE_BSLightingShaderProperty[0]);
 	stl::write_vfunc<0x2C, BSLightingShaderProperty_GetRenderPasses_LocalMap>(RE::VTABLE_BSLightingShaderProperty[0]);
 	stl::detour_thunk<BSLightingShaderProperty_OnLoadTextureSet>(REL::RelocationID(99865, 106510));
-
-	logger::info("[TruePBR] Hooking BSLightingShader");
-	stl::write_vfunc<0x6, BSLightingShader_SetupGeometry>(RE::VTABLE_BSLightingShader[0]);
-	stl::detour_thunk_ignore_func<BSLightingShader_GetPixelTechnique>(REL::RelocationID(101633, 108700));
 
 	logger::info("[TruePBR] Hooking BSTempEffectSimpleDecal");
 	stl::detour_thunk<BSTempEffectSimpleDecal_SetupGeometry>(REL::RelocationID(29253, 30108));
@@ -2036,9 +1973,6 @@ void TruePBR::PostPostLoad()
 
 	logger::info("[TruePBR] Hooking TESObjectLAND");
 	stl::detour_thunk<PBR_TESObjectLAND_SetupMaterial>(REL::RelocationID(18368, 18791));
-
-	logger::info("[TruePBR] Hooking BSLightingShader::SetupMaterial");
-	stl::write_vfunc<0x4, PBR_BSLightingShader_SetupMaterial>(RE::VTABLE_BSLightingShader[0]);
 }
 
 void TruePBR::DataLoaded()
