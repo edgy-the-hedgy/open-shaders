@@ -139,13 +139,62 @@ namespace DX12Native
 		shadows.Dispatch(backend, std::move(captured), std::move(built), lights, frame, controls);
 	}
 
+	void NativeLighting::PublishRuntimeDirectLights(uint32_t frame, std::vector<DirectPointLight> lights)
+	{
+		std::scoped_lock lock(runtimeLightMutex);
+		directRuntimeFrame = frame;
+		directRuntimeLights = std::move(lights);
+	}
+
 	void NativeLighting::DispatchDirect(const GraphicsBackend& backend, std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
 		const ShadowTraceControls& controls)
 	{
 		if (!material)
 			return;
-		const auto lights = GetUnifiedLights(material->frame);
-		direct.Dispatch(backend, std::move(material), lights, controls);
+		const auto prepared = GetUnifiedLights(material->frame);
+		const auto toLinear = [](float value) {
+			value = std::max(value, 0.0f);
+			return value <= 0.04045f ? value / 12.92f : std::pow((value + 0.055f) / 1.055f, 2.4f);
+		};
+		std::vector<DirectPointLight> lights;
+		lights.reserve(kMaxShadowLights);
+		for (const auto& source : prepared) {
+			if (lights.size() >= kMaxShadowLights) break;
+			lights.push_back({ source.position,
+				{ toLinear(source.color.x) * source.fade, toLinear(source.color.y) * source.fade, toLinear(source.color.z) * source.fade },
+				source.radius, source.emitterRadius, 0.0f, false });
+		}
+		const auto preparedCount = lights.size();
+		bool runtimeAvailable = false;
+		{
+			std::scoped_lock lock(runtimeLightMutex);
+			runtimeAvailable = directRuntimeFrame == material->frame;
+			if (runtimeAvailable) {
+				std::vector<bool> matched(preparedCount, false);
+				for (const auto& live : directRuntimeLights) {
+					size_t best = preparedCount;
+					float bestDistance = std::numeric_limits<float>::infinity();
+					for (size_t i = 0; i < preparedCount; ++i) {
+						if (matched[i]) continue;
+						const auto& candidate = lights[i];
+						const float dx = live.position.x - candidate.position.x;
+						const float dy = live.position.y - candidate.position.y;
+						const float dz = live.position.z - candidate.position.z;
+						const float d2 = dx*dx + dy*dy + dz*dz;
+						const float tolerance = std::clamp(candidate.radius * 0.01f, 4.0f, 32.0f);
+						if (d2 <= tolerance*tolerance && d2 < bestDistance) { best = i; bestDistance = d2; }
+					}
+					if (best != preparedCount) {
+						lights[best] = live;
+						matched[best] = true;
+					} else if (lights.size() < kMaxShadowLights) {
+						lights.push_back(live);
+					}
+				}
+			}
+		}
+		const bool inputsAvailable = runtimeAvailable || !prepared.empty();
+		direct.Dispatch(backend, std::move(material), lights, inputsAvailable, controls);
 	}
 
 	void NativeLighting::ClearFrozenLights()
@@ -162,6 +211,8 @@ namespace DX12Native
 			runtimeLightFrame = UINT32_MAX;
 			runtimeLightSamples.clear();
 			frozenNativeLights.clear();
+			directRuntimeFrame = UINT32_MAX;
+			directRuntimeLights.clear();
 		}
 		shadows.Reset();
 		direct.Reset();

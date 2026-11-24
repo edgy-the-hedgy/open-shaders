@@ -85,9 +85,11 @@ void main(uint3 id : SV_DispatchThreadID)
         float3 l = delta/distance;
         float ndl = saturate(dot(n,l));
         if (ndl <= 0) continue;
-        float fade = saturate((light.w-distance)/max(light.w*0.1,0.5));
-        fade = pow(max(fade*fade*(3.0-2.0*fade),1e-6),max(params.y,0.01));
-        float attenuation = fade * max(color.a,0.0) / max(d2 + params.x*params.x,1.0);
+        float relativeDistance = distance / light.w;
+        float fade = saturate((light.w-distance)*max(params.y,0.0));
+        float attenuation = params.z != 0.0 ?
+            fade*fade*(3.0-2.0*fade)/max(d2+params.x*params.x,1.0) :
+            1.0-saturate(relativeDistance*relativeDistance);
         if (attenuation <= 0.0 || !isfinite(attenuation) || !any(color.rgb > 0.0)) continue;
         if (!Visible(world,l,distance)) continue;
         float3 halfDelta = view + l;

@@ -101,11 +101,13 @@ namespace DX12Native
 
 	void DirectLightingTrace::Dispatch(const GraphicsBackend& backend,
 		std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
-		std::span<const DX12::PreparedLight> lights, const ShadowTraceControls& controls)
+		std::span<const DirectPointLight> lights, bool inputsAvailable, const ShadowTraceControls& controls)
 	{
 		CS_GPU_PASS("NativeLighting::Direct");
 		if (!material || (current && current->frame == material->frame)) return;
 		Poll(material->frame);
+		dispatchedLights = 0;
+		if (!inputsAvailable) { failure = "Waiting for native light inputs"; return; }
 		if (!material->samples || !material->producerFence || !material->producerValue ||
 			!material->scene || !material->scene->acceleration || !material->raster ||
 			!material->raster->depth || !material->raster->depth->resource ||
@@ -171,13 +173,13 @@ namespace DX12Native
 			records.reserve(std::min(lights.size(), size_t(kMaxShadowLights)) * 3);
 			for (const auto& light : lights) {
 				if (records.size() / 3 >= kMaxShadowLights) break;
-				if (!std::isfinite(light.radius) || light.radius <= 0 || !std::isfinite(light.fade) ||
+				if (!std::isfinite(light.radius) || light.radius <= 0 ||
 					!std::isfinite(light.position.x) || !std::isfinite(light.position.y) || !std::isfinite(light.position.z) ||
-					!std::isfinite(light.color.x) || !std::isfinite(light.color.y) || !std::isfinite(light.color.z) ||
-					!std::isfinite(light.emitterRadius) || !std::isfinite(light.falloffExponent)) continue;
+					!std::isfinite(light.radiance.x) || !std::isfinite(light.radiance.y) || !std::isfinite(light.radiance.z) ||
+					!std::isfinite(light.sourceRadius) || !std::isfinite(light.fadeZone)) continue;
 				records.push_back({ light.position.x, light.position.y, light.position.z, light.radius });
-				records.push_back({ light.color.x, light.color.y, light.color.z, light.fade });
-				records.push_back({ light.emitterRadius, light.falloffExponent, 0, 0 });
+				records.push_back({ light.radiance.x, light.radiance.y, light.radiance.z, 0 });
+				records.push_back({ light.sourceRadius, light.fadeZone, light.inverseSquare ? 1.0f : 0.0f, 0 });
 			}
 			const uint32_t lightCount = uint32_t(records.size() / 3);
 			if (records.empty()) records.resize(3);
@@ -222,6 +224,7 @@ namespace DX12Native
 			Eval::Check(backend.commandQueue->Signal(completion.get(), value));
 			nextFence = value; slot->readyValue = value;
 			current = slot;
+			dispatchedLights = lightCount;
 			failure.clear();
 		} catch (const std::exception& error) {
 			failure = error.what();

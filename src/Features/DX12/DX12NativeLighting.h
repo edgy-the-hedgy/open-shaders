@@ -21,6 +21,9 @@ namespace DX12Native
 		{
 			shadowLights.store(std::move(lights), std::memory_order_release);
 		}
+		/** @brief Publishes the runtime LLF light list without mutating raster data. */
+		void PublishRuntimeDirectLights(uint32_t frame, std::vector<DirectPointLight> lights);
+		uint32_t DirectLightCount() const { return direct.DispatchedLights(); }
 		/** @brief Determines whether the observed SCM light is selected for native shadows. */
 		bool OwnsStaticForLight(const RE::NiLight* ni, uint32_t frame, bool offloadFlickeringStatic) const;
 		/** @brief Captures live light values without altering raster lighting. */
@@ -66,5 +69,7 @@ namespace DX12Native
 		uint32_t runtimeLightFrame = UINT32_MAX;
 		std::vector<RuntimeLightSample> runtimeLightSamples;
 		std::unordered_map<uint32_t, DX12::PreparedLight> frozenNativeLights;
+		uint32_t directRuntimeFrame = UINT32_MAX;
+		std::vector<DirectPointLight> directRuntimeLights;
 	};
 }

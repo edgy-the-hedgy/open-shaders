@@ -11,6 +11,13 @@
 
 namespace DX12Native
 {
+	/** @brief Absolute-position, linear-radiance input shared by native direct light consumers. */
+	struct DirectPointLight
+	{
+		float3 position{}, radiance{};
+		float radius = 0, sourceRadius = 0, fadeZone = 0;
+		bool inverseSquare = false;
+	};
 	/** @brief Fenced packed diffuse/specular radiance with explicit pixel ownership. */
 	struct DirectLightingFrame
 	{
@@ -34,12 +41,13 @@ namespace DX12Native
 		void Poll(uint32_t frame);
 		void Reset() { current.reset(); Poll(UINT32_MAX); }
 		void Dispatch(const GraphicsBackend& backend, std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
-			std::span<const DX12::PreparedLight> lights, const ShadowTraceControls& controls);
+			std::span<const DirectPointLight> lights, bool inputsAvailable, const ShadowTraceControls& controls);
 		std::shared_ptr<const DirectLightingFrame> Get(uint32_t frame) const
 		{
 			return current && current->frame == frame ? current : nullptr;
 		}
 		const std::string& Failure() const { return failure; }
+		uint32_t DispatchedLights() const { return dispatchedLights; }
 
 	private:
 		void Initialize(const GraphicsBackend& backend);
@@ -51,6 +59,7 @@ namespace DX12Native
 		std::shared_ptr<DirectLightingFrame> current;
 		VideoMemoryBudget videoBudget;
 		uint64_t nextFence = 0;
+		uint32_t dispatchedLights = 0;
 		std::string failure;
 	};
 }

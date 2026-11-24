@@ -48,6 +48,11 @@ struct DX12NativeScene final : Feature
 	// Snapshot LLF/SCM point-light parameters without altering the DX11 light.
 	void ObserveRuntimeLight(RE::BSShadowLight* light, uint32_t referenceID, bool flickers,
 		const RE::NiPoint3& restOrigin);
+	/** @brief Accepts the current LLF publication for Full Native lighting only. */
+	void PublishRuntimeDirectLights(uint32_t frame, std::vector<DX12Native::DirectPointLight> lights)
+	{
+		lighting.PublishRuntimeDirectLights(frame, std::move(lights));
+	}
 	void OnSceneTransitionReset(bool a_opening) override;
 	void OnRuntimeDisabled() override;
 
