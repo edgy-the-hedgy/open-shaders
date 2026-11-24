@@ -74,6 +74,8 @@ struct DX12NativeScene final : Feature
 
 	/** @brief Whether the coverage visualization is requested for this frame. */
 	bool IsCoveragePreviewEnabled() const { return materialCoveragePreview; }
+	/** @brief Selects an explicit direct signal preview or experimental replacement. */
+	uint32_t GetLightingView() const { return directLightingEnabled ? uint32_t(lightingView) : 0u; }
 	/** @brief Returns an optional same-frame coverage visualization input. */
 	std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> GetMaterialCoverageFrame(uint32_t frame) const
 	{
@@ -97,6 +99,7 @@ private:
 	bool screenProbeEnabled = false;
 	bool materialCoveragePreview = false;
 	bool directLightingEnabled = false;
+	int lightingView = 0;
 	bool fullResolutionMaterialProbe = false;
 	bool continuousMaterialProbe = false;
 	bool shadowMaskEnabled = true;

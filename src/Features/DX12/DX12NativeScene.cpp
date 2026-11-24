@@ -57,9 +57,22 @@ void DX12NativeScene::DrawLightingSettings(bool /*developer*/)
 	const bool exclusive = globals::features::dx12Control.UsesExclusiveMaterials();
 	ImGui::BeginDisabled(!exclusive);
 	ImGui::Checkbox(T("menu.dx12.lighting.direct", "Direct lighting"), &directLightingEnabled);
+	if (directLightingEnabled) {
+		const char* views[] = {
+			T("menu.dx12.lighting.view_raster", "Raster composite (preserve illumination)"),
+			T("menu.dx12.lighting.view_diffuse", "Direct diffuse"),
+			T("menu.dx12.lighting.view_specular", "Direct specular"),
+			T("menu.dx12.lighting.view_combined", "Combined direct"),
+			T("menu.dx12.lighting.view_reach", "Light influence"),
+			T("menu.dx12.lighting.view_visibility", "Ray visibility"),
+			T("menu.dx12.lighting.view_coverage", "Lighting coverage"),
+			T("menu.dx12.lighting.view_normals", "Surface normals"),
+			T("menu.dx12.lighting.view_replace", "Replace covered pixels (direct only)") };
+		ImGui::Combo(T("menu.dx12.lighting.view", "Lighting output"), &lightingView, views, int(std::size(views)));
+	}
 	ImGui::EndDisabled();
 	ImGui::TextWrapped("%s", exclusive ?
-		T("menu.dx12.lighting.native_direct_info", "Direct lighting replaces covered opaque pixels; uncovered pixels retain raster color. Independent shadows are controlled in Shadows.") :
+		T("menu.dx12.lighting.native_direct_info", "Direct signals are evaluated independently. Raster composite preserves ambient and indirect light; direct-only replacement is experimental.") :
 		T("menu.dx12.lighting.raster_active", "Raster lighting remains active."));
 }
 
@@ -91,6 +104,7 @@ void DX12NativeScene::DrawDevStats()
 		if (stats.sampled) ImGui::Text("Screen frame %u | Evaluated %u / %u | No hit %u | Depth mismatch %u | Missing material %u | Invalid depth %u",
 			stats.frame, stats.evaluated, stats.sampled, stats.noHit, stats.depthMismatch, stats.missingMaterial, stats.invalid);
 		if ((screenProbeEnabled || materialCoveragePreview || globals::features::dx12Control.UsesExclusiveMaterials()) && !screenProbe.failure.empty()) ImGui::TextWrapped("%s", screenProbe.failure.c_str());
+		if (directLightingEnabled) ImGui::Text("Direct lights dispatched: %u", lighting.DirectLightCount());
 		if (directLightingEnabled && !lighting.DirectFailure().empty()) ImGui::TextWrapped("%s", lighting.DirectFailure().c_str());
 	}
 	const auto built = acceleration.GetScene();
@@ -146,6 +160,7 @@ void DX12NativeScene::DrawDevStats()
 void DX12NativeScene::LoadSettings(json& input)
 {
 	directLightingEnabled = input.value("DirectLighting", false);
+	lightingView = std::clamp(input.value("LightingView", 0), 0, 8);
 	shadowMaskEnabled = input.value("ShadowMask", true);
 	outdoorShadowOffloading = input.value("OutdoorShadowOffloading", false);
 	offloadStaticShadows = input.value("OffloadSCMStatic", true);
@@ -164,7 +179,7 @@ void DX12NativeScene::LoadSettings(json& input)
 
 void DX12NativeScene::SaveSettings(json& output)
 {
-	output = { { "DirectLighting", directLightingEnabled }, { "ShadowMask", shadowMaskEnabled }, { "OutdoorShadowOffloading", outdoorShadowOffloading }, { "ShadowTraceDensityMode", densityMode },
+	output = { { "DirectLighting", directLightingEnabled }, { "LightingView", lightingView }, { "ShadowMask", shadowMaskEnabled }, { "OutdoorShadowOffloading", outdoorShadowOffloading }, { "ShadowTraceDensityMode", densityMode },
 		{ "OffloadSCMStatic", offloadStaticShadows },
 		{ "OffloadFlickeringStatic", offloadFlickeringStatic },
 		{ "FreezeNativeFlickering", freezeNativeFlickering },
@@ -178,6 +193,7 @@ void DX12NativeScene::SaveSettings(json& output)
 void DX12NativeScene::RestoreDefaultSettings()
 {
 	directLightingEnabled = false;
+	lightingView = 0;
 	materialCoveragePreview = false;
 	shadowMaskEnabled = true;
 	outdoorShadowOffloading = false;

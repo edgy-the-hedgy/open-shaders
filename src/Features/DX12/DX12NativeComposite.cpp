@@ -63,7 +63,7 @@ namespace DX12Native
 		const std::shared_ptr<const ShadowMaskFrame>& shadow,
 		bool returnColorToDX11, bool coverageRequested,
 		const std::shared_ptr<const NativeScreenProbe::MaterialFrame>& materialPreview,
-		const std::shared_ptr<const DirectLightingFrame>& direct)
+		const std::shared_ptr<const DirectLightingFrame>& direct, uint32_t lightingView)
 	{
 		if (!device11 || !context11 || !device12 || !queue || !source || !width || !height)
 			return {};
@@ -110,15 +110,16 @@ namespace DX12Native
 			bufferMatches(direct->samples.get(), uint64_t(direct->rowPitch) * height) &&
 			fenceValid(direct->readyFence.get(), direct->readyValue);
 		const bool canCompose = supportsShadow && transfer != Transfer::Unknown &&
-			(coverageRequested || directValid || shadow) && InitializeShadow(device12);
+			(coverageRequested || (lightingView != 0u) || shadow) && InitializeShadow(device12);
 		const bool applyCoverage = canCompose && coverageRequested;
-		const bool applyDirect = canCompose && !applyCoverage && directValid;
-		const bool applyShadow = canCompose && !applyCoverage &&
+		const bool applyDirect = canCompose && !applyCoverage && directValid && lightingView != 0u;
+		const bool missingPreview = canCompose && !applyCoverage && lightingView > 0u && lightingView < 8u && !directValid;
+		const bool applyShadow = canCompose && !applyCoverage && !missingPreview &&
 			shadow && shadow->mask && fenceValid(shadow->readyFence.get(), shadow->readyValue) &&
 			shadow->width >= width && shadow->height >= height &&
 			raster && raster->depth && raster->depth->resource && raster->cameraValid &&
 			fenceValid(raster->readyFence.get(), raster->readyValue) && raster->width >= width && raster->height >= height;
-		const bool applyPass = applyCoverage || applyDirect || applyShadow;
+		const bool applyPass = applyCoverage || applyDirect || applyShadow || missingPreview;
 		const bool useMaterial = (applyCoverage || applyDirect) && materialValid;
 		if (!applyPass)
 			returnColorToDX11 = false;
@@ -333,7 +334,7 @@ namespace DX12Native
 					globals::features::dx12Control.GetReconstructionGridSize(),
 					useMaterial ? material->rowPitch : 0u, applyDirect ? direct->rowPitch : 0u,
 					applyShadow ? 1u : 0u, applyDirect ? 1u : 0u,
-					applyCoverage ? (useMaterial ? 1u : 2u) : 0u, 0u };
+					applyCoverage ? (useMaterial ? 1u : 2u) : 0u, missingPreview ? 9u : (applyDirect ? lightingView : 0u) };
 				slot->commands->SetComputeRoot32BitConstants(2, 48, &constants, 0);
 				slot->commands->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
 				const auto colorEnd = CD3DX12_RESOURCE_BARRIER::Transition(slot->frame->color.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);

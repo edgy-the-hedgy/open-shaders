@@ -46,7 +46,7 @@ namespace DX12Native
 			bool discard = false;
 		};
 		std::shared_ptr<Submission> pending;
-		std::shared_ptr<OutputAllocation> reusableOutput;
+		std::array<std::shared_ptr<OutputAllocation>, 4> outputPool;
 		GraphicsBackend owner;
 		winrt::com_ptr<ID3D12RootSignature> root;
 		winrt::com_ptr<ID3D12PipelineState> pipeline;
@@ -141,7 +141,7 @@ namespace DX12Native
 		}
 		void Reset()
 		{
-			stats={}; failure.clear(); lastFrame=UINT32_MAX; published.reset(); reusableOutput.reset();
+			stats={}; failure.clear(); lastFrame=UINT32_MAX; published.reset();
 			reusedAllocations=0; submittedFrames=0;
 			if (pending) pending->discard=true;
 		}
@@ -149,7 +149,7 @@ namespace DX12Native
 		{
 			if (!pending) return;
 			const auto done=pending->fence->GetCompletedValue();
-			if (done==UINT64_MAX) { pending.reset(); published.reset(); reusableOutput.reset(); failure="Screen probe device removed"; return; }
+			if (done==UINT64_MAX) { pending.reset(); published.reset(); outputPool = {}; failure="Screen probe device removed"; return; }
 			if (pending->value==UINT64_MAX || done<pending->value) return;
 			if (!pending->discard) {
 				Stats result{};
@@ -199,7 +199,6 @@ namespace DX12Native
 				Initialize(backend);
 				auto* device=backend.d3d12Device.get();
 				VideoMemoryBudget budget;
-				const auto available=budget.Query(device,0);
 				const uint32_t gridWidth=fullResolution?width:kWidth, gridHeight=fullResolution?height:kHeight;
 				const uint64_t count=uint64_t(gridWidth)*gridHeight;
 				if (count>UINT32_MAX || gridWidth>16384 || gridHeight>16384) { failure="Screen material dimensions unsupported"; return; }
@@ -207,11 +206,21 @@ namespace DX12Native
 				const uint64_t bytes=uint64_t(pitchPixels)*gridHeight*kSampleStride;
 				// ByteAddressBuffer uses 32-bit byte offsets.
 				if (bytes>UINT32_MAX) { failure="Screen material byte address range exceeded"; return; }
-				const bool reuse=reusableOutput && reusableOutput.use_count()==1 && reusableOutput->bytes==bytes;
-				if (!reuse) reusableOutput.reset();
+				std::shared_ptr<OutputAllocation>* selected = nullptr;
+				uint64_t tracked = 0;
+				for (auto& entry : outputPool) {
+					if (entry) tracked += entry->bytes;
+					if (!entry || entry.use_count() == 1) {
+						if (!selected || (entry && entry->bytes == bytes)) selected = &entry;
+					}
+				}
+				if (!selected) { failure="Material frame pool busy"; return; }
+				auto& reusableOutput = *selected;
+				const bool reuse = reusableOutput && reusableOutput->bytes == bytes;
+				const auto available = budget.Query(device, tracked);
 				const auto desc=CD3DX12_RESOURCE_DESC::Buffer(bytes,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 				const auto allocation=reuse?0:device->GetResourceAllocationInfo(0,1,&desc).SizeInBytes;
-				if (!available.dxgiAvailable || allocation==UINT64_MAX || allocation>available.effectiveBytes || available.effectiveBytes-allocation<6ull*65536) {
+				if (!available.dxgiAvailable || allocation==UINT64_MAX || tracked>available.effectiveBytes || allocation>available.effectiveBytes-tracked || available.effectiveBytes-tracked-allocation<6ull*65536) {
 					failure="Screen probe deferred by DXGI budget"; return;
 				}
 				auto slot=std::make_shared<Submission>();

@@ -46,7 +46,7 @@ namespace DX12Native
 			const std::shared_ptr<const ShadowMaskFrame>& shadow,
 			bool returnColorToDX11, bool coverageRequested = false,
 			const std::shared_ptr<const NativeScreenProbe::MaterialFrame>& materialPreview = {},
-			const std::shared_ptr<const DirectLightingFrame>& direct = {});
+			const std::shared_ptr<const DirectLightingFrame>& direct = {}, uint32_t lightingView = 0);
 		bool Retain(const std::shared_ptr<const Frame>& frame, ID3D12Fence* fence, uint64_t value);
 		~NativeComposite();
 

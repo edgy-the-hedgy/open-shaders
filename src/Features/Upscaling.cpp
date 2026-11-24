@@ -3689,18 +3689,19 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 		const auto shadow = nativeScene.GetShadowMask(nativeFrame);
 		const bool coverageRequested = globals::features::dx12Control.IsFullNativeMode() && nativeScene.IsCoveragePreviewEnabled();
 		const auto materialPreview = coverageRequested ? nativeScene.GetMaterialCoverageFrame(nativeFrame) : nullptr;
-		const auto direct = coverageRequested ? nullptr : nativeScene.GetNativeLightingFrame(nativeFrame);
+		const uint32_t lightingView = globals::features::dx12Control.IsFullNativeMode() && !coverageRequested ? nativeScene.GetLightingView() : 0u;
+		const auto direct = lightingView ? nativeScene.GetNativeLightingFrame(nativeFrame) : nullptr;
 		const bool runtimeFSRReads = upscaleMethod == UpscaleMethod::kFSR && upscaling.fidelityFX.RuntimeUpscalerReadsComposite();
 		// The return also covers a frame DX12 DLSS hands to DX11, so its shadows do not drop for that frame.
 		const bool dx12Reads = runtimeFSRReads || (upscaleMethod == UpscaleMethod::kDLSS && upscaling.nativeDLSS.GetFailure().empty());
-		if (dx12Reads || shadow || direct || coverageRequested)
+		if (dx12Reads || shadow || lightingView || coverageRequested)
 			upscaling.nativeCompositeFrame = upscaling.nativeComposite.Capture(
 				upscaling.dx12SwapChain.d3d11Device.get(),
 				upscaling.dx12SwapChain.d3d11Context.get(),
 				upscaling.dx12SwapChain.d3d12Device.get(),
 				upscaling.dx12SwapChain.commandQueue.get(), scene, globals::state->frameCount,
 				static_cast<uint32_t>(renderSize.x), static_cast<uint32_t>(renderSize.y),
-				transfer, shadow, !runtimeFSRReads, coverageRequested, materialPreview, direct);
+				transfer, shadow, !runtimeFSRReads, coverageRequested, materialPreview, direct, lightingView);
 	}
 
 	if (upscaleMethod != UpscaleMethod::kNONE && upscaleMethod != UpscaleMethod::kTAA) {
