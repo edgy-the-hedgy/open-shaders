@@ -143,3 +143,10 @@ shader aggregates five status counters in thread groups; CPU readback is only
 20 bytes, regardless of resolution. Allocation is checked against current
 DXGI headroom. This still samples once per 30 frames and does not replace
 raster material authority or supply final lighting.
+
+Full Native exterior index work continues after normal active and predictive
+requests finish, using at most one refresh request per second. A refresh leaves
+its previous geometry published until a valid replacement arrives; stalled
+index advancement is bounded to three failures. Once the catalog finishes,
+resident tiles built against older index progress are refreshed. This is not a
+claim of complete coverage for unsupported records or failed model bounds.

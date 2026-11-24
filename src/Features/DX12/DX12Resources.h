@@ -121,6 +121,8 @@ namespace DX12
 		std::vector<PreparedLight> lights;
 		uint64_t bytes = 0;
 		uint8_t preparationAttempts = 0;
+		uint32_t exteriorIndexAtBuild = 0;
+		uint8_t refreshFailures = 0;
 		std::chrono::steady_clock::time_point retryAfter{};
 		State state = State::Requested;
 		std::string failureReason;                                       // Last bounded companion failure, retained for Dev and tile hover.
@@ -211,6 +213,9 @@ namespace DX12
 		std::mutex mutex;
 		std::atomic<std::shared_ptr<const Grid>> snapshot{ std::make_shared<const Grid>() };
 		std::optional<SubcellKey> pending;
+		bool pendingRefresh = false;
+		std::chrono::steady_clock::time_point nextIndexRefresh{};
+		uint8_t indexStalls = 0;
 		std::deque<std::shared_ptr<const Tile>> recentTiles;
 		double previousX = 0, previousY = 0, movementX = 0, movementY = 0;
 		uint32_t previousScope = 0, previousSize = 0;

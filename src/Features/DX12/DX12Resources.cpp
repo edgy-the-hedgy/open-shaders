@@ -54,6 +54,7 @@ namespace DX12
 		// remains in the same center subcell. A center transition starts a new
 		// bounded retry window for those same neighboring keys.
 		const bool playerChangedSubcell = current->requested.front() != next->requested.front();
+		if (playerChangedSubcell) { indexStalls = 0; nextIndexRefresh = {}; }
 		if (current->size == size) {
 			const auto lookup = [&](SubcellKey key) -> std::shared_ptr<const Tile> {
 				for (const auto& old : current->resident)
@@ -128,7 +129,7 @@ namespace DX12
 		}
 		if (pending && std::ranges::find(next->requested, *pending) == next->requested.end() &&
 			std::ranges::find(next->predictive, *pending) == next->predictive.end())
-			pending.reset();
+			{ pending.reset(); pendingRefresh = false; }
 		snapshot.store(std::move(next), std::memory_order_release);
 	}
 
@@ -158,6 +159,7 @@ namespace DX12
 				next->resident[index] = std::move(tile);
 			snapshot.store(std::move(next), std::memory_order_release);
 			pending = key;
+			pendingRefresh = false;
 			return pending;
 		};
 		const auto sorted = [&](auto keys, size_t begin, size_t end) {
@@ -198,6 +200,31 @@ namespace DX12
 			if (const auto request = start(key, true, i))
 				return request;
 		}
+		// Continue indexing even when the player is stationary. Refreshes never
+		// replace an existing tile with a Preparing state or evict its geometry.
+		if (current->fullNative && current->telemetry && current->telemetry->exteriorTotal &&
+			std::chrono::steady_clock::now() >= nextIndexRefresh && indexStalls < 3) {
+			const auto& progress = *current->telemetry;
+			const auto refresh = [&](const auto& tile) -> std::optional<SubcellKey> {
+				if (!tile || tile->refreshFailures >= 3 || tile->state == Tile::State::Preparing ||
+					tile->state == Tile::State::Requested || tile->state == Tile::State::RetryWaiting ||
+					tile->state == Tile::State::Deferred) return {};
+				pending = tile->key;
+				pendingRefresh = true;
+				nextIndexRefresh = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+				return pending;
+			};
+			if (!progress.exteriorFinished) {
+				if (auto request = refresh(current->resident.front())) return request;
+			} else {
+				for (const auto& tile : current->resident)
+					if (tile && tile->exteriorIndexAtBuild < progress.exteriorTotal)
+						if (auto request = refresh(tile)) return request;
+				for (const auto& tile : current->predictiveResident)
+					if (tile && tile->exteriorIndexAtBuild < progress.exteriorTotal)
+						if (auto request = refresh(tile)) return request;
+			}
+		}
 		return std::nullopt;
 	}
 
@@ -206,7 +233,8 @@ namespace DX12
 		std::scoped_lock lock(mutex);
 		if (!pending || *pending != publication.key)
 			return false;
-		pending.reset();
+		const bool refreshing = pendingRefresh;
+		pending.reset(); pendingRefresh = false;
 		const auto current = snapshot.load(std::memory_order_acquire);
 		const auto active = std::ranges::find(current->requested, publication.key);
 		const auto predictive = std::ranges::find(current->predictive, publication.key);
@@ -219,6 +247,27 @@ namespace DX12
 		                          current->resident[std::distance(current->requested.begin(), active)] :
 		                          current->predictiveResident[std::distance(current->predictive.begin(), predictive)];
 		tile->preparationAttempts = static_cast<uint8_t>(std::min<unsigned>(existing ? unsigned(existing->preparationAttempts) + 1 : 1u, 3u));
+		if (refreshing && existing) {
+			const auto& previous = current->telemetry;
+			const auto& progress = publication.telemetry;
+			const bool valid = publication.validated && publication.fullNative && progress &&
+				previous && progress->exteriorTotal == previous->exteriorTotal &&
+				progress->exteriorIndexed >= previous->exteriorIndexed;
+			if (!valid || (!previous->exteriorFinished && !progress->exteriorFinished &&
+				progress->exteriorIndexed == previous->exteriorIndexed)) {
+				auto retained = std::make_shared<Tile>(*existing);
+				retained->refreshFailures = uint8_t(std::min(3u, unsigned(retained->refreshFailures) + 1u));
+				auto unchanged = std::make_shared<Grid>(*current);
+				++unchanged->revision;
+				if (active != current->requested.end()) unchanged->resident[std::distance(current->requested.begin(), active)] = std::move(retained);
+				else unchanged->predictiveResident[std::distance(current->predictive.begin(), predictive)] = std::move(retained);
+				if (previous && !previous->exteriorFinished) ++indexStalls;
+				snapshot.store(std::move(unchanged), std::memory_order_release);
+				return false;
+			}
+			indexStalls = 0;
+		}
+		if (publication.telemetry) tile->exteriorIndexAtBuild = publication.telemetry->exteriorIndexed;
 		tile->failureReason = std::move(publication.failureReason);
 		tile->rejectionReasons = std::move(publication.rejectionReasons);
 		tile->nifSources = std::move(publication.nifSources);
@@ -393,7 +442,8 @@ namespace DX12
 	void ResourceGrid::Clear()
 	{
 		std::scoped_lock lock(mutex);
-		pending.reset();
+		pending.reset(); pendingRefresh = false;
+		indexStalls = 0; nextIndexRefresh = {};
 		recentTiles.clear();
 		previousScope = previousSize = 0;
 		movementX = movementY = 0;
@@ -409,6 +459,7 @@ namespace DX12
 		std::scoped_lock lock(mutex);
 		if (!pending)
 			return;
+		if (pendingRefresh) { pending.reset(); pendingRefresh = false; return; }
 		const auto current = snapshot.load(std::memory_order_acquire);
 		auto next = std::make_shared<Grid>(*current);
 		const auto reset = [&](auto& keys, auto& resident) {
