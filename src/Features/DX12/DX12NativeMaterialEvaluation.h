@@ -334,8 +334,8 @@ namespace DX12Native
 								remaining = std::min(remaining, current.effectiveBytes);
 								try {
 									if (auto upload = LoadTexture(device, path, remaining, reason)) {
-										texture = upload->texture;
 										uploads.push_back(std::move(*upload));
+										texture = uploads.back().texture;
 									}
 								} catch (const std::exception&) { reason = "GPU allocation/upload setup"; }
 							}
