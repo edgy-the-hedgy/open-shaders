@@ -10,6 +10,8 @@
 
 #include "Features/CSEditor.h"
 #include "Features/DynamicCubemaps.h"
+#include "Features/DX12/DX12Control.h"
+#include "Features/DX12/DX12NativeScene.h"
 #include "Features/Effects11.h"
 #include "Features/IBL.h"
 #include "Features/LightLimitFix.h"
@@ -491,8 +493,17 @@ void Deferred::DeferredPasses()
 		globals::state->BindSharedDataCS(context);
 
 		if (auto* shader = interior ? GetComputeMainCompositeInterior() : GetComputeMainComposite()) {
+			const auto frame = globals::game::graphicsState ? globals::game::graphicsState->GetFrameCount() : 0u;
+			const bool nativeMode = !globals::game::isVR && globals::features::dx12Control.IsActive() && globals::features::dx12Control.IsFullNativeMode();
+			auto* nativeMaterials = nativeMode ? globals::features::dx12NativeScene.AcquireDeferredNativeMaterials(frame) : nullptr;
+			if (nativeMode) context->CSSetShaderResources(28, 1, &nativeMaterials);
 			context->CSSetShader(shader, nullptr, 0);
 			context->Dispatch(dispatchCount.x, dispatchCount.y, 1);
+			if (nativeMode) {
+				ID3D11ShaderResourceView* clearNative = nullptr;
+				context->CSSetShaderResources(28, 1, &clearNative);
+				if (nativeMaterials) globals::features::dx12NativeScene.ReleaseDeferredNativeMaterials(frame);
+			}
 		}
 
 		// Unbind mode texture SRV
@@ -791,6 +802,9 @@ ID3D11ComputeShader* Deferred::GetComputeMainComposite()
 {
 	std::vector<std::pair<const char*, const char*>> defines;
 
+	if (!globals::game::isVR && globals::features::dx12Control.IsActive() && globals::features::dx12Control.IsFullNativeMode())
+		defines.push_back({ "NATIVE_PBR_DEFERRED", nullptr });
+
 	if (globals::features::dynamicCubemaps.loaded)
 		defines.push_back({ "DYNAMIC_CUBEMAPS", nullptr });
 
@@ -821,6 +835,9 @@ ID3D11ComputeShader* Deferred::GetComputeMainCompositeInterior()
 {
 	std::vector<std::pair<const char*, const char*>> defines;
 	defines.push_back({ "INTERIOR", nullptr });
+
+	if (!globals::game::isVR && globals::features::dx12Control.IsActive() && globals::features::dx12Control.IsFullNativeMode())
+		defines.push_back({ "NATIVE_PBR_DEFERRED", nullptr });
 
 	if (globals::features::dynamicCubemaps.loaded)
 		defines.push_back({ "DYNAMIC_CUBEMAPS", nullptr });

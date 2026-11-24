@@ -3,6 +3,7 @@
 #include "DX12NativeAcceleration.h"
 #include "DX12NativeRasterCapture.h"
 #include "DX12GpuRetirement.h"
+#include "GraphicsInterop.h"
 #include <fstream>
 
 namespace DX12Native
@@ -33,6 +34,10 @@ namespace DX12Native
 			std::shared_ptr<const RasterFrame> raster;
 			std::shared_ptr<const TopLevel> scene;
 			std::shared_ptr<OutputAllocation> output;
+			std::shared_ptr<WrappedResource> deferredTexture;
+			winrt::com_ptr<ID3D12Fence> consumerFence;
+			uint64_t consumerValue=0;
+			bool consumerAcquired=false;
 			winrt::com_ptr<ID3D12Resource> readback, camera, counters, counterInit;
 			winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
 			winrt::com_ptr<ID3D12RootSignature> root;
@@ -47,6 +52,10 @@ namespace DX12Native
 		};
 		std::shared_ptr<Submission> pending;
 		std::shared_ptr<OutputAllocation> reusableOutput;
+		std::shared_ptr<WrappedResource> reusableDeferred;
+		uint32_t deferredWidth=0, deferredHeight=0;
+		SharedFence producerInterop, consumerInterop;
+		uint32_t consumedFrames=0;
 		GraphicsBackend owner;
 		winrt::com_ptr<ID3D12RootSignature> root;
 		winrt::com_ptr<ID3D12PipelineState> pipeline;
@@ -92,14 +101,16 @@ namespace DX12Native
 			winrt::com_ptr<ID3DBlob> blob, errors;
 			winrt::com_ptr<ID3D12RootSignature> newRoot;
 			winrt::com_ptr<ID3D12PipelineState> newPipeline;
-			winrt::com_ptr<ID3D12Fence> newFence;
+			SharedFence newProducer, newConsumer;
 			Eval::Check(D3D12SerializeRootSignature(&desc,D3D_ROOT_SIGNATURE_VERSION_1,blob.put(),errors.put()));
 			Eval::Check(device->CreateRootSignature(0,blob->GetBufferPointer(),blob->GetBufferSize(),IID_PPV_ARGS(newRoot.put())));
 			D3D12_COMPUTE_PIPELINE_STATE_DESC pso{};
 			pso.pRootSignature=newRoot.get(); pso.CS={shader.data(),shader.size()};
 			Eval::Check(device->CreateComputePipelineState(&pso,IID_PPV_ARGS(newPipeline.put())));
-			Eval::Check(device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(newFence.put())));
-			owner=backend; root=std::move(newRoot); pipeline=std::move(newPipeline); fence=std::move(newFence);
+			newProducer.Create(device,backend.d3d11Device.get(),"NativePBR::MaterialProducer");
+			newConsumer.Create(device,backend.d3d11Device.get(),"NativePBR::MaterialConsumer");
+			owner=backend; root=std::move(newRoot); pipeline=std::move(newPipeline);
+			producerInterop=std::move(newProducer); consumerInterop=std::move(newConsumer); fence=producerInterop.fence12;
 		}
 	public:
 		struct Stats
@@ -107,14 +118,15 @@ namespace DX12Native
 			uint32_t frame=0, sampled=0, evaluated=0, noHit=0, depthMismatch=0, missingMaterial=0, invalid=0;
 			uint32_t width=0, height=0;
 			uint64_t outputBytes=0;
-			uint32_t reusedAllocations=0, submittedFrames=0;
+			uint32_t reusedAllocations=0, submittedFrames=0, deferredFrames=0;
+			uint64_t deferredBytes=0;
 		};
 		struct MaterialFrame
 		{
 			// Keep the entire MaterialFrame alive until consumer fence retirement.
 			std::shared_ptr<const OutputAllocation> allocation;
 			winrt::com_ptr<ID3D12Resource> samples;
-			uint32_t sampleStride=kSampleStride;
+			uint32_t sampleStride=kSampleStride, rowPitch=0;
 			winrt::com_ptr<ID3D12Fence> producerFence;
 			uint64_t producerValue=0, geometryRevision=0;
 			uint32_t frame=0, width=0, height=0, scope=0;
@@ -132,15 +144,16 @@ namespace DX12Native
 
 		~NativeScreenProbe()
 		{
-			if (pending && !GpuFenceRetired(pending->fence.get(),pending->value))
+			if (pending && (!GpuFenceRetired(pending->fence.get(),pending->value) || !GpuFenceRetired(pending->consumerFence.get(),pending->consumerValue)))
 				RetireWhenGpuDone(std::move(pending),owner.d3d12Device,[](const Submission& submission) {
-					return GpuFenceRetired(submission.fence.get(),submission.value);
+					return GpuFenceRetired(submission.fence.get(),submission.value) && GpuFenceRetired(submission.consumerFence.get(),submission.consumerValue);
 				});
 		}
 		void Reset()
 		{
 			stats={}; failure.clear(); lastFrame=UINT32_MAX; published.reset(); reusableOutput.reset();
-			reusedAllocations=0; submittedFrames=0;
+			reusedAllocations=0; submittedFrames=0; consumedFrames=0;
+			reusableDeferred.reset(); deferredWidth=deferredHeight=0;
 			if (pending) pending->discard=true;
 		}
 		void Poll()
@@ -148,12 +161,14 @@ namespace DX12Native
 			if (!pending) return;
 			const auto done=pending->fence->GetCompletedValue();
 			if (done==UINT64_MAX) { pending.reset(); published.reset(); reusableOutput.reset(); failure="Screen probe device removed"; return; }
-			if (pending->value==UINT64_MAX || done<pending->value) return;
+			if (pending->value==UINT64_MAX || done<pending->value || !GpuFenceRetired(pending->consumerFence.get(),pending->consumerValue)) return;
 			if (!pending->discard) {
 				Stats result{};
 				result.frame=pending->frame; result.width=pending->width; result.height=pending->height;
 				result.sampled=result.width*result.height;
-				result.outputBytes=uint64_t(result.sampled)*kSampleStride;
+				result.outputBytes=pending->output->bytes;
+				result.deferredFrames=consumedFrames;
+				result.deferredBytes=pending->deferredTexture ? uint64_t(result.sampled)*kSampleStride : 0;
 				result.reusedAllocations=reusedAllocations; result.submittedFrames=submittedFrames;
 				const D3D12_RANGE read{0,SIZE_T(kCounterBytes)};
 				void* mapped=nullptr;
@@ -170,12 +185,41 @@ namespace DX12Native
 			}
 			pending.reset();
 		}
+				// Same-frame DX11 consumer. Never read previous-frame native surfaces.
+		ID3D11ShaderResourceView* AcquireDeferred(uint32_t frame)
+		{
+			if (!pending || pending->discard || pending->frame!=frame || pending->value==UINT64_MAX ||
+				!pending->deferredTexture || pending->consumerAcquired || !producerInterop.fence11 || !consumerInterop.fence11)
+				return nullptr;
+			if (FAILED(owner.d3d11Context->Wait(producerInterop.fence11.get(),pending->value))) {
+				failure="Deferred material producer wait failed"; return nullptr;
+			}
+			pending->consumerAcquired=true;
+			pending->consumerFence=consumerInterop.fence12;
+			pending->consumerValue=UINT64_MAX;
+			return pending->deferredTexture->srv;
+		}
+		void ReleaseDeferred(uint32_t frame)
+		{
+			if (!pending || pending->frame!=frame || !pending->consumerAcquired || pending->consumerValue!=UINT64_MAX) return;
+			auto signal=consumerInterop.Next();
+			if (FAILED(owner.d3d11Context->Signal(consumerInterop.fence11.get(),signal))) {
+				signal=consumerInterop.Next();
+				if (FAILED(owner.d3d11Context->Signal(consumerInterop.fence11.get(),signal))) {
+					failure="Deferred material consumer signal failed";
+					pending->discard=true; // Never recycle an untracked consumer.
+					return;
+				}
+			}
+			pending->consumerValue=signal; ++consumedFrames;
+			owner.d3d11Context->Flush();
+		}
 		bool WantsFrame(uint32_t frame,bool continuous=false) const
 		{
 			return !pending && (lastFrame==UINT32_MAX || frame-lastFrame>=(continuous?1u:30u));
 		}
 		void Dispatch(const GraphicsBackend& backend,std::shared_ptr<const RasterFrame> raster,
-			std::shared_ptr<const TopLevel> scene,uint32_t frame,uint32_t width,uint32_t height,bool fullResolution,bool continuous=false)
+			std::shared_ptr<const TopLevel> scene,uint32_t frame,uint32_t width,uint32_t height,bool fullResolution,bool continuous=false,bool deferred=false)
 		{
 			if (!WantsFrame(frame,continuous)) return;
 			lastFrame=frame;
@@ -201,7 +245,8 @@ namespace DX12Native
 				const uint32_t gridWidth=fullResolution?width:kWidth, gridHeight=fullResolution?height:kHeight;
 				const uint64_t count=uint64_t(gridWidth)*gridHeight;
 				if (count>UINT32_MAX || gridWidth>16384 || gridHeight>16384) { failure="Screen material dimensions unsupported"; return; }
-				const uint64_t bytes=count*kSampleStride;
+				const uint32_t pitchPixels=(gridWidth+7u)&~7u;
+				const uint64_t bytes=uint64_t(pitchPixels)*gridHeight*kSampleStride;
 				// ByteAddressBuffer uses 32-bit byte offsets.
 				if (bytes>UINT32_MAX) { failure="Screen material byte address range exceeded"; return; }
 				const bool reuse=reusableOutput && reusableOutput.use_count()==1 && reusableOutput->bytes==bytes;
@@ -212,6 +257,24 @@ namespace DX12Native
 					failure="Screen probe deferred by DXGI budget"; return;
 				}
 				auto slot=std::make_shared<Submission>();
+				if (deferred && fullResolution) {
+					if (gridWidth>4096) { failure="Deferred material bridge width unsupported"; return; }
+					if (!reusableDeferred || deferredWidth!=gridWidth || deferredHeight!=gridHeight) {
+						reusableDeferred.reset();
+						const auto textureDesc=CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R16G16B16A16_FLOAT,gridWidth*4u,gridHeight,1,1);
+						const auto bridgeAllocation=device->GetResourceAllocationInfo(0,1,&textureDesc).SizeInBytes;
+						if (bridgeAllocation==UINT64_MAX || bridgeAllocation>available.effectiveBytes-allocation-6ull*65536) {
+							failure="Deferred material bridge budget unavailable"; return;
+						}
+						D3D11_TEXTURE2D_DESC desc11{};
+						desc11.Width=gridWidth*4u; desc11.Height=gridHeight; desc11.MipLevels=1; desc11.ArraySize=1;
+						desc11.Format=DXGI_FORMAT_R16G16B16A16_FLOAT; desc11.SampleDesc.Count=1;
+						desc11.Usage=D3D11_USAGE_DEFAULT; desc11.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+						reusableDeferred=std::make_shared<WrappedResource>(desc11,backend.d3d11Device.get(),device,"NativePBR::DeferredMaterials");
+						deferredWidth=gridWidth; deferredHeight=gridHeight;
+					}
+					slot->deferredTexture=reusableDeferred;
+				} else reusableDeferred.reset();
 				slot->raster=std::move(raster); slot->scene=std::move(scene);
 				slot->frame=frame; slot->width=gridWidth; slot->height=gridHeight; slot->fullResolution=fullResolution; slot->fence=fence; slot->root=root; slot->pipeline=pipeline;
 				if (!reuse) {
@@ -276,11 +339,27 @@ namespace DX12Native
 				}
 				command->Dispatch((gridWidth+7)/8,(gridHeight+7)/8,1);
 				const std::array end{
-					CD3DX12_RESOURCE_BARRIER::Transition(slot->output->resource.get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+					CD3DX12_RESOURCE_BARRIER::Transition(slot->output->resource.get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,slot->deferredTexture?D3D12_RESOURCE_STATE_COPY_SOURCE:D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
 					CD3DX12_RESOURCE_BARRIER::Transition(slot->counters.get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COPY_SOURCE),
 					CD3DX12_RESOURCE_BARRIER::Transition(slot->raster->depth->resource.get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COMMON)};
 				command->ResourceBarrier(UINT(end.size()),end.data());
 				command->CopyBufferRegion(slot->readback.get(),0,slot->counters.get(),0,kCounterBytes);
+				if (slot->deferredTexture) {
+					const auto shared=slot->deferredTexture->resource.get();
+					const auto descShared=shared->GetDesc();
+					D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{}; UINT64 copyBytes=0;
+					device->GetCopyableFootprints(&descShared,0,1,0,&footprint,nullptr,nullptr,&copyBytes);
+					if (footprint.Footprint.RowPitch!=pitchPixels*kSampleStride || copyBytes>bytes)
+						throw std::runtime_error("Native deferred material copy layout mismatch");
+					const auto beginCopy=CD3DX12_RESOURCE_BARRIER::Transition(shared,D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COPY_DEST);
+					command->ResourceBarrier(1,&beginCopy);
+					const CD3DX12_TEXTURE_COPY_LOCATION dst(shared,0), src(slot->output->resource.get(),footprint);
+					command->CopyTextureRegion(&dst,0,0,0,&src,nullptr);
+					const std::array afterCopy{
+						CD3DX12_RESOURCE_BARRIER::Transition(shared,D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_COMMON),
+						CD3DX12_RESOURCE_BARRIER::Transition(slot->output->resource.get(),D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)};
+					command->ResourceBarrier(UINT(afterCopy.size()),afterCopy.data());
+				}
 				Eval::Check(command->Close());
 				Eval::Check(backend.commandQueue->Wait(slot->raster->readyFence.get(),slot->raster->readyValue));
 				Eval::Check(backend.commandQueue->Wait(slot->scene->producerFence.get(),slot->scene->producerValue));
@@ -298,7 +377,7 @@ namespace DX12Native
 					materialFrame->allocation=pending->output; materialFrame->samples=pending->output->resource; materialFrame->producerFence=pending->fence;
 					materialFrame->producerValue=value; materialFrame->geometryRevision=pending->scene->geometryRevision;
 					materialFrame->frame=frame; materialFrame->scope=pending->scene->scope;
-					materialFrame->width=gridWidth; materialFrame->height=gridHeight;
+					materialFrame->width=gridWidth; materialFrame->height=gridHeight; materialFrame->rowPitch=pitchPixels*kSampleStride;
 					published=std::move(materialFrame);
 				}
 			} catch (const std::exception& error) {

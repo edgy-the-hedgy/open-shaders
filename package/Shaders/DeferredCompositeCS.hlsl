@@ -17,6 +17,9 @@ Texture2D<unorm float3> NormalRoughnessTexture : register(t2);
 Texture2D<float3> MasksTexture : register(t3);
 Texture2D<unorm float2> Masks2Texture : register(t9);
 Texture2D<float4> GrassWindSpringDebug : register(t27);
+#if defined(NATIVE_PBR_DEFERRED)
+Texture2D<float4> NativeMaterials : register(t28);
+#endif
 
 RWTexture2D<float4> MainRW : register(u0);
 RWTexture2D<float4> NormalTAAMaskSpecularMaskRW : register(u1);
@@ -136,6 +139,21 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 
 	float3 linDiffuseColor = Color::IrradianceToLinear(diffuseColor);
 	float3 normalWS = normalize(mul(FrameBuffer::CameraViewInverse[eyeIndex], float4(normalVS, 0)).xyz);
+#if defined(NATIVE_PBR_DEFERRED)
+	// The shared texture contains four RGBA16F texels per native pixel.
+	// An unbound SRV or uncovered pixel has a zero/nonpositive status.
+	uint2 nativeCoord = uint2(dispatchID.x*4u, dispatchID.y);
+	float4 nativeBase = NativeMaterials.Load(int3(nativeCoord,0));
+	bool useNative = nativeBase.a == 1.0;
+	float4 nativeNormal = NativeMaterials.Load(int3(nativeCoord+uint2(1,0),0));
+	float4 nativeF0 = NativeMaterials.Load(int3(nativeCoord+uint2(2,0),0));
+	float4 nativeEmission = NativeMaterials.Load(int3(nativeCoord+uint2(3,0),0));
+	useNative = useNative && all(isfinite(nativeBase)) && all(isfinite(nativeNormal)) &&
+		all(isfinite(nativeF0)) && all(isfinite(nativeEmission)) && dot(nativeNormal.xyz,nativeNormal.xyz)>1e-8;
+	float3 indirectNormalWS = useNative ? normalize(nativeNormal.xyz) : normalWS;
+#else
+	float3 indirectNormalWS = normalWS;
+#endif
 
 #if defined(SKYLIGHTING)
 #	if defined(VR)
@@ -144,14 +162,14 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 	float3 positionMS = positionWS.xyz;
 #	endif
 	// Normal-biased, like forward Lighting.hlsl: a reflection-vector bias slides along grazing surfaces and shows the probe grid.
-	sh2 skylightingSH = Skylighting::Sample(positionMS, normalWS);
+	sh2 skylightingSH = Skylighting::Sample(positionMS, indirectNormalWS);
 #endif
 
 #if defined(SSGI)
 
 	float ssgiAo;
 	float3 ssgiIl;
-	SampleSSGI(dispatchID.xy, normalWS, ssgiAo, ssgiIl);
+	SampleSSGI(dispatchID.xy, indirectNormalWS, ssgiAo, ssgiIl);
 
 	// Masks2.x stores 1 - vertexAO (Lighting.hlsl only); cleared to 0 for
 	// pixels with no vertex AO contribution, so vertexAO defaults to 1.
@@ -159,6 +177,9 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 	ssgiAo = saturate(ssgiAo / max(vertexAO, EPSILON_DIVISION));
 
 	float3 linAlbedo = Color::IrradianceToLinear(albedo / Color::PBRLightingScale);
+#if defined(NATIVE_PBR_DEFERRED)
+	if (useNative) linAlbedo = max(0,nativeBase.rgb) * (1.0-saturate(nativeF0.a)) * (1.0-saturate(nativeF0.rgb));
+#endif
 	float3 multiBounceSSGIAo = MultiBounceAO(linAlbedo, ssgiAo);
 
 	float3 vanillaDALC = Color::Ambient(max(0, SharedData::GetAmbient(normalWS)));
@@ -208,15 +229,25 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 #if defined(DYNAMIC_CUBEMAPS)
 
 	float3 reflectance = ReflectanceTexture[dispatchID.xy];
+#if defined(NATIVE_PBR_DEFERRED)
+	if (useNative) {
+		float3 viewNative = -normalize(positionWS.xyz);
+		float2 envBrdf = BRDF::EnvBRDF(saturate(nativeNormal.a),saturate(dot(indirectNormalWS,viewNative)));
+		reflectance = max(0,nativeF0.rgb*envBrdf.x+envBrdf.y);
+	}
+#endif
 
 	if (any(reflectance > 0.0)) {
 		float3 V = -normalize(positionWS.xyz);
-		float3 R = reflect(-V, normalWS);
+		float3 R = reflect(-V, indirectNormalWS);
 
 		float roughness = 1.0 - glossiness;
+#if defined(NATIVE_PBR_DEFERRED)
+		if (useNative) roughness = saturate(nativeNormal.a);
+#endif
 		float level = roughness * 8.0;
 
-		sh2 specularLobe = SphericalHarmonics::FauxSpecularLobe(normalWS, V, roughness);
+		sh2 specularLobe = SphericalHarmonics::FauxSpecularLobe(indirectNormalWS, V, roughness);
 
 		float3 finalIrradiance = 0;
 
@@ -288,7 +319,7 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 
 #	if defined(SSGI)
 		float3 ssgiIlSpecular;
-		SampleSSGISpecular(dispatchID.xy, specularLobe, ssgiAo, ssgiIlSpecular, normalWS, V, roughness);
+		SampleSSGISpecular(dispatchID.xy, specularLobe, ssgiAo, ssgiIlSpecular, indirectNormalWS, V, roughness);
 
 		finalIrradiance = (finalIrradiance * ssgiAo);
 

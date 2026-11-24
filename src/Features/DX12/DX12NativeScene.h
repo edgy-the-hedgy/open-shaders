@@ -63,6 +63,9 @@ struct DX12NativeScene final : Feature
 	/** @brief Completed full-resolution native material outputs; immutable and fenced. */
 	std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> GetNativeMaterialFrame(uint32_t frame) const { return screenProbe.GetMaterialFrame(frame); }
 
+ID3D11ShaderResourceView* AcquireDeferredNativeMaterials(uint32_t frame) { return deferredNativeMaterials ? screenProbe.AcquireDeferred(frame) : nullptr; }
+	void ReleaseDeferredNativeMaterials(uint32_t frame) { screenProbe.ReleaseDeferred(frame); }
+
 private:
 	/** @brief Gates only native shadow replacement; never disables DX11 baseline shadows. */
 	bool CanOffloadShadowsInCurrentCell() const;
@@ -75,6 +78,7 @@ private:
 	bool screenProbeEnabled = false;
 	bool fullResolutionMaterialProbe = false;
 	bool continuousMaterialProbe = false;
+	bool deferredNativeMaterials = false;
 	// One immutable, ordered light selection shared by SCM and the RayQuery dispatch.
 	std::atomic<std::shared_ptr<const std::vector<DX12::PreparedLight>>> shadowLights;
 	bool shadowMaskEnabled = true;

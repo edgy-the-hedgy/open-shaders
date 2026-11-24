@@ -207,7 +207,7 @@ void screenMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
     GroupMemoryBarrierWithGroupSync();
     if (all(id.xy < GridSize)) {
         Sample result=EvaluateScreen(id.xy);
-        uint offset=(id.y*GridSize.x+id.x)*32u;
+        uint offset=(id.y*((GridSize.x+7u)&~7u)+id.x)*32u;
         ScreenOutput.Store4(offset,uint4(PackHalf4(result.color),PackHalf4(result.normal)));
         ScreenOutput.Store4(offset+16u,uint4(PackHalf4(result.f0),PackHalf4(result.emission)));
         uint category = result.color.a==1.0 ? 0 : result.color.a==-1.0 ? 1 :
