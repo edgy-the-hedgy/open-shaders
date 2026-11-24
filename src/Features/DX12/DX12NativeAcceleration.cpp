@@ -348,6 +348,18 @@ namespace DX12Native
 			top->shadingGeometry.reset();
 			a_build.shadingUpload = nullptr;
 		}
+		if (top->shadingGeometry && top->preparedMaterials) {
+			try {
+				a_build.materialEvaluation = NativeMaterialEvaluation::Prepare(device.get(), *top->preparedMaterials, *top->inputs,
+					materialTextures, a_build.materialUploads);
+				if (!a_build.materialEvaluation)
+					top->materialFailure = "NativePBR evaluation deferred or no eligible material sources";
+			} catch (const std::exception& error) {
+				top->materialFailure = error.what();
+				a_build.materialEvaluation.reset();
+				a_build.materialUploads.clear();
+			}
+		}
 		a_build.top = std::move(top);
 		Begin(a_build);
 		if (const auto& shading = a_build.top->shadingGeometry) {
@@ -355,6 +367,8 @@ namespace DX12Native
 			const auto shadingBarrier = CD3DX12_RESOURCE_BARRIER::Transition(shading->buffer.get(),
 				D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 			a_build.commands->ResourceBarrier(1, &shadingBarrier);
+			if (a_build.materialEvaluation)
+				a_build.materialEvaluation->Record(a_build.commands.get(), shading->buffer.get(), a_build.materialUploads);
 		}
 		D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build{};
 		build.Inputs = inputs;
@@ -389,8 +403,16 @@ namespace DX12Native
 			if (build.generation == generation) {
 				if (build.bottom)
 					bottoms[build.bottom->shape->GeometryKey()] = build.bottom;
-				if (build.top)
+				if (build.top) {
+					if (build.materialEvaluation) {
+						build.materialEvaluation->Complete();
+						materialTextures = build.materialEvaluation->textures;
+						build.top->materialEvaluation = std::move(build.materialEvaluation);
+					} else {
+						materialTextures.clear();
+					}
 					published = build.top;
+				}
 			}
 			build = {};
 		}
@@ -404,6 +426,7 @@ namespace DX12Native
 		++generation;
 		target.reset();
 		bottoms.clear();
+		materialTextures.clear();
 		published.reset();
 		targetRevision = 0;
 		targetScope = 0;
@@ -425,6 +448,8 @@ namespace DX12Native
 				published.reset();
 			}
 			target = std::move(a_inputs);
+			if (!target->residency->fullNative)
+				materialTextures.clear();
 			targetRevision = target->geometryRevision;
 			targetScope = scope;
 			std::unordered_set<const void*> wanted;

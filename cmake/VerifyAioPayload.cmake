@@ -12,6 +12,8 @@ set(_required
     "Shaders/DX12NativeScene/ShadowMask.dxil"
     "Shaders/NativeComposite/ShadowLayer.hlsl6"
     "Shaders/NativeComposite/ShadowLayer.dxil"
+    "Shaders/NativeComposite/NativePBRProbe.hlsl6"
+    "Shaders/NativeComposite/NativePBRProbe.dxil"
     "Shaders/Upscaling/FidelityFX/amd_fidelityfx_framegeneration_dx12.dll"
     "Shaders/Upscaling/FidelityFX/amd_fidelityfx_loader_dx12.dll"
     "Shaders/Upscaling/FidelityFX/amd_fidelityfx_upscaler_dx12.dll"

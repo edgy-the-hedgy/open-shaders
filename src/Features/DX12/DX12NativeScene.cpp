@@ -66,11 +66,23 @@ void DX12NativeScene::DrawDevStats()
 	ImGui::Text("TLAS instances: %zu | Unique BLAS: %zu", built->inputs->geometry.size(), unique.size());
 	if (const auto& materials = built->preparedMaterials) {
 		ImGui::Text("Preliminary recipes: %zu | Missing sources: %u | Unsupported: %u", materials->recipes.size(), materials->missing, materials->unsupported);
-		ImGui::TextDisabled("CPU recipes only; no native texture residency or rendering authority");
+		ImGui::TextDisabled("Diagnostic material evaluation only; raster rendering authority unchanged");
 		if (const auto& shading = built->shadingGeometry)
 			ImGui::Text("GPU shading geometry: %u / %u instances | %.2f MiB", shading->readyInstances, shading->instanceCount, double(shading->bytes) / 1048576.0);
 		else if (!built->shadingFailure.empty())
 			ImGui::TextWrapped("%s", built->shadingFailure.c_str());
+		if (const auto& evaluation = built->materialEvaluation) {
+			ImGui::Text("Resident recipes: %u | DDS: %zu | Reused: %u | Failed: %u", evaluation->residentRecipes,
+				evaluation->textures.size(), evaluation->reusedTextures, evaluation->failedTextures);
+			ImGui::Text("Native DDS VRAM: %.2f MiB | Evaluated triangles: %u / %u", double(evaluation->textureBytes) / 1048576.0,
+				evaluation->evaluated, evaluation->instanceCount);
+			if (evaluation->evaluated) {
+				const auto& sample = evaluation->firstSample;
+				ImGui::Text("Sample base RGB: %.3f %.3f %.3f | Roughness %.3f | Metal %.3f | AO %.3f",
+					sample.color[0], sample.color[1], sample.color[2], sample.normal[3], sample.f0[3], sample.emission[3]);
+			}
+		} else if (!built->materialFailure.empty())
+			ImGui::TextWrapped("%s", built->materialFailure.c_str());
 	}
 }
 

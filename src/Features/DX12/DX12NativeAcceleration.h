@@ -2,6 +2,7 @@
 
 #include "DX12NativeSceneInputs.h"
 #include "DX12PreparedMaterials.h"
+#include "DX12NativeMaterialEvaluation.h"
 #include "GraphicsBackend.h"
 
 #include <array>
@@ -44,7 +45,8 @@ namespace DX12Native
 		std::shared_ptr<const SceneInputs> inputs;
 		std::shared_ptr<const PreparedMaterials> preparedMaterials;
 		std::shared_ptr<const ShadingGeometry> shadingGeometry;
-		std::string shadingFailure;
+		std::string shadingFailure, materialFailure;
+		std::shared_ptr<const NativeMaterialEvaluation> materialEvaluation;
 		std::vector<std::shared_ptr<const BottomLevel>> bottoms;
 		winrt::com_ptr<ID3D12Resource> acceleration;
 		winrt::com_ptr<ID3D12Fence> producerFence;
@@ -88,6 +90,8 @@ namespace DX12Native
 			winrt::com_ptr<ID3D12GraphicsCommandList4> commands;
 			winrt::com_ptr<ID3D12Resource> sourceUpload;
 			winrt::com_ptr<ID3D12Resource> shadingUpload;
+			std::vector<NativeMaterialEvaluation::Upload> materialUploads;
+			std::shared_ptr<NativeMaterialEvaluation> materialEvaluation;
 			winrt::com_ptr<ID3D12Resource> scratch;
 			std::shared_ptr<BottomLevel> bottom;
 			std::shared_ptr<TopLevel> top;
@@ -117,6 +121,7 @@ namespace DX12Native
 		std::vector<Consumer> consumers;
 		std::shared_ptr<const SceneInputs> target;
 		std::shared_ptr<const TopLevel> published;
+		NativeMaterialEvaluation::TextureCache materialTextures;
 		uint64_t generation = 0, nextFence = 0;
 		uint64_t targetRevision = 0;
 		uint32_t targetScope = 0;

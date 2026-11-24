@@ -90,3 +90,13 @@ Unavailable records use UINT32_MAX offsets. The upload and TLAS share a producer
 fence; the immutable TopLevel retains the buffer through consumer retirement.
 Allocation is optional and uses current DXGI headroom; no such buffer is created
 in lightweight modes. GPU texture residency and material evaluation are separate.
+
+Full Native material diagnostic: the acceleration worker loads original loose
+DDS mip chains from the effective Data view, deduplicates by canonical path,
+reuses only fence-completed textures, and creates linear/sRGB descriptor views
+(256 individual texture pools, 512 descriptors). It records NativePBRProbe
+SM6.5 on the same queue as the scene generation, evaluating one triangle centroid
+per eligible instance. The bounded readback is aggregated after the producer
+fence and exposed in Dev. This is not screen-space evaluation or authority
+transfer: TXST/MATO and live material overrides, archive DDS, and unsupported
+formats/features still require integration. The final color remains untouched.

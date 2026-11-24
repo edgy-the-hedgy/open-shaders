@@ -24,6 +24,7 @@ if(EXCLUDE_NATIVE_DXIL)
         APPEND _excluded_shader_relpaths
         "DX12NativeScene/ShadowMask.dxil"
         "NativeComposite/ShadowLayer.dxil"
+        "NativeComposite/NativePBRProbe.dxil"
     )
 endif()
 
