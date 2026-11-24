@@ -1,8 +1,10 @@
 #include "Common/Math.hlsli"
+#include "NativeEnvironmentColor.hlsli"
 #include "Common/Spherical Harmonics/SphericalHarmonics.hlsli"
 
 TextureCube<float4> EnvTexture : register(t0);
-RWStructuredBuffer<sh2> IBLTexture : register(u0);
+RWByteAddressBuffer IBLTexture : register(u0);
+cbuffer ProjectionInputs : register(b0) { uint ColorEncoding; };
 
 SamplerState LinearSampler : register(s0);
 
@@ -32,7 +34,7 @@ groupshared sh2 sharedB[TOTAL_SAMPLES];
 	float3 rayDir = SphericalHarmonics::GetUniformSphereSample(sampleCoord.x, sampleCoord.y);
 
 	// Sample cubemap with optimized direction
-	float3 color = EnvTexture.SampleLevel(LinearSampler, -rayDir, 0).xyz;
+	float3 color = DecodeEnvironmentRadiance(EnvTexture.SampleLevel(LinearSampler, -rayDir, 0).xyz, ColorEncoding);
 
 	// Compute spherical harmonics basis for this direction
 	sh2 sh = SphericalHarmonics::Evaluate(rayDir);
@@ -63,8 +65,8 @@ groupshared sh2 sharedB[TOTAL_SAMPLES];
 
 	// Only first thread writes the final accumulated result
 	if (groupIndex == 0) {
-		IBLTexture[0] = sharedR[0];
-		IBLTexture[1] = sharedG[0];
-		IBLTexture[2] = sharedB[0];
+		IBLTexture.Store4(0u, asuint(sharedR[0]));
+		IBLTexture.Store4(16u, asuint(sharedG[0]));
+		IBLTexture.Store4(32u, asuint(sharedB[0]));
 	}
 }

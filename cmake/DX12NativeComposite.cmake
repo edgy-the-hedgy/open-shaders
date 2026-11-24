@@ -50,6 +50,8 @@ if(NATIVE_SHADOW_DXC)
     set(_native_indirect_deps
         "${_native_common}/Common/Math.hlsli"
         "${_native_common}/Common/BRDF.hlsli"
+        "${_native_common}/Common/ColorSpaces.hlsli"
+        "${_native_indirect_dir}/NativeEnvironmentColor.hlsli"
         "${_native_common}/Common/Shading.hlsli"
         "${_native_common}/Common/Spherical Harmonics/SphericalHarmonics.hlsli"
         "${_native_indirect_dir}/NativeIndirectBRDF.hlsli"

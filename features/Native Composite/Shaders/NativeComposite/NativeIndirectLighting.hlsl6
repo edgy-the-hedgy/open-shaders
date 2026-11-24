@@ -1,10 +1,11 @@
 #include "NativeSurface.hlsli"
 #include "NativeIndirectBRDF.hlsli"
+#include "NativeEnvironmentColor.hlsli"
 
 ByteAddressBuffer Materials : register(t0);
 Texture2D<float> RasterDepth : register(t1);
-StructuredBuffer<float4> EnvironmentSH : register(t2);
-StructuredBuffer<float4> SkySH : register(t3);
+ByteAddressBuffer EnvironmentSH : register(t2);
+ByteAddressBuffer SkySH : register(t3);
 TextureCube<float4> Environment : register(t4);
 TextureCube<float4> Reflections : register(t5);
 SamplerState LinearSampler : register(s0);
@@ -24,7 +25,7 @@ cbuffer IndirectInputs : register(b0)
     float EnvironmentScale;
     float SkyScale;
     uint Interior;
-    uint Padding;
+    uint ColorEncoding;
 };
 
 float4 UnpackHalf4(uint2 value)
@@ -70,9 +71,9 @@ void main(uint3 id : SV_DispatchThreadID)
     uint active = EnabledContributions & AvailableContributions;
     if ((active & ContributionIndirectDiffuse) != 0u)
     {
-        float3 radiance = NativeIndirect::EvaluateIrradiance(EnvironmentSH[0], EnvironmentSH[1], EnvironmentSH[2], n) * EnvironmentScale;
+        float3 radiance = NativeIndirect::EvaluateIrradiance(asfloat(EnvironmentSH.Load4(0u)), asfloat(EnvironmentSH.Load4(16u)), asfloat(EnvironmentSH.Load4(32u)), n) * EnvironmentScale;
         if (Interior == 0u)
-            radiance += NativeIndirect::EvaluateIrradiance(SkySH[0], SkySH[1], SkySH[2], n) * SkyScale;
+            radiance += NativeIndirect::EvaluateIrradiance(asfloat(SkySH.Load4(0u)), asfloat(SkySH.Load4(16u)), asfloat(SkySH.Load4(32u)), n) * SkyScale;
         Lighting.Store2(outputOffset, PackOpaqueRadiance(radiance * lobes.diffuse, ContributionIndirectDiffuse));
     }
     if ((active & ContributionIndirectSpecular) != 0u && EnvironmentMipCount != 0u &&
@@ -80,11 +81,11 @@ void main(uint3 id : SV_DispatchThreadID)
     {
         float3 r = reflect(-view, n);
         float level = roughness * float(EnvironmentMipCount - 1u);
-        float3 env = Environment.SampleLevel(LinearSampler, r, level).rgb;
+        float3 env = DecodeEnvironmentRadiance(Environment.SampleLevel(LinearSampler, r, level).rgb, ColorEncoding);
         float3 radiance = env * EnvironmentScale;
         if (Interior == 0u)
         {
-            float3 full = Reflections.SampleLevel(LinearSampler, r, roughness * float(ReflectionMipCount - 1u)).rgb;
+            float3 full = DecodeEnvironmentRadiance(Reflections.SampleLevel(LinearSampler, r, roughness * float(ReflectionMipCount - 1u)).rgb, ColorEncoding);
             radiance += max(0.0, full - env) * SkyScale;
         }
         Lighting.Store2(outputOffset + 8u, PackOpaqueRadiance(radiance * lobes.specular, ContributionIndirectSpecular));

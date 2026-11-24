@@ -29,7 +29,7 @@ namespace DX12Native::MaterialFrameContract
 	}
 
 	enum class SurfaceCorrespondence { DepthOnly, ExactRasterIdentity };
-	enum class LightingCoverage { SelectedPointLights, CompleteRasterReplacement };
+	enum class LightingCoverage { SelectedPointLights, CompleteRasterReplacement, EnvironmentOnly };
 
 	enum class SignalEncoding { MaterialModulated, Demodulated, Reconstructed, FinalLinearOpaqueColor, Visibility };
 	enum class ReconstructionState { Raw, Spatial, Temporal };
