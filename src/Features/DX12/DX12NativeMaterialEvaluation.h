@@ -277,6 +277,7 @@ namespace DX12Native
 			std::unordered_map<std::string, uint32_t> indices;
 			std::unordered_set<std::string> failed, invalidSrgb;
 			std::unordered_map<uint64_t, uint32_t> ready;
+			std::unordered_set<uint64_t> missingBaseTextures;
 			std::vector<NativePBR::GpuMaterialRecord> recordTable;
 			recordTable.reserve(prepared.recipes.size());
 			auto bindingTable = prepared.bindings;
@@ -385,13 +386,20 @@ namespace DX12Native
 					!(recipe.issues & (NativePBR::InvalidSnapshot | NativePBR::InvalidTexturePath | NativePBR::MissingRequiredTextures))) {
 					ready.emplace(recipe.identity, index);
 					++result->residentRecipes;
+				} else if (!(recipe.issues & (NativePBR::InvalidSnapshot | NativePBR::InvalidTexturePath))) {
+					missingBaseTextures.insert(recipe.identity);
 				}
 			}
 			for (size_t i = 0; i < bindingTable.size(); ++i) {
 				auto& binding = bindingTable[i];
 				const uint64_t identity = uint64_t(binding.identity[0]) | (uint64_t(binding.identity[1]) << 32);
 				const auto it = ready.find(identity);
-				if (it == ready.end() || !scene.geometry[i].shape || !scene.geometry[i].shape->shading) continue;
+				if (it == ready.end()) {
+					if (missingBaseTextures.contains(identity))
+						binding.flags |= MaterialFrameContract::kMissingBaseTexturesBinding;
+					continue;
+				}
+				if (!scene.geometry[i].shape || !scene.geometry[i].shape->shading) continue;
 				const auto& source = *scene.geometry[i].shape->shading;
 				binding.materialIndex = it->second;
 				binding.flags = (source.shaderFlags2 & (1u << 5)) ? NativePBR::kGpuDrawUsesVertexColor : 0;

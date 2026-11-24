@@ -5,6 +5,7 @@
 #define NATIVE_BINDING_REGISTER t2
 #define NATIVE_TEXTURE_REGISTER t3
 #include "NativeMaterialAlpha.hlsli"
+#include "NativeSurface.hlsli"
 struct Sample { float4 color; float4 normal; float4 f0; float4 emission; };
 RWStructuredBuffer<Sample> Output : register(u0);
 cbuffer Constants : register(b0) { uint InstanceCount; };
@@ -110,7 +111,7 @@ uint2 PackHalf4(float4 value)
     uint4 bits=f32tof16(clamp(value,-65504.0,65504.0));
     return uint2(bits.x | (bits.y<<16),bits.z | (bits.w<<16));
 }
-groupshared uint GroupCounts[6];
+groupshared uint GroupCounts[8];
 
 // Non-opaque instances are marked in the TLAS; do not commit a candidate
 // without a resident alpha texture and an authoritative comparison function.
@@ -134,7 +135,7 @@ Sample EvaluateScreen(uint2 pixelIndex)
     if (!isfinite(distance) || distance <= 0.5 || distance > 60000.0) return result;
     // Only accept the closest native hit when it agrees with raster visibility.
     // Unprepared foreground surfaces must not expose native geometry behind them.
-    result.color.a = -1.0;
+    result.color.a = SurfaceMissingGeometry;
     float tolerance = max(2.0, distance*0.002);
     RayDesc ray;
     ray.Origin=origin; ray.Direction=delta/distance; ray.TMin=0.5; ray.TMax=distance+tolerance;
@@ -146,19 +147,29 @@ Sample EvaluateScreen(uint2 pixelIndex)
     }
     if(query.CommittedStatus()!=COMMITTED_TRIANGLE_HIT) return result;
     if(abs(query.CommittedRayT()-distance)>tolerance) {
-        result.color.a=-2.0; return result;
+        result.color.a=SurfaceDepthMismatch; return result;
+    }
+    uint instance = query.CommittedInstanceID();
+    if (instance >= InstanceCount) {
+        result.color.a = SurfaceEvaluationFailed; return result;
+    }
+    Binding binding = Bindings[instance];
+    if (binding.materialIndex == 0xffffffffu) {
+        result.color.a = (binding.flags & SurfaceMissingBaseTexturesBinding) != 0u ?
+            SurfaceMissingTextures : SurfaceUnsupportedMaterial;
+        return result;
     }
     float2 bary=query.CommittedTriangleBarycentrics();
     result=EvaluateMaterial(query.CommittedInstanceID(),query.CommittedPrimitiveIndex(),float3(1.0-bary.x-bary.y,bary));
-    if(result.color.a==0.0) result.color.a=-3.0;
+    if(result.color.a==SurfaceInvalidReceiver) result.color.a=SurfaceEvaluationFailed;
     // The native output is consumed in world space, including rotated instances.
-    if (result.color.a == 1.0) {
+    if (result.color.a == SurfaceEvaluatedBase) {
         float3 worldNormal = mul(result.normal.xyz, (float3x3)query.CommittedWorldToObject3x4());
         if (all(isfinite(worldNormal)) && dot(worldNormal,worldNormal)>1e-8) {
             result.normal.xyz = normalize(worldNormal);
-            if ((Bindings[query.CommittedInstanceID()].flags & 2048u) != 0u) result.color.a = 2.0;
+            if ((binding.flags & SurfaceBaseOnlyBinding) != 0u) result.color.a = SurfaceFeatureLimited;
         }
-        else result.color.a = -3.0;
+        else result.color.a = SurfaceEvaluationFailed;
     }
     return result;
 }
@@ -166,19 +177,21 @@ Sample EvaluateScreen(uint2 pixelIndex)
 [numthreads(8,8,1)]
 void screenMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
 {
-    if (lane < 6) GroupCounts[lane]=0;
+    if (lane < 8) GroupCounts[lane]=0;
     GroupMemoryBarrierWithGroupSync();
     if (all(id.xy < GridSize)) {
         Sample result=EvaluateScreen(id.xy);
-        uint offset=(id.y*((GridSize.x+7u)&~7u)+id.x)*32u;
+        uint offset=(id.y*((GridSize.x+7u)&~7u)+id.x)*NativeSurfaceStride;
         ScreenOutput.Store4(offset,uint4(PackHalf4(result.color),PackHalf4(result.normal)));
         ScreenOutput.Store4(offset+16u,uint4(PackHalf4(result.f0),PackHalf4(result.emission)));
-        uint category = result.color.a==1.0 ? 0 : result.color.a==-1.0 ? 1 :
-            result.color.a==-2.0 ? 2 : result.color.a==-3.0 ? 3 : result.color.a==2.0 ? 5 : 4;
+        uint category = result.color.a==SurfaceEvaluatedBase ? 0 : result.color.a==SurfaceMissingGeometry ? 1 :
+            result.color.a==SurfaceDepthMismatch ? 2 : result.color.a==SurfaceEvaluationFailed ? 3 :
+            result.color.a==SurfaceFeatureLimited ? 5 : result.color.a==SurfaceUnsupportedMaterial ? 6 :
+            result.color.a==SurfaceMissingTextures ? 7 : 4;
         InterlockedAdd(GroupCounts[category],1u);
     }
     GroupMemoryBarrierWithGroupSync();
-    if (lane < 6) {
+    if (lane < 8) {
         uint ignored;
         ProbeCounts.InterlockedAdd(lane*4,GroupCounts[lane],ignored);
     }

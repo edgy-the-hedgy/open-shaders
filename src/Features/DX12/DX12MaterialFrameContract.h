@@ -8,6 +8,31 @@ namespace DX12Native::MaterialFrameContract
 	inline constexpr uint32_t kMaterialStride = 32;
 	inline constexpr uint32_t kLightingStride = 16;
 	inline constexpr uint32_t kBaseOnlyBinding = 1u << 11;
+	inline constexpr uint32_t kMissingBaseTexturesBinding = 1u << 12;
+
+	enum class SurfaceStatus : int32_t
+	{
+		InvalidReceiver = 0,
+		EvaluatedBase = 1,
+		FeatureLimited = 2,
+		MissingGeometry = -1,
+		DepthMismatch = -2,
+		EvaluationFailed = -3,
+		UnsupportedMaterial = -4,
+		MissingTextures = -5
+	};
+
+	/** @brief Base evaluation validity is not final-color ownership. */
+	constexpr bool HasEvaluatedBase(SurfaceStatus status)
+	{
+		return status == SurfaceStatus::EvaluatedBase || status == SurfaceStatus::FeatureLimited;
+	}
+
+	/** @brief Replacement requires exact raster correspondence and complete lighting. */
+	constexpr bool CanReplaceRaster(SurfaceStatus status, bool exactCorrespondence, bool completeLighting)
+	{
+		return status == SurfaceStatus::EvaluatedBase && exactCorrespondence && completeLighting;
+	}
 
 	/** @brief A submitted fence may be incomplete, but must have a valid signal value. */
 	constexpr bool ValidProducerSignal(uint64_t value, uint64_t completed)

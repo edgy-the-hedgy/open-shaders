@@ -1,3 +1,4 @@
+#include "NativeSurface.hlsli"
 // Independent current-frame prepared RT shadow-mask composition, without
 // coupling the native direct BRDF or its RR-ready raw signals to shadow history.
 Texture2D<float4> ShadowMask : register(t0);
@@ -41,7 +42,9 @@ float3 CoverageColor(float status)
     if (status == 2.0) return float3(0.04,0.72,0.85);
     if (status == -1.0) return float3(0.95,0.48,0.04);
     if (status == -2.0) return float3(0.56,0.10,0.90);
-    if (status == -3.0) return float3(0.92,0.04,0.05);
+    if (status == SurfaceEvaluationFailed) return float3(0.92,0.04,0.05);
+    if (status == SurfaceUnsupportedMaterial) return float3(0.45,0.45,0.45);
+    if (status == SurfaceMissingTextures) return float3(0.95,0.80,0.05);
     return float3(0.22,0.22,0.22);
 }
 float3 EncodeScene(float3 color)
@@ -69,7 +72,7 @@ void main(uint3 id : SV_DispatchThreadID)
     if (PreviewCoverage != 0u) {
         float status = 0.0;
         if (PreviewCoverage == 1u)
-            status = UnpackHalf4(MaterialSamples.Load2(id.y*MaterialPitch+id.x*32u)).a;
+            status = UnpackHalf4(MaterialSamples.Load2(id.y*MaterialPitch+id.x*NativeSurfaceStride)).a;
         float4 color = Scene[id.xy];
         color.rgb = EncodeScene(CoverageColor(status));
         Scene[id.xy] = color;
@@ -82,13 +85,13 @@ void main(uint3 id : SV_DispatchThreadID)
         return;
     }
     if (ApplyDirect != 0u && LightingView > 0u && LightingView < 8u) {
-        uint materialOffset = id.y*MaterialPitch + id.x*32u;
+        uint materialOffset = id.y*MaterialPitch + id.x*NativeSurfaceStride;
         uint lightingOffset = id.y*LightingPitch + id.x*16u;
         float4 base = UnpackHalf4(MaterialSamples.Load2(materialOffset));
         float4 emission = UnpackHalf4(MaterialSamples.Load2(materialOffset+24u));
         float4 diffuse = UnpackHalf4(DirectSamples.Load2(lightingOffset));
         float4 specular = UnpackHalf4(DirectSamples.Load2(lightingOffset+8u));
-        bool valid = (base.a == 1.0 || base.a == 2.0) && diffuse.a >= 1.0 && specular.a >= 1.0 &&
+        bool valid = HasEvaluatedNativeBase(base.a) && diffuse.a >= 1.0 && specular.a >= 1.0 &&
             all(isfinite(emission)) && all(isfinite(diffuse)) && all(isfinite(specular));
         if (LightingView < 8u) {
             float3 preview = 0.0;

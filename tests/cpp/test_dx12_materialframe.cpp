@@ -66,3 +66,18 @@ TEST_CASE("Native material feature demand does not change base readiness", "[dx1
 	recipe.parameters.displacementScale = 1.0f;
 	REQUIRE((GpuSpecializedTextureRoles(recipe) & TextureRoleBit(TextureRole::Displacement)) != 0u);
 }
+
+TEST_CASE("Evaluated native base is distinct from raster replacement eligibility", "[dx12][materials]")
+{
+	REQUIRE(HasEvaluatedBase(SurfaceStatus::EvaluatedBase));
+	REQUIRE(HasEvaluatedBase(SurfaceStatus::FeatureLimited));
+	for (auto status : { SurfaceStatus::InvalidReceiver, SurfaceStatus::MissingGeometry, SurfaceStatus::DepthMismatch,
+		SurfaceStatus::EvaluationFailed, SurfaceStatus::UnsupportedMaterial, SurfaceStatus::MissingTextures }) {
+		REQUIRE_FALSE(HasEvaluatedBase(status));
+		REQUIRE_FALSE(CanReplaceRaster(status, true, true));
+	}
+	REQUIRE_FALSE(CanReplaceRaster(SurfaceStatus::FeatureLimited, true, true));
+	REQUIRE_FALSE(CanReplaceRaster(SurfaceStatus::EvaluatedBase, false, true));
+	REQUIRE_FALSE(CanReplaceRaster(SurfaceStatus::EvaluatedBase, true, false));
+	REQUIRE(CanReplaceRaster(SurfaceStatus::EvaluatedBase, true, true));
+}

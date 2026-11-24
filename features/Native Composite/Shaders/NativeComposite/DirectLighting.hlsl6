@@ -9,6 +9,7 @@ RWByteAddressBuffer Counters : register(u1);
 #define NATIVE_BINDING_REGISTER t6
 #define NATIVE_TEXTURE_REGISTER t7
 #include "NativeMaterialAlpha.hlsli"
+#include "NativeSurface.hlsli"
 
 cbuffer DirectInputs : register(b0)
 {
@@ -92,11 +93,11 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
     rays = 0u;
     const uint outputOffset = (pixel.y * Size.x + pixel.x) * 16u;
     Lighting.Store4(outputOffset, uint4(0,0,0,0));
-    const uint offset = pixel.y * MaterialPitch + pixel.x * 32u;
+    const uint offset = pixel.y * MaterialPitch + pixel.x * NativeSurfaceStride;
     float4 base = UnpackHalf4(Materials.Load2(offset));
     float4 normal = UnpackHalf4(Materials.Load2(offset + 8u));
     float4 f0 = UnpackHalf4(Materials.Load2(offset + 16u));
-    if ((base.a != 1.0 && base.a != 2.0) || !all(isfinite(base)) || !all(isfinite(normal)) || !all(isfinite(f0)) ||
+    if (!HasEvaluatedNativeBase(base.a) || !all(isfinite(base)) || !all(isfinite(normal)) || !all(isfinite(f0)) ||
         dot(normal.xyz, normal.xyz) < 1e-8) return 0u;
     float3 deltaView = cameraWorld - world;
     if (dot(deltaView,deltaView) < 1e-8) return 0u;

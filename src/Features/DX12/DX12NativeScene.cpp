@@ -99,11 +99,11 @@ void DX12NativeScene::DrawDevStats()
 	ImGui::SeparatorText(T("menu.dx12.dev.scene_materials", "Scene / material preparation"));
 	if (globals::features::dx12Control.IsFullNativeMode()) {
 		const auto& stats = screenProbe.stats;
-		if (stats.sampled) ImGui::Text("Material output: %u x %u | %.2f MiB GPU | 24-byte counter readback", stats.width, stats.height, double(stats.outputBytes)/1048576.0);
+		if (stats.sampled) ImGui::Text("Material output: %u x %u | %.2f MiB GPU | 32-byte counter readback", stats.width, stats.height, double(stats.outputBytes)/1048576.0);
 		if (stats.submittedFrames) ImGui::Text("Material submissions: %u | Reused output allocations: %u", stats.submittedFrames, stats.reusedAllocations);
-		if (stats.sampled) ImGui::Text("Screen frame %u | Evaluated %u / %u | No hit %u | Depth mismatch %u | Missing material %u | Invalid depth %u",
+		if (stats.sampled) ImGui::Text("Screen frame %u | Evaluated %u / %u | No hit %u | Depth mismatch %u | Evaluation failed %u | Invalid depth %u",
 			stats.frame, stats.evaluated + stats.baseOnly, stats.sampled, stats.noHit, stats.depthMismatch, stats.missingMaterial, stats.invalid);
-		if (stats.sampled) ImGui::Text("Base-only evaluated pixels: %u | Complete base material pixels: %u", stats.baseOnly, stats.evaluated);
+		if (stats.sampled) ImGui::Text("Base-only %u | Evaluated base %u | Unsupported %u | Missing textures %u", stats.baseOnly, stats.evaluated, stats.unsupportedMaterial, stats.missingTextures);
 		if ((screenProbeEnabled || materialCoveragePreview || globals::features::dx12Control.UsesExclusiveMaterials()) && !screenProbe.failure.empty()) ImGui::TextWrapped("%s", screenProbe.failure.c_str());
 		if (directLightingEnabled) {
 			const auto& lightStats = lighting.DirectStats();
