@@ -115,6 +115,7 @@ namespace DX12Native
 			std::shared_ptr<const OutputAllocation> allocation;
 			std::shared_ptr<const RasterFrame> raster;
 			std::shared_ptr<const TopLevel> scene;
+			winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
 			winrt::com_ptr<ID3D12Resource> samples;
 			uint32_t sampleStride=kSampleStride, rowPitch=0;
 			winrt::com_ptr<ID3D12Fence> producerFence;
@@ -309,6 +310,7 @@ namespace DX12Native
 					auto materialFrame=std::make_shared<MaterialFrame>();
 					materialFrame->allocation=pending->output; materialFrame->samples=pending->output->resource; materialFrame->producerFence=pending->fence;
 					materialFrame->raster=pending->raster; materialFrame->scene=pending->scene;
+					materialFrame->descriptors=pending->descriptors;
 					materialFrame->producerValue=value; materialFrame->geometryRevision=pending->scene->geometryRevision;
 					materialFrame->frame=frame; materialFrame->scope=pending->scene->scope;
 					materialFrame->width=gridWidth; materialFrame->height=gridHeight; materialFrame->rowPitch=pitchPixels*kSampleStride;

@@ -22,8 +22,7 @@ namespace DX12Native
 	struct DirectLightingFrame
 	{
 		std::shared_ptr<const NativeScreenProbe::MaterialFrame> material;
-		winrt::com_ptr<ID3D12Resource> samples, lights, camera;
-		winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
+		winrt::com_ptr<ID3D12Resource> samples, lights, camera, counters, readback, counterInit;
 		winrt::com_ptr<ID3D12CommandAllocator> allocator;
 		winrt::com_ptr<ID3D12GraphicsCommandList> commands;
 		winrt::com_ptr<ID3D12RootSignature> root;
@@ -31,6 +30,7 @@ namespace DX12Native
 		winrt::com_ptr<ID3D12Fence> readyFence;
 		uint64_t readyValue = 0, allocationBytes = 0;
 		uint32_t frame = 0, width = 0, height = 0, rowPitch = 0;
+		bool statsPending = false;
 	};
 
 	/** @brief Consumes the published material frame without retracing primary rays. */
@@ -48,6 +48,11 @@ namespace DX12Native
 		}
 		const std::string& Failure() const { return failure; }
 		uint32_t DispatchedLights() const { return dispatchedLights; }
+		struct Stats {
+			uint32_t frame = 0;
+			std::array<uint32_t, 6> counts{};
+		};
+		const Stats& GetStats() const { return stats; }
 
 	private:
 		void Initialize(const GraphicsBackend& backend);
@@ -60,6 +65,7 @@ namespace DX12Native
 		VideoMemoryBudget videoBudget;
 		uint64_t nextFence = 0;
 		uint32_t dispatchedLights = 0;
+		Stats stats;
 		std::string failure;
 	};
 }

@@ -17,13 +17,14 @@ namespace DX12Native
 	{
 		using Eval = NativeMaterialEvaluation;
 		constexpr uint32_t kLightingStride = 16;
+		constexpr uint64_t kCounterBytes = 6 * sizeof(uint32_t);
 		struct Constants
 		{
 			Matrix projectionInverse, viewInverse;
 			float4 positionAdjust;
 			uint32_t width, height, materialPitch, lightCount;
 			float nearLightRadius;
-			uint32_t nearLightExclusion, padding0 = 0, padding1 = 0;
+			uint32_t nearLightExclusion, instanceCount, padding = 0;
 		};
 		static_assert(sizeof(Constants) <= 256);
 
@@ -50,11 +51,27 @@ namespace DX12Native
 	void DirectLightingTrace::Poll(uint32_t frame)
 	{
 		if (current && current->frame != frame) current.reset();
-		for (auto& slot : slots)
-			if (slot && slot.use_count() == 1 && GpuFenceRetired(slot->readyFence.get(), slot->readyValue)) {
+		for (auto& slot : slots) {
+			if (!slot || !GpuFenceRetired(slot->readyFence.get(), slot->readyValue)) continue;
+			if (slot->statsPending) {
+				slot->statsPending = false;
+				if (slot->readyFence->GetCompletedValue() != UINT64_MAX &&
+					(stats.frame == 0 || int32_t(slot->frame - stats.frame) >= 0)) {
+					void* mapped = nullptr;
+					const D3D12_RANGE read{ 0, SIZE_T(kCounterBytes) };
+					if (SUCCEEDED(slot->readback->Map(0, &read, &mapped))) {
+						stats.frame = slot->frame;
+						std::memcpy(stats.counts.data(), mapped, kCounterBytes);
+						const D3D12_RANGE noWrite{};
+						slot->readback->Unmap(0, &noWrite);
+					}
+				}
+			}
+			if (slot.use_count() == 1) {
 				slot->material.reset();
 				slot->lights = nullptr;
 			}
+		}
 	}
 
 	void DirectLightingTrace::Initialize(const GraphicsBackend& backend)
@@ -72,16 +89,27 @@ namespace DX12Native
 		file.seekg(0);
 		if (!file.read(shader.data(), std::streamsize(shader.size())))
 			throw std::runtime_error("Direct lighting DXIL read failed");
-		CD3DX12_DESCRIPTOR_RANGE range;
-		range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 3);
-		CD3DX12_ROOT_PARAMETER parameters[6];
+		CD3DX12_DESCRIPTOR_RANGE ranges[2];
+		ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NativePBR::kGpuTextureDescriptorCapacity, 7, 0, 0);
+		ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 3, 0, NativePBR::kGpuTextureDescriptorCapacity);
+		CD3DX12_ROOT_PARAMETER parameters[10];
 		parameters[0].InitAsShaderResourceView(0);
 		parameters[1].InitAsShaderResourceView(1);
 		parameters[2].InitAsShaderResourceView(2);
-		parameters[3].InitAsDescriptorTable(1, &range);
+		parameters[3].InitAsDescriptorTable(2, ranges);
 		parameters[4].InitAsUnorderedAccessView(0);
 		parameters[5].InitAsConstantBufferView(0);
-		const CD3DX12_ROOT_SIGNATURE_DESC signature(6, parameters);
+		parameters[6].InitAsShaderResourceView(4);
+		parameters[7].InitAsShaderResourceView(5);
+		parameters[8].InitAsShaderResourceView(6);
+		parameters[9].InitAsUnorderedAccessView(1);
+		std::array<CD3DX12_STATIC_SAMPLER_DESC, 4> samplers;
+		for (uint32_t mode = 0; mode < 4; ++mode)
+			samplers[mode] = CD3DX12_STATIC_SAMPLER_DESC(mode, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+				(mode & 2) ? D3D12_TEXTURE_ADDRESS_MODE_WRAP : D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+				(mode & 1) ? D3D12_TEXTURE_ADDRESS_MODE_WRAP : D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+				D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
+		const CD3DX12_ROOT_SIGNATURE_DESC signature(10, parameters, UINT(samplers.size()), samplers.data());
 		winrt::com_ptr<ID3DBlob> blob, errors;
 		winrt::com_ptr<ID3D12RootSignature> newRoot;
 		winrt::com_ptr<ID3D12PipelineState> newPipeline;
@@ -109,7 +137,8 @@ namespace DX12Native
 		dispatchedLights = 0;
 		if (!inputsAvailable) { failure = "Waiting for native light inputs"; return; }
 		if (!material->samples || !material->producerFence || !material->producerValue ||
-			!material->scene || !material->scene->acceleration || !material->raster ||
+			!material->scene || !material->scene->acceleration || !material->scene->shadingGeometry ||
+			!material->scene->materialEvaluation || !material->descriptors || !material->raster ||
 			!material->raster->depth || !material->raster->depth->resource ||
 			!material->raster->cameraValid || material->raster->frame != material->frame ||
 			material->scene->geometryRevision != material->geometryRevision ||
@@ -154,10 +183,10 @@ namespace DX12Native
 					D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 				replacement->samples->SetName(L"NativeLighting::DiffuseSpecular");
 				replacement->camera = Eval::Buffer(device, 256, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
-				D3D12_DESCRIPTOR_HEAP_DESC heap{};
-				heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-				heap.NumDescriptors = 1; heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-				Eval::Check(device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(replacement->descriptors.put())));
+				replacement->counters = Eval::Buffer(device, kCounterBytes, D3D12_HEAP_TYPE_DEFAULT,
+					D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+				replacement->readback = Eval::Buffer(device, kCounterBytes, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST);
+				replacement->counterInit = Eval::Table(device, std::vector<uint32_t>(6, 0));
 				Eval::Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(replacement->allocator.put())));
 				Eval::Check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, replacement->allocator.get(), pipeline.get(), IID_PPV_ARGS(replacement->commands.put())));
 				slot = std::move(replacement);
@@ -165,7 +194,7 @@ namespace DX12Native
 				Eval::Check(slot->allocator->Reset());
 				Eval::Check(slot->commands->Reset(slot->allocator.get(), pipeline.get()));
 			}
-			slot->readyFence = completion; slot->readyValue = UINT64_MAX;
+			slot->readyFence = completion; slot->readyValue = UINT64_MAX; slot->statsPending = false;
 			slot->root = root; slot->pipeline = pipeline;
 			slot->frame = material->frame; slot->material = std::move(material);
 			const auto& raster = *slot->material->raster;
@@ -186,23 +215,31 @@ namespace DX12Native
 			slot->lights = Eval::Table(device, records);
 			const Constants constants{ raster.camera.CameraProjInverse, raster.camera.CameraViewInverse,
 				raster.camera.CameraPosAdjust, width, height, slot->material->rowPitch, lightCount,
-				controls.nearLightRadius, controls.nearLightExclusion ? 1u : 0u };
+				controls.nearLightRadius, controls.nearLightExclusion ? 1u : 0u, slot->material->scene->materialEvaluation->instanceCount };
 			WriteConstants(slot->camera.get(), constants);
-			D3D12_SHADER_RESOURCE_VIEW_DESC depth{};
-			depth.Format = DXGI_FORMAT_R32_FLOAT; depth.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-			depth.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; depth.Texture2D.MipLevels = 1;
 			auto* depthResource = raster.depth->resource.get();
-			device->CreateShaderResourceView(depthResource, &depth, slot->descriptors->GetCPUDescriptorHandleForHeapStart());
+			const auto& evaluation = *slot->material->scene->materialEvaluation;
 			auto* command = slot->commands.get();
-			ID3D12DescriptorHeap* heaps[]{ slot->descriptors.get() };
+			ID3D12DescriptorHeap* heaps[]{ slot->material->descriptors.get() };
 			command->SetDescriptorHeaps(1, heaps);
 			command->SetComputeRootSignature(root.get());
 			command->SetComputeRootShaderResourceView(0, slot->material->scene->acceleration->GetGPUVirtualAddress());
 			command->SetComputeRootShaderResourceView(1, slot->material->samples->GetGPUVirtualAddress());
 			command->SetComputeRootShaderResourceView(2, slot->lights->GetGPUVirtualAddress());
-			command->SetComputeRootDescriptorTable(3, slot->descriptors->GetGPUDescriptorHandleForHeapStart());
+			command->SetComputeRootDescriptorTable(3, slot->material->descriptors->GetGPUDescriptorHandleForHeapStart());
 			command->SetComputeRootUnorderedAccessView(4, slot->samples->GetGPUVirtualAddress());
 			command->SetComputeRootConstantBufferView(5, slot->camera->GetGPUVirtualAddress());
+			command->SetComputeRootShaderResourceView(6, slot->material->scene->shadingGeometry->buffer->GetGPUVirtualAddress());
+			command->SetComputeRootShaderResourceView(7, evaluation.records->GetGPUVirtualAddress());
+			command->SetComputeRootShaderResourceView(8, evaluation.bindings->GetGPUVirtualAddress());
+			command->SetComputeRootUnorderedAccessView(9, slot->counters->GetGPUVirtualAddress());
+			if (!fresh) {
+				const auto counterStart = CD3DX12_RESOURCE_BARRIER::Transition(slot->counters.get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+				command->ResourceBarrier(1, &counterStart);
+			}
+			command->CopyBufferRegion(slot->counters.get(), 0, slot->counterInit.get(), 0, kCounterBytes);
+			const auto counterUav = CD3DX12_RESOURCE_BARRIER::Transition(slot->counters.get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+			command->ResourceBarrier(1, &counterUav);
 			const auto depthStart = CD3DX12_RESOURCE_BARRIER::Transition(depthResource, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 			command->ResourceBarrier(1, &depthStart);
 			if (!fresh) {
@@ -215,6 +252,9 @@ namespace DX12Native
 				CD3DX12_RESOURCE_BARRIER::Transition(depthResource, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON)
 			};
 			command->ResourceBarrier(UINT(end.size()), end.data());
+			const auto counterEnd = CD3DX12_RESOURCE_BARRIER::Transition(slot->counters.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+			command->ResourceBarrier(1, &counterEnd);
+			command->CopyBufferRegion(slot->readback.get(), 0, slot->counters.get(), 0, kCounterBytes);
 			Eval::Check(command->Close());
 			Eval::Check(backend.commandQueue->Wait(slot->material->producerFence.get(), slot->material->producerValue));
 			ID3D12CommandList* lists[]{ command };
@@ -222,7 +262,7 @@ namespace DX12Native
 			submitted = true;
 			const uint64_t value = nextFence + 1;
 			Eval::Check(backend.commandQueue->Signal(completion.get(), value));
-			nextFence = value; slot->readyValue = value;
+			nextFence = value; slot->readyValue = value; slot->statsPending = true;
 			current = slot;
 			dispatchedLights = lightCount;
 			failure.clear();

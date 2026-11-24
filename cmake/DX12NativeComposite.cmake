@@ -15,13 +15,14 @@ if(NATIVE_SHADOW_DXC)
         VERBATIM
     )
     set(_native_pbr_probe_source "${CMAKE_CURRENT_SOURCE_DIR}/features/Native Composite/Shaders/NativeComposite/NativePBRProbe.hlsl6")
+    set(_native_material_alpha "${CMAKE_CURRENT_SOURCE_DIR}/features/Native Composite/Shaders/NativeComposite/NativeMaterialAlpha.hlsli")
     set(_native_pbr_probe_dxil "${_native_composite_dir}/NativePBRProbe.dxil")
     add_custom_command(
         OUTPUT "${_native_pbr_probe_dxil}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${_native_composite_dir}"
         COMMAND "${NATIVE_SHADOW_DXC}" -T cs_6_5 -E main -HV 2021 -O3 -Ges -Gis -Fo
             "${_native_pbr_probe_dxil}" "${_native_pbr_probe_source}"
-        DEPENDS "${_native_pbr_probe_source}"
+        DEPENDS "${_native_pbr_probe_source}" "${_native_material_alpha}"
         VERBATIM
     )
     set(_native_pbr_screen_dxil "${_native_composite_dir}/NativePBRScreenProbe.dxil")
@@ -30,7 +31,7 @@ if(NATIVE_SHADOW_DXC)
         COMMAND ${CMAKE_COMMAND} -E make_directory "${_native_composite_dir}"
         COMMAND "${NATIVE_SHADOW_DXC}" -T cs_6_5 -E screenMain -HV 2021 -O3 -Ges -Gis -Fo
             "${_native_pbr_screen_dxil}" "${_native_pbr_probe_source}"
-        DEPENDS "${_native_pbr_probe_source}"
+        DEPENDS "${_native_pbr_probe_source}" "${_native_material_alpha}"
         VERBATIM
     )
     set(_native_direct_source "${CMAKE_CURRENT_SOURCE_DIR}/features/Native Composite/Shaders/NativeComposite/DirectLighting.hlsl6")
@@ -40,7 +41,7 @@ if(NATIVE_SHADOW_DXC)
         COMMAND ${CMAKE_COMMAND} -E make_directory "${_native_composite_dir}"
         COMMAND "${NATIVE_SHADOW_DXC}" -T cs_6_5 -E main -HV 2021 -O3 -Ges -Gis -Fo
             "${_native_direct_dxil}" "${_native_direct_source}"
-        DEPENDS "${_native_direct_source}"
+        DEPENDS "${_native_direct_source}" "${_native_material_alpha}"
         VERBATIM
     )
     add_custom_target(

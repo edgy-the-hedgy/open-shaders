@@ -104,7 +104,13 @@ void DX12NativeScene::DrawDevStats()
 		if (stats.sampled) ImGui::Text("Screen frame %u | Evaluated %u / %u | No hit %u | Depth mismatch %u | Missing material %u | Invalid depth %u",
 			stats.frame, stats.evaluated, stats.sampled, stats.noHit, stats.depthMismatch, stats.missingMaterial, stats.invalid);
 		if ((screenProbeEnabled || materialCoveragePreview || globals::features::dx12Control.UsesExclusiveMaterials()) && !screenProbe.failure.empty()) ImGui::TextWrapped("%s", screenProbe.failure.c_str());
-		if (directLightingEnabled) ImGui::Text("Direct lights dispatched: %u", lighting.DirectLightCount());
+		if (directLightingEnabled) {
+			const auto& lightStats = lighting.DirectStats();
+			ImGui::Text("Direct lights dispatched: %u | GPU frame: %u", lighting.DirectLightCount(), lightStats.frame);
+			ImGui::Text("Lighting valid: %u | No influence: %u | Occluded: %u | Visible: %u",
+				lightStats.counts[0], lightStats.counts[1], lightStats.counts[2], lightStats.counts[3]);
+			ImGui::Text("Tile candidates: %u | Tiles: %u", lightStats.counts[4], lightStats.counts[5]);
+		}
 		if (directLightingEnabled && !lighting.DirectFailure().empty()) ImGui::TextWrapped("%s", lighting.DirectFailure().c_str());
 	}
 	const auto built = acceleration.GetScene();

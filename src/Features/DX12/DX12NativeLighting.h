@@ -24,6 +24,7 @@ namespace DX12Native
 		/** @brief Publishes the runtime LLF light list without mutating raster data. */
 		void PublishRuntimeDirectLights(uint32_t frame, std::vector<DirectPointLight> lights);
 		uint32_t DirectLightCount() const { return direct.DispatchedLights(); }
+		const DirectLightingTrace::Stats& DirectStats() const { return direct.GetStats(); }
 		/** @brief Determines whether the observed SCM light is selected for native shadows. */
 		bool OwnsStaticForLight(const RE::NiLight* ni, uint32_t frame, bool offloadFlickeringStatic) const;
 		/** @brief Captures live light values without altering raster lighting. */
