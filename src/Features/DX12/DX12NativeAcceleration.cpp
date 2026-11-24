@@ -356,8 +356,12 @@ namespace DX12Native
 		}
 		if (top->shadingGeometry && top->preparedMaterials) {
 			try {
+				std::erase_if(retiredMaterialTextures, [](const auto& entry) { return entry.second.expired(); });
+				auto reusable = materialTextures;
+				for (const auto& [path, weak] : retiredMaterialTextures)
+					if (auto texture = weak.lock()) reusable.try_emplace(path, std::move(texture));
 				a_build.materialEvaluation = NativeMaterialEvaluation::Prepare(device.get(), *top->preparedMaterials, *top->inputs,
-					materialTextures, a_build.materialUploads);
+					reusable, a_build.materialUploads);
 				if (!a_build.materialEvaluation)
 					top->materialFailure = "NativePBR evaluation deferred or no eligible material sources";
 			} catch (const std::exception& error) {
@@ -406,6 +410,10 @@ namespace DX12Native
 		for (auto& build : builds) {
 			if (!build.fence || build.fence > done)
 				continue;
+			if (build.materialEvaluation) {
+				for (const auto& [path, texture] : build.materialEvaluation->textures)
+					retiredMaterialTextures.insert_or_assign(path, texture);
+			}
 			if (build.generation == generation) {
 				if (build.bottom)
 					bottoms[build.bottom->shape->GeometryKey()] = build.bottom;
@@ -443,7 +451,7 @@ namespace DX12Native
 		if (!completion || !failure.empty())
 			return;
 		Retire();
-		if (!a_inputs || !a_inputs->residency || !a_inputs->residency->requested.front().scope)
+		if (!a_inputs || !a_inputs->residency || a_inputs->residency->requested.empty() || !a_inputs->residency->requested.front().scope)
 			return;
 		const uint32_t scope = a_inputs->residency->requested.front().scope;
 		if (!target || targetRevision != a_inputs->geometryRevision || targetScope != scope) {

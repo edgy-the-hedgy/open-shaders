@@ -38,6 +38,7 @@ float4 UnpackHalf4(uint2 value)
 float3 CoverageColor(float status)
 {
     if (status == 1.0) return float3(0.04,0.85,0.13);
+    if (status == 2.0) return float3(0.04,0.72,0.85);
     if (status == -1.0) return float3(0.95,0.48,0.04);
     if (status == -2.0) return float3(0.56,0.10,0.90);
     if (status == -3.0) return float3(0.92,0.04,0.05);
@@ -87,7 +88,7 @@ void main(uint3 id : SV_DispatchThreadID)
         float4 emission = UnpackHalf4(MaterialSamples.Load2(materialOffset+24u));
         float4 diffuse = UnpackHalf4(DirectSamples.Load2(lightingOffset));
         float4 specular = UnpackHalf4(DirectSamples.Load2(lightingOffset+8u));
-        bool valid = base.a == 1.0 && diffuse.a >= 1.0 && specular.a >= 1.0 &&
+        bool valid = (base.a == 1.0 || base.a == 2.0) && diffuse.a >= 1.0 && specular.a >= 1.0 &&
             all(isfinite(emission)) && all(isfinite(diffuse)) && all(isfinite(specular));
         if (LightingView < 8u) {
             float3 preview = 0.0;
@@ -107,7 +108,7 @@ void main(uint3 id : SV_DispatchThreadID)
             Scene[id.xy] = color;
             return;
         }
-        if (valid) {
+        if (valid && base.a == 1.0) {
             float4 color = Scene[id.xy];
             color.rgb = EncodeScene(max(0.0, diffuse.rgb + specular.rgb + emission.rgb));
             Scene[id.xy] = color;

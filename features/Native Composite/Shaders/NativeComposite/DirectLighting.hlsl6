@@ -96,7 +96,7 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
     float4 base = UnpackHalf4(Materials.Load2(offset));
     float4 normal = UnpackHalf4(Materials.Load2(offset + 8u));
     float4 f0 = UnpackHalf4(Materials.Load2(offset + 16u));
-    if (base.a != 1.0 || !all(isfinite(base)) || !all(isfinite(normal)) || !all(isfinite(f0)) ||
+    if ((base.a != 1.0 && base.a != 2.0) || !all(isfinite(base)) || !all(isfinite(normal)) || !all(isfinite(f0)) ||
         dot(normal.xyz, normal.xyz) < 1e-8) return 0u;
     float3 deltaView = cameraWorld - world;
     if (dot(deltaView,deltaView) < 1e-8) return 0u;

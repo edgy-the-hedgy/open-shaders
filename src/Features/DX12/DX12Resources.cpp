@@ -360,6 +360,10 @@ namespace DX12
 					auto copy = std::make_shared<Shape>(*original);
 					auto live = std::make_shared<PreparedShading>(*shading);
 					live->recoveredPlacement = true;
+					if (original->materialOverride && !original->materialOverride->ambiguous) {
+						if (live->runtimeTextureSet.empty()) live->runtimeTextureSet = original->materialOverride->textureSet;
+						if (live->runtimeMaterialObject.empty()) live->runtimeMaterialObject = original->materialOverride->materialObject;
+					}
 					copy->shading = std::move(live);
 					// The observed engine texture set is the winning binding. Do
 					// not reapply the unresolved offline alternate to it.

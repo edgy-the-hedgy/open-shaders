@@ -21,7 +21,7 @@ namespace DX12Native
 		uint32_t runtimeMissing = 0, runtimeSources = 0, companionMissing = 0, recoveredPlacements = 0;
 		std::array<uint32_t, 5> rejected{};
 		std::array<uint32_t, size_t(DX12::RuntimeMaterialFailure::Count)> runtimeFailures{};
-		uint32_t alphaTested = 0;
+		uint32_t alphaTested = 0, resolvedTextureSets = 0, resolvedMaterialObjects = 0;
 	};
 
 	inline std::shared_ptr<const PreparedMaterials> CompilePreparedMaterials(const SceneInputs& inputs, const std::shared_ptr<const NativePBR::MaterialCatalogSnapshot>& catalog)
@@ -60,6 +60,8 @@ namespace DX12Native
 				(placementMaterial ? std::string_view(placementMaterial->textureSet) : std::string_view{});
 			const std::string_view mato = !source->runtimeMaterialObject.empty() ? std::string_view(source->runtimeMaterialObject) :
 				(placementMaterial ? std::string_view(placementMaterial->materialObject) : std::string_view{});
+			if (catalog && !txst.empty() && catalog->FindTextureSet(txst)) ++result->resolvedTextureSets;
+			if (catalog && !mato.empty() && catalog->FindMaterialObject(mato)) ++result->resolvedMaterialObjects;
 			if ((placementMaterial && placementMaterial->ambiguous) || !pbrIdentified || source->alpha != 1.0f ||
 				(source->stride != 60 && source->stride != 36) || source->clampMode < 0 || source->uvTransform.size() != 4) {
 				++result->unsupported;

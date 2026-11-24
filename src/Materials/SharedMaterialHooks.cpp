@@ -7,6 +7,8 @@
 #include "Utils/StringUtils.h"
 #include "Globals.h"
 #include "TruePBR.h"
+#include "TruePBR/BSLightingShaderMaterialPBR.h"
+#include "TruePBR/BSLightingShaderMaterialPBRLandscape.h"
 
 #include <list>
 #include <mutex>
@@ -238,4 +240,19 @@ std::optional<std::array<float, 3>> SharedMaterialHooks::ProjectedColorScale(con
 			return record->baseColorScale;
 	}
 	return {};
+}
+
+SharedMaterialHooks::LegacyResidencyStats SharedMaterialHooks::LegacyResidency()
+{
+	LegacyResidencyStats stats;
+	{
+		std::scoped_lock lock(BSLightingShaderMaterialPBR::AllMutex);
+		stats.meshes = BSLightingShaderMaterialPBR::All.size();
+	}
+	{
+		std::scoped_lock lock(BSLightingShaderMaterialPBRLandscape::AllMutex);
+		stats.landscapes = BSLightingShaderMaterialPBRLandscape::All.size();
+	}
+	stats.glints = bool(globals::features::truePBR.glintsNoiseTexture);
+	return stats;
 }

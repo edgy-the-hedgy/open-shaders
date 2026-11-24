@@ -100,7 +100,7 @@ namespace DX12Native
 		const auto fenceValid = [](ID3D12Fence* fence, uint64_t value) {
 			return fence && value && value != UINT64_MAX && fence->GetCompletedValue() != UINT64_MAX;
 		};
-		const bool materialValid = material && material->width == width && material->height == height &&
+		const bool materialValid = material && material->IsCoherent(frame, width, height) &&
 			material->sampleStride == 32u && uint64_t(material->rowPitch) >= uint64_t(width) * 32u &&
 			bufferMatches(material->samples.get(), uint64_t(material->rowPitch) * height) &&
 			fenceValid(material->producerFence.get(), material->producerValue);
@@ -115,9 +115,9 @@ namespace DX12Native
 		const bool applyDirect = canCompose && !applyCoverage && directValid && lightingView != 0u;
 		const bool missingPreview = canCompose && !applyCoverage && lightingView > 0u && lightingView < 8u && !directValid;
 		const bool applyShadow = canCompose && !applyCoverage && !missingPreview &&
-			shadow && shadow->mask && fenceValid(shadow->readyFence.get(), shadow->readyValue) &&
+			shadow && shadow->frame == frame && shadow->mask && fenceValid(shadow->readyFence.get(), shadow->readyValue) &&
 			shadow->width >= width && shadow->height >= height &&
-			raster && raster->depth && raster->depth->resource && raster->cameraValid &&
+			raster && raster->frame == frame && raster->depth && raster->depth->resource && raster->cameraValid &&
 			fenceValid(raster->readyFence.get(), raster->readyValue) && raster->width >= width && raster->height >= height;
 		const bool applyPass = applyCoverage || applyDirect || applyShadow || missingPreview;
 		const bool useMaterial = (applyCoverage || applyDirect) && materialValid;
@@ -155,6 +155,7 @@ namespace DX12Native
 
 		bool producerSignalled = false;
 		bool submitted = false;
+		bool returnCopyIssued = false;
 		try {
 			const bool recreate = !slot->frame || slot->device != device12 ||
 			                      slot->device11 != device11 || slot->sourceDesc.Width != desc.Width ||
@@ -384,6 +385,7 @@ namespace DX12Native
 				// The slot is reused only once this second signal completes, so the return texture outlives the DX11 copy.
 				DX::ThrowIfFailed(context11->Wait(slot->fence.fence11.get(), done));
 				const D3D11_BOX sourceRegion{ 0, 0, 0, width, height, 1 };
+				returnCopyIssued = true;
 				context11->CopySubresourceRegion(source, 0, 0, 0, 0,
 					slot->returned->resource11, 0, &sourceRegion);
 				const uint64_t copied = slot->fence.Next();
@@ -406,7 +408,14 @@ namespace DX12Native
 					logger::warn("[NativeComposite] Capture failed, the frame keeps its plain color");
 				}
 			}
-			if (submitted && slot->fence.fence12) {
+			if (returnCopyIssued && slot->fence.fence11) {
+				const uint64_t tail = slot->fence.Next();
+				if (SUCCEEDED(context11->Signal(slot->fence.fence11.get(), tail))) {
+					context11->Flush();
+					slot->frame->producerFence = slot->fence.fence12;
+					slot->frame->producerValue = tail;
+				} else slot->untracked = true;
+			} else if (submitted && slot->fence.fence12) {
 				// The command list was queued. A tail Signal on that queue tracks
 				// its completion even when the original Signal failed.
 				const uint64_t tail = slot->fence.Next();

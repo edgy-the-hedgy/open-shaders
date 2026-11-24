@@ -14,4 +14,7 @@ namespace SharedMaterialHooks
 	void NormalizeRasterDescriptors(RE::BSShader::Type type, uint32_t& vertex, uint32_t& pixel);
 	/** @brief Obtains projected color metadata from the selected material authority. */
 	std::optional<std::array<float, 3>> ProjectedColorScale(const RE::TESForm* form);
+	struct LegacyResidencyStats { size_t meshes = 0, landscapes = 0; bool glints = false; };
+	/** @brief Counts live legacy PBR extension records and the dedicated glint texture. */
+	LegacyResidencyStats LegacyResidency();
 }

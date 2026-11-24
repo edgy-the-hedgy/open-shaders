@@ -4,6 +4,7 @@
 #include "DX12Control.h"
 #include "DX12Resources.h"
 #include "Globals.h"
+#include "Materials/SharedMaterialHooks.h"
 #include "GpuPass.h"
 #include "RE/T/TESObjectCELL.h"
 #include "RE/N/NiAlphaProperty.h"
@@ -83,7 +84,7 @@ void DX12NativeScene::DrawMaterialSettings(bool developer)
 		T("menu.dx12.materials.raster_active", "Raster material rendering remains active. DX12 material evaluation is experimental."));
 	ImGui::Checkbox(T("menu.dx12.materials.coverage", "Material coverage visualization"), &materialCoveragePreview);
 	if (materialCoveragePreview)
-		ImGui::TextWrapped("%s", T("menu.dx12.materials.coverage_legend", "Green: evaluated | Red: missing material | Amber: no hit | Purple: depth mismatch | Gray: invalid depth"));
+		ImGui::TextWrapped("%s", T("menu.dx12.materials.coverage_legend", "Green: evaluated | Cyan: base-only | Red: missing material | Amber: no hit | Purple: depth mismatch | Gray: invalid depth"));
 	if (!developer)
 		return;
 	if (ImGui::Checkbox(T("menu.dx12.materials.probe", "Visible-pixel material probe"), &screenProbeEnabled) && !screenProbeEnabled)
@@ -99,10 +100,11 @@ void DX12NativeScene::DrawDevStats()
 	ImGui::SeparatorText(T("menu.dx12.dev.scene_materials", "Scene / material preparation"));
 	if (globals::features::dx12Control.IsFullNativeMode()) {
 		const auto& stats = screenProbe.stats;
-		if (stats.sampled) ImGui::Text("Material output: %u x %u | %.2f MiB GPU | 20-byte counter readback", stats.width, stats.height, double(stats.outputBytes)/1048576.0);
+		if (stats.sampled) ImGui::Text("Material output: %u x %u | %.2f MiB GPU | 24-byte counter readback", stats.width, stats.height, double(stats.outputBytes)/1048576.0);
 		if (stats.submittedFrames) ImGui::Text("Material submissions: %u | Reused output allocations: %u", stats.submittedFrames, stats.reusedAllocations);
 		if (stats.sampled) ImGui::Text("Screen frame %u | Evaluated %u / %u | No hit %u | Depth mismatch %u | Missing material %u | Invalid depth %u",
-			stats.frame, stats.evaluated, stats.sampled, stats.noHit, stats.depthMismatch, stats.missingMaterial, stats.invalid);
+			stats.frame, stats.evaluated + stats.baseOnly, stats.sampled, stats.noHit, stats.depthMismatch, stats.missingMaterial, stats.invalid);
+		if (stats.sampled) ImGui::Text("Base-only evaluated pixels: %u | Complete base material pixels: %u", stats.baseOnly, stats.evaluated);
 		if ((screenProbeEnabled || materialCoveragePreview || globals::features::dx12Control.UsesExclusiveMaterials()) && !screenProbe.failure.empty()) ImGui::TextWrapped("%s", screenProbe.failure.c_str());
 		if (directLightingEnabled) {
 			const auto& lightStats = lighting.DirectStats();
@@ -132,7 +134,7 @@ void DX12NativeScene::DrawDevStats()
 		ImGui::Text("Missing: runtime %u | Companion %u | Runtime material sources: %u",
 			materials->runtimeMissing, materials->companionMissing, materials->runtimeSources);
 		ImGui::Text("Companion materials recovered from matching live geometry: %u", materials->recoveredPlacements);
-		ImGui::Text("Alpha-tested material sources: %u", materials->alphaTested);
+		ImGui::Text("Alpha-tested material sources: %u | TXST: %u | MATO: %u", materials->alphaTested, materials->resolvedTextureSets, materials->resolvedMaterialObjects);
 		if (ImGui::TreeNode("Missing runtime material reasons")) {
 			const char* names[] = {"No observation", "Missing shader material", "Missing vertex inputs", "Non-PBR marker", "Unsupported shader flags", "Opacity or clamp", "Missing texture set", "Invalid UV", "Invalid texture path", "Missing required textures", "Invalid vertex attributes"};
 			static_assert(std::size(names) == size_t(DX12::RuntimeMaterialFailure::Count));
@@ -151,6 +153,9 @@ void DX12NativeScene::DrawDevStats()
 		if (const auto& evaluation = built->materialEvaluation) {
 			ImGui::Text("Resident recipes: %u | DDS: %zu (archive %u) | Reused: %u | Failed: %u", evaluation->residentRecipes,
 				evaluation->textures.size(), evaluation->archiveTextures, evaluation->reusedTextures, evaluation->failedTextures);
+			ImGui::Text("Base-only material bindings: %u", evaluation->baseOnlyBindings);
+			const auto legacy = SharedMaterialHooks::LegacyResidency();
+			ImGui::Text("Legacy PBR material extensions: %zu mesh / %zu landscape | Glints texture: %s", legacy.meshes, legacy.landscapes, legacy.glints ? "resident" : "none");
 			if (ImGui::TreeNode("DDS failure details")) {
 				for (const auto& [reason, count] : evaluation->failureReasons) ImGui::Text("%s: %u", reason.c_str(), count);
 				for (const auto& [path, reason] : evaluation->failedExamples) ImGui::TextWrapped("%s: %s", reason.c_str(), path.c_str());

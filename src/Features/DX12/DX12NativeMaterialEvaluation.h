@@ -48,7 +48,7 @@ namespace DX12Native
 		winrt::com_ptr<ID3D12PipelineState> pipeline;
 		uint64_t revision = 0, textureBytes = 0;
 		uint32_t instanceCount = 0, residentRecipes = 0, failedTextures = 0, reusedTextures = 0, archiveTextures = 0;
-		uint32_t evaluated = 0;
+		uint32_t evaluated = 0, baseOnlyBindings = 0;
 		std::map<std::string, uint32_t> failureReasons;
 		std::vector<std::pair<std::string, std::string>> failedExamples;
 		Sample firstSample{};
@@ -282,7 +282,10 @@ namespace DX12Native
 							continue;
 						}
 						std::shared_ptr<const Texture> texture;
-						if (const auto old = previous.find(path); old != previous.end()) {
+						if (const auto old = previous.find(path); old != previous.end() && old->second && old->second->resource) {
+							winrt::com_ptr<ID3D12Device> textureDevice;
+							if (FAILED(old->second->resource->GetDevice(IID_PPV_ARGS(textureDevice.put()))) || textureDevice.get() != device)
+								throw std::runtime_error("Native texture cache device mismatch");
 							std::error_code ec;
 							const auto filename = Util::JoinRelativePath("Data", std::filesystem::path(path));
 							const auto size = std::filesystem::file_size(filename, ec);
@@ -347,6 +350,14 @@ namespace DX12Native
 				const auto& source = *scene.geometry[i].shape->shading;
 				binding.materialIndex = it->second;
 				binding.flags = (source.shaderFlags2 & (1u << 5)) ? NativePBR::kGpuDrawUsesVertexColor : 0;
+				const auto& recipe = prepared.recipes[it->second];
+				constexpr uint32_t incomplete = NativePBR::UnsupportedPbrFeatures | NativePBR::UnsupportedGlint |
+					NativePBR::UnsupportedDisplacement | NativePBR::UnsupportedProjection;
+				const uint64_t nifFlags = uint64_t(source.shaderFlags1) | (uint64_t(source.shaderFlags2) << 32);
+				if ((recipe.issues & incomplete) || (nifFlags & static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kProjectedUV))) {
+					binding.flags |= 1u << 11;
+					++result->baseOnlyBindings;
+				}
 				const auto& normalPath = prepared.recipes[it->second].textures[1].canonicalPath;
 				if (const auto normal = result->textures.find(normalPath); normal != result->textures.end() &&
 					normal->second->format == DXGI_FORMAT_BC5_UNORM) binding.flags |= 1u << 8;

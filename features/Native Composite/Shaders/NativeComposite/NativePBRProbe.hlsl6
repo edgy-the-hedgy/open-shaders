@@ -110,7 +110,7 @@ uint2 PackHalf4(float4 value)
     uint4 bits=f32tof16(clamp(value,-65504.0,65504.0));
     return uint2(bits.x | (bits.y<<16),bits.z | (bits.w<<16));
 }
-groupshared uint GroupCounts[5];
+groupshared uint GroupCounts[6];
 
 // Non-opaque instances are marked in the TLAS; do not commit a candidate
 // without a resident alpha texture and an authoritative comparison function.
@@ -155,7 +155,10 @@ Sample EvaluateScreen(uint2 pixelIndex)
     if (result.color.a == 1.0) {
         float3 worldNormal = mul(result.normal.xyz, (float3x3)query.CommittedWorldToObject3x4());
         if (all(isfinite(worldNormal)) && dot(worldNormal,worldNormal)>1e-8)
+            {
             result.normal.xyz = normalize(worldNormal);
+            if ((Bindings[query.CommittedInstanceID()].flags & 2048u) != 0u) result.color.a = 2.0;
+        }
         else result.color.a = -3.0;
     }
     return result;
@@ -164,7 +167,7 @@ Sample EvaluateScreen(uint2 pixelIndex)
 [numthreads(8,8,1)]
 void screenMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
 {
-    if (lane < 5) GroupCounts[lane]=0;
+    if (lane < 6) GroupCounts[lane]=0;
     GroupMemoryBarrierWithGroupSync();
     if (all(id.xy < GridSize)) {
         Sample result=EvaluateScreen(id.xy);
@@ -172,11 +175,11 @@ void screenMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
         ScreenOutput.Store4(offset,uint4(PackHalf4(result.color),PackHalf4(result.normal)));
         ScreenOutput.Store4(offset+16u,uint4(PackHalf4(result.f0),PackHalf4(result.emission)));
         uint category = result.color.a==1.0 ? 0 : result.color.a==-1.0 ? 1 :
-            result.color.a==-2.0 ? 2 : result.color.a==-3.0 ? 3 : 4;
+            result.color.a==-2.0 ? 2 : result.color.a==-3.0 ? 3 : result.color.a==2.0 ? 5 : 4;
         InterlockedAdd(GroupCounts[category],1u);
     }
     GroupMemoryBarrierWithGroupSync();
-    if (lane < 5) {
+    if (lane < 6) {
         uint ignored;
         ProbeCounts.InterlockedAdd(lane*4,GroupCounts[lane],ignored);
     }

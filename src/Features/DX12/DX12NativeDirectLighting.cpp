@@ -136,7 +136,7 @@ namespace DX12Native
 		Poll(material->frame);
 		dispatchedLights = 0;
 		if (!inputsAvailable) { failure = "Waiting for native light inputs"; return; }
-		if (!material->samples || !material->producerFence || !material->producerValue ||
+		if (!material->IsCoherent(material->frame, controls.viewportWidth, controls.viewportHeight) ||
 			!material->scene || !material->scene->acceleration || !material->scene->shadingGeometry ||
 			!material->scene->materialEvaluation || !material->descriptors || !material->raster ||
 			!material->raster->depth || !material->raster->depth->resource ||

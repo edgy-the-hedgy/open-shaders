@@ -122,6 +122,7 @@ namespace DX12Native
 		std::shared_ptr<const SceneInputs> target;
 		std::shared_ptr<const TopLevel> published;
 		NativeMaterialEvaluation::TextureCache materialTextures;
+		std::unordered_map<std::string, std::weak_ptr<const NativeMaterialEvaluation::Texture>> retiredMaterialTextures;
 		uint64_t generation = 0, nextFence = 0;
 		uint64_t targetRevision = 0;
 		uint32_t targetScope = 0;

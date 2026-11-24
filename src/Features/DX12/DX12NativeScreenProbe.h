@@ -13,7 +13,7 @@ namespace DX12Native
 	{
 		using Eval = NativeMaterialEvaluation;
 		static constexpr uint32_t kWidth = 64, kHeight = 36;
-		static constexpr uint64_t kCounterBytes = 5 * sizeof(uint32_t);
+		static constexpr uint64_t kCounterBytes = 6 * sizeof(uint32_t);
 		static constexpr uint32_t kSampleStride = 32; // 16 IEEE binary16 values, same component ordering as Eval::Sample.
 		struct Camera
 		{
@@ -105,7 +105,7 @@ namespace DX12Native
 	public:
 		struct Stats
 		{
-			uint32_t frame=0, sampled=0, evaluated=0, noHit=0, depthMismatch=0, missingMaterial=0, invalid=0;
+			uint32_t frame=0, sampled=0, evaluated=0, noHit=0, depthMismatch=0, missingMaterial=0, invalid=0, baseOnly=0;
 			uint32_t width=0, height=0;
 			uint64_t outputBytes=0;
 			uint32_t reusedAllocations=0, submittedFrames=0;
@@ -122,6 +122,22 @@ namespace DX12Native
 			winrt::com_ptr<ID3D12Fence> producerFence;
 			uint64_t producerValue=0, geometryRevision=0;
 			uint32_t frame=0, width=0, height=0, scope=0;
+			/** @brief Validates the immutable full-resolution producer contract. */
+			bool IsCoherent(uint32_t requestedFrame, uint32_t requestedWidth, uint32_t requestedHeight) const
+			{
+				if (frame != requestedFrame || width != requestedWidth || height != requestedHeight ||
+					!width || !height || sampleStride != kSampleStride || rowPitch % kSampleStride ||
+					uint64_t(rowPitch) < uint64_t(width) * kSampleStride ||
+					uint64_t(rowPitch) * height > UINT32_MAX || !allocation || !samples ||
+					!producerFence || !producerValue || producerValue == UINT64_MAX ||
+					producerFence->GetCompletedValue() == UINT64_MAX || !raster || raster->frame != frame ||
+					raster->width < width || raster->height < height || !scene || !scope ||
+					scene->scope != scope || scene->geometryRevision != geometryRevision ||
+					!scene->materialEvaluation || scene->materialEvaluation->revision != geometryRevision)
+					return false;
+				const auto desc = samples->GetDesc();
+				return desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER && desc.Width >= uint64_t(rowPitch) * height;
+			}
 		};
 		std::shared_ptr<const MaterialFrame> GetMaterialFrame(uint32_t frame) const
 		{
@@ -164,10 +180,10 @@ namespace DX12Native
 				if (SUCCEEDED(pending->readback->Map(0,&read,&mapped))) {
 					const auto* counts=static_cast<const uint32_t*>(mapped);
 					result.evaluated=counts[0]; result.noHit=counts[1]; result.depthMismatch=counts[2];
-					result.missingMaterial=counts[3]; result.invalid=counts[4];
+					result.missingMaterial=counts[3]; result.invalid=counts[4]; result.baseOnly=counts[5];
 					const D3D12_RANGE noWrite{};
 					pending->readback->Unmap(0,&noWrite);
-					if (uint64_t(result.evaluated)+result.noHit+result.depthMismatch+result.missingMaterial+result.invalid==result.sampled) {
+					if (uint64_t(result.evaluated)+result.noHit+result.depthMismatch+result.missingMaterial+result.invalid+result.baseOnly==result.sampled) {
 						stats=result; failure.clear();
 					} else failure="Screen material counter mismatch";
 				} else failure="Screen material counter readback failed";
@@ -186,7 +202,7 @@ namespace DX12Native
 			// Keep at most one completed frame and one pending submission; an external
 			// consumer may retain its own immutable output reference.
 			published.reset();
-			if (!raster || !raster->depth || !raster->depth->resource || !raster->cameraValid || !raster->readyFence ||
+			if (!raster || raster->frame != frame || !raster->depth || !raster->depth->resource || !raster->cameraValid || !raster->readyFence ||
 				!scene || !scene->acceleration || !scene->producerFence || !scene->shadingGeometry || !scene->materialEvaluation ||
 				!width || !height || width>raster->width || height>raster->height) {
 				failure="Waiting for matching raster and native material generation"; return;
@@ -235,7 +251,7 @@ namespace DX12Native
 				slot->output=reusableOutput;
 				slot->readback=Eval::Buffer(device,kCounterBytes,D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_STATE_COPY_DEST);
 				slot->counters=Eval::Buffer(device,kCounterBytes,D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-				slot->counterInit=Eval::Table(device,std::vector<uint32_t>(5,0));
+				slot->counterInit=Eval::Table(device,std::vector<uint32_t>(6,0));
 				slot->camera=Eval::Buffer(device,256,D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ);
 				const Camera constants{slot->raster->camera.CameraProjInverse,slot->raster->camera.CameraViewInverse,
 					slot->raster->camera.CameraPosAdjust,width,height,gridWidth,gridHeight};
