@@ -337,7 +337,6 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/
 		temporal.historyRevision = ++historyRevision;
 		temporal.resetHistory = true;
 	}
-	lastTemporal = temporal;
 	raster.Capture(*backend, Util::GetCurrentSceneDepthSRV(false),
 		&globals::game::frameBufferCached.nonVR, temporal);
 	const auto captured = raster.Get(frame);
@@ -355,8 +354,10 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/
 	if (fullProbe)
 		screenProbe.Dispatch(*backend, captured, built, frame, viewportWidth, viewportHeight,
 			fullResolutionMaterialProbe || materialRequired, continuousMaterialProbe || materialRequired, screenProbeEnabled || materialCoveragePreview);
-	if (directEnabled)
-		lighting.DispatchDirect(*backend, screenProbe.GetMaterialFrame(frame), controls);
+	const auto material = screenProbe.GetMaterialFrame(frame);
+	lastTemporal = material && material->raster == captured ? temporal : TemporalIdentity{};
+	if (directEnabled && material && material->raster == captured)
+		lighting.DispatchDirect(*backend, material, controls);
 	if (shadowTrace)
 		lighting.DispatchShadows(*backend, captured, built, frame, controls);
 }

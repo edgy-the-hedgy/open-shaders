@@ -127,10 +127,12 @@ namespace DX12Native
 			return;
 		current.reset();
 		if (!raster || !raster->depth || !raster->depth->resource || !raster->readyFence ||
-			!raster->cameraValid) {
+			!raster->cameraValid || raster->frame != frame ||
+			!MaterialFrameContract::ValidProducerSignal(raster->readyValue, raster->readyFence->GetCompletedValue())) {
 			return;
 		}
-		if (!scene || !scene->acceleration || !scene->producerFence) {
+		if (!scene || !scene->acceleration || !scene->producerFence ||
+			!MaterialFrameContract::ValidProducerSignal(scene->producerValue, scene->producerFence->GetCompletedValue())) {
 			return;
 		}
 		if (lights.empty()) {
@@ -141,12 +143,21 @@ namespace DX12Native
 		try {
 			Initialize(requested);
 			const uint64_t finished = completion->GetCompletedValue();
+			if (finished == UINT64_MAX) return;
+			for (auto& slot : slots) {
+				if (!slot || slot->readyValue != UINT64_MAX) continue;
+				const uint64_t rescue = nextFence + 1;
+				if (SUCCEEDED(backend.commandQueue->Signal(completion.get(), rescue))) {
+					nextFence = rescue;
+					slot->readyValue = rescue;
+				}
+			}
 			auto it = std::ranges::find_if(slots, [&](const auto& slot) {
 				if (!slot)
 					return true;
-				return slot.use_count() == 1 && slot->readyValue <= finished &&
+				return slot.use_count() == 1 && slot->readyValue != UINT64_MAX && slot->readyValue <= finished &&
 				       std::ranges::all_of(slot->consumers, [](const auto& c) {
-						   return c.first->GetCompletedValue() >= c.second;
+						   return GpuFenceRetired(c.first.get(), c.second);
 					   });
 			});
 			if (it == slots.end()) {
@@ -323,7 +334,7 @@ namespace DX12Native
 	bool ShadowMaskTrace::RetainThrough(const std::shared_ptr<const ShadowMaskFrame>& frame,
 		ID3D12Fence* fence, uint64_t value)
 	{
-		if (!frame || !fence || !value)
+		if (!frame || !fence || !value || value == UINT64_MAX)
 			return false;
 		for (const auto& slot : slots) {
 			if (slot.get() != frame.get())

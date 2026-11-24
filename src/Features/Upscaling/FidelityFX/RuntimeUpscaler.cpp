@@ -627,6 +627,7 @@ FidelityFX::RuntimeCommandContext* FidelityFX::AcquireRuntimeCommandContext()
 		return nullptr;
 
 	const uint64_t completedValue = runtimeFence.fence12->GetCompletedValue();
+	if (completedValue == UINT64_MAX) return nullptr;
 	const uint32_t commandContextCount = static_cast<uint32_t>(runtimeCommandContexts.size());
 	for (uint32_t i = 0; i < commandContextCount; ++i) {
 		const uint32_t index = (runtimeCommandContextCursor + i) % commandContextCount;
@@ -780,63 +781,37 @@ bool FidelityFX::HasRuntimeUpscalerResources() const
 bool FidelityFX::PollRuntimeUpscalerTeardownIdle()
 {
 	auto& swapChain = globals::features::upscaling.dx12SwapChain;
-	if (!runtimeFence.fence12 && !runtimeFence.fence11) {
-		pendingRuntimeTeardownD3D11FenceValue = 0;
-		pendingRuntimeTeardownD3D12FenceValue = 0;
+	if (!runtimeFence.fence12 && !runtimeFence.fence11)
+		return true;
+	if (!runtimeFence.fence12 || !runtimeFence.fence11)
+		return false;
+	if (runtimeFence.fence12->GetCompletedValue() == UINT64_MAX) {
+		pendingRuntimeTeardownD3D11FenceValue = pendingRuntimeTeardownD3D12FenceValue = 0;
 		return true;
 	}
-
+	if (!swapChain.d3d11Context || !swapChain.commandQueue)
+		return false;
 	try {
-		if (pendingRuntimeTeardownD3D11FenceValue != 0 &&
-			(!swapChain.d3d11Context || !runtimeFence.fence11 || !runtimeFence.fence12)) {
-			pendingRuntimeTeardownD3D11FenceValue = 0;
+		if (!pendingRuntimeTeardownD3D11FenceValue) {
+			const uint64_t tail = runtimeFence.Next();
+			DX::ThrowIfFailed(swapChain.d3d11Context->Signal(runtimeFence.fence11.get(), tail));
+			pendingRuntimeTeardownD3D11FenceValue = tail;
+			swapChain.d3d11Context->Flush();
 		}
-		if (pendingRuntimeTeardownD3D12FenceValue != 0 && (!swapChain.commandQueue || !runtimeFence.fence12)) {
-			pendingRuntimeTeardownD3D12FenceValue = 0;
+		if (runtimeFence.fence12->GetCompletedValue() < pendingRuntimeTeardownD3D11FenceValue)
+			return false;
+		if (!pendingRuntimeTeardownD3D12FenceValue) {
+			const uint64_t tail = runtimeFence.Next();
+			DX::ThrowIfFailed(swapChain.commandQueue->Signal(runtimeFence.fence12.get(), tail));
+			pendingRuntimeTeardownD3D12FenceValue = tail;
 		}
-
-		if (swapChain.d3d11Context && runtimeFence.fence11 && runtimeFence.fence12) {
-			if (pendingRuntimeTeardownD3D11FenceValue == 0) {
-				pendingRuntimeTeardownD3D11FenceValue = runtimeFence.Next();
-				DX::ThrowIfFailed(swapChain.d3d11Context->Signal(runtimeFence.fence11.get(), pendingRuntimeTeardownD3D11FenceValue));
-				swapChain.d3d11Context->Flush();
-			}
-
-			if (runtimeFence.fence12->GetCompletedValue() < pendingRuntimeTeardownD3D11FenceValue)
-				return false;
-
-			pendingRuntimeTeardownD3D11FenceValue = 0;
-		} else if (globals::d3d::context) {
-			globals::d3d::context->Flush();
-		}
-
-		if (swapChain.commandQueue && runtimeFence.fence12) {
-			if (pendingRuntimeTeardownD3D12FenceValue == 0) {
-				pendingRuntimeTeardownD3D12FenceValue = runtimeFence.Next();
-				DX::ThrowIfFailed(swapChain.commandQueue->Signal(runtimeFence.fence12.get(), pendingRuntimeTeardownD3D12FenceValue));
-			}
-
-			if (runtimeFence.fence12->GetCompletedValue() < pendingRuntimeTeardownD3D12FenceValue)
-				return false;
-
-			pendingRuntimeTeardownD3D12FenceValue = 0;
-		}
-	} catch (const std::exception& e) {
-		static bool loggedTeardownPollFailure = false;
-		if (!loggedTeardownPollFailure) {
-			logger::debug("[FidelityFX] Runtime upscaler teardown poll failed: {}", e.what());
-			loggedTeardownPollFailure = true;
-		}
-		pendingRuntimeTeardownD3D11FenceValue = 0;
-		pendingRuntimeTeardownD3D12FenceValue = 0;
+		if (runtimeFence.fence12->GetCompletedValue() < pendingRuntimeTeardownD3D12FenceValue)
+			return false;
+		pendingRuntimeTeardownD3D11FenceValue = pendingRuntimeTeardownD3D12FenceValue = 0;
 		return true;
 	} catch (...) {
-		pendingRuntimeTeardownD3D11FenceValue = 0;
-		pendingRuntimeTeardownD3D12FenceValue = 0;
-		return true;
+		return runtimeFence.fence12->GetCompletedValue() == UINT64_MAX;
 	}
-
-	return true;
 }
 
 bool FidelityFX::PollRuntimeUpscalerTeardownReady()

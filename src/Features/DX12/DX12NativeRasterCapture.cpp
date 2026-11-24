@@ -43,6 +43,14 @@ namespace DX12Native
 			const auto done = producer.fence12->GetCompletedValue();
 			if (done == UINT64_MAX)
 				throw std::runtime_error("Raster device removed");
+			for (auto& slot : slots) {
+				if (!slot || slot->readyValue != UINT64_MAX) continue;
+				const uint64_t rescue = producer.Next();
+				if (SUCCEEDED(backend.d3d11Context->Signal(producer.fence11.get(), rescue))) {
+					backend.d3d11Context->Flush();
+					slot->readyValue = rescue;
+				}
+			}
 			auto available = std::find_if(slots.begin(), slots.end(), [&](const auto& slot) {
 				const auto completed = producer.fence12->GetCompletedValue();
 				if (!slot)
@@ -165,7 +173,8 @@ namespace DX12Native
 
 	std::shared_ptr<const RasterFrame> RasterCapture::Get(uint32_t a_frame) const
 	{
-		return current && current->frame == a_frame ? current : nullptr;
+		return current && current->frame == a_frame && current->readyFence &&
+			MaterialFrameContract::ValidProducerSignal(current->readyValue, current->readyFence->GetCompletedValue()) ? current : nullptr;
 	}
 
 	bool RasterCapture::RetainThrough(const std::shared_ptr<const RasterFrame>& a_frame, ID3D12Fence* a_fence, uint64_t a_value)

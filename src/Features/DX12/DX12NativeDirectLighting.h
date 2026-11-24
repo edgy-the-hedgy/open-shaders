@@ -48,7 +48,8 @@ namespace DX12Native
 			std::span<const DirectPointLight> lights, bool inputsAvailable, const ShadowTraceControls& controls);
 		std::shared_ptr<const DirectLightingFrame> Get(uint32_t frame) const
 		{
-			return current && current->frame == frame ? current : nullptr;
+			return current && current->frame == frame && current->readyFence &&
+				MaterialFrameContract::ValidProducerSignal(current->readyValue, current->readyFence->GetCompletedValue()) ? current : nullptr;
 		}
 		const std::string& Failure() const { return failure; }
 		uint32_t DispatchedLights() const { return dispatchedLights; }

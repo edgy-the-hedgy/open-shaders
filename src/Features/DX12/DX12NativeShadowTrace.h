@@ -54,7 +54,8 @@ namespace DX12Native
 			uint32_t frame, const ShadowTraceControls& controls);
 		std::shared_ptr<const ShadowMaskFrame> Get(uint32_t frame) const
 		{
-			return current && current->frame == frame ? current : nullptr;
+			return current && current->frame == frame && current->readyFence &&
+				MaterialFrameContract::ValidProducerSignal(current->readyValue, current->readyFence->GetCompletedValue()) ? current : nullptr;
 		}
 		bool RetainThrough(const std::shared_ptr<const ShadowMaskFrame>& frame, ID3D12Fence* fence, uint64_t value);
 		void Reset() { current.reset(); }
