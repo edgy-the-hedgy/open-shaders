@@ -6,6 +6,7 @@
 #include "Globals.h"
 #include "GpuPass.h"
 #include "RE/T/TESObjectCELL.h"
+#include "RE/N/NiAlphaProperty.h"
 #include "State.h"
 #include "Utils/D3D.h"
 
@@ -80,6 +81,14 @@ void DX12NativeScene::DrawDevStats()
 		ImGui::Text("Missing: runtime %u | Companion %u | Runtime material sources: %u",
 			materials->runtimeMissing, materials->companionMissing, materials->runtimeSources);
 		ImGui::Text("Companion materials recovered from matching live geometry: %u", materials->recoveredPlacements);
+		ImGui::Text("Alpha-tested material sources: %u", materials->alphaTested);
+		if (ImGui::TreeNode("Missing runtime material reasons")) {
+			const char* names[] = {"No observation", "Missing shader material", "Missing vertex inputs", "Non-PBR marker", "Unsupported shader flags", "Opacity or clamp", "Missing texture set", "Invalid UV", "Invalid texture path", "Missing required textures", "Invalid vertex attributes"};
+			static_assert(std::size(names) == size_t(DX12::RuntimeMaterialFailure::Count));
+			for (size_t i=0; i<std::size(names); ++i)
+				if (materials->runtimeFailures[i]) ImGui::Text("%s: %u", names[i], materials->runtimeFailures[i]);
+			ImGui::TreePop();
+		}
 		ImGui::Text("Unsupported (overlapping): ambiguous %u | non-PBR %u | alpha %u | basis %u | UV/clamp %u",
 			materials->rejected[0], materials->rejected[1], materials->rejected[2], materials->rejected[3], materials->rejected[4]);
 		ImGui::TextDisabled("Diagnostic material evaluation only; raster rendering authority unchanged");
@@ -402,9 +411,15 @@ void DX12NativeScene::ObserveSCMRigidCaster(RE::BSGeometry& geometry, bool requi
 	if (!tri || geometry.AsDynamicTriShape())
 		return;
 	const auto& runtime = geometry.GetGeometryRuntimeData();
-	if (runtime.skinInstance || runtime.alphaProperty || !runtime.rendererData ||
+	if (runtime.skinInstance || !runtime.rendererData ||
 		!runtime.rendererData->rawVertexData || !runtime.rendererData->rawIndexData)
 		return;
+	const bool fullNative = globals::features::dx12Control.IsFullNativeMode();
+	const auto* alpha = runtime.alphaProperty.get();
+	// Only the full-native material query understands non-opaque candidates.
+	// Blending, animated opacity and unsupported compare operations remain excluded.
+	if (alpha && (!fullNative || alpha->GetAlphaBlending() || !alpha->GetAlphaTesting() ||
+		((alpha->alphaFlags >> 10) & 7u) != 4u && ((alpha->alphaFlags >> 10) & 7u) != 6u)) return;
 	// Ignore effects, sky, water and other non-lighting draws; geometry only.
 	const auto* property = runtime.shaderProperty.get();
 	if (!property || property->GetRTTI() != globals::rtti::BSLightingShaderPropertyRTTI.get())
@@ -443,10 +458,13 @@ void DX12NativeScene::ObserveSCMRigidCaster(RE::BSGeometry& geometry, bool requi
 	candidate.triangleCount = counts.triangleCount;
 	candidate.vertices = runtime.rendererData->rawVertexData;
 	candidate.indices = runtime.rendererData->rawIndexData;
-	if (globals::features::dx12Control.IsFullNativeMode()) {
+	if (fullNative) {
+		candidate.fullNative = true;
+		candidate.alphaTest = alpha != nullptr;
+		if (alpha) { candidate.alphaThreshold = alpha->alphaThreshold; candidate.alphaFunction = uint8_t((alpha->alphaFlags >> 10) & 7u); }
 		using V = RE::BSGraphics::Vertex;
+		candidate.shadingProperty = static_cast<const RE::BSLightingShaderProperty*>(property);
 		if (desc.HasFlag(V::VF_UV) && desc.HasFlag(V::VF_NORMAL)) {
-			candidate.shadingProperty = static_cast<const RE::BSLightingShaderProperty*>(property);
 			candidate.uvOffset = desc.GetAttributeOffset(V::VA_TEXCOORD0);
 			candidate.normalOffset = desc.GetAttributeOffset(V::VA_NORMAL);
 			if (desc.HasFlag(V::VF_TANGENT)) candidate.tangentOffset = desc.GetAttributeOffset(V::VA_BINORMAL);

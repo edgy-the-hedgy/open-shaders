@@ -13,6 +13,7 @@
 #include <DirectXPackedVector.h>
 #include "RE/B/BSLightingShaderMaterialBase.h"
 #include "RE/B/BSTextureSet.h"
+#include "Features/NativePBR/NativePBRCompiler.h"
 
 namespace DX12Native
 {
@@ -75,28 +76,34 @@ namespace DX12Native
 		// Copy only generic engine material inputs, never TruePBR extension state.
 		// The live PBR marker may be original (menu-screen) or remapped by the
 		// active raster backend (vertex-lighting). This is diagnostic observation.
-		std::shared_ptr<DX12::PreparedShading> SnapshotMaterial(const RuntimeGeometryCandidate& source)
+		std::shared_ptr<DX12::PreparedShading> SnapshotMaterial(const RuntimeGeometryCandidate& source, DX12::RuntimeMaterialFailure& failure)
 		{
+			using Failure = DX12::RuntimeMaterialFailure;
+			const auto reject = [&](Failure reason) -> std::shared_ptr<DX12::PreparedShading> { failure = reason; return {}; };
 			const auto* property = source.shadingProperty;
-			if (!property || !property->material || property->material->GetType() != RE::BSShaderMaterial::Type::kLighting ||
-				source.uvOffset < 16 || source.normalOffset < 16 ||
+			if (!property || !property->material || property->material->GetType() != RE::BSShaderMaterial::Type::kLighting)
+				return reject(Failure::MissingProperty);
+			if (source.uvOffset < 16 || source.normalOffset < 16 ||
 				source.uvOffset > source.stride - 4 || source.normalOffset > source.stride - 4 ||
 				(source.tangentOffset != UINT32_MAX && (source.tangentOffset < 16 || source.tangentOffset > source.stride - 4)) || (source.colorOffset != UINT32_MAX &&
-				(source.colorOffset < 16 || source.colorOffset > source.stride - 4))) return {};
+				(source.colorOffset < 16 || source.colorOffset > source.stride - 4))) return reject(Failure::MissingVertexInputs);
 			using F = RE::BSShaderProperty::EShaderPropertyFlag;
 			const auto flags = static_cast<uint64_t>(property->flags.underlying());
-			if (!property->flags.any(F::kMenuScreen, F::kVertexLighting) ||
-				property->flags.any(F::kVertexAlpha, F::kGrayscaleToPaletteAlpha, F::kRefraction, F::kTempRefraction,
-					F::kTreeAnim, F::kLODLandscape, F::kMultiTextureLandscape, F::kFace, F::kHairTint) ||
-				property->alpha != 1.0f) return {};
+			if (!property->flags.any(F::kMenuScreen, F::kVertexLighting)) return reject(Failure::NonPbrMarker);
+			if (property->flags.any(F::kVertexAlpha, F::kGrayscaleToPaletteAlpha, F::kRefraction, F::kTempRefraction,
+					F::kTreeAnim, F::kLODLandscape, F::kMultiTextureLandscape, F::kFace, F::kHairTint)) return reject(Failure::UnsupportedShaderFlags);
+			if (property->alpha != 1.0f) return reject(Failure::OpacityOrClamp);
 			const auto* material = static_cast<const RE::BSLightingShaderMaterialBase*>(property->material);
 			if (material->materialAlpha != 1.0f || material->textureClampMode < 0 || material->textureClampMode > 3)
-				return {};
+				return reject(Failure::OpacityOrClamp);
 			auto* textures = material->textureSet.get();
 			const auto* expected = REL::Relocation<const RE::NiRTTI*>{ RE::BSTextureSet::Ni_RTTI }.get();
-			if (!textures || !expected || !textures->GetRTTI() || !textures->GetRTTI()->IsKindOf(expected)) return {};
+			if (!textures || !expected || !textures->GetRTTI() || !textures->GetRTTI()->IsKindOf(expected)) return reject(Failure::MissingTextureSet);
 			auto shading = std::make_shared<DX12::PreparedShading>();
 			shading->runtimeObserved = true;
+			shading->alphaTest = source.alphaTest;
+			shading->alphaThreshold = source.alphaThreshold;
+			shading->alphaFunction = source.alphaFunction;
 			shading->stride = source.tangentOffset == UINT32_MAX ? 36 : 60;
 			shading->shapeName = source.shapeName;
 			shading->provenance = "runtime engine material";
@@ -106,14 +113,18 @@ namespace DX12Native
 			shading->clampMode = material->textureClampMode;
 			shading->uvTransform = { material->texCoordOffset[0].x, material->texCoordOffset[0].y,
 				material->texCoordScale[0].x, material->texCoordScale[0].y };
-			if (!std::ranges::all_of(shading->uvTransform, [](float x) { return std::isfinite(x); })) return {};
+			if (!std::ranges::all_of(shading->uvTransform, [](float x) { return std::isfinite(x); })) return reject(Failure::InvalidUv);
 			for (uint32_t i = 0; i < 8; ++i) {
 				const char* path = textures->GetTexturePath(static_cast<RE::BSTextureSet::Texture>(i));
 				std::string name = path ? path : "";
-				if (name.size() > 260) return {};
+				if (!name.empty()) {
+					const auto canonical = NativePBR::CanonicalTexturePath(name);
+					if (!canonical || canonical->size() > 260) return reject(Failure::InvalidTexturePath);
+					name = *canonical;
+				}
 				shading->textures.push_back(std::move(name));
 			}
-			if (shading->textures[0].empty() || shading->textures[1].empty() || shading->textures[5].empty()) return {};
+			if (shading->textures[0].empty() || shading->textures[1].empty() || shading->textures[5].empty()) return reject(Failure::MissingRequiredTextures);
 			return shading;
 		}
 
@@ -239,8 +250,9 @@ namespace DX12Native
 			packet.vertices.resize(static_cast<size_t>(vertexBytes));
 			std::memcpy(packet.vertices.data(), candidate.vertices, packet.vertices.size());
 			packet.indices.assign(candidate.indices, candidate.indices + indexCount);
-			if (candidate.shadingProperty) {
-				packet.shading = SnapshotMaterial(candidate);
+			packet.alphaTest = candidate.alphaTest;
+			if (candidate.fullNative) {
+				packet.shading = SnapshotMaterial(candidate, packet.materialFailure);
 				packet.uvOffset = candidate.uvOffset;
 				packet.normalOffset = candidate.normalOffset;
 				packet.tangentOffset = candidate.tangentOffset;
@@ -293,6 +305,7 @@ namespace DX12Native
 							   [&](uint16_t index) { return index < packet.vertexCount; }))
 				continue;
 			shape->indices.assign(packet.indices.begin(), packet.indices.end());
+			shape->runtimeMaterialFailure = packet.materialFailure;
 			if (packet.shading) {
 				// Skyrim rigid vertex layout: float3 position + bitangent X,
 				// half2 UV, packed normal.xyz/bitangent Y, packed tangent.xyz/
@@ -313,6 +326,7 @@ namespace DX12Native
 					const float v = DirectX::PackedVector::XMConvertHalfToFloat(uv[1]);
 					if ((t && !std::isfinite(bx)) || !std::isfinite(u) || !std::isfinite(v)) {
 						attributes.clear();
+						shape->runtimeMaterialFailure = DX12::RuntimeMaterialFailure::InvalidVertexAttributes;
 						break;
 					}
 					attributes.insert(attributes.end(), { sn(n[0]), sn(n[1]), sn(n[2]), u, v,
@@ -322,6 +336,8 @@ namespace DX12Native
 				}
 				if (!attributes.empty()) shape->shading = std::move(packet.shading);
 			}
+			// An alpha-tested mesh without its material cannot be treated as opaque.
+			if (packet.alphaTest && !shape->shading) continue;
 
 			const auto releaseIfCurrent = [&]() {
 				std::scoped_lock lock(mutex);
@@ -340,23 +356,32 @@ namespace DX12Native
 				releaseIfCurrent();
 				continue;
 			}
-			bool companionOwns = false, ambiguousMatch = false;
+			bool companionOwns = false, ambiguousMatch = false, namedMatch = false;
 			std::shared_ptr<const DX12::Shape> materialMatch;
 			for (const auto& tile : grid->resident) {
 				if (!tile) continue;
 				for (const auto& prepared : tile->shapes) {
 					if (!prepared || !SameShape(*prepared, *shape)) continue;
-					companionOwns = true;
-					if (!grid->fullNative || !shape->shading || prepared->referencePlugin.empty()) continue;
+					if (!grid->fullNative || prepared->referencePlugin.empty() || packet.referenceKey.starts_with("render:")) {
+						companionOwns = true;
+						continue;
+					}
 					const auto reference = std::format("{:06X}:{}", prepared->referenceLocal, prepared->referencePlugin);
 					if (!std::equal(reference.begin(), reference.end(), packet.referenceKey.begin(), packet.referenceKey.end(),
 						[](char a, char b) { return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b)); }))
 						continue;
-					// Match exact geometry and reference; if multiple distinct
-					// blocks are indistinguishable, do not guess their materials.
-					if (prepared->shading && prepared->shading->shapeName != shape->shading->shapeName) continue;
-					if (materialMatch && materialMatch->identity != prepared->identity) ambiguousMatch = true;
-					else materialMatch = prepared;
+					// Exact geometry alone does not make two placed references equivalent.
+					companionOwns = true;
+					if (!shape->shading || shape->shading->alphaTest) continue;
+					const bool sameName = prepared->shading && prepared->shading->shapeName == shape->shading->shapeName;
+					// Prefer an exact shape name, but unique reference + ordered
+					// geometry is also sufficient when the engine renamed a shape.
+					if (sameName && !namedMatch) {
+						materialMatch = prepared; ambiguousMatch = false; namedMatch = true;
+					} else if (sameName == namedMatch) {
+						if (materialMatch && materialMatch->identity != prepared->identity) ambiguousMatch = true;
+						else materialMatch = prepared;
+					}
 				}
 			}
 			if (companionOwns) {

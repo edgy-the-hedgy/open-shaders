@@ -21,6 +21,8 @@ namespace DX12Native
 		uint32_t missing = 0, unsupported = 0;
 		uint32_t runtimeMissing = 0, runtimeSources = 0, companionMissing = 0, recoveredPlacements = 0;
 		std::array<uint32_t, 5> rejected{};
+		std::array<uint32_t, size_t(DX12::RuntimeMaterialFailure::Count)> runtimeFailures{};
+		uint32_t alphaTested = 0;
 	};
 
 	inline std::shared_ptr<const PreparedMaterials> CompilePreparedMaterials(const SceneInputs& inputs, const std::shared_ptr<const NativePBR::MaterialCatalogSnapshot>& catalog)
@@ -42,12 +44,16 @@ namespace DX12Native
 			const auto missingBinding = NativePBR::PackGpuDrawBinding(0, 0, UINT32_MAX, 0);
 			if (!source) {
 				++result->missing;
-				if (instance.shape && instance.shape->runtimeObjectKey) ++result->runtimeMissing;
+				if (instance.shape && instance.shape->runtimeObjectKey) {
+					++result->runtimeMissing;
+					++result->runtimeFailures[size_t(instance.shape->runtimeMaterialFailure)];
+				}
 				else ++result->companionMissing;
 				result->bindings.push_back(missingBinding);
 				continue;
 			}
 			if (source->runtimeObserved) ++result->runtimeSources;
+			if (source->alphaTest) ++result->alphaTested;
 			if (source->recoveredPlacement) ++result->recoveredPlacements;
 			const auto& placementMaterial = instance.shape->materialOverride;
 			if ((placementMaterial && placementMaterial->ambiguous) || !(source->shaderFlags2 & pbrSource) || source->alpha != 1.0f ||

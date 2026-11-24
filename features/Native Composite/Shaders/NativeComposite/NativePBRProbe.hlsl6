@@ -130,6 +130,30 @@ uint2 PackHalf4(float4 value)
 }
 groupshared uint GroupCounts[5];
 
+// Non-opaque instances are marked in the TLAS; do not commit a candidate
+// without a resident alpha texture and an authoritative comparison function.
+bool AcceptAlpha(uint instance,uint primitive,float2 bary)
+{
+    if (instance>=InstanceCount) return false;
+    Binding binding=Bindings[instance];
+    if (binding.materialIndex==0xffffffffu || (binding.flags & 1024u)==0u) return false;
+    uint4 offsets=Geometry.Load4(instance*32), counts=Geometry.Load4(instance*32+16);
+    if (offsets.z==0xffffffffu || (offsets.w!=36u && offsets.w!=60u) || primitive>=counts.y/3u) return false;
+    MaterialRecord material=Materials[binding.materialIndex];
+    if (any(material.identity.xy!=binding.identity) || any(material.identity.zw!=binding.revision) || material.textures[0].x==0xffffffffu) return false;
+    uint3 ix=Geometry.Load3(offsets.y+primitive*12u);
+    if (any(ix>=counts.x)) return false;
+    float3 weights=float3(1.0-bary.x-bary.y,bary);
+    float2 uv=0;
+    [unroll] for (uint i=0;i<3u;++i)
+        uv+=weights[i]*asfloat(Geometry.Load2(offsets.z+ix[i]*offsets.w+12u));
+    uv=uv*material.uv[0].zw+material.uv[0].xy;
+    float alpha=Tex(material.textures[0].x,uv,material.properties.z).a;
+    float threshold=float((binding.flags>>16)&255u)/255.0;
+    uint comparison=(binding.flags>>24)&7u;
+    return comparison==4u ? alpha>threshold : comparison==6u && alpha>=threshold;
+}
+
 Sample EvaluateScreen(uint2 pixelIndex)
 {
     Sample result = (Sample)0;
@@ -153,9 +177,12 @@ Sample EvaluateScreen(uint2 pixelIndex)
     float tolerance = max(2.0, distance*0.002);
     RayDesc ray;
     ray.Origin=origin; ray.Direction=delta/distance; ray.TMin=0.5; ray.TMax=distance+tolerance;
-    RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
+    RayQuery<RAY_FLAG_NONE> query;
     query.TraceRayInline(ProbeScene,RAY_FLAG_NONE,0xff,ray);
-    while(query.Proceed()) {}
+    while(query.Proceed()) {
+        if (query.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE && AcceptAlpha(query.CandidateInstanceID(),query.CandidatePrimitiveIndex(),query.CandidateTriangleBarycentrics()))
+            query.CommitNonOpaqueTriangleHit();
+    }
     if(query.CommittedStatus()!=COMMITTED_TRIANGLE_HIT) return result;
     if(abs(query.CommittedRayT()-distance)>tolerance) {
         result.color.a=-2.0; return result;

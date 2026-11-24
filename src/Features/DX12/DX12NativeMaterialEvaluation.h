@@ -351,6 +351,7 @@ namespace DX12Native
 				if (const auto normal = result->textures.find(normalPath); normal != result->textures.end() &&
 					normal->second->format == DXGI_FORMAT_BC5_UNORM) binding.flags |= 1u << 8;
 				if (source.shaderFlags1 & (1u << 12)) binding.flags |= 1u << 9;
+				if (source.alphaTest) binding.flags |= (1u << 10) | (uint32_t(source.alphaThreshold) << 16) | (uint32_t(source.alphaFunction) << 24);
 			}
 			result->records = Table(device, recordTable);
 			result->bindings = Table(device, bindingTable);

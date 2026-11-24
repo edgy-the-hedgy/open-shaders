@@ -46,6 +46,13 @@ namespace DX12
 	};
 
 	/** @brief Immutable unevaluated material inputs; absent in the lightweight profile. */
+	enum class RuntimeMaterialFailure : uint8_t
+	{
+		None, MissingProperty, MissingVertexInputs, NonPbrMarker, UnsupportedShaderFlags,
+		OpacityOrClamp, MissingTextureSet, InvalidUv, InvalidTexturePath, MissingRequiredTextures,
+		InvalidVertexAttributes, Count
+	};
+
 	struct PreparedShading
 	{
 		uint32_t stride = 0;  // RSGA v1: 36, v2: 60 bytes
@@ -57,6 +64,8 @@ namespace DX12
 		bool twoSided = false;
 		bool runtimeObserved = false;  // Live engine texture set, not PG-certified offline provenance.
 		bool recoveredPlacement = false;
+		bool alphaTest = false;
+		uint8_t alphaThreshold = 0, alphaFunction = 0;
 		int32_t clampMode = -1;
 		std::vector<float> uvTransform;
 		std::vector<std::string> textures;
@@ -97,6 +106,7 @@ namespace DX12
 		std::string sourceNif;  // Populated for runtime-supplemented shapes when NIF provenance is known.
 		std::shared_ptr<const PreparedShading> shading;  // Full Native only; no GPU ownership.
 		std::optional<PlacementMaterial> materialOverride;
+		RuntimeMaterialFailure runtimeMaterialFailure = RuntimeMaterialFailure::None;
 		std::shared_ptr<const GeometryAsset> geometry;  // Shared immutable rigid asset in Full Native.
 		const std::vector<float3>& Positions() const { return geometry ? geometry->positions : positions; }
 		const std::vector<uint32_t>& Indices() const { return geometry ? geometry->indices : indices; }
