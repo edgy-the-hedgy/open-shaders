@@ -315,7 +315,7 @@ namespace DX12Native
 			desc.InstanceID = UINT(instances.size());
 			desc.InstanceMask = 0xFF;
 			desc.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_CULL_DISABLE;
-			if (target->residency && target->residency->fullNative && input.shape->shading && input.shape->shading->alphaTest)
+			if (target->residency && target->residency->fullNative && input.shape->alphaTest)
 				desc.Flags |= D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_NON_OPAQUE;
 			desc.AccelerationStructure = found->second->acceleration->GetGPUVirtualAddress();
 			instances.push_back(desc);

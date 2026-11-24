@@ -93,7 +93,7 @@ internal sealed class FullNativeContext
             compressed.ReadExactly(raw);
             if (compressed.ReadByte() != -1 || !SHA256.HashData(raw).SequenceEqual(digest)) return false;
             using var payload = new BinaryReader(new MemoryStream(raw));
-            if (payload.ReadString() != "native-model-v3" || payload.ReadString() != hash) return false;
+            if (payload.ReadString() != "native-model-v4" || payload.ReadString() != hash) return false;
             var n = payload.ReadInt32();
             if (n < 0 || n > 4096) return false;
             var shapes = new List<ModelShape>(n);
@@ -144,7 +144,7 @@ internal sealed class FullNativeContext
             using var raw = new MemoryStream();
             using (var writer = new BinaryWriter(raw, System.Text.Encoding.UTF8, true))
             {
-                writer.Write("native-model-v3");
+                writer.Write("native-model-v4");
                 writer.Write(hash);
                 writer.Write(model.Shapes.Length);
                 foreach (var s in model.Shapes)

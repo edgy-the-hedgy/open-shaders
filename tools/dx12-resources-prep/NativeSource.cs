@@ -5,7 +5,7 @@ using NiflySharp.Enums;
 
 internal sealed record MaterialSource(string SourceNif, string SourceHash, string Provenance,
     int BlockIndex, uint ShaderFlags1, uint ShaderFlags2, float Alpha, bool TwoSided,
-    int ClampMode, float[]? UvTransform, string[] Textures, string ShapeName, int ShapeOrdinal);
+    int ClampMode, float[]? UvTransform, string[] Textures, string ShapeName, int ShapeOrdinal, bool AlphaTest = false, byte AlphaThreshold = 0, byte AlphaFunction = 0);
 
 internal static class NativeSource
 {
@@ -38,6 +38,28 @@ internal static class NativeSource
         if (path is "" or "data" or "textures" || path.Length > 251)
             throw new InvalidDataException("Invalid material texture path");
         return "textures\\" + path;
+    }
+
+    // Nifly generates the NiAlphaProperty flags as a bitfield with Value;
+    // read public or private generated fields without depending on a specific
+    // generated accessor. Missing/unknown metadata is never treated as opaque.
+    internal static bool TryReadAlphaTest(NiAlphaProperty property, out byte threshold, out byte function)
+    {
+        threshold = function = 0;
+        static object? Read(object value, string name)
+        {
+            const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            var type = value.GetType();
+            return type.GetProperty(name, flags)?.GetValue(value) ??
+                type.GetField("_" + char.ToLowerInvariant(name[0]) + name[1..], flags)?.GetValue(value);
+        }
+        var flagValue = Read(property, "Flags");
+        var raw = flagValue is IConvertible ? flagValue : flagValue == null ? null : Read(flagValue, "Value");
+        if (raw is not IConvertible bits || Read(property, "Threshold") is not IConvertible limit) return false;
+        var flagsValue = bits.ToUInt16(null);
+        threshold = limit.ToByte(null);
+        function = (byte)((flagsValue >> 10) & 7);
+        return (flagsValue & 1) == 0 && (flagsValue & (1 << 9)) != 0 && function is 4 or 6;
     }
 
     private static uint? ReadTextureClampMode(BSLightingShaderProperty shader)

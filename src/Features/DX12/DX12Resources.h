@@ -99,6 +99,7 @@ namespace DX12
 		uint64_t identity = 0;
 		std::string referencePlugin;
 		uint32_t referenceLocal = 0;
+		bool alphaTest = false;  // Independent of optional material decoding: never turn an alpha mesh opaque.
 		uint64_t runtimeObjectKey = 0;  // Stable across transform changes; zero for companion shapes.
 		std::vector<float3> positions;
 		std::vector<uint32_t> indices;

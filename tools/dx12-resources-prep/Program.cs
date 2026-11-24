@@ -157,7 +157,7 @@ static string DescribeFailure(string stage, Exception error)
 }
 
 internal sealed record TileShape(ulong Identity, Vector3[] Positions, uint[] Indices, float[] Transform,
-    byte[]? Shading = null, MaterialSource? Material = null, string ReferencePlugin = "", uint ReferenceLocal = 0, PlacementMaterial? Override = null);
+    byte[]? Shading = null, MaterialSource? Material = null, string ReferencePlugin = "", uint ReferenceLocal = 0, PlacementMaterial? Override = null, bool AlphaTest = false);
 internal sealed record CompanionTelemetry(string Manager, string Profile, int PgEntries, long CacheBytes, int CacheEntries,
     ulong CacheHits, ulong CacheMisses, ulong CacheEvictions, int ExteriorIndexed, int ExteriorTotal,
     bool ExteriorFinished, bool ExteriorIncomplete);
@@ -545,6 +545,13 @@ internal static class SceneTile
                         }
                         else { admittedShading.Add(shading); shadingBytes += shading.Length; }
                     }
+                    if (shape.Material?.AlphaTest == true && shading == null)
+                    {
+                        bytes -= shapeBytes;
+                        Reject("alpha-tested shape shading budget");
+                        AddMissing(placed.FormKey, unresolvedNif, shape.Index, "alpha-tested shape shading budget");
+                        continue;
+                    }
                     PlacementMaterial? materialOverride = null;
                     if (fullNative && shading != null && shape.Material is { } original)
                     {
@@ -575,7 +582,8 @@ internal static class SceneTile
                     shapes.Add(new TileShape(Identity(placed.FormKey.ToString(), shape.Index),
                         shape.Positions, shape.Indices, PlacementTransform.ToRows(transform),
                         shading, shading != null ? shape.Material : null,
-                        fullNative ? placed.FormKey.ModKey.ToString() : "", fullNative ? placed.FormKey.ID : 0, materialOverride));
+                        fullNative ? placed.FormKey.ModKey.ToString() : "", fullNative ? placed.FormKey.ID : 0, materialOverride,
+                        fullNative && shape.Material?.AlphaTest == true));
                 }
             }
             catch (Exception error) when (error is not OutOfMemoryException)
@@ -741,10 +749,15 @@ internal static class SceneTile
             }
             try
             {
-                // Alpha holes require textures: never admit these as opaque RT occluders.
-                if (nif.GetBlock(entry.AlphaPropertyRef) != null)
+                // Lightweight profiles still exclude all alpha-dependent shapes.
+                // Full Native admits only PG-verified, nonblended supported alpha tests.
+                var alphaBlock = nif.GetBlock(entry.AlphaPropertyRef);
+                byte alphaThreshold = 0, alphaFunction = 0;
+                if (alphaBlock != null && (full == null || sourceHash == null ||
+                    alphaBlock is not NiAlphaProperty alpha ||
+                    !NativeSource.TryReadAlphaTest(alpha, out alphaThreshold, out alphaFunction)))
                 {
-                    Skip("alpha-dependent shape (textures required)", index);
+                    Skip("alpha-dependent shape (unsupported or unverified alpha test)", index);
                     continue;
                 }
                 var vertices = shape.VertexPositions.ToArray();
@@ -778,11 +791,26 @@ internal static class SceneTile
                         material = null;
                     }
                 }
+                if (alphaBlock != null)
+                {
+                    if (material == null || shading == null || material.Alpha != 1.0f ||
+                        (material.ShaderFlags2 & (1u << 23)) == 0 || material.ClampMode < 0 ||
+                        material.UvTransform?.Length != 4 || material.Textures.Length < 6 ||
+                        string.IsNullOrEmpty(material.Textures[0]) || string.IsNullOrEmpty(material.Textures[1]) ||
+                        string.IsNullOrEmpty(material.Textures[5]))
+                    {
+                        Skip("alpha-tested shape missing native material inputs", index);
+                        continue;
+                    }
+                    material = material with { AlphaTest = true, AlphaThreshold = alphaThreshold, AlphaFunction = alphaFunction };
+                }
                 output.Add(new ModelShape(index, vertices, indices, hierarchy.ForShape(index), shading, material));
             }
             catch (Exception error) when (error is not OutOfMemoryException)
             {
-                Skip("invalid or unsupported shape data", index);
+                var reason = error is InvalidDataException ? error.Message : "shape extraction: " + error.GetType().Name;
+                // Keep stable bounded categories; no exception stack or persistent dump.
+                Skip(reason.Length > 80 ? reason[..80] : reason, index);
             }
         }
         if (output.Count == 0 && missing.Count == 0)

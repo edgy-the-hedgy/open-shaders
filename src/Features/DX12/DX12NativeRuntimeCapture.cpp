@@ -306,6 +306,7 @@ namespace DX12Native
 				continue;
 			shape->indices.assign(packet.indices.begin(), packet.indices.end());
 			shape->runtimeMaterialFailure = packet.materialFailure;
+			shape->alphaTest = packet.alphaTest;
 			if (packet.shading) {
 				// Skyrim rigid vertex layout: float3 position + bitangent X,
 				// half2 UV, packed normal.xyz/bitangent Y, packed tangent.xyz/

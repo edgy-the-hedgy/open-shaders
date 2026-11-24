@@ -556,6 +556,13 @@ namespace DX12
 						shading->shaderFlags1 = item.at("shaderFlags1").get<uint32_t>();
 						shading->shaderFlags2 = item.at("shaderFlags2").get<uint32_t>();
 						shading->alpha = item.at("alpha").get<float>();
+						shading->alphaTest = item.value("alphaTest", false);
+						const auto threshold = item.value("alphaThreshold", 0u);
+						const auto function = item.value("alphaFunction", 0u);
+						if (threshold > 255 || (shading->alphaTest && function != 4 && function != 6))
+							throw std::invalid_argument("Invalid alpha test");
+						shading->alphaThreshold = uint8_t(threshold);
+						shading->alphaFunction = uint8_t(function);
 						shading->twoSided = item.at("twoSided").get<bool>();
 						shading->clampMode = item.at("clampMode").get<int32_t>();
 						if (!item.at("uvTransform").is_null())
@@ -659,6 +666,8 @@ namespace DX12
 					}
 				}
 				shape->shading = geometry.shading;
+				shape->alphaTest = task.fullNative && (item.value("alphaTest", false) || (shape->shading && shape->shading->alphaTest));
+				if (shape->alphaTest && shape->shading && !shape->shading->alphaTest) shape->shading.reset();
 				if (task.fullNative && shape->shading) {
 					try {
 						if (const auto entry = item.find("materialOverride"); entry != item.end() && !entry->is_null()) {
