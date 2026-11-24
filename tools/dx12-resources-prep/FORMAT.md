@@ -135,3 +135,11 @@ receiver depth, uses committed primitive and barycentric coordinates, and
 shares the triangle probe material evaluation. A single fenced submission
 retains the immutable scene and raster inputs, with a small readback for counts.
 It does not write to the final image or transfer material authority.
+
+The opt-in visible-pixel Dev probe supports native render resolution. It keeps
+64-byte material records per pixel on the GPU, in an immutable frame carrying
+scope, geometry revision, dimensions and the signaled producer fence. Consumers must wait on that fence. The
+shader aggregates five status counters in thread groups; CPU readback is only
+20 bytes, regardless of resolution. Allocation is checked against current
+DXGI headroom. This still samples once per 30 frames and does not replace
+raster material authority or supply final lighting.

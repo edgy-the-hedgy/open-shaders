@@ -60,6 +60,9 @@ struct DX12NativeScene final : Feature
 		return raster.RetainThrough(a_frame, a_fence, a_value);
 	}
 
+	/** @brief Completed full-resolution native material outputs; immutable and fenced. */
+	std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> GetNativeMaterialFrame(uint32_t frame) const { return screenProbe.GetMaterialFrame(frame); }
+
 private:
 	/** @brief Gates only native shadow replacement; never disables DX11 baseline shadows. */
 	bool CanOffloadShadowsInCurrentCell() const;
@@ -70,6 +73,7 @@ private:
 	DX12Native::ShadowMaskTrace shadows;
 	DX12Native::NativeScreenProbe screenProbe;
 	bool screenProbeEnabled = false;
+	bool fullResolutionMaterialProbe = false;
 	// One immutable, ordered light selection shared by SCM and the RayQuery dispatch.
 	std::atomic<std::shared_ptr<const std::vector<DX12::PreparedLight>>> shadowLights;
 	bool shadowMaskEnabled = true;

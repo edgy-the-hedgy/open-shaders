@@ -98,43 +98,67 @@ cbuffer ProbeCamera : register(b1)
     uint2 ViewSize;
     uint2 GridSize;
 };
-[numthreads(8,8,1)]
-void screenMain(uint3 id : SV_DispatchThreadID)
+RWByteAddressBuffer ProbeCounts : register(u1);
+groupshared uint GroupCounts[5];
+
+Sample EvaluateScreen(uint2 pixelIndex)
 {
-    if (any(id.xy >= GridSize)) return;
-    uint index = id.y*GridSize.x+id.x;
     Sample result = (Sample)0;
-    Output[index] = result;
-    uint2 pixel = min(uint2((float2(id.xy)+0.5)*float2(ViewSize)/float2(GridSize)),ViewSize-1u);
+    uint2 pixel = min(uint2((float2(pixelIndex)+0.5)*float2(ViewSize)/float2(GridSize)),ViewSize-1u);
     float z = ProbeDepth.Load(int3(pixel,0));
-    if (!isfinite(z) || z <= 0.0 || z >= 1.0) return;
+    if (!isfinite(z) || z <= 0.0 || z >= 1.0) return result;
     float2 clip = 2.0*(float2(pixel)+0.5)/float2(ViewSize)-1.0;
     clip.y = -clip.y;
     float4 v = mul(InverseProjection,float4(clip,z,1));
-    if (!all(isfinite(v)) || abs(v.w)<1e-8) return;
+    if (!all(isfinite(v)) || abs(v.w)<1e-8) return result;
     float4 w = mul(InverseView,float4(v.xyz/v.w,1));
     float4 camera = mul(InverseView,float4(0,0,0,1));
-    if (!all(isfinite(w)) || !all(isfinite(camera)) || abs(w.w)<1e-8 || abs(camera.w)<1e-8) return;
+    if (!all(isfinite(w)) || !all(isfinite(camera)) || abs(w.w)<1e-8 || abs(camera.w)<1e-8) return result;
     float3 origin = camera.xyz/camera.w+PositionAdjust.xyz;
     float3 delta = w.xyz/w.w+PositionAdjust.xyz-origin;
     float distance = length(delta);
-    if (!isfinite(distance) || distance <= 0.5 || distance > 60000.0) return;
+    if (!isfinite(distance) || distance <= 0.5 || distance > 60000.0) return result;
     // Only accept the closest native hit when it agrees with raster visibility.
     // Unprepared foreground surfaces must not expose native geometry behind them.
     result.color.a = -1.0;
-    Output[index] = result;
     float tolerance = max(2.0, distance*0.002);
     RayDesc ray;
     ray.Origin=origin; ray.Direction=delta/distance; ray.TMin=0.5; ray.TMax=distance+tolerance;
     RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
     query.TraceRayInline(ProbeScene,RAY_FLAG_NONE,0xff,ray);
     while(query.Proceed()) {}
-    if(query.CommittedStatus()!=COMMITTED_TRIANGLE_HIT) return;
+    if(query.CommittedStatus()!=COMMITTED_TRIANGLE_HIT) return result;
     if(abs(query.CommittedRayT()-distance)>tolerance) {
-        result.color.a=-2.0; Output[index]=result; return;
+        result.color.a=-2.0; return result;
     }
     float2 bary=query.CommittedTriangleBarycentrics();
     result=EvaluateMaterial(query.CommittedInstanceID(),query.CommittedPrimitiveIndex(),float3(1.0-bary.x-bary.y,bary));
     if(result.color.a==0.0) result.color.a=-3.0;
-    Output[index]=result;
+    // The native output is consumed in world space, including rotated instances.
+    if (result.color.a == 1.0) {
+        float3 worldNormal = mul(result.normal.xyz, (float3x3)query.CommittedWorldToObject3x4());
+        if (all(isfinite(worldNormal)) && dot(worldNormal,worldNormal)>1e-8)
+            result.normal.xyz = normalize(worldNormal);
+        else result.color.a = -3.0;
+    }
+    return result;
+}
+
+[numthreads(8,8,1)]
+void screenMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
+{
+    if (lane < 5) GroupCounts[lane]=0;
+    GroupMemoryBarrierWithGroupSync();
+    if (all(id.xy < GridSize)) {
+        Sample result=EvaluateScreen(id.xy);
+        Output[id.y*GridSize.x+id.x]=result;
+        uint category = result.color.a==1.0 ? 0 : result.color.a==-1.0 ? 1 :
+            result.color.a==-2.0 ? 2 : result.color.a==-3.0 ? 3 : 4;
+        InterlockedAdd(GroupCounts[category],1u);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (lane < 5) {
+        uint ignored;
+        ProbeCounts.InterlockedAdd(lane*4,GroupCounts[lane],ignored);
+    }
 }
