@@ -31,6 +31,10 @@ TEST_CASE("Screen material defaults and inactive projection are not feature limi
 	REQUIRE((recipe.issues & UnsupportedProjection) != 0);
 	REQUIRE(ClassifyScreenSurface(recipe, false).issues == 0);
 	REQUIRE(ClassifyScreenSurface(recipe, false).inactiveProjectedRecipe);
+	const auto unresolved = ClassifyScreenSurface(recipe, false, true, false);
+	REQUIRE(unresolved.issues == ScreenUnknownMetadata);
+	REQUIRE(unresolved.unresolvedProjection);
+	REQUIRE_FALSE(unresolved.inactiveProjectedRecipe);
 	REQUIRE(ClassifyScreenSurface(recipe, true).issues == (ScreenProjection | ScreenGlint));
 	REQUIRE(ClassifyScreenSurface(MakeRecipe(BaseMaterial()), true).issues == ScreenProjection);
 	REQUIRE(ClassifyScreenSurface(MakeRecipe(BaseMaterial()), false, false).issues == ScreenUnknownMetadata);
@@ -88,10 +92,10 @@ TEST_CASE("Base-only reason statistics count bindings without double counting to
 	material.texturePaths[size_t(TextureRole::Displacement)] = "height.dds";
 	const auto recipe = MakeRecipe(material);
 	ScreenSurfaceTally tally;
-	tally.Observe(recipe, ClassifyScreenSurface(recipe, false));
-	tally.Observe(recipe, ClassifyScreenSurface(recipe, true));
+	tally.Observe(recipe, ClassifyScreenSurface(recipe, false), false);
+	tally.Observe(recipe, ClassifyScreenSurface(recipe, true), true);
 	const auto base = MakeRecipe(BaseMaterial());
-	tally.Observe(base, ClassifyScreenSurface(base, false));
+	tally.Observe(base, ClassifyScreenSurface(base, false), false);
 	REQUIRE(tally.resident == 3);
 	REQUIRE(tally.limited == 2);
 	REQUIRE(tally.overlapping == 1);

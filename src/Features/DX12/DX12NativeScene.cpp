@@ -182,8 +182,8 @@ void DX12NativeScene::DrawDevStats()
 				for (size_t i = 0; i < capability.reasons.size(); ++i)
 					ImGui::Text("%s: %u (sole: %u)", NativePBR::kScreenSurfaceIssueNames[i].data(),
 						capability.reasons[i], capability.soleReasons[i]);
-				ImGui::Text("Projected UV: %u | Inactive projected recipe: %u",
-					capability.projectedUv, capability.inactiveProjectedRecipes);
+				ImGui::Text("Projected UV: %u | Inactive recipe: %u | Unresolved projection: %u",
+					capability.projectedUv, capability.inactiveProjectedRecipes, capability.unresolvedProjection);
 				constexpr std::array names{ "Subsurface", "TwoLayer", "ColoredCoat", "InterlayerParallax",
 					"CoatNormal", "Fuzz", "HairMarschner", "Foliage", "ThinSurface" };
 				for (size_t i = 0; i < names.size(); ++i)

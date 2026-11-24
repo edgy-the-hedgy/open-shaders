@@ -140,11 +140,12 @@ namespace NativePBR
 	struct ScreenSurfaceCapability
 	{
 		uint32_t issues = 0, activeFlags = 0;
-		bool projectedUv = false, inactiveProjectedRecipe = false;
+		bool projectedUv = false, inactiveProjectedRecipe = false, unresolvedProjection = false;
 	};
 
 	/** @brief Classify the actual base-only screen evaluator, not the historical ray-material path. */
-	inline ScreenSurfaceCapability ClassifyScreenSurface(const Recipe& recipe, bool projectedUv, bool authoredFlagsKnown = true)
+	inline ScreenSurfaceCapability ClassifyScreenSurface(const Recipe& recipe, bool projectedUv,
+		bool authoredFlagsKnown = true, bool projectionKnown = true)
 	{
 		ScreenSurfaceCapability result;
 		const auto& material = recipe.parameters;
@@ -187,9 +188,10 @@ namespace NativePBR
 			((active & fuzz) && material.fuzzRoughnessTexture && hasTexture(TextureRole::Displacement)))
 			result.issues |= ScreenFeatureTextures;
 		result.projectedUv = projectedUv;
-		result.inactiveProjectedRecipe = !projectedUv && (recipe.issues & UnsupportedProjection) != 0;
+		result.unresolvedProjection = !projectedUv && !projectionKnown;
+		result.inactiveProjectedRecipe = !projectedUv && projectionKnown && (recipe.issues & UnsupportedProjection) != 0;
 		if (projectedUv) result.issues |= ScreenProjection;
-		if (!authoredFlagsKnown) result.issues |= ScreenUnknownMetadata;
+		if (!authoredFlagsKnown || result.unresolvedProjection) result.issues |= ScreenUnknownMetadata;
 		return result;
 	}
 
@@ -198,16 +200,17 @@ namespace NativePBR
 	{
 		std::array<uint32_t, kScreenSurfaceIssueNames.size()> reasons{}, soleReasons{};
 		std::array<uint32_t, 9> authoredFlags{}, activeFlags{};
-		uint32_t resident = 0, limited = 0, overlapping = 0, projectedUv = 0, inactiveProjectedRecipes = 0;
+		uint32_t resident = 0, limited = 0, overlapping = 0, projectedUv = 0, inactiveProjectedRecipes = 0, unresolvedProjection = 0;
 		uint32_t formerlyLimitedNowBase = 0, formerlyBaseNowLimited = 0;
 
-		void Observe(const Recipe& recipe, const ScreenSurfaceCapability& capability)
+		void Observe(const Recipe& recipe, const ScreenSurfaceCapability& capability, bool previousProjectedUv)
 		{
 			++resident;
 			if (capability.projectedUv) ++projectedUv;
 			if (capability.inactiveProjectedRecipe) ++inactiveProjectedRecipes;
+			if (capability.unresolvedProjection) ++unresolvedProjection;
 			constexpr uint32_t oldIncomplete = UnsupportedPbrFeatures | UnsupportedGlint | UnsupportedDisplacement | UnsupportedProjection;
-			const bool oldLimited = (recipe.issues & oldIncomplete) != 0 || capability.projectedUv;
+			const bool oldLimited = (recipe.issues & oldIncomplete) != 0 || previousProjectedUv;
 			if (oldLimited && !capability.issues) ++formerlyLimitedNowBase;
 			if (!oldLimited && capability.issues) ++formerlyBaseNowLimited;
 			if (capability.issues) {

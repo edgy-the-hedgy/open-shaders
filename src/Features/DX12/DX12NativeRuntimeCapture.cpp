@@ -129,6 +129,7 @@ namespace DX12Native
 			shading->shaderFlags1 = uint32_t(flags);
 			shading->shaderFlags2 = uint32_t(flags >> 32);
 			shading->originalPbrFlags = originalFlags;
+			shading->runtimeProjectedUv = property->flags.any(F::kProjectedUV);
 			if (originalFlags) {
 				shading->nifThinSurface = ReadNifFloats<4>(property, "PBRThinSurface");
 				shading->nifFuzz = ReadNifFloats<2>(property, "PBRFuzz");

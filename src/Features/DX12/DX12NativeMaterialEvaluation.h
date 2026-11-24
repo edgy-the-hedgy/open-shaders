@@ -446,9 +446,14 @@ namespace DX12Native
 				binding.flags = (source.shaderFlags2 & (1u << 5)) ? NativePBR::kGpuDrawUsesVertexColor : 0;
 				const auto& recipe = prepared.recipes[it->second];
 				const uint64_t nifFlags = uint64_t(source.shaderFlags1) | (uint64_t(source.shaderFlags2) << 32);
-				const bool projectedUv = (nifFlags & static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kProjectedUV)) != 0;
-				const auto capability = NativePBR::ClassifyScreenSurface(recipe, projectedUv, !source.runtimeObserved || source.originalPbrFlags);
-				result->surfaceCapabilities.Observe(recipe, capability);
+				const bool authoredProjectedUv = (nifFlags & static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kProjectedUV)) != 0;
+				const bool projectedUv = authoredProjectedUv || (source.runtimeObserved && source.runtimeProjectedUv);
+				const auto& placement = scene.geometry[i].shape->materialOverride;
+				const bool hasMato = !source.runtimeMaterialObject.empty() || (placement && !placement->materialObject.empty());
+				const bool projectionKnown = projectedUv || source.runtimeObserved || !hasMato;
+				const auto capability = NativePBR::ClassifyScreenSurface(recipe, projectedUv,
+					!source.runtimeObserved || source.originalPbrFlags, projectionKnown);
+				result->surfaceCapabilities.Observe(recipe, capability, authoredProjectedUv);
 				if (capability.issues) {
 					binding.flags |= MaterialFrameContract::kBaseOnlyBinding;
 					++result->baseOnlyBindings;
