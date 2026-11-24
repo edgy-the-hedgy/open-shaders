@@ -65,6 +65,34 @@ namespace NativePBR
 			a_pool + (a_interpretation == TextureInterpretation::ColorSrgb ? kGpuTexturePoolCapacity : 0) :
 			kGpuMissingTexture;
 	}
+	inline constexpr uint32_t TextureRoleBit(TextureRole role)
+	{
+		return 1u << static_cast<uint32_t>(role);
+	}
+
+	/** @brief Texture roles required by the current base surface evaluation. */
+	inline uint32_t GpuBaseRequestedTextureRoles(const Recipe& recipe)
+	{
+		return kGpuRequiredTextureRoles |
+			(recipe.textures[static_cast<size_t>(TextureRole::Emission)].canonicalPath.empty() ? 0u : TextureRoleBit(TextureRole::Emission));
+	}
+
+	/** @brief Authored feature resources admitted after base surfaces for native integration. */
+	inline uint32_t GpuSpecializedTextureRoles(const Recipe& recipe)
+	{
+		const auto active = ActiveOpaquePbrFlags(recipe);
+		uint32_t result = 0;
+		const auto request = [&](TextureRole role, bool used) {
+			if (used && !recipe.textures[static_cast<size_t>(role)].canonicalPath.empty())
+				result |= TextureRoleBit(role);
+		};
+		request(TextureRole::Displacement, SupportsOpaqueParallax(recipe) ||
+			(active & uint32_t(PBRFlags::InterlayerParallax)) != 0);
+		request(TextureRole::Features0, (active & (uint32_t(PBRFlags::Subsurface) | uint32_t(PBRFlags::TwoLayer))) != 0);
+		request(TextureRole::Features1, (active & (uint32_t(PBRFlags::Fuzz) | uint32_t(PBRFlags::TwoLayer))) != 0);
+		return result;
+	}
+
 	/** @brief Requires only the texture roles sampled by the current opaque SM6.5 evaluator. */
 	inline uint32_t GpuRequestedTextureRoles(const Recipe& a_recipe)
 	{
