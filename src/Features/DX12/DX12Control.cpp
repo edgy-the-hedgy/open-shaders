@@ -9,73 +9,101 @@
 
 void DX12Control::DrawSettings()
 {
-	// Keep pipeline mode directly below the DX12 heading and above subfeature tabs.
-	const char* modes[] = { T("menu.dx12.mode.shadow_offload", "Shadow offload"), T("menu.dx12.mode.raster_comparison", "Raster comparison"), T("menu.dx12.mode.full_native", "Full Native") };
-	int mode = settings.Mode;
-	if (ImGui::Combo(T("menu.dx12.mode.label", "Mode"), &mode, modes, int(std::size(modes)))) {
-		settings.Mode = mode;
-		ApplyModeRequest();
+	ImGui::Checkbox(T("menu.dx12.master.enable", "Enable DX12 (restart required)"), &settings.Enabled);
+	const bool active = IsActive();
+	if (settings.Enabled != bootActive.load(std::memory_order_acquire))
+		ImGui::TextWrapped("%s", T("menu.dx12.master.restart_boot_state", "Restart Skyrim to apply the DX12 enable setting."));
+
+	ImGui::SeparatorText(T("menu.dx12.tab.resources", "Resources"));
+	const auto drawResourceControls = [&]() {
+		ImGui::TextUnformatted(T("menu.dx12.mode.label", "Rendering mode"));
+		const char* modes[] = { T("menu.dx12.mode.shadow_offload", "Shadow Offloading"), T("menu.dx12.mode.raster_comparison", "Raster Comparison"), T("menu.dx12.mode.full_native", "Full Native") };
+		int mode = settings.Mode;
+		for (int i = 0; i < int(std::size(modes)); ++i)
+			if (ImGui::RadioButton(modes[i], &mode, i)) {
+				settings.Mode = mode;
+				ApplyModeRequest();
+			}
+
+		ImGui::TextWrapped("%s", settings.Mode == 0 ?
+			T("menu.dx12.mode.shadow_offload_description", "DX12 shadows replace matched raster static shadows.") :
+			settings.Mode == 1 ? T("menu.dx12.mode.raster_comparison_description", "Raster shadows remain unchanged; DX12 shadow dispatch is paused for comparison.") :
+			T("menu.dx12.mode.full_native_description", "Full resource preparation and experimental material evaluation; raster rendering remains active."));
+		if (settings.Mode != selectedMode.load(std::memory_order_relaxed))
+			ImGui::TextWrapped("%s", T("menu.dx12.mode.restart_native", "Restart Skyrim to enter or leave Full Native mode."));
+
+		ImGui::Separator();
+		if (active)
+			globals::features::dx12Resources.DrawSettings();
+		else
+			ImGui::TextWrapped("%s", T("menu.dx12.resources.inactive", "Resources are not initialized."));
+		if (settings.Mode == 2)
+			ImGui::TextWrapped("%s", active && IsFullNativeMode() ?
+				T("menu.dx12.resources.cache_automatic", "Persistent cache: automatic") :
+				T("menu.dx12.resources.cache_pending", "Persistent cache: available after restart"));
+	};
+
+	if (ImGui::BeginTable("##DX12ResourceOverview", 2, ImGuiTableFlags_SizingStretchProp)) {
+		ImGui::TableSetupColumn("##Subcells", ImGuiTableColumnFlags_WidthStretch, 0.43f);
+		ImGui::TableSetupColumn("##Controls", ImGuiTableColumnFlags_WidthStretch, 0.57f);
+		ImGui::TableNextRow();
+		ImGui::TableSetColumnIndex(0);
+		globals::features::dx12Resources.DrawSubcellOverview();
+		ImGui::TableSetColumnIndex(1);
+		drawResourceControls();
+		ImGui::EndTable();
 	}
-	ImGui::TextDisabled(settings.Mode == 0 ?
-							T("menu.dx12.mode.shadow_offload_description", "Native shadows replace matched raster static shadows.") :
-							settings.Mode == 1 ? T("menu.dx12.mode.raster_comparison_description", "Raster shadows remain unchanged; native shadow dispatch is paused for comparison.") :
-							T("menu.dx12.mode.full_native_description", "Full Native resource preparation and diagnostic material evaluation; raster rendering remains active."));
 
-	if (settings.Mode != selectedMode.load(std::memory_order_relaxed))
-		ImGui::TextDisabled(T("menu.dx12.mode.restart_native", "Restart Skyrim to enter or leave Full Native mode."));
-
-	if (!IsActive()) {
-		ImGui::Checkbox(T("menu.dx12.master.enable", "Enable native DX12 features (restart required)"), &settings.Enabled);
-		if (settings.Enabled)
-			ImGui::TextDisabled(T("menu.dx12.master.restart_resources", "Restart the game to initialize DX12 Resources."));
+	if (!active)
 		return;
-	}
+
+	ImGui::Spacing();
+	ImGui::Separator();
+	const bool developer = globals::state && globals::state->IsDeveloperMode();
 	if (!Util::BeginPillTabBar("##DX12Tabs"))
 		return;
-	const char* labels[] = { T("menu.dx12.tab.resources", "Resources"), T("menu.dx12.tab.native_scene", "Native Scene"), T("menu.dx12.tab.native_composite", "Native Composite"), T("menu.dx12.tab.master_switch", "Master Switch"), T("menu.dx12.tab.dev", "Dev") };
-	const int tabCount = globals::state && globals::state->IsDeveloperMode() ? 5 : 4;
-	for (int index = 0; index < tabCount; ++index) {
-		if (!Util::BeginPillTabItem(labels[index]))
-			continue;
-		switch (index) {
-		case 0:
-			globals::features::dx12Resources.DrawSettings();
-			break;
-		case 1:
-			globals::features::dx12NativeScene.DrawSettings();
-			break;
-		case 2:
-			{
-				ImGui::Checkbox(T("menu.dx12.composite.spatial_reconstruction", "Spatial shadow reconstruction"), &settings.SpatialReconstruction);
-				spatialReconstruction.store(settings.SpatialReconstruction, std::memory_order_relaxed);
-				int gridIndex = int((settings.ReconstructionGridSize - 3u) / 2u);
-				ImGui::BeginDisabled(!settings.SpatialReconstruction);
-				if (ImGui::Combo(T("menu.dx12.composite.reconstruction_grid", "Reconstruction grid"), &gridIndex,
-						"3x3\0"
-						"5x5\0"
-						"7x7\0"
-						"9x9\0")) {
-					settings.ReconstructionGridSize = uint32_t(3 + gridIndex * 2);
-					reconstructionGrid.store(settings.ReconstructionGridSize, std::memory_order_relaxed);
-				}
-				ImGui::EndDisabled();
-				if (ImGui::SliderFloat(T("menu.dx12.composite.shadow_strength", "Shadow strength"), &settings.ShadowStrength, 0.0f, 4.0f, "%.2f"))
-					shadowStrength.store(settings.ShadowStrength, std::memory_order_relaxed);
-				if (ImGui::SliderFloat(T("menu.dx12.composite.shadow_blend", "Shadow blend"), &settings.ShadowBlend, 0.0f, 1.0f, "%.2f"))
-					shadowBlend.store(settings.ShadowBlend, std::memory_order_relaxed);
-				ImGui::TextDisabled(T("menu.dx12.composite.before_upscaling", "Reconstruction and shadow application run before native upscaling."));
-				break;
-			}
-		case 3:
-			ImGui::Checkbox(T("menu.dx12.master.enable", "Enable native DX12 features (restart required)"), &settings.Enabled);
-			if (settings.Enabled != bootActive.load(std::memory_order_acquire))
-				ImGui::TextDisabled(T("menu.dx12.master.restart_boot_state", "A game restart is required; DX12 Resources retains its boot state until then."));
-			break;
-		case 4:
-			globals::features::dx12Resources.DrawDevStats();
-			globals::features::dx12NativeScene.DrawDevStats();
-			break;
+	if (Util::BeginPillTabItem(T("menu.dx12.tab.shadows", "Shadows"))) {
+		globals::features::dx12NativeScene.DrawSettings();
+		ImGui::SeparatorText(T("menu.dx12.shadows.reconstruction", "Reconstruction"));
+		ImGui::Checkbox(T("menu.dx12.composite.spatial_reconstruction", "Spatial shadow reconstruction"), &settings.SpatialReconstruction);
+		spatialReconstruction.store(settings.SpatialReconstruction, std::memory_order_relaxed);
+		int gridIndex = int((settings.ReconstructionGridSize - 3u) / 2u);
+		ImGui::BeginDisabled(!settings.SpatialReconstruction);
+		if (ImGui::Combo(T("menu.dx12.composite.reconstruction_grid", "Reconstruction grid"), &gridIndex,
+				"3x3\0"
+				"5x5\0"
+				"7x7\0"
+				"9x9\0")) {
+			settings.ReconstructionGridSize = uint32_t(3 + gridIndex * 2);
+			reconstructionGrid.store(settings.ReconstructionGridSize, std::memory_order_relaxed);
 		}
+		ImGui::EndDisabled();
+		if (ImGui::SliderFloat(T("menu.dx12.composite.shadow_strength", "Shadow strength"), &settings.ShadowStrength, 0.0f, 4.0f, "%.2f"))
+			shadowStrength.store(settings.ShadowStrength, std::memory_order_relaxed);
+		if (ImGui::SliderFloat(T("menu.dx12.composite.shadow_blend", "Shadow blend"), &settings.ShadowBlend, 0.0f, 1.0f, "%.2f"))
+			shadowBlend.store(settings.ShadowBlend, std::memory_order_relaxed);
+		ImGui::TextDisabled(T("menu.dx12.composite.before_upscaling", "Reconstruction and shadow application run before upscaling."));
+		Util::EndPillTabItem();
+	}
+	if (settings.Mode == 2) {
+		if (Util::BeginPillTabItem(T("menu.dx12.tab.lighting", "Lighting"))) {
+			if (IsFullNativeMode())
+				globals::features::dx12NativeScene.DrawLightingSettings(developer);
+			else
+				ImGui::TextWrapped("%s", T("menu.dx12.mode.restart_native", "Restart Skyrim to enter or leave Full Native mode."));
+			Util::EndPillTabItem();
+		}
+		if (Util::BeginPillTabItem(T("menu.dx12.tab.materials", "Materials"))) {
+			if (IsFullNativeMode())
+				globals::features::dx12NativeScene.DrawMaterialSettings(developer);
+			else
+				ImGui::TextWrapped("%s", T("menu.dx12.mode.restart_native", "Restart Skyrim to enter or leave Full Native mode."));
+			Util::EndPillTabItem();
+		}
+	}
+	if (developer && Util::BeginPillTabItem(T("menu.dx12.tab.dev", "Dev"))) {
+		globals::features::dx12Resources.DrawDevStats();
+		globals::features::dx12NativeScene.DrawDevStats();
 		Util::EndPillTabItem();
 	}
 	Util::EndPillTabBar();

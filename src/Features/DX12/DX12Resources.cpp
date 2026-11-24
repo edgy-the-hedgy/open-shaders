@@ -515,9 +515,9 @@ namespace
 			return IM_COL32(46, 54, 65, 255);  // Awaiting generation: dark slate.
 		switch (tile->state) {
 		case DX12::Tile::State::Ready:
-			return active ? IM_COL32(243, 201, 74, 255) : IM_COL32(117, 197, 239, 255);
+			return active ? IM_COL32(37, 112, 76, 255) : IM_COL32(52, 81, 65, 255);
 		case DX12::Tile::State::ReadyPartial:
-			return active ? IM_COL32(200, 164, 71, 255) : IM_COL32(91, 156, 194, 255);
+			return active ? IM_COL32(30, 90, 62, 255) : IM_COL32(43, 67, 54, 255);
 		case DX12::Tile::State::Preparing:
 			return IM_COL32(182, 140, 91, 255);
 		case DX12::Tile::State::RetryWaiting:
@@ -552,8 +552,8 @@ namespace
 	{
 		const auto center = grid.requested.front();
 		const float available = std::max(1.0f, ImGui::GetContentRegionAvail().x);
-		const float pitch = std::min(54.0f, std::max(28.0f, (available - 4.0f) / 5.0f));
-		const float side = pitch - 4.0f;
+		const float pitch = std::clamp((available - 4.0f) / 5.0f, 1.0f, 54.0f);
+		const float side = pitch - std::min(4.0f, pitch * 0.2f);
 		const float total = pitch * 5.0f;
 		const ImVec2 origin = ImGui::GetCursorScreenPos();
 		const float left = origin.x + std::max(0.0f, (available - total) * 0.5f);
@@ -567,7 +567,7 @@ namespace
 				const ImVec2 p0{ left + col * pitch, origin.y + row * pitch };
 				const ImVec2 p1{ p0.x + side, p0.y + side };
 				draw->AddRectFilled(p0, p1, TileColor(tile, active), 3.0f);
-				draw->AddRect(p0, p1, active ? IM_COL32(255, 225, 150, 200) : IM_COL32(138, 174, 207, 180), 3.0f, 0, active ? 1.8f : 1.0f);
+				draw->AddRect(p0, p1, col == 2 && row == 2 ? IM_COL32(166, 244, 194, 255) : active ? IM_COL32(91, 157, 119, 220) : IM_COL32(90, 111, 99, 180), 3.0f, 0, active ? 1.8f : 1.0f);
 				if (tile && tile->state == DX12::Tile::State::ReadyPartial) {
 					// A diagonal distinguishes partially processed cells without hiding the zone color.
 					draw->AddLine(ImVec2(p0.x + 4.0f, p1.y - 4.0f),
@@ -575,7 +575,7 @@ namespace
 				}
 				if (col == 2 && row == 2) {
 					const ImVec2 marker{ (p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f };
-					draw->AddCircleFilled(marker, 5.0f, IM_COL32(30, 37, 48, 255));
+					draw->AddCircleFilled(marker, 5.0f, IM_COL32(255, 255, 255, 255));
 					draw->AddCircle(marker, 5.0f, IM_COL32(255, 255, 255, 240), 0, 1.5f);
 				}
 			}
@@ -635,6 +635,19 @@ void DX12Resources::ResetPreparation()
 
 void DX12Resources::DrawSettings()
 {
+	const auto snapshot = GetGrid();
+	if (snapshot && snapshot->requested.front().scope) {
+		const auto& center = snapshot->requested.front();
+		ImGui::Text(T("menu.dx12.resources.scope_id", "Worldspace / cell: %08X"), center.scope);
+		ImGui::Text(T("menu.dx12.resources.current_subcell", "Subcell: (%lld, %lld)"),
+			static_cast<long long>(center.x), static_cast<long long>(center.y));
+		ImGui::Text(T("menu.dx12.resources.geometry_status", "Geometry: %s"), TileStatus(snapshot->resident.front()));
+	} else {
+		ImGui::TextWrapped("%s", T("menu.dx12.resources.awaiting_cell", "Waiting for a cell."));
+	}
+	ImGui::TextWrapped("%s", T("menu.dx12.resources.companion_automatic", "Companion preparation: automatic"));
+	ImGui::TextWrapped("%s", T("menu.dx12.resources.streaming_automatic", "Predictive streaming: automatic"));
+	ImGui::Separator();
 	int index = int(std::ranges::find(DX12::kSubcellSizes, settings.SubcellSize) - DX12::kSubcellSizes.begin());
 	if (index >= int(DX12::kSubcellSizes.size()))
 		index = 0;
@@ -646,15 +659,19 @@ void DX12Resources::DrawSettings()
 			ResetPreparation();
 		}
 	}
+}
 
-	ImGui::SeparatorText(T("menu.dx12.resources.subcell_status", "Subcell status (5x5)"));
+void DX12Resources::DrawSubcellOverview()
+{
 	const auto snapshot = GetGrid();
 	if (snapshot)
 		DrawSubcellMap(*snapshot);
-	ImGui::TextColored(ImVec4(0.95f, 0.79f, 0.29f, 1.0f), T("menu.dx12.resources.legend.yellow", "Yellow: loaded 3x3"));
-	ImGui::TextColored(ImVec4(0.46f, 0.77f, 0.90f, 1.0f), T("menu.dx12.resources.legend.light_blue", "Light blue: loaded predictive ring"));
-	ImGui::TextColored(ImVec4(0.83f, 0.30f, 0.30f, 1.0f), T("menu.dx12.resources.legend.red", "Red: failed (retry pending)"));
-	ImGui::TextDisabled(T("menu.dx12.resources.legend.diagonal", "Diagonal: partially loaded  |  Center dot: player subcell"));
+	ImGui::PushTextWrapPos(0.0f);
+	ImGui::TextColored(ImVec4(0.25f, 0.65f, 0.43f, 1.0f), "%s", T("menu.dx12.resources.legend.active_green", "Green: loaded 3x3"));
+	ImGui::TextColored(ImVec4(0.48f, 0.65f, 0.54f, 1.0f), "%s", T("menu.dx12.resources.legend.predictive_green", "Muted green: loaded predictive ring"));
+	ImGui::TextColored(ImVec4(0.83f, 0.30f, 0.30f, 1.0f), "%s", T("menu.dx12.resources.legend.red", "Red: failed (retry pending)"));
+	ImGui::TextDisabled("%s", T("menu.dx12.resources.legend.diagonal", "Diagonal: partially loaded  |  Center dot: player subcell"));
+	ImGui::PopTextWrapPos();
 }
 
 void DX12Resources::DrawDevStats()

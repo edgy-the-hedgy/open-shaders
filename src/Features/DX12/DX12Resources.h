@@ -257,6 +257,8 @@ struct DX12Resources final : Feature
 	bool IsInFeatureList() const override { return false; }
 	bool SupportsVR() override { return false; }
 	void DrawSettings() override;
+	/** @brief Draw the current subcell map and its status legend. */
+	void DrawSubcellOverview();
 	void DrawDevStats();
 	void LoadSettings(json& input) override;
 	void SaveSettings(json& output) override;

@@ -28,6 +28,10 @@ struct DX12NativeScene final : Feature
 	bool SupportsVR() override { return false; }
 
 	void DrawSettings() override;
+	/** @brief Draw available Full Native lighting controls. */
+	void DrawLightingSettings(bool developer);
+	/** @brief Draw available Full Native material controls. */
+	void DrawMaterialSettings(bool developer);
 	void DrawDevStats();
 	bool WantsRenderPassHook() const override { return true; }
 	std::function<void()> OnRenderPassBegin(const RE::BSRenderPass* pass) override;

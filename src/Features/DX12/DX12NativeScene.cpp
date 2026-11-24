@@ -23,12 +23,12 @@ void DX12NativeScene::DrawSettings()
 	ImGui::Checkbox(T("menu.dx12.scene.independent_shadowmask", "Independent shadowmask"), &shadowMaskEnabled);
 	ImGui::Checkbox(T("menu.dx12.scene.outdoor_shadow_offloading", "Enable outdoor shadow offloading (DX12 only)"), &outdoorShadowOffloading);
 	bool keepRasterStatic = !offloadStaticShadows;
-	if (ImGui::Checkbox(T("menu.dx12.scene.keep_raster_static", "Keep raster static shadows for native-accounted lights"), &keepRasterStatic))
+	if (ImGui::Checkbox(T("menu.dx12.scene.keep_raster_static", "Keep raster static shadows for DX12-accounted lights"), &keepRasterStatic))
 		offloadStaticShadows = !keepRasterStatic;
 	bool retainFlickeringRaster = !offloadFlickeringStatic;
 	if (ImGui::Checkbox(T("menu.dx12.scene.keep_raster_flickering", "Keep raster static shadows for flickering lights"), &retainFlickeringRaster))
 		offloadFlickeringStatic = !retainFlickeringRaster;
-	if (ImGui::Checkbox(T("menu.dx12.scene.freeze_flickering_native", "Freeze flickering native shadows (DX12 only)"), &freezeNativeFlickering)) {
+	if (ImGui::Checkbox(T("menu.dx12.scene.freeze_flickering_native", "Freeze flickering shadows (DX12 only)"), &freezeNativeFlickering)) {
 		std::scoped_lock lock(runtimeLightMutex);
 		frozenNativeLights.clear();
 	}
@@ -53,14 +53,30 @@ void DX12NativeScene::DrawSettings()
 	ImGui::SliderFloat(T("menu.dx12.scene.shadow_falloff_curve", "Shadow falloff curve"), &shadowFalloffCurve, 0.0f, 2.5f, "%.2f");
 }
 
+void DX12NativeScene::DrawLightingSettings(bool developer)
+{
+	ImGui::TextWrapped("%s", T("menu.dx12.lighting.raster_active", "Raster lighting remains active. DX12 indirect lighting is experimental."));
+	if (developer && ImGui::Checkbox(T("menu.dx12.lighting.deferred_materials", "Use DX12 materials in deferred indirect lighting (experimental)"), &deferredNativeMaterials))
+		screenProbe.Reset();
+}
+
+void DX12NativeScene::DrawMaterialSettings(bool developer)
+{
+	ImGui::TextWrapped("%s", T("menu.dx12.materials.raster_active", "Raster material rendering remains active. DX12 material evaluation is experimental."));
+	if (!developer)
+		return;
+	if (ImGui::Checkbox(T("menu.dx12.materials.probe", "Visible-pixel material probe"), &screenProbeEnabled) && !screenProbeEnabled)
+		screenProbe.Reset();
+	if (screenProbeEnabled && ImGui::Checkbox(T("menu.dx12.materials.full_resolution", "Full render resolution"), &fullResolutionMaterialProbe))
+		screenProbe.Reset();
+	if (screenProbeEnabled && ImGui::Checkbox(T("menu.dx12.materials.continuous_probe", "Continuous material probe (when GPU slot is free)"), &continuousMaterialProbe))
+		screenProbe.Reset();
+}
+
 void DX12NativeScene::DrawDevStats()
 {
-	ImGui::SeparatorText("Native Scene / NativePBR preparation");
+	ImGui::SeparatorText(T("menu.dx12.dev.scene_materials", "Scene / material preparation"));
 	if (globals::features::dx12Control.IsFullNativeMode()) {
-		if (ImGui::Checkbox("Visible-pixel material probe", &screenProbeEnabled) && !screenProbeEnabled) screenProbe.Reset();
-		if (screenProbeEnabled && ImGui::Checkbox("Full native render resolution", &fullResolutionMaterialProbe)) screenProbe.Reset();
-		if (screenProbeEnabled && ImGui::Checkbox("Continuous material probe (when GPU slot is free)", &continuousMaterialProbe)) screenProbe.Reset();
-		if (ImGui::Checkbox("Native materials in deferred indirect lighting (experimental)", &deferredNativeMaterials)) screenProbe.Reset();
 		const auto& stats = screenProbe.stats;
 		if (stats.sampled) ImGui::Text("Material output: %u x %u | %.2f MiB GPU | 20-byte counter readback", stats.width, stats.height, double(stats.outputBytes)/1048576.0);
 		if (stats.submittedFrames) ImGui::Text("Material submissions: %u | Reused output allocations: %u", stats.submittedFrames, stats.reusedAllocations);
@@ -71,7 +87,7 @@ void DX12NativeScene::DrawDevStats()
 	}
 	const auto built = acceleration.GetScene();
 	if (!built || !built->inputs) {
-		ImGui::TextDisabled("No completed native scene");
+		ImGui::TextDisabled("%s", T("menu.dx12.dev.no_scene", "No completed scene"));
 		return;
 	}
 	std::unordered_set<const DX12Native::BottomLevel*> unique;
@@ -106,7 +122,7 @@ void DX12NativeScene::DrawDevStats()
 				for (const auto& [path, reason] : evaluation->failedExamples) ImGui::TextWrapped("%s: %s", reason.c_str(), path.c_str());
 				ImGui::TreePop();
 			}
-			ImGui::Text("Native DDS VRAM: %.2f MiB | Evaluated triangles: %u / %u", double(evaluation->textureBytes) / 1048576.0,
+			ImGui::Text(T("menu.dx12.dev.dds_vram", "DDS VRAM: %.2f MiB | Evaluated triangles: %u / %u"), double(evaluation->textureBytes) / 1048576.0,
 				evaluation->evaluated, evaluation->instanceCount);
 			if (evaluation->evaluated) {
 				const auto& sample = evaluation->firstSample;
