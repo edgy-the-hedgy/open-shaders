@@ -35,11 +35,10 @@ try
     if (!File.Exists(Path.Combine(data, scope.ModKey.ToString())) ||
         !Directory.Exists(Path.GetDirectoryName(output))) return 2;
     var result = SceneTile.Prepare(data, plugins, scope, x, y, size, worldspace, Path.GetDirectoryName(output)!);
-    await using var stream = new FileStream(output, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-    await JsonSerializer.SerializeAsync(stream, result, new JsonSerializerOptions
+    TileTransfer.Write(output, result, new JsonSerializerOptions
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-    });
+    }, FileMode.CreateNew);
     return 0;
 }
 catch (Exception)
@@ -60,7 +59,7 @@ static async Task<int> ServeAsync(string[] arguments)
         if (!File.Exists(plugins) || !Directory.Exists(sessionRoot) ||
             !File.Exists(Path.Combine(data, "Skyrim.esm"))) return 2;
         var requestFile = Path.Combine(sessionRoot, "request.json");
-        var replyFile = Path.Combine(sessionRoot, "reply.json");
+        var replyFile = Path.Combine(sessionRoot, "reply.tile");
         var replyTemp = Path.Combine(sessionRoot, "reply.tmp");
         var options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
         var (prepare, owner) = SceneTile.OpenSession(data, plugins);
@@ -97,9 +96,8 @@ static async Task<int> ServeAsync(string[] arguments)
                     // Native geometry publication must fail closed on a request failure.
                     result = new TileResult(1, 0, 1, false, [], [], DescribeFailure("Request", error));
                 }
-                // Publish only after serialization completes; the host adopts reply.json atomically.
-                await using (var stream = new FileStream(replyTemp, FileMode.Create, FileAccess.Write, FileShare.None))
-                    await JsonSerializer.SerializeAsync(stream, result ?? new TileResult(1, 0, 1, false, [], []), options);
+                // Publish the complete bounded binary envelope atomically.
+                TileTransfer.Write(replyTemp, result ?? new TileResult(1, 0, 1, false, [], []), options, FileMode.Create);
                 File.Move(replyTemp, replyFile, true);
             }
         }
@@ -116,14 +114,13 @@ static async Task<int> ServeAsync(string[] arguments)
                 if (Directory.Exists(sessionRoot))
                 {
                     var temp = Path.Combine(sessionRoot, "reply.tmp");
-                    var reply = Path.Combine(sessionRoot, "reply.json");
+                    var reply = Path.Combine(sessionRoot, "reply.tile");
                     var failure = new TileResult(1, 0, 1, false, [], [],
                         DescribeFailure("Initialize", error));
-                    await using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
-                        await JsonSerializer.SerializeAsync(stream, failure, new JsonSerializerOptions
-                        {
-                            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-                        });
+                    TileTransfer.Write(temp, failure, new JsonSerializerOptions
+                    {
+                        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+                    }, FileMode.Create);
                     File.Move(temp, reply, true);
                 }
             }
@@ -139,7 +136,7 @@ static string DescribeFailure(string stage, Exception error)
     return detail.Length <= 320 ? detail : detail[..320];
 }
 
-internal sealed record TileShape(ulong Identity, float[][] Positions, uint[] Indices, float[] Transform);
+internal sealed record TileShape(ulong Identity, Vector3[] Positions, uint[] Indices, float[] Transform);
 internal sealed record TileNifSource(string ReferencePlugin, uint ReferenceLocal, string NifPath);
 internal sealed record TileMissingNifShape(string ReferencePlugin, uint ReferenceLocal, string NifPath,
     int BlockIndex, string Reason);
@@ -156,7 +153,7 @@ internal sealed record ModelExtraction(ModelShape[] Shapes, MissingModelShape[] 
 
 internal static class SceneTile
 {
-    private const int MaxShapes = 384;
+    private const int MaxShapes = 4096;
     private const int MaxLights = 2048;
     private const int MaxNifSources = 4096;
     private const int MaxMissingShapes = 4096;
@@ -396,14 +393,17 @@ internal static class SceneTile
                     if (!Overlaps(shape.Positions, transform, tileX, tileY, size)) continue;
                     ++eligible;
                     var shapeBytes = checked((long)shape.Positions.Length * 12 + (long)shape.Indices.Length * 4);
-                    if (shapes.Count >= MaxShapes || shapeBytes > MaxGeometryBytes - bytes)
+                    var budgetReason = shapes.Count >= MaxShapes ? "tile shape count exceeded" :
+                        shapeBytes > MaxGeometryBytes - bytes ? "tile geometry byte budget exceeded" : null;
+                    if (budgetReason != null)
                     {
-                        Reject("tile shape or byte budget exceeded");
+                        Reject(budgetReason);
+                        AddMissing(placed.FormKey, unresolvedNif, shape.Index, budgetReason);
                         continue;
                     }
                     bytes += shapeBytes;
                     shapes.Add(new TileShape(Identity(placed.FormKey.ToString(), shape.Index),
-                        shape.Positions.Select(p => new[] { p.X, p.Y, p.Z }).ToArray(), shape.Indices,
+                        shape.Positions, shape.Indices,
                         PlacementTransform.ToRows(transform)));
                 }
             }

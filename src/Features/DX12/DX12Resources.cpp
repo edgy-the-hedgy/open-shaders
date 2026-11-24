@@ -272,7 +272,7 @@ namespace DX12
 	{
 		// Larger interior furniture and room pieces often exceed 256 KiB.
 		// Keep the whole runtime supplement transient and strictly budgeted.
-		constexpr size_t kMaximumRuntimeShapes = 384;
+		constexpr size_t kMaximumRuntimeShapes = 2048;
 		constexpr uint64_t kMaximumRuntimeBytes = 64ull * 1024 * 1024;
 		constexpr uint64_t kMaximumSingleShapeBytes = 1024ull * 1024;
 		if (!shape || !shape->identity || shape->positions.empty() || shape->indices.empty() ||
