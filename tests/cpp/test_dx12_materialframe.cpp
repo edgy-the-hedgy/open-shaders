@@ -119,3 +119,13 @@ TEST_CASE("Temporal identity rejects gaps, extent changes and resets", "[dx12][m
 	++now.scope;
 	REQUIRE_FALSE(now.CanReuseHistory(previous));
 }
+
+TEST_CASE("Fence retirement never treats an untracked submission as complete", "[dx12][materials]")
+{
+	REQUIRE(FenceRetired(0, 0));
+	REQUIRE_FALSE(FenceRetired(UINT64_MAX, 100));
+	REQUIRE_FALSE(FenceRetired(5, 4));
+	REQUIRE(FenceRetired(5, 5));
+	REQUIRE(FenceRetired(UINT64_MAX, UINT64_MAX));
+	REQUIRE_FALSE(ValidProducerSignal(5, UINT64_MAX));
+}

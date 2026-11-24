@@ -1,5 +1,7 @@
 #pragma once
 
+#include "DX12MaterialFrameContract.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -18,7 +20,7 @@ namespace DX12Native
 		if (!fence)
 			return false;
 		const uint64_t completed = fence->GetCompletedValue();
-		return completed == UINT64_MAX || (value != UINT64_MAX && completed >= value);
+		return MaterialFrameContract::FenceRetired(value, completed);
 	}
 
 	inline bool GpuDeviceRemoved(ID3D12Device* device)

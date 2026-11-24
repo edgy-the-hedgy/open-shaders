@@ -103,6 +103,12 @@ namespace DX12Native::MaterialFrameContract
 		return value != 0 && value != UINT64_MAX && completed != UINT64_MAX;
 	}
 
+	/** @brief An untracked submission never retires on a normal completion value. */
+	constexpr bool FenceRetired(uint64_t value, uint64_t completed)
+	{
+		return !value || completed == UINT64_MAX || (value != UINT64_MAX && completed >= value);
+	}
+
 	/** @brief Checks the packed surface ABI before a consumer binds it. */
 	constexpr bool ValidMaterialABI(uint32_t version, uint32_t stride)
 	{

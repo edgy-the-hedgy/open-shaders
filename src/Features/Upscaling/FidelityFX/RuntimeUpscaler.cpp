@@ -1298,12 +1298,14 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 
 			ID3D12CommandList* commandListsToExecute[] = { commandList };
 			const uint64_t d3d12SubmitFence = runtimeFence.Next();
-			if (nativeColor && !upscaling.nativeComposite.Retain(composite, runtimeFence.fence12.get(), d3d12SubmitFence)) {
+			auto ticket = nativeColor ? upscaling.nativeComposite.ReserveConsumer(composite, swapChain.commandQueue.get()) : nullptr;
+			if (nativeColor && !ticket) {
 				commandContext->fenceValue = 0;
 				return false;
 			}
 			swapChain.commandQueue->ExecuteCommandLists(1, commandListsToExecute);
 			commandListSubmitted = true;
+			if (ticket) ticket->MarkSubmitted();
 			DX::ThrowIfFailed(swapChain.commandQueue->Signal(runtimeFence.fence12.get(), d3d12SubmitFence));
 			commandContext->fenceValue = d3d12SubmitFence;
 			commandFenceTracked = true;
@@ -1335,7 +1337,7 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 				DX::ThrowIfFailed(swapChain.commandQueue->Signal(runtimeFence.fence12.get(), rescueFence));
 				commandContext->fenceValue = rescueFence;
 			} catch (...) {
-				commandContext->fenceValue = 0;
+				commandContext->fenceValue = UINT64_MAX;
 			}
 		}
 		dispatchOk = false;
@@ -1349,7 +1351,7 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 				DX::ThrowIfFailed(swapChain.commandQueue->Signal(runtimeFence.fence12.get(), rescueFence));
 				commandContext->fenceValue = rescueFence;
 			} catch (...) {
-				commandContext->fenceValue = 0;
+				commandContext->fenceValue = UINT64_MAX;
 			}
 		}
 		dispatchOk = false;

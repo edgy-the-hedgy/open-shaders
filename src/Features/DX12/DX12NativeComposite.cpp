@@ -450,19 +450,42 @@ namespace DX12Native
 		}
 	}
 
-	bool NativeComposite::Retain(const std::shared_ptr<const Frame>& frame, ID3D12Fence* fence, uint64_t value)
+	void NativeComposite::ConsumerTicket::MarkSubmitted()
 	{
-		if (!frame || !fence || !value)
-			return false;
-		for (auto& slot : slots) {
-			if (slot && slot->frame == frame) {
-				winrt::com_ptr<ID3D12Fence> keep;
-				keep.copy_from(fence);
-				slot->consumers.emplace_back(std::move(keep), value);
-				return true;
-			}
+		submitted = true;
+		if (!signalled) signalled = SUCCEEDED(queue->Signal(fence.get(), 1));
+	}
+
+	bool NativeComposite::ConsumerTicket::Retired()
+	{
+		if (!submitted) return true;
+		if (!signalled) {
+			if (fence->GetCompletedValue() == UINT64_MAX) return true;
+			MarkSubmitted();
 		}
-		return false;
+		return signalled && GpuFenceRetired(fence.get(), 1);
+	}
+
+	std::shared_ptr<NativeComposite::ConsumerTicket> NativeComposite::ReserveConsumer(
+		const std::shared_ptr<const Frame>& frame, ID3D12CommandQueue* queue)
+	{
+		if (!frame || !frame->valid || !queue || !frame->producerFence ||
+			!MaterialFrameContract::ValidProducerSignal(frame->producerValue, frame->producerFence->GetCompletedValue()))
+			return {};
+		for (auto& slot : slots) {
+			if (!slot || slot->frame != frame || slot->recovery != Slot::Recovery::None || slot->consumers.size() >= 4)
+				continue;
+			winrt::com_ptr<ID3D12Device> device;
+			if (FAILED(queue->GetDevice(IID_PPV_ARGS(device.put()))) || device.get() != slot->device)
+				return {};
+			auto ticket = std::make_shared<ConsumerTicket>();
+			if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(ticket->fence.put()))))
+				return {};
+			ticket->queue.copy_from(queue);
+			slot->consumers.push_back(ticket);
+			return ticket;
+		}
+		return {};
 	}
 
 	void NativeComposite::PollRetirement()
@@ -495,7 +518,7 @@ namespace DX12Native
 				slot.opaqueInput.reset();
 			}
 			std::erase_if(slot.consumers, [](const auto& consumer) {
-				return GpuFenceRetired(consumer.first.get(), consumer.second);
+				return consumer.use_count() == 1 && consumer->Retired();
 			});
 		}
 	}
@@ -508,7 +531,7 @@ namespace DX12Native
 			if (slot.frame && !GpuFenceRetired(slot.fence.fence12.get(), slot.frame->producerValue))
 				return false;
 			return std::ranges::all_of(slot.consumers, [](const auto& consumer) {
-				return GpuFenceRetired(consumer.first.get(), consumer.second);
+				return consumer.use_count() == 1 && consumer->Retired();
 			});
 		};
 		for (auto& slot : slots) {

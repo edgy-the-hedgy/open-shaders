@@ -82,7 +82,19 @@ namespace DX12Native
 			const std::shared_ptr<const NativeScreenProbe::MaterialFrame>& material = {},
 			const std::shared_ptr<const DirectLightingFrame>& direct = {}, uint32_t lightingView = 0,
 			const std::shared_ptr<const OpaqueLightingFrame>& opaque = {});
-		bool Retain(const std::shared_ptr<const Frame>& frame, ID3D12Fence* fence, uint64_t value);
+		/** @brief Queue-local retirement marker independent of the provider's shared fence. */
+		class ConsumerTicket
+		{
+		public:
+			void MarkSubmitted();
+		private:
+			friend class NativeComposite;
+			bool Retired();
+			winrt::com_ptr<ID3D12CommandQueue> queue;
+			winrt::com_ptr<ID3D12Fence> fence;
+			bool submitted = false, signalled = false;
+		};
+		std::shared_ptr<ConsumerTicket> ReserveConsumer(const std::shared_ptr<const Frame>& frame, ID3D12CommandQueue* queue);
 		void PollRetirement();
 		~NativeComposite();
 
@@ -104,7 +116,7 @@ namespace DX12Native
 			winrt::com_ptr<ID3D12RootSignature> shadowRoot;
 			winrt::com_ptr<ID3D12PipelineState> shadowPipeline;
 			SharedFence fence;
-			std::vector<std::pair<winrt::com_ptr<ID3D12Fence>, uint64_t>> consumers;
+			std::vector<std::shared_ptr<ConsumerTicket>> consumers;
 			ID3D12Device* device = nullptr;
 			ID3D11Device* device11 = nullptr;
 			D3D11_TEXTURE2D_DESC sourceDesc{};
