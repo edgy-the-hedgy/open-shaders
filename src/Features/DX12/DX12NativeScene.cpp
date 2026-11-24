@@ -153,6 +153,9 @@ void DX12NativeScene::DrawDevStats()
 			ImGui::Text("Resident recipes: %u | DDS: %zu (archive %u) | Reused: %u | Failed: %u", evaluation->residentRecipes,
 				evaluation->textures.size(), evaluation->archiveTextures, evaluation->reusedTextures, evaluation->failedTextures);
 			ImGui::Text("Base-only material bindings: %u", evaluation->baseOnlyBindings);
+			ImGui::Text("Specialized DDS roles: %u / %u | Shared references: %u | Texture slots: %zu / %u",
+				evaluation->specializedResident, evaluation->specializedRequested, evaluation->sharedTextureReferences,
+				evaluation->poolTextures.size(), NativePBR::kGpuTexturePoolCapacity);
 			const auto legacy = SharedMaterialHooks::LegacyResidency();
 			ImGui::Text("Legacy PBR material extensions: %zu mesh / %zu landscape | Glints texture: %s", legacy.meshes, legacy.landscapes, legacy.glints ? "resident" : "none");
 			if (ImGui::TreeNode("DDS failure details")) {
