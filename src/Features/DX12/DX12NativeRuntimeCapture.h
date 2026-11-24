@@ -20,7 +20,7 @@ namespace DX12Native
 	/** @brief Borrowed rigid CPU arrays, valid only inside the SCM cull callback. */
 	struct RuntimeGeometryCandidate
 	{
-		std::string referenceKey, shapeName;
+		std::string referenceKey, shapeName, materialObjectEditorID;
 		std::array<float, 12> transform{};
 		const uint8_t* vertices = nullptr;
 		const uint16_t* indices = nullptr;

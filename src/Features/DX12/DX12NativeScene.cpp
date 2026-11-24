@@ -420,6 +420,17 @@ void DX12NativeScene::ObserveSCMRigidCaster(RE::BSGeometry& geometry, bool requi
 		if (alpha) { candidate.alphaThreshold = alpha->alphaThreshold; candidate.alphaFunction = uint8_t((alpha->alphaFlags >> 10) & 7u); }
 		using V = RE::BSGraphics::Vertex;
 		candidate.shadingProperty = static_cast<const RE::BSLightingShaderProperty*>(property);
+		if (reference) {
+			const auto* placed = reference->As<RE::TESObjectREFR>();
+			if (placed && placed->data.objectReference && placed->data.objectReference->formType == RE::FormType::Static) {
+				const auto* stat = static_cast<const RE::TESObjectSTAT*>(placed->data.objectReference);
+				const auto* mato = stat->data.materialObj;
+				if (mato && mato->directionalData.singlePass) {
+					const char* id = mato->GetFormEditorID();
+					if (id) candidate.materialObjectEditorID = id;
+				}
+			}
+		}
 		if (desc.HasFlag(V::VF_UV) && desc.HasFlag(V::VF_NORMAL)) {
 			candidate.uvOffset = desc.GetAttributeOffset(V::VA_TEXCOORD0);
 			candidate.normalOffset = desc.GetAttributeOffset(V::VA_NORMAL);

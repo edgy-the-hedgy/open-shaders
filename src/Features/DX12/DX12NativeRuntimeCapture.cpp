@@ -1,6 +1,8 @@
 #include "DX12NativeRuntimeCapture.h"
 
 #include "Globals.h"
+#include "DX12Control.h"
+#include "Materials/SharedMaterialHooks.h"
 
 #include <algorithm>
 #include <bit>
@@ -73,9 +75,6 @@ namespace DX12Native
 				});
 		}
 
-		// Copy only generic engine material inputs, never TruePBR extension state.
-		// The live PBR marker may be original (menu-screen) or remapped by the
-		// active raster backend (vertex-lighting). This is diagnostic observation.
 		std::shared_ptr<DX12::PreparedShading> SnapshotMaterial(const RuntimeGeometryCandidate& source, DX12::RuntimeMaterialFailure& failure)
 		{
 			using Failure = DX12::RuntimeMaterialFailure;
@@ -89,7 +88,9 @@ namespace DX12Native
 				(source.colorOffset < 16 || source.colorOffset > source.stride - 4))) return reject(Failure::MissingVertexInputs);
 			using F = RE::BSShaderProperty::EShaderPropertyFlag;
 			const auto flags = static_cast<uint64_t>(property->flags.underlying());
-			if (!property->flags.any(F::kMenuScreen, F::kVertexLighting)) return reject(Failure::NonPbrMarker);
+			const bool exclusive = globals::features::dx12Control.UsesExclusiveMaterials();
+			if (exclusive ? !property->flags.any(F::kMenuScreen) : !property->flags.any(F::kVertexLighting))
+				return reject(Failure::NonPbrMarker);
 			if (property->flags.any(F::kVertexAlpha, F::kGrayscaleToPaletteAlpha, F::kRefraction, F::kTempRefraction,
 					F::kTreeAnim, F::kLODLandscape, F::kMultiTextureLandscape, F::kFace, F::kHairTint)) return reject(Failure::UnsupportedShaderFlags);
 			if (property->alpha != 1.0f) return reject(Failure::OpacityOrClamp);
@@ -108,7 +109,10 @@ namespace DX12Native
 			shading->shapeName = source.shapeName;
 			shading->provenance = "runtime engine material";
 			shading->shaderFlags1 = uint32_t(flags);
-			shading->shaderFlags2 = uint32_t(flags >> 32) | (1u << 23);
+			shading->shaderFlags2 = uint32_t(flags >> 32);
+			shading->originalPbrFlags = exclusive;
+			shading->runtimeTextureSet = SharedMaterialHooks::ResolveTextureSetEditorID(textures);
+			shading->runtimeMaterialObject = source.materialObjectEditorID;
 			shading->twoSided = property->flags.any(F::kTwoSided);
 			shading->clampMode = material->textureClampMode;
 			shading->uvTransform = { material->texCoordOffset[0].x, material->texCoordOffset[0].y,

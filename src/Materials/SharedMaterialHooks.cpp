@@ -1,5 +1,8 @@
 #include "SharedMaterialHooks.h"
 #include "Features/InteriorSun.h"
+#include "Features/DX12/DX12Control.h"
+#include "RE/B/BSTextureSet.h"
+#include "Utils/StringUtils.h"
 #include "Globals.h"
 #include "TruePBR.h"
 
@@ -52,6 +55,48 @@ namespace
 		stl::write_vfunc<0x33, SetEditorID<Form>>(vtable[0]);
 	}
 
+	std::mutex textureMutex;
+	struct TextureSource {
+		std::string signature, editorId;
+		bool ambiguous = false;
+	};
+	std::unordered_map<const RE::BSTextureSet*, TextureSource> textureSources;
+	constexpr size_t kMaxTextureSources = 32768;
+
+	std::string TextureSignature(RE::BSTextureSet* textures)
+	{
+		std::string key;
+		for (uint32_t i = 0; i < 8; ++i) {
+			const auto* path = textures->GetTexturePath(static_cast<RE::BSTextureSet::Texture>(i));
+			auto name = Util::ToLowerAscii(path ? path : "");
+			std::ranges::replace(name, '/', '\\');
+			key += std::to_string(name.size()) + ":" + name;
+		}
+		return key;
+	}
+
+	struct NativeTextureSetConversion
+	{
+		static RE::BSShaderTextureSet* thunk(RE::BGSTextureSet* record)
+		{
+			auto* result = func(record);
+			if (!record || !result) return result;
+			const char* id = record->GetFormEditorID();
+			if (!id || !*id) return result;
+			auto signature = TextureSignature(result);
+			std::scoped_lock lock(textureMutex);
+			if (textureSources.size() >= kMaxTextureSources && !textureSources.contains(result))
+				textureSources.clear();
+			auto& entry = textureSources[result];
+			if (entry.signature != signature)
+				entry = { std::move(signature), id, false };
+			else if (entry.editorId != id)
+				entry.ambiguous = true;
+			return result;
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
 	struct LightingRenderPasses
 	{
 		static RE::BSShaderProperty::RenderPassArray* thunk(RE::BSLightingShaderProperty* property,
@@ -78,5 +123,21 @@ void SharedMaterialHooks::Install()
 		InstallEditorID<RE::BGSLightingTemplate>(RE::VTABLE_BGSLightingTemplate);
 		InstallEditorID<RE::TESWeather>(RE::VTABLE_TESWeather);
 		stl::write_vfunc<0x2A, LightingRenderPasses>(RE::VTABLE_BSLightingShaderProperty[0]);
+		if (globals::features::dx12Control.UsesExclusiveMaterials())
+			stl::detour_thunk<NativeTextureSetConversion>(REL::RelocationID(20905, 21361));
 	});
+}
+
+std::string SharedMaterialHooks::ResolveTextureSetEditorID(RE::BSTextureSet* textures)
+{
+	if (!textures) return {};
+	if (const auto* record = skyrim_cast<RE::BGSTextureSet*>(textures)) {
+		const char* id = record->GetFormEditorID();
+		if (id && *id) return id;
+	}
+	const auto signature = TextureSignature(textures);
+	std::scoped_lock lock(textureMutex);
+	const auto it = textureSources.find(textures);
+	return it != textureSources.end() && !it->second.ambiguous && it->second.signature == signature ?
+		it->second.editorId : std::string{};
 }

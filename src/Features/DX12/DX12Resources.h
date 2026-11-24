@@ -63,6 +63,8 @@ namespace DX12
 		float alpha = 1.0f;
 		bool twoSided = false;
 		bool runtimeObserved = false;  // Live engine texture set, not PG-certified offline provenance.
+		bool originalPbrFlags = false;
+		std::string runtimeTextureSet, runtimeMaterialObject;
 		bool recoveredPlacement = false;
 		bool alphaTest = false;
 		uint8_t alphaThreshold = 0, alphaFunction = 0;
