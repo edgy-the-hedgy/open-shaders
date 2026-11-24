@@ -83,6 +83,7 @@ namespace DX12Native
 			const std::shared_ptr<const DirectLightingFrame>& direct = {}, uint32_t lightingView = 0,
 			const std::shared_ptr<const OpaqueLightingFrame>& opaque = {});
 		bool Retain(const std::shared_ptr<const Frame>& frame, ID3D12Fence* fence, uint64_t value);
+		void PollRetirement();
 		~NativeComposite();
 
 	private:
@@ -107,7 +108,10 @@ namespace DX12Native
 			ID3D12Device* device = nullptr;
 			ID3D11Device* device11 = nullptr;
 			D3D11_TEXTURE2D_DESC sourceDesc{};
-			bool supportsShadow = false, hasReturn = false, untracked = false;
+			bool supportsShadow = false, hasReturn = false;
+			enum class Recovery { None, D3D11, D3D12 } recovery = Recovery::None;
+			winrt::com_ptr<ID3D11DeviceContext4> recoveryContext;
+			winrt::com_ptr<ID3D12CommandQueue> recoveryQueue;
 			uint64_t frameBytes = 0;
 		};
 

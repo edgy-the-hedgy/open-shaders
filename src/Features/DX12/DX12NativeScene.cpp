@@ -293,6 +293,7 @@ void DX12NativeScene::PreShadowMaps()
 void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/)
 {
 	CS_GPU_PASS("DX12NativeScene::OpaqueRasterReady");
+	opaqueComposite.PollRetirement();
 	opaqueLighting.reset();
 	opaqueRaster.reset();
 	if (!loaded || globals::game::isVR || !globals::features::dx12Control.IsActive())

@@ -131,30 +131,15 @@ namespace DX12Native
 		if (!applyPass)
 			returnColorToDX11 = false;
 
+		PollRetirement();
 		Slot* slot = nullptr;
 		for (auto& candidate : slots) {
 			if (!candidate)
 				candidate = std::make_unique<Slot>();
 			auto& value = *candidate;
-			if (!value.untracked && value.frame && value.frame->producerValue &&
-				GpuFenceRetired(value.fence.fence12.get(), value.frame->producerValue)) {
-				value.shadowInput.reset();
-				value.rasterInput.reset();
-				value.materialInput.reset();
-				value.lightingInput.reset();
-				value.opaqueInput.reset();
-			}
-			if (value.untracked || (value.frame && value.frame.use_count() != 1))
+			if (value.recovery != Slot::Recovery::None ||
+				(value.frame && (value.frame.use_count() != 1 || !GpuFenceRetired(value.fence.fence12.get(), value.frame->producerValue))))
 				continue;
-			if (value.frame && value.frame->producerValue) {
-				const uint64_t completed = value.fence.fence12 ? value.fence.fence12->GetCompletedValue() : UINT64_MAX;
-				if (completed == UINT64_MAX || completed < value.frame->producerValue)
-					continue;
-			}
-			std::erase_if(value.consumers, [](const auto& consumer) {
-				const auto completed = consumer.first ? consumer.first->GetCompletedValue() : UINT64_MAX;
-				return completed != UINT64_MAX && completed >= consumer.second;
-			});
 			if (!slot && value.consumers.empty())
 				slot = &value;
 		}
@@ -252,6 +237,7 @@ namespace DX12Native
 			context11->CopyResource(slot->shared->resource11, source);
 			const uint64_t inputValue = slot->fence.Next();
 			DX::ThrowIfFailed(context11->Signal(slot->fence.fence11.get(), inputValue));
+			context11->Flush();
 			DX::ThrowIfFailed(queue->Wait(slot->fence.fence12.get(), inputValue));
 			DX::ThrowIfFailed(slot->allocator->Reset());
 			DX::ThrowIfFailed(slot->commands->Reset(slot->allocator.get(), nullptr));
@@ -432,7 +418,10 @@ namespace DX12Native
 					context11->Flush();
 					slot->frame->producerFence = slot->fence.fence12;
 					slot->frame->producerValue = tail;
-				} else slot->untracked = true;
+				} else {
+					slot->recovery = Slot::Recovery::D3D11;
+					slot->recoveryContext.copy_from(context11);
+				}
 			} else if (submitted && slot->fence.fence12) {
 				// The command list was queued. A tail Signal on that queue tracks
 				// its completion even when the original Signal failed.
@@ -440,8 +429,10 @@ namespace DX12Native
 				if (SUCCEEDED(queue->Signal(slot->fence.fence12.get(), tail))) {
 					slot->frame->producerFence = slot->fence.fence12;
 					slot->frame->producerValue = tail;
-				} else
-					slot->untracked = true;
+				} else {
+					slot->recovery = Slot::Recovery::D3D12;
+					slot->recoveryQueue.copy_from(queue);
+				}
 			} else if (producerSignalled && slot->fence.fence11) {
 				// No DX12 work was submitted, but the DX11 copy may still be
 				// pending. Fence it before allowing this slot to be recycled.
@@ -450,8 +441,10 @@ namespace DX12Native
 					context11->Flush();
 					slot->frame->producerFence = slot->fence.fence12;
 					slot->frame->producerValue = tail;
-				} else
-					slot->untracked = true;
+				} else {
+					slot->recovery = Slot::Recovery::D3D11;
+					slot->recoveryContext.copy_from(context11);
+				}
 			}
 			return {};
 		}
@@ -472,10 +465,45 @@ namespace DX12Native
 		return false;
 	}
 
+	void NativeComposite::PollRetirement()
+	{
+		for (auto& candidate : slots) {
+			if (!candidate) continue;
+			auto& slot = *candidate;
+			if (GpuDeviceRemoved(slot.device)) {
+				candidate.reset();
+				continue;
+			}
+			if (slot.recovery != Slot::Recovery::None) {
+				const uint64_t tail = slot.fence.Next();
+				const HRESULT hr = slot.recovery == Slot::Recovery::D3D11 ?
+					slot.recoveryContext->Signal(slot.fence.fence11.get(), tail) :
+					slot.recoveryQueue->Signal(slot.fence.fence12.get(), tail);
+				if (FAILED(hr)) continue;
+				if (slot.recoveryContext) slot.recoveryContext->Flush();
+				slot.frame->producerFence = slot.fence.fence12;
+				slot.frame->producerValue = tail;
+				slot.recovery = Slot::Recovery::None;
+				slot.recoveryContext = nullptr;
+				slot.recoveryQueue = nullptr;
+			}
+			if (slot.frame && GpuFenceRetired(slot.fence.fence12.get(), slot.frame->producerValue)) {
+				slot.shadowInput.reset();
+				slot.rasterInput.reset();
+				slot.materialInput.reset();
+				slot.lightingInput.reset();
+				slot.opaqueInput.reset();
+			}
+			std::erase_if(slot.consumers, [](const auto& consumer) {
+				return GpuFenceRetired(consumer.first.get(), consumer.second);
+			});
+		}
+	}
+
 	NativeComposite::~NativeComposite()
 	{
 		const auto ready = [](const Slot& slot) {
-			if (slot.untracked || (slot.frame && slot.frame.use_count() > 1))
+			if (slot.recovery != Slot::Recovery::None || (slot.frame && slot.frame.use_count() > 1))
 				return false;
 			if (slot.frame && !GpuFenceRetired(slot.fence.fence12.get(), slot.frame->producerValue))
 				return false;
