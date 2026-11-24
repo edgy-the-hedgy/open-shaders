@@ -762,11 +762,11 @@ void DX12Resources::PreShadowMaps()
 				if (task.fullNative) {
 					if (auto* handler = RE::TESDataHandler::GetSingleton()) {
 						for (uint32_t i = 0; i < handler->GetLoadedModCount(); ++i)
-							if (const auto* loaded = handler->LookupLoadedModByIndex(static_cast<uint8_t>(i)))
-								task.loadedPlugins.emplace_back(loaded->GetFilename());
+							if (const auto* loadedPlugin = handler->LookupLoadedModByIndex(static_cast<uint8_t>(i)))
+								task.loadedPlugins.emplace_back(loadedPlugin->GetFilename());
 						for (uint32_t i = 0; i < handler->GetLoadedLightModCount(); ++i)
-							if (const auto* loaded = handler->LookupLoadedLightModByIndex(static_cast<uint16_t>(i)))
-								task.loadedLightPlugins.emplace_back(loaded->GetFilename());
+							if (const auto* loadedLightPlugin = handler->LookupLoadedLightModByIndex(static_cast<uint16_t>(i)))
+								task.loadedLightPlugins.emplace_back(loadedLightPlugin->GetFilename());
 					}
 				}
 				if (companion->Enqueue(std::move(task))) {
