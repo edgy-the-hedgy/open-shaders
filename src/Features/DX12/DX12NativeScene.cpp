@@ -177,6 +177,14 @@ void DX12NativeScene::DrawDevStats()
 			ImGui::Text("Specialized DDS roles: %u / %u | Shared references: %u | Texture slots: %zu / %u",
 				evaluation->specializedResident, evaluation->specializedRequested, evaluation->sharedTextureReferences,
 				evaluation->poolTextures.size(), NativePBR::kGpuTexturePoolCapacity);
+			const auto roleCoverage = [&](NativePBR::TextureRole role) {
+				const auto index = static_cast<size_t>(role);
+				ImGui::Text("%u / %u", evaluation->specializedRoleResident[index], evaluation->specializedRoleRequested[index]);
+			};
+			ImGui::Text("Displacement:"); ImGui::SameLine(); roleCoverage(NativePBR::TextureRole::Displacement);
+			ImGui::SameLine(); ImGui::Text("Features0:"); ImGui::SameLine(); roleCoverage(NativePBR::TextureRole::Features0);
+			ImGui::SameLine(); ImGui::Text("Features1:"); ImGui::SameLine(); roleCoverage(NativePBR::TextureRole::Features1);
+			ImGui::Text("Specialized roles blocked by base residency: %u", evaluation->specializedBlockedByBase);
 			const auto legacy = SharedMaterialHooks::LegacyResidency();
 			ImGui::Text("Legacy PBR material extensions: %zu mesh / %zu landscape | Glints texture: %s", legacy.meshes, legacy.landscapes, legacy.glints ? "resident" : "none");
 			if (ImGui::TreeNode("DDS failure details")) {
