@@ -382,7 +382,7 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/
 bool DX12NativeScene::PublishOpaqueLighting(std::shared_ptr<const DX12Native::OpaqueLightingFrame> frame)
 {
 	if (!frame || !opaqueRaster || !globals::features::dx12Control.UsesExclusiveMaterials() ||
-		shadowMaskEnabled || frame->material != screenProbe.GetMaterialFrame(opaqueRaster->frame) ||
+		shadowMaskEnabled || frame->material != GetOpaqueMaterialFrame() ||
 		!frame->material || frame->material->raster != opaqueRaster || !frame->IsCoherent(frame->material))
 		return false;
 	opaqueLighting = std::move(frame);
@@ -396,6 +396,9 @@ void DX12NativeScene::OnOpaqueCompositeReady(const OpaqueRasterInputs& inputs)
 	auto captured = std::exchange(opaqueRaster, {});
 	if (!complete || !captured || !backend || !inputs.litColor || !globals::state ||
 		!globals::game::graphicsState || globals::game::isVR || shadowMaskEnabled ||
+		globals::state->IsMainOrLoadingMenuOpen() || globals::state->isMapMenuOpen ||
+		(globals::state->permutationData.ExtraShaderDescriptor &
+			static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)) ||
 		!globals::features::dx12Control.UsesExclusiveMaterials() ||
 		complete->material->raster != captured ||
 		complete->temporal.nativeFrame != globals::game::graphicsState->GetFrameCount() ||

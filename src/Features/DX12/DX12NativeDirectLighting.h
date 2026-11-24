@@ -24,6 +24,7 @@ namespace DX12Native
 		static constexpr auto coverage = MaterialFrameContract::LightingCoverage::SelectedPointLights;
 		static constexpr auto encoding = MaterialFrameContract::SignalEncoding::MaterialModulated;
 		static constexpr auto sampling = MaterialFrameContract::SamplingLayout::FullResolution;
+		static constexpr auto reconstruction = MaterialFrameContract::ReconstructionState::Raw;
 		static constexpr uint32_t available = MaterialFrameContract::DirectDiffuse | MaterialFrameContract::DirectSpecular;
 		std::shared_ptr<const NativeScreenProbe::MaterialFrame> material;
 		winrt::com_ptr<ID3D12Resource> samples, lights, camera, counters, readback, counterInit;

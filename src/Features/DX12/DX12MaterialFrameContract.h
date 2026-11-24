@@ -32,6 +32,7 @@ namespace DX12Native::MaterialFrameContract
 	enum class LightingCoverage { SelectedPointLights, CompleteRasterReplacement };
 
 	enum class SignalEncoding { MaterialModulated, Demodulated, Reconstructed, FinalLinearOpaqueColor, Visibility };
+	enum class ReconstructionState { Raw, Spatial, Temporal };
 	enum class SamplingLayout { FullResolution, Sparse };
 
 	enum Contribution : uint32_t

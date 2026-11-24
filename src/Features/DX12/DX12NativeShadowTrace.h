@@ -30,6 +30,9 @@ namespace DX12Native
 	/** @brief Full render-size raw visibility; the composite owns reconstruction. */
 	struct ShadowMaskFrame
 	{
+		static constexpr auto encoding = MaterialFrameContract::SignalEncoding::Visibility;
+		static constexpr auto reconstruction = MaterialFrameContract::ReconstructionState::Raw;
+		static constexpr uint32_t available = MaterialFrameContract::IndependentVisibility;
 		std::shared_ptr<const TopLevel> scene;
 		std::shared_ptr<const RasterFrame> raster;
 		winrt::com_ptr<ID3D12Resource> mask, cameraUpload, lightUpload;

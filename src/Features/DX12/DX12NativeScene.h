@@ -45,6 +45,19 @@ struct DX12NativeScene final : Feature
 	void OnOpaqueCompositeReady(const OpaqueRasterInputs& a_inputs) override;
 	/** @brief Accepts one complete, same-opaque-pass lighting publication before forward drawing. */
 	bool PublishOpaqueLighting(std::shared_ptr<const DX12Native::OpaqueLightingFrame> frame);
+	/** @brief Only the open primary opaque pass can supply capture inputs. */
+	std::shared_ptr<const DX12Native::RasterFrame> GetOpaqueRasterFrame() const { return opaqueRaster; }
+	std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> GetOpaqueMaterialFrame() const
+	{
+		const auto material = opaqueRaster ? screenProbe.GetMaterialFrame(opaqueRaster->frame) : nullptr;
+		return material && material->raster == opaqueRaster ? material : nullptr;
+	}
+	std::shared_ptr<const DX12Native::DirectLightingFrame> GetOpaqueDirectLightingFrame() const
+	{
+		const auto material = GetOpaqueMaterialFrame();
+		const auto direct = material && directLightingEnabled ? lighting.GetDirect(material->frame) : nullptr;
+		return direct && direct->material == material ? direct : nullptr;
+	}
 	/** @brief Observe CPU-backed opaque rigid geometry from SCM or normal render passes. */
 	void ObserveSCMRigidCaster(RE::BSGeometry& geometry, bool requireStability = false);
 	/** @brief SCM hands native-owned lights' static casters to RayQuery and retains movers. */
