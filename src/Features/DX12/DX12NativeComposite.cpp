@@ -108,6 +108,7 @@ namespace DX12Native
 			MaterialFrameContract::ValidLayout(width, height, direct->rowPitch, MaterialFrameContract::kLightingStride) &&
 			bufferMatches(direct->samples.get(), uint64_t(direct->rowPitch) * height) &&
 			fenceValid(direct->readyFence.get(), direct->readyValue);
+		if (lightingView > 7u) lightingView = 0u;
 		const bool canCompose = supportsShadow && transfer != Transfer::Unknown &&
 			(coverageRequested || (lightingView != 0u) || shadow) && InitializeShadow(device12);
 		const bool applyCoverage = canCompose && coverageRequested;

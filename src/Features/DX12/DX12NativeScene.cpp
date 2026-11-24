@@ -67,13 +67,12 @@ void DX12NativeScene::DrawLightingSettings(bool /*developer*/)
 			T("menu.dx12.lighting.view_reach", "Light influence"),
 			T("menu.dx12.lighting.view_visibility", "Ray visibility"),
 			T("menu.dx12.lighting.view_coverage", "Lighting coverage"),
-			T("menu.dx12.lighting.view_normals", "Surface normals"),
-			T("menu.dx12.lighting.view_replace", "Replace covered pixels (direct only)") };
+			T("menu.dx12.lighting.view_normals", "Surface normals") };
 		ImGui::Combo(T("menu.dx12.lighting.view", "Lighting output"), &lightingView, views, int(std::size(views)));
 	}
 	ImGui::EndDisabled();
 	ImGui::TextWrapped("%s", exclusive ?
-		T("menu.dx12.lighting.native_direct_info", "Direct signals are evaluated independently. Raster composite preserves ambient and indirect light; direct-only replacement is experimental.") :
+		T("menu.dx12.lighting.native_direct_info", "Direct signals are evaluated independently. Raster composite preserves ambient and indirect light; lighting outputs are previews only.") :
 		T("menu.dx12.lighting.raster_active", "Raster lighting remains active."));
 }
 
@@ -176,7 +175,8 @@ void DX12NativeScene::DrawDevStats()
 void DX12NativeScene::LoadSettings(json& input)
 {
 	directLightingEnabled = input.value("DirectLighting", false);
-	lightingView = std::clamp(input.value("LightingView", 0), 0, 8);
+	lightingView = input.value("LightingView", 0);
+	if (lightingView < 0 || lightingView > 7) lightingView = 0;
 	shadowMaskEnabled = input.value("ShadowMask", true);
 	outdoorShadowOffloading = input.value("OutdoorShadowOffloading", false);
 	offloadStaticShadows = input.value("OffloadSCMStatic", true);
