@@ -50,7 +50,7 @@ namespace SharedMaterialHooks
 	std::optional<float> PbrDisplacementScale(const RE::BSLightingShaderProperty* property);
 	/** @brief Prevents exclusive mode from selecting legacy PBR shader permutations. */
 	void NormalizeRasterDescriptors(RE::BSShader::Type type, uint32_t& vertex, uint32_t& pixel, bool deferred = false);
-	/** @brief Removes the native route marker before engine shader lookup. */
+	/** @brief Removes exclusive-mode material extensions from raw engine descriptors. */
 	void StripNativeRasterRoute(RE::BSShader::Type type, uint32_t& vertex, uint32_t& pixel);
 	/** @brief Obtains projected color metadata from the selected material authority. */
 	std::optional<std::array<float, 3>> ProjectedColorScale(const RE::TESForm* form);

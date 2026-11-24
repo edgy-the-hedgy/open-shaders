@@ -21,3 +21,13 @@ TEST_CASE("Native raster marker becomes a distinct deferred permutation", "[dx12
 	REQUIRE(NormalizePixel(vc | kRouteBit, false, true) == vc);
 	REQUIRE(NormalizePixel(vc, true, true) == vc);
 }
+
+TEST_CASE("Disabled native raster strips stale route and input bits", "[dx12][materials]")
+{
+	constexpr uint32_t preserved = (1u << 20) | (8u << 24) | (1u << 4);
+	constexpr uint32_t stale = preserved | kRouteBit | kInputBit;
+	REQUIRE(StripRoute(stale) == preserved);
+	REQUIRE(NormalizePixel(stale, false, true) == preserved);
+	REQUIRE(NormalizePixel(stale, false, false) == preserved);
+	REQUIRE(NormalizePixel(preserved | kInputBit, true, true) == preserved);
+}

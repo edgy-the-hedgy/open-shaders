@@ -249,6 +249,10 @@ bool Hooks::BSShader_BeginTechnique::thunk(RE::BSShader* shader, uint32_t vertex
 			state->modifiedPixelDescriptor &= ~nativeInput;
 	}
 	SharedMaterialHooks::StripNativeRasterRoute(shader->shaderType.get(), vertexDescriptor, pixelDescriptor);
+	state->currentVertexDescriptor = vertexDescriptor;
+	state->currentPixelDescriptor = pixelDescriptor;
+	state->permutationData.VertexShaderDescriptor = vertexDescriptor;
+	state->permutationData.PixelShaderDescriptor = pixelDescriptor;
 
 	// Only check against non-shader bits
 	state->permutationData.PixelShaderDescriptor = Util::ShaderDescriptor::UploadedPixelDescriptor(state->permutationData.PixelShaderDescriptor, state->modifiedPixelDescriptor, State::GetRuntimePixelBits(*shader));

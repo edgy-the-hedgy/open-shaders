@@ -445,7 +445,7 @@ void SharedMaterialHooks::NormalizeRasterDescriptors(RE::BSShader::Type type, ui
 	static_assert(uint32_t(Cache::LightingShaderFlags::TruePbr) == NativeRasterPolicy::kRouteBit);
 	static_assert(uint32_t(Cache::LightingShaderFlags::NativePbrInput) == NativeRasterPolicy::kInputBit);
 	if (type == RE::BSShader::Type::Lighting) {
-		vertex &= ~(NativeRasterPolicy::kRouteBit | NativeRasterPolicy::kInputBit);
+		vertex = NativeRasterPolicy::StripRoute(vertex);
 		pixel = NativeRasterPolicy::NormalizePixel(pixel, globals::features::dx12Control.UsesNativeRasterInputs(), deferred);
 	} else if (type == RE::BSShader::Type::Utility) {
 		const auto flag = static_cast<uint32_t>(Cache::UtilityShaderFlags::TruePbr);
@@ -456,9 +456,15 @@ void SharedMaterialHooks::NormalizeRasterDescriptors(RE::BSShader::Type type, ui
 
 void SharedMaterialHooks::StripNativeRasterRoute(RE::BSShader::Type type, uint32_t& vertex, uint32_t& pixel)
 {
-	if (type != RE::BSShader::Type::Lighting || !globals::features::dx12Control.UsesExclusiveMaterials()) return;
-	vertex &= ~(NativeRasterPolicy::kRouteBit | NativeRasterPolicy::kInputBit);
-	pixel &= ~(NativeRasterPolicy::kRouteBit | NativeRasterPolicy::kInputBit);
+	if (!globals::features::dx12Control.UsesExclusiveMaterials()) return;
+	if (type == RE::BSShader::Type::Lighting) {
+		vertex = NativeRasterPolicy::StripRoute(vertex);
+		pixel = NativeRasterPolicy::StripRoute(pixel);
+	} else if (type == RE::BSShader::Type::Utility) {
+		const auto flag = static_cast<uint32_t>(SIE::ShaderCache::UtilityShaderFlags::TruePbr);
+		vertex &= ~flag;
+		pixel &= ~flag;
+	}
 }
 
 std::optional<std::array<float, 3>> SharedMaterialHooks::ProjectedColorScale(const RE::TESForm* form)

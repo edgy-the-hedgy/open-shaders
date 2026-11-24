@@ -16,11 +16,17 @@ namespace NativeRasterPolicy
 		return descriptor;
 	}
 
+	/** @brief Remove both native routing extensions from a raw engine descriptor. */
+	constexpr uint32_t StripRoute(uint32_t descriptor)
+	{
+		return descriptor & ~(kRouteBit | kInputBit);
+	}
+
 	/** @brief Converts the raw marker into a native-only pixel permutation. */
 	constexpr uint32_t NormalizePixel(uint32_t descriptor, bool enabled, bool deferred)
 	{
 		const bool routed = (descriptor & kRouteBit) != 0;
-		descriptor &= ~(kRouteBit | kInputBit);
+		descriptor = StripRoute(descriptor);
 		if (routed && enabled && deferred) descriptor |= kInputBit;
 		return descriptor;
 	}
