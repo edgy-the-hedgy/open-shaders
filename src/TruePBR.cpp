@@ -5,6 +5,7 @@
 
 #include "Features/DX12/DX12Control.h"
 #include "Hooks.h"
+#include "Materials/SharedMaterialHooks.h"
 #include "I18n/I18n.h"
 #include "ShaderCache.h"
 #include "State.h"
@@ -1518,10 +1519,9 @@ void TruePBR::SetupGrassMaterial(RE::BSLightingShaderProperty* sourceProperty, R
 		return;
 	}
 
+	if (!SharedMaterialHooks::IsLegacyPbrMeshMaterial(sourceProperty->material) ||
+		(grassProperty->material && grassProperty->material->GetType() != RE::BSShaderMaterial::Type::kLighting)) return;
 	auto* sourceMaterial = static_cast<BSLightingShaderMaterialPBR*>(sourceProperty->material);
-	if (sourceMaterial == nullptr) {
-		return;
-	}
 
 	// Populate the material before it is interned.
 	BSLightingShaderMaterialPBR grassMaterial;
@@ -1737,7 +1737,7 @@ struct BSGrassShaderProperty_GetRenderPasses
 	static RE::BSShaderProperty::RenderPassArray* thunk(RE::BSLightingShaderProperty* property, RE::BSGeometry* geometry, std::uint32_t renderFlags, RE::BSShaderAccumulator* accumulator)
 	{
 		auto* renderPasses = func(property, geometry, renderFlags, accumulator);
-		if (renderPasses == nullptr || !property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMenuScreen)) {
+		if (renderPasses == nullptr || !SharedMaterialHooks::IsLegacyPbrGrass(property)) {
 			return renderPasses;
 		}
 
@@ -1799,7 +1799,8 @@ struct BSGrassShader_SetupMaterial
 		func(shader, material);
 
 		const auto technique = static_cast<SIE::ShaderCache::GrassShaderTechniques>(globals::state->currentPixelDescriptor & 0b1111);
-		if (technique != SIE::ShaderCache::GrassShaderTechniques::TruePbr) {
+		if (technique != SIE::ShaderCache::GrassShaderTechniques::TruePbr ||
+			!SharedMaterialHooks::IsLegacyPbrMeshMaterial(material)) {
 			return;
 		}
 

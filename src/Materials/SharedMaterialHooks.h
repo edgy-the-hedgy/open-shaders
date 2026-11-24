@@ -29,6 +29,10 @@ namespace SharedMaterialHooks
 	MaterialMetadata ClassifyMaterial(const RE::BSLightingShaderProperty* property);
 	/** @brief Reports whether legacy PBR material rendering is available. */
 	bool UsesLegacyMaterialRendering();
+	/** @brief Checks tracked legacy mesh material identity without dereferencing a downcast. */
+	bool IsLegacyPbrMeshMaterial(const RE::BSShaderMaterial* material);
+	/** @brief Checks both the generated-grass marker and actual legacy material identity. */
+	bool IsLegacyPbrGrass(const RE::BSShaderProperty* property);
 	/** @brief Resolves reference-local projected MATO identity without consulting TruePBR. */
 	std::string ResolveMaterialObjectEditorID(const RE::TESObjectREFR* reference);
 	/** @brief Returns an owned NativePBR TXST recipe, independent of legacy catalogs. */

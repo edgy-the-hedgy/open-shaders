@@ -374,7 +374,7 @@ namespace GrassExtensions
 			RE::BSLightingShaderProperty* grassProperty = func(property);
 			globals::features::truePBR.SetupGrassMaterial(lightingProperty, grassProperty);
 
-			if (lightingProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kEffectLighting)) {
+			if (lightingProperty && grassProperty && lightingProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kEffectLighting)) {
 				grassProperty->SetFlags(RE::BSShaderProperty::EShaderPropertyFlag8::kEffectLighting, true);
 			}
 
@@ -393,9 +393,8 @@ namespace GrassExtensions
 
 			auto state = globals::state;
 			const auto* shaderProperty = static_cast<RE::BSShaderProperty*>(pass->geometry->GetGeometryRuntimeData().shaderProperty.get());
-			// TruePBR marks converted grass properties with kMenuScreen.
 			state->SetGrassFlags(shaderProperty && shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kEffectLighting),
-				shaderProperty && shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMenuScreen));
+				SharedMaterialHooks::IsLegacyPbrGrass(shaderProperty));
 
 			// Grass meshes are rooted at the model origin, so the model bound's center sits about halfway up the mesh.
 			const auto& bound = pass->geometry->GetModelData().modelBound;

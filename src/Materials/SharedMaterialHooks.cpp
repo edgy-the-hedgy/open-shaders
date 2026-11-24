@@ -335,6 +335,22 @@ bool SharedMaterialHooks::UsesLegacyMaterialRendering()
 		!globals::features::dx12Control.UsesExclusiveMaterials();
 }
 
+bool SharedMaterialHooks::IsLegacyPbrMeshMaterial(const RE::BSShaderMaterial* material)
+{
+	if (!UsesLegacyMaterialRendering() || !material ||
+		material->GetType() != RE::BSShaderMaterial::Type::kLighting ||
+		material->GetFeature() != RE::BSShaderMaterial::Feature::kDefault) return false;
+	std::scoped_lock lock(BSLightingShaderMaterialPBR::AllMutex);
+	return BSLightingShaderMaterialPBR::All.contains(
+		reinterpret_cast<BSLightingShaderMaterialPBR*>(const_cast<RE::BSShaderMaterial*>(material)));
+}
+
+bool SharedMaterialHooks::IsLegacyPbrGrass(const RE::BSShaderProperty* property)
+{
+	return property && property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMenuScreen) &&
+		IsLegacyPbrMeshMaterial(property->material);
+}
+
 SharedMaterialHooks::MaterialMetadata SharedMaterialHooks::ClassifyMaterial(const RE::BSLightingShaderProperty* property)
 {
 	MaterialMetadata result;
