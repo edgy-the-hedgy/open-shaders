@@ -123,7 +123,7 @@ namespace DX12Native
 		std::shared_ptr<const RasterFrame> raster, std::shared_ptr<const TopLevel> scene,
 		std::span<const DX12::PreparedLight> lights, uint32_t frame, const ShadowTraceControls& controls)
 	{
-		if (current && current->frame == frame)
+		if (current && current->frame == frame && current->raster == raster && current->scene == scene)
 			return;
 		current.reset();
 		if (!raster || !raster->depth || !raster->depth->resource || !raster->readyFence ||

@@ -102,8 +102,14 @@ TEST_CASE("Opaque ownership requires every contribution and exact identity", "[d
 
 TEST_CASE("Temporal identity rejects gaps, extent changes and resets", "[dx12][materials]")
 {
-	const TemporalIdentity previous{ 5, 100, 1920, 1080, 7, 3, true, true };
+	TemporalIdentity previous{ 5, 100, 1920, 1080, 7, 3, true, true };
 	TemporalIdentity now{ 6, 101, 1920, 1080, 7, 3, true, false };
+	previous.jitter = JitterFromClipOffset(1.0f / 1920.0f, -1.0f / 1080.0f, 1920, 1080);
+	now.jitter = JitterFromClipOffset(0.0f, 0.0f, 1920, 1080);
+	now.previousJitter = previous.jitter;
+	REQUIRE(previous.jitter.valid);
+	REQUIRE(previous.jitter.x == 0.5f);
+	REQUIRE(previous.jitter.y == 0.5f);
 	REQUIRE(now.CanReuseHistory(previous));
 	REQUIRE(now.SameFrame(now));
 	REQUIRE_FALSE(now.SameFrame(previous));
@@ -117,6 +123,12 @@ TEST_CASE("Temporal identity rejects gaps, extent changes and resets", "[dx12][m
 	REQUIRE_FALSE(now.CanReuseHistory(previous));
 	--now.width;
 	++now.scope;
+	REQUIRE_FALSE(now.CanReuseHistory(previous));
+	--now.scope;
+	++now.materialRevision;
+	REQUIRE_FALSE(now.CanReuseHistory(previous));
+	--now.materialRevision;
+	now.jitter.valid = false;
 	REQUIRE_FALSE(now.CanReuseHistory(previous));
 }
 

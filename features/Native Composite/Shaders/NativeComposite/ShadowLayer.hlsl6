@@ -76,15 +76,11 @@ void main(uint3 id : SV_DispatchThreadID)
     if (any(id.xy >= Size)) return;
     if (ApplyOpaque != 0u) {
         float status = UnpackHalf4(MaterialSamples.Load2(id.y*MaterialPitch+id.x*NativeSurfaceStride)).a;
-        float4 sample = UnpackHalf4(OpaqueSamples.Load2(id.y*OpaquePitch+id.x*8u));
-        if (status == SurfaceEvaluatedBase && all(isfinite(sample)) &&
-            sample.a >= 0.0 && sample.a <= 255.0 && sample.a == floor(sample.a)) {
-            uint valid = uint(sample.a);
-            if ((valid & ~OpaqueAvailable) == 0u && (valid & OpaqueRequired) == OpaqueRequired) {
-                float4 color = Scene[id.xy];
-                color.rgb = EncodeScene(sample.rgb);
-                Scene[id.xy] = color;
-            }
+        float4 sample = UnpackHalf4(OpaqueSamples.Load2(id.y*OpaquePitch+id.x*NativeOpaqueRadianceStride));
+        if (OpaqueRadianceValid(status, sample, OpaqueAvailable, OpaqueRequired)) {
+            float4 color = Scene[id.xy];
+            color.rgb = EncodeScene(sample.rgb);
+            Scene[id.xy] = color;
         }
         return;
     }

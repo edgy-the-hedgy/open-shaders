@@ -61,7 +61,11 @@ struct DX12NativeScene final : Feature
 	void OnRuntimeDisabled() override;
 
 	/** @brief Raw full-resolution shadow output, independently fenced for Native Composite. */
-	std::shared_ptr<const DX12Native::ShadowMaskFrame> GetShadowMask(uint32_t frame) const { return lighting.GetShadowMask(frame); }
+	std::shared_ptr<const DX12Native::ShadowMaskFrame> GetShadowMask(uint32_t frame) const
+	{
+		const auto shadow = lighting.GetShadowMask(frame);
+		return shadow && shadow->raster == raster.Get(frame) ? shadow : nullptr;
+	}
 	bool RetainShadowMask(const std::shared_ptr<const DX12Native::ShadowMaskFrame>& frame,
 		ID3D12Fence* fence, uint64_t value) { return lighting.RetainShadowMask(frame, fence, value); }
 
@@ -74,7 +78,11 @@ struct DX12NativeScene final : Feature
 	}
 
 	/** @brief Submitted full-resolution native material outputs; immutable and fenced. */
-	std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> GetNativeMaterialFrame(uint32_t frame) const { return screenProbe.GetMaterialFrame(frame); }
+	std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> GetNativeMaterialFrame(uint32_t frame) const
+	{
+		const auto material = screenProbe.GetMaterialFrame(frame);
+		return material && material->raster == raster.Get(frame) ? material : nullptr;
+	}
 
 	/** @brief Whether the coverage visualization is requested for this frame. */
 	bool IsCoveragePreviewEnabled() const { return materialCoveragePreview; }
@@ -83,12 +91,13 @@ struct DX12NativeScene final : Feature
 	/** @brief Returns an optional same-frame coverage visualization input. */
 	std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> GetMaterialCoverageFrame(uint32_t frame) const
 	{
-		return materialCoveragePreview ? screenProbe.GetMaterialFrame(frame) : nullptr;
+		return materialCoveragePreview ? GetNativeMaterialFrame(frame) : nullptr;
 	}
 	/** @brief Returns an optional same-frame direct lighting contribution. */
 	std::shared_ptr<const DX12Native::DirectLightingFrame> GetNativeLightingFrame(uint32_t frame) const
 	{
-		return directLightingEnabled ? lighting.GetDirect(frame) : nullptr;
+		const auto direct = directLightingEnabled ? lighting.GetDirect(frame) : nullptr;
+		return direct && direct->material == GetNativeMaterialFrame(frame) ? direct : nullptr;
 	}
 
 private:

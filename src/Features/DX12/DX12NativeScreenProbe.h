@@ -137,7 +137,8 @@ namespace DX12Native
 					!raster || raster->frame != frame || !raster->cameraValid || !raster->depth || !raster->depth->resource ||
 					!raster->readyFence || !MaterialFrameContract::ValidProducerSignal(raster->readyValue, raster->readyFence->GetCompletedValue()) ||
 					raster->width < width || raster->height < height || raster->temporal.nativeFrame != frame ||
-					raster->temporal.width != width || raster->temporal.height != height || raster->temporal.scope != scope || !scene || !scope ||
+					raster->temporal.width != width || raster->temporal.height != height || raster->temporal.scope != scope ||
+					raster->temporal.geometryRevision != geometryRevision || raster->temporal.materialRevision != materialRevision || !scene || !scope ||
 					scene->scope != scope || scene->geometryRevision != geometryRevision ||
 					!scene->acceleration || !scene->producerFence ||
 					!MaterialFrameContract::ValidProducerSignal(scene->producerValue, scene->producerFence->GetCompletedValue()) ||

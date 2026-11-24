@@ -303,6 +303,7 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/
 			static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
 		return;
 	screenProbe.Poll();
+	raster.Reset();
 	const uint32_t frame = globals::game::graphicsState->GetFrameCount();
 	lighting.PollDirect(frame);
 	const auto& control = globals::features::dx12Control;
@@ -333,12 +334,28 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/
 	using DX12Native::MaterialFrameContract::TemporalIdentity;
 	TemporalIdentity temporal{ frame, globals::state->frameCount, viewportWidth, viewportHeight,
 		built ? built->scope : 0u, historyRevision, globals::features::reverseZ.IsActive(), false };
-	if (globals::state->ShouldResetHistory() || !temporal.CanReuseHistory(lastTemporal)) {
+	const auto& camera = globals::game::frameBufferCached.nonVR;
+	const auto clipDelta = camera.CameraProj * camera.CameraProjUnjitteredInverse;
+	bool uniformJitter = true;
+	for (uint32_t row = 0; row < 4; ++row) {
+		for (uint32_t column = 0; column < 4; ++column) {
+			const float value = clipDelta.m[row][column];
+			if (!std::isfinite(value) ||
+				(!(column == 3 && row < 2) && std::abs(value - (row == column ? 1.0f : 0.0f)) > 0.001f))
+				uniformJitter = false;
+		}
+	}
+	if (uniformJitter)
+		temporal.jitter = DX12Native::MaterialFrameContract::JitterFromClipOffset(clipDelta._14, clipDelta._24, viewportWidth, viewportHeight);
+	temporal.geometryRevision = built ? built->geometryRevision : 0;
+	temporal.materialRevision = built && built->materialEvaluation ? built->materialEvaluation->revision : 0;
+	if (globals::state->ShouldResetHistory() || globals::state->IsMainOrLoadingMenuOpen() || !temporal.CanReuseHistory(lastTemporal)) {
 		temporal.historyRevision = ++historyRevision;
 		temporal.resetHistory = true;
+	} else {
+		temporal.previousJitter = lastTemporal.jitter;
 	}
-	raster.Capture(*backend, Util::GetCurrentSceneDepthSRV(false),
-		&globals::game::frameBufferCached.nonVR, temporal);
+	raster.Capture(*backend, Util::GetCurrentSceneDepthSRV(false), &camera, temporal);
 	const auto captured = raster.Get(frame);
 	opaqueRaster = captured;
 	const DX12Native::ShadowTraceControls controls{

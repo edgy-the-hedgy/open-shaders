@@ -141,7 +141,7 @@ namespace DX12Native
 		std::span<const DirectPointLight> lights, bool inputsAvailable, const ShadowTraceControls& controls)
 	{
 		CS_GPU_PASS("NativeLighting::Direct");
-		if (!material || (current && current->frame == material->frame)) return;
+		if (!material || (current && current->material == material)) return;
 		Poll(material->frame);
 		dispatchedLights = 0;
 		if (!inputsAvailable) { failure = "Waiting for native light inputs"; return; }

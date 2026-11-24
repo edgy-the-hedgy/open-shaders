@@ -68,24 +68,43 @@ namespace DX12Native::MaterialFrameContract
 			CompleteOpaque(admission) ? OpaqueOwner::Native : OpaqueOwner::Raster;
 	}
 
+	struct PixelJitter
+	{
+		float x = 0, y = 0;
+		bool valid = false;
+		constexpr bool operator==(const PixelJitter&) const = default;
+	};
+
+	/** @brief Actual jittered minus unjittered pixel position, +x right / +y down. */
+	constexpr PixelJitter JitterFromClipOffset(float x, float y, uint32_t width, uint32_t height)
+	{
+		return { x * float(width) * 0.5f, -y * float(height) * 0.5f, width != 0 && height != 0 };
+	}
+
 	struct TemporalIdentity
 	{
 		uint32_t nativeFrame = 0, pluginFrame = 0, width = 0, height = 0, scope = 0;
 		uint64_t historyRevision = 0;
 		bool reverseDepth = false, resetHistory = true;
+		uint64_t geometryRevision = 0, materialRevision = 0;
+		PixelJitter jitter{}, previousJitter{};
 
 		constexpr bool SameFrame(const TemporalIdentity& other) const
 		{
 			return nativeFrame == other.nativeFrame && pluginFrame == other.pluginFrame &&
 				width && height && width == other.width && height == other.height &&
-				scope == other.scope && historyRevision == other.historyRevision && reverseDepth == other.reverseDepth;
+				scope == other.scope && historyRevision == other.historyRevision && reverseDepth == other.reverseDepth &&
+				resetHistory == other.resetHistory && geometryRevision == other.geometryRevision && materialRevision == other.materialRevision &&
+				jitter == other.jitter && previousJitter == other.previousJitter;
 		}
 		constexpr bool CanReuseHistory(const TemporalIdentity& previous) const
 		{
 			return !resetHistory && nativeFrame - previous.nativeFrame == 1u &&
 				pluginFrame - previous.pluginFrame == 1u && width && height && width == previous.width &&
 				height == previous.height && scope && scope == previous.scope &&
-				historyRevision == previous.historyRevision && reverseDepth == previous.reverseDepth;
+				historyRevision == previous.historyRevision && reverseDepth == previous.reverseDepth &&
+				geometryRevision == previous.geometryRevision && materialRevision == previous.materialRevision &&
+				jitter.valid && previous.jitter.valid;
 		}
 	};
 
