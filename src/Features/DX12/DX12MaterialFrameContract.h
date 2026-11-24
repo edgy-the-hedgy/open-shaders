@@ -28,10 +28,15 @@ namespace DX12Native::MaterialFrameContract
 		return status == SurfaceStatus::EvaluatedBase || status == SurfaceStatus::FeatureLimited;
 	}
 
+	enum class SurfaceCorrespondence { DepthOnly, ExactRasterIdentity };
+	enum class LightingCoverage { SelectedPointLights, CompleteRasterReplacement };
+
 	/** @brief Replacement requires exact raster correspondence and complete lighting. */
-	constexpr bool CanReplaceRaster(SurfaceStatus status, bool exactCorrespondence, bool completeLighting)
+	constexpr bool CanReplaceRaster(SurfaceStatus status, SurfaceCorrespondence correspondence, LightingCoverage coverage)
 	{
-		return status == SurfaceStatus::EvaluatedBase && exactCorrespondence && completeLighting;
+		return status == SurfaceStatus::EvaluatedBase &&
+			correspondence == SurfaceCorrespondence::ExactRasterIdentity &&
+			coverage == LightingCoverage::CompleteRasterReplacement;
 	}
 
 	/** @brief A submitted fence may be incomplete, but must have a valid signal value. */

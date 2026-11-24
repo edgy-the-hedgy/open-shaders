@@ -22,12 +22,15 @@ namespace DX12Native
 			LegacyScene
 		};
 
+		enum class ColorAuthority { Raster, RasterWithShadowMask, Diagnostic };
+
 		struct Frame
 		{
 			winrt::com_ptr<ID3D12Resource> color;
 			winrt::com_ptr<ID3D12Fence> producerFence;
 			uint64_t producerValue = 0;
-			uint32_t frame = 0, width = 0, height = 0;
+			uint32_t frame = 0, nativeFrame = 0, width = 0, height = 0;
+			ColorAuthority colorAuthority = ColorAuthority::Raster;
 			DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 			bool valid = false;
 			bool IsComplete() const
@@ -42,7 +45,7 @@ namespace DX12Native
 		std::shared_ptr<const Frame> Capture(ID3D11Device5* device11,
 			ID3D11DeviceContext4* context11, ID3D12Device* device12,
 			ID3D12CommandQueue* queue, ID3D11Texture2D* source,
-			uint32_t frame, uint32_t width, uint32_t height, Transfer transfer,
+			uint32_t frame, uint32_t nativeFrame, uint32_t width, uint32_t height, Transfer transfer,
 			const std::shared_ptr<const ShadowMaskFrame>& shadow,
 			bool returnColorToDX11, bool coverageRequested = false,
 			const std::shared_ptr<const NativeScreenProbe::MaterialFrame>& material = {},

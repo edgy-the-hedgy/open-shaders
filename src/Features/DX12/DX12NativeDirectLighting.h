@@ -21,6 +21,7 @@ namespace DX12Native
 	/** @brief Fenced packed diffuse/specular radiance with explicit pixel ownership. */
 	struct DirectLightingFrame
 	{
+		static constexpr auto coverage = MaterialFrameContract::LightingCoverage::SelectedPointLights;
 		std::shared_ptr<const NativeScreenProbe::MaterialFrame> material;
 		winrt::com_ptr<ID3D12Resource> samples, lights, camera, counters, readback, counterInit;
 		winrt::com_ptr<ID3D12CommandAllocator> allocator;

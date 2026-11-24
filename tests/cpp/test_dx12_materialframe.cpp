@@ -74,10 +74,10 @@ TEST_CASE("Evaluated native base is distinct from raster replacement eligibility
 	for (auto status : { SurfaceStatus::InvalidReceiver, SurfaceStatus::MissingGeometry, SurfaceStatus::DepthMismatch,
 		SurfaceStatus::EvaluationFailed, SurfaceStatus::UnsupportedMaterial, SurfaceStatus::MissingTextures }) {
 		REQUIRE_FALSE(HasEvaluatedBase(status));
-		REQUIRE_FALSE(CanReplaceRaster(status, true, true));
+		REQUIRE_FALSE(CanReplaceRaster(status, SurfaceCorrespondence::ExactRasterIdentity, LightingCoverage::CompleteRasterReplacement));
 	}
-	REQUIRE_FALSE(CanReplaceRaster(SurfaceStatus::FeatureLimited, true, true));
-	REQUIRE_FALSE(CanReplaceRaster(SurfaceStatus::EvaluatedBase, false, true));
-	REQUIRE_FALSE(CanReplaceRaster(SurfaceStatus::EvaluatedBase, true, false));
-	REQUIRE(CanReplaceRaster(SurfaceStatus::EvaluatedBase, true, true));
+	REQUIRE_FALSE(CanReplaceRaster(SurfaceStatus::FeatureLimited, SurfaceCorrespondence::ExactRasterIdentity, LightingCoverage::CompleteRasterReplacement));
+	REQUIRE_FALSE(CanReplaceRaster(SurfaceStatus::EvaluatedBase, SurfaceCorrespondence::DepthOnly, LightingCoverage::CompleteRasterReplacement));
+	REQUIRE_FALSE(CanReplaceRaster(SurfaceStatus::EvaluatedBase, SurfaceCorrespondence::ExactRasterIdentity, LightingCoverage::SelectedPointLights));
+	REQUIRE(CanReplaceRaster(SurfaceStatus::EvaluatedBase, SurfaceCorrespondence::ExactRasterIdentity, LightingCoverage::CompleteRasterReplacement));
 }

@@ -59,7 +59,7 @@ namespace DX12Native
 	std::shared_ptr<const NativeComposite::Frame> NativeComposite::Capture(
 		ID3D11Device5* device11, ID3D11DeviceContext4* context11,
 		ID3D12Device* device12, ID3D12CommandQueue* queue, ID3D11Texture2D* source,
-		uint32_t frame, uint32_t width, uint32_t height, Transfer transfer,
+		uint32_t frame, uint32_t nativeFrame, uint32_t width, uint32_t height, Transfer transfer,
 		const std::shared_ptr<const ShadowMaskFrame>& shadow,
 		bool returnColorToDX11, bool coverageRequested,
 		const std::shared_ptr<const NativeScreenProbe::MaterialFrame>& material,
@@ -99,7 +99,7 @@ namespace DX12Native
 		const auto fenceValid = [](ID3D12Fence* fence, uint64_t value) {
 			return fence && value && value != UINT64_MAX && fence->GetCompletedValue() != UINT64_MAX;
 		};
-		const bool materialValid = material && material->IsCoherent(frame, width, height) &&
+		const bool materialValid = material && material->IsCoherent(nativeFrame, width, height) &&
 			bufferMatches(material->samples.get(), uint64_t(material->rowPitch) * height) &&
 			fenceValid(material->producerFence.get(), material->producerValue);
 		const bool directValid = direct && materialValid && direct->material == material &&
@@ -114,9 +114,9 @@ namespace DX12Native
 		const bool applyDirect = canCompose && !applyCoverage && directValid && lightingView != 0u;
 		const bool missingPreview = canCompose && !applyCoverage && lightingView > 0u && lightingView < 8u && !directValid;
 		const bool applyShadow = canCompose && !applyCoverage && !missingPreview &&
-			shadow && shadow->frame == frame && shadow->mask && fenceValid(shadow->readyFence.get(), shadow->readyValue) &&
+			shadow && shadow->frame == nativeFrame && shadow->mask && fenceValid(shadow->readyFence.get(), shadow->readyValue) &&
 			shadow->width >= width && shadow->height >= height &&
-			raster && raster->frame == frame && raster->depth && raster->depth->resource && raster->cameraValid &&
+			raster && raster->frame == nativeFrame && raster->depth && raster->depth->resource && raster->cameraValid &&
 			fenceValid(raster->readyFence.get(), raster->readyValue) && raster->width >= width && raster->height >= height;
 		const bool applyPass = applyCoverage || applyDirect || applyShadow || missingPreview;
 		const bool useMaterial = (applyCoverage || applyDirect) && materialValid;
@@ -392,6 +392,9 @@ namespace DX12Native
 				output.producerValue = copied;
 			}
 			output.frame = frame;
+			output.nativeFrame = nativeFrame;
+			output.colorAuthority = (applyCoverage || applyDirect || missingPreview) ? ColorAuthority::Diagnostic :
+				applyShadow ? ColorAuthority::RasterWithShadowMask : ColorAuthority::Raster;
 			output.width = width;
 			output.height = height;
 			output.format = desc.Format;

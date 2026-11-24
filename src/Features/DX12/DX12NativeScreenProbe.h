@@ -121,6 +121,7 @@ namespace DX12Native
 			winrt::com_ptr<ID3D12Resource> samples;
 			uint32_t abiVersion=MaterialFrameContract::kMaterialAbiVersion, sampleStride=kSampleStride, rowPitch=0;
 			static constexpr D3D12_RESOURCE_STATES publishedState = D3D12_RESOURCE_STATE_COMMON;
+			static constexpr auto correspondence = MaterialFrameContract::SurfaceCorrespondence::DepthOnly;
 			winrt::com_ptr<ID3D12Fence> producerFence;
 			uint64_t producerValue=0, geometryRevision=0, materialRevision=0;
 			uint32_t frame=0, width=0, height=0, scope=0;

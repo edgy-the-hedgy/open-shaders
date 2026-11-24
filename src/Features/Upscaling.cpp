@@ -3700,7 +3700,7 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 				upscaling.dx12SwapChain.d3d11Device.get(),
 				upscaling.dx12SwapChain.d3d11Context.get(),
 				upscaling.dx12SwapChain.d3d12Device.get(),
-				upscaling.dx12SwapChain.commandQueue.get(), scene, globals::state->frameCount,
+				upscaling.dx12SwapChain.commandQueue.get(), scene, globals::state->frameCount, nativeFrame,
 				static_cast<uint32_t>(renderSize.x), static_cast<uint32_t>(renderSize.y),
 				transfer, shadow, !runtimeFSRReads, coverageRequested, material, direct, lightingView);
 	}

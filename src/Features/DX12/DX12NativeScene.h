@@ -69,12 +69,12 @@ struct DX12NativeScene final : Feature
 		return raster.RetainThrough(a_frame, a_fence, a_value);
 	}
 
-	/** @brief Completed full-resolution native material outputs; immutable and fenced. */
+	/** @brief Submitted full-resolution native material outputs; immutable and fenced. */
 	std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> GetNativeMaterialFrame(uint32_t frame) const { return screenProbe.GetMaterialFrame(frame); }
 
 	/** @brief Whether the coverage visualization is requested for this frame. */
 	bool IsCoveragePreviewEnabled() const { return materialCoveragePreview; }
-	/** @brief Selects an explicit direct signal preview or experimental replacement. */
+	/** @brief Selects an explicit direct signal preview. */
 	uint32_t GetLightingView() const { return directLightingEnabled ? uint32_t(lightingView) : 0u; }
 	/** @brief Returns an optional same-frame coverage visualization input. */
 	std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> GetMaterialCoverageFrame(uint32_t frame) const
