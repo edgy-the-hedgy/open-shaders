@@ -49,6 +49,7 @@ namespace DX12
 		uint64_t identity = 0;
 		uint64_t runtimeObjectKey = 0;  // Stable across transform changes.
 		uint32_t observationFrame = 0;
+		uint64_t meshIdentity = 0;
 		std::vector<float3> positions;
 		std::vector<uint32_t> indices;
 		std::array<float, 12> transform{};

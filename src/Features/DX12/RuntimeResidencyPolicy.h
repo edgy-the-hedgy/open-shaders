@@ -18,6 +18,12 @@ namespace DX12
 		       shapeBytes <= kMaximumRuntimeBytes - residentBytes;
 	}
 
+	/** @brief Reject invalid allocation sizes and allocations above current DXGI headroom. */
+	constexpr bool RuntimeAllocationFits(uint64_t bytes, uint64_t available)
+	{
+		return bytes != 0 && bytes != UINT64_MAX && bytes <= available;
+	}
+
 	inline constexpr uint32_t kRuntimeObservationLifetime = 600;
 	inline constexpr uint32_t kRuntimeSweepInterval = 60;
 

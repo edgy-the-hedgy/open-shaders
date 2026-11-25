@@ -254,6 +254,17 @@ namespace DX12Native
 					continue;
 				}
 				shape->indices.assign(packet.indices.begin(), packet.indices.end());
+				uint64_t meshHash = kFnvOffset;
+				const auto hashBytes = [&](const void* data, size_t size) {
+					const auto* bytes = static_cast<const unsigned char*>(data);
+					for (size_t i = 0; i < size; ++i)
+						meshHash = (meshHash ^ bytes[i]) * kFnvPrime;
+				};
+				const uint64_t counts[] = { shape->positions.size(), shape->indices.size() };
+				hashBytes(counts, sizeof(counts));
+				hashBytes(shape->positions.data(), shape->positions.size() * sizeof(float3));
+				hashBytes(shape->indices.data(), shape->indices.size() * sizeof(uint32_t));
+				shape->meshIdentity = meshHash ? meshHash : 1;
 
 				const auto grid = globals::features::dx12Resources.GetGrid();
 				if (!grid || !grid->requested.front().scope ||

@@ -48,3 +48,13 @@ TEST_CASE("Runtime geometry expiry tolerates frame rollover", "[dx12]")
 	REQUIRE_FALSE(RuntimeObservationExpired(3, UINT32_MAX - 3));
 	REQUIRE(RuntimeObservationExpired(1000, UINT32_MAX - 3));
 }
+
+TEST_CASE("Native GPU budget admission rejects invalid allocation sizes", "[dx12]")
+{
+	using namespace DX12;
+	REQUIRE(RuntimeAllocationFits(4096, 4096));
+	REQUIRE_FALSE(RuntimeAllocationFits(4097, 4096));
+	REQUIRE_FALSE(RuntimeAllocationFits(0, 4096));
+	REQUIRE_FALSE(RuntimeAllocationFits(1, 0));
+	REQUIRE_FALSE(RuntimeAllocationFits(UINT64_MAX, UINT64_MAX));
+}

@@ -2,6 +2,7 @@
 
 #include "DX12NativeSceneInputs.h"
 #include "GraphicsBackend.h"
+#include "VideoMemoryBudget.h"
 
 #include <array>
 #include <atomic>
@@ -79,15 +80,17 @@ namespace DX12Native
 			uint64_t value = 0;
 		};
 
-		winrt::com_ptr<ID3D12Resource> Buffer(uint64_t a_size, D3D12_HEAP_TYPE a_heap, D3D12_RESOURCE_STATES a_state, const wchar_t* a_name) const;
+		winrt::com_ptr<ID3D12Resource> Buffer(uint64_t a_size, D3D12_HEAP_TYPE a_heap, D3D12_RESOURCE_STATES a_state, const wchar_t* a_name);
 		void Begin(Build& a_build);
 		void Submit(Build& a_build);
 		void Retire();
 		bool BuildBottom(Build& a_build, const std::shared_ptr<const DX12::Shape>& a_shape);
 		bool BuildTop(Build& a_build);
-		bool HasPendingBottom(uint64_t a_identity, const DX12::Shape* a_shape) const;
+		bool HasPendingBottom(const DX12::Shape& a_shape) const;
 
 		GraphicsBackend backend;
+		VideoMemoryBudget videoBudget;
+		uint64_t budgetRetryAfter = 0;
 		winrt::com_ptr<ID3D12Device5> device;
 		winrt::com_ptr<ID3D12Fence> completion;
 		std::array<Build, 2> builds;

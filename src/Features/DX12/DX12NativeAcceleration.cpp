@@ -1,4 +1,5 @@
 #include "DX12NativeAcceleration.h"
+#include "RuntimeResidencyPolicy.h"
 
 #include <algorithm>
 #include <chrono>
@@ -16,6 +17,22 @@ namespace DX12Native
 	namespace
 	{
 		constexpr uint32_t kMaximumInstances = (1u << 24u) - 1u;
+
+		struct BudgetDeferred {};
+
+		uint64_t MeshKey(const DX12::Shape& shape)
+		{
+			return shape.meshIdentity ? shape.meshIdentity : shape.identity;
+		}
+
+		bool SameMesh(const DX12::Shape& a, const DX12::Shape& b)
+		{
+			if (&a == &b)
+				return true;
+			return a.meshIdentity && a.meshIdentity == b.meshIdentity &&
+			       a.positions.size() == b.positions.size() && a.indices == b.indices &&
+			       std::memcmp(a.positions.data(), b.positions.data(), a.positions.size() * sizeof(float3)) == 0;
+		}
 
 		void Check(HRESULT result)
 		{
@@ -102,13 +119,19 @@ namespace DX12Native
 		}
 	}
 
-	winrt::com_ptr<ID3D12Resource> AccelerationScene::Buffer(uint64_t a_size, D3D12_HEAP_TYPE a_heap, D3D12_RESOURCE_STATES a_state, const wchar_t* a_name) const
+	winrt::com_ptr<ID3D12Resource> AccelerationScene::Buffer(uint64_t a_size, D3D12_HEAP_TYPE a_heap, D3D12_RESOURCE_STATES a_state, const wchar_t* a_name)
 	{
 		if (!a_size)
 			throw std::runtime_error("Zero-size native acceleration allocation");
 		const auto heap = CD3DX12_HEAP_PROPERTIES(a_heap);
 		const auto flags = a_heap == D3D12_HEAP_TYPE_DEFAULT ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE;
 		const auto desc = CD3DX12_RESOURCE_DESC::Buffer(a_size, flags);
+		if (a_heap == D3D12_HEAP_TYPE_DEFAULT) {
+			const auto allocation = device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
+			const auto budget = videoBudget.Query(device.get(), 0);
+			if (!DX12::RuntimeAllocationFits(allocation, budget.effectiveBytes))
+				throw BudgetDeferred{};
+		}
 		winrt::com_ptr<ID3D12Resource> resource;
 		Check(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, a_state, nullptr, IID_PPV_ARGS(resource.put())));
 		resource->SetName(a_name);
@@ -209,8 +232,8 @@ namespace DX12Native
 		top->bottoms.reserve(target->geometry.size());
 
 		for (const auto& input : target->geometry) {
-			const auto found = bottoms.find(input.shape->identity);
-			if (found == bottoms.end() || found->second->shape.get() != input.shape.get())
+			const auto found = bottoms.find(MeshKey(*input.shape));
+			if (found == bottoms.end() || !SameMesh(*found->second->shape, *input.shape))
 				return false;
 			D3D12_RAYTRACING_INSTANCE_DESC desc{};
 			std::memcpy(desc.Transform, input.shape->transform.data(), sizeof(desc.Transform));
@@ -260,11 +283,11 @@ namespace DX12Native
 		return true;
 	}
 
-	bool AccelerationScene::HasPendingBottom(uint64_t a_identity, const DX12::Shape* a_shape) const
+	bool AccelerationScene::HasPendingBottom(const DX12::Shape& a_shape) const
 	{
 		return std::ranges::any_of(builds, [&](const auto& build) {
 			return build.bottom &&
-			       build.bottom->shape->identity == a_identity && build.bottom->shape.get() == a_shape;
+			       SameMesh(*build.bottom->shape, a_shape);
 		});
 	}
 
@@ -279,9 +302,9 @@ namespace DX12Native
 			if (!build.fence || build.fence > done)
 				continue;
 			if (build.bottom && target && std::ranges::any_of(target->geometry, [&](const auto& input) {
-					return input.shape.get() == build.bottom->shape.get();
+					return input.shape && SameMesh(*input.shape, *build.bottom->shape);
 				}))
-				bottoms[build.bottom->shape->identity] = build.bottom;
+				bottoms[MeshKey(*build.bottom->shape)] = build.bottom;
 			if (build.generation == generation && build.top)
 				published = build.top;
 			build = {};
@@ -324,7 +347,7 @@ namespace DX12Native
 			std::unordered_set<uint64_t> wanted;
 			for (const auto& input : target->geometry)
 				if (input.shape)
-					wanted.insert(input.shape->identity);
+					wanted.insert(MeshKey(*input.shape));
 			std::erase_if(bottoms, [&](const auto& pair) {
 				return !wanted.contains(pair.first);
 			});
@@ -334,6 +357,8 @@ namespace DX12Native
 		if (published && published->geometryRevision == targetRevision && published->scope == targetScope)
 			return;
 
+		if (GetTickCount64() < budgetRetryAfter)
+			return;
 		Build* available = nullptr;
 		for (auto& build : builds)
 			if (!build.allocator) {
@@ -346,10 +371,15 @@ namespace DX12Native
 			for (const auto& input : target->geometry) {
 				if (!input.shape)
 					continue;
-				const auto found = bottoms.find(input.shape->identity);
-				if (found != bottoms.end() && found->second->shape.get() == input.shape.get())
+				const auto found = bottoms.find(MeshKey(*input.shape));
+				if (found != bottoms.end()) {
+					if (!SameMesh(*found->second->shape, *input.shape)) {
+						failure = "Native geometry mesh identity collision";
+						return;
+					}
 					continue;
-				if (HasPendingBottom(input.shape->identity, input.shape.get()))
+				}
+				if (HasPendingBottom(*input.shape))
 					continue;
 				if (!BuildBottom(*available, input.shape))
 					*available = {};
@@ -358,8 +388,8 @@ namespace DX12Native
 			if (std::ranges::any_of(target->geometry, [&](const auto& input) {
 					if (!input.shape)
 						return false;
-					const auto found = bottoms.find(input.shape->identity);
-					return found == bottoms.end() || found->second->shape.get() != input.shape.get();
+					const auto found = bottoms.find(MeshKey(*input.shape));
+					return found == bottoms.end() || !SameMesh(*found->second->shape, *input.shape);
 				}))
 				return;
 			if (!std::ranges::any_of(builds, [&](const auto& build) {
@@ -368,6 +398,10 @@ namespace DX12Native
 				if (!BuildTop(*available))
 					*available = {};
 			}
+		} catch (const BudgetDeferred&) {
+			budgetRetryAfter = GetTickCount64() + 250;
+			if (!available->fence)
+				*available = {};
 		} catch (const std::exception& error) {
 			failure = error.what();
 			if (!available->fence)

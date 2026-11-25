@@ -25,3 +25,12 @@ pending revision. A diagnostic scene cannot cross a grid epoch boundary.
 Run the existing cpp_tests CTest target for the residency and spatial grid
 checks. Record native instance count, CPU geometry bytes, TLAS availability,
 native mask output and CPU/GPU timings for baseline and diagnostic mode.
+
+Runtime observations now expire after 600 frames without a recent renderer
+witness (swept every 60 frames). This is deliberately conservative: it is
+not an engine unload event and may drop off-screen objects. Buffer identity
+changes trigger a new observation; in-place edits remain unverified.
+BLAS reuse is based on normalized mesh content, independent of placement,
+with exact geometry comparison for matching keys. DXGI headroom is checked
+before default-heap acceleration allocations; pressure defers builds.
+The CPU cap remains fixed. Source and scene expose feature diagnostics.
