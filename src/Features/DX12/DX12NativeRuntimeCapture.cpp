@@ -4,12 +4,10 @@
 
 #include <algorithm>
 #include <bit>
-#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <format>
 #include <ranges>
-#include <string_view>
 
 namespace DX12Native
 {
@@ -58,8 +56,6 @@ namespace DX12Native
 					add(static_cast<unsigned char>(value >> (n * 8)));
 			return hash ? hash : 1;
 		}
-
-
 	}
 
 	RuntimeGeometryCapture::RuntimeGeometryCapture() = default;
@@ -224,7 +220,6 @@ namespace DX12Native
 					continue;
 				}
 				shape->indices.assign(packet.indices.begin(), packet.indices.end());
-
 
 				const auto grid = globals::features::dx12Resources.GetGrid();
 				if (!grid || !grid->requested.front().scope ||

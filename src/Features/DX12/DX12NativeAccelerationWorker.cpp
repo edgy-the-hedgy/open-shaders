@@ -1,4 +1,5 @@
 #include "DX12NativeAcceleration.h"
+#include "RuntimeResidencyPolicy.h"
 
 #include <chrono>
 #include <limits>
@@ -29,6 +30,8 @@ namespace DX12Native
 		uint64_t resetSerial = 0;  // A reset survives a newer grid request.
 		uint64_t lastRevision = std::numeric_limits<uint64_t>::max();
 		uint32_t lastScope = 0;
+		uint64_t lastRuntimeEpoch = 0;
+		bool finished = false;
 		std::string failure;
 	};
 
@@ -47,8 +50,20 @@ namespace DX12Native
 	{
 		if (!a_device || !a_context)
 			return false;
-		if (worker.joinable())
-			return true;
+		if (worker.joinable()) {
+			{
+				std::scoped_lock lock(state->mutex);
+				if (!state->finished)
+					return true;
+				if (!state->failure.empty())
+					return false;
+			}
+			worker.join();
+		}
+		{
+			std::scoped_lock lock(state->mutex);
+			state->finished = false;
+		}
 		winrt::com_ptr<ID3D11Device> device;
 		winrt::com_ptr<ID3D11DeviceContext> context;
 		device.copy_from(a_device);
@@ -56,7 +71,15 @@ namespace DX12Native
 		auto retained = state;
 		worker = std::jthread([retained, device = std::move(device),
 								  context = std::move(context)](std::stop_token stop) mutable {
-			Run(std::move(retained), stop, std::move(device), std::move(context));
+			try {
+				Run(retained, stop, std::move(device), std::move(context));
+			} catch (...) {
+				std::scoped_lock lock(retained->mutex);
+				retained->failure = "Native acceleration worker failed";
+			}
+			std::scoped_lock lock(retained->mutex);
+			retained->finished = true;
+			retained->published.store(nullptr, std::memory_order_release);
 		});
 		return true;
 	}
@@ -70,9 +93,10 @@ namespace DX12Native
 			std::scoped_lock lock(state->mutex);
 			if (state->lastScope == scope && state->lastRevision == a_grid->geometryRevision)
 				return;
-			if (state->lastScope && state->lastScope != scope)
+			if (state->lastScope != scope || state->lastRuntimeEpoch != a_grid->runtimeEpoch)
 				state->published.store(nullptr, std::memory_order_release);
 			state->lastScope = scope;
+			state->lastRuntimeEpoch = a_grid->runtimeEpoch;
 			state->lastRevision = a_grid->geometryRevision;
 			state->pending = std::move(a_grid);
 			++state->epoch;
@@ -85,6 +109,9 @@ namespace DX12Native
 		{
 			std::scoped_lock lock(state->mutex);
 			state->lastScope = 0;
+			state->lastRuntimeEpoch = 0;
+			if (state->finished)
+				state->failure.clear();
 			state->lastRevision = std::numeric_limits<uint64_t>::max();
 			state->pending.reset();
 			state->published.store(nullptr, std::memory_order_release);
@@ -150,7 +177,11 @@ namespace DX12Native
 					processedResetSerial = a_state->resetSerial;
 					resetPending = true;
 				}
-				if (processedEpoch != a_state->epoch) {
+				const bool targetInFlight = inputs && !inputs->geometry.empty() && !acceleration.GetScene();
+				const bool sameEpoch = inputs && inputs->residency &&
+					DX12::RuntimeSceneMatches(inputs->residency->requested.front().scope,
+						inputs->residency->runtimeEpoch, a_state->lastScope, a_state->lastRuntimeEpoch);
+				if (processedEpoch != a_state->epoch && (!targetInFlight || !sameEpoch || resetPending)) {
 					processedEpoch = a_state->epoch;
 					next = std::exchange(a_state->pending, nullptr);
 					changed = true;
@@ -172,8 +203,9 @@ namespace DX12Native
 			const auto completed = acceleration.GetScene();
 			if (completed) {
 				std::scoped_lock lock(a_state->mutex);
-				if (processedEpoch == a_state->epoch &&
-					!a_stop.stop_requested())
+				if (processedResetSerial == a_state->resetSerial && completed->inputs && completed->inputs->residency &&
+					DX12::RuntimeSceneMatches(completed->scope, completed->inputs->residency->runtimeEpoch,
+						a_state->lastScope, a_state->lastRuntimeEpoch) && !a_stop.stop_requested())
 					a_state->published.store(completed, std::memory_order_release);
 			}
 			if (!acceleration.Failure().empty()) {
@@ -186,10 +218,15 @@ namespace DX12Native
 			std::erase_if(consumers, [](const RetainedScene& record) {
 				return record.fence->GetCompletedValue() >= record.value;
 			});
-			const bool building = (inputs && !completed) || acceleration.HasPendingBuilds();
+			const bool building = (inputs && !inputs->geometry.empty() && !completed) || acceleration.HasPendingBuilds();
 			std::unique_lock lock(a_state->mutex);
+			const bool deferred = building && inputs && inputs->residency && !completed &&
+				DX12::RuntimeSceneMatches(inputs->residency->requested.front().scope,
+					inputs->residency->runtimeEpoch, a_state->lastScope, a_state->lastRuntimeEpoch) &&
+				processedResetSerial == a_state->resetSerial;
+			const uint64_t waitEpoch = deferred ? a_state->epoch : processedEpoch;
 			auto workArrived = [&] {
-				return a_stop.stop_requested() || processedEpoch != a_state->epoch ||
+				return a_stop.stop_requested() || waitEpoch != a_state->epoch ||
 				       !a_state->consumers.empty();
 			};
 			if (building || !consumers.empty())

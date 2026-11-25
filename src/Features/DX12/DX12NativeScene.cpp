@@ -2,6 +2,7 @@
 
 #include "DX12Control.h"
 #include "DX12Resources.h"
+#include "RuntimeResidencyPolicy.h"
 #include "Globals.h"
 #include "GpuPass.h"
 #include "RE/T/TESObjectCELL.h"
@@ -140,12 +141,12 @@ void DX12NativeScene::ObserveRuntimeLight(RE::BSShadowLight* light, uint32_t ref
 	}
 	if (freezeNativeFlickering && flickers && referenceID != 0) {
 		// Keep DX11's flicker intact. Only the native shadow has a stable light.
-		live.position = float3{ restOrigin.x, restOrigin.y, restOrigin.z };
+		if (std::isfinite(restOrigin.x) && std::isfinite(restOrigin.y) && std::isfinite(restOrigin.z))
+			live.position = float3{ restOrigin.x, restOrigin.y, restOrigin.z };
 		if (frozenNativeLights.size() < DX12Native::kMaxShadowLights || frozenNativeLights.contains(referenceID))
 			live = frozenNativeLights.try_emplace(referenceID, live).first->second;
 	}
-	// A prepared emitter must not accidentally account for two different SCM
-	// lights that happen to occupy the same position.
+	// Deduplicate repeated observations of the same engine light.
 	const auto it = std::ranges::find_if(runtimeLightSamples, [ni](const auto& sample) {
 		return sample.source == ni;
 	});
@@ -229,7 +230,9 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/
 			}
 		}
 		const auto grid = globals::features::dx12Resources.GetGrid();
-		if (!built || !grid || built->scope != grid->requested.front().scope)
+		if (!built || !built->inputs || !built->inputs->residency || !grid ||
+			!DX12::RuntimeSceneMatches(built->scope, built->inputs->residency->runtimeEpoch,
+				grid->requested.front().scope, grid->runtimeEpoch))
 			return;
 		shadowLights.store(std::make_shared<const std::vector<DX12::PreparedLight>>(liveLights), std::memory_order_release);
 		shadows.Dispatch(*backend, captured, built, liveLights, frame, controls);

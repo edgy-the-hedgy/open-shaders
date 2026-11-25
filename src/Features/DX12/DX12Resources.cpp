@@ -1,4 +1,5 @@
 #include "DX12Resources.h"
+#include "RuntimeResidencyPolicy.h"
 
 #include "CompanionWorker.h"
 #include "DX12Control.h"
@@ -271,17 +272,12 @@ namespace DX12
 
 	bool ResourceGrid::PublishRuntimeShape(std::shared_ptr<const Shape> shape, float centerX, float centerY, uint64_t expectedEpoch)
 	{
-		// Larger interior furniture and room pieces often exceed 256 KiB.
-		// Keep the whole runtime supplement transient and strictly budgeted.
-		constexpr size_t kMaximumRuntimeShapes = 384;
-		constexpr uint64_t kMaximumRuntimeBytes = 64ull * 1024 * 1024;
-		constexpr uint64_t kMaximumSingleShapeBytes = 1024ull * 1024;
 		if (!shape || !shape->identity || shape->positions.empty() || shape->indices.empty() ||
 			shape->indices.size() % 3)
 			return false;
 		const uint64_t shapeBytes = uint64_t(shape->positions.size()) * sizeof(float3) +
 		                            uint64_t(shape->indices.size()) * sizeof(uint32_t);
-		if (!shapeBytes || shapeBytes > kMaximumSingleShapeBytes)
+		if (!shapeBytes || shapeBytes > kMaximumSingleRuntimeShapeBytes)
 			return false;
 		std::scoped_lock lock(mutex);
 		const auto current = snapshot.load(std::memory_order_acquire);
@@ -309,8 +305,7 @@ namespace DX12
 				return true;
 			});
 		}
-		if (next->runtimeShapes.size() >= kMaximumRuntimeShapes ||
-			shapeBytes > kMaximumRuntimeBytes - next->runtimeBytes)
+		if (!RuntimeShapeFits(next->runtimeShapes.size(), next->runtimeBytes, shapeBytes))
 			return false;
 		next->runtimeShapes.push_back({ key, std::move(shape), shapeBytes });
 		next->runtimeBytes += shapeBytes;
