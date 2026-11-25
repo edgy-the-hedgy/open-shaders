@@ -263,7 +263,7 @@ namespace DX12Native
 	bool AccelerationScene::HasPendingBottom(uint64_t a_identity, const DX12::Shape* a_shape) const
 	{
 		return std::ranges::any_of(builds, [&](const auto& build) {
-			return build.generation == generation && build.bottom &&
+			return build.bottom &&
 			       build.bottom->shape->identity == a_identity && build.bottom->shape.get() == a_shape;
 		});
 	}
@@ -278,12 +278,12 @@ namespace DX12Native
 		for (auto& build : builds) {
 			if (!build.fence || build.fence > done)
 				continue;
-			if (build.generation == generation) {
-				if (build.bottom)
-					bottoms[build.bottom->shape->identity] = build.bottom;
-				if (build.top)
-					published = build.top;
-			}
+			if (build.bottom && target && std::ranges::any_of(target->geometry, [&](const auto& input) {
+					return input.shape.get() == build.bottom->shape.get();
+				}))
+				bottoms[build.bottom->shape->identity] = build.bottom;
+			if (build.generation == generation && build.top)
+				published = build.top;
 			build = {};
 		}
 		std::erase_if(consumers, [](const Consumer& consumer) {
@@ -306,6 +306,8 @@ namespace DX12Native
 		if (!completion || !failure.empty())
 			return;
 		Retire();
+		if (!failure.empty())
+			return;
 		if (!a_inputs || !a_inputs->residency || !a_inputs->residency->requested.front().scope)
 			return;
 		const uint32_t scope = a_inputs->residency->requested.front().scope;
@@ -348,11 +350,18 @@ namespace DX12Native
 				if (found != bottoms.end() && found->second->shape.get() == input.shape.get())
 					continue;
 				if (HasPendingBottom(input.shape->identity, input.shape.get()))
-					return;
+					continue;
 				if (!BuildBottom(*available, input.shape))
 					*available = {};
 				return;
 			}
+			if (std::ranges::any_of(target->geometry, [&](const auto& input) {
+					if (!input.shape)
+						return false;
+					const auto found = bottoms.find(input.shape->identity);
+					return found == bottoms.end() || found->second->shape.get() != input.shape.get();
+				}))
+				return;
 			if (!std::ranges::any_of(builds, [&](const auto& build) {
 					return build.generation == generation && build.top != nullptr;
 				})) {

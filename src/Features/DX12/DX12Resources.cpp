@@ -44,6 +44,7 @@ namespace DX12
 		auto next = std::make_shared<Grid>();
 		next->revision = current->revision + 1;
 		next->geometryRevision = current->geometryRevision + 1;
+		next->runtimeEpoch = current->runtimeEpoch + 1;
 		next->size = size;
 		next->requested = *desired;
 		next->predictive = *predictive;
@@ -268,7 +269,7 @@ namespace DX12
 		return true;
 	}
 
-	bool ResourceGrid::PublishRuntimeShape(std::shared_ptr<const Shape> shape, float centerX, float centerY)
+	bool ResourceGrid::PublishRuntimeShape(std::shared_ptr<const Shape> shape, float centerX, float centerY, uint64_t expectedEpoch)
 	{
 		// Larger interior furniture and room pieces often exceed 256 KiB.
 		// Keep the whole runtime supplement transient and strictly budgeted.
@@ -284,7 +285,7 @@ namespace DX12
 			return false;
 		std::scoped_lock lock(mutex);
 		const auto current = snapshot.load(std::memory_order_acquire);
-		if (!current->requested.front().scope)
+		if (!current->requested.front().scope || current->runtimeEpoch != expectedEpoch)
 			return false;
 		const auto x = Coordinate(centerX, current->size);
 		const auto y = Coordinate(centerY, current->size);
@@ -336,6 +337,7 @@ namespace DX12
 		auto next = std::make_shared<Grid>();
 		next->revision = current->revision + 1;
 		next->geometryRevision = current->geometryRevision + 1;
+		next->runtimeEpoch = current->runtimeEpoch + 1;
 		snapshot.store(std::move(next), std::memory_order_release);
 	}
 

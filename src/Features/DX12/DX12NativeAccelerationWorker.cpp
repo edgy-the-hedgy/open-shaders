@@ -179,6 +179,7 @@ namespace DX12Native
 			if (!acceleration.Failure().empty()) {
 				std::scoped_lock lock(a_state->mutex);
 				a_state->failure = acceleration.Failure();
+				a_state->published.store(nullptr, std::memory_order_release);
 				break;
 			}
 
@@ -192,9 +193,9 @@ namespace DX12Native
 				       !a_state->consumers.empty();
 			};
 			if (building || !consumers.empty())
-				a_state->wake.wait_for(lock, kGpuRetirePoll, workArrived);
+				a_state->wake.wait_for(lock, a_stop, kGpuRetirePoll, workArrived);
 			else
-				a_state->wake.wait(lock, workArrived);
+				a_state->wake.wait(lock, a_stop, workArrived);
 		}
 
 		// GPU consumer lifetimes continue independently of worker cancellation.

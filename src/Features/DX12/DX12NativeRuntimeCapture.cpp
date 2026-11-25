@@ -59,40 +59,10 @@ namespace DX12Native
 			return hash ? hash : 1;
 		}
 
-		bool FromMissingNif(std::string_view referenceKey, const DX12::MissingNifShapeDescriptor& source)
-		{
-			const std::string recorded = std::format("{:06X}:{}", source.referenceLocal, source.referencePlugin);
-			return std::equal(referenceKey.begin(), referenceKey.end(),
-				recorded.begin(), recorded.end(), [](char a, char b) {
-					return std::tolower(static_cast<unsigned char>(a)) ==
-					       std::tolower(static_cast<unsigned char>(b));
-				});
-		}
 
-		// Compare actual rigid geometry, not subcell readiness or camera coverage.
-		// Companion-produced shapes take precedence over equivalent runtime shapes.
-		bool SameShape(const DX12::Shape& a, const DX12::Shape& b)
-		{
-			if (a.positions.size() != b.positions.size() || a.indices != b.indices)
-				return false;
-			for (size_t i = 0; i < a.transform.size(); ++i)
-				if (std::abs(a.transform[i] - b.transform[i]) > 0.01f)
-					return false;
-			for (size_t i = 0; i < a.positions.size(); ++i) {
-				const auto& x = a.positions[i];
-				const auto& y = b.positions[i];
-				if (std::abs(x.x - y.x) > 0.01f ||
-					std::abs(x.y - y.y) > 0.01f ||
-					std::abs(x.z - y.z) > 0.01f)
-					return false;
-			}
-			return true;
-		}
 	}
 
-	RuntimeGeometryCapture::RuntimeGeometryCapture() :
-		worker([this](std::stop_token stop) { Run(stop); })
-	{}
+	RuntimeGeometryCapture::RuntimeGeometryCapture() = default;
 
 	RuntimeGeometryCapture::~RuntimeGeometryCapture()
 	{
@@ -111,6 +81,7 @@ namespace DX12Native
 		stableObservations.clear();
 		activeCenter = {};
 		activeSize = 0;
+		activeGridEpoch = 0;
 		lastFrame = UINT32_MAX;
 		frameBytes = 0;
 	}
@@ -131,12 +102,14 @@ namespace DX12Native
 		const auto center = grid->requested.front();
 		const uint64_t id = Identity(candidate);
 		const uint64_t stableKey = StableObjectKey(candidate);
+		uint64_t captureGeneration = 0;
 		{
 			std::scoped_lock lock(mutex);
-			if (activeCenter != center || activeSize != grid->size) {
+			if (activeCenter != center || activeSize != grid->size || activeGridEpoch != grid->runtimeEpoch) {
 				++generation;
 				activeCenter = center;
 				activeSize = grid->size;
+				activeGridEpoch = grid->runtimeEpoch;
 				captured.clear();
 				stableObservations.clear();
 				pending.clear();
@@ -147,6 +120,8 @@ namespace DX12Native
 				lastFrame = frame;
 				frameBytes = 0;
 			}
+			if (std::ranges::any_of(grid->runtimeShapes, [id](const auto& item) { return item.shape && item.shape->identity == id; }))
+				return;
 			if (candidate.requiresStability && !captured.contains(id)) {
 				// Avoid freezing moving clutter and actor attachments into TLAS.
 				// One observation per engine frame, irrespective of pass multiplicity.
@@ -174,12 +149,15 @@ namespace DX12Native
 			if (bytes > kFrameCopyBytes - frameBytes || pending.size() >= kPacketLimit ||
 				!captured.insert(id).second)
 				return;
+			captureGeneration = generation;
 			frameBytes += static_cast<uint32_t>(bytes);
 		}
 
 		try {
 			Packet packet;
 			packet.identity = id;
+			packet.gridEpoch = grid->runtimeEpoch;
+			packet.generation = captureGeneration;
 			packet.runtimeObjectKey = stableKey;
 			packet.sourceCenter = center;
 			packet.referenceKey = candidate.referenceKey;
@@ -193,17 +171,17 @@ namespace DX12Native
 			packet.indices.assign(candidate.indices, candidate.indices + indexCount);
 			{
 				std::scoped_lock lock(mutex);
-				if (activeCenter != center || activeSize != grid->size) {
-					captured.erase(id);
+				if (captureGeneration != generation)
 					return;
-				}
-				packet.generation = generation;
+				if (!worker.joinable())
+					worker = std::jthread([this](std::stop_token stop) { Run(stop); });
 				pending.push_back(std::move(packet));
 			}
 			wake.notify_one();
 		} catch (...) {
 			std::scoped_lock lock(mutex);
-			captured.erase(id);
+			if (captureGeneration == generation)
+				captured.erase(id);
 		}
 	}
 
@@ -219,78 +197,58 @@ namespace DX12Native
 				packet = std::move(pending.front());
 				pending.pop_front();
 			}
-			auto shape = std::make_shared<DX12::Shape>();
-			shape->identity = packet.identity;
-			shape->runtimeObjectKey = packet.runtimeObjectKey;
-			shape->transform = packet.transform;
-			shape->positions.reserve(packet.vertexCount);
-			bool usable = true;
-			for (uint32_t i = 0; i < packet.vertexCount; ++i) {
-				float xyz[3];
-				std::memcpy(xyz, packet.vertices.data() + size_t(i) * packet.stride, sizeof(xyz));
-				if (!std::isfinite(xyz[0]) || !std::isfinite(xyz[1]) || !std::isfinite(xyz[2])) {
-					usable = false;
-					break;
-				}
-				shape->positions.push_back({ xyz[0], xyz[1], xyz[2] });
-			}
-			if (!usable || !std::ranges::all_of(packet.indices,
-							   [&](uint16_t index) { return index < packet.vertexCount; }))
-				continue;
-			shape->indices.assign(packet.indices.begin(), packet.indices.end());
-
 			const auto releaseIfCurrent = [&]() {
 				std::scoped_lock lock(mutex);
 				if (packet.generation == generation)
 					captured.erase(packet.identity);
 			};
-			const auto grid = globals::features::dx12Resources.GetGrid();
-			if (!grid || !grid->requested.front().scope ||
-				grid->requested.front().scope != packet.sourceCenter.scope) {
-				releaseIfCurrent();
-				continue;
-			}
-			const auto x = DX12::Coordinate(packet.centerX, grid->size);
-			const auto y = DX12::Coordinate(packet.centerY, grid->size);
-			if (!x || !y || !std::ranges::contains(grid->requested, DX12::SubcellKey{ grid->requested.front().scope, *x, *y })) {
-				releaseIfCurrent();
-				continue;
-			}
-			bool companionOwns = false;
-			for (const auto& tile : grid->resident) {
-				if (!tile)
-					continue;
-				for (const auto& prepared : tile->shapes)
-					if (prepared && SameShape(*prepared, *shape)) {
-						companionOwns = true;
+			try {
+				auto shape = std::make_shared<DX12::Shape>();
+				shape->identity = packet.identity;
+				shape->runtimeObjectKey = packet.runtimeObjectKey;
+				shape->transform = packet.transform;
+				shape->positions.reserve(packet.vertexCount);
+				bool usable = true;
+				for (uint32_t i = 0; i < packet.vertexCount; ++i) {
+					float xyz[3];
+					std::memcpy(xyz, packet.vertices.data() + size_t(i) * packet.stride, sizeof(xyz));
+					if (!std::isfinite(xyz[0]) || !std::isfinite(xyz[1]) || !std::isfinite(xyz[2])) {
+						usable = false;
 						break;
 					}
-				if (companionOwns)
-					break;
-			}
-			if (companionOwns)
-				continue;
-			// The companion may have retained the original NIF even when a block
-			// was unsupported. Preserve that provenance on the runtime supplement.
-			// Block indices are NOT inferred from runtime shape names.
-			for (const auto& tile : grid->resident) {
-				if (!tile || !shape->sourceNif.empty())
-					continue;
-				for (const auto& missing : tile->missingShapes) {
-					if (FromMissingNif(packet.referenceKey, missing)) {
-						shape->sourceNif = missing.nifPath;
-						break;
-					}
+					shape->positions.push_back({ xyz[0], xyz[1], xyz[2] });
 				}
-			}
-			{
-				std::scoped_lock lock(mutex);
-				if (packet.generation != generation)
+				if (!usable || !std::ranges::all_of(packet.indices,
+								   [&](uint16_t index) { return index < packet.vertexCount; })) {
+					releaseIfCurrent();
 					continue;
+				}
+				shape->indices.assign(packet.indices.begin(), packet.indices.end());
+
+
+				const auto grid = globals::features::dx12Resources.GetGrid();
+				if (!grid || !grid->requested.front().scope ||
+					grid->requested.front().scope != packet.sourceCenter.scope || grid->runtimeEpoch != packet.gridEpoch) {
+					releaseIfCurrent();
+					continue;
+				}
+				const auto x = DX12::Coordinate(packet.centerX, grid->size);
+				const auto y = DX12::Coordinate(packet.centerY, grid->size);
+				if (!x || !y || !std::ranges::contains(grid->requested, DX12::SubcellKey{ grid->requested.front().scope, *x, *y })) {
+					releaseIfCurrent();
+					continue;
+				}
+				{
+					std::scoped_lock lock(mutex);
+					if (packet.generation != generation)
+						continue;
+					globals::features::dx12Resources.PublishRuntimeShape(
+						std::move(shape), packet.centerX, packet.centerY, packet.gridEpoch);
+					captured.erase(packet.identity);
+				}
+			} catch (...) {
+				releaseIfCurrent();
 			}
-			// Existing immutable grid owns residency and geometry revisions.
-			globals::features::dx12Resources.PublishRuntimeShape(
-				std::move(shape), packet.centerX, packet.centerY);
 		}
 	}
 }

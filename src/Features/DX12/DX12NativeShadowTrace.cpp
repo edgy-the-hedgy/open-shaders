@@ -141,6 +141,8 @@ namespace DX12Native
 		try {
 			Initialize(requested);
 			const uint64_t finished = completion->GetCompletedValue();
+			if (finished == UINT64_MAX)
+				return;
 			auto it = std::ranges::find_if(slots, [&](const auto& slot) {
 				if (!slot)
 					return true;

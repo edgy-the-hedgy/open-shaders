@@ -47,7 +47,7 @@ namespace DX12Native
 	private:
 		struct Packet
 		{
-			uint64_t identity = 0, runtimeObjectKey = 0, generation = 0;
+			uint64_t identity = 0, runtimeObjectKey = 0, generation = 0, gridEpoch = 0;
 			DX12::SubcellKey sourceCenter{};
 			std::string referenceKey;  // Match a runtime addition with unresolved NIF provenance.
 			std::array<float, 12> transform{};
@@ -65,7 +65,7 @@ namespace DX12Native
 		std::unordered_map<uint64_t, std::pair<uint32_t, uint32_t>> stableObservations;
 		DX12::SubcellKey activeCenter{};
 		uint32_t activeSize = 0, lastFrame = UINT32_MAX, frameBytes = 0;
-		uint64_t generation = 0;
+		uint64_t generation = 0, activeGridEpoch = 0;
 		std::jthread worker;
 	};
 }
