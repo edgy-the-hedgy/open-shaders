@@ -6,6 +6,7 @@
 #include "Globals.h"
 #include "GpuPass.h"
 #include "RE/T/TESObjectCELL.h"
+#include "RE/B/BSVisit.h"
 #include "RE/S/ScriptEventSourceHolder.h"
 #include "State.h"
 #include "Utils/D3D.h"
@@ -64,6 +65,9 @@ void DX12NativeScene::DrawSettings()
 {
 	ImGui::Checkbox(T("menu.dx12.scene.independent_shadowmask", "Independent shadowmask"), &shadowMaskEnabled);
 	ImGui::Checkbox(T("menu.dx12.scene.outdoor_shadow_offloading", "Enable outdoor shadow offloading (DX12 only)"), &outdoorShadowOffloading);
+	bool scan = scanLoadedNodes.load(std::memory_order_relaxed);
+	if (ImGui::Checkbox(T("menu.dx12.runtime.loaded_nodes", "Observe loaded sibling geometry (experimental)"), &scan))
+		scanLoadedNodes.store(scan, std::memory_order_relaxed);
 	bool preview = previewRuntimeShadows.load(std::memory_order_relaxed);
 	if (ImGui::Checkbox(T("menu.dx12.runtime.preview", "Diagnostic shadow overlay (raster retained)"), &preview))
 		previewRuntimeShadows.store(preview, std::memory_order_relaxed);
@@ -98,6 +102,7 @@ void DX12NativeScene::LoadSettings(json& input)
 	shadowMaskEnabled = input.value("ShadowMask", true);
 	outdoorShadowOffloading = input.value("OutdoorShadowOffloading", false);
 	previewRuntimeShadows.store(input.value("PreviewRuntimeShadows", false), std::memory_order_relaxed);
+	scanLoadedNodes.store(input.value("ScanLoadedNodes", false), std::memory_order_relaxed);
 	densityMode = std::min(input.value("ShadowTraceDensityMode", 7u), 7u);
 	freezeNativeFlickering = input.value("FreezeNativeFlickering", false);
 	{
@@ -115,6 +120,7 @@ void DX12NativeScene::SaveSettings(json& output)
 {
 	output = { { "ShadowMask", shadowMaskEnabled }, { "OutdoorShadowOffloading", outdoorShadowOffloading }, { "ShadowTraceDensityMode", densityMode },
 		{ "PreviewRuntimeShadows", previewRuntimeShadows.load(std::memory_order_relaxed) },
+		{ "ScanLoadedNodes", scanLoadedNodes.load(std::memory_order_relaxed) },
 		{ "FreezeNativeFlickering", freezeNativeFlickering },
 		{ "ShadowNearLightExclusion", nearLightShadowExclusion },
 		{ "ShadowNearLightRadius", nearLightExclusionUnits },
@@ -128,6 +134,7 @@ void DX12NativeScene::RestoreDefaultSettings()
 	shadowMaskEnabled = true;
 	outdoorShadowOffloading = false;
 	previewRuntimeShadows.store(false, std::memory_order_relaxed);
+	scanLoadedNodes.store(false, std::memory_order_relaxed);
 	densityMode = 7;
 	freezeNativeFlickering = false;
 	{
@@ -300,23 +307,25 @@ std::function<void()> DX12NativeScene::OnRenderPassBegin(const RE::BSRenderPass*
 		(globals::state->permutationData.ExtraShaderDescriptor &
 			static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
 		return nullptr;
-	ObserveSCMRigidCaster(*pass->geometry, true);
+	ObserveSCMRigidCaster(*pass->geometry, true, scanLoadedNodes.load(std::memory_order_relaxed));
 	return nullptr;
 }
 
-void DX12NativeScene::ObserveSCMRigidCaster(RE::BSGeometry& geometry, bool requireStability)
+void DX12NativeScene::ObserveSCMRigidCaster(RE::BSGeometry& geometry, bool requireStability, bool expandLoadedNode)
 {
-	// SCM and already-submitted opaque render passes share this bounded
-	// CPU-only capture path. No scene traversal, readback or GPU wait.
+	// Only CPU-backed geometry enters this capture path.
 	if (!loaded || globals::game::isVR || !globals::features::dx12Control.IsActive() || !globals::features::dx12Control.IsShadowOffloadMode())
 		return;
 	auto* tri = geometry.AsTriShape();
 	if (!tri || geometry.AsDynamicTriShape())
 		return;
 	const auto& runtime = geometry.GetGeometryRuntimeData();
-	if (runtime.skinInstance || runtime.alphaProperty || !runtime.rendererData ||
-		!runtime.rendererData->rawVertexData || !runtime.rendererData->rawIndexData)
+	if (runtime.skinInstance || runtime.alphaProperty || !runtime.rendererData)
 		return;
+	if (!runtime.rendererData->rawVertexData || !runtime.rendererData->rawIndexData) {
+		missingCpuGeometry.fetch_add(1, std::memory_order_relaxed);
+		return;
+	}
 	// Ignore effects, sky, water and other non-lighting draws; geometry only.
 	const auto* property = runtime.shaderProperty.get();
 	if (!property || property->GetRTTI() != globals::rtti::BSLightingShaderPropertyRTTI.get())
@@ -368,6 +377,47 @@ void DX12NativeScene::ObserveSCMRigidCaster(RE::BSGeometry& geometry, bool requi
 	                           globals::game::graphicsState->GetFrameCount() :
 	                           0;
 	geometryCapture.Observe(candidate, frame, globals::features::dx12Resources.GetGrid());
+	if (expandLoadedNode && reference && node && node != &geometry)
+		ObserveLoadedSiblings(*node, geometry, frame);
+}
+
+void DX12NativeScene::ObserveLoadedSiblings(RE::NiAVObject& root, RE::BSGeometry& source, uint32_t frame)
+{
+	constexpr uint32_t kMaxRootsPerFrame = 8;
+	constexpr uint32_t kMaxGeometryPerFrame = 64;
+	uint32_t allowance = 0;
+	{
+		std::scoped_lock lock(graphMutex);
+		if (graphFrame != frame) {
+			graphFrame = frame;
+			graphRoots.clear();
+			graphVisits = 0;
+		}
+		if (graphRoots.size() >= kMaxRootsPerFrame || graphVisits >= kMaxGeometryPerFrame ||
+			!graphRoots.insert(&root).second)
+			return;
+		allowance = kMaxGeometryPerFrame - graphVisits;
+		graphVisits += allowance;
+	}
+	uint32_t visited = 0;
+	try {
+		RE::BSVisit::TraverseScenegraphGeometries(&root, [&](RE::BSGeometry* geometry) {
+			if (visited >= allowance)
+				return RE::BSVisit::BSVisitControl::kStop;
+			++visited;
+			if (geometry && geometry != &source && !geometry->GetAppCulled()) {
+				ObserveSCMRigidCaster(*geometry, true, false);
+				loadedNodeObservations.fetch_add(1, std::memory_order_relaxed);
+			}
+			return visited < allowance ? RE::BSVisit::BSVisitControl::kContinue : RE::BSVisit::BSVisitControl::kStop;
+		});
+	} catch (...) {
+	}
+	{
+		std::scoped_lock lock(graphMutex);
+		if (graphFrame == frame)
+			graphVisits -= allowance - visited;
+	}
 }
 
 json DX12NativeScene::GetDiagnostics()
@@ -378,7 +428,10 @@ json DX12NativeScene::GetDiagnostics()
 		{ "tlasAvailable", bool(scene && scene->acceleration) },
 		{ "tlasRevision", scene ? scene->geometryRevision : 0 },
 		{ "tlasInstances", scene && scene->inputs ? scene->inputs->geometry.size() : 0 },
-		{ "nativeLights", lights ? lights->size() : 0 }, { "accelerationFailure", acceleration.Failure() } };
+		{ "nativeLights", lights ? lights->size() : 0 }, { "accelerationFailure", acceleration.Failure() },
+		{ "scanLoadedNodes", scanLoadedNodes.load(std::memory_order_relaxed) },
+		{ "loadedNodeObservations", loadedNodeObservations.load(std::memory_order_relaxed) },
+		{ "missingCpuGeometryObservations", missingCpuGeometry.load(std::memory_order_relaxed) } };
 }
 
 void DX12NativeScene::OnSceneTransitionReset(bool a_opening)

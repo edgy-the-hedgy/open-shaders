@@ -2,6 +2,7 @@
 
 #include "Feature.h"
 #include "SpatialGrid.h"
+#include "RuntimeResidencyPolicy.h"
 
 #include <atomic>
 #include <chrono>
@@ -150,6 +151,8 @@ namespace DX12
 		bool PublishRuntimeShape(std::shared_ptr<const Shape> shape, float centerX, float centerY, uint64_t expectedEpoch);
 		/** @brief Releases every in-memory tile at scene transition. */
 		void Clear();
+		void SetRuntimeBudget(uint64_t bytes) { runtimeBudget.store(bytes, std::memory_order_relaxed); }
+		uint64_t RuntimeBudget() const { return runtimeBudget.load(std::memory_order_relaxed); }
 		/** @brief Retires observations that no longer have a recent engine witness. */
 		void RetireRuntimeShapes(std::span<const uint64_t> identities, uint64_t expectedEpoch);
 		void FlushRetiredCache();  // DRAM only; caller decides transition policy.
@@ -160,6 +163,7 @@ namespace DX12
 
 	private:
 		std::mutex mutex;
+		std::atomic<uint64_t> runtimeBudget{ kMaximumRuntimeBytes };
 		std::atomic<std::shared_ptr<const Grid>> snapshot{ std::make_shared<const Grid>() };
 		std::optional<SubcellKey> pending;
 		std::deque<std::shared_ptr<const Tile>> recentTiles;
@@ -224,6 +228,7 @@ struct DX12Resources final : Feature
 private:
 	void ResetPreparation();
 	DX12::ResourceGrid grid;
+	uint64_t nextCpuBudgetPoll = 0;
 	std::atomic<uint64_t> flushGeneration{ 0 };
 	std::atomic<std::shared_ptr<const DX12::PreparationStats>> generationStats{
 		std::make_shared<const DX12::PreparationStats>()

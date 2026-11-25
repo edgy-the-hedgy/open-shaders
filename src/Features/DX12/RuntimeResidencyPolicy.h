@@ -10,12 +10,20 @@ namespace DX12
 	inline constexpr uint64_t kMaximumSingleRuntimeShapeBytes = 1024ull * 1024;
 
 	/** @brief Bounds transient CPU geometry without arithmetic underflow. */
-	constexpr bool RuntimeShapeFits(size_t residentShapes, uint64_t residentBytes, uint64_t shapeBytes)
+	constexpr bool RuntimeShapeFits(size_t residentShapes, uint64_t residentBytes, uint64_t shapeBytes,
+		uint64_t budgetBytes = kMaximumRuntimeBytes)
 	{
 		return residentShapes < kMaximumRuntimeShapes &&
-		       residentBytes <= kMaximumRuntimeBytes &&
+		       budgetBytes <= kMaximumRuntimeBytes && residentBytes <= budgetBytes &&
 		       shapeBytes > 0 && shapeBytes <= kMaximumSingleRuntimeShapeBytes &&
-		       shapeBytes <= kMaximumRuntimeBytes - residentBytes;
+		       shapeBytes <= budgetBytes - residentBytes;
+	}
+
+	/** @brief Use at most one sixteenth of available physical memory for new CPU geometry. */
+	constexpr uint64_t RuntimeCpuBudget(uint64_t availableBytes)
+	{
+		const auto share = availableBytes / 16;
+		return share < kMaximumRuntimeBytes ? share : kMaximumRuntimeBytes;
 	}
 
 	/** @brief Reject invalid allocation sizes and allocations above current DXGI headroom. */

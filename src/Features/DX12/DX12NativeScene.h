@@ -42,7 +42,7 @@ struct DX12NativeScene final : Feature, RE::BSTEventSink<RE::TESObjectLoadedEven
 	void RestoreDefaultSettings() override;
 	void OnOpaqueRasterReady(const OpaqueRasterInputs& a_inputs) override;
 	/** @brief Observe CPU-backed opaque rigid geometry from SCM or normal render passes. */
-	void ObserveSCMRigidCaster(RE::BSGeometry& geometry, bool requireStability = false);
+	void ObserveSCMRigidCaster(RE::BSGeometry& geometry, bool requireStability = false, bool expandLoadedNode = false);
 	/** @brief SCM hands native-owned lights' static casters to RayQuery and retains movers. */
 	bool OwnsStaticForLight(RE::BSShadowLight* light, int32_t slot) const;
 	// Snapshot LLF/SCM point-light parameters without altering the DX11 light.
@@ -69,6 +69,12 @@ private:
 	/** @brief Gates only native shadow replacement; never disables DX11 baseline shadows. */
 	bool CanOffloadShadowsInCurrentCell() const;
 	void DrainReferenceChanges();
+	void ObserveLoadedSiblings(RE::NiAVObject& root, RE::BSGeometry& source, uint32_t frame);
+	std::mutex graphMutex;
+	std::unordered_set<const RE::NiAVObject*> graphRoots;
+	uint32_t graphFrame = UINT32_MAX, graphVisits = 0;
+	std::atomic<bool> scanLoadedNodes{ false };
+	std::atomic<uint64_t> loadedNodeObservations{ 0 }, missingCpuGeometry{ 0 };
 	std::mutex referenceChangeMutex;
 	std::unordered_set<uint32_t> changedReferences;
 	bool referenceChangeOverflow = false;

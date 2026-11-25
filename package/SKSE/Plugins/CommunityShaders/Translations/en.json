@@ -5951,6 +5951,8 @@
     "menu.clear_shader_cache": "Clear Shader Cache",
     "menu.clear_shader_cache_tooltip": "Clears the shader cache and disk cache (if enabled). The Shader Cache is the collection of compiled shaders which replace the vanilla shaders at runtime. The Disk Cache is a collection of compiled shaders on disk. Clearing will mean that shaders are recompiled only when the game re-encounters them.",
     "menu.disable_at_boot_desc": "Select features to disable at boot. This is the same as deleting a feature.ini file. Restart will be required to reenable.",
+    "menu.dx12.runtime.budget_mib": "CPU admission budget: %.2f MiB",
+    "menu.dx12.runtime.loaded_nodes": "Observe loaded sibling geometry (experimental)",
     "menu.dx12.runtime.source": "Runtime geometry only",
     "menu.dx12.runtime.no_prediction": "No companion or unloaded tile preparation",
     "menu.dx12.runtime.resident_shapes": "Observed shapes: %zu",

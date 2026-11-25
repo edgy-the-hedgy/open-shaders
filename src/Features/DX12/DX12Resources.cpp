@@ -213,7 +213,7 @@ namespace DX12
 				return true;
 			});
 		}
-		if (!RuntimeShapeFits(next->runtimeShapes.size(), next->runtimeBytes, shapeBytes))
+		if (!RuntimeShapeFits(next->runtimeShapes.size(), next->runtimeBytes, shapeBytes, RuntimeBudget()))
 			return false;
 		next->runtimeShapes.push_back({ key, std::move(shape), shapeBytes });
 		next->runtimeBytes += shapeBytes;
@@ -330,6 +330,7 @@ void DX12Resources::DrawSettings()
 	if (snapshot) {
 		ImGui::Text(T("menu.dx12.runtime.resident_shapes", "Observed shapes: %zu"), snapshot->runtimeShapes.size());
 		ImGui::Text(T("menu.dx12.runtime.resident_mib", "Geometry: %.2f MiB"), double(snapshot->runtimeBytes) / (1024.0 * 1024.0));
+		ImGui::Text(T("menu.dx12.runtime.budget_mib", "CPU admission budget: %.2f MiB"), double(grid.RuntimeBudget()) / (1024.0 * 1024.0));
 	}
 }
 
@@ -377,6 +378,14 @@ void DX12Resources::PreShadowMaps()
 	const uint32_t scope = world ? world->GetFormID() : cell->GetFormID();
 	const auto position = player->GetPosition();
 	grid.Advance(scope, settings.SubcellSize, position.x, position.y);
+	const auto now = GetTickCount64();
+	if (now >= nextCpuBudgetPoll) {
+		MEMORYSTATUSEX memory{};
+		memory.dwLength = sizeof(memory);
+		if (GlobalMemoryStatusEx(&memory))
+			grid.SetRuntimeBudget(DX12::RuntimeCpuBudget(memory.ullAvailPhys));
+		nextCpuBudgetPoll = now + 1000;
+	}
 }
 
 void DX12Resources::OnSceneTransitionReset(bool opening)
@@ -393,6 +402,7 @@ json DX12Resources::GetDiagnostics()
 	return { { "source", "runtime" }, { "scope", snapshot->requested.front().scope },
 		{ "gridEpoch", snapshot->runtimeEpoch }, { "geometryRevision", snapshot->geometryRevision },
 		{ "residentShapes", snapshot->runtimeShapes.size() }, { "residentBytes", snapshot->runtimeBytes },
+		{ "cpuBudgetBytes", grid.RuntimeBudget() },
 		{ "companionActive", false }, { "predictivePreparation", false } };
 }
 

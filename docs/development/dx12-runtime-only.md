@@ -45,3 +45,13 @@ BUILD_DX12_RESOURCES_COMPANION=ON, DX12_RESOURCES_PREBUILT_EXE and
 DX12_RESOURCES_PREBUILT_SHA256. This does not enable companion execution in
 runtime-only mode. A separate repository and its release process are not
 created by this build option.
+
+CPU admission is additionally limited by one sixteenth of available system
+physical memory, checked once per second. Existing observations retire by
+lifecycle/expiry, not by a synchronous pressure eviction.
+An optional experimental loaded sibling scan is available in Native Scene.
+It expands a renderer-observed reference's existing scene graph during its
+render callback, with bounded root and geometry visits. It does not force
+asset loading or enumerate unseen references, and is disabled by default.
+The GPU-only geometry diagnostic counts rejected observations; readback is
+not implemented. These paths require engine-side testing.

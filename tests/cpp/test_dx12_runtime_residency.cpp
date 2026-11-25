@@ -58,3 +58,14 @@ TEST_CASE("Native GPU budget admission rejects invalid allocation sizes", "[dx12
 	REQUIRE_FALSE(RuntimeAllocationFits(1, 0));
 	REQUIRE_FALSE(RuntimeAllocationFits(UINT64_MAX, UINT64_MAX));
 }
+
+TEST_CASE("CPU geometry admission adapts to available memory", "[dx12]")
+{
+	using namespace DX12;
+	REQUIRE(RuntimeCpuBudget(0) == 0);
+	REQUIRE(RuntimeCpuBudget(16 * 1024 * 1024ull) == 1024 * 1024ull);
+	REQUIRE(RuntimeCpuBudget(UINT64_MAX) == kMaximumRuntimeBytes);
+	REQUIRE(RuntimeShapeFits(0, 0, 4096, 4096));
+	REQUIRE_FALSE(RuntimeShapeFits(0, 4096, 1, 4096));
+	REQUIRE_FALSE(RuntimeShapeFits(0, 8192, 1, 4096));
+}
