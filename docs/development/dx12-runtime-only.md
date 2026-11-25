@@ -34,3 +34,14 @@ BLAS reuse is based on normalized mesh content, independent of placement,
 with exact geometry comparison for matching keys. DXGI headroom is checked
 before default-heap acceleration allocations; pressure defers builds.
 The CPU cap remains fixed. Source and scene expose feature diagnostics.
+
+The scene listens for engine object-loaded events (both load and unload).
+Callbacks publish only bounded FormIDs; the render hook invalidates affected
+residency and pending packets. This is a first lifecycle mechanism, not proof
+of correct handling of every disable, mesh edit or engine event ordering.
+
+An optional reference tool can be staged without a .NET SDK using
+BUILD_DX12_RESOURCES_COMPANION=ON, DX12_RESOURCES_PREBUILT_EXE and
+DX12_RESOURCES_PREBUILT_SHA256. This does not enable companion execution in
+runtime-only mode. A separate repository and its release process are not
+created by this build option.

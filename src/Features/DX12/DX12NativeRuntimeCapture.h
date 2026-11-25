@@ -27,6 +27,7 @@ namespace DX12Native
 		uint32_t stride = 0, vertexCount = 0, triangleCount = 0;
 		float centerX = 0, centerY = 0;
 		bool requiresStability = false;  // Render-pass-only shapes must be stationary for several frames.
+		uint32_t referenceID = 0;
 		uint64_t objectIdentity = 0;     // Per-session BSGeometry identity independent of NIF shape names.
 	};
 
@@ -44,6 +45,7 @@ namespace DX12Native
 			const std::shared_ptr<const DX12::Grid>& grid);
 		void Reset();
 		void Sweep(uint32_t frame, const std::shared_ptr<const DX12::Grid>& grid);
+		void InvalidateReferences(const std::unordered_set<uint32_t>& references, bool overflow);
 
 	private:
 		struct Packet
@@ -52,7 +54,7 @@ namespace DX12Native
 			DX12::SubcellKey sourceCenter{};
 			std::string referenceKey;  // Match a runtime addition with unresolved NIF provenance.
 			std::array<float, 12> transform{};
-			uint32_t stride = 0, vertexCount = 0, frame = 0;
+			uint32_t stride = 0, vertexCount = 0, frame = 0, referenceID = 0;
 			float centerX = 0, centerY = 0;
 			std::vector<uint8_t> vertices;
 			std::vector<uint16_t> indices;
@@ -62,7 +64,7 @@ namespace DX12Native
 		std::mutex mutex;
 		std::condition_variable_any wake;
 		std::deque<Packet> pending;
-		std::unordered_set<uint64_t> captured;
+		std::unordered_map<uint64_t, uint32_t> captured;
 		std::unordered_map<uint64_t, uint32_t> lastObserved;
 		uint32_t lastSweep = 0;
 		std::unordered_map<uint64_t, std::pair<uint32_t, uint32_t>> stableObservations;

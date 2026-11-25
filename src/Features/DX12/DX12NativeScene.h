@@ -5,6 +5,8 @@
 #include "DX12NativeRuntimeCapture.h"
 #include "DX12NativeShadowTrace.h"
 #include "Feature.h"
+#include "RE/B/BSTEvent.h"
+#include "RE/T/TESObjectLoadedEvent.h"
 
 #include <atomic>
 #include <memory>
@@ -12,10 +14,11 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 /** @brief Independent early opaque raster capture for native DX12. */
-struct DX12NativeScene final : Feature
+struct DX12NativeScene final : Feature, RE::BSTEventSink<RE::TESObjectLoadedEvent>
 {
 	std::string GetName() override { return "DX12 Native Scene"; }
 	std::string GetShortName() override { return "DX12NativeScene"; }
@@ -27,6 +30,9 @@ struct DX12NativeScene final : Feature
 	bool SupportsVR() override { return false; }
 
 	void DrawSettings() override;
+	void DataLoaded() override;
+	RE::BSEventNotifyControl ProcessEvent(const RE::TESObjectLoadedEvent* event,
+		RE::BSTEventSource<RE::TESObjectLoadedEvent>* source) override;
 	bool WantsRenderPassHook() const override { return true; }
 	std::function<void()> OnRenderPassBegin(const RE::BSRenderPass* pass) override;
 	bool WantsPreShadowMapsHook() const override { return true; }
@@ -62,6 +68,11 @@ struct DX12NativeScene final : Feature
 private:
 	/** @brief Gates only native shadow replacement; never disables DX11 baseline shadows. */
 	bool CanOffloadShadowsInCurrentCell() const;
+	void DrainReferenceChanges();
+	std::mutex referenceChangeMutex;
+	std::unordered_set<uint32_t> changedReferences;
+	bool referenceChangeOverflow = false;
+	bool referenceEventsRegistered = false;
 	std::optional<GraphicsBackend> backend;
 	DX12Native::RasterCapture raster;
 	DX12Native::RuntimeGeometryCapture geometryCapture;

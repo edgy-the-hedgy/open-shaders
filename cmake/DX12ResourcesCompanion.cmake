@@ -17,6 +17,8 @@ if(NOT BUILD_DX12_RESOURCES_COMPANION)
     return()
 endif()
 
+set(DX12_RESOURCES_PREBUILT_EXE "" CACHE FILEPATH "Optional prebuilt companion executable")
+set(DX12_RESOURCES_PREBUILT_SHA256 "" CACHE STRING "Expected SHA256 for the prebuilt companion")
 find_program(DX12_RESOURCES_DOTNET NAMES dotnet.exe dotnet)
 set(_dx12_companion_project
     "${CMAKE_SOURCE_DIR}/tools/dx12-resources-prep/DX12ResourcesPrep.csproj"
@@ -36,7 +38,24 @@ file(
     "${CMAKE_SOURCE_DIR}/tools/dx12-resources-prep/*.cs"
 )
 
-if(DX12_RESOURCES_DOTNET)
+if(DX12_RESOURCES_PREBUILT_EXE)
+    if(NOT EXISTS "${DX12_RESOURCES_PREBUILT_EXE}" OR NOT DX12_RESOURCES_PREBUILT_SHA256)
+        message(FATAL_ERROR "A prebuilt companion requires an existing executable and a SHA256")
+    endif()
+    file(SHA256 "${DX12_RESOURCES_PREBUILT_EXE}" _prebuilt_hash)
+    string(TOLOWER "${DX12_RESOURCES_PREBUILT_SHA256}" _expected_hash)
+    if(NOT _prebuilt_hash STREQUAL _expected_hash)
+        message(FATAL_ERROR "Prebuilt DX12 Resources companion SHA256 mismatch")
+    endif()
+    add_custom_command(
+        OUTPUT "${_dx12_companion_exe}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${_dx12_companion_output}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${DX12_RESOURCES_PREBUILT_EXE}" "${_dx12_companion_exe}"
+        DEPENDS "${DX12_RESOURCES_PREBUILT_EXE}"
+        VERBATIM
+    )
+elseif(DX12_RESOURCES_DOTNET)
     add_custom_command(
         OUTPUT "${_dx12_companion_exe}"
         COMMAND

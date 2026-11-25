@@ -6,6 +6,7 @@
 #include "Globals.h"
 #include "GpuPass.h"
 #include "RE/T/TESObjectCELL.h"
+#include "RE/S/ScriptEventSourceHolder.h"
 #include "State.h"
 #include "Utils/D3D.h"
 
@@ -15,6 +16,49 @@
 #include <format>
 #include <limits>
 #include <ranges>
+#include <utility>
+
+void DX12NativeScene::DataLoaded()
+{
+	if (globals::game::isVR || referenceEventsRegistered)
+		return;
+	if (auto* source = RE::ScriptEventSourceHolder::GetSingleton()) {
+		source->AddEventSink<RE::TESObjectLoadedEvent>(this);
+		referenceEventsRegistered = true;
+	}
+}
+
+RE::BSEventNotifyControl DX12NativeScene::ProcessEvent(const RE::TESObjectLoadedEvent* event,
+	RE::BSTEventSource<RE::TESObjectLoadedEvent>*)
+{
+	if (!event || !event->formID || !globals::features::dx12Control.IsActive())
+		return RE::BSEventNotifyControl::kContinue;
+	std::scoped_lock lock(referenceChangeMutex);
+	constexpr size_t kMaxReferenceChanges = 1024;
+	if (changedReferences.size() < kMaxReferenceChanges) {
+		try {
+			changedReferences.insert(event->formID);
+		} catch (...) {
+			referenceChangeOverflow = true;
+		}
+	} else {
+		referenceChangeOverflow = true;
+	}
+	return RE::BSEventNotifyControl::kContinue;
+}
+
+void DX12NativeScene::DrainReferenceChanges()
+{
+	std::unordered_set<uint32_t> changes;
+	bool overflow = false;
+	{
+		std::scoped_lock lock(referenceChangeMutex);
+		changes.swap(changedReferences);
+		overflow = std::exchange(referenceChangeOverflow, false);
+	}
+	if (!changes.empty() || overflow)
+		geometryCapture.InvalidateReferences(changes, overflow);
+}
 
 void DX12NativeScene::DrawSettings()
 {
@@ -170,6 +214,8 @@ void DX12NativeScene::PreShadowMaps()
 		shadowLights.store(nullptr, std::memory_order_release);
 		return;
 	}
+	DrainReferenceChanges();
+	grid = globals::features::dx12Resources.GetGrid();
 	if (globals::game::graphicsState) {
 		geometryCapture.Sweep(globals::game::graphicsState->GetFrameCount(), grid);
 		grid = globals::features::dx12Resources.GetGrid();
@@ -303,6 +349,7 @@ void DX12NativeScene::ObserveSCMRigidCaster(RE::BSGeometry& geometry, bool requi
 	                             std::format("render:{:016X}", reinterpret_cast<std::uintptr_t>(&geometry));
 	candidate.shapeName = geometry.name.empty() ? "<unnamed>" : geometry.name.c_str();
 	candidate.requiresStability = requireStability;
+	candidate.referenceID = reference ? reference->GetFormID() : 0;
 	candidate.objectIdentity = reinterpret_cast<std::uintptr_t>(&geometry);
 	candidate.stride = stride;
 	candidate.vertexCount = counts.vertexCount;

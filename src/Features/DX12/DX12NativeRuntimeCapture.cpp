@@ -151,7 +151,7 @@ namespace DX12Native
 					return;
 			}
 			if (bytes > kFrameCopyBytes - frameBytes || pending.size() >= kPacketLimit ||
-				!captured.insert(id).second)
+				!captured.try_emplace(id, candidate.referenceID).second)
 				return;
 			captureGeneration = generation;
 			frameBytes += static_cast<uint32_t>(bytes);
@@ -161,6 +161,7 @@ namespace DX12Native
 			Packet packet;
 			packet.identity = id;
 			packet.frame = frame;
+			packet.referenceID = candidate.referenceID;
 			packet.gridEpoch = grid->runtimeEpoch;
 			packet.generation = captureGeneration;
 			packet.runtimeObjectKey = stableKey;
@@ -187,6 +188,30 @@ namespace DX12Native
 			std::scoped_lock lock(mutex);
 			if (captureGeneration == generation)
 				captured.erase(id);
+		}
+	}
+
+	void RuntimeGeometryCapture::InvalidateReferences(const std::unordered_set<uint32_t>& references, bool overflow)
+	{
+		std::scoped_lock lock(mutex);
+		const auto grid = globals::features::dx12Resources.GetGrid();
+		if (!grid)
+			return;
+		std::vector<uint64_t> retired;
+		for (const auto& item : grid->runtimeShapes)
+			if (item.shape && (overflow || references.contains(item.shape->referenceID)))
+				retired.push_back(item.shape->identity);
+		const bool pendingAffected = std::ranges::any_of(captured, [&](const auto& item) {
+			return overflow || references.contains(item.second);
+		});
+		if (!retired.empty() || pendingAffected || overflow) {
+			++generation;
+			pending.clear();
+			captured.clear();
+			stableObservations.clear();
+			for (auto id : retired)
+				lastObserved.erase(id);
+			globals::features::dx12Resources.RetireRuntimeShapes(retired, grid->runtimeEpoch);
 		}
 	}
 
@@ -235,6 +260,7 @@ namespace DX12Native
 				auto shape = std::make_shared<DX12::Shape>();
 				shape->identity = packet.identity;
 				shape->observationFrame = packet.frame;
+				shape->referenceID = packet.referenceID;
 				shape->runtimeObjectKey = packet.runtimeObjectKey;
 				shape->transform = packet.transform;
 				shape->positions.reserve(packet.vertexCount);
