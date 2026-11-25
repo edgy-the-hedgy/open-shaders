@@ -170,6 +170,10 @@ void DX12NativeScene::PreShadowMaps()
 		shadowLights.store(nullptr, std::memory_order_release);
 		return;
 	}
+	if (globals::game::graphicsState) {
+		geometryCapture.Sweep(globals::game::graphicsState->GetFrameCount(), grid);
+		grid = globals::features::dx12Resources.GetGrid();
+	}
 	// Only a revision-coalesced mailbox handoff on this thread. All BLAS/TLAS
 	// allocations, command recording and GPU builds run on their own worker.
 	if (acceleration.Start(globals::d3d::device, globals::d3d::context))
@@ -317,6 +321,17 @@ void DX12NativeScene::ObserveSCMRigidCaster(RE::BSGeometry& geometry, bool requi
 	                           globals::game::graphicsState->GetFrameCount() :
 	                           0;
 	geometryCapture.Observe(candidate, frame, globals::features::dx12Resources.GetGrid());
+}
+
+json DX12NativeScene::GetDiagnostics()
+{
+	const auto scene = acceleration.GetScene();
+	const auto lights = shadowLights.load(std::memory_order_acquire);
+	return { { "rasterAuthoritative", true }, { "preview", previewRuntimeShadows.load(std::memory_order_relaxed) },
+		{ "tlasAvailable", bool(scene && scene->acceleration) },
+		{ "tlasRevision", scene ? scene->geometryRevision : 0 },
+		{ "tlasInstances", scene && scene->inputs ? scene->inputs->geometry.size() : 0 },
+		{ "nativeLights", lights ? lights->size() : 0 }, { "accelerationFailure", acceleration.Failure() } };
 }
 
 void DX12NativeScene::OnSceneTransitionReset(bool a_opening)

@@ -18,6 +18,15 @@ namespace DX12
 		       shapeBytes <= kMaximumRuntimeBytes - residentBytes;
 	}
 
+	inline constexpr uint32_t kRuntimeObservationLifetime = 600;
+	inline constexpr uint32_t kRuntimeSweepInterval = 60;
+
+	/** @brief Unsigned frame subtraction is valid across frame counter rollover. */
+	constexpr bool RuntimeObservationExpired(uint32_t frame, uint32_t observed)
+	{
+		return frame - observed > kRuntimeObservationLifetime;
+	}
+
 	/** @brief Scope and grid epoch must agree before borrowing a diagnostic scene. */
 	constexpr bool RuntimeSceneMatches(uint32_t sceneScope, uint64_t sceneEpoch,
 		uint32_t liveScope, uint64_t liveEpoch)

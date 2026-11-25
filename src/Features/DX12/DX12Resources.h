@@ -47,7 +47,8 @@ namespace DX12
 	struct Shape
 	{
 		uint64_t identity = 0;
-		uint64_t runtimeObjectKey = 0;  // Stable across transform changes; zero for companion shapes.
+		uint64_t runtimeObjectKey = 0;  // Stable across transform changes.
+		uint32_t observationFrame = 0;
 		std::vector<float3> positions;
 		std::vector<uint32_t> indices;
 		std::array<float, 12> transform{};
@@ -147,6 +148,8 @@ namespace DX12
 		bool PublishRuntimeShape(std::shared_ptr<const Shape> shape, float centerX, float centerY, uint64_t expectedEpoch);
 		/** @brief Releases every in-memory tile at scene transition. */
 		void Clear();
+		/** @brief Retires observations that no longer have a recent engine witness. */
+		void RetireRuntimeShapes(std::span<const uint64_t> identities, uint64_t expectedEpoch);
 		void FlushRetiredCache();  // DRAM only; caller decides transition policy.
 		/** @brief Cancel a superseded predictive request and allow active work to preempt it. */
 		void CancelPending();
@@ -166,14 +169,10 @@ namespace DX12
 /** @brief Memory-resident geometry and lights with an ephemeral companion scratch directory. */
 struct DX12Resources final : Feature
 {
-	// Keep construction and destruction out of this header: the two unique_ptr
-	// pointees are forward-declared until CompanionWorker.h is included in the TU.
 	DX12Resources();
 	~DX12Resources();
 	struct Settings
 	{
-		// The only Resources setting. Companion generation is automatic when
-		// DX12 is active; no separate toggles for workers or GPU residency.
 		uint32_t SubcellSize = DX12::kSubcellSizes.front();
 	};
 
@@ -205,6 +204,11 @@ struct DX12Resources final : Feature
 	{
 		return grid.PublishRuntimeShape(std::move(shape), centerX, centerY, expectedEpoch);
 	}
+	void RetireRuntimeShapes(std::span<const uint64_t> identities, uint64_t expectedEpoch)
+	{
+		grid.RetireRuntimeShapes(identities, expectedEpoch);
+	}
+	json GetDiagnostics() override;
 	bool IsActive() const;
 	uint64_t GetFlushGeneration() const { return flushGeneration.load(std::memory_order_acquire); }
 	/** @brief Returns the most recent prepared-light publication. */
@@ -218,12 +222,7 @@ struct DX12Resources final : Feature
 private:
 	void ResetPreparation();
 	DX12::ResourceGrid grid;
-	std::unique_ptr<DX12::CompanionWorker> companion;
-	std::unique_ptr<DX12::CompanionResult> adopting;
-	size_t lightAdoptionOffset = 0;
-	uint32_t lastVisitedCell = 0, previousVisitedCell = 0, distinctTransitions = 0;
 	std::atomic<uint64_t> flushGeneration{ 0 };
-	std::optional<DX12::SubcellKey> inFlight;
 	std::atomic<std::shared_ptr<const DX12::PreparationStats>> generationStats{
 		std::make_shared<const DX12::PreparationStats>()
 	};

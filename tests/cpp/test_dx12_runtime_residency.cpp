@@ -39,3 +39,12 @@ TEST_CASE("Runtime DX12 neighborhoods contain nine scoped tiles", "[dx12]")
 	REQUIRE_FALSE(DX12::Neighborhood(0, 4096, 0, 0).has_value());
 	REQUIRE_FALSE(DX12::Neighborhood(42, 1024, 0, 0).has_value());
 }
+
+TEST_CASE("Runtime geometry expiry tolerates frame rollover", "[dx12]")
+{
+	using namespace DX12;
+	REQUIRE_FALSE(RuntimeObservationExpired(700, 100));
+	REQUIRE(RuntimeObservationExpired(701, 100));
+	REQUIRE_FALSE(RuntimeObservationExpired(3, UINT32_MAX - 3));
+	REQUIRE(RuntimeObservationExpired(1000, UINT32_MAX - 3));
+}

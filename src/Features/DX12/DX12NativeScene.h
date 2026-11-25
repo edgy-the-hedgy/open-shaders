@@ -44,6 +44,7 @@ struct DX12NativeScene final : Feature
 		const RE::NiPoint3& restOrigin);
 	void OnSceneTransitionReset(bool a_opening) override;
 	void OnRuntimeDisabled() override;
+	json GetDiagnostics() override;
 
 	/** @brief Raw full-resolution shadow output, independently fenced for Native Composite. */
 	std::shared_ptr<const DX12Native::ShadowMaskFrame> GetShadowMask(uint32_t frame) const { return previewRuntimeShadows.load(std::memory_order_relaxed) ? shadows.Get(frame) : nullptr; }

@@ -1,6 +1,7 @@
 #include "DX12NativeRuntimeCapture.h"
 
 #include "Globals.h"
+#include "RuntimeResidencyPolicy.h"
 
 #include <algorithm>
 #include <bit>
@@ -51,7 +52,10 @@ namespace DX12Native
 				for (unsigned n = 0; n < 4; ++n)
 					add(static_cast<unsigned char>(bits >> (n * 8)));
 			}
-			for (uint32_t value : { source.vertexCount, source.triangleCount })
+			for (auto address : { reinterpret_cast<uintptr_t>(source.vertices), reinterpret_cast<uintptr_t>(source.indices) })
+				for (unsigned n = 0; n < sizeof(address); ++n)
+					add(static_cast<unsigned char>(address >> (n * 8)));
+			for (uint32_t value : { source.vertexCount, source.triangleCount, source.stride })
 				for (unsigned n = 0; n < 4; ++n)
 					add(static_cast<unsigned char>(value >> (n * 8)));
 			return hash ? hash : 1;
@@ -75,6 +79,8 @@ namespace DX12Native
 		pending.clear();
 		captured.clear();
 		stableObservations.clear();
+		lastObserved.clear();
+		lastSweep = 0;
 		activeCenter = {};
 		activeSize = 0;
 		activeGridEpoch = 0;
@@ -116,8 +122,10 @@ namespace DX12Native
 				lastFrame = frame;
 				frameBytes = 0;
 			}
-			if (std::ranges::any_of(grid->runtimeShapes, [id](const auto& item) { return item.shape && item.shape->identity == id; }))
+			if (std::ranges::any_of(grid->runtimeShapes, [id](const auto& item) { return item.shape && item.shape->identity == id; })) {
+				lastObserved[id] = frame;
 				return;
+			}
 			if (candidate.requiresStability && !captured.contains(id)) {
 				// Avoid freezing moving clutter and actor attachments into TLAS.
 				// One observation per engine frame, irrespective of pass multiplicity.
@@ -152,6 +160,7 @@ namespace DX12Native
 		try {
 			Packet packet;
 			packet.identity = id;
+			packet.frame = frame;
 			packet.gridEpoch = grid->runtimeEpoch;
 			packet.generation = captureGeneration;
 			packet.runtimeObjectKey = stableKey;
@@ -181,6 +190,30 @@ namespace DX12Native
 		}
 	}
 
+	void RuntimeGeometryCapture::Sweep(uint32_t frame, const std::shared_ptr<const DX12::Grid>& grid)
+	{
+		if (!grid || !grid->requested.front().scope)
+			return;
+		std::scoped_lock lock(mutex);
+		if (frame - lastSweep < DX12::kRuntimeSweepInterval)
+			return;
+		lastSweep = frame;
+		std::vector<uint64_t> expired;
+		std::unordered_set<uint64_t> resident;
+		for (const auto& item : grid->runtimeShapes) {
+			if (!item.shape)
+				continue;
+			const auto id = item.shape->identity;
+			resident.insert(id);
+			const auto seen = lastObserved.find(id);
+			const auto observed = seen == lastObserved.end() ? item.shape->observationFrame : seen->second;
+			if (DX12::RuntimeObservationExpired(frame, observed))
+				expired.push_back(id);
+		}
+		std::erase_if(lastObserved, [&](const auto& item) { return !resident.contains(item.first); });
+		globals::features::dx12Resources.RetireRuntimeShapes(expired, grid->runtimeEpoch);
+	}
+
 	void RuntimeGeometryCapture::Run(std::stop_token stop)
 	{
 		while (!stop.stop_requested()) {
@@ -201,6 +234,7 @@ namespace DX12Native
 			try {
 				auto shape = std::make_shared<DX12::Shape>();
 				shape->identity = packet.identity;
+				shape->observationFrame = packet.frame;
 				shape->runtimeObjectKey = packet.runtimeObjectKey;
 				shape->transform = packet.transform;
 				shape->positions.reserve(packet.vertexCount);
@@ -237,8 +271,9 @@ namespace DX12Native
 					std::scoped_lock lock(mutex);
 					if (packet.generation != generation)
 						continue;
-					globals::features::dx12Resources.PublishRuntimeShape(
-						std::move(shape), packet.centerX, packet.centerY, packet.gridEpoch);
+					if (globals::features::dx12Resources.PublishRuntimeShape(
+						std::move(shape), packet.centerX, packet.centerY, packet.gridEpoch))
+						lastObserved[packet.identity] = packet.frame;
 					captured.erase(packet.identity);
 				}
 			} catch (...) {

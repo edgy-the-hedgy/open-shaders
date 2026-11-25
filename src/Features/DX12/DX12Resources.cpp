@@ -1,11 +1,8 @@
 #include "DX12Resources.h"
 #include "RuntimeResidencyPolicy.h"
 
-#include "CompanionWorker.h"
 #include "DX12Control.h"
 #include "Globals.h"
-#include "GpuPass.h"
-#include "RE/T/TESDataHandler.h"
 #include "RE/T/TESWorldSpace.h"
 
 #include <algorithm>
@@ -20,25 +17,9 @@ namespace DX12
 	void ResourceGrid::Advance(uint32_t scope, uint32_t size, double x, double y)
 	{
 		const auto desired = Neighborhood(scope, size, x, y);
-		const auto predictive = PredictiveNeighborhood(scope, size, x, y);
-		if (!desired || !predictive)
+		if (!desired)
 			return;
 		std::scoped_lock lock(mutex);
-		if (previousScope == scope && previousSize == size) {
-			const double vx = x - previousX, vy = y - previousY;
-			const double displacement = vx * vx + vy * vy;
-			// Preserve the last non-jitter direction while stationary; disregard teleports.
-			if (std::isfinite(displacement) && displacement > 1.0 && displacement < double(size) * size) {
-				movementX = vx;
-				movementY = vy;
-			}
-		} else {
-			movementX = movementY = 0;
-		}
-		previousX = x;
-		previousY = y;
-		previousScope = scope;
-		previousSize = size;
 		const auto current = snapshot.load(std::memory_order_acquire);
 		if (current->requested == *desired && current->size == size)
 			return;
@@ -48,86 +29,13 @@ namespace DX12
 		next->runtimeEpoch = current->runtimeEpoch + 1;
 		next->size = size;
 		next->requested = *desired;
-		next->predictive = *predictive;
-		// A failed neighbor may be attempted at most three times while the player
-		// remains in the same center subcell. A center transition starts a new
-		// bounded retry window for those same neighboring keys.
-		const bool playerChangedSubcell = current->requested.front() != next->requested.front();
 		if (current->size == size) {
-			const auto lookup = [&](SubcellKey key) -> std::shared_ptr<const Tile> {
-				for (const auto& old : current->resident)
-					if (old && old->key == key)
-						return old;
-				for (const auto& old : current->predictiveResident)
-					if (old && old->key == key)
-						return old;
-				for (const auto& old : recentTiles)
-					if (old && old->key == key)
-						return old;
-				return {};
-			};
-			const auto resetFailedAfterMove = [&](std::shared_ptr<const Tile>& tile) {
-				if (!playerChangedSubcell || !tile ||
-					(tile->state != Tile::State::Incomplete && tile->state != Tile::State::RetryWaiting))
-					return;
-				auto retry = std::make_shared<Tile>(*tile);
-				retry->state = Tile::State::Requested;
-				retry->preparationAttempts = 0;
-				retry->retryAfter = {};
-				retry->failureReason.clear();
-				tile = std::move(retry);
-			};
-			for (size_t i = 0; i < kGridCapacity; ++i) {
-				next->resident[i] = lookup(next->requested[i]);
-				resetFailedAfterMove(next->resident[i]);
-				if (next->resident[i] && next->resident[i]->state == Tile::State::Deferred) {
-					// A CPU-budgeted speculative tile is re-requested at full quality on active promotion.
-					auto promoted = std::make_shared<Tile>(*next->resident[i]);
-					promoted->state = Tile::State::Requested;
-					next->resident[i] = std::move(promoted);
-				}
-			}
-			for (size_t i = 0; i < kPredictiveCapacity; ++i) {
-				auto tile = lookup(next->predictive[i]);
-				resetFailedAfterMove(tile);
-				if (tile && (tile->state == Tile::State::Ready || tile->state == Tile::State::ReadyPartial) &&
-					tile->bytes > kPredictiveTileBudgetBytes) {
-					// Moving from active residency must respect the same 12 MiB per-tile cap
-					// as fresh predictive publications. Keep prepared lights available.
-					auto deferred = std::make_shared<Tile>(*tile);
-					deferred->shapes.clear();
-					deferred->bytes = 0;
-					deferred->state = Tile::State::Deferred;
-					tile = std::move(deferred);
-				}
-				next->predictiveResident[i] = std::move(tile);
-			}
-			// Runtime-only geometry follows the active neighborhood. Prune tiles
-			// that leave 3x3 without a disk flush or stale GPU ownership.
 			for (const auto& observed : current->runtimeShapes)
 				if (std::ranges::contains(next->requested, observed.tile)) {
 					next->runtimeShapes.push_back(observed);
 					next->runtimeBytes += observed.bytes;
 				}
 		}
-		// Keep recently retired immutable cell publications in bounded DRAM.
-		// A -> B -> A must not repeat companion processing.
-		if (current->size == size) {
-			const auto retain = [&](const auto& tile) {
-				if (!tile || (tile->state != Tile::State::Ready && tile->state != Tile::State::ReadyPartial))
-					return;
-				if (std::ranges::contains(next->requested, tile->key) || std::ranges::contains(next->predictive, tile->key))
-					return;
-				std::erase_if(recentTiles, [&](const auto& cached) { return cached && cached->key == tile->key; });
-				recentTiles.push_back(tile);
-			};
-			for (const auto& tile : current->resident) retain(tile);
-			for (const auto& tile : current->predictiveResident) retain(tile);
-			while (recentTiles.size() > 32) recentTiles.pop_front();
-		}
-		if (pending && std::ranges::find(next->requested, *pending) == next->requested.end() &&
-			std::ranges::find(next->predictive, *pending) == next->predictive.end())
-			pending.reset();
 		snapshot.store(std::move(next), std::memory_order_release);
 	}
 
@@ -315,6 +223,30 @@ namespace DX12
 		return true;
 	}
 
+	void ResourceGrid::RetireRuntimeShapes(std::span<const uint64_t> identities, uint64_t expectedEpoch)
+	{
+		if (identities.empty())
+			return;
+		const std::unordered_set<uint64_t> retired(identities.begin(), identities.end());
+		std::scoped_lock lock(mutex);
+		const auto current = snapshot.load(std::memory_order_acquire);
+		if (current->runtimeEpoch != expectedEpoch)
+			return;
+		auto next = std::make_shared<Grid>(*current);
+		const auto removed = std::erase_if(next->runtimeShapes, [&](const RuntimeShape& observed) {
+			if (!observed.shape || !retired.contains(observed.shape->identity))
+				return false;
+			next->runtimeBytes -= observed.bytes;
+			return true;
+		});
+		if (!removed)
+			return;
+		++next->revision;
+		++next->geometryRevision;
+		++next->runtimeEpoch;
+		snapshot.store(std::move(next), std::memory_order_release);
+	}
+
 	void ResourceGrid::FlushRetiredCache()
 	{
 		std::scoped_lock lock(mutex);
@@ -373,15 +305,7 @@ DX12Resources::~DX12Resources() = default;
 
 void DX12Resources::ResetPreparation()
 {
-	// A new subcell size or world-scene epoch invalidates the grid and all
-	// companion work. Keep this off the normal settings-load path when unchanged.
-	if (companion)
-		companion->Cancel();
-	inFlight.reset();
-	adopting.reset();
-	lightAdoptionOffset = 0;
 	grid.Clear();
-	lastVisitedCell = previousVisitedCell = distinctTransitions = 0;
 	flushGeneration.fetch_add(1, std::memory_order_release);
 	generationStats.store(std::make_shared<const DX12::PreparationStats>(), std::memory_order_release);
 }
@@ -438,7 +362,7 @@ void DX12Resources::RestoreDefaultSettings()
 void DX12Resources::PreShadowMaps()
 {
 	if (!IsActive()) {
-		if (grid.Snapshot()->requested.front().scope || inFlight || adopting)
+		if (grid.Snapshot()->requested.front().scope)
 			ResetPreparation();
 		return;
 	}
@@ -450,29 +374,26 @@ void DX12Resources::PreShadowMaps()
 		return;
 	}
 	const auto* world = cell->IsExteriorCell() ? player->GetWorldspace() : nullptr;
-	const uint32_t cellID = cell->GetFormID();
-	if (lastVisitedCell && cellID && cellID != lastVisitedCell) {
-		if (cellID == previousVisitedCell)
-			distinctTransitions = 0;  // Returning to a visited cell.
-		else if (++distinctTransitions >= 2) {
-			grid.FlushRetiredCache();
-			flushGeneration.fetch_add(1, std::memory_order_release);
-			distinctTransitions = 0;
-		}
-		previousVisitedCell = lastVisitedCell;
-	}
-	if (cellID)
-		lastVisitedCell = cellID;
 	const uint32_t scope = world ? world->GetFormID() : cell->GetFormID();
 	const auto position = player->GetPosition();
 	grid.Advance(scope, settings.SubcellSize, position.x, position.y);
-
 }
 
 void DX12Resources::OnSceneTransitionReset(bool opening)
 {
 	if (opening)
 		ResetPreparation();
+}
+
+json DX12Resources::GetDiagnostics()
+{
+	const auto snapshot = GetGrid();
+	if (!snapshot)
+		return json::object();
+	return { { "source", "runtime" }, { "scope", snapshot->requested.front().scope },
+		{ "gridEpoch", snapshot->runtimeEpoch }, { "geometryRevision", snapshot->geometryRevision },
+		{ "residentShapes", snapshot->runtimeShapes.size() }, { "residentBytes", snapshot->runtimeBytes },
+		{ "companionActive", false }, { "predictivePreparation", false } };
 }
 
 void DX12Resources::OnRuntimeDisabled()

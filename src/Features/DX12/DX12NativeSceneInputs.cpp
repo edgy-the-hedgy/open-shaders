@@ -25,12 +25,6 @@ namespace DX12Native
 				return;
 			inputs->geometry.push_back({ subcell, shape });
 		};
-		for (const auto& tile : grid.resident) {
-			if (!tile)
-				continue;
-			for (const auto& shape : tile->shapes)
-				appendShape(tile->key, shape);
-		}
 		for (const auto& observed : grid.runtimeShapes)
 			appendShape(observed.tile, observed.shape);
 

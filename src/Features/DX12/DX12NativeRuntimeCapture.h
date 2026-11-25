@@ -43,6 +43,7 @@ namespace DX12Native
 		void Observe(const RuntimeGeometryCandidate& candidate, uint32_t frame,
 			const std::shared_ptr<const DX12::Grid>& grid);
 		void Reset();
+		void Sweep(uint32_t frame, const std::shared_ptr<const DX12::Grid>& grid);
 
 	private:
 		struct Packet
@@ -51,7 +52,7 @@ namespace DX12Native
 			DX12::SubcellKey sourceCenter{};
 			std::string referenceKey;  // Match a runtime addition with unresolved NIF provenance.
 			std::array<float, 12> transform{};
-			uint32_t stride = 0, vertexCount = 0;
+			uint32_t stride = 0, vertexCount = 0, frame = 0;
 			float centerX = 0, centerY = 0;
 			std::vector<uint8_t> vertices;
 			std::vector<uint16_t> indices;
@@ -62,6 +63,8 @@ namespace DX12Native
 		std::condition_variable_any wake;
 		std::deque<Packet> pending;
 		std::unordered_set<uint64_t> captured;
+		std::unordered_map<uint64_t, uint32_t> lastObserved;
+		uint32_t lastSweep = 0;
 		std::unordered_map<uint64_t, std::pair<uint32_t, uint32_t>> stableObservations;
 		DX12::SubcellKey activeCenter{};
 		uint32_t activeSize = 0, lastFrame = UINT32_MAX, frameBytes = 0;
