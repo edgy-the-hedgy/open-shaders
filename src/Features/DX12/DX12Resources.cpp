@@ -366,134 +366,9 @@ namespace DX12
 
 }
 
-namespace
-{
-	const char* TileStatus(const std::shared_ptr<const DX12::Tile>& tile)
-	{
-		if (!tile)
-			return T("menu.dx12.resources.status.not_processed", "Not processed");
-		switch (tile->state) {
-		case DX12::Tile::State::Ready:
-			return T("menu.dx12.resources.status.loaded", "Loaded");
-		case DX12::Tile::State::ReadyPartial:
-			return T("menu.dx12.resources.status.partially_loaded", "Partially loaded");
-		case DX12::Tile::State::Preparing:
-			return T("menu.dx12.resources.status.processing", "Processing");
-		case DX12::Tile::State::RetryWaiting:
-			return T("menu.dx12.resources.status.retry_pending", "Failed (retry pending)");
-		case DX12::Tile::State::Incomplete:
-			return T("menu.dx12.resources.status.retry_exhausted", "Skipped (retry exhausted)");
-		case DX12::Tile::State::Deferred:
-			return T("menu.dx12.resources.status.predictive_budget", "Skipped (predictive budget)");
-		case DX12::Tile::State::Requested:
-			return T("menu.dx12.resources.status.not_processed", "Not processed");
-		}
-		return T("menu.dx12.resources.status.unknown", "Unknown");
-	}
-
-	ImU32 TileColor(const std::shared_ptr<const DX12::Tile>& tile, bool active)
-	{
-		if (!tile)
-			return IM_COL32(46, 54, 65, 255);  // Awaiting generation: dark slate.
-		switch (tile->state) {
-		case DX12::Tile::State::Ready:
-			return active ? IM_COL32(243, 201, 74, 255) : IM_COL32(117, 197, 239, 255);
-		case DX12::Tile::State::ReadyPartial:
-			return active ? IM_COL32(200, 164, 71, 255) : IM_COL32(91, 156, 194, 255);
-		case DX12::Tile::State::Preparing:
-			return IM_COL32(182, 140, 91, 255);
-		case DX12::Tile::State::RetryWaiting:
-			return IM_COL32(211, 76, 76, 255);
-		case DX12::Tile::State::Incomplete:
-			return IM_COL32(123, 129, 139, 255);
-		case DX12::Tile::State::Deferred:
-			return IM_COL32(123, 129, 139, 255);
-		case DX12::Tile::State::Requested:
-			return IM_COL32(46, 54, 65, 255);
-		}
-		return IM_COL32(46, 54, 65, 255);
-	}
-
-	std::shared_ptr<const DX12::Tile> FindTile(
-		const DX12::Grid& grid, DX12::SubcellKey key, bool active)
-	{
-		if (active) {
-			for (size_t i = 0; i < DX12::kGridCapacity; ++i)
-				if (grid.requested[i] == key)
-					return grid.resident[i];
-		} else {
-			for (size_t i = 0; i < DX12::kPredictiveCapacity; ++i)
-				if (grid.predictive[i] == key)
-					return grid.predictiveResident[i];
-		}
-		return {};
-	}
-
-	void DrawSubcellMap(const DX12::Grid& grid)
-	{
-		const auto center = grid.requested.front();
-		const float available = std::max(1.0f, ImGui::GetContentRegionAvail().x);
-		const float pitch = std::min(54.0f, std::max(28.0f, (available - 4.0f) / 5.0f));
-		const float side = pitch - 4.0f;
-		const float total = pitch * 5.0f;
-		const ImVec2 origin = ImGui::GetCursorScreenPos();
-		const float left = origin.x + std::max(0.0f, (available - total) * 0.5f);
-		ImDrawList* draw = ImGui::GetWindowDrawList();
-		for (int row = 0; row < 5; ++row) {
-			for (int col = 0; col < 5; ++col) {
-				const int dx = col - 2, dy = 2 - row;
-				const bool active = std::max(std::abs(dx), std::abs(dy)) <= 1;
-				const DX12::SubcellKey key{ center.scope, center.x + dx, center.y + dy };
-				const auto tile = center.scope ? FindTile(grid, key, active) : nullptr;
-				const ImVec2 p0{ left + col * pitch, origin.y + row * pitch };
-				const ImVec2 p1{ p0.x + side, p0.y + side };
-				draw->AddRectFilled(p0, p1, TileColor(tile, active), 3.0f);
-				draw->AddRect(p0, p1, active ? IM_COL32(255, 225, 150, 200) : IM_COL32(138, 174, 207, 180), 3.0f, 0, active ? 1.8f : 1.0f);
-				if (tile && tile->state == DX12::Tile::State::ReadyPartial) {
-					// A diagonal distinguishes partially processed cells without hiding the zone color.
-					draw->AddLine(ImVec2(p0.x + 4.0f, p1.y - 4.0f),
-						ImVec2(p1.x - 4.0f, p0.y + 4.0f), IM_COL32(32, 44, 56, 170), 2.0f);
-				}
-				if (col == 2 && row == 2) {
-					const ImVec2 marker{ (p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f };
-					draw->AddCircleFilled(marker, 5.0f, IM_COL32(30, 37, 48, 255));
-					draw->AddCircle(marker, 5.0f, IM_COL32(255, 255, 255, 240), 0, 1.5f);
-				}
-			}
-		}
-		ImGui::Dummy(ImVec2(available, total));
-		// Hover uses the immutable grid snapshot, so no worker or scene locks are taken.
-		if (center.scope && ImGui::IsItemHovered()) {
-			const ImVec2 mouse = ImGui::GetIO().MousePos;
-			const int col = int((mouse.x - left) / pitch);
-			const int row = int((mouse.y - origin.y) / pitch);
-			if (mouse.x >= left && mouse.y >= origin.y && col >= 0 && col < 5 && row >= 0 && row < 5) {
-				const int dx = col - 2, dy = 2 - row;
-				const bool active = std::max(std::abs(dx), std::abs(dy)) <= 1;
-				const DX12::SubcellKey key{ center.scope, center.x + dx, center.y + dy };
-				const auto tile = FindTile(grid, key, active);
-				ImGui::BeginTooltip();
-				ImGui::Text(T("menu.dx12.resources.tooltip.subcell", "%s subcell (%lld, %lld): %s"), active ? T("menu.dx12.resources.active", "Active") : T("menu.dx12.resources.predictive", "Predictive"),
-					static_cast<long long>(key.x), static_cast<long long>(key.y), TileStatus(tile));
-				if (tile && tile->preparationAttempts)
-					ImGui::Text(T("menu.dx12.resources.tooltip.attempts", "Attempts: %u / 3"), unsigned(tile->preparationAttempts));
-				if (tile && (!tile->nifSources.empty() || !tile->missingShapes.empty()))
-					ImGui::Text(T("menu.dx12.resources.tooltip.nif_sources", "NIF sources: %zu | Missing shape references: %zu"),
-						tile->nifSources.size(), tile->missingShapes.size());
-				if (tile && !tile->failureReason.empty())
-					ImGui::TextWrapped(T("menu.dx12.resources.tooltip.last_reason", "Last reason: %s"), tile->failureReason.c_str());
-				if (tile)
-					for (const auto& [reason, count] : tile->rejectionReasons)
-						ImGui::Text("%s: %u", reason.c_str(), count);
-				ImGui::EndTooltip();
-			}
-		}
-	}
-}
-
 bool DX12Resources::IsActive() const
 {
-	return loaded && globals::features::dx12Control.IsActive() && !globals::game::isVR;
+	return loaded && globals::features::dx12Control.IsActive() && globals::features::dx12Control.IsShadowOffloadMode() && !globals::game::isVR;
 }
 
 DX12Resources::DX12Resources() = default;
@@ -528,77 +403,12 @@ void DX12Resources::DrawSettings()
 		}
 	}
 
-	ImGui::SeparatorText(T("menu.dx12.resources.subcell_status", "Subcell status (5x5)"));
 	const auto snapshot = GetGrid();
-	const auto timing = GetPreparationStats();
-
-	const auto drawSubcellDetails = [&]() {
-		if (snapshot) {
-			size_t activeLoaded = 0, predictiveLoaded = 0;
-			const auto classify = [&](const auto& tile, bool active) {
-				if (tile && (tile->state == DX12::Tile::State::Ready || tile->state == DX12::Tile::State::ReadyPartial))
-					(active ? activeLoaded : predictiveLoaded)++;
-			};
-			for (const auto& tile : snapshot->resident)
-				classify(tile, true);
-			for (const auto& tile : snapshot->predictiveResident)
-				classify(tile, false);
-			ImGui::Text(T("menu.dx12.resources.loaded_counts", "Loaded: active %zu / 9, predictive %zu / 16"), activeLoaded, predictiveLoaded);
-		}
-		ImGui::TextColored(ImVec4(0.95f, 0.79f, 0.29f, 1.0f), T("menu.dx12.resources.legend.yellow", "Yellow: loaded 3x3"));
-		ImGui::TextColored(ImVec4(0.46f, 0.77f, 0.94f, 1.0f), T("menu.dx12.resources.legend.light_blue", "Light blue: loaded predictive ring"));
-		ImGui::TextColored(ImVec4(0.83f, 0.30f, 0.30f, 1.0f), T("menu.dx12.resources.legend.red", "Red: failed (retry pending)"));
-		ImGui::TextDisabled(T("menu.dx12.resources.legend.diagonal", "Diagonal: partially loaded  |  Center dot: player subcell"));
-	};
-
-	const auto drawGenerationStats = [&]() {
-		ImGui::TextColored(ImVec4(0.40f, 0.77f, 0.49f, 1.0f), T("menu.dx12.resources.stats.title", "Subcell generation stats"));
-		ImGui::TextDisabled(T("menu.dx12.resources.stats.timing_head", "Last / Avg / Worst (milliseconds)"));
-		const auto show = [](const char* label, const DX12::PreparationTiming& value) {
-			if (value.completed)
-				ImGui::Text("%s: %.1f / %.1f / %.1f ms", label, value.lastMs, value.AverageMs(), value.worstMs);
-			else
-				ImGui::TextDisabled("%s: -- / -- / --", label);
-		};
-		if (timing) {
-			show(T("menu.dx12.resources.stats.main", "Main"), timing->active);
-			show(T("menu.dx12.resources.predictive", "Predictive"), timing->predictive);
-			show(T("menu.dx12.resources.stats.corners", "Corners"), timing->corners);
-		}
-	};
-
-	const float available = ImGui::GetContentRegionAvail().x;
-	if (available >= 1050.0f &&
-		ImGui::BeginTable("##SubcellStatusLayout", 3, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoPadOuterX)) {
-		ImGui::TableSetupColumn("##SubcellMap", ImGuiTableColumnFlags_WidthFixed, 290.0f);
-		ImGui::TableSetupColumn("##SubcellDetails", ImGuiTableColumnFlags_WidthFixed, 375.0f);
-		ImGui::TableSetupColumn("##SubcellGenerationStats", ImGuiTableColumnFlags_WidthStretch);
-		ImGui::TableNextRow();
-		ImGui::TableSetColumnIndex(0);
-		if (snapshot)
-			DrawSubcellMap(*snapshot);
-		ImGui::TableSetColumnIndex(1);
-		drawSubcellDetails();
-		ImGui::TableSetColumnIndex(2);
-		drawGenerationStats();
-		ImGui::EndTable();
-	} else if (available >= 680.0f &&
-			   ImGui::BeginTable("##SubcellStatusLayout", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoPadOuterX)) {
-		ImGui::TableSetupColumn("##SubcellMap", ImGuiTableColumnFlags_WidthFixed, 290.0f);
-		ImGui::TableSetupColumn("##SubcellDetails", ImGuiTableColumnFlags_WidthStretch);
-		ImGui::TableNextRow();
-		ImGui::TableSetColumnIndex(0);
-		if (snapshot)
-			DrawSubcellMap(*snapshot);
-		ImGui::TableSetColumnIndex(1);
-		drawSubcellDetails();
-		ImGui::EndTable();
-		drawGenerationStats();
-	} else {
-		if (snapshot)
-			DrawSubcellMap(*snapshot);
-		drawSubcellDetails();
-		drawGenerationStats();
+	ImGui::TextUnformatted(T("menu.dx12.runtime.source", "Runtime geometry only"));
+	ImGui::TextDisabled("%s", T("menu.dx12.runtime.no_prediction", "No companion or unloaded tile preparation"));
+	if (snapshot) {
+		ImGui::Text(T("menu.dx12.runtime.resident_shapes", "Observed shapes: %zu"), snapshot->runtimeShapes.size());
+		ImGui::Text(T("menu.dx12.runtime.resident_mib", "Geometry: %.2f MiB"), double(snapshot->runtimeBytes) / (1024.0 * 1024.0));
 	}
 }
 
@@ -630,7 +440,6 @@ void DX12Resources::RestoreDefaultSettings()
 
 void DX12Resources::PreShadowMaps()
 {
-	CS_GPU_PASS("DX12Resources::Grid");
 	if (!IsActive()) {
 		if (grid.Snapshot()->requested.front().scope || inFlight || adopting)
 			ResetPreparation();
@@ -638,8 +447,11 @@ void DX12Resources::PreShadowMaps()
 	}
 	const auto* player = globals::game::player;
 	const auto* cell = player ? player->GetParentCell() : nullptr;
-	if (!cell)
+	if (!cell) {
+		if (grid.Snapshot()->requested.front().scope)
+			ResetPreparation();
 		return;
+	}
 	const auto* world = cell->IsExteriorCell() ? player->GetWorldspace() : nullptr;
 	const uint32_t cellID = cell->GetFormID();
 	if (lastVisitedCell && cellID && cellID != lastVisitedCell) {
@@ -657,118 +469,13 @@ void DX12Resources::PreShadowMaps()
 	const uint32_t scope = world ? world->GetFormID() : cell->GetFormID();
 	const auto position = player->GetPosition();
 	grid.Advance(scope, settings.SubcellSize, position.x, position.y);
-	if (!companion)
-		companion = std::make_unique<DX12::CompanionWorker>();
-	const auto neighborhood = grid.Snapshot();
-	if (inFlight) {
-		const bool stillWanted = std::ranges::contains(neighborhood->requested, *inFlight) ||
-		                         std::ranges::contains(neighborhood->predictive, *inFlight);
-		// An in-flight predictive request must yield when an active tile becomes newly necessary.
-		const bool speculative = !std::ranges::contains(neighborhood->requested, *inFlight);
-		const bool activeMissing = std::ranges::any_of(neighborhood->resident, [](const auto& tile) {
-			return !tile || tile->state == DX12::Tile::State::Requested;
-		});
-		if (!stillWanted || (speculative && activeMissing)) {
-			companion->Cancel();
-			grid.CancelPending();
-			inFlight.reset();
-		}
-	}
-	if (auto result = companion->Take()) {
-		inFlight.reset();
-		adopting = std::make_unique<DX12::CompanionResult>(std::move(*result));
-		adopting->publication.failureReason = adopting->failure.substr(0, 320);
-		adopting->publication.lights.reserve(adopting->lights.size());
-		lightAdoptionOffset = 0;
-	}
-	if (adopting) {
-		const auto key = adopting->publication.key;
-		const bool active = std::ranges::contains(neighborhood->requested, key);
-		const bool predictive = std::ranges::contains(neighborhood->predictive, key);
-		const bool activeMissing = std::ranges::any_of(neighborhood->resident, [](const auto& tile) {
-			return !tile || tile->state == DX12::Tile::State::Requested;
-		});
-		if ((!active && !predictive) || (predictive && activeMissing)) {
-			// A superseded speculative publication must not block an active tile.
-			adopting.reset();
-			lightAdoptionOffset = 0;
-			grid.CancelPending();
-		} else {
-			// Only engine FormID lookup must run on the game thread. Keep it bounded
-			// while immutable geometry remains off-thread prepared.
-			constexpr size_t kFormResolutionsPerFrame = 64;
-			const size_t end = std::min(adopting->lights.size(), lightAdoptionOffset + kFormResolutionsPerFrame);
-			auto* handler = RE::TESDataHandler::GetSingleton();
-			for (; lightAdoptionOffset < end; ++lightAdoptionOffset) {
-				auto& record = adopting->lights[lightAdoptionOffset];
-				const auto* reference = handler ? handler->LookupForm(record.referenceLocal, record.referencePlugin) : nullptr;
-				const auto* base = handler ? handler->LookupForm(record.baseLocal, record.basePlugin) : nullptr;
-				if (!reference || !base) {
-					// This light cannot be matched; it must not invalidate unrelated
-					// geometry or shadow coverage for other successfully resolved lights.
-					continue;
-				}
-				record.value.referenceID = reference->GetFormID();
-				record.value.baseID = base->GetFormID();
-				adopting->publication.lights.push_back(record.value);
-			}
-			if (lightAdoptionOffset == adopting->lights.size()) {
-				const bool wasPredictiveRequest = adopting->predictive;
-				const bool wasCornerRequest = adopting->corner;
-				const double elapsedMs = adopting->preparationMs;
-				if (grid.Publish(std::move(adopting->publication))) {
-					// This snapshot only counts accepted, finished worker requests; canceled
-					// and superseded work is not misreported as generated geometry.
-					auto next = std::make_shared<DX12::PreparationStats>(
-						*generationStats.load(std::memory_order_acquire));
-					auto& timing = !wasPredictiveRequest ? next->active :
-					               wasCornerRequest      ? next->corners :
-					                                       next->predictive;
-					++timing.completed;
-					timing.lastMs = elapsedMs;
-					timing.totalMs += elapsedMs;
-					timing.worstMs = std::max(timing.worstMs, elapsedMs);
-					generationStats.store(std::move(next), std::memory_order_release);
-				}
-				adopting.reset();
-				lightAdoptionOffset = 0;
-			}
-		}
-	}
-	if (!adopting && companion->Idle()) {
-		if (const auto request = grid.NextRequest()) {
-			const auto* source = world ? static_cast<const RE::TESForm*>(world) : static_cast<const RE::TESForm*>(cell);
-			const auto* file = source ? source->GetFile(0) : nullptr;
-			if (file && !file->GetFilename().empty()) {
-				DX12::CompanionRequest task;
-				task.key = *request;
-				const auto requestedGrid = grid.Snapshot();
-				task.predictive = !std::ranges::contains(requestedGrid->requested, *request);
-				// Predictive indices 0..11 are sides; 12..15 are corners.
-				// Store the request-time class before a possible player subcell transition.
-				task.corner = task.predictive &&
-				              std::ranges::find(requestedGrid->predictive.begin() + 12,
-								  requestedGrid->predictive.end(), *request) != requestedGrid->predictive.end();
-				task.size = settings.SubcellSize;
-				task.localScopeID = source->GetLocalFormID();
-				task.scopePlugin = file->GetFilename();
-				task.worldspace = world != nullptr;
-				if (companion->Enqueue(std::move(task))) {
-					inFlight = *request;
-					return;
-				}
-			}
-			DX12::CompanionPublication incomplete;
-			incomplete.key = *request;
-			grid.Publish(std::move(incomplete));
-		}
-	}
+
 }
 
-void DX12Resources::OnSceneTransitionReset(bool /*opening*/)
+void DX12Resources::OnSceneTransitionReset(bool opening)
 {
-	// Loading-menu transitions do not flush the DRAM cache.
-	// The next observed cell ID determines whether this is a return trip.
+	if (opening)
+		ResetPreparation();
 }
 
 void DX12Resources::OnRuntimeDisabled()

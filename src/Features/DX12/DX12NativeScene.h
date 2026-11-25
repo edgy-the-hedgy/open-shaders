@@ -46,7 +46,7 @@ struct DX12NativeScene final : Feature
 	void OnRuntimeDisabled() override;
 
 	/** @brief Raw full-resolution shadow output, independently fenced for Native Composite. */
-	std::shared_ptr<const DX12Native::ShadowMaskFrame> GetShadowMask(uint32_t frame) const { return shadows.Get(frame); }
+	std::shared_ptr<const DX12Native::ShadowMaskFrame> GetShadowMask(uint32_t frame) const { return previewRuntimeShadows.load(std::memory_order_relaxed) ? shadows.Get(frame) : nullptr; }
 	bool RetainShadowMask(const std::shared_ptr<const DX12Native::ShadowMaskFrame>& frame,
 		ID3D12Fence* fence, uint64_t value) { return shadows.RetainThrough(frame, fence, value); }
 
@@ -70,8 +70,7 @@ private:
 	std::atomic<std::shared_ptr<const std::vector<DX12::PreparedLight>>> shadowLights;
 	bool shadowMaskEnabled = true;
 	bool outdoorShadowOffloading = false;  // Off by default; vanilla raster shadows are unaffected.
-	bool offloadStaticShadows = true;
-	bool offloadFlickeringStatic = true;
+	std::atomic<bool> previewRuntimeShadows{ false };
 	bool freezeNativeFlickering = false;
 	uint32_t densityMode = 7;  // Four-ninths density by default.
 	bool nearLightShadowExclusion = true;

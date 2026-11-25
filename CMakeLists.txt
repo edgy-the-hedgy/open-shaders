@@ -1417,12 +1417,6 @@ if(AIO_ZIP_TO_DIST AND NOT NATIVE_SHADOW_DXC)
         "Native DX12 AIO packaging requires dxc.exe (SM6.5 .dxil shader output)"
     )
 endif()
-if(AIO_ZIP_TO_DIST AND NOT BUILD_DX12_RESOURCES_COMPANION)
-    message(
-        FATAL_ERROR
-        "Native DX12 AIO packaging requires the DX12 Resources companion"
-    )
-endif()
 
 if(NOT DEFINED ENV{CommunityShadersOutputDir})
     message(
@@ -1595,6 +1589,7 @@ if(AIO_ZIP_TO_DIST)
         COMMAND
         ${CMAKE_COMMAND}
         -DAIO_STAGE_DIR="${_aio_archive_source_dir}"
+        -DREQUIRE_DX12_COMPANION=${BUILD_DX12_RESOURCES_COMPANION}
         -P
         "${CMAKE_SOURCE_DIR}/cmake/VerifyAioPayload.cmake"
     )
@@ -1841,6 +1836,7 @@ list(
     COMMAND
     ${CMAKE_COMMAND}
     -DAIO_STAGE_DIR="${_aio_manual_source_dir}"
+    -DREQUIRE_DX12_COMPANION=${BUILD_DX12_RESOURCES_COMPANION}
     -P
     "${CMAKE_SOURCE_DIR}/cmake/VerifyAioPayload.cmake"
 )

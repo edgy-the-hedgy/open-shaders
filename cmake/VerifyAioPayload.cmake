@@ -4,7 +4,6 @@ if(NOT DEFINED AIO_STAGE_DIR OR NOT IS_DIRECTORY "${AIO_STAGE_DIR}")
 endif()
 set(_required
     "SKSE/Plugins/CommunityShaders.dll"
-    "SKSE/Plugins/CommunityShaders/DX12Resources/bin/DX12ResourcesPrep.exe"
     "Shaders/Features/DX12.ini"
     "Shaders/Features/DX12Resources.ini"
     "Shaders/Features/DX12NativeScene.ini"
@@ -30,6 +29,9 @@ set(_required
     "Shaders/Upscaling/StreamlineDX12/sl.pcl.dll"
     "Shaders/Upscaling/StreamlineDX12/sl.reflex.dll"
 )
+if(REQUIRE_DX12_COMPANION)
+    list(APPEND _required "SKSE/Plugins/CommunityShaders/DX12Resources/bin/DX12ResourcesPrep.exe")
+endif()
 foreach(_path IN LISTS _required)
     set(_full "${AIO_STAGE_DIR}/${_path}")
     if(NOT EXISTS "${_full}" OR IS_DIRECTORY "${_full}")

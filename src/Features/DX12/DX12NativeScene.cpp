@@ -1,6 +1,5 @@
 #include "DX12NativeScene.h"
 
-#include "../Upscaling.h"
 #include "DX12Control.h"
 #include "DX12Resources.h"
 #include "Globals.h"
@@ -20,12 +19,10 @@ void DX12NativeScene::DrawSettings()
 {
 	ImGui::Checkbox(T("menu.dx12.scene.independent_shadowmask", "Independent shadowmask"), &shadowMaskEnabled);
 	ImGui::Checkbox(T("menu.dx12.scene.outdoor_shadow_offloading", "Enable outdoor shadow offloading (DX12 only)"), &outdoorShadowOffloading);
-	bool keepRasterStatic = !offloadStaticShadows;
-	if (ImGui::Checkbox(T("menu.dx12.scene.keep_raster_static", "Keep raster static shadows for native-accounted lights"), &keepRasterStatic))
-		offloadStaticShadows = !keepRasterStatic;
-	bool retainFlickeringRaster = !offloadFlickeringStatic;
-	if (ImGui::Checkbox(T("menu.dx12.scene.keep_raster_flickering", "Keep raster static shadows for flickering lights"), &retainFlickeringRaster))
-		offloadFlickeringStatic = !retainFlickeringRaster;
+	bool preview = previewRuntimeShadows.load(std::memory_order_relaxed);
+	if (ImGui::Checkbox(T("menu.dx12.runtime.preview", "Diagnostic shadow overlay (raster retained)"), &preview))
+		previewRuntimeShadows.store(preview, std::memory_order_relaxed);
+	ImGui::TextDisabled("%s", T("menu.dx12.runtime.preview_warning", "Preview may double-darken shadows; raster ownership is unchanged."));
 	if (ImGui::Checkbox(T("menu.dx12.scene.freeze_flickering_native", "Freeze flickering native shadows (DX12 only)"), &freezeNativeFlickering)) {
 		std::scoped_lock lock(runtimeLightMutex);
 		frozenNativeLights.clear();
@@ -55,8 +52,7 @@ void DX12NativeScene::LoadSettings(json& input)
 {
 	shadowMaskEnabled = input.value("ShadowMask", true);
 	outdoorShadowOffloading = input.value("OutdoorShadowOffloading", false);
-	offloadStaticShadows = input.value("OffloadSCMStatic", true);
-	offloadFlickeringStatic = input.value("OffloadFlickeringStatic", true);
+	previewRuntimeShadows.store(input.value("PreviewRuntimeShadows", false), std::memory_order_relaxed);
 	densityMode = std::min(input.value("ShadowTraceDensityMode", 7u), 7u);
 	freezeNativeFlickering = input.value("FreezeNativeFlickering", false);
 	{
@@ -73,8 +69,7 @@ void DX12NativeScene::LoadSettings(json& input)
 void DX12NativeScene::SaveSettings(json& output)
 {
 	output = { { "ShadowMask", shadowMaskEnabled }, { "OutdoorShadowOffloading", outdoorShadowOffloading }, { "ShadowTraceDensityMode", densityMode },
-		{ "OffloadSCMStatic", offloadStaticShadows },
-		{ "OffloadFlickeringStatic", offloadFlickeringStatic },
+		{ "PreviewRuntimeShadows", previewRuntimeShadows.load(std::memory_order_relaxed) },
 		{ "FreezeNativeFlickering", freezeNativeFlickering },
 		{ "ShadowNearLightExclusion", nearLightShadowExclusion },
 		{ "ShadowNearLightRadius", nearLightExclusionUnits },
@@ -87,8 +82,7 @@ void DX12NativeScene::RestoreDefaultSettings()
 {
 	shadowMaskEnabled = true;
 	outdoorShadowOffloading = false;
-	offloadStaticShadows = true;
-	offloadFlickeringStatic = true;
+	previewRuntimeShadows.store(false, std::memory_order_relaxed);
 	densityMode = 7;
 	freezeNativeFlickering = false;
 	{
@@ -109,43 +103,9 @@ bool DX12NativeScene::CanOffloadShadowsInCurrentCell() const
 	return cell && (!cell->IsExteriorCell() || outdoorShadowOffloading);
 }
 
-bool DX12NativeScene::OwnsStaticForLight(RE::BSShadowLight* light, int32_t slot) const
+bool DX12NativeScene::OwnsStaticForLight(RE::BSShadowLight*, int32_t) const
 {
-	// SCM keeps raster dynamic casters unconditionally. Static casters may be
-	// omitted only when this exact runtime light was matched to a native emitter
-	// in the current frame; a nearby prepared light is not sufficient proof.
-	if (!light || slot < 0 || !loaded || globals::game::isVR ||
-		!globals::features::dx12Control.IsActive() ||
-		!globals::features::dx12Control.IsShadowOffloadMode() ||
-		!shadowMaskEnabled || !offloadStaticShadows || !CanOffloadShadowsInCurrentCell() ||
-		light->GetIsFrustumOrDirectionalLight() || !globals::game::graphicsState)
-		return false;
-	const auto scene = acceleration.GetScene();
-	const auto lights = shadowLights.load(std::memory_order_acquire);
-	const auto* ni = light->light.get();
-	if (!scene || !scene->acceleration || !lights || !ni)
-		return false;
-
-	const uint32_t frame = globals::game::graphicsState->GetFrameCount();
-	std::scoped_lock lock(runtimeLightMutex);
-	if (runtimeLightFrame != frame)
-		return false;
-
-	const auto found = std::ranges::find_if(runtimeLightSamples, [ni](const RuntimeLightSample& sample) {
-		return sample.source == ni;
-	});
-	if (found == runtimeLightSamples.end() ||
-		(found->flickers && !offloadFlickeringStatic))
-		return false;
-
-	// The shader admits only the published prepared lights. Never suppress a
-	// raster static caster for a light not actually selected for DX12 tracing.
-	const size_t limit = std::min(lights->size(), size_t{ DX12Native::kMaxShadowLights });
-	for (size_t i = 0; i < limit; ++i) {
-		const auto& candidate = (*lights)[i];
-		if (candidate.referenceID != 0 && candidate.referenceID == found->referenceID)
-			return true;
-	}
+	// Observed geometry does not establish complete per-light caster coverage.
 	return false;
 }
 
@@ -156,8 +116,7 @@ void DX12NativeScene::ObserveRuntimeLight(RE::BSShadowLight* light, uint32_t ref
 		!light || light->GetIsFrustumOrDirectionalLight() || !globals::game::graphicsState)
 		return;
 	auto* ni = light->light.get();
-	const auto lights = shadowLights.load(std::memory_order_acquire);
-	if (!ni || !lights)
+	if (!ni || !globals::features::dx12Control.IsShadowOffloadMode())
 		return;
 	const auto& rt = ni->GetLightRuntimeData();
 	const auto& position = ni->world.translate;
@@ -167,32 +126,8 @@ void DX12NativeScene::ObserveRuntimeLight(RE::BSShadowLight* light, uint32_t ref
 		!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z))
 		return;
 
-	const DX12::PreparedLight* matched = nullptr;
-	if (referenceID != 0) {
-		const auto it = std::ranges::find_if(*lights, [referenceID](const auto& candidate) {
-			return candidate.referenceID == referenceID;
-		});
-		if (it == lights->end())
-			return;  // Never let a different nearby light inherit this source's animation.
-		matched = &*it;
-	} else {
-		float bestDistanceSquared = std::numeric_limits<float>::infinity();
-		for (const auto& candidate : *lights) {
-			const float dx = candidate.position.x - restOrigin.x;
-			const float dy = candidate.position.y - restOrigin.y;
-			const float dz = candidate.position.z - restOrigin.z;
-			const float errorSquared = dx * dx + dy * dy + dz * dz;
-			const float tolerance = std::clamp(candidate.radius * 0.01f, 4.0f, 32.0f);
-			if (std::isfinite(errorSquared) && errorSquared < bestDistanceSquared &&
-				errorSquared <= tolerance * tolerance) {
-				bestDistanceSquared = errorSquared;
-				matched = &candidate;
-			}
-		}
-	}
-	if (!matched)
-		return;
-	DX12::PreparedLight live = *matched;
+	DX12::PreparedLight live{};
+	live.referenceID = referenceID;
 	live.position = float3{ position.x, position.y, position.z };
 	live.radius = rt.radius.x;
 	live.color = float3{ rt.diffuse.red, rt.diffuse.green, rt.diffuse.blue };
@@ -203,10 +138,11 @@ void DX12NativeScene::ObserveRuntimeLight(RE::BSShadowLight* light, uint32_t ref
 		runtimeLightFrame = frame;
 		runtimeLightSamples.clear();
 	}
-	if (freezeNativeFlickering && flickers && matched->referenceID != 0) {
+	if (freezeNativeFlickering && flickers && referenceID != 0) {
 		// Keep DX11's flicker intact. Only the native shadow has a stable light.
 		live.position = float3{ restOrigin.x, restOrigin.y, restOrigin.z };
-		live = frozenNativeLights.try_emplace(matched->referenceID, live).first->second;
+		if (frozenNativeLights.size() < DX12Native::kMaxShadowLights || frozenNativeLights.contains(referenceID))
+			live = frozenNativeLights.try_emplace(referenceID, live).first->second;
 	}
 	// A prepared emitter must not accidentally account for two different SCM
 	// lights that happen to occupy the same position.
@@ -214,20 +150,17 @@ void DX12NativeScene::ObserveRuntimeLight(RE::BSShadowLight* light, uint32_t ref
 		return sample.source == ni;
 	});
 	if (it != runtimeLightSamples.end()) {
-		it->referenceID = matched->referenceID;
+		it->referenceID = referenceID;
 		it->value = live;
 		it->flickers = flickers;
-	} else if (runtimeLightSamples.size() < DX12Native::kMaxShadowLights &&
-			   !std::ranges::any_of(runtimeLightSamples, [&](const auto& sample) {
-				   return sample.referenceID == matched->referenceID;
-			   })) {
-		runtimeLightSamples.push_back({ ni, matched->referenceID, live, flickers });
+	} else if (runtimeLightSamples.size() < DX12Native::kMaxShadowLights) {
+		runtimeLightSamples.push_back({ ni, referenceID, live, flickers });
 	}
 }
 
 void DX12NativeScene::PreShadowMaps()
 {
-	if (!loaded || globals::game::isVR || !globals::features::dx12Control.IsActive()) {
+	if (!loaded || globals::game::isVR || !globals::features::dx12Control.IsActive() || !globals::features::dx12Control.IsShadowOffloadMode()) {
 		shadowLights.store(nullptr, std::memory_order_release);
 		return;
 	}
@@ -236,11 +169,6 @@ void DX12NativeScene::PreShadowMaps()
 		shadowLights.store(nullptr, std::memory_order_release);
 		return;
 	}
-	// SCM reads a single per-frame publication without re-enumerating tiles
-	// for every shadow light; the same ordered sources feed RayQuery.
-	shadowLights.store(std::make_shared<const std::vector<DX12::PreparedLight>>(
-						   globals::features::dx12Resources.GetPreparedLights()),
-		std::memory_order_release);
 	// Only a revision-coalesced mailbox handoff on this thread. All BLAS/TLAS
 	// allocations, command recording and GPU builds run on their own worker.
 	if (acceleration.Start(globals::d3d::device, globals::d3d::context))
@@ -279,7 +207,6 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/
 	{
 		const auto captured = raster.Get(frame);
 		const auto built = acceleration.GetScene();
-		const auto lights = shadowLights.load(std::memory_order_acquire);
 		// The native trace handles unavailable inputs without affecting raster
 		// rendering. RayQuery dispatch remains in DX12NativeShadowTrace.
 		const DX12Native::ShadowTraceControls controls{
@@ -292,19 +219,19 @@ void DX12NativeScene::OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/
 			.fadeRange = shadowFadeRange,
 			.falloffCurve = shadowFalloffCurve
 		};
-		std::vector<DX12::PreparedLight> liveLights = lights ? *lights : std::vector<DX12::PreparedLight>{};
-		if (!liveLights.empty()) {
+		std::vector<DX12::PreparedLight> liveLights;
+		{
 			std::scoped_lock lock(runtimeLightMutex);
 			if (runtimeLightFrame == frame) {
-				for (const auto& runtime : runtimeLightSamples) {
-					auto it = std::ranges::find_if(liveLights, [&](const auto& candidate) {
-						return candidate.referenceID == runtime.referenceID;
-					});
-					if (it != liveLights.end())
-						*it = runtime.value;
-				}
+				liveLights.reserve(runtimeLightSamples.size());
+				for (const auto& runtime : runtimeLightSamples)
+					liveLights.push_back(runtime.value);
 			}
 		}
+		const auto grid = globals::features::dx12Resources.GetGrid();
+		if (!built || !grid || built->scope != grid->requested.front().scope)
+			return;
+		shadowLights.store(std::make_shared<const std::vector<DX12::PreparedLight>>(liveLights), std::memory_order_release);
 		shadows.Dispatch(*backend, captured, built, liveLights, frame, controls);
 	}
 }
@@ -316,8 +243,6 @@ std::function<void()> DX12NativeScene::OnRenderPassBegin(const RE::BSRenderPass*
 	if (!pass || !pass->geometry || !loaded || globals::game::isVR ||
 		!shadowMaskEnabled || !globals::features::dx12Control.IsActive() ||
 		!globals::features::dx12Control.IsShadowOffloadMode() ||
-		!globals::features::upscaling.loaded ||
-		globals::features::upscaling.GetUpscaleMethod() != Upscaling::UpscaleMethod::kFSR ||
 		!globals::state || globals::state->isMapMenuOpen ||
 		(globals::state->permutationData.ExtraShaderDescriptor &
 			static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
@@ -330,7 +255,7 @@ void DX12NativeScene::ObserveSCMRigidCaster(RE::BSGeometry& geometry, bool requi
 {
 	// SCM and already-submitted opaque render passes share this bounded
 	// CPU-only capture path. No scene traversal, readback or GPU wait.
-	if (!loaded || globals::game::isVR || !globals::features::dx12Control.IsActive())
+	if (!loaded || globals::game::isVR || !globals::features::dx12Control.IsActive() || !globals::features::dx12Control.IsShadowOffloadMode())
 		return;
 	auto* tri = geometry.AsTriShape();
 	if (!tri || geometry.AsDynamicTriShape())

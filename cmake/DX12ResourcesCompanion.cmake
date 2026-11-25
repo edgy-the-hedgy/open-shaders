@@ -1,6 +1,5 @@
 # DX12 Resources is a self-contained, geometry-and-light-only .NET companion.
-# It is an essential payload of the Windows AIO package, not just of
-# AUTO_PLUGIN_DEPLOYMENT. A normal C++-only target does not invoke dotnet.
+# Optional reference tool; runtime-only acquisition does not launch it.
 if(NOT WIN32)
     return()
 endif()
@@ -8,7 +7,7 @@ endif()
 option(
     BUILD_DX12_RESOURCES_COMPANION
     "Build and include the DX12 Resources companion executable in Windows AIO packages"
-    ON
+    OFF
 )
 if(NOT BUILD_DX12_RESOURCES_COMPANION)
     message(
