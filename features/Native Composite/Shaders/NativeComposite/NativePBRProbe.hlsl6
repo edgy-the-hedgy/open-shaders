@@ -71,7 +71,7 @@ float NativeParallaxMarchMip(uint textureIndex, float2 dx, float2 dy, float view
     float farFloor=lerp(0.0,3.0,saturate((viewDistance-512.0)/1536.0));
     return min(floor(max(marchMip,farFloor)),float(max(levels,1u)-1u));
 }
-float2 NativeParallaxUV(uint textureIndex, uint mode, float2 coords, float3 viewTS, float scale, float mip, float flattenAmount)
+float2 NativeParallaxUV(uint textureIndex, uint mode, float2 coords, float3 viewTS, float scale, float mip, float flattenAmount, float heightMultiplier)
 {
     if (!isfinite(scale) || scale<=0.0 || !all(isfinite(viewTS)) || viewTS.z<=0.0) return coords;
     float2 slope=viewTS.xy/max(viewTS.z*0.7+0.3+flattenAmount,0.001);
@@ -86,7 +86,7 @@ float2 NativeParallaxUV(uint textureIndex, uint mode, float2 coords, float3 view
     [loop] for (uint k=1u;k<=steps;++k) {
         bound=1.0-float(k)*stepSize;
         float2 uv=coords+travel*(bound-0.5);
-        height=saturate(TexLevel(textureIndex,uv,mode,mip).r);
+        height=saturate(TexLevel(textureIndex,uv,mode,mip).r)*heightMultiplier;
         if (height>=bound) { hit=true; break; }
         previousBound=bound; previousHeight=height;
     }
@@ -95,7 +95,7 @@ float2 NativeParallaxUV(uint textureIndex, uint mode, float2 coords, float3 view
     float fineStep=stepSize/float(steps);
     [loop] for (uint j=1u;j<=steps;++j) {
         bound=start-float(j)*fineStep;
-        height=saturate(TexLevel(textureIndex,coords+travel*(bound-0.5),mode,mip).r);
+        height=saturate(TexLevel(textureIndex,coords+travel*(bound-0.5),mode,mip).r)*heightMultiplier;
         if (height>=bound) break;
         previousBound=bound; previousHeight=height;
     }
@@ -160,9 +160,34 @@ Sample EvaluateMaterial(uint instance, uint primitive, float3 weights, float3 ra
     if (dot(t,t) < 1e-8) return result;
     t = normalize(t);
     b = cross(n,t)*(dot(cross(n,t),b)<0.0 ? -1.0 : 1.0);
+    float2 originalUV=uv;
+    bool interlayer=(binding.flags & SurfaceCoatReadyBinding)!=0u && (material.properties.x & 8u)!=0u;
+    float3 entryNormal=n;
+    float eta=1.0;
+    bool interlayerActive=false;
     if (parallaxEnabled && (binding.flags & SurfaceParallaxReadyBinding)!=0u && material.textures[2].x!=0xffffffffu &&
         (binding.flags & 512u)==0u && dot(rayObject,rayObject)>1e-8 && counts.z>=12u) {
         float3 view=normalize(-rayObject);
+        if (interlayer) {
+            float strength=saturate(material.coat.x);
+            if (material.textures[2].z!=0xffffffffu)
+                strength*=saturate(Tex(material.textures[2].z,originalUV,material.properties.z).a);
+            float3 mapped;
+            if ((material.properties.x & 16u)!=0u && material.textures[3].x!=0xffffffffu)
+                mapped=Tex(material.textures[3].x,originalUV,material.properties.z).xyz*2.0-1.0;
+            else {
+                mapped=Tex(material.textures[0].z,originalUV,material.properties.z).xyz*2.0-1.0;
+                if ((binding.flags & 256u)!=0u) mapped.z=sqrt(saturate(1.0-dot(mapped.xy,mapped.xy)));
+            }
+            float3 candidate=t*mapped.x+b*mapped.y+n*mapped.z;
+            if (!all(isfinite(candidate)) || dot(candidate,candidate)<1e-8 ||
+                !isfinite(strength) || !isfinite(material.coat.z)) return result;
+            entryNormal=normalize(candidate);
+            float rootF0=sqrt(saturate(material.coat.z));
+            eta=lerp(1.0,(1.0-rootF0)/(1.0+rootF0),strength);
+            view=NativeRefractDirection(view,entryNormal,eta);
+            interlayerActive=true;
+        }
         float3 viewTS=float3(dot(t,view),dot(b,view),dot(n,view));
         float3 p0=asfloat(Geometry.Load3(offsets.x+ix.x*counts.z));
         float3 e1=asfloat(Geometry.Load3(offsets.x+ix.y*counts.z))-p0;
@@ -191,7 +216,7 @@ Sample EvaluateMaterial(uint instance, uint primitive, float3 weights, float3 ra
                 flattenAmount=NativeParallaxFlatten(normalize(normalWorld),normalize(normalX),normalize(normalY),
                     mul(objectToWorld,positionX),mul(objectToWorld,positionY),normalize(viewWorld));
         }
-        uv=NativeParallaxUV(material.textures[2].x,material.properties.z,uv,viewTS,material.base.z,mip,flattenAmount);
+        uv=NativeParallaxUV(material.textures[2].x,material.properties.z,uv,viewTS,material.base.z,mip,flattenAmount,interlayerActive ? 0.5 : 1.0);
         if (shadowEnabled && material.base.z>0.0 && material.base.z<=65504.0 && isfinite(material.base.z) &&
             viewTS.z>0.0 && all(isfinite(uv))) {
             float3 worldTangent=mul(t,worldToObject);
@@ -202,7 +227,8 @@ Sample EvaluateMaterial(uint instance, uint primitive, float3 weights, float3 ra
                 shadow.uv=uv;
                 // Zero is the invalid record; use descriptor index + 1.
                 shadow.textureAndMode=(material.textures[2].x+1u)|((material.properties.z&3u)<<16u);
-                shadow.height=saturate(height);
+                shadow.height=saturate(height)*(interlayerActive ? 0.5 : 1.0);
+                if (interlayerActive) shadow.textureAndMode|=1u<<18u;
                 shadow.tangentScale=float4(normalize(worldTangent),material.base.z);
                 shadow.bitangentMip=float4(normalize(worldBitangent),shadowMip);
             }
@@ -267,14 +293,15 @@ Sample EvaluateMaterial(uint instance, uint primitive, float3 weights, float3 ra
         float3 coatColor = SrgbToLinear(max(material.coatColor.rgb,0.0));
         float strength = saturate(material.coat.x);
         float coatRoughness = material.coat.y;
-        float3 coatNormal = normal;
+        float2 coatUV=interlayer ? originalUV : uv;
+        float3 coatNormal = interlayerActive ? entryNormal : normal;
         if (material.textures[2].z != 0xffffffffu) {
-            float4 feature0 = Tex(material.textures[2].z, uv, material.properties.z);
+            float4 feature0 = Tex(material.textures[2].z, coatUV, material.properties.z);
             coatColor *= SrgbToLinear(feature0.rgb);
             strength *= saturate(feature0.a);
         }
         if (material.textures[3].x != 0xffffffffu) {
-            float4 feature1 = Tex(material.textures[3].x, uv, material.properties.z);
+            float4 feature1 = Tex(material.textures[3].x, coatUV, material.properties.z);
             coatRoughness *= feature1.a;
             if ((material.properties.x & 16u) != 0u) {
                 float3 mapped = feature1.xyz * 2.0 - 1.0;
@@ -289,6 +316,7 @@ Sample EvaluateMaterial(uint instance, uint primitive, float3 weights, float3 ra
         coat.normalRoughness=float4(coatNormal,clamp(coatRoughness,0.045,1.0));
         coat.colorStrength=float4(coatColor,strength);
         coat.f0Colored=float4(saturate(material.coat.z).xxx,(material.properties.x & 4u) != 0u ? 1.0 : 0.0);
+        if (interlayerActive) coat.subsurface.w=2.0+eta;
     }
     return result;
 }

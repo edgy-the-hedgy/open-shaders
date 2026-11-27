@@ -100,8 +100,17 @@ bool VisibleDirectional(float3 world, float3 normal, float3 direction)
 }
 
 void AccumulateBRDF(float4 base, float4 f0, float3 n, float3 view, float3 l, float ndl, float ndv, float a2,
-    float3 incident, NativeCoatSample coat, inout float3 diffuse, inout float3 specular, inout float3 transmission)
+    float3 incident, float heightVisibility, NativeCoatSample coat, inout float3 diffuse, inout float3 specular, inout float3 transmission)
 {
+    bool layered=HasNativeInterlayer(coat);
+    if (!layered) incident*=heightVisibility;
+    float3 coatView=view, coatLight=l;
+    if (layered) {
+        view=NativeBaseDirection(view,coat);
+        l=NativeBaseDirection(l,coat);
+        ndl=saturate(dot(n,l));
+        ndv=max(saturate(dot(n,view)),1e-4);
+    }
     // Non-thin scattering follows Common/PBR.hlsli, with native DXR visibility.
     // Keep scattering separate from reflected diffuse.
     if (HasNativeThinSurface(coat)) {
@@ -142,16 +151,19 @@ void AccumulateBRDF(float4 base, float4 f0, float3 n, float3 view, float3 l, flo
     float gV = ndl*sqrt(ndv*ndv*(1.0-a2)+a2);
     float gL = ndv*sqrt(ndl*ndl*(1.0-a2)+a2);
     float visibility = 0.5/max(gV+gL,1e-5);
-    float3 irradiance = incident * ndl;
+    float3 irradiance = incident * ndl * (layered ? heightVisibility : 1.0);
     float3 baseDiffuse = max(base.rgb,0.0)*(1.0-saturate(f0.a))*(1.0-fresnel)*(1.0/3.14159265)*irradiance;
     float3 baseSpecular = fresnel*distribution*visibility*irradiance;
     if (HasNativeCoat(coat)) {
         float3 cn = normalize(coat.normalRoughness.xyz);
-        float cnl = saturate(dot(cn,l)), cnv = max(saturate(abs(dot(cn,view))),1e-4);
-        float cnh = saturate(dot(cn,h));
+        float cnl = saturate(dot(cn,coatLight)), cnv = max(saturate(abs(dot(cn,coatView))),1e-4);
+        float3 coatHalfDelta=coatView+coatLight;
+        float3 coatHalf=dot(coatHalfDelta,coatHalfDelta)>1e-8 ? normalize(coatHalfDelta) : cn;
+        float cnh = saturate(dot(cn,coatHalf));
+        float coatVdh=saturate(dot(coatView,coatHalf));
         float ca = coat.normalRoughness.w * coat.normalRoughness.w;
         float ca2 = ca*ca;
-        float3 cf = saturate(coat.f0Colored.rgb) + (1.0-saturate(coat.f0Colored.rgb))*pow(1.0-vdh,5.0);
+        float3 cf = saturate(coat.f0Colored.rgb) + (1.0-saturate(coat.f0Colored.rgb))*pow(1.0-coatVdh,5.0);
         float cd = cnh*cnh*(ca2-1.0)+1.0;
         float cgV = cnl*sqrt(cnv*cnv*(1.0-ca2)+ca2);
         float cgL = cnv*sqrt(cnl*cnl*(1.0-ca2)+ca2);
@@ -209,7 +221,8 @@ float NativeHeightVisibility(NativeParallaxShadowSample sample, float3 light, fl
     [loop] for (uint tap=0u;tap<taps;++tap) {
         float height=TexLevel(textureIndex,sample.uv+direction/(float(tap+1u)+noise),mode,sample.bitangentMip.w).r;
         if (!isfinite(height)) return 1.0;
-        accumulated+=max(0.0,saturate(height)-sample.height);
+        float heightMultiplier=(sample.textureAndMode & (1u<<18u))!=0u ? 0.5 : 1.0;
+        accumulated+=max(0.0,saturate(height)*heightMultiplier-sample.height);
     }
     return 1.0-saturate(accumulated*(8.0/float(taps)));
 }
@@ -249,7 +262,7 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
             float3 biasNormal=HasNativeThinSurface(coat) ? coat.normalRoughness.xyz : n;
             if (VisibleDirectional(world,dot(biasNormal,l)<0.0 ? -biasNormal : biasNormal,l)) {
                 ++visible;
-                AccumulateBRDF(base, f0, n, view, l, ndl, ndv, a2, max(DirectionalRadiance.rgb,0.0)*NativeHeightVisibility(shadow,l,viewDistance,shadowNoise), coat, diffuse, specular, transmission);
+                AccumulateBRDF(base, f0, n, view, l, ndl, ndv, a2, max(DirectionalRadiance.rgb,0.0),NativeHeightVisibility(shadow,NativeBaseDirection(l,coat),viewDistance,shadowNoise), coat, diffuse, specular, transmission);
             }
         }
     }
@@ -278,7 +291,7 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
         if (traced) ++rays;
         if (!unoccluded) continue;
         ++visible;
-        AccumulateBRDF(base, f0, n, view, l, ndl, ndv, a2, max(color.rgb,0.0)*attenuation*NativeHeightVisibility(shadow,l,viewDistance,shadowNoise), coat, diffuse, specular, transmission);
+        AccumulateBRDF(base, f0, n, view, l, ndl, ndv, a2, max(color.rgb,0.0)*attenuation,NativeHeightVisibility(shadow,NativeBaseDirection(l,coat),viewDistance,shadowNoise), coat, diffuse, specular, transmission);
     }
     if (!all(isfinite(diffuse)) || !all(isfinite(specular))) return 0u;
     // Half precision stores counts up to 2047 plus one for validity.

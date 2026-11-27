@@ -427,15 +427,17 @@ namespace DX12Native
 				const bool projectionKnown = projectedUv || scene.geometry[i]->materialObjectEditorId.empty();
 				auto capability = NativePBR::ClassifyScreenSurface(recipe, projectedUv, true, projectionKnown);
 				constexpr uint32_t coat = uint32_t(PBRFlags::TwoLayer);
-				constexpr uint32_t supportedCoat = coat | uint32_t(PBRFlags::ColoredCoat) | uint32_t(PBRFlags::CoatNormal);
+				constexpr uint32_t interlayer = uint32_t(PBRFlags::InterlayerParallax);
+				constexpr uint32_t supportedCoat = coat | uint32_t(PBRFlags::ColoredCoat) | uint32_t(PBRFlags::CoatNormal) | interlayer;
 				const auto authoredMap = [&](NativePBR::TextureRole role) {
 					return !recipe.textures[static_cast<size_t>(role)].canonicalPath.empty();
 				};
 				const auto residentMap = [&](NativePBR::TextureRole role) {
 					return (recordTable[it->second].controls[0] & NativePBR::TextureRoleBit(role)) != 0;
 				};
-				// Single-surface height evaluation is usable for diagnostics, but its
-				// shadow and warp contracts remain independently feature-limited.
+				// Keep screen displacement feature-limited until runtime parity is verified.
+				const bool layeredHeight = (capability.activeFlags & interlayer) &&
+					recipe.parameters.kind == NativePBR::MaterialKind::Mesh && recipe.parameters.displacementScale > 0.0f;
 				if (!projectedUv && NativePBR::SupportsOpaqueParallax(recipe) && residentMap(NativePBR::TextureRole::Displacement))
 					binding.flags |= MaterialFrameContract::kParallaxReadyBinding;
 				const bool subsurfaceReady = capability.activeFlags == uint32_t(PBRFlags::Subsurface) &&
@@ -456,8 +458,9 @@ namespace DX12Native
 					(!authoredMap(NativePBR::TextureRole::Features0) || residentMap(NativePBR::TextureRole::Features0)) &&
 					(!authoredMap(NativePBR::TextureRole::Features1) || residentMap(NativePBR::TextureRole::Features1)) &&
 					(!(capability.activeFlags & uint32_t(PBRFlags::CoatNormal)) || residentMap(NativePBR::TextureRole::Features1));
-				if (coatReady) {
+				if (coatReady && (!(capability.activeFlags & interlayer) || (!projectedUv && layeredHeight && residentMap(NativePBR::TextureRole::Displacement)))) {
 					binding.flags |= MaterialFrameContract::kCoatReadyBinding;
+					if (layeredHeight) binding.flags |= MaterialFrameContract::kParallaxReadyBinding;
 					// Projection and displacement still retain their own independent limitations.
 					capability.issues &= ~(NativePBR::ScreenPbrFeatures | NativePBR::ScreenFeatureTextures);
 				}

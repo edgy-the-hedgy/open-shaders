@@ -44,6 +44,24 @@ bool HasNativeCoat(NativeCoatSample coat)
     return coat.colorStrength.w > 0.0 && all(isfinite(coat.normalRoughness)) && all(isfinite(coat.colorStrength)) &&
         all(isfinite(coat.f0Colored)) && dot(coat.normalRoughness.xyz, coat.normalRoughness.xyz) > 1e-8;
 }
+// Interlayer refraction is mutually exclusive with subsurface scattering.
+// The unused scattering W component of a coat record stores 2 + eta.
+bool HasNativeInterlayer(NativeCoatSample coat)
+{
+    return HasNativeCoat(coat) && coat.subsurface.w>=2.0 && coat.subsurface.w<=3.0 &&
+        all(coat.subsurface.xyz==0.0);
+}
+float3 NativeRefractDirection(float3 direction, float3 normal, float eta)
+{
+    if (dot(direction,normal)<=0.0) return direction;
+    float3 candidate=-refract(-direction,normal,eta);
+    return all(isfinite(candidate)) && dot(candidate,candidate)>1e-8 ? normalize(candidate) : direction;
+}
+float3 NativeBaseDirection(float3 direction, NativeCoatSample coat)
+{
+    return HasNativeInterlayer(coat) ? NativeRefractDirection(direction,normalize(coat.normalRoughness.xyz),
+        saturate(coat.subsurface.w-2.0)) : direction;
+}
 // Coat and thin-surface modes are mutually exclusive in the authored material guide.
 // The thin variant reuses the coat fields for face normal, balance and specular controls.
 bool HasNativeThinSurface(NativeCoatSample material)
