@@ -18,10 +18,16 @@ namespace DX12Native
 		float radius = 0, sourceRadius = 0, fadeZone = 0;
 		bool inverseSquare = false;
 	};
+	/** @brief Optional same-frame directional input. No claim of distant caster coverage. */
+	struct DirectDirectionalLight
+	{
+		float4 direction{}, radiance{};  // w on direction indicates valid input.
+	};
+
 	/** @brief Fenced packed diffuse/specular radiance with explicit pixel ownership. */
 	struct DirectLightingFrame
 	{
-		static constexpr auto coverage = MaterialFrameContract::LightingCoverage::SelectedPointLights;
+		static constexpr auto coverage = MaterialFrameContract::LightingCoverage::SelectedDirectLights;
 		static constexpr auto encoding = MaterialFrameContract::SignalEncoding::MaterialModulated;
 		static constexpr auto sampling = MaterialFrameContract::SamplingLayout::FullResolution;
 		static constexpr auto reconstruction = MaterialFrameContract::ReconstructionState::Raw;
@@ -36,6 +42,7 @@ namespace DX12Native
 		uint64_t readyValue = 0, allocationBytes = 0;
 		uint32_t frame = 0, width = 0, height = 0, rowPitch = 0;
 		bool statsPending = false;
+		bool directionalIncluded = false;
 	};
 
 	/** @brief Consumes the published material frame without retracing primary rays. */
@@ -46,7 +53,8 @@ namespace DX12Native
 		void Poll(uint32_t frame);
 		void Reset() { current.reset(); for (auto& slot : slots) if (slot) slot->statsPending = false; Poll(UINT32_MAX); stats = {}; dispatchedLights = 0; failure.clear(); }
 		void Dispatch(const GraphicsBackend& backend, std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
-			std::span<const DirectPointLight> lights, bool inputsAvailable, uint32_t viewportWidth, uint32_t viewportHeight);
+			std::span<const DirectPointLight> lights, bool inputsAvailable, const DirectDirectionalLight& directional,
+			uint32_t viewportWidth, uint32_t viewportHeight);
 		std::shared_ptr<const DirectLightingFrame> Get(uint32_t frame) const
 		{
 			return current && current->frame == frame && current->readyFence &&

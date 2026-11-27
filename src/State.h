@@ -752,6 +752,7 @@ public:
 	struct AmbientSHSnapshot
 	{
 		std::array<float4, 3> coefficients{};
+		float4 directionalDirection{}, directionalColor{};
 		uint32_t engineFrame = UINT32_MAX, pluginFrame = UINT32_MAX;
 	};
 	AmbientSHSnapshot ambientSHSnapshot;
@@ -760,6 +761,15 @@ public:
 		if (ambientSHSnapshot.engineFrame != engineFrame || ambientSHSnapshot.pluginFrame != pluginFrame)
 			return false;
 		result = ambientSHSnapshot.coefficients;
+		return true;
+	}
+
+	bool GetNativeDirectionalLight(uint32_t engineFrame, uint32_t pluginFrame, float4& direction, float4& color) const
+	{
+		if (ambientSHSnapshot.engineFrame != engineFrame || ambientSHSnapshot.pluginFrame != pluginFrame)
+			return false;
+		direction = ambientSHSnapshot.directionalDirection;
+		color = ambientSHSnapshot.directionalColor;
 		return true;
 	}
 

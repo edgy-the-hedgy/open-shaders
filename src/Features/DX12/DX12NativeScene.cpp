@@ -769,10 +769,24 @@ void DX12NativeScene::DispatchFullNativeMaterial()
 		for (const auto& light : lights.activeLights)
 			collect(light.get());
 	}
-	// Selected point-light coverage remains partial (sun, spot and unsupported
-	// emitters are not represented). Raster ownership is unchanged.
-	fullNativeDirect->Dispatch(*backend, material, directLights, runtimeAvailable || !prepared.empty(),
-		uint32_t(viewport.x), uint32_t(viewport.y));
+	DX12Native::DirectDirectionalLight directional;
+	// Use the same directional values published by the existing raster
+	// constant-buffer producer. Missing/late snapshots never fabricate light.
+	float4 sunDirection{}, sunColor{};
+	if (!Util::IsInterior() && globals::state->GetNativeDirectionalLight(frame, globals::state->frameCount, sunDirection, sunColor) &&
+		std::isfinite(sunDirection.x) && std::isfinite(sunDirection.y) && std::isfinite(sunDirection.z) &&
+		std::isfinite(sunColor.x) && std::isfinite(sunColor.y) && std::isfinite(sunColor.z)) {
+		const float lengthSquared = sunDirection.x * sunDirection.x + sunDirection.y * sunDirection.y + sunDirection.z * sunDirection.z;
+		if (lengthSquared > 1e-8f && std::isfinite(lengthSquared)) {
+			const float inverseLength = 1.0f / std::sqrt(lengthSquared);
+			directional.direction = { sunDirection.x * inverseLength, sunDirection.y * inverseLength, sunDirection.z * inverseLength, 1.0f };
+			directional.radiance = { toLinear(sunColor.x), toLinear(sunColor.y), toLinear(sunColor.z), 0.0f };
+		}
+	}
+	// Selected direct coverage remains partial: exterior sun visibility is
+	// limited to the resident TLAS, with no spot/particle/interior-sun guarantee.
+	fullNativeDirect->Dispatch(*backend, material, directLights, runtimeAvailable || !prepared.empty() || directional.direction.w != 0.0f,
+		directional, uint32_t(viewport.x), uint32_t(viewport.y));
 }
 
 void DX12NativeScene::ResetFullNativeEnvironment()

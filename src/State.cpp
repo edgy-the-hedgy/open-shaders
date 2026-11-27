@@ -2638,7 +2638,7 @@ void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] b
 		data.AmbientSHB = float4{ dalcSH.b.c0, dalcSH.b.c1[0], dalcSH.b.c1[1], dalcSH.b.c1[2] };
 		if (globals::features::dx12Control.WantsMaterialPreparation() && a_inWorld && globals::game::graphicsState &&
 			!(permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(ExtraShaderDescriptors::IsReflections))) {
-			ambientSHSnapshot = { { data.AmbientSHR, data.AmbientSHG, data.AmbientSHB },
+			ambientSHSnapshot = { { data.AmbientSHR, data.AmbientSHG, data.AmbientSHB }, data.DirLightDirection, data.DirLightColor,
 				globals::game::graphicsState->GetFrameCount(), frameCount };
 		}
 

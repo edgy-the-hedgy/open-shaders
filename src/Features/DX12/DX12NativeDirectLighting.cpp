@@ -26,6 +26,7 @@ namespace DX12Native
 			uint32_t width, height, materialPitch, lightCount;
 			float nearLightRadius;
 			uint32_t nearLightExclusion, instanceCount, padding = 0;
+			float4 directionalDirection, directionalRadiance;
 		};
 		static_assert(sizeof(Constants) <= 256);
 
@@ -140,7 +141,8 @@ namespace DX12Native
 
 	void DirectLightingTrace::Dispatch(const GraphicsBackend& backend,
 		std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
-		std::span<const DirectPointLight> lights, bool inputsAvailable, uint32_t viewportWidth, uint32_t viewportHeight)
+		std::span<const DirectPointLight> lights, bool inputsAvailable, const DirectDirectionalLight& directional,
+		uint32_t viewportWidth, uint32_t viewportHeight)
 	{
 		CS_GPU_PASS("NativeLighting::Direct");
 		if (!material || (current && current->material == material)) return;
@@ -224,7 +226,8 @@ namespace DX12Native
 			slot->lights = Eval::Table(device, records);
 			const Constants constants{ raster.camera.CameraProjInverse, raster.camera.CameraViewInverse,
 				raster.camera.CameraPosAdjust, width, height, slot->material->rowPitch, lightCount,
-				0.0f, 0u, slot->material->scene->materialEvaluation->instanceCount };
+				0.0f, 0u, slot->material->scene->materialEvaluation->instanceCount, 0u, directional.direction, directional.radiance };
+			slot->directionalIncluded = directional.direction.w != 0.0f;
 			WriteConstants(slot->camera.get(), constants);
 			auto* depthResource = raster.depth->resource.get();
 			const auto& evaluation = *slot->material->scene->materialEvaluation;
