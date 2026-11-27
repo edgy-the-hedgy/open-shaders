@@ -162,3 +162,27 @@ TEST_CASE("Red-only native texture bindings require height-only data", "[dx12][m
 	recipe.parameters.fuzzWeight = 0.0f;
 	REQUIRE(GpuAcceptsRedOnlyTexture(recipe, TextureRole::Displacement));
 }
+
+TEST_CASE("Full Native stationary history requires uninterrupted coherent publications", "[dx12][materials]")
+{
+	StationaryHistoryIdentity previous{ 5, 8, 1920, 1080, 12, DirectDiffuse, 7, 7, 4, true };
+	auto now = previous;
+	now.frame++;
+	now.pluginFrame++;
+	now.reset = false;
+	REQUIRE(now.CanReuse(previous));
+	now.reset = true;
+	REQUIRE_FALSE(now.CanReuse(previous));
+	now.reset = false;
+	now.environmentRevision++;
+	REQUIRE_FALSE(now.CanReuse(previous));
+	now.environmentRevision--;
+	now.available |= IndirectDiffuse;
+	REQUIRE_FALSE(now.CanReuse(previous));
+	now.available = previous.available;
+	now.frame++;
+	REQUIRE_FALSE(now.CanReuse(previous));
+	now.frame--;
+	now.materialRevision++;
+	REQUIRE_FALSE(now.CanReuse(previous));
+}

@@ -4,6 +4,7 @@
 
 #include <directx/d3dx12.h>
 #include <fstream>
+#include <cstring>
 
 namespace DX12Native
 {
@@ -13,6 +14,7 @@ namespace DX12Native
 	FullNativeReconstruction::~FullNativeReconstruction()
 	{
 		current.reset();
+		history.reset();
 		for (auto& slot : slots) {
 			if (!slot || GpuFenceRetired(slot->readyFence.get(), slot->readyValue))
 				continue;
@@ -23,10 +25,16 @@ namespace DX12Native
 
 	void FullNativeReconstruction::Poll(uint32_t frame)
 	{
-		if (current && current->frame != frame)
+		if (current && current->frame != frame) {
+			history = frame - current->frame == 1u ? current : nullptr;
 			current.reset();
+		}
+		if (history && frame - history->frame != 1u)
+			history.reset();
+		// A completed consumer no longer needs its predecessor. Break history
+		// chains before choosing reusable slots, even if the latest frame is held.
 		for (auto& slot : slots) {
-			if (!slot || slot.use_count() != 1)
+			if (!slot)
 				continue;
 			if (slot->readyValue == UINT64_MAX && completion && owner.commandQueue &&
 				completion->GetCompletedValue() != UINT64_MAX) {
@@ -36,7 +44,11 @@ namespace DX12Native
 					slot->readyValue = rescue;
 				}
 			}
-			if (GpuFenceRetired(slot->readyFence.get(), slot->readyValue)) {
+			if (GpuFenceRetired(slot->readyFence.get(), slot->readyValue))
+				slot->historyInput.reset();
+		}
+		for (auto& slot : slots) {
+			if (slot && slot.use_count() == 1 && GpuFenceRetired(slot->readyFence.get(), slot->readyValue)) {
 				slot->material.reset();
 				slot->direct.reset();
 				slot->indirect.reset();
@@ -65,16 +77,19 @@ namespace DX12Native
 		file.seekg(0);
 		if (!file.read(shader.data(), std::streamsize(shader.size())))
 			throw std::runtime_error("Full Native reconstruction DXIL read failed");
-		CD3DX12_DESCRIPTOR_RANGE range;
-		range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 3);
-		CD3DX12_ROOT_PARAMETER parameters[6];
+		CD3DX12_DESCRIPTOR_RANGE depthRanges[2];
+		depthRanges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 3, 0, 0);
+		depthRanges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 6, 0, 1);
+		CD3DX12_ROOT_PARAMETER parameters[8];
 		parameters[0].InitAsShaderResourceView(0);
 		parameters[1].InitAsShaderResourceView(1);
 		parameters[2].InitAsShaderResourceView(2);
-		parameters[3].InitAsDescriptorTable(1, &range);
+		parameters[3].InitAsDescriptorTable(2, depthRanges);
 		parameters[4].InitAsUnorderedAccessView(0);
-		parameters[5].InitAsConstants(6, 0);
-		CD3DX12_ROOT_SIGNATURE_DESC signature(6, parameters);
+		parameters[5].InitAsConstants(8, 0);
+		parameters[6].InitAsShaderResourceView(4);
+		parameters[7].InitAsShaderResourceView(5);
+		CD3DX12_ROOT_SIGNATURE_DESC signature(8, parameters);
 		winrt::com_ptr<ID3DBlob> blob, errors;
 		winrt::com_ptr<ID3D12RootSignature> newRoot;
 		winrt::com_ptr<ID3D12PipelineState> newPipeline;
@@ -94,7 +109,8 @@ namespace DX12Native
 
 	void FullNativeReconstruction::Dispatch(const GraphicsBackend& backend,
 		std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
-		std::shared_ptr<const DirectLightingFrame> direct, std::shared_ptr<const IndirectLightingFrame> indirect)
+		std::shared_ptr<const DirectLightingFrame> direct, std::shared_ptr<const IndirectLightingFrame> indirect,
+		uint32_t pluginFrame, bool resetHistory)
 	{
 		if (!material || !material->IsCoherent(material->frame, material->width, material->height))
 			return;
@@ -114,6 +130,20 @@ namespace DX12Native
 		const uint64_t bytes = uint64_t(material->width) * material->height * kLightingStride;
 		if (!available || !bytes || bytes > UINT32_MAX)
 			return;
+		const StationaryHistoryIdentity stamp{ material->frame, pluginFrame, material->width, material->height,
+			material->scope, available, material->geometryRevision, material->materialRevision,
+			indirect && indirect->environment ? indirect->environment->revision : 0u, resetHistory };
+		const auto sameCamera = [](const auto& a, const auto& b) {
+			return std::memcmp(&a.CameraProjInverse, &b.CameraProjInverse, sizeof(a.CameraProjInverse)) == 0 &&
+				std::memcmp(&a.CameraViewInverse, &b.CameraViewInverse, sizeof(a.CameraViewInverse)) == 0 &&
+				std::memcmp(&a.CameraPosAdjust, &b.CameraPosAdjust, sizeof(a.CameraPosAdjust)) == 0;
+		};
+		if (!history || !history->material || !history->readyFence || !stamp.CanReuse(history->historyIdentity) ||
+			!ValidProducerSignal(history->readyValue, history->readyFence->GetCompletedValue()) ||
+			!history->material->IsCoherent(history->frame, history->width, history->height) ||
+			history->material->scene != material->scene ||
+			!sameCamera(history->material->raster->camera, material->raster->camera))
+			history.reset();
 
 		std::shared_ptr<FullNativeReconstructionFrame>* selected = nullptr;
 		bool submitted = false;
@@ -150,6 +180,9 @@ namespace DX12Native
 				auto replacement = std::make_shared<FullNativeReconstructionFrame>();
 				replacement->samples = Eval::Buffer(device, bytes, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 				replacement->allocationBytes = allocation;
+				const D3D12_DESCRIPTOR_HEAP_DESC heap{ D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 2,
+					D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
+				DX::ThrowIfFailed(device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(replacement->depthDescriptors.put())));
 				DX::ThrowIfFailed(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(replacement->allocator.put())));
 				DX::ThrowIfFailed(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, replacement->allocator.get(), pipeline.get(), IID_PPV_ARGS(replacement->commands.put())));
 				slot = std::move(replacement);
@@ -165,6 +198,9 @@ namespace DX12Native
 			slot->height = slot->material->height;
 			slot->rowPitch = slot->width * kLightingStride;
 			slot->available = available;
+			slot->historyIdentity = stamp;
+			slot->historyInput = std::move(history);
+			slot->reconstruction = slot->historyInput ? ReconstructionState::Temporal : ReconstructionState::Spatial;
 			slot->root = root;
 			slot->pipeline = pipeline;
 			slot->readyFence = completion;
@@ -172,33 +208,55 @@ namespace DX12Native
 			auto* cmd = slot->commands.get();
 			auto* depth = slot->material->raster->depth->resource.get();
 			const auto address = slot->material->samples->GetGPUVirtualAddress();
-			ID3D12DescriptorHeap* heaps[]{ slot->material->descriptors.get() };
+			const auto* previous = slot->historyInput.get();
+			auto* previousDepth = previous ? previous->material->raster->depth->resource.get() : depth;
+			const auto increment = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+			const auto cpu = slot->depthDescriptors->GetCPUDescriptorHandleForHeapStart();
+			D3D12_SHADER_RESOURCE_VIEW_DESC depthView{};
+			depthView.Format = DXGI_FORMAT_R32_FLOAT;
+			depthView.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+			depthView.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			depthView.Texture2D.MipLevels = 1;
+			device->CreateShaderResourceView(depth, &depthView, cpu);
+			device->CreateShaderResourceView(previousDepth, &depthView, { cpu.ptr + SIZE_T(increment) });
+			ID3D12DescriptorHeap* heaps[]{ slot->depthDescriptors.get() };
 			cmd->SetDescriptorHeaps(1, heaps);
 			cmd->SetComputeRootSignature(root.get());
 			cmd->SetComputeRootShaderResourceView(0, address);
 			cmd->SetComputeRootShaderResourceView(1, slot->direct ? slot->direct->samples->GetGPUVirtualAddress() : address);
 			cmd->SetComputeRootShaderResourceView(2, slot->indirect ? slot->indirect->samples->GetGPUVirtualAddress() : address);
-			const auto increment = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-			cmd->SetComputeRootDescriptorTable(3, CD3DX12_GPU_DESCRIPTOR_HANDLE(slot->material->descriptors->GetGPUDescriptorHandleForHeapStart(), NativePBR::kGpuTextureDescriptorCapacity, increment));
+			cmd->SetComputeRootDescriptorTable(3, slot->depthDescriptors->GetGPUDescriptorHandleForHeapStart());
+			cmd->SetComputeRootShaderResourceView(6, previous ? previous->samples->GetGPUVirtualAddress() : address);
+			cmd->SetComputeRootShaderResourceView(7, previous ? previous->material->samples->GetGPUVirtualAddress() : address);
 			cmd->SetComputeRootUnorderedAccessView(4, slot->samples->GetGPUVirtualAddress());
 			const uint32_t constants[]{ slot->width, slot->height, slot->material->rowPitch,
-				slot->direct ? slot->direct->rowPitch : 0u, slot->indirect ? slot->indirect->rowPitch : 0u, available };
-			cmd->SetComputeRoot32BitConstants(5, 6, constants, 0);
+				slot->direct ? slot->direct->rowPitch : 0u, slot->indirect ? slot->indirect->rowPitch : 0u, available,
+				previous ? previous->material->rowPitch : 0u, previous ? 1u : 0u };
+			cmd->SetComputeRoot32BitConstants(5, 8, constants, 0);
 			const D3D12_RESOURCE_BARRIER begin[]{
 				CD3DX12_RESOURCE_BARRIER::Transition(depth, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
 				CD3DX12_RESOURCE_BARRIER::Transition(slot->samples.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
 			};
 			cmd->ResourceBarrier(2, begin);
+			if (previousDepth != depth) {
+				const auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(previousDepth, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+				cmd->ResourceBarrier(1, &barrier);
+			}
 			cmd->Dispatch((slot->width + 7) / 8, (slot->height + 7) / 8, 1);
 			const D3D12_RESOURCE_BARRIER end[]{
 				CD3DX12_RESOURCE_BARRIER::Transition(depth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
 				CD3DX12_RESOURCE_BARRIER::Transition(slot->samples.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON)
 			};
 			cmd->ResourceBarrier(2, end);
+			if (previousDepth != depth) {
+				const auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(previousDepth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+				cmd->ResourceBarrier(1, &barrier);
+			}
 			DX::ThrowIfFailed(cmd->Close());
 			DX::ThrowIfFailed(backend.commandQueue->Wait(slot->material->producerFence.get(), slot->material->producerValue));
 			if (slot->direct) DX::ThrowIfFailed(backend.commandQueue->Wait(slot->direct->readyFence.get(), slot->direct->readyValue));
 			if (slot->indirect) DX::ThrowIfFailed(backend.commandQueue->Wait(slot->indirect->readyFence.get(), slot->indirect->readyValue));
+			if (previous) DX::ThrowIfFailed(backend.commandQueue->Wait(previous->readyFence.get(), previous->readyValue));
 			ID3D12CommandList* lists[]{ cmd };
 			backend.commandQueue->ExecuteCommandLists(1, lists);
 			submitted = true;

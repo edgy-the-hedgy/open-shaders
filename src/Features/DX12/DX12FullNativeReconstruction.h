@@ -8,7 +8,10 @@ namespace DX12Native
 	/** @brief Independent reconstructed diffuse/specular contribution, never an opaque ownership claim. */
 	struct FullNativeReconstructionFrame
 	{
-		static constexpr auto reconstruction = MaterialFrameContract::ReconstructionState::Spatial;
+		MaterialFrameContract::ReconstructionState reconstruction = MaterialFrameContract::ReconstructionState::Spatial;
+		MaterialFrameContract::StationaryHistoryIdentity historyIdentity{};
+		std::shared_ptr<const FullNativeReconstructionFrame> historyInput;
+		winrt::com_ptr<ID3D12DescriptorHeap> depthDescriptors;
 		static constexpr auto correspondence = MaterialFrameContract::SurfaceCorrespondence::DepthOnly;
 		std::shared_ptr<const NativeScreenProbe::MaterialFrame> material;
 		std::shared_ptr<const DirectLightingFrame> direct;
@@ -29,7 +32,8 @@ namespace DX12Native
 		~FullNativeReconstruction();
 		void Poll(uint32_t frame);
 		void Dispatch(const GraphicsBackend& backend, std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
-			std::shared_ptr<const DirectLightingFrame> direct, std::shared_ptr<const IndirectLightingFrame> indirect);
+			std::shared_ptr<const DirectLightingFrame> direct, std::shared_ptr<const IndirectLightingFrame> indirect,
+			uint32_t pluginFrame, bool resetHistory);
 		std::shared_ptr<const FullNativeReconstructionFrame> Get(uint32_t frame) const;
 	private:
 		void Initialize(const GraphicsBackend& backend);
@@ -40,6 +44,7 @@ namespace DX12Native
 		winrt::com_ptr<ID3D12Fence> completion;
 		std::array<std::shared_ptr<FullNativeReconstructionFrame>, 3> slots;
 		std::shared_ptr<FullNativeReconstructionFrame> current;
+		std::shared_ptr<const FullNativeReconstructionFrame> history;
 		uint64_t nextValue = 0;
 		bool failureLogged = false;
 	};

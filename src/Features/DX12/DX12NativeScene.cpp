@@ -848,7 +848,8 @@ void DX12NativeScene::DispatchFullNativeIndirect()
 		ibl.loaded && !stamp.interior ? ibl.GetNativeSkyRadiance() : EnvironmentSource{});
 	fullNativeIndirect->Dispatch(*backend, material, fullNativeEnvironment->Get(),
 		uint32_t(IndirectDiffuse) | uint32_t(IndirectSpecular), settings.EnvIBLScale, settings.SkyIBLScale, ambient);
-	globals::features::upscaling.nativeComposite.ReconstructFullNative(*backend, material, GetFullNativeDirect(frame), GetFullNativeIndirect(frame));
+	globals::features::upscaling.nativeComposite.ReconstructFullNative(*backend, material, GetFullNativeDirect(frame), GetFullNativeIndirect(frame),
+		globals::state->frameCount, globals::state->ShouldResetHistory());
 }
 
 void DX12NativeScene::OnOpaqueRasterReady()
