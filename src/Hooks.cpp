@@ -12,7 +12,6 @@
 #include "Feature.h"
 #include "Globals.h"
 #include "Menu.h"
-#include "Materials/SharedMaterialHooks.h"
 #include "Menu/BackgroundBlur.h"
 #include "ShaderCache.h"
 #include "State.h"
@@ -69,12 +68,8 @@ namespace
 	/// Binds the paraboloid clip geometry shader with our Utility paraboloid shadow vertex shader, and unbinds it for every other one.
 	void SetParaboloidClipShader(const RE::BSShader* a_shader, uint32_t a_vertexDescriptor, bool a_customVertexShader)
 	{
-		using enum SIE::ShaderCache::UtilityShaderFlags;
-		// The paraboloid bit is shared with AdditionalAlphaMask, so only a shadow-map draw outside OpaqueEffect is paraboloid.
-		constexpr auto paraboloidShadow = static_cast<uint32_t>(RenderShadowmap) | static_cast<uint32_t>(RenderShadowmapPb);
 		winrt::com_ptr<ID3D11GeometryShader> geometryShader;
-		if (ParaboloidClipAllowed && a_customVertexShader && a_shader && a_shader->shaderType.get() == RE::BSShader::Type::Utility &&
-			(a_vertexDescriptor & paraboloidShadow) == paraboloidShadow && !(a_vertexDescriptor & static_cast<uint32_t>(OpaqueEffect)))
+		if (ParaboloidClipAllowed && a_customVertexShader && a_shader)
 			geometryShader = globals::shaderCache->GetParaboloidClipShader(*a_shader, a_vertexDescriptor);
 		if (geometryShader || ParaboloidClipBound) {
 			globals::d3d::context->GSSetShader(geometryShader.get(), nullptr, 0);
@@ -241,18 +236,6 @@ bool Hooks::BSShader_BeginTechnique::thunk(RE::BSShader* shader, uint32_t vertex
 
 	NormalizeLegacyUtilityDescriptors(*shader, state->modifiedVertexDescriptor, state->modifiedPixelDescriptor);
 	state->ModifyShaderLookup(*shader, state->modifiedVertexDescriptor, state->modifiedPixelDescriptor);
-	constexpr auto nativeInput = static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::NativePbrInput);
-	if (shader->shaderType.get() == RE::BSShader::Type::Lighting && (state->modifiedPixelDescriptor & nativeInput)) {
-		if (skipPixelShader || !shaderCache->IsEnabled() || !state->ShaderEnabled(RE::BSShader::Type::Lighting) ||
-			!shaderCache->GetVertexShader(*shader, state->modifiedVertexDescriptor) ||
-			!shaderCache->GetPixelShader(*shader, state->modifiedPixelDescriptor))
-			state->modifiedPixelDescriptor &= ~nativeInput;
-	}
-	SharedMaterialHooks::StripNativeRasterRoute(shader->shaderType.get(), vertexDescriptor, pixelDescriptor);
-	state->currentVertexDescriptor = vertexDescriptor;
-	state->currentPixelDescriptor = pixelDescriptor;
-	state->permutationData.VertexShaderDescriptor = vertexDescriptor;
-	state->permutationData.PixelShaderDescriptor = pixelDescriptor;
 
 	// Only check against non-shader bits
 	state->permutationData.PixelShaderDescriptor = Util::ShaderDescriptor::UploadedPixelDescriptor(state->permutationData.PixelShaderDescriptor, state->modifiedPixelDescriptor, State::GetRuntimePixelBits(*shader));
@@ -378,7 +361,7 @@ namespace GrassExtensions
 			RE::BSLightingShaderProperty* grassProperty = func(property);
 			globals::features::truePBR.SetupGrassMaterial(lightingProperty, grassProperty);
 
-			if (lightingProperty && grassProperty && lightingProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kEffectLighting)) {
+			if (lightingProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kEffectLighting)) {
 				grassProperty->SetFlags(RE::BSShaderProperty::EShaderPropertyFlag8::kEffectLighting, true);
 			}
 
@@ -397,8 +380,9 @@ namespace GrassExtensions
 
 			auto state = globals::state;
 			const auto* shaderProperty = static_cast<RE::BSShaderProperty*>(pass->geometry->GetGeometryRuntimeData().shaderProperty.get());
+			// TruePBR marks converted grass properties with kMenuScreen.
 			state->SetGrassFlags(shaderProperty && shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kEffectLighting),
-				SharedMaterialHooks::IsLegacyPbrGrass(shaderProperty));
+				shaderProperty && shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMenuScreen));
 
 			// Grass meshes are rooted at the model origin, so the model bound's center sits about halfway up the mesh.
 			const auto& bound = pass->geometry->GetModelData().modelBound;
@@ -406,6 +390,11 @@ namespace GrassExtensions
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
+}
+
+bool Hooks::IsGrassMeshLoadHookInstalled()
+{
+	return GrassExtensions::LoadGrassType::func.address() != 0;
 }
 
 namespace WaterBlendHistory
@@ -974,13 +963,13 @@ namespace Hooks
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
-	// Disable scene TAA for the duration of the menu interface render, then restore it.
+	// The loading model uses the engine's jitter and temporal resolve before the menu text is drawn.
 	struct MenuManagerDrawInterfaceStart
 	{
 		static void thunk(int64_t a1)
 		{
 			const bool temporal = Util::GetTemporal();
-			Util::SetTemporal(false);
+			Util::SetTemporal(temporal && globals::state->isLoadingMenuOpen);
 			func(a1);
 			Util::SetTemporal(temporal);
 		}
@@ -1568,9 +1557,8 @@ namespace Hooks
 		// 0x4F5 decodes as a stray TEST, not a CALL, on 1.7.99 -- the two offsets are not interchangeable.
 		stl::write_thunk_call<GrassExtensions::BSGrassShaderProperty_ctor>(REL::RelocationID(15214, 15383).address() + REL::Relocate<std::uintptr_t>(0x45B, REL::Module::IsAtLeast(REL::Version(1, 7, 99, 0)) ? 0x4FD : 0x4F5));
 		stl::write_vfunc<0x6, GrassExtensions::BSGrassShader_SetupGeometry>(RE::VTABLE_BSGrassShader[0]);
-		stl::write_thunk_call<GrassExtensions::LoadGrassType>(REL::RelocationID(15204, 15372).address() + Util::VersionedRelocation::Select(0x2F5, 0x2F5, 0x305));
-		stl::write_thunk_call<GrassExtensions::LoadGrassType>(REL::RelocationID(15205, 15373).address() + Util::VersionedRelocation::Select(0x62B, 0x597, 0x590));
-		stl::write_thunk_call<GrassExtensions::LoadGrassType>(REL::RelocationID(15206, 15374).address() + REL::Relocate(0x25C, 0x25C));
+		// NGIO can call the loader outside the engine's grass tasks.
+		stl::detour_thunk<GrassExtensions::LoadGrassType>(REL::RelocationID(15214, 15383));
 		stl::write_vfunc<0x0, GrassExtensions::BSMultiStreamInstanceTriShape_dtor>(RE::VTABLE_BSMultiStreamInstanceTriShape[0]);
 		stl::write_vfunc<0x6, PostProcessingExtensions::BSParticleShader_SetupGeometry>(RE::VTABLE_BSParticleShader[0]);
 

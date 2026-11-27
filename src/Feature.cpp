@@ -1,5 +1,6 @@
 #include "Feature.h"
 
+#include <mutex>
 #include <unordered_map>
 
 #include "FeatureIssues.h"
@@ -11,6 +12,7 @@
 #include "Features/DX12/DX12Control.h"
 #include "Features/DX12/DX12NativeScene.h"
 #include "Features/DX12/DX12Resources.h"
+#include "Features/DetailMaps.h"
 #include "Features/DeveloperTools.h"
 #include "Features/DynamicCubemaps.h"
 #include "Features/ProceduralSun.h"
@@ -299,6 +301,7 @@ namespace
 			&globals::features::lodBlending,
 			&globals::features::hairSpecular,
 			&globals::features::interiorSun,
+			&globals::features::detailMaps,
 			&globals::features::furShells,
 			&globals::features::terrainVariation,
 			&globals::features::ibl,
@@ -401,6 +404,18 @@ void Feature::ApplyDrawHooks()
 	}
 }
 
+void Feature::ApplyDepthPrepassReadyHooks()
+{
+	static const auto features = FilterFeatureList([](Feature* feature) { return feature->WantsDepthPrepassReadyHook(); });
+	ForEachLoadedFeature(features, "OnDepthPrepassReady", [](Feature* feature) { feature->OnDepthPrepassReady(); }, true);
+}
+
+void Feature::ApplyOpaqueRasterReadyHooks()
+{
+	static const auto features = FilterFeatureList([](Feature* feature) { return feature->WantsOpaqueRasterReadyHook(); });
+	ForEachLoadedFeature(features, "OnOpaqueRasterReady", [](Feature* feature) { feature->OnOpaqueRasterReady(); }, true);
+}
+
 void Feature::ApplyPreShadowMapsHooks()
 {
 	static const auto features = FilterFeatureList([](Feature* feature) { return feature->WantsPreShadowMapsHook(); });
@@ -486,6 +501,15 @@ namespace
 					g_loadingMenuOpenPending.store(true, std::memory_order_release);
 				else
 					g_loadingMenuClosePending.store(true, std::memory_order_release);
+				Feature::ForEachLoadedFeature("OnLoadingMenuEvent", [&](Feature* feature) {
+					try {
+						feature->OnLoadingMenuEvent(a_event->opening);
+					} catch (const std::exception& error) {
+						logger::error("{} loading notification failed: {}", feature->GetShortName(), error.what());
+					} catch (...) {
+						logger::error("{} loading notification failed", feature->GetShortName());
+					}
+				});
 			}
 			return RE::BSEventNotifyControl::kContinue;
 		}
@@ -497,19 +521,25 @@ namespace
 	};
 }
 
-void Feature::DrainSceneTransitions()
+void Feature::RegisterSceneTransitionEvents()
 {
 	static std::atomic<bool> registered{ false };
-	if (!registered.load(std::memory_order_acquire)) {
-		if (auto* ui = globals::game::ui) {
-			// GetEventSource can be null before the UI is fully up; leave registered=false and retry
-			// next frame rather than dereferencing it.
-			if (auto* source = ui->GetEventSource<RE::MenuOpenCloseEvent>()) {
+	static std::once_flag registration;
+	if (registered.load(std::memory_order_acquire))
+		return;
+	if (auto* ui = globals::game::ui) {
+		if (auto* source = ui->GetEventSource<RE::MenuOpenCloseEvent>()) {
+			std::call_once(registration, [source] {
 				source->AddEventSink(SceneTransitionSink::GetSingleton());
 				registered.store(true, std::memory_order_release);
-			}
+			});
 		}
 	}
+}
+
+void Feature::DrainSceneTransitions()
+{
+	RegisterSceneTransitionEvents();
 
 	if (g_loadingMenuOpenPending.exchange(false, std::memory_order_acq_rel))
 		ForEachLoadedFeature("OnSceneTransitionReset(open)", [](Feature* f) { f->OnSceneTransitionReset(true); });

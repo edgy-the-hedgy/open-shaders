@@ -1,28 +1,27 @@
 #include "DX12NativeAcceleration.h"
+#include "DX12GpuRetirement.h"
+#include "Utils/TracyZones.h"
 #include "VideoMemoryBudget.h"
 
 #include <algorithm>
-#include <chrono>
-#include <condition_variable>
 #include <cstring>
 #include <directx/d3dx12.h>
+#include <DirectXPackedVector.h>
+#include <cmath>
 #include <limits>
 #include <ranges>
 #include <stdexcept>
-#include <thread>
 #include <unordered_set>
+#include <utility>
 
 namespace DX12Native
 {
 	namespace
 	{
 		constexpr uint32_t kMaximumInstances = (1u << 24u) - 1u;
+		struct AllocationDeferred
+		{};
 
-		void Check(HRESULT result)
-		{
-			if (FAILED(result))
-				throw std::runtime_error("DX12 native acceleration resource or command failure");
-		}
 	}
 
 	AccelerationScene::~AccelerationScene()
@@ -51,32 +50,26 @@ namespace DX12Native
 		if (!inFlight)
 			return;
 
-		// Retain the resources in an owning retirement task, not leaked allocations.
-		// A tail marker drains queue submissions for which Signal() originally failed.
-		std::thread([pending = std::move(retiring), producer = completion,
-						queue = backend.commandQueue, retainedDevice = device,
-						lastSignalled, needsDrain]() mutable {
-			(void)pending;  // The capture deliberately owns the queued GPU resources.
-			winrt::com_ptr<ID3D12Fence> drainFence;
-			bool drainScheduled = !needsDrain;
-			while (true) {
-				const uint64_t done = producer->GetCompletedValue();
-				if (done == UINT64_MAX)
-					break;  // Device removal permits releasing the resources.
-				if (!drainScheduled && retainedDevice && queue) {
-					if (!drainFence)
-						(void)retainedDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(drainFence.put()));
-					if (drainFence && SUCCEEDED(queue->Signal(drainFence.get(), 1)))
-						drainScheduled = true;
-				}
-				if (done >= lastSignalled && drainScheduled &&
-					(!needsDrain || drainFence->GetCompletedValue() >= 1))
-					break;
-				if (!retainedDevice || FAILED(retainedDevice->GetDeviceRemovedReason()))
-					break;
-				std::this_thread::sleep_for(std::chrono::milliseconds(8));
+		// A tail marker tracks any ExecuteCommandLists whose original Signal failed.
+		// If even the rescue marker fails, retain until device removal.
+		std::vector<FenceDependency> dependencies;
+		if (lastSignalled)
+			dependencies.push_back(FencePoint(completion.get(), lastSignalled));
+		if (needsDrain) {
+			winrt::com_ptr<ID3D12Fence> drain;
+			if (device && backend.commandQueue &&
+				SUCCEEDED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(drain.put()))) &&
+				SUCCEEDED(backend.commandQueue->Signal(drain.get(), 1))) {
+				drain->SetName(L"DX12NativeScene::AccelerationRetirementFence");
+				dependencies.push_back(FencePoint(drain.get(), 1));
+			} else {
+				dependencies.push_back(FencePoint(completion.get(), UINT64_MAX));
 			}
-		}).detach();
+		}
+		winrt::com_ptr<ID3D12Device> retainedDevice;
+		if (device)
+			retainedDevice.copy_from(device.get());
+		RetireAfterFences(std::pair{ backend.commandQueue, std::move(retiring) }, std::move(retainedDevice), std::move(dependencies));
 	}
 
 	bool AccelerationScene::Initialize(const GraphicsBackend& a_backend)
@@ -88,12 +81,12 @@ namespace DX12Native
 			return false;
 		try {
 			backend = a_backend;
-			Check(backend.d3d12Device->QueryInterface(IID_PPV_ARGS(device.put())));
+			DX::ThrowIfFailed(backend.d3d12Device->QueryInterface(IID_PPV_ARGS(device.put())));
 			D3D12_FEATURE_DATA_D3D12_OPTIONS5 options{};
-			Check(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options, sizeof(options)));
+			DX::ThrowIfFailed(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options, sizeof(options)));
 			if (options.RaytracingTier < D3D12_RAYTRACING_TIER_1_1)
 				return false;
-			Check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(completion.put())));
+			DX::ThrowIfFailed(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(completion.put())));
 			completion->SetName(L"DX12NativeScene::AccelerationFence");
 			failure.clear();
 			return true;
@@ -110,8 +103,13 @@ namespace DX12Native
 		const auto heap = CD3DX12_HEAP_PROPERTIES(a_heap);
 		const auto flags = a_heap == D3D12_HEAP_TYPE_DEFAULT ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE;
 		const auto desc = CD3DX12_RESOURCE_DESC::Buffer(a_size, flags);
+		const uint64_t bytes = device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
+		if (!bytes || bytes == UINT64_MAX)
+			throw std::runtime_error("Invalid native acceleration allocation");
+		if (bytes > videoBudget.Query(device.get(), 0).effectiveBytes)
+			throw AllocationDeferred{};
 		winrt::com_ptr<ID3D12Resource> resource;
-		Check(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, a_state, nullptr, IID_PPV_ARGS(resource.put())));
+		DX::ThrowIfFailed(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, a_state, nullptr, IID_PPV_ARGS(resource.put())));
 		resource->SetName(a_name);
 		return resource;
 	}
@@ -119,13 +117,14 @@ namespace DX12Native
 	void AccelerationScene::Begin(Build& a_build)
 	{
 		a_build.generation = generation;
-		Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(a_build.allocator.put())));
-		Check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, a_build.allocator.get(), nullptr, IID_PPV_ARGS(a_build.commands.put())));
+		DX::ThrowIfFailed(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(a_build.allocator.put())));
+		DX::ThrowIfFailed(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, a_build.allocator.get(), nullptr, IID_PPV_ARGS(a_build.commands.put())));
 	}
 
 	void AccelerationScene::Submit(Build& a_build)
 	{
-		Check(a_build.commands->Close());
+		ZoneScopedN("DX12::Acceleration::Submit");
+		DX::ThrowIfFailed(a_build.commands->Close());
 		ID3D12CommandList* commands[] = { a_build.commands.get() };
 		backend.commandQueue->ExecuteCommandLists(1, commands);
 		const uint64_t signalValue = nextFence + 1;
@@ -134,7 +133,7 @@ namespace DX12Native
 			// A queued submission has no valid completion marker. Retain Build
 			// and drain the direct queue during owned asynchronous retirement.
 			a_build.fence = UINT64_MAX;
-			Check(signalResult);
+			DX::ThrowIfFailed(signalResult);
 		}
 		a_build.fence = signalValue;
 		nextFence = signalValue;
@@ -142,29 +141,30 @@ namespace DX12Native
 
 	bool AccelerationScene::BuildBottom(Build& a_build, const std::shared_ptr<const DX12::Shape>& a_shape)
 	{
-		if (!a_shape || !a_shape->identity || a_shape->Positions().empty() ||
-			a_shape->Indices().empty() || a_shape->Indices().size() % 3u ||
-			a_shape->Positions().size() > UINT32_MAX || a_shape->Indices().size() > UINT32_MAX)
+		ZoneScopedN("DX12::Acceleration::BuildBLAS");
+		if (!a_shape || !a_shape->identity || a_shape->positions.empty() ||
+			a_shape->indices.empty() || a_shape->indices.size() % 3u ||
+			a_shape->positions.size() > UINT32_MAX || a_shape->indices.size() > UINT32_MAX)
 			return false;
-		const uint64_t vertexBytes = uint64_t(a_shape->Positions().size()) * sizeof(float3);
-		const uint64_t indexBytes = uint64_t(a_shape->Indices().size()) * sizeof(uint32_t);
+		const uint64_t vertexBytes = uint64_t(a_shape->positions.size()) * sizeof(float3);
+		const uint64_t indexBytes = uint64_t(a_shape->indices.size()) * sizeof(uint32_t);
 		a_build.sourceUpload = Buffer(vertexBytes + indexBytes, D3D12_HEAP_TYPE_UPLOAD,
 			D3D12_RESOURCE_STATE_GENERIC_READ, L"DX12NativeScene::RigidGeometryUpload");
 		void* mapped = nullptr;
 		const D3D12_RANGE noRead{ 0, 0 };
-		Check(a_build.sourceUpload->Map(0, &noRead, &mapped));
-		std::memcpy(mapped, a_shape->Positions().data(), size_t(vertexBytes));
-		std::memcpy(static_cast<uint8_t*>(mapped) + vertexBytes, a_shape->Indices().data(), size_t(indexBytes));
+		DX::ThrowIfFailed(a_build.sourceUpload->Map(0, &noRead, &mapped));
+		std::memcpy(mapped, a_shape->positions.data(), size_t(vertexBytes));
+		std::memcpy(static_cast<uint8_t*>(mapped) + vertexBytes, a_shape->indices.data(), size_t(indexBytes));
 		a_build.sourceUpload->Unmap(0, nullptr);
 
 		D3D12_RAYTRACING_GEOMETRY_DESC triangle{};
 		triangle.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
 		triangle.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
 		triangle.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
-		triangle.Triangles.VertexCount = UINT(a_shape->Positions().size());
+		triangle.Triangles.VertexCount = UINT(a_shape->positions.size());
 		triangle.Triangles.VertexBuffer = { a_build.sourceUpload->GetGPUVirtualAddress(), sizeof(float3) };
 		triangle.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
-		triangle.Triangles.IndexCount = UINT(a_shape->Indices().size());
+		triangle.Triangles.IndexCount = UINT(a_shape->indices.size());
 		triangle.Triangles.IndexBuffer = a_build.sourceUpload->GetGPUVirtualAddress() + vertexBytes;
 
 		D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs{};
@@ -196,111 +196,118 @@ namespace DX12Native
 		return true;
 	}
 
-	void AccelerationScene::PrepareShadingGeometry(Build& a_build, TopLevel& a_top)
+	void AccelerationScene::PrepareShadingGeometry(Build& a_build, TopLevel& top)
 	{
-		// Native-only, optional shader geometry. Leave the completed shadow TLAS
-		// usable if residency is unavailable. One immutable buffer per published
-		// generation, with offsets shared by all identical resident assets.
-		if (!a_top.preparedMaterials || !a_top.inputs)
+		const auto& scene = *top.inputs;
+		if (!scene.materials || scene.geometry.empty() ||
+			scene.geometry.size() > UINT32_MAX / sizeof(ShadingGeometryBinding))
 			return;
-		const auto& geometry = a_top.inputs->geometry;
-		if (geometry.size() > UINT32_MAX / sizeof(ShadingGeometryBinding))
-			return;
-		std::vector<ShadingGeometryBinding> table(geometry.size());
+		std::vector<ShadingGeometryBinding> table(scene.geometry.size());
+		std::vector<std::vector<float>> attributes(scene.geometry.size());
 		struct CopyRange { const void* data; uint64_t offset, bytes; };
 		std::vector<CopyRange> copies;
-		struct Offsets { uint32_t position, index; };
-		std::unordered_map<const void*, Offsets> meshes;
-		std::unordered_map<const DX12::PreparedShading*, uint32_t> attributes;
 		uint64_t bytes = uint64_t(table.size()) * sizeof(ShadingGeometryBinding);
-		uint32_t ready = 0;
-		const auto append = [&](const void* data, uint64_t length) -> uint32_t {
-			if (!length || bytes >= UINT32_MAX || length >= UINT32_MAX - bytes)
-				throw std::runtime_error("Native shading geometry address space exhausted");
+		const uint64_t budget = videoBudget.Query(device.get(), 0).effectiveBytes / 2;
+		if (bytes >= budget)
+			return;
+		const auto append = [&](const void* data, uint64_t length) {
 			const auto offset = uint32_t(bytes);
 			copies.push_back({ data, bytes, length });
 			bytes += length;
 			return offset;
 		};
-		for (size_t i = 0; i < geometry.size(); ++i) {
-			const auto& shape = geometry[i].shape;
-			if (!shape || !shape->shading || (shape->shading->stride != 60 && shape->shading->stride != 36))
+		uint32_t ready = 0;
+		for (size_t i = 0; i < scene.geometry.size(); ++i) {
+			const auto& shape = scene.geometry[i];
+			if (!shape || !shape->material || scene.materials->candidateIndices[i] == UINT32_MAX)
 				continue;
-			const auto& positions = shape->Positions();
-			const auto& indices = shape->Indices();
-			const auto& shading = *shape->shading;
-			if (positions.empty() || indices.empty() || positions.size() > UINT32_MAX || indices.size() > UINT32_MAX ||
-				uint64_t(shading.attributes.size()) * sizeof(float) != uint64_t(positions.size()) * shading.stride)
+			const auto& source = *shape->material;
+			const auto validOffset = [&](uint32_t offset) {
+				return source.vertexStride >= 16 && offset >= 16 && offset <= source.vertexStride - 4;
+			};
+			if (source.vertexCount != shape->positions.size() ||
+				uint64_t(source.vertexCount) * source.vertexStride != source.vertexBytes.size() ||
+				!validOffset(source.uvOffset) || !validOffset(source.normalOffset) ||
+				(source.tangentOffset != UINT32_MAX && !validOffset(source.tangentOffset)) ||
+				(source.colorOffset != UINT32_MAX && !validOffset(source.colorOffset)) ||
+				shape->indices.empty() || shape->indices.size() > UINT32_MAX)
 				continue;
-			// Only stage geometry with a preliminary material identity.
-			const auto& material = a_top.preparedMaterials->bindings[i];
-			if (material.identity[0] == 0 && material.identity[1] == 0)
+			const uint32_t stride = source.tangentOffset == UINT32_MAX ? 36u : 60u;
+			const uint64_t positionBytes = uint64_t(shape->positions.size()) * sizeof(float3);
+			const uint64_t indexBytes = uint64_t(shape->indices.size()) * sizeof(uint32_t);
+			const uint64_t attributeBytes = uint64_t(source.vertexCount) * stride;
+			const uint64_t total = positionBytes + indexBytes + attributeBytes;
+			if (total >= UINT32_MAX - bytes || total > budget - bytes)
 				continue;
-			auto mesh = meshes.find(shape->GeometryKey());
-			if (mesh == meshes.end()) {
-				const Offsets offsets{
-					append(positions.data(), uint64_t(positions.size()) * sizeof(float3)),
-					append(indices.data(), uint64_t(indices.size()) * sizeof(uint32_t)) };
-				mesh = meshes.emplace(shape->GeometryKey(), offsets).first;
+			auto& decoded = attributes[i];
+			decoded.reserve(size_t(attributeBytes / sizeof(float)));
+			const auto sn = [](uint8_t value) { return float(value) * (2.0f / 255.0f) - 1.0f; };
+			for (uint32_t j = 0; j < source.vertexCount; ++j) {
+				const auto* vertex = source.vertexBytes.data() + size_t(j) * source.vertexStride;
+				uint16_t uv[2];
+				float bx;
+				std::memcpy(uv, vertex + source.uvOffset, sizeof(uv));
+				std::memcpy(&bx, vertex + 12, sizeof(bx));
+				const auto* n = vertex + source.normalOffset;
+				const auto* t = source.tangentOffset == UINT32_MAX ? nullptr : vertex + source.tangentOffset;
+				const auto* color = source.colorOffset == UINT32_MAX ? nullptr : vertex + source.colorOffset;
+				const float u = DirectX::PackedVector::XMConvertHalfToFloat(uv[0]);
+				const float v = DirectX::PackedVector::XMConvertHalfToFloat(uv[1]);
+				if ((t && !std::isfinite(bx)) || !std::isfinite(u) || !std::isfinite(v)) {
+					decoded.clear();
+					break;
+				}
+				decoded.insert(decoded.end(), { sn(n[0]), sn(n[1]), sn(n[2]), u, v,
+					color ? float(color[0])/255.0f : 1.0f, color ? float(color[1])/255.0f : 1.0f,
+					color ? float(color[2])/255.0f : 1.0f, color ? float(color[3])/255.0f : 1.0f });
+				if (t)
+					decoded.insert(decoded.end(), { sn(t[0]), sn(t[1]), sn(t[2]), bx, sn(n[3]), sn(t[3]) });
 			}
-			auto attr = attributes.find(&shading);
-			if (attr == attributes.end()) {
-				const auto offset = append(shading.attributes.data(), uint64_t(shading.attributes.size()) * sizeof(float));
-				attr = attributes.emplace(&shading, offset).first;
-			}
-			table[i] = { mesh->second.position, mesh->second.index, attr->second, shading.stride,
-				uint32_t(positions.size()), uint32_t(indices.size()), uint32_t(sizeof(float3)), 0 };
+			if (decoded.empty())
+				continue;
+			table[i] = { append(shape->positions.data(), positionBytes), append(shape->indices.data(), indexBytes),
+				append(decoded.data(), attributeBytes), stride, source.vertexCount, uint32_t(shape->indices.size()), uint32_t(sizeof(float3)), 0 };
 			++ready;
 		}
 		if (!ready) {
-			a_top.shadingFailure = "No supported shading geometry";
+			top.shadingFailure = "No supported native shading geometry";
 			return;
 		}
 		const auto desc = CD3DX12_RESOURCE_DESC::Buffer(bytes);
 		const auto allocation = device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
-		VideoMemoryBudget budget;
-		const auto available = budget.Query(device.get(), 0);
-		// Conservatively allow for both staging and resident allocation, even on
-		// UMA. Never assume headroom when DXGI telemetry is absent.
-		if (allocation == UINT64_MAX || !available.dxgiAvailable || allocation > available.effectiveBytes / 2) {
-			a_top.shadingFailure = "Native shading geometry deferred by DXGI budget";
+		if (allocation == UINT64_MAX || allocation > videoBudget.Query(device.get(), 0).effectiveBytes / 2) {
+			top.shadingFailure = "Native shading geometry deferred by DXGI budget";
 			return;
 		}
 		auto resident = std::make_shared<ShadingGeometry>();
 		resident->bytes = bytes;
-		resident->revision = a_top.geometryRevision;
+		resident->revision = top.geometryRevision;
 		resident->instanceCount = uint32_t(table.size());
 		resident->readyInstances = ready;
 		const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
-		Check(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+		DX::ThrowIfFailed(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
 			D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(resident->buffer.put())));
-		resident->buffer->SetName(L"DX12NativeScene::ShadingGeometry");
-		auto staging = Buffer(bytes, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ,
-			L"DX12NativeScene::ShadingGeometryUpload");
+		resident->buffer->SetName(L"DX12NativeScene::FullNativeShadingGeometry");
+		auto staging = Buffer(bytes, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ, L"DX12NativeScene::FullNativeShadingUpload");
 		void* mapped = nullptr;
-		const D3D12_RANGE noRead{ 0, 0 };
-		Check(staging->Map(0, &noRead, &mapped));
+		const D3D12_RANGE noRead{};
+		DX::ThrowIfFailed(staging->Map(0, &noRead, &mapped));
 		std::memcpy(mapped, table.data(), table.size() * sizeof(table.front()));
 		for (const auto& range : copies)
 			std::memcpy(static_cast<uint8_t*>(mapped) + size_t(range.offset), range.data, size_t(range.bytes));
 		staging->Unmap(0, nullptr);
 		a_build.shadingUpload = std::move(staging);
-		a_top.shadingGeometry = std::move(resident);
+		top.shadingGeometry = std::move(resident);
 	}
 
 	bool AccelerationScene::BuildTop(Build& a_build)
 	{
+		ZoneScopedN("DX12::Acceleration::BuildTLAS");
 		if (!target || target->geometry.empty() || target->geometry.size() > kMaximumInstances)
 			return false;
 		std::vector<D3D12_RAYTRACING_INSTANCE_DESC> instances;
 		auto top = std::make_shared<TopLevel>();
 		top->inputs = target;
-		if (target->residency && target->residency->fullNative) {
-			auto& materialCatalog = NativePBR::MaterialCatalog::Shared();
-			if (!materialCatalog.GetSnapshot())
-				materialCatalog.Load();
-			top->preparedMaterials = CompilePreparedMaterials(*target, materialCatalog.GetSnapshot());
-		}
 		top->geometryRevision = targetRevision;
 		top->scope = targetScope;
 		top->producerFence = completion;
@@ -308,19 +315,18 @@ namespace DX12Native
 		top->bottoms.reserve(target->geometry.size());
 
 		for (const auto& input : target->geometry) {
-			const auto found = bottoms.find(input.shape->GeometryKey());
-			if (found == bottoms.end() || found->second->shape->GeometryKey() != input.shape->GeometryKey())
+			const auto found = bottoms.find(input->identity);
+			if (found == bottoms.end() || found->second->shape.get() != input.get())
 				return false;
 			D3D12_RAYTRACING_INSTANCE_DESC desc{};
-			std::memcpy(desc.Transform, input.shape->transform.data(), sizeof(desc.Transform));
+			std::memcpy(desc.Transform, input->transform.data(), sizeof(desc.Transform));
 			desc.InstanceID = UINT(instances.size());
 			desc.InstanceMask = 0xFF;
 			desc.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_CULL_DISABLE;
-			if (target->residency && target->residency->fullNative && input.shape->alphaTest)
-				desc.Flags |= D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_NON_OPAQUE;
 			desc.AccelerationStructure = found->second->acceleration->GetGPUVirtualAddress();
 			instances.push_back(desc);
 			top->bottoms.push_back(found->second);
+			top->blasBytes += found->second->acceleration->GetDesc().Width;
 		}
 
 		const uint64_t bytes = uint64_t(instances.size()) * sizeof(instances.front());
@@ -328,7 +334,7 @@ namespace DX12Native
 			D3D12_RESOURCE_STATE_GENERIC_READ, L"DX12NativeScene::InstanceUpload");
 		void* mapped = nullptr;
 		const D3D12_RANGE noRead{ 0, 0 };
-		Check(a_build.sourceUpload->Map(0, &noRead, &mapped));
+		DX::ThrowIfFailed(a_build.sourceUpload->Map(0, &noRead, &mapped));
 		std::memcpy(mapped, instances.data(), size_t(bytes));
 		a_build.sourceUpload->Unmap(0, nullptr);
 
@@ -343,53 +349,32 @@ namespace DX12Native
 		if (!info.ResultDataMaxSizeInBytes || !info.ScratchDataSizeInBytes)
 			return false;
 
+		top->tlasBytes = info.ResultDataMaxSizeInBytes;
 		top->acceleration = Buffer(info.ResultDataMaxSizeInBytes, D3D12_HEAP_TYPE_DEFAULT,
 			D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, L"DX12NativeScene::TLAS");
 		a_build.scratch = Buffer(info.ScratchDataSizeInBytes, D3D12_HEAP_TYPE_DEFAULT,
 			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"DX12NativeScene::TLASScratch");
-		try {
-			PrepareShadingGeometry(a_build, *top);
-		} catch (const std::exception& error) {
-			top->shadingFailure = error.what();
-			top->shadingGeometry.reset();
-			a_build.shadingUpload = nullptr;
-		}
-		if (top->shadingGeometry && top->preparedMaterials) {
+		// Only Full Native publishes material candidates. Shadow modes do not enter this path.
+		if (target->materials && !target->materials->recipes.empty()) {
 			try {
-				std::unordered_set<std::string> requestedTextures;
-				for (const auto& recipe : top->preparedMaterials->recipes) {
-					if (recipe.issues & (NativePBR::InvalidSnapshot | NativePBR::InvalidTexturePath | NativePBR::MissingRequiredTextures)) continue;
-					const auto roles = NativePBR::GpuBaseRequestedTextureRoles(recipe) | NativePBR::GpuSpecializedTextureRoles(recipe);
-					for (size_t i = 0; i < recipe.textures.size(); ++i)
-						if ((roles & (1u << i)) && !recipe.textures[i].canonicalPath.empty())
-							requestedTextures.insert(recipe.textures[i].canonicalPath);
-				}
-				std::erase_if(materialTextures, [&](const auto& entry) { return !requestedTextures.contains(entry.first); });
-				std::erase_if(retiredMaterialTextures, [](const auto& entry) { return entry.second.expired(); });
-				auto reusable = materialTextures;
-				for (const auto& [path, weak] : retiredMaterialTextures)
-						if (requestedTextures.contains(path))
-						if (auto texture = weak.lock()) reusable.try_emplace(path, std::move(texture));
-				a_build.materialEvaluation = NativeMaterialEvaluation::Prepare(device.get(), *top->preparedMaterials, *top->inputs,
-					reusable, a_build.materialUploads);
-				if (!a_build.materialEvaluation)
-					top->materialFailure = "NativePBR evaluation deferred or no eligible material sources";
+				PrepareShadingGeometry(a_build, *top);
+			} catch (const AllocationDeferred&) {
+				top->shadingFailure = "Native shading geometry allocation deferred";
+			} catch (const std::exception& error) {
+				top->shadingFailure = error.what();
+			}
+			try {
+				top->materialEvaluation = NativeMaterialEvaluation::Prepare(device.get(), *target->materials, *target, materialTextures, a_build.materialUploads);
+				if (!top->materialEvaluation)
+					top->materialFailure = "Material allocation deferred or unavailable";
 			} catch (const std::exception& error) {
 				top->materialFailure = error.what();
-				a_build.materialEvaluation.reset();
-				a_build.materialUploads.clear();
 			}
+			if (!top->materialEvaluation)
+				a_build.materialUploads.clear();
 		}
 		a_build.top = std::move(top);
 		Begin(a_build);
-		if (const auto& shading = a_build.top->shadingGeometry) {
-			a_build.commands->CopyBufferRegion(shading->buffer.get(), 0, a_build.shadingUpload.get(), 0, shading->bytes);
-			const auto shadingBarrier = CD3DX12_RESOURCE_BARRIER::Transition(shading->buffer.get(),
-				D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-			a_build.commands->ResourceBarrier(1, &shadingBarrier);
-			if (a_build.materialEvaluation)
-				a_build.materialEvaluation->Record(a_build.commands.get(), shading->buffer.get(), a_build.materialUploads);
-		}
 		D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build{};
 		build.Inputs = inputs;
 		build.DestAccelerationStructureData = a_build.top->acceleration->GetGPUVirtualAddress();
@@ -397,21 +382,30 @@ namespace DX12Native
 		a_build.commands->BuildRaytracingAccelerationStructure(&build, 0, nullptr);
 		const auto barrier = CD3DX12_RESOURCE_BARRIER::UAV(a_build.top->acceleration.get());
 		a_build.commands->ResourceBarrier(1, &barrier);
+		if (const auto& shading = a_build.top->shadingGeometry) {
+			a_build.commands->CopyBufferRegion(shading->buffer.get(), 0, a_build.shadingUpload.get(), 0, shading->bytes);
+			const auto shadingBarrier = CD3DX12_RESOURCE_BARRIER::Transition(shading->buffer.get(),
+				D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+			a_build.commands->ResourceBarrier(1, &shadingBarrier);
+		}
+		if (a_build.top->materialEvaluation)
+			NativeMaterialEvaluation::RecordUploads(a_build.commands.get(), a_build.materialUploads);
 		Submit(a_build);
 		a_build.top->producerValue = a_build.fence;
 		return true;
 	}
 
-	bool AccelerationScene::HasPendingBottom(const void* a_key) const
+	bool AccelerationScene::HasPendingBottom(uint64_t a_identity, const DX12::Shape* a_shape) const
 	{
 		return std::ranges::any_of(builds, [&](const auto& build) {
 			return build.generation == generation && build.bottom &&
-			       build.bottom->shape->GeometryKey() == a_key;
+			       build.bottom->shape->identity == a_identity && build.bottom->shape.get() == a_shape;
 		});
 	}
 
 	void AccelerationScene::Retire()
 	{
+		ZoneScopedN("DX12::Acceleration::Retire");
 		const uint64_t done = completion->GetCompletedValue();
 		if (done == UINT64_MAX) {
 			failure = "DX12 native acceleration device removed before completion";
@@ -420,30 +414,19 @@ namespace DX12Native
 		for (auto& build : builds) {
 			if (!build.fence || build.fence > done)
 				continue;
-			if (build.materialEvaluation) {
-				for (const auto& [path, texture] : build.materialEvaluation->textures)
-					retiredMaterialTextures.insert_or_assign(path, texture);
-			}
 			if (build.generation == generation) {
 				if (build.bottom)
-					bottoms[build.bottom->shape->GeometryKey()] = build.bottom;
+					bottoms[build.bottom->shape->identity] = build.bottom;
 				if (build.top) {
-					if (build.materialEvaluation) {
-						build.materialEvaluation->Complete();
-						materialTextures = build.materialEvaluation->textures;
-						build.top->materialEvaluation = std::move(build.materialEvaluation);
-					} else {
+					if (build.top->materialEvaluation)
+						materialTextures = build.top->materialEvaluation->textures;
+					else
 						materialTextures.clear();
-					}
 					published = build.top;
 				}
 			}
 			build = {};
 		}
-		std::erase_if(consumers, [](const Consumer& consumer) {
-			return consumer.fence->GetCompletedValue() >= consumer.value;
-		});
-		std::erase_if(retiredMaterialTextures, [](const auto& entry) { return entry.second.expired(); });
 	}
 
 	void AccelerationScene::Reset()
@@ -459,10 +442,13 @@ namespace DX12Native
 
 	void AccelerationScene::Advance(std::shared_ptr<const SceneInputs> a_inputs)
 	{
+		budgetDeferred = false;
 		if (!completion || !failure.empty())
 			return;
 		Retire();
-		if (!a_inputs || !a_inputs->residency || a_inputs->residency->requested.empty() || !a_inputs->residency->requested.front().scope)
+		if (!failure.empty())
+			return;
+		if (!a_inputs || !a_inputs->residency || !a_inputs->residency->requested.front().scope)
 			return;
 		const uint32_t scope = a_inputs->residency->requested.front().scope;
 		if (!target || targetRevision != a_inputs->geometryRevision || targetScope != scope) {
@@ -473,14 +459,12 @@ namespace DX12Native
 				published.reset();
 			}
 			target = std::move(a_inputs);
-			if (!target->residency->fullNative)
-				materialTextures.clear();
 			targetRevision = target->geometryRevision;
 			targetScope = scope;
-			std::unordered_set<const void*> wanted;
+			std::unordered_set<uint64_t> wanted;
 			for (const auto& input : target->geometry)
-				if (input.shape)
-					wanted.insert(input.shape->GeometryKey());
+				if (input)
+					wanted.insert(input->identity);
 			std::erase_if(bottoms, [&](const auto& pair) {
 				return !wanted.contains(pair.first);
 			});
@@ -500,14 +484,14 @@ namespace DX12Native
 			return;
 		try {
 			for (const auto& input : target->geometry) {
-				if (!input.shape)
+				if (!input)
 					continue;
-				const auto found = bottoms.find(input.shape->GeometryKey());
-				if (found != bottoms.end() && found->second->shape->GeometryKey() == input.shape->GeometryKey())
+				const auto found = bottoms.find(input->identity);
+				if (found != bottoms.end() && found->second->shape.get() == input.get())
 					continue;
-				if (HasPendingBottom(input.shape->GeometryKey()))
+				if (HasPendingBottom(input->identity, input.get()))
 					return;
-				if (!BuildBottom(*available, input.shape))
+				if (!BuildBottom(*available, input))
 					*available = {};
 				return;
 			}
@@ -517,6 +501,10 @@ namespace DX12Native
 				if (!BuildTop(*available))
 					*available = {};
 			}
+		} catch (const AllocationDeferred&) {
+			budgetDeferred = true;
+			if (!available->fence)
+				*available = {};
 		} catch (const std::exception& error) {
 			failure = error.what();
 			if (!available->fence)
@@ -524,15 +512,4 @@ namespace DX12Native
 		}
 	}
 
-	bool AccelerationScene::RetainThrough(const std::shared_ptr<const TopLevel>& a_scene, ID3D12Fence* a_fence, uint64_t a_value)
-	{
-		if (!a_scene || !a_fence || !a_value)
-			return false;
-		Consumer consumer;
-		consumer.scene = a_scene;
-		consumer.fence.copy_from(a_fence);
-		consumer.value = a_value;
-		consumers.push_back(std::move(consumer));
-		return true;
-	}
 }

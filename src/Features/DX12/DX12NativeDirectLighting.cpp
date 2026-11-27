@@ -1,6 +1,7 @@
 #include "DX12NativeDirectLighting.h"
 #include "DX12GpuRetirement.h"
 #include "GpuPass.h"
+#include "Utils/FileSystem.h"
 
 #include <algorithm>
 #include <cmath>
@@ -25,6 +26,7 @@ namespace DX12Native
 			uint32_t width, height, materialPitch, lightCount;
 			float nearLightRadius;
 			uint32_t nearLightExclusion, instanceCount, padding = 0;
+			float4 directionalDirection, directionalRadiance;
 		};
 		static_assert(sizeof(Constants) <= 256);
 
@@ -41,11 +43,12 @@ namespace DX12Native
 	DirectLightingTrace::~DirectLightingTrace()
 	{
 		current.reset();
-		for (auto& slot : slots)
-			if (slot && !GpuFenceRetired(slot->readyFence.get(), slot->readyValue))
-				RetireWhenGpuDone(std::move(slot), owner.d3d12Device, [](const DirectLightingFrame& frame) {
-					return GpuFenceRetired(frame.readyFence.get(), frame.readyValue);
-				});
+		for (auto& slot : slots) {
+			if (!slot || GpuFenceRetired(slot->readyFence.get(), slot->readyValue))
+				continue;
+			std::vector<FenceDependency> dependencies{ FencePoint(slot->readyFence.get(), slot->readyValue) };
+			RetireAfterFences(std::move(slot), owner.d3d12Device, std::move(dependencies));
+		}
 	}
 
 	void DirectLightingTrace::Poll(uint32_t frame)
@@ -91,7 +94,7 @@ namespace DX12Native
 			return;
 		}
 		auto* device = backend.d3d12Device.get();
-		std::ifstream file("Data/Shaders/NativeComposite/DirectLighting.dxil", std::ios::binary | std::ios::ate);
+		std::ifstream file(Util::PathHelpers::GetShadersPath() / "NativeComposite" / "DirectLighting.dxil", std::ios::binary | std::ios::ate);
 		if (!file || file.tellg() <= 0 || file.tellg() > 16 * 1024 * 1024)
 			throw std::runtime_error("DirectLighting.dxil unavailable");
 		std::vector<char> shader(static_cast<size_t>(file.tellg()));
@@ -138,14 +141,15 @@ namespace DX12Native
 
 	void DirectLightingTrace::Dispatch(const GraphicsBackend& backend,
 		std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
-		std::span<const DirectPointLight> lights, bool inputsAvailable, const ShadowTraceControls& controls)
+		std::span<const DirectPointLight> lights, bool inputsAvailable, const DirectDirectionalLight& directional,
+		uint32_t viewportWidth, uint32_t viewportHeight)
 	{
 		CS_GPU_PASS("NativeLighting::Direct");
 		if (!material || (current && current->material == material)) return;
 		Poll(material->frame);
 		dispatchedLights = 0;
 		if (!inputsAvailable) { failure = "Waiting for native light inputs"; return; }
-		if (!material->IsCoherent(material->frame, controls.viewportWidth, controls.viewportHeight) ||
+		if (!material->IsCoherent(material->frame, viewportWidth, viewportHeight) ||
 			!material->scene->acceleration || !material->scene->shadingGeometry || !material->descriptors ||
 			!material->raster->depth || !material->raster->depth->resource || !material->raster->cameraValid) {
 			failure = "Incompatible native material frame";
@@ -180,7 +184,7 @@ namespace DX12Native
 				uint64_t tracked = 0;
 				for (const auto& held : slots) if (held) tracked += held->allocationBytes;
 				const auto budget = videoBudget.Query(device, tracked);
-				if (!budget.dxgiAvailable || required > budget.effectiveBytes || tracked > budget.effectiveBytes - required)
+				if (!budget.localBudget || required > budget.effectiveBytes || tracked > budget.effectiveBytes - required)
 					throw std::runtime_error("Direct lighting deferred by DXGI budget");
 				auto replacement = std::make_shared<DirectLightingFrame>();
 				replacement->allocationBytes = required;
@@ -205,9 +209,9 @@ namespace DX12Native
 			slot->frame = material->frame; slot->material = std::move(material);
 			const auto& raster = *slot->material->raster;
 			std::vector<std::array<float, 4>> records;
-			records.reserve(std::min(lights.size(), size_t(kMaxShadowLights)) * 3);
+			records.reserve(std::min(lights.size(), size_t(DX12::kMaxPreparedLights)) * 3);
 			for (const auto& light : lights) {
-				if (records.size() / 3 >= kMaxShadowLights) break;
+				if (records.size() / 3 >= DX12::kMaxPreparedLights) break;
 				if (!std::isfinite(light.radius) || light.radius <= 0 ||
 					!std::isfinite(light.position.x) || !std::isfinite(light.position.y) || !std::isfinite(light.position.z) ||
 					!std::isfinite(light.radiance.x) || !std::isfinite(light.radiance.y) || !std::isfinite(light.radiance.z) ||
@@ -222,7 +226,8 @@ namespace DX12Native
 			slot->lights = Eval::Table(device, records);
 			const Constants constants{ raster.camera.CameraProjInverse, raster.camera.CameraViewInverse,
 				raster.camera.CameraPosAdjust, width, height, slot->material->rowPitch, lightCount,
-				controls.nearLightRadius, controls.nearLightExclusion ? 1u : 0u, slot->material->scene->materialEvaluation->instanceCount };
+				0.0f, 0u, slot->material->scene->materialEvaluation->instanceCount, 0u, directional.direction, directional.radiance };
+			slot->directionalIncluded = directional.direction.w != 0.0f;
 			WriteConstants(slot->camera.get(), constants);
 			auto* depthResource = raster.depth->resource.get();
 			const auto& evaluation = *slot->material->scene->materialEvaluation;

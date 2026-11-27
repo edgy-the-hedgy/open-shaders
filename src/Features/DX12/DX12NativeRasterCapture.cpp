@@ -3,6 +3,7 @@
 #include "DX12GpuRetirement.h"
 #include "GpuPass.h"
 #include "Utils/D3D.h"
+#include "Utils/FileSystem.h"
 #include <algorithm>
 #include <directx/d3dx12.h>
 #include <ranges>
@@ -13,19 +14,16 @@ namespace DX12Native
 	RasterCapture::~RasterCapture()
 	{
 		current.reset();
-		const auto ready = [fence = producer.fence12](const RasterFrame& frame) {
-			const auto* producerFence = frame.readyFence ? frame.readyFence.get() : fence.get();
-			return GpuFenceRetired(const_cast<ID3D12Fence*>(producerFence), frame.readyValue) &&
-			       std::ranges::all_of(frame.consumers, [](const auto& consumer) {
-					   return GpuFenceRetired(consumer.first.get(), consumer.second);
-				   });
-		};
-		for (auto& slot : slots)
-			if (slot && !ready(*slot))
-				RetireWhenGpuDone(std::move(slot), backend.d3d12Device, ready);
+		for (auto& slot : slots) {
+			if (!slot)
+				continue;
+			std::vector<FenceDependency> dependencies;
+			dependencies.push_back(FencePoint(slot->readyFence ? slot->readyFence.get() : producer.fence12.get(), slot->readyValue));
+			RetireAfterFences(std::move(slot), backend.d3d12Device, std::move(dependencies));
+		}
 	}
 
-	void RasterCapture::Capture(const GraphicsBackend& a_backend, ID3D11ShaderResourceView* a_depth, const globals::FrameBuffer* a_camera, const MaterialFrameContract::TemporalIdentity& a_temporal)
+	void RasterCapture::Capture(const GraphicsBackend& a_backend, ID3D11ShaderResourceView* a_depth, const globals::FrameBuffer* a_camera, uint32_t a_frame)
 	{
 		CS_GPU_PASS("DX12NativeScene::CaptureOpaqueRaster");
 		current.reset();
@@ -43,28 +41,15 @@ namespace DX12Native
 			const auto done = producer.fence12->GetCompletedValue();
 			if (done == UINT64_MAX)
 				throw std::runtime_error("Raster device removed");
-			for (auto& slot : slots) {
-				if (!slot || slot->readyValue != UINT64_MAX) continue;
-				const uint64_t rescue = producer.Next();
-				if (SUCCEEDED(backend.d3d11Context->Signal(producer.fence11.get(), rescue))) {
-					backend.d3d11Context->Flush();
-					slot->readyValue = rescue;
-				}
-			}
 			auto available = std::find_if(slots.begin(), slots.end(), [&](const auto& slot) {
 				const auto completed = producer.fence12->GetCompletedValue();
 				if (!slot)
 					return completed != UINT64_MAX;
-				if (slot.use_count() != 1 || slot->readyValue == UINT64_MAX || completed == UINT64_MAX || completed < slot->readyValue)
-					return false;
-				return std::ranges::all_of(slot->consumers, [](const auto& consumer) {
-					const auto done = consumer.first->GetCompletedValue();
-					return done != UINT64_MAX && done >= consumer.second;
-				});
+				return slot.use_count() == 1 && slot->readyValue != UINT64_MAX &&
+				       completed != UINT64_MAX && completed >= slot->readyValue;
 			});
-			if (available == slots.end()) {
-				throw std::runtime_error("Raster snapshots are still in use");
-			}
+			if (available == slots.end())
+				return;
 			if (!a_depth)
 				throw std::runtime_error("Opaque depth unavailable");
 			D3D11_SHADER_RESOURCE_VIEW_DESC depthView{};
@@ -79,8 +64,10 @@ namespace DX12Native
 				!depthDesc.Width || !depthDesc.Height || depthDesc.ArraySize != 1 ||
 				depthDesc.MipLevels != 1 || depthDesc.SampleDesc.Count != 1)
 				throw std::runtime_error("Opaque depth layout unsupported");
-			if (!depthShader)
-				depthShader.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\DX12NativeScene\\CaptureDepth.cs.hlsl", {}, "cs_5_0")));
+			if (!depthShader) {
+				const auto shaderPath = Util::PathHelpers::GetShadersPath() / "DX12NativeScene" / "CaptureDepth.cs.hlsl";
+				depthShader.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(shaderPath.c_str(), {}, "cs_5_0")));
+			}
 			if (!depthShader)
 				throw std::runtime_error("Opaque depth capture shader unavailable");
 			const uint32_t width = depthDesc.Width, height = depthDesc.Height;
@@ -117,7 +104,6 @@ namespace DX12Native
 					depthDesc, backend.d3d11Device.get(), backend.d3d12Device.get(), "DX12NativeScene::RasterDepth");
 				slot = std::move(replacement);
 			}
-			slot->consumers.clear();
 			slot->readyValue = UINT64_MAX;
 			slot->readyFence = producer.fence12;
 			captureSlot = slot;
@@ -150,47 +136,48 @@ namespace DX12Native
 				slot->camera = *a_camera;
 			slot->readyFence = producer.fence12;
 			slot->readyValue = ready;
-			slot->frame = a_temporal.nativeFrame;
-			slot->temporal = a_temporal;
+			slot->frame = a_frame;
 			current = slot;
-		} catch (const std::exception&) {
+			failureLogged = false;
+		} catch (...) {
 			// A DX11 dispatch may still be queued if a later step fails.
 			// Attach a producer fence rather than quarantining the slot forever.
 			if (captureSlot && captureSlot->readyValue == UINT64_MAX) {
 				if (gpuCopyStarted && producer.fence11) {
 					const uint64_t rescue = producer.Next();
-					if (SUCCEEDED(backend.d3d11Context->Signal(producer.fence11.get(), rescue))) {
+					if (const HRESULT hr = backend.d3d11Context->Signal(producer.fence11.get(), rescue); SUCCEEDED(hr)) {
 						backend.d3d11Context->Flush();
 						captureSlot->readyValue = rescue;
+					} else {
+						logger::warn("[DX12NativeScene] Raster recovery signal failed; retaining slot: {}", DX::com_exception(hr).what());
 					}
 				} else if (!gpuCopyStarted) {
 					captureSlot->readyValue = 0;
 				}
 			}
-			// Missing capture leaves no published frame; do not disrupt raster.
+			if (!failureLogged) {
+				failureLogged = true;
+				try {
+					throw;
+				} catch (const winrt::hresult_error& error) {
+					logger::warn("[DX12NativeScene] Raster capture failed (HRESULT 0x{:08X}): {}", static_cast<uint32_t>(error.code()), winrt::to_string(error.message()));
+				} catch (const std::exception& error) {
+					logger::warn("[DX12NativeScene] Raster capture failed: {}", error.what());
+				} catch (...) {
+					logger::warn("[DX12NativeScene] Raster capture failed with an unknown exception");
+				}
+			}
 		}
 	}
 
 	std::shared_ptr<const RasterFrame> RasterCapture::Get(uint32_t a_frame) const
 	{
-		return current && current->frame == a_frame && current->readyFence &&
-			MaterialFrameContract::ValidProducerSignal(current->readyValue, current->readyFence->GetCompletedValue()) ? current : nullptr;
+		return current && current->frame == a_frame ? current : nullptr;
 	}
 
-	bool RasterCapture::RetainThrough(const std::shared_ptr<const RasterFrame>& a_frame, ID3D12Fence* a_fence, uint64_t a_value)
+	void RasterCapture::Reset()
 	{
-		if (!a_frame || !a_fence || !a_value || a_value == UINT64_MAX)
-			return false;
-		for (const auto& slot : slots) {
-			if (slot.get() != a_frame.get())
-				continue;
-			winrt::com_ptr<ID3D12Fence> fence;
-			fence.copy_from(a_fence);
-			slot->consumers.emplace_back(std::move(fence), a_value);
-			return true;
-		}
-		return false;
+		current.reset();
+		failureLogged = false;
 	}
-
-	void RasterCapture::Reset() { current.reset(); }
 }

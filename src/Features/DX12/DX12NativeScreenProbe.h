@@ -4,6 +4,7 @@
 #include "DX12NativeRasterCapture.h"
 #include "DX12GpuRetirement.h"
 #include "DX12MaterialFrameContract.h"
+#include "Utils/FileSystem.h"
 #include <fstream>
 
 namespace DX12Native
@@ -65,7 +66,7 @@ namespace DX12Native
 				return;
 			}
 			auto* device = backend.d3d12Device.get();
-			std::ifstream file("Data/Shaders/NativeComposite/NativePBRScreenProbe.dxil", std::ios::binary | std::ios::ate);
+			std::ifstream file(Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativePBRScreenProbe.dxil", std::ios::binary | std::ios::ate);
 			if (!file || file.tellg() <= 0 || file.tellg() > 16*1024*1024)
 				throw std::runtime_error("NativePBRScreenProbe.dxil unavailable");
 			std::vector<char> shader(static_cast<size_t>(file.tellg()));
@@ -136,9 +137,7 @@ namespace DX12Native
 					!producerFence || !MaterialFrameContract::ValidProducerSignal(producerValue, producerFence->GetCompletedValue()) ||
 					!raster || raster->frame != frame || !raster->cameraValid || !raster->depth || !raster->depth->resource ||
 					!raster->readyFence || !MaterialFrameContract::ValidProducerSignal(raster->readyValue, raster->readyFence->GetCompletedValue()) ||
-					raster->width < width || raster->height < height || raster->temporal.nativeFrame != frame ||
-					raster->temporal.width != width || raster->temporal.height != height || raster->temporal.scope != scope ||
-					raster->temporal.geometryRevision != geometryRevision || raster->temporal.materialRevision != materialRevision || !scene || !scope ||
+					raster->width < width || raster->height < height || !scene || !scope ||
 					scene->scope != scope || scene->geometryRevision != geometryRevision ||
 					!scene->acceleration || !scene->producerFence ||
 					!MaterialFrameContract::ValidProducerSignal(scene->producerValue, scene->producerFence->GetCompletedValue()) ||
@@ -164,11 +163,12 @@ namespace DX12Native
 
 		~NativeScreenProbe()
 		{
-			for (auto& pending : submissions)
-				if (pending && !GpuFenceRetired(pending->fence.get(),pending->value))
-					RetireWhenGpuDone(std::move(pending),owner.d3d12Device,[](const Submission& submission) {
-						return GpuFenceRetired(submission.fence.get(),submission.value);
-					});
+			for (auto& pending : submissions) {
+				if (!pending || GpuFenceRetired(pending->fence.get(), pending->value))
+					continue;
+				std::vector<FenceDependency> dependencies{ FencePoint(pending->fence.get(), pending->value) };
+				RetireAfterFences(std::move(pending), owner.d3d12Device, std::move(dependencies));
+			}
 		}
 		void Reset()
 		{
@@ -236,7 +236,6 @@ namespace DX12Native
 			std::shared_ptr<const TopLevel> scene,uint32_t frame,uint32_t width,uint32_t height,bool fullResolution,bool continuous=false,bool collectStats=false)
 		{
 			if (!WantsFrame(frame,continuous)) return;
-			lastFrame=frame;
 			published.reset();
 			auto availableSlot = std::find_if(submissions.begin(), submissions.end(), [](const auto& entry) { return !entry; });
 			if (availableSlot==submissions.end()) return;
@@ -282,7 +281,7 @@ namespace DX12Native
 				const auto available = videoBudget.Query(device, tracked);
 				const auto desc=CD3DX12_RESOURCE_DESC::Buffer(bytes,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 				const auto allocation=reuse?0:device->GetResourceAllocationInfo(0,1,&desc).SizeInBytes;
-				if (!available.dxgiAvailable || allocation==UINT64_MAX || tracked>available.effectiveBytes || allocation>available.effectiveBytes-tracked || available.effectiveBytes-tracked-allocation<6ull*65536) {
+				if (!available.localBudget || allocation==UINT64_MAX || tracked>available.effectiveBytes || allocation>available.effectiveBytes-tracked || available.effectiveBytes-tracked-allocation<6ull*65536) {
 					failure="Screen probe deferred by DXGI budget"; return;
 				}
 				auto slot=std::make_shared<Submission>();
@@ -371,6 +370,7 @@ namespace DX12Native
 				pending=std::move(slot);
 				ID3D12CommandList* lists[]{command}; backend.commandQueue->ExecuteCommandLists(1,lists);
 				submitted=true;
+				lastFrame=frame;
 				pending->output->shaderReadable=true;
 				++submittedFrames;
 				if (reuse) ++reusedAllocations;

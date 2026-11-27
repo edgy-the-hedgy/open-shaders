@@ -1,11 +1,13 @@
 #include "DX12NativeSceneInputs.h"
+#include "DX12ShapeEquivalence.h"
+#include "DX12PreparedMaterialFrame.h"
 
 #include <unordered_set>
 #include <utility>
 
 namespace DX12Native
 {
-	std::shared_ptr<const SceneInputs> CollectSceneInputs(std::shared_ptr<const DX12::Grid> a_grid)
+	std::shared_ptr<const SceneInputs> CollectSceneInputs(std::shared_ptr<const DX12::Grid> a_grid, bool a_includeMaterials)
 	{
 		auto inputs = std::make_shared<SceneInputs>();
 		inputs->residency = std::move(a_grid);
@@ -15,25 +17,46 @@ namespace DX12Native
 		const auto& grid = *inputs->residency;
 		inputs->geometryRevision = grid.geometryRevision;
 
-		// A placed shape may be discovered by both companion and runtime observation.
-		// Keep the companion version; do not require a tile to certify full coverage.
+		// Native preparation takes precedence over equivalent observed rigid geometry.
 		std::unordered_set<uint64_t> seenShapes;
-		const auto appendShape = [&](DX12::SubcellKey subcell, const std::shared_ptr<const DX12::Shape>& shape) {
+		const auto appendShape = [&](const std::shared_ptr<const DX12::Shape>& shape) {
 			if (!shape)
 				return;
-			if (shape->identity && !seenShapes.insert(shape->identity).second)
+			if (shape->identity && !seenShapes.insert(shape->identity).second) {
+				++inputs->duplicateShapes;
 				return;
-			inputs->geometry.push_back({ subcell, shape });
+			}
+			if (shape->casterSource.Valid())
+				inputs->casterSources.emplace(shape->casterSource.geometry, inputs->geometry.size());
+			inputs->triangles += shape->indices.size() / 3;
+			inputs->geometry.push_back(shape);
 		};
 		for (const auto& tile : grid.resident) {
 			if (!tile)
 				continue;
-			for (const auto& shape : tile->shapes)
-				appendShape(tile->key, shape);
+			for (const auto& shape : tile->shapes) {
+				if (shape)
+					++inputs->preparedShapes;
+				appendShape(shape);
+			}
 		}
-		for (const auto& observed : grid.runtimeShapes)
-			appendShape(observed.tile, observed.shape);
+		const size_t preparedCount = inputs->geometry.size();
+		for (const auto& observed : grid.runtimeShapes) {
+			if (!observed.shape)
+				continue;
+			++inputs->observedShapes;
+			const auto prepared = std::span(inputs->geometry).first(preparedCount);
+			if (std::ranges::any_of(prepared, [&](const auto& shape) {
+					return DX12::EquivalentGeometry(*shape, *observed.shape);
+				})) {
+				++inputs->duplicateShapes;
+				continue;
+			}
+			appendShape(observed.shape);
+		}
 
+		if (a_includeMaterials)
+			inputs->materials = CompilePreparedMaterialFrame(*inputs);
 		return inputs;
 	}
 }

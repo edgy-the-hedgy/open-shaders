@@ -14,6 +14,7 @@
 #include <winrt/base.h>
 
 #include "Utils/CacheInvalidation.h"
+#include "Utils/RuntimeTaskGate.h"
 #include "Utils/WinApi.h"
 
 struct ID3D11ComputeShader;
@@ -619,6 +620,8 @@ namespace SIE
 		void SetDump(bool value);
 		/** @brief Signals all compilation threads to stop and clears pending tasks. */
 		void StopCompilation();
+		/** @brief Lazily acquire a lifetime-safe submitter for short runtime CPU tasks. */
+		std::shared_ptr<Util::RuntimeTaskGate> GetRuntimeTaskGate();
 		/** @brief Drops queued/in-flight compilation work without stopping the management
 		 * thread (unlike StopCompilation(), which is terminal). Returns immediately. */
 		void CancelCompilation();
@@ -819,7 +822,7 @@ namespace SIE
 		RE::BSGraphics::PixelShader* GetPixelShader(const RE::BSShader& shader,
 			uint32_t descriptor, bool a_precompile = false);
 		/** @brief The Utility geometry shader that cuts a paraboloid shadow draw's triangles at its hemisphere plane, for a vertex descriptor; null if it cannot compile. */
-		winrt::com_ptr<ID3D11GeometryShader> GetParaboloidClipShader(const RE::BSShader& shader, uint32_t vertexDescriptor);
+		winrt::com_ptr<ID3D11GeometryShader> GetParaboloidClipShader(const RE::BSShader& shader, uint32_t vertexDescriptor, std::optional<uint64_t> a_taskGeneration = std::nullopt);
 		/** @brief Checks that every requested pixel-shader permutation is ready. */
 		bool HasPixelShaders(RE::BSShader::Type type, std::span<const uint32_t> descriptors);
 		RE::BSGraphics::ComputeShader* GetComputeShader(const RE::BSShader& shader,
@@ -1059,6 +1062,12 @@ namespace SIE
 			MTLandLODBlend = 19,
 		};
 
+		/** @brief The technique a Lighting descriptor selects. */
+		static constexpr LightingShaderTechniques GetLightingTechnique(uint32_t a_descriptor)
+		{
+			return static_cast<LightingShaderTechniques>((a_descriptor >> 24) & 0x3F);
+		}
+
 		enum class LightingShaderFlags : uint32_t
 		{
 			VC = 1 << 0,
@@ -1069,8 +1078,8 @@ namespace SIE
 			TruePbr = 1 << 3,
 			Deferred = 1 << 4,
 			LandscapeSeams = 1 << 5,
-			NativePbrInput = 1 << 6,
 			// Community Shaders end
+			DetailMaps = 1 << 6,
 			Specular = 1 << 9,
 			SoftLighting = 1 << 10,
 			RimLighting = 1 << 11,
@@ -1424,6 +1433,12 @@ namespace SIE
 		std::mutex paraboloidClipMutex;
 		ankerl::unordered_dense::map<uint32_t, winrt::com_ptr<ID3D11GeometryShader>> paraboloidClipShaders;
 		CompilationSet compilationSet;
+		// Guarded by compilationSet.compilationMutex; shader cache clears do not cancel runtime jobs.
+		bool runtimeTaskAdmissionClosed = false;
+		bool runtimeTaskInFlight = false;
+		std::shared_ptr<Util::RuntimeTaskGate> runtimeTaskGate;
+		bool TrySubmitRuntimeTask(std::function<void()> a_work);
+		void CloseRuntimeTaskAdmission();
 		ankerl::unordered_dense::map<std::string, ShaderCacheResult> shaderMap{};
 		std::mutex mapMutex;                                                                      // guard for shaderMap
 		std::condition_variable mapCV;                                                            // signalled when a Pending entry transitions to Completed/Failed

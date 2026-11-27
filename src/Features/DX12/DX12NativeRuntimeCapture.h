@@ -20,17 +20,13 @@ namespace DX12Native
 	/** @brief Borrowed rigid CPU arrays, valid only inside the SCM cull callback. */
 	struct RuntimeGeometryCandidate
 	{
-		std::string referenceKey, shapeName, materialObjectEditorID;
+		std::string referenceKey, shapeName;
 		std::array<float, 12> transform{};
 		const uint8_t* vertices = nullptr;
 		const uint16_t* indices = nullptr;
 		uint32_t stride = 0, vertexCount = 0, triangleCount = 0;
 		float centerX = 0, centerY = 0;
 		bool requiresStability = false;  // Render-pass-only shapes must be stationary for several frames.
-		bool fullNative = false, alphaTest = false;
-		uint8_t alphaThreshold = 0, alphaFunction = 0;
-		const RE::BSLightingShaderProperty* shadingProperty = nullptr;  // Borrowed only during Observe.
-		uint32_t uvOffset = UINT32_MAX, normalOffset = UINT32_MAX, tangentOffset = UINT32_MAX, colorOffset = UINT32_MAX;
 		uint64_t objectIdentity = 0;     // Per-session BSGeometry identity independent of NIF shape names.
 	};
 
@@ -43,7 +39,7 @@ namespace DX12Native
 		RuntimeGeometryCapture(const RuntimeGeometryCapture&) = delete;
 		RuntimeGeometryCapture& operator=(const RuntimeGeometryCapture&) = delete;
 
-		/** @brief No D3D calls, GPU readbacks or waits. At most 2 MiB copied per frame. */
+		/** @brief No D3D calls, GPU readbacks or waits. */
 		void Observe(const RuntimeGeometryCandidate& candidate, uint32_t frame,
 			const std::shared_ptr<const DX12::Grid>& grid);
 		void Reset();
@@ -52,15 +48,11 @@ namespace DX12Native
 		struct Packet
 		{
 			uint64_t identity = 0, runtimeObjectKey = 0, generation = 0;
+			DX12::CasterSource casterSource;
 			DX12::SubcellKey sourceCenter{};
-			std::string referenceKey;  // Match a runtime addition with unresolved NIF provenance.
 			std::array<float, 12> transform{};
 			uint32_t stride = 0, vertexCount = 0;
 			float centerX = 0, centerY = 0;
-			std::shared_ptr<DX12::PreparedShading> shading;
-			bool alphaTest = false;
-			DX12::RuntimeMaterialFailure materialFailure = DX12::RuntimeMaterialFailure::None;
-			uint32_t uvOffset = UINT32_MAX, normalOffset = UINT32_MAX, tangentOffset = UINT32_MAX, colorOffset = UINT32_MAX;
 			std::vector<uint8_t> vertices;
 			std::vector<uint16_t> indices;
 		};
@@ -72,7 +64,7 @@ namespace DX12Native
 		std::unordered_set<uint64_t> captured;
 		std::unordered_map<uint64_t, std::pair<uint32_t, uint32_t>> stableObservations;
 		DX12::SubcellKey activeCenter{};
-		uint32_t activeSize = 0, lastFrame = UINT32_MAX, frameBytes = 0;
+		uint32_t activeSize = 0;
 		uint64_t generation = 0;
 		std::jthread worker;
 	};

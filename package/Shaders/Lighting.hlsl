@@ -40,6 +40,10 @@ float GetFurWet()
 }
 #endif
 
+#if defined(DETAIL_MAPS)
+#	include "DetailMaps/DetailMaps.hlsli"
+#endif
+
 #if defined(FACEGEN) || defined(FACEGEN_RGB_TINT)
 #	define SKIN
 #endif
@@ -494,6 +498,10 @@ VS_OUTPUT main(VS_INPUT input)
 	float2 gridOffset = LandBlendParams.zw - input.Position.xy;
 	vsout.LandBlendWeights2.w = 1 - saturate(0.000375600968 * (9625.59961 - length(gridOffset)));
 	vsout.LandBlendWeights2.xyz = input.LandBlendWeights2.xyz;
+#		if defined(SNOW_DEFORMATION)
+	// The domain shader writes the packed-snow amount here; zero keeps landscape it does not displace untinted.
+	vsout.LandBlendWeights2.z = 0;
+#		endif
 #	elif defined(PROJECTED_UV) && !defined(SKINNED)
 #		if defined(ENVMAP)
 	vsout.TexProj = TextureProj[eyeIndex][2].xyz;
@@ -1126,6 +1134,10 @@ float GetSnowParameterY(float texProjTmp, float alpha)
 #		include "Common/LandscapeSeams.hlsli"
 #	endif
 
+#	if defined(LANDSCAPE) && defined(SNOW_DEFORMATION)
+#		include "SnowDeformation/PackedSnow.hlsli"
+#	endif
+
 #	if defined(EMAT)
 #		include "ExtendedMaterials/ExtendedMaterials.hlsli"
 #	endif
@@ -1287,22 +1299,6 @@ bool UseSkylightingShadowVisibility()
 
 FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 {
-#	if defined(NATIVE_PBR_INPUT) && defined(DEFERRED) && !defined(SKINNED) && !defined(MODELSPACENORMALS) && !defined(LANDSCAPE)
-	PS_OUTPUT psout = (PS_OUTPUT)0;
-	uint eyeIndex = Stereo::GetEyeIndexPS(input.Position, VPOSOffset);
-	float3 normalWS = normalize(float3(input.TBN0.z, input.TBN1.z, input.TBN2.z));
-	if (!frontFace) normalWS = -normalWS;
-	float3 normalVS = normalize(FrameBuffer::WorldToView(normalWS, false, eyeIndex));
-	psout.Diffuse.w = 1.0;
-	psout.MotionVectors = float4(MotionBlur::GetSSMotionVector(input.WorldPosition, input.PreviousWorldPosition, eyeIndex), 0.0, 1.0);
-	psout.NormalGlossiness = float4(GBuffer::EncodeNormal(normalVS), 0.0, 1.0);
-	psout.Albedo.w = 1.0;
-	psout.Specular.w = 1.0;
-	psout.Reflectance.w = 1.0;
-	psout.Masks.w = 1.0;
-	psout.Masks2.w = 1.0;
-	return psout;
-#	else
 	PS_OUTPUT psout;
 	uint eyeIndex = Stereo::GetEyeIndexPS(input.Position, VPOSOffset);
 
@@ -1996,6 +1992,23 @@ FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFro
 #	if defined(WORLD_MAP)
 	normal.xyz = GetWorldMapNormal(input, normal.xyz, rawBaseColor.xyz);
 #	endif  // WORLD_MAP
+
+#	if defined(DETAIL_MAPS) && !defined(MODELSPACENORMALS) && !defined(LANDSCAPE) && !defined(FUR_SHELLS)
+	float3 detailPosition = input.WorldPosition.xyz;
+#		if defined(VR)
+	// Both eyes use the head center so distance fading agrees across stereo views.
+	detailPosition += FrameBuffer::CameraPosAdjust[eyeIndex].xyz -
+	                  0.5 * (FrameBuffer::CameraPosAdjust[0].xyz + FrameBuffer::CameraPosAdjust[1].xyz);
+#		endif
+	DetailMaps::Detail detailSample = DetailMaps::GetDetail(uv, length(detailPosition), SampColorSampler);
+	baseColor.xyz *= detailSample.Albedo;
+	normal.xyz = DetailMaps::ApplyNormal(normal.xyz, detailSample);
+#		if defined(TRUE_PBR)
+	rawRMAOS.x = saturate(rawRMAOS.x + detailSample.Roughness);
+#		else
+	glossiness = saturate(glossiness * (1.0 - detailSample.Roughness));
+#		endif
+#	endif
 
 #	if defined(LANDSCAPE)
 #		if defined(SNOW) && !defined(TRUE_PBR)
@@ -2695,6 +2708,9 @@ FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFro
 				float complexMaterialRoughness = 1.0 - complexMaterialColor.y;
 				material.Roughness = lerp(material.Roughness, complexMaterialRoughness, complexMaterial);
 				material.F0 = lerp(material.F0, complexSpecular, complexMaterial);
+#				if defined(DETAIL_MAPS) && !defined(MODELSPACENORMALS) && !defined(LANDSCAPE) && !defined(FUR_SHELLS)
+				material.Roughness = saturate(material.Roughness + detailSample.Roughness * complexMaterial);
+#				endif
 #			endif
 
 				envMask = saturate(envMask);
@@ -2896,6 +2912,19 @@ FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFro
 		material.BaseColor *= snowFactor + (1 - snowFactor) * lodLandNoiseMultiplier;
 #		endif
 #	endif  // SNOW_COVER
+
+#	if defined(LANDSCAPE) && defined(SNOW_DEFORMATION)
+	[branch] if (input.LandBlendWeights2.z > 0.0)
+	{
+		const float packedSnow = saturate(input.LandBlendWeights2.z);
+		material.BaseColor *= lerp(1.0, PackedSnow::AlbedoTint, packedSnow);
+		material.Roughness *= lerp(1.0, PackedSnow::RoughnessScale, packedSnow);
+#		if !defined(TRUE_PBR)
+		material.Shininess *= lerp(1.0, PackedSnow::ShininessScale, packedSnow);
+#		endif
+	}
+#	endif
+
 #	if defined(GLINT) && defined(SNOW_COVER)
 	[branch] if (material.GlintLogMicrofacetDensity > SnowCover::GlintEnableThreshold)
 	{
@@ -3089,7 +3118,7 @@ FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFro
 	const bool captureRadiance = Permutation::IsReflectionRadianceCapture() && ShadowSampling::HasDistantShadows();
 	float3 radianceDirLightColor = dirLightColor;
 	[branch] if (captureRadiance)
-		radianceDirLightColor *= ShadowSampling::GetTerrainCloudShadow(input.WorldPosition.xyz, FrameBuffer::CameraPosAdjust[eyeIndex].xyz, eyeIndex);
+		radianceDirLightColor *= ShadowSampling::GetTerrainCloudShadow(input.WorldPosition.xyz, FrameBuffer::CameraPosAdjust[eyeIndex].xyz, eyeIndex, false);
 #	endif
 
 #	if defined(LIGHT_LIMIT_FIX)
@@ -4444,7 +4473,6 @@ FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFro
 #	endif
 
 	return psout;
-#	endif  // NATIVE_PBR_INPUT
 }
 
 #endif  // PSHADER

@@ -74,10 +74,6 @@ add_executable(
     test_input.cpp
     test_stringutils.cpp
     test_isl_radiusmath.cpp
-    test_dx12_lightmath.cpp
-    test_dx12_materialframe.cpp
-    test_native_raster_policy.cpp
-    test_native_surface_capability.cpp
     test_shadowcaster_math.cpp
     test_lodshadow_update_budget.cpp
     test_gpupassnames.cpp
@@ -102,6 +98,12 @@ add_executable(
     test_devbenchnotices.cpp
     test_shadercacheclear.cpp
     test_generationclaim.cpp
+    test_dx12_runtime_tasks.cpp
+    test_dx12_scene_prep.cpp
+    test_dx12_lightmath.cpp
+    test_dx12_materialframe.cpp
+    test_native_raster_policy.cpp
+    test_native_surface_capability.cpp
     test_framelatch.cpp
     test_render_extent.cpp
     test_dlssg_input_fence.cpp
@@ -135,6 +137,7 @@ add_executable(
     test_prerequisitechain.cpp
     test_desktop_mirror.cpp
     test_furshellassetscan.cpp
+    test_furshelllimits.cpp
     test_furinertiaspring.cpp
     test_region.cpp
     test_bound_points.cpp
@@ -144,6 +147,7 @@ add_executable(
     test_control_value.cpp
     test_vr_helper_combo.cpp
     test_profiler.cpp
+    test_ui_blend_coverage.cpp
     # Stub I18n::Get so units-under-test that call T() (Subrect's DrawEditor)
     # link without pulling the translation loader into the test binary.
     i18n_stub.cpp
@@ -226,6 +230,7 @@ foreach(cpp_test_target IN ITEMS cpp_tests screenshot_tests_devbench)
             magic_enum::magic_enum
             xxHash::xxhash
             spdlog::spdlog
+            d3d11
             d3dcompiler
             bcrypt
             Threads::Threads

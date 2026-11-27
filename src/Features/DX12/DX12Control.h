@@ -1,5 +1,6 @@
 #pragma once
 
+#include "DX12ControlMode.h"
 #include "Feature.h"
 
 #include <atomic>
@@ -9,14 +10,8 @@ struct DX12Control final : Feature
 {
 	struct Settings
 	{
-		bool Enabled = false;
-		int Mode = 0;  // 0: shadow offload, 1: raster comparison, 2: Full Native preparation
-		bool ExclusiveMaterials = false;
-		bool RasterInputsOnly = false;
-		bool SpatialReconstruction = true;
-		uint32_t ReconstructionGridSize = 5;  // Odd, 3x3 through 9x9.
-		float ShadowStrength = 1.0f;
-		float ShadowBlend = 0.70f;
+		bool Enabled = true;
+		int Mode = static_cast<int>(DX12::ControlMode::FullRT);
 	};
 
 	std::string GetName() override { return "DX12"; }
@@ -29,31 +24,29 @@ struct DX12Control final : Feature
 	bool SupportsVR() override { return false; }
 	/** @brief Whether native work may be submitted this frame. */
 	bool IsActive() const { return loaded && bootActive.load(std::memory_order_acquire); }
-	bool IsFullNativeMode() const { return selectedMode.load(std::memory_order_relaxed) == 2; }
-	/** @brief Session-latched material authority, never changed by live settings. */
+	bool IsShadowOffloadMode() const { return GetMode() == DX12::ControlMode::ShadowOffload; }
+	bool IsFullRTMode() const { return GetMode() == DX12::ControlMode::FullRT; }
+	bool IsFullNativeMode() const { return GetMode() == DX12::ControlMode::FullNative; }
+	/** @brief Material capture is admitted only for an active Full Native session. */
+	bool WantsMaterialPreparation() const { return IsActive() && DX12::RequiresMaterialPreparation(GetMode()); }
+	/** @brief Boot-latched NativePBR authority; disabling DX12 at runtime cannot reinstall legacy hooks. */
 	bool UsesExclusiveMaterials() const { return exclusiveMaterials.load(std::memory_order_acquire); }
-	/** @brief Raster suppression is unavailable until same-frame replacement and fallback exist. */
-	bool UsesNativeRasterInputs() const { return false; }
-	bool IsShadowOffloadMode() const { return selectedMode.load(std::memory_order_relaxed) == 0; }
-	bool UseSpatialReconstruction() const { return spatialReconstruction.load(std::memory_order_relaxed); }
-	uint32_t GetReconstructionGridSize() const { return reconstructionGrid.load(std::memory_order_relaxed); }
-	float GetShadowStrength() const { return shadowStrength.load(std::memory_order_relaxed); }
-	float GetShadowBlend() const { return shadowBlend.load(std::memory_order_relaxed); }
+	void InitializeMaterialAuthority();
 	void DrawSettings() override;
+	void RegisterUxActions() override;
 	void LoadSettings(json& input) override;
 	void SaveSettings(json& output) override;
 	void RestoreDefaultSettings() override;
 	void OnRuntimeDisabled() override;
 
 private:
-	void ApplyModeRequest();
 	std::atomic<bool> bootActive{ false };
 	std::atomic<bool> exclusiveMaterials{ false };
+	bool authorityCaptured = false;
 	bool bootCaptured = false;
-	std::atomic<int> selectedMode{ 0 };
-	std::atomic<bool> spatialReconstruction{ true };
-	std::atomic<uint32_t> reconstructionGrid{ 5 };
-	std::atomic<float> shadowStrength{ 1.0f };
-	std::atomic<float> shadowBlend{ 0.70f };
+	DX12::ControlMode GetMode() const;
+	void DrawSimpleSettings(bool developerMode);
+	void RequestMode(DX12::ControlMode mode);
+	mutable std::atomic<int> selectedMode{ Settings{}.Mode };
 	Settings settings;
 };

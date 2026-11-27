@@ -9,7 +9,6 @@
 #include "../../State.h"
 #include "../../Utils/FileSystem.h"
 #include "../../Utils/Game.h"
-#include "../DX12/DX12Control.h"
 #include "../DX12/DX12NativeScene.h"
 #include "ShadowCasterInternal.h"
 
@@ -253,7 +252,7 @@ namespace ShadowCasterManager
 	// casters per s_cullPassMode (StaticOnly on a rare atlas rebake, DynamicOnly
 	// the rest of the time). Frame-flow doc: SplitState in ShadowScheduler.cpp.
 	std::atomic<int> s_cullPassMode{ static_cast<int>(CasterPass::All) };
-	std::atomic<bool> s_nativeStaticCullActive{ false };
+	thread_local DX12::SCMNativeCasterMode s_nativeCasterMode = DX12::SCMNativeCasterMode::Disabled;
 
 	/// Static/dynamic caster draws classified last frame (Tracy plots for A/B).
 	std::atomic<uint32_t> s_staticCasterDraws{ 0 };
@@ -349,6 +348,86 @@ namespace ShadowCasterManager
 		if (!inserted && r.dynamic != wasDynamic)
 			r.classEpoch = s_casterClassEpoch;
 		return r;
+	}
+
+	// Full RT tracks transforms instead of world-bound changes or the movement
+	// of another shape on the same placed reference. Keep this history separate
+	// from baseline SCM's deliberately more permissive cache classification.
+	namespace
+	{
+		struct FullRTCasterMotion
+		{
+			std::array<float, 13> pose{};
+			int lastEpoch = -1, lastMovedEpoch = -1, ancestryEpoch = -1;
+			bool actorAttached = false, dynamic = false, poseValid = false;
+		};
+		ankerl::unordered_dense::map<RE::BSGeometry*, FullRTCasterMotion> fullRTCasterMotion;
+		constexpr float kFullRTTranslationThreshold = 1.0f;
+		constexpr float kFullRTRotationScaleThreshold = 0.001f;
+		constexpr int kFullRTMotionRetentionEpochs = 300;
+		constexpr uint32_t kFullRTParentLimit = 16;
+	}
+
+	void ResetFullRTCasterMotion()
+	{
+		fullRTCasterMotion.clear();
+	}
+
+	void PruneFullRTCasterMotion()
+	{
+		std::erase_if(fullRTCasterMotion, [](const auto& kv) {
+			return s_casterClassEpoch - kv.second.lastEpoch > kFullRTMotionRetentionEpochs;
+		});
+	}
+
+	bool IsFullRTDynamicCaster(RE::BSGeometry& geom)
+	{
+		if (geom.GetGeometryRuntimeData().skinInstance || geom.AsDynamicTriShape())
+			return true;
+		auto [it, inserted] = fullRTCasterMotion.try_emplace(&geom);
+		auto& record = it->second;
+		if (!inserted && record.lastEpoch == s_casterClassEpoch)
+			return record.dynamic;
+		const bool first = inserted || record.lastEpoch < 0 ||
+		                   s_casterClassEpoch - record.lastEpoch > kFullRTMotionRetentionEpochs;
+		if (first)
+			record = {};
+		if (first || s_casterClassEpoch - record.ancestryEpoch >= kAncestryRecheckEpochs) {
+			record.actorAttached = false;
+			auto* node = static_cast<RE::NiAVObject*>(&geom);
+			for (uint32_t depth = 0; node && depth < kFullRTParentLimit; ++depth, node = node->parent)
+				if (const auto* owner = node->GetUserData(); owner && owner->IsActor()) {
+					record.actorAttached = true;
+					break;
+				}
+			record.ancestryEpoch = s_casterClassEpoch;
+		}
+		const auto& world = geom.world;
+		std::array<float, 13> pose{ world.translate.x, world.translate.y, world.translate.z };
+		for (uint32_t row = 0; row < 3; ++row)
+			for (uint32_t col = 0; col < 3; ++col)
+				pose[3 + 3 * row + col] = world.rotate.entry[row][col];
+		pose.back() = world.scale;
+		bool moved = false, finite = true;
+		for (size_t i = 0; i < pose.size(); ++i) {
+			finite &= std::isfinite(pose[i]);
+			const float threshold = i < 3 ? kFullRTTranslationThreshold : kFullRTRotationScaleThreshold;
+			moved |= std::abs(pose[i] - record.pose[i]) >= threshold;
+		}
+		if (!finite) {
+			record.poseValid = false;
+			record.lastMovedEpoch = -1;
+		} else if (!record.poseValid || moved) {
+			if (record.poseValid)
+				record.lastMovedEpoch = s_casterClassEpoch;
+			record.pose = pose;
+			record.poseValid = true;
+		}
+		const bool moving = finite && record.lastMovedEpoch >= 0 &&
+		                    s_casterClassEpoch - record.lastMovedEpoch < kStaticStabilityFrames;
+		record.lastEpoch = s_casterClassEpoch;
+		record.dynamic = DX12::FullRTDynamicCaster(false, false, record.actorAttached, moving);
+		return record.dynamic;
 	}
 
 	static bool IsCasterDynamic(RE::BSGeometry& geom)
@@ -449,18 +528,28 @@ namespace ShadowCasterManager
 	{
 		// Passive collection during the existing SCM caster walk. This does not
 		// change raster filter decisions or add another geometry traversal.
-		if (globals::features::dx12Control.IsActive() &&
-			!globals::game::isVR &&
+		const auto nativeMode = s_nativeCasterMode;
+		if (nativeMode != DX12::SCMNativeCasterMode::Disabled &&
+			nativeMode != DX12::SCMNativeCasterMode::SuppressAll &&
 			!geom.GetGeometryRuntimeData().skinInstance &&
 			!IsCasterDynamic(geom))
 			globals::features::dx12NativeScene.ObserveSCMRigidCaster(geom);
-		const bool nativeDynamicOnly = s_nativeStaticCullActive.load(std::memory_order_relaxed);
+		const bool nativeDynamicOnly = nativeMode == DX12::SCMNativeCasterMode::Suppress ||
+		                               nativeMode == DX12::SCMNativeCasterMode::SuppressAll;
 		if (!AtlasActive() && !nativeDynamicOnly)
 			return false;
 		if (const auto passless = ShadowMapPassless(geom); passless != PasslessReason::kNone) {
 			s_passlessCasterSkipTotal.fetch_add(1, std::memory_order_relaxed);
 			s_passlessCasterSkipByReason[static_cast<int>(passless)].fetch_add(1, std::memory_order_relaxed);
 			return true;
+		}
+		if (nativeMode == DX12::SCMNativeCasterMode::SuppressAll) {
+			const bool dynamic = IsFullRTDynamicCaster(geom);
+			if (dynamic)
+				s_visitDynamicCount.fetch_add(1, std::memory_order_relaxed);
+			else
+				globals::features::dx12NativeScene.AuditCasterCoverage(geom);
+			return !dynamic;
 		}
 		// Skinned = always dynamic (see IsCasterDynamic); only non-skinned
 		// casters have a mobility record, classified once per frame.
@@ -473,6 +562,8 @@ namespace ShadowCasterManager
 			// owned light are removed, even if TLAS coverage is incomplete.
 			if (dynamic)
 				s_visitDynamicCount.fetch_add(1, std::memory_order_relaxed);
+			else
+				globals::features::dx12NativeScene.AuditCasterCoverage(geom);
 			return !dynamic;
 		}
 		// A caster that settled since the bake is missing from it and is drawn live; one that started moving is still in

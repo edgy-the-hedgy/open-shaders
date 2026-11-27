@@ -1,4 +1,5 @@
 #include "State.h"
+#include "Features/DX12/DX12Control.h"
 #include <algorithm>
 
 #include <codecvt>
@@ -46,7 +47,6 @@
 #include "Features/Wind/Wind.h"
 #include "HiZPyramid.h"
 #include "Menu.h"
-#include "Materials/SharedMaterialHooks.h"
 #include "PostProcessingMode.h"
 #include "Presets/BaseSettingsCustomization.h"
 #include "Presets/PresetPreferences.h"
@@ -2236,7 +2236,6 @@ void State::SetupResources()
 void State::ModifyShaderLookup(const RE::BSShader& a_shader, uint& a_vertexDescriptor, uint& a_pixelDescriptor, bool a_forceDeferred)
 {
 	auto deferred = globals::deferred;
-	SharedMaterialHooks::NormalizeRasterDescriptors(a_shader.shaderType.get(), a_vertexDescriptor, a_pixelDescriptor, deferred->deferredPass && !a_forceDeferred);
 
 	if (a_shader.shaderType.get() != RE::BSShader::Type::Utility && a_shader.shaderType.get() != RE::BSShader::Type::ImageSpace) {
 		switch (a_shader.shaderType.get()) {
@@ -2265,11 +2264,11 @@ void State::ModifyShaderLookup(const RE::BSShader& a_shader, uint& a_vertexDescr
 									   (uint32_t)SIE::ShaderCache::LightingShaderFlags::BaseObjectIsSnow);
 
 				{
-					uint32_t technique = 0x3F & (a_pixelDescriptor >> 24);
-					if (technique != (uint32_t)SIE::ShaderCache::LightingShaderTechniques::LODLand &&
-						technique != (uint32_t)SIE::ShaderCache::LightingShaderTechniques::LODLandNoise &&
-						technique != (uint32_t)SIE::ShaderCache::LightingShaderTechniques::LODObjects &&
-						technique != (uint32_t)SIE::ShaderCache::LightingShaderTechniques::LODObjectHD)
+					const auto technique = SIE::ShaderCache::GetLightingTechnique(a_pixelDescriptor);
+					if (technique != SIE::ShaderCache::LightingShaderTechniques::LODLand &&
+						technique != SIE::ShaderCache::LightingShaderTechniques::LODLandNoise &&
+						technique != SIE::ShaderCache::LightingShaderTechniques::LODObjects &&
+						technique != SIE::ShaderCache::LightingShaderTechniques::LODObjectHD)
 						a_pixelDescriptor &= ~((uint32_t)SIE::ShaderCache::LightingShaderFlags::Specular |
 											   (uint32_t)SIE::ShaderCache::LightingShaderFlags::SoftLighting |
 											   (uint32_t)SIE::ShaderCache::LightingShaderFlags::RimLighting |
@@ -2287,21 +2286,21 @@ void State::ModifyShaderLookup(const RE::BSShader& a_shader, uint& a_vertexDescr
 					a_pixelDescriptor |= (uint32_t)SIE::ShaderCache::LightingShaderFlags::Deferred;
 
 				{
-					uint32_t technique = 0x3F & (a_vertexDescriptor >> 24);
-					if (technique == (uint32_t)SIE::ShaderCache::LightingShaderTechniques::Glowmap ||
-						technique == (uint32_t)SIE::ShaderCache::LightingShaderTechniques::Parallax ||
-						technique == (uint32_t)SIE::ShaderCache::LightingShaderTechniques::Facegen ||
-						technique == (uint32_t)SIE::ShaderCache::LightingShaderTechniques::FacegenRGBTint ||
-						technique == (uint32_t)SIE::ShaderCache::LightingShaderTechniques::LODObjects ||
-						technique == (uint32_t)SIE::ShaderCache::LightingShaderTechniques::LODObjectHD ||
-						technique == (uint32_t)SIE::ShaderCache::LightingShaderTechniques::MultiIndexSparkle ||
-						technique == (uint32_t)SIE::ShaderCache::LightingShaderTechniques::Hair)
+					const auto technique = SIE::ShaderCache::GetLightingTechnique(a_vertexDescriptor);
+					if (technique == SIE::ShaderCache::LightingShaderTechniques::Glowmap ||
+						technique == SIE::ShaderCache::LightingShaderTechniques::Parallax ||
+						technique == SIE::ShaderCache::LightingShaderTechniques::Facegen ||
+						technique == SIE::ShaderCache::LightingShaderTechniques::FacegenRGBTint ||
+						technique == SIE::ShaderCache::LightingShaderTechniques::LODObjects ||
+						technique == SIE::ShaderCache::LightingShaderTechniques::LODObjectHD ||
+						technique == SIE::ShaderCache::LightingShaderTechniques::MultiIndexSparkle ||
+						technique == SIE::ShaderCache::LightingShaderTechniques::Hair)
 						a_vertexDescriptor &= ~(0x3F << 24);
 				}
 
 				{
-					uint32_t technique = 0x3F & (a_pixelDescriptor >> 24);
-					if (technique == (uint32_t)SIE::ShaderCache::LightingShaderTechniques::Glowmap)
+					const auto technique = SIE::ShaderCache::GetLightingTechnique(a_pixelDescriptor);
+					if (technique == SIE::ShaderCache::LightingShaderTechniques::Glowmap)
 						a_pixelDescriptor &= ~(0x3F << 24);
 				}
 			}
@@ -2637,9 +2636,9 @@ void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] b
 		data.AmbientSHR = float4{ dalcSH.r.c0, dalcSH.r.c1[0], dalcSH.r.c1[1], dalcSH.r.c1[2] };
 		data.AmbientSHG = float4{ dalcSH.g.c0, dalcSH.g.c1[0], dalcSH.g.c1[1], dalcSH.g.c1[2] };
 		data.AmbientSHB = float4{ dalcSH.b.c0, dalcSH.b.c1[0], dalcSH.b.c1[1], dalcSH.b.c1[2] };
-		if (a_inWorld && globals::game::graphicsState &&
+		if (globals::features::dx12Control.WantsMaterialPreparation() && a_inWorld && globals::game::graphicsState &&
 			!(permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(ExtraShaderDescriptors::IsReflections))) {
-			ambientSHSnapshot = { { data.AmbientSHR, data.AmbientSHG, data.AmbientSHB },
+			ambientSHSnapshot = { { data.AmbientSHR, data.AmbientSHG, data.AmbientSHB }, data.DirLightDirection, data.DirLightColor,
 				globals::game::graphicsState->GetFrameCount(), frameCount };
 		}
 

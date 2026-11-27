@@ -175,9 +175,7 @@ public:
 	size_t GetSettingsBlobSize() const override { return sizeof(settings); }
 
 	void UpdateCubemap();
-	/** @brief Registers the primary opaque frame for the next scheduled capture. */
 	void SetNativeCaptureContext(const DX12Native::EnvironmentStamp& stamp);
-	/** @brief Borrows a finished base or reflection environment, not a filtering scratch texture. */
 	DX12Native::EnvironmentSource GetNativeEnvironment(bool reflections) const;
 private:
 	DX12Native::EnvironmentStamp nativeCaptureContext{}, nativePendingCapture[2]{};

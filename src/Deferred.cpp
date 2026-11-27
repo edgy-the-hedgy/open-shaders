@@ -412,12 +412,7 @@ void Deferred::DeferredPasses()
 
 	auto motionVectors = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
 
-	const Feature::OpaqueRasterInputs opaqueInputs{
-		Util::AsReal(main.texture), Util::AsReal(specular.texture), Util::AsReal(albedo.texture),
-		Util::AsReal(normalRoughness.texture), Util::AsReal(masks.texture), Util::AsReal(masks2.texture),
-		Util::AsReal(reflectance.texture), Util::AsReal(motionVectors.texture)
-	};
-	Feature::ForEachLoadedFeature("OnOpaqueRasterReady", [&](Feature* feature) { feature->OnOpaqueRasterReady(opaqueInputs); }, true);
+	Feature::ApplyOpaqueRasterReadyHooks();
 
 	bool interior = Util::IsInterior();
 
@@ -435,9 +430,6 @@ void Deferred::DeferredPasses()
 	if (sss.loaded)
 		sss.DrawSSS();
 
-	if (!globals::game::isVR)
-		Feature::ForEachLoadedFeature("OnOpaqueRadianceReady", [&](Feature* feature) { feature->OnOpaqueRadianceReady(opaqueInputs); }, true);
-
 	auto& dynamicCubemaps = globals::features::dynamicCubemaps;
 	if (dynamicCubemaps.loaded)
 		dynamicCubemaps.UpdateCubemap();
@@ -447,7 +439,6 @@ void Deferred::DeferredPasses()
 	// Matches SKYLIGHTING_COVERAGE_REGISTER in DeferredCompositeCS.hlsl; t17 is SharedData::DepthTexture
 	constexpr UINT SKYLIGHTING_COVERAGE_SLOT = 18;
 
-	bool opaqueCompositeDispatched = false;
 	// Deferred Composite
 	{
 		CS_GPU_PASS("Deferred::DeferredComposite");
@@ -497,7 +488,6 @@ void Deferred::DeferredPasses()
 		if (auto* shader = interior ? GetComputeMainCompositeInterior() : GetComputeMainComposite()) {
 			context->CSSetShader(shader, nullptr, 0);
 			context->Dispatch(dispatchCount.x, dispatchCount.y, 1);
-			opaqueCompositeDispatched = true;
 		}
 
 		// Unbind mode texture SRV
@@ -527,9 +517,6 @@ void Deferred::DeferredPasses()
 
 		context->CSSetShader(nullptr, nullptr, 0);
 	}
-
-	if (opaqueCompositeDispatched && !globals::game::isVR)
-		Feature::ForEachLoadedFeature("OnOpaqueCompositeReady", [&](Feature* feature) { feature->OnOpaqueCompositeReady(opaqueInputs); }, true);
 
 	if (dynamicCubemaps.loaded)
 		dynamicCubemaps.PostDeferred();
@@ -588,7 +575,7 @@ bool Deferred::ForwardMasks2Available() const
 void Deferred::BindForwardHairMasks()
 {
 	const std::uint32_t descriptor = globals::state->modifiedPixelDescriptor;
-	const auto technique = static_cast<SIE::ShaderCache::LightingShaderTechniques>((descriptor >> 24) & 0x3F);
+	const auto technique = SIE::ShaderCache::GetLightingTechnique(descriptor);
 	const bool deferredDraw = (descriptor & static_cast<std::uint32_t>(SIE::ShaderCache::LightingShaderFlags::Deferred)) != 0;
 	if (!globals::features::lightLimitFix.settings.SunLitHair || deferredPass || !globals::state->inWorld || technique != SIE::ShaderCache::LightingShaderTechniques::Hair || deferredDraw)
 		return;
@@ -859,6 +846,16 @@ void Deferred::Hooks::Main_RenderShadowMaps::thunk()
 	func();
 	globals::deferred->EarlyPrepasses();
 };
+
+void Deferred::Hooks::Main_RenderShadowmasks::thunk(bool a1)
+{
+	static uint32_t lastFrame = UINT32_MAX;
+	if (auto* state = globals::game::graphicsState; state && state->GetFrameCount() != lastFrame) {
+		lastFrame = state->GetFrameCount();
+		Feature::ApplyDepthPrepassReadyHooks();
+	}
+	func(a1);
+}
 
 void Deferred::Hooks::Main_RenderWorld::thunk(bool a1)
 {

@@ -216,10 +216,17 @@ namespace Util
 	float GetCameraDistanceToReference(RE::TESObjectREFR* a_ref);
 	/** @brief Projects a flat-runtime reference into top-left depth texture coordinates. */
 	bool GetReferenceFocusCoord(RE::TESObjectREFR* a_ref, float2& a_focusCoord);
+	/** @brief Projects a flat-runtime world position into top-left normalized screen coordinates. */
+	bool GetWorldFocusCoord(const RE::NiPoint3& position, float2& a_focusCoord);
 
 	RE::NiPoint3 GetAverageEyePosition();
 	RE::NiPoint3 GetEyePosition(int eyeIndex);
 	RE::BSGraphics::ViewData GetCameraData(int eyeIndex);
+
+	/** @brief Whether the engine is accumulating the first-person view. */
+	bool IsFirstPersonPass();
+	/** @brief Distance from the first eye to the near side of the geometry's bound; 0 in the first-person view. */
+	float GetPassDistance(const RE::BSGeometry& a_geometry);
 
 	float2 ConvertToDynamic(float2 a_size, bool a_ignoreLock = false);
 
@@ -391,6 +398,18 @@ namespace Util
 	// TESForm formatting helpers
 	std::string FormatTESForm(const RE::TESForm* form);
 	std::string FormatWeather(const RE::TESWeather* weather);
+
+	/** @brief Borrow the player's actual parent cell on the game thread, or nullptr. */
+	[[nodiscard]] const RE::TESObjectCELL* GetPlayerCell();
+
+	/** @brief Game-thread snapshot of the player's spatial location. Form pointers are borrowed. */
+	struct PlayerSpatialLocation
+	{
+		const RE::TESObjectCELL* cell;
+		const RE::TESWorldSpace* worldspace;  ///< Null for interiors or an unavailable exterior worldspace.
+		RE::NiPoint3 position;
+	};
+	[[nodiscard]] std::optional<PlayerSpatialLocation> GetPlayerSpatialLocation();
 
 	bool IsInterior();
 	/** @brief Returns the active interior cell or exterior worldspace's editor ID, or an empty view. */

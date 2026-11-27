@@ -2,21 +2,22 @@
 
 #include "DX12MaterialFrameContract.h"
 
-#include "DX12PreparedMaterials.h"
+#include "DX12PreparedMaterialFrame.h"
+#include "DX12NativeSceneInputs.h"
+#include "RE/B/BSShaderProperty.h"
 #include "VideoMemoryBudget.h"
 #include <DirectXTex.h>
 #include "RE/B/BSResourceNiBinaryStream.h"
 #include <directx/d3dx12.h>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <limits>
 #include <map>
 
 namespace DX12Native
 {
 	// Generation-owned immutable resources. No source DDS is persisted.
-	// This evaluates a representative triangle per instance, not screen pixels.
+	// Texture residency only; screen evaluation belongs to a separate early dispatch.
 	struct NativeMaterialEvaluation
 	{
 		struct Texture
@@ -35,33 +36,25 @@ namespace DX12Native
 			winrt::com_ptr<ID3D12Resource> staging;
 			std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> footprints;
 		};
-		struct Sample
-		{
-			std::array<float, 4> color, normal, f0, emission;
-		};
-		static_assert(sizeof(Sample) == 64);
 		using TextureCache = std::unordered_map<std::string, std::shared_ptr<const Texture>>;
 
 		TextureCache textures;
 		std::vector<std::shared_ptr<const Texture>> poolTextures;
-		winrt::com_ptr<ID3D12Resource> records, bindings, output, readback;
+		winrt::com_ptr<ID3D12Resource> records, bindings;
 		winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
-		winrt::com_ptr<ID3D12RootSignature> root;
-		winrt::com_ptr<ID3D12PipelineState> pipeline;
 		uint64_t revision = 0, textureBytes = 0;
 		uint32_t instanceCount = 0, residentRecipes = 0, failedTextures = 0, reusedTextures = 0, archiveTextures = 0;
-		uint32_t evaluated = 0, baseOnlyBindings = 0;
+		uint32_t baseOnlyBindings = 0;
 		NativePBR::ScreenSurfaceTally surfaceCapabilities;
 		uint32_t specializedRequested = 0, specializedResident = 0, sharedTextureReferences = 0;
 		uint32_t specializedBlockedByBase = 0;
 		std::array<uint32_t, static_cast<size_t>(NativePBR::TextureRole::Count)> specializedRoleRequested{}, specializedRoleResident{};
 		std::map<std::string, uint32_t> failureReasons;
 		std::vector<std::pair<std::string, std::string>> failedExamples;
-		Sample firstSample{};
 
 		static void Check(HRESULT hr)
 		{
-			if (FAILED(hr)) throw std::runtime_error("NativePBR resource creation failed");
+			DX::ThrowIfFailed(hr);
 		}
 
 		static winrt::com_ptr<ID3D12Resource> Buffer(ID3D12Device* device, uint64_t bytes,
@@ -209,62 +202,24 @@ namespace DX12Native
 			return upload;
 		}
 
-		void CreatePipeline(ID3D12Device* device)
-		{
-			std::ifstream file("Data/Shaders/NativeComposite/NativePBRProbe.dxil", std::ios::binary | std::ios::ate);
-			if (!file || file.tellg() <= 0 || file.tellg() > 16 * 1024 * 1024)
-				throw std::runtime_error("NativePBRProbe.dxil unavailable");
-			std::vector<char> shader(static_cast<size_t>(file.tellg()));
-			file.seekg(0);
-			if (!file.read(shader.data(), std::streamsize(shader.size())))
-				throw std::runtime_error("NativePBRProbe.dxil read failed");
-			CD3DX12_DESCRIPTOR_RANGE range;
-			range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NativePBR::kGpuTextureDescriptorCapacity, 3);
-			CD3DX12_ROOT_PARAMETER parameters[6];
-			parameters[0].InitAsShaderResourceView(0);
-			parameters[1].InitAsShaderResourceView(1);
-			parameters[2].InitAsShaderResourceView(2);
-			parameters[3].InitAsDescriptorTable(1, &range);
-			parameters[4].InitAsUnorderedAccessView(0);
-			parameters[5].InitAsConstants(1, 0);
-			std::array<CD3DX12_STATIC_SAMPLER_DESC, 4> samplers;
-			for (uint32_t mode = 0; mode < 4; ++mode)
-				samplers[mode] = CD3DX12_STATIC_SAMPLER_DESC(mode, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
-					(mode & 2) ? D3D12_TEXTURE_ADDRESS_MODE_WRAP : D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
-					(mode & 1) ? D3D12_TEXTURE_ADDRESS_MODE_WRAP : D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
-					D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
-			const CD3DX12_ROOT_SIGNATURE_DESC desc(6, parameters, UINT(samplers.size()), samplers.data());
-			winrt::com_ptr<ID3DBlob> blob, errors;
-			Check(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, blob.put(), errors.put()));
-			Check(device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(root.put())));
-			D3D12_COMPUTE_PIPELINE_STATE_DESC pso{};
-			pso.pRootSignature = root.get();
-			pso.CS = { shader.data(), shader.size() };
-			Check(device->CreateComputePipelineState(&pso, IID_PPV_ARGS(pipeline.put())));
-		}
-
-		// Called on the existing acceleration worker before recording commands.
-		// Reuse only fence-completed textures from a previous publication.
 		static std::shared_ptr<NativeMaterialEvaluation> Prepare(ID3D12Device* device,
-			const PreparedMaterials& prepared, const SceneInputs& scene, const TextureCache& previous,
+			const PreparedMaterialFrame& prepared, const SceneInputs& scene, const TextureCache& previous,
 			std::vector<Upload>& uploads)
 		{
 			if (prepared.recipes.empty() || prepared.bindings.empty() ||
 				prepared.bindings.size() != scene.geometry.size() || prepared.bindings.size() > 65535u * 64u) return {};
 			VideoMemoryBudget budget;
 			auto available = budget.Query(device, 0);
-			if (!available.dxgiAvailable) return {};
-			const uint64_t resultBytes = uint64_t(prepared.bindings.size()) * sizeof(Sample);
+			if (!available.localBudget) return {};
 			const uint64_t tableBytes = uint64_t(prepared.recipes.size()) * sizeof(NativePBR::GpuMaterialRecord) +
 				uint64_t(prepared.bindings.size()) * sizeof(NativePBR::GpuDrawBinding);
-			// Reserve aligned allocations for tables, UAV/readback and descriptor metadata.
-			const uint64_t overhead = 2 * resultBytes + tableBytes + 6ull * 65536;
+			// Reserve aligned allocations for tables and descriptor metadata.
+			const uint64_t overhead = tableBytes + 3ull * 65536;
 			if (overhead >= available.effectiveBytes) return {};
 			uint64_t remaining = available.effectiveBytes - overhead;
 			auto result = std::make_shared<NativeMaterialEvaluation>();
-			result->revision = prepared.sceneRevision;
+			result->revision = prepared.geometryRevision;
 			result->instanceCount = uint32_t(prepared.bindings.size());
-			result->CreatePipeline(device);
 			const D3D12_DESCRIPTOR_HEAP_DESC heap{ D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
 				NativePBR::kGpuTextureDescriptorCapacity, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
 			Check(device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(result->descriptors.put())));
@@ -440,19 +395,18 @@ namespace DX12Native
 						binding.flags |= MaterialFrameContract::kMissingBaseTexturesBinding;
 					continue;
 				}
-				if (!scene.geometry[i].shape || !scene.geometry[i].shape->shading) continue;
-				const auto& source = *scene.geometry[i].shape->shading;
+				if (!scene.geometry[i] || !scene.geometry[i]->material) continue;
+				const auto& source = *scene.geometry[i]->material;
+				if (!source.authoredShaderFlags) continue;
 				binding.materialIndex = it->second;
-				binding.flags = (source.shaderFlags2 & (1u << 5)) ? NativePBR::kGpuDrawUsesVertexColor : 0;
+				using F = RE::BSShaderProperty::EShaderPropertyFlag;
+				const auto flags = *source.authoredShaderFlags;
+				binding.flags = source.colorOffset != UINT32_MAX && (flags & (uint64_t(1) << 37)) ? NativePBR::kGpuDrawUsesVertexColor : 0;
 				const auto& recipe = prepared.recipes[it->second];
-				const uint64_t nifFlags = uint64_t(source.shaderFlags1) | (uint64_t(source.shaderFlags2) << 32);
-				const bool authoredProjectedUv = (nifFlags & static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kProjectedUV)) != 0;
-				const bool projectedUv = authoredProjectedUv || (source.runtimeObserved && source.runtimeProjectedUv);
-				const auto& placement = scene.geometry[i].shape->materialOverride;
-				const bool hasMato = !source.runtimeMaterialObject.empty() || (placement && !placement->materialObject.empty());
-				const bool projectionKnown = projectedUv || source.runtimeObserved || !hasMato;
-				const auto capability = NativePBR::ClassifyScreenSurface(recipe, projectedUv,
-					!source.runtimeObserved || source.originalPbrFlags, projectionKnown);
+				const bool authoredProjectedUv = (flags & static_cast<uint64_t>(F::kProjectedUV)) != 0;
+				const bool projectedUv = authoredProjectedUv || (source.observedShaderFlags & static_cast<uint64_t>(F::kProjectedUV)) != 0;
+				const bool projectionKnown = projectedUv || scene.geometry[i]->materialObjectEditorId.empty();
+				const auto capability = NativePBR::ClassifyScreenSurface(recipe, projectedUv, true, projectionKnown);
 				result->surfaceCapabilities.Observe(recipe, capability, authoredProjectedUv);
 				if (capability.issues) {
 					binding.flags |= MaterialFrameContract::kBaseOnlyBinding;
@@ -461,18 +415,14 @@ namespace DX12Native
 				const auto& normalPath = prepared.recipes[it->second].textures[1].canonicalPath;
 				if (const auto normal = result->textures.find(normalPath); normal != result->textures.end() &&
 					normal->second->format == DXGI_FORMAT_BC5_UNORM) binding.flags |= 1u << 8;
-				if (source.shaderFlags1 & (1u << 12)) binding.flags |= 1u << 9;
-				if (source.alphaTest) binding.flags |= (1u << 10) | (uint32_t(source.alphaThreshold) << 16) | (uint32_t(source.alphaFunction) << 24);
+				if (flags & (uint64_t(1) << 12)) binding.flags |= 1u << 9;
 			}
 			result->records = Table(device, recordTable);
 			result->bindings = Table(device, bindingTable);
-			result->output = Buffer(device, resultBytes, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-				D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-			result->readback = Buffer(device, resultBytes, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST);
 			return result;
 		}
 
-		void Record(ID3D12GraphicsCommandList* commands, ID3D12Resource* geometry, const std::vector<Upload>& uploads) const
+		static void RecordUploads(ID3D12GraphicsCommandList* commands, const std::vector<Upload>& uploads)
 		{
 			for (const auto& upload : uploads) {
 				for (uint32_t mip = 0; mip < upload.texture->mips; ++mip) {
@@ -484,47 +434,6 @@ namespace DX12Native
 					D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 				commands->ResourceBarrier(1, &barrier);
 			}
-			ID3D12DescriptorHeap* heaps[]{ descriptors.get() };
-			commands->SetDescriptorHeaps(1, heaps);
-			commands->SetComputeRootSignature(root.get());
-			commands->SetPipelineState(pipeline.get());
-			commands->SetComputeRootShaderResourceView(0, geometry->GetGPUVirtualAddress());
-			commands->SetComputeRootShaderResourceView(1, records->GetGPUVirtualAddress());
-			commands->SetComputeRootShaderResourceView(2, bindings->GetGPUVirtualAddress());
-			commands->SetComputeRootDescriptorTable(3, descriptors->GetGPUDescriptorHandleForHeapStart());
-			commands->SetComputeRootUnorderedAccessView(4, output->GetGPUVirtualAddress());
-			commands->SetComputeRoot32BitConstant(5, instanceCount, 0);
-			commands->Dispatch((instanceCount + 63u) / 64u, 1, 1);
-			const auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(output.get(),
-				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
-			commands->ResourceBarrier(1, &barrier);
-			commands->CopyBufferRegion(readback.get(), 0, output.get(), 0, uint64_t(instanceCount) * sizeof(Sample));
-		}
-
-		// Only the acceleration worker calls this after its producer fence signals.
-		void Complete()
-		{
-			output = nullptr;
-			descriptors = nullptr;
-			root = nullptr;
-			pipeline = nullptr;
-			if (!readback) return;
-			const D3D12_RANGE range{ 0, SIZE_T(instanceCount) * sizeof(Sample) };
-			void* mapped = nullptr;
-			if (FAILED(readback->Map(0, &range, &mapped))) {
-				readback = nullptr;
-				return;
-			}
-			const auto* samples = static_cast<const Sample*>(mapped);
-			for (uint32_t i = 0; i < instanceCount; ++i) {
-				if (samples[i].color[3] > 0.0f && std::isfinite(samples[i].color[3])) {
-					if (!evaluated) firstSample = samples[i];
-					++evaluated;
-				}
-			}
-			const D3D12_RANGE noWrite{};
-			readback->Unmap(0, &noWrite);
-			readback = nullptr;
 		}
 	};
 }

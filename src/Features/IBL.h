@@ -106,13 +106,13 @@ public:
 	PerFrame GetCommonBufferData() const;
 	/** @brief Returns true when IBL should be suppressed in the current scene for menus or interior cells. */
 	bool IsDisabledForCurrentScene() const;
+	/** @brief Returns whether exterior reflections supply a separate sky irradiance source. */
+	bool UsesReflectionRadiance() const;
 	/** @brief Returns true when Effects 11 owns IBL (not handed off to CS) with its own image based lighting enabled, overriding these settings. */
 	bool IsManagedByENB() const;
 	/** @brief Returns the diffuse IBL spherical harmonics compute shader, compiling it on first use. */
 	ID3D11ComputeShader* GetDiffuseIBLCS();
-	/** @brief Requests scoped unshadowed sky radiance using the existing reflection capture. */
 	void SetNativeCaptureContext(const DX12Native::EnvironmentStamp& stamp);
-	/** @brief Borrows sky radiance only after all six scoped faces have been captured. */
 	DX12Native::EnvironmentSource GetNativeSkyRadiance() const;
 
 private:

@@ -9,10 +9,23 @@
 
 namespace DX12
 {
-	inline constexpr std::array<uint32_t, 7> kSubcellSizes{ 4096, 6144, 8192, 10240, 12288, 14336, 16384 };
+	inline constexpr uint32_t kMinSubcellSize = 4096;
+	inline constexpr uint32_t kMaxSubcellSize = 16384;
+	inline constexpr uint32_t kSubcellSizeStep = 2048;
+	inline constexpr auto kSubcellSizes = [] {
+		std::array<uint32_t, (kMaxSubcellSize - kMinSubcellSize) / kSubcellSizeStep + 1> sizes{};
+		for (size_t i = 0; i < sizes.size(); ++i)
+			sizes[i] = kMinSubcellSize + static_cast<uint32_t>(i) * kSubcellSizeStep;
+		return sizes;
+	}();
 	inline constexpr int kGridRadius = 1;
-	inline constexpr size_t kGridCapacity = (2 * kGridRadius + 1) * (2 * kGridRadius + 1);
-	inline constexpr size_t kPredictiveCapacity = 16;  // 5x5 outer ring: twelve sides, four corners.
+	inline constexpr int kGridDiameter = 2 * kGridRadius + 1;
+	inline constexpr size_t kGridCapacity = kGridDiameter * kGridDiameter;
+	inline constexpr int kPredictiveRadius = kGridRadius + 1;
+	inline constexpr int kPredictiveDiameter = 2 * kPredictiveRadius + 1;
+	inline constexpr size_t kPredictiveCapacity = kPredictiveDiameter * kPredictiveDiameter - kGridCapacity;
+	inline constexpr size_t kPredictiveCornerCount = 4;
+	inline constexpr size_t kPredictiveSideCount = kPredictiveCapacity - kPredictiveCornerCount;
 
 	/** @brief Identifies one runtime subcell, independent of any on-disk cache. */
 	struct SubcellKey
@@ -38,10 +51,10 @@ namespace DX12
 	inline std::optional<std::array<SubcellKey, kGridCapacity>> Neighborhood(uint32_t scope, uint32_t size, double x, double y)
 	{
 		const auto centerX = Coordinate(x, size), centerY = Coordinate(y, size);
-		if (!scope || !centerX || !centerY || *centerX <= std::numeric_limits<int64_t>::min() + 2 ||
-			*centerX >= std::numeric_limits<int64_t>::max() - 2 ||
-			*centerY <= std::numeric_limits<int64_t>::min() + 2 ||
-			*centerY >= std::numeric_limits<int64_t>::max() - 2)
+		if (!scope || !centerX || !centerY || *centerX <= std::numeric_limits<int64_t>::min() + kPredictiveRadius ||
+			*centerX >= std::numeric_limits<int64_t>::max() - kPredictiveRadius ||
+			*centerY <= std::numeric_limits<int64_t>::min() + kPredictiveRadius ||
+			*centerY >= std::numeric_limits<int64_t>::max() - kPredictiveRadius)
 			return std::nullopt;
 		std::array<SubcellKey, kGridCapacity> tiles{};
 		size_t index = 0;
@@ -53,7 +66,7 @@ namespace DX12
 		return tiles;
 	}
 
-	/** @brief Companion-only 5x5 outer ring. First twelve are sides, final four are corners. */
+	/** @brief Preparation-only 5x5 outer ring. First twelve are sides, final four are corners. */
 	inline std::optional<std::array<SubcellKey, kPredictiveCapacity>> PredictiveNeighborhood(
 		uint32_t scope, uint32_t size, double x, double y)
 	{
@@ -62,14 +75,38 @@ namespace DX12
 			return std::nullopt;
 		const auto origin = center->front();
 		std::array<SubcellKey, kPredictiveCapacity> tiles{};
-		size_t side = 0, corner = 12;
-		for (int64_t dy = -2; dy <= 2; ++dy)
-			for (int64_t dx = -2; dx <= 2; ++dx) {
-				if (std::max(std::abs(dx), std::abs(dy)) != 2)
+		size_t side = 0, corner = kPredictiveSideCount;
+		for (int64_t dy = -kPredictiveRadius; dy <= kPredictiveRadius; ++dy)
+			for (int64_t dx = -kPredictiveRadius; dx <= kPredictiveRadius; ++dx) {
+				if (std::max(std::abs(dx), std::abs(dy)) != kPredictiveRadius)
 					continue;
-				const bool outerCorner = std::abs(dx) == 2 && std::abs(dy) == 2;
+				const bool outerCorner = std::abs(dx) == kPredictiveRadius && std::abs(dy) == kPredictiveRadius;
 				tiles[outerCorner ? corner++ : side++] = { scope, origin.x + dx, origin.y + dy };
 			}
 		return tiles;
 	}
+
+	struct LoadingTileRequest
+	{
+		SubcellKey key;
+		bool predictive = false;
+		bool corner = false;
+	};
+
+	/** @brief Uses neutral movement and the existing active/sides/corners hierarchy for a queued destination. */
+	inline std::optional<std::array<LoadingTileRequest, kGridCapacity + kPredictiveCapacity>> LoadingPreparationOrder(
+		uint32_t scope, uint32_t size, double x, double y)
+	{
+		const auto active = Neighborhood(scope, size, x, y);
+		const auto predictive = PredictiveNeighborhood(scope, size, x, y);
+		if (!active || !predictive)
+			return std::nullopt;
+		std::array<LoadingTileRequest, kGridCapacity + kPredictiveCapacity> order{};
+		for (size_t i = 0; i < active->size(); ++i)
+			order[i] = { (*active)[i], false, false };
+		for (size_t i = 0; i < predictive->size(); ++i)
+			order[active->size() + i] = { (*predictive)[i], true, i >= kPredictiveSideCount };
+		return order;
+	}
+
 }

@@ -2,12 +2,12 @@
 #include "Compatibility.h"
 #include "Deferred.h"
 #include "Features/Upscaling.h"
+#include "Features/DX12/DX12Control.h"
 #include "FrameAnnotations.h"
 #include "Globals.h"
 #include "Hooks.h"
 #include "I18n/I18n.h"
 #include "Menu.h"
-#include "Materials/SharedMaterialHooks.h"
 #include "Menu/ThemeManager.h"
 #include "NativeMenu/NativeMenu.h"
 #include "ShaderCache.h"
@@ -106,7 +106,6 @@ void MessageHandler(SKSE::MessagingInterface::Message* message)
 				Hooks::Install();
 				EngineFix::InstallOnPostPostLoadFixes();
 				FrameAnnotations::OnPostPostLoad();
-				SharedMaterialHooks::Install();
 
 				globals::state->flatWorldMapLoaded = GetModuleHandleW(L"FlatMapMarkersSSE.dll") != nullptr;
 				if (globals::state->flatWorldMapLoaded)
@@ -114,6 +113,8 @@ void MessageHandler(SKSE::MessagingInterface::Message* message)
 
 				auto shaderCache = globals::shaderCache;
 
+				// Select the boot-latched material backend before any legacy material hooks install.
+				globals::features::dx12Control.InitializeMaterialAuthority();
 				// Run feature PostPostLoad() first so features can disable themselves if needed
 				Feature::ForEachLoadedFeature("PostPostLoad", [](Feature* feature) { feature->PostPostLoad(); });
 
@@ -218,7 +219,7 @@ bool Load()
 	auto log = spdlog::default_logger();
 	log->set_level(state->GetLogLevel());
 
-	for (const auto& plugin : Compatibility::incompatiblePlugins) {
+	for (const auto& plugin : Compatibility::GetIncompatiblePlugins()) {
 		if (std::filesystem::exists(plugin.dll)) {
 			auto dllName = stl::utf16_to_utf8(plugin.dll).value_or("<unicode conversion error>"s);
 			auto errorMessage = plugin.reason.empty() ?

@@ -29,7 +29,7 @@ namespace DX12Native::MaterialFrameContract
 	}
 
 	enum class SurfaceCorrespondence { DepthOnly, ExactRasterIdentity };
-	enum class LightingCoverage { SelectedPointLights, CompleteRasterReplacement, EnvironmentOnly };
+	enum class LightingCoverage { SelectedPointLights, CompleteRasterReplacement, EnvironmentOnly, SelectedDirectLights };
 
 	enum class SignalEncoding { MaterialModulated, Demodulated, Reconstructed, FinalLinearOpaqueColor, Visibility };
 	enum class ReconstructionState { Raw, Spatial, Temporal };
@@ -68,6 +68,22 @@ namespace DX12Native::MaterialFrameContract
 			status == SurfaceStatus::EvaluatedBase && correspondence == SurfaceCorrespondence::ExactRasterIdentity &&
 			CompleteOpaque(admission) ? OpaqueOwner::Native : OpaqueOwner::Raster;
 	}
+
+	/** @brief Conservative same-pixel history, not motion-vector reprojection. */
+	struct StationaryHistoryIdentity
+	{
+		uint32_t frame = 0, pluginFrame = 0, width = 0, height = 0, scope = 0, available = 0;
+		uint64_t geometryRevision = 0, materialRevision = 0, environmentRevision = 0;
+		bool reset = true;
+		constexpr bool CanReuse(const StationaryHistoryIdentity& previous) const
+		{
+			return !reset && frame - previous.frame == 1u && pluginFrame - previous.pluginFrame == 1u &&
+				width && height && width == previous.width && height == previous.height &&
+				scope && scope == previous.scope && available && available == previous.available &&
+				geometryRevision == previous.geometryRevision && materialRevision == previous.materialRevision &&
+				environmentRevision == previous.environmentRevision;
+		}
+	};
 
 	struct PixelJitter
 	{

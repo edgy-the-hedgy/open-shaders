@@ -1,44 +1,39 @@
 #include "DX12NativeShadowTrace.h"
 #include "DX12GpuRetirement.h"
+#include "DX12NativeLightWorker.h"
+#include "Utils/FileSystem.h"
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstring>
 #include <directx/d3dx12.h>
 #include <fstream>
 #include <ranges>
 #include <stdexcept>
+#include <tuple>
 
 namespace DX12Native
 {
 	namespace
 	{
-		constexpr uint32_t kRecords = 3;
-
-		void Check(HRESULT result)
-		{
-			if (FAILED(result))
-				throw std::runtime_error("DX12 Native Scene shadowmask operation failed");
-		}
+		constexpr uint32_t kRecords = kLightRecordsPerEmitter;
+		constexpr std::streamoff kMaxShadowBytecodeBytes = 4 * VideoMemoryBudget::kMiB;
+		constexpr uint32_t kShadowThreadGroupSize = 8;
 		struct Constants
 		{
 			Matrix projectionInverse, viewInverse;
 			float4 positionAdjust;
-			uint32_t width, height, frame, density;
-			uint32_t lightCount;
-			float minimum = 0.5f, maximum = 60000.0f;
-			uint32_t reserved = 0;
-			float shadowReachMultiplier = 1.0f, shadowFadeRange = 0.5f, shadowFalloffCurve = 1.0f;
-			float nearLightRadius = 0.0f;
-			uint32_t nearLightExclusion = 0, padding0 = 0;
-			uint32_t padding1 = 0, padding2 = 0;
+			uint32_t width, height, lightCount, frameIndex;
+			uint32_t physicalWidth, physicalHeight, lightSlotCount;
 		};
+		static_assert(sizeof(Constants) <= D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
 		winrt::com_ptr<ID3D12Resource> UploadBuffer(ID3D12Device* device, UINT64 bytes)
 		{
 			const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
 			const auto desc = CD3DX12_RESOURCE_DESC::Buffer(bytes);
 			winrt::com_ptr<ID3D12Resource> result;
-			Check(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE,
+			DX::ThrowIfFailed(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE,
 				&desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(result.put())));
 			return result;
 		}
@@ -46,7 +41,7 @@ namespace DX12Native
 		{
 			const D3D12_RANGE noRead{ 0, 0 };
 			void* mapped = nullptr;
-			Check(resource->Map(0, &noRead, &mapped));
+			DX::ThrowIfFailed(resource->Map(0, &noRead, &mapped));
 			std::memcpy(mapped, bytes, count);
 			resource->Unmap(0, nullptr);
 		}
@@ -55,29 +50,31 @@ namespace DX12Native
 	ShadowMaskTrace::~ShadowMaskTrace()
 	{
 		current.reset();
-		const auto ready = [fence = completion](const ShadowMaskFrame& frame) {
-			ID3D12Fence* producerFence = frame.readyFence ? frame.readyFence.get() : fence.get();
-			return GpuFenceRetired(producerFence, frame.readyValue) &&
-			       std::ranges::all_of(frame.consumers, [](const auto& consumer) {
-					   return GpuFenceRetired(consumer.first.get(), consumer.second);
-				   });
-		};
-		for (auto& slot : slots)
-			if (slot && !ready(*slot))
-				RetireWhenGpuDone(std::move(slot), backend.d3d12Device, ready);
+		for (auto& slot : slots) {
+			if (!slot)
+				continue;
+			std::vector<FenceDependency> dependencies;
+			dependencies.push_back(FencePoint(slot->readyFence ? slot->readyFence.get() : completion.get(), slot->readyValue));
+			RetireAfterFences(std::tuple{ roots[slot->pipelineVariant >= kShadowVariantCount], pipelines[slot->pipelineVariant], std::move(slot) }, backend.d3d12Device, std::move(dependencies));
+		}
 	}
 
-	void ShadowMaskTrace::Initialize(const GraphicsBackend& requested)
+	void ShadowMaskTrace::Initialize(const GraphicsBackend& requested, uint32_t variant)
 	{
-		if (pipeline)
+		if (pipelines[variant])
 			return;
-		backend = requested;
+		if (!completion)
+			backend = requested;
 		auto* device = backend.d3d12Device.get();
 		if (!device || !backend.commandQueue)
 			throw std::runtime_error("DX12 Native Scene queue unavailable");
-		std::ifstream bytecode("Data/Shaders/DX12NativeScene/ShadowMask.dxil",
+		const bool slices = variant >= kShadowVariantCount;
+		auto& root = roots[slices];
+		constexpr const char* names[]{ "ShadowOffload.dxil", "ShadowRTQuality.dxil", "ShadowRTPerformance.dxil",
+			"ShadowRTQualitySlices.dxil", "ShadowRTPerformanceSlices.dxil" };
+		std::ifstream bytecode(Util::PathHelpers::GetShadersPath() / "DX12NativeScene" / names[variant],
 			std::ios::binary | std::ios::ate);
-		if (!bytecode || bytecode.tellg() <= 0 || bytecode.tellg() > 4 * 1024 * 1024)
+		if (!bytecode || bytecode.tellg() <= 0 || bytecode.tellg() > kMaxShadowBytecodeBytes)
 			throw std::runtime_error("Native Scene shadowmask DXIL unavailable");
 		std::vector<char> shader(static_cast<size_t>(bytecode.tellg()));
 		bytecode.seekg(0);
@@ -86,7 +83,7 @@ namespace DX12Native
 
 		D3D12_DESCRIPTOR_RANGE ranges[2]{};
 		ranges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1, 0, 0 };
-		ranges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 0 };
+		ranges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, slices ? 2u : 1u, 0, 0, 0 };
 		D3D12_ROOT_PARAMETER params[5]{};
 		params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
 		params[0].Descriptor.ShaderRegister = 0;  // t0 TLAS
@@ -102,41 +99,41 @@ namespace DX12Native
 			UINT(std::size(params)), params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE
 		};
 		winrt::com_ptr<ID3DBlob> serialized, errors;
-		Check(D3D12SerializeRootSignature(&signature, D3D_ROOT_SIGNATURE_VERSION_1,
+		DX::ThrowIfFailed(D3D12SerializeRootSignature(&signature, D3D_ROOT_SIGNATURE_VERSION_1,
 			serialized.put(), errors.put()));
-		winrt::com_ptr<ID3D12RootSignature> newRoot;
-		Check(device->CreateRootSignature(0, serialized->GetBufferPointer(),
-			serialized->GetBufferSize(), IID_PPV_ARGS(newRoot.put())));
+		auto newRoot = root;
+		if (!newRoot)
+			DX::ThrowIfFailed(device->CreateRootSignature(0, serialized->GetBufferPointer(),
+				serialized->GetBufferSize(), IID_PPV_ARGS(newRoot.put())));
 		D3D12_COMPUTE_PIPELINE_STATE_DESC pipelineDesc{};
 		pipelineDesc.pRootSignature = newRoot.get();
 		pipelineDesc.CS = { shader.data(), shader.size() };
 		winrt::com_ptr<ID3D12PipelineState> newPipeline;
-		Check(device->CreateComputePipelineState(&pipelineDesc, IID_PPV_ARGS(newPipeline.put())));
-		winrt::com_ptr<ID3D12Fence> newCompletion;
-		Check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(newCompletion.put())));
+		DX::ThrowIfFailed(device->CreateComputePipelineState(&pipelineDesc, IID_PPV_ARGS(newPipeline.put())));
+		auto newCompletion = completion;
+		if (!newCompletion)
+			DX::ThrowIfFailed(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(newCompletion.put())));
+		if (slices && !visibilityReady.fence12)
+			visibilityReady.Create(device, backend.d3d11Device.get(), "DX12NativeScene::LightVisibilityReady");
 		root = std::move(newRoot);
-		pipeline = std::move(newPipeline);
+		pipelines[variant] = std::move(newPipeline);
 		completion = std::move(newCompletion);
 	}
 
-	void ShadowMaskTrace::Poll(uint32_t frame)
+	void ShadowMaskTrace::BeginFrame(uint32_t frame)
 	{
-		if (current && current->frame != frame) current.reset();
+		if (current && current->frame != frame)
+			current.reset();
+		if (!completion)
+			return;
+		const uint64_t finished = completion->GetCompletedValue();
+		if (finished == UINT64_MAX)
+			return;
 		for (auto& slot : slots) {
-			if (!slot) continue;
-			if (slot->readyValue == UINT64_MAX && slot->readyFence && backend.commandQueue &&
-				slot->readyFence->GetCompletedValue() != UINT64_MAX) {
-				const uint64_t rescue = nextFence + 1;
-				if (SUCCEEDED(backend.commandQueue->Signal(slot->readyFence.get(), rescue))) {
-					nextFence = rescue;
-					slot->readyValue = rescue;
-				}
-			}
-			if (slot.use_count() == 1 && GpuFenceRetired(slot->readyFence.get(), slot->readyValue) &&
-				std::ranges::all_of(slot->consumers, [](const auto& c) { return GpuFenceRetired(c.first.get(), c.second); })) {
+			if (slot && slot.use_count() == 1 && slot->readyValue != UINT64_MAX && slot->readyValue <= finished) {
 				slot->raster.reset();
 				slot->scene.reset();
-				slot->consumers.clear();
+				slot->nativeLights.reset();
 			}
 		}
 	}
@@ -145,54 +142,97 @@ namespace DX12Native
 		std::shared_ptr<const RasterFrame> raster, std::shared_ptr<const TopLevel> scene,
 		std::span<const DX12::PreparedLight> lights, uint32_t frame, const ShadowTraceControls& controls)
 	{
-		if (current && current->frame == frame && current->raster == raster && current->scene == scene)
+		if (current && current->frame == frame)
 			return;
 		current.reset();
-		Poll(frame);
+		ReportSkipped(Outcome::None);
+		const auto quality = controls.quality;
+		const bool slices = controls.captureLightVisibility && quality != kShadowQualityOffloading;
+		const auto variant = ShadowTraceVariant(quality, slices);
+		const auto fallback = [&] {
+			auto combined = controls;
+			combined.captureLightVisibility = false;
+			Dispatch(requested, raster, scene, lights, frame, combined);
+		};
+		const bool uploadLights = !controls.nativeLights || controls.uploadLights;
+		const auto& pipeline = pipelines[variant];
+		if (initializationFailed[variant]) {
+			if (slices)
+				return fallback();
+			return ReportSkipped(Outcome::InitializationFailed);
+		}
 		if (!raster || !raster->depth || !raster->depth->resource || !raster->readyFence ||
-			!raster->cameraValid || raster->frame != frame ||
-			!MaterialFrameContract::ValidProducerSignal(raster->readyValue, raster->readyFence->GetCompletedValue())) {
-			return;
+			!raster->cameraValid) {
+			return ReportSkipped(Outcome::NoRaster);
 		}
-		if (!scene || !scene->acceleration || !scene->producerFence ||
-			!MaterialFrameContract::ValidProducerSignal(scene->producerValue, scene->producerFence->GetCompletedValue())) {
-			return;
+		if (!scene || !scene->acceleration || !scene->producerFence) {
+			return ReportSkipped(Outcome::NoScene);
 		}
+		if (controls.nativeLights && (!controls.nativeLights->buffer || controls.nativeLights->scope != scene->scope))
+			return ReportSkipped(Outcome::NoLights);
 		if (lights.empty()) {
-			return;
+			return ReportSkipped(Outcome::NoLights);
 		}
 		std::shared_ptr<ShadowMaskFrame> attempted;
 		bool submitted = false;
 		try {
-			Initialize(requested);
+			Initialize(requested, variant);
 			const uint64_t finished = completion->GetCompletedValue();
-			if (finished == UINT64_MAX) return;
+			if (finished == UINT64_MAX)
+				return ReportSkipped(Outcome::Failed);
+			// Retire idle experimental allocations when leaving the experiment.
+			if (!slices) {
+				for (auto& slot : slots)
+					if (slot && slot->lightVisibility && slot.use_count() == 1 && slot->readyValue <= finished)
+						slot.reset();
+			}
 			auto it = std::ranges::find_if(slots, [&](const auto& slot) {
 				if (!slot)
 					return true;
-				return slot.use_count() == 1 && slot->readyValue != UINT64_MAX && slot->readyValue <= finished &&
-				       std::ranges::all_of(slot->consumers, [](const auto& c) {
-						   return GpuFenceRetired(c.first.get(), c.second);
-					   });
+				return slot.use_count() == 1 && slot->readyValue <= finished;
 			});
 			if (it == slots.end()) {
-				return;
+				return ReportSkipped(Outcome::NoFreeSlot);
 			}
 			auto& slot = *it;
 			const UINT width = controls.viewportWidth, height = controls.viewportHeight;
 			if (!width || !height || width > raster->width || height > raster->height) {
-				return;
+				return ReportSkipped(Outcome::ViewportMismatch);
 			}
-			const bool fresh = !slot || slot->width != width || slot->height != height;
+			const uint32_t maskWidth = ShadowPhysicalWidth(ShadowLogicalExtent(width, quality), quality);
+			const uint32_t maskHeight = ShadowLogicalExtent(height, quality);
+			const uint32_t lightCount = uint32_t(std::min(lights.size(), size_t(kMaxShadowLights)));
+			const uint64_t lightBytes = uint64_t(std::bit_ceil(lightCount)) * kRecords * sizeof(std::array<float, 4>);
+			const uint32_t lightSlotCount = ShadowVisibilityCount(lightCount, slices);
+			// Always create an array SRV, including when only one light is submitted.
+			const uint32_t lightCapacity = ShadowVisibilityCapacity(lightSlotCount);
+			const bool fresh = !slot || slot->maskWidth != maskWidth || slot->maskHeight != maskHeight ||
+			                   slot->pipelineVariant != variant || slot->lightVisibilityCapacity != lightCapacity;
 			if (fresh) {
 				auto replacement = std::make_shared<ShadowMaskFrame>();
+				D3D12_FEATURE_DATA_FORMAT_SUPPORT support{ DXGI_FORMAT_R32G32_FLOAT };
+				DX::ThrowIfFailed(requested.d3d12Device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support)));
+				if (!(support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE) || !(support.Support1 & D3D12_FORMAT_SUPPORT1_SHADER_LOAD))
+					throw std::runtime_error("Offload mask format unavailable");
 				const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
 				const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(
-					DXGI_FORMAT_R32G32B32A32_FLOAT, width, height, 1, 1, 1, 0,
+					DXGI_FORMAT_R32G32_FLOAT, maskWidth, maskHeight, 1, 1, 1, 0,
 					D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-				const uint64_t allocation = requested.d3d12Device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
+				uint64_t allocation = requested.d3d12Device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
 				if (!allocation || allocation == UINT64_MAX)
 					throw std::runtime_error("Native shadowmask allocation unsupported");
+				if (slices) {
+					D3D12_FEATURE_DATA_FORMAT_SUPPORT sliceSupport{ DXGI_FORMAT_R8_UNORM };
+					DX::ThrowIfFailed(requested.d3d12Device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &sliceSupport, sizeof(sliceSupport)));
+					if (!(sliceSupport.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE) || !(sliceSupport.Support1 & D3D12_FORMAT_SUPPORT1_SHADER_LOAD))
+						throw std::runtime_error("Native light visibility format unavailable");
+					const auto sliceDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8_UNORM, maskWidth, maskHeight,
+						static_cast<UINT16>(lightCapacity), 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS);
+					const uint64_t sliceBytes = requested.d3d12Device->GetResourceAllocationInfo(0, 1, &sliceDesc).SizeInBytes;
+					if (!sliceBytes || sliceBytes == UINT64_MAX || allocation > UINT64_MAX - sliceBytes)
+						throw std::runtime_error("Native light visibility allocation unsupported");
+					allocation += sliceBytes;
+				}
 				uint64_t tracked = 0;
 				for (const auto& existing : slots) {
 					if (!existing)
@@ -205,63 +245,103 @@ namespace DX12Native
 				if (allocation > allowance || tracked > allowance - allocation)
 					throw std::runtime_error("Native shadowmask allocation deferred by DXGI budget");
 				replacement->allocationBytes = allocation;
-				Check(requested.d3d12Device->CreateCommittedResource(&heap,
+				replacement->pipelineVariant = variant;
+				replacement->lightVisibilityCapacity = lightCapacity;
+				DX::ThrowIfFailed(requested.d3d12Device->CreateCommittedResource(&heap,
 					D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
 					nullptr, IID_PPV_ARGS(replacement->mask.put())));
 				replacement->mask->SetName(L"DX12NativeScene::RawShadowMask");
+				if (slices) {
+					D3D11_TEXTURE2D_DESC sliceDesc{};
+					sliceDesc.Width = maskWidth;
+					sliceDesc.Height = maskHeight;
+					sliceDesc.MipLevels = 1;
+					sliceDesc.ArraySize = lightCapacity;
+					sliceDesc.Format = DXGI_FORMAT_R8_UNORM;
+					sliceDesc.SampleDesc.Count = 1;
+					sliceDesc.Usage = D3D11_USAGE_DEFAULT;
+					sliceDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+					replacement->lightVisibility = std::make_unique<WrappedResource>(sliceDesc,
+						requested.d3d11Device.get(), requested.d3d12Device.get(), "DX12NativeScene::LightVisibility");
+				}
 				D3D12_DESCRIPTOR_HEAP_DESC descriptors{};
 				descriptors.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 				descriptors.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-				descriptors.NumDescriptors = 2;
-				Check(requested.d3d12Device->CreateDescriptorHeap(
+				descriptors.NumDescriptors = slices ? 3u : 2u;
+				DX::ThrowIfFailed(requested.d3d12Device->CreateDescriptorHeap(
 					&descriptors, IID_PPV_ARGS(replacement->descriptors.put())));
-				replacement->cameraUpload = UploadBuffer(requested.d3d12Device.get(), 256);
-				replacement->lightUpload = UploadBuffer(requested.d3d12Device.get(),
-					sizeof(std::array<float, 4>) * kMaxShadowLights * kRecords);
-				Check(requested.d3d12Device->CreateCommandAllocator(
+				if (slices) {
+					descriptors.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+					descriptors.NumDescriptors = 1;
+					DX::ThrowIfFailed(requested.d3d12Device->CreateDescriptorHeap(&descriptors, IID_PPV_ARGS(replacement->clearDescriptors.put())));
+				}
+				replacement->cameraUpload = UploadBuffer(requested.d3d12Device.get(), D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+				if (uploadLights)
+					replacement->lightUpload = UploadBuffer(requested.d3d12Device.get(), lightBytes);
+				DX::ThrowIfFailed(requested.d3d12Device->CreateCommandAllocator(
 					D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(replacement->allocator.put())));
-				Check(requested.d3d12Device->CreateCommandList(0,
+				DX::ThrowIfFailed(requested.d3d12Device->CreateCommandList(0,
 					D3D12_COMMAND_LIST_TYPE_DIRECT, replacement->allocator.get(),
 					pipeline.get(), IID_PPV_ARGS(replacement->commands.put())));
 				slot = std::move(replacement);
 			} else {
-				Check(slot->allocator->Reset());
-				Check(slot->commands->Reset(slot->allocator.get(), pipeline.get()));
+				if (uploadLights && (!slot->lightUpload || slot->lightUpload->GetDesc().Width < lightBytes)) {
+					slot->lightRecordsUploaded = false;
+					slot->lightUpload = UploadBuffer(requested.d3d12Device.get(), lightBytes);
+				}
+				DX::ThrowIfFailed(slot->allocator->Reset());
+				DX::ThrowIfFailed(slot->commands->Reset(slot->allocator.get(), pipeline.get()));
 			}
-			slot->consumers.clear();
 			slot->readyValue = UINT64_MAX;
 			slot->readyFence = completion;
 			attempted = slot;
-			slot->raster = std::move(raster);
-			slot->scene = std::move(scene);
+			// Retain the arguments locally for a combined-mask retry if the optional producer fails.
+			slot->raster = raster;
+			slot->scene = scene;
+			slot->nativeLights = controls.nativeLights;
+			slot->uploadedLights = uploadLights;
 			slot->frame = frame;
 			slot->width = width;
 			slot->height = height;
+			slot->maskWidth = maskWidth;
+			slot->maskHeight = maskHeight;
+			slot->quality = quality;
+			slot->lightVisibilityValue = 0;
+			slot->visibilityLights.clear();
+			if (slices)
+				slot->visibilityLights.assign(lights.begin(), lights.begin() + lightSlotCount);
 			const Constants camera{
 				slot->raster->camera.CameraProjInverse,
 				slot->raster->camera.CameraViewInverse,
 				slot->raster->camera.CameraPosAdjust,
-				width, height, frame, std::min(controls.densityMode, 7u),
-				uint32_t(std::min(lights.size(), size_t(kMaxShadowLights))),
-				0.5f, 60000.0f, 0u,
-				std::clamp(controls.reachMultiplier, 0.1f, 64.0f),
-				std::clamp(controls.fadeRange, 0.0f, 1.0f),
-				std::clamp(controls.falloffCurve, 0.0f, 2.5f),
-				std::clamp(controls.nearLightRadius, 0.0f, 512.0f),
-				controls.nearLightExclusion ? 1u : 0u,
-				0u, 0u, 0u
+				width, height, lightCount, frame, maskWidth, maskHeight, lightSlotCount
 			};
-			static_assert(sizeof(Constants) <= 256);
 			WriteUpload(slot->cameraUpload.get(), &camera, sizeof(camera));
 
-			std::array<std::array<float, 4>, kMaxShadowLights * kRecords> records{};
-			for (size_t i = 0; i < camera.lightCount; ++i) {
-				const auto& light = lights[i];
-				records[i * 3 + 0] = { light.position.x, light.position.y, light.position.z, light.radius };
-				records[i * 3 + 1] = { light.color.x, light.color.y, light.color.z, light.fade };
-				records[i * 3 + 2] = { light.emitterRadius, light.falloffExponent, float(light.flags), 0 };
+			if (slot->uploadedLights) {
+				auto& records = slot->lightRecords;
+				const size_t recordCount = size_t(lightCount) * kRecords;
+				bool changed = !slot->lightRecordsUploaded || records.size() != recordCount;
+				slot->lightRecordsUploaded = false;
+				records.resize(recordCount);
+				for (size_t i = 0; i < lightCount; ++i) {
+					const auto packed = PackNativeLight(lights[i]);
+					auto* destination = records.data() + i * kRecords;
+					if (std::memcmp(destination, packed.data(), sizeof(packed)) != 0) {
+						std::memcpy(destination, packed.data(), sizeof(packed));
+						changed = true;
+					}
+				}
+				if (changed)
+					WriteUpload(slot->lightUpload.get(), records.data(), records.size() * sizeof(records.front()));
+				slot->lightRecordsUploaded = true;
 			}
-			WriteUpload(slot->lightUpload.get(), records.data(), sizeof(records));
+			slot->debugLights.clear();
+			slot->debugPreparedCount = 0;
+			if (controls.captureDebugLights) {
+				slot->debugLights.assign(lights.begin(), lights.begin() + lightCount);
+				slot->debugPreparedCount = std::min(controls.debugPreparedCount, lightCount);
+			}
 
 			const UINT step = requested.d3d12Device->GetDescriptorHandleIncrementSize(
 				D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -275,21 +355,33 @@ namespace DX12Native
 				slot->raster->depth->resource.get(), &depth, cpu);
 			cpu.ptr += step;
 			D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
-			uav.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+			uav.Format = DXGI_FORMAT_R32G32_FLOAT;
 			uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
 			requested.d3d12Device->CreateUnorderedAccessView(slot->mask.get(), nullptr, &uav, cpu);
 
+			ID3D12Resource* lightMask = slices ? slot->lightVisibility->resource.get() : nullptr;
+			D3D12_CPU_DESCRIPTOR_HANDLE clearCpu{};
+			if (slices) {
+				cpu.ptr += step;
+				D3D12_UNORDERED_ACCESS_VIEW_DESC lightUav{};
+				lightUav.Format = DXGI_FORMAT_R8_UNORM;
+				lightUav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+				lightUav.Texture2DArray.ArraySize = lightCapacity;
+				clearCpu = slot->clearDescriptors->GetCPUDescriptorHandleForHeapStart();
+				requested.d3d12Device->CreateUnorderedAccessView(lightMask, nullptr, &lightUav, cpu);
+				requested.d3d12Device->CreateUnorderedAccessView(lightMask, nullptr, &lightUav, clearCpu);
+			}
 			auto* command = slot->commands.get();
 			ID3D12DescriptorHeap* heaps[]{ slot->descriptors.get() };
 			command->SetDescriptorHeaps(1, heaps);
-			command->SetComputeRootSignature(root.get());
+			command->SetComputeRootSignature(roots[slices].get());
 			command->SetPipelineState(pipeline.get());
 			command->SetComputeRootShaderResourceView(0, slot->scene->acceleration->GetGPUVirtualAddress());
 			auto gpu = slot->descriptors->GetGPUDescriptorHandleForHeapStart();
 			command->SetComputeRootDescriptorTable(1, gpu);
 			gpu.ptr += step;
 			command->SetComputeRootDescriptorTable(2, gpu);
-			command->SetComputeRootShaderResourceView(3, slot->lightUpload->GetGPUVirtualAddress());
+			command->SetComputeRootShaderResourceView(3, (slot->uploadedLights ? slot->lightUpload : slot->nativeLights->buffer)->GetGPUVirtualAddress());
 			command->SetComputeRootConstantBufferView(4, slot->cameraUpload->GetGPUVirtualAddress());
 
 			const auto depthStart = CD3DX12_RESOURCE_BARRIER::Transition(
@@ -302,10 +394,26 @@ namespace DX12Native
 					D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 				command->ResourceBarrier(1, &maskStart);
 			}
-			// The output remains full-resolution regardless of sparse trace density.
-			command->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
+			if (slices) {
+				const auto start = CD3DX12_RESOURCE_BARRIER::Transition(lightMask, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+				command->ResourceBarrier(1, &start);
+				auto lightGpu = slot->descriptors->GetGPUDescriptorHandleForHeapStart();
+				lightGpu.ptr += 2ull * step;
+				constexpr float lit[4]{ 1.0f, 1.0f, 1.0f, 1.0f };
+				command->ClearUnorderedAccessViewFloat(lightGpu, clearCpu, lightMask, lit, 0, nullptr);
+				const auto cleared = CD3DX12_RESOURCE_BARRIER::UAV(lightMask);
+				command->ResourceBarrier(1, &cleared);
+			}
+			command->Dispatch((maskWidth + kShadowThreadGroupSize - 1) / kShadowThreadGroupSize,
+				(maskHeight + kShadowThreadGroupSize - 1) / kShadowThreadGroupSize, 1);
 			const auto uavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(slot->mask.get());
 			command->ResourceBarrier(1, &uavBarrier);
+			if (slices) {
+				const auto written = CD3DX12_RESOURCE_BARRIER::UAV(lightMask);
+				command->ResourceBarrier(1, &written);
+				const auto end = CD3DX12_RESOURCE_BARRIER::Transition(lightMask, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+				command->ResourceBarrier(1, &end);
+			}
 			const std::array end{
 				CD3DX12_RESOURCE_BARRIER::Transition(slot->mask.get(),
 					D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON),
@@ -313,52 +421,72 @@ namespace DX12Native
 					D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON)
 			};
 			command->ResourceBarrier(UINT(end.size()), end.data());
-			Check(command->Close());
+			DX::ThrowIfFailed(command->Close());
 
 			// These are queue-side dependencies, never CPU waits or render-thread stalls.
-			Check(requested.commandQueue->Wait(slot->raster->readyFence.get(), slot->raster->readyValue));
-			Check(requested.commandQueue->Wait(slot->scene->producerFence.get(), slot->scene->producerValue));
+			DX::ThrowIfFailed(requested.commandQueue->Wait(slot->raster->readyFence.get(), slot->raster->readyValue));
+			DX::ThrowIfFailed(requested.commandQueue->Wait(slot->scene->producerFence.get(), slot->scene->producerValue));
 			ID3D12CommandList* lists[]{ command };
 			requested.commandQueue->ExecuteCommandLists(1, lists);
 			submitted = true;
+			if (slices) {
+				const auto ready = visibilityReady.Next();
+				DX::ThrowIfFailed(requested.commandQueue->Signal(visibilityReady.fence12.get(), ready));
+				slot->lightVisibilityFence = visibilityReady.fence11;
+				slot->lightVisibilityValue = ready;
+			}
 			const uint64_t value = nextFence + 1;
-			Check(requested.commandQueue->Signal(completion.get(), value));
+			DX::ThrowIfFailed(requested.commandQueue->Signal(completion.get(), value));
 			nextFence = value;
 			slot->readyValue = value;
 			current = slot;
-		} catch (const std::exception&) {
+			lastLightCount.store(lightCount, std::memory_order_relaxed);
+			lastVisibilityCount.store(lightSlotCount, std::memory_order_relaxed);
+			lastOutcome.store(Outcome::Dispatched, std::memory_order_relaxed);
+			failureLogged = false;
+		} catch (...) {
+			ReportSkipped(Outcome::Failed);
+			initializationFailed[variant] = !pipeline;
 			if (attempted) {
 				if (submitted && completion && backend.commandQueue) {
 					// ExecuteCommandLists succeeded. A queue-tail marker retires the
 					// submission even if its original Signal failed.
 					const uint64_t rescue = nextFence + 1;
-					if (SUCCEEDED(backend.commandQueue->Signal(completion.get(), rescue))) {
+					if (const HRESULT hr = backend.commandQueue->Signal(completion.get(), rescue); SUCCEEDED(hr)) {
 						nextFence = rescue;
 						attempted->readyValue = rescue;
+					} else {
+						logger::warn("[DX12NativeScene] Shadow recovery signal failed; retaining slot: {}", DX::com_exception(hr).what());
 					}
 				} else if (!submitted) {
 					attempted->readyValue = 0;
 					attempted->raster.reset();
 					attempted->scene.reset();
+					attempted->nativeLights.reset();
+					// A recorded but unsubmitted fresh resource still has its initial state.
+					// Drop this slot rather than reuse it with the submitted-state assumption.
+					if (slices) {
+						for (auto& entry : slots)
+							if (entry == attempted)
+								entry.reset();
+					}
 				}
 			}
-			// This frame is unavailable; baseline raster shadows are unaffected.
+			if (!failureLogged) {
+				failureLogged = true;
+				try {
+					throw;
+				} catch (const winrt::hresult_error& error) {
+					logger::warn("[DX12NativeScene] Shadow dispatch failed (HRESULT 0x{:08X}): {}", static_cast<uint32_t>(error.code()), winrt::to_string(error.message()));
+				} catch (const std::exception& error) {
+					logger::warn("[DX12NativeScene] Shadow dispatch failed: {}", error.what());
+				} catch (...) {
+					logger::warn("[DX12NativeScene] Shadow dispatch failed with an unknown exception");
+				}
+			}
+			if (slices)
+				fallback();
 		}
 	}
 
-	bool ShadowMaskTrace::RetainThrough(const std::shared_ptr<const ShadowMaskFrame>& frame,
-		ID3D12Fence* fence, uint64_t value)
-	{
-		if (!frame || !fence || !value || value == UINT64_MAX)
-			return false;
-		for (const auto& slot : slots) {
-			if (slot.get() != frame.get())
-				continue;
-			winrt::com_ptr<ID3D12Fence> keep;
-			keep.copy_from(fence);
-			slot->consumers.emplace_back(std::move(keep), value);
-			return true;
-		}
-		return false;
-	}
 }

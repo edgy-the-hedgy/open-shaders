@@ -68,8 +68,6 @@ public:
 	virtual void Prepass() override;
 	/** @brief Installs all Detours hooks for PBR material, shader, and decal interception. */
 	virtual void PostPostLoad() override;
-	/** @brief Applies legacy PBR technique flags to engine lighting render passes. */
-	void RewriteLightingRenderPasses(RE::BSLightingShaderProperty* property, RE::BSShaderProperty::RenderPassArray* passes);
 	/** @brief Looks up the default PBR land texture set by editor ID after data files are loaded. */
 	virtual void DataLoaded() override;
 
@@ -170,6 +168,7 @@ public:
 	void SetupGlintsTexture();
 	eastl::unique_ptr<Texture2D> glintsNoiseTexture = nullptr;
 
+	std::unordered_map<uint32_t, std::string> editorIDs;
 
 	struct PBRTextureSetData
 	{

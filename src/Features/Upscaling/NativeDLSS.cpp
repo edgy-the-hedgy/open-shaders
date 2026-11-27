@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "../../GpuPass.h"
+#include "../DX12/DX12Control.h"
 #include "../Upscaling.h"
 
 bool NativeDLSS::Upscale(ID3D11Resource* a_colorOut, ID3D11Resource* a_motionVectors, ID3D11Resource* a_reactiveMask,
@@ -16,6 +17,8 @@ bool NativeDLSS::Upscale(ID3D11Resource* a_colorOut, ID3D11Resource* a_motionVec
 {
 	const bool resumed = !active;
 	active = false;
+	if (!globals::features::dx12Control.IsActive())
+		return false;
 
 	auto& upscaling = globals::features::upscaling;
 	auto* state = globals::state;
@@ -38,10 +41,11 @@ bool NativeDLSS::Upscale(ID3D11Resource* a_colorOut, ID3D11Resource* a_motionVec
 	CS_GPU_PASS("Upscaling::NativeDLSS");
 
 	CommandContext* commandContext = nullptr;
+	bool retained = false;
 	bool submitted = false;
 	const auto abandon = [&](std::string_view a_reason) {
 		// A retained composite or a submitted list must see a signal past it, or its slot and allocator stay busy.
-		if (submitted && !(commandContext && commandContext->fenceValue)) {
+		if ((retained || submitted) && !(commandContext && commandContext->fenceValue)) {
 			try {
 				const uint64_t rescue = fence.Next();
 				DX::ThrowIfFailed(queue->Signal(fence.fence12.get(), rescue));
@@ -49,8 +53,6 @@ bool NativeDLSS::Upscale(ID3D11Resource* a_colorOut, ID3D11Resource* a_motionVec
 					commandContext->fenceValue = rescue;
 				lastSubmitted = rescue;
 			} catch (...) {
-				lastSubmitted = UINT64_MAX;
-				if (commandContext) commandContext->fenceValue = UINT64_MAX;
 			}
 		}
 		Latch(std::format("the DX12 DLSS dispatch threw: {}", a_reason));
@@ -83,6 +85,10 @@ bool NativeDLSS::Upscale(ID3D11Resource* a_colorOut, ID3D11Resource* a_motionVec
 		DX::ThrowIfFailed(queue->Wait(composite->producerFence.get(), composite->producerValue));
 
 		const uint64_t done = fence.Next();
+		if (!upscaling.nativeComposite.Retain(composite, fence.fence12.get(), done))
+			return false;
+		retained = true;
+
 		auto* commandList = commandContext->commandList.get();
 		DX::ThrowIfFailed(commandContext->allocator->Reset());
 		DX::ThrowIfFailed(commandList->Reset(commandContext->allocator.get(), nullptr));
@@ -108,12 +114,9 @@ bool NativeDLSS::Upscale(ID3D11Resource* a_colorOut, ID3D11Resource* a_motionVec
 		transition(false);
 		DX::ThrowIfFailed(commandList->Close());
 
-		auto ticket = upscaling.nativeComposite.ReserveConsumer(composite, queue);
-		if (!ticket) return false;
 		ID3D12CommandList* lists[]{ commandList };
 		queue->ExecuteCommandLists(1, lists);
 		submitted = true;
-		ticket->MarkSubmitted();
 		DX::ThrowIfFailed(queue->Signal(fence.fence12.get(), done));
 		commandContext->fenceValue = done;
 		lastSubmitted = done;
@@ -295,15 +298,6 @@ NativeDLSS::CommandContext* NativeDLSS::AcquireCommandContext()
 
 bool NativeDLSS::WaitForSubmitted()
 {
-	if (lastSubmitted == UINT64_MAX) {
-		auto* queue = globals::features::upscaling.dx12SwapChain.commandQueue.get();
-		if (!queue || !fence.fence12) return false;
-		const uint64_t rescue = fence.Next();
-		if (FAILED(queue->Signal(fence.fence12.get(), rescue))) return false;
-		lastSubmitted = rescue;
-		for (auto& context : commandContexts)
-			if (context.fenceValue == UINT64_MAX) context.fenceValue = rescue;
-	}
 	return fence.CpuWait(lastSubmitted, SharedFence::kFenceTimeoutMs);
 }
 

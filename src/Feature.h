@@ -103,6 +103,17 @@ struct Feature
 	/** @brief Gets additional shader define key-value pairs for this feature. */
 	virtual std::vector<std::pair<std::string_view, std::string_view>> GetShaderDefineOptions() { return {}; }
 
+	/**
+	 * @brief Descriptor bit that selects this feature's compiled Lighting variant, or 0 when it has none.
+	 *
+	 * The bit is masked out of the descriptor before the engine builds its define set, so it must not
+	 * collide with an engine, upstream or technique bit (see src/LightingBudget.h).
+	 */
+	virtual uint32_t GetLightingVariantFlag() const { return 0; }
+
+	/** @brief Preprocessor define compiled into the Lighting variant selected by GetLightingVariantFlag(). */
+	virtual std::string_view GetLightingVariantDefine() const { return {}; }
+
 protected:
 	/** @brief Builds a full Nexus Mods URL from a numeric mod ID. */
 	static std::string MakeNexusModURL(std::string_view modId) noexcept
@@ -264,6 +275,8 @@ public:
 	 * @param opening true when the LoadingMenu is opening (old cell teardown), false when closing.
 	 */
 	virtual void OnSceneTransitionReset(bool /*opening*/) {}
+	/** @brief Main-thread loading notification; publish immutable data only, never mutate render-owned state. */
+	virtual void OnLoadingMenuEvent(bool /*opening*/) {}
 	virtual void DrawSettings() {}
 
 	/**
@@ -370,27 +383,13 @@ public:
 	/** @brief Called after the world scene is complete, including first-person rendering on SE/AE. */
 	virtual void OnWorldRenderEnd(RE::RENDER_TARGET /*a_renderTarget*/) {}
 
-	/** @brief Source textures from the opaque raster stage. */
-	struct OpaqueRasterInputs
-	{
-		ID3D11Texture2D* litColor = nullptr;
-		ID3D11Texture2D* litSpecular = nullptr;
-		ID3D11Texture2D* albedo = nullptr;
-		ID3D11Texture2D* normalRoughness = nullptr;
-		ID3D11Texture2D* masks = nullptr;
-		ID3D11Texture2D* masks2 = nullptr;
-		ID3D11Texture2D* reflectance = nullptr;
-		ID3D11Texture2D* motion = nullptr;
-	};
-
-	/** @brief Offers completed opaque inputs before deferred composition. */
-	virtual void OnOpaqueRasterReady(const OpaqueRasterInputs& /*a_inputs*/) {}
-
-	/** @brief Borrowed radiance inputs after SSS, before environment capture and deferred composite. */
-	virtual void OnOpaqueRadianceReady(const OpaqueRasterInputs& /*a_inputs*/) {}
-
-	/** @brief Completed opaque color, before forward and secondary drawing; inputs are callback-scoped. */
-	virtual void OnOpaqueCompositeReady(const OpaqueRasterInputs& /*a_inputs*/) {}
+	/** @brief Notifies features that opaque raster rendering is complete. */
+	virtual void OnOpaqueRasterReady() {}
+	/** @brief Boot-time opt-in to the opaque raster hook. */
+	virtual bool WantsOpaqueRasterReadyHook() const { return false; }
+	/** @brief Main depth prepass completed, before forward light evaluation. */
+	virtual void OnDepthPrepassReady() {}
+	virtual bool WantsDepthPrepassReadyHook() const { return false; }
 
 	/** @brief Called before a post-processing implementation consumes the scene target. */
 	virtual void OnBeforePostProcessing(RE::RENDER_TARGET /*a_renderTarget*/) {}
@@ -726,6 +725,9 @@ public:
 
 	/** @brief Visits PreShadowMaps() on every loaded feature that opted in via WantsPreShadowMapsHook(); the list is cached once. */
 	static void ApplyPreShadowMapsHooks();
+	/** @brief Dispatches the opaque raster completion event to registered features. */
+	static void ApplyOpaqueRasterReadyHooks();
+	static void ApplyDepthPrepassReadyHooks();
 
 	/** @brief The features that opted into ShouldSkipRenderPass() via WantsRenderPassSkipHook(), cached once; ForEachLoadedFeature skips unloaded ones. */
 	static const std::vector<Feature*>& GetRenderPassSkipFeatures();
@@ -772,6 +774,8 @@ public:
 	 * the render path so feature resets serialize with render-thread menu/Prepass iteration.
 	 */
 	static void DrainSceneTransitions();
+	/** @brief Registers the shared loading event sink before the first gameplay frame. */
+	static void RegisterSceneTransitionEvents();
 
 	/**
 	 * @brief Finds a loaded feature by its short name.

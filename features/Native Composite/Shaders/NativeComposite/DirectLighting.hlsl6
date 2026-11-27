@@ -23,6 +23,8 @@ cbuffer DirectInputs : register(b0)
     uint NearLightExclusion;
     uint InstanceCount;
     uint Padding;
+    float4 DirectionalDirection;
+    float4 DirectionalRadiance;
 };
 
 float4 UnpackHalf4(uint2 value)
@@ -61,6 +63,44 @@ bool Visible(float3 world, float3 normal, float3 direction, float distance, out 
             query.CommitNonOpaqueTriangleHit();
     }
     return query.CommittedStatus() == COMMITTED_NOTHING;
+}
+
+bool VisibleDirectional(float3 world, float3 normal, float3 direction)
+{
+    const float bias = 0.5;
+    RayDesc ray;
+    ray.Origin = world + normal * bias + direction * bias;
+    ray.Direction = direction;
+    ray.TMin = bias;
+    // No claim beyond the available acceleration structure. Directional
+    // rays have no finite emitter position or point-light fade radius.
+    ray.TMax = 3.402823e38;
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
+    query.TraceRayInline(Scene, RAY_FLAG_NONE, 0xff, ray);
+    while (query.Proceed()) {
+        if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
+            AcceptAlpha(query.CandidateInstanceID(), query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(), InstanceCount))
+            query.CommitNonOpaqueTriangleHit();
+    }
+    return query.CommittedStatus() == COMMITTED_NOTHING;
+}
+
+void AccumulateBRDF(float4 base, float4 f0, float3 n, float3 view, float3 l, float ndl, float ndv, float a2,
+    float3 incident, inout float3 diffuse, inout float3 specular)
+{
+    float3 halfDelta = view + l;
+    if (dot(halfDelta,halfDelta) < 1e-8) return;
+    float3 h = normalize(halfDelta);
+    float ndh = saturate(dot(n,h)), vdh = saturate(dot(view,h));
+    float3 fresnel = saturate(f0.rgb) + (1.0-saturate(f0.rgb))*pow(1.0-vdh,5.0);
+    float dDenom = ndh*ndh*(a2-1.0)+1.0;
+    float distribution = a2 / max(3.14159265*dDenom*dDenom,1e-7);
+    float gV = ndl*sqrt(ndv*ndv*(1.0-a2)+a2);
+    float gL = ndv*sqrt(ndl*ndl*(1.0-a2)+a2);
+    float visibility = 0.5/max(gV+gL,1e-5);
+    float3 irradiance = incident * ndl;
+    diffuse += max(base.rgb,0.0)*(1.0-saturate(f0.a))*(1.0-fresnel)*(1.0/3.14159265)*irradiance;
+    specular += fresnel*distribution*visibility*irradiance;
 }
 
 groupshared float3 TileMin[64];
@@ -107,6 +147,18 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
     float alpha = roughness * roughness, a2 = alpha * alpha;
     float3 diffuse = 0, specular = 0;
     uint inReach = 0, visible = 0;
+    if (DirectionalDirection.w != 0.0 && any(DirectionalRadiance.rgb > 0.0)) {
+        float3 l = DirectionalDirection.xyz;
+        float ndl = saturate(dot(n,l));
+        if (ndl > 0.0) {
+            ++inReach;
+            ++rays;
+            if (VisibleDirectional(world,n,l)) {
+                ++visible;
+                AccumulateBRDF(base, f0, n, view, l, ndl, ndv, a2, max(DirectionalRadiance.rgb,0.0), diffuse, specular);
+            }
+        }
+    }
     [loop] for (uint candidate = 0; candidate < TileCount; ++candidate) {
         uint i = TileLights[candidate];
         float4 light = Lights[i*3u], color = Lights[i*3u+1u], params = Lights[i*3u+2u];
@@ -129,19 +181,7 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
         if (traced) ++rays;
         if (!unoccluded) continue;
         ++visible;
-        float3 halfDelta = view + l;
-        if (dot(halfDelta,halfDelta) < 1e-8) continue;
-        float3 h = normalize(halfDelta);
-        float ndh = saturate(dot(n,h)), vdh = saturate(dot(view,h));
-        float3 fresnel = saturate(f0.rgb) + (1.0-saturate(f0.rgb))*pow(1.0-vdh,5.0);
-        float dDenom = ndh*ndh*(a2-1.0)+1.0;
-        float distribution = a2 / max(3.14159265*dDenom*dDenom,1e-7);
-        float gV = ndl*sqrt(ndv*ndv*(1.0-a2)+a2);
-        float gL = ndv*sqrt(ndl*ndl*(1.0-a2)+a2);
-        float visibility = 0.5/max(gV+gL,1e-5);
-        float3 irradiance = max(color.rgb,0.0)*attenuation*ndl;
-        diffuse += max(base.rgb,0.0)*(1.0-saturate(f0.a))*(1.0-fresnel)*(1.0/3.14159265)*irradiance;
-        specular += fresnel*distribution*visibility*irradiance;
+        AccumulateBRDF(base, f0, n, view, l, ndl, ndv, a2, max(color.rgb,0.0)*attenuation, diffuse, specular);
     }
     if (!all(isfinite(diffuse)) || !all(isfinite(specular))) return 0u;
     // Half precision stores counts up to 2047 plus one for validity.

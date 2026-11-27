@@ -22,3 +22,13 @@ TEST_CASE("DX12 prepared light matching has bounded world tolerance", "[dx12][li
 	REQUIRE(MatchTolerance(1000.0f) == Approx(10.0f));
 	REQUIRE(MatchTolerance(60000.0f) == Approx(32.0f));
 }
+
+TEST_CASE("Full Native point emitter matching rejects conflicting placed references", "[dx12][lighting]")
+{
+	using DX12Native::LightMath::SameEmitterCandidate;
+	REQUIRE(SameEmitterCandidate(11, 11, 4.0f, 1000.0f));
+	REQUIRE(SameEmitterCandidate(0, 11, 4.0f, 1000.0f));
+	REQUIRE_FALSE(SameEmitterCandidate(11, 12, 0.0f, 1000.0f));
+	REQUIRE_FALSE(SameEmitterCandidate(11, 11, 121.0f, 1000.0f));
+	REQUIRE_FALSE(SameEmitterCandidate(0, 0, 0.0f, -1.0f));
+}

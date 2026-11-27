@@ -1,4 +1,5 @@
 #include "DX12NativeEnvironment.h"
+#include "DX12MaterialFrameContract.h"
 #include "DX12GpuRetirement.h"
 #include "GpuPass.h"
 
@@ -26,11 +27,15 @@ namespace DX12Native
 		current.reset();
 		for (auto& pool : pools) {
 			pool.current.reset();
-			for (auto& slot : pool.slots)
-				if (slot && !slot->Retired())
-					RetireWhenGpuDone(std::move(slot), owner.d3d12Device, [](const EnvironmentCube& cube) {
-						return cube.Retired();
-					});
+			for (auto& slot : pool.slots) {
+				if (!slot || slot->Retired())
+					continue;
+				std::vector<FenceDependency> dependencies{
+					FencePoint(slot->sourceFence.get(), slot->sourceValue),
+					FencePoint(slot->readyFence.get(), slot->readyValue)
+				};
+				RetireAfterFences(std::move(slot), owner.d3d12Device, std::move(dependencies));
+			}
 		}
 	}
 
@@ -135,7 +140,7 @@ namespace DX12Native
             const uint64_t allocation = cubeBytes + stagingBytes;
             const uint64_t tracked = AllocationBytes();
             const auto budget = videoBudget.Query(device, tracked);
-            if (!budget.dxgiAvailable || allocation > budget.effectiveBytes || tracked > budget.effectiveBytes - allocation)
+            if (!budget.localBudget || allocation > budget.effectiveBytes || tracked > budget.effectiveBytes - allocation)
                 throw std::runtime_error("Environment allocation deferred by DXGI budget");
             D3D11_TEXTURE2D_DESC sharedDesc{};
             sharedDesc.Width = stagingWidth; sharedDesc.Height = stagingHeight;

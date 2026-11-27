@@ -6,6 +6,7 @@
 #include "Features/LightLimitFix/RadiusMath.h"
 #include "Features/LightLimitFix/SettingsSanitize.h"
 #include "Features/LightLimitFix/ShadowCasterMath.h"
+#include "Features/LightLimitFix/ShadowMeshExclusions.h"
 #include "Globals.h"
 #include "GpuPass.h"
 #include "I18n/I18n.h"
@@ -18,9 +19,6 @@
 #include <bit>
 
 #include "Deferred.h"
-#include "Features/DX12/DX12Control.h"
-#include "Features/DX12/DX12LightMath.h"
-#include "Features/DX12/DX12NativeScene.h"
 #include "Menu/ThemeManager.h"
 #include "ShaderCache.h"
 #include "State.h"
@@ -55,7 +53,6 @@ namespace
 	constexpr float kJsonPlacedLightIntensityMax = 8.0f;
 	constexpr int kLightAttachRefreshFramesMin = 1;
 	constexpr int kLightAttachRefreshFramesMax = 600;
-	constexpr float kSoftShadowScaleMax = 2.0f;
 
 	void SanitizeSettings(LightLimitFix::Settings& a_settings)
 	{
@@ -70,7 +67,7 @@ namespace
 		a_settings.BillboardRadius =
 			Util::ClampFiniteOrDefault(a_settings.BillboardRadius, kBillboardRadiusMin, kBillboardRadiusMax, 1.0f);
 		a_settings.SoftShadowScale =
-			Util::ClampFiniteOrDefault(a_settings.SoftShadowScale, 0.0f, kSoftShadowScaleMax, 0.0f);
+			Util::ClampFiniteOrDefault(a_settings.SoftShadowScale, 0.0f, LightLimitFix::kSoftShadowScaleMax, 0.0f);
 		a_settings.ParticleClusterThreshold =
 			Util::ClampFiniteOrDefault(a_settings.ParticleClusterThreshold, kParticleClusterThresholdMin, kParticleClusterThresholdMax, 32.0f);
 		a_settings.MaxParticlesPerEmitter = std::clamp(a_settings.MaxParticlesPerEmitter, kMaxParticlesPerEmitterMin, kMaxParticlesPerEmitterMax);
@@ -254,11 +251,7 @@ void LightLimitFix::DrawSettings()
 		ImGui::SetScrollHereY(0.0f);
 	if (Util::BeginPillTabItem(T("feature.light_limit_fix.shadow_limit_fix_header", "Shadow Limit Fix"), nullptr,
 			selectShadows ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None)) {
-		ShadowCasterManager::DrawSettings(settings.ShadowSettings);
-		ImGui::SliderFloat(T("feature.light_limit_fix.soft_shadow_scale", "Soft Shadows by Light Size"), &settings.SoftShadowScale, 0.0f, kSoftShadowScaleMax, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T("feature.light_limit_fix.soft_shadow_scale_tooltip", "Softens an inverse-square point light's shadow the farther it falls from what casts it, by the light's own size; linear lights have no size and stay hard. 0 keeps every shadow edge hard."));
-		}
+		ShadowCasterManager::DrawSettings(settings.ShadowSettings, settings.SoftShadowScale);
 		Util::EndPillTabItem();
 	}
 
@@ -1258,6 +1251,7 @@ float LightLimitFix::BSLight_GetLuminance::thunk(RE::BSLight* bsLight, RE::NiPoi
 
 void LightLimitFix::DataLoaded()
 {
+	ShadowMeshExclusions::Reload();
 	if (auto gameSettings = globals::game::gameSettingCollection) {
 		if (auto iMagicLightMaxCount = gameSettings->GetSetting("iMagicLightMaxCount")) {
 			iMagicLightMaxCount->data.i = MAXINT32;
@@ -1268,11 +1262,17 @@ void LightLimitFix::DataLoaded()
 
 bool LightLimitFix::ShouldSkipRenderPass(const RE::BSRenderPass* a_pass)
 {
-	return ShadowCasterManager::RejectCyclicPassChain(a_pass);
+	return ShadowCasterManager::RejectCyclicPassChain(a_pass) || ShadowMeshExclusions::ShouldSkip(a_pass);
 }
 
 void LightLimitFix::RegisterUxActions()
 {
+	FEATURE_RENDER_COMMAND("reloadShadowMeshExclusions",
+		"Reload every JSON file in LightLimitFix/ShadowMeshExclusions and refresh point-light shadows. Params: none.",
+		[](Feature*, const json&) { ShadowMeshExclusions::Reload(); });
+	FEATURE_RENDER_QUERY("shadowMeshExclusions",
+		"Lists point-light shadow mesh exclusions by JSON filename, invalid files, unresolved NIFs, and cumulative skipped shadow draws. Params: none.",
+		[](const Feature*, const json&) { return ShadowMeshExclusions::Inspect(); });
 	FEATURE_COMMAND("forcePassGuardTrips",
 		"Forces the next N SCM shadow-render pass-chain guard checks to report a cycle, so the skip path can be exercised without a real ring. Watch inspect kind=llfshadows budget.passGuardCycleSkipsTotal. Params: count (int, default 1, max 1000).",
 		[](Feature*, const json& args) { ShadowCasterManager::ForcePassGuardTrips(args.value("count", 1u)); });
@@ -1530,31 +1530,6 @@ void LightLimitFix::UpdateLights()
 
 	lightCount = std::min((uint)lightsData.size(), MAX_LIGHTS);
 	clusteredLightCount.store(lightCount, std::memory_order_relaxed);
-	if (!globals::game::isVR && globals::game::graphicsState &&
-		globals::features::dx12Control.IsActive() && globals::features::dx12Control.IsFullNativeMode()) {
-		std::vector<DX12Native::DirectPointLight> nativeLights;
-		nativeLights.reserve(lightCount);
-		const auto eye = eyePositionCached[0];
-		for (uint32_t i = 0; i < lightCount; ++i) {
-			const auto& source = lightsData[i];
-			if (source.lightFlags.any(LightFlags::Disabled) || !std::isfinite(source.fade) || source.fade <= 0 ||
-				!std::isfinite(source.radius) || source.radius <= 0) continue;
-			const bool linear = source.lightFlags.any(LightFlags::Linear);
-			const bool inverseSquare = source.lightFlags.any(LightFlags::InverseSquare);
-			const auto toLinear = [linear](float v) { return DX12Native::LightMath::ToLinear(v, linear); };
-			const float scale = source.fade * (inverseSquare ? ISLMath::ScaledUnitsSq : 1.0f);
-			const auto& p = source.positionWS[0].data;
-			if (!std::isfinite(p.x + eye.x) || !std::isfinite(p.y + eye.y) || !std::isfinite(p.z + eye.z) ||
-				!std::isfinite(source.color.x) || !std::isfinite(source.color.y) || !std::isfinite(source.color.z) ||
-				(inverseSquare && (!std::isfinite(source.sizeBias) || !std::isfinite(source.fadeZone)))) continue;
-			nativeLights.push_back({ { p.x + eye.x, p.y + eye.y, p.z + eye.z },
-				{ toLinear(source.color.x)*scale, toLinear(source.color.y)*scale, toLinear(source.color.z)*scale },
-				source.radius, inverseSquare ? std::sqrt(std::max(source.sizeBias, 0.0f)) : 0.0f,
-				inverseSquare ? source.fadeZone : 0.0f, inverseSquare });
-		}
-		globals::features::dx12NativeScene.PublishRuntimeDirectLights(
-			globals::game::graphicsState->GetFrameCount(), std::move(nativeLights));
-	}
 
 	{
 		CS_PROFILE_CPU_SCOPE(globals::profiler, "LightLimitFix::UploadLightsCPU");

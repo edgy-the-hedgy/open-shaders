@@ -8,7 +8,7 @@
 #include "PostProcessingMode.h"
 #include "ShaderCache.h"
 #include "State.h"
-#include "Materials/SharedMaterialHooks.h"
+#include "TruePBR.h"
 #include "Util.h"
 
 #if defined(ENABLE_EFFECTS11)
@@ -272,13 +272,13 @@ void LinearLighting::Prepass()
 		return;
 
 	lodProjectedMaterialColorScales.fill(kNoProjectedMaterialColorScale);
-	if (auto* defaultObjects = RE::BGSDefaultObjectManager::GetSingleton(); defaultObjects) {
+	if (auto* defaultObjects = RE::BGSDefaultObjectManager::GetSingleton(); defaultObjects && globals::features::truePBR.loaded) {
 		constexpr std::array materialObjects{ RE::DefaultObjectID::kSnowLODMaterial, RE::DefaultObjectID::kSnowLODMaterialHD };
 		for (size_t index = 0; index < materialObjects.size(); ++index) {
 			auto** materialObject = defaultObjects->GetObject<RE::BGSMaterialObject>(materialObjects[index]);
-			const auto scale = SharedMaterialHooks::ProjectedColorScale(materialObject ? *materialObject : nullptr);
-			if (scale && std::ranges::all_of(*scale, [](float value) { return std::isfinite(value); })) {
-				std::ranges::transform(*scale, lodProjectedMaterialColorScales[index].begin(), [](float value) { return std::max(value, 0.0f); });
+			auto* materialData = globals::features::truePBR.GetPBRMaterialObjectData(materialObject ? *materialObject : nullptr);
+			if (materialData && std::ranges::all_of(materialData->baseColorScale, [](float value) { return std::isfinite(value); })) {
+				std::ranges::transform(materialData->baseColorScale, lodProjectedMaterialColorScales[index].begin(), [](float value) { return std::max(value, 0.0f); });
 			}
 		}
 	}
@@ -442,7 +442,7 @@ void LinearLighting::BSLightingShader_SetupGeometry(RE::BSRenderPass* a_pass)
 	using LightingFlags = SIE::ShaderCache::LightingShaderFlags;
 	using enum SIE::ShaderCache::LightingShaderTechniques;
 	if ((descriptor & static_cast<uint32_t>(LightingFlags::ProjectedUV)) != 0 && (descriptor & static_cast<uint32_t>(LightingFlags::TruePbr)) == 0) {
-		const auto technique = static_cast<SIE::ShaderCache::LightingShaderTechniques>((descriptor >> 24) & 0x3F);
+		const auto technique = SIE::ShaderCache::GetLightingTechnique(descriptor);
 		if (technique == LODObjects || technique == LODObjectHD)
 			perGeometryData.projectedMaterialColorScale = lodProjectedMaterialColorScales[technique == LODObjectHD ? 1 : 0];
 	}

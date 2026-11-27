@@ -1,6 +1,7 @@
 #include "DX12NativeIndirectLighting.h"
 #include "DX12GpuRetirement.h"
 #include "GpuPass.h"
+#include "Utils/FileSystem.h"
 
 #include <algorithm>
 #include <cmath>
@@ -29,7 +30,7 @@ namespace DX12Native
         static_assert(sizeof(Constants) == 272);
         constexpr uint64_t kSHBytes = 48;
 
-        void BuildPipeline(ID3D12Device* device, const char* path, UINT count, CD3DX12_ROOT_PARAMETER* parameters,
+        void BuildPipeline(ID3D12Device* device, const std::filesystem::path& path, UINT count, CD3DX12_ROOT_PARAMETER* parameters,
             winrt::com_ptr<ID3D12RootSignature>& root, winrt::com_ptr<ID3D12PipelineState>& pipeline)
         {
             std::ifstream file(path, std::ios::binary | std::ios::ate);
@@ -74,11 +75,12 @@ namespace DX12Native
         current.reset();
         baseCache.reset();
         skyCache.reset();
-        for (auto& slot : slots)
-            if (slot && !GpuFenceRetired(slot->readyFence.get(), slot->readyValue))
-                RetireWhenGpuDone(std::move(slot), owner.d3d12Device, [](const IndirectLightingFrame& f) {
-                    return GpuFenceRetired(f.readyFence.get(), f.readyValue);
-                });
+        for (auto& slot : slots) {
+            if (!slot || GpuFenceRetired(slot->readyFence.get(), slot->readyValue))
+                continue;
+            std::vector<FenceDependency> dependencies{ FencePoint(slot->readyFence.get(), slot->readyValue) };
+            RetireAfterFences(std::move(slot), owner.d3d12Device, std::move(dependencies));
+        }
     }
 
     uint64_t NativeIndirectLighting::AllocationBytes() const
@@ -154,8 +156,8 @@ namespace DX12Native
         winrt::com_ptr<ID3D12RootSignature> pr, ir;
         winrt::com_ptr<ID3D12PipelineState> pp, ip;
         winrt::com_ptr<ID3D12Fence> fence;
-        BuildPipeline(device, "Data/Shaders/NativeComposite/NativeDiffuseSH.dxil", 3, projectionParameters, pr, pp);
-        BuildPipeline(device, "Data/Shaders/NativeComposite/NativeIndirectLighting.dxil", 6, parameters, ir, ip);
+        BuildPipeline(device, Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativeDiffuseSH.dxil", 3, projectionParameters, pr, pp);
+        BuildPipeline(device, Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativeIndirectLighting.dxil", 6, parameters, ir, ip);
         Eval::Check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(fence.put())));
         owner = backend;
         projectionRoot = std::move(pr); projectionPipeline = std::move(pp);
@@ -219,7 +221,7 @@ namespace DX12Native
             if (required) {
                 const uint64_t tracked = AllocationBytes();
                 const auto allowance = budget.Query(device, tracked);
-                if (!allowance.dxgiAvailable || required > allowance.effectiveBytes || tracked > allowance.effectiveBytes - required)
+                if (!allowance.localBudget || required > allowance.effectiveBytes || tracked > allowance.effectiveBytes - required)
                     throw std::runtime_error("Indirect lighting deferred by DXGI budget");
             }
             if (fresh) {

@@ -309,6 +309,13 @@ void IBL::ReflectionsPrepass()
 	}
 }
 
+bool IBL::UsesReflectionRadiance() const
+{
+	return loaded && reflectionRadiance && globals::shaderCache->IsEnabled() &&
+	       (globals::game::isVR || globals::features::lodShadows.loaded) &&
+	       !IsDisabledForCurrentScene() && !Util::IsInterior() && (settings.EnableIBL || IsManagedByENB());
+}
+
 void IBL::SetNativeCaptureContext(const DX12Native::EnvironmentStamp& stamp)
 {
 	if (!nativeCaptureContext.SameEnvironment(stamp)) {
@@ -328,17 +335,9 @@ DX12Native::EnvironmentSource IBL::GetNativeSkyRadiance() const
 
 std::function<void()> IBL::OnReflectionsRenderBegin()
 {
-	if (!reflectionRadiance || !globals::shaderCache->IsEnabled() || IsDisabledForCurrentScene() ||
-		Util::IsInterior() || (!settings.EnableIBL && !IsManagedByENB())) {
+	if (!UsesReflectionRadiance()) {
 		validFaces = 0;
-		nativeSkyFaces = 0;
-		return nullptr;
-	}
-
-	const auto& lodShadows = globals::features::lodShadows;
-	if (!globals::game::isVR && !lodShadows.loaded) {
-		validFaces = 0;
-		nativeSkyFaces = 0;
+		if (nativeCaptureContext.epoch) nativeSkyFaces = 0;
 		return nullptr;
 	}
 
@@ -346,7 +345,7 @@ std::function<void()> IBL::OnReflectionsRenderBegin()
 	const std::array<uint, 2> colorSpace{ lighting.enableLinearLighting, lighting.enableACEScg };
 	if (captureColorSpace != colorSpace) {
 		validFaces = 0;
-		nativeSkyFaces = 0;
+		if (nativeCaptureContext.epoch) nativeSkyFaces = 0;
 		captureColorSpace = colorSpace;
 	}
 	clearedFaces = 0;
@@ -355,30 +354,28 @@ std::function<void()> IBL::OnReflectionsRenderBegin()
 	const auto flag = static_cast<uint32_t>(State::ExtraShaderDescriptors::CaptureReflectionRadiance);
 	globals::state->permutationData.ExtraShaderDescriptor |= flag;
 	auto nativeStamp = nativeCaptureContext;
-	if (globals::game::graphicsState && globals::state) {
+	if (nativeStamp.epoch && globals::game::graphicsState && globals::state) {
 		nativeStamp.engineFrame = globals::game::graphicsState->GetFrameCount();
 		nativeStamp.pluginFrame = globals::state->frameCount;
-	} else {
-		nativeStamp = {};
+		const auto encoding = lighting.enableLinearLighting ?
+			(lighting.enableACEScg ? DX12Native::EnvironmentEncoding::LinearAP1 : DX12Native::EnvironmentEncoding::LinearRec709) : DX12Native::EnvironmentEncoding::LegacyScene;
+		if (nativeStamp.encoding != encoding || nativeStamp.interior) nativeStamp = {};
 	}
-	const auto encoding = lighting.enableLinearLighting ?
-		(lighting.enableACEScg ? DX12Native::EnvironmentEncoding::LinearAP1 : DX12Native::EnvironmentEncoding::LinearRec709) :
-		DX12Native::EnvironmentEncoding::LegacyScene;
-	if (nativeStamp.encoding != encoding || nativeStamp.interior)
-		nativeStamp = {};
 	return [this, flag, nativeStamp]() {
 		RestoreCaptureTargets();
 		globals::state->permutationData.ExtraShaderDescriptor &= ~flag;
 		capturingRadiance = false;
 		validFaces = captureFailed ? 0 : validFaces | clearedFaces;
-		if (captureFailed || !nativeStamp.SameEnvironment(nativeCaptureContext)) {
-			nativeSkyFaces = 0;
-			nativeSkyStamp = {};
-		} else if (clearedFaces) {
-			nativeSkyFaces |= clearedFaces;
-			if (nativeSkyFaces == kAllCubeFaces) {
-				nativeSkyStamp = nativeStamp;
-				++nativeSkyRevision;
+		if (nativeCaptureContext.epoch) {
+			if (captureFailed || !nativeStamp.SameEnvironment(nativeCaptureContext)) {
+				nativeSkyFaces = 0;
+				nativeSkyStamp = {};
+			} else if (clearedFaces) {
+				nativeSkyFaces |= clearedFaces;
+				if (nativeSkyFaces == kAllCubeFaces) {
+					nativeSkyStamp = nativeStamp;
+					++nativeSkyRevision;
+				}
 			}
 		}
 	};
@@ -386,7 +383,8 @@ std::function<void()> IBL::OnReflectionsRenderBegin()
 
 void IBL::OnSceneTransitionReset(bool)
 {
-	SetNativeCaptureContext({});
+	if (nativeCaptureContext.epoch)
+		SetNativeCaptureContext({});
 	validFaces = 0;
 }
 
@@ -564,7 +562,7 @@ void IBL::Prepass()
 			context->CSSetShader(diffuseIBLShader, nullptr, 0);
 	}
 
-	// Reflections retain their shadows while ambient uses the same unshadowed scene radiance.
+	// Visible reflections receive LOD shadows while sky irradiance retains terrain and cloud shadows.
 	{
 		const auto& reflections = globals::game::renderer->GetRendererData().cubemapRenderTargets[RE::RENDER_TARGETS_CUBEMAP::kREFLECTIONS];
 		srvs.at(0) = validFaces == kAllCubeFaces ? reflectionRadiance->srv.get() : Util::AsReal(reflections.SRV);
@@ -600,7 +598,8 @@ void IBL::Prepass()
 
 void IBL::SetupResources()
 {
-	SetNativeCaptureContext({});
+	if (nativeCaptureContext.epoch)
+		SetNativeCaptureContext({});
 	GetDiffuseIBLCS();
 	validFaces = 0;
 	capturingRadiance = false;
@@ -742,7 +741,8 @@ void IBL::SetupResources()
 
 void IBL::ClearShaderCache()
 {
-	SetNativeCaptureContext({});
+	if (nativeCaptureContext.epoch)
+		SetNativeCaptureContext({});
 	diffuseIBLCS.Reset();
 	dynamicIBLValid = false;
 	validFaces = 0;
