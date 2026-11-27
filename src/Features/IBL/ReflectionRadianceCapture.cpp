@@ -1,6 +1,7 @@
 #include "ReflectionRadianceCapture.h"
 
 #include "Features/LinearLighting.h"
+#include "Features/DX12/DX12Control.h"
 #include "Globals.h"
 #include "GpuPass.h"
 #include "State.h"
@@ -81,10 +82,25 @@ void IBLInput::ReflectionRadianceCapture::OnDraw()
 	auto* context = globals::d3d::context;
 	std::array<ID3D11RenderTargetView*, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> targets{};
 	std::array<winrt::com_ptr<ID3D11RenderTargetView>, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> currentTargets;
-	context->OMGetRenderTargets(static_cast<UINT>(targets.size()), targets.data(), nullptr);
-	for (UINT index = 0; index < targets.size(); ++index)
-		currentTargets[index].attach(targets[index]);
+	const auto readTargets = [&]() {
+		context->OMGetRenderTargets(static_cast<UINT>(targets.size()), targets.data(), nullptr);
+		for (UINT index = 0; index < targets.size(); ++index) {
+			currentTargets[index] = nullptr;
+			currentTargets[index].attach(targets[index]);
+		}
+	};
+	readTargets();
 	const auto& reflections = globals::game::renderer->GetRendererData().cubemapRenderTargets[RE::RENDER_TARGETS_CUBEMAP::kREFLECTIONS];
+	if (globals::features::dx12Control.UsesExclusiveMaterials() && captureTargetBound) {
+		bool sameFace = false;
+		for (UINT face = 0; face < radianceViews.size(); ++face)
+			sameFace |= targets[0] == Util::AsReal(reflections.cubeSideRTV[face]) &&
+				targets[kRadianceTarget] == radianceViews[face].get();
+		if (!sameFace) {
+			RestoreCaptureTargets();
+			readTargets();
+		}
+	}
 	for (UINT face = 0; face < radianceViews.size(); ++face) {
 		if (targets[0] != Util::AsReal(reflections.cubeSideRTV[face]))
 			continue;
@@ -162,7 +178,29 @@ void IBLInput::ReflectionRadianceCapture::OnDraw()
 
 void IBLInput::ReflectionRadianceCapture::RestoreCaptureTargets()
 {
-	if (captureTargetBound) {
+	if (captureTargetBound && globals::features::dx12Control.UsesExclusiveMaterials()) {
+		// Restore only the attachment and blend object we installed. Other
+		// attachments, depth and blend factors may have changed legitimately.
+		auto* context = globals::d3d::context;
+		std::array<ID3D11RenderTargetView*, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> targets{};
+		std::array<winrt::com_ptr<ID3D11RenderTargetView>, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> currentTargets;
+		winrt::com_ptr<ID3D11DepthStencilView> depth;
+		context->OMGetRenderTargets(static_cast<UINT>(targets.size()), targets.data(), depth.put());
+		for (UINT index = 0; index < targets.size(); ++index)
+			currentTargets[index].attach(targets[index]);
+		const bool captureStillBound = std::any_of(radianceViews.begin(), radianceViews.end(),
+			[&](const auto& view) { return view.get() == targets[kRadianceTarget]; });
+		if (captureStillBound) {
+			targets[kRadianceTarget] = savedTargets[kRadianceTarget].get();
+			context->OMSetRenderTargets(static_cast<UINT>(targets.size()), targets.data(), depth.get());
+		}
+		winrt::com_ptr<ID3D11BlendState> currentBlend;
+		std::array<float, 4> blendFactor{};
+		UINT sampleMask = 0;
+		context->OMGetBlendState(currentBlend.put(), blendFactor.data(), &sampleMask);
+		if (currentBlend.get() == boundRadianceBlend)
+			context->OMSetBlendState(savedBlend.get(), blendFactor.data(), sampleMask);
+	} else if (captureTargetBound) {
 		std::array<ID3D11RenderTargetView*, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> targets{};
 		globals::d3d::context->OMGetRenderTargets(static_cast<UINT>(targets.size()), targets.data(), nullptr);
 		const bool captureStillBound = std::any_of(radianceViews.begin(), radianceViews.end(),
