@@ -14,6 +14,7 @@ struct DX12Control final : Feature
 		bool Enabled = true;
 		int Mode = static_cast<int>(DX12::ControlMode::FullRT);
 		bool NativeScreenSpaceReflections = true;
+		float NativeWaterReflectionRadius = 0.05f;
 	};
 
 	std::string GetName() override { return "DX12"; }
@@ -47,6 +48,7 @@ struct DX12Control final : Feature
 	void DrawSettings() override;
 	void RegisterUxActions() override;
 	bool NativeSSREnabled() const { return WantsMaterialPreparation() && nativeSSR.load(std::memory_order_relaxed); }
+	float NativeWaterReflectionRadius() const { return waterReflectionRadius.load(std::memory_order_relaxed); }
 	void MigrateLegacySettings(json& root) const override;
 	void LoadSettings(json& input) override;
 	void SaveSettings(json& output) override;
@@ -63,5 +65,6 @@ private:
 	void RequestMode(DX12::ControlMode mode);
 	mutable std::atomic<int> selectedMode{ Settings{}.Mode };
 	std::atomic<bool> nativeSSR{ true };
+	std::atomic<float> waterReflectionRadius{ Settings{}.NativeWaterReflectionRadius };
 	Settings settings;
 };

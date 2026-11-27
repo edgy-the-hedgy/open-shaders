@@ -1,5 +1,7 @@
 #include "NativeWaterSSR.h"
 #include "NativeCubemapPolicy.h"
+#include "Features/DX12/DX12FullNativeReconstruction.h"
+#include <cstring>
 #include "Features/DX12/DX12GpuRetirement.h"
 #include "Globals.h"
 #include "GpuPass.h"
@@ -17,13 +19,16 @@ namespace
     constexpr UINT kGroup=8;
     struct CaptureConstants { uint32_t width,height; float scaleX,scaleY; };
     struct Constants {
-        Matrix projection,inverseProjection,inverseView;
+        Matrix projection,inverseProjection,inverseView,view;
+        float4 positionAdjust;
         uint32_t width,height,outputWidth,outputHeight;
-        uint32_t reverseZ,sky,encoding,gammaInput;
-        uint32_t performance,padding[3]{};
+        uint32_t sky,encoding,quality,frame;
+        uint32_t instanceCount,characterEnabled,rayPitch,tokenCount;
+        float emitterRadius;
+        uint32_t padding[3]{};
     };
-    static_assert(sizeof(Constants)==240);
-    constexpr UINT kConstants=sizeof(Constants)/sizeof(uint32_t);
+    static_assert(sizeof(Constants)==336);
+    constexpr UINT kTextureOffset=7;
     void Transition(ID3D12GraphicsCommandList* cmd, ID3D12Resource* resource, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to)
     {
         const auto barrier=CD3DX12_RESOURCE_BARRIER::Transition(resource,from,to);
@@ -46,7 +51,9 @@ namespace
 
 struct NativeCubemaps::WaterSSR::Slot
 {
-    std::unique_ptr<WrappedResource> raw,mask,result;
+    std::unique_ptr<WrappedResource> raw,mask,result,sparse;
+    winrt::com_ptr<ID3D12Resource> constants;
+    std::shared_ptr<const FullNativeReconstructionFrame> native;
     winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
     winrt::com_ptr<ID3D12CommandAllocator> allocator;
     winrt::com_ptr<ID3D12GraphicsCommandList> commands;
@@ -75,15 +82,22 @@ void NativeCubemaps::WaterSSR::Initialize(const GraphicsBackend& backend)
         return;
     }
     auto* device=backend.d3d12Device.get();
-    CD3DX12_DESCRIPTOR_RANGE ranges[2];
-    ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,3,0);
-    ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV,1,0);
-    CD3DX12_ROOT_PARAMETER params[2];
-    params[0].InitAsDescriptorTable(2,ranges);
-    params[1].InitAsConstants(kConstants,0);
-    const CD3DX12_STATIC_SAMPLER_DESC sampler(0,D3D12_FILTER_MIN_MAG_MIP_LINEAR,
-        D3D12_TEXTURE_ADDRESS_MODE_CLAMP,D3D12_TEXTURE_ADDRESS_MODE_CLAMP,D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
-    const CD3DX12_ROOT_SIGNATURE_DESC signature(2,params,1,&sampler);
+    CD3DX12_DESCRIPTOR_RANGE ranges[3];
+    ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,5,0,0,0);
+    ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV,2,0,0,5);
+    ranges[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,NativePBR::kGpuTextureDescriptorCapacity,9,0,kTextureOffset);
+    CD3DX12_ROOT_PARAMETER params[11];
+    params[0].InitAsDescriptorTable(3,ranges);
+    params[1].InitAsConstantBufferView(0);
+    params[2].InitAsConstants(1,1);
+    for(UINT i=0;i<4;++i)params[3+i].InitAsShaderResourceView(5+i);
+    for(UINT i=0;i<4;++i)params[7+i].InitAsShaderResourceView(521+i);
+    std::array<CD3DX12_STATIC_SAMPLER_DESC,4> samplers;
+    for(UINT i=0;i<samplers.size();++i)
+        samplers[i]=CD3DX12_STATIC_SAMPLER_DESC(i,D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+            (i&2)?D3D12_TEXTURE_ADDRESS_MODE_WRAP:D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            (i&1)?D3D12_TEXTURE_ADDRESS_MODE_WRAP:D3D12_TEXTURE_ADDRESS_MODE_CLAMP,D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
+    const CD3DX12_ROOT_SIGNATURE_DESC signature(11,params,UINT(samplers.size()),samplers.data());
     winrt::com_ptr<ID3DBlob> blob,errors;
     winrt::com_ptr<ID3D12RootSignature> nextRoot;
     winrt::com_ptr<ID3D12PipelineState> nextPipeline;
@@ -113,13 +127,29 @@ void NativeCubemaps::WaterSSR::Initialize(const GraphicsBackend& backend)
 
 void NativeCubemaps::WaterSSR::Poll()
 {
-    for(auto& slot:slots) if(slot && GpuFenceRetired(outputFence.fence12.get(),slot->ready)) slot->environment.reset();
+    for(auto& slot:slots) if(slot && GpuFenceRetired(outputFence.fence12.get(),slot->ready)) { slot->environment.reset(); slot->native.reset(); }
 }
 
 void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeWorldFrame& world,std::shared_ptr<const EnvironmentFrame> environment,
-    EnvironmentEncoding encoding,bool gammaInput,bool skyVisible,bool performance,ID3D11PixelShader* expected)
+    std::shared_ptr<const FullNativeReconstructionFrame> native,EnvironmentEncoding encoding,bool skyVisible,uint32_t quality,float emitterRadius,ID3D11PixelShader* expected)
 {
+    using namespace MaterialFrameContract;
     if (active || !expected || world.width<2 || !world.height || !globals::d3d::context) return;
+    if(!native || native->frame!=world.engineFrame || native->width!=world.width || native->height!=world.height ||
+        native->quality!=SanitizeRTQuality(quality) || !native->material || !native->direct || native->direct->material!=native->material ||
+        !native->material->IsCoherent(world.engineFrame,world.width,world.height) || !native->rasterEvidence ||
+        !native->environmentRadiance || native->environmentRadiance->GetDesc().Width<uint64_t(world.width)*world.height*8u ||
+        !native->readyFence || !ValidProducerSignal(native->readyValue,native->readyFence->GetCompletedValue())) {++rejected;return;}
+    const auto& material=*native->material;
+    const auto& evidence=*native->rasterEvidence;
+    const auto stamp=RasterIdentityStamp{world.engineFrame,material.scope,material.geometryRevision,material.materialRevision};
+    if(evidence.stamp!=stamp || !evidence.tokenCount || !evidence.tokenTable || !evidence.texture || !evidence.texture->resource ||
+        evidence.width<world.width || evidence.height<world.height || !evidence.readyFence ||
+        !ValidProducerSignal(evidence.readyValue,evidence.readyFence->GetCompletedValue())) {++rejected;return;}
+    const auto characters=native->direct->characters;
+    const auto& scene=*material.scene;
+    const auto& evaluation=*scene.materialEvaluation;
+    quality=SanitizeRTQuality(quality);
     CS_GPU_PASS("NativeCubemaps::WaterSSR");
     auto* context=backend.d3d11Context.get();
     if(!context) return;
@@ -170,10 +200,12 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
             const auto a=alloc(DXGI_FORMAT_R32G32B32A32_FLOAT,world.width,world.height+1);
             const auto b=alloc(DXGI_FORMAT_R32_FLOAT,world.width,world.height);
             const auto c=alloc(DXGI_FORMAT_R16G16B16A16_FLOAT,ow,oh);
-            if(a==UINT64_MAX||b==UINT64_MAX||c==UINT64_MAX||a>UINT64_MAX-b||a+b>UINT64_MAX-c)throw std::runtime_error("Water SSR allocation unsupported");
+            const auto d=alloc(DXGI_FORMAT_R16G16B16A16_FLOAT,ow,oh);
+            if(a==UINT64_MAX||b==UINT64_MAX||c==UINT64_MAX||d==UINT64_MAX||a>UINT64_MAX-b||a+b>UINT64_MAX-c||a+b+c>UINT64_MAX-d)
+                throw std::runtime_error("Water SSR allocation unsupported");
             uint64_t tracked=0;for(const auto& old:slots)if(old)tracked+=old->bytes;
             const auto allowance=budget.Query(device,tracked).effectiveBytes;
-            if(a+b+c>allowance||tracked>allowance-(a+b+c))throw std::runtime_error("Water SSR deferred by DXGI budget");
+            if(a+b+c+d>allowance||tracked>allowance-(a+b+c+d))throw std::runtime_error("Water SSR deferred by DXGI budget");
             auto next=std::make_shared<Slot>();
             auto texture=[&](DXGI_FORMAT fmt,uint32_t w,uint32_t h,const char* name){
                 D3D11_TEXTURE2D_DESC desc{};desc.Width=w;desc.Height=h;desc.MipLevels=1;desc.ArraySize=1;desc.Format=fmt;
@@ -183,8 +215,10 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
             next->raw=texture(DXGI_FORMAT_R32G32B32A32_FLOAT,world.width,world.height+1,"NativeWaterSSR::Raw");
             next->mask=texture(DXGI_FORMAT_R32_FLOAT,world.width,world.height,"NativeWaterSSR::Mask");
             next->result=texture(DXGI_FORMAT_R16G16B16A16_FLOAT,ow,oh,"NativeWaterSSR::Result");
-            next->width=world.width;next->height=world.height;next->outWidth=ow;next->outHeight=oh;next->bytes=a+b+c;
-            const D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,4,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
+            next->sparse=texture(DXGI_FORMAT_R16G16B16A16_FLOAT,ow,oh,"NativeWaterSSR::Sparse");
+            next->constants=NativeMaterialEvaluation::Buffer(device,512,D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ);
+            next->width=world.width;next->height=world.height;next->outWidth=ow;next->outHeight=oh;next->bytes=a+b+c+d;
+            const D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,kTextureOffset+NativePBR::kGpuTextureDescriptorCapacity,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
             DX::ThrowIfFailed(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(next->descriptors.put())));
             DX::ThrowIfFailed(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,IID_PPV_ARGS(next->allocator.put())));
             DX::ThrowIfFailed(device->CreateCommandList(0,D3D12_COMMAND_LIST_TYPE_DIRECT,next->allocator.get(),pipeline.get(),IID_PPV_ARGS(next->commands.put())));
@@ -192,10 +226,11 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
             next->root=root;next->pipeline=pipeline;slot=std::move(next);
         }
         slot->input=slot->ready=slot->consumed=0;
-        slot->environment.reset();
-        if(skyVisible&&environment&&environment->reflection&&environment->stamp.encoding==encoding&&
-            environment->reflection->IsReadyFor(environment->stamp)&&
-            Policy::PublicationFresh(true,environment->reflection->stamp.engineFrame,world.engineFrame)&&
+        slot->environment.reset();slot->native=native;
+        const auto fallbackCube=environment ? (skyVisible && environment->reflection ? environment->reflection : environment->base) : nullptr;
+        if(environment&&fallbackCube&&environment->stamp.scope==material.scope&&environment->stamp.encoding==encoding&&
+            fallbackCube->IsReadyFor(environment->stamp)&&
+            Policy::PublicationFresh(true,fallbackCube->stamp.engineFrame,world.engineFrame)&&
             environment->producerFence&&MaterialFrameContract::ValidProducerSignal(environment->producerValue,environment->producerFence->GetCompletedValue()))
             slot->environment=std::move(environment);
         DX::ThrowIfFailed(slot->allocator->Reset());
@@ -209,26 +244,55 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         };
         view(slot->raw->resource.get(),DXGI_FORMAT_R32G32B32A32_FLOAT,0);
         view(slot->mask->resource.get(),DXGI_FORMAT_R32_FLOAT,1);
-        const auto sky=slot->environment?slot->environment->reflection:nullptr;
+        const auto sky=slot->environment?fallbackCube:nullptr;
+        auto* opaqueDepth=material.raster->depth->resource.get();
+        auto* tokens=evidence.texture->resource.get();
+        view(opaqueDepth,DXGI_FORMAT_R32_FLOAT,3);
+        view(tokens,DXGI_FORMAT_R16G16B16A16_UNORM,4);
+        evaluation.WriteTextureViews(device,{cpu.ptr+SIZE_T(kTextureOffset)*step});
         D3D12_SHADER_RESOURCE_VIEW_DESC cube{};cube.Format=sky?sky->format:DXGI_FORMAT_R16G16B16A16_FLOAT;
         cube.ViewDimension=D3D12_SRV_DIMENSION_TEXTURECUBE;cube.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         cube.TextureCube.MipLevels=sky?sky->mipCount:1;
         device->CreateShaderResourceView(sky?sky->resource.get():nullptr,&cube,{cpu.ptr+SIZE_T(2)*step});
         D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};uav.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;uav.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2D;
-        device->CreateUnorderedAccessView(slot->result->resource.get(),nullptr,&uav,{cpu.ptr+SIZE_T(3)*step});
+        device->CreateUnorderedAccessView(slot->result->resource.get(),nullptr,&uav,{cpu.ptr+SIZE_T(5)*step});
+        device->CreateUnorderedAccessView(slot->sparse->resource.get(),nullptr,&uav,{cpu.ptr+SIZE_T(6)*step});
         const auto common=D3D12_RESOURCE_STATE_COMMON,read=D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,write=D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         Transition(cmd,slot->raw->resource.get(),common,read);Transition(cmd,slot->mask->resource.get(),common,read);
         if(sky)Transition(cmd,sky->resource.get(),common,read);
         Transition(cmd,slot->result->resource.get(),common,write);
+        Transition(cmd,slot->sparse->resource.get(),common,write);
+        Transition(cmd,opaqueDepth,common,read);Transition(cmd,tokens,common,read);
         ID3D12DescriptorHeap* heaps[]{slot->descriptors.get()};cmd->SetDescriptorHeaps(1,heaps);cmd->SetComputeRootSignature(root.get());
         cmd->SetComputeRootDescriptorTable(0,slot->descriptors->GetGPUDescriptorHandleForHeapStart());
-        const Constants constants{world.camera.CameraProj,world.camera.CameraProjInverse,world.camera.CameraViewInverse,
-            world.width,world.height,ow,oh,uint32_t(world.reverseZ),uint32_t(bool(sky)),uint32_t(encoding),uint32_t(gammaInput),uint32_t(performance)};
-        cmd->SetComputeRoot32BitConstants(1,kConstants,&constants,0);
+        const Constants constants{world.camera.CameraProj,world.camera.CameraProjInverse,world.camera.CameraViewInverse,world.camera.CameraView,
+            world.camera.CameraPosAdjust,world.width,world.height,ow,oh,uint32_t(bool(sky)),uint32_t(encoding),quality,world.engineFrame,
+            evaluation.instanceCount,uint32_t(bool(characters)),material.rayIdentityRowPitch,evidence.tokenCount,
+            std::isfinite(emitterRadius)?std::clamp(emitterRadius,0.0f,1.0f):0.0f};
+        void* mapped=nullptr;const D3D12_RANGE noRead{};
+        DX::ThrowIfFailed(slot->constants->Map(0,&noRead,&mapped));
+        std::memcpy(mapped,&constants,sizeof(constants));slot->constants->Unmap(0,nullptr);
+        cmd->SetComputeRootConstantBufferView(1,slot->constants->GetGPUVirtualAddress());
+        cmd->SetComputeRootShaderResourceView(3,scene.acceleration->GetGPUVirtualAddress());
+        cmd->SetComputeRootShaderResourceView(4,scene.shadingGeometry->buffer->GetGPUVirtualAddress());
+        cmd->SetComputeRootShaderResourceView(5,evaluation.records->GetGPUVirtualAddress());
+        cmd->SetComputeRootShaderResourceView(6,evaluation.bindings->GetGPUVirtualAddress());
+        cmd->SetComputeRootShaderResourceView(7,characters?characters->acceleration->GetGPUVirtualAddress():scene.acceleration->GetGPUVirtualAddress());
+        cmd->SetComputeRootShaderResourceView(8,material.rayIdentity->GetGPUVirtualAddress());
+        cmd->SetComputeRootShaderResourceView(9,evidence.tokenTable->GetGPUVirtualAddress());
+        cmd->SetComputeRootShaderResourceView(10,native->environmentRadiance->GetGPUVirtualAddress());
+        cmd->SetComputeRoot32BitConstant(2,0,0);
+        cmd->Dispatch((ShadowPhysicalWidth(ShadowLogicalExtent(ow,quality),quality)+kGroup-1)/kGroup,
+            (ShadowLogicalExtent(oh,quality)+kGroup-1)/kGroup,1);
+        const auto barrier=CD3DX12_RESOURCE_BARRIER::UAV(slot->sparse->resource.get());
+        cmd->ResourceBarrier(1,&barrier);
+        cmd->SetComputeRoot32BitConstant(2,1,0);
         cmd->Dispatch((ow+kGroup-1)/kGroup,(oh+kGroup-1)/kGroup,1);
         Transition(cmd,slot->raw->resource.get(),read,common);Transition(cmd,slot->mask->resource.get(),read,common);
         if(sky)Transition(cmd,sky->resource.get(),read,common);
         Transition(cmd,slot->result->resource.get(),write,common);
+        Transition(cmd,slot->sparse->resource.get(),write,common);
+        Transition(cmd,opaqueDepth,read,common);Transition(cmd,tokens,read,common);
         DX::ThrowIfFailed(cmd->Close());
         // Copy raw shader inputs using the original per-geometry constants; no
         // reflection evaluation takes place in the DX11 capture shader.
@@ -258,6 +322,9 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         context4->Flush();
         DX::ThrowIfFailed(owner.commandQueue->Wait(inputFence.fence12.get(),inputValue));
         if(sky)DX::ThrowIfFailed(owner.commandQueue->Wait(slot->environment->producerFence.get(),slot->environment->producerValue));
+        DX::ThrowIfFailed(owner.commandQueue->Wait(native->readyFence.get(),native->readyValue));
+        DX::ThrowIfFailed(owner.commandQueue->Wait(evidence.readyFence.get(),evidence.readyValue));
+        if(characters)DX::ThrowIfFailed(owner.commandQueue->Wait(characters->readyFence.get(),characters->readyValue));
         slot->ready=UINT64_MAX;
         ID3D12CommandList* lists[]{cmd};owner.commandQueue->ExecuteCommandLists(1,lists);
         const auto outputValue=outputFence.Next();

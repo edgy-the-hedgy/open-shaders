@@ -4,6 +4,8 @@
 #include <array>
 #include <memory>
 
+namespace DX12Native { struct FullNativeReconstructionFrame; }
+
 namespace NativeCubemaps
 {
     // Native execution for the engine's existing water reflection image-space pass.
@@ -14,7 +16,8 @@ namespace NativeCubemaps
         ~WaterSSR();
         void Poll();
         void Draw(const GraphicsBackend&, const DX12Native::NativeWorldFrame&, std::shared_ptr<const DX12Native::EnvironmentFrame>,
-            DX12Native::EnvironmentEncoding, bool gammaInput, bool skyVisible, bool performance, ID3D11PixelShader* expected);
+            std::shared_ptr<const DX12Native::FullNativeReconstructionFrame>, DX12Native::EnvironmentEncoding,
+            bool skyVisible, uint32_t quality, float emitterRadius, ID3D11PixelShader* expected);
         void End();
         json Diagnostics() const;
     private:

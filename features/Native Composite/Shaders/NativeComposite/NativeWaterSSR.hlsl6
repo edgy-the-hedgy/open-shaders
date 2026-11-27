@@ -1,91 +1,145 @@
+#include "NativeSurface.hlsli"
+#include "FullNativeSampling.hlsli"
 #include "Common/ColorSpaces.hlsli"
 Texture2D<float4> Raw : register(t0);
 Texture2D<float> Coverage : register(t1);
 TextureCube<float4> Sky : register(t2);
+Texture2D<float> OpaqueDepth : register(t3);
+Texture2D<float4> Tokens : register(t4);
+RaytracingAccelerationStructure Scene : register(t5);
+#define NATIVE_GEOMETRY_REGISTER t6
+#define NATIVE_RECORD_REGISTER t7
+#define NATIVE_BINDING_REGISTER t8
+#define NATIVE_TEXTURE_REGISTER t9
+#include "NativeMaterialAlpha.hlsli"
+RaytracingAccelerationStructure CharacterScene : register(t521);
+ByteAddressBuffer RayIdentity : register(t522);
+ByteAddressBuffer TokenTable : register(t523);
+ByteAddressBuffer Radiance : register(t524);
 RWTexture2D<float4> Result : register(u0);
-SamplerState LinearClamp : register(s0);
+RWTexture2D<float4> Sparse : register(u1);
 cbuffer Constants : register(b0)
 {
     row_major float4x4 Projection;
     row_major float4x4 InverseProjection;
     row_major float4x4 InverseView;
+    row_major float4x4 View;
+    float4 PositionAdjust;
     uint2 Size;
     uint2 OutputSize;
-    uint ReverseZ;
     uint HasSky;
     uint Encoding;
-    uint GammaInput;
-    uint Performance;
+    uint Quality;
+    uint Frame;
+    uint InstanceCount;
+    uint CharacterEnabled;
+    uint RayPitch;
+    uint TokenCount;
+    float EmitterRadius;
+    uint3 Padding;
 };
-float StandardDepth(float d){return ReverseZ!=0u?1.0-d:d;}
-bool InFrame(float2 uv){return all(uv>=0.0)&&all(uv<1.0);}
+cbuffer DispatchPhase : register(b1) { uint Phase; };
 uint2 Pixel(float2 uv){return min(uint2(uv*float2(Size)),Size-1u);}
-float4 Read(float2 uv){return Raw.Load(int3(Pixel(uv),0));}
-float3 ConvertScene(float3 c)
+bool Receiver(uint2 pixel,out float3 world,out float3 direction)
 {
-    if(GammaInput!=0u&&Encoding!=0u){
-        c=sign(c)*pow(abs(c),1.6);
-        if(Encoding==2u)c=sRGBToAP1(c);
-    }
+    world=0;direction=0;
+    float2 uv=(float2(pixel)+0.5)/float2(OutputSize);
+    uint2 p=Pixel(uv);
+    if(!(Coverage.Load(int3(p,0))>0))return false;
+    float depth=Raw.Load(int3(p,0)).a;
+    if(!isfinite(depth)||depth<=0||depth>=1)return false;
+    float4 position=mul(InverseProjection,float4(uv*float2(2,-2)+float2(-1,1),depth,1));
+    if(!all(isfinite(position))||abs(position.w)<1e-8)return false;
+    float3 v=position.xyz/position.w;
+    float4 absolute=mul(InverseView,float4(v,1));
+    if(!all(isfinite(absolute))||abs(absolute.w)<1e-8)return false;
+    world=absolute.xyz/absolute.w+PositionAdjust.xyz;
+    direction=normalize(mul((float3x3)InverseView,v));
+    return all(isfinite(world))&&all(isfinite(direction));
+}
+float3 EncodeRadiance(float3 c)
+{
+    if(Encoding==0u)return pow(max(c,0.0),1.0/1.6);
+    if(Encoding==2u)return max(sRGBToAP1(c),0.0);
     return max(c,0.0);
+}
+float4 Fallback(float3 direction)
+{
+    if(HasSky==0u)return 0;
+    float3 c=Sky.SampleLevel(ClampClamp,direction,0).rgb;
+    return all(isfinite(c))?float4(clamp(c,0,65504),1):0;
+}
+float4 Trace(uint2 receiver,float3 world,float3 incident)
+{
+    // Flat world-space water; the normal is oriented toward the receiver side.
+    float3 normal=float3(0,0,incident.z<=0?1:-1);
+    float3 mirror=reflect(incident,normal);
+    float3 direction=normalize(mirror+NativeEmitterOffset(mirror,EmitterRadius*ShadowEmitterMultiplier(Quality),receiver,0u,Frame));
+    if(!all(isfinite(direction))||dot(direction,normal)<=0.0)return Fallback(mirror);
+    RayDesc ray;
+    ray.Origin=world+normal*0.5;ray.Direction=direction;ray.TMin=0.5;ray.TMax=3.402823e38;
+    RayQuery<RAY_FLAG_NONE> query;
+    query.TraceRayInline(Scene,RAY_FLAG_NONE,0xff,ray);
+    while(query.Proceed()){
+        if(query.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE&&
+           AcceptAlpha(query.CandidateInstanceID(),query.CandidatePrimitiveIndex(),query.CandidateTriangleBarycentrics(),InstanceCount))
+            query.CommitNonOpaqueTriangleHit();
+    }
+    if(query.CommittedStatus()!=COMMITTED_TRIANGLE_HIT)return Fallback(direction);
+    float distance=query.CommittedRayT();
+    if(CharacterEnabled!=0u){
+        ray.TMax=distance;
+        RayQuery<RAY_FLAG_FORCE_OPAQUE|RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> character;
+        character.TraceRayInline(CharacterScene,RAY_FLAG_NONE,0xff,ray);
+        while(character.Proceed()){}
+        if(character.CommittedStatus()!=COMMITTED_NOTHING)return Fallback(direction);
+    }
+    float3 point=ray.Origin+direction*distance;
+    float4 clip=mul(Projection,mul(View,float4(point-PositionAdjust.xyz,1)));
+    if(!all(isfinite(clip))||abs(clip.w)<1e-5)return Fallback(direction);
+    float2 uv=clip.xy/clip.w*float2(0.5,-0.5)+0.5;
+    float depth=clip.z/clip.w;
+    if(any(uv<0)||any(uv>=1)||depth<=0||depth>=1)return Fallback(direction);
+    uint2 p=Pixel(uv);
+    float observed=OpaqueDepth.Load(int3(p,0));
+    if(!isfinite(observed)||abs(observed-depth)>0.0005)return Fallback(direction);
+    uint token=uint(round(saturate(Tokens.Load(int3(p,0)).b)*65535.0));
+    if(token==0||token>TokenCount)return Fallback(direction);
+    uint2 identity=RayIdentity.Load2(p.y*RayPitch+p.x*8u);
+    uint2 committed=uint2(query.CommittedInstanceID(),query.CommittedPrimitiveIndex());
+    if(any(identity==0xffffffffu)||any(uint2(identity.x,identity.y&0x7fffffffu)!=committed)||
+       any(TokenTable.Load2((token-1u)*8u)!=committed))return Fallback(direction);
+    float4 color=UnpackNativeLobeHalf4(Radiance.Load2((p.y*Size.x+p.x)*8u));
+    if(!all(isfinite(color))||color.a!=float(ContributionDirectDiffuse))return Fallback(direction);
+    return float4(clamp(EncodeRadiance(color.rgb),0,65504),1);
 }
 [numthreads(8,8,1)]
 void main(uint3 id:SV_DispatchThreadID)
 {
-    if(any(id.xy>=OutputSize))return;
-    Result[id.xy]=0;
-    float2 uv=(float2(id.xy)+0.5)/float2(OutputSize);
-    const float4 params=Raw.Load(int3(0,Size.y,0));
-    const float3 normal=Raw.Load(int3(1,Size.y,0)).xyz;
-    if(!all(isfinite(params))||params.y<=0.0||!all(isfinite(normal))||dot(normal,normal)<1e-8||
-        !(Coverage.Load(int3(Pixel(uv),0))>0))return;
-    float depth=Read(uv).a;
-    if(!isfinite(depth)||depth<=0||depth>=1)return;
-    float4 position=mul(InverseProjection,float4(uv*float2(2,-2)+float2(-1,1),depth,1));
-    if(!all(isfinite(position))||abs(position.w)<1e-8)return;
-    float3 view=normalize(position.xyz/position.w);
-    float3 reflection=reflect(view,normalize(normal));
-    if(!all(isfinite(reflection)))return;
-    float4 clip=mul(Projection,float4(reflection,0));
-    float3 ndc=float3(uv*float2(2,-2)+float2(-1,1),depth);
-    float3 direction=clip.xyz-ndc*clip.w;
-    direction.z=ReverseZ!=0u?-direction.z:direction.z;
-    direction.xy*=float2(0.5,-0.5);
-    float len=length(direction);
-    if(!isfinite(len)||len<1e-8)return;
-    direction/=len;
-    float3 origin=float3(uv,StandardDepth(depth));
-    float3 previous=origin;
-    const uint steps=Performance!=0u?32u:64u;
-    [loop]for(uint i=1;i<steps;++i){
-        float3 ray=origin+(float(i)/steps)*direction;
-        if(!InFrame(ray.xy))return;
-        float z=StandardDepth(Read(ray.xy).a);
-        if(!isfinite(z)||z<0||z>1)return;
-        if(z>0.9999&&z<1.0-1e-6){previous=ray;continue;}
-        if(ray.z<=z){previous=ray;continue;}
-        float3 lo=previous,hi=ray;
-        [unroll]for(uint k=0;k<6;++k){
-            float3 mid=(lo+hi)*0.5;
-            if(!InFrame(mid.xy))return;
-            float d=StandardDepth(Read(mid.xy).a);
-            if(!isfinite(d))return;
-            if(mid.z>d)hi=mid;else lo=mid;
-        }
-        float3 hit=(lo+hi)*0.5;
-        float4 sample=Read(hit.xy);
-        float hitDepth=StandardDepth(sample.a);
-        float confidence=1.0-saturate(abs(hit.z-hitDepth)/params.y);
-        confidence*=1.0-saturate(length(hit-origin));
-        float2 center=abs(hit.xy*2.0-1.0);
-        confidence*=smoothstep(0.0,0.1,saturate(1.0-center.x))*smoothstep(0.0,0.5,saturate(1.0-center.y));
-        if(confidence<=0)return;
-        float3 color=0;
-        if(hitDepth>=1.0-1e-6){
-            if(HasSky==0u)return;
-            color=Sky.SampleLevel(LinearClamp,mul((float3x3)InverseView,reflection),0).rgb;
-        }else color=ConvertScene(sample.rgb);
-        if(all(isfinite(color)))Result[id.xy]=float4(clamp(color,0,65504),confidence);
+    if(Phase==0u){
+        uint2 p=NativeSamplePixel(id.xy,OutputSize,Quality,Frame);
+        if(any(p>=OutputSize))return;
+        float3 world,direction;
+        Sparse[p]=Receiver(p,world,direction)?Trace(p,world,direction):float4(0,0,0,0);
         return;
     }
+    if(any(id.xy>=OutputSize))return;
+    uint2 p=id.xy;
+    Result[p]=0;
+    float3 world,direction;
+    if(!Receiver(p,world,direction))return;
+    if(NativeIsSampled(p,OutputSize,Quality,Frame)&&!ShadowFilterDirectSamples(Quality)){
+        Result[p]=Sparse[p];return;
+    }
+    int radius=int(ShadowReconstructionRadius(Quality));
+    float4 sum=0;float total=0;
+    [loop]for(int y=-radius;y<=radius;++y)[loop]for(int x=-radius;x<=radius;++x){
+        int2 q=int2(p)+int2(x,y);
+        if(any(q<0)||any(q>=int2(OutputSize))||!NativeIsSampled(uint2(q),OutputSize,Quality,Frame))continue;
+        float3 other,otherDirection;
+        if(!Receiver(uint2(q),other,otherDirection)||abs(other.z-world.z)>max(1.0,length(world-PositionAdjust.xyz)*0.001))continue;
+        float w=1.0/(1.0+float(x*x+y*y));
+        sum+=Sparse[q]*w;total+=w;
+    }
+    Result[p]=total>0?sum/total:Fallback(reflect(direction,float3(0,0,1)));
 }

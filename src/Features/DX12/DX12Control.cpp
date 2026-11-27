@@ -16,6 +16,7 @@
 #include "Utils/UI.h"
 
 #include <algorithm>
+#include <cmath>
 
 DX12::ControlMode DX12Control::GetMode() const
 {
@@ -175,8 +176,12 @@ void DX12Control::DrawSimpleSettings(bool developerMode)
 
 	ImGui::SeparatorText(T("menu.dx12.tab.native_scene", "Native Scene"));
 	globals::features::dx12NativeScene.DrawSettings();
-	if (UsesExclusiveMaterials() && ImGui::Checkbox("Native screen-space reflections", &settings.NativeScreenSpaceReflections))
-		nativeSSR.store(settings.NativeScreenSpaceReflections, std::memory_order_relaxed);
+	if (UsesExclusiveMaterials()) {
+		if (ImGui::Checkbox(T("menu.dx12.native_reflections", "Native ray-traced reflections"), &settings.NativeScreenSpaceReflections))
+			nativeSSR.store(settings.NativeScreenSpaceReflections, std::memory_order_relaxed);
+		if (ImGui::SliderFloat(T("menu.dx12.water_reflection_radius", "Water reflection emitter radius"), &settings.NativeWaterReflectionRadius, 0.0f, 1.0f, "%.3f"))
+			waterReflectionRadius.store(settings.NativeWaterReflectionRadius, std::memory_order_relaxed);
+	}
 	ImGui::SeparatorText(T("menu.dx12.tab.resources", "Resources"));
 	globals::features::dx12Resources.DrawSettings();
 }
@@ -225,6 +230,9 @@ void DX12Control::LoadSettings(json& input)
 	const Settings defaults{};
 	settings.Enabled = input.value("Enabled", defaults.Enabled);
 	settings.NativeScreenSpaceReflections = input.value("NativeScreenSpaceReflections", defaults.NativeScreenSpaceReflections);
+	const float radius = input.value("NativeWaterReflectionRadius", defaults.NativeWaterReflectionRadius);
+	settings.NativeWaterReflectionRadius = std::isfinite(radius) ? std::clamp(radius, 0.0f, 1.0f) : defaults.NativeWaterReflectionRadius;
+	waterReflectionRadius.store(settings.NativeWaterReflectionRadius, std::memory_order_relaxed);
 	nativeSSR.store(settings.NativeScreenSpaceReflections, std::memory_order_relaxed);
 	settings.Mode = static_cast<int>(DX12::SanitizeControlMode(input.value("Mode", defaults.Mode),
 		globals::state && globals::state->IsDeveloperMode()));
@@ -241,12 +249,14 @@ void DX12Control::SaveSettings(json& output)
 	const auto requested = DX12::SanitizeControlMode(settings.Mode, globals::state && globals::state->IsDeveloperMode());
 	const auto saved = DX12::RequiresModeRestart(active, requested) ? requested : active;
 	output = { { "Enabled", settings.Enabled }, { "Mode", static_cast<int>(saved) },
-		{ "NativeScreenSpaceReflections", settings.NativeScreenSpaceReflections } };
+		{ "NativeScreenSpaceReflections", settings.NativeScreenSpaceReflections },
+		{ "NativeWaterReflectionRadius", settings.NativeWaterReflectionRadius } };
 }
 
 void DX12Control::RestoreDefaultSettings()
 {
 	settings = {};
+	waterReflectionRadius.store(settings.NativeWaterReflectionRadius, std::memory_order_relaxed);
 	nativeSSR.store(settings.NativeScreenSpaceReflections, std::memory_order_relaxed);
 	RequestMode(static_cast<DX12::ControlMode>(settings.Mode));
 	if (!bootCaptured) {
