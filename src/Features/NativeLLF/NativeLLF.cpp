@@ -1,4 +1,5 @@
 #include "NativeLLF.h"
+#include "NativeLLFParticleBridge.h"
 
 #include "Features/DX12/DX12Control.h"
 #include "Features/DX12/DX12LightMath.h"
@@ -61,13 +62,58 @@ namespace DX12Native
 	}
 }
 
+namespace
+{
+	struct ParticleEmitter
+	{
+		float3 position, color;
+		float radius, fade;
+	};
+
+	// Render-thread CPU publication, identical lifetime to the old LLF snapshot.
+	struct ParticleSnapshot
+	{
+		std::vector<ParticleEmitter> emitters;
+		uint32_t frame = UINT32_MAX, pluginFrame = UINT32_MAX;
+	};
+
+	ParticleSnapshot& LegacyParticleSnapshot()
+	{
+		static ParticleSnapshot snapshot;
+		return snapshot;
+	}
+}
+
+void NativeLLF::ResetLegacyParticleBridge()
+{
+	auto& snapshot = LegacyParticleSnapshot();
+	snapshot.emitters.clear();
+	snapshot.frame = snapshot.pluginFrame = UINT32_MAX;
+}
+
+void NativeLLF::PublishLegacyParticleBridge(std::span<const LightLimitFix::LightData> lights,
+	const RE::NiPoint3& eyePosition, uint32_t frame, uint32_t pluginFrame)
+{
+	auto& snapshot = LegacyParticleSnapshot();
+	snapshot.emitters.clear();
+	snapshot.emitters.reserve(lights.size());
+	for (const auto& light : lights) {
+		const auto& p = light.positionWS[0].data;
+		snapshot.emitters.push_back({ { p.x + eyePosition.x, p.y + eyePosition.y, p.z + eyePosition.z },
+			light.color, light.radius, light.fade });
+	}
+	snapshot.frame = frame;
+	snapshot.pluginFrame = pluginFrame;
+}
+
 std::optional<NativeLLF::DirectInputFrame> NativeLLF::CollectDirectInputs(const DX12Native::TopLevel& scene, uint32_t frame, bool opaqueReady)
 {
 	if (!globals::features::dx12Control.WantsMaterialPreparation() || !globals::state || !scene.inputs || !scene.inputs->residency)
 		return std::nullopt;
 	const auto& llf = globals::features::lightLimitFix;
-	const bool particleSnapshotReady = llf.loaded && llf.nativeParticleFrame == frame &&
-		llf.nativeParticlePluginFrame == globals::state->frameCount;
+	const auto& particles = LegacyParticleSnapshot();
+	const bool particleSnapshotReady = llf.loaded && particles.frame == frame &&
+		particles.pluginFrame == globals::state->frameCount;
 	// Prefer early material dispatch where possible, but defer direct lighting to opaque-ready if
 	// the current LLF emitter publication has not arrived yet.
 	if (llf.loaded && !particleSnapshotReady && !opaqueReady)
@@ -187,7 +233,7 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::CollectDirectInputs(const 
 	// after matching so prepared ordinals remain stable during the merge.
 	std::erase_if(directLights, [](const auto& light) { return light.radius <= 0.0f; });
 	if (particleSnapshotReady) {
-		for (const auto& particle : llf.nativeParticleEmitters) {
+		for (const auto& particle : particles.emitters) {
 			if (directLights.size() >= DX12::kMaxPreparedLights)
 				break;
 			if (!std::isfinite(particle.radius) || particle.radius <= 0.0f || !std::isfinite(particle.fade) || particle.fade <= 0.0f ||

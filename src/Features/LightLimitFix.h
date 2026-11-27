@@ -227,12 +227,6 @@ public:
 	/** @brief Particle lights accepted after expansion, clustering, and buffer filtering. */
 	std::atomic<uint32_t> bufferedParticleLightCount{ 0 };
 
-	// Render-thread publication of accepted particle emitters for Full Native only.
-	// These are copied values, never retained particle-system pointers.
-	struct NativeParticleEmitter { float3 position, color; float radius, fade; };
-	std::vector<NativeParticleEmitter> nativeParticleEmitters;
-	uint32_t nativeParticleFrame = UINT32_MAX;
-	uint32_t nativeParticlePluginFrame = UINT32_MAX;
 	std::shared_mutex cachedParticleLightsMutex;
 	eastl::vector<CachedParticleLight> cachedParticleLights;
 
