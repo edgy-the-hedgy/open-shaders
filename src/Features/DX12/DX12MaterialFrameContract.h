@@ -124,6 +124,11 @@ namespace DX12Native::MaterialFrameContract
 	}
 
 	enum class OpaqueOwner { Raster, Native };
+	// A matching diagnostic MRT token is deliberately not exact winner certification.
+	constexpr SurfaceCorrespondence CertifyRasterCorrespondence(bool candidateMatch, bool allRasterWritersCertified)
+	{
+		return candidateMatch && allRasterWritersCertified ? SurfaceCorrespondence::ExactRasterIdentity : SurfaceCorrespondence::DepthOnly;
+	}
 	constexpr OpaqueOwner ResolveOpaqueOwner(SurfaceStatus status, SurfaceCorrespondence correspondence,
 		ContributionAdmission admission, bool coherent, bool earlyOpaqueStage, bool independentShadowActive)
 	{

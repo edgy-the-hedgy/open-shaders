@@ -9,6 +9,9 @@ ByteAddressBuffer HistoryMaterials : register(t5);
 Texture2D<float> HistoryDepth : register(t6);
 ByteAddressBuffer RayIdentity : register(t7);
 ByteAddressBuffer HistoryRayIdentity : register(t8);
+Texture2D<float4> RasterTokens : register(t9);
+ByteAddressBuffer RasterTokenTable : register(t10);
+RWByteAddressBuffer CandidateMask : register(u1);
 RWByteAddressBuffer Reconstructed : register(u0);
 cbuffer ReconstructionConstants : register(b0)
 {
@@ -21,6 +24,7 @@ cbuffer ReconstructionConstants : register(b0)
     uint HasHistory;
     uint RayIdentityPitch;
     uint HistoryRayIdentityPitch;
+    uint RasterTokenCount;
 };
 
 bool ValidRayIdentity(uint2 identity)
@@ -131,6 +135,17 @@ void main(uint3 id : SV_DispatchThreadID)
     if (any(id.xy >= Size)) return;
     const uint offset = (id.y * Size.x + id.x) * 16u;
     Reconstructed.Store4(offset, uint4(0, 0, 0, 0));
+    const uint candidateOffset = (id.y * Size.x + id.x) * 4u;
+    CandidateMask.Store(candidateOffset, 0u);
+    if (RasterTokenCount != 0u) {
+        uint token = uint(round(saturate(RasterTokens.Load(int3(id.xy, 0)).b) * 65535.0));
+        if (token > 0u && token <= RasterTokenCount) {
+            uint2 raster = RasterTokenTable.Load2((token - 1u) * 8u);
+            uint2 hit = ReadRayIdentity(id.xy);
+            if (ValidRayIdentity(hit) && all(raster == hit))
+                CandidateMask.Store(candidateOffset, 1u); // Candidate only, never an ownership grant.
+        }
+    }
     const float4 base = ReadMaterial(id.xy, 0u);
     const float4 normal = ReadMaterial(id.xy, 8u);
     const float depth = Depth.Load(int3(id.xy, 0));

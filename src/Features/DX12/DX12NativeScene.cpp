@@ -863,8 +863,13 @@ void DX12NativeScene::DispatchFullNativeIndirect()
 		ibl.loaded && !stamp.interior ? ibl.GetNativeSkyRadiance() : EnvironmentSource{});
 	fullNativeIndirect->Dispatch(*backend, material, fullNativeEnvironment->Get(),
 		uint32_t(IndirectDiffuse) | uint32_t(IndirectSpecular), settings.EnvIBLScale, settings.SkyIBLScale, ambient);
+	const auto& draws = fullNativeRasterDraws;
+	const bool matchingDraws = draws.finalized && draws.scene == material->scene && draws.stamp.frame == frame;
+	auto* tokenSource = matchingDraws && globals::game::renderer ?
+		Util::AsReal(globals::game::renderer->GetRuntimeData().renderTargets[MASKS2].texture) : nullptr;
 	globals::features::upscaling.nativeComposite.ReconstructFullNative(*backend, material, GetFullNativeDirect(frame), GetFullNativeIndirect(frame),
-		globals::state->frameCount, globals::state->ShouldResetHistory());
+		globals::state->frameCount, globals::state->ShouldResetHistory(), tokenSource, draws.stamp,
+		matchingDraws ? std::span<const RasterPixelIdentity>(draws.tokens) : std::span<const RasterPixelIdentity>{});
 }
 
 void DX12NativeScene::OnOpaqueRasterReady()

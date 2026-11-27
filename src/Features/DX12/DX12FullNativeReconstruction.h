@@ -2,6 +2,7 @@
 
 #include "DX12NativeDirectLighting.h"
 #include "DX12NativeIndirectLighting.h"
+#include "DX12FullNativeRasterEvidence.h"
 
 namespace DX12Native
 {
@@ -16,7 +17,8 @@ namespace DX12Native
 		std::shared_ptr<const NativeScreenProbe::MaterialFrame> material;
 		std::shared_ptr<const DirectLightingFrame> direct;
 		std::shared_ptr<const IndirectLightingFrame> indirect;
-		winrt::com_ptr<ID3D12Resource> samples;
+		winrt::com_ptr<ID3D12Resource> samples, candidateMask;
+		std::shared_ptr<const FullNativeRasterEvidence> rasterEvidence;
 		winrt::com_ptr<ID3D12CommandAllocator> allocator;
 		winrt::com_ptr<ID3D12GraphicsCommandList> commands;
 		winrt::com_ptr<ID3D12RootSignature> root;
@@ -33,12 +35,15 @@ namespace DX12Native
 		void Poll(uint32_t frame);
 		void Dispatch(const GraphicsBackend& backend, std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
 			std::shared_ptr<const DirectLightingFrame> direct, std::shared_ptr<const IndirectLightingFrame> indirect,
-			uint32_t pluginFrame, bool resetHistory);
+			uint32_t pluginFrame, bool resetHistory, ID3D11Texture2D* rasterTokens,
+			MaterialFrameContract::RasterIdentityStamp rasterStamp,
+			std::span<const MaterialFrameContract::RasterPixelIdentity> tokens);
 		std::shared_ptr<const FullNativeReconstructionFrame> Get(uint32_t frame) const;
 	private:
 		void Initialize(const GraphicsBackend& backend);
 		GraphicsBackend owner;
 		VideoMemoryBudget budget;
+		FullNativeRasterEvidenceCapture evidenceCapture;
 		winrt::com_ptr<ID3D12RootSignature> root;
 		winrt::com_ptr<ID3D12PipelineState> pipeline;
 		winrt::com_ptr<ID3D12Fence> completion;

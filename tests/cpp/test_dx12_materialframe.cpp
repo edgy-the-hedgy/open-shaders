@@ -250,3 +250,11 @@ TEST_CASE("Full Native raster primitive tokens never alias on exhaustion", "[dx1
 	REQUIRE(RasterTokenBase(0, 0) == 0);
 	REQUIRE(RasterTokenBase(UINT32_MAX, 1) == 0);
 }
+
+TEST_CASE("A matching raster token cannot independently grant opaque ownership", "[dx12][materials]")
+{
+	constexpr ContributionAdmission complete{ kOpaqueRequired, kOpaqueRequired };
+	REQUIRE(ResolveOpaqueOwner(SurfaceStatus::EvaluatedBase, CertifyRasterCorrespondence(true, false), complete, true, true, false) == OpaqueOwner::Raster);
+	REQUIRE(ResolveOpaqueOwner(SurfaceStatus::EvaluatedBase, CertifyRasterCorrespondence(false, true), complete, true, true, false) == OpaqueOwner::Raster);
+	REQUIRE(ResolveOpaqueOwner(SurfaceStatus::EvaluatedBase, CertifyRasterCorrespondence(true, true), complete, true, true, false) == OpaqueOwner::Native);
+}
