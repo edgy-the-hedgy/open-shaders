@@ -121,15 +121,15 @@ float4 Trace(uint2 receiver,float3 world,float3 incident)
         }
     }
     if(!staticHit)return Fallback(direction);
-    float3 point=ray.Origin+direction*distance;
+    float3 hitPosition=ray.Origin+direction*distance;
     float3 secondary;
     if(ShadeNativeSecondary(query.CommittedInstanceID(),query.CommittedPrimitiveIndex(),query.CommittedTriangleBarycentrics(),
         (float3x3)query.CommittedWorldToObject3x4(),(float3x3)query.CommittedObjectToWorld3x4(),query.CommittedTriangleFrontFace(),
-        point,direction,distance,EmitterRadius,receiver,0u,Frame,Quality,InstanceCount,CharacterEnabled,
+        hitPosition,direction,distance,EmitterRadius,receiver,0u,Frame,Quality,InstanceCount,CharacterEnabled,
         SecondaryLightCount,SecondarySunDirection,SecondarySunRadiance,SecondaryFoliage,SecondaryMaterialControls,SecondaryProjectionRows,secondary))
         return float4(clamp(EncodeRadiance(secondary),0,65504),1);
     if(TokenCount==0u)return Fallback(direction);
-    float4 clip=mul(Projection,mul(View,float4(point-PositionAdjust.xyz,1)));
+    float4 clip=mul(Projection,mul(View,float4(hitPosition-PositionAdjust.xyz,1)));
     if(!all(isfinite(clip))||abs(clip.w)<1e-5)return Fallback(direction);
     float2 uv=clip.xy/clip.w*float2(0.5,-0.5)+0.5;
     float depth=clip.z/clip.w;

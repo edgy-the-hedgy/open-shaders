@@ -137,7 +137,7 @@ struct NativeMaterialTriangle
     bool hasTangents;
 };
 
-Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, NativeMaterialTriangle triangle, uint instance, float3 weights, float3 rayObject, float3 rayOffsetX, float3 rayOffsetY, float rayScale, float viewDistance, float3x3 worldToObject, float3x3 objectToWorld, bool parallaxEnabled, bool warpFixEnabled, bool shadowEnabled, float mipBias, uint projectionRow, float3 worldPosition, float projectionNoise, RawRasterSurface raw, out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow)
+Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, NativeMaterialTriangle triData, uint instance, float3 weights, float3 rayObject, float3 rayOffsetX, float3 rayOffsetY, float rayScale, float viewDistance, float3x3 worldToObject, float3x3 objectToWorld, bool parallaxEnabled, bool warpFixEnabled, bool shadowEnabled, float mipBias, uint projectionRow, float3 worldPosition, float projectionNoise, RawRasterSurface raw, out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow)
 {
     rawUsed = false;
     coat = (NativeCoatSample)0;
@@ -151,15 +151,15 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
     float2 triangleUV[3];
     float3 triangleNormal[3];
     [unroll] for (uint i = 0; i < 3u; ++i) {
-        triangleNormal[i]=triangle.normals[i];
+        triangleNormal[i]=triData.normals[i];
         n += weights[i]*triangleNormal[i];
-        triangleUV[i]=triangle.uv[i];
+        triangleUV[i]=triData.uv[i];
         uv += weights[i]*triangleUV[i];
-        color += weights[i]*triangle.colors[i].rgb;
-        vertexAlpha += weights[i]*triangle.colors[i].a;
-        if (triangle.hasTangents) {
-            t += weights[i]*triangle.tangents[i];
-            b += weights[i]*triangle.bitangents[i];
+        color += weights[i]*triData.colors[i].rgb;
+        vertexAlpha += weights[i]*triData.colors[i].a;
+        if (triData.hasTangents) {
+            t += weights[i]*triData.tangents[i];
+            b += weights[i]*triData.bitangents[i];
         }
     }
     uv = uv*material.uv[0].zw+material.uv[0].xy;
@@ -177,11 +177,11 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
     n = normalize(n);
     // Legacy 36-byte RSGA and rigid meshes without stored tangents can
     // derive a local basis from the actual triangle and its UV gradients.
-    if (!raw.valid && (!triangle.hasTangents || dot(t,t) < 1e-8 || dot(b,b) < 1e-8)) {
-        if (!triangle.hasPositions) return result;
-        float3 p0=triangle.positions[0];
-        float3 e1=triangle.positions[1]-p0;
-        float3 e2=triangle.positions[2]-p0;
+    if (!raw.valid && (!triData.hasTangents || dot(t,t) < 1e-8 || dot(b,b) < 1e-8)) {
+        if (!triData.hasPositions) return result;
+        float3 p0=triData.positions[0];
+        float3 e1=triData.positions[1]-p0;
+        float3 e2=triData.positions[2]-p0;
         float2 duv1=triangleUV[1]-triangleUV[0], duv2=triangleUV[2]-triangleUV[0];
         float determinant=duv1.x*duv2.y-duv1.y*duv2.x;
         if (!isfinite(determinant) || abs(determinant)<1e-10) {
@@ -204,7 +204,7 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
     float eta=1.0;
     bool interlayerActive=false;
     if (parallaxEnabled && (binding.flags & SurfaceParallaxReadyBinding)!=0u && material.textures[2].x!=0xffffffffu &&
-        (binding.flags & 512u)==0u && dot(rayObject,rayObject)>1e-8 && triangle.hasPositions) {
+        (binding.flags & 512u)==0u && dot(rayObject,rayObject)>1e-8 && triData.hasPositions) {
         float3 view=normalize(-rayObject);
         if (interlayer) {
             float strength=saturate(material.coat.x);
@@ -227,9 +227,9 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
             interlayerActive=true;
         }
         float3 viewTS=float3(dot(t,view),dot(b,view),dot(n,view));
-        float3 p0=triangle.positions[0];
-        float3 e1=triangle.positions[1]-p0;
-        float3 e2=triangle.positions[2]-p0;
+        float3 p0=triData.positions[0];
+        float3 e1=triData.positions[1]-p0;
+        float3 e2=triData.positions[2]-p0;
         float2 uv1=(triangleUV[1]-triangleUV[0])*material.uv[0].zw;
         float2 uv2=(triangleUV[2]-triangleUV[0])*material.uv[0].zw;
         float2 baryX,baryY;
@@ -286,10 +286,10 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
     float projectionWeight=0.0;
     bool projectionApplied=false;
 #if defined(NATIVE_MATERIAL_PROJECTION)
-    if (projectionRow!=0xffffffffu && triangle.hasPositions && (binding.flags&512u)==0u) {
-        float3 p0=triangle.positions[0];
-        float3 e1=triangle.positions[1]-p0;
-        float3 e2=triangle.positions[2]-p0;
+    if (projectionRow!=0xffffffffu && triData.hasPositions && (binding.flags&512u)==0u) {
+        float3 p0=triData.positions[0];
+        float3 e1=triData.positions[1]-p0;
+        float3 e2=triData.positions[2]-p0;
         float2 baryX,baryY;
         float3 dx,dy;
         bool validX=NativeTriangleDifferential(rayObject,rayOffsetX,rayScale,e1,e2,baryX,dx);
@@ -328,7 +328,7 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
         else result.color.a=SurfaceFeatureLimited;
     }
     if ((binding.flags & SurfaceThinSurfaceReadyBinding) != 0u) {
-        if (!triangle.hasPositions) { result.color.a=SurfaceFeatureLimited; return result; }
+        if (!triData.hasPositions) { result.color.a=SurfaceFeatureLimited; return result; }
         float3 scatterColor=0.0;
         float thickness=1.0;
         if ((material.properties.x & 1u)!=0u) {
@@ -340,9 +340,9 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
                 thickness*=saturate(feature0.a);
             } else scatterColor*=base*(1.0-metallic);
         }
-        float3 p0=triangle.positions[0];
-        float3 p1=triangle.positions[1];
-        float3 p2=triangle.positions[2];
+        float3 p0=triData.positions[0];
+        float3 p1=triData.positions[1];
+        float3 p2=triData.positions[2];
         float3 face=cross(p1-p0,p2-p0);
         if (!all(isfinite(face)) || dot(face,face)<1e-8 || !all(isfinite(scatterColor)) ||
             !isfinite(thickness) || !isfinite(material.surface.y) || !all(isfinite(material.thinSurface.xyz))) {
@@ -429,22 +429,22 @@ Sample EvaluateMaterial(uint instanceCount, uint instance, uint primitive, float
     if (any(material.identity.xy != binding.identity) || any(material.identity.zw != binding.revision)) return (Sample)0;
     uint3 ix = Geometry.Load3(offsets.y + primitive*12u);
     if (any(ix >= counts.x)) return (Sample)0;
-    NativeMaterialTriangle triangle = (NativeMaterialTriangle)0;
-    triangle.hasPositions = counts.z >= 12u;
-    triangle.hasTangents = offsets.w == 60u;
+    NativeMaterialTriangle triData = (NativeMaterialTriangle)0;
+    triData.hasPositions = counts.z >= 12u;
+    triData.hasTangents = offsets.w == 60u;
     [unroll] for (uint i = 0; i < 3u; ++i) {
         uint a = offsets.z + ix[i]*offsets.w;
-        triangle.normals[i] = asfloat(Geometry.Load3(a));
-        triangle.uv[i] = asfloat(Geometry.Load2(a+12));
-        triangle.colors[i] = asfloat(Geometry.Load4(a+20));
-        if (triangle.hasTangents) {
-            triangle.tangents[i] = asfloat(Geometry.Load3(a+36));
-            triangle.bitangents[i] = asfloat(Geometry.Load3(a+48));
+        triData.normals[i] = asfloat(Geometry.Load3(a));
+        triData.uv[i] = asfloat(Geometry.Load2(a+12));
+        triData.colors[i] = asfloat(Geometry.Load4(a+20));
+        if (triData.hasTangents) {
+            triData.tangents[i] = asfloat(Geometry.Load3(a+36));
+            triData.bitangents[i] = asfloat(Geometry.Load3(a+48));
         }
-        if (triangle.hasPositions)
-            triangle.positions[i] = asfloat(Geometry.Load3(offsets.x+ix[i]*counts.z));
+        if (triData.hasPositions)
+            triData.positions[i] = asfloat(Geometry.Load3(offsets.x+ix[i]*counts.z));
     }
-    return EvaluateMaterialTriangle(binding,material,triangle,instance,weights,rayObject,rayOffsetX,rayOffsetY,
+    return EvaluateMaterialTriangle(binding,material,triData,instance,weights,rayObject,rayOffsetX,rayOffsetY,
         rayScale,viewDistance,worldToObject,objectToWorld,parallaxEnabled,warpFixEnabled,shadowEnabled,mipBias,
         projectionRow,worldPosition,projectionNoise,raw,rawUsed,coat,shadow);
 }

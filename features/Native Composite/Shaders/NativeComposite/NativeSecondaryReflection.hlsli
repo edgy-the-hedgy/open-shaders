@@ -232,31 +232,31 @@ bool ShadeNativeCharacterSecondary(uint instance,uint primitive,float2 bary,bool
     [branch]if(actor)ix=CharacterIndices.Load3(primitive*12u);
     else ix=CharacterMoverGeometry.Load3(indexOffset+primitive*12u);
     if(any(ix>=vertexCount))return false;
-    NativeMaterialTriangle triangle=(NativeMaterialTriangle)0;
-    triangle.hasPositions=true;triangle.hasTangents=true;
+    NativeMaterialTriangle triData=(NativeMaterialTriangle)0;
+    triData.hasPositions=true;triData.hasTangents=true;
     [unroll]for(uint j=0u;j<3u;++j){
         uint offset=positionOffset+ix[j]*72u;
         [branch]if(actor){
-            triangle.positions[j]=asfloat(CharacterPositions.Load3(offset));
-            triangle.normals[j]=asfloat(CharacterPositions.Load3(offset+12u));
-            triangle.uv[j]=asfloat(CharacterPositions.Load2(offset+24u));
-            triangle.colors[j]=asfloat(CharacterPositions.Load4(offset+32u));
-            triangle.tangents[j]=asfloat(CharacterPositions.Load3(offset+48u));
-            triangle.bitangents[j]=asfloat(CharacterPositions.Load3(offset+60u));
+            triData.positions[j]=asfloat(CharacterPositions.Load3(offset));
+            triData.normals[j]=asfloat(CharacterPositions.Load3(offset+12u));
+            triData.uv[j]=asfloat(CharacterPositions.Load2(offset+24u));
+            triData.colors[j]=asfloat(CharacterPositions.Load4(offset+32u));
+            triData.tangents[j]=asfloat(CharacterPositions.Load3(offset+48u));
+            triData.bitangents[j]=asfloat(CharacterPositions.Load3(offset+60u));
         }else{
-            triangle.positions[j]=asfloat(CharacterMoverGeometry.Load3(offset));
-            triangle.normals[j]=asfloat(CharacterMoverGeometry.Load3(offset+12u));
-            triangle.uv[j]=asfloat(CharacterMoverGeometry.Load2(offset+24u));
-            triangle.colors[j]=asfloat(CharacterMoverGeometry.Load4(offset+32u));
-            triangle.tangents[j]=asfloat(CharacterMoverGeometry.Load3(offset+48u));
-            triangle.bitangents[j]=asfloat(CharacterMoverGeometry.Load3(offset+60u));
+            triData.positions[j]=asfloat(CharacterMoverGeometry.Load3(offset));
+            triData.normals[j]=asfloat(CharacterMoverGeometry.Load3(offset+12u));
+            triData.uv[j]=asfloat(CharacterMoverGeometry.Load2(offset+24u));
+            triData.colors[j]=asfloat(CharacterMoverGeometry.Load4(offset+32u));
+            triData.tangents[j]=asfloat(CharacterMoverGeometry.Load3(offset+48u));
+            triData.bitangents[j]=asfloat(CharacterMoverGeometry.Load3(offset+60u));
         }
-        if(!all(isfinite(triangle.positions[j]))||!all(isfinite(triangle.normals[j]))||
-           dot(triangle.normals[j],triangle.normals[j])<1e-8||!all(isfinite(triangle.uv[j]))||
-           !all(isfinite(triangle.colors[j])))return false;
-        triangle.hasTangents=triangle.hasTangents&&all(isfinite(triangle.tangents[j]))&&
-           all(isfinite(triangle.bitangents[j]))&&dot(triangle.tangents[j],triangle.tangents[j])>1e-8&&
-           dot(triangle.bitangents[j],triangle.bitangents[j])>1e-8;
+        if(!all(isfinite(triData.positions[j]))||!all(isfinite(triData.normals[j]))||
+           dot(triData.normals[j],triData.normals[j])<1e-8||!all(isfinite(triData.uv[j]))||
+           !all(isfinite(triData.colors[j])))return false;
+        triData.hasTangents=triData.hasTangents&&all(isfinite(triData.tangents[j]))&&
+           all(isfinite(triData.bitangents[j]))&&dot(triData.tangents[j],triData.tangents[j])>1e-8&&
+           dot(triData.bitangents[j],triData.bitangents[j])>1e-8;
     }
     float lod=clamp(log2(max(1.0,distance*max(footprint,0.001)/16.0)),0.0,8.0);
     float3 tangent=normalize(cross(rayDirection,abs(rayDirection.z)<0.99?float3(0,0,1):float3(0,1,0)));
@@ -264,7 +264,7 @@ bool ShadeNativeCharacterSecondary(uint instance,uint primitive,float2 bary,bool
     float footprintWorld=max(0.01,distance*max(footprint,0.001)*0.01);
     float noise=NativeEmitterRandom(NativeEmitterHash(pixel.x^NativeEmitterHash(pixel.y)^frame),0x68bc21ebu);
     bool rawUsed;NativeCoatSample coat;NativeParallaxShadowSample height;
-    Sample s=EvaluateMaterialTriangle(binding,material,triangle,0u,float3(1.0-bary.x-bary.y,bary),
+    Sample s=EvaluateMaterialTriangle(binding,material,triData,0u,float3(1.0-bary.x-bary.y,bary),
         mul(worldToObject,rayDirection*distance),mul(worldToObject,tangent*footprintWorld),
         mul(worldToObject,bitangent*footprintWorld),1.0,distance,worldToObject,objectToWorld,
         (materialControls&1u)!=0u&&(binding.flags&SurfaceParallaxReadyBinding)!=0u,false,
