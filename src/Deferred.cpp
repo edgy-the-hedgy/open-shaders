@@ -975,7 +975,9 @@ void Deferred::Hooks::Main_RenderFirstPersonView::thunk(bool a1, bool a2)
 {
 	auto* const state = globals::state;
 	if (globals::features::dx12Control.UsesExclusiveMaterials()) {
-		const auto flag = static_cast<uint32_t>(State::ExtraShaderDescriptors::InWorld);
+		const auto worldFlag = static_cast<uint32_t>(State::ExtraShaderDescriptors::InWorld);
+		const auto environmentFlag = static_cast<uint32_t>(State::ExtraShaderDescriptors::NativeForwardEnvironment);
+		const auto flag = worldFlag | environmentFlag;
 		struct FirstPersonScope
 		{
 			State& state;
@@ -989,7 +991,7 @@ void Deferred::Hooks::Main_RenderFirstPersonView::thunk(bool a1, bool a2)
 		};
 		const FirstPersonScope scope{ *state, state->permutationData.ExtraShaderDescriptor & flag, flag };
 		++state->nativeFirstPersonDepth;
-		state->permutationData.ExtraShaderDescriptor |= flag;
+		state->permutationData.ExtraShaderDescriptor = (state->permutationData.ExtraShaderDescriptor & ~environmentFlag) | worldFlag;
 		func(a1, a2);
 		return;
 	}

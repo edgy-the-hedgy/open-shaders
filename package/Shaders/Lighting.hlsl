@@ -3881,6 +3881,9 @@ FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input,
 #		if defined(DYNAMIC_CUBEMAPS)
 	if (waterRoughnessSpecular < 1.0)
 		wetnessReflectance = GetWetnessIndirectLobeWeights(indirectLobeWeights, wetnessNormal, waterRoughnessSpecular, indirectContext);
+#		elif defined(FULL_NATIVE_INPUT) && !defined(DEFERRED)
+	if (NativeForwardEnvironment::Available() && waterRoughnessSpecular < 1.0)
+		wetnessReflectance = GetWetnessIndirectLobeWeights(indirectLobeWeights, wetnessNormal, waterRoughnessSpecular, indirectContext);
 #		endif
 #		if defined(CHARACTER_RAIN_SURFACE)
 	float3 characterSpotReflectance = 0.0f;
@@ -4102,6 +4105,10 @@ FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input,
 #		elif defined(FULL_NATIVE_INPUT)
 		color.xyz += indirectLobeWeights.specular * (NativeForwardEnvironment::Available() ?
 			NativeForwardEnvironment::Sample(SampColorSampler,reflect(-viewDirection,specularNormal),material.Roughness,1.0) : directionalAmbientColor);
+#			if defined(WETNESS_EFFECTS)
+		if (NativeForwardEnvironment::Available() && waterRoughnessSpecular < 1.0)
+			color.xyz += wetnessReflectance * NativeForwardEnvironment::Sample(SampColorSampler,reflect(-viewDirection,wetnessNormal),waterRoughnessSpecular,1.0);
+#			endif
 #		else
 		color.xyz += indirectLobeWeights.specular * directionalAmbientColor;
 #		endif

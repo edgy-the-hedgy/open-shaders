@@ -38,13 +38,20 @@ namespace
         const auto barrier=CD3DX12_RESOURCE_BARRIER::Transition(r,from,to);
         cmd->ResourceBarrier(1,&barrier);
     }
-    void CubeSRV(ID3D12Device* device,const EnvironmentCube* cube,D3D12_CPU_DESCRIPTOR_HANDLE handle)
+    void TransitionCubeMip(ID3D12GraphicsCommandList* cmd,const EnvironmentCube& cube,uint32_t mip,D3D12_RESOURCE_STATES from,D3D12_RESOURCE_STATES to)
+    {
+        std::array<D3D12_RESOURCE_BARRIER,6> barriers{};
+        for(UINT face=0;face<6;++face)
+            barriers[face]=CD3DX12_RESOURCE_BARRIER::Transition(cube.resource.get(),from,to,mip+face*cube.mipCount);
+        cmd->ResourceBarrier(UINT(barriers.size()),barriers.data());
+    }
+    void CubeSRV(ID3D12Device* device,const EnvironmentCube* cube,D3D12_CPU_DESCRIPTOR_HANDLE handle,bool firstMipOnly=false)
     {
         D3D12_SHADER_RESOURCE_VIEW_DESC view{};
         view.Format=cube ? cube->format:kFormat;
         view.ViewDimension=D3D12_SRV_DIMENSION_TEXTURECUBE;
         view.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        view.TextureCube.MipLevels=cube ? cube->mipCount:1;
+        view.TextureCube.MipLevels=cube && !firstMipOnly ? cube->mipCount:1;
         device->CreateShaderResourceView(cube ? cube->resource.get():nullptr,&view,handle);
     }
     void RawSRV(ID3D12Device* device,ID3D12Resource* resource,D3D12_CPU_DESCRIPTOR_HANDLE handle)
@@ -318,7 +325,7 @@ void NativeCubemaps::CubeProcessing::SubmitStep(const std::shared_ptr<Generation
     UINT table=0;
     const auto run=[&](const EnvironmentCube* source,const EnvironmentCube* previous,const EnvironmentCube* reflection,EnvironmentCube& destination,uint32_t mip,bool isReflection) {
         const UINT offset=kDescriptorsPerTable*table++;
-        CubeSRV(device,source,{cpu.ptr+SIZE_T(offset)*step});
+        CubeSRV(device,source,{cpu.ptr+SIZE_T(offset)*step},!history && mip!=0);
         CubeSRV(device,previous,{cpu.ptr+SIZE_T(offset+1)*step});
         CubeSRV(device,reflection,{cpu.ptr+SIZE_T(offset+2)*step});
         RawSRV(device,history && native ? native->material->samples.get():nullptr,{cpu.ptr+SIZE_T(offset+3)*step});
@@ -348,15 +355,19 @@ void NativeCubemaps::CubeProcessing::SubmitStep(const std::shared_ptr<Generation
         if(previous) Transition(cmd,previous->resource.get(),read,common);
     } else {
         auto& cube=reflected?slot->reflection:slot->base;
-        Transition(cmd,slot->history.resource.get(),common,read);
-        Transition(cmd,cube.resource.get(),common,write);
-        const bool engineReflection=reflected && (slot->constants.reflection&1u)!=0u;
+        const bool inference=slot->cursor.mip==0;
+        const bool engineReflection=inference && reflected && (slot->constants.reflection&1u)!=0u;
+        if(inference) Transition(cmd,slot->history.resource.get(),common,read);
+        else TransitionCubeMip(cmd,cube,0,common,read);
         if(engineReflection) Transition(cmd,input->reflection->resource.get(),common,read);
-        for(uint32_t mip=slot->cursor.mip;mip<slot->cursor.EndMip();++mip)
-            run(&slot->history,nullptr,engineReflection?input->reflection.get():nullptr,cube,mip,reflected);
+        for(uint32_t mip=slot->cursor.mip;mip<slot->cursor.EndMip();++mip) {
+            TransitionCubeMip(cmd,cube,mip,common,write);
+            run(inference?&slot->history:&cube,nullptr,engineReflection?input->reflection.get():nullptr,cube,mip,reflected);
+            TransitionCubeMip(cmd,cube,mip,write,common);
+        }
         if(engineReflection) Transition(cmd,input->reflection->resource.get(),read,common);
-        Transition(cmd,cube.resource.get(),write,common);
-        Transition(cmd,slot->history.resource.get(),read,common);
+        if(inference) Transition(cmd,slot->history.resource.get(),read,common);
+        else TransitionCubeMip(cmd,cube,0,read,common);
     }
     Check(cmd->Close());
     if(history) {

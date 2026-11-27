@@ -105,12 +105,41 @@ float3 Fallback(float3 direction)
     float3 gamma = max(0,float3(dot(DALC[0],basis),dot(DALC[1],basis),dot(DALC[2],basis)));
     return Encoding == 0 ? SceneRadiance(gamma) : lerp(gamma/12.92,pow((gamma+0.055)/1.055,2.4),step(0.04045,gamma));
 }
+bool Observed(float4 c)
+{
+    return all(isfinite(c)) && (c.a > 0 || (Reflection != 0 && (HasReflection & 2u) != 0u && c.a < 0));
+}
+// Fill unobserved directions from nearby valid observations at increasing
+// angular scales. The cube sampler crosses face boundaries; sky contributes
+// only to the reflection environment. Inferred values never enter history.
+float3 Infer(float3 direction)
+{
+    float4 c=Source.SampleLevel(PointClamp,direction,0);
+    if(Observed(c)) return c.rgb;
+    float3 tangent=normalize(cross(abs(direction.z)<0.999?float3(0,0,1):float3(1,0,0),direction));
+    float3 bitangent=cross(direction,tangent);
+    const float radii[5]={0.015625,0.0625,0.25,0.75,2.0};
+    [loop] for(uint ring=0;ring<5;++ring) {
+        float3 sum=0;
+        float count=0;
+        [unroll] for(uint i=0;i<8;++i) {
+            float phi=6.28318530718*(float(i)+0.5*float(ring&1u))/8.0;
+            float3 probe=normalize(direction+radii[ring]*(cos(phi)*tangent+sin(phi)*bitangent));
+            float4 sample=Source.SampleLevel(PointClamp,probe,0);
+            if(Observed(sample)){sum+=sample.rgb;count+=1;}
+        }
+        if(count>0) {
+            float confidence=saturate(count/4.0)/(1.0+float(ring));
+            return lerp(Fallback(direction),sum/count,confidence);
+        }
+    }
+    return Fallback(direction);
+}
+// Convolution reads the completed inferred mip zero, not sparse history.
+// It therefore never repeats the inference search per GGX sample.
 float3 Resolve(float3 direction)
 {
-    float4 c = Source.SampleLevel(PointClamp,direction,0);
-    if (c.a > 0 || (Reflection != 0 && (HasReflection & 2u) != 0u && c.a < 0))
-        return c.rgb;
-    return Fallback(direction);
+    return max(0,DecodeEnvironmentRadiance(Source.SampleLevel(LinearClamp,direction,0).rgb,Encoding));
 }
 [numthreads(8,8,1)]
 void main(uint3 id : SV_DispatchThreadID)
@@ -118,7 +147,7 @@ void main(uint3 id : SV_DispatchThreadID)
     if (any(id.xy >= Size) || id.z >= 6) return;
     float3 n = NativeCubeDirection(id,Size);
     if (Mip == 0) {
-        Destination[id] = float4(min(Encode(Resolve(n)),65504),1);
+        Destination[id] = float4(min(Encode(Infer(n)),65504),1);
         return;
     }
     float3 t = normalize(cross(abs(n.z)<0.999 ? float3(0,0,1) : float3(1,0,0), n));
