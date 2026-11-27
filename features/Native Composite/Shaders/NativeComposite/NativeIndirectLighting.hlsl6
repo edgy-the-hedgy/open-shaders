@@ -184,8 +184,6 @@ void main(uint3 id : SV_DispatchThreadID)
     NativeIndirect::LobeWeights lobes = NativeIndirect::EvaluateLobes(base.rgb, f0.rgb, f0.a,
         roughness, emissionAO.a, saturate(dot(n, baseView)));
     PBR::FuzzLayer fuzz=ResolveNativeFuzz(coat,roughness,n,view,false);
-    lobes.diffuse=lobes.diffuse*(1.0-fuzz.weightedAlbedo)+fuzz.weightedAlbedo*fuzz.color*saturate(emissionAO.a);
-    lobes.specular*=fuzz.specularThroughput;
     float3 transmissionWeight=0.0, backTransmissionWeight=0.0;
     if (HasNativeThinSurface(coat)) {
         float3 reflected,front,back;
@@ -205,6 +203,10 @@ void main(uint3 id : SV_DispatchThreadID)
         float3 reflected=saturate(f0.rgb*env.x+env.y);
         transmissionWeight=coat.subsurface.rgb*(1.0-saturate(coat.subsurface.w))*BRDF::Diffuse_Lambert()*(1.0-reflected);
     }
+    lobes.diffuse=lobes.diffuse*(1.0-fuzz.weightedAlbedo)+fuzz.weightedAlbedo*fuzz.color*saturate(emissionAO.a);
+    lobes.specular*=fuzz.specularThroughput;
+    transmissionWeight*=1.0-fuzz.weightedAlbedo;
+    backTransmissionWeight*=1.0-fuzz.weightedAlbedo;
     bool hasCoat = HasNativeCoat(coat);
     float3 cn = hasCoat ? normalize(coat.normalRoughness.xyz) : n;
     float3 coatSpecularWeight = 0.0;
