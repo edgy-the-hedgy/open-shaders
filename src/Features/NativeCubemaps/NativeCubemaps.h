@@ -1,13 +1,19 @@
 #pragma once
 
+#include "Features/DX12/FullNativeFeature.h"
+
 #include "Features/DX12/DX12NativeEnvironment.h"
 
 namespace NativeCubemaps
 {
 	/** @brief Owns native environment generations and fenced DX12 environment resources. */
-	class Producer
+	class Producer final : public DX12::FullNativeFeature
 	{
 	public:
+		std::string GetName() override { return "Native Cubemaps"; }
+		std::string GetShortName() override { return "NativeCubemaps"; }
+		void OnRuntimeDisabled() override { Reset(); Release(); }
+		void ClearShaderCache() override { Reset(); Release(); }
 		DX12Native::EnvironmentStamp Prepare(uint32_t scope, uint32_t frame, bool& changed);
 		void Capture(const GraphicsBackend& backend);
 		void Reset();

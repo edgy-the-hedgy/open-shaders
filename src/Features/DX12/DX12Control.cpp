@@ -1,5 +1,9 @@
 #include "DX12Control.h"
 #include "DX12NativeScene.h"
+#include "Features/NativeLLF/NativeLLF.h"
+#include "Features/NativeCubemaps/NativeCubemaps.h"
+#include "Features/NativeIBL/NativeIBL.h"
+#include "Features/NativePBR/NativePBRFrameProducer.h"
 #include "DX12Resources.h"
 #include "Features/NativePBR/NativeMaterialMetadata.h"
 #include "TruePBR.h"
@@ -32,17 +36,48 @@ void DX12Control::RequestMode(DX12::ControlMode mode)
 }
 
 	
+std::array<Feature*, 4> DX12Control::NativeCounterparts()
+{
+	return { &globals::features::nativeLLF, &globals::features::nativeCubemaps,
+		&globals::features::nativeIBL, &globals::features::nativePBR };
+}
+
+bool DX12Control::IsNativeCounterpart(const Feature* feature)
+{
+	const auto counterparts = NativeCounterparts();
+	return std::ranges::find(counterparts, feature) != counterparts.end();
+}
+
 void DX12Control::InitializeFeatureBackend()
 {
 	if (authorityCaptured)
 		return;
 	authorityCaptured = true;
 	const auto backend = DX12::SelectFeatureBackend(IsActive(), GetMode(), globals::game::isVR);
-	featureBackend.store(backend, std::memory_order_release);
-	if (backend == DX12::FeatureBackend::FullNative) {
-		globals::features::truePBR.loaded = false;
-		logger::info("[DX12] Full Native selected; TruePBR is disabled for this session. Vanilla raster lighting remains the fallback.");
+	if (backend != DX12::FeatureBackend::FullNative)
+		return;
+
+	// Validate core registration before excluding the legacy material owner.
+	// These features have no independent settings; their GPU resources remain lazy.
+	const auto counterparts = NativeCounterparts();
+	json unused = json::object();
+	bool ready = true;
+	for (auto* feature : counterparts) {
+		feature->Load(unused);
+		feature->installed = feature->loaded;
+		ready = ready && feature->loaded;
 	}
+	if (!ready) {
+		for (auto* feature : counterparts)
+			feature->loaded = false;
+		selectedMode.store(static_cast<int>(DX12::ControlMode::FullRT), std::memory_order_relaxed);
+		logger::error("[DX12] Full Native core registration failed; retaining baseline authority and FullRT for this session.");
+		return;
+	}
+
+	globals::features::truePBR.loaded = false;
+	featureBackend.store(backend, std::memory_order_release);
+	logger::info("[DX12] Full Native selected; TruePBR is disabled for this session. Vanilla raster lighting remains the fallback.");
 }
 
 void DX12Control::InstallMaterialBackendHooks()
@@ -146,6 +181,13 @@ void DX12Control::OnRuntimeDisabled()
 		return;
 	globals::features::dx12NativeScene.OnRuntimeDisabled();
 	globals::features::dx12Resources.OnRuntimeDisabled();
+	if (UsesExclusiveMaterials()) {
+		for (auto* feature : NativeCounterparts()) {
+			if (feature->loaded)
+				feature->OnRuntimeDisabled();
+			feature->loaded = false;
+		}
+	}
 }
 
 void DX12Control::RegisterUxActions()

@@ -106,9 +106,14 @@ void NativeLLF::PublishLegacyParticleBridge(std::span<const LightLimitFix::Light
 	snapshot.pluginFrame = pluginFrame;
 }
 
-std::optional<NativeLLF::DirectInputFrame> NativeLLF::CollectDirectInputs(const DX12Native::TopLevel& scene, uint32_t frame, bool opaqueReady)
+void NativeLLF::Producer::ResetParticleInput()
 {
-	if (!globals::features::dx12Control.WantsMaterialPreparation() || !globals::state || !scene.inputs || !scene.inputs->residency)
+	ResetLegacyParticleBridge();
+}
+
+std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInputs(const DX12Native::TopLevel& scene, uint32_t frame, bool opaqueReady)
+{
+	if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation() || !globals::state || !scene.inputs || !scene.inputs->residency)
 		return std::nullopt;
 	const auto& llf = globals::features::lightLimitFix;
 	const auto& particles = LegacyParticleSnapshot();

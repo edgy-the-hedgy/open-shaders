@@ -10,6 +10,10 @@
 #include "Features/CloudShadows.h"
 #include "Features/DX12/DX12Control.h"
 #include "Features/DX12/DX12NativeScene.h"
+#include "Features/NativeLLF/NativeLLF.h"
+#include "Features/NativeCubemaps/NativeCubemaps.h"
+#include "Features/NativeIBL/NativeIBL.h"
+#include "Features/NativePBR/NativePBRFrameProducer.h"
 #include "Features/DX12/DX12Resources.h"
 #include "Features/DetailMaps.h"
 #include "Features/DeveloperTools.h"
@@ -148,6 +152,10 @@ namespace globals
 		DX12Control dx12Control{};
 		DX12Resources dx12Resources{};
 		DX12NativeScene dx12NativeScene{};
+		NativeLLF::Producer nativeLLF{};
+		NativeCubemaps::Producer nativeCubemaps{};
+		NativeIBL::Producer nativeIBL{};
+		NativePBR::FrameProducer nativePBR{};
 
 		namespace llf
 		{

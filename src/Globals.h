@@ -67,6 +67,10 @@ struct ProceduralAurora;
 struct DX12Control;
 struct DX12Resources;
 struct DX12NativeScene;
+namespace NativeLLF { class Producer; }
+namespace NativeCubemaps { class Producer; }
+namespace NativeIBL { class Producer; }
+namespace NativePBR { class FrameProducer; }
 
 class State;
 class Deferred;
@@ -185,6 +189,10 @@ namespace globals
 		extern DX12Control dx12Control;
 		extern DX12Resources dx12Resources;
 		extern DX12NativeScene dx12NativeScene;
+		extern NativeLLF::Producer nativeLLF;
+		extern NativeCubemaps::Producer nativeCubemaps;
+		extern NativeIBL::Producer nativeIBL;
+		extern NativePBR::FrameProducer nativePBR;
 
 		namespace llf
 		{

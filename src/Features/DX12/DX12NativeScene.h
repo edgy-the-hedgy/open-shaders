@@ -6,10 +6,9 @@
 #include "DX12NativeRasterCapture.h"
 #include "DX12ProjectedInputs.h"
 #include "DX12NativeCharacterCasters.h"
-#include "Features/NativePBR/NativePBRFrameProducer.h"
+#include "DX12NativeScreenProbe.h"
 #include "DX12NativeDirectLighting.h"
-#include "Features/NativeCubemaps/NativeCubemaps.h"
-#include "Features/NativeIBL/NativeIBL.h"
+#include "DX12NativeIndirectLighting.h"
 #include "DX12NativeRuntimeCapture.h"
 #include "DX12NativeShadowTrace.h"
 #include "SCMNativePolicy.h"
@@ -90,20 +89,14 @@ struct DX12NativeScene final : OverlayFeature
 
 	/** @brief Raw mode-sized shadow output, independently fenced for Native Composite. */
 	std::shared_ptr<const DX12Native::ShadowMaskFrame> GetShadowMask(uint32_t frame) const { return shadows.Get(frame); }
-	std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> GetFullNativeMaterial(uint32_t frame) const
-	{
-		return nativePBR.Get(frame);
-	}
+	std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> GetFullNativeMaterial(uint32_t frame) const;
 
 	std::shared_ptr<const DX12Native::DirectLightingFrame> GetFullNativeDirect(uint32_t frame) const
 	{
 		return fullNativeDirect ? fullNativeDirect->Get(frame) : nullptr;
 	}
 
-	std::shared_ptr<const DX12Native::IndirectLightingFrame> GetFullNativeIndirect(uint32_t frame) const
-	{
-		return nativeIBL.Get(frame);
-	}
+	std::shared_ptr<const DX12Native::IndirectLightingFrame> GetFullNativeIndirect(uint32_t frame) const;
 
 private:
 	/** @brief Gates native scene work; never disables DX11 baseline shadows. */
@@ -113,7 +106,6 @@ private:
 	void ApplyPendingLoadingReset();
 	std::optional<GraphicsBackend> backend;
 	DX12Native::RasterCapture raster;
-	NativePBR::FrameProducer nativePBR;
 	void DispatchFullNativeMaterial(bool opaqueReady = false);
 	void ObserveFullNativeRasterDraw(RE::BSGeometry& geometry);
 	void FinishFullNativeRasterDraws();
@@ -160,8 +152,6 @@ private:
 	};
 	FullNativeRasterDrawState fullNativeRasterDraws;
 	std::unique_ptr<DX12Native::DirectLightingTrace> fullNativeDirect;
-	NativeCubemaps::Producer nativeCubemaps;
-	NativeIBL::Producer nativeIBL;
 	void DispatchFullNativeIndirect();
 	void ResetFullNativeEnvironment();
 	DX12Native::RuntimeGeometryCapture geometryCapture;

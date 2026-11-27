@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Features/DX12/DX12NativeDirectLighting.h"
+#include "Features/DX12/FullNativeFeature.h"
 
 #include <optional>
 #include <vector>
@@ -24,7 +25,15 @@ namespace NativeLLF
 		bool available = false;
 	};
 
-	// Until particle capture is independently routed, wait for the current legacy emitter snapshot
-	// or the opaque-ready boundary. This bridge is transitional, not exclusive NativeLLF authority.
-	std::optional<DirectInputFrame> CollectDirectInputs(const DX12Native::TopLevel& scene, uint32_t frame, bool opaqueReady);
+	class Producer final : public DX12::FullNativeFeature
+	{
+	public:
+		std::string GetName() override { return "Native LLF"; }
+		std::string GetShortName() override { return "NativeLLF"; }
+		void ResetParticleInput();
+		void OnRuntimeDisabled() override { ResetParticleInput(); }
+
+		// Transitional particle capture bridge until raw engine capture is independently routed.
+		std::optional<DirectInputFrame> CollectDirectInputs(const DX12Native::TopLevel& scene, uint32_t frame, bool opaqueReady);
+	};
 }

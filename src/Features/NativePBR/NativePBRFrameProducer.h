@@ -1,13 +1,19 @@
 #pragma once
 
+#include "Features/DX12/FullNativeFeature.h"
+
 #include "Features/DX12/DX12NativeScreenProbe.h"
 
 namespace NativePBR
 {
 	/** @brief Owns screen-space material evaluation and projected input publications. */
-	class FrameProducer
+	class FrameProducer final : public DX12::FullNativeFeature
 	{
 	public:
+		std::string GetName() override { return "Native PBR"; }
+		std::string GetShortName() override { return "NativePBR"; }
+		void OnRuntimeDisabled() override { Reset(); Release(); }
+		void ClearShaderCache() override { Reset(); Release(); }
 		void Poll(uint32_t frame);
 		bool WantsFrame(uint32_t frame) const { return !probe || probe->WantsFrame(frame, true); }
 		bool HasEvaluator() const { return bool(probe); }

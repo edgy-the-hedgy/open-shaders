@@ -3,6 +3,7 @@
 #include "DX12ControlMode.h"
 #include "Feature.h"
 
+#include <array>
 #include <atomic>
 
 /** @brief Session-wide opt-in for DX12 Resources and future native features. */
@@ -32,6 +33,8 @@ struct DX12Control final : Feature
 	/** @brief Session authority is independent of runtime DX12 availability. */
 	DX12::FeatureBackend GetFeatureBackend() const { return featureBackend.load(std::memory_order_acquire); }
 	bool UsesExclusiveMaterials() const { return GetFeatureBackend() == DX12::FeatureBackend::FullNative; }
+	static std::array<Feature*, 4> NativeCounterparts();
+	static bool IsNativeCounterpart(const Feature* feature);
 	void InitializeFeatureBackend();
 	void InstallMaterialBackendHooks();
 	std::string_view GetShaderDefineName() override { return "NATIVE_PBR_INPUT"; }

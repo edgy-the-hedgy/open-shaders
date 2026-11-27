@@ -1,13 +1,19 @@
 #pragma once
 
+#include "Features/DX12/FullNativeFeature.h"
+
 #include "Features/DX12/DX12NativeIndirectLighting.h"
 
 namespace NativeIBL
 {
 	/** @brief Environment-only indirect lighting consumer; owns its DX12 resources. */
-	class Producer
+	class Producer final : public DX12::FullNativeFeature
 	{
 	public:
+		std::string GetName() override { return "Native IBL"; }
+		std::string GetShortName() override { return "NativeIBL"; }
+		void OnRuntimeDisabled() override { Reset(); Release(); }
+		void ClearShaderCache() override { Reset(); Release(); }
 		void Poll(uint32_t frame) { if (lighting) lighting->Poll(frame); }
 		void Reset() { if (lighting) lighting->Reset(); }
 		void Release() { lighting.reset(); }
