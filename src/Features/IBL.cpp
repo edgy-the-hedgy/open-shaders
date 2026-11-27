@@ -1,6 +1,5 @@
 #include "IBL.h"
 #include "Features/DX12/DX12Control.h"
-#include "Features/NativeIBL/NativeIBL.h"
 #include "Features/IBL/IBLSettingsInput.h"
 
 #include "Deferred.h"
@@ -336,8 +335,8 @@ bool IBL::UsesReflectionRadiance() const
 
 std::function<void()> IBL::OnReflectionsRenderBegin()
 {
-	if (globals::features::dx12Control.WantsMaterialPreparation())
-		return nullptr;  // NativeIBL owns the reflection input hook in this session.
+	if (!globals::features::dx12Control.UsesLegacyReflectionCapture())
+		return nullptr;
 	if (!capture.Allocated())
 		capture.Setup();
 	return capture.Begin(UsesReflectionRadiance());
@@ -417,8 +416,7 @@ void IBL::Prepass()
 	// Visible reflections receive LOD shadows while sky irradiance retains terrain and cloud shadows.
 	{
 		const auto& reflections = globals::game::renderer->GetRendererData().cubemapRenderTargets[RE::RENDER_TARGETS_CUBEMAP::kREFLECTIONS];
-		auto* radiance = globals::features::dx12Control.WantsMaterialPreparation() ?
-			globals::features::nativeIBL.GetRasterSkyView() : capture.View();
+		auto* radiance = globals::features::dx12Control.GetFallbackSkyRadiance(capture.View());
 		srvs.at(0) = radiance ? radiance : Util::AsReal(reflections.SRV);
 		uavs.at(0) = skyIBLTexture->uav.get();
 
@@ -453,7 +451,7 @@ void IBL::Prepass()
 void IBL::SetupResources()
 {
 	GetDiffuseIBLCS();
-	if (!globals::features::dx12Control.WantsMaterialPreparation())
+	if (globals::features::dx12Control.UsesLegacyReflectionCapture())
 		capture.Setup();
 
 	{

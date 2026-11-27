@@ -31,6 +31,22 @@ namespace DX12
 		return active && mode == ControlMode::FullNative && !isVR ? FeatureBackend::FullNative : FeatureBackend::Baseline;
 	}
 
+	// Native producers own the evaluated DX12 publications. Legacy light
+	// and environment work is retained only for raster compatibility.
+	enum class CounterpartKind { Shared, NativeProducer, LegacyMaterial, LegacyLighting };
+	enum class ExecutionRole { Baseline, NativeAuthority, RasterFallback, Dormant };
+	constexpr ExecutionRole SelectExecutionRole(FeatureBackend backend, CounterpartKind kind)
+	{
+		if (backend == FeatureBackend::Baseline)
+			return kind == CounterpartKind::NativeProducer ? ExecutionRole::Dormant : ExecutionRole::Baseline;
+		switch (kind) {
+		case CounterpartKind::NativeProducer: return ExecutionRole::NativeAuthority;
+		case CounterpartKind::LegacyMaterial: return ExecutionRole::Dormant;
+		case CounterpartKind::LegacyLighting: return ExecutionRole::RasterFallback;
+		default: return ExecutionRole::Baseline;
+		}
+	}
+
 	// Shared between shader permutation routing and disk-cache identity.
 	enum class InputShaderKind { Other, Lighting, Effect, Sky, DistantTree };
 	constexpr bool HasFullNativeInput(FeatureBackend backend, InputShaderKind kind)

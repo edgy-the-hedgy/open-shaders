@@ -31,7 +31,7 @@ namespace NativeLLF
 		void ResetParticleInput();
 		void OnRuntimeDisabled() override { ResetParticleInput(); }
 		void OnSceneTransitionReset(bool opening) override { if (opening) ResetParticleInput(); }
-		void ObserveParticlePass(RE::BSRenderPass* pass);
+		std::optional<ParticleInput::Observation> ObserveParticlePass(RE::BSRenderPass* pass);
 		std::optional<DirectInputFrame> CollectDirectInputs(const DX12Native::TopLevel& scene, uint32_t frame, bool opaqueReady);
 
 	private:

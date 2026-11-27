@@ -60,25 +60,27 @@ void NativeLLF::Producer::ResetParticleInput()
 	currentPluginFrame = UINT32_MAX;
 }
 
-void NativeLLF::Producer::ObserveParticlePass(RE::BSRenderPass* pass)
+std::optional<ParticleInput::Observation> NativeLLF::Producer::ObserveParticlePass(RE::BSRenderPass* pass)
 {
 	if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation() ||
 		!particleSettings.EnableParticleLights || !pass || !pass->geometry || !pass->shaderProperty ||
 		!globals::shaderCache || !globals::shaderCache->IsEnabled() ||
 		!globals::state || globals::state->isMapMenuOpen || globals::features::dx12Resources.IsLoading() ||
 		(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
-		return;
+		return std::nullopt;
 	if (pass->shaderProperty->GetRTTI() != globals::rtti::BSEffectShaderPropertyRTTI.get())
-		return;
+		return std::nullopt;
 	std::scoped_lock observationLock(observationMutex);
-	if (pending.size() >= DX12::kMaxPreparedLights || observed.size() >= 16u * DX12::kMaxPreparedLights ||
-		!observed.insert(pass->geometry).second)
-		return;
-	const auto reference = ParticleInput::Recognize(pass, true, configs, references, referenceMutex);
-	if (!reference.valid)
-		return;
-	if (const auto emitter = ParticleInput::ReadEmitter(pass, reference))
-		CaptureEmitter(*emitter);
+	if (pending.size() >= DX12::kMaxPreparedLights || observed.size() >= 16u * DX12::kMaxPreparedLights)
+		return std::nullopt;
+	const bool firstObservation = observed.insert(pass->geometry).second;
+	ParticleInput::Observation result;
+	result.reference = ParticleInput::Recognize(pass, true, configs, references, referenceMutex);
+	if (result.reference.valid)
+		result.emitter = ParticleInput::ReadEmitter(pass, result.reference);
+	if (firstObservation && result.emitter)
+		CaptureEmitter(*result.emitter);
+	return result;
 }
 
 void NativeLLF::Producer::CaptureEmitter(const LightLimitFix::ParticleLightInfo& emitter)
@@ -169,8 +171,11 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 		return std::nullopt;
 	// Native particles are published by the frame reset, independently of
 	// raster LLF prepass timing. Opaque-ready remains part of the caller contract.
-	std::scoped_lock observationLock(observationMutex);
-	const bool particleSnapshotReady = currentPluginFrame == globals::state->frameCount;
+	bool particleSnapshotReady = false;
+	{
+		std::scoped_lock observationLock(observationMutex);
+		particleSnapshotReady = currentPluginFrame == globals::state->frameCount;
+	}
 	if (particleSettings.EnableParticleLights && !particleSnapshotReady && !opaqueReady)
 		return std::nullopt;
 	const auto prepared = DX12Resources::CollectPreparedLights(*scene.inputs->residency);
@@ -287,7 +292,9 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 	// Discard prepared spots for which no live projection was resolved, only
 	// after matching so prepared ordinals remain stable during the merge.
 	std::erase_if(directLights, [](const auto& light) { return light.radius <= 0.0f; });
-	if (particleSnapshotReady) {
+	{
+		std::scoped_lock observationLock(observationMutex);
+		if (particleSnapshotReady && currentPluginFrame == globals::state->frameCount) {
 		const auto eye = Util::GetEyePosition(0);
 		const float fadeStart = RE::Sky::GetLightLODStartFadeSquared();
 		const float fadeEnd = RE::Sky::GetLightLODEndFadeSquared();
@@ -308,6 +315,7 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 			directLights.push_back({ particle.position,
 				{ toLinear(particle.color.x) * fade, toLinear(particle.color.y) * fade,
 					toLinear(particle.color.z) * fade }, particle.radius, 0.0f, 0.0f, false });
+		}
 		}
 	}
 	auto& directional = result.directional;

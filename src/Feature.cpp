@@ -85,7 +85,8 @@ void Feature::MigrateConfigSettings(json& settings)
 void Feature::Load(json& o_json)
 {
 	// Full Native owns material authority for the session, including config reloads.
-	if (this == &globals::features::truePBR && globals::features::dx12Control.UsesExclusiveMaterials()) {
+	if (DX12Control::ClassifyCounterpart(this) == DX12::CounterpartKind::LegacyMaterial &&
+		globals::features::dx12Control.GetExecutionRole(this) == DX12::ExecutionRole::Dormant) {
 		loaded = false;
 		return;
 	}

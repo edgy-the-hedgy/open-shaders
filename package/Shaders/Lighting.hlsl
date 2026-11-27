@@ -5,7 +5,9 @@
 #endif
 
 #define LIGHTING
+#define FULL_NATIVE_LIGHTING_SHADER
 #include "Common/FullNativeInput.hlsli"
+#undef FULL_NATIVE_LIGHTING_SHADER
 
 #include "Common/Color.hlsli"
 #include "Common/FrameBuffer.hlsli"

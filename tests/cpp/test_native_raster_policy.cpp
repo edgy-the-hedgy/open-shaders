@@ -46,3 +46,14 @@ TEST_CASE("Full Native input ABI is independent of fallback and runtime producer
 	REQUIRE(SelectFeatureBackend(false, ControlMode::FullNative, false) == FeatureBackend::Baseline);
 	REQUIRE(SelectFeatureBackend(true, ControlMode::FullNative, true) == FeatureBackend::Baseline);
 }
+
+TEST_CASE("Full Native classifies legacy fallback separately from native authority", "[dx12][features]")
+{
+	using namespace DX12;
+	REQUIRE(SelectExecutionRole(FeatureBackend::FullNative, CounterpartKind::LegacyMaterial) == ExecutionRole::Dormant);
+	REQUIRE(SelectExecutionRole(FeatureBackend::FullNative, CounterpartKind::LegacyLighting) == ExecutionRole::RasterFallback);
+	REQUIRE(SelectExecutionRole(FeatureBackend::FullNative, CounterpartKind::NativeProducer) == ExecutionRole::NativeAuthority);
+	REQUIRE(SelectExecutionRole(FeatureBackend::Baseline, CounterpartKind::NativeProducer) == ExecutionRole::Dormant);
+	REQUIRE(SelectExecutionRole(FeatureBackend::Baseline, CounterpartKind::LegacyLighting) == ExecutionRole::Baseline);
+	REQUIRE(SelectExecutionRole(FeatureBackend::Baseline, CounterpartKind::LegacyMaterial) == ExecutionRole::Baseline);
+}

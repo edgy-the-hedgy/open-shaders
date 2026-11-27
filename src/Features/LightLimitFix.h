@@ -466,6 +466,7 @@ public:
 
 	ParticleLightReference GetParticleLightConfigs(RE::BSRenderPass* a_pass);
 	bool AddParticleLight(RE::BSRenderPass* a_pass, ParticleLightReference a_reference);
+	bool QueueParticleLight(RE::BSRenderPass* a_pass, const ParticleLightInfo& info);
 	bool CheckParticleLights(RE::BSRenderPass* a_pass, uint32_t a_technique);
 	void ProcessQueuedParticleLights(eastl::vector<LightData>& lightsData);
 

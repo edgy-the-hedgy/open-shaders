@@ -7,6 +7,9 @@
 #include "DX12Resources.h"
 #include "Features/NativePBR/NativeMaterialMetadata.h"
 #include "TruePBR.h"
+#include "Features/LightLimitFix.h"
+#include "Features/DynamicCubemaps.h"
+#include "Features/IBL.h"
 #include "Globals.h"
 #include "State.h"
 #include "Utils/DevBenchUx.h"
@@ -46,6 +49,52 @@ bool DX12Control::IsNativeCounterpart(const Feature* feature)
 {
 	const auto counterparts = NativeCounterparts();
 	return std::ranges::find(counterparts, feature) != counterparts.end();
+}
+
+DX12::CounterpartKind DX12Control::ClassifyCounterpart(const Feature* feature)
+{
+	using Kind = DX12::CounterpartKind;
+	if (IsNativeCounterpart(feature))
+		return Kind::NativeProducer;
+	if (feature == &globals::features::truePBR)
+		return Kind::LegacyMaterial;
+	if (feature == &globals::features::lightLimitFix || feature == &globals::features::dynamicCubemaps ||
+		feature == &globals::features::ibl)
+		return Kind::LegacyLighting;
+	return Kind::Shared;
+}
+
+DX12::ExecutionRole DX12Control::GetExecutionRole(const Feature* feature) const
+{
+	return DX12::SelectExecutionRole(GetFeatureBackend(), ClassifyCounterpart(feature));
+}
+
+ID3D11ShaderResourceView* DX12Control::GetFallbackSkyRadiance(ID3D11ShaderResourceView* legacyView) const
+{
+	if (UsesLegacyReflectionCapture())
+		return legacyView;
+	return WantsMaterialPreparation() ? globals::features::nativeIBL.GetRasterSkyView() : nullptr;
+}
+
+json DX12Control::GetDiagnostics()
+{
+	using Role = DX12::ExecutionRole;
+	const auto name = [](Role role) {
+		switch (role) {
+		case Role::NativeAuthority: return "native-authority";
+		case Role::RasterFallback: return "raster-fallback";
+		case Role::Dormant: return "dormant";
+		default: return "baseline";
+		}
+	};
+	json roles = json::object();
+	for (auto* feature : NativeCounterparts())
+		roles[feature->GetShortName()] = { { "role", name(GetExecutionRole(feature)) }, { "loaded", feature->loaded } };
+	for (Feature* feature : std::array<Feature*, 4>{ &globals::features::lightLimitFix,
+		&globals::features::dynamicCubemaps, &globals::features::ibl, &globals::features::truePBR })
+		roles[feature->GetShortName()] = { { "role", name(GetExecutionRole(feature)) }, { "loaded", feature->loaded } };
+	return { { "fullNativeSession", UsesExclusiveMaterials() }, { "active", IsActive() },
+		{ "featureRoles", std::move(roles) } };
 }
 
 void DX12Control::InitializeFeatureBackend()

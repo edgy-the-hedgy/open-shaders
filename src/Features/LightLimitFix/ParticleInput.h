@@ -11,6 +11,12 @@ namespace ParticleInput
 	// renderer resources and feature state remain owned by the selected consumer.
 	LightLimitFix::ParticleLightReference Recognize(RE::BSRenderPass* pass, bool enabled,
 		ParticleLights& configs, ReferenceCache& cache, std::mutex& mutex);
+	struct Observation
+	{
+		LightLimitFix::ParticleLightReference reference;
+		std::optional<LightLimitFix::ParticleLightInfo> emitter;
+	};
+
 	std::optional<LightLimitFix::ParticleLightInfo> ReadEmitter(RE::BSRenderPass* pass,
 		const LightLimitFix::ParticleLightReference& reference);
 }

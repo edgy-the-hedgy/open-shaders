@@ -493,11 +493,16 @@ bool LightLimitFix::AddParticleLight(RE::BSRenderPass* a_pass, ParticleLightRefe
 	const auto emitter = ParticleInput::ReadEmitter(a_pass, a_reference);
 	if (!emitter)
 		return false;
-	const auto& info = *emitter;
+	return QueueParticleLight(a_pass, *emitter);
+}
 
+bool LightLimitFix::QueueParticleLight(RE::BSRenderPass* a_pass, const ParticleLightInfo& info)
+{
+	if (!a_pass || !a_pass->geometry || info.node != a_pass->geometry)
+		return false;
 	a_pass->geometry->IncRefCount();
 
-	if (!a_reference.billboard) {
+	if (!info.billboard) {
 		if (auto particleSystem = static_cast<RE::NiParticleSystem*>(a_pass->geometry)) {
 			if (auto particleData = particleSystem->GetParticlesRuntimeData().particleData.get())
 				particleData->IncRefCount();
@@ -516,7 +521,7 @@ bool LightLimitFix::AddParticleLight(RE::BSRenderPass* a_pass, ParticleLightRefe
 	}
 
 	if (!enqueued) {
-		if (!a_reference.billboard) {
+		if (!info.billboard) {
 			if (auto particleSystem = static_cast<RE::NiParticleSystem*>(a_pass->geometry)) {
 				if (auto particleData = particleSystem->GetParticlesRuntimeData().particleData.get())
 					particleData->DecRefCount();

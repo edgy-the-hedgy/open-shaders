@@ -1340,18 +1340,32 @@ namespace Hooks
 	// Returns true when LightLimitFix wants to cull this render pass because the geometry was
 	// recognized as a particle light marked with `Cull = true` in its INI config. The SEH guard
 	// fails open so a transient bad render-pass pointer cannot crash a render-thread hook.
+	// Keep C++ objects outside the SEH thunk. The native observer publishes raw
+	// input once; legacy LLF can consume that observation for raster fallback.
+	bool RouteParticleLightPass(RE::BSRenderPass* pass, uint32_t technique)
+	{
+		auto& legacy = globals::features::lightLimitFix;
+		if (globals::features::nativeLLF.loaded) {
+			const auto observation = globals::features::nativeLLF.ObserveParticlePass(pass);
+			if (observation && legacy.loaded && legacy.settings.EnableParticleLights) {
+				if (!observation->emitter)
+					return false;
+				return legacy.QueueParticleLight(pass, *observation->emitter) &&
+					legacy.settings.EnableParticleLightsCulling && observation->reference.config.cull;
+			}
+			if (!legacy.loaded)
+				return false;
+		}
+		return legacy.loaded && !legacy.CheckParticleLights(pass, technique);
+	}
+
 	bool ShouldSkipRenderPassForParticleLights(RE::BSRenderPass* a_pass, uint32_t a_technique)
 	{
 #if defined(_MSC_VER)
 		__try
 #endif
 		{
-			// Independent native observation at the existing hook. Raster culling
-			// and fallback lighting retain their baseline behavior.
-			if (globals::features::nativeLLF.loaded)
-				globals::features::nativeLLF.ObserveParticlePass(a_pass);
-			return globals::features::lightLimitFix.loaded &&
-			       !globals::features::lightLimitFix.CheckParticleLights(a_pass, a_technique);
+			return RouteParticleLightPass(a_pass, a_technique);
 		}
 #if defined(_MSC_VER)
 		__except (1) {

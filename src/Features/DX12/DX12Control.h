@@ -35,6 +35,12 @@ struct DX12Control final : Feature
 	bool UsesExclusiveMaterials() const { return GetFeatureBackend() == DX12::FeatureBackend::FullNative; }
 	static std::array<Feature*, 4> NativeCounterparts();
 	static bool IsNativeCounterpart(const Feature* feature);
+	static DX12::CounterpartKind ClassifyCounterpart(const Feature* feature);
+	DX12::ExecutionRole GetExecutionRole(const Feature* feature) const;
+	// Selects the single radiance acquisition owner, not the fallback renderer.
+	bool UsesLegacyReflectionCapture() const { return GetFeatureBackend() == DX12::FeatureBackend::Baseline; }
+	ID3D11ShaderResourceView* GetFallbackSkyRadiance(ID3D11ShaderResourceView* legacyView) const;
+	json GetDiagnostics() override;
 	void InitializeFeatureBackend();
 	void InstallMaterialBackendHooks();
 	void DrawSettings() override;
