@@ -125,6 +125,18 @@ class ArchitectureLintTests(unittest.TestCase):
         self.assertIn("void historyMain(", shader)
         self.assertIn("void main(", shader)
 
+    def test_native_payload_is_verified_and_protected_during_shader_only_sync(self):
+        verification = (ROOT / "cmake/VerifyAioPayload.cmake").read_text(encoding="utf-8")
+        sync = (ROOT / "cmake/SyncShaderDeploy.cmake").read_text(encoding="utf-8")
+        for path in ("DX12NativeScene/CharacterSkinning.dxil", "NativeComposite/NativeCubemapHistory.dxil",
+                     "NativeComposite/NativeCubemapFilter.dxil"):
+            self.assertIn(f'"Shaders/{path}"', verification)
+            self.assertIn(f'"{path}"', sync)
+        for name in ("NativeLLF", "NativeIBL", "NativeCubemaps", "NativePBR"):
+            self.assertIn(f'"Shaders/Features/{name}.ini"', verification)
+        self.assertIn('"Shaders/Common/FullNativeInput.hlsli"', verification)
+        self.assertIn('"Shaders/NativeCubemaps/CaptureRaw.cs.hlsl"', verification)
+
 
 if __name__ == "__main__":
     unittest.main()

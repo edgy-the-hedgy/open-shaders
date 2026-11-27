@@ -27,6 +27,7 @@ if(EXCLUDE_NATIVE_DXIL)
         "DX12NativeScene/ShadowRTPerformance.dxil"
         "DX12NativeScene/ShadowRTQualitySlices.dxil"
         "DX12NativeScene/ShadowRTPerformanceSlices.dxil"
+        "DX12NativeScene/CharacterSkinning.dxil"
         "NativeComposite/CompositeOffload.dxil"
         "NativeComposite/CompositeRTQuality.dxil"
         "NativeComposite/CompositeRTPerformance.dxil"
@@ -35,6 +36,8 @@ if(EXCLUDE_NATIVE_DXIL)
         "NativeComposite/DirectLighting.dxil"
         "NativeComposite/NativeDiffuseSH.dxil"
         "NativeComposite/NativeIndirectLighting.dxil"
+        "NativeComposite/NativeCubemapHistory.dxil"
+        "NativeComposite/NativeCubemapFilter.dxil"
         "NativeComposite/FullNativeReconstruction.dxil"
         "NativeComposite/CompositeFullNative.dxil"
     )

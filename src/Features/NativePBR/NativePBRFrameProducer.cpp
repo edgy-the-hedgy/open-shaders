@@ -6,6 +6,11 @@
 #include "Utils/D3D.h"
 #include "Utils/Game.h"
 
+namespace
+{
+	constexpr uint32_t kDeveloperCoverageInterval = 120;
+}
+
 void NativePBR::FrameProducer::Poll(uint32_t frame)
 {
 	if (probe)
@@ -25,7 +30,8 @@ void NativePBR::FrameProducer::Dispatch(const GraphicsBackend& backend, std::sha
 	const DX12Native::MaterialFrameContract::RasterIdentityStamp stamp{ frame, scene->scope, scene->geometryRevision, scene->materialEvaluation->revision };
 	auto projected = opaqueReady && projection ? projection->GetSubmitted(stamp) : nullptr;
 	const auto& extended = globals::features::extendedMaterials;
-	probe->Dispatch(backend, std::move(raster), std::move(scene), frame, width, height, true, true, false,
+	const bool collectCoverage = globals::state && globals::state->IsDeveloperMode() && frame % kDeveloperCoverageInterval == 0;
+	probe->Dispatch(backend, std::move(raster), std::move(scene), frame, width, height, true, true, collectCoverage,
 		extended.loaded && extended.settings.EnableParallax != 0,
 		extended.loaded && extended.settings.EnableParallaxWarpingFix != 0,
 		extended.loaded && extended.settings.EnableShadows != 0,
@@ -63,5 +69,10 @@ json NativePBR::FrameProducer::GetDiagnostics()
 		{ "width", publication ? publication->width : 0u }, { "height", publication ? publication->height : 0u },
 		{ "producerValue", publication ? publication->producerValue : 0 },
 		{ "submittedFrames", probe ? probe->submittedFrames : 0u }, { "reusedAllocations", probe ? probe->reusedAllocations : 0u },
-		{ "coverageMeasured", probe && probe->stats.sampled != 0 }, { "failure", probe ? probe->failure : "" } };
+		{ "coverageMeasured", probe && probe->stats.sampled != 0 },
+		{ "coverageFrame", probe ? probe->stats.frame : 0u },
+		{ "sampledPixels", probe ? probe->stats.sampled : 0u }, { "evaluatedPixels", probe ? probe->stats.evaluated : 0u },
+		{ "baseOnlyPixels", probe ? probe->stats.baseOnly : 0u }, { "depthMismatchPixels", probe ? probe->stats.depthMismatch : 0u },
+		{ "missingMaterialPixels", probe ? probe->stats.missingMaterial : 0u }, { "unsupportedMaterialPixels", probe ? probe->stats.unsupportedMaterial : 0u },
+		{ "missingTexturePixels", probe ? probe->stats.missingTextures : 0u }, { "failure", probe ? probe->failure : "" } };
 }
