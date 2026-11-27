@@ -12,10 +12,10 @@ namespace NativeIBL
 	public:
 		std::string GetName() override { return "Native IBL"; }
 		std::string GetShortName() override { return "NativeIBL"; }
-		void OnRuntimeDisabled() override { Reset(); Release(); }
-		void ClearShaderCache() override { Reset(); Release(); }
+		void OnRuntimeDisabled() override { InvalidateGeneration(); Release(); }
+		void ClearShaderCache() override { InvalidateGeneration(); Release(); }
 		void Poll(uint32_t frame) { if (lighting) lighting->Poll(frame); }
-		void Reset() { if (lighting) lighting->Reset(); }
+		void InvalidateGeneration() { if (lighting) lighting->Reset(); }
 		void Release() { lighting.reset(); }
 		void Dispatch(const GraphicsBackend& backend,
 			std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> material,

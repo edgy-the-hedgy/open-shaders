@@ -182,11 +182,8 @@ void DX12Control::OnRuntimeDisabled()
 	globals::features::dx12NativeScene.OnRuntimeDisabled();
 	globals::features::dx12Resources.OnRuntimeDisabled();
 	if (UsesExclusiveMaterials()) {
-		for (auto* feature : NativeCounterparts()) {
-			if (feature->loaded)
-				feature->OnRuntimeDisabled();
+		for (auto* feature : NativeCounterparts())
 			feature->loaded = false;
-		}
 	}
 }
 

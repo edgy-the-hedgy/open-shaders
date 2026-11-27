@@ -41,7 +41,7 @@ void NativePBR::FrameProducer::PublishProjection(const GraphicsBackend& backend,
 	projection->Publish(backend, stamp, inputs);
 }
 
-void NativePBR::FrameProducer::Reset()
+void NativePBR::FrameProducer::InvalidateGeneration()
 {
 	if (projection)
 		projection->Reset();

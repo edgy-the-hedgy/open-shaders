@@ -674,8 +674,8 @@ void DX12NativeScene::ResetFullNativeEnvironment()
 		return;
 	if (globals::features::nativePBR.HasEvaluator())
 		globals::features::upscaling.nativeComposite.ResetFullNative();
-	globals::features::nativeIBL.Reset();
-	globals::features::nativeCubemaps.Reset();
+	globals::features::nativeIBL.InvalidateGeneration();
+	globals::features::nativeCubemaps.InvalidateGeneration();
 }
 
 void DX12NativeScene::DispatchFullNativeIndirect()
@@ -696,7 +696,7 @@ void DX12NativeScene::DispatchFullNativeIndirect()
 	if (environmentChanged) {
 		if (globals::features::nativePBR.HasEvaluator())
 			globals::features::upscaling.nativeComposite.ResetFullNative();
-		globals::features::nativeIBL.Reset();
+		globals::features::nativeIBL.InvalidateGeneration();
 	}
 	const auto material = GetFullNativeMaterial(frame);
 	if (!backend || !material || material->scope != stamp.scope)
@@ -1273,7 +1273,7 @@ void DX12NativeScene::ApplyPendingLoadingReset()
 		if (fullNativeDirect)
 			fullNativeDirect->Reset();
 		if (globals::features::dx12Control.UsesExclusiveMaterials()) {
-			globals::features::nativePBR.Reset();
+			globals::features::nativePBR.InvalidateGeneration();
 			globals::features::nativeLLF.ResetParticleInput();
 		}
 		raster.Reset();
@@ -1295,8 +1295,15 @@ void DX12NativeScene::OnRuntimeDisabled()
 	frameNativeMode.store(DX12::SCMNativeMode::Disabled, std::memory_order_release);
 	frameExactShadowLights.store(false, std::memory_order_relaxed);
 	movingOriginCount.store(0, std::memory_order_relaxed);
-	if (!nativeSessionStarted)
+	if (!nativeSessionStarted) {
+		if (globals::features::dx12Control.UsesExclusiveMaterials()) {
+			globals::features::nativeLLF.OnRuntimeDisabled();
+			globals::features::nativeIBL.OnRuntimeDisabled();
+			globals::features::nativeCubemaps.OnRuntimeDisabled();
+			globals::features::nativePBR.OnRuntimeDisabled();
+		}
 		return;
+	}
 	nativeSessionStarted = false;
 	shadowLightScope.store(0, std::memory_order_release);
 	shadowLights.store(nullptr, std::memory_order_release);

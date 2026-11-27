@@ -21,7 +21,7 @@ DX12Native::EnvironmentStamp NativeCubemaps::Producer::Prepare(uint32_t scope, u
 	changed = currentStamp.epoch && (!currentStamp.SameEnvironment(stamp) ||
 		(std::isfinite(hours) && std::abs(hours - lastHours) > 0.01f));
 	if (changed) {
-		Reset();
+		InvalidateGeneration();
 		stamp.epoch = epoch;
 	}
 	currentStamp = stamp;
@@ -46,7 +46,7 @@ void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend)
 		ibl.loaded && !currentStamp.interior ? ibl.GetNativeSkyRadiance() : EnvironmentSource{});
 }
 
-void NativeCubemaps::Producer::Reset()
+void NativeCubemaps::Producer::InvalidateGeneration()
 {
 	if (environment)
 		environment->Reset();

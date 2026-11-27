@@ -12,8 +12,8 @@ namespace NativePBR
 	public:
 		std::string GetName() override { return "Native PBR"; }
 		std::string GetShortName() override { return "NativePBR"; }
-		void OnRuntimeDisabled() override { Reset(); Release(); }
-		void ClearShaderCache() override { Reset(); Release(); }
+		void OnRuntimeDisabled() override { InvalidateGeneration(); Release(); }
+		void ClearShaderCache() override { InvalidateGeneration(); Release(); }
 		void Poll(uint32_t frame);
 		bool WantsFrame(uint32_t frame) const { return !probe || probe->WantsFrame(frame, true); }
 		bool HasEvaluator() const { return bool(probe); }
@@ -29,7 +29,7 @@ namespace NativePBR
 		{
 			return probe ? probe->GetMaterialFrame(frame) : nullptr;
 		}
-		void Reset();
+		void InvalidateGeneration();
 		void ReleaseProjection() { projection.reset(); }
 		void Release();
 
