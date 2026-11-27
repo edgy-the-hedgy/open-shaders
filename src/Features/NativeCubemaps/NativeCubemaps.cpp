@@ -27,9 +27,15 @@ DX12Native::EnvironmentStamp NativeCubemaps::Producer::Prepare(uint32_t scope, u
 	currentStamp = stamp;
 	if (std::isfinite(hours))
 		lastHours = hours;
-	// Transitional capture adapters; native processing consumes only stamped publications.
-	globals::features::dynamicCubemaps.SetNativeCaptureContext(stamp);
-	globals::features::ibl.SetNativeCaptureContext(stamp);
+	// The legacy capture adapters retain only coherent source revisions.
+	if (!cubeContext.SameEnvironment(stamp)) {
+		ResetLegacyCubeBridge();
+		auto& cubes = globals::features::dynamicCubemaps;
+		cubes.resetCapture[0] = cubes.resetCapture[1] = true;
+	}
+	if (!skyContext.SameEnvironment(stamp))
+		ResetLegacySkyBridge();
+	cubeContext = skyContext = stamp;
 	return stamp;
 }
 
@@ -41,19 +47,95 @@ void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend)
 	const auto& cubes = globals::features::dynamicCubemaps;
 	const auto& ibl = globals::features::ibl;
 	environment->Capture(backend, currentStamp,
-		cubes.loaded ? cubes.GetNativeEnvironment(false) : EnvironmentSource{},
-		cubes.loaded && !currentStamp.interior ? cubes.GetNativeEnvironment(true) : EnvironmentSource{},
-		ibl.loaded && !currentStamp.interior ? ibl.GetNativeSkyRadiance() : EnvironmentSource{});
+		cubes.loaded ? cubeSources[0].Get(currentStamp) : EnvironmentSource{},
+		cubes.loaded && !currentStamp.interior ? cubeSources[1].Get(currentStamp) : EnvironmentSource{},
+		ibl.loaded && !currentStamp.interior ? skySource.Get(currentStamp) : EnvironmentSource{});
 }
 
 void NativeCubemaps::Producer::InvalidateGeneration()
 {
 	if (environment)
 		environment->Reset();
-	if (currentStamp.epoch) {
-		globals::features::dynamicCubemaps.SetNativeCaptureContext({});
-		globals::features::ibl.SetNativeCaptureContext({});
-	}
+	ResetLegacyCubeBridge();
+	ResetLegacySkyBridge();
 	currentStamp = {};
 	++epoch;
+}
+
+void NativeCubemaps::Producer::ResetLegacyCubeBridge()
+{
+	cubeContext = {};
+	cubePending = {};
+	cubeSources = {};
+}
+
+void NativeCubemaps::Producer::RecordLegacyCubeCapture(uint32_t index, bool successful)
+{
+	if (!cubeContext.epoch || index >= cubePending.size())
+		return;
+	const bool sameFrame = globals::game::graphicsState && globals::state &&
+		cubeContext.engineFrame == globals::game::graphicsState->GetFrameCount() &&
+		cubeContext.pluginFrame == globals::state->frameCount;
+	cubePending[index] = successful && sameFrame ? cubeContext : DX12Native::EnvironmentStamp{};
+}
+
+void NativeCubemaps::Producer::PublishLegacyCube(uint32_t index, ID3D11Texture2D* texture)
+{
+	if (!cubeContext.epoch || index >= cubePending.size())
+		return;
+	auto& source = cubeSources[index];
+	const auto capture = cubePending[index];
+	source = {};
+	if (texture && capture.SameEnvironment(cubeContext)) {
+		source.texture.copy_from(texture);
+		source.stamp = capture;
+		source.revision = ++cubeRevision;
+	}
+	cubePending[index] = {};
+}
+
+void NativeCubemaps::Producer::InvalidateLegacySkyFaces()
+{
+	skyFaces = 0;
+	skyPending = {};
+	skySource = {};
+}
+
+void NativeCubemaps::Producer::ResetLegacySkyBridge()
+{
+	skyContext = {};
+	InvalidateLegacySkyFaces();
+}
+
+void NativeCubemaps::Producer::BeginLegacySkyCapture(DX12Native::EnvironmentEncoding encoding)
+{
+	skyPending = skyContext;
+	if (!skyPending.epoch || !globals::game::graphicsState || !globals::state ||
+		skyPending.encoding != encoding || skyPending.interior) {
+		skyPending = {};
+		return;
+	}
+	skyPending.engineFrame = globals::game::graphicsState->GetFrameCount();
+	skyPending.pluginFrame = globals::state->frameCount;
+}
+
+void NativeCubemaps::Producer::PublishLegacySky(bool failed, uint32_t clearedFaces, uint32_t validFaces, uint32_t allFaces, ID3D11Texture2D* texture)
+{
+	if (!skyContext.epoch)
+		return;
+	if (failed || !skyPending.SameEnvironment(skyContext)) {
+		InvalidateLegacySkyFaces();
+		return;
+	}
+	if (clearedFaces) {
+		skyFaces |= clearedFaces;
+		if (skyFaces == allFaces && validFaces == allFaces && texture) {
+			skySource.texture.copy_from(texture);
+			skySource.stamp = skyPending;
+			skySource.revision = ++skyRevision;
+		}
+	}
+	if (validFaces != allFaces)
+		skySource = {};
+	skyPending = {};
 }
