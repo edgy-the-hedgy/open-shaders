@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: MIT AND (LicenseRef-GPL-3.0-with-Modding-Exception WITH GPL-3.0-linking-source-exception)
 // Original code Copyright (c) 2022 Ilya Perapechka (MIT), modifications GPL-3.0 with Modding Exception (see EXCEPTIONS.md)
 
+// Full Native owns the counterpart contributions. Keep the engine water
+// visibility, refraction and vanilla shading contract until a dedicated native
+// water surface publication/consumer can replace those contributions safely.
+#if defined(FULL_NATIVE_INPUT)
+#	undef LIGHT_LIMIT_FIX
+#	undef IBL
+#	undef DYNAMIC_CUBEMAPS
+#endif
+
 #if defined(HORIZON_FIX)
 namespace HorizonFix
 {

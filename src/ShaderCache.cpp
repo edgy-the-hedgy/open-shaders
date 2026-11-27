@@ -765,6 +765,7 @@ namespace SIE
 			case Type::Effect: return Kind::Effect;
 			case Type::Sky: return Kind::Sky;
 			case Type::DistantTree: return Kind::DistantTree;
+			case Type::Water: return Kind::Water;
 			default: return Kind::Other;
 			}
 		}

@@ -38,7 +38,7 @@ TEST_CASE("Disabled native raster strips stale route and input bits", "[dx12][ma
 TEST_CASE("Full Native input ABI is independent of fallback and runtime producer state", "[dx12][shaders]")
 {
 	using namespace DX12;
-	for (auto kind : { InputShaderKind::Lighting, InputShaderKind::Effect, InputShaderKind::Sky, InputShaderKind::DistantTree }) {
+	for (auto kind : { InputShaderKind::Lighting, InputShaderKind::Effect, InputShaderKind::Sky, InputShaderKind::DistantTree, InputShaderKind::Water }) {
 		REQUIRE(HasFullNativeInput(FeatureBackend::FullNative, kind));
 		REQUIRE_FALSE(HasFullNativeInput(FeatureBackend::Baseline, kind));
 	}
@@ -47,6 +47,19 @@ TEST_CASE("Full Native input ABI is independent of fallback and runtime producer
 		REQUIRE(SelectFeatureBackend(true, mode, false) == FeatureBackend::Baseline);
 	REQUIRE(SelectFeatureBackend(false, ControlMode::FullNative, false) == FeatureBackend::Baseline);
 	REQUIRE(SelectFeatureBackend(true, ControlMode::FullNative, true) == FeatureBackend::Baseline);
+}
+
+TEST_CASE("Water input permutations are exclusive to an active Full Native session", "[dx12][shaders]")
+{
+	using namespace DX12;
+	for (auto mode : { ControlMode::ShadowOffload, ControlMode::RasterComparison, ControlMode::FullRT, ControlMode::FullNative }) {
+		for (bool active : { false, true }) {
+			for (bool vr : { false, true }) {
+				const auto backend = SelectFeatureBackend(active, mode, vr);
+				REQUIRE(HasFullNativeInput(backend, InputShaderKind::Water) == (active && !vr && mode == ControlMode::FullNative));
+			}
+		}
+	}
 }
 
 TEST_CASE("Full Native enforces exclusive counterpart authority", "[dx12][features]")

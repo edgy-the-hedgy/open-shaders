@@ -588,7 +588,10 @@ namespace Color
 #	if defined(PSHADER) && defined(CS_UTILITY) && !defined(LIGHT_LIMIT_FIX)
 		if (lightIndex >= MaxVanillaPointLightFlags)
 			return 0;
-		return lightIndex < PackedPointLightFlagVectorSize ? CSUtilityPointLightFlags0[lightIndex] : CSUtilityPointLightFlags1[lightIndex - PackedPointLightFlagVectorSize];
+		// FXC may inspect both arms during literal loop unrolling. Keep both
+		// component indices in range even when the corresponding arm is unused.
+		const uint component = lightIndex % PackedPointLightFlagVectorSize;
+		return lightIndex < PackedPointLightFlagVectorSize ? CSUtilityPointLightFlags0[component] : CSUtilityPointLightFlags1[component];
 #	else
 		return 0;
 #	endif
