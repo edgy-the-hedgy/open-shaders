@@ -48,7 +48,7 @@ cbuffer Constants : register(b0)
     float4 SecondarySunDirection,SecondarySunRadiance;
     uint SecondaryLightCount,SecondaryFoliage;
     uint SecondaryMaterialControls,SecondaryProjectionRows;
-    uint CharacterVertexCount,CharacterTriangleCount,CharacterPartCount,CharacterPadding;
+    uint CharacterVertexCount,CharacterTriangleCount,CharacterPartCount,CharacterMoverCount;
 };
 #include "NativeSecondaryReflection.hlsli"
 cbuffer DispatchPhase : register(b1) { uint Phase; };
@@ -110,9 +110,10 @@ float4 Trace(uint2 receiver,float3 world,float3 incident)
             float3 characterRadiance;
             if(ShadeNativeCharacterSecondary(character.CommittedInstanceID(),character.CommittedPrimitiveIndex(),
                 character.CommittedTriangleBarycentrics(),character.CommittedTriangleFrontFace(),
+                (float3x3)character.CommittedWorldToObject3x4(),(float3x3)character.CommittedObjectToWorld3x4(),
                 ray.Origin+direction*hitDistance,direction,hitDistance,EmitterRadius,receiver,0u,Frame,Quality,
                 InstanceCount,CharacterEnabled,SecondaryLightCount,SecondarySunDirection,SecondarySunRadiance,
-                SecondaryFoliage,SecondaryMaterialControls,CharacterVertexCount,CharacterTriangleCount,CharacterPartCount,characterRadiance))
+                SecondaryFoliage,SecondaryMaterialControls,CharacterVertexCount,CharacterTriangleCount,CharacterPartCount,CharacterMoverCount,characterRadiance))
                 return float4(clamp(EncodeRadiance(characterRadiance),0,65504),2);
             float4 dynamicFallback=Fallback(direction);
             if(dynamicFallback.a>0.0)dynamicFallback.a=2.0;

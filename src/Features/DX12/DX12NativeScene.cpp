@@ -1626,10 +1626,11 @@ json DX12NativeScene::GetStatus() const
 			{ "exactPixelIdentity", false }, { "rasterReplacement", false } };
 		const auto frame = globals::game::graphicsState ? globals::game::graphicsState->GetFrameCount() : UINT32_MAX;
 		const auto characters = characterCasters ? characterCasters->Get(frame, draws.stamp.scope) : nullptr;
-		const auto* reflectionActor = characters ? characters->ReflectionActor() : nullptr;
-		const auto* characterMaterials = reflectionActor ? reflectionActor->materials->evaluation.get() : nullptr;
+		const auto characterView = characters ? characters->Reflections() : DX12Native::CharacterCasterFrame::ReflectionView{};
+		const auto* characterMaterials = characterView.evaluation;
 		status["fullNativeCharacterCasters"] = { { "submitted", characters != nullptr },
 			{ "reflectionMaterialsReady", characterMaterials != nullptr },
+			{ "reflectionRigidInstances", characterView.moverCount },
 			{ "materialGeneration", characterMaterials ? characterMaterials->revision : 0ull },
 			{ "materialParts", characterMaterials ? characterMaterials->instanceCount : 0u },
 			{ "residentRecipes", characterMaterials ? characterMaterials->residentRecipes : 0u },

@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstring>
 #include <memory>
+#include <span>
 #include <map>
 #include <ranges>
 #include <stdexcept>
@@ -37,6 +38,9 @@ namespace DX12Native
         static constexpr uint32_t kPosedVertexStride = MaterialFrameContract::kCharacterPosedVertexStride;
         std::shared_ptr<const CharacterCasterFrame> actorSource;
         std::shared_ptr<const CharacterMaterialPublication> materials;
+        std::shared_ptr<const std::vector<DX12::PreparedMaterialSource>> materialSources;
+        winrt::com_ptr<ID3D12Resource> rigidShading;
+        uint32_t rigidShadingCount = 0;
         std::vector<winrt::com_ptr<ID3D12Resource>> rigidResources;
         winrt::com_ptr<ID3D12Fence> readyFence;
         winrt::com_ptr<ID3D12Resource> acceleration, bottom, positions, scratch, bind, palette, indices, instance;
@@ -45,20 +49,38 @@ namespace DX12Native
         winrt::com_ptr<ID3D12RootSignature> root;
         winrt::com_ptr<ID3D12PipelineState> pipeline;
 
-        // In a combined TLAS instance 0 is the actor BLAS only when actorSource
-        // exists. Mover-only frames and independently transformed movers have
-        // no actor material ordinals and must never sample the actor tables.
-        const CharacterCasterFrame* ReflectionActor() const
+        struct ReflectionView
         {
-            if (rigidInstances && !actorSource) return nullptr;
-            const auto* actor = actorSource ? actorSource.get() : this;
-            return actor->scope == scope && actor->vertices && actor->triangles && actor->parts &&
-                actor->positions && actor->indices &&
+            const CharacterCasterFrame* actor = nullptr;
+            const NativeMaterialEvaluation* evaluation = nullptr;
+            ID3D12Resource* movers = nullptr;
+            uint32_t moverCount = 0, actorInstance = 0;
+        };
+
+        ReflectionView Reflections() const
+        {
+            ReflectionView view;
+            const auto* actor = actorSource ? actorSource.get() : (rigidInstances ? nullptr : this);
+            view.actorInstance = actor ? 1u : 0u;
+            const bool actorGeometry = actor && actor->scope == scope && actor->positions && actor->indices &&
                 MaterialFrameContract::ValidCharacterPrimitiveLayout(actor->vertices, actor->triangles, actor->parts,
-                    actor->positions->GetDesc().Width, actor->indices->GetDesc().Width) &&
-                actor->materials && actor->materials->scope == scope &&
-                actor->materials->Ready() && actor->materials->evaluation->instanceCount == actor->parts &&
-                actor->materials->evaluation->revision == actor->materials->generation ? actor : nullptr;
+                    actor->positions->GetDesc().Width, actor->indices->GetDesc().Width);
+            const auto valid = [&](const auto& publication, uint32_t count) {
+                return publication && publication->scope == scope && publication->Ready() &&
+                    publication->evaluation->instanceCount == count &&
+                    publication->evaluation->revision == publication->generation;
+            };
+            if (rigidShading && rigidShadingCount && rigidShadingCount == rigidInstances &&
+                (!actor || actorGeometry) && valid(materials, parts + rigidShadingCount)) {
+                view.actor = actorGeometry ? actor : nullptr;
+                view.evaluation = materials->evaluation.get();
+                view.movers = rigidShading.get();
+                view.moverCount = rigidShadingCount;
+            } else if (actorGeometry && valid(actor->materials, actor->parts)) {
+                view.actor = actor;
+                view.evaluation = actor->materials->evaluation.get();
+            }
+            return view;
         }
 
         bool Submitted(uint32_t expectedFrame, uint32_t expectedScope) const
@@ -415,7 +437,8 @@ namespace DX12Native
         void ObserveRigidMover(RE::BSGeometry& geometry, uint32_t frame, uint32_t scope)
         {
             if (moverScope != scope) {
-                moverMeshes.clear(); moverScope = scope; moverFrame = UINT32_MAX;
+                moverMeshes.clear(); moverShadingOrder.clear(); moverShadingCache = nullptr; moverMaterialWorker.Reset();
+                moverScope = scope; moverFrame = UINT32_MAX;
             }
             if (moverFrame != frame) {
                 movers.clear(); seenMovers.clear(); moverFrame = frame; newMoverMeshes = 0;
@@ -445,18 +468,36 @@ namespace DX12Native
                 mesh->geometry = RE::NiPointer<RE::BSGeometry>(&geometry);
                 mesh->positions.reserve(snapshot.vertices.size());
                 for (const auto& vertex : snapshot.vertices) mesh->positions.push_back(vertex.position);
+                // Retain bounded immutable local shading data, independently of the
+                // BLAS staging arrays. No per-frame CPU skinning of rigid movers.
+                uint64_t retained = 0;
+                for (const auto& [key, cached] : moverMeshes)
+                    retained += cached->shading.size() * sizeof(float) + cached->shadingIndices.size() * sizeof(uint32_t);
+                const uint64_t bytes = uint64_t(snapshot.vertices.size()) * CharacterCasterFrame::kPosedVertexStride +
+                    uint64_t(snapshot.indices.size()) * sizeof(uint32_t);
+                if (bytes <= kMoverShadingBudget && retained <= kMoverShadingBudget - bytes) {
+                    mesh->shading.reserve(snapshot.vertices.size() * 18u);
+                    for (const auto& v : snapshot.vertices) {
+                        for (const auto& field : { std::span<const float>(v.position), std::span<const float>(v.normal),
+                            std::span<const float>(v.uv), std::span<const float>(v.color),
+                            std::span<const float>(v.tangent), std::span<const float>(v.bitangent) })
+                            mesh->shading.insert(mesh->shading.end(), field.begin(), field.end());
+                    }
+                    mesh->shadingIndices = snapshot.indices;
+                }
                 mesh->indices = std::move(snapshot.indices);
                 found = moverMeshes.emplace(key, std::move(mesh)).first;
                 ++newMoverMeshes;
             }
             found->second->lastFrame = frame;
             seenMovers.push_back(&geometry);
-            movers.push_back({ found->second, transform });
+            movers.push_back({ found->second, transform, CaptureCharacterMaterial(geometry, HasColor(desc)) });
         }
 
         void Reset()
         {
-            combined.reset(); current.reset(); materialWorker.Reset();
+            combined.reset(); current.reset(); materialWorker.Reset(); moverMaterialWorker.Reset();
+            moverShadingOrder.clear(); moverShadingCache = nullptr;
             attemptedFrame = UINT32_MAX; attemptedScope = 0;
             moverFrame = UINT32_MAX; moverScope = 0; movers.clear(); seenMovers.clear(); moverMeshes.clear();
         }
@@ -479,7 +520,7 @@ namespace DX12Native
                     if (SUCCEEDED(backend.commandQueue->Signal(completion.get(), rescue))) slot->readyValue = rescue;
                 }
                 if (slot && slot.use_count() == 1 && GpuFenceRetired(slot->readyFence.get(), slot->readyValue)) {
-                    slot->actorSource.reset(); slot->rigidResources.clear();
+                    slot->actorSource.reset(); slot->rigidResources.clear(); slot->materials.reset(); slot->rigidShading = nullptr;
                 }
             }
             const bool reuseActor = interval == 2u && current && current->allowedAge == 1u &&
@@ -576,7 +617,8 @@ namespace DX12Native
                 next->frame = frame; next->scope = scope; next->allowedAge = interval == 2u ? 1u : 0u; next->parts = snapshot.parts;
                 next->vertices = uint32_t(snapshot.vertices.size()); next->triangles = triangleCount;
                 if (snapshot.materialSources.size() != snapshot.parts) throw std::runtime_error("Character material part mapping mismatch");
-                next->materials = materialWorker.Update(backend, frame, scope, std::move(snapshot.materialSources));
+                next->materialSources = std::make_shared<const std::vector<DX12::PreparedMaterialSource>>(std::move(snapshot.materialSources));
+                next->materials = materialWorker.Update(backend, frame, scope, *next->materialSources);
                 if (!reuse) next->allocationBytes = required;
                 next->root = root; next->pipeline = pipeline;
                 next->readyFence = completion;
@@ -670,7 +712,8 @@ namespace DX12Native
                 next->vertices = next->actorSource ? next->actorSource->vertices : 0;
                 next->triangles = next->actorSource ? next->actorSource->triangles : 0;
                 next->rigidResources.clear();
-                next->rigidInstances = 0;
+                next->rigidInstances = 0; next->rigidShadingCount = 0;
+                next->rigidShading = nullptr; next->materials.reset();
                 constexpr auto uav = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
                 const auto makeBuffer = [&](uint64_t bytes, D3D12_RESOURCE_STATES state, D3D12_HEAP_TYPE heap = D3D12_HEAP_TYPE_DEFAULT) {
                     const auto flags = heap == D3D12_HEAP_TYPE_DEFAULT ? uav : D3D12_RESOURCE_FLAG_NONE;
@@ -700,6 +743,10 @@ namespace DX12Native
                     instance.AccelerationStructure = next->actorSource->bottom->GetGPUVirtualAddress();
                     instances.push_back(instance);
                 }
+                std::vector<std::shared_ptr<RigidMesh>> shadingOrder;
+                std::vector<DX12::PreparedMaterialSource> materialSources;
+                if (next->actorSource && next->actorSource->materialSources)
+                    materialSources = *next->actorSource->materialSources;
                 std::vector<std::pair<std::shared_ptr<RigidMesh>, winrt::com_ptr<ID3D12Resource>>> built;
                 for (const auto& mover : movers) {
                     auto& mesh = *mover.mesh;
@@ -746,8 +793,23 @@ namespace DX12Native
                     instance.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_CULL_DISABLE;
                     instance.AccelerationStructure = blas->GetGPUVirtualAddress();
                     instances.push_back(instance); ++next->rigidInstances;
+                    shadingOrder.push_back(mover.mesh);
+                    materialSources.push_back(mover.material);
                 }
                 if (!next->rigidInstances) { Eval::Check(cmd->Close()); return; }
+                if (materialSources.size() == next->parts + next->rigidInstances) {
+                    // Shading is optional for visibility. A failed allocation or
+                    // deferred material generation must not interrupt the rigid TLAS.
+                    try {
+                        next->rigidShading = PrepareMoverShading(device.get(), shadingOrder);
+                        if (next->rigidShading) {
+                            next->rigidShadingCount = next->rigidInstances;
+                            next->materials = moverMaterialWorker.Update(backend, frame, scope, std::move(materialSources));
+                        }
+                    } catch (const std::exception&) {
+                        next->rigidShading = nullptr; next->rigidShadingCount = 0;
+                    }
+                }
                 D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS top{};
                 top.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
                 top.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
@@ -795,18 +857,60 @@ namespace DX12Native
         {
             RE::NiPointer<RE::BSGeometry> geometry;
             std::vector<std::array<float, 3>> positions;
-            std::vector<uint32_t> indices;
+            std::vector<uint32_t> indices, shadingIndices;
+            std::vector<float> shading;
             winrt::com_ptr<ID3D12Resource> blas;
             uint32_t lastFrame = 0;
         };
-        struct RigidInstance { std::shared_ptr<RigidMesh> mesh; Bone transform; };
+        struct RigidInstance { std::shared_ptr<RigidMesh> mesh; Bone transform; DX12::PreparedMaterialSource material; };
+        static constexpr uint64_t kMoverShadingBudget = 32ull * VideoMemoryBudget::kMiB;
+        // Local geometry rows are indexed by the admitted TLAS instance order,
+        // excluding the optional actor BLAS. Shared meshes occupy one data range.
+        winrt::com_ptr<ID3D12Resource> PrepareMoverShading(ID3D12Device* device,
+            const std::vector<std::shared_ptr<RigidMesh>>& order)
+        {
+            if (moverShadingCache && moverShadingOrder == order) return moverShadingCache;
+            if (order.empty() || order.size() > kMaxMovers) return {};
+            const size_t tableWords = order.size() * 4u;
+            std::vector<uint32_t> words(tableWords);
+            std::map<const RigidMesh*, std::array<uint32_t, 4>> ranges;
+            bool any = false;
+            for (size_t i = 0; i < order.size(); ++i) {
+                const auto& mesh = *order[i];
+                if (mesh.shading.empty() || mesh.shadingIndices.empty() || mesh.shading.size() % 18u) continue;
+                auto it = ranges.find(&mesh);
+                if (it == ranges.end()) {
+                    const uint64_t count = uint64_t(mesh.shading.size()) + mesh.shadingIndices.size();
+                    if ((uint64_t(words.size()) + count) * sizeof(uint32_t) > kMoverShadingBudget) continue;
+                    const uint32_t vertexOffset = uint32_t(words.size() * sizeof(uint32_t));
+                    const auto start = words.size();
+                    words.resize(start + mesh.shading.size());
+                    std::memcpy(words.data() + start, mesh.shading.data(), mesh.shading.size() * sizeof(float));
+                    const uint32_t indexOffset = uint32_t(words.size() * sizeof(uint32_t));
+                    words.insert(words.end(), mesh.shadingIndices.begin(), mesh.shadingIndices.end());
+                    it = ranges.emplace(&mesh, std::array{ vertexOffset, indexOffset,
+                        uint32_t(mesh.shading.size() / 18u), uint32_t(mesh.shadingIndices.size()) }).first;
+                }
+                std::copy(it->second.begin(), it->second.end(), words.begin() + i * 4u);
+                any = true;
+            }
+            if (!any) return {};
+            const auto desc = CD3DX12_RESOURCE_DESC::Buffer(uint64_t(words.size()) * sizeof(uint32_t));
+            const uint64_t allocation = device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
+            if (!allocation || allocation == UINT64_MAX || allocation > budget.Query(device, 0).effectiveBytes) return {};
+            auto resource = Eval::Table(device, words);
+            moverShadingCache = resource; moverShadingOrder = order;
+            return resource;
+        }
+        winrt::com_ptr<ID3D12Resource> moverShadingCache;
+        std::vector<std::shared_ptr<RigidMesh>> moverShadingOrder;
         std::map<MeshKey, std::shared_ptr<RigidMesh>> moverMeshes;
         std::vector<RigidInstance> movers;
         std::array<std::shared_ptr<CharacterCasterFrame>, 4> moverSlots;
         std::shared_ptr<CharacterCasterFrame> combined;
         uint32_t moverScope = 0, newMoverMeshes = 0;
         GraphicsBackend owner;
-        CharacterMaterialWorker materialWorker;
+        CharacterMaterialWorker materialWorker, moverMaterialWorker;
         VideoMemoryBudget budget;
         std::array<std::shared_ptr<CharacterCasterFrame>, 3> slots;
         std::shared_ptr<CharacterCasterFrame> current;

@@ -17,6 +17,7 @@ ByteAddressBuffer CharacterIndices : register(t1, space1);
 StructuredBuffer<MaterialRecord> CharacterMaterialRecords : register(t2, space1);
 StructuredBuffer<Binding> CharacterBindings : register(t3, space1);
 Texture2DArray<float4> CharacterTextures[512] : register(t4, space1);
+ByteAddressBuffer CharacterMoverGeometry : register(t516, space1);
 static const uint NativeTextureIndexLimit = 1024u;
 #else
 static const uint NativeTextureIndexLimit = 512u;

@@ -33,8 +33,9 @@ namespace DX12Native
             float4 secondarySunDirection, secondarySunRadiance;
             uint32_t secondaryLightCount, secondaryFoliage, skyAvailable, secondaryMaterialControls;
             uint32_t secondaryProjectionRows, characterVertices, characterTriangles, characterParts;
+            uint32_t characterMovers, characterPadding[3]{};
         };
-        static_assert(sizeof(Constants) == 528);
+        static_assert(sizeof(Constants) == 544);
         constexpr uint64_t kSHBytes = 48;
         constexpr UINT kCharacterTextureOffset = 6 + NativePBR::kGpuTextureDescriptorCapacity + kProjectedTextureCapacity;
 
@@ -156,7 +157,7 @@ namespace DX12Native
         ranges[3].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 527, 0, 4 + NativePBR::kGpuTextureDescriptorCapacity);
         ranges[4].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,1+kProjectedTextureCapacity,530,0,5+NativePBR::kGpuTextureDescriptorCapacity);
         ranges[5].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,NativePBR::kGpuTextureDescriptorCapacity,4,1,kCharacterTextureOffset);
-        CD3DX12_ROOT_PARAMETER parameters[21];
+        CD3DX12_ROOT_PARAMETER parameters[22];
         parameters[0].InitAsShaderResourceView(0);
         parameters[1].InitAsDescriptorTable(6, ranges);
         parameters[2].InitAsShaderResourceView(2);
@@ -175,11 +176,12 @@ namespace DX12Native
         parameters[15].InitAsShaderResourceView(528);
         parameters[16].InitAsShaderResourceView(529);
         for (UINT i=0;i<4;++i) parameters[17+i].InitAsShaderResourceView(i,1);
+        parameters[21].InitAsShaderResourceView(516,1);
         winrt::com_ptr<ID3D12RootSignature> pr, ir;
         winrt::com_ptr<ID3D12PipelineState> pp, ip;
         winrt::com_ptr<ID3D12Fence> fence;
         BuildPipeline(device, Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativeDiffuseSH.dxil", 3, projectionParameters, pr, pp);
-        BuildPipeline(device, Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativeIndirectLighting.dxil", 21, parameters, ir, ip);
+        BuildPipeline(device, Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativeIndirectLighting.dxil", 22, parameters, ir, ip);
         Eval::Check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(fence.put())));
         owner = backend;
         projectionRoot = std::move(pr); projectionPipeline = std::move(pp);
@@ -303,8 +305,9 @@ namespace DX12Native
             CubeView(device, env.reflection ? *env.reflection : *env.base, cpu(2));
             CubeView(device, env.sky ? *env.sky : *env.base, cpu(3));
             slot->material->scene->materialEvaluation->WriteTextureViews(device, cpu(4));
-            const auto* actor = slot->characters ? slot->characters->ReflectionActor() : nullptr;
-            const auto& actorEvaluation = actor ? *actor->materials->evaluation : *slot->material->scene->materialEvaluation;
+            const auto characterView = slot->characters ? slot->characters->Reflections() : CharacterCasterFrame::ReflectionView{};
+            const auto* actor = characterView.actor;
+            const auto& actorEvaluation = characterView.evaluation ? *characterView.evaluation : *slot->material->scene->materialEvaluation;
             actorEvaluation.WriteTextureViews(device, cpu(kCharacterTextureOffset));
             const auto ssrEvidence = slot->screenSpaceReflections && validEvidence ? evidence : nullptr;
             const auto projection=slot->screenSpaceReflections && slot->material->projection && slot->material->projectionLookup &&
@@ -348,7 +351,7 @@ namespace DX12Native
                 slot->ssrDirect && slot->ssrDirect->foliageScattering ? 1u : 0u,
                 slot->skySH ? 1u : 0u,
                 uint32_t(slot->material->parallaxEnabled) | (uint32_t(slot->material->parallaxShadows)<<1u),
-                projection?projection->rowCount:0u, actor?actor->vertices:0u, actor?actor->triangles:0u, actor?actor->parts:0u };
+                projection?projection->rowCount:0u, actor?actor->vertices:0u, actor?actor->triangles:0u, actor?actor->parts:0u, characterView.moverCount };
             void* mapped = nullptr; const D3D12_RANGE noRead{};
             Eval::Check(slot->constants->Map(0, &noRead, &mapped));
             std::memcpy(mapped, &constants, sizeof(constants)); slot->constants->Unmap(0, nullptr);
@@ -382,6 +385,7 @@ namespace DX12Native
             cmd->SetComputeRootShaderResourceView(18,actor?actor->indices->GetGPUVirtualAddress():materialAddress);
             cmd->SetComputeRootShaderResourceView(19,actorEvaluation.records->GetGPUVirtualAddress());
             cmd->SetComputeRootShaderResourceView(20,actorEvaluation.bindings->GetGPUVirtualAddress());
+            cmd->SetComputeRootShaderResourceView(21,characterView.movers?characterView.movers->GetGPUVirtualAddress():materialAddress);
             TransitionProjectionViews(cmd,projection.get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             if (tokens) Transition(cmd, tokens, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             cmd->Dispatch((ShadowPhysicalWidth(ShadowLogicalExtent(width, slot->quality), slot->quality) + 7) / 8,

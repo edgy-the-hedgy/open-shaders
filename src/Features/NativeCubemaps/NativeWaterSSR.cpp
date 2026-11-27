@@ -30,7 +30,7 @@ namespace
         float4 previousPositionAdjust;
         float4 secondarySunDirection,secondarySunRadiance;
         uint32_t secondaryLightCount,secondaryFoliage,secondaryMaterialControls,secondaryProjectionRows;
-        uint32_t characterVertices,characterTriangles,characterParts,characterPadding=0;
+        uint32_t characterVertices,characterTriangles,characterParts,characterMovers;
     };
     static_assert(sizeof(Constants)==480);
     constexpr UINT kTextureOffset=7;
@@ -103,7 +103,7 @@ void NativeCubemaps::WaterSSR::Initialize(const GraphicsBackend& backend)
     ranges[3].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,3,525,0,kHistoryOffset);
     ranges[4].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,1+kProjectedTextureCapacity,530,0,kProjectionOffset);
     ranges[5].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,NativePBR::kGpuTextureDescriptorCapacity,4,1,kCharacterTextureOffset);
-    CD3DX12_ROOT_PARAMETER params[17];
+    CD3DX12_ROOT_PARAMETER params[18];
     params[0].InitAsDescriptorTable(6,ranges);
     params[1].InitAsConstantBufferView(0);
     params[2].InitAsConstants(1,1);
@@ -112,12 +112,13 @@ void NativeCubemaps::WaterSSR::Initialize(const GraphicsBackend& backend)
     params[11].InitAsShaderResourceView(528);
     params[12].InitAsShaderResourceView(529);
     for(UINT i=0;i<4;++i)params[13+i].InitAsShaderResourceView(i,1);
+    params[17].InitAsShaderResourceView(516,1);
     std::array<CD3DX12_STATIC_SAMPLER_DESC,4> samplers;
     for(UINT i=0;i<samplers.size();++i)
         samplers[i]=CD3DX12_STATIC_SAMPLER_DESC(i,D3D12_FILTER_MIN_MAG_MIP_LINEAR,
             (i&2)?D3D12_TEXTURE_ADDRESS_MODE_WRAP:D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
             (i&1)?D3D12_TEXTURE_ADDRESS_MODE_WRAP:D3D12_TEXTURE_ADDRESS_MODE_CLAMP,D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
-    const CD3DX12_ROOT_SIGNATURE_DESC signature(17,params,UINT(samplers.size()),samplers.data());
+    const CD3DX12_ROOT_SIGNATURE_DESC signature(18,params,UINT(samplers.size()),samplers.data());
     winrt::com_ptr<ID3DBlob> blob,errors;
     winrt::com_ptr<ID3D12RootSignature> nextRoot;
     winrt::com_ptr<ID3D12PipelineState> nextPipeline;
@@ -287,8 +288,9 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         view(opaqueDepth,DXGI_FORMAT_R32_FLOAT,3);
         view(tokens,DXGI_FORMAT_R16G16B16A16_UNORM,4);
         evaluation.WriteTextureViews(device,{cpu.ptr+SIZE_T(kTextureOffset)*step});
-        const auto* actor=characters?characters->ReflectionActor():nullptr;
-        const auto& actorEvaluation=actor?*actor->materials->evaluation:evaluation;
+        const auto characterView=characters?characters->Reflections():CharacterCasterFrame::ReflectionView{};
+        const auto* actor=characterView.actor;
+        const auto& actorEvaluation=characterView.evaluation?*characterView.evaluation:evaluation;
         actorEvaluation.WriteTextureViews(device,{cpu.ptr+SIZE_T(kCharacterTextureOffset)*step});
         const auto projection=material.projection && material.projectionLookup && material.projection->Ready(stamp)?material.projection:nullptr;
         WriteProjectionViews(device,projection.get(),{cpu.ptr+SIZE_T(kProjectionOffset)*step});
@@ -315,7 +317,7 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
             direct->directional.direction,direct->directional.radiance,
             direct->lightCount,uint32_t(direct->foliageScattering),
             uint32_t(material.parallaxEnabled)|(uint32_t(material.parallaxShadows)<<1u),projection?projection->rowCount:0u,
-            actor?actor->vertices:0u,actor?actor->triangles:0u,actor?actor->parts:0u};
+            actor?actor->vertices:0u,actor?actor->triangles:0u,actor?actor->parts:0u,characterView.moverCount};
         void* mapped=nullptr;const D3D12_RANGE noRead{};
         DX::ThrowIfFailed(slot->constants->Map(0,&noRead,&mapped));
         std::memcpy(mapped,&constants,sizeof(constants));slot->constants->Unmap(0,nullptr);
@@ -334,6 +336,7 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         cmd->SetComputeRootShaderResourceView(14,actor?actor->indices->GetGPUVirtualAddress():material.samples->GetGPUVirtualAddress());
         cmd->SetComputeRootShaderResourceView(15,actorEvaluation.records->GetGPUVirtualAddress());
         cmd->SetComputeRootShaderResourceView(16,actorEvaluation.bindings->GetGPUVirtualAddress());
+        cmd->SetComputeRootShaderResourceView(17,characterView.movers?characterView.movers->GetGPUVirtualAddress():material.samples->GetGPUVirtualAddress());
         TransitionProjectionViews(cmd,projection.get(),common,read);
         cmd->SetComputeRoot32BitConstant(2,0,0);
         cmd->Dispatch((ShadowPhysicalWidth(ShadowLogicalExtent(ow,quality),quality)+kGroup-1)/kGroup,

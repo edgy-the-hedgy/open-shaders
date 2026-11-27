@@ -24,8 +24,11 @@ namespace DX12Native
     {
         DX12::PreparedMaterialSource source;
         const auto& runtime = geometry.GetGeometryRuntimeData();
-        const auto* property = static_cast<const RE::BSLightingShaderProperty*>(runtime.shaderProperty.get());
-        if (!property || !property->material || property->material->GetType() != RE::BSShaderMaterial::Type::kLighting ||
+        const auto* baseProperty = runtime.shaderProperty.get();
+        if (!baseProperty || baseProperty->GetRTTI() != globals::rtti::BSLightingShaderPropertyRTTI.get() || runtime.alphaProperty)
+            return source;
+        const auto* property = static_cast<const RE::BSLightingShaderProperty*>(baseProperty);
+        if (!property->material || property->material->GetType() != RE::BSShaderMaterial::Type::kLighting ||
             property->material->GetFeature() != RE::BSShaderMaterial::Feature::kDefault)
             return source;
         source.authoredShaderFlags = NativePBR::ReadAuthoredFlags(*property);

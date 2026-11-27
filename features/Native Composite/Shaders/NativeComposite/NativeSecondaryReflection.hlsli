@@ -193,17 +193,30 @@ bool ShadeNativeSecondary(uint instance,uint primitive,float2 bary,float3x3 worl
 
 
 #if defined(NATIVE_CHARACTER_REFLECTION)
-// The actor BLAS is one merged geometry. Committed primitive IDs address
-// exactly the index and part streams retained by the same posed frame.
+// Actor BLAS primitives address the posed streams; rigid movers use their
+// admitted instance ordinal and immutable local-space geometry instead.
 bool ShadeNativeCharacterSecondary(uint instance,uint primitive,float2 bary,bool front,
+    float3x3 worldToObject,float3x3 objectToWorld,
     float3 world,float3 rayDirection,float distance,float footprint,uint2 pixel,uint lobe,uint frame,uint quality,
     uint instanceCount,uint characters,uint lightCount,float4 sunDirection,float4 sunRadiance,uint foliage,
-    uint materialControls,uint vertexCount,uint triangleCount,uint partCount,out float3 radiance)
+    uint materialControls,uint vertexCount,uint triangleCount,uint partCount,uint moverCount,out float3 radiance)
 {
     radiance=0;
-    if(instance!=0u||primitive>=triangleCount||vertexCount==0u||partCount==0u||lightCount>SecondaryMaxLightCount)return false;
-    uint part=CharacterIndices.Load(triangleCount*12u+primitive*4u);
-    if(part>=partCount)return false;
+    if(lightCount>SecondaryMaxLightCount)return false;
+    const bool actor=partCount!=0u&&instance==0u;
+    uint part, positionOffset=0u, indexOffset=0u;
+    if(actor){
+        if(primitive>=triangleCount||vertexCount==0u)return false;
+        part=CharacterIndices.Load(triangleCount*12u+primitive*4u);
+        if(part>=partCount)return false;
+    }else{
+        uint mover=instance-(partCount!=0u?1u:0u);
+        if(mover>=moverCount)return false;
+        uint4 row=CharacterMoverGeometry.Load4(mover*16u);
+        positionOffset=row.x;indexOffset=row.y;vertexCount=row.z;
+        if(vertexCount==0u||primitive>=row.w/3u)return false;
+        part=partCount+mover;
+    }
     Binding binding=CharacterBindings[part];
     if(binding.materialIndex==0xffffffffu||(binding.flags&(SurfaceMissingBaseTexturesBinding|512u))!=0u||
        ((binding.flags&SurfaceBaseOnlyBinding)!=0u&&(binding.flags&SurfaceSecondaryParallaxBinding)==0u))return false;
@@ -215,18 +228,29 @@ bool ShadeNativeCharacterSecondary(uint instance,uint primitive,float2 bary,bool
         if(material.textures[i].x<512u)material.textures[i].x+=512u;
         if(material.textures[i].z<512u)material.textures[i].z+=512u;
     }
-    uint3 ix=CharacterIndices.Load3(primitive*12u);
+    uint3 ix;
+    [branch]if(actor)ix=CharacterIndices.Load3(primitive*12u);
+    else ix=CharacterMoverGeometry.Load3(indexOffset+primitive*12u);
     if(any(ix>=vertexCount))return false;
     NativeMaterialTriangle triangle=(NativeMaterialTriangle)0;
     triangle.hasPositions=true;triangle.hasTangents=true;
     [unroll]for(uint j=0u;j<3u;++j){
-        uint offset=ix[j]*72u;
-        triangle.positions[j]=asfloat(CharacterPositions.Load3(offset));
-        triangle.normals[j]=asfloat(CharacterPositions.Load3(offset+12u));
-        triangle.uv[j]=asfloat(CharacterPositions.Load2(offset+24u));
-        triangle.colors[j]=asfloat(CharacterPositions.Load4(offset+32u));
-        triangle.tangents[j]=asfloat(CharacterPositions.Load3(offset+48u));
-        triangle.bitangents[j]=asfloat(CharacterPositions.Load3(offset+60u));
+        uint offset=positionOffset+ix[j]*72u;
+        [branch]if(actor){
+            triangle.positions[j]=asfloat(CharacterPositions.Load3(offset));
+            triangle.normals[j]=asfloat(CharacterPositions.Load3(offset+12u));
+            triangle.uv[j]=asfloat(CharacterPositions.Load2(offset+24u));
+            triangle.colors[j]=asfloat(CharacterPositions.Load4(offset+32u));
+            triangle.tangents[j]=asfloat(CharacterPositions.Load3(offset+48u));
+            triangle.bitangents[j]=asfloat(CharacterPositions.Load3(offset+60u));
+        }else{
+            triangle.positions[j]=asfloat(CharacterMoverGeometry.Load3(offset));
+            triangle.normals[j]=asfloat(CharacterMoverGeometry.Load3(offset+12u));
+            triangle.uv[j]=asfloat(CharacterMoverGeometry.Load2(offset+24u));
+            triangle.colors[j]=asfloat(CharacterMoverGeometry.Load4(offset+32u));
+            triangle.tangents[j]=asfloat(CharacterMoverGeometry.Load3(offset+48u));
+            triangle.bitangents[j]=asfloat(CharacterMoverGeometry.Load3(offset+60u));
+        }
         if(!all(isfinite(triangle.positions[j]))||!all(isfinite(triangle.normals[j]))||
            dot(triangle.normals[j],triangle.normals[j])<1e-8||!all(isfinite(triangle.uv[j]))||
            !all(isfinite(triangle.colors[j])))return false;
@@ -234,7 +258,6 @@ bool ShadeNativeCharacterSecondary(uint instance,uint primitive,float2 bary,bool
            all(isfinite(triangle.bitangents[j]))&&dot(triangle.tangents[j],triangle.tangents[j])>1e-8&&
            dot(triangle.bitangents[j],triangle.bitangents[j])>1e-8;
     }
-    const float3x3 identity=float3x3(1,0,0,0,1,0,0,0,1);
     float lod=clamp(log2(max(1.0,distance*max(footprint,0.001)/16.0)),0.0,8.0);
     float3 tangent=normalize(cross(rayDirection,abs(rayDirection.z)<0.99?float3(0,0,1):float3(0,1,0)));
     float3 bitangent=cross(rayDirection,tangent);
@@ -242,10 +265,11 @@ bool ShadeNativeCharacterSecondary(uint instance,uint primitive,float2 bary,bool
     float noise=NativeEmitterRandom(NativeEmitterHash(pixel.x^NativeEmitterHash(pixel.y)^frame),0x68bc21ebu);
     bool rawUsed;NativeCoatSample coat;NativeParallaxShadowSample height;
     Sample s=EvaluateMaterialTriangle(binding,material,triangle,0u,float3(1.0-bary.x-bary.y,bary),
-        rayDirection*distance,tangent*footprintWorld,bitangent*footprintWorld,1.0,distance,identity,identity,
+        mul(worldToObject,rayDirection*distance),mul(worldToObject,tangent*footprintWorld),
+        mul(worldToObject,bitangent*footprintWorld),1.0,distance,worldToObject,objectToWorld,
         (materialControls&1u)!=0u&&(binding.flags&SurfaceParallaxReadyBinding)!=0u,false,
         (materialControls&2u)!=0u,lod,0xffffffffu,world,noise,(RawRasterSurface)0,rawUsed,coat,height);
-    return ShadeNativeSecondarySurface(s,coat,height,identity,front,world,rayDirection,distance,pixel,
+    return ShadeNativeSecondarySurface(s,coat,height,worldToObject,front,world,rayDirection,distance,pixel,
         lobe,frame,quality,instanceCount,characters,lightCount,sunDirection,sunRadiance,foliage,radiance);
 }
 #endif

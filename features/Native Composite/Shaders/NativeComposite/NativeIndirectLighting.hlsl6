@@ -73,6 +73,8 @@ cbuffer IndirectInputs : register(b0)
     uint SkyAvailable, SecondaryMaterialControls;
     uint SecondaryProjectionRows;
     uint CharacterVertexCount, CharacterTriangleCount, CharacterPartCount;
+    uint CharacterMoverCount;
+    uint3 CharacterPadding;
 };
 #include "NativeSecondaryReflection.hlsli"
 
@@ -197,9 +199,10 @@ float3 ResolveRayReflection(uint2 receiver,float3 world,float3 normal,float3 dir
             float3 characterRadiance;
             if(ShadeNativeCharacterSecondary(character.CommittedInstanceID(),character.CommittedPrimitiveIndex(),
                 character.CommittedTriangleBarycentrics(),character.CommittedTriangleFrontFace(),
+                (float3x3)character.CommittedWorldToObject3x4(),(float3x3)character.CommittedObjectToWorld3x4(),
                 ray.Origin+d*hitDistance,d,hitDistance,roughness,receiver,lobe,FrameIndex,QualityMode,
                 InstanceCount,CharacterCastersEnabled,SecondaryLightCount,SecondarySunDirection,SecondarySunRadiance,
-                SecondaryFoliage,SecondaryMaterialControls,CharacterVertexCount,CharacterTriangleCount,CharacterPartCount,characterRadiance))
+                SecondaryFoliage,SecondaryMaterialControls,CharacterVertexCount,CharacterTriangleCount,CharacterPartCount,CharacterMoverCount,characterRadiance))
                 return lerp(fallback,characterRadiance,saturate(1.0-roughness/0.45));
             return fallback;
         }
