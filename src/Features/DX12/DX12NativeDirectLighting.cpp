@@ -208,21 +208,27 @@ namespace DX12Native
 			slot->root = root; slot->pipeline = pipeline;
 			slot->frame = material->frame; slot->material = std::move(material);
 			const auto& raster = *slot->material->raster;
+			constexpr size_t kLightRecordVectors = 7;
 			std::vector<std::array<float, 4>> records;
-			records.reserve(std::min(lights.size(), size_t(DX12::kMaxPreparedLights)) * 3);
+			records.reserve(std::min(lights.size(), size_t(DX12::kMaxPreparedLights)) * kLightRecordVectors);
 			for (const auto& light : lights) {
-				if (records.size() / 3 >= DX12::kMaxPreparedLights) break;
+				if (records.size() / kLightRecordVectors >= DX12::kMaxPreparedLights) break;
 				if (!std::isfinite(light.radius) || light.radius <= 0 ||
 					!std::isfinite(light.position.x) || !std::isfinite(light.position.y) || !std::isfinite(light.position.z) ||
 					!std::isfinite(light.radiance.x) || !std::isfinite(light.radiance.y) || !std::isfinite(light.radiance.z) ||
-					!std::isfinite(light.sourceRadius) || !std::isfinite(light.fadeZone)) continue;
+					!std::isfinite(light.sourceRadius) || !std::isfinite(light.fadeZone) ||
+					(light.spot && !std::ranges::all_of(light.worldToSpot, [](float v) { return std::isfinite(v); }))) continue;
 				records.push_back({ light.position.x, light.position.y, light.position.z, light.radius });
 				records.push_back({ light.radiance.x, light.radiance.y, light.radiance.z, 0 });
-				records.push_back({ light.sourceRadius, light.fadeZone, light.inverseSquare ? 1.0f : 0.0f, 0 });
+				records.push_back({ light.sourceRadius, light.fadeZone, light.inverseSquare ? 1.0f : 0.0f, light.spot ? 1.0f : 0.0f });
+				for (size_t row = 0; row < 4; ++row) {
+					const size_t offset = row * 4;
+					records.push_back({ light.worldToSpot[offset], light.worldToSpot[offset + 1], light.worldToSpot[offset + 2], light.worldToSpot[offset + 3] });
+				}
 			}
-			const uint32_t lightCount = uint32_t(records.size() / 3);
+			const uint32_t lightCount = uint32_t(records.size() / kLightRecordVectors);
 			if (!lights.empty() && records.empty()) throw std::runtime_error("No valid direct light records");
-			if (records.empty()) records.resize(3);
+			if (records.empty()) records.resize(kLightRecordVectors);
 			slot->lights = Eval::Table(device, records);
 			const Constants constants{ raster.camera.CameraProjInverse, raster.camera.CameraViewInverse,
 				raster.camera.CameraPosAdjust, width, height, slot->material->rowPitch, lightCount,

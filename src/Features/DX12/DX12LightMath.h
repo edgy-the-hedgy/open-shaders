@@ -23,6 +23,14 @@ namespace DX12Native::LightMath
 			std::isfinite(radius) && radius > 0.0f && distanceSquared <= tolerance * tolerance;
 	}
 
+	inline float SpotFootprint(float x, float y, float w)
+	{
+		if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(w) || w <= 0.0f)
+			return 0.0f;
+		x /= w; y /= w;
+		return std::clamp(1.0f - x * x - y * y, 0.0f, 1.0f);
+	}
+
 	inline float MatchTolerance(float radius)
 	{
 		return std::clamp(radius * 0.01f, 4.0f, 32.0f);

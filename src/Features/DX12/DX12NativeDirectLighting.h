@@ -17,6 +17,8 @@ namespace DX12Native
 		float3 position{}, radiance{};
 		float radius = 0, sourceRadius = 0, fadeZone = 0;
 		bool inverseSquare = false;
+		bool spot = false;
+		std::array<float, 16> worldToSpot{};  // Row-major, row-vector engine projection.
 	};
 	/** @brief Optional same-frame directional input. No claim of distant caster coverage. */
 	struct DirectDirectionalLight

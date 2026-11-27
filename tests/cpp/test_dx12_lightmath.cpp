@@ -32,3 +32,13 @@ TEST_CASE("Full Native point emitter matching rejects conflicting placed referen
 	REQUIRE_FALSE(SameEmitterCandidate(11, 11, 121.0f, 1000.0f));
 	REQUIRE_FALSE(SameEmitterCandidate(0, 0, 0.0f, -1.0f));
 }
+
+TEST_CASE("Native spotlight footprint matches the legacy cone falloff", "[dx12][lighting]")
+{
+	using DX12Native::LightMath::SpotFootprint;
+	REQUIRE(SpotFootprint(0, 0, 1) == 1.0f);
+	REQUIRE(SpotFootprint(1, 0, 2) == 0.75f);
+	REQUIRE(SpotFootprint(2, 0, 2) == 0.0f);
+	REQUIRE(SpotFootprint(3, 0, 2) == 0.0f);
+	REQUIRE(SpotFootprint(0, 0, -1) == 0.0f);
+}

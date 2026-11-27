@@ -1,6 +1,18 @@
 RaytracingAccelerationStructure Scene : register(t0);
 ByteAddressBuffer Materials : register(t1);
 StructuredBuffer<float4> Lights : register(t2);
+static const uint DirectLightRecordVectors = 7u;
+
+// Same angular footprint as LLF GetSpotlightFalloff/GetShadowLightFootprint.
+// Only engine projection metadata is shared; the shadow visibility is DXR.
+float NativeSpotFalloff(uint record, float3 world)
+{
+    float4 clip = world.x * Lights[record + 3u] + world.y * Lights[record + 4u] +
+        world.z * Lights[record + 5u] + Lights[record + 6u];
+    if (!all(isfinite(clip)) || clip.w <= 0.0) return 0.0;
+    float2 xy = clip.xy / clip.w;
+    return saturate(1.0 - dot(xy, xy));
+}
 Texture2D<float> RasterDepth : register(t3);
 RWByteAddressBuffer Lighting : register(u0);
 RWByteAddressBuffer Counters : register(u1);
@@ -161,7 +173,8 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
     }
     [loop] for (uint candidate = 0; candidate < TileCount; ++candidate) {
         uint i = TileLights[candidate];
-        float4 light = Lights[i*3u], color = Lights[i*3u+1u], params = Lights[i*3u+2u];
+        uint record = i * DirectLightRecordVectors;
+        float4 light = Lights[record], color = Lights[record + 1u], params = Lights[record + 2u];
         float3 delta = light.xyz - world;
         float d2 = dot(delta,delta);
         if (!isfinite(d2) || d2 <= 0.25 || d2 >= light.w*light.w) continue;
@@ -174,6 +187,7 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
         float attenuation = params.z != 0.0 ?
             fade*fade*(3.0-2.0*fade)/max(d2+params.x*params.x,1.0) :
             1.0-saturate(relativeDistance*relativeDistance);
+        if (params.w != 0.0) attenuation *= NativeSpotFalloff(record, world);
         if (attenuation <= 0.0 || !isfinite(attenuation) || !any(color.rgb > 0.0)) continue;
         ++inReach;
         bool traced;
@@ -209,7 +223,7 @@ void main(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
     }
     if (all(TileMin[0] <= TileMax[0])) {
         [loop] for (uint i=lane; i<min(LightCount,2048u); i+=64u) {
-            float4 light = Lights[i*3u];
+            float4 light = Lights[i * DirectLightRecordVectors];
             float3 nearest = clamp(light.xyz,TileMin[0],TileMax[0]);
             float3 delta = light.xyz-nearest;
             if (dot(delta,delta) <= light.w*light.w) {

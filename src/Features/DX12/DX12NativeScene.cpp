@@ -693,6 +693,9 @@ void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 		directLights.push_back({ light.position,
 			{ toLinear(light.color.x) * light.fade, toLinear(light.color.y) * light.fade, toLinear(light.color.z) * light.fade },
 			light.radius, light.emitterRadius, 0.0f, false });
+		// A prepared spotlight without a current projection is not an omni light.
+		if (light.flags & (static_cast<uint32_t>(RE::TES_LIGHT_FLAGS::kSpotlight) | static_cast<uint32_t>(RE::TES_LIGHT_FLAGS::kSpotShadow)))
+			directLights.back().radius = 0.0f;
 	}
 
 	// Full Native samples live values without changing LLF, SCM, or their cached
@@ -712,8 +715,7 @@ void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 			const auto flags = PointLightFlags::GetVanillaPointLightFlags(light, ni);
 			const auto runtimeFlags = PointLightFlags::GetRuntimeLightFlags(ni);
 			using F = PointLightFlags::Flags;
-			if ((flags & PointLightFlags::ToMask(F::Spot)) ||
-				(runtimeFlags & PointLightFlags::ToMask(F::Disabled)))
+			if (runtimeFlags & PointLightFlags::ToMask(F::Disabled))
 				return;
 			const auto& rt = ni->GetLightRuntimeData();
 			const auto& position = ni->world.translate;
@@ -725,6 +727,15 @@ void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 			DX12Native::DirectPointLight value{ { position.x, position.y, position.z },
 				{ toLinear(rt.diffuse.red) * rt.fade, toLinear(rt.diffuse.green) * rt.fade, toLinear(rt.diffuse.blue) * rt.fade },
 				rt.radius.x, 0.0f, 0.0f, false };
+			if (flags & PointLightFlags::ToMask(F::Spot)) {
+				auto* spot = skyrim_cast<RE::BSShadowLight*>(light);
+				std::array<float, 16> inverse{};
+				if (!spot || !spot->GetIsFrustumLight() ||
+					!ShadowCasterManager::GetLightProjection(spot, value.worldToSpot.data(), inverse.data()) ||
+					!std::ranges::all_of(value.worldToSpot, [](float v) { return std::isfinite(v); }))
+					return;
+				value.spot = true;
+			}
 			if (runtimeFlags & PointLightFlags::ToMask(F::InverseSquare)) {
 				const auto* ext = LLFCommon::RuntimeLightDataExt::Get(ni);
 				if (!std::isfinite(ext->size) || ext->size <= 0.0f || !std::isfinite(ext->cutoffOverride) ||
@@ -779,6 +790,9 @@ void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 		for (const auto& light : lights.activeLights)
 			collect(light.get());
 	}
+	// Discard prepared spots for which no live projection was resolved, only
+	// after matching so prepared ordinals remain stable during the merge.
+	std::erase_if(directLights, [](const auto& light) { return light.radius <= 0.0f; });
 	if (particleSnapshotReady) {
 		for (const auto& particle : llf.nativeParticleEmitters) {
 			if (directLights.size() >= DX12::kMaxPreparedLights)
@@ -807,7 +821,7 @@ void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 		}
 	}
 	// Selected direct coverage remains partial: sun and particle visibility are
-	// limited to the resident TLAS, and spot/unsupported emitters are not yet represented.
+	// limited to the resident TLAS; spots require a valid live engine projection.
 	fullNativeDirect->Dispatch(*backend, material, directLights, runtimeAvailable || !prepared.empty() || directional.direction.w != 0.0f,
 		directional, uint32_t(viewport.x), uint32_t(viewport.y));
 }
