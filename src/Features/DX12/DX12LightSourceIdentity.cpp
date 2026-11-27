@@ -4,6 +4,7 @@
 #include "RE/T/TESObjectLIGH.h"
 #include "RE/T/TESObjectREFR.h"
 #include "Utils/PointLightFlags.h"
+#include "Utils/Game.h"
 
 #include <Windows.h>
 #include <cmath>
@@ -14,15 +15,11 @@ namespace DX12Native
 	void ReadFullLightOwner(const RE::NiLight* ni, uint32_t& owner, uint32_t& placed) noexcept
 	{
 		__try {
-			const RE::NiAVObject* node = ni;
-			for (uint32_t depth = 0; node && depth < 16; ++depth, node = node->parent) {
-				if (auto* ref = node->GetUserData()) {
-					owner = ref->GetFormID();
-					auto* base = ref->GetObjectReference();
-					if (base && base->As<RE::TESObjectLIGH>())
-						placed = owner;
-					return;
-				}
+			if (auto* ref = Util::FindSceneOwner(ni)) {
+				owner = ref->GetFormID();
+				auto* base = ref->GetObjectReference();
+				if (base && base->As<RE::TESObjectLIGH>())
+					placed = owner;
 			}
 		} __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
 		}
