@@ -1,6 +1,7 @@
 #pragma once
 #include "DX12NativeEnvironment.h"
 #include "DX12NativeScreenProbe.h"
+#include "DX12NativeDirectLighting.h"
 #include "../../../package/Shaders/Common/NativeShadowRT.hlsli"
 #include "DX12NativeCharacterCasters.h"
 #include <array>
@@ -39,6 +40,7 @@ namespace DX12Native
         std::shared_ptr<const NativeScreenProbe::MaterialFrame> material;
         std::shared_ptr<const CharacterCasterFrame> characters;
         std::shared_ptr<const EnvironmentFrame> environment;
+        std::shared_ptr<const DirectLightingFrame> ssrDirect;
         std::shared_ptr<const EnvironmentIrradiance> baseSH, skySH;
         winrt::com_ptr<ID3D12Resource> samples, constants;
         winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
@@ -50,6 +52,7 @@ namespace DX12Native
         uint64_t readyValue = 0, allocationBytes = 0;
         uint32_t frame = 0, width = 0, height = 0, rowPitch = 0, available = 0;
         bool skyVisibilityTraced = false;
+        bool screenSpaceReflections = false;
     };
 
     // Environment-only raw signals; never advertise complete opaque ownership.
@@ -61,7 +64,8 @@ namespace DX12Native
         void Reset();
         void Dispatch(const GraphicsBackend&, std::shared_ptr<const NativeScreenProbe::MaterialFrame>,
             std::shared_ptr<const EnvironmentFrame>, uint32_t enabled, float environmentScale, float skyScale, const NativeAmbientParameters& ambient,
-            std::shared_ptr<const CharacterCasterFrame> characters = nullptr, uint32_t quality = kShadowQualityQuality);
+            std::shared_ptr<const CharacterCasterFrame> characters = nullptr, uint32_t quality = kShadowQualityQuality,
+            std::shared_ptr<const DirectLightingFrame> ssrDirect = nullptr);
         std::shared_ptr<const IndirectLightingFrame> Get(uint32_t frame) const;
         const std::string& Failure() const { return failure; }
         uint64_t AllocationBytes() const;

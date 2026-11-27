@@ -175,6 +175,8 @@ void DX12Control::DrawSimpleSettings(bool developerMode)
 
 	ImGui::SeparatorText(T("menu.dx12.tab.native_scene", "Native Scene"));
 	globals::features::dx12NativeScene.DrawSettings();
+	if (UsesExclusiveMaterials() && ImGui::Checkbox("Native screen-space reflections", &settings.NativeScreenSpaceReflections))
+		nativeSSR.store(settings.NativeScreenSpaceReflections, std::memory_order_relaxed);
 	ImGui::SeparatorText(T("menu.dx12.tab.resources", "Resources"));
 	globals::features::dx12Resources.DrawSettings();
 }
@@ -203,10 +205,27 @@ void DX12Control::DrawSettings()
 	Util::EndPillTabBar();
 }
 
+void DX12Control::MigrateLegacySettings(json& root) const
+{
+	// Copy the old preference only when no independent native preference exists.
+	// Do not rewrite or remove the baseline feature's settings.
+	const auto legacy = root.find("Dynamic Cubemaps");
+	if (legacy == root.end() || !legacy->is_object()) return;
+	const auto value = legacy->find("EnabledSSR");
+	if (value == legacy->end()) return;
+	if (!root.contains("DX12")) root["DX12"] = json::object();
+	auto& native = root["DX12"];
+	if (!native.is_object() || native.contains("NativeScreenSpaceReflections")) return;
+	if (value->is_boolean()) native["NativeScreenSpaceReflections"] = value->get<bool>();
+	else if (value->is_number_integer()) native["NativeScreenSpaceReflections"] = *value != 0;
+}
+
 void DX12Control::LoadSettings(json& input)
 {
 	const Settings defaults{};
 	settings.Enabled = input.value("Enabled", defaults.Enabled);
+	settings.NativeScreenSpaceReflections = input.value("NativeScreenSpaceReflections", defaults.NativeScreenSpaceReflections);
+	nativeSSR.store(settings.NativeScreenSpaceReflections, std::memory_order_relaxed);
 	settings.Mode = static_cast<int>(DX12::SanitizeControlMode(input.value("Mode", defaults.Mode),
 		globals::state && globals::state->IsDeveloperMode()));
 	RequestMode(static_cast<DX12::ControlMode>(settings.Mode));
@@ -221,12 +240,14 @@ void DX12Control::SaveSettings(json& output)
 	const auto active = GetMode();
 	const auto requested = DX12::SanitizeControlMode(settings.Mode, globals::state && globals::state->IsDeveloperMode());
 	const auto saved = DX12::RequiresModeRestart(active, requested) ? requested : active;
-	output = { { "Enabled", settings.Enabled }, { "Mode", static_cast<int>(saved) } };
+	output = { { "Enabled", settings.Enabled }, { "Mode", static_cast<int>(saved) },
+		{ "NativeScreenSpaceReflections", settings.NativeScreenSpaceReflections } };
 }
 
 void DX12Control::RestoreDefaultSettings()
 {
 	settings = {};
+	nativeSSR.store(settings.NativeScreenSpaceReflections, std::memory_order_relaxed);
 	RequestMode(static_cast<DX12::ControlMode>(settings.Mode));
 	if (!bootCaptured) {
 		bootActive.store(settings.Enabled, std::memory_order_release);

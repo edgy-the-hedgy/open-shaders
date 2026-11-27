@@ -796,7 +796,8 @@ void DX12NativeScene::DispatchFullNativeIndirect()
 	if (!material || material->scope != stamp.scope)
 		return;
 	globals::features::nativeIBL.Dispatch(*backend, material, globals::features::nativeCubemaps.Get(), stamp,
-		characterCasters ? characterCasters->Get(frame, material->scope) : nullptr, FullNativeFrameQuality(frame));
+		characterCasters ? characterCasters->Get(frame, material->scope) : nullptr, FullNativeFrameQuality(frame),
+		globals::features::dx12Control.NativeSSREnabled() ? GetFullNativeDirect(frame) : nullptr);
 	const auto& draws = fullNativeRasterDraws;
 	const bool matchingDraws = draws.finalized && draws.scene == material->scene && draws.stamp.frame == frame;
 	auto* tokenSource = matchingDraws && globals::game::renderer ?
