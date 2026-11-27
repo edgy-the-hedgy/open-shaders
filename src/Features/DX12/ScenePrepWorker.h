@@ -31,6 +31,7 @@ namespace DX12
 		std::array<float, 12> transform{};
 		CasterSource casterSource;
 		std::shared_ptr<const PreparedMaterialSource> material;
+		std::string materialObjectEditorId;
 	};
 
 	struct UnattachedModelPlacement
@@ -40,6 +41,7 @@ namespace DX12
 		std::string refPlugin;
 		std::string nifPath;
 		AffineTransform transform{};
+		std::string materialObjectEditorId;
 	};
 
 	struct InteriorPreparationBatch

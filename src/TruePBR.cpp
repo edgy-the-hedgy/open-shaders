@@ -1,4 +1,6 @@
 #include "TruePBR.h"
+#include "Features/DX12/DX12Control.h"
+#include "Features/NativePBR/NativeMaterialMetadata.h"
 
 #include "TruePBR/BSLightingShaderMaterialPBR.h"
 #include "TruePBR/BSLightingShaderMaterialPBRLandscape.h"
@@ -817,6 +819,8 @@ struct BSLightingShaderProperty_LoadBinary
 		static_cast<RE::BSLightingShaderMaterialBase*>(property->material)->LoadBinary(stream);
 
 		if (isPbr) {
+			if (globals::features::dx12Control.WantsMaterialPreparation())
+				NativePBR::PreserveAuthoredFlags(*property);
 			auto pbrMaterial = static_cast<BSLightingShaderMaterialPBR*>(property->material);
 			if (property->flags.any(kMultiLayerParallax)) {
 				pbrMaterial->pbrFlags.set(PBRFlags::TwoLayer);
@@ -1955,7 +1959,10 @@ struct BGSTextureSet_ToShaderTextureSet
 		auto truePBR = &globals::features::truePBR;
 		truePBR->currentTextureSet = textureSet;
 
-		return func(textureSet);
+		auto* result = func(textureSet);
+		if (globals::features::dx12Control.WantsMaterialPreparation())
+			NativePBR::RememberTextureSet(textureSet, result);
+		return result;
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };

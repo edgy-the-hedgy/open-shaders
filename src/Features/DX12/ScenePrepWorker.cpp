@@ -1,6 +1,8 @@
 #include "ScenePrepWorker.h"
 
 #include "Globals.h"
+#include "Features/NativePBR/NativeMaterialMetadata.h"
+#include "RE/B/BGSMaterialObject.h"
 #include "RE/B/BGSMovableStatic.h"
 #include "RE/B/BSGeometry.h"
 #include "RE/B/BSMeshLODTriShape.h"
@@ -242,6 +244,9 @@ namespace DX12
 				return {};
 			auto source = std::make_shared<PreparedMaterialSource>();
 			source->observedShaderFlags = static_cast<uint64_t>(property->flags.underlying());
+			source->authoredShaderFlags = NativePBR::ReadAuthoredFlags(*property);
+			source->textureSetEditorId = NativePBR::ResolveTextureSet(textures);
+			NativePBR::ReadNifParameters(*property, source->nifThinSurface, source->nifFuzz);
 			source->vertexStride = extracted.stride;
 			source->vertexCount = extracted.vertexCount;
 			source->alpha = material->materialAlpha;
@@ -278,7 +283,7 @@ namespace DX12
 
 		void CaptureAttachedSubtree(
 			RE::NiAVObject* a_obj, uint32_t a_ownerFormID, std::string_view a_plugin, uint32_t a_localID,
-			std::string_view a_nifPath, uint32_t& a_shapeOrdinal, uint32_t a_depth, ScenePrepRequest& a_request, CaptureCache& a_cache)
+			std::string_view a_nifPath, uint32_t& a_shapeOrdinal, uint32_t a_depth, ScenePrepRequest& a_request, CaptureCache& a_cache, std::string_view a_mato = {})
 		{
 			if (!a_obj || a_depth > kMaxSceneGraphDepth || a_obj->GetAppCulled())
 				return;
@@ -289,7 +294,7 @@ namespace DX12
 			}
 			if (auto* node = a_obj->AsNode()) {
 				for (const auto& child : node->GetChildren())
-					CaptureAttachedSubtree(child.get(), a_ownerFormID, a_plugin, a_localID, a_nifPath, a_shapeOrdinal, a_depth + 1, a_request, a_cache);
+					CaptureAttachedSubtree(child.get(), a_ownerFormID, a_plugin, a_localID, a_nifPath, a_shapeOrdinal, a_depth + 1, a_request, a_cache, a_mato);
 				return;
 			}
 			auto* geom = a_obj->AsGeometry();
@@ -354,7 +359,7 @@ namespace DX12
 			a_request.attachedShapes.push_back({ MakeShapeIdentity(a_ownerFormID, ordinal), std::move(mesh), rows,
 				{ reinterpret_cast<uintptr_t>(geom), reinterpret_cast<uintptr_t>(extracted.rawVertices),
 					reinterpret_cast<uintptr_t>(extracted.rawIndices), extracted.vertexCount, extracted.indexCount,
-					extracted.stride, extracted.firstIndex }, std::move(material) });
+					extracted.stride, extracted.firstIndex }, std::move(material), std::string(a_mato) });
 		}
 
 		struct CachedDecodedMesh
@@ -574,11 +579,17 @@ namespace DX12
 			if (!nifView.empty())
 				AddNifSource(request, plugin, localID, nifView);
 
+			std::string_view mato;
+			if (request.includeMaterials && stat && stat->data.materialObj && stat->data.materialObj->directionalData.singlePass) {
+				const char* id = stat->data.materialObj->GetFormEditorID();
+				if (id && std::string_view(id).size() <= 256)
+					mato = id;
+			}
 			if (root) {
 				if (!request.consolidate && knownBounds && !bounds.MayOverlap(a_key.x, a_key.y, a_size))
 					return RE::BSContainer::ForEachResult::kContinue;
 				uint32_t ordinal = 0;
-				CaptureAttachedSubtree(root, refID, plugin, localID, nifView, ordinal, 0, request, captureCache);
+				CaptureAttachedSubtree(root, refID, plugin, localID, nifView, ordinal, 0, request, captureCache, mato);
 				return RE::BSContainer::ForEachResult::kContinue;
 			}
 
@@ -604,7 +615,7 @@ namespace DX12
 				localID,
 				std::string(plugin),
 				*nifPath,
-				*placement });
+				*placement, std::string(mato) });
 			return RE::BSContainer::ForEachResult::kContinue;
 		};
 
@@ -891,7 +902,7 @@ namespace DX12
 								   uint64_t a_identity, const std::vector<float3>& a_positions,
 								   const std::vector<uint32_t>& a_indices, const std::array<float, 12>& a_transform,
 								   std::string_view a_plugin, uint32_t a_localID, std::string_view a_nifPath,
-								   int32_t a_blockIndex, CasterSource a_source = {}, std::shared_ptr<const PreparedMaterialSource> a_material = {}) {
+								   int32_t a_blockIndex, CasterSource a_source = {}, std::shared_ptr<const PreparedMaterialSource> a_material = {}, std::string_view a_mato = {}) {
 			const auto overlaps = OverlapsSubcellXY(a_positions, a_transform, a_request.key.x, a_request.key.y, a_request.size);
 			if (!overlaps) {
 				RecordRejection(pub.rejectionReasons, pub.failedShapes, "invalid placed bounds");
@@ -913,7 +924,7 @@ namespace DX12
 
 			++pub.eligibleShapes;
 			const uint64_t bytes = uint64_t(a_positions.size()) * sizeof(float3) +
-			                       uint64_t(a_indices.size()) * sizeof(uint32_t) + (a_material ? a_material->ByteSize() : 0);
+			                       uint64_t(a_indices.size()) * sizeof(uint32_t) + (a_material ? a_material->ByteSize() : 0) + a_mato.size();
 			if (pub.shapes.size() >= kMaxTileShapes || bytes > kMaxTileGeometryBytes - pub.geometryBytes) {
 				budgetExceeded = true;
 				RecordRejection(pub.rejectionReasons, pub.failedShapes, "tile shape or byte budget exceeded");
@@ -931,6 +942,7 @@ namespace DX12
 			shape->indices = a_indices;
 			shape->transform = a_transform;
 			shape->material = std::move(a_material);
+			shape->materialObjectEditorId = a_mato;
 			pub.geometryBytes += bytes;
 			if (a_request.consolidate)
 				batchShapes.push_back({ shape, shapeBounds, bytes });
@@ -970,7 +982,7 @@ namespace DX12
 					rawCache.emplace(sliceKey, decoded);
 				}
 			}
-			emitShape(attached.identity, decoded->positions, decoded->indices, attached.transform, {}, 0, {}, -1, attached.casterSource, attached.material);
+			emitShape(attached.identity, decoded->positions, decoded->indices, attached.transform, {}, 0, {}, -1, attached.casterSource, attached.material, attached.materialObjectEditorId);
 		}
 		rawCache.clear();
 
@@ -1046,7 +1058,7 @@ namespace DX12
 				emitShape(
 					MakeShapeIdentity(placement.refFormID, modelShape.ordinal),
 					modelShape.mesh->positions, modelShape.mesh->indices, rows,
-					placement.refPlugin, placement.refLocal, placement.nifPath, int32_t(modelShape.ordinal), {}, modelShape.material);
+					placement.refPlugin, placement.refLocal, placement.nifPath, int32_t(modelShape.ordinal), {}, modelShape.material, placement.materialObjectEditorId);
 			}
 		}
 

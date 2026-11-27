@@ -2,6 +2,7 @@
 #include "TilePreparationPolicy.h"
 
 #include "DX12Control.h"
+#include "Features/NativePBR/MaterialCatalog.h"
 #include "DX12NativeScene.h"
 #include "Globals.h"
 #include "GpuPass.h"
@@ -725,6 +726,8 @@ void DX12Resources::DataLoaded()
 {
 	if (!IsActive())
 		return;
+	if (globals::features::dx12Control.WantsMaterialPreparation())
+		NativePBR::MaterialCatalog::Shared().Load();
 	Feature::RegisterSceneTransitionEvents();
 	if (globals::game::player)
 		globals::game::player->AsPositionPlayerEventSource()->AddEventSink(this);

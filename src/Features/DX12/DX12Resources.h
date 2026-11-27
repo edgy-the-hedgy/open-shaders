@@ -53,6 +53,10 @@ namespace DX12
 	struct PreparedMaterialSource
 	{
 		uint64_t observedShaderFlags = 0;
+		std::optional<uint64_t> authoredShaderFlags;
+		std::optional<std::array<float, 4>> nifThinSurface;
+		std::optional<std::array<float, 2>> nifFuzz;
+		std::string textureSetEditorId;
 		uint32_t vertexStride = 0, vertexCount = 0;
 		uint32_t uvOffset = UINT32_MAX, normalOffset = UINT32_MAX, tangentOffset = UINT32_MAX, colorOffset = UINT32_MAX;
 		float alpha = 1.0f;
@@ -62,7 +66,7 @@ namespace DX12
 		std::vector<uint8_t> vertexBytes;
 		uint64_t ByteSize() const
 		{
-			uint64_t bytes = sizeof(PreparedMaterialSource) + vertexBytes.size();
+			uint64_t bytes = sizeof(PreparedMaterialSource) + vertexBytes.size() + textureSetEditorId.size();
 			for (const auto& path : texturePaths)
 				bytes += path.size();
 			return bytes;
@@ -79,6 +83,7 @@ namespace DX12
 		std::vector<uint32_t> indices;
 		std::array<float, 12> transform{};
 		std::shared_ptr<const PreparedMaterialSource> material;
+		std::string materialObjectEditorId;  // Reference-local, not a shared mesh attribute.
 	};
 
 	struct Tile
