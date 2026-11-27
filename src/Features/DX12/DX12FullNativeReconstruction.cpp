@@ -88,7 +88,7 @@ namespace DX12Native
 		parameters[2].InitAsShaderResourceView(2);
 		parameters[3].InitAsDescriptorTable(3, depthRanges);
 		parameters[4].InitAsUnorderedAccessView(0);
-		parameters[5].InitAsConstants(11, 0);
+		parameters[5].InitAsConstants(13, 0);
 		parameters[6].InitAsShaderResourceView(4);
 		parameters[7].InitAsShaderResourceView(5);
 		parameters[8].InitAsShaderResourceView(7);
@@ -191,7 +191,7 @@ namespace DX12Native
 					return;
 				auto replacement = std::make_shared<FullNativeReconstructionFrame>();
 				replacement->samples = Eval::Buffer(device, bytes, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-				replacement->candidateMask = Eval::Buffer(device, bytes / 4, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+				replacement->ownershipMask = Eval::Buffer(device, bytes / 4, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 				replacement->allocationBytes = sampleAllocation + maskAllocation;
 				const D3D12_DESCRIPTOR_HEAP_DESC heap{ D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 3,
 					D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
@@ -211,6 +211,11 @@ namespace DX12Native
 			slot->height = slot->material->height;
 			slot->rowPitch = slot->width * kLightingStride;
 			slot->available = available;
+			// Selected lights and environment-only indirect are not complete raster coverage.
+			slot->completeLightingCoverage = slot->direct && slot->indirect &&
+				slot->direct->coverage == LightingCoverage::CompleteRasterReplacement &&
+				slot->indirect->coverage == LightingCoverage::CompleteRasterReplacement &&
+				(available & kOpaqueRequired) == kOpaqueRequired;
 			if (rayStamp == rasterStamp)
 				slot->rasterEvidence = evidenceCapture.Capture(backend, rasterTokens, rasterStamp, tokens);
 			if (slot->rasterEvidence && (slot->rasterEvidence->width < slot->width || slot->rasterEvidence->height < slot->height))
@@ -237,6 +242,7 @@ namespace DX12Native
 			device->CreateShaderResourceView(depth, &depthView, cpu);
 			device->CreateShaderResourceView(previousDepth, &depthView, { cpu.ptr + SIZE_T(increment) });
 			const auto evidence = slot->rasterEvidence;
+			slot->rasterWinnerCertified = evidence && evidence->winnerCertified;
 			auto* evidenceTexture = evidence ? evidence->texture->resource.get() : nullptr;
 			auto tokenView = depthView;
 			tokenView.Format = DXGI_FORMAT_R16G16B16A16_UNORM;
@@ -254,16 +260,17 @@ namespace DX12Native
 			cmd->SetComputeRootShaderResourceView(9, previous ? previous->material->rayIdentity->GetGPUVirtualAddress() : slot->material->rayIdentity->GetGPUVirtualAddress());
 			cmd->SetComputeRootUnorderedAccessView(4, slot->samples->GetGPUVirtualAddress());
 			cmd->SetComputeRootShaderResourceView(10, evidence ? evidence->tokenTable->GetGPUVirtualAddress() : slot->material->rayIdentity->GetGPUVirtualAddress());
-			cmd->SetComputeRootUnorderedAccessView(11, slot->candidateMask->GetGPUVirtualAddress());
+			cmd->SetComputeRootUnorderedAccessView(11, slot->ownershipMask->GetGPUVirtualAddress());
 			const uint32_t constants[]{ slot->width, slot->height, slot->material->rowPitch,
 				slot->direct ? slot->direct->rowPitch : 0u, slot->indirect ? slot->indirect->rowPitch : 0u, available,
 				previous ? previous->material->rowPitch : 0u, previous ? 1u : 0u,
-				slot->material->rayIdentityRowPitch, previous ? previous->material->rayIdentityRowPitch : 0u, evidence ? evidence->tokenCount : 0u };
-			cmd->SetComputeRoot32BitConstants(5, 11, constants, 0);
+				slot->material->rayIdentityRowPitch, previous ? previous->material->rayIdentityRowPitch : 0u, evidence ? evidence->tokenCount : 0u,
+				slot->rasterWinnerCertified ? 1u : 0u, slot->completeLightingCoverage ? 1u : 0u };
+			cmd->SetComputeRoot32BitConstants(5, 13, constants, 0);
 			const D3D12_RESOURCE_BARRIER begin[]{
 				CD3DX12_RESOURCE_BARRIER::Transition(depth, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
 				CD3DX12_RESOURCE_BARRIER::Transition(slot->samples.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-				CD3DX12_RESOURCE_BARRIER::Transition(slot->candidateMask.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->ownershipMask.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
 			};
 			cmd->ResourceBarrier(3, begin);
 			if (evidenceTexture) {
@@ -278,7 +285,7 @@ namespace DX12Native
 			const D3D12_RESOURCE_BARRIER end[]{
 				CD3DX12_RESOURCE_BARRIER::Transition(depth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
 				CD3DX12_RESOURCE_BARRIER::Transition(slot->samples.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON),
-				CD3DX12_RESOURCE_BARRIER::Transition(slot->candidateMask.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON)
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->ownershipMask.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON)
 			};
 			cmd->ResourceBarrier(3, end);
 			if (evidenceTexture) {

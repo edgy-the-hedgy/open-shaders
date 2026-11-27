@@ -13,6 +13,8 @@ namespace DX12Native
 	/** @brief MRT token evidence, not a certified raster winner. */
 	struct FullNativeRasterEvidence
 	{
+		// A blended UNORM MRT token is not an independently certified winner.
+		static constexpr bool winnerCertified = false;
 		MaterialFrameContract::RasterIdentityStamp stamp{};
 		std::unique_ptr<WrappedResource> texture;
 		winrt::com_ptr<ID3D12Resource> tokenTable;

@@ -11,6 +11,11 @@ static const uint ContributionEmission = 1u << 5;
 static const uint ContributionRemainingOpaque = 1u << 6;
 static const uint ContributionIndependentVisibility = 1u << 7;
 static const uint NativeOpaqueRequired = 127u;
+static const uint RasterIdentityCandidate = 1u << 0;
+static const uint ExactRasterWinner = 1u << 1;
+static const uint CompleteOpaqueRadiance = 1u << 2;
+static const uint NativeOwnsOpaque = 1u << 3;
+static const uint NativeOpaqueOwnershipRequired = 15u;
 static const float SurfaceInvalidReceiver = 0.0;
 static const float SurfaceEvaluatedBase = 1.0;
 static const float SurfaceFeatureLimited = 2.0;
@@ -21,6 +26,11 @@ static const float SurfaceUnsupportedMaterial = -4.0;
 static const float SurfaceMissingTextures = -5.0;
 static const uint SurfaceBaseOnlyBinding = 1u << 11;
 static const uint SurfaceMissingBaseTexturesBinding = 1u << 12;
+
+bool HasNativeOpaqueOwnership(uint ownership)
+{
+    return ownership == NativeOpaqueOwnershipRequired;
+}
 
 bool HasEvaluatedNativeBase(float status)
 {

@@ -6,7 +6,7 @@
 
 namespace DX12Native
 {
-	/** @brief Independent reconstructed diffuse/specular contribution, never an opaque ownership claim. */
+	/** @brief Reconstructed contributions and explicit per-pixel opaque ownership bits. */
 	struct FullNativeReconstructionFrame
 	{
 		MaterialFrameContract::ReconstructionState reconstruction = MaterialFrameContract::ReconstructionState::Spatial;
@@ -17,7 +17,9 @@ namespace DX12Native
 		std::shared_ptr<const NativeScreenProbe::MaterialFrame> material;
 		std::shared_ptr<const DirectLightingFrame> direct;
 		std::shared_ptr<const IndirectLightingFrame> indirect;
-		winrt::com_ptr<ID3D12Resource> samples, candidateMask;
+		winrt::com_ptr<ID3D12Resource> samples, ownershipMask;
+		// The GPU writes explicit evidence and owner bits. A candidate alone is not authority.
+		bool rasterWinnerCertified = false, completeLightingCoverage = false;
 		std::shared_ptr<const FullNativeRasterEvidence> rasterEvidence;
 		winrt::com_ptr<ID3D12CommandAllocator> allocator;
 		winrt::com_ptr<ID3D12GraphicsCommandList> commands;

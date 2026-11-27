@@ -124,6 +124,10 @@ namespace DX12Native::MaterialFrameContract
 	}
 
 	enum class OpaqueOwner { Raster, Native };
+	inline constexpr uint32_t kRasterIdentityCandidate = 1u << 0;
+	inline constexpr uint32_t kExactRasterWinner = 1u << 1;
+	inline constexpr uint32_t kCompleteOpaqueRadiance = 1u << 2;
+	inline constexpr uint32_t kNativeOwnsOpaque = 1u << 3;
 	// A matching diagnostic MRT token is deliberately not exact winner certification.
 	constexpr SurfaceCorrespondence CertifyRasterCorrespondence(bool candidateMatch, bool allRasterWritersCertified)
 	{
@@ -135,6 +139,33 @@ namespace DX12Native::MaterialFrameContract
 		return coherent && earlyOpaqueStage && !independentShadowActive &&
 			status == SurfaceStatus::EvaluatedBase && correspondence == SurfaceCorrespondence::ExactRasterIdentity &&
 			CompleteOpaque(admission) ? OpaqueOwner::Native : OpaqueOwner::Raster;
+	}
+
+	/** @brief A candidate mask is evidence, not permission. Only the explicit owner
+	 * bit may be consumed by a final-color replacement or a raster suppression path.
+	 */
+	constexpr uint32_t ResolveOwnershipBits(bool candidate, bool certifiedWinner,
+		bool completeLightingCoverage, SurfaceStatus status, ContributionAdmission admission,
+		bool coherent, bool earlyOpaqueStage, bool independentShadowActive)
+	{
+		const auto correspondence = CertifyRasterCorrespondence(candidate, certifiedWinner);
+		const bool complete = completeLightingCoverage && CompleteOpaque(admission);
+		uint32_t bits = candidate ? kRasterIdentityCandidate : 0u;
+		if (correspondence == SurfaceCorrespondence::ExactRasterIdentity)
+			bits |= kExactRasterWinner;
+		if (complete)
+			bits |= kCompleteOpaqueRadiance;
+		if (complete && ResolveOpaqueOwner(status, correspondence, admission,
+				coherent, earlyOpaqueStage, independentShadowActive) == OpaqueOwner::Native)
+			bits |= kNativeOwnsOpaque;
+		return bits;
+	}
+
+	constexpr bool NativeOwnsOpaque(uint32_t bits)
+	{
+		constexpr uint32_t required = kRasterIdentityCandidate | kExactRasterWinner |
+			kCompleteOpaqueRadiance | kNativeOwnsOpaque;
+		return (bits & required) == required && !(bits & ~required);
 	}
 
 	/** @brief Conservative same-pixel history, not motion-vector reprojection. */

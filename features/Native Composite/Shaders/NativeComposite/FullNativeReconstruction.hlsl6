@@ -11,7 +11,7 @@ ByteAddressBuffer RayIdentity : register(t7);
 ByteAddressBuffer HistoryRayIdentity : register(t8);
 Texture2D<float4> RasterTokens : register(t9);
 ByteAddressBuffer RasterTokenTable : register(t10);
-RWByteAddressBuffer CandidateMask : register(u1);
+RWByteAddressBuffer OwnershipMask : register(u1);
 RWByteAddressBuffer Reconstructed : register(u0);
 cbuffer ReconstructionConstants : register(b0)
 {
@@ -25,6 +25,8 @@ cbuffer ReconstructionConstants : register(b0)
     uint RayIdentityPitch;
     uint HistoryRayIdentityPitch;
     uint RasterTokenCount;
+    uint RasterWinnerCertified;
+    uint CompleteLightingCoverage;
 };
 
 bool ValidRayIdentity(uint2 identity)
@@ -135,17 +137,21 @@ void main(uint3 id : SV_DispatchThreadID)
     if (any(id.xy >= Size)) return;
     const uint offset = (id.y * Size.x + id.x) * 16u;
     Reconstructed.Store4(offset, uint4(0, 0, 0, 0));
-    const uint candidateOffset = (id.y * Size.x + id.x) * 4u;
-    CandidateMask.Store(candidateOffset, 0u);
+    const uint ownershipOffset = (id.y * Size.x + id.x) * 4u;
+    uint ownership = 0u;
+    OwnershipMask.Store(ownershipOffset, 0u);
     if (RasterTokenCount != 0u) {
         uint token = uint(round(saturate(RasterTokens.Load(int3(id.xy, 0)).b) * 65535.0));
         if (token > 0u && token <= RasterTokenCount) {
             uint2 raster = RasterTokenTable.Load2((token - 1u) * 8u);
             uint2 hit = ReadRayIdentity(id.xy);
-            if (ValidRayIdentity(hit) && all(raster == hit))
-                CandidateMask.Store(candidateOffset, 1u); // Candidate only, never an ownership grant.
+            if (ValidRayIdentity(hit) && all(raster == hit)) {
+                ownership |= RasterIdentityCandidate;
+                if (RasterWinnerCertified != 0u) ownership |= ExactRasterWinner;
+            }
         }
     }
+    OwnershipMask.Store(ownershipOffset, ownership);
     const float4 base = ReadMaterial(id.xy, 0u);
     const float4 normal = ReadMaterial(id.xy, 8u);
     const float depth = Depth.Load(int3(id.xy, 0));
@@ -165,6 +171,16 @@ void main(uint3 id : SV_DispatchThreadID)
         diffuse = AccumulateStationary(diffuse, diffuseValid, offset);
         specular = AccumulateStationary(specular, specularValid, offset + 8u);
     }
-    Reconstructed.Store4(offset, uint4(PackOpaqueRadiance(diffuse, diffuseValid),
-        PackOpaqueRadiance(specular, specularValid)));
+    const uint2 packedDiffuse = PackOpaqueRadiance(diffuse, diffuseValid);
+    const uint2 packedSpecular = PackOpaqueRadiance(specular, specularValid);
+    Reconstructed.Store4(offset, uint4(packedDiffuse, packedSpecular));
+    // Check the actual encoded output, not the pre-pack validity flags. Half
+    // overflow can invalidate the signal. Zero radiance still needs valid bits.
+    const uint valid = uint(Unpack(packedDiffuse).a) | uint(Unpack(packedSpecular).a);
+    const bool complete = CompleteLightingCoverage != 0u && (Available & ~255u) == 0u &&
+        (valid & ~Available) == 0u && (valid & NativeOpaqueRequired) == NativeOpaqueRequired;
+    if (complete) ownership |= CompleteOpaqueRadiance;
+    if (complete && base.a == SurfaceEvaluatedBase && (ownership & ExactRasterWinner) != 0u)
+        ownership |= NativeOwnsOpaque;
+    OwnershipMask.Store(ownershipOffset, ownership);
 }

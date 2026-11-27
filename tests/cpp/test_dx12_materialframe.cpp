@@ -258,3 +258,24 @@ TEST_CASE("A matching raster token cannot independently grant opaque ownership",
 	REQUIRE(ResolveOpaqueOwner(SurfaceStatus::EvaluatedBase, CertifyRasterCorrespondence(false, true), complete, true, true, false) == OpaqueOwner::Raster);
 	REQUIRE(ResolveOpaqueOwner(SurfaceStatus::EvaluatedBase, CertifyRasterCorrespondence(true, true), complete, true, true, false) == OpaqueOwner::Native);
 }
+
+TEST_CASE("Full Native owner bits require certified winner and complete encoded contributions", "[dx12][materials]")
+{
+	constexpr ContributionAdmission complete{ kOpaqueRequired, kOpaqueRequired };
+	constexpr ContributionAdmission partial{ DirectDiffuse | DirectSpecular, DirectDiffuse | DirectSpecular };
+	const auto resolve = [&](bool match, bool certified, bool coverage, ContributionAdmission admission,
+		SurfaceStatus status = SurfaceStatus::EvaluatedBase, bool coherent = true,
+		bool early = true, bool independentShadow = false) {
+		return ResolveOwnershipBits(match, certified, coverage, status, admission, coherent, early, independentShadow);
+	};
+	REQUIRE(resolve(true, false, false, partial) == kRasterIdentityCandidate);
+	REQUIRE_FALSE(NativeOwnsOpaque(resolve(true, true, false, complete)));
+	REQUIRE_FALSE(NativeOwnsOpaque(resolve(true, true, true, partial)));
+	REQUIRE_FALSE(NativeOwnsOpaque(resolve(true, true, true, complete, SurfaceStatus::FeatureLimited)));
+	REQUIRE_FALSE(NativeOwnsOpaque(resolve(true, true, true, complete, SurfaceStatus::EvaluatedBase, false)));
+	REQUIRE_FALSE(NativeOwnsOpaque(resolve(true, true, true, complete, SurfaceStatus::EvaluatedBase, true, false)));
+	REQUIRE_FALSE(NativeOwnsOpaque(resolve(true, true, true, complete, SurfaceStatus::EvaluatedBase, true, true, true)));
+	REQUIRE(NativeOwnsOpaque(resolve(true, true, true, complete)));
+	REQUIRE_FALSE(NativeOwnsOpaque(kNativeOwnsOpaque));
+	REQUIRE_FALSE(NativeOwnsOpaque(UINT32_MAX));
+}
