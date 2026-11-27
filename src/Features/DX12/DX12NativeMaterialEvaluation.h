@@ -54,6 +54,30 @@ namespace DX12Native
 		std::map<std::string, uint32_t> failureReasons;
 		std::vector<std::pair<std::string, std::string>> failedExamples;
 
+		// Rebuild SRVs from immutable texture resources; shader-visible heaps are
+		// not legal CopyDescriptors sources. All material consumers share this view ABI.
+		static void WriteTextureView(ID3D12Device* device, const Texture* texture, bool srgb, D3D12_CPU_DESCRIPTOR_HANDLE handle)
+		{
+			if (texture && srgb && DirectX::MakeSRGB(texture->format) == texture->format) texture = nullptr;
+			D3D12_SHADER_RESOURCE_VIEW_DESC view{};
+			view.Format = texture ? (srgb ? DirectX::MakeSRGB(texture->format) : texture->format) : DXGI_FORMAT_R8G8B8A8_UNORM;
+			view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+			view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			view.Texture2DArray.MipLevels = texture ? texture->mips : 1;
+			view.Texture2DArray.ArraySize = 1;
+			device->CreateShaderResourceView(texture ? texture->resource.get() : nullptr, &view, handle);
+		}
+
+		void WriteTextureViews(ID3D12Device* device, D3D12_CPU_DESCRIPTOR_HANDLE start) const
+		{
+			const auto step = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+			for (uint32_t i = 0; i < NativePBR::kGpuTextureDescriptorCapacity; ++i) {
+				const auto pool = i % NativePBR::kGpuTexturePoolCapacity;
+				const auto* texture = pool < poolTextures.size() ? poolTextures[pool].get() : nullptr;
+				WriteTextureView(device, texture, i >= NativePBR::kGpuTexturePoolCapacity, { start.ptr + SIZE_T(i) * step });
+			}
+		}
+
 		static void Check(HRESULT hr)
 		{
 			DX::ThrowIfFailed(hr);
@@ -228,14 +252,7 @@ namespace DX12Native
 			const auto start = result->descriptors->GetCPUDescriptorHandleForHeapStart();
 			const auto step = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 			const auto write = [&](uint32_t index, const Texture* texture, bool srgb) {
-				D3D12_SHADER_RESOURCE_VIEW_DESC view{};
-				view.Format = texture ? (srgb ? DirectX::MakeSRGB(texture->format) : texture->format) : DXGI_FORMAT_R8G8B8A8_UNORM;
-				view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
-				view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-				view.Texture2DArray.MipLevels = texture ? texture->mips : 1;
-				view.Texture2DArray.ArraySize = 1;
-				const D3D12_CPU_DESCRIPTOR_HANDLE handle{ start.ptr + SIZE_T(index) * step };
-				device->CreateShaderResourceView(texture ? texture->resource.get() : nullptr, &view, handle);
+				WriteTextureView(device, texture, srgb, { start.ptr + SIZE_T(index) * step });
 			};
 			for (uint32_t i = 0; i < NativePBR::kGpuTextureDescriptorCapacity; ++i) write(i, nullptr, false);
 			std::unordered_map<std::string, uint32_t> indices;

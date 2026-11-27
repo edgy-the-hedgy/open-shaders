@@ -275,8 +275,7 @@ namespace DX12Native
             CubeView(device, *env.base, cpu(1));
             CubeView(device, env.reflection ? *env.reflection : *env.base, cpu(2));
             CubeView(device, env.sky ? *env.sky : *env.base, cpu(3));
-            device->CopyDescriptorsSimple(NativePBR::kGpuTextureDescriptorCapacity, cpu(4),
-                slot->material->descriptors->GetCPUDescriptorHandleForHeapStart(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            slot->material->scene->materialEvaluation->WriteTextureViews(device, cpu(4));
             ID3D12DescriptorHeap* heaps[]{ slot->descriptors.get() };
             cmd->SetDescriptorHeaps(1, heaps);
             const auto project = [&](const std::shared_ptr<const EnvironmentCube>& cube, UINT descriptor) {
