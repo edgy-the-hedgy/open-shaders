@@ -72,6 +72,16 @@ namespace DX12Native
             return result;
         }
 
+        template <class T>
+        static void UpdateTable(ID3D12Resource* resource, const std::vector<T>& values)
+        {
+            void* mapped = nullptr;
+            const D3D12_RANGE noRead{};
+            Eval::Check(resource->Map(0, &noRead, &mapped));
+            std::memcpy(mapped, values.data(), values.size() * sizeof(T));
+            resource->Unmap(0, nullptr);
+        }
+
         static bool Finite(const auto& values)
         {
             return std::ranges::all_of(values, [](float value) { return std::isfinite(value); });
@@ -367,17 +377,27 @@ namespace DX12Native
                 add(snapshot.bones.size() * sizeof(Bone), D3D12_RESOURCE_FLAG_NONE);
                 add(snapshot.indices.size() * sizeof(uint32_t), D3D12_RESOURCE_FLAG_NONE);
                 add(sizeof(D3D12_RAYTRACING_INSTANCE_DESC), D3D12_RESOURCE_FLAG_NONE);
+                const auto fits = [](const auto& resource, uint64_t bytes) {
+                    return resource && resource->GetDesc().Width >= bytes;
+                };
+                const bool reuse = *selected && (*selected)->allocator && (*selected)->commands &&
+                    fits((*selected)->bottom, bottomInfo.ResultDataMaxSizeInBytes) && fits((*selected)->acceleration, topInfo.ResultDataMaxSizeInBytes) &&
+                    fits((*selected)->scratch, scratchBytes) && fits((*selected)->positions, positionBytes) &&
+                    fits((*selected)->bind, snapshot.vertices.size() * sizeof(Vertex)) && fits((*selected)->palette, snapshot.bones.size() * sizeof(Bone)) &&
+                    fits((*selected)->indices, snapshot.indices.size() * sizeof(uint32_t)) && fits((*selected)->instance, sizeof(D3D12_RAYTRACING_INSTANCE_DESC));
                 uint64_t tracked = 0;
                 for (const auto& slot : slots) if (slot) tracked += slot->allocationBytes;
                 const auto allowance = budget.Query(device.get(), tracked);
-                if (!allowance.localBudget || required > allowance.effectiveBytes ||
-                    tracked > allowance.effectiveBytes - required) { failure = "Character caster DXGI budget deferred"; return; }
+                if (!reuse && (!allowance.localBudget || required > allowance.effectiveBytes ||
+                    tracked > allowance.effectiveBytes - required)) { failure = "Character caster DXGI budget deferred"; return; }
 
-                auto next = std::make_shared<CharacterCasterFrame>();
+                auto next = reuse ? *selected : std::make_shared<CharacterCasterFrame>();
                 next->frame = frame; next->scope = scope; next->parts = snapshot.parts;
                 next->vertices = uint32_t(snapshot.vertices.size()); next->triangles = uint32_t(snapshot.indices.size()/3);
-                next->allocationBytes = required; next->root = root; next->pipeline = pipeline;
+                if (!reuse) next->allocationBytes = required;
+                next->root = root; next->pipeline = pipeline;
                 next->readyFence = completion;
+                if (!reuse) {
                 next->bind = Eval::Table(device.get(), snapshot.vertices);
                 next->palette = Eval::Table(device.get(), snapshot.bones);
                 next->indices = Eval::Table(device.get(), snapshot.indices);
@@ -388,13 +408,29 @@ namespace DX12Native
                 next->scratch = buffer(scratchBytes, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
                 next->bottom = buffer(bottomInfo.ResultDataMaxSizeInBytes, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE);
                 next->acceleration = buffer(topInfo.ResultDataMaxSizeInBytes, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE);
+                } else {
+                    UpdateTable(next->bind.get(), snapshot.vertices);
+                    UpdateTable(next->palette.get(), snapshot.bones);
+                    UpdateTable(next->indices.get(), snapshot.indices);
+                }
                 D3D12_RAYTRACING_INSTANCE_DESC instance{};
                 instance.Transform[0][0] = instance.Transform[1][1] = instance.Transform[2][2] = 1;
                 instance.InstanceMask = 0xff; instance.AccelerationStructure = next->bottom->GetGPUVirtualAddress();
-                next->instance = Eval::Table(device.get(), std::vector{ instance });
-                Eval::Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(next->allocator.put())));
-                Eval::Check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, next->allocator.get(), pipeline.get(), IID_PPV_ARGS(next->commands.put())));
+                if (reuse) {
+                    UpdateTable(next->instance.get(), std::vector{ instance });
+                    Eval::Check(next->allocator->Reset());
+                    Eval::Check(next->commands->Reset(next->allocator.get(), pipeline.get()));
+                } else {
+                    next->instance = Eval::Table(device.get(), std::vector{ instance });
+                    Eval::Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(next->allocator.put())));
+                    Eval::Check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, next->allocator.get(), pipeline.get(), IID_PPV_ARGS(next->commands.put())));
+                }
                 auto* cmd = next->commands.get();
+                if (reuse) {
+                    const auto writable = CD3DX12_RESOURCE_BARRIER::Transition(next->positions.get(),
+                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                    cmd->ResourceBarrier(1, &writable);
+                }
                 cmd->SetComputeRootSignature(root.get());
                 cmd->SetComputeRootShaderResourceView(0, next->bind->GetGPUVirtualAddress());
                 cmd->SetComputeRootShaderResourceView(1, next->palette->GetGPUVirtualAddress());

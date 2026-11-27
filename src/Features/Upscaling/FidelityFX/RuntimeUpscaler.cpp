@@ -383,6 +383,8 @@ std::string FidelityFX::GetRuntimeUpscalerProviderName() const
 void FidelityFX::ResetRuntimeUpscalerTracking(bool a_invalidateProviderCache)
 {
 	runtimeFallbackResetDispatchesRemaining = 0;
+	runtimeCommandContextBusy = false;
+	runtimeNativeHistoryDiscontinuous = false;
 	runtimeUpscalerLastFramePathValid = false;
 	runtimeUpscalerLastFrameIndex = 0;
 	runtimeUpscalerLastFramePath = RuntimeUpscalerFramePath::kInactive;
@@ -623,10 +625,13 @@ bool FidelityFX::EnsureRuntimeCommandContexts()
 
 FidelityFX::RuntimeCommandContext* FidelityFX::AcquireRuntimeCommandContext()
 {
+	runtimeCommandContextBusy = false;
 	if (!runtimeFence.fence12 || !EnsureRuntimeCommandContexts())
 		return nullptr;
 
 	const uint64_t completedValue = runtimeFence.fence12->GetCompletedValue();
+	if (completedValue == UINT64_MAX)
+		return nullptr;
 	const uint32_t commandContextCount = static_cast<uint32_t>(runtimeCommandContexts.size());
 	for (uint32_t i = 0; i < commandContextCount; ++i) {
 		const uint32_t index = (runtimeCommandContextCursor + i) % commandContextCount;
@@ -639,6 +644,12 @@ FidelityFX::RuntimeCommandContext* FidelityFX::AcquireRuntimeCommandContext()
 		commandContext.fenceValue = 0;
 		runtimeCommandContextCursor = (index + 1) % commandContextCount;
 		return &commandContext;
+	}
+
+	// Full Native must not stall the render thread on command allocator reuse.
+	if (globals::features::dx12Control.UsesExclusiveMaterials()) {
+		runtimeCommandContextBusy = true;
+		return nullptr;
 	}
 
 	uint32_t waitIndex = commandContextCount;
@@ -1257,7 +1268,7 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 			dispatchParameters.viewSpaceToMetersFactor = 0.01428222656f;
 			dispatchParameters.flags = 0;
 			const bool runtimeFallbackReset = runtimeFallbackResetDispatchesRemaining > 0;
-			dispatchParameters.reset = dispatchParameters.reset || runtimeFallbackReset;
+			dispatchParameters.reset = dispatchParameters.reset || runtimeFallbackReset || runtimeNativeHistoryDiscontinuous;
 
 			DWORD faultCode = 0;
 			const bool dispatchCompleted = Util::SehGuarded(
@@ -1270,8 +1281,10 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 				logger::critical("[FidelityFX] Runtime upscaler dispatch faulted for eye {} (exception 0x{:08X}); the provider will not be used again this session", a_contextIndex, static_cast<uint32_t>(faultCode));
 				return false;
 			}
-			if (dispatchOk && runtimeFallbackReset)
-				runtimeFallbackResetDispatchesRemaining--;
+			if (dispatchOk) {
+				runtimeNativeHistoryDiscontinuous = false;
+				if (runtimeFallbackReset) runtimeFallbackResetDispatchesRemaining--;
+			}
 
 			if (!dispatchOk) {
 				// A non-OK/faulted dispatch doesn't necessarily throw, so it would otherwise
@@ -1399,6 +1412,7 @@ bool FidelityFX::UpscaleRegion(uint32_t a_contextIndex, ID3D11Resource* a_color,
 		const uint32_t fullRenderHeight = useFullRenderBounds ? a_displayHeight : a_renderHeight;
 
 		auto tryRuntimeUpscaler = [&](uint32_t a_requestedVersion, uint32_t a_fullRenderWidth, uint32_t a_fullRenderHeight) {
+			runtimeCommandContextBusy = false;
 			try {
 				if (EnsureRuntimeUpscalerContexts(a_fullRenderWidth, a_fullRenderHeight, a_displayWidth, a_displayHeight, runtimeContextCount, a_requestedVersion) &&
 					DispatchRuntimeUpscalerSingle(
@@ -1431,6 +1445,12 @@ bool FidelityFX::UpscaleRegion(uint32_t a_contextIndex, ID3D11Resource* a_color,
 		if (tryRuntimeUpscaler(requestedRuntimeVersion, fullRenderWidth, fullRenderHeight))
 			return true;
 
+		if (runtimeCommandContextBusy) {
+			// A busy pool is not a provider fault. Keep the provider armed and reset
+			// its temporal history on the next successful native dispatch.
+			runtimeNativeHistoryDiscontinuous = true;
+			runtimeFallbackResetDispatchesRemaining = std::max(runtimeFallbackResetDispatchesRemaining, runtimeContextCount);
+		} else {
 		// Try the runtime FSR3 provider in the upscaler DLL before falling back to the host SDK.
 		// CanUseRuntimeUpscalerPath() re-check: the upgrade attempt above may have just quarantined
 		// the provider, which must stop this fallback from dispatching into it too.
@@ -1446,7 +1466,12 @@ bool FidelityFX::UpscaleRegion(uint32_t a_contextIndex, ID3D11Resource* a_color,
 		if (!runtimeUpscalerFailureLatched) {
 			runtimeFallbackResetDispatchesRemaining = std::max(runtimeFallbackResetDispatchesRemaining, runtimeContextCount);
 		}
-		LatchRuntimeUpscalerFailure();
+		if (runtimeCommandContextBusy) {
+			runtimeNativeHistoryDiscontinuous = true;
+		} else {
+			LatchRuntimeUpscalerFailure();
+		}
+		}
 
 		// A sibling eye already published a runtime-provider frame; falling through to host
 		// FSR3 here would present an unretractable mixed-provider stereo pair. Drop this eye

@@ -183,6 +183,8 @@ private:
 	};
 	std::array<RuntimeCommandContext, kRuntimeCommandContextCount> runtimeCommandContexts;
 	uint32_t runtimeCommandContextCursor = 0;
+	bool runtimeCommandContextBusy = false;
+	bool runtimeNativeHistoryDiscontinuous = false;
 
 	WrappedResource* runtimeColorShared[2]{};
 	WrappedResource* runtimeDepthShared[2]{};
