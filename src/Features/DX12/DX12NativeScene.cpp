@@ -45,9 +45,14 @@ void DX12NativeScene::DrawSettings()
 	if (control.IsFullRTMode() || control.UsesExclusiveMaterials()) {
 		const char* qualities[]{ T("menu.dx12.scene.rt_quality", "Quality"), T("menu.dx12.scene.rt_performance", "Performance") };
 		int quality = fullRTQuality == DX12Native::kShadowQualityPerformance ? 1 : 0;
-		if (ImGui::Combo(T("menu.dx12.scene.shadow_quality", "Shadow quality"), &quality, qualities, int(std::size(qualities))))
+		if (ImGui::Combo(control.UsesExclusiveMaterials() ? "Ray query quality" : T("menu.dx12.scene.shadow_quality", "Shadow quality"), &quality, qualities, int(std::size(qualities))))
 			fullRTQuality = quality == 0 ? DX12Native::kShadowQualityQuality : DX12Native::kShadowQualityPerformance;
-		if (control.UsesExclusiveMaterials()) return;
+		if (control.UsesExclusiveMaterials()) {
+			bool alternate = characterUpdateInterval == 2u;
+			if (ImGui::Checkbox("Update characters every second frame", &alternate))
+				characterUpdateInterval = alternate ? 2u : 1u;
+			return;
+		}
 		bool outdoor = outdoorFullRT.load(std::memory_order_relaxed);
 		if (ImGui::Checkbox(T("menu.dx12.scene.outdoor_shadow_offloading", "Enable outdoor shadow offloading (DX12 only)"), &outdoor))
 			outdoorFullRT.store(outdoor, std::memory_order_relaxed);
@@ -173,6 +178,7 @@ void DX12NativeScene::LoadSettings(json& input)
 	outdoorFullRT = profile.value("OutdoorShadowOffloading", false);
 	debugRTLights.store(profile.value("DebugNativeLights", false), std::memory_order_relaxed);
 	fullRTQuality = DX12Native::SanitizeRTQuality(profile.value("ShadowQualityMode", DX12Native::kShadowQualityQuality));
+	characterUpdateInterval = std::clamp(input.value("CharacterUpdateInterval", 1u), 1u, 2u);
 	uint32_t unify = profile.value("RuntimeUnificationRadius", DX12Native::kDefaultRuntimeUnificationRadius);
 	uint32_t exclude = profile.value("PreparedExclusionRadius", DX12Native::kDefaultPreparedExclusionRadius);
 	if (!profile.contains("AdditivePreparedEmission")) {
@@ -193,6 +199,7 @@ void DX12NativeScene::SaveSettings(json& output)
 {
 	output = { { "OutdoorShadowOffloading", outdoorShadowOffloading.load(std::memory_order_relaxed) },
 		{ "DebugNativeLights", debugOffloadLights.load(std::memory_order_relaxed) },
+		{ "CharacterUpdateInterval", characterUpdateInterval },
 		{ "FullRT", { { "OutdoorShadowOffloading", outdoorFullRT.load(std::memory_order_relaxed) }, { "ShadowQualityMode", fullRTQuality },
 						{ "DebugNativeLights", debugRTLights.load(std::memory_order_relaxed) },
 						{ "RuntimeUnificationRadius", runtimeUnificationRadius.load(std::memory_order_relaxed) },
@@ -208,6 +215,7 @@ void DX12NativeScene::RestoreDefaultSettings()
 	debugOffloadLights.store(false, std::memory_order_relaxed);
 	debugRTLights.store(false, std::memory_order_relaxed);
 	fullRTQuality = DX12Native::kShadowQualityQuality;
+	characterUpdateInterval = 1u;
 	runtimeUnificationRadius.store(DX12Native::kDefaultRuntimeUnificationRadius, std::memory_order_relaxed);
 	preparedExclusionRadius.store(DX12Native::kDefaultPreparedExclusionRadius, std::memory_order_relaxed);
 	additivePreparedEmission.store(true, std::memory_order_relaxed);
@@ -752,7 +760,7 @@ void DX12NativeScene::OnOpaqueRasterReady()
 			!(globals::state->permutationData.ExtraShaderDescriptor &
 				static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)) &&
 			grid && !grid->requested.empty())
-			characterCasters->Publish(*backend, globals::game::graphicsState->GetFrameCount(), grid->requested.front().scope);
+			characterCasters->Publish(*backend, globals::game::graphicsState->GetFrameCount(), grid->requested.front().scope, characterUpdateInterval);
 		DispatchFullNativeMaterial(true);
 		DispatchFullNativeIndirect();
 		return;
@@ -887,8 +895,9 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 	if (characterCasters) {
 		bool ancestryRead = false;
 		const auto* reference = Util::FindSceneOwner(&geometry, false, &ancestryRead);
-		if (ancestryRead && reference && reference->IsDynamicForm() && !reference->IsActor())
-			characterCasters->ObserveRigidMover(geometry, frame);
+		const auto moverGrid = globals::features::dx12Resources.GetGrid();
+		if (ancestryRead && reference && reference->IsDynamicForm() && !reference->IsActor() && moverGrid && !moverGrid->requested.empty())
+			characterCasters->ObserveRigidMover(geometry, frame, moverGrid->requested.front().scope);
 	}
 	const auto scene = acceleration.GetScene();
 	const auto grid = globals::features::dx12Resources.GetGrid();
@@ -1522,6 +1531,8 @@ json DX12NativeScene::GetStatus() const
 		const auto frame = globals::game::graphicsState ? globals::game::graphicsState->GetFrameCount() : UINT32_MAX;
 		const auto characters = characterCasters ? characterCasters->Get(frame, draws.stamp.scope) : nullptr;
 		status["fullNativeCharacterCasters"] = { { "submitted", characters != nullptr },
+			{ "updateInterval", characterUpdateInterval }, { "rigidInstances", characters ? characters->rigidInstances : 0u },
+			{ "actorAge", characters ? frame - (characters->actorSource ? characters->actorSource->frame : characters->frame) : 0u },
 			{ "parts", characters ? characters->parts : 0u }, { "vertices", characters ? characters->vertices : 0u },
 			{ "triangles", characters ? characters->triangles : 0u },
 			{ "rejectedParts", characterCasters ? characterCasters->RejectedParts() : 0u },

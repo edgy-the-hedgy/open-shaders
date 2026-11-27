@@ -180,6 +180,7 @@ private:
 	std::atomic<bool> debugRTLights{ false };
 	bool WantsLightPreview(DX12::SCMNativeMode mode) const;
 	uint32_t fullRTQuality = DX12Native::kShadowQualityQuality;
+	uint32_t characterUpdateInterval = 1u;
 	uint32_t fullNativeQualityFrame = UINT32_MAX, fullNativeFrameQuality = DX12Native::kShadowQualityQuality;
 	uint32_t FullNativeFrameQuality(uint32_t frame)
 	{

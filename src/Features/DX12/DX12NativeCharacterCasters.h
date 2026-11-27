@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstring>
 #include <memory>
+#include <map>
 #include <ranges>
 #include <stdexcept>
 #include <vector>
@@ -26,6 +27,9 @@ namespace DX12Native
     {
         uint32_t frame = UINT32_MAX, scope = 0, parts = 0, vertices = 0, triangles = 0;
         uint64_t allocationBytes = 0, readyValue = 0;
+        uint32_t allowedAge = 0, rigidInstances = 0;
+        std::shared_ptr<const CharacterCasterFrame> actorSource;
+        std::vector<winrt::com_ptr<ID3D12Resource>> rigidResources;
         winrt::com_ptr<ID3D12Fence> readyFence;
         winrt::com_ptr<ID3D12Resource> acceleration, bottom, positions, scratch, bind, palette, indices, instance;
         winrt::com_ptr<ID3D12CommandAllocator> allocator;
@@ -35,7 +39,7 @@ namespace DX12Native
 
         bool Submitted(uint32_t expectedFrame, uint32_t expectedScope) const
         {
-            return frame == expectedFrame && scope == expectedScope && acceleration && readyFence &&
+            return expectedFrame - frame <= allowedAge && scope == expectedScope && acceleration && readyFence &&
                 readyValue != 0 && readyValue != UINT64_MAX && readyFence->GetCompletedValue() != UINT64_MAX;
         }
     };
@@ -248,7 +252,7 @@ namespace DX12Native
             return true;
         }
 
-        Snapshot Capture(uint32_t frame)
+        static Snapshot Capture()
         {
             Snapshot result;
             uint32_t actors = 0;
@@ -262,25 +266,6 @@ namespace DX12Native
                         !CapturePart(geometry, result)) ++result.rejected;
                 });
             });
-            // Rigid non-actor movers are captured by the ordinary draw hook.
-            // Their CPU data is copied at observation time, never borrowed across frames.
-            if (moverFrame == frame) {
-                const auto vertexBase = uint32_t(result.vertices.size());
-                const auto boneBase = uint32_t(result.bones.size());
-                if (result.parts + observedMovers.parts <= kMaxParts &&
-                    result.vertices.size() + observedMovers.vertices.size() <= kMaxVertices &&
-                    result.indices.size() + observedMovers.indices.size() <= kMaxIndices &&
-                    result.bones.size() + observedMovers.bones.size() <= kMaxBones) {
-                    for (auto v : observedMovers.vertices) {
-                        for (auto& bone : v.bones) bone += boneBase;
-                        result.vertices.push_back(v);
-                    }
-                    result.bones.insert(result.bones.end(), observedMovers.bones.begin(), observedMovers.bones.end());
-                    for (auto index : observedMovers.indices) result.indices.push_back(vertexBase + index);
-                    result.parts += observedMovers.parts;
-                }
-                result.rejected += observedMovers.rejected;
-            }
             return result;
         }
 
@@ -316,7 +301,13 @@ namespace DX12Native
     public:
         ~NativeCharacterCasters()
         {
+            combined.reset();
             current.reset();
+            for (auto& slot : moverSlots)
+                if (slot && !GpuFenceRetired(slot->readyFence.get(), slot->readyValue)) {
+                    const auto value = slot->readyValue;
+                    RetireAfterFences(std::move(slot), owner.d3d12Device, { FencePoint(completion.get(), value) });
+                }
             for (auto& slot : slots)
                 if (slot && !GpuFenceRetired(slot->readyFence.get(), slot->readyValue)) {
                     const auto value = slot->readyValue;
@@ -324,38 +315,84 @@ namespace DX12Native
                 }
         }
 
-        void ObserveRigidMover(RE::BSGeometry& geometry, uint32_t frame)
+        // Alan's rigid mover approach: local-space immutable mesh BLASes,
+        // independent per-frame instance transforms. Capture missing meshes
+        // immediately, so raw engine pointers are never read at submission.
+        void ObserveRigidMover(RE::BSGeometry& geometry, uint32_t frame, uint32_t scope)
         {
-            if (moverFrame != frame) {
-                observedMovers = {};
-                seenMovers.clear();
-                moverFrame = frame;
+            if (moverScope != scope) {
+                moverMeshes.clear(); moverScope = scope; moverFrame = UINT32_MAX;
             }
-            if (observedMovers.parts >= kMaxParts || seenMovers.size() >= kMaxParts ||
-                std::ranges::find(seenMovers, &geometry) != seenMovers.end() ||
-                geometry.GetGeometryRuntimeData().skinInstance)
+            if (moverFrame != frame) {
+                movers.clear(); seenMovers.clear(); moverFrame = frame; newMoverMeshes = 0;
+            }
+            if (movers.size() >= kMaxMovers || std::ranges::find(seenMovers, &geometry) != seenMovers.end())
                 return;
+            auto* tri = geometry.AsTriShape();
+            const auto& runtime = geometry.GetGeometryRuntimeData();
+            if (!tri || geometry.AsDynamicTriShape() || runtime.skinInstance || runtime.alphaProperty ||
+                !runtime.rendererData || !runtime.rendererData->rawVertexData || !runtime.rendererData->rawIndexData)
+                return;
+            const auto counts = tri->GetTrishapeRuntimeData();
+            const MeshKey key{ reinterpret_cast<uintptr_t>(runtime.rendererData->rawVertexData),
+                reinterpret_cast<uintptr_t>(runtime.rendererData->rawIndexData),
+                uintptr_t(counts.vertexCount), uintptr_t(counts.triangleCount), uintptr_t(runtime.vertexDesc.GetSize()) };
+            const auto transform = Rows(geometry.world);
+            if (!Finite(transform)) return;
+            auto found = moverMeshes.find(key);
+            if (found == moverMeshes.end()) {
+                // Do not grow a cache of unbounded uploads. At most eight new
+                // rigid mesh captures/builds per frame, as in Alan's path.
+                if (moverMeshes.size() >= kMaxCachedMeshes || newMoverMeshes >= kMaxNewMovers) return;
+                Snapshot snapshot;
+                if (!CapturePart(&geometry, snapshot) || snapshot.parts != 1) return;
+                auto mesh = std::make_shared<RigidMesh>();
+                mesh->geometry = RE::NiPointer<RE::BSGeometry>(&geometry);
+                mesh->positions.reserve(snapshot.vertices.size());
+                for (const auto& vertex : snapshot.vertices) mesh->positions.push_back(vertex.position);
+                mesh->indices = std::move(snapshot.indices);
+                found = moverMeshes.emplace(key, std::move(mesh)).first;
+                ++newMoverMeshes;
+            }
+            found->second->lastFrame = frame;
             seenMovers.push_back(&geometry);
-            if (!CapturePart(&geometry, observedMovers)) ++observedMovers.rejected;
+            movers.push_back({ found->second, transform });
         }
 
         void Reset()
         {
-            current.reset();
+            combined.reset(); current.reset();
             attemptedFrame = UINT32_MAX; attemptedScope = 0;
-            moverFrame = UINT32_MAX; observedMovers = {}; seenMovers.clear();
+            moverFrame = UINT32_MAX; moverScope = 0; movers.clear(); seenMovers.clear(); moverMeshes.clear();
         }
         std::shared_ptr<const CharacterCasterFrame> Get(uint32_t frame, uint32_t scope) const
         {
+            if (combined && combined->Submitted(frame, scope)) return combined;
             return current && current->Submitted(frame, scope) ? current : nullptr;
         }
         const std::string& Failure() const { return failure; }
         uint32_t RejectedParts() const { return rejectedParts; }
 
-        void Publish(const GraphicsBackend& backend, uint32_t frame, uint32_t scope)
+        void Publish(const GraphicsBackend& backend, uint32_t frame, uint32_t scope, uint32_t interval)
         {
             if (!scope || (attemptedFrame == frame && attemptedScope == scope)) return;
-            attemptedFrame = frame; attemptedScope = scope; current.reset();
+            attemptedFrame = frame; attemptedScope = scope;
+            combined.reset();
+            for (auto& slot : moverSlots)
+                if (slot && slot.use_count() == 1 && GpuFenceRetired(slot->readyFence.get(), slot->readyValue)) {
+                    slot->actorSource.reset(); slot->rigidResources.clear();
+                }
+            const bool reuseActor = interval == 2u && current && current->allowedAge == 1u &&
+                frame - current->frame == 1u && current->Submitted(frame, scope);
+            if (!reuseActor) PublishActor(backend, frame, scope, interval);
+            PublishMovers(backend, frame, scope);
+            std::erase_if(moverMeshes, [&](const auto& entry) { return frame - entry.second->lastFrame > kMoverRetentionFrames; });
+        }
+
+    private:
+        void PublishActor(const GraphicsBackend& backend, uint32_t frame, uint32_t scope, uint32_t interval)
+        {
+            current.reset();
             std::shared_ptr<CharacterCasterFrame>* selected = nullptr;
             bool reusedUnsubmitted = false;
             try {
@@ -370,7 +407,7 @@ namespace DX12Native
                         selected = &slot;
                 }
                 if (!selected) { failure = "Character caster frame pool busy"; return; }
-                auto snapshot = Capture(frame);
+                auto snapshot = Capture();
                 rejectedParts = snapshot.rejected;
                 if (snapshot.vertices.empty() || snapshot.indices.empty()) { failure = "No admitted character parts"; return; }
                 auto device = backend.d3d12Device.try_as<ID3D12Device5>();
@@ -433,7 +470,7 @@ namespace DX12Native
 
                 reusedUnsubmitted = reuse;
                 auto next = reuse ? *selected : std::make_shared<CharacterCasterFrame>();
-                next->frame = frame; next->scope = scope; next->parts = snapshot.parts;
+                next->frame = frame; next->scope = scope; next->allowedAge = interval == 2u ? 1u : 0u; next->parts = snapshot.parts;
                 next->vertices = uint32_t(snapshot.vertices.size()); next->triangles = uint32_t(snapshot.indices.size()/3);
                 if (!reuse) next->allocationBytes = required;
                 next->root = root; next->pipeline = pipeline;
@@ -510,7 +547,159 @@ namespace DX12Native
             }
         }
 
-    private:
+        void PublishMovers(const GraphicsBackend& backend, uint32_t frame, uint32_t scope)
+        {
+            if (moverFrame != frame || moverScope != scope || movers.empty()) return;
+            try {
+                Initialize(backend);
+                auto device = backend.d3d12Device.try_as<ID3D12Device5>();
+                if (!device || completion->GetCompletedValue() == UINT64_MAX) return;
+                auto selected = std::ranges::find_if(moverSlots, [](const auto& slot) {
+                    return !slot || (slot.use_count() == 1 && GpuFenceRetired(slot->readyFence.get(), slot->readyValue));
+                });
+                if (selected == moverSlots.end()) return;
+                auto next = *selected ? *selected : std::make_shared<CharacterCasterFrame>();
+                next->frame = frame; next->scope = scope; next->allowedAge = 0;
+                next->actorSource = current && current->Submitted(frame, scope) ? current : nullptr;
+                next->parts = next->actorSource ? next->actorSource->parts : 0;
+                next->vertices = next->actorSource ? next->actorSource->vertices : 0;
+                next->triangles = next->actorSource ? next->actorSource->triangles : 0;
+                next->rigidResources.clear();
+                next->rigidInstances = 0;
+                constexpr auto uav = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+                const auto makeBuffer = [&](uint64_t bytes, D3D12_RESOURCE_STATES state, D3D12_HEAP_TYPE heap = D3D12_HEAP_TYPE_DEFAULT) {
+                    const auto flags = heap == D3D12_HEAP_TYPE_DEFAULT ? uav : D3D12_RESOURCE_FLAG_NONE;
+                    const auto desc = CD3DX12_RESOURCE_DESC::Buffer(bytes, flags);
+                    const auto allocation = device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
+                    if (!allocation || allocation == UINT64_MAX || allocation > budget.Query(device.get(), 0).effectiveBytes)
+                        throw std::runtime_error("Rigid caster allocation exceeds DXGI allowance");
+                    return Eval::Buffer(device.get(), bytes, heap, state, flags);
+                };
+                if (!next->allocator) {
+                    Eval::Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(next->allocator.put())));
+                    Eval::Check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, next->allocator.get(), nullptr, IID_PPV_ARGS(next->commands.put())));
+                } else {
+                    Eval::Check(next->allocator->Reset());
+                    Eval::Check(next->commands->Reset(next->allocator.get(), nullptr));
+                }
+                // Publish the slot before recording. A failed submission is
+                // never reused until a rescue fence retires the recorded work.
+                *selected = next;
+                auto* cmd = next->commands.get();
+                std::vector<D3D12_RAYTRACING_INSTANCE_DESC> instances;
+                instances.reserve(movers.size() + 1);
+                if (next->actorSource) {
+                    D3D12_RAYTRACING_INSTANCE_DESC instance{};
+                    instance.Transform[0][0] = instance.Transform[1][1] = instance.Transform[2][2] = 1;
+                    instance.InstanceMask = 0xff;
+                    instance.AccelerationStructure = next->actorSource->bottom->GetGPUVirtualAddress();
+                    instances.push_back(instance);
+                }
+                std::vector<std::pair<std::shared_ptr<RigidMesh>, winrt::com_ptr<ID3D12Resource>>> built;
+                for (const auto& mover : movers) {
+                    auto& mesh = *mover.mesh;
+                    auto blas = mesh.blas;
+                    if (!blas) {
+                        const auto pending = std::ranges::find_if(built, [&](const auto& entry) { return entry.first == mover.mesh; });
+                        if (pending != built.end()) blas = pending->second;
+                        else {
+                            if (built.size() >= kMaxNewMovers || mesh.positions.empty() || mesh.indices.empty()) continue;
+                            auto positions = Eval::Table(device.get(), mesh.positions);
+                            auto indices = Eval::Table(device.get(), mesh.indices);
+                            D3D12_RAYTRACING_GEOMETRY_DESC geometry{};
+                            geometry.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+                            geometry.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+                            geometry.Triangles.VertexBuffer = { positions->GetGPUVirtualAddress(), sizeof(mesh.positions.front()) };
+                            geometry.Triangles.VertexCount = UINT(mesh.positions.size());
+                            geometry.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+                            geometry.Triangles.IndexBuffer = indices->GetGPUVirtualAddress();
+                            geometry.Triangles.IndexCount = UINT(mesh.indices.size());
+                            geometry.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
+                            D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS input{};
+                            input.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+                            input.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+                            input.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY; input.NumDescs = 1; input.pGeometryDescs = &geometry;
+                            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info{};
+                            device->GetRaytracingAccelerationStructurePrebuildInfo(&input, &info);
+                            if (!info.ResultDataMaxSizeInBytes || !info.ScratchDataSizeInBytes) continue;
+                            blas = makeBuffer(info.ResultDataMaxSizeInBytes, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE);
+                            auto scratch = makeBuffer(info.ScratchDataSizeInBytes, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                            D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build{};
+                            build.Inputs = input; build.DestAccelerationStructureData = blas->GetGPUVirtualAddress();
+                            build.ScratchAccelerationStructureData = scratch->GetGPUVirtualAddress();
+                            next->rigidResources.insert(next->rigidResources.end(), { positions, indices, scratch, blas });
+                            cmd->BuildRaytracingAccelerationStructure(&build, 0, nullptr);
+                            const auto barrier = CD3DX12_RESOURCE_BARRIER::UAV(blas.get());
+                            cmd->ResourceBarrier(1, &barrier);
+                            built.emplace_back(mover.mesh, blas);
+                        }
+                    }
+                    next->rigidResources.push_back(blas);
+                    D3D12_RAYTRACING_INSTANCE_DESC instance{};
+                    std::memcpy(instance.Transform, mover.transform.data(), sizeof(instance.Transform));
+                    instance.InstanceID = UINT(instances.size()); instance.InstanceMask = 0xff;
+                    instance.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_CULL_DISABLE;
+                    instance.AccelerationStructure = blas->GetGPUVirtualAddress();
+                    instances.push_back(instance); ++next->rigidInstances;
+                }
+                if (!next->rigidInstances) { Eval::Check(cmd->Close()); return; }
+                D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS top{};
+                top.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+                top.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
+                top.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY; top.NumDescs = kMaxMovers + 1;
+                if (!next->acceleration || !next->scratch || !next->instance) {
+                    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info{};
+                    device->GetRaytracingAccelerationStructurePrebuildInfo(&top, &info);
+                    if (!info.ResultDataMaxSizeInBytes || !info.ScratchDataSizeInBytes) throw std::runtime_error("Rigid TLAS unsupported");
+                    next->acceleration = makeBuffer(info.ResultDataMaxSizeInBytes, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE);
+                    next->scratch = makeBuffer(info.ScratchDataSizeInBytes, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                    next->instance = makeBuffer(uint64_t(kMaxMovers + 1) * sizeof(instances.front()), D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_HEAP_TYPE_UPLOAD);
+                }
+                UpdateTable(next->instance.get(), instances);
+                top.NumDescs = UINT(instances.size()); top.InstanceDescs = next->instance->GetGPUVirtualAddress();
+                D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build{};
+                build.Inputs = top; build.DestAccelerationStructureData = next->acceleration->GetGPUVirtualAddress();
+                build.ScratchAccelerationStructureData = next->scratch->GetGPUVirtualAddress();
+                cmd->BuildRaytracingAccelerationStructure(&build, 0, nullptr);
+                const auto ready = CD3DX12_RESOURCE_BARRIER::UAV(next->acceleration.get());
+                cmd->ResourceBarrier(1, &ready);
+                Eval::Check(cmd->Close());
+                next->readyFence = completion; next->readyValue = UINT64_MAX;
+                ID3D12CommandList* lists[]{ cmd };
+                backend.commandQueue->ExecuteCommandLists(1, lists);
+                const auto value = ++nextFence;
+                Eval::Check(backend.commandQueue->Signal(completion.get(), value));
+                next->readyValue = value;
+                for (auto& [mesh, blas] : built) {
+                    mesh->blas = std::move(blas);
+                    mesh->positions.clear(); mesh->indices.clear();
+                }
+                combined = std::move(next);
+            } catch (const std::exception& error) {
+                failure = error.what();
+                // Drop failed, unsubmitted recording contexts. Submitted but
+                // untracked ones stay quarantined until shutdown/device loss.
+                for (auto& slot : moverSlots)
+                    if (slot && slot->frame == frame && slot->readyValue != UINT64_MAX) slot.reset();
+            }
+        }
+
+        static constexpr uint32_t kMaxMovers = 512, kMaxNewMovers = 8, kMaxCachedMeshes = 512, kMoverRetentionFrames = 300;
+        using MeshKey = std::array<uintptr_t, 5>;
+        struct RigidMesh
+        {
+            RE::NiPointer<RE::BSGeometry> geometry;
+            std::vector<std::array<float, 3>> positions;
+            std::vector<uint32_t> indices;
+            winrt::com_ptr<ID3D12Resource> blas;
+            uint32_t lastFrame = 0;
+        };
+        struct RigidInstance { std::shared_ptr<RigidMesh> mesh; Bone transform; };
+        std::map<MeshKey, std::shared_ptr<RigidMesh>> moverMeshes;
+        std::vector<RigidInstance> movers;
+        std::array<std::shared_ptr<CharacterCasterFrame>, 4> moverSlots;
+        std::shared_ptr<CharacterCasterFrame> combined;
+        uint32_t moverScope = 0, newMoverMeshes = 0;
         GraphicsBackend owner;
         VideoMemoryBudget budget;
         std::array<std::shared_ptr<CharacterCasterFrame>, 3> slots;
@@ -521,7 +710,6 @@ namespace DX12Native
         uint64_t nextFence = 0;
         uint32_t attemptedFrame = UINT32_MAX, attemptedScope = 0, rejectedParts = 0;
         uint32_t moverFrame = UINT32_MAX;
-        Snapshot observedMovers;
         std::vector<const RE::BSGeometry*> seenMovers;
         std::string failure;
     };
