@@ -42,6 +42,24 @@ namespace NativeCubemaps::Policy
             (current < previous || current - previous > 0.25f);
     }
 
+    struct WaterHistoryIdentity
+    {
+        uint32_t engineFrame=0,pluginFrame=0,width=0,height=0,outWidth=0,outHeight=0,scope=0,quality=0,encoding=0;
+        uintptr_t camera=0;
+        uint64_t geometry=0,material=0,environmentEpoch=0,environmentRevision=0;
+        float radius=0;
+        bool reset=true;
+        constexpr bool CanReuse(const WaterHistoryIdentity& old) const
+        {
+            return !reset && engineFrame-old.engineFrame==1u && pluginFrame-old.pluginFrame==1u &&
+                camera && camera==old.camera && scope && scope==old.scope &&
+                width && height && outWidth && outHeight && width==old.width && height==old.height &&
+                outWidth==old.outWidth && outHeight==old.outHeight && quality==old.quality && encoding==old.encoding &&
+                geometry==old.geometry && material==old.material && radius==old.radius &&
+                environmentEpoch==old.environmentEpoch && environmentRevision==old.environmentRevision;
+        }
+    };
+
     constexpr bool CaptureDue(uint32_t previous, uint32_t current)
     {
         return previous == std::numeric_limits<uint32_t>::max() ||

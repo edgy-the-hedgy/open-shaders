@@ -16,6 +16,9 @@ RaytracingAccelerationStructure CharacterScene : register(t521);
 ByteAddressBuffer RayIdentity : register(t522);
 ByteAddressBuffer TokenTable : register(t523);
 ByteAddressBuffer Radiance : register(t524);
+Texture2D<float4> PreviousRaw : register(t525);
+Texture2D<float> PreviousMask : register(t526);
+Texture2D<float4> PreviousResult : register(t527);
 RWTexture2D<float4> Result : register(u0);
 RWTexture2D<float4> Sparse : register(u1);
 cbuffer Constants : register(b0)
@@ -36,7 +39,10 @@ cbuffer Constants : register(b0)
     uint RayPitch;
     uint TokenCount;
     float EmitterRadius;
-    uint3 Padding;
+    uint HasHistory;
+    uint2 Padding;
+    row_major float4x4 PreviousViewProjection;
+    float4 PreviousPositionAdjust;
 };
 cbuffer DispatchPhase : register(b1) { uint Phase; };
 uint2 Pixel(float2 uv){return min(uint2(uv*float2(Size)),Size-1u);}
@@ -113,6 +119,23 @@ float4 Trace(uint2 receiver,float3 world,float3 incident)
     if(!all(isfinite(color))||color.a!=float(ContributionDirectDiffuse))return Fallback(direction);
     return float4(clamp(EncodeRadiance(color.rgb),0,65504),1);
 }
+float4 Accumulate(float4 current,float3 world,float3 lo,float3 hi)
+{
+    if(HasHistory==0u||current.a<=0.0)return current;
+    float4 clip=mul(PreviousViewProjection,float4(world-PreviousPositionAdjust.xyz,1));
+    if(!all(isfinite(clip))||abs(clip.w)<1e-5)return current;
+    float2 uv=clip.xy/clip.w*float2(0.5,-0.5)+0.5;
+    float depth=clip.z/clip.w;
+    if(any(uv<0)||any(uv>=1)||depth<=0||depth>=1)return current;
+    uint2 p=Pixel(uv);
+    if(PreviousMask.Load(int3(p,0))<=0.0)return current;
+    float oldDepth=PreviousRaw.Load(int3(p,0)).a;
+    if(!isfinite(oldDepth)||abs(oldDepth-depth)>0.0005)return current;
+    float4 prior=PreviousResult.Load(int3(min(uint2(uv*float2(OutputSize)),OutputSize-1u),0));
+    if(!all(isfinite(prior))||prior.a<=0.0)return current;
+    if(ShadowClampHistory(Quality))prior.rgb=clamp(prior.rgb,lo,hi);
+    return lerp(prior,current,1.0/float(ShadowTemporalFrames(Quality)));
+}
 [numthreads(8,8,1)]
 void main(uint3 id:SV_DispatchThreadID)
 {
@@ -128,18 +151,21 @@ void main(uint3 id:SV_DispatchThreadID)
     Result[p]=0;
     float3 world,direction;
     if(!Receiver(p,world,direction))return;
-    if(NativeIsSampled(p,OutputSize,Quality,Frame)&&!ShadowFilterDirectSamples(Quality)){
-        Result[p]=Sparse[p];return;
-    }
+    bool direct=NativeIsSampled(p,OutputSize,Quality,Frame)&&!ShadowFilterDirectSamples(Quality);
     int radius=int(ShadowReconstructionRadius(Quality));
     float4 sum=0;float total=0;
+    float3 lo=65504.0,hi=0.0;
     [loop]for(int y=-radius;y<=radius;++y)[loop]for(int x=-radius;x<=radius;++x){
         int2 q=int2(p)+int2(x,y);
         if(any(q<0)||any(q>=int2(OutputSize))||!NativeIsSampled(uint2(q),OutputSize,Quality,Frame))continue;
         float3 other,otherDirection;
         if(!Receiver(uint2(q),other,otherDirection)||abs(other.z-world.z)>max(1.0,length(world-PositionAdjust.xyz)*0.001))continue;
         float w=1.0/(1.0+float(x*x+y*y));
-        sum+=Sparse[q]*w;total+=w;
+        float4 sample=Sparse[q];
+        if(!all(isfinite(sample))||sample.a<=0.0)continue;
+        sum+=sample*w;total+=w;lo=min(lo,sample.rgb);hi=max(hi,sample.rgb);
     }
-    Result[p]=total>0?sum/total:Fallback(reflect(direction,float3(0,0,1)));
+    float4 current=direct?Sparse[p]:(total>0?sum/total:Fallback(reflect(direction,float3(0,0,1))));
+    if(total<=0){lo=current.rgb;hi=current.rgb;}
+    Result[p]=Accumulate(current,world,lo,hi);
 }

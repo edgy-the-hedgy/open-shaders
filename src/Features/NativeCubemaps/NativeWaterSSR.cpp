@@ -25,10 +25,13 @@ namespace
         uint32_t sky,encoding,quality,frame;
         uint32_t instanceCount,characterEnabled,rayPitch,tokenCount;
         float emitterRadius;
-        uint32_t padding[3]{};
+        uint32_t hasHistory,padding[2]{};
+        Matrix previousViewProjection;
+        float4 previousPositionAdjust;
     };
-    static_assert(sizeof(Constants)==336);
+    static_assert(sizeof(Constants)==416);
     constexpr UINT kTextureOffset=7;
+    constexpr UINT kHistoryOffset=kTextureOffset+NativePBR::kGpuTextureDescriptorCapacity;
     void Transition(ID3D12GraphicsCommandList* cmd, ID3D12Resource* resource, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to)
     {
         const auto barrier=CD3DX12_RESOURCE_BARRIER::Transition(resource,from,to);
@@ -54,6 +57,10 @@ struct NativeCubemaps::WaterSSR::Slot
     std::unique_ptr<WrappedResource> raw,mask,result,sparse;
     winrt::com_ptr<ID3D12Resource> constants;
     std::shared_ptr<const FullNativeReconstructionFrame> native;
+    std::shared_ptr<Slot> historyInput;
+    Policy::WaterHistoryIdentity historyIdentity{};
+    Matrix viewProjection;
+    float4 positionAdjust;
     winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
     winrt::com_ptr<ID3D12CommandAllocator> allocator;
     winrt::com_ptr<ID3D12GraphicsCommandList> commands;
@@ -67,6 +74,7 @@ struct NativeCubemaps::WaterSSR::Slot
 NativeCubemaps::WaterSSR::~WaterSSR()
 {
     End();
+    latest.reset();
     for(auto& slot:slots) if(slot) {
         std::vector<FenceDependency> dependencies{FencePoint(inputFence.fence12.get(),slot->input),
             FencePoint(outputFence.fence12.get(),slot->ready),FencePoint(consumedFence.fence12.get(),slot->consumed)};
@@ -82,12 +90,13 @@ void NativeCubemaps::WaterSSR::Initialize(const GraphicsBackend& backend)
         return;
     }
     auto* device=backend.d3d12Device.get();
-    CD3DX12_DESCRIPTOR_RANGE ranges[3];
+    CD3DX12_DESCRIPTOR_RANGE ranges[4];
     ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,5,0,0,0);
     ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV,2,0,0,5);
     ranges[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,NativePBR::kGpuTextureDescriptorCapacity,9,0,kTextureOffset);
+    ranges[3].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,3,525,0,kHistoryOffset);
     CD3DX12_ROOT_PARAMETER params[11];
-    params[0].InitAsDescriptorTable(3,ranges);
+    params[0].InitAsDescriptorTable(4,ranges);
     params[1].InitAsConstantBufferView(0);
     params[2].InitAsConstants(1,1);
     for(UINT i=0;i<4;++i)params[3+i].InitAsShaderResourceView(5+i);
@@ -127,7 +136,7 @@ void NativeCubemaps::WaterSSR::Initialize(const GraphicsBackend& backend)
 
 void NativeCubemaps::WaterSSR::Poll()
 {
-    for(auto& slot:slots) if(slot && GpuFenceRetired(outputFence.fence12.get(),slot->ready)) { slot->environment.reset(); slot->native.reset(); }
+    for(auto& slot:slots) if(slot && GpuFenceRetired(outputFence.fence12.get(),slot->ready)) { slot->environment.reset(); slot->native.reset(); slot->historyInput.reset(); }
 }
 
 void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeWorldFrame& world,std::shared_ptr<const EnvironmentFrame> environment,
@@ -162,6 +171,7 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         viewport.Width<1 || viewport.Height<1 || viewport.Width>world.displayWidth || viewport.Height>world.displayHeight ||
         std::floor(viewport.Width)!=viewport.Width || std::floor(viewport.Height)!=viewport.Height) {++rejected;return;}
     const uint32_t ow=uint32_t(viewport.Width),oh=uint32_t(viewport.Height);
+    emitterRadius=std::isfinite(emitterRadius)?std::clamp(emitterRadius,0.0f,1.0f):0.0f;
     std::array<winrt::com_ptr<ID3D11ShaderResourceView>,3> input;
     ID3D11ShaderResourceView* reads[3]{};context->PSGetShaderResources(0,3,reads);
     for(size_t i=0;i<input.size();++i) input[i].attach(reads[i]);
@@ -185,7 +195,7 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         Poll();
         auto* device=owner.d3d12Device.get();
         if(outputFence.fence12->GetCompletedValue()==UINT64_MAX) throw std::runtime_error("Water SSR device removed");
-        for(auto& slot:slots) if(!slot || (GpuFenceRetired(inputFence.fence12.get(),slot->input)&&
+        for(auto& slot:slots) if(!slot || (slot.use_count()==1 && GpuFenceRetired(inputFence.fence12.get(),slot->input)&&
             GpuFenceRetired(outputFence.fence12.get(),slot->ready)&&GpuFenceRetired(consumedFence.fence12.get(),slot->consumed))) {
             selected=&slot;
             if(slot && slot->width==world.width&&slot->height==world.height&&slot->outWidth==ow&&slot->outHeight==oh) break;
@@ -218,7 +228,7 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
             next->sparse=texture(DXGI_FORMAT_R16G16B16A16_FLOAT,ow,oh,"NativeWaterSSR::Sparse");
             next->constants=NativeMaterialEvaluation::Buffer(device,512,D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ);
             next->width=world.width;next->height=world.height;next->outWidth=ow;next->outHeight=oh;next->bytes=a+b+c+d;
-            const D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,kTextureOffset+NativePBR::kGpuTextureDescriptorCapacity,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
+            const D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,kHistoryOffset+3,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
             DX::ThrowIfFailed(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(next->descriptors.put())));
             DX::ThrowIfFailed(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,IID_PPV_ARGS(next->allocator.put())));
             DX::ThrowIfFailed(device->CreateCommandList(0,D3D12_COMMAND_LIST_TYPE_DIRECT,next->allocator.get(),pipeline.get(),IID_PPV_ARGS(next->commands.put())));
@@ -245,6 +255,17 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         view(slot->raw->resource.get(),DXGI_FORMAT_R32G32B32A32_FLOAT,0);
         view(slot->mask->resource.get(),DXGI_FORMAT_R32_FLOAT,1);
         const auto sky=slot->environment?fallbackCube:nullptr;
+        const Policy::WaterHistoryIdentity identity{world.engineFrame,world.pluginFrame,world.width,world.height,ow,oh,
+            material.scope,quality,uint32_t(encoding),world.cameraIdentity,material.geometryRevision,material.materialRevision,
+            slot->environment?slot->environment->stamp.epoch:0u,sky?sky->revision:0u,emitterRadius,world.resetHistory};
+        const auto previous=latest && identity.CanReuse(latest->historyIdentity) &&
+            GpuFenceRetired(outputFence.fence12.get(),latest->ready) &&
+            GpuFenceRetired(consumedFence.fence12.get(),latest->consumed) ? latest : nullptr;
+        slot->historyInput=previous;slot->historyIdentity=identity;
+        slot->viewProjection=world.camera.CameraViewProj;slot->positionAdjust=world.camera.CameraPosAdjust;
+        view(previous?previous->raw->resource.get():nullptr,DXGI_FORMAT_R32G32B32A32_FLOAT,kHistoryOffset);
+        view(previous?previous->mask->resource.get():nullptr,DXGI_FORMAT_R32_FLOAT,kHistoryOffset+1);
+        view(previous?previous->result->resource.get():nullptr,DXGI_FORMAT_R16G16B16A16_FLOAT,kHistoryOffset+2);
         auto* opaqueDepth=material.raster->depth->resource.get();
         auto* tokens=evidence.texture->resource.get();
         view(opaqueDepth,DXGI_FORMAT_R32_FLOAT,3);
@@ -263,12 +284,13 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         Transition(cmd,slot->result->resource.get(),common,write);
         Transition(cmd,slot->sparse->resource.get(),common,write);
         Transition(cmd,opaqueDepth,common,read);Transition(cmd,tokens,common,read);
+        if(previous){Transition(cmd,previous->raw->resource.get(),common,read);Transition(cmd,previous->mask->resource.get(),common,read);Transition(cmd,previous->result->resource.get(),common,read);}
         ID3D12DescriptorHeap* heaps[]{slot->descriptors.get()};cmd->SetDescriptorHeaps(1,heaps);cmd->SetComputeRootSignature(root.get());
         cmd->SetComputeRootDescriptorTable(0,slot->descriptors->GetGPUDescriptorHandleForHeapStart());
         const Constants constants{world.camera.CameraProj,world.camera.CameraProjInverse,world.camera.CameraViewInverse,world.camera.CameraView,
             world.camera.CameraPosAdjust,world.width,world.height,ow,oh,uint32_t(bool(sky)),uint32_t(encoding),quality,world.engineFrame,
             evaluation.instanceCount,uint32_t(bool(characters)),material.rayIdentityRowPitch,evidence.tokenCount,
-            std::isfinite(emitterRadius)?std::clamp(emitterRadius,0.0f,1.0f):0.0f};
+            emitterRadius,uint32_t(bool(previous)),{},previous?previous->viewProjection:Matrix{},previous?previous->positionAdjust:float4{}};
         void* mapped=nullptr;const D3D12_RANGE noRead{};
         DX::ThrowIfFailed(slot->constants->Map(0,&noRead,&mapped));
         std::memcpy(mapped,&constants,sizeof(constants));slot->constants->Unmap(0,nullptr);
@@ -293,6 +315,7 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         Transition(cmd,slot->result->resource.get(),write,common);
         Transition(cmd,slot->sparse->resource.get(),write,common);
         Transition(cmd,opaqueDepth,read,common);Transition(cmd,tokens,read,common);
+        if(previous){Transition(cmd,previous->raw->resource.get(),read,common);Transition(cmd,previous->mask->resource.get(),read,common);Transition(cmd,previous->result->resource.get(),read,common);}
         DX::ThrowIfFailed(cmd->Close());
         // Copy raw shader inputs using the original per-geometry constants; no
         // reflection evaluation takes place in the DX11 capture shader.
@@ -334,7 +357,8 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         slot->consumed=UINT64_MAX;active=slot;
         auto* result=slot->result->srv;context->PSSetShaderResources(kReturnSlot,1,&result);
         context->PSSetShader(returnShader.get(),nullptr,0);
-        ++submissions;failure.clear();
+        latest=slot;
+        ++submissions;historySubmissions+=uint64_t(bool(previous));failure.clear();
     } catch(const std::exception& e) {
         if(failure!=e.what())logger::warn("[NativeCubemaps] Water SSR: {}",e.what());
         failure=e.what();++rejected;
@@ -359,5 +383,5 @@ void NativeCubemaps::WaterSSR::End()
 json NativeCubemaps::WaterSSR::Diagnostics() const
 {
     uint64_t bytes=0;for(const auto& slot:slots)if(slot)bytes+=slot->bytes;
-    return {{"submissions",submissions},{"rejected",rejected},{"allocatedBytes",bytes},{"failure",failure}};
+    return {{"submissions",submissions},{"historySubmissions",historySubmissions},{"rejected",rejected},{"allocatedBytes",bytes},{"failure",failure}};
 }

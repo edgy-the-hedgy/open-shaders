@@ -19,6 +19,7 @@ namespace NativeCubemaps
             std::shared_ptr<const DX12Native::FullNativeReconstructionFrame>, DX12Native::EnvironmentEncoding,
             bool skyVisible, uint32_t quality, float emitterRadius, ID3D11PixelShader* expected);
         void End();
+        void ResetHistory() { latest.reset(); }
         json Diagnostics() const;
     private:
         struct Slot;
@@ -32,10 +33,10 @@ namespace NativeCubemaps
         winrt::com_ptr<ID3D11PixelShader> returnShader;
         winrt::com_ptr<ID3D11Buffer> captureCB;
         std::array<std::shared_ptr<Slot>,3> slots;
-        std::shared_ptr<Slot> active;
+        std::shared_ptr<Slot> active,latest;
         winrt::com_ptr<ID3D11PixelShader> previousShader;
         winrt::com_ptr<ID3D11ShaderResourceView> previousView;
-        uint64_t submissions=0, rejected=0;
+        uint64_t submissions=0, rejected=0, historySubmissions=0;
         std::string failure;
     };
 }

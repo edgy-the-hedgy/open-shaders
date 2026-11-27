@@ -243,7 +243,7 @@ json NativeCubemaps::Producer::GetDiagnostics()
 
 void NativeCubemaps::Producer::InvalidateGeneration()
 {
-    if(waterSSR) waterSSR->End();
+    if(waterSSR) { waterSSR->End(); waterSSR->ResetHistory(); }
     waterScopeDepth=0; waterScopeInvalid=false;
     if(processing) processing->Reset();
     if(inputs) inputs->Reset();

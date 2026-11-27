@@ -56,3 +56,22 @@ TEST_CASE("Environment scheduler visits every mip before publication", "[dx12][c
         REQUIRE(reflected == (reflection ? kMips : 0u));
     }
 }
+
+TEST_CASE("Flat water reflection history rejects incompatible publications", "[dx12][cubemaps]")
+{
+    WaterHistoryIdentity old{10,20,1920,1080,960,540,12,1,1,123,4,4,2,8,0.05f,true};
+    auto now=old;now.engineFrame++;now.pluginFrame++;now.reset=false;
+    REQUIRE(now.CanReuse(old));
+    now.radius=0.1f;REQUIRE_FALSE(now.CanReuse(old));now.radius=old.radius;
+    now.quality=3;REQUIRE_FALSE(now.CanReuse(old));now.quality=old.quality;
+    now.environmentRevision++;REQUIRE_FALSE(now.CanReuse(old));now.environmentRevision=old.environmentRevision;
+    now.scope++;REQUIRE_FALSE(now.CanReuse(old));now.scope=old.scope;
+    now.reset=true;REQUIRE_FALSE(now.CanReuse(old));now.reset=false;
+    now.engineFrame++;REQUIRE_FALSE(now.CanReuse(old));
+}
+TEST_CASE("Ordinary clock evolution does not invalidate cubemap generations", "[dx12][cubemaps]")
+{
+    REQUIRE_FALSE(ClockDiscontinuity(100.0f,100.02f));
+    REQUIRE(ClockDiscontinuity(100.0f,101.0f));
+    REQUIRE(ClockDiscontinuity(100.0f,99.0f));
+}
