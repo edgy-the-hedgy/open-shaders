@@ -10,6 +10,7 @@
 #include "Utils/FileSystem.h"
 #include "Utils/SkinnedMesh.h"
 
+#include <DirectXPackedVector.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -24,13 +25,16 @@
 
 namespace DX12Native
 {
-    // A frame-local world-space caster-only scene. No material IDs are shared
-    // with the static TLAS, and this scene cannot supply primary receivers.
+    // Frame-local world-space actor geometry. The posed vertex and primitive
+    // part streams retire with the exact BLAS generation. Never use static scene IDs.
     struct CharacterCasterFrame
     {
         uint32_t frame = UINT32_MAX, scope = 0, parts = 0, vertices = 0, triangles = 0;
         uint64_t allocationBytes = 0, readyValue = 0;
         uint32_t allowedAge = 0, rigidInstances = 0;
+        static constexpr uint32_t kPosedVertexStride = 72;
+        // The index resource holds triangles followed by one part ordinal per primitive.
+        uint32_t PrimitivePartOffset() const { return triangles * 3u * sizeof(uint32_t); }
         std::shared_ptr<const CharacterCasterFrame> actorSource;
         std::vector<winrt::com_ptr<ID3D12Resource>> rigidResources;
         winrt::com_ptr<ID3D12Fence> readyFence;
@@ -57,15 +61,21 @@ namespace DX12Native
             std::array<float, 3> position;
             std::array<uint32_t, 4> bones;
             std::array<float, 4> weights;
+            std::array<float, 3> normal{};
+            std::array<float, 2> uv{};
+            std::array<float, 4> color{ 1, 1, 1, 1 };
+            std::array<float, 3> tangent{}, bitangent{};
         };
         using Bone = std::array<float, 12>;
-        static_assert(sizeof(Vertex) == 44 && sizeof(Bone) == 48);
+        static_assert(sizeof(Vertex) == 104 && sizeof(Bone) == 48);
+        static_assert(offsetof(Vertex, normal) == 44 && offsetof(Vertex, uv) == 56 &&
+            offsetof(Vertex, color) == 64 && offsetof(Vertex, tangent) == 80 && offsetof(Vertex, bitangent) == 92);
 
         struct Snapshot
         {
             std::vector<Vertex> vertices;
             std::vector<Bone> bones;
-            std::vector<uint32_t> indices;
+            std::vector<uint32_t> indices, primitiveParts;
             uint32_t parts = 0, rejected = 0;
         };
 
@@ -103,6 +113,45 @@ namespace DX12Native
             return std::isfinite(tolerance) && x*x + y*y + z*z <= tolerance*tolerance;
         }
 
+        // Match the existing native static vertex decoder. A missing or invalid
+        // shading layout does not disqualify an otherwise valid shadow caster.
+        static void CaptureAttributes(RE::BSGraphics::VertexDesc desc, const uint8_t* data, Vertex& vertex)
+        {
+            using V = RE::BSGraphics::Vertex;
+            const auto stride = desc.GetSize();
+            const auto valid = [stride](uint32_t offset) {
+                return stride >= 20 && offset >= 16 && offset <= stride - 4;
+            };
+            if (!desc.HasFlag(V::VF_UV) || !desc.HasFlag(V::VF_NORMAL)) return;
+            const auto uvOffset = desc.GetAttributeOffset(V::VA_TEXCOORD0);
+            const auto normalOffset = desc.GetAttributeOffset(V::VA_NORMAL);
+            if (!valid(uvOffset) || !valid(normalOffset)) return;
+            uint16_t packedUV[2];
+            std::memcpy(packedUV, data + uvOffset, sizeof(packedUV));
+            const std::array uv{ DirectX::PackedVector::XMConvertHalfToFloat(packedUV[0]),
+                DirectX::PackedVector::XMConvertHalfToFloat(packedUV[1]) };
+            if (!Finite(uv)) return;
+            const auto sn = [](uint8_t value) { return float(value) * (2.0f / 255.0f) - 1.0f; };
+            const auto* n = data + normalOffset;
+            vertex.uv = uv;
+            vertex.normal = { sn(n[0]), sn(n[1]), sn(n[2]) };
+            if (desc.HasFlag(V::VF_TANGENT)) {
+                const auto offset = desc.GetAttributeOffset(V::VA_BINORMAL);
+                float bx;
+                std::memcpy(&bx, data + 12, sizeof(bx));
+                if (valid(offset) && std::isfinite(bx)) {
+                    const auto* t = data + offset;
+                    vertex.tangent = { sn(t[0]), sn(t[1]), sn(t[2]) };
+                    vertex.bitangent = { bx, sn(n[3]), sn(t[3]) };
+                }
+            }
+            if (desc.HasFlag(V::VF_COLORS)) {
+                const auto offset = desc.GetAttributeOffset(V::VA_COLOR);
+                if (valid(offset))
+                    for (uint32_t i = 0; i < 4; ++i) vertex.color[i] = float(data[offset + i]) / 255.0f;
+            }
+        }
+
         static bool CaptureRigid(RE::BSGeometry& geometry, Snapshot& out)
         {
             auto* tri = geometry.AsTriShape();
@@ -126,6 +175,7 @@ namespace DX12Native
                 Vertex v{ {}, { bone, bone, bone, bone }, { 1, 0, 0, 0 } };
                 std::memcpy(v.position.data(), runtime.rendererData->rawVertexData + i * stride, sizeof(v.position));
                 if (!Finite(v.position)) return false;
+                CaptureAttributes(desc, runtime.rendererData->rawVertexData + i * stride, v);
                 vertices.push_back(v);
             }
             const size_t step = std::max<size_t>(1, count / 32);
@@ -146,6 +196,7 @@ namespace DX12Native
             out.vertices.insert(out.vertices.end(), vertices.begin(), vertices.end());
             out.bones.push_back(transform);
             out.indices.insert(out.indices.end(), indices.begin(), indices.end());
+            out.primitiveParts.insert(out.primitiveParts.end(), indices.size() / 3, out.parts);
             ++out.parts;
             return true;
         }
@@ -221,6 +272,14 @@ namespace DX12Native
 
             // Reject a mismatched skin-space transform instead of allowing an
             // incorrect pose to cast shadows elsewhere in the world.
+            // The skinned reader emits vertices in exactly this partition order.
+            size_t attributeVertex = 0;
+            for (uint32_t i = 0; i < partitions->numPartitions; ++i) {
+                const auto& part = partitions->partitions[i];
+                auto desc = part.vertexDesc;
+                for (uint32_t j = 0; j < part.vertices; ++j)
+                    CaptureAttributes(desc, part.buffData->rawVertexData + size_t(j) * desc.GetSize(), vertices[attributeVertex++]);
+            }
             const auto& bound = geometry->worldBound;
             const size_t step = std::max<size_t>(1, vertices.size() / 32);
             for (size_t i = 0; i < vertices.size(); i += step) {
@@ -251,6 +310,7 @@ namespace DX12Native
             out.vertices.insert(out.vertices.end(), vertices.begin(), vertices.end());
             out.bones.insert(out.bones.end(), bones.begin(), bones.end());
             out.indices.insert(out.indices.end(), indices.begin(), indices.end());
+            out.primitiveParts.insert(out.primitiveParts.end(), indices.size() / 3, out.parts);
             ++out.parts;
             return true;
         }
@@ -426,7 +486,7 @@ namespace DX12Native
                 geometry.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
                 geometry.Triangles.VertexCount = UINT(snapshot.vertices.size());
                 geometry.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
-                geometry.Triangles.VertexBuffer.StrideInBytes = 12;
+                geometry.Triangles.VertexBuffer.StrideInBytes = CharacterCasterFrame::kPosedVertexStride;
                 geometry.Triangles.IndexCount = UINT(snapshot.indices.size());
                 geometry.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
 
@@ -447,7 +507,10 @@ namespace DX12Native
                     !bottomInfo.ScratchDataSizeInBytes || !topInfo.ScratchDataSizeInBytes)
                     throw std::runtime_error("Character caster AS unsupported");
                 const uint64_t scratchBytes = std::max(bottomInfo.ScratchDataSizeInBytes, topInfo.ScratchDataSizeInBytes);
-                const uint64_t positionBytes = snapshot.vertices.size() * 12ull;
+                const uint64_t positionBytes = snapshot.vertices.size() * uint64_t(CharacterCasterFrame::kPosedVertexStride);
+                const uint32_t triangleCount = uint32_t(snapshot.indices.size() / 3);
+                if (snapshot.primitiveParts.size() != triangleCount) throw std::runtime_error("Character primitive mapping mismatch");
+                snapshot.indices.insert(snapshot.indices.end(), snapshot.primitiveParts.begin(), snapshot.primitiveParts.end());
                 uint64_t required = 0;
                 const auto add = [&](uint64_t bytes, D3D12_RESOURCE_FLAGS flags) {
                     const auto desc = CD3DX12_RESOURCE_DESC::Buffer(bytes, flags);
@@ -480,7 +543,7 @@ namespace DX12Native
                 reusedUnsubmitted = reuse;
                 auto next = reuse ? *selected : std::make_shared<CharacterCasterFrame>();
                 next->frame = frame; next->scope = scope; next->allowedAge = interval == 2u ? 1u : 0u; next->parts = snapshot.parts;
-                next->vertices = uint32_t(snapshot.vertices.size()); next->triangles = uint32_t(snapshot.indices.size()/3);
+                next->vertices = uint32_t(snapshot.vertices.size()); next->triangles = triangleCount;
                 if (!reuse) next->allocationBytes = required;
                 next->root = root; next->pipeline = pipeline;
                 next->readyFence = completion;

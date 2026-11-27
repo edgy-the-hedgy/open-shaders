@@ -1,4 +1,6 @@
-// Skinning is performed on the native queue into world-space BLAS positions.
+// Native skinning writes positions and shading attributes from the same palette.
+// DXR reads the first float3 of each posed vertex; reflection consumers use the
+// remaining 60 bytes in the shared material triangle layout.
 ByteAddressBuffer BindVertices : register(t0);
 ByteAddressBuffer SkinPalette : register(t1);
 RWByteAddressBuffer Positions : register(u0);
@@ -8,18 +10,31 @@ cbuffer Inputs : register(b0) { uint VertexCount; };
 void main(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= VertexCount) return;
-    uint base = id.x * 44;
+    uint base = id.x * 104u;
     float4 p = float4(asfloat(BindVertices.Load3(base)), 1.0);
-    uint4 bones = BindVertices.Load4(base + 12);
-    float4 weights = asfloat(BindVertices.Load4(base + 28));
-    float3 result = 0.0;
+    uint4 bones = BindVertices.Load4(base + 12u);
+    float4 weights = asfloat(BindVertices.Load4(base + 28u));
+    float3 normal = asfloat(BindVertices.Load3(base + 44u));
+    float3 tangent = asfloat(BindVertices.Load3(base + 80u));
+    float3 bitangent = asfloat(BindVertices.Load3(base + 92u));
+    float3 result = 0.0, n = 0.0, t = 0.0, b = 0.0;
     [unroll] for (uint i = 0; i < 4; ++i) {
         if (weights[i] <= 0.0) continue;
-        uint offset = bones[i] * 48;
+        uint offset = bones[i] * 48u;
         float4 x = asfloat(SkinPalette.Load4(offset));
-        float4 y = asfloat(SkinPalette.Load4(offset + 16));
-        float4 z = asfloat(SkinPalette.Load4(offset + 32));
+        float4 y = asfloat(SkinPalette.Load4(offset + 16u));
+        float4 z = asfloat(SkinPalette.Load4(offset + 32u));
         result += weights[i] * float3(dot(x,p), dot(y,p), dot(z,p));
+        float3x3 basis = float3x3(x.xyz,y.xyz,z.xyz);
+        n += weights[i] * mul(basis,normal);
+        t += weights[i] * mul(basis,tangent);
+        b += weights[i] * mul(basis,bitangent);
     }
-    Positions.Store3(id.x * 12, asuint(result));
+    uint posed = id.x * 72u;
+    Positions.Store3(posed, asuint(result));
+    Positions.Store3(posed + 12u, asuint(n));
+    Positions.Store2(posed + 24u, BindVertices.Load2(base + 56u));
+    Positions.Store4(posed + 32u, BindVertices.Load4(base + 64u));
+    Positions.Store3(posed + 48u, asuint(t));
+    Positions.Store3(posed + 60u, asuint(b));
 }
