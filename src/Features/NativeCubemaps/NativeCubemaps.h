@@ -2,6 +2,7 @@
 
 #include "Features/DX12/FullNativeFeature.h"
 #include "Features/DX12/DX12NativeEnvironment.h"
+#include "Features/DX12/VideoMemoryBudget.h"
 
 namespace DX12Native { struct FullNativeReconstructionFrame; }
 
@@ -27,7 +28,7 @@ namespace NativeCubemaps
         std::array<std::shared_ptr<Generation>,3> slots;
         std::shared_ptr<Generation> latest;
         std::shared_ptr<const DX12Native::EnvironmentFrame> current;
-        VideoMemoryBudget budget;
+        DX12Native::VideoMemoryBudget budget;
         uint64_t nextFence = 0;
     };
 
