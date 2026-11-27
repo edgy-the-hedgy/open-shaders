@@ -75,3 +75,18 @@ TEST_CASE("Ordinary clock evolution does not invalidate cubemap generations", "[
     REQUIRE(ClockDiscontinuity(100.0f,101.0f));
     REQUIRE(ClockDiscontinuity(100.0f,99.0f));
 }
+
+TEST_CASE("Cubemap face freshness cannot be extended by refreshing just one face", "[dx12][cubemaps]")
+{
+    CubeFaceHistory faces;
+    faces.Observe(0x1fu,10);
+    REQUIRE_FALSE(faces.Fresh(10));
+    faces.Observe(0x20u,11);
+    REQUIRE(faces.Fresh(130));
+    faces.Observe(1u,131);
+    REQUIRE_FALSE(faces.Fresh(131));
+    faces.Observe(0x3eu,131);
+    REQUIRE(faces.Fresh(131));
+    faces={};faces.Observe(0x3fu,UINT32_MAX-1);
+    REQUIRE(faces.Fresh(1));
+}

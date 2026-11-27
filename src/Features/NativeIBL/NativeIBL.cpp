@@ -21,68 +21,6 @@ void NativeIBL::Producer::PostPostLoad()
 	settings = globals::features::ibl.settings;
 }
 
-void NativeIBL::Producer::SetupResources()
-{
-	if (loaded)
-		capture.Setup();
-}
-
-void NativeIBL::Producer::SetCaptureContext(const DX12Native::EnvironmentStamp& stamp)
-{
-	if (!context.SameEnvironment(stamp)) {
-		capture.Invalidate();
-		publishedStamp = {};
-	}
-	context = stamp;
-}
-
-std::function<void()> NativeIBL::Producer::OnReflectionsRenderBegin()
-{
-	using namespace DX12Native;
-	if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation())
-		return nullptr;
-	// Cubemap acquisition also uses this face-coverage certification. Capture
-	// availability is independent of whether indirect IBL contribution is enabled.
-	const bool enabled = !Util::IsInterior() &&
-		globals::shaderCache && globals::shaderCache->IsEnabled();
-	if (enabled && !capture.Allocated())
-		capture.Setup();
-	auto cleanup = capture.Begin(enabled);
-	if (!cleanup) {
-		publishedStamp = {};
-		return nullptr;
-	}
-	auto stamp = context;
-	const auto color = globals::features::linearLighting.GetCommonBufferData();
-	const auto encoding = color.enableLinearLighting ?
-		(color.enableACEScg ? EnvironmentEncoding::LinearAP1 : EnvironmentEncoding::LinearRec709) : EnvironmentEncoding::LegacyScene;
-	if (!globals::game::graphicsState || !globals::state || stamp.encoding != encoding || stamp.interior)
-		stamp = {};
-	else {
-		stamp.engineFrame = globals::game::graphicsState->GetFrameCount();
-		stamp.pluginFrame = globals::state->frameCount;
-	}
-	return [this, stamp, cleanup = std::move(cleanup)] {
-		cleanup();
-		if (capture.IsCapturing()) return; // Nested cleanup is not a publication boundary.
-		if (!stamp.SameEnvironment(context) || !capture.Ready()) {
-			publishedStamp = {};
-			return;
-		}
-		if (capture.ClearedFaces()) {
-			publishedStamp = stamp;
-			++skyRevision;
-		}
-	};
-}
-
-DX12Native::EnvironmentSource NativeIBL::Producer::GetSkySource(const DX12Native::EnvironmentStamp& requested) const
-{
-	DX12Native::EnvironmentSource source{ capture.Ready() ? capture.Texture() : nullptr, skyRevision, publishedStamp };
-	return source.IsValidFor(requested) && NativeCubemaps::Policy::PublicationFresh(
-		publishedStamp.SameEnvironment(requested), publishedStamp.engineFrame, requested.engineFrame) ? source : DX12Native::EnvironmentSource{};
-}
-
 void NativeIBL::Producer::Dispatch(const GraphicsBackend& backend,
 	std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> material,
 	std::shared_ptr<const DX12Native::EnvironmentFrame> environment,
@@ -126,7 +64,7 @@ void NativeIBL::Producer::Dispatch(const GraphicsBackend& backend,
 	ambient.utilitySaturation = utility.ambientLightColor.saturation;
 	ambient.utilityGammaOffset = utility.ambientLightColor.gammaOffset;
 	const auto& skylighting = globals::features::skylighting;
-	ambient.traceSkyVisibility = skylighting.loaded && skylighting.settings.EnableSkylighting && !stamp.interior;
+	ambient.traceSkyVisibility = skylighting.loaded && skylighting.settings.EnableSkylighting && !stamp.interior && !stamp.skyHidden;
 	ambient.minDiffuseSkyVisibility = std::clamp(skylighting.settings.MinDiffuseVisibility, 0.0f, 1.0f);
 	ambient.minSpecularSkyVisibility = std::clamp(skylighting.settings.MinSpecularVisibility, 0.0f, 1.0f);
 	ambient.skyMinZ = std::max(0.0f, std::cos(std::clamp(skylighting.settings.MaxZenith, 0.0f, 1.57079632679f)));
@@ -139,9 +77,8 @@ json NativeIBL::Producer::GetDiagnostics()
 {
 	const auto frame = globals::game::graphicsState ? globals::game::graphicsState->GetFrameCount() : UINT32_MAX;
 	const auto publication = Get(frame);
-	return { { "skyFacesValid", capture.ValidFaces() }, { "skyRevision", skyRevision },
-		{ "skyPublished", bool(GetSkySource(context).texture) },
-		{ "indirectPublished", bool(publication) },
+	return { { "indirectPublished", bool(publication) },
+        { "skyPublished", publication && bool(publication->environment->sky) },
 		{ "availableContributions", publication ? publication->available : 0u },
 		{ "environmentRevision", publication && publication->environment ? publication->environment->revision : 0u },
 		{ "skyVisibilityTraced", publication && publication->skyVisibilityTraced },

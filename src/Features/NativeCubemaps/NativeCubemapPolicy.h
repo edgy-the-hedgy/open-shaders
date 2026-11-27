@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -34,6 +35,22 @@ namespace NativeCubemaps::Policy
     inline constexpr uint32_t kMaxHistoryGap = 120;
     inline constexpr uint32_t kMaxPublicationAge = kMaxHistoryGap;
     inline constexpr float kMaxHistoryTranslation = 128.0f;
+    struct CubeFaceHistory
+    {
+        static constexpr uint32_t kFaces=6,kAllFaces=(1u<<kFaces)-1u;
+        std::array<uint32_t,kFaces> frames{};
+        uint32_t valid=0;
+        constexpr void Observe(uint32_t mask,uint32_t frame)
+        {
+            for(uint32_t i=0;i<kFaces;++i)if(mask&(1u<<i)){frames[i]=frame;valid|=1u<<i;}
+        }
+        constexpr bool Fresh(uint32_t frame) const
+        {
+            if(valid!=kAllFaces)return false;
+            for(auto face:frames)if(frame-face>kMaxPublicationAge)return false;
+            return true;
+        }
+    };
 
     inline bool ClockDiscontinuity(float previous, float current)
     {

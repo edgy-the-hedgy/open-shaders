@@ -35,7 +35,9 @@ DX12Native::EnvironmentStamp NativeCubemaps::Producer::Prepare(uint32_t scope,ui
     const auto color=globals::features::linearLighting.GetCommonBufferData();
     const auto encoding=color.enableLinearLighting ?
         (color.enableACEScg?EnvironmentEncoding::LinearAP1:EnvironmentEncoding::LinearRec709):EnvironmentEncoding::LegacyScene;
-    EnvironmentStamp stamp{epoch,scope,frame,globals::state->frameCount,encoding,Util::IsInterior()};
+    const bool interior=Util::IsInterior();
+    const bool skyHidden=!interior && (!globals::game::sky || globals::game::sky->flags.any(RE::Sky::Flags::kHideSky));
+    EnvironmentStamp stamp{epoch,scope,frame,globals::state->frameCount,encoding,interior,skyHidden};
     const float hours=globals::game::calendar?globals::game::calendar->GetHoursPassed():lastHours;
     changed=currentStamp.epoch && (!currentStamp.SameEnvironment(stamp) ||
         Policy::ClockDiscontinuity(lastHours,hours));
@@ -44,7 +46,6 @@ DX12Native::EnvironmentStamp NativeCubemaps::Producer::Prepare(uint32_t scope,ui
     if(processing) processing->Poll();
     if(waterSSR) waterSSR->Poll();
     if(std::isfinite(hours)) lastHours=hours;
-    globals::features::nativeIBL.SetCaptureContext(stamp);
     return stamp;
 }
 bool NativeCubemaps::Producer::CaptureRaw(const GraphicsBackend& backend, ID3D11ShaderResourceView* sceneColor)
@@ -148,7 +149,7 @@ void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend, ID3D11Sha
         }
         if(!source.texture && !native) return;
         if(!inputs) inputs=std::make_unique<NativeEnvironment>();
-        const auto sky=!currentStamp.interior?globals::features::nativeIBL.GetSkySource(currentStamp):EnvironmentSource{};
+        const auto sky=GetSkySource(currentStamp);
         EnvironmentSource reflection{};
         // The native reflection hook certifies complete face coverage for the
         // matching scene. Borrow the engine's unfiltered reflection target.
@@ -185,6 +186,51 @@ std::shared_ptr<const DX12Native::EnvironmentFrame> NativeCubemaps::Producer::Ge
         frame->base->stamp.engineFrame, currentStamp.engineFrame))
         return nullptr;
     return frame;
+}
+
+void NativeCubemaps::Producer::SetupResources()
+{
+    if(loaded && globals::game::renderer) skyCapture.Setup();
+}
+
+std::function<void()> NativeCubemaps::Producer::OnReflectionsRenderBegin()
+{
+    using namespace DX12Native;
+    if(!loaded || !globals::features::dx12Control.WantsMaterialPreparation()) return nullptr;
+    auto stamp=currentStamp;
+    const auto color=globals::features::linearLighting.GetCommonBufferData();
+    const auto encoding=color.enableLinearLighting ?
+        (color.enableACEScg?EnvironmentEncoding::LinearAP1:EnvironmentEncoding::LinearRec709):EnvironmentEncoding::LegacyScene;
+    const bool visibleSky=!Util::IsInterior() && globals::game::sky &&
+        !globals::game::sky->flags.any(RE::Sky::Flags::kHideSky);
+    const bool enabled=visibleSky && globals::shaderCache && globals::shaderCache->IsEnabled() &&
+        globals::game::graphicsState && globals::state && stamp.scope && stamp.encoding==encoding && !stamp.interior && !stamp.skyHidden;
+    if(enabled&&!skyCapture.Allocated()) skyCapture.Setup();
+    auto cleanup=skyCapture.Begin(enabled);
+    if(!cleanup){skyStamp={};skyFaces={};return nullptr;}
+    if(enabled){
+        stamp.engineFrame=globals::game::graphicsState->GetFrameCount();
+        stamp.pluginFrame=globals::state->frameCount;
+    }else stamp={};
+    return [this,stamp,cleanup=std::move(cleanup)]{
+        cleanup();
+        if(skyCapture.IsCapturing())return;
+        if(!stamp.SameEnvironment(currentStamp)||skyCapture.Failed()){
+            skyStamp={};skyFaces={};return;
+        }
+        const uint32_t updated=skyCapture.ClearedFaces();
+        skyFaces.Observe(updated,stamp.engineFrame);
+        if(!skyCapture.Ready()||!skyFaces.Fresh(stamp.engineFrame)) {skyStamp={};return;}
+        if(updated){skyStamp=stamp;++skyRevision;}
+    };
+}
+
+DX12Native::EnvironmentSource NativeCubemaps::Producer::GetSkySource(const DX12Native::EnvironmentStamp& requested) const
+{
+    if(requested.interior||requested.skyHidden||!skyFaces.Fresh(requested.engineFrame))return {};
+    DX12Native::EnvironmentSource source{skyCapture.Ready()?skyCapture.Texture():nullptr,skyRevision,skyStamp};
+    return source.IsValidFor(requested)&&Policy::PublicationFresh(true,skyStamp.engineFrame,requested.engineFrame)?
+        source:DX12Native::EnvironmentSource{};
 }
 
 void NativeCubemaps::Producer::BeginForward()
@@ -226,6 +272,7 @@ void NativeCubemaps::Producer::EndWaterSSR()
 }
 void NativeCubemaps::Producer::OnDraw()
 {
+    skyCapture.OnDraw();
     if (waterScopeDepth != 1 || waterScopeInvalid ||
         !globals::features::dx12Control.NativeSSREnabled() || !globals::state ||
         !globals::game::graphicsState || !globals::state->currentShader ||
@@ -256,6 +303,8 @@ json NativeCubemaps::Producer::GetDiagnostics()
         {"transitionalRasterInputAdmitted",publication && publication->rasterCompatibilityInput},
         {"lastCaptureFrame",lastCaptureFrame}, {"environmentRevision",publication ? publication->revision : 0},
         {"basePublished",publication && bool(publication->base)}, {"reflectionPublished",publication && bool(publication->reflection)},
+        {"skyFacesValid",skyCapture.ValidFaces()}, {"skyRevision",skyRevision},
+        {"skyAcquisitionFresh",bool(GetSkySource(currentStamp).texture)}, {"skyHidden",currentStamp.skyHidden},
         {"skyPublished",publication && bool(publication->sky)}, {"inputAllocationBytes",inputs ? inputs->AllocationBytes() : 0},
         {"inputFailure",inputs ? inputs->Failure() : ""},
         {"processing",processing ? processing->GetDiagnostics() : json::object()},
@@ -271,12 +320,13 @@ void NativeCubemaps::Producer::InvalidateGeneration()
     waterScopeDepth=0; waterScopeInvalid=false;
     if(processing) processing->Reset();
     if(inputs) inputs->Reset();
-    globals::features::nativeIBL.SetCaptureContext({});
+    skyCapture.Invalidate(); skyFaces={}; skyStamp={};
     currentStamp={}; ++epoch; lastCaptureFrame=UINT32_MAX; failureLogged=false;
 }
 void NativeCubemaps::Producer::Release()
 {
     EndForward();
+    skyCapture.Release(); skyFaces={}; skyStamp={};
     forward.reset(); waterSSR.reset();
     processing.reset(); inputs.reset();
     raw=nullptr; rawUAV=nullptr; inputShader=nullptr; inputConstants=nullptr;

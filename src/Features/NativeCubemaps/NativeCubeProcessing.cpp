@@ -232,7 +232,8 @@ bool NativeCubemaps::CubeProcessing::Dispatch(const GraphicsBackend& backend,
     });
     if(found==slots.end()) return false;
     auto* device=owner.d3d12Device.get();
-    const bool reflection=!input->stamp.interior && input->reflection && input->reflection->IsReadyFor(input->stamp) &&
+    const bool reflection=!input->stamp.interior;
+    const bool engineReflection=reflection && !input->stamp.skyHidden && input->reflection && input->reflection->IsReadyFor(input->stamp) &&
         Policy::PublicationFresh(input->reflection->stamp.SameEnvironment(input->stamp),
             input->reflection->stamp.engineFrame,input->stamp.engineFrame);
     const auto resourceDesc=[](uint32_t mips) { return CD3DX12_RESOURCE_DESC::Tex2D(kFormat,kSize,kSize,6,static_cast<UINT16>(mips),1,0,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS); };
@@ -283,7 +284,7 @@ bool NativeCubemaps::CubeProcessing::Dispatch(const GraphicsBackend& backend,
         useHistory=Policy::CanReuseHistory(latest->base.stamp.SameEnvironment(input->stamp),elapsed,x*x+y*y+z*z);
     }
     if(useHistory) slot->previous=latest;
-    slot->constants={dalc,uint32_t(input->stamp.encoding),uint32_t(useHistory),uint32_t(reflection),elapsed};
+    slot->constants={dalc,uint32_t(input->stamp.encoding),uint32_t(useHistory),uint32_t(engineReflection) | (!input->stamp.skyHidden ? 2u : 0u),elapsed};
     slot->cursor={}; slot->rasterReady=rasterReady; slot->nativeAdmitted=bool(native); slot->reflectionEnabled=reflection;
     slot->value=0;
     *found=slot; pending=slot;
@@ -349,10 +350,11 @@ void NativeCubemaps::CubeProcessing::SubmitStep(const std::shared_ptr<Generation
         auto& cube=reflected?slot->reflection:slot->base;
         Transition(cmd,slot->history.resource.get(),common,read);
         Transition(cmd,cube.resource.get(),common,write);
-        if(reflected) Transition(cmd,input->reflection->resource.get(),common,read);
+        const bool engineReflection=reflected && (slot->constants.reflection&1u)!=0u;
+        if(engineReflection) Transition(cmd,input->reflection->resource.get(),common,read);
         for(uint32_t mip=slot->cursor.mip;mip<slot->cursor.EndMip();++mip)
-            run(&slot->history,nullptr,reflected?input->reflection.get():nullptr,cube,mip,reflected);
-        if(reflected) Transition(cmd,input->reflection->resource.get(),read,common);
+            run(&slot->history,nullptr,engineReflection?input->reflection.get():nullptr,cube,mip,reflected);
+        if(engineReflection) Transition(cmd,input->reflection->resource.get(),read,common);
         Transition(cmd,cube.resource.get(),write,common);
         Transition(cmd,slot->history.resource.get(),read,common);
     }

@@ -15,20 +15,11 @@ namespace NativeIBL
 		std::string GetShortName() override { return "NativeIBL"; }
 		void PostPostLoad() override;
 		json GetDiagnostics() override;
-		void SetupResources() override;
-		bool WantsDrawHook() const override { return true; }
-		bool WantsRenderPassHook() const override { return true; }
-		void OnDraw() override { capture.OnDraw(); }
-		std::function<void()> OnRenderPassBegin(const RE::BSRenderPass*) override { return capture.OnRenderPassBegin(); }
-		std::function<void()> OnReflectionsRenderBegin() override;
-		void OnRuntimeDisabled() override { InvalidateGeneration(); Release(); SetCaptureContext({}); }
-		void ClearShaderCache() override { InvalidateGeneration(); Release(); SetCaptureContext({}); }
-		void SetCaptureContext(const DX12Native::EnvironmentStamp& stamp);
-		DX12Native::EnvironmentSource GetSkySource(const DX12Native::EnvironmentStamp& requested) const;
-		ID3D11ShaderResourceView* GetRasterSkyView() const { return GetSkySource(context).texture ? capture.View() : nullptr; }
+		void OnRuntimeDisabled() override { InvalidateGeneration(); Release(); }
+		void ClearShaderCache() override { InvalidateGeneration(); Release(); }
 		void Poll(uint32_t frame) { if (lighting) lighting->Poll(frame); }
 		void InvalidateGeneration() { if (lighting) lighting->Reset(); }
-		void Release() { lighting.reset(); capture.Release(); }
+		void Release() { lighting.reset(); }
 		void Dispatch(const GraphicsBackend& backend,
 			std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> material,
 			std::shared_ptr<const DX12Native::EnvironmentFrame> environment,
@@ -42,9 +33,6 @@ namespace NativeIBL
 
 	private:
 		IBL::Settings settings;
-		IBLInput::ReflectionRadianceCapture capture;
-		DX12Native::EnvironmentStamp context{}, publishedStamp{};
-		uint64_t skyRevision = 0;
 		std::unique_ptr<DX12Native::NativeIndirectLighting> lighting;
 	};
 }

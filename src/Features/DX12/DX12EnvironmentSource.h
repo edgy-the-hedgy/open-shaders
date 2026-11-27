@@ -14,11 +14,12 @@ namespace DX12Native
 		uint32_t scope = 0, engineFrame = 0, pluginFrame = 0;
 		EnvironmentEncoding encoding = EnvironmentEncoding::LegacyScene;
 		bool interior = false;
+		bool skyHidden = false;
 
 		bool SameEnvironment(const EnvironmentStamp& other) const
 		{
 			return epoch && epoch == other.epoch && scope && scope == other.scope &&
-				interior == other.interior && encoding == other.encoding;
+				interior == other.interior && skyHidden == other.skyHidden && encoding == other.encoding;
 		}
 	};
 

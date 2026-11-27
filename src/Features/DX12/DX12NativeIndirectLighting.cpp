@@ -31,7 +31,7 @@ namespace DX12Native
             Matrix projection, view;
             uint32_t ssrEnabled, directPitch, rayPitch, tokenCount;
             float4 secondarySunDirection, secondarySunRadiance;
-            uint32_t secondaryLightCount, secondaryFoliage, secondaryPadding[2]{};
+            uint32_t secondaryLightCount, secondaryFoliage, skyAvailable, secondaryPadding=0;
         };
         static_assert(sizeof(Constants) == 512);
         constexpr uint64_t kSHBytes = 48;
@@ -199,7 +199,7 @@ namespace DX12Native
             failure = "Waiting for same-frame engine DALC"; return;
         }
         uint32_t available = 0;
-        if ((enabled & IndirectDiffuse) && (!ambient.iblEnabled || environment->stamp.interior || environment->sky)) available |= IndirectDiffuse;
+        if ((enabled & IndirectDiffuse) && (!ambient.iblEnabled || environment->stamp.interior || environment->stamp.skyHidden || environment->base)) available |= IndirectDiffuse;
         if ((enabled & IndirectSpecular) && (environment->stamp.interior || environment->reflection)) available |= IndirectSpecular;
         if ((enabled & Transmission) && (available & IndirectDiffuse)) available |= Transmission;
         if (!available) { failure = "Waiting for completed environment inputs"; return; }
@@ -237,7 +237,8 @@ namespace DX12Native
                 return device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
             };
             const bool needsBaseSH = ambient.iblEnabled && ambient.dalcMode < 2;
-            const bool needsSkySH = ambient.iblEnabled && (available & IndirectDiffuse) && !environment->stamp.interior;
+            const bool needsSkySH = ambient.iblEnabled && (available & IndirectDiffuse) && !environment->stamp.interior &&
+                !environment->stamp.skyHidden && bool(environment->sky);
             if (!needsBaseSH) baseCache.reset();
             if (!needsSkySH) skyCache.reset();
             const bool projectBase = needsBaseSH && (!baseCache || baseCache->cube != environment->base);
@@ -332,7 +333,8 @@ namespace DX12Native
                 slot->ssrDirect ? slot->ssrDirect->directional.direction : float4{},
                 slot->ssrDirect ? slot->ssrDirect->directional.radiance : float4{},
                 slot->ssrDirect ? slot->ssrDirect->lightCount : 0u,
-                slot->ssrDirect && slot->ssrDirect->foliageScattering ? 1u : 0u };
+                slot->ssrDirect && slot->ssrDirect->foliageScattering ? 1u : 0u,
+                slot->skySH ? 1u : 0u };
             void* mapped = nullptr; const D3D12_RANGE noRead{};
             Eval::Check(slot->constants->Map(0, &noRead, &mapped));
             std::memcpy(mapped, &constants, sizeof(constants)); slot->constants->Unmap(0, nullptr);

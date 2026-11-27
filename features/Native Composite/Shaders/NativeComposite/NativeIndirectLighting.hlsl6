@@ -69,7 +69,7 @@ cbuffer IndirectInputs : register(b0)
     uint SSRTokenCount;
     float4 SecondarySunDirection, SecondarySunRadiance;
     uint SecondaryLightCount, SecondaryFoliage;
-    uint2 SecondaryPadding;
+    uint SkyAvailable, SecondaryPadding;
 };
 #include "NativeSecondaryReflection.hlsli"
 
@@ -336,8 +336,9 @@ void main(uint3 id : SV_DispatchThreadID)
         float skyVisibility = SkyCapVisibility(world,n,n,1.0,MinDiffuseSkyVisibility);
         if (IBLEnabled != 0u && Interior == 0u) {
             if (DALCMode == 3u) radiance *= skyVisibility;
-            radiance += SaturateColor(NativeIndirect::EvaluateIrradiance(asfloat(SkySH.Load4(0u)),
-                asfloat(SkySH.Load4(16u)), asfloat(SkySH.Load4(32u)), n), SkySaturation) * SkyScale * skyVisibility;
+            if(SkyAvailable!=0u)
+                radiance += SaturateColor(NativeIndirect::EvaluateIrradiance(asfloat(SkySH.Load4(0u)),
+                    asfloat(SkySH.Load4(16u)), asfloat(SkySH.Load4(32u)), n), SkySaturation) * SkyScale * skyVisibility;
         } else if (IBLEnabled == 0u && Interior == 0u) {
             radiance *= skyVisibility;
         }
@@ -350,7 +351,7 @@ void main(uint3 id : SV_DispatchThreadID)
                 float backVisibility=SkyCapVisibility(world,-n,-n,1.0,MinDiffuseSkyVisibility);
                 if (IBLEnabled!=0u && Interior==0u) {
                     if (DALCMode==3u) backRadiance*=backVisibility;
-                    backRadiance+=SaturateColor(NativeIndirect::EvaluateIrradiance(asfloat(SkySH.Load4(0u)),asfloat(SkySH.Load4(16u)),asfloat(SkySH.Load4(32u)),-n),SkySaturation)*SkyScale*backVisibility;
+                    if(SkyAvailable!=0u) backRadiance+=SaturateColor(NativeIndirect::EvaluateIrradiance(asfloat(SkySH.Load4(0u)),asfloat(SkySH.Load4(16u)),asfloat(SkySH.Load4(32u)),-n),SkySaturation)*SkyScale*backVisibility;
                 } else if (Interior==0u) backRadiance*=backVisibility;
             }
             Lighting.Store2(outputOffset+16u,PackOpaqueRadiance(radiance*transmissionWeight+backRadiance*backTransmissionWeight,base.a==SurfaceEvaluatedBase ? ContributionTransmission : 0u));

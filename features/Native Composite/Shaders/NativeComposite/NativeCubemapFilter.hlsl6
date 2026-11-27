@@ -98,7 +98,7 @@ void historyMain(uint3 id : SV_DispatchThreadID)
 }
 float3 Fallback(float3 direction)
 {
-    if (Reflection != 0 && HasReflection != 0)
+    if (Reflection != 0 && (HasReflection & 1u) != 0u)
         // Engine reflections are irradiance-encoded; the raw main capture is scene-gamma.
         return max(0,DecodeEnvironmentRadiance(EngineReflection.SampleLevel(LinearClamp,direction,0).rgb,Encoding));
     float4 basis = SphericalHarmonics::Evaluate(direction);
@@ -108,7 +108,7 @@ float3 Fallback(float3 direction)
 float3 Resolve(float3 direction)
 {
     float4 c = Source.SampleLevel(PointClamp,direction,0);
-    if (c.a > 0 || (Reflection != 0 && c.a < 0))
+    if (c.a > 0 || (Reflection != 0 && (HasReflection & 2u) != 0u && c.a < 0))
         return c.rgb;
     return Fallback(direction);
 }

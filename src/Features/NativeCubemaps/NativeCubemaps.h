@@ -4,7 +4,9 @@
 #include "Features/DX12/DX12NativeEnvironment.h"
 #include "Features/DX12/VideoMemoryBudget.h"
 #include "NativeWaterSSR.h"
+#include "NativeCubemapPolicy.h"
 #include "NativeForwardEnvironment.h"
+#include "Features/IBL/ReflectionRadianceCapture.h"
 
 namespace DX12Native { struct FullNativeReconstructionFrame; }
 
@@ -47,6 +49,12 @@ namespace NativeCubemaps
         std::string GetShortName() override { return "NativeCubemaps"; }
         bool WantsDrawHook() const override { return true; }
         void OnDraw() override;
+        bool WantsRenderPassHook() const override { return true; }
+        std::function<void()> OnRenderPassBegin(const RE::BSRenderPass*) override { return skyCapture.OnRenderPassBegin(); }
+        std::function<void()> OnReflectionsRenderBegin() override;
+        void SetupResources() override;
+        void OnSceneTransitionReset(bool opening) override { if(opening) InvalidateGeneration(); }
+        DX12Native::EnvironmentSource GetSkySource(const DX12Native::EnvironmentStamp&) const;
         void BeginForward();
         void EndForward();
         void BeginWaterSSR();
@@ -72,7 +80,10 @@ namespace NativeCubemaps
         winrt::com_ptr<ID3D11UnorderedAccessView> rawUAV;
         winrt::com_ptr<ID3D11ComputeShader> inputShader;
         winrt::com_ptr<ID3D11Buffer> inputConstants;
-        DX12Native::EnvironmentStamp currentStamp{};
+        IBLInput::ReflectionRadianceCapture skyCapture;
+        DX12Native::EnvironmentStamp currentStamp{}, skyStamp{};
+        Policy::CubeFaceHistory skyFaces;
+        uint64_t skyRevision=0;
         uint64_t epoch = 1, rawRevision = 0;
         uint32_t lastCaptureFrame = UINT32_MAX;
         float lastHours = 0;
