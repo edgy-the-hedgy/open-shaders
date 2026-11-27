@@ -34,10 +34,13 @@ void main(uint3 id : SV_DispatchThreadID)
     float depth = SceneDepth.Load(int3(p,0));
     if (!isfinite(depth) || depth < 0 || depth > 1) return;
     bool sky = abs(depth-FarDepth) <= 1e-7;
+    float distance=0;
     if (!sky) {
         float4 world = mul(InverseViewProjection, float4(uv*float2(2,-2)+float2(-1,1),depth,1));
-        if (!all(isfinite(world)) || abs(world.w) < 1e-8 || length(world.xyz/world.w) < 16.5) return;
+        if (!all(isfinite(world)) || abs(world.w) < 1e-8) return;
+        distance=length(world.xyz/world.w);
+        if(!isfinite(distance)||distance<16.5||distance>65504.0*1024.0)return;
     }
     float3 c = SceneColor.Load(int3(p,0)).rgb;
-    if (all(isfinite(c))) Raw[id] = float4(clamp(c,0,65504), sky ? -1.0 : 1.0);
+    if (all(isfinite(c))) Raw[id] = float4(clamp(c,0,65504), sky ? -1.0 : distance/1024.0);
 }

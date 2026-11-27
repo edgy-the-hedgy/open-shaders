@@ -19,13 +19,14 @@ namespace
     using NativeCubemaps::Policy::kMips;
     constexpr DXGI_FORMAT kFormat=DXGI_FORMAT_R16G16B16A16_FLOAT;
     constexpr UINT kTables=NativeCubemaps::Policy::kMipsPerStep;
-    constexpr UINT kDescriptorsPerTable=8;
+    constexpr UINT kDescriptorsPerTable=11;
+    constexpr DXGI_FORMAT kPositionFormat=DXGI_FORMAT_R32G32B32A32_FLOAT;
     struct NativeCaptureConstants {
-        Matrix view{}, projection{};
+        Matrix view{}, projection{}, inverseViewProjection{};
         uint32_t width=0,height=0,materialPitch=0,radiancePitch=0;
+        float4 previousCameraDelta{};
     };
-    constexpr UINT kNativeCaptureDwords=36;
-    static_assert(sizeof(NativeCaptureConstants)==kNativeCaptureDwords*sizeof(uint32_t));
+    static_assert(sizeof(NativeCaptureConstants)<=256);
     struct Constants {
         std::array<float4,3> dalc;
         uint32_t encoding, history, reflection, frameDelta;
@@ -68,7 +69,9 @@ namespace
 
 struct NativeCubemaps::CubeProcessing::Generation
 {
-    EnvironmentCube history,base,reflection;
+    EnvironmentCube history,positions,base,reflection;
+    winrt::com_ptr<ID3D12Resource> captureConstants;
+    float referenceLuminance=0.0f;
     winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
     winrt::com_ptr<ID3D12CommandAllocator> allocator;
     winrt::com_ptr<ID3D12GraphicsCommandList> commands;
@@ -177,13 +180,13 @@ void NativeCubemaps::CubeProcessing::Initialize(const GraphicsBackend& backend)
     }
     auto* device=backend.d3d12Device.get();
     CD3DX12_DESCRIPTOR_RANGE ranges[2];
-    ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,7,0);
-    ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV,1,0);
+    ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,9,0);
+    ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV,2,0);
     CD3DX12_ROOT_PARAMETER params[4];
     params[0].InitAsDescriptorTable(2,ranges);
     params[1].InitAsConstants(16,0);
     params[2].InitAsConstants(4,1);
-    params[3].InitAsConstants(kNativeCaptureDwords,2);
+    params[3].InitAsConstantBufferView(2);
     CD3DX12_STATIC_SAMPLER_DESC samplers[2]{
         CD3DX12_STATIC_SAMPLER_DESC(0,D3D12_FILTER_MIN_MAG_MIP_POINT,D3D12_TEXTURE_ADDRESS_MODE_CLAMP,D3D12_TEXTURE_ADDRESS_MODE_CLAMP,D3D12_TEXTURE_ADDRESS_MODE_CLAMP),
         CD3DX12_STATIC_SAMPLER_DESC(1,D3D12_FILTER_MIN_MAG_MIP_LINEAR,D3D12_TEXTURE_ADDRESS_MODE_CLAMP,D3D12_TEXTURE_ADDRESS_MODE_CLAMP,D3D12_TEXTURE_ADDRESS_MODE_CLAMP)};
@@ -245,10 +248,12 @@ bool NativeCubemaps::CubeProcessing::Dispatch(const GraphicsBackend& backend,
             input->reflection->stamp.engineFrame,input->stamp.engineFrame);
     const auto resourceDesc=[](uint32_t mips) { return CD3DX12_RESOURCE_DESC::Tex2D(kFormat,kSize,kSize,6,static_cast<UINT16>(mips),1,0,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS); };
     const auto rawDesc=resourceDesc(1), filteredDesc=resourceDesc(kMips);
+    const auto positionDesc=CD3DX12_RESOURCE_DESC::Tex2D(kPositionFormat,kSize,kSize,6,1,1,0,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+    const auto positionBytes=device->GetResourceAllocationInfo(0,1,&positionDesc).SizeInBytes;
     const auto rawBytes=device->GetResourceAllocationInfo(0,1,&rawDesc).SizeInBytes;
     const auto filteredBytes=device->GetResourceAllocationInfo(0,1,&filteredDesc).SizeInBytes;
-    if(!rawBytes || !filteredBytes || rawBytes==UINT64_MAX || filteredBytes==UINT64_MAX) return false;
-    const uint64_t required=rawBytes+filteredBytes*(reflection?2:1)+65536;
+    if(!rawBytes || !filteredBytes || !positionBytes || rawBytes==UINT64_MAX || filteredBytes==UINT64_MAX || positionBytes==UINT64_MAX) return false;
+    const uint64_t required=rawBytes+positionBytes+filteredBytes*(reflection?2:1)+2*65536;
     // The selected slot has retired and has no external leases. Remove it
     // from the pool before recording so an exception cannot leave a partially
     // reset command list eligible for reuse.
@@ -268,6 +273,10 @@ bool NativeCubemaps::CubeProcessing::Dispatch(const GraphicsBackend& backend,
             cube.format=kFormat; cube.width=kSize; cube.mipCount=mips;
         };
         allocate(slot->history,1); allocate(slot->base,kMips);
+        const CD3DX12_HEAP_PROPERTIES positionHeap(D3D12_HEAP_TYPE_DEFAULT);
+        Check(device->CreateCommittedResource(&positionHeap,D3D12_HEAP_FLAG_NONE,&positionDesc,D3D12_RESOURCE_STATE_COMMON,nullptr,IID_PPV_ARGS(slot->positions.resource.put())));
+        slot->positions.format=kPositionFormat;slot->positions.width=kSize;slot->positions.mipCount=1;
+        slot->captureConstants=NativeMaterialEvaluation::Buffer(device,256,D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ);
         if(reflection) allocate(slot->reflection,kMips);
         const D3D12_DESCRIPTOR_HEAP_DESC heap{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,kDescriptorsPerTable*kTables,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
         Check(device->CreateDescriptorHeap(&heap,IID_PPV_ARGS(slot->descriptors.put())));
@@ -281,14 +290,18 @@ bool NativeCubemaps::CubeProcessing::Dispatch(const GraphicsBackend& backend,
         cube.stamp=input->stamp; cube.revision=nextFence+1; cube.readyFence=fence;
         cube.readyValue=0;
     };
-    stampCube(slot->history); stampCube(slot->base);
+    stampCube(slot->history); stampCube(slot->positions); stampCube(slot->base);
     if(reflection) stampCube(slot->reflection);
     const uint32_t elapsed=latest ? input->stamp.engineFrame-latest->base.stamp.engineFrame:0;
+    const auto luminance=[](float r,float g,float b){return 0.2126f*r+0.7152f*g+0.0722f*b;};
+    const float ambient=std::max(0.0f,luminance(dalc[0].x,dalc[1].x,dalc[2].x));
+    const auto sun=native?native->direct->directional.radiance:float4{};
+    slot->referenceLuminance=ambient+std::max(0.0f,luminance(sun.x,sun.y,sun.z));
     bool useHistory=false;
     if(latest) {
         const auto& old=latest->cameraPosition;
         const float x=old.x-cameraPosition.x,y=old.y-cameraPosition.y,z=old.z-cameraPosition.z;
-        useHistory=Policy::CanReuseHistory(latest->base.stamp.SameEnvironment(input->stamp),elapsed,x*x+y*y+z*z);
+        useHistory=Policy::CanReuseHistory(latest->base.stamp.SameEnvironment(input->stamp),elapsed,x*x+y*y+z*z) && !Policy::LightingDiscontinuity(latest->referenceLuminance,slot->referenceLuminance);
     }
     if(useHistory) slot->previous=latest;
     slot->constants={dalc,uint32_t(input->stamp.encoding),uint32_t(useHistory),uint32_t(engineReflection) | (!input->stamp.skyHidden ? 2u : 0u) | (input->defaultCube && input->defaultCube->IsReadyFor(input->stamp) ? 4u : 0u),elapsed};
@@ -319,9 +332,16 @@ void NativeCubemaps::CubeProcessing::SubmitStep(const std::shared_ptr<Generation
     NativeCaptureConstants nativeConstants{};
     if(history && native) {
         const auto& camera=native->material->raster->camera;
-        nativeConstants={camera.CameraView,camera.CameraProj,native->width,native->height,native->material->rowPitch,native->width*FullNativeReconstructionFrame::environmentRadianceStride};
+        nativeConstants={camera.CameraView,camera.CameraProj,camera.CameraViewProjInverse,native->width,native->height,native->material->rowPitch,native->width*FullNativeReconstructionFrame::environmentRadianceStride};
     }
-    cmd->SetComputeRoot32BitConstants(3,kNativeCaptureDwords,&nativeConstants,0);
+    if(history && slot->previous) {
+        const auto& old=slot->previous->cameraPosition; const auto& now=slot->cameraPosition;
+        nativeConstants.previousCameraDelta={old.x-now.x,old.y-now.y,old.z-now.z,0};
+    }
+    void* mapped=nullptr;const D3D12_RANGE noRead{};
+    Check(slot->captureConstants->Map(0,&noRead,&mapped));
+    std::memcpy(mapped,&nativeConstants,sizeof(nativeConstants));slot->captureConstants->Unmap(0,nullptr);
+    cmd->SetComputeRootConstantBufferView(3,slot->captureConstants->GetGPUVirtualAddress());
     UINT table=0;
     const auto run=[&](const EnvironmentCube* source,const EnvironmentCube* previous,const EnvironmentCube* reflection,EnvironmentCube& destination,uint32_t mip,bool isReflection) {
         const UINT offset=kDescriptorsPerTable*table++;
@@ -332,10 +352,15 @@ void NativeCubemaps::CubeProcessing::SubmitStep(const std::shared_ptr<Generation
         RawSRV(device,history && native ? native->environmentRadiance.get():nullptr,{cpu.ptr+SIZE_T(offset+4)*step});
         RawSRV(device,history && native ? native->ownershipMask.get():nullptr,{cpu.ptr+SIZE_T(offset+5)*step});
         CubeSRV(device,!history && mip==0 && (slot->constants.reflection&4u)!=0u?input->defaultCube.get():nullptr,{cpu.ptr+SIZE_T(offset+6)*step});
+        CubeSRV(device,history && slot->previous?&slot->previous->positions:nullptr,{cpu.ptr+SIZE_T(offset+7)*step});
+        D3D12_SHADER_RESOURCE_VIEW_DESC depthView{};depthView.Format=DXGI_FORMAT_R32_FLOAT;depthView.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D;depthView.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;depthView.Texture2D.MipLevels=1;
+        device->CreateShaderResourceView(history && native?native->material->raster->depth->resource.get():nullptr,&depthView,{cpu.ptr+SIZE_T(offset+8)*step});
         D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
         uav.Format=kFormat; uav.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
         uav.Texture2DArray.MipSlice=mip; uav.Texture2DArray.ArraySize=6;
-        device->CreateUnorderedAccessView(destination.resource.get(),nullptr,&uav,{cpu.ptr+SIZE_T(offset+7)*step});
+        device->CreateUnorderedAccessView(destination.resource.get(),nullptr,&uav,{cpu.ptr+SIZE_T(offset+9)*step});
+        uav.Format=kPositionFormat;uav.Texture2DArray.MipSlice=0;
+        device->CreateUnorderedAccessView(history?slot->positions.resource.get():nullptr,nullptr,&uav,{cpu.ptr+SIZE_T(offset+10)*step});
         const uint32_t size=std::max(1u,kSize>>mip);
         const uint32_t dispatch[]{size,mip,kMips,uint32_t(isReflection)};
         cmd->SetComputeRootDescriptorTable(0,{gpu.ptr+UINT64(offset)*step});
@@ -348,12 +373,16 @@ void NativeCubemaps::CubeProcessing::SubmitStep(const std::shared_ptr<Generation
     if(history) {
         const auto* previous=slot->previous?&slot->previous->history:nullptr;
         if(slot->rasterReady) Transition(cmd,input->base->resource.get(),common,read);
-        if(previous) Transition(cmd,previous->resource.get(),common,read);
+        if(previous) {Transition(cmd,previous->resource.get(),common,read);Transition(cmd,slot->previous->positions.resource.get(),common,read);}
+        if(native) Transition(cmd,native->material->raster->depth->resource.get(),common,read);
+        Transition(cmd,slot->positions.resource.get(),common,write);
         Transition(cmd,slot->history.resource.get(),common,write);
         run(slot->rasterReady?input->base.get():nullptr,previous,nullptr,slot->history,0,false);
         Transition(cmd,slot->history.resource.get(),write,common);
         if(slot->rasterReady) Transition(cmd,input->base->resource.get(),read,common);
-        if(previous) Transition(cmd,previous->resource.get(),read,common);
+        if(previous) {Transition(cmd,previous->resource.get(),read,common);Transition(cmd,slot->previous->positions.resource.get(),read,common);}
+        if(native) Transition(cmd,native->material->raster->depth->resource.get(),read,common);
+        Transition(cmd,slot->positions.resource.get(),write,common);
     } else {
         auto& cube=reflected?slot->reflection:slot->base;
         const bool inference=slot->cursor.mip==0;

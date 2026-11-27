@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -57,6 +58,14 @@ namespace NativeCubemaps::Policy
         // A normal advancing game clock must not invalidate an in-flight cube.
         return std::isfinite(previous) && std::isfinite(current) &&
             (current < previous || current - previous > 0.25f);
+    }
+
+    inline bool LightingDiscontinuity(float previous,float current)
+    {
+        if(!std::isfinite(previous)||!std::isfinite(current))return true;
+        if(previous<0||current<0)return true;
+        if(previous<0.001f && current<0.001f)return false;
+        return std::abs(std::log2(std::max(current,0.0001f)/std::max(previous,0.0001f)))>=1.0f;
     }
 
     struct WaterHistoryIdentity

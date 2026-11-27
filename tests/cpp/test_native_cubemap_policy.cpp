@@ -95,3 +95,13 @@ TEST_CASE("Cubemap face freshness cannot be extended by refreshing just one face
     faces={};faces.Observe(0x3fu,UINT32_MAX-1);
     REQUIRE(faces.Fresh(1));
 }
+
+TEST_CASE("Cubemap lighting discontinuities are separate from normal exposure evolution", "[dx12][cubemaps]")
+{
+    REQUIRE_FALSE(LightingDiscontinuity(1.0f,1.1f));
+    REQUIRE(LightingDiscontinuity(1.0f,2.0f));
+    REQUIRE(LightingDiscontinuity(1.0f,0.5f));
+    REQUIRE_FALSE(LightingDiscontinuity(0.0f,0.0001f));
+    REQUIRE(LightingDiscontinuity(0.0f,1.0f));
+    REQUIRE(LightingDiscontinuity(1.0f,std::numeric_limits<float>::quiet_NaN()));
+}
