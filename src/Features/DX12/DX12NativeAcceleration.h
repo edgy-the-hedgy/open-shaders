@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DX12NativeSceneInputs.h"
+#include "DX12NativeMaterialEvaluation.h"
 #include "GraphicsBackend.h"
 #include "VideoMemoryBudget.h"
 
@@ -23,6 +24,8 @@ namespace DX12Native
 	struct TopLevel
 	{
 		std::shared_ptr<const SceneInputs> inputs;
+		std::shared_ptr<const NativeMaterialEvaluation> materialEvaluation;
+		std::string materialFailure;
 		std::vector<std::shared_ptr<const BottomLevel>> bottoms;
 		winrt::com_ptr<ID3D12Resource> acceleration;
 		winrt::com_ptr<ID3D12Fence> producerFence;
@@ -66,6 +69,7 @@ namespace DX12Native
 			winrt::com_ptr<ID3D12GraphicsCommandList4> commands;
 			winrt::com_ptr<ID3D12Resource> sourceUpload;
 			winrt::com_ptr<ID3D12Resource> scratch;
+			std::vector<NativeMaterialEvaluation::Upload> materialUploads;
 			std::shared_ptr<BottomLevel> bottom;
 			std::shared_ptr<TopLevel> top;
 			uint64_t fence = 0, generation = 0;
@@ -87,6 +91,7 @@ namespace DX12Native
 		std::unordered_map<uint64_t, std::shared_ptr<const BottomLevel>> bottoms;
 		std::shared_ptr<const SceneInputs> target;
 		std::shared_ptr<const TopLevel> published;
+		NativeMaterialEvaluation::TextureCache materialTextures;
 		uint64_t generation = 0, nextFence = 0;
 		uint64_t targetRevision = 0;
 		uint32_t targetScope = 0;

@@ -248,6 +248,18 @@ namespace DX12Native
 			D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, L"DX12NativeScene::TLAS");
 		a_build.scratch = Buffer(info.ScratchDataSizeInBytes, D3D12_HEAP_TYPE_DEFAULT,
 			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"DX12NativeScene::TLASScratch");
+		// Only Full Native publishes material candidates. Shadow modes do not enter this path.
+		if (target->materials && !target->materials->recipes.empty()) {
+			try {
+				top->materialEvaluation = NativeMaterialEvaluation::Prepare(device.get(), *target->materials, *target, materialTextures, a_build.materialUploads);
+				if (!top->materialEvaluation)
+					top->materialFailure = "Material allocation deferred or unavailable";
+			} catch (const std::exception& error) {
+				top->materialFailure = error.what();
+			}
+			if (!top->materialEvaluation)
+				a_build.materialUploads.clear();
+		}
 		a_build.top = std::move(top);
 		Begin(a_build);
 		D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build{};
@@ -257,6 +269,8 @@ namespace DX12Native
 		a_build.commands->BuildRaytracingAccelerationStructure(&build, 0, nullptr);
 		const auto barrier = CD3DX12_RESOURCE_BARRIER::UAV(a_build.top->acceleration.get());
 		a_build.commands->ResourceBarrier(1, &barrier);
+		if (a_build.top->materialEvaluation)
+			NativeMaterialEvaluation::RecordUploads(a_build.commands.get(), a_build.materialUploads);
 		Submit(a_build);
 		a_build.top->producerValue = a_build.fence;
 		return true;
@@ -284,8 +298,13 @@ namespace DX12Native
 			if (build.generation == generation) {
 				if (build.bottom)
 					bottoms[build.bottom->shape->identity] = build.bottom;
-				if (build.top)
+				if (build.top) {
+					if (build.top->materialEvaluation)
+						materialTextures = build.top->materialEvaluation->textures;
+					else
+						materialTextures.clear();
 					published = build.top;
+				}
 			}
 			build = {};
 		}
@@ -296,6 +315,7 @@ namespace DX12Native
 		++generation;
 		target.reset();
 		bottoms.clear();
+		materialTextures.clear();
 		published.reset();
 		targetRevision = 0;
 		targetScope = 0;

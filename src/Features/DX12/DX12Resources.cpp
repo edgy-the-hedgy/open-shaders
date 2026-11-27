@@ -902,7 +902,12 @@ void DX12Resources::DrawDevResourceStatus()
 				const auto& materials = *inputs.materials;
 				ImGui::Text("%s", std::format("Material sources: {} | Recipes: {} | Missing: {} | Unknown authored flags: {} | Limited: {}",
 					materials.sources, materials.recipes.size(), materials.missing, materials.unknownAuthored, materials.limited).c_str());
-				ImGui::Text("%s", std::format("Resolved TXST: {} | MATO: {} | GPU residency: not submitted", materials.resolvedTxst, materials.resolvedMato).c_str());
+				ImGui::Text("%s", std::format("Resolved TXST: {} | MATO: {}", materials.resolvedTxst, materials.resolvedMato).c_str());
+				if (const auto& gpu = scene->materialEvaluation) {
+					ImGui::Text("%s", std::format("GPU material recipes: {} | DDS pages: {} | failed: {} | reused: {} | bytes: {}", gpu->residentRecipes, gpu->textures.size(), gpu->failedTextures, gpu->reusedTextures, gpu->textureBytes).c_str());
+				} else if (!scene->materialFailure.empty()) {
+					ImGui::TextWrapped("%s", scene->materialFailure.c_str());
+				}
 			}
 			ImGui::Text(T("menu.dx12.resources.geometry_counts", "Published sources: prepared %zu | observed %zu | duplicates %zu"),
 				inputs.preparedShapes, inputs.observedShapes, inputs.duplicateShapes);
