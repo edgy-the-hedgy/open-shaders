@@ -170,9 +170,11 @@ bool ShadeNativeSecondary(uint instance,uint primitive,float2 bary,float3x3 worl
     if(binding.materialIndex==0xffffffffu||(binding.flags&SurfaceMissingBaseTexturesBinding)!=0u)return false;
     uint projectionRow=0xffffffffu;
     if((binding.flags&SurfaceBaseOnlyBinding)!=0u){
-        if((binding.flags&SurfaceSecondaryProjectionBinding)==0u||projectionRows==0u)return false;
-        projectionRow=ProjectionLookup.Load(instance*4u);
-        if(projectionRow>=projectionRows)return false;
+        if((binding.flags&SurfaceSecondaryProjectionBinding)!=0u){
+            if(projectionRows==0u)return false;
+            projectionRow=ProjectionLookup.Load(instance*4u);
+            if(projectionRow>=projectionRows)return false;
+        }else if((binding.flags&SurfaceSecondaryParallaxBinding)==0u)return false;
     }
     // A conservative ray-cone LOD avoids always sampling mip zero on long,
     // rough reflection rays. Primary raster gradients remain unchanged.
@@ -188,5 +190,64 @@ bool ShadeNativeSecondary(uint instance,uint primitive,float2 bary,float3x3 worl
     return ShadeNativeSecondarySurface(s,coat,height,worldToObject,front,world,rayDirection,distance,pixel,
         lobe,frame,quality,instanceCount,characters,lightCount,sunDirection,sunRadiance,foliage,radiance);
 }
+
+
+#if defined(NATIVE_CHARACTER_REFLECTION)
+// The actor BLAS is one merged geometry. Committed primitive IDs address
+// exactly the index and part streams retained by the same posed frame.
+bool ShadeNativeCharacterSecondary(uint instance,uint primitive,float2 bary,bool front,
+    float3 world,float3 rayDirection,float distance,float footprint,uint2 pixel,uint lobe,uint frame,uint quality,
+    uint instanceCount,uint characters,uint lightCount,float4 sunDirection,float4 sunRadiance,uint foliage,
+    uint materialControls,uint vertexCount,uint triangleCount,uint partCount,out float3 radiance)
+{
+    radiance=0;
+    if(instance!=0u||primitive>=triangleCount||vertexCount==0u||partCount==0u||lightCount>SecondaryMaxLightCount)return false;
+    uint part=CharacterIndices.Load(triangleCount*12u+primitive*4u);
+    if(part>=partCount)return false;
+    Binding binding=CharacterBindings[part];
+    if(binding.materialIndex==0xffffffffu||(binding.flags&(SurfaceMissingBaseTexturesBinding|512u))!=0u||
+       ((binding.flags&SurfaceBaseOnlyBinding)!=0u&&(binding.flags&SurfaceSecondaryParallaxBinding)==0u))return false;
+    MaterialRecord material=CharacterMaterialRecords[binding.materialIndex];
+    if(any(material.identity.xy!=binding.identity)||any(material.identity.zw!=binding.revision))return false;
+    // Character textures occupy an independent descriptor bank. Only actual
+    // descriptor indices are rebased; absent slots and location metadata stay unchanged.
+    [unroll]for(uint i=0u;i<4u;++i){
+        if(material.textures[i].x<512u)material.textures[i].x+=512u;
+        if(material.textures[i].z<512u)material.textures[i].z+=512u;
+    }
+    uint3 ix=CharacterIndices.Load3(primitive*12u);
+    if(any(ix>=vertexCount))return false;
+    NativeMaterialTriangle triangle=(NativeMaterialTriangle)0;
+    triangle.hasPositions=true;triangle.hasTangents=true;
+    [unroll]for(uint j=0u;j<3u;++j){
+        uint offset=ix[j]*72u;
+        triangle.positions[j]=asfloat(CharacterPositions.Load3(offset));
+        triangle.normals[j]=asfloat(CharacterPositions.Load3(offset+12u));
+        triangle.uv[j]=asfloat(CharacterPositions.Load2(offset+24u));
+        triangle.colors[j]=asfloat(CharacterPositions.Load4(offset+32u));
+        triangle.tangents[j]=asfloat(CharacterPositions.Load3(offset+48u));
+        triangle.bitangents[j]=asfloat(CharacterPositions.Load3(offset+60u));
+        if(!all(isfinite(triangle.positions[j]))||!all(isfinite(triangle.normals[j]))||
+           dot(triangle.normals[j],triangle.normals[j])<1e-8||!all(isfinite(triangle.uv[j]))||
+           !all(isfinite(triangle.colors[j])))return false;
+        triangle.hasTangents=triangle.hasTangents&&all(isfinite(triangle.tangents[j]))&&
+           all(isfinite(triangle.bitangents[j]))&&dot(triangle.tangents[j],triangle.tangents[j])>1e-8&&
+           dot(triangle.bitangents[j],triangle.bitangents[j])>1e-8;
+    }
+    const float3x3 identity=float3x3(1,0,0,0,1,0,0,0,1);
+    float lod=clamp(log2(max(1.0,distance*max(footprint,0.001)/16.0)),0.0,8.0);
+    float3 tangent=normalize(cross(rayDirection,abs(rayDirection.z)<0.99?float3(0,0,1):float3(0,1,0)));
+    float3 bitangent=cross(rayDirection,tangent);
+    float footprintWorld=max(0.01,distance*max(footprint,0.001)*0.01);
+    float noise=NativeEmitterRandom(NativeEmitterHash(pixel.x^NativeEmitterHash(pixel.y)^frame),0x68bc21ebu);
+    bool rawUsed;NativeCoatSample coat;NativeParallaxShadowSample height;
+    Sample s=EvaluateMaterialTriangle(binding,material,triangle,0u,float3(1.0-bary.x-bary.y,bary),
+        rayDirection*distance,tangent*footprintWorld,bitangent*footprintWorld,1.0,distance,identity,identity,
+        (materialControls&1u)!=0u&&(binding.flags&SurfaceParallaxReadyBinding)!=0u,false,
+        (materialControls&2u)!=0u,lod,0xffffffffu,world,noise,(RawRasterSurface)0,rawUsed,coat,height);
+    return ShadeNativeSecondarySurface(s,coat,height,identity,front,world,rayDirection,distance,pixel,
+        lobe,frame,quality,instanceCount,characters,lightCount,sunDirection,sunRadiance,foliage,radiance);
+}
+#endif
 
 #endif

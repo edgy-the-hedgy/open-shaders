@@ -15,6 +15,7 @@ RaytracingAccelerationStructure Scene : register(t6);
 #define NATIVE_RECORD_REGISTER t8
 #define NATIVE_BINDING_REGISTER t9
 #define NATIVE_TEXTURE_REGISTER t10
+#define NATIVE_CHARACTER_REFLECTION
 #include "NativeMaterialAlpha.hlsli"
 ByteAddressBuffer MaterialLobes : register(t522);
 RaytracingAccelerationStructure CharacterScene : register(t523);
@@ -71,7 +72,7 @@ cbuffer IndirectInputs : register(b0)
     uint SecondaryLightCount, SecondaryFoliage;
     uint SkyAvailable, SecondaryMaterialControls;
     uint SecondaryProjectionRows;
-    uint3 SecondaryProjectionPadding;
+    uint CharacterVertexCount, CharacterTriangleCount, CharacterPartCount;
 };
 #include "NativeSecondaryReflection.hlsli"
 
@@ -184,15 +185,26 @@ float3 ResolveRayReflection(uint2 receiver,float3 world,float3 normal,float3 dir
             AcceptAlpha(query.CandidateInstanceID(),query.CandidatePrimitiveIndex(),query.CandidateTriangleBarycentrics(),InstanceCount))
             query.CommitNonOpaqueTriangleHit();
     }
-    if(query.CommittedStatus()!=COMMITTED_TRIANGLE_HIT) return fallback;
-    const float distance=query.CommittedRayT();
-    if(CharacterCastersEnabled!=0u) {
+    const bool staticHit=query.CommittedStatus()==COMMITTED_TRIANGLE_HIT;
+    const float distance=staticHit?query.CommittedRayT():ray.TMax;
+    if(CharacterCastersEnabled!=0u && distance>ray.TMin) {
         ray.TMax=distance;
-        RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> character;
+        RayQuery<RAY_FLAG_FORCE_OPAQUE> character;
         character.TraceRayInline(CharacterScene,RAY_FLAG_NONE,0xff,ray);
         while(character.Proceed()) {}
-        if(character.CommittedStatus()!=COMMITTED_NOTHING) return fallback;
+        if(character.CommittedStatus()==COMMITTED_TRIANGLE_HIT) {
+            const float hitDistance=character.CommittedRayT();
+            float3 characterRadiance;
+            if(ShadeNativeCharacterSecondary(character.CommittedInstanceID(),character.CommittedPrimitiveIndex(),
+                character.CommittedTriangleBarycentrics(),character.CommittedTriangleFrontFace(),
+                ray.Origin+d*hitDistance,d,hitDistance,roughness,receiver,lobe,FrameIndex,QualityMode,
+                InstanceCount,CharacterCastersEnabled,SecondaryLightCount,SecondarySunDirection,SecondarySunRadiance,
+                SecondaryFoliage,SecondaryMaterialControls,CharacterVertexCount,CharacterTriangleCount,CharacterPartCount,characterRadiance))
+                return lerp(fallback,characterRadiance,saturate(1.0-roughness/0.45));
+            return fallback;
+        }
     }
+    if(!staticHit)return fallback;
     const uint2 committed=uint2(query.CommittedInstanceID(),query.CommittedPrimitiveIndex());
     float3 secondary;
     if (ShadeNativeSecondary(committed.x,committed.y,query.CommittedTriangleBarycentrics(),

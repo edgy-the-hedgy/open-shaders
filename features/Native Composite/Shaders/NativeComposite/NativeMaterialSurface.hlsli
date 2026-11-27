@@ -53,7 +53,12 @@ float NativeParallaxFlatten(float3 normal, float3 normalX, float3 normalY,
 float NativeParallaxMarchMip(uint textureIndex, float2 dx, float2 dy, float viewDistance, bool validGradients, float mipBias, out float shadowMip)
 {
     uint width,height,layers,levels;
-    Textures[NonUniformResourceIndex(textureIndex)].GetDimensions(0u,width,height,layers,levels);
+#if defined(NATIVE_CHARACTER_REFLECTION)
+    if (textureIndex >= 512u)
+        CharacterTextures[NonUniformResourceIndex(textureIndex-512u)].GetDimensions(0u,width,height,layers,levels);
+    else
+#endif
+        Textures[NonUniformResourceIndex(textureIndex)].GetDimensions(0u,width,height,layers,levels);
     float baseMip=0.0;
     if (validGradients) {
         float2 dxSize=dx*float2(width,height), dySize=dy*float2(width,height);

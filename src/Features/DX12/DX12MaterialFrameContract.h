@@ -19,6 +19,8 @@ namespace DX12Native::MaterialFrameContract
 	inline constexpr uint32_t kFoliageReadyBinding = 1u << 6;
 	// Only projection is missing; secondary shading may use a matching published row.
 	inline constexpr uint32_t kSecondaryProjectionBinding = 1u << 7;
+	// Only screen displacement remains limited; secondary rays can evaluate the resident height field.
+	inline constexpr uint32_t kSecondaryParallaxBinding = 1u << 30;
 	inline constexpr uint32_t kLightingStride = 24;
 	// Transmission is independently evaluated by both lighting producers.
 	constexpr bool CompleteTransmission(bool directValid, bool indirectValid) { return directValid && indirectValid; }

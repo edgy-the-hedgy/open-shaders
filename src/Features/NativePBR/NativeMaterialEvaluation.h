@@ -518,6 +518,9 @@ namespace DX12Native
 				}
 				if (capability.issues == NativePBR::ScreenProjection && !(flags & (uint64_t(1) << 12)))
 					binding.flags |= MaterialFrameContract::kSecondaryProjectionBinding;
+				if (capability.issues == NativePBR::ScreenDisplacement &&
+					(binding.flags & MaterialFrameContract::kParallaxReadyBinding) && !(flags & (uint64_t(1) << 12)))
+					binding.flags |= MaterialFrameContract::kSecondaryParallaxBinding;
 				result->surfaceCapabilities.Observe(recipe, capability, authoredProjectedUv);
 				if (capability.issues) {
 					binding.flags |= MaterialFrameContract::kBaseOnlyBinding;

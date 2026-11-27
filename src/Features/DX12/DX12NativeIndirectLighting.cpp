@@ -32,10 +32,11 @@ namespace DX12Native
             uint32_t ssrEnabled, directPitch, rayPitch, tokenCount;
             float4 secondarySunDirection, secondarySunRadiance;
             uint32_t secondaryLightCount, secondaryFoliage, skyAvailable, secondaryMaterialControls;
-            uint32_t secondaryProjectionRows, paddingProjection[3]{};
+            uint32_t secondaryProjectionRows, characterVertices, characterTriangles, characterParts;
         };
         static_assert(sizeof(Constants) == 528);
         constexpr uint64_t kSHBytes = 48;
+        constexpr UINT kCharacterTextureOffset = 6 + NativePBR::kGpuTextureDescriptorCapacity + kProjectedTextureCapacity;
 
         void BuildPipeline(ID3D12Device* device, const std::filesystem::path& path, UINT count, CD3DX12_ROOT_PARAMETER* parameters,
             winrt::com_ptr<ID3D12RootSignature>& root, winrt::com_ptr<ID3D12PipelineState>& pipeline)
@@ -148,15 +149,16 @@ namespace DX12Native
         projectionParameters[0].InitAsDescriptorTable(1, &projectionRange);
         projectionParameters[1].InitAsUnorderedAccessView(0);
         projectionParameters[2].InitAsConstants(1, 0);
-        CD3DX12_DESCRIPTOR_RANGE ranges[5];
+        CD3DX12_DESCRIPTOR_RANGE ranges[6];
         ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1, 0, 0);
         ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 4, 0, 1);
         ranges[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NativePBR::kGpuTextureDescriptorCapacity, 10, 0, 4);
         ranges[3].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 527, 0, 4 + NativePBR::kGpuTextureDescriptorCapacity);
         ranges[4].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,1+kProjectedTextureCapacity,530,0,5+NativePBR::kGpuTextureDescriptorCapacity);
-        CD3DX12_ROOT_PARAMETER parameters[17];
+        ranges[5].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,NativePBR::kGpuTextureDescriptorCapacity,4,1,kCharacterTextureOffset);
+        CD3DX12_ROOT_PARAMETER parameters[21];
         parameters[0].InitAsShaderResourceView(0);
-        parameters[1].InitAsDescriptorTable(5, ranges);
+        parameters[1].InitAsDescriptorTable(6, ranges);
         parameters[2].InitAsShaderResourceView(2);
         parameters[3].InitAsShaderResourceView(3);
         parameters[4].InitAsUnorderedAccessView(0);
@@ -172,11 +174,12 @@ namespace DX12Native
         parameters[14].InitAsShaderResourceView(526);
         parameters[15].InitAsShaderResourceView(528);
         parameters[16].InitAsShaderResourceView(529);
+        for (UINT i=0;i<4;++i) parameters[17+i].InitAsShaderResourceView(i,1);
         winrt::com_ptr<ID3D12RootSignature> pr, ir;
         winrt::com_ptr<ID3D12PipelineState> pp, ip;
         winrt::com_ptr<ID3D12Fence> fence;
         BuildPipeline(device, Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativeDiffuseSH.dxil", 3, projectionParameters, pr, pp);
-        BuildPipeline(device, Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativeIndirectLighting.dxil", 17, parameters, ir, ip);
+        BuildPipeline(device, Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativeIndirectLighting.dxil", 21, parameters, ir, ip);
         Eval::Check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(fence.put())));
         owner = backend;
         projectionRoot = std::move(pr); projectionPipeline = std::move(pp);
@@ -267,7 +270,7 @@ namespace DX12Native
                 replacement->samples->SetName(L"NativeLighting::IndirectDiffuseSpecular");
                 replacement->constants = Eval::Buffer(device, 768, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
                 D3D12_DESCRIPTOR_HEAP_DESC heap{};
-                heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; heap.NumDescriptors = 6 + NativePBR::kGpuTextureDescriptorCapacity + kProjectedTextureCapacity; heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+                heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; heap.NumDescriptors = kCharacterTextureOffset + NativePBR::kGpuTextureDescriptorCapacity; heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
                 Eval::Check(device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(replacement->descriptors.put())));
                 Eval::Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(replacement->allocator.put())));
                 Eval::Check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, replacement->allocator.get(), pipeline.get(), IID_PPV_ARGS(replacement->commands.put())));
@@ -300,6 +303,9 @@ namespace DX12Native
             CubeView(device, env.reflection ? *env.reflection : *env.base, cpu(2));
             CubeView(device, env.sky ? *env.sky : *env.base, cpu(3));
             slot->material->scene->materialEvaluation->WriteTextureViews(device, cpu(4));
+            const auto* actor = slot->characters ? slot->characters->ReflectionActor() : nullptr;
+            const auto& actorEvaluation = actor ? *actor->materials->evaluation : *slot->material->scene->materialEvaluation;
+            actorEvaluation.WriteTextureViews(device, cpu(kCharacterTextureOffset));
             const auto ssrEvidence = slot->screenSpaceReflections && validEvidence ? evidence : nullptr;
             const auto projection=slot->screenSpaceReflections && slot->material->projection && slot->material->projectionLookup &&
                 slot->material->projection->Ready(stamp)?slot->material->projection:nullptr;
@@ -342,7 +348,7 @@ namespace DX12Native
                 slot->ssrDirect && slot->ssrDirect->foliageScattering ? 1u : 0u,
                 slot->skySH ? 1u : 0u,
                 uint32_t(slot->material->parallaxEnabled) | (uint32_t(slot->material->parallaxShadows)<<1u),
-                projection?projection->rowCount:0u };
+                projection?projection->rowCount:0u, actor?actor->vertices:0u, actor?actor->triangles:0u, actor?actor->parts:0u };
             void* mapped = nullptr; const D3D12_RANGE noRead{};
             Eval::Check(slot->constants->Map(0, &noRead, &mapped));
             std::memcpy(mapped, &constants, sizeof(constants)); slot->constants->Unmap(0, nullptr);
@@ -372,6 +378,10 @@ namespace DX12Native
             cmd->SetComputeRootShaderResourceView(14, ssrEvidence ? ssrEvidence->tokenTable->GetGPUVirtualAddress() : materialAddress);
             cmd->SetComputeRootShaderResourceView(15, slot->ssrDirect ? slot->ssrDirect->lights->GetGPUVirtualAddress() : materialAddress);
             cmd->SetComputeRootShaderResourceView(16,projection?slot->material->projectionLookup->GetGPUVirtualAddress():materialAddress);
+            cmd->SetComputeRootShaderResourceView(17,actor?actor->positions->GetGPUVirtualAddress():materialAddress);
+            cmd->SetComputeRootShaderResourceView(18,actor?actor->indices->GetGPUVirtualAddress():materialAddress);
+            cmd->SetComputeRootShaderResourceView(19,actorEvaluation.records->GetGPUVirtualAddress());
+            cmd->SetComputeRootShaderResourceView(20,actorEvaluation.bindings->GetGPUVirtualAddress());
             TransitionProjectionViews(cmd,projection.get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             if (tokens) Transition(cmd, tokens, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             cmd->Dispatch((ShadowPhysicalWidth(ShadowLogicalExtent(width, slot->quality), slot->quality) + 7) / 8,

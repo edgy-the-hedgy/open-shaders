@@ -5,7 +5,7 @@
 float NativeHeightVisibility(NativeParallaxShadowSample sample, float3 light, float viewDistance, float noise)
 {
     uint encoded=sample.textureAndMode&65535u;
-    if (encoded==0u || encoded>512u || !all(isfinite(sample.uv)) ||
+    if (encoded==0u || encoded>NativeTextureIndexLimit || !all(isfinite(sample.uv)) ||
         !all(isfinite(sample.tangentScale)) || !all(isfinite(sample.bitangentMip)) ||
         !isfinite(sample.height) || sample.tangentScale.w<=0.0) return 1.0;
     uint textureIndex=encoded-1u;

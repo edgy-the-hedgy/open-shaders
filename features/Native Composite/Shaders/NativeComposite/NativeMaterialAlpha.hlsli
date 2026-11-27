@@ -11,12 +11,31 @@ ByteAddressBuffer Geometry : register(NATIVE_GEOMETRY_REGISTER);
 StructuredBuffer<MaterialRecord> MaterialRecords : register(NATIVE_RECORD_REGISTER);
 StructuredBuffer<Binding> Bindings : register(NATIVE_BINDING_REGISTER);
 Texture2DArray<float4> Textures[512] : register(NATIVE_TEXTURE_REGISTER);
+#if defined(NATIVE_CHARACTER_REFLECTION)
+ByteAddressBuffer CharacterPositions : register(t0, space1);
+ByteAddressBuffer CharacterIndices : register(t1, space1);
+StructuredBuffer<MaterialRecord> CharacterMaterialRecords : register(t2, space1);
+StructuredBuffer<Binding> CharacterBindings : register(t3, space1);
+Texture2DArray<float4> CharacterTextures[512] : register(t4, space1);
+static const uint NativeTextureIndexLimit = 1024u;
+#else
+static const uint NativeTextureIndexLimit = 512u;
+#endif
 SamplerState ClampClamp : register(s0);
 SamplerState ClampWrap : register(s1);
 SamplerState WrapClamp : register(s2);
 SamplerState WrapWrap : register(s3);
 float4 TexLevel(uint index, float2 uv, uint mode, float mip)
 {
+#if defined(NATIVE_CHARACTER_REFLECTION)
+    if (index >= 512u) {
+        uint characterSlot = NonUniformResourceIndex(index - 512u);
+        if (mode == 0u) return CharacterTextures[characterSlot].SampleLevel(ClampClamp, float3(uv,0), mip);
+        if (mode == 1u) return CharacterTextures[characterSlot].SampleLevel(ClampWrap, float3(uv,0), mip);
+        if (mode == 2u) return CharacterTextures[characterSlot].SampleLevel(WrapClamp, float3(uv,0), mip);
+        return CharacterTextures[characterSlot].SampleLevel(WrapWrap, float3(uv,0), mip);
+    }
+#endif
     uint slot = NonUniformResourceIndex(index);
     if (mode == 0u) return Textures[slot].SampleLevel(ClampClamp, float3(uv,0), mip);
     if (mode == 1u) return Textures[slot].SampleLevel(ClampWrap, float3(uv,0), mip);

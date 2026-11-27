@@ -47,6 +47,18 @@ namespace DX12Native
         winrt::com_ptr<ID3D12RootSignature> root;
         winrt::com_ptr<ID3D12PipelineState> pipeline;
 
+        // In a combined TLAS instance 0 is the actor BLAS only when actorSource
+        // exists. Mover-only frames and independently transformed movers have
+        // no actor material ordinals and must never sample the actor tables.
+        const CharacterCasterFrame* ReflectionActor() const
+        {
+            const auto* actor = actorSource ? actorSource.get() : this;
+            return actor->scope == scope && actor->vertices && actor->triangles && actor->parts &&
+                actor->positions && actor->indices && actor->materials && actor->materials->scope == scope &&
+                actor->materials->Ready() && actor->materials->evaluation->instanceCount == actor->parts &&
+                actor->materials->evaluation->revision == actor->materials->generation ? actor : nullptr;
+        }
+
         bool Submitted(uint32_t expectedFrame, uint32_t expectedScope) const
         {
             return expectedFrame - frame <= allowedAge && scope == expectedScope && acceleration && readyFence &&
