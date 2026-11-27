@@ -52,7 +52,37 @@ namespace DX12Native
 		}
 	};
 
-	/** @brief GPU-only projection publication. No readback, waits on CPU, or changes to raster lighting. */
+	// Recreate typed views; never copy from a shader-visible descriptor heap.
+    inline void WriteProjectionViews(ID3D12Device* device,const ProjectedInputFrame* frame,D3D12_CPU_DESCRIPTOR_HANDLE start)
+    {
+        const auto step=device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        D3D12_SHADER_RESOURCE_VIEW_DESC view{};
+        view.Format=DXGI_FORMAT_R32G32B32A32_UINT;view.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D;
+        view.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;view.Texture2D.MipLevels=1;
+        device->CreateShaderResourceView(frame?frame->records->resource.get():nullptr,&view,start);
+        for(uint32_t index=0;index<kProjectedTextureCapacity;++index){
+            view.Format=DXGI_FORMAT_R8G8B8A8_UNORM;view.Texture2D.MostDetailedMip=0;view.Texture2D.MipLevels=1;
+            ID3D12Resource* resource=nullptr;
+            if(frame&&index<frame->textures.size()){
+                const auto& texture=frame->textures[index];
+                view.Format=texture.view.Format;view.Texture2D.MostDetailedMip=texture.view.Texture2D.MostDetailedMip;
+                view.Texture2D.MipLevels=texture.view.Texture2D.MipLevels;resource=texture.shared->resource.get();
+            }
+            device->CreateShaderResourceView(resource,&view,{start.ptr+SIZE_T(index+1)*step});
+        }
+    }
+    inline void TransitionProjectionViews(ID3D12GraphicsCommandList* cmd,const ProjectedInputFrame* frame,D3D12_RESOURCE_STATES from,D3D12_RESOURCE_STATES to)
+    {
+        if(!frame)return;
+        std::vector<D3D12_RESOURCE_BARRIER> barriers;
+        barriers.reserve(frame->textures.size()+1);
+        barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(frame->records->resource.get(),from,to));
+        for(const auto& texture:frame->textures)
+            barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(texture.shared->resource.get(),from,to));
+        cmd->ResourceBarrier(UINT(barriers.size()),barriers.data());
+    }
+
+    /** @brief GPU-only projection publication. No readback, waits on CPU, or changes to raster lighting. */
 	class ProjectedInputCapture
 	{
 		struct alignas(16) PackConstants

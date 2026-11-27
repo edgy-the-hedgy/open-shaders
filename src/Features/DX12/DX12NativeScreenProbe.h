@@ -141,6 +141,8 @@ namespace DX12Native
 			bool parallaxEnabled = false, parallaxShadows = false;
 			uint32_t rawInputDraws = 0;
 			std::shared_ptr<const FullNativeRasterEvidence> rawRasterEvidence;
+			std::shared_ptr<const ProjectedInputFrame> projection;
+			winrt::com_ptr<ID3D12Resource> projectionLookup;
 			uint32_t abiVersion=MaterialFrameContract::kMaterialAbiVersion, sampleStride=kSampleStride, rowPitch=0;
 			static constexpr D3D12_RESOURCE_STATES publishedState = D3D12_RESOURCE_STATE_COMMON;
 			MaterialFrameContract::SurfaceCorrespondence correspondence = MaterialFrameContract::SurfaceCorrespondence::DepthOnly;
@@ -403,23 +405,7 @@ namespace DX12Native
 				device->CreateShaderResourceView(slot->raster->depth->resource.get(),&depth,
 					{cpu.ptr+SIZE_T(NativePBR::kGpuTextureDescriptorCapacity)*step});
 				const auto projectionDescriptor=NativePBR::kGpuTextureDescriptorCapacity+1;
-				auto projectionView=depth;
-				projectionView.Format=DXGI_FORMAT_R32G32B32A32_UINT;
-				device->CreateShaderResourceView(slot->projection ? slot->projection->records->resource.get() : nullptr,
-					&projectionView,{cpu.ptr+SIZE_T(projectionDescriptor)*step});
-				for (uint32_t index=0;index<kProjectedTextureCapacity;++index) {
-					auto view=depth;
-					view.Format=DXGI_FORMAT_R8G8B8A8_UNORM;
-					ID3D12Resource* resource=nullptr;
-					if (slot->projection && index<slot->projection->textures.size()) {
-						const auto& texture=slot->projection->textures[index];
-						view.Format=texture.view.Format;
-						view.Texture2D.MostDetailedMip=texture.view.Texture2D.MostDetailedMip;
-						view.Texture2D.MipLevels=texture.view.Texture2D.MipLevels;
-						resource=texture.shared->resource.get();
-					}
-					device->CreateShaderResourceView(resource,&view,{cpu.ptr+SIZE_T(projectionDescriptor+1+index)*step});
-				}
+				WriteProjectionViews(device,slot->projection.get(),{cpu.ptr+SIZE_T(projectionDescriptor)*step});
 				const auto rawDescriptor=projectionDescriptor+1+kProjectedTextureCapacity;
 				D3D12_SHADER_RESOURCE_VIEW_DESC rawView{};
 				rawView.Format=DXGI_FORMAT_R32G32B32A32_UINT;
@@ -539,6 +525,8 @@ namespace DX12Native
 					materialFrame->parallaxShadows=shadowPlane;
 					materialFrame->rawInputDraws=pending->rawInputs ? pending->rawInputs->draws : 0u;
 					materialFrame->rawRasterEvidence=pending->rawInputs ? pending->rawInputs->evidence : nullptr;
+					materialFrame->projection=pending->projection;
+					materialFrame->projectionLookup=pending->projectionLookup;
 					materialFrame->raster=pending->raster; materialFrame->scene=pending->scene;
 					materialFrame->descriptors=pending->descriptors;
 					materialFrame->producerValue=value; materialFrame->geometryRevision=pending->scene->geometryRevision;

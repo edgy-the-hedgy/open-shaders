@@ -273,6 +273,7 @@ Sample EvaluateMaterial(uint instanceCount, uint instance, uint primitive, float
     packed.r*=material.base.y;
     packed.a*=material.base.w;
     float projectionWeight=0.0;
+    bool projectionApplied=false;
 #if defined(NATIVE_MATERIAL_PROJECTION)
     if (projectionRow!=0xffffffffu && counts.z>=12u && (binding.flags&512u)==0u) {
         float3 p0=asfloat(Geometry.Load3(offsets.x+ix.x*counts.z));
@@ -283,7 +284,7 @@ Sample EvaluateMaterial(uint instanceCount, uint instance, uint primitive, float
         bool validX=NativeTriangleDifferential(rayObject,rayOffsetX,rayScale,e1,e2,baryX,dx);
         bool validY=NativeTriangleDifferential(rayObject,rayOffsetY,rayScale,e1,e2,baryY,dy);
         if (validX && validY)
-            NativeApplyProjection(projectionRow,instance,worldPosition,mul(objectToWorld,dx),mul(objectToWorld,dy),
+            projectionApplied=NativeApplyProjection(projectionRow,instance,worldPosition,mul(objectToWorld,dx),mul(objectToWorld,dy),
                 objectToWorld,worldToObject,cross(e1,e2),n,t,b,(binding.flags&1u)!=0u ? saturate(vertexAlpha) : 1.0,
                 projectionNoise,material,base,normal,packed,projectionWeight);
     }
@@ -295,7 +296,12 @@ Sample EvaluateMaterial(uint instanceCount, uint instance, uint primitive, float
     float3 emission = 0;
     if (material.textures[1].z != 0xffffffffu) emission = NativeSurfaceTex(material.textures[1].z,uv,material.properties.z,raw,mipBias).rgb;
     if (!all(isfinite(base)) || !all(isfinite(normal)) || !all(isfinite(f0)) || !all(isfinite(emission))) return result;
+    #if defined(NATIVE_SECONDARY_SURFACE)
+    result.color = float4(base,projectionRow!=0xffffffffu && !projectionApplied ? SurfaceFeatureLimited : SurfaceEvaluatedBase);
+#else
+    // Preserve primary ownership policy until projected receiver parity is verified.
     result.color = float4(base,projectionRow!=0xffffffffu ? SurfaceFeatureLimited : SurfaceEvaluatedBase);
+#endif
     result.normal = float4(normal,roughness);
     result.f0 = float4(f0,metallic);
     result.emission = float4(emission,saturate(packed.b));

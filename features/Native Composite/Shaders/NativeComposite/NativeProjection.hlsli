@@ -5,9 +5,15 @@
 #include "Common/Triplanar.hlsli"
 #include "Common/Random.hlsli"
 
+#if defined(NATIVE_SECONDARY_SURFACE)
+ByteAddressBuffer ProjectionLookup : register(t529);
+Texture2D<uint4> ProjectionRecords : register(t530);
+Texture2D<float4> ProjectionTextures[512] : register(t531);
+#else
 ByteAddressBuffer ProjectionLookup : register(t517);
 Texture2D<uint4> ProjectionRecords : register(t518);
 Texture2D<float4> ProjectionTextures[512] : register(t519);
+#endif
 static const uint NativeProjectionTextureCapacity=512u;
 
 float4 NativeProjectionGrad(uint index, uint mode, float2 uv, float2 dx, float2 dy)

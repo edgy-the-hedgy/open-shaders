@@ -29,11 +29,12 @@ namespace
         Matrix previousViewProjection;
         float4 previousPositionAdjust;
         float4 secondarySunDirection,secondarySunRadiance;
-        uint32_t secondaryLightCount,secondaryFoliage,secondaryMaterialControls,secondaryPadding=0;
+        uint32_t secondaryLightCount,secondaryFoliage,secondaryMaterialControls,secondaryProjectionRows;
     };
     static_assert(sizeof(Constants)==464);
     constexpr UINT kTextureOffset=7;
     constexpr UINT kHistoryOffset=kTextureOffset+NativePBR::kGpuTextureDescriptorCapacity;
+    constexpr UINT kProjectionOffset=kHistoryOffset+3;
     void Transition(ID3D12GraphicsCommandList* cmd, ID3D12Resource* resource, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to)
     {
         const auto barrier=CD3DX12_RESOURCE_BARRIER::Transition(resource,from,to);
@@ -93,24 +94,26 @@ void NativeCubemaps::WaterSSR::Initialize(const GraphicsBackend& backend)
         return;
     }
     auto* device=backend.d3d12Device.get();
-    CD3DX12_DESCRIPTOR_RANGE ranges[4];
+    CD3DX12_DESCRIPTOR_RANGE ranges[5];
     ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,5,0,0,0);
     ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV,2,0,0,5);
     ranges[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,NativePBR::kGpuTextureDescriptorCapacity,9,0,kTextureOffset);
     ranges[3].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,3,525,0,kHistoryOffset);
-    CD3DX12_ROOT_PARAMETER params[12];
-    params[0].InitAsDescriptorTable(4,ranges);
+    ranges[4].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,1+kProjectedTextureCapacity,530,0,kProjectionOffset);
+    CD3DX12_ROOT_PARAMETER params[13];
+    params[0].InitAsDescriptorTable(5,ranges);
     params[1].InitAsConstantBufferView(0);
     params[2].InitAsConstants(1,1);
     for(UINT i=0;i<4;++i)params[3+i].InitAsShaderResourceView(5+i);
     for(UINT i=0;i<4;++i)params[7+i].InitAsShaderResourceView(521+i);
     params[11].InitAsShaderResourceView(528);
+    params[12].InitAsShaderResourceView(529);
     std::array<CD3DX12_STATIC_SAMPLER_DESC,4> samplers;
     for(UINT i=0;i<samplers.size();++i)
         samplers[i]=CD3DX12_STATIC_SAMPLER_DESC(i,D3D12_FILTER_MIN_MAG_MIP_LINEAR,
             (i&2)?D3D12_TEXTURE_ADDRESS_MODE_WRAP:D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
             (i&1)?D3D12_TEXTURE_ADDRESS_MODE_WRAP:D3D12_TEXTURE_ADDRESS_MODE_CLAMP,D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
-    const CD3DX12_ROOT_SIGNATURE_DESC signature(12,params,UINT(samplers.size()),samplers.data());
+    const CD3DX12_ROOT_SIGNATURE_DESC signature(13,params,UINT(samplers.size()),samplers.data());
     winrt::com_ptr<ID3DBlob> blob,errors;
     winrt::com_ptr<ID3D12RootSignature> nextRoot;
     winrt::com_ptr<ID3D12PipelineState> nextPipeline;
@@ -237,7 +240,7 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
             next->sparse=texture(DXGI_FORMAT_R16G16B16A16_FLOAT,ow,oh,"NativeWaterSSR::Sparse");
             next->constants=NativeMaterialEvaluation::Buffer(device,512,D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ);
             next->width=world.width;next->height=world.height;next->outWidth=ow;next->outHeight=oh;next->bytes=a+b+c+d;
-            const D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,kHistoryOffset+3,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
+            const D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,kProjectionOffset+1+kProjectedTextureCapacity,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
             DX::ThrowIfFailed(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(next->descriptors.put())));
             DX::ThrowIfFailed(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,IID_PPV_ARGS(next->allocator.put())));
             DX::ThrowIfFailed(device->CreateCommandList(0,D3D12_COMMAND_LIST_TYPE_DIRECT,next->allocator.get(),pipeline.get(),IID_PPV_ARGS(next->commands.put())));
@@ -280,6 +283,8 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         view(opaqueDepth,DXGI_FORMAT_R32_FLOAT,3);
         view(tokens,DXGI_FORMAT_R16G16B16A16_UNORM,4);
         evaluation.WriteTextureViews(device,{cpu.ptr+SIZE_T(kTextureOffset)*step});
+        const auto projection=material.projection && material.projectionLookup && material.projection->Ready(stamp)?material.projection:nullptr;
+        WriteProjectionViews(device,projection.get(),{cpu.ptr+SIZE_T(kProjectionOffset)*step});
         D3D12_SHADER_RESOURCE_VIEW_DESC cube{};cube.Format=sky?sky->format:DXGI_FORMAT_R16G16B16A16_FLOAT;
         cube.ViewDimension=D3D12_SRV_DIMENSION_TEXTURECUBE;cube.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         cube.TextureCube.MipLevels=sky?sky->mipCount:1;
@@ -302,7 +307,7 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
             emitterRadius,uint32_t(bool(previous)),{},previous?previous->viewProjection:Matrix{},previous?previous->positionAdjust:float4{},
             direct->directional.direction,direct->directional.radiance,
             direct->lightCount,uint32_t(direct->foliageScattering),
-            uint32_t(material.parallaxEnabled)|(uint32_t(material.parallaxShadows)<<1u)};
+            uint32_t(material.parallaxEnabled)|(uint32_t(material.parallaxShadows)<<1u),projection?projection->rowCount:0u};
         void* mapped=nullptr;const D3D12_RANGE noRead{};
         DX::ThrowIfFailed(slot->constants->Map(0,&noRead,&mapped));
         std::memcpy(mapped,&constants,sizeof(constants));slot->constants->Unmap(0,nullptr);
@@ -316,6 +321,8 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         cmd->SetComputeRootShaderResourceView(9,evidence?evidence->tokenTable->GetGPUVirtualAddress():material.rayIdentity->GetGPUVirtualAddress());
         cmd->SetComputeRootShaderResourceView(10,native?native->environmentRadiance->GetGPUVirtualAddress():material.samples->GetGPUVirtualAddress());
         cmd->SetComputeRootShaderResourceView(11,direct->lights->GetGPUVirtualAddress());
+        cmd->SetComputeRootShaderResourceView(12,projection?material.projectionLookup->GetGPUVirtualAddress():material.samples->GetGPUVirtualAddress());
+        TransitionProjectionViews(cmd,projection.get(),common,read);
         cmd->SetComputeRoot32BitConstant(2,0,0);
         cmd->Dispatch((ShadowPhysicalWidth(ShadowLogicalExtent(ow,quality),quality)+kGroup-1)/kGroup,
             (ShadowLogicalExtent(oh,quality)+kGroup-1)/kGroup,1);
@@ -323,6 +330,7 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         cmd->ResourceBarrier(1,&barrier);
         cmd->SetComputeRoot32BitConstant(2,1,0);
         cmd->Dispatch((ow+kGroup-1)/kGroup,(oh+kGroup-1)/kGroup,1);
+        TransitionProjectionViews(cmd,projection.get(),read,common);
         Transition(cmd,slot->raw->resource.get(),read,common);Transition(cmd,slot->mask->resource.get(),read,common);
         if(sky)Transition(cmd,sky->resource.get(),read,common);
         Transition(cmd,slot->result->resource.get(),write,common);
@@ -363,6 +371,7 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         DX::ThrowIfFailed(owner.commandQueue->Wait(direct->readyFence.get(),direct->readyValue));
         if(native)DX::ThrowIfFailed(owner.commandQueue->Wait(native->readyFence.get(),native->readyValue));
         if(evidence)DX::ThrowIfFailed(owner.commandQueue->Wait(evidence->readyFence.get(),evidence->readyValue));
+        if(projection)DX::ThrowIfFailed(owner.commandQueue->Wait(projection->readyFence.get(),projection->readyValue));
         if(characters)DX::ThrowIfFailed(owner.commandQueue->Wait(characters->readyFence.get(),characters->readyValue));
         slot->ready=UINT64_MAX;
         ID3D12CommandList* lists[]{cmd};owner.commandQueue->ExecuteCommandLists(1,lists);

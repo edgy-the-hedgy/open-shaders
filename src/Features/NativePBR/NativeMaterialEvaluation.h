@@ -489,6 +489,8 @@ namespace DX12Native
 					// Projection and displacement still retain their own independent limitations.
 					capability.issues &= ~(NativePBR::ScreenPbrFeatures | NativePBR::ScreenFeatureTextures);
 				}
+				if (capability.issues == NativePBR::ScreenProjection && !(flags & (uint64_t(1) << 12)))
+					binding.flags |= MaterialFrameContract::kSecondaryProjectionBinding;
 				result->surfaceCapabilities.Observe(recipe, capability, authoredProjectedUv);
 				if (capability.issues) {
 					binding.flags |= MaterialFrameContract::kBaseOnlyBinding;

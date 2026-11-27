@@ -70,6 +70,8 @@ cbuffer IndirectInputs : register(b0)
     float4 SecondarySunDirection, SecondarySunRadiance;
     uint SecondaryLightCount, SecondaryFoliage;
     uint SkyAvailable, SecondaryMaterialControls;
+    uint SecondaryProjectionRows;
+    uint3 SecondaryProjectionPadding;
 };
 #include "NativeSecondaryReflection.hlsli"
 
@@ -196,7 +198,7 @@ float3 ResolveRayReflection(uint2 receiver,float3 world,float3 normal,float3 dir
     if (ShadeNativeSecondary(committed.x,committed.y,query.CommittedTriangleBarycentrics(),
         (float3x3)query.CommittedWorldToObject3x4(),(float3x3)query.CommittedObjectToWorld3x4(),query.CommittedTriangleFrontFace(),
         ray.Origin+d*distance,d,distance,roughness,receiver,lobe,FrameIndex,QualityMode,InstanceCount,CharacterCastersEnabled,
-        SecondaryLightCount,SecondarySunDirection,SecondarySunRadiance,SecondaryFoliage,SecondaryMaterialControls,secondary))
+        SecondaryLightCount,SecondarySunDirection,SecondarySunRadiance,SecondaryFoliage,SecondaryMaterialControls,SecondaryProjectionRows,secondary))
         return lerp(fallback,secondary,saturate(1.0-roughness/0.45));
     if (SSRTokenCount==0u) return fallback;
     uint2 hit,hitIdentity; float2 uv; float projectedDepth;
