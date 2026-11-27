@@ -512,6 +512,7 @@ public:
 
 	bool inWorld = false;
 	bool activeReflections = false;
+	uint32_t nativeFirstPersonDepth = 0;
 
 	// Latched by Main_RenderWorld through frame end, so Post-time code can tell
 	// a real scene rendered this frame even under a menu (e.g. VR Playroom).

@@ -4,6 +4,7 @@
 #include "DX12NativeAcceleration.h"
 #include "DX12NativeLightWorker.h"
 #include "DX12NativeRasterCapture.h"
+#include "DX12NativeWorldFrame.h"
 #include "DX12ProjectedInputs.h"
 #include "DX12NativeCharacterCasters.h"
 #include "DX12NativeScreenProbe.h"
@@ -79,6 +80,8 @@ struct DX12NativeScene final : OverlayFeature
 	void RestoreDefaultSettings() override;
 	bool WantsOpaqueRasterReadyHook() const override;
 	void OnOpaqueRasterReady() override;
+	void ObserveWorldCamera(const globals::FrameBuffer& camera);
+	std::shared_ptr<const DX12Native::NativeWorldFrame> GetWorldFrame(uint32_t engineFrame, uint32_t pluginFrame) const;
 	void ReplayFullNativeInput(ID3D11DeviceContext* context, uint32_t indexCount, const std::function<void()>& draw);
 	// Capture the completed fallback radiance before native final-color application.
 	void CaptureFullNativeEnvironment(ID3D11ShaderResourceView* sceneColor, uint32_t frame);
@@ -118,6 +121,8 @@ private:
 	void ApplyPendingLoadingReset();
 	std::optional<GraphicsBackend> backend;
 	DX12Native::RasterCapture raster;
+	std::atomic<std::shared_ptr<const DX12Native::NativeWorldFrame>> worldFrame;
+	uint64_t rejectedWorldCameraUploads = 0;
 	void DispatchFullNativeMaterial(bool opaqueReady = false);
 	void ObserveFullNativeRasterDraw(RE::BSGeometry& geometry);
 	void FinishFullNativeRasterDraws();

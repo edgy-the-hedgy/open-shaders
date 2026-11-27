@@ -1,6 +1,7 @@
 #include "NativeCubemaps.h"
 #include "NativeCubemapPolicy.h"
 #include "Features/DX12/DX12FullNativeReconstruction.h"
+#include "Features/DX12/DX12NativeScene.h"
 
 #include "Features/NativeIBL/NativeIBL.h"
 #include "Features/LinearLighting.h"
@@ -73,7 +74,9 @@ bool NativeCubemaps::Producer::CaptureRaw(const GraphicsBackend& backend, ID3D11
     auto& depth=renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
     ID3D11ShaderResourceView* reads[]{sceneColor,Util::AsReal(depth.depthSRV)};
     if(!reads[0] || !reads[1]) return false;
-    const auto& camera=globals::game::frameBufferCached.nonVR;
+    const auto world=globals::features::dx12NativeScene.GetWorldFrame(currentStamp.engineFrame,currentStamp.pluginFrame);
+    if(!world) return false;
+    const auto& camera=world->camera;
     const RawConstants data{camera.CameraView,camera.CameraProj,camera.CameraViewProjInverse,
         camera.DynamicResolutionParams1,globals::features::reverseZ.GetFarDepth(),kSize};
     context->UpdateSubresource(inputConstants.get(),0,nullptr,&data,0,0);
@@ -111,6 +114,8 @@ void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend, ID3D11Sha
     using namespace DX12Native;
     if(!loaded || !currentStamp.scope || currentStamp.engineFrame != frame || !globals::state ||
         currentStamp.pluginFrame != globals::state->frameCount || !globals::game::renderer) return;
+    const auto world=globals::features::dx12NativeScene.GetWorldFrame(frame,currentStamp.pluginFrame);
+    if(!world) return;
     if(processing) processing->Poll();
     if(!Policy::CaptureDue(lastCaptureFrame,currentStamp.engineFrame)) return;
     try {
@@ -153,7 +158,7 @@ void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend, ID3D11Sha
         }
         if(!captured->base && !native) return;
         if(!processing) processing=std::make_unique<CubeProcessing>();
-        if(processing->Dispatch(backend,captured,dalc,globals::game::frameBufferCached.nonVR.CameraPosAdjust,native)) {
+        if(processing->Dispatch(backend,captured,dalc,world->camera.CameraPosAdjust,native)) {
             lastCaptureFrame=currentStamp.engineFrame;
             failureLogged=false;
         }

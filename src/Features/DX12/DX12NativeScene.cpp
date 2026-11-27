@@ -10,6 +10,8 @@
 #include "../LightLimitFix/Common.h"
 #include "../LightLimitFix/RadiusMath.h"
 #include "../Upscaling.h"
+#include "../Upscaling/WorldCameraLookup.h"
+#include "../ReverseZ.h"
 #include "DX12Control.h"
 #include "DX12Resources.h"
 #include "Globals.h"
@@ -634,6 +636,71 @@ std::shared_ptr<const DX12Native::IndirectLightingFrame> DX12NativeScene::GetFul
 	return globals::features::nativeIBL.Get(frame);
 }
 
+std::shared_ptr<const DX12Native::NativeWorldFrame> DX12NativeScene::GetWorldFrame(uint32_t engineFrame, uint32_t pluginFrame) const
+{
+	const auto publication = worldFrame.load(std::memory_order_acquire);
+	return publication && publication->Matches(engineFrame, pluginFrame) ? publication : nullptr;
+}
+
+void DX12NativeScene::ObserveWorldCamera(const globals::FrameBuffer& camera)
+{
+	using namespace DX12Native;
+	const auto* state = globals::state;
+	if (!globals::features::dx12Control.UsesExclusiveMaterials() || globals::game::isVR ||
+		!state || !globals::game::graphicsState || !state->inWorld || state->nativeFirstPersonDepth ||
+		(state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
+		return;
+	const auto engine = globals::game::graphicsState->GetFrameCount();
+	const auto plugin = state->frameCount;
+	if (GetWorldFrame(engine, plugin)) return;
+	const auto world = UpscalingCamera::GetWorldCameraFrame();
+	const auto* identity = RE::Main::WorldRootCamera();
+	// The camera table identifies the engine's world root independently of the
+	// most recently uploaded buffer. Check the actual upload against it.
+	const auto sameMatrix = [](const Matrix& a, const Matrix& b) {
+		for (uint32_t row = 0; row < 4; ++row)
+			for (uint32_t col = 0; col < 4; ++col) {
+				const float x = a.m[row][col], y = b.m[row][col];
+				if (!std::isfinite(x) || !std::isfinite(y) || std::abs(x-y) > 0.00001f * std::max(1.0f, std::abs(y)))
+					return false;
+			}
+		return true;
+	};
+	if (!world || !identity || !sameMatrix(camera.CameraViewProjUnjittered.Transpose(), world->viewProjection) ||
+		!sameMatrix(camera.CameraPreviousViewProjUnjittered.Transpose(), world->previousViewProjection) ||
+		std::abs(camera.CameraPosAdjust.x-world->origin.x) > 0.001f ||
+		std::abs(camera.CameraPosAdjust.y-world->origin.y) > 0.001f ||
+		std::abs(camera.CameraPosAdjust.z-world->origin.z) > 0.001f) {
+		++rejectedWorldCameraUploads;
+		return;
+	}
+	const auto& upscaling = globals::features::upscaling;
+	const auto size = upscaling.GetNativeRenderSize(plugin, {});
+	if (size.x < 1 || size.y < 1) return;
+	const auto jitter = upscaling.GetNativeRasterJitter(plugin, uint32_t(size.x), uint32_t(size.y));
+	if (!jitter.valid) return;
+	auto frame = std::make_shared<NativeWorldFrame>();
+	frame->camera = camera;
+	frame->engineFrame = engine; frame->pluginFrame = plugin;
+	frame->cameraIdentity = reinterpret_cast<uintptr_t>(identity);
+	frame->width = uint32_t(size.x); frame->height = uint32_t(size.y);
+	frame->displayWidth = uint32_t(state->screenSize.x); frame->displayHeight = uint32_t(state->screenSize.y);
+	frame->jitter = jitter;
+	frame->cameraNear = *globals::game::cameraNear; frame->cameraFar = *globals::game::cameraFar;
+	frame->cameraFov = Util::GetVerticalFOVRad();
+	frame->reverseZ = globals::features::reverseZ.IsActive();
+	const auto previous = worldFrame.load(std::memory_order_acquire);
+	const bool consecutive = previous && previous->engineFrame + 1u == engine && previous->pluginFrame + 1u == plugin &&
+		previous->cameraIdentity == frame->cameraIdentity;
+	if (consecutive) {
+		frame->previousJitter = previous->jitter;
+		frame->previousDynamicResolution1 = previous->camera.DynamicResolutionParams1;
+		frame->previousDynamicResolution2 = previous->camera.DynamicResolutionParams2;
+	}
+	frame->resetHistory = !consecutive || state->ShouldResetHistory();
+	worldFrame.store(std::move(frame), std::memory_order_release);
+}
+
 void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 {
 	if (!loaded || globals::game::isVR || !globals::features::dx12Control.WantsMaterialPreparation() ||
@@ -662,16 +729,16 @@ void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 	// Evaluate after the opaque boundary so the raw FXC publication and final
 	// depth belong to the same frame. The early hook only establishes readiness.
 	if (!opaqueReady) return;
-	const auto viewport = globals::features::upscaling.GetNativeRenderSize(globals::state->frameCount,
-		Util::ConvertToDynamic(globals::state->screenSize));
+	const auto world = GetWorldFrame(frame, globals::state->frameCount);
+	if (!world) return;
+	const float2 viewport{ float(world->width), float(world->height) };
 	if (!std::isfinite(viewport.x) || !std::isfinite(viewport.y) || viewport.x < 1.0f || viewport.y < 1.0f)
 		return;
 	if (globals::features::nativePBR.WantsFrame(frame)) {
 		if (!raster.Get(frame)) {
 			auto* renderer = globals::game::renderer;
 			auto* motion = renderer ? Util::AsReal(renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR].texture) : nullptr;
-			const auto jitter = globals::features::upscaling.GetNativeRasterJitter(globals::state->frameCount, uint32_t(viewport.x), uint32_t(viewport.y));
-			raster.Capture(*backend, Util::GetCurrentSceneDepthSRV(false), &globals::game::frameBufferCached.nonVR, frame, motion, jitter);
+			raster.Capture(*backend, Util::GetCurrentSceneDepthSRV(false), &world->camera, frame, motion, world->jitter);
 		}
 		globals::features::nativePBR.Dispatch(*backend, raster.Get(frame), scene, frame, uint32_t(viewport.x), uint32_t(viewport.y), opaqueReady, FullNativeFrameQuality(frame));
 	}
@@ -699,6 +766,7 @@ void DX12NativeScene::ResetFullNativeEnvironment()
 		return;
 	if (globals::features::nativePBR.HasEvaluator())
 		globals::features::upscaling.nativeComposite.ResetFullNative();
+	worldFrame.store(nullptr, std::memory_order_release);
 	globals::features::nativeIBL.InvalidateGeneration();
 	globals::features::nativeCubemaps.InvalidateGeneration();
 }
@@ -1463,6 +1531,14 @@ json DX12NativeScene::GetStatus() const
 		{ "shadowOffloadMode", globals::features::dx12Control.IsShadowOffloadMode() },
 		{ "frameNativeMode", magic_enum::enum_name(GetFrameNativeMode()) },
 		{ "perLightVisibility", false } };
+	if (globals::features::dx12Control.UsesExclusiveMaterials()) {
+		const auto world = worldFrame.load(std::memory_order_acquire);
+		status["worldCamera"] = { { "engineFrame", world ? world->engineFrame : 0u },
+			{ "pluginFrame", world ? world->pluginFrame : 0u }, { "identity", world ? world->cameraIdentity : 0u },
+			{ "width", world ? world->width : 0u }, { "height", world ? world->height : 0u },
+			{ "jitterX", world ? world->jitter.x : 0.0f }, { "jitterY", world ? world->jitter.y : 0.0f },
+			{ "rejectedUploads", rejectedWorldCameraUploads } };
+	}
 	if (const auto grid = globals::features::dx12Resources.GetGrid()) {
 		json active = json::array();
 		json predictive = json::object();

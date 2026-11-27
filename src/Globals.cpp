@@ -368,6 +368,8 @@ namespace globals
 			for (auto* feature : fixupFeatures)
 				feature->FixupMappedFrameBuffer(frameBuffer);
 			CopyMappedFrameBuffer(frameBufferCached.nonVR, frameBuffer);
+			if (globals::features::dx12Control.UsesExclusiveMaterials())
+				globals::features::dx12NativeScene.ObserveWorldCamera(frameBufferCached.nonVR);
 		}
 		mappedFrameBuffer = nullptr;
 	}

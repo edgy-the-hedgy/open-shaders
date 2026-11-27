@@ -21,7 +21,7 @@
 #include "../../Utils/NvApiDrs.h"
 #include "../DX12/DX12Control.h"
 #include "../Upscaling.h"
-#include "CameraReprojection.h"
+#include "WorldCameraLookup.h"
 #include "DLSSGDynamic.h"
 #include "DLSSGPreset.h"
 #include "DX12SwapChain.h"
@@ -30,54 +30,6 @@
 #include "PerfMode.h"
 #include "Utils/Logging.h"
 
-namespace
-{
-	// Flat (SE/AE) layout of a BSGraphics::State::cameraDataCacheA entry; the universal CommonLib build compiles these fields out.
-	struct CameraStateEntry
-	{
-		RE::NiCamera* referenceCamera;
-		std::uint64_t pad08;
-		RE::BSGraphics::ViewData viewData;
-		RE::NiPoint3 posAdjust;
-		RE::NiPoint3 currentPosAdjust;
-		RE::NiPoint3 previousPosAdjust;
-		bool useJitter;
-		std::uint32_t numData;
-		std::uint32_t pad28C;
-	};
-	static_assert(offsetof(CameraStateEntry, viewData) == 0x10);
-	static_assert(offsetof(CameraStateEntry, posAdjust) == 0x260);
-	static_assert(offsetof(CameraStateEntry, previousPosAdjust) == 0x278);
-	static_assert(sizeof(CameraStateEntry) == 0x290);
-
-	/**
-	 * @brief The world camera's frame from the engine camera table, which keys entries on (camera, useJitter):
-	 * the jittered entry the scene draws with, else the unjittered one; nullopt in VR or when neither exists.
-	 */
-	std::optional<UpscalingCamera::CameraFrame> GetWorldCameraFrame()
-	{
-		const auto* camera = RE::Main::WorldRootCamera();
-		if (globals::game::isVR || !camera)
-			return std::nullopt;
-		const auto& table = globals::game::graphicsState->GetRuntimeData().cameraDataCacheA;
-		const auto* entries = reinterpret_cast<const CameraStateEntry*>(table.data());
-		const CameraStateEntry* match = nullptr;
-		for (std::uint32_t i = 0; i < table.size(); ++i) {
-			const auto& entry = entries[i];
-			if (entry.referenceCamera != camera)
-				continue;
-			match = &entry;
-			if (entry.useJitter)
-				break;
-		}
-		if (!match)
-			return std::nullopt;
-		const auto& view = match->viewData;
-		return UpscalingCamera::FromCameraTable(view.viewMat, view.viewProjMatrixUnjittered, view.previousViewProjMatrixUnjittered,
-			float3(match->posAdjust.x, match->posAdjust.y, match->posAdjust.z),
-			float3(match->previousPosAdjust.x, match->previousPosAdjust.y, match->previousPosAdjust.z));
-	}
-}
 
 void LoggingCallback(sl::LogType type, const char* msg)
 {
@@ -570,7 +522,19 @@ bool Streamline::CheckFrameConstants(sl::ViewportHandle p_viewport, uint32_t eye
 	slConstants.cameraFar = *globals::game::cameraFar;
 
 	// The per-frame camera cache holds whichever camera uploaded last, often the first-person camera, which breaks DLSS-G's background reprojection.
-	auto camera = GetWorldCameraFrame();
+	const bool fullNativeWorld = globals::features::dx12Control.UsesExclusiveMaterials() && state->worldRenderedThisFrame && !globals::game::isVR;
+	std::optional<UpscalingCamera::CameraFrame> camera;
+	if (fullNativeWorld) {
+		const auto world = globals::features::dx12NativeScene.GetWorldFrame(
+			globals::game::graphicsState->GetFrameCount(), state->frameCount);
+		if (!world) return false;
+		camera = UpscalingCamera::FromConstantBuffer(world->camera.CameraViewInverse,
+			world->camera.CameraViewProjUnjittered, world->camera.CameraPreviousViewProjUnjittered,
+			float3(world->camera.CameraPosAdjust.x, world->camera.CameraPosAdjust.y, world->camera.CameraPosAdjust.z),
+			float3(world->camera.CameraPreviousPosAdjust.x, world->camera.CameraPreviousPosAdjust.y, world->camera.CameraPreviousPosAdjust.z));
+	} else {
+		camera = UpscalingCamera::GetWorldCameraFrame();
+	}
 	if (!camera) {
 		const auto& frameBuffer = globals::game::frameBufferCached;
 		const auto& cameraPosition = frameBuffer.GetCameraPosAdjust(eyeIndex);

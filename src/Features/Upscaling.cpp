@@ -3135,18 +3135,32 @@ void Upscaling::PublishNativeFrameParameters(uint32_t width, uint32_t height)
 	publication->displayWidth = uint32_t(globals::state->screenSize.x);
 	publication->displayHeight = uint32_t(globals::state->screenSize.y);
 	publication->color = nativeCompositeFrame;
+	if (globals::state->worldRenderedThisFrame && globals::game::graphicsState) {
+		publication->world = globals::features::dx12NativeScene.GetWorldFrame(
+			globals::game::graphicsState->GetFrameCount(), publication->frame);
+		if (!publication->world || publication->world->width != width || publication->world->height != height) {
+			nativePreparedFrame.reset();
+			return;
+		}
+	}
 	const auto rasterJitter = GetNativeRasterJitter(publication->frame, width, height);
 	publication->jitterX = rasterJitter.valid ? rasterJitter.x : -jitter.x;
 	publication->jitterY = rasterJitter.valid ? rasterJitter.y : -jitter.y;
 	publication->cameraNear = *globals::game::cameraNear; publication->cameraFar = *globals::game::cameraFar;
 	publication->cameraFov = Util::GetVerticalFOVRad(); publication->frameTimeMs = *globals::game::deltaTime * 1000.f;
+	if (publication->world) {
+		publication->jitterX = publication->world->jitter.x; publication->jitterY = publication->world->jitter.y;
+		publication->cameraNear = publication->world->cameraNear; publication->cameraFar = publication->world->cameraFar;
+		publication->cameraFov = publication->world->cameraFov;
+		publication->displayWidth = publication->world->displayWidth; publication->displayHeight = publication->world->displayHeight;
+	}
 	publication->generationFrameTimeMs = RE::GetSecondsSinceLastFrame() * 1000.f;
 	publication->lightingQuality = globals::features::dx12NativeScene.GetFullNativeQuality(
 		globals::game::graphicsState ? globals::game::graphicsState->GetFrameCount() : UINT32_MAX);
 	const bool changed = lastNativeLightingQuality != publication->lightingQuality;
 	const bool sameFrameReset = nativePreparedFrame && nativePreparedFrame->frame == publication->frame && nativePreparedFrame->resetHistory;
 	lastNativeLightingQuality = publication->lightingQuality;
-	publication->resetHistory = changed || sameFrameReset || globals::state->ShouldResetHistory() ||
+	publication->resetHistory = changed || sameFrameReset || (publication->world && publication->world->resetHistory) || globals::state->ShouldResetHistory() ||
 		(globals::state->IsMainOrLoadingMenuOpen() && !menuCameraMVsValid);
 	if (frameGenerationPrepared && nativeFrameGenerationFrame == publication->frame &&
 		dx12SwapChain.depthBufferShared12 && dx12SwapChain.motionVectorBufferShared12) {

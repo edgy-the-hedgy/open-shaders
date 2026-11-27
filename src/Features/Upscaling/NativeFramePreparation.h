@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Features/DX12/DX12NativeComposite.h"
+#include "Features/DX12/DX12NativeWorldFrame.h"
 #include <array>
 #include <memory>
 #include <d3d11_4.h>
@@ -24,6 +25,7 @@ namespace DX12Native
 	{
 		uint32_t frame = 0, width = 0, height = 0, displayWidth = 0, displayHeight = 0;
 		std::shared_ptr<const NativeComposite::Frame> color;
+		std::shared_ptr<const NativeWorldFrame> world;
 		std::shared_ptr<const UpscalerGuideSet> guides;
 		std::array<ID3D11Resource*, UpscalerGuideSet::Count> sourceIdentities{};
 		float jitterX = 0, jitterY = 0, cameraNear = 0, cameraFar = 0, cameraFov = 0, frameTimeMs = 0, preExposure = 1;

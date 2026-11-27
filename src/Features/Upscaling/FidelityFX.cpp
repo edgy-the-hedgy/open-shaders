@@ -336,7 +336,8 @@ void FidelityFX::Present(bool a_useFrameGeneration, bool a_isHDR)
 
 		ffx::DispatchDescFrameGenerationPrepareCameraInfo cameraConfig{};
 
-		auto viewMatrix = globals::game::frameBufferCached.GetCameraViewInverse().Transpose();
+		const auto world = currentNative ? prepared->world : nullptr;
+		auto viewMatrix = world ? world->camera.CameraViewInverse.Transpose() : globals::game::frameBufferCached.GetCameraViewInverse().Transpose();
 
 		cameraConfig.cameraRight[0] = viewMatrix._11;
 		cameraConfig.cameraRight[1] = viewMatrix._12;
@@ -350,9 +351,10 @@ void FidelityFX::Present(bool a_useFrameGeneration, bool a_isHDR)
 		cameraConfig.cameraForward[1] = viewMatrix._32;
 		cameraConfig.cameraForward[2] = viewMatrix._33;
 
-		cameraConfig.cameraPosition[0] = globals::game::frameBufferCached.GetCameraPosAdjust().x;
-		cameraConfig.cameraPosition[1] = globals::game::frameBufferCached.GetCameraPosAdjust().y;
-		cameraConfig.cameraPosition[2] = globals::game::frameBufferCached.GetCameraPosAdjust().z;
+		const auto origin = world ? world->camera.CameraPosAdjust : globals::game::frameBufferCached.GetCameraPosAdjust();
+		cameraConfig.cameraPosition[0] = origin.x;
+		cameraConfig.cameraPosition[1] = origin.y;
+		cameraConfig.cameraPosition[2] = origin.z;
 
 		if (ffx::Dispatch(frameGenContext, dispatchParameters, cameraConfig) != ffx::ReturnCode::Ok) {
 			logger::critical("[FidelityFX] Failed to dispatch frame generation!");

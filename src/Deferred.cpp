@@ -970,6 +970,25 @@ void Deferred::Hooks::BSCubeMapCamera_RenderCubemap::thunk(RE::NiAVObject* camer
 void Deferred::Hooks::Main_RenderFirstPersonView::thunk(bool a1, bool a2)
 {
 	auto* const state = globals::state;
+	if (globals::features::dx12Control.UsesExclusiveMaterials()) {
+		const auto flag = static_cast<uint32_t>(State::ExtraShaderDescriptors::InWorld);
+		struct FirstPersonScope
+		{
+			State& state;
+			uint32_t previous, flag;
+			~FirstPersonScope()
+			{
+				--state.nativeFirstPersonDepth;
+				auto& descriptor = state.permutationData.ExtraShaderDescriptor;
+				descriptor = (descriptor & ~flag) | previous;
+			}
+		};
+		const FirstPersonScope scope{ *state, state->permutationData.ExtraShaderDescriptor & flag, flag };
+		++state->nativeFirstPersonDepth;
+		state->permutationData.ExtraShaderDescriptor |= flag;
+		func(a1, a2);
+		return;
+	}
 	state->permutationData.ExtraShaderDescriptor |= static_cast<uint32_t>(State::ExtraShaderDescriptors::InWorld);
 	func(a1, a2);
 	state->permutationData.ExtraShaderDescriptor &= ~static_cast<uint32_t>(State::ExtraShaderDescriptors::InWorld);
