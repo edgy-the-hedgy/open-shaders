@@ -86,9 +86,15 @@ bool NativeDLSS::Upscale(ID3D11Resource* a_colorOut, ID3D11Resource* a_motionVec
 		}
 		featureKey = key;
 
+		const auto prepared = upscaling.nativePreparedFrame;
+		const bool directGuides = prepared && prepared->Matches(state->frameCount, a_extentIn.width, a_extentIn.height,
+			swapChain.d3d12Device.get(), { sources[kDepth], sources[kMotionVectors], sources[kReactiveMask], sources[kTransparencyMask] });
 		const D3D11_BOX inputBox{ 0, 0, 0, a_extentIn.width, a_extentIn.height, 1 };
-		for (uint32_t i = 0; i < kOutput; ++i)
-			context11->CopySubresourceRegion(shared[i]->resource11, 0, 0, 0, 0, sources[i], 0, &inputBox);
+		if (directGuides)
+			commandContext->prepared = prepared;
+		else
+			for (uint32_t i = 0; i < kOutput; ++i)
+				context11->CopySubresourceRegion(shared[i]->resource11, 0, 0, 0, 0, sources[i], 0, &inputBox);
 		const uint64_t inputsCopied = fence.Next();
 		// The DX11 copies are also submitted work, even if DX12 never dispatches.
 		lastSubmitted = DX12Native::kUntrackedFenceValue;
@@ -107,8 +113,9 @@ bool NativeDLSS::Upscale(ID3D11Resource* a_colorOut, ID3D11Resource* a_motionVec
 		DX::ThrowIfFailed(commandList->Reset(commandContext->allocator.get(), nullptr));
 
 		constexpr size_t kInputCount = kOutput + 1;
-		const std::array<ID3D12Resource*, kInputCount> inputs{ composite->color.get(), shared[kDepth]->resource.get(),
-			shared[kMotionVectors]->resource.get(), shared[kReactiveMask]->resource.get(), shared[kTransparencyMask]->resource.get() };
+		const auto guide = [&](uint32_t index) { return directGuides ? prepared->guides->resources[index].get() : shared[index]->resource.get(); };
+		const std::array<ID3D12Resource*, kInputCount> inputs{ composite->color.get(), guide(kDepth),
+			guide(kMotionVectors), guide(kReactiveMask), guide(kTransparencyMask) };
 		auto* output = shared[kOutput]->resource.get();
 		const auto transition = [&](bool a_toDLSS) {
 			std::array<D3D12_RESOURCE_BARRIER, kInputCount + 1> barriers{};
@@ -122,7 +129,7 @@ bool NativeDLSS::Upscale(ID3D11Resource* a_colorOut, ID3D11Resource* a_motionVec
 			commandList->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
 		};
 		transition(true);
-		streamline.pendingHistoryReset |= resumed;
+		streamline.pendingHistoryReset |= resumed || (directGuides && prepared->resetHistory);
 		const bool evaluated = streamline.EvaluateDLSSDX12(commandList, inputs[0], output, inputs[1], inputs[2], inputs[3], inputs[4], a_extentIn, a_extentOut);
 		transition(false);
 		DX::ThrowIfFailed(commandList->Close());
@@ -316,6 +323,7 @@ NativeDLSS::CommandContext* NativeDLSS::AcquireCommandContext()
 	if (completed == UINT64_MAX || completed < oldest.fenceValue)
 		return nullptr;
 	oldest.fenceValue = 0;
+	oldest.prepared.reset();
 	return &oldest;
 }
 

@@ -596,13 +596,20 @@ bool Streamline::CheckFrameConstants(sl::ViewportHandle p_viewport, uint32_t eye
 
 	auto& upscaling = globals::features::upscaling;
 	auto jitter = upscaling.jitter;
-	slConstants.jitterOffset = { -jitter.x, -jitter.y };
+	const auto prepared = upscaling.nativePreparedFrame;
+	const bool nativePrepared = globals::features::dx12Control.UsesExclusiveMaterials() && prepared && prepared->frame == state->frameCount && eyeIndex == 0u;
+	if (nativePrepared) {
+		slConstants.cameraFOV = prepared->cameraFov;
+		slConstants.cameraNear = prepared->cameraNear;
+		slConstants.cameraFar = prepared->cameraFar;
+	}
+	slConstants.jitterOffset = { nativePrepared ? prepared->jitterX : -jitter.x, nativePrepared ? prepared->jitterY : -jitter.y };
 	// Menus render no motion vectors; camera-derived MVs restore valid reprojection there.
 	// Reset only when that fill couldn't run — accumulating against zero MVs ghosts.
 	const bool menuReset = state->IsMainOrLoadingMenuOpen() && !upscaling.menuCameraMVsValid;
 	const bool gazeReset = upscaling.foveatedRender.ConsumeGazeEyeReset(eyeIndex);
 	const bool historyReset = std::exchange(pendingHistoryReset, false);
-	slConstants.reset = (menuReset || gazeReset || historyReset) ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+	slConstants.reset = (menuReset || gazeReset || historyReset || (nativePrepared && prepared->resetHistory)) ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 
 	// Apply foveated mvec scale only when the subrect execute path is actually
 	// running this frame (flag set by ExecuteFoveatedRoute). The standard full-frame

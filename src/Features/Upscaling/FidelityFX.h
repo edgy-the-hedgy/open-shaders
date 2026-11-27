@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <memory>
 #include <atomic>
 #include <d3d11_4.h>
 #include <d3d12.h>
@@ -26,6 +27,8 @@
 #include "Utils/Logging.h"
 
 /** @brief Manages FidelityFX upscaling and frame generation with host FSR3 fallback and runtime provider discovery. */
+namespace DX12Native { struct NativeUpscalerFrame; }
+
 class FidelityFX
 {
 public:
@@ -180,6 +183,7 @@ private:
 		winrt::com_ptr<ID3D12CommandAllocator> commandAllocator;
 		winrt::com_ptr<ID3D12GraphicsCommandList4> commandList;
 		uint64_t fenceValue = 0;
+		std::shared_ptr<const DX12Native::NativeUpscalerFrame> prepared;
 	};
 	std::array<RuntimeCommandContext, kRuntimeCommandContextCount> runtimeCommandContexts;
 	uint32_t runtimeCommandContextCursor = 0;

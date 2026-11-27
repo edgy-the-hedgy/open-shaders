@@ -642,6 +642,7 @@ FidelityFX::RuntimeCommandContext* FidelityFX::AcquireRuntimeCommandContext()
 			continue;
 
 		commandContext.fenceValue = 0;
+		commandContext.prepared.reset();
 		runtimeCommandContextCursor = (index + 1) % commandContextCount;
 		return &commandContext;
 	}
@@ -673,6 +674,7 @@ FidelityFX::RuntimeCommandContext* FidelityFX::AcquireRuntimeCommandContext()
 
 	auto& commandContext = runtimeCommandContexts[waitIndex];
 	commandContext.fenceValue = 0;
+	commandContext.prepared.reset();
 	runtimeCommandContextCursor = (waitIndex + 1) % commandContextCount;
 	return &commandContext;
 }
@@ -1190,6 +1192,19 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 	CS_GPU_PASS_INDEXED(globals::game::isVR ? 1 + a_contextIndex : 0,
 		"Upscaling::RuntimeUpscalerDispatch", "Upscaling::RuntimeUpscalerDispatch Eye 0", "Upscaling::RuntimeUpscalerDispatch Eye 1");
 
+	const auto prepared = upscaling.nativePreparedFrame;
+	const bool directGuides = prepared && prepared->Matches(state->frameCount, a_renderWidth, a_renderHeight,
+		swapChain.d3d12Device.get(), { a_depth, a_motionVectors, a_reactiveMask, a_transparencyCompositionMask });
+	if (directGuides) commandContext->prepared = prepared;
+	const auto guide = [&](size_t index, WrappedResource* fallback) {
+		return directGuides ? prepared->guides->resources[index].get() : fallback->resource.get();
+	};
+	using Guides = DX12Native::UpscalerGuideSet;
+	auto* depth12 = guide(Guides::Depth, runtimeDepthShared[a_contextIndex]);
+	auto* motion12 = guide(Guides::Motion, runtimeMotionShared[a_contextIndex]);
+	auto* reactive12 = guide(Guides::Reactive, runtimeReactiveShared[a_contextIndex]);
+	auto* transparency12 = guide(Guides::Transparency, runtimeTransparencyShared[a_contextIndex]);
+
 	bool dispatchOk = false;
 	bool commandListSubmitted = false;
 	bool commandFenceTracked = false;
@@ -1215,10 +1230,10 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 		};
 
 		if ((!nativeColor && !copyIntoShared(a_color, runtimeColorShared[a_contextIndex], colorDesc.Width, colorDesc.Height, runtimeColorSharedDesc.Width, runtimeColorSharedDesc.Height)) ||
-			!copyIntoShared(a_depth, runtimeDepthShared[a_contextIndex], depthDesc.Width, depthDesc.Height, runtimeDepthSharedDesc.Width, runtimeDepthSharedDesc.Height) ||
+			(!directGuides && (!copyIntoShared(a_depth, runtimeDepthShared[a_contextIndex], depthDesc.Width, depthDesc.Height, runtimeDepthSharedDesc.Width, runtimeDepthSharedDesc.Height) ||
 			!copyIntoShared(a_motionVectors, runtimeMotionShared[a_contextIndex], motionDesc.Width, motionDesc.Height, runtimeMotionSharedDesc.Width, runtimeMotionSharedDesc.Height) ||
 			!copyIntoShared(a_reactiveMask, runtimeReactiveShared[a_contextIndex], reactiveDesc.Width, reactiveDesc.Height, runtimeReactiveSharedDesc.Width, runtimeReactiveSharedDesc.Height) ||
-			!copyIntoShared(a_transparencyCompositionMask, runtimeTransparencyShared[a_contextIndex], transparencyDesc.Width, transparencyDesc.Height, runtimeTransparencySharedDesc.Width, runtimeTransparencySharedDesc.Height)) {
+			!copyIntoShared(a_transparencyCompositionMask, runtimeTransparencyShared[a_contextIndex], transparencyDesc.Width, transparencyDesc.Height, runtimeTransparencySharedDesc.Width, runtimeTransparencySharedDesc.Height)))) {
 			logger::error("[FidelityFX] Runtime upscaler shared-resource copy failed for eye {}", a_contextIndex);
 			dispatchOk = false;
 		} else {
@@ -1234,10 +1249,10 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 			auto* color12 = nativeColor ? composite->color.get() : runtimeColorShared[a_contextIndex]->resource.get();
 			std::array<D3D12_RESOURCE_BARRIER, 6> beginBarriers = {
 				CD3DX12_RESOURCE_BARRIER::Transition(color12, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-				CD3DX12_RESOURCE_BARRIER::Transition(runtimeDepthShared[a_contextIndex]->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-				CD3DX12_RESOURCE_BARRIER::Transition(runtimeMotionShared[a_contextIndex]->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-				CD3DX12_RESOURCE_BARRIER::Transition(runtimeReactiveShared[a_contextIndex]->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-				CD3DX12_RESOURCE_BARRIER::Transition(runtimeTransparencyShared[a_contextIndex]->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+				CD3DX12_RESOURCE_BARRIER::Transition(depth12, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+				CD3DX12_RESOURCE_BARRIER::Transition(motion12, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+				CD3DX12_RESOURCE_BARRIER::Transition(reactive12, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+				CD3DX12_RESOURCE_BARRIER::Transition(transparency12, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
 				CD3DX12_RESOURCE_BARRIER::Transition(runtimeOutputShared[a_contextIndex]->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
 			};
 			commandList->ResourceBarrier(static_cast<UINT>(beginBarriers.size()), beginBarriers.data());
@@ -1245,30 +1260,30 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 			ffx::DispatchDescUpscale dispatchParameters{};
 			dispatchParameters.commandList = commandList;
 			dispatchParameters.color = ffxApiGetResourceDX12(color12, FFX_API_RESOURCE_STATE_COMPUTE_READ);
-			dispatchParameters.depth = ffxApiGetResourceDX12(runtimeDepthShared[a_contextIndex]->resource.get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
-			dispatchParameters.motionVectors = ffxApiGetResourceDX12(runtimeMotionShared[a_contextIndex]->resource.get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
+			dispatchParameters.depth = ffxApiGetResourceDX12(depth12, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+			dispatchParameters.motionVectors = ffxApiGetResourceDX12(motion12, FFX_API_RESOURCE_STATE_COMPUTE_READ);
 			dispatchParameters.exposure = FfxApiResource({});
-			dispatchParameters.reactive = ffxApiGetResourceDX12(runtimeReactiveShared[a_contextIndex]->resource.get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
-			dispatchParameters.transparencyAndComposition = ffxApiGetResourceDX12(runtimeTransparencyShared[a_contextIndex]->resource.get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
+			dispatchParameters.reactive = ffxApiGetResourceDX12(reactive12, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+			dispatchParameters.transparencyAndComposition = ffxApiGetResourceDX12(transparency12, FFX_API_RESOURCE_STATE_COMPUTE_READ);
 			dispatchParameters.output = ffxApiGetResourceDX12(runtimeOutputShared[a_contextIndex]->resource.get(), FFX_API_RESOURCE_STATE_UNORDERED_ACCESS, FFX_API_RESOURCE_USAGE_UAV);
-			dispatchParameters.jitterOffset = { -upscaling.jitter.x, -upscaling.jitter.y };
+			dispatchParameters.jitterOffset = directGuides ? decltype(dispatchParameters.jitterOffset){ prepared->jitterX, prepared->jitterY } : decltype(dispatchParameters.jitterOffset){ -upscaling.jitter.x, -upscaling.jitter.y };
 			dispatchParameters.motionVectorScale = { a_motionVectorScaleX, a_motionVectorScaleY };
 			dispatchParameters.renderSize = { a_renderWidth, a_renderHeight };
 			dispatchParameters.upscaleSize = { a_displayWidth, a_displayHeight };
 			dispatchParameters.enableSharpening = true;
 			dispatchParameters.sharpness = a_sharpness;
-			dispatchParameters.frameTimeDelta = *globals::game::deltaTime * 1000.f;
-			dispatchParameters.preExposure = 1.0f;
+			dispatchParameters.frameTimeDelta = directGuides ? prepared->frameTimeMs : *globals::game::deltaTime * 1000.f;
+			dispatchParameters.preExposure = directGuides ? prepared->preExposure : 1.0f;
 			// Preserve the baseline menu-camera reset and independent provider
 			// fallback reset below; no diagnostic preview history exists.
 			dispatchParameters.reset = state->IsMainOrLoadingMenuOpen() && !upscaling.menuCameraMVsValid;
-			dispatchParameters.cameraNear = *globals::game::cameraNear;
-			dispatchParameters.cameraFar = *globals::game::cameraFar;
-			dispatchParameters.cameraFovAngleVertical = Util::GetVerticalFOVRad();
+			dispatchParameters.cameraNear = directGuides ? prepared->cameraNear : *globals::game::cameraNear;
+			dispatchParameters.cameraFar = directGuides ? prepared->cameraFar : *globals::game::cameraFar;
+			dispatchParameters.cameraFovAngleVertical = directGuides ? prepared->cameraFov : Util::GetVerticalFOVRad();
 			dispatchParameters.viewSpaceToMetersFactor = 0.01428222656f;
 			dispatchParameters.flags = 0;
 			const bool runtimeFallbackReset = runtimeFallbackResetDispatchesRemaining > 0;
-			dispatchParameters.reset = dispatchParameters.reset || runtimeFallbackReset || runtimeNativeHistoryDiscontinuous;
+			dispatchParameters.reset = dispatchParameters.reset || runtimeFallbackReset || runtimeNativeHistoryDiscontinuous || (directGuides && prepared->resetHistory);
 
 			DWORD faultCode = 0;
 			const bool dispatchCompleted = Util::SehGuarded(
@@ -1299,10 +1314,10 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 
 			std::array<D3D12_RESOURCE_BARRIER, 6> endBarriers = {
 				CD3DX12_RESOURCE_BARRIER::Transition(color12, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
-				CD3DX12_RESOURCE_BARRIER::Transition(runtimeDepthShared[a_contextIndex]->resource.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
-				CD3DX12_RESOURCE_BARRIER::Transition(runtimeMotionShared[a_contextIndex]->resource.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
-				CD3DX12_RESOURCE_BARRIER::Transition(runtimeReactiveShared[a_contextIndex]->resource.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
-				CD3DX12_RESOURCE_BARRIER::Transition(runtimeTransparencyShared[a_contextIndex]->resource.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
+				CD3DX12_RESOURCE_BARRIER::Transition(depth12, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
+				CD3DX12_RESOURCE_BARRIER::Transition(motion12, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
+				CD3DX12_RESOURCE_BARRIER::Transition(reactive12, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
+				CD3DX12_RESOURCE_BARRIER::Transition(transparency12, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
 				CD3DX12_RESOURCE_BARRIER::Transition(runtimeOutputShared[a_contextIndex]->resource.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON),
 			};
 			commandList->ResourceBarrier(static_cast<UINT>(endBarriers.size()), endBarriers.data());
@@ -1348,7 +1363,7 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 				DX::ThrowIfFailed(swapChain.commandQueue->Signal(runtimeFence.fence12.get(), rescueFence));
 				commandContext->fenceValue = rescueFence;
 			} catch (...) {
-				commandContext->fenceValue = 0;
+				commandContext->fenceValue = UINT64_MAX;
 			}
 		}
 		dispatchOk = false;
@@ -1362,7 +1377,7 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 				DX::ThrowIfFailed(swapChain.commandQueue->Signal(runtimeFence.fence12.get(), rescueFence));
 				commandContext->fenceValue = rescueFence;
 			} catch (...) {
-				commandContext->fenceValue = 0;
+				commandContext->fenceValue = UINT64_MAX;
 			}
 		}
 		dispatchOk = false;

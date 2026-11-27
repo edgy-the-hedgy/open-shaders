@@ -6,6 +6,7 @@
 #include "Upscaling/FidelityFX.h"
 #include "Upscaling/FoveatedRender.h"
 #include "Upscaling/NativeDLSS.h"
+#include "Upscaling/NativeFramePreparation.h"
 #include "Upscaling/NeuralRendering.h"
 #include "Upscaling/PerfMode.h"
 #include "Upscaling/RCAS/RCAS.h"
@@ -448,6 +449,10 @@ public:
 	static inline DX12SwapChain dx12SwapChain;
 	DX12Native::NativeComposite nativeComposite;
 	std::shared_ptr<const DX12Native::NativeComposite::Frame> nativeCompositeFrame;
+	std::shared_ptr<const DX12Native::NativeUpscalerFrame> nativePreparedFrame;
+	std::shared_ptr<const DX12Native::UpscalerGuideSet> nativeGuideCache;
+	uint32_t nativeFrameGenerationFrame = UINT32_MAX;
+	void PublishNativeUpscalerInputs(UpscaleMethod method, uint32_t width, uint32_t height, ID3D11Resource* engineMotion);
 	NativeDLSS nativeDLSS;
 	static inline RCAS rcas;                      ///< Standalone RCAS sharpening for DLSS
 	static inline PerfMode perfMode;              ///< VR-only: render engine at upscaled-render res

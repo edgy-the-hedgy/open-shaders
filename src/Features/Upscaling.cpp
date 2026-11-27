@@ -1734,19 +1734,30 @@ void Upscaling::CreateUpscalingTextureResources(UpscaleMethod a_upscalemethod)
 
 	texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
 
+	const bool fullNative = globals::features::dx12Control.UsesExclusiveMaterials() && !globals::game::isVR;
+	const auto createGuide = [fullNative](D3D11_TEXTURE2D_DESC desc, const char* name) {
+		if (fullNative) {
+			auto shareable = desc;
+			shareable.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
+			try { return new Texture2D(shareable, name); }
+			catch (...) { logger::warn("[Upscaling] {} cannot be shared directly; retaining the copy path", name); }
+		}
+		return new Texture2D(desc, name);
+	};
+
 	if (a_upscalemethod == UpscaleMethod::kDLSS || a_upscalemethod == UpscaleMethod::kFSR) {
 		texDesc.Format = DXGI_FORMAT_R8_UNORM;
 		srvDesc.Format = texDesc.Format;
 		uavDesc.Format = texDesc.Format;
 
 		if (!reactiveMaskTexture) {
-			reactiveMaskTexture = new Texture2D(texDesc, "Upscaling::ReactiveMask");
+			reactiveMaskTexture = createGuide(texDesc, "Upscaling::ReactiveMask");
 			reactiveMaskTexture->CreateSRV(srvDesc);
 			reactiveMaskTexture->CreateUAV(uavDesc);
 		}
 
 		if (!transparencyCompositionMaskTexture) {
-			transparencyCompositionMaskTexture = new Texture2D(texDesc, "Upscaling::TransparencyCompositionMask");
+			transparencyCompositionMaskTexture = createGuide(texDesc, "Upscaling::TransparencyCompositionMask");
 			transparencyCompositionMaskTexture->CreateSRV(srvDesc);
 			transparencyCompositionMaskTexture->CreateUAV(uavDesc);
 		}
@@ -1773,7 +1784,7 @@ void Upscaling::CreateUpscalingTextureResources(UpscaleMethod a_upscalemethod)
 			depthUavDesc.Format = depthDesc.Format;
 			depthUavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
 
-			typedDepthTexture = new Texture2D(depthDesc, "Upscaling::TypedDepth");
+			typedDepthTexture = createGuide(depthDesc, "Upscaling::TypedDepth");
 			typedDepthTexture->CreateSRV(depthSrvDesc);
 			typedDepthTexture->CreateUAV(depthUavDesc);
 		}
@@ -1783,7 +1794,7 @@ void Upscaling::CreateUpscalingTextureResources(UpscaleMethod a_upscalemethod)
 	// to dilate; FSR's standard path reads the engine's motion vectors directly and only
 	// needs the copy when the foveated route (per-eye crop) is actually reachable.
 	if (a_upscalemethod == UpscaleMethod::kDLSS ||
-		(a_upscalemethod == UpscaleMethod::kFSR && foveatedRender.IsLoaded())) {
+		(a_upscalemethod == UpscaleMethod::kFSR && (foveatedRender.IsLoaded() || fullNative))) {
 		if (!motionVectorCopyTexture) {
 			auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
 
@@ -1794,7 +1805,7 @@ void Upscaling::CreateUpscalingTextureResources(UpscaleMethod a_upscalemethod)
 			srvDesc.Format = texDesc.Format;
 			uavDesc.Format = texDesc.Format;
 
-			motionVectorCopyTexture = new Texture2D(motionTexDesc, "Upscaling::MotionVectorCopy");
+			motionVectorCopyTexture = createGuide(motionTexDesc, "Upscaling::MotionVectorCopy");
 			motionVectorCopyTexture->CreateSRV(srvDesc);
 			motionVectorCopyTexture->CreateUAV(uavDesc);
 		}
@@ -1828,6 +1839,8 @@ void Upscaling::DestroyUpscalingTextureResources(UpscaleMethod a_upscalemethod)
 {
 	logger::debug("[Upscaling] Destroying texture resources for method {} ({})", static_cast<int>(a_upscalemethod), magic_enum::enum_name(a_upscalemethod));
 
+	nativePreparedFrame.reset();
+	nativeGuideCache.reset();
 	// Clean up D3D11 textures that are no longer needed
 	// Only destroy textures when switching away from methods that use them
 	if (a_upscalemethod != UpscaleMethod::kDLSS && a_upscalemethod != UpscaleMethod::kFSR) {
@@ -1864,7 +1877,7 @@ void Upscaling::DestroyUpscalingTextureResources(UpscaleMethod a_upscalemethod)
 	// switch with foveation not loaded leaks the DLSS-allocated texture (nothing
 	// destroys it, and CreateUpscalingTextureResources also skips reallocating it).
 	if (a_upscalemethod != UpscaleMethod::kDLSS &&
-		!(a_upscalemethod == UpscaleMethod::kFSR && foveatedRender.IsLoaded())) {
+		!(a_upscalemethod == UpscaleMethod::kFSR && (foveatedRender.IsLoaded() || globals::features::dx12Control.UsesExclusiveMaterials()))) {
 		if (motionVectorCopyTexture) {
 			motionVectorCopyTexture->srv = nullptr;
 			motionVectorCopyTexture->uav = nullptr;
@@ -2823,7 +2836,8 @@ bool Upscaling::ShouldPrepareFrameGeneration() const
 
 bool Upscaling::ShouldUseFrameGenerationThisFrame() const
 {
-	return frameGenerationPrepared;
+	return frameGenerationPrepared && (!globals::features::dx12Control.UsesExclusiveMaterials() ||
+		(globals::state && nativeFrameGenerationFrame == globals::state->frameCount));
 }
 
 bool Upscaling::IsUpscalingActive() const
@@ -3100,9 +3114,72 @@ void Upscaling::FillMenuCameraMotionVectors()
 	menuCameraMVsValid = true;
 }
 
+void Upscaling::PublishNativeUpscalerInputs(UpscaleMethod method, uint32_t width, uint32_t height, ID3D11Resource* engineMotion)
+{
+	using namespace DX12Native;
+	nativePreparedFrame.reset();
+	if (!globals::features::dx12Control.UsesExclusiveMaterials() || globals::game::isVR || !globals::state ||
+		!typedDepthTexture || !motionVectorCopyTexture || !reactiveMaskTexture || !transparencyCompositionMaskTexture ||
+		!dx12SwapChain.EnsureSharedDevice() || !width || !height)
+		return;
+	const std::array<ID3D11Resource*, UpscalerGuideSet::Count> outputs{
+		typedDepthTexture->resource.get(), motionVectorCopyTexture->resource.get(),
+		reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get() };
+	auto* device = dx12SwapChain.d3d12Device.get();
+	bool same = nativeGuideCache && nativeGuideCache->device.get() == device;
+	for (size_t i = 0; same && i < outputs.size(); ++i)
+		same = nativeGuideCache->encoderOutputs[i].get() == outputs[i];
+	if (!same) {
+		auto cache = std::make_shared<UpscalerGuideSet>();
+		cache->device.copy_from(device);
+		for (size_t i = 0; i < outputs.size(); ++i)
+			if (outputs[i]) cache->encoderOutputs[i].copy_from(outputs[i]);
+		try {
+			for (size_t i = 0; i < outputs.size(); ++i) {
+				if (!outputs[i]) throw std::runtime_error("Missing native encoder output");
+				winrt::com_ptr<IDXGIResource1> shared;
+				DX::ThrowIfFailed(outputs[i]->QueryInterface(IID_PPV_ARGS(shared.put())));
+				winrt::handle handle;
+				DX::ThrowIfFailed(shared->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr, handle.put()));
+				DX::ThrowIfFailed(device->OpenSharedHandle(handle.get(), IID_PPV_ARGS(cache->resources[i].put())));
+			}
+			cache->complete = true;
+		} catch (...) {
+			cache->resources = {};
+			logger::warn("[Upscaling] Native guide import unavailable; using provider copies");
+		}
+		nativeGuideCache = std::move(cache);
+	}
+	if (!nativeGuideCache->complete)
+		return;
+	for (const auto& resource : nativeGuideCache->resources) {
+		const auto desc = resource->GetDesc();
+		if (desc.Width < width || desc.Height < height) return;
+	}
+	auto publication = std::make_shared<NativeUpscalerFrame>();
+	publication->frame = globals::state->frameCount;
+	publication->width = width; publication->height = height;
+	publication->displayWidth = uint32_t(globals::state->screenSize.x);
+	publication->displayHeight = uint32_t(globals::state->screenSize.y);
+	publication->color = nativeCompositeFrame;
+	publication->guides = nativeGuideCache;
+	publication->sourceIdentities = outputs;
+	// FSR consumes undilated motion; the non-DLSS encoder copies the engine
+	// motion unchanged. Keep the provider's original DX11 source identity.
+	if (method == UpscaleMethod::kFSR)
+		publication->sourceIdentities[UpscalerGuideSet::Motion] = engineMotion;
+	publication->jitterX = -jitter.x; publication->jitterY = -jitter.y;
+	publication->cameraNear = *globals::game::cameraNear; publication->cameraFar = *globals::game::cameraFar;
+	publication->cameraFov = Util::GetVerticalFOVRad(); publication->frameTimeMs = *globals::game::deltaTime * 1000.f;
+	publication->resetHistory = globals::state->ShouldResetHistory() ||
+		(globals::state->IsMainOrLoadingMenuOpen() && !menuCameraMVsValid);
+	nativePreparedFrame = std::move(publication);
+}
+
 void Upscaling::Upscale()
 {
 	ZoneScoped;
+	nativePreparedFrame.reset();
 	auto upscaleMethod = GetUpscaleMethod();
 
 	auto context = globals::d3d::context;
@@ -3179,7 +3256,7 @@ void Upscaling::Upscale()
 				ID3D11UnorderedAccessView* uavs[4] = {
 					globals::game::isVR ? vrIntermediateReactiveMask[i]->uav.get() : reactiveMaskTexture->uav.get(),
 					globals::game::isVR ? vrIntermediateTransparencyMask[i]->uav.get() : transparencyCompositionMaskTexture->uav.get(),
-					(upscaleMethod == UpscaleMethod::kDLSS) ? (globals::game::isVR ? vrIntermediateMotionVectors[i]->uav.get() : motionVectorCopyTexture->uav.get()) : nullptr,
+					(upscaleMethod == UpscaleMethod::kDLSS || (globals::features::dx12Control.UsesExclusiveMaterials() && motionVectorCopyTexture)) ? (globals::game::isVR ? vrIntermediateMotionVectors[i]->uav.get() : motionVectorCopyTexture->uav.get()) : nullptr,
 					depthOutput
 				};
 				context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
@@ -3199,6 +3276,8 @@ void Upscaling::Upscale()
 
 		ID3D11ComputeShader* shader = nullptr;
 		context->CSSetShader(shader, nullptr, 0);
+		if (encodeCS && !globals::game::isVR)
+			PublishNativeUpscalerInputs(upscaleMethod, eyeRenderWidth, eyeRenderHeight, Util::AsReal(motionVector.texture));
 	};
 
 	if (!foveatedRouteCandidate)
@@ -3669,21 +3748,26 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 	if (upscaling.nativeDLSS.HasPendingReset())
 		upscaling.nativeDLSS.ServiceReset();
 	upscaling.frameGenerationPrepared = false;
+	upscaling.nativeFrameGenerationFrame = UINT32_MAX;
+	upscaling.nativePreparedFrame.reset();
 	if (upscaling.ShouldPrepareFrameGeneration()) {
 		if (postProcessing.loaded)
 			postProcessing.ClearBorderMotionVectorsForFrameGen();
 		upscaling.frameGenerationPrepared = upscaling.CopySharedD3D12Resources();
+		if (upscaling.frameGenerationPrepared && globals::state)
+			upscaling.nativeFrameGenerationFrame = globals::state->frameCount;
 	}
 
 	// open-RT's late-frame DX11 color capture: Native Composite is the
-	// final color authority, while FSR's other input preparation stays as-is.
+	// final color authority. Native upscaler guides are published after encoding.
 	const bool nativeActive = globals::features::dx12Control.IsActive();
 	if (nativeActive || upscaling.nativeCompositeFrame) {
 		upscaling.nativeCompositeFrame.reset();
 		DX12Native::lastCompositeShadowResult.store(DX12Native::CompositeShadowResult::NotCaptured, std::memory_order_relaxed);
 	}
 	if (nativeActive && upscaling.loaded && !globals::game::isVR &&
-		globals::features::dx12NativeScene.GetFrameNativeMode() != DX12::SCMNativeMode::Disabled &&
+		(globals::features::dx12Control.UsesExclusiveMaterials() ||
+			globals::features::dx12NativeScene.GetFrameNativeMode() != DX12::SCMNativeMode::Disabled) &&
 		globals::game::graphicsState &&
 		upscaling.dx12SwapChain.EnsureSharedDevice()) {
 		auto* renderer = globals::game::renderer;
