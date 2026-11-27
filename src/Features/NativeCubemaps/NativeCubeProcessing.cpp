@@ -1,4 +1,5 @@
 #include "NativeCubemaps.h"
+#include "NativeCubemapPolicy.h"
 #include "Features/DX12/DX12GpuRetirement.h"
 #include "Features/DX12/DX12MaterialFrameContract.h"
 #include "Utils/FileSystem.h"
@@ -14,7 +15,8 @@
 using namespace DX12Native;
 namespace
 {
-    constexpr uint32_t kSize=256, kMips=9;
+    using NativeCubemaps::Policy::kSize;
+    using NativeCubemaps::Policy::kMips;
     constexpr DXGI_FORMAT kFormat=DXGI_FORMAT_R16G16B16A16_FLOAT;
     constexpr UINT kTables=1+2*kMips;
     struct Constants {
@@ -169,10 +171,10 @@ bool NativeCubemaps::CubeProcessing::Dispatch(const GraphicsBackend& backend,
     Check(device->CreateCommandList(0,D3D12_COMMAND_LIST_TYPE_DIRECT,slot->allocator.get(),historyPipeline.get(),IID_PPV_ARGS(slot->commands.put())));
     const uint32_t elapsed=latest ? input->stamp.engineFrame-latest->base.stamp.engineFrame:0;
     bool useHistory=false;
-    if(latest && latest->base.stamp.SameEnvironment(input->stamp) && elapsed && elapsed<=120) {
+    if(latest) {
         const auto& old=latest->cameraPosition;
         const float x=old.x-cameraPosition.x,y=old.y-cameraPosition.y,z=old.z-cameraPosition.z;
-        useHistory=std::isfinite(x*x+y*y+z*z) && x*x+y*y+z*z<=128.f*128.f;
+        useHistory=Policy::CanReuseHistory(latest->base.stamp.SameEnvironment(input->stamp),elapsed,x*x+y*y+z*z);
     }
     if(useHistory) slot->previous=latest;
     const Constants constants{dalc,uint32_t(input->stamp.encoding),uint32_t(useHistory),uint32_t(reflection),elapsed};

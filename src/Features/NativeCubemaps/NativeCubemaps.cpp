@@ -1,4 +1,5 @@
 #include "NativeCubemaps.h"
+#include "NativeCubemapPolicy.h"
 
 #include "Features/NativeIBL/NativeIBL.h"
 #include "Features/LinearLighting.h"
@@ -14,8 +15,7 @@
 
 namespace
 {
-    constexpr uint32_t kSize=256;
-    constexpr uint32_t kCaptureInterval=6;
+    using NativeCubemaps::Policy::kSize;
     struct RawConstants {
         Matrix view, projection, inverseViewProjection;
         float4 dynamicResolution;
@@ -110,7 +110,7 @@ void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend)
     using namespace DX12Native;
     if(!loaded || !currentStamp.scope || !globals::state || !globals::game::renderer) return;
     if(processing) processing->Poll();
-    if(lastCaptureFrame!=UINT32_MAX && currentStamp.engineFrame-lastCaptureFrame<kCaptureInterval) return;
+    if(!Policy::CaptureDue(lastCaptureFrame,currentStamp.engineFrame)) return;
     lastCaptureFrame=currentStamp.engineFrame;
     try {
         std::array<float4,3> dalc{};

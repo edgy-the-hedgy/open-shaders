@@ -96,5 +96,22 @@ class ArchitectureLintTests(unittest.TestCase):
             self.assertIn("eyeCount", text, f"{source} eye-local shaders need the per-eye dispatch loop")
 
 
+    def test_full_native_cubemap_acquisition_has_no_legacy_publication_bridge(self):
+        native = (ROOT / "src/Features/NativeCubemaps/NativeCubemaps.cpp").read_text(encoding="utf-8")
+        legacy = (ROOT / "src/Features/DynamicCubemaps.cpp").read_text(encoding="utf-8")
+        self.assertNotIn("globals::features::dynamicCubemaps", native)
+        self.assertNotIn("nativeCubemaps", legacy)
+        self.assertIn("CaptureRaw(backend)", native)
+        self.assertIn("processing->Dispatch", native)
+
+    def test_native_cube_processing_is_staged_as_dxil(self):
+        cmake = (ROOT / "cmake/DX12NativeComposite.cmake").read_text(encoding="utf-8")
+        shader = (ROOT / "features/Native Composite/Shaders/NativeComposite/NativeCubemapFilter.hlsl6").read_text(encoding="utf-8")
+        self.assertIn("NativeCubemapHistory NativeCubemapFilter", cmake)
+        self.assertIn("set(_full_native_entry historyMain)", cmake)
+        self.assertIn("void historyMain(", shader)
+        self.assertIn("void main(", shader)
+
+
 if __name__ == "__main__":
     unittest.main()
