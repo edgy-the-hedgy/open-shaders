@@ -558,6 +558,8 @@ public:
 	 * @param a_prepass Whether this is a prepass rendering phase.
 	 */
 	void UpdateSharedData(bool a_inWorld, bool a_prepass);
+	/** @brief Shared material texture LOD bias for raster and native evaluation. */
+	float GetMaterialMipBias(bool temporal) const;
 	/** @brief Publishes feature constants after render-thread resource or readiness changes. */
 	void UpdateFeatureData(bool a_inWorld);
 	/**

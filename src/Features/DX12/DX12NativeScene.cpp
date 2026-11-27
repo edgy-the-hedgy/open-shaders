@@ -672,7 +672,8 @@ void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 		fullNativeMaterial->Dispatch(*backend, raster.Get(frame), scene, frame, uint32_t(viewport.x), uint32_t(viewport.y), true, true, false,
 			globals::features::extendedMaterials.loaded && globals::features::extendedMaterials.settings.EnableParallax != 0,
 			globals::features::extendedMaterials.loaded && globals::features::extendedMaterials.settings.EnableParallaxWarpingFix != 0,
-			globals::features::extendedMaterials.loaded && globals::features::extendedMaterials.settings.EnableShadows != 0);
+			globals::features::extendedMaterials.loaded && globals::features::extendedMaterials.settings.EnableShadows != 0,
+			globals::state->GetMaterialMipBias(Util::GetTemporal()));
 	}
 	const auto material = fullNativeMaterial->GetMaterialFrame(frame);
 	if (!material || material->scene != scene || !scene->inputs || !scene->inputs->residency)
