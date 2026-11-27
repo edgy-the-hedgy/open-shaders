@@ -153,7 +153,7 @@ namespace DX12Native
         ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1, 0, 0);
         ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 4, 0, 1);
         ranges[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NativePBR::kGpuTextureDescriptorCapacity, 10, 0, 4);
-        CD3DX12_ROOT_PARAMETER parameters[10];
+        CD3DX12_ROOT_PARAMETER parameters[11];
         parameters[0].InitAsShaderResourceView(0);
         parameters[1].InitAsDescriptorTable(3, ranges);
         parameters[2].InitAsShaderResourceView(2);
@@ -164,11 +164,12 @@ namespace DX12Native
         parameters[7].InitAsShaderResourceView(7);
         parameters[8].InitAsShaderResourceView(8);
         parameters[9].InitAsShaderResourceView(9);
+        parameters[10].InitAsShaderResourceView(522);
         winrt::com_ptr<ID3D12RootSignature> pr, ir;
         winrt::com_ptr<ID3D12PipelineState> pp, ip;
         winrt::com_ptr<ID3D12Fence> fence;
         BuildPipeline(device, Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativeDiffuseSH.dxil", 3, projectionParameters, pr, pp);
-        BuildPipeline(device, Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativeIndirectLighting.dxil", 10, parameters, ir, ip);
+        BuildPipeline(device, Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativeIndirectLighting.dxil", 11, parameters, ir, ip);
         Eval::Check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(fence.put())));
         owner = backend;
         projectionRoot = std::move(pr); projectionPipeline = std::move(pp);
@@ -322,6 +323,7 @@ namespace DX12Native
             cmd->SetComputeRootShaderResourceView(7, scene.shadingGeometry->buffer->GetGPUVirtualAddress());
             cmd->SetComputeRootShaderResourceView(8, scene.materialEvaluation->records->GetGPUVirtualAddress());
             cmd->SetComputeRootShaderResourceView(9, scene.materialEvaluation->bindings->GetGPUVirtualAddress());
+            cmd->SetComputeRootShaderResourceView(10, slot->material->materialLobes->GetGPUVirtualAddress());
             cmd->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
             Transition(cmd, slot->samples.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
             Transition(cmd, depth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);

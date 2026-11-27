@@ -104,7 +104,7 @@ namespace DX12Native
 		CD3DX12_DESCRIPTOR_RANGE ranges[2];
 		ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NativePBR::kGpuTextureDescriptorCapacity, 7, 0, 0);
 		ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 3, 0, NativePBR::kGpuTextureDescriptorCapacity);
-		CD3DX12_ROOT_PARAMETER parameters[10];
+		CD3DX12_ROOT_PARAMETER parameters[11];
 		parameters[0].InitAsShaderResourceView(0);
 		parameters[1].InitAsShaderResourceView(1);
 		parameters[2].InitAsShaderResourceView(2);
@@ -115,13 +115,14 @@ namespace DX12Native
 		parameters[7].InitAsShaderResourceView(5);
 		parameters[8].InitAsShaderResourceView(6);
 		parameters[9].InitAsUnorderedAccessView(1);
+		parameters[10].InitAsShaderResourceView(519);
 		std::array<CD3DX12_STATIC_SAMPLER_DESC, 4> samplers;
 		for (uint32_t mode = 0; mode < 4; ++mode)
 			samplers[mode] = CD3DX12_STATIC_SAMPLER_DESC(mode, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
 				(mode & 2) ? D3D12_TEXTURE_ADDRESS_MODE_WRAP : D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
 				(mode & 1) ? D3D12_TEXTURE_ADDRESS_MODE_WRAP : D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
 				D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
-		const CD3DX12_ROOT_SIGNATURE_DESC signature(10, parameters, UINT(samplers.size()), samplers.data());
+		const CD3DX12_ROOT_SIGNATURE_DESC signature(11, parameters, UINT(samplers.size()), samplers.data());
 		winrt::com_ptr<ID3DBlob> blob, errors;
 		winrt::com_ptr<ID3D12RootSignature> newRoot;
 		winrt::com_ptr<ID3D12PipelineState> newPipeline;
@@ -251,6 +252,7 @@ namespace DX12Native
 			command->SetComputeRootShaderResourceView(7, evaluation.records->GetGPUVirtualAddress());
 			command->SetComputeRootShaderResourceView(8, evaluation.bindings->GetGPUVirtualAddress());
 			command->SetComputeRootUnorderedAccessView(9, slot->counters->GetGPUVirtualAddress());
+			command->SetComputeRootShaderResourceView(10, slot->material->materialLobes->GetGPUVirtualAddress());
 			if (!fresh) {
 				const auto counterStart = CD3DX12_RESOURCE_BARRIER::Transition(slot->counters.get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
 				command->ResourceBarrier(1, &counterStart);

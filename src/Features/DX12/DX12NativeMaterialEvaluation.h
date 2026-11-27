@@ -408,7 +408,24 @@ namespace DX12Native
 				const bool authoredProjectedUv = (flags & static_cast<uint64_t>(F::kProjectedUV)) != 0;
 				const bool projectedUv = authoredProjectedUv || (source.observedShaderFlags & static_cast<uint64_t>(F::kProjectedUV)) != 0;
 				const bool projectionKnown = projectedUv || scene.geometry[i]->materialObjectEditorId.empty();
-				const auto capability = NativePBR::ClassifyScreenSurface(recipe, projectedUv, true, projectionKnown);
+				auto capability = NativePBR::ClassifyScreenSurface(recipe, projectedUv, true, projectionKnown);
+				constexpr uint32_t coat = uint32_t(PBRFlags::TwoLayer);
+				constexpr uint32_t supportedCoat = coat | uint32_t(PBRFlags::ColoredCoat) | uint32_t(PBRFlags::CoatNormal);
+				const auto authoredMap = [&](NativePBR::TextureRole role) {
+					return !recipe.textures[static_cast<size_t>(role)].canonicalPath.empty();
+				};
+				const auto residentMap = [&](NativePBR::TextureRole role) {
+					return (recordTable[it->second].controls[0] & NativePBR::TextureRoleBit(role)) != 0;
+				};
+				const bool coatReady = (capability.activeFlags & coat) && !(capability.activeFlags & ~supportedCoat) &&
+					(!authoredMap(NativePBR::TextureRole::Features0) || residentMap(NativePBR::TextureRole::Features0)) &&
+					(!authoredMap(NativePBR::TextureRole::Features1) || residentMap(NativePBR::TextureRole::Features1)) &&
+					(!(capability.activeFlags & uint32_t(PBRFlags::CoatNormal)) || residentMap(NativePBR::TextureRole::Features1));
+				if (coatReady) {
+					binding.flags |= MaterialFrameContract::kCoatReadyBinding;
+					// Projection and displacement still retain their own independent limitations.
+					capability.issues &= ~(NativePBR::ScreenPbrFeatures | NativePBR::ScreenFeatureTextures);
+				}
 				result->surfaceCapabilities.Observe(recipe, capability, authoredProjectedUv);
 				if (capability.issues) {
 					binding.flags |= MaterialFrameContract::kBaseOnlyBinding;

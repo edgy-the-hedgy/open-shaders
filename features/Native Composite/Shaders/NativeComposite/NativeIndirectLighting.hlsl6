@@ -14,6 +14,7 @@ RaytracingAccelerationStructure Scene : register(t6);
 #define NATIVE_BINDING_REGISTER t9
 #define NATIVE_TEXTURE_REGISTER t10
 #include "NativeMaterialAlpha.hlsli"
+ByteAddressBuffer MaterialLobes : register(t522);
 RWByteAddressBuffer Lighting : register(u0);
 
 cbuffer IndirectInputs : register(b0)
@@ -170,6 +171,7 @@ void main(uint3 id : SV_DispatchThreadID)
     float4 normal = UnpackHalf4(Materials.Load2(offset + 8u));
     float4 f0 = UnpackHalf4(Materials.Load2(offset + 16u));
     float4 emissionAO = UnpackHalf4(Materials.Load2(offset + 24u));
+    NativeCoatSample coat=ReadNativeCoat(MaterialLobes,offset);
     if (!HasEvaluatedNativeBase(base.a) || !all(isfinite(base)) || !all(isfinite(normal)) ||
         !all(isfinite(f0)) || !all(isfinite(emissionAO)) || dot(normal.xyz, normal.xyz) < 1e-8) return;
     float3 view, world;
@@ -178,6 +180,19 @@ void main(uint3 id : SV_DispatchThreadID)
     float roughness = clamp(normal.w, 0.045, 1.0);
     NativeIndirect::LobeWeights lobes = NativeIndirect::EvaluateLobes(base.rgb, f0.rgb, f0.a,
         roughness, emissionAO.a, saturate(dot(n, view)));
+    bool hasCoat = HasNativeCoat(coat);
+    float3 cn = hasCoat ? normalize(coat.normalRoughness.xyz) : n;
+    float3 coatSpecularWeight = 0.0;
+    float3 coatDiffuseWeight = 0.0;
+    if (hasCoat) {
+        float2 coatBRDF = BRDF::EnvBRDF(coat.normalRoughness.w,saturate(abs(dot(cn,view))));
+        float3 reflected = saturate(coat.f0Colored.rgb*coatBRDF.x+coatBRDF.y);
+        float strength=saturate(coat.colorStrength.w);
+        lobes.diffuse *= 1.0-reflected*strength;
+        lobes.specular *= 1.0-reflected*strength;
+        coatSpecularWeight=reflected*strength;
+        if (coat.f0Colored.w != 0.0) coatDiffuseWeight=coat.colorStrength.rgb*(1.0-reflected)*strength;
+    }
     uint active = EnabledContributions & AvailableContributions;
     if ((active & ContributionIndirectDiffuse) != 0u)
     {
@@ -190,7 +205,8 @@ void main(uint3 id : SV_DispatchThreadID)
         } else if (IBLEnabled == 0u && Interior == 0u) {
             radiance *= skyVisibility;
         }
-        Lighting.Store2(outputOffset, PackOpaqueRadiance(radiance * lobes.diffuse, ContributionIndirectDiffuse));
+        float3 diffuseRadiance = radiance * (lobes.diffuse + coatDiffuseWeight);
+        Lighting.Store2(outputOffset, PackOpaqueRadiance(diffuseRadiance, ContributionIndirectDiffuse));
     }
     if ((active & ContributionIndirectSpecular) != 0u && EnvironmentMipCount != 0u &&
         (Interior != 0u || ReflectionMipCount != 0u))
@@ -215,6 +231,27 @@ void main(uint3 id : SV_DispatchThreadID)
                 radiance = full * target / max(0.001, reference);
             }
         }
-        Lighting.Store2(outputOffset + 8u, PackOpaqueRadiance(radiance * lobes.specular, ContributionIndirectSpecular));
+        float3 specularRadiance = radiance * lobes.specular;
+        if (hasCoat) {
+            float3 cr = reflect(-view,cn);
+            float crLevel = coat.normalRoughness.w * float(EnvironmentMipCount-1u);
+            float3 crEnv=DecodeEnvironmentRadiance(Environment.SampleLevel(ClampClamp,cr,crLevel).rgb,ColorEncoding);
+            float crTarget=Luminance(EnvironmentIrradiance(-cr));
+            float crNorm=Luminance(DecodeEnvironmentRadiance(Environment.SampleLevel(ClampClamp,cr,float(EnvironmentMipCount-1u)).rgb,ColorEncoding));
+            float3 crRadiance=crEnv*crTarget/max(0.001,crNorm);
+            if (Interior==0u) {
+                float3 crFull=DecodeEnvironmentRadiance(Reflections.SampleLevel(ClampClamp,cr,coat.normalRoughness.w*float(ReflectionMipCount-1u)).rgb,ColorEncoding);
+                if (IBLEnabled!=0u) {
+                    float visibility=SkyCapVisibility(world,cn,cr,clamp(2.0/(coat.normalRoughness.w*coat.normalRoughness.w)-2.0,1.0,128.0),MinSpecularSkyVisibility);
+                    if (DALCMode==3u) crRadiance*=SkyCapVisibility(world,cn,float3(0,0,1),1.0,MinSpecularSkyVisibility);
+                    crRadiance+=max(0.0,crFull-crEnv)*SkyScale*visibility;
+                } else {
+                    float crRef=Luminance(DecodeEnvironmentRadiance(Reflections.SampleLevel(ClampClamp,cr,float(ReflectionMipCount-1u)).rgb,ColorEncoding));
+                    crRadiance=crFull*crTarget/max(0.001,crRef);
+                }
+            }
+            specularRadiance += crRadiance*coatSpecularWeight;
+        }
+        Lighting.Store2(outputOffset + 8u, PackOpaqueRadiance(specularRadiance, ContributionIndirectSpecular));
     }
 }

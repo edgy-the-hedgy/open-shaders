@@ -14,8 +14,9 @@ float3 SrgbToLinear(float3 v)
     v = max(v,0);
     return lerp(v/12.92, pow((v+0.055)/1.055,2.4), v>0.04045);
 }
-Sample EvaluateMaterial(uint instance, uint primitive, float3 weights)
+Sample EvaluateMaterial(uint instance, uint primitive, float3 weights, out NativeCoatSample coat)
 {
+    coat = (NativeCoatSample)0;
     Sample result = (Sample)0;
     if (instance >= InstanceCount) return result;
     Binding binding = Bindings[instance];
@@ -84,6 +85,34 @@ Sample EvaluateMaterial(uint instance, uint primitive, float3 weights)
     result.normal = float4(normal,roughness);
     result.f0 = float4(f0,metallic);
     result.emission = float4(emission,saturate(packed.b));
+    if ((binding.flags & SurfaceCoatReadyBinding) != 0u) {
+        // Match the legacy feature0 color/strength and feature1 roughness/normal semantics.
+        float3 coatColor = SrgbToLinear(max(material.coatColor.rgb,0.0));
+        float strength = saturate(material.coat.x);
+        float coatRoughness = material.coat.y;
+        float3 coatNormal = normal;
+        if (material.textures[2].z != 0xffffffffu) {
+            float4 feature0 = Tex(material.textures[2].z, uv, material.properties.z);
+            coatColor *= SrgbToLinear(feature0.rgb);
+            strength *= saturate(feature0.a);
+        }
+        if (material.textures[3].x != 0xffffffffu) {
+            float4 feature1 = Tex(material.textures[3].x, uv, material.properties.z);
+            coatRoughness *= feature1.a;
+            if ((material.properties.x & 16u) != 0u) {
+                float3 mapped = feature1.xyz * 2.0 - 1.0;
+                float3 candidate = t*mapped.x + b*mapped.y + n*mapped.z;
+                if (!all(isfinite(candidate)) || dot(candidate,candidate) < 1e-8) { result.color.a=SurfaceFeatureLimited; return result; }
+                coatNormal = normalize(candidate);
+            }
+        }
+        if (!all(isfinite(coatColor)) || !isfinite(strength) || !isfinite(coatRoughness) || !isfinite(material.coat.z)) {
+            result.color.a=SurfaceFeatureLimited; return result;
+        }
+        coat.normalRoughness=float4(coatNormal,clamp(coatRoughness,0.045,1.0));
+        coat.colorStrength=float4(coatColor,strength);
+        coat.f0Colored=float4(saturate(material.coat.z).xxx,(material.properties.x & 4u) != 0u ? 1.0 : 0.0);
+    }
     return result;
 }
 
@@ -91,7 +120,8 @@ Sample EvaluateMaterial(uint instance, uint primitive, float3 weights)
 void main(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= InstanceCount) return;
-    Output[id.x] = EvaluateMaterial(id.x, 0u, float3(1.0/3.0,1.0/3.0,1.0/3.0));
+    NativeCoatSample coat;
+    Output[id.x] = EvaluateMaterial(id.x, 0u, float3(1.0/3.0,1.0/3.0,1.0/3.0), coat);
 }
 
 Texture2D<float> ProbeDepth : register(t515);
@@ -109,6 +139,7 @@ RWByteAddressBuffer ProbeCounts : register(u1);
 RWByteAddressBuffer ScreenOutput : register(u2);
 // Separate identity plane: material ABI remains 32 bytes per sample.
 RWByteAddressBuffer RayIdentity : register(u3);
+RWByteAddressBuffer MaterialLobes : register(u4);
 uint2 PackHalf4(float4 value)
 {
     uint4 bits=f32tof16(clamp(value,-65504.0,65504.0));
@@ -119,8 +150,9 @@ groupshared uint GroupCounts[8];
 // Non-opaque instances are marked in the TLAS; do not commit a candidate
 // without a resident alpha texture and an authoritative comparison function.
 
-Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity)
+Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out NativeCoatSample coat)
 {
+    coat=(NativeCoatSample)0;
     hitIdentity = uint2(0xffffffffu, 0xffffffffu);
     Sample result = (Sample)0;
     uint2 pixel = min(uint2((float2(pixelIndex)+0.5)*float2(ViewSize)/float2(GridSize)),ViewSize-1u);
@@ -164,13 +196,18 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity)
         return result;
     }
     float2 bary=query.CommittedTriangleBarycentrics();
-    result=EvaluateMaterial(query.CommittedInstanceID(),query.CommittedPrimitiveIndex(),float3(1.0-bary.x-bary.y,bary));
+    result=EvaluateMaterial(query.CommittedInstanceID(),query.CommittedPrimitiveIndex(),float3(1.0-bary.x-bary.y,bary),coat);
     if(result.color.a==SurfaceInvalidReceiver) result.color.a=SurfaceEvaluationFailed;
     // The native output is consumed in world space, including rotated instances.
-    if (result.color.a == SurfaceEvaluatedBase) {
+    if (HasEvaluatedNativeBase(result.color.a)) {
         float3 worldNormal = mul(result.normal.xyz, (float3x3)query.CommittedWorldToObject3x4());
         if (all(isfinite(worldNormal)) && dot(worldNormal,worldNormal)>1e-8) {
             result.normal.xyz = normalize(worldNormal);
+            if (HasNativeCoat(coat)) {
+                float3 worldCoat = mul(coat.normalRoughness.xyz,(float3x3)query.CommittedWorldToObject3x4());
+                if (all(isfinite(worldCoat)) && dot(worldCoat,worldCoat)>1e-8) coat.normalRoughness.xyz=normalize(worldCoat);
+                else { coat=(NativeCoatSample)0; result.color.a=SurfaceFeatureLimited; }
+            }
             if ((binding.flags & SurfaceBaseOnlyBinding) != 0u) result.color.a = SurfaceFeatureLimited;
         }
         else result.color.a = SurfaceEvaluationFailed;
@@ -191,10 +228,14 @@ void screenMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
     }
     if (all(id.xy < GridSize)) {
         uint2 hitIdentity;
-        Sample result=EvaluateScreen(id.xy, hitIdentity);
+        NativeCoatSample coat;
+        Sample result=EvaluateScreen(id.xy, hitIdentity, coat);
         uint ordinal = id.y*((GridSize.x+7u)&~7u)+id.x;
         uint offset=ordinal*NativeSurfaceStride;
         RayIdentity.Store2(ordinal*8u,hitIdentity);
+        uint lobeOffset=ordinal*NativeMaterialLobeStride;
+        MaterialLobes.Store4(lobeOffset,uint4(PackHalf4(coat.normalRoughness),PackHalf4(coat.colorStrength)));
+        MaterialLobes.Store4(lobeOffset+16u,uint4(PackHalf4(coat.f0Colored),0u,0u));
         ScreenOutput.Store4(offset,uint4(PackHalf4(result.color),PackHalf4(result.normal)));
         ScreenOutput.Store4(offset+16u,uint4(PackHalf4(result.f0),PackHalf4(result.emission)));
         uint category = result.color.a==SurfaceEvaluatedBase ? 0 : result.color.a==SurfaceMissingGeometry ? 1 :

@@ -26,8 +26,8 @@ namespace DX12Native
 		static_assert(sizeof(Camera) <= 256);
 		struct OutputAllocation
 		{
-			winrt::com_ptr<ID3D12Resource> resource, rayIdentity;
-			uint64_t bytes=0, identityBytes=0, allocationBytes=0;
+			winrt::com_ptr<ID3D12Resource> resource, rayIdentity, materialLobes;
+			uint64_t bytes=0, identityBytes=0, lobeBytes=0, allocationBytes=0;
 			bool shaderReadable=false;
 		};
 		struct Submission
@@ -75,7 +75,7 @@ namespace DX12Native
 				throw std::runtime_error("Screen probe DXIL read failed");
 			CD3DX12_DESCRIPTOR_RANGE range;
 			range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NativePBR::kGpuTextureDescriptorCapacity + 1, 3);
-			CD3DX12_ROOT_PARAMETER parameters[10];
+			CD3DX12_ROOT_PARAMETER parameters[11];
 			parameters[0].InitAsShaderResourceView(0);
 			parameters[1].InitAsShaderResourceView(1);
 			parameters[2].InitAsShaderResourceView(2);
@@ -86,13 +86,14 @@ namespace DX12Native
 			parameters[7].InitAsConstantBufferView(1);
 			parameters[8].InitAsUnorderedAccessView(1);
 			parameters[9].InitAsUnorderedAccessView(3);
+			parameters[10].InitAsUnorderedAccessView(4);
 			std::array<CD3DX12_STATIC_SAMPLER_DESC, 4> samplers;
 			for (uint32_t mode = 0; mode < 4; ++mode)
 				samplers[mode] = CD3DX12_STATIC_SAMPLER_DESC(mode, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
 					(mode & 2) ? D3D12_TEXTURE_ADDRESS_MODE_WRAP : D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
 					(mode & 1) ? D3D12_TEXTURE_ADDRESS_MODE_WRAP : D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
 					D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
-			const CD3DX12_ROOT_SIGNATURE_DESC desc(10, parameters, UINT(samplers.size()), samplers.data());
+			const CD3DX12_ROOT_SIGNATURE_DESC desc(11, parameters, UINT(samplers.size()), samplers.data());
 			winrt::com_ptr<ID3DBlob> blob, errors;
 			winrt::com_ptr<ID3D12RootSignature> newRoot;
 			winrt::com_ptr<ID3D12PipelineState> newPipeline;
@@ -120,8 +121,8 @@ namespace DX12Native
 			std::shared_ptr<const RasterFrame> raster;
 			std::shared_ptr<const TopLevel> scene;
 			winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
-			winrt::com_ptr<ID3D12Resource> samples, rayIdentity;
-			uint32_t rayIdentityRowPitch = 0;
+			winrt::com_ptr<ID3D12Resource> samples, rayIdentity, materialLobes;
+			uint32_t rayIdentityRowPitch = 0, materialLobeRowPitch = 0;
 			uint32_t abiVersion=MaterialFrameContract::kMaterialAbiVersion, sampleStride=kSampleStride, rowPitch=0;
 			static constexpr D3D12_RESOURCE_STATES publishedState = D3D12_RESOURCE_STATE_COMMON;
 			MaterialFrameContract::SurfaceCorrespondence correspondence = MaterialFrameContract::SurfaceCorrespondence::DepthOnly;
@@ -138,6 +139,9 @@ namespace DX12Native
 					!rayIdentity || allocation->rayIdentity.get() != rayIdentity.get() ||
 					!MaterialFrameContract::ValidLayout(width, height, rayIdentityRowPitch, MaterialFrameContract::kRayIdentityStride) ||
 					allocation->identityBytes < uint64_t(rayIdentityRowPitch) * height ||
+					!materialLobes || allocation->materialLobes.get() != materialLobes.get() ||
+					!MaterialFrameContract::ValidLayout(width, height, materialLobeRowPitch, MaterialFrameContract::kMaterialLobeStride) ||
+					allocation->lobeBytes < uint64_t(materialLobeRowPitch) * height ||
 					!allocation->shaderReadable || !descriptors ||
 					!producerFence || !MaterialFrameContract::ValidProducerSignal(producerValue, producerFence->GetCompletedValue()) ||
 					!raster || raster->frame != frame || !raster->cameraValid || !raster->depth || !raster->depth->resource ||
@@ -152,6 +156,8 @@ namespace DX12Native
 					return false;
 				const auto desc = samples->GetDesc();
 				const auto identityDesc = rayIdentity->GetDesc();
+				const auto lobeDesc = materialLobes->GetDesc();
+				if (lobeDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER || lobeDesc.Width < uint64_t(materialLobeRowPitch) * height) return false;
 				return identityDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
 					identityDesc.Width >= uint64_t(rayIdentityRowPitch) * height && desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
 					desc.Width >= uint64_t(rowPitch) * height && allocation->bytes >= uint64_t(rowPitch) * height;
@@ -271,8 +277,9 @@ namespace DX12Native
 				const uint32_t pitchPixels=(gridWidth+7u)&~7u;
 				const uint64_t bytes=uint64_t(pitchPixels)*gridHeight*kSampleStride;
 				const uint64_t identityBytes=uint64_t(pitchPixels)*gridHeight*MaterialFrameContract::kRayIdentityStride;
+				const uint64_t lobeBytes=uint64_t(pitchPixels)*gridHeight*MaterialFrameContract::kMaterialLobeStride;
 				// ByteAddressBuffer uses 32-bit byte offsets.
-				if (bytes>UINT32_MAX) { failure="Screen material byte address range exceeded"; return; }
+				if (bytes>UINT32_MAX || lobeBytes>UINT32_MAX) { failure="Screen material byte address range exceeded"; return; }
 				std::shared_ptr<OutputAllocation>* selected = nullptr;
 				uint64_t tracked = 0;
 				for (auto& entry : outputPool) {
@@ -289,12 +296,15 @@ namespace DX12Native
 				const auto available = videoBudget.Query(device, tracked);
 				const auto desc=CD3DX12_RESOURCE_DESC::Buffer(bytes,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 				const auto identityDesc=CD3DX12_RESOURCE_DESC::Buffer(identityBytes,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+				const auto lobeDesc=CD3DX12_RESOURCE_DESC::Buffer(lobeBytes,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 				const auto sampleAllocation=device->GetResourceAllocationInfo(0,1,&desc).SizeInBytes;
 				const auto identityAllocation=device->GetResourceAllocationInfo(0,1,&identityDesc).SizeInBytes;
-				if (sampleAllocation==UINT64_MAX || identityAllocation==UINT64_MAX || sampleAllocation>UINT64_MAX-identityAllocation) {
+				const auto lobeAllocation=device->GetResourceAllocationInfo(0,1,&lobeDesc).SizeInBytes;
+				if (sampleAllocation==UINT64_MAX || identityAllocation==UINT64_MAX || lobeAllocation==UINT64_MAX ||
+					sampleAllocation>UINT64_MAX-identityAllocation || sampleAllocation+identityAllocation>UINT64_MAX-lobeAllocation) {
 					failure="Screen material/identity allocation unsupported"; return;
 				}
-				const auto allocation=reuse?0:sampleAllocation+identityAllocation;
+				const auto allocation=reuse?0:sampleAllocation+identityAllocation+lobeAllocation;
 				if (!available.localBudget || allocation==UINT64_MAX || tracked>available.effectiveBytes || allocation>available.effectiveBytes-tracked || available.effectiveBytes-tracked-allocation<6ull*65536) {
 					failure="Screen probe deferred by DXGI budget"; return;
 				}
@@ -307,6 +317,8 @@ namespace DX12Native
 					replacement->rayIdentity=Eval::Buffer(device,identityBytes,D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 					replacement->bytes=bytes;
 					replacement->identityBytes=identityBytes;
+					replacement->materialLobes=Eval::Buffer(device,lobeBytes,D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+					replacement->lobeBytes=lobeBytes;
 					replacement->allocationBytes=allocation;
 					reusableOutput=std::move(replacement);
 				}
@@ -361,6 +373,7 @@ namespace DX12Native
 				command->SetComputeRootConstantBufferView(7,slot->camera->GetGPUVirtualAddress());
 				command->SetComputeRootUnorderedAccessView(8,slot->counters->GetGPUVirtualAddress());
 				command->SetComputeRootUnorderedAccessView(9,slot->output->rayIdentity->GetGPUVirtualAddress());
+				command->SetComputeRootUnorderedAccessView(10,slot->output->materialLobes->GetGPUVirtualAddress());
 				if (collectStats) {
 					command->CopyBufferRegion(slot->counters.get(),0,slot->counterInit.get(),0,kCounterBytes);
 					const auto counterBarrier=CD3DX12_RESOURCE_BARRIER::Transition(slot->counters.get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -372,13 +385,15 @@ namespace DX12Native
 				if (slot->output->shaderReadable) {
 					const std::array outputBarriers{
 						CD3DX12_RESOURCE_BARRIER::Transition(slot->output->resource.get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-						CD3DX12_RESOURCE_BARRIER::Transition(slot->output->rayIdentity.get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_UNORDERED_ACCESS)};
+						CD3DX12_RESOURCE_BARRIER::Transition(slot->output->rayIdentity.get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+						CD3DX12_RESOURCE_BARRIER::Transition(slot->output->materialLobes.get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_UNORDERED_ACCESS)};
 					command->ResourceBarrier(UINT(outputBarriers.size()),outputBarriers.data());
 				}
 				command->Dispatch((gridWidth+7)/8,(gridHeight+7)/8,1);
 				const std::array end{
 					CD3DX12_RESOURCE_BARRIER::Transition(slot->output->resource.get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COMMON),
 					CD3DX12_RESOURCE_BARRIER::Transition(slot->output->rayIdentity.get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COMMON),
+					CD3DX12_RESOURCE_BARRIER::Transition(slot->output->materialLobes.get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COMMON),
 					CD3DX12_RESOURCE_BARRIER::Transition(slot->raster->depth->resource.get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COMMON)};
 				command->ResourceBarrier(UINT(end.size()),end.data());
 				if (collectStats) {
@@ -404,6 +419,8 @@ namespace DX12Native
 					materialFrame->allocation=pending->output; materialFrame->samples=pending->output->resource; materialFrame->producerFence=pending->fence;
 					materialFrame->rayIdentity=pending->output->rayIdentity;
 					materialFrame->rayIdentityRowPitch=pitchPixels*MaterialFrameContract::kRayIdentityStride;
+					materialFrame->materialLobes=pending->output->materialLobes;
+					materialFrame->materialLobeRowPitch=pitchPixels*MaterialFrameContract::kMaterialLobeStride;
 					materialFrame->raster=pending->raster; materialFrame->scene=pending->scene;
 					materialFrame->descriptors=pending->descriptors;
 					materialFrame->producerValue=value; materialFrame->geometryRevision=pending->scene->geometryRevision;
