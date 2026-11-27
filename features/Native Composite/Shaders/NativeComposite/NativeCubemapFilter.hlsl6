@@ -1,14 +1,13 @@
 #include "Common/NativeCubeDirection.hlsli"
 #include "NativeEnvironmentColor.hlsli"
 #include "NativeSurface.hlsli"
-#include "FullNativeSampling.hlsli"
 #include "Common/Spherical Harmonics/SphericalHarmonics.hlsli"
 
 TextureCube<float4> Source : register(t0);
 TextureCube<float4> Previous : register(t1);
 TextureCube<float4> EngineReflection : register(t2);
 ByteAddressBuffer NativeMaterials : register(t3);
-ByteAddressBuffer NativeDirect : register(t4);
+ByteAddressBuffer NativeEnvironmentRadiance : register(t4);
 ByteAddressBuffer RasterEvidence : register(t5);
 RWTexture2DArray<float4> Destination : register(u0);
 SamplerState PointClamp : register(s0);
@@ -34,9 +33,7 @@ cbuffer NativeCapture : register(b2)
     row_major float4x4 NativeProjection;
     uint2 NativeSize;
     uint NativeMaterialPitch;
-    uint NativeDirectPitch;
-    uint NativeQuality;
-    uint NativeFrame;
+    uint NativeRadiancePitch;
 };
 
 // The outgoing diffuse, emission and thin transmission are usable for
@@ -55,19 +52,10 @@ bool ReadNativeRadiance(float3 direction, out float3 radiance)
     uint2 pixel = min(uint2(uv*float2(NativeSize)),NativeSize-1u);
     uint evidence = RasterEvidence.Load((pixel.y*NativeSize.x+pixel.x)*4u);
     if ((evidence & RasterIdentityCandidate) == 0u) return false;
-    uint material = pixel.y*NativeMaterialPitch+pixel.x*NativeSurfaceStride;
-    float4 base = UnpackNativeLobeHalf4(NativeMaterials.Load2(material));
-    float4 emission = UnpackNativeLobeHalf4(NativeMaterials.Load2(material+24u));
-    // Raw direct-light slots are sparse; material identity does not certify a
-    // current-frame lighting write. Reject unsampled lanes before any load.
-    if (!NativeIsSampled(pixel, NativeSize, NativeQuality, NativeFrame)) return false;
-    uint signal = pixel.y*NativeDirectPitch+pixel.x*NativeLightingStride;
-    float4 diffuse = UnpackNativeLobeHalf4(NativeDirect.Load2(signal));
-    float4 transmission = UnpackNativeLobeHalf4(NativeDirect.Load2(signal+16u));
-    if (base.a != SurfaceEvaluatedBase || !all(isfinite(base)) || !all(isfinite(emission)) ||
-        !all(isfinite(diffuse)) || diffuse.a <= 0 || !all(isfinite(transmission)) ||
-        transmission.a != float(ContributionTransmission)) return false;
-    radiance = max(diffuse.rgb+transmission.rgb+max(emission.rgb,0),0);
+    const uint signal = pixel.y*NativeRadiancePitch+pixel.x*8u;
+    const float4 value = UnpackNativeLobeHalf4(NativeEnvironmentRadiance.Load2(signal));
+    if (!all(isfinite(value)) || value.a != float(ContributionDirectDiffuse)) return false;
+    radiance = max(value.rgb,0);
     return all(isfinite(radiance)) && all(radiance <= 65504);
 }
 

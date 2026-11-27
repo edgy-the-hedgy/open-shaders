@@ -18,6 +18,10 @@ namespace DX12Native
 		std::shared_ptr<const DirectLightingFrame> direct;
 		std::shared_ptr<const IndirectLightingFrame> indirect;
 		winrt::com_ptr<ID3D12Resource> samples, ownershipMask;
+		// Direct diffuse + direct transmission + emission, with explicit validity.
+		// The environment producer must never consume combined indirect radiance.
+		winrt::com_ptr<ID3D12Resource> environmentRadiance;
+		static constexpr uint32_t environmentRadianceStride = 8;
 		// The GPU writes explicit evidence and owner bits. A candidate alone is not authority.
 		bool rasterWinnerCertified = false, completeLightingCoverage = false;
 		std::shared_ptr<const FullNativeRasterEvidence> rasterEvidence;

@@ -22,10 +22,9 @@ namespace
     constexpr UINT kDescriptorsPerTable=7;
     struct NativeCaptureConstants {
         Matrix view{}, projection{};
-        uint32_t width=0,height=0,materialPitch=0,directPitch=0;
-        uint32_t quality=0,frame=0;
+        uint32_t width=0,height=0,materialPitch=0,radiancePitch=0;
     };
-    constexpr UINT kNativeCaptureDwords=38;
+    constexpr UINT kNativeCaptureDwords=36;
     static_assert(sizeof(NativeCaptureConstants)==kNativeCaptureDwords*sizeof(uint32_t));
     struct Constants {
         std::array<float4,3> dalc;
@@ -156,12 +155,11 @@ bool NativeCubemaps::CubeProcessing::Dispatch(const GraphicsBackend& backend,
     if(native) {
         const auto& material=native->material;
         const auto& direct=native->direct;
-        if(!material || !direct || direct->material!=material || !native->ownershipMask || !direct->samples ||
+        if(!material || !direct || direct->material!=material || !native->ownershipMask || !native->environmentRadiance ||
             native->frame!=input->stamp.engineFrame || native->width!=material->width || native->height!=material->height ||
             material->scope!=input->stamp.scope || !material->IsCoherent(native->frame,native->width,native->height) ||
             direct->frame!=native->frame || direct->width!=native->width || direct->height!=native->height ||
-            !ValidLayout(direct->width,direct->height,direct->rowPitch,kLightingStride) ||
-            direct->samples->GetDesc().Width<uint64_t(direct->rowPitch)*direct->height ||
+            native->environmentRadiance->GetDesc().Width<uint64_t(native->width)*native->height*FullNativeReconstructionFrame::environmentRadianceStride ||
             native->ownershipMask->GetDesc().Width<uint64_t(native->width)*native->height*4 ||
             !native->readyFence || !ValidProducerSignal(native->readyValue,native->readyFence->GetCompletedValue()) ||
             !direct->readyFence || !ValidProducerSignal(direct->readyValue,direct->readyFence->GetCompletedValue()))
@@ -241,7 +239,7 @@ bool NativeCubemaps::CubeProcessing::Dispatch(const GraphicsBackend& backend,
     NativeCaptureConstants nativeConstants{};
     if(native) {
         const auto& camera=native->material->raster->camera;
-        nativeConstants={camera.CameraView,camera.CameraProj,native->width,native->height,native->material->rowPitch,native->direct->rowPitch,native->direct->quality,native->direct->frame};
+        nativeConstants={camera.CameraView,camera.CameraProj,native->width,native->height,native->material->rowPitch,native->width*FullNativeReconstructionFrame::environmentRadianceStride};
     }
     cmd->SetComputeRoot32BitConstants(3,kNativeCaptureDwords,&nativeConstants,0);
     UINT table=0;
@@ -251,7 +249,7 @@ bool NativeCubemaps::CubeProcessing::Dispatch(const GraphicsBackend& backend,
         CubeSRV(device,previous,{cpu.ptr+SIZE_T(offset+1)*step});
         CubeSRV(device,reflected,{cpu.ptr+SIZE_T(offset+2)*step});
         RawSRV(device,native ? native->material->samples.get():nullptr,{cpu.ptr+SIZE_T(offset+3)*step});
-        RawSRV(device,native ? native->direct->samples.get():nullptr,{cpu.ptr+SIZE_T(offset+4)*step});
+        RawSRV(device,native ? native->environmentRadiance.get():nullptr,{cpu.ptr+SIZE_T(offset+4)*step});
         RawSRV(device,native ? native->ownershipMask.get():nullptr,{cpu.ptr+SIZE_T(offset+5)*step});
         D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
         uav.Format=kFormat; uav.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2DARRAY;

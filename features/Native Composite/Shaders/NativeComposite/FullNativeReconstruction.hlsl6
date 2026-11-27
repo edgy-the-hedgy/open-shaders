@@ -15,6 +15,7 @@ ByteAddressBuffer RasterTokenTable : register(t10);
 Texture2D<float2> Motion : register(t11);
 RWByteAddressBuffer OwnershipMask : register(u1);
 RWByteAddressBuffer Reconstructed : register(u0);
+RWByteAddressBuffer EnvironmentRadiance : register(u2);
 cbuffer ReconstructionConstants : register(b0)
 {
     uint2 Size;
@@ -184,6 +185,8 @@ void main(uint3 id : SV_DispatchThreadID)
     const uint ownershipOffset = (id.y * Size.x + id.x) * 4u;
     uint ownership = 0u;
     OwnershipMask.Store(ownershipOffset, 0u);
+    const uint radianceOffset = (id.y * Size.x + id.x) * 8u;
+    EnvironmentRadiance.Store2(radianceOffset, uint2(0,0));
     if (RasterTokenCount != 0u) {
         uint token = uint(round(saturate(RasterTokens.Load(int3(id.xy, 0)).b) * 65535.0));
         if (token > 0u && token <= RasterTokenCount) {
@@ -209,6 +212,14 @@ void main(uint3 id : SV_DispatchThreadID)
     float3 indirectSpecular = FilterSignal(id.xy, ContributionIndirectSpecular, base, normal, depth, ispec, isLow, isHigh);
     float3 directTransmission = FilterSignal(id.xy, DirectTransmissionSignal, base, normal, depth, dt, dtLow, dtHigh);
     float3 indirectTransmission = FilterSignal(id.xy, IndirectTransmissionSignal, base, normal, depth, it, itLow, itHigh);
+    // Separate spatially reconstructed direct-only publication. Never include
+    // indirect or view-dependent specular in the environment feedback path.
+    if (dd && dt && base.a == SurfaceEvaluatedBase && (ownership & RasterIdentityCandidate) != 0u) {
+        float3 emission = ReadMaterial(id.xy, 24u).rgb;
+        float3 radiance = max(directDiffuse + directTransmission + max(emission, 0.0), 0.0);
+        if (all(isfinite(emission)) && all(isfinite(radiance)) && all(radiance <= 65504.0))
+            EnvironmentRadiance.Store2(radianceOffset, PackOpaqueRadiance(radiance, ContributionDirectDiffuse));
+    }
     float3 transmission=directTransmission+indirectTransmission;
     const uint transmissionValid=dt && it ? ContributionTransmission : 0u;
     // Only intentional sparse holes with compatible evidence are reconstructed.
