@@ -4,6 +4,7 @@
 #include "DX12NativeAcceleration.h"
 #include "DX12NativeLightWorker.h"
 #include "DX12NativeRasterCapture.h"
+#include "DX12NativeScreenProbe.h"
 #include "DX12NativeRuntimeCapture.h"
 #include "DX12NativeShadowTrace.h"
 #include "SCMNativePolicy.h"
@@ -82,6 +83,10 @@ struct DX12NativeScene final : OverlayFeature
 
 	/** @brief Raw mode-sized shadow output, independently fenced for Native Composite. */
 	std::shared_ptr<const DX12Native::ShadowMaskFrame> GetShadowMask(uint32_t frame) const { return shadows.Get(frame); }
+	std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> GetFullNativeMaterial(uint32_t frame) const
+	{
+		return fullNativeMaterial ? fullNativeMaterial->GetMaterialFrame(frame) : nullptr;
+	}
 
 private:
 	/** @brief Gates native scene work; never disables DX11 baseline shadows. */
@@ -91,6 +96,8 @@ private:
 	void ApplyPendingLoadingReset();
 	std::optional<GraphicsBackend> backend;
 	DX12Native::RasterCapture raster;
+	std::unique_ptr<DX12Native::NativeScreenProbe> fullNativeMaterial;  // Allocated only in Full Native.
+	void DispatchFullNativeMaterial();
 	DX12Native::RuntimeGeometryCapture geometryCapture;
 	DX12Native::AccelerationWorker acceleration;
 	DX12Native::ShadowMaskTrace shadows;

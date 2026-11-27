@@ -346,6 +346,10 @@ bool DX12NativeScene::WantsDepthPrepassReadyHook() const { return WantsRenderPas
 
 void DX12NativeScene::OnDepthPrepassReady()
 {
+	if (globals::features::dx12Control.WantsMaterialPreparation()) {
+		DispatchFullNativeMaterial();
+		return;
+	}
 	if (!earlyTraceExperiment.load(std::memory_order_relaxed) || !globals::state || !globals::state->IsDeveloperMode())
 		return;
 	CS_GPU_PASS("DX12NativeScene::DepthPrepassReady");
@@ -622,8 +626,44 @@ void DX12NativeScene::ObserveScheduledShadowOrigin(const RE::NiLight* light, con
 		scheduledOrigins.try_emplace(reinterpret_cast<uintptr_t>(light), float3{ origin.x, origin.y, origin.z });
 }
 
+void DX12NativeScene::DispatchFullNativeMaterial()
+{
+	if (!loaded || globals::game::isVR || !globals::features::dx12Control.WantsMaterialPreparation() ||
+		!globals::game::graphicsState || !globals::state || globals::state->isMapMenuOpen ||
+		globals::features::dx12Resources.IsLoading() || !nativeSessionStarted ||
+		(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
+		return;
+	CS_GPU_PASS("DX12NativeScene::FullNativeMaterial");
+	const auto frame = globals::game::graphicsState->GetFrameCount();
+	if (!fullNativeMaterial)
+		fullNativeMaterial = std::make_unique<DX12Native::NativeScreenProbe>();
+	fullNativeMaterial->Poll(frame);
+	if (!fullNativeMaterial->WantsFrame(frame, true))
+		return;
+	const auto scene = acceleration.GetScene();
+	const auto grid = globals::features::dx12Resources.GetGrid();
+	if (!scene || !grid || scene->scope != grid->requested.front().scope ||
+		scene->geometryRevision != grid->geometryRevision || !scene->materialEvaluation || !scene->shadingGeometry)
+		return;
+	if (!backend) {
+		std::string reason;
+		backend = GraphicsBackend::Create(globals::d3d::device, globals::d3d::context, reason);
+		if (!backend)
+			return;
+	}
+	const auto viewport = Util::ConvertToDynamic(globals::state->screenSize);
+	if (!std::isfinite(viewport.x) || !std::isfinite(viewport.y) || viewport.x < 1.0f || viewport.y < 1.0f)
+		return;
+	raster.Capture(*backend, Util::GetCurrentSceneDepthSRV(false), &globals::game::frameBufferCached.nonVR, frame);
+	fullNativeMaterial->Dispatch(*backend, raster.Get(frame), scene, frame, uint32_t(viewport.x), uint32_t(viewport.y), true, true, false);
+}
+
 void DX12NativeScene::OnOpaqueRasterReady()
 {
+	if (globals::features::dx12Control.WantsMaterialPreparation()) {
+		DispatchFullNativeMaterial();
+		return;
+	}
 	if (!loaded || globals::game::isVR || !globals::features::dx12Control.IsActive())
 		return;
 	if (!globals::game::graphicsState || !globals::state || globals::state->isMapMenuOpen ||
@@ -850,6 +890,8 @@ void DX12NativeScene::ApplyPendingLoadingReset()
 			ResetFullLightInventory();
 		}
 		globals::features::upscaling.nativeComposite.ResetShadowHistory();
+		if (fullNativeMaterial)
+			fullNativeMaterial->Reset();
 		raster.Reset();
 		shadows.Reset();
 		acceleration.Reset();
@@ -876,6 +918,7 @@ void DX12NativeScene::OnRuntimeDisabled()
 		ResetFullLightInventory();
 	}
 	globals::features::upscaling.nativeComposite.ResetShadowHistory();
+	fullNativeMaterial.reset();
 	raster.Reset();
 	shadows.Reset();
 	acceleration.Stop();
