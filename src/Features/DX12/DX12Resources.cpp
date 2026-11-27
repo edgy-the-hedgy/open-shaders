@@ -4,6 +4,7 @@
 #include "DX12Control.h"
 #include "Features/NativePBR/MaterialCatalog.h"
 #include "DX12NativeScene.h"
+#include "DX12PreparedMaterialFrame.h"
 #include "Globals.h"
 #include "GpuPass.h"
 #include "RE/M/MainMenu.h"
@@ -897,6 +898,12 @@ void DX12Resources::DrawDevResourceStatus()
 			snapshot->runtimeShapes.size(), static_cast<unsigned long long>(snapshot->runtimeBytes));
 		if (scene && scene->inputs && scene->scope == snapshot->requested.front().scope) {
 			const auto& inputs = *scene->inputs;
+			if (globals::features::dx12Control.WantsMaterialPreparation() && inputs.materials) {
+				const auto& materials = *inputs.materials;
+				ImGui::Text("%s", std::format("Material sources: {} | Recipes: {} | Missing: {} | Unknown authored flags: {} | Limited: {}",
+					materials.sources, materials.recipes.size(), materials.missing, materials.unknownAuthored, materials.limited).c_str());
+				ImGui::Text("%s", std::format("Resolved TXST: {} | MATO: {} | GPU residency: not submitted", materials.resolvedTxst, materials.resolvedMato).c_str());
+			}
 			ImGui::Text(T("menu.dx12.resources.geometry_counts", "Published sources: prepared %zu | observed %zu | duplicates %zu"),
 				inputs.preparedShapes, inputs.observedShapes, inputs.duplicateShapes);
 			ImGui::Text(T("menu.dx12.resources.geometry_unique", "Unique shapes: %zu | triangles: %llu"),

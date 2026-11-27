@@ -235,7 +235,7 @@ namespace DX12
 			if (!property || !property->material || property->material->GetType() != RE::BSShaderMaterial::Type::kLighting)
 				return {};
 			const auto* material = static_cast<const RE::BSLightingShaderMaterialBase*>(property->material);
-			const auto* textures = material->textureSet.get();
+			auto* textures = material->textureSet.get();
 			const auto* expected = REL::Relocation<const RE::NiRTTI*>{ RE::BSTextureSet::Ni_RTTI }.get();
 			if (!textures || !expected || !textures->GetRTTI() || !textures->GetRTTI()->IsKindOf(expected))
 				return {};
