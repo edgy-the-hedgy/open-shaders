@@ -1,6 +1,7 @@
 #include "FeatureIssues.h"
 #include "CSEditor/Browser/BrowserWidgets.h"
 #include "Feature.h"
+#include "Features/DX12/DX12Control.h"
 #include "Menu/Icons/helpers/IconFonts.h"
 #include "Menu/MenuIcons.h"
 
@@ -985,6 +986,11 @@ namespace FeatureIssues
 					// runtime (e.g. a VR-incompatible feature's ini, shipped in the AIO
 					// to every platform) instead of misreporting it as unrecognized.
 					if (auto* known = Feature::FindRegisteredFeatureByShortName(featureName)) {
+						// Native counterparts are registered even before Full Native authority
+						// is latched, and intentionally absent in baseline modes.
+						// Their INI compatibility is checked by InitializeFeatureBackend.
+						if (DX12Control::IsNativeCounterpart(known))
+							continue;
 						if (globals::game::isVR && !known->SupportsVR()) {
 							logger::info("Ignoring {}.ini, not supported on VR", featureName);
 							continue;
