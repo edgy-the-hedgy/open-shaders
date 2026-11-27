@@ -2,6 +2,7 @@
 
 #include "DX12NativeShadowTrace.h"
 #include "DX12FullNativeReconstruction.h"
+#include "DX12FullNativeFinalColor.h"
 #include "GraphicsInterop.h"
 #include "NativeShadowHistory.h"
 #include "VideoMemoryBudget.h"
@@ -63,7 +64,9 @@ namespace DX12Native
 			std::span<const MaterialFrameContract::RasterPixelIdentity> tokens);
 		std::shared_ptr<const FullNativeReconstructionFrame> GetFullNativeReconstruction(uint32_t frame) const;
 		void PollFullNative(uint32_t frame) { if (fullNativeReconstruction) fullNativeReconstruction->Poll(frame); }
-		void ResetFullNative() { fullNativeReconstruction.reset(); }
+		void ResetFullNative() { fullNativeFinalColor.reset(); fullNativeReconstruction.reset(); }
+		bool ApplyFullNativeOpaque(uint32_t frame, ID3D11UnorderedAccessView* target);
+		std::shared_ptr<const FullNativeFinalColorFrame> GetFullNativeFinalColor(uint32_t frame) const;
 		~NativeComposite();
 		/** @brief Release completed input publications on the render thread. */
 		void RetireCompletedInputs();
@@ -119,6 +122,7 @@ namespace DX12Native
 
 		std::array<std::unique_ptr<Slot>, 4> slots;
 		std::unique_ptr<FullNativeReconstruction> fullNativeReconstruction;
+		std::unique_ptr<FullNativeFinalColor> fullNativeFinalColor;
 		struct ShadowVariantState
 		{
 			winrt::com_ptr<ID3D12RootSignature> root;

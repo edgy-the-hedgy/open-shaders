@@ -522,6 +522,12 @@ void Deferred::DeferredPasses()
 		context->CSSetShader(nullptr, nullptr, 0);
 	}
 
+	// Native Composite is the only Full Native color application owner. Apply
+	// before forward geometry and effects, after raster fallback is complete.
+	if (globals::features::dx12Control.WantsMaterialPreparation() && globals::game::graphicsState)
+		globals::features::upscaling.nativeComposite.ApplyFullNativeOpaque(
+			globals::game::graphicsState->GetFrameCount(), Util::AsReal(main.UAV));
+
 	if (dynamicCubemaps.loaded)
 		dynamicCubemaps.PostDeferred();
 

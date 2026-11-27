@@ -62,7 +62,7 @@ if(NATIVE_SHADOW_DXC)
     file(GLOB _full_native_local_deps CONFIGURE_DEPENDS
         "${_full_native_source_dir}/Native*.hlsli"
     )
-    foreach(_shader IN ITEMS NativePBRProbe NativePBRScreenProbe DirectLighting NativeDiffuseSH NativeIndirectLighting FullNativeReconstruction)
+    foreach(_shader IN ITEMS NativePBRProbe NativePBRScreenProbe DirectLighting NativeDiffuseSH NativeIndirectLighting FullNativeReconstruction CompositeFullNative)
         set(_full_native_entry main)
         set(_full_native_source "${_full_native_source_dir}/${_shader}.hlsl6")
         if(_shader STREQUAL "NativePBRScreenProbe")

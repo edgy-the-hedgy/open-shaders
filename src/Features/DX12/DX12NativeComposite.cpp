@@ -592,12 +592,30 @@ namespace DX12Native
 			return;
 		if (!fullNativeReconstruction)
 			fullNativeReconstruction = std::make_unique<FullNativeReconstruction>();
+		const auto frame = material->frame;
 		fullNativeReconstruction->Dispatch(backend, std::move(material), std::move(direct), std::move(indirect), pluginFrame, resetHistory, rasterTokens, rasterStamp, tokens);
+		if (auto reconstructed = fullNativeReconstruction->Get(frame)) {
+			if (!fullNativeFinalColor)
+				fullNativeFinalColor = std::make_unique<FullNativeFinalColor>();
+			fullNativeFinalColor->Compose(backend, std::move(reconstructed));
+		}
 	}
 
 	std::shared_ptr<const FullNativeReconstructionFrame> NativeComposite::GetFullNativeReconstruction(uint32_t frame) const
 	{
 		return fullNativeReconstruction ? fullNativeReconstruction->Get(frame) : nullptr;
+	}
+
+	std::shared_ptr<const FullNativeFinalColorFrame> NativeComposite::GetFullNativeFinalColor(uint32_t frame) const
+	{
+		return fullNativeFinalColor ? fullNativeFinalColor->Get(frame) : nullptr;
+	}
+
+	bool NativeComposite::ApplyFullNativeOpaque(uint32_t frame, ID3D11UnorderedAccessView* target)
+	{
+		if (!globals::features::dx12Control.WantsMaterialPreparation() || !fullNativeFinalColor)
+			return false;
+		return fullNativeFinalColor->Apply(frame, target);
 	}
 
 	bool NativeComposite::Retain(const std::shared_ptr<const Frame>& frame, ID3D12Fence* fence, uint64_t value)

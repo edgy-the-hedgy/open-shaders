@@ -279,3 +279,13 @@ TEST_CASE("Full Native owner bits require certified winner and complete encoded 
 	REQUIRE_FALSE(NativeOwnsOpaque(kNativeOwnsOpaque));
 	REQUIRE_FALSE(NativeOwnsOpaque(UINT32_MAX));
 }
+
+TEST_CASE("Full Native final color rejects stale ownership or incompatible encoding", "[dx12][materials]")
+{
+	constexpr uint32_t owned = kRasterIdentityCandidate | kExactRasterWinner | kCompleteOpaqueRadiance | kNativeOwnsOpaque;
+	REQUIRE(CanApplyFinalOpaque(owned, true, true, true));
+	REQUIRE_FALSE(CanApplyFinalOpaque(kRasterIdentityCandidate, true, true, true));
+	REQUIRE_FALSE(CanApplyFinalOpaque(owned, false, true, true));
+	REQUIRE_FALSE(CanApplyFinalOpaque(owned, true, false, true));
+	REQUIRE_FALSE(CanApplyFinalOpaque(owned, true, true, false));
+}

@@ -168,6 +168,14 @@ namespace DX12Native::MaterialFrameContract
 		return (bits & required) == required && !(bits & ~required);
 	}
 
+	/** @brief Color application additionally requires the final-color encoding
+	 * contract; a complete ownership mask cannot authorize the wrong color space.
+	 */
+	constexpr bool CanApplyFinalOpaque(uint32_t bits, bool sameFrame, bool encodingCompatible, bool earlyOpaqueStage)
+	{
+		return NativeOwnsOpaque(bits) && sameFrame && encodingCompatible && earlyOpaqueStage;
+	}
+
 	/** @brief Conservative same-pixel history, not motion-vector reprojection. */
 	struct StationaryHistoryIdentity
 	{
