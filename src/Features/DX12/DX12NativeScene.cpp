@@ -1,6 +1,5 @@
 #include "DX12NativeScene.h"
 #include "Features/NativeLLF/NativeLLF.h"
-#include "Features/ExtendedMaterials.h"
 #include "Features/FoliageLighting.h"
 
 #include "../LightLimitFix/ShadowCasterMath.h"
@@ -612,12 +611,10 @@ void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 	CS_GPU_PASS("DX12NativeScene::FullNativeMaterial");
 	const auto frame = globals::game::graphicsState->GetFrameCount();
 	globals::features::upscaling.nativeComposite.PollFullNative(frame);
-	if (!fullNativeMaterial)
-		fullNativeMaterial = std::make_unique<DX12Native::NativeScreenProbe>();
 	nativeIBL.Poll(frame);
 	if (fullNativeDirect)
 		fullNativeDirect->Poll(frame);
-	fullNativeMaterial->Poll(frame);
+	nativePBR.Poll(frame);
 	const auto scene = acceleration.GetScene();
 	const auto grid = globals::features::dx12Resources.GetGrid();
 	if (!scene || !grid || grid->requested.empty() || scene->scope != grid->requested.front().scope ||
@@ -632,24 +629,15 @@ void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 	const auto viewport = Util::ConvertToDynamic(globals::state->screenSize);
 	if (!std::isfinite(viewport.x) || !std::isfinite(viewport.y) || viewport.x < 1.0f || viewport.y < 1.0f)
 		return;
-	const auto& projectionTally = scene->materialEvaluation->surfaceCapabilities;
-	// Prepared projected surfaces require same-frame opaque draw inputs.
-	// Keep early material dispatch for scenes without known projection demand.
-	const bool needsProjection = projectionTally.projectedUv || projectionTally.unresolvedProjection;
-	if (fullNativeMaterial->WantsFrame(frame, true)) {
+	if (nativePBR.WantsFrame(frame)) {
 		if (!raster.Get(frame))
 			raster.Capture(*backend, Util::GetCurrentSceneDepthSRV(false), &globals::game::frameBufferCached.nonVR, frame);
-		if (needsProjection && !opaqueReady)
+		const auto& tally = scene->materialEvaluation->surfaceCapabilities;
+		if ((tally.projectedUv || tally.unresolvedProjection) && !opaqueReady)
 			return;
-		const DX12Native::MaterialFrameContract::RasterIdentityStamp projectionStamp{ frame, scene->scope, scene->geometryRevision, scene->materialEvaluation->revision };
-		auto projection = opaqueReady && projectedInputs ? projectedInputs->GetSubmitted(projectionStamp) : nullptr;
-		fullNativeMaterial->Dispatch(*backend, raster.Get(frame), scene, frame, uint32_t(viewport.x), uint32_t(viewport.y), true, true, false,
-			globals::features::extendedMaterials.loaded && globals::features::extendedMaterials.settings.EnableParallax != 0,
-			globals::features::extendedMaterials.loaded && globals::features::extendedMaterials.settings.EnableParallaxWarpingFix != 0,
-			globals::features::extendedMaterials.loaded && globals::features::extendedMaterials.settings.EnableShadows != 0,
-			globals::state->GetMaterialMipBias(Util::GetTemporal()), std::move(projection));
+		nativePBR.Dispatch(*backend, raster.Get(frame), scene, frame, uint32_t(viewport.x), uint32_t(viewport.y), opaqueReady);
 	}
-	const auto material = fullNativeMaterial->GetMaterialFrame(frame);
+	const auto material = nativePBR.Get(frame);
 	if (!material || material->scene != scene || !scene->inputs || !scene->inputs->residency)
 		return;
 	if (fullNativeDirect && fullNativeDirect->Get(frame))
@@ -669,7 +657,7 @@ void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 
 void DX12NativeScene::ResetFullNativeEnvironment()
 {
-	if (fullNativeMaterial)
+	if (nativePBR.HasEvaluator())
 		globals::features::upscaling.nativeComposite.ResetFullNative();
 	nativeIBL.Reset();
 	nativeCubemaps.Reset();
@@ -691,7 +679,7 @@ void DX12NativeScene::DispatchFullNativeIndirect()
 	bool environmentChanged = false;
 	const auto stamp = nativeCubemaps.Prepare(grid->requested.front().scope, frame, environmentChanged);
 	if (environmentChanged) {
-		if (fullNativeMaterial)
+		if (nativePBR.HasEvaluator())
 			globals::features::upscaling.nativeComposite.ResetFullNative();
 		nativeIBL.Reset();
 	}
@@ -1128,8 +1116,7 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 				observation.constantOffsets, observation.views });
 		}
 		if (!inputs.empty()) {
-			if (!projectedInputs) projectedInputs = std::make_unique<DX12Native::ProjectedInputCapture>();
-			projectedInputs->Publish(*backend, draws.stamp, inputs);
+			nativePBR.PublishProjection(*backend, draws.stamp, inputs);
 		}
 	}
 }
@@ -1266,13 +1253,11 @@ void DX12NativeScene::ApplyPendingLoadingReset()
 		}
 		globals::features::upscaling.nativeComposite.ResetShadowHistory();
 		fullNativeRasterDraws = {};
-		if (projectedInputs) projectedInputs->Reset();
 		if (characterCasters) characterCasters->Reset();
 		ResetFullNativeEnvironment();
 		if (fullNativeDirect)
 			fullNativeDirect->Reset();
-		if (fullNativeMaterial)
-			fullNativeMaterial->Reset();
+		nativePBR.Reset();
 		raster.Reset();
 		shadows.Reset();
 		acceleration.Reset();
@@ -1284,7 +1269,7 @@ void DX12NativeScene::OnRuntimeDisabled()
 {
 	projectedConstantPool = {};
 	projectedConstantDevice = nullptr;
-	projectedInputs.reset();
+	nativePBR.ReleaseProjection();
 	characterCasters.reset();
 	loadingResetPending.store(false, std::memory_order_release);
 	frameNativeModeID.store(UINT32_MAX, std::memory_order_release);
@@ -1308,7 +1293,7 @@ void DX12NativeScene::OnRuntimeDisabled()
 	nativeIBL.Release();
 	nativeCubemaps.Release();
 	fullNativeDirect.reset();
-	fullNativeMaterial.reset();
+	nativePBR.Release();
 	raster.Reset();
 	shadows.Reset();
 	acceleration.Stop();
@@ -1409,7 +1394,7 @@ json DX12NativeScene::GetStatus() const
 					++completeTextureViews;
 			}
 		}
-		const auto projectionFrame = projectedInputs ? projectedInputs->Get(draws.stamp) : nullptr;
+		const auto projectionFrame = nativePBR.GetProjection(draws.stamp);
 		status["fullNativeProjectionInputs"] = { { "frame", draws.stamp.frame }, { "finalized", draws.finalized },
 			{ "projectedDraws", draws.projectedDraws }, { "unmatchedDraws", draws.unmatchedProjectedDraws },
 			{ "validPropertyInstances", validProjection }, { "conflictingInstances", conflictingProjection },

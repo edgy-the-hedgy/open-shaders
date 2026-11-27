@@ -9,7 +9,7 @@ namespace NativeCubemaps
 	{
 	public:
 		DX12Native::EnvironmentStamp Prepare(uint32_t scope, uint32_t frame, bool& changed);
-		void Capture(const DX12Native::GraphicsBackend& backend);
+		void Capture(const GraphicsBackend& backend);
 		void Reset();
 		void Release() { environment.reset(); }
 		std::shared_ptr<const DX12Native::EnvironmentFrame> Get() const { return environment ? environment->Get() : nullptr; }

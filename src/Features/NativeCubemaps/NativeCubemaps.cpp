@@ -33,7 +33,7 @@ DX12Native::EnvironmentStamp NativeCubemaps::Producer::Prepare(uint32_t scope, u
 	return stamp;
 }
 
-void NativeCubemaps::Producer::Capture(const DX12Native::GraphicsBackend& backend)
+void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend)
 {
 	using namespace DX12Native;
 	if (!environment)

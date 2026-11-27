@@ -6,7 +6,7 @@
 #include "DX12NativeRasterCapture.h"
 #include "DX12ProjectedInputs.h"
 #include "DX12NativeCharacterCasters.h"
-#include "DX12NativeScreenProbe.h"
+#include "Features/NativePBR/NativePBRFrameProducer.h"
 #include "DX12NativeDirectLighting.h"
 #include "Features/NativeCubemaps/NativeCubemaps.h"
 #include "Features/NativeIBL/NativeIBL.h"
@@ -92,7 +92,7 @@ struct DX12NativeScene final : OverlayFeature
 	std::shared_ptr<const DX12Native::ShadowMaskFrame> GetShadowMask(uint32_t frame) const { return shadows.Get(frame); }
 	std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> GetFullNativeMaterial(uint32_t frame) const
 	{
-		return fullNativeMaterial ? fullNativeMaterial->GetMaterialFrame(frame) : nullptr;
+		return nativePBR.Get(frame);
 	}
 
 	std::shared_ptr<const DX12Native::DirectLightingFrame> GetFullNativeDirect(uint32_t frame) const
@@ -113,7 +113,7 @@ private:
 	void ApplyPendingLoadingReset();
 	std::optional<GraphicsBackend> backend;
 	DX12Native::RasterCapture raster;
-	std::unique_ptr<DX12Native::NativeScreenProbe> fullNativeMaterial;  // Allocated only in Full Native.
+	NativePBR::FrameProducer nativePBR;
 	void DispatchFullNativeMaterial(bool opaqueReady = false);
 	void ObserveFullNativeRasterDraw(RE::BSGeometry& geometry);
 	void FinishFullNativeRasterDraws();
@@ -126,7 +126,6 @@ private:
 		std::array<uint32_t, 2> byteWidths{};
 	};
 	static constexpr uint32_t kMaxProjectedConstantSnapshots = DX12Native::kMaxProjectedDraws;
-	std::unique_ptr<DX12Native::ProjectedInputCapture> projectedInputs;
 	std::unique_ptr<DX12Native::NativeCharacterCasters> characterCasters;
 	std::array<ProjectedConstantSlot, kMaxProjectedConstantSnapshots> projectedConstantPool;
 	winrt::com_ptr<ID3D11Device> projectedConstantDevice;

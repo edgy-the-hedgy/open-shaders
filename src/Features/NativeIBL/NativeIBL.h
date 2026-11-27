@@ -11,7 +11,7 @@ namespace NativeIBL
 		void Poll(uint32_t frame) { if (lighting) lighting->Poll(frame); }
 		void Reset() { if (lighting) lighting->Reset(); }
 		void Release() { lighting.reset(); }
-		void Dispatch(const DX12Native::GraphicsBackend& backend,
+		void Dispatch(const GraphicsBackend& backend,
 			std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> material,
 			std::shared_ptr<const DX12Native::EnvironmentFrame> environment,
 			const DX12Native::EnvironmentStamp& stamp,

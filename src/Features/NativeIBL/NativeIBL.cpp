@@ -10,7 +10,7 @@
 #include <algorithm>
 #include <cmath>
 
-void NativeIBL::Producer::Dispatch(const DX12Native::GraphicsBackend& backend,
+void NativeIBL::Producer::Dispatch(const GraphicsBackend& backend,
 	std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> material,
 	std::shared_ptr<const DX12Native::EnvironmentFrame> environment,
 	const DX12Native::EnvironmentStamp& stamp,
