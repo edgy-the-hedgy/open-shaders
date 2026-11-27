@@ -58,6 +58,7 @@ struct NativeCubemaps::WaterSSR::Slot
 {
     std::unique_ptr<WrappedResource> raw,mask,result,sparse;
     winrt::com_ptr<ID3D12Resource> constants;
+    std::shared_ptr<const DirectLightingFrame> direct;
     std::shared_ptr<const FullNativeReconstructionFrame> native;
     std::shared_ptr<Slot> historyInput;
     Policy::WaterHistoryIdentity historyIdentity{};
@@ -139,27 +140,34 @@ void NativeCubemaps::WaterSSR::Initialize(const GraphicsBackend& backend)
 
 void NativeCubemaps::WaterSSR::Poll()
 {
-    for(auto& slot:slots) if(slot && GpuFenceRetired(outputFence.fence12.get(),slot->ready)) { slot->environment.reset(); slot->native.reset(); slot->historyInput.reset(); }
+    for(auto& slot:slots) if(slot && GpuFenceRetired(outputFence.fence12.get(),slot->ready)) { slot->environment.reset(); slot->native.reset(); slot->direct.reset(); slot->historyInput.reset(); }
 }
 
 void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeWorldFrame& world,std::shared_ptr<const EnvironmentFrame> environment,
-    std::shared_ptr<const FullNativeReconstructionFrame> native,EnvironmentEncoding encoding,bool skyVisible,uint32_t quality,float emitterRadius,ID3D11PixelShader* expected)
+    std::shared_ptr<const DirectLightingFrame> direct,std::shared_ptr<const FullNativeReconstructionFrame> native,EnvironmentEncoding encoding,bool skyVisible,uint32_t quality,float emitterRadius,ID3D11PixelShader* expected)
 {
     using namespace MaterialFrameContract;
     if (active || !expected || world.width<2 || !world.height || !globals::d3d::context) return;
-    if(!native || native->frame!=world.engineFrame || native->width!=world.width || native->height!=world.height ||
-        native->quality!=SanitizeRTQuality(quality) || !native->material || !native->direct || native->direct->material!=native->material ||
-        !native->material->IsCoherent(world.engineFrame,world.width,world.height) || !native->rasterEvidence ||
-        !native->environmentRadiance || native->environmentRadiance->GetDesc().Width<uint64_t(world.width)*world.height*8u ||
-        !native->readyFence || !ValidProducerSignal(native->readyValue,native->readyFence->GetCompletedValue())) {++rejected;return;}
-    const auto& material=*native->material;
-    const auto& evidence=*native->rasterEvidence;
+    if(!direct || direct->frame!=world.engineFrame || direct->width!=world.width || direct->height!=world.height ||
+        direct->quality!=SanitizeRTQuality(quality) || !direct->material || !direct->lights || direct->lightCount>DX12::kMaxPreparedLights ||
+        !direct->material->IsCoherent(world.engineFrame,world.width,world.height) || !direct->readyFence ||
+        !ValidProducerSignal(direct->readyValue,direct->readyFence->GetCompletedValue())){++rejected;return;}
+    const auto& material=*direct->material;
     const auto stamp=RasterIdentityStamp{world.engineFrame,material.scope,material.geometryRevision,material.materialRevision};
-    if(evidence.stamp!=stamp || !evidence.tokenCount || !evidence.tokenTable || !evidence.texture || !evidence.texture->resource ||
-        evidence.width<world.width || evidence.height<world.height || !evidence.readyFence ||
-        !ValidProducerSignal(evidence.readyValue,evidence.readyFence->GetCompletedValue())) {++rejected;return;}
-    if(!native->direct->lights || native->direct->lightCount>DX12::kMaxPreparedLights){++rejected;return;}
-    const auto characters=native->direct->characters;
+    // Optional screen hit reuse. Never require opaque reconstruction or the
+    // first completed environment generation to trace a water reflection.
+    if(!native || native->material!=direct->material || native->direct!=direct || native->frame!=world.engineFrame ||
+        native->quality!=direct->quality || native->width!=world.width || native->height!=world.height ||
+        !native->environmentRadiance || native->environmentRadiance->GetDesc().Width<uint64_t(world.width)*world.height*8u ||
+        !native->readyFence || !ValidProducerSignal(native->readyValue,native->readyFence->GetCompletedValue()))
+        native.reset();
+    auto evidence=native?native->rasterEvidence:nullptr;
+    if(!evidence || evidence->stamp!=stamp || !evidence->tokenCount || !evidence->tokenTable ||
+       !evidence->texture || !evidence->texture->resource || evidence->width<world.width || evidence->height<world.height ||
+       !evidence->readyFence || !ValidProducerSignal(evidence->readyValue,evidence->readyFence->GetCompletedValue())){
+        evidence.reset();native.reset();
+    }
+    const auto characters=direct->characters;
     const auto& scene=*material.scene;
     const auto& evaluation=*scene.materialEvaluation;
     quality=SanitizeRTQuality(quality);
@@ -176,14 +184,11 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         std::floor(viewport.Width)!=viewport.Width || std::floor(viewport.Height)!=viewport.Height) {++rejected;return;}
     const uint32_t ow=uint32_t(viewport.Width),oh=uint32_t(viewport.Height);
     emitterRadius=std::isfinite(emitterRadius)?std::clamp(emitterRadius,0.0f,1.0f):0.0f;
-    std::array<winrt::com_ptr<ID3D11ShaderResourceView>,3> input;
-    ID3D11ShaderResourceView* reads[3]{};context->PSGetShaderResources(0,3,reads);
-    for(size_t i=0;i<input.size();++i) input[i].attach(reads[i]);
-    winrt::com_ptr<ID3D11Buffer> geometry;
-    UINT firstConstant=0,numConstants=0;
-    context->PSGetConstantBuffers1(2,1,geometry.put(),&firstConstant,&numConstants);
-    D3D11_BUFFER_DESC gd{};if(geometry)geometry->GetDesc(&gd);
-    if(!geometry || numConstants<2 || uint64_t(firstConstant)*16+32>gd.ByteWidth || !std::ranges::all_of(input,[](const auto& v){return TextureInput(v.get());})) {++rejected;return;}
+    std::array<winrt::com_ptr<ID3D11ShaderResourceView>,2> input;
+    context->PSGetShaderResources(0,1,input[0].put());
+    context->PSGetShaderResources(2,1,input[1].put());
+    ID3D11ShaderResourceView* reads[]{input[0].get(),input[1].get()};
+    if(!std::ranges::all_of(input,[](const auto& v){return TextureInput(v.get());})){++rejected;return;}
     winrt::com_ptr<ID3D11RenderTargetView> target;
     context->OMGetRenderTargets(1,target.put(),nullptr);
     if(!target){++rejected;return;}
@@ -211,7 +216,7 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
                 const auto desc=CD3DX12_RESOURCE_DESC::Tex2D(fmt,w,h,1,1,1,0,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
                 return device->GetResourceAllocationInfo(0,1,&desc).SizeInBytes;
             };
-            const auto a=alloc(DXGI_FORMAT_R32G32B32A32_FLOAT,world.width,world.height+1);
+            const auto a=alloc(DXGI_FORMAT_R32_FLOAT,world.width,world.height);
             const auto b=alloc(DXGI_FORMAT_R32_FLOAT,world.width,world.height);
             const auto c=alloc(DXGI_FORMAT_R16G16B16A16_FLOAT,ow,oh);
             const auto d=alloc(DXGI_FORMAT_R16G16B16A16_FLOAT,ow,oh);
@@ -226,7 +231,7 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
                 desc.SampleDesc.Count=1;desc.Usage=D3D11_USAGE_DEFAULT;desc.BindFlags=D3D11_BIND_SHADER_RESOURCE|D3D11_BIND_UNORDERED_ACCESS;
                 return std::make_unique<WrappedResource>(desc,owner.d3d11Device.get(),device,name);
             };
-            next->raw=texture(DXGI_FORMAT_R32G32B32A32_FLOAT,world.width,world.height+1,"NativeWaterSSR::Raw");
+            next->raw=texture(DXGI_FORMAT_R32_FLOAT,world.width,world.height,"NativeWaterSSR::Depth");
             next->mask=texture(DXGI_FORMAT_R32_FLOAT,world.width,world.height,"NativeWaterSSR::Mask");
             next->result=texture(DXGI_FORMAT_R16G16B16A16_FLOAT,ow,oh,"NativeWaterSSR::Result");
             next->sparse=texture(DXGI_FORMAT_R16G16B16A16_FLOAT,ow,oh,"NativeWaterSSR::Sparse");
@@ -240,7 +245,7 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
             next->root=root;next->pipeline=pipeline;slot=std::move(next);
         }
         slot->input=slot->ready=slot->consumed=0;
-        slot->environment.reset();slot->native=native;
+        slot->environment.reset();slot->direct=direct;slot->native=native;
         const auto fallbackCube=environment ? (skyVisible && environment->reflection ? environment->reflection : environment->base) : nullptr;
         if(environment&&fallbackCube&&environment->stamp.scope==material.scope&&environment->stamp.encoding==encoding&&
             fallbackCube->IsReadyFor(environment->stamp)&&
@@ -256,7 +261,7 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
             D3D12_SHADER_RESOURCE_VIEW_DESC d{};d.Format=fmt;d.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D;d.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;d.Texture2D.MipLevels=1;
             device->CreateShaderResourceView(resource,&d,{cpu.ptr+SIZE_T(index)*step});
         };
-        view(slot->raw->resource.get(),DXGI_FORMAT_R32G32B32A32_FLOAT,0);
+        view(slot->raw->resource.get(),DXGI_FORMAT_R32_FLOAT,0);
         view(slot->mask->resource.get(),DXGI_FORMAT_R32_FLOAT,1);
         const auto sky=slot->environment?fallbackCube:nullptr;
         const Policy::WaterHistoryIdentity identity{world.engineFrame,world.pluginFrame,world.width,world.height,ow,oh,
@@ -267,11 +272,11 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
             GpuFenceRetired(consumedFence.fence12.get(),latest->consumed) ? latest : nullptr;
         slot->historyInput=previous;slot->historyIdentity=identity;
         slot->viewProjection=world.camera.CameraViewProj;slot->positionAdjust=world.camera.CameraPosAdjust;
-        view(previous?previous->raw->resource.get():nullptr,DXGI_FORMAT_R32G32B32A32_FLOAT,kHistoryOffset);
+        view(previous?previous->raw->resource.get():nullptr,DXGI_FORMAT_R32_FLOAT,kHistoryOffset);
         view(previous?previous->mask->resource.get():nullptr,DXGI_FORMAT_R32_FLOAT,kHistoryOffset+1);
         view(previous?previous->result->resource.get():nullptr,DXGI_FORMAT_R16G16B16A16_FLOAT,kHistoryOffset+2);
         auto* opaqueDepth=material.raster->depth->resource.get();
-        auto* tokens=evidence.texture->resource.get();
+        auto* tokens=evidence?evidence->texture->resource.get():nullptr;
         view(opaqueDepth,DXGI_FORMAT_R32_FLOAT,3);
         view(tokens,DXGI_FORMAT_R16G16B16A16_UNORM,4);
         evaluation.WriteTextureViews(device,{cpu.ptr+SIZE_T(kTextureOffset)*step});
@@ -287,16 +292,16 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         if(sky)Transition(cmd,sky->resource.get(),common,read);
         Transition(cmd,slot->result->resource.get(),common,write);
         Transition(cmd,slot->sparse->resource.get(),common,write);
-        Transition(cmd,opaqueDepth,common,read);Transition(cmd,tokens,common,read);
+        Transition(cmd,opaqueDepth,common,read);if(tokens)Transition(cmd,tokens,common,read);
         if(previous){Transition(cmd,previous->raw->resource.get(),common,read);Transition(cmd,previous->mask->resource.get(),common,read);Transition(cmd,previous->result->resource.get(),common,read);}
         ID3D12DescriptorHeap* heaps[]{slot->descriptors.get()};cmd->SetDescriptorHeaps(1,heaps);cmd->SetComputeRootSignature(root.get());
         cmd->SetComputeRootDescriptorTable(0,slot->descriptors->GetGPUDescriptorHandleForHeapStart());
         const Constants constants{world.camera.CameraProj,world.camera.CameraProjInverse,world.camera.CameraViewInverse,world.camera.CameraView,
             world.camera.CameraPosAdjust,world.width,world.height,ow,oh,uint32_t(bool(sky)),uint32_t(encoding),quality,world.engineFrame,
-            evaluation.instanceCount,uint32_t(bool(characters)),material.rayIdentityRowPitch,evidence.tokenCount,
+            evaluation.instanceCount,uint32_t(bool(characters)),material.rayIdentityRowPitch,evidence?evidence->tokenCount:0u,
             emitterRadius,uint32_t(bool(previous)),{},previous?previous->viewProjection:Matrix{},previous?previous->positionAdjust:float4{},
-            native->direct->directional.direction,native->direct->directional.radiance,
-            native->direct->lightCount,uint32_t(native->direct->foliageScattering)};
+            direct->directional.direction,direct->directional.radiance,
+            direct->lightCount,uint32_t(direct->foliageScattering)};
         void* mapped=nullptr;const D3D12_RANGE noRead{};
         DX::ThrowIfFailed(slot->constants->Map(0,&noRead,&mapped));
         std::memcpy(mapped,&constants,sizeof(constants));slot->constants->Unmap(0,nullptr);
@@ -307,9 +312,9 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         cmd->SetComputeRootShaderResourceView(6,evaluation.bindings->GetGPUVirtualAddress());
         cmd->SetComputeRootShaderResourceView(7,characters?characters->acceleration->GetGPUVirtualAddress():scene.acceleration->GetGPUVirtualAddress());
         cmd->SetComputeRootShaderResourceView(8,material.rayIdentity->GetGPUVirtualAddress());
-        cmd->SetComputeRootShaderResourceView(9,evidence.tokenTable->GetGPUVirtualAddress());
-        cmd->SetComputeRootShaderResourceView(10,native->environmentRadiance->GetGPUVirtualAddress());
-        cmd->SetComputeRootShaderResourceView(11,native->direct->lights->GetGPUVirtualAddress());
+        cmd->SetComputeRootShaderResourceView(9,evidence?evidence->tokenTable->GetGPUVirtualAddress():material.rayIdentity->GetGPUVirtualAddress());
+        cmd->SetComputeRootShaderResourceView(10,native?native->environmentRadiance->GetGPUVirtualAddress():material.samples->GetGPUVirtualAddress());
+        cmd->SetComputeRootShaderResourceView(11,direct->lights->GetGPUVirtualAddress());
         cmd->SetComputeRoot32BitConstant(2,0,0);
         cmd->Dispatch((ShadowPhysicalWidth(ShadowLogicalExtent(ow,quality),quality)+kGroup-1)/kGroup,
             (ShadowLogicalExtent(oh,quality)+kGroup-1)/kGroup,1);
@@ -321,30 +326,32 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         if(sky)Transition(cmd,sky->resource.get(),read,common);
         Transition(cmd,slot->result->resource.get(),write,common);
         Transition(cmd,slot->sparse->resource.get(),write,common);
-        Transition(cmd,opaqueDepth,read,common);Transition(cmd,tokens,read,common);
+        Transition(cmd,opaqueDepth,read,common);if(tokens)Transition(cmd,tokens,read,common);
         if(previous){Transition(cmd,previous->raw->resource.get(),read,common);Transition(cmd,previous->mask->resource.get(),read,common);Transition(cmd,previous->result->resource.get(),read,common);}
         DX::ThrowIfFailed(cmd->Close());
-        // Copy raw shader inputs using the original per-geometry constants; no
-        // reflection evaluation takes place in the DX11 capture shader.
+        // Capture only engine water coverage and native-depth values.
         const CaptureConstants cap{world.width,world.height,scale.x,scale.y};
         context->UpdateSubresource(captureCB.get(),0,nullptr,&cap,0,0);
         winrt::com_ptr<ID3D11ComputeShader> oldCS;context->CSGetShader(oldCS.put(),nullptr,nullptr);
-        ID3D11ShaderResourceView* oldReads[3]{};context->CSGetShaderResources(0,3,oldReads);
+        ID3D11ShaderResourceView* oldReads[2]{};context->CSGetShaderResources(0,2,oldReads);
         ID3D11UnorderedAccessView* oldWrites[2]{};context->CSGetUnorderedAccessViews(0,2,oldWrites);
-        ID3D11Buffer* oldCB[3]{};UINT oldFirst[3]{},oldCount[3]{};
-        context->CSGetConstantBuffers1(0,3,oldCB,oldFirst,oldCount);
+        winrt::com_ptr<ID3D11Buffer> oldCB;UINT oldFirst=0,oldCount=0;
+        context->CSGetConstantBuffers1(0,1,oldCB.put(),&oldFirst,&oldCount);
         ID3D11UnorderedAccessView* writes[]{slot->raw->uav,slot->mask->uav};
-        ID3D11Buffer* buffers[]{captureCB.get(),nullptr,geometry.get()};
-        context->CSSetShaderResources(0,3,reads);
+        auto* buffer=captureCB.get();
+        context->CSSetShaderResources(0,2,reads);
         context->CSSetUnorderedAccessViews(0,2,writes,nullptr);
-        context->CSSetConstantBuffers(0,3,buffers);
-        context->CSSetConstantBuffers1(2,1,&buffers[2],&firstConstant,&numConstants);context->CSSetShader(capture.get(),nullptr,0);
-        ID3D11ShaderResourceView* check[3]{};context->CSGetShaderResources(0,3,check);
-        bool bound=true;for(UINT i=0;i<3;++i){bound=bound&&check[i]==reads[i];if(check[i])check[i]->Release();}
+        context->CSSetConstantBuffers(0,1,&buffer);context->CSSetShader(capture.get(),nullptr,0);
+        ID3D11ShaderResourceView* check[2]{};context->CSGetShaderResources(0,2,check);
+        ID3D11UnorderedAccessView* checkWrites[2]{};context->CSGetUnorderedAccessViews(0,2,checkWrites);
+        bool bound=true;for(UINT i=0;i<2;++i){
+            bound=bound&&check[i]==reads[i]&&checkWrites[i]==writes[i];
+            if(check[i])check[i]->Release();if(checkWrites[i])checkWrites[i]->Release();
+        }
         if(bound){slot->input=UINT64_MAX;context->Dispatch((world.width+kGroup-1)/kGroup,(world.height+kGroup-1)/kGroup,1);}
-        context->CSSetUnorderedAccessViews(0,2,oldWrites,nullptr);context->CSSetShaderResources(0,3,oldReads);
-        context->CSSetConstantBuffers1(0,3,oldCB,oldFirst,oldCount);context->CSSetShader(oldCS.get(),nullptr,0);
-        for(auto* v:oldReads)if(v)v->Release();for(auto* v:oldWrites)if(v)v->Release();for(auto* v:oldCB)if(v)v->Release();
+        context->CSSetUnorderedAccessViews(0,2,oldWrites,nullptr);context->CSSetShaderResources(0,2,oldReads);
+        buffer=oldCB.get();context->CSSetConstantBuffers1(0,1,&buffer,&oldFirst,&oldCount);context->CSSetShader(oldCS.get(),nullptr,0);
+        for(auto* v:oldReads)if(v)v->Release();for(auto* v:oldWrites)if(v)v->Release();
         if(!bound){++rejected;return;}
         auto* context4=owner.d3d11Context.get();
         const auto inputValue=inputFence.Next();
@@ -352,8 +359,9 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         context4->Flush();
         DX::ThrowIfFailed(owner.commandQueue->Wait(inputFence.fence12.get(),inputValue));
         if(sky)DX::ThrowIfFailed(owner.commandQueue->Wait(slot->environment->producerFence.get(),slot->environment->producerValue));
-        DX::ThrowIfFailed(owner.commandQueue->Wait(native->readyFence.get(),native->readyValue));
-        DX::ThrowIfFailed(owner.commandQueue->Wait(evidence.readyFence.get(),evidence.readyValue));
+        DX::ThrowIfFailed(owner.commandQueue->Wait(direct->readyFence.get(),direct->readyValue));
+        if(native)DX::ThrowIfFailed(owner.commandQueue->Wait(native->readyFence.get(),native->readyValue));
+        if(evidence)DX::ThrowIfFailed(owner.commandQueue->Wait(evidence->readyFence.get(),evidence->readyValue));
         if(characters)DX::ThrowIfFailed(owner.commandQueue->Wait(characters->readyFence.get(),characters->readyValue));
         slot->ready=UINT64_MAX;
         ID3D12CommandList* lists[]{cmd};owner.commandQueue->ExecuteCommandLists(1,lists);

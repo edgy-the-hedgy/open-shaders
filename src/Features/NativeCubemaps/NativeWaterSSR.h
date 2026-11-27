@@ -4,7 +4,7 @@
 #include <array>
 #include <memory>
 
-namespace DX12Native { struct FullNativeReconstructionFrame; }
+namespace DX12Native { struct FullNativeReconstructionFrame; struct DirectLightingFrame; }
 
 namespace NativeCubemaps
 {
@@ -16,7 +16,7 @@ namespace NativeCubemaps
         ~WaterSSR();
         void Poll();
         void Draw(const GraphicsBackend&, const DX12Native::NativeWorldFrame&, std::shared_ptr<const DX12Native::EnvironmentFrame>,
-            std::shared_ptr<const DX12Native::FullNativeReconstructionFrame>, DX12Native::EnvironmentEncoding,
+            std::shared_ptr<const DX12Native::DirectLightingFrame>, std::shared_ptr<const DX12Native::FullNativeReconstructionFrame>, DX12Native::EnvironmentEncoding,
             bool skyVisible, uint32_t quality, float emitterRadius, ID3D11PixelShader* expected);
         void End();
         void ResetHistory() { latest.reset(); }

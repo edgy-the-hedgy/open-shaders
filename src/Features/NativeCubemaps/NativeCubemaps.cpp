@@ -289,7 +289,8 @@ void NativeCubemaps::Producer::OnDraw()
     const auto color=globals::features::linearLighting.GetCommonBufferData();
     const auto encoding=color.enableLinearLighting ?
         (color.enableACEScg?DX12Native::EnvironmentEncoding::LinearAP1:DX12Native::EnvironmentEncoding::LinearRec709):DX12Native::EnvironmentEncoding::LegacyScene;
-    waterSSR->Draw(*backend,*world,Get(),globals::features::upscaling.nativeComposite.GetFullNativeReconstruction(world->engineFrame),encoding,
+    waterSSR->Draw(*backend,*world,Get(),globals::features::dx12NativeScene.GetFullNativeDirect(world->engineFrame),
+        globals::features::upscaling.nativeComposite.GetFullNativeReconstruction(world->engineFrame),encoding,
         !Util::IsInterior() && globals::game::sky && !globals::game::sky->flags.any(RE::Sky::Flags::kHideSky),
         globals::features::dx12NativeScene.GetFullNativeQuality(world->engineFrame),
         globals::features::dx12Control.NativeWaterReflectionRadius(),
