@@ -427,12 +427,16 @@ void TruePBR::SaveSettings(json& o_json)
 
 void TruePBR::LoadSettings(json& o_json)
 {
+	if (globals::features::dx12Control.UsesExclusiveMaterials())
+		loaded = false;
 	settings = o_json;
 	enableVerboseJsonLogging = o_json.value("EnableVerboseJsonLogging", false);
 }
 
 void TruePBR::RestoreDefaultSettings()
 {
+	if (globals::features::dx12Control.UsesExclusiveMaterials())
+		loaded = false;
 	settings = {};
 	enableVerboseJsonLogging = false;
 }
@@ -441,12 +445,16 @@ void TruePBR::RestoreDefaultSettings()
 
 void TruePBR::SetupResources()
 {
+	if (globals::features::dx12Control.UsesExclusiveMaterials())
+		return;
 	SetupTextureSetData();
 	SetupMaterialObjectData();
 }
 
 void TruePBR::Prepass()
 {
+	if (globals::features::dx12Control.UsesExclusiveMaterials())
+		return;
 	SetupDefaultPBRLandTextureSet();
 
 	auto context = globals::d3d::context;
@@ -458,6 +466,8 @@ void TruePBR::Prepass()
 
 void TruePBR::SetupGlintsTexture()
 {
+	if (globals::features::dx12Control.UsesExclusiveMaterials())
+		return;
 	constexpr uint noiseTexSize = 128;
 
 	D3D11_TEXTURE2D_DESC tex_desc{
@@ -536,6 +546,8 @@ void TruePBR::SetupGlintsTexture()
 
 void TruePBR::SetupTextureSetData()
 {
+	if (globals::features::dx12Control.UsesExclusiveMaterials())
+		return;
 	if (enableVerboseJsonLogging) {
 		logger::info("[TruePBR] loading PBR texture set configs");
 	}
@@ -554,6 +566,8 @@ void TruePBR::SetupTextureSetData()
 
 void TruePBR::ReloadTextureSetData()
 {
+	if (globals::features::dx12Control.UsesExclusiveMaterials())
+		return;
 	if (enableVerboseJsonLogging) {
 		logger::info("[TruePBR] reloading PBR texture set configs");
 	}
@@ -587,7 +601,7 @@ void TruePBR::ReloadTextureSetData()
 
 TruePBR::PBRTextureSetData* TruePBR::GetPBRTextureSetData(const RE::TESForm* textureSet)
 {
-	if (textureSet == nullptr) {
+	if (globals::features::dx12Control.UsesExclusiveMaterials() || textureSet == nullptr) {
 		return nullptr;
 	}
 
@@ -605,6 +619,8 @@ bool TruePBR::IsPBRTextureSet(const RE::TESForm* textureSet)
 
 void TruePBR::SetupMaterialObjectData()
 {
+	if (globals::features::dx12Control.UsesExclusiveMaterials())
+		return;
 	if (enableVerboseJsonLogging) {
 		logger::info("[TruePBR] loading PBR material object configs");
 	}
@@ -623,7 +639,7 @@ void TruePBR::SetupMaterialObjectData()
 
 TruePBR::PBRMaterialObjectData* TruePBR::GetPBRMaterialObjectData(const RE::TESForm* materialObject)
 {
-	if (materialObject == nullptr) {
+	if (globals::features::dx12Control.UsesExclusiveMaterials() || materialObject == nullptr) {
 		return nullptr;
 	}
 
@@ -717,6 +733,8 @@ namespace Permutations
 
 void TruePBR::GenerateShaderPermutations(RE::BSShader* shader)
 {
+	if (globals::features::dx12Control.UsesExclusiveMaterials())
+		return;
 	auto state = globals::state;
 	auto shaderCache = globals::shaderCache;
 	if (shader->shaderType == RE::BSShader::Type::Lighting) {
@@ -2018,6 +2036,8 @@ struct PBR_BSLightingShader_SetupMaterial
 
 void TruePBR::PostPostLoad()
 {
+	if (globals::features::dx12Control.UsesExclusiveMaterials())
+		return;
 	logger::info("[TruePBR] Hooking BGSTextureSet");
 	stl::detour_thunk<BGSTextureSet_ToShaderTextureSet>(REL::RelocationID(20905, 21361));
 
@@ -2069,12 +2089,16 @@ void TruePBR::PostPostLoad()
 
 void TruePBR::DataLoaded()
 {
+	if (globals::features::dx12Control.UsesExclusiveMaterials())
+		return;
 	defaultPbrLandTextureSet = RE::TESForm::LookupByEditorID<RE::BGSTextureSet>("DefaultPBRLand");
 	SetupDefaultPBRLandTextureSet();
 }
 
 void TruePBR::SetupDefaultPBRLandTextureSet()
 {
+	if (globals::features::dx12Control.UsesExclusiveMaterials())
+		return;
 	if (!defaultLandTextureSetReplaced && defaultPbrLandTextureSet != nullptr) {
 		if (auto* defaultLandTexture = GetDefaultLandTexture()) {
 			logger::info("[TruePBR] replacing default land texture set record with {}", defaultPbrLandTextureSet->GetFormEditorID());
@@ -2086,6 +2110,8 @@ void TruePBR::SetupDefaultPBRLandTextureSet()
 
 void TruePBR::SetShaderResources(ID3D11DeviceContext* a_context)
 {
+	if (globals::features::dx12Control.UsesExclusiveMaterials())
+		return;
 	uint32_t mask = extendedRendererState.PSResourceModifiedBits;
 
 	if (mask == 0) [[likely]] {

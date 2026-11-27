@@ -7,6 +7,8 @@
 
 namespace NativePBR
 {
+	/** @brief Installs native-only metadata hooks before the engine loads forms/NIFs. */
+	void InstallExclusiveMetadataHooks();
 	/** @brief Preserve original NIF flags without altering legacy material rendering. */
 	void PreserveAuthoredFlags(RE::BSLightingShaderProperty& property);
 	std::optional<uint64_t> ReadAuthoredFlags(const RE::BSLightingShaderProperty& property);

@@ -29,6 +29,9 @@ struct DX12Control final : Feature
 	bool IsFullNativeMode() const { return GetMode() == DX12::ControlMode::FullNative; }
 	/** @brief Material capture is admitted only for an active Full Native session. */
 	bool WantsMaterialPreparation() const { return IsActive() && DX12::RequiresMaterialPreparation(GetMode()); }
+	/** @brief Boot-latched NativePBR authority; disabling DX12 at runtime cannot reinstall legacy hooks. */
+	bool UsesExclusiveMaterials() const { return exclusiveMaterials.load(std::memory_order_acquire); }
+	void InitializeMaterialAuthority();
 	void DrawSettings() override;
 	void RegisterUxActions() override;
 	void LoadSettings(json& input) override;
@@ -38,6 +41,8 @@ struct DX12Control final : Feature
 
 private:
 	std::atomic<bool> bootActive{ false };
+	std::atomic<bool> exclusiveMaterials{ false };
+	bool authorityCaptured = false;
 	bool bootCaptured = false;
 	DX12::ControlMode GetMode() const;
 	void DrawSimpleSettings(bool developerMode);

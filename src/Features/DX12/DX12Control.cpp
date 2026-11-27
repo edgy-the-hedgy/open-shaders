@@ -1,6 +1,8 @@
 #include "DX12Control.h"
 #include "DX12NativeScene.h"
 #include "DX12Resources.h"
+#include "Features/NativePBR/NativeMaterialMetadata.h"
+#include "TruePBR.h"
 #include "Globals.h"
 #include "State.h"
 #include "Utils/DevBenchUx.h"
@@ -29,13 +31,27 @@ void DX12Control::RequestMode(DX12::ControlMode mode)
 		selectedMode.store(settings.Mode, std::memory_order_relaxed);
 }
 
+	
+void DX12Control::InitializeMaterialAuthority()
+{
+	if (authorityCaptured)
+		return;
+	authorityCaptured = true;
+	if (!WantsMaterialPreparation() || globals::game::isVR)
+		return;
+	NativePBR::InstallExclusiveMetadataHooks();
+	exclusiveMaterials.store(true, std::memory_order_release);
+	globals::features::truePBR.loaded = false;
+	logger::info("[DX12] Full Native owns material discovery and evaluation; TruePBR is disabled for this session. Vanilla raster lighting remains the fallback.");
+}
+
 void DX12Control::DrawSimpleSettings(bool developerMode)
 {
 	using DX12::ControlMode;
 	const char* modes[] = {
 		T("menu.dx12.mode.shadow_offload", "Shadow offload"),
 		T("menu.dx12.mode.ray_traced_static_shadows", "Ray-Traced Static Shadows"),
-		T("menu.dx12.mode.full_native", "Full Native (preparation preview)"),
+		T("menu.dx12.mode.full_native", "Full Native (experimental)"),
 		T("menu.dx12.mode.raster_comparison", "Raster comparison")
 	};
 	constexpr ControlMode modeIDs[]{ ControlMode::ShadowOffload, ControlMode::FullRT, ControlMode::FullNative, ControlMode::RasterComparison };
@@ -50,7 +66,7 @@ void DX12Control::DrawSimpleSettings(bool developerMode)
 	if (DX12::RequiresModeRestart(GetMode(), static_cast<ControlMode>(settings.Mode)))
 		ImGui::TextDisabled(T("menu.dx12.mode.restart_full_native", "Entering or leaving Full Native requires a restart."));
 	if (IsFullNativeMode())
-		ImGui::TextDisabled(T("menu.dx12.mode.full_native_preview", "Material preparation preview; raster lighting remains authoritative."));
+		ImGui::TextDisabled(T("menu.dx12.mode.full_native_preview", "NativePBR material authority; vanilla raster remains the final-color fallback."));
 	ImGui::Checkbox(T("menu.dx12.master.enable", "Enable native DX12 features (restart required)"), &settings.Enabled);
 	if (settings.Enabled != bootActive.load(std::memory_order_acquire))
 		ImGui::TextDisabled(T("menu.dx12.master.restart_boot_state", "A game restart is required; DX12 Resources retains its boot state until then."));
@@ -112,6 +128,10 @@ void DX12Control::RestoreDefaultSettings()
 {
 	settings = {};
 	RequestMode(static_cast<DX12::ControlMode>(settings.Mode));
+	if (!bootCaptured) {
+		bootActive.store(settings.Enabled, std::memory_order_release);
+		bootCaptured = true;
+	}
 }
 
 void DX12Control::OnRuntimeDisabled()

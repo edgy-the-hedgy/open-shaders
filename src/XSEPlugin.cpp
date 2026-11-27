@@ -2,6 +2,7 @@
 #include "Compatibility.h"
 #include "Deferred.h"
 #include "Features/Upscaling.h"
+#include "Features/DX12/DX12Control.h"
 #include "FrameAnnotations.h"
 #include "Globals.h"
 #include "Hooks.h"
@@ -112,6 +113,8 @@ void MessageHandler(SKSE::MessagingInterface::Message* message)
 
 				auto shaderCache = globals::shaderCache;
 
+				// Select the boot-latched material backend before any legacy material hooks install.
+				globals::features::dx12Control.InitializeMaterialAuthority();
 				// Run feature PostPostLoad() first so features can disable themselves if needed
 				Feature::ForEachLoadedFeature("PostPostLoad", [](Feature* feature) { feature->PostPostLoad(); });
 

@@ -1,6 +1,8 @@
 #include "NativeMaterialMetadata.h"
 
+#include "Hooks.h"
 #include "RE/B/BSLightingShaderProperty.h"
+#include "RE/B/BSShaderTextureSet.h"
 #include "RE/B/BSTextureSet.h"
 #include "RE/B/BGSTextureSet.h"
 #include "RE/N/NiIntegersExtraData.h"
@@ -11,6 +13,7 @@
 #include <bit>
 #include <cmath>
 #include <mutex>
+#include <list>
 #include <unordered_map>
 #include <vector>
 
@@ -20,6 +23,104 @@ namespace NativePBR
 	{
 		constexpr auto kAuthoredFlags = "OS.NativePBR.OriginalFlags.v1";
 		constexpr size_t kMaxTextureSources = 32768;
+
+		// Engine form IDs are needed even when the legacy TruePBR feature is
+		// not installed. Intern strings so GetFormEditorID returns stable memory.
+		std::mutex editorMutex;
+		std::list<std::string> editorStrings;
+		std::unordered_map<uint32_t, const char*> editorIDs;
+		template <class Form>
+		struct GetEditorID
+		{
+			static const char* thunk(const RE::TESForm* form)
+			{
+				std::scoped_lock lock(editorMutex);
+				const auto it = editorIDs.find(form->GetFormID());
+				return it != editorIDs.end() ? it->second : "";
+			}
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+		template <class Form>
+		struct SetEditorID
+		{
+			static bool thunk(RE::TESForm* form, const char* editorId)
+			{
+				if (editorId) {
+					std::scoped_lock lock(editorMutex);
+					const auto id = form->GetFormID();
+					const auto it = editorIDs.find(id);
+					if (it == editorIDs.end() || std::string_view(it->second) != editorId) {
+						editorStrings.emplace_back(editorId);
+						editorIDs[id] = editorStrings.back().c_str();
+					}
+				}
+				return func(form, editorId);
+			}
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+		template <class Form, class VTable>
+		void InstallEditorID(const VTable& vtable)
+		{
+			stl::write_vfunc<0x32, GetEditorID<Form>>(vtable[0]);
+			stl::write_vfunc<0x33, SetEditorID<Form>>(vtable[0]);
+		}
+
+		bool HasBaseTextures(const RE::BSLightingShaderProperty* property)
+		{
+			if (!property || !property->material ||
+				property->material->GetType() != RE::BSShaderMaterial::Type::kLighting ||
+				property->material->GetFeature() != RE::BSShaderMaterial::Feature::kDefault)
+				return false;
+			const auto* material = static_cast<const RE::BSLightingShaderMaterialBase*>(property->material);
+			auto* textures = material->textureSet.get();
+			const auto* expected = REL::Relocation<const RE::NiRTTI*>{ RE::BSTextureSet::Ni_RTTI }.get();
+			if (!textures || !expected || !textures->GetRTTI() || !textures->GetRTTI()->IsKindOf(expected))
+				return false;
+			for (const uint32_t slot : { 0u, 1u, 5u }) {
+				const auto* path = textures->GetTexturePath(static_cast<RE::BSTextureSet::Texture>(slot));
+				if (!path || !*path)
+					return false;
+			}
+			return true;
+		}
+
+		struct NativeNifPostLink
+		{
+			static void thunk(RE::BSLightingShaderProperty* property, RE::NiStream& stream)
+			{
+				func(property, stream);
+				using enum RE::BSShaderProperty::EShaderPropertyFlag;
+				if (!property || !property->flags.any(kMenuScreen) ||
+					property->flags.any(kLODLandscape, kMultiTextureLandscape, kFace, kHairTint, kTreeAnim,
+						kRefraction, kTempRefraction, kVertexAlpha, kGrayscaleToPaletteAlpha) ||
+					!HasBaseTextures(property))
+					return;
+				auto path = Util::ToLowerAscii(stream.inputFilePath);
+				std::ranges::replace(path, '\\', '/');
+				if (path.find("worldmap") != std::string::npos || path.find("mapmenu") != std::string::npos ||
+					path.find("interface/") != std::string::npos)
+					return;
+				PreserveAuthoredFlags(*property);
+				if (!ReadAuthoredFlags(*property))
+					return;
+				// Preserve the ordinary vanilla raster fallback, but do not let
+				// it interpret authored PBR feature markers as legacy effects.
+				property->flags.reset(kMenuScreen, kSpecular, kGlowMap, kEnvMap, kMultiLayerParallax,
+					kSoftLighting, kRimLighting, kBackLighting, kAnisotropicLighting, kEffectLighting, kFitSlope);
+			}
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		struct NativeTextureSetConversion
+		{
+			static RE::BSShaderTextureSet* thunk(RE::BGSTextureSet* record)
+			{
+				auto* result = func(record);
+				RememberTextureSet(record, result);
+				return result;
+			}
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
 		struct TextureSource
 		{
 			std::string signature, editorId;
@@ -54,6 +155,20 @@ namespace NativePBR
 				return {};
 			return values;
 		}
+	}
+
+	void InstallExclusiveMetadataHooks()
+	{
+		static std::once_flag once;
+		std::call_once(once, [] {
+			InstallEditorID<RE::TESLandTexture>(RE::VTABLE_TESLandTexture);
+			InstallEditorID<RE::BGSTextureSet>(RE::VTABLE_BGSTextureSet);
+			InstallEditorID<RE::BGSMaterialObject>(RE::VTABLE_BGSMaterialObject);
+			InstallEditorID<RE::BGSLightingTemplate>(RE::VTABLE_BGSLightingTemplate);
+			InstallEditorID<RE::TESWeather>(RE::VTABLE_TESWeather);
+			stl::detour_thunk<NativeTextureSetConversion>(REL::RelocationID(20905, 21361));
+			stl::write_vfunc<0x1E, NativeNifPostLink>(RE::VTABLE_BSLightingShaderProperty[0]);
+		});
 	}
 
 	void PreserveAuthoredFlags(RE::BSLightingShaderProperty& property)
