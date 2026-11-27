@@ -8,7 +8,8 @@
 #include "DX12NativeCharacterCasters.h"
 #include "DX12NativeScreenProbe.h"
 #include "DX12NativeDirectLighting.h"
-#include "DX12NativeIndirectLighting.h"
+#include "Features/NativeCubemaps/NativeCubemaps.h"
+#include "Features/NativeIBL/NativeIBL.h"
 #include "DX12NativeRuntimeCapture.h"
 #include "DX12NativeShadowTrace.h"
 #include "SCMNativePolicy.h"
@@ -101,7 +102,7 @@ struct DX12NativeScene final : OverlayFeature
 
 	std::shared_ptr<const DX12Native::IndirectLightingFrame> GetFullNativeIndirect(uint32_t frame) const
 	{
-		return fullNativeIndirect ? fullNativeIndirect->Get(frame) : nullptr;
+		return nativeIBL.Get(frame);
 	}
 
 private:
@@ -160,11 +161,8 @@ private:
 	};
 	FullNativeRasterDrawState fullNativeRasterDraws;
 	std::unique_ptr<DX12Native::DirectLightingTrace> fullNativeDirect;
-	std::unique_ptr<DX12Native::NativeEnvironment> fullNativeEnvironment;
-	std::unique_ptr<DX12Native::NativeIndirectLighting> fullNativeIndirect;
-	DX12Native::EnvironmentStamp fullNativeEnvironmentStamp{};
-	uint64_t fullNativeEnvironmentEpoch = 1;
-	float fullNativeEnvironmentHours = 0.0f;
+	NativeCubemaps::Producer nativeCubemaps;
+	NativeIBL::Producer nativeIBL;
 	void DispatchFullNativeIndirect();
 	void ResetFullNativeEnvironment();
 	DX12Native::RuntimeGeometryCapture geometryCapture;

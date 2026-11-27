@@ -1,12 +1,7 @@
 #include "DX12NativeScene.h"
 #include "Features/NativeLLF/NativeLLF.h"
-#include "Features/DynamicCubemaps.h"
-#include "Features/IBL.h"
-#include "Features/Skylighting.h"
 #include "Features/ExtendedMaterials.h"
 #include "Features/FoliageLighting.h"
-#include "Features/LinearLighting.h"
-#include "Features/CSUtility.h"
 
 #include "../LightLimitFix/ShadowCasterMath.h"
 #include "../LightLimitFix/Common.h"
@@ -619,8 +614,7 @@ void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 	globals::features::upscaling.nativeComposite.PollFullNative(frame);
 	if (!fullNativeMaterial)
 		fullNativeMaterial = std::make_unique<DX12Native::NativeScreenProbe>();
-	if (fullNativeIndirect)
-		fullNativeIndirect->Poll(frame);
+	nativeIBL.Poll(frame);
 	if (fullNativeDirect)
 		fullNativeDirect->Poll(frame);
 	fullNativeMaterial->Poll(frame);
@@ -677,16 +671,8 @@ void DX12NativeScene::ResetFullNativeEnvironment()
 {
 	if (fullNativeMaterial)
 		globals::features::upscaling.nativeComposite.ResetFullNative();
-	if (fullNativeIndirect)
-		fullNativeIndirect->Reset();
-	if (fullNativeEnvironment)
-		fullNativeEnvironment->Reset();
-	if (fullNativeEnvironmentStamp.epoch) {
-		globals::features::dynamicCubemaps.SetNativeCaptureContext({});
-		globals::features::ibl.SetNativeCaptureContext({});
-	}
-	fullNativeEnvironmentStamp = {};
-	++fullNativeEnvironmentEpoch;
+	nativeIBL.Reset();
+	nativeCubemaps.Reset();
 }
 
 void DX12NativeScene::DispatchFullNativeIndirect()
@@ -702,55 +688,18 @@ void DX12NativeScene::DispatchFullNativeIndirect()
 	if (!grid || grid->requested.empty() || !grid->requested.front().scope)
 		return;
 	const auto frame = globals::game::graphicsState->GetFrameCount();
-	const auto color = globals::features::linearLighting.GetCommonBufferData();
-	const auto encoding = color.enableLinearLighting ?
-		(color.enableACEScg ? EnvironmentEncoding::LinearAP1 : EnvironmentEncoding::LinearRec709) :
-		EnvironmentEncoding::LegacyScene;
-	EnvironmentStamp stamp{ fullNativeEnvironmentEpoch, grid->requested.front().scope, frame,
-		globals::state->frameCount, encoding, Util::IsInterior() };
-	const float hours = globals::game::calendar ? globals::game::calendar->GetHoursPassed() : fullNativeEnvironmentHours;
-	if (fullNativeEnvironmentStamp.epoch && (!fullNativeEnvironmentStamp.SameEnvironment(stamp) ||
-		(std::isfinite(hours) && std::abs(hours - fullNativeEnvironmentHours) > 0.01f))) {
-		ResetFullNativeEnvironment();
-		stamp.epoch = fullNativeEnvironmentEpoch;
+	bool environmentChanged = false;
+	const auto stamp = nativeCubemaps.Prepare(grid->requested.front().scope, frame, environmentChanged);
+	if (environmentChanged) {
+		if (fullNativeMaterial)
+			globals::features::upscaling.nativeComposite.ResetFullNative();
+		nativeIBL.Reset();
 	}
-	fullNativeEnvironmentStamp = stamp;
-	if (std::isfinite(hours)) fullNativeEnvironmentHours = hours;
-	auto& cubes = globals::features::dynamicCubemaps;
-	auto& ibl = globals::features::ibl;
-	cubes.SetNativeCaptureContext(stamp);
-	ibl.SetNativeCaptureContext(stamp);
 	const auto material = GetFullNativeMaterial(frame);
 	if (!backend || !material || material->scope != stamp.scope)
 		return;
-	if (!fullNativeEnvironment)
-		fullNativeEnvironment = std::make_unique<NativeEnvironment>();
-	if (!fullNativeIndirect)
-		fullNativeIndirect = std::make_unique<NativeIndirectLighting>();
-	const auto settings = ibl.GetCommonBufferData();
-	const auto utility = globals::features::csUtility.GetCommonBufferData();
-	NativeAmbientParameters ambient;
-	ambient.dalcValid = globals::state->GetAmbientSH(stamp.engineFrame, stamp.pluginFrame, ambient.dalc);
-	ambient.environmentSaturation = settings.EnvIBLSaturation;
-	ambient.skySaturation = settings.SkyIBLSaturation;
-	ambient.dalcMode = settings.DALCMode;
-	ambient.dalcAmount = settings.DALCAmount;
-	ambient.iblEnabled = ibl.loaded ? settings.EnableIBL : 0u;
-	ambient.ambientMultiplier = utility.ambientLightMult * (color.enableLinearLighting ? color.ambientMult : 1.0f);
-	ambient.conversionSaturation = color.conversionSaturation;
-	ambient.utilitySaturation = utility.ambientLightColor.saturation;
-	ambient.utilityGammaOffset = utility.ambientLightColor.gammaOffset;
-	const auto& skylighting = globals::features::skylighting;
-	ambient.traceSkyVisibility = skylighting.loaded && skylighting.settings.EnableSkylighting && !stamp.interior;
-	ambient.minDiffuseSkyVisibility = std::clamp(skylighting.settings.MinDiffuseVisibility, 0.0f, 1.0f);
-	ambient.minSpecularSkyVisibility = std::clamp(skylighting.settings.MinSpecularVisibility, 0.0f, 1.0f);
-	ambient.skyMinZ = std::max(0.0f, std::cos(std::clamp(skylighting.settings.MaxZenith, 0.0f, 1.57079632679f)));
-	fullNativeEnvironment->Capture(*backend, stamp,
-		cubes.loaded ? cubes.GetNativeEnvironment(false) : EnvironmentSource{},
-		cubes.loaded && !stamp.interior ? cubes.GetNativeEnvironment(true) : EnvironmentSource{},
-		ibl.loaded && !stamp.interior ? ibl.GetNativeSkyRadiance() : EnvironmentSource{});
-	fullNativeIndirect->Dispatch(*backend, material, fullNativeEnvironment->Get(),
-		uint32_t(IndirectDiffuse) | uint32_t(IndirectSpecular) | uint32_t(Transmission), settings.EnvIBLScale, settings.SkyIBLScale, ambient,
+	nativeCubemaps.Capture(*backend);
+	nativeIBL.Dispatch(*backend, material, nativeCubemaps.Get(), stamp,
 		characterCasters ? characterCasters->Get(frame, material->scope) : nullptr);
 	const auto& draws = fullNativeRasterDraws;
 	const bool matchingDraws = draws.finalized && draws.scene == material->scene && draws.stamp.frame == frame;
@@ -1356,8 +1305,8 @@ void DX12NativeScene::OnRuntimeDisabled()
 	globals::features::upscaling.nativeComposite.ResetShadowHistory();
 	fullNativeRasterDraws = {};
 	ResetFullNativeEnvironment();
-	fullNativeIndirect.reset();
-	fullNativeEnvironment.reset();
+	nativeIBL.Release();
+	nativeCubemaps.Release();
 	fullNativeDirect.reset();
 	fullNativeMaterial.reset();
 	raster.Reset();
