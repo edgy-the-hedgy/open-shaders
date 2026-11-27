@@ -180,6 +180,11 @@ void main(uint3 id : SV_DispatchThreadID)
     float roughness = clamp(normal.w, 0.045, 1.0);
     NativeIndirect::LobeWeights lobes = NativeIndirect::EvaluateLobes(base.rgb, f0.rgb, f0.a,
         roughness, emissionAO.a, saturate(dot(n, view)));
+    if (HasNativeSubsurface(coat)) {
+        float2 env=BRDF::EnvBRDF(roughness,saturate(dot(n,view)));
+        float3 reflected=saturate(f0.rgb*env.x+env.y);
+        lobes.diffuse+=coat.subsurface.rgb*(1.0-saturate(coat.subsurface.w))*BRDF::Diffuse_Lambert()*(1.0-reflected);
+    }
     bool hasCoat = HasNativeCoat(coat);
     float3 cn = hasCoat ? normalize(coat.normalRoughness.xyz) : n;
     float3 coatSpecularWeight = 0.0;

@@ -85,6 +85,16 @@ Sample EvaluateMaterial(uint instance, uint primitive, float3 weights, out Nativ
     result.normal = float4(normal,roughness);
     result.f0 = float4(f0,metallic);
     result.emission = float4(emission,saturate(packed.b));
+    if ((binding.flags & SurfaceSubsurfaceReadyBinding) != 0u) {
+        float3 scatterColor = SrgbToLinear(max(material.subsurfaceColor.rgb,0.0));
+        float thickness = saturate(material.coat.w);
+        if (material.textures[2].z != 0xffffffffu) {
+            float4 feature0 = Tex(material.textures[2].z,uv,material.properties.z);
+            scatterColor *= SrgbToLinear(max(feature0.rgb,0.0));
+            thickness *= saturate(feature0.a);
+        }
+        if (all(isfinite(scatterColor)) && isfinite(thickness)) coat.subsurface=float4(scatterColor,thickness);
+    }
     if ((binding.flags & SurfaceCoatReadyBinding) != 0u) {
         // Match the legacy feature0 color/strength and feature1 roughness/normal semantics.
         float3 coatColor = SrgbToLinear(max(material.coatColor.rgb,0.0));
@@ -235,7 +245,7 @@ void screenMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
         RayIdentity.Store2(ordinal*8u,hitIdentity);
         uint lobeOffset=ordinal*NativeMaterialLobeStride;
         MaterialLobes.Store4(lobeOffset,uint4(PackHalf4(coat.normalRoughness),PackHalf4(coat.colorStrength)));
-        MaterialLobes.Store4(lobeOffset+16u,uint4(PackHalf4(coat.f0Colored),0u,0u));
+        MaterialLobes.Store4(lobeOffset+16u,uint4(PackHalf4(coat.f0Colored),PackHalf4(coat.subsurface)));
         ScreenOutput.Store4(offset,uint4(PackHalf4(result.color),PackHalf4(result.normal)));
         ScreenOutput.Store4(offset+16u,uint4(PackHalf4(result.f0),PackHalf4(result.emission)));
         uint category = result.color.a==SurfaceEvaluatedBase ? 0 : result.color.a==SurfaceMissingGeometry ? 1 :

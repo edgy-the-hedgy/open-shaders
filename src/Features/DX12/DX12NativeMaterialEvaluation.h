@@ -417,6 +417,10 @@ namespace DX12Native
 				const auto residentMap = [&](NativePBR::TextureRole role) {
 					return (recordTable[it->second].controls[0] & NativePBR::TextureRoleBit(role)) != 0;
 				};
+				const bool subsurfaceReady = capability.activeFlags == uint32_t(PBRFlags::Subsurface) &&
+					(!authoredMap(NativePBR::TextureRole::Features0) || residentMap(NativePBR::TextureRole::Features0));
+				// Retain feature-limited status until independent transmission validity is integrated.
+				if (subsurfaceReady) binding.flags |= MaterialFrameContract::kSubsurfaceReadyBinding;
 				const bool coatReady = (capability.activeFlags & coat) && !(capability.activeFlags & ~supportedCoat) &&
 					(!authoredMap(NativePBR::TextureRole::Features0) || residentMap(NativePBR::TextureRole::Features0)) &&
 					(!authoredMap(NativePBR::TextureRole::Features1) || residentMap(NativePBR::TextureRole::Features1)) &&

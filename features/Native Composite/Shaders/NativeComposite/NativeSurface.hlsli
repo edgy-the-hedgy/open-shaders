@@ -3,7 +3,8 @@
 static const uint NativeSurfaceStride = 32u;
 static const uint NativeMaterialLobeStride = 32u;
 static const uint SurfaceCoatReadyBinding = 1u << 13;
-struct NativeCoatSample { float4 normalRoughness; float4 colorStrength; float4 f0Colored; };
+static const uint SurfaceSubsurfaceReadyBinding = 1u << 14;
+struct NativeCoatSample { float4 normalRoughness; float4 colorStrength; float4 f0Colored; float4 subsurface; };
 float4 UnpackNativeLobeHalf4(uint2 v) { return f16tof32(uint4(v.x & 65535u, v.x >> 16, v.y & 65535u, v.y >> 16)); }
 NativeCoatSample ReadNativeCoat(ByteAddressBuffer lobes, uint offset)
 {
@@ -11,12 +12,17 @@ NativeCoatSample ReadNativeCoat(ByteAddressBuffer lobes, uint offset)
     coat.normalRoughness = UnpackNativeLobeHalf4(lobes.Load2(offset));
     coat.colorStrength = UnpackNativeLobeHalf4(lobes.Load2(offset + 8u));
     coat.f0Colored = UnpackNativeLobeHalf4(lobes.Load2(offset + 16u));
+    coat.subsurface = UnpackNativeLobeHalf4(lobes.Load2(offset + 24u));
     return coat;
 }
 bool HasNativeCoat(NativeCoatSample coat)
 {
     return coat.colorStrength.w > 0.0 && all(isfinite(coat.normalRoughness)) && all(isfinite(coat.colorStrength)) &&
         all(isfinite(coat.f0Colored)) && dot(coat.normalRoughness.xyz, coat.normalRoughness.xyz) > 1e-8;
+}
+bool HasNativeSubsurface(NativeCoatSample material)
+{
+    return all(isfinite(material.subsurface)) && any(material.subsurface.rgb > 0.0) && material.subsurface.w < 1.0;
 }
 static const uint NativeOpaqueRadianceStride = 8u;
 static const uint ContributionDirectDiffuse = 1u << 0;

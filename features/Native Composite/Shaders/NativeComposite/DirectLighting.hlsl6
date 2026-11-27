@@ -22,6 +22,7 @@ RWByteAddressBuffer Counters : register(u1);
 #define NATIVE_TEXTURE_REGISTER t7
 #include "NativeMaterialAlpha.hlsli"
 #include "NativeSurface.hlsli"
+#include "Common/BRDF.hlsli"
 ByteAddressBuffer MaterialLobes : register(t519);
 
 cbuffer DirectInputs : register(b0)
@@ -101,6 +102,17 @@ bool VisibleDirectional(float3 world, float3 normal, float3 direction)
 void AccumulateBRDF(float4 base, float4 f0, float3 n, float3 view, float3 l, float ndl, float ndv, float a2,
     float3 incident, NativeCoatSample coat, inout float3 diffuse, inout float3 specular)
 {
+    // Non-thin scattering follows Common/PBR.hlsli, with native DXR visibility.
+    // Diagnostic diffuse until a separate transmission output is reconstructed.
+    if (HasNativeSubsurface(coat)) {
+        float thickness=saturate(coat.subsurface.w);
+        float forwardScatter=exp2(saturate(-dot(view,l))*12.234-12.234);
+        float backScatter=saturate(ndl*thickness+(1.0-thickness))*0.5;
+        float scatter=lerp(backScatter,1.0,forwardScatter)*(1.0-thickness);
+        float2 env=BRDF::EnvBRDF(sqrt(sqrt(a2)),saturate(abs(dot(n,view))));
+        float3 kd=1.0-saturate(f0.rgb*env.x+env.y);
+        diffuse+=coat.subsurface.rgb*scatter*incident*BRDF::Diffuse_Lambert()*kd;
+    }
     float3 halfDelta = view + l;
     if (dot(halfDelta,halfDelta) < 1e-8) return;
     float3 h = normalize(halfDelta);
@@ -184,7 +196,7 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
     if (DirectionalDirection.w != 0.0 && any(DirectionalRadiance.rgb > 0.0)) {
         float3 l = DirectionalDirection.xyz;
         float ndl = saturate(dot(n,l));
-        if (ndl > 0.0 || (HasNativeCoat(coat) && dot(coat.normalRoughness.xyz,l)>0.0)) {
+        if (ndl > 0.0 || HasNativeSubsurface(coat) || (HasNativeCoat(coat) && dot(coat.normalRoughness.xyz,l)>0.0)) {
             ++inReach;
             ++rays;
             if (VisibleDirectional(world,n,l)) {
@@ -203,7 +215,7 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
         float distance = sqrt(d2);
         float3 l = delta/distance;
         float ndl = saturate(dot(n,l));
-        if (ndl <= 0 && !(HasNativeCoat(coat) && dot(coat.normalRoughness.xyz,l)>0.0)) continue;
+        if (ndl <= 0 && !HasNativeSubsurface(coat) && !(HasNativeCoat(coat) && dot(coat.normalRoughness.xyz,l)>0.0)) continue;
         float relativeDistance = distance / light.w;
         float fade = saturate((light.w-distance)*max(params.y,0.0));
         float attenuation = params.z != 0.0 ?
