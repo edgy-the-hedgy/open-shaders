@@ -43,7 +43,7 @@ namespace NativeCubemaps
     private:
         bool CaptureRaw(const GraphicsBackend&);
         std::unique_ptr<DX12Native::NativeEnvironment> inputs;
-        CubeProcessing processing;
+        std::unique_ptr<CubeProcessing> processing;
         winrt::com_ptr<ID3D11Texture2D> raw;
         winrt::com_ptr<ID3D11UnorderedAccessView> rawUAV;
         winrt::com_ptr<ID3D11ComputeShader> inputShader;

@@ -109,6 +109,7 @@ void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend)
 {
     using namespace DX12Native;
     if(!loaded || !currentStamp.scope || !globals::state || !globals::game::renderer) return;
+    if(processing) processing->Poll();
     if(lastCaptureFrame!=UINT32_MAX && currentStamp.engineFrame-lastCaptureFrame<kCaptureInterval) return;
     lastCaptureFrame=currentStamp.engineFrame;
     try {
@@ -127,7 +128,8 @@ void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend)
         inputs->Capture(backend,currentStamp,source,reflection,sky);
         const auto frame=inputs->Get();
         if(frame && frame->base && frame->base->revision==source.revision) {
-            processing.Dispatch(backend,frame,dalc,globals::game::frameBufferCached.nonVR.CameraPosAdjust);
+            if(!processing) processing=std::make_unique<CubeProcessing>();
+            processing->Dispatch(backend,frame,dalc,globals::game::frameBufferCached.nonVR.CameraPosAdjust);
             failureLogged=false;
         }
     } catch(const std::exception& e) {
@@ -140,14 +142,14 @@ void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend)
 }
 void NativeCubemaps::Producer::InvalidateGeneration()
 {
-    processing.Reset();
+    if(processing) processing->Reset();
     if(inputs) inputs->Reset();
     globals::features::nativeIBL.SetCaptureContext({});
     currentStamp={}; ++epoch; lastCaptureFrame=UINT32_MAX; failureLogged=false;
 }
 void NativeCubemaps::Producer::Release()
 {
-    processing.Reset(); inputs.reset();
+    processing.reset(); inputs.reset();
     raw=nullptr; rawUAV=nullptr; inputShader=nullptr; inputConstants=nullptr;
     lastCaptureFrame=UINT32_MAX;
 }

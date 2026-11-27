@@ -39,17 +39,17 @@ void historyMain(uint3 id : SV_DispatchThreadID)
 {
     if (any(id.xy >= Size) || id.z >= 6) return;
     float3 d = NativeCubeDirection(id, Size);
-    float4 sample = Source.SampleLevel(PointClamp,d,0);
-    if (abs(sample.a) > 0) {
-        Destination[id] = float4(sample.rgb, sign(sample.a));
+    float4 captured = Source.SampleLevel(PointClamp,d,0);
+    if (abs(captured.a) > 0) {
+        Destination[id] = float4(captured.rgb, sign(captured.a));
         return;
     }
     if (HasHistory != 0) {
-        sample = Previous.SampleLevel(PointClamp,d,0);
-        float age = abs(sample.a) + float(FrameDelta);
+        captured = Previous.SampleLevel(PointClamp,d,0);
+        float age = abs(captured.a) + float(FrameDelta);
         // Never refresh the age of inferred or unobserved directions.
-        if (abs(sample.a) > 0 && age <= 1800.0) {
-            Destination[id] = float4(sample.rgb, sign(sample.a)*age);
+        if (abs(captured.a) > 0 && age <= 1800.0) {
+            Destination[id] = float4(captured.rgb, sign(captured.a)*age);
             return;
         }
     }
