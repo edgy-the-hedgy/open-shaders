@@ -1205,15 +1205,25 @@ bool DX12NativeScene::CaptureProjectedConstants(ProjectedTextureObservation& obs
 	}
 	auto& slot = projectedConstantPool[draws.constantSnapshots];
 	for (size_t i = 0; i < sources.size(); ++i) {
-		if (!slot.buffers[i] || slot.byteWidths[i] != descriptions[i].ByteWidth) {
+		if (!slot.buffers[i] || !slot.views[i] || slot.byteWidths[i] != descriptions[i].ByteWidth) {
 			D3D11_BUFFER_DESC desc{};
 			desc.ByteWidth = descriptions[i].ByteWidth;
 			desc.Usage = D3D11_USAGE_DEFAULT;
-			desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+			desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+			desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
 			winrt::com_ptr<ID3D11Buffer> replacement;
 			if (FAILED(globals::d3d::device->CreateBuffer(&desc, nullptr, replacement.put())))
 				return false;
+			D3D11_SHADER_RESOURCE_VIEW_DESC viewDesc{};
+			viewDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+			viewDesc.ViewDimension = D3D11_SRV_DIMENSION_BUFFEREX;
+			viewDesc.BufferEx.NumElements = desc.ByteWidth / sizeof(uint32_t);
+			viewDesc.BufferEx.Flags = D3D11_BUFFEREX_SRV_FLAG_RAW;
+			winrt::com_ptr<ID3D11ShaderResourceView> replacementView;
+			if (FAILED(globals::d3d::device->CreateShaderResourceView(replacement.get(), &viewDesc, replacementView.put())))
+				return false;
 			slot.buffers[i] = std::move(replacement);
+			slot.views[i] = std::move(replacementView);
 			slot.byteWidths[i] = desc.ByteWidth;
 		}
 	}
@@ -1299,6 +1309,7 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 	if (!globals::game::graphicsState)
 		return;
 	auto& draws = fullNativeRasterDraws;
+	if (draws.finalized) return;
 	if (draws.stamp.frame != globals::game::graphicsState->GetFrameCount() ||
 		draws.scene != acceleration.GetScene()) {
 		draws = {};
@@ -1312,6 +1323,24 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 			token = {};
 	}
 	draws.finalized = true;
+	if (backend && draws.constantSnapshots) {
+		std::vector<DX12Native::ProjectedInputDraw> inputs;
+		inputs.reserve(draws.constantSnapshots);
+		for (const auto& [ordinal, observation] : draws.projectionTextures) {
+			const auto property = draws.projection.find(ordinal);
+			if (property == draws.projection.end() || !property->second.ValidProjection() ||
+				observation.conflicted || observation.repeatedConstants || observation.constantSlot >= draws.constantSnapshots)
+				continue;
+			const auto& slot = projectedConstantPool[observation.constantSlot];
+			if (!slot.views[0] || !slot.views[1]) continue;
+			inputs.push_back({ ordinal, observation.descriptor, { slot.views[0].get(), slot.views[1].get() },
+				observation.constantOffsets, observation.views });
+		}
+		if (!inputs.empty()) {
+			if (!projectedInputs) projectedInputs = std::make_unique<DX12Native::ProjectedInputCapture>();
+			projectedInputs->Publish(*backend, draws.stamp, inputs);
+		}
+	}
 }
 
 std::function<void()> DX12NativeScene::OnRenderPassBegin(const RE::BSRenderPass* pass)
@@ -1446,6 +1475,7 @@ void DX12NativeScene::ApplyPendingLoadingReset()
 		}
 		globals::features::upscaling.nativeComposite.ResetShadowHistory();
 		fullNativeRasterDraws = {};
+		if (projectedInputs) projectedInputs->Reset();
 		ResetFullNativeEnvironment();
 		if (fullNativeDirect)
 			fullNativeDirect->Reset();
@@ -1462,6 +1492,7 @@ void DX12NativeScene::OnRuntimeDisabled()
 {
 	projectedConstantPool = {};
 	projectedConstantDevice = nullptr;
+	projectedInputs.reset();
 	loadingResetPending.store(false, std::memory_order_release);
 	frameNativeModeID.store(UINT32_MAX, std::memory_order_release);
 	frameNativeMode.store(DX12::SCMNativeMode::Disabled, std::memory_order_release);
@@ -1585,6 +1616,7 @@ json DX12NativeScene::GetStatus() const
 					++completeTextureViews;
 			}
 		}
+		const auto projectionFrame = projectedInputs ? projectedInputs->Get(draws.stamp) : nullptr;
 		status["fullNativeProjectionInputs"] = { { "frame", draws.stamp.frame }, { "finalized", draws.finalized },
 			{ "projectedDraws", draws.projectedDraws }, { "unmatchedDraws", draws.unmatchedProjectedDraws },
 			{ "validPropertyInstances", validProjection }, { "conflictingInstances", conflictingProjection },
@@ -1592,7 +1624,11 @@ json DX12NativeScene::GetStatus() const
 			{ "conflictingTextureInstances", conflictingTextures },
 			{ "constantSnapshots", draws.constantSnapshots }, { "uniqueConstantSnapshots", uniqueConstantSnapshots },
 			{ "constantSnapshotFailures", draws.constantSnapshotFailures },
-			{ "projectorConstantsReady", false }, { "projectedTexturesReady", false } };
+			{ "projectorConstantsReady", projectionFrame != nullptr },
+			{ "publishedRows", projectionFrame ? projectionFrame->rowCount : 0u },
+			{ "residentProjectedTextures", projectionFrame ? projectionFrame->textures.size() : 0u },
+			{ "missingProjectedTextures", projectionFrame ? projectionFrame->missingTextures : 0u },
+			{ "projectedTexturesReady", projectionFrame && !projectionFrame->missingTextures } };
 		status["fullNativeRasterAdmission"] = { { "frame", draws.stamp.frame }, { "scope", draws.stamp.scope },
 			{ "geometryRevision", draws.stamp.geometryRevision }, { "materialRevision", draws.stamp.materialRevision },
 			{ "draws", draws.draws }, { "candidateDraws", draws.candidates }, { "uniqueInstances", draws.uniqueInstances },

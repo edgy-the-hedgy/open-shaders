@@ -4,6 +4,7 @@
 #include "DX12NativeAcceleration.h"
 #include "DX12NativeLightWorker.h"
 #include "DX12NativeRasterCapture.h"
+#include "DX12ProjectedInputs.h"
 #include "DX12NativeScreenProbe.h"
 #include "DX12NativeDirectLighting.h"
 #include "DX12NativeIndirectLighting.h"
@@ -119,9 +120,11 @@ private:
 	struct ProjectedConstantSlot
 	{
 		std::array<winrt::com_ptr<ID3D11Buffer>, 2> buffers;
+		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 2> views;
 		std::array<uint32_t, 2> byteWidths{};
 	};
-	static constexpr uint32_t kMaxProjectedConstantSnapshots = 128;
+	static constexpr uint32_t kMaxProjectedConstantSnapshots = DX12Native::kMaxProjectedDraws;
+	std::unique_ptr<DX12Native::ProjectedInputCapture> projectedInputs;
 	std::array<ProjectedConstantSlot, kMaxProjectedConstantSnapshots> projectedConstantPool;
 	winrt::com_ptr<ID3D11Device> projectedConstantDevice;
 	struct ProjectedTextureObservation
