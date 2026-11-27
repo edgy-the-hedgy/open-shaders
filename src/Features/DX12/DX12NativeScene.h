@@ -119,6 +119,9 @@ private:
 		DX12Native::MaterialFrameContract::RasterIdentityStamp stamp{};
 		std::vector<uint8_t> seen;
 		std::vector<uint32_t> tokenBases;
+		// Sparse, frame-local observations indexed by the matched TLAS instance.
+		std::unordered_map<uint32_t, DX12Native::MaterialFrameContract::ProjectedPropertyObservation> projection;
+		uint32_t projectedDraws = 0, unmatchedProjectedDraws = 0;
 		std::vector<DX12Native::MaterialFrameContract::RasterPixelIdentity> tokens;
 		uint32_t tokenBudgetRejected = 0;
 		uint32_t draws = 0, candidates = 0, uniqueInstances = 0, ambiguous = 0, rejected = 0;

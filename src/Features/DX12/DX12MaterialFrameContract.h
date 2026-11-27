@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <cmath>
 #include <cstdint>
 
 namespace DX12Native::MaterialFrameContract
@@ -81,6 +83,40 @@ namespace DX12Native::MaterialFrameContract
 			pixel.instance < instanceCount && pixel.primitive < primitiveCount &&
 			pixel.instance == hit.instance && pixel.primitive == hit.primitive;
 	}
+
+	/** @brief Raw per-draw projector property values; not yet a shader projection contract.
+	 *  Engine setup may transform them or select different textures. Never infer ownership from this record.
+	 */
+	struct ProjectedPropertyValues
+	{
+		std::array<float, 4> params{}, color{};
+		bool operator==(const ProjectedPropertyValues&) const = default;
+		bool Valid() const
+		{
+			for (const auto value : params) if (!std::isfinite(value)) return false;
+			for (const auto value : color) if (!std::isfinite(value)) return false;
+			return true;
+		}
+	};
+	struct ProjectedPropertyObservation
+	{
+		ProjectedPropertyValues values{};
+		bool observed = false, projected = false, conflicted = false;
+		void Observe(bool active, const ProjectedPropertyValues& next = {})
+		{
+			if (conflicted) return;
+			if ((active && !next.Valid()) ||
+				(observed && (projected != active || (active && values != next)))) {
+				conflicted = true;
+				return;
+			}
+			observed = true;
+			projected = active;
+			if (active) values = next;
+		}
+		bool ValidProjection() const { return observed && projected && !conflicted; }
+		bool RejectRasterCandidate() const { return conflicted || projected; }
+	};
 
 	/** @brief A unique attached draw match; duplicate matches are ambiguous even if their geometry is equivalent. */
 	struct UniqueRasterCandidate

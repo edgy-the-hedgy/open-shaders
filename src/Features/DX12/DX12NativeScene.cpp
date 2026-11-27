@@ -17,6 +17,7 @@
 #include "Globals.h"
 #include "Deferred.h"
 #include "GpuPass.h"
+#include "RE/B/BSLightingShaderProperty.h"
 #include "RE/M/MainMenu.h"
 #include "RE/T/TESObjectCELL.h"
 #include "RE/T/TESObjectLIGH.h"
@@ -1080,6 +1081,10 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 		++draws.rejected;
 		return;
 	}
+	const auto* property = static_cast<const RE::BSLightingShaderProperty*>(rt.shaderProperty.get());
+	using PropertyFlag = RE::BSShaderProperty::EShaderPropertyFlag;
+	const bool projected = property->flags.any(PropertyFlag::kProjectedUV);
+	if (projected) ++draws.projectedDraws;
 	const auto counts = tri->GetTrishapeRuntimeData();
 	const DX12::CasterSource live{ reinterpret_cast<uintptr_t>(&geometry),
 		reinterpret_cast<uintptr_t>(rt.rendererData->rawVertexData), reinterpret_cast<uintptr_t>(rt.rendererData->rawIndexData),
@@ -1101,6 +1106,22 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 		if (shape && DX12::SameCasterSource(shape->casterSource, live, shape->transform, transform))
 			match.Observe(uint32_t(ordinal));
 	}
+	// Observe projection before base admission: projected receivers are
+	// intentionally feature-limited, so they cannot pass exactBaseCandidates.
+	if (match.Valid()) {
+		auto& observation = draws.projection[match.ordinal];
+		if (projected) {
+			const auto& params = property->projectedUVParams;
+			const auto& color = property->projectedUVColor;
+			observation.Observe(true, { { params.red, params.green, params.blue, params.alpha },
+				{ color.red, color.green, color.blue, color.alpha } });
+		} else observation.Observe(false);
+		// Live projection overrides stale preparation classification for admission.
+		if (observation.RejectRasterCandidate()) {
+			++draws.rejected;
+			return;
+		}
+	} else if (projected) ++draws.unmatchedProjectedDraws;
 	const auto& eligible = scene->materialEvaluation->exactBaseCandidates;
 	if (!match.Valid() || match.ordinal >= eligible.size() || !eligible[match.ordinal]) {
 		if (match.ambiguous)
@@ -1139,6 +1160,13 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 		draws.scene != acceleration.GetScene()) {
 		draws = {};
 		return;
+	}
+	// A later projected/conflicting pass invalidates tokens already emitted
+	// by an earlier pass for this instance. Preserve token ordinals.
+	for (auto& token : draws.tokens) {
+		const auto observation = draws.projection.find(token.instance);
+		if (observation != draws.projection.end() && observation->second.RejectRasterCandidate())
+			token = {};
 	}
 	draws.finalized = true;
 }
@@ -1389,6 +1417,15 @@ json DX12NativeScene::GetStatus() const
 	}
 	if (globals::features::dx12Control.WantsMaterialPreparation()) {
 		const auto& draws = fullNativeRasterDraws;
+		uint32_t validProjection = 0, conflictingProjection = 0;
+		for (const auto& [ordinal, observation] : draws.projection) {
+			validProjection += observation.ValidProjection() ? 1u : 0u;
+			conflictingProjection += observation.conflicted ? 1u : 0u;
+		}
+		status["fullNativeProjectionInputs"] = { { "frame", draws.stamp.frame }, { "finalized", draws.finalized },
+			{ "projectedDraws", draws.projectedDraws }, { "unmatchedDraws", draws.unmatchedProjectedDraws },
+			{ "validPropertyInstances", validProjection }, { "conflictingInstances", conflictingProjection },
+			{ "projectorConstantsReady", false }, { "projectedTexturesReady", false } };
 		status["fullNativeRasterAdmission"] = { { "frame", draws.stamp.frame }, { "scope", draws.stamp.scope },
 			{ "geometryRevision", draws.stamp.geometryRevision }, { "materialRevision", draws.stamp.materialRevision },
 			{ "draws", draws.draws }, { "candidateDraws", draws.candidates }, { "uniqueInstances", draws.uniqueInstances },

@@ -2,6 +2,7 @@
 #include "Features/NativePBR/GpuMaterialAbi.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include <limits>
 
 using namespace DX12Native::MaterialFrameContract;
 
@@ -308,4 +309,33 @@ TEST_CASE("Native transmission requires both producer signals", "[dx12][material
 	STATIC_REQUIRE_FALSE(CompleteTransmission(true,false));
 	STATIC_REQUIRE_FALSE(CompleteTransmission(false,true));
 	STATIC_REQUIRE_FALSE(CompleteTransmission(false,false));
+}
+
+TEST_CASE("Live projected properties reject conflicting observations and raster admission", "[dx12][materials]")
+{
+	ProjectedPropertyValues values{ { 1.0f, 0.5f, 0.25f, 0.0f }, { 0.7f, 0.8f, 0.9f, 1.0f } };
+	ProjectedPropertyObservation observation;
+	REQUIRE_FALSE(observation.ValidProjection());
+	observation.Observe(true, values);
+	REQUIRE(observation.ValidProjection());
+	REQUIRE(observation.RejectRasterCandidate());
+	observation.Observe(true, values);
+	REQUIRE(observation.ValidProjection());
+	values.params[0] = 2.0f;
+	observation.Observe(true, values);
+	REQUIRE_FALSE(observation.ValidProjection());
+	REQUIRE(observation.conflicted);
+	observation.Observe(true, values);
+	REQUIRE_FALSE(observation.ValidProjection());
+	ProjectedPropertyObservation toggled;
+	toggled.Observe(false);
+	REQUIRE_FALSE(toggled.RejectRasterCandidate());
+	toggled.Observe(true, values);
+	REQUIRE(toggled.RejectRasterCandidate());
+	REQUIRE_FALSE(toggled.ValidProjection());
+	ProjectedPropertyObservation invalid;
+	values.params[0] = std::numeric_limits<float>::quiet_NaN();
+	invalid.Observe(true, values);
+	REQUIRE_FALSE(invalid.ValidProjection());
+	REQUIRE(invalid.RejectRasterCandidate());
 }
