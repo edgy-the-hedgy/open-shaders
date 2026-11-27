@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <limits>
 #include <map>
+#include <span>
 
 namespace DX12Native
 {
@@ -228,12 +229,37 @@ namespace DX12Native
 			return upload;
 		}
 
+		/** @brief Value-only shading facts aligned to the producer's binding ordinals.
+		 * Static and posed geometry retain separate publications and can use the same residency path.
+		 */
+		struct BindingSource
+		{
+			uint64_t authoredFlags = 0, observedFlags = 0;
+			bool valid = false, hasVertexColor = false, hasMaterialObject = false;
+		};
+
 		static std::shared_ptr<NativeMaterialEvaluation> Prepare(ID3D12Device* device,
 			const PreparedMaterialFrame& prepared, const SceneInputs& scene, const TextureCache& previous,
 			std::vector<Upload>& uploads)
 		{
+			if (prepared.bindings.size() != scene.geometry.size()) return {};
+			std::vector<BindingSource> sources(scene.geometry.size());
+			for (size_t i = 0; i < scene.geometry.size(); ++i) {
+				const auto& geometry = scene.geometry[i];
+				if (!geometry || !geometry->material || !geometry->material->authoredShaderFlags) continue;
+				const auto& source = *geometry->material;
+				sources[i] = { *source.authoredShaderFlags, source.observedShaderFlags, true,
+					source.colorOffset != UINT32_MAX, !geometry->materialObjectEditorId.empty() };
+			}
+			return PrepareForBindings(device, prepared, sources, previous, uploads);
+		}
+
+		static std::shared_ptr<NativeMaterialEvaluation> PrepareForBindings(ID3D12Device* device,
+			const PreparedMaterialFrame& prepared, std::span<const BindingSource> sources, const TextureCache& previous,
+			std::vector<Upload>& uploads)
+		{
 			if (prepared.recipes.empty() || prepared.bindings.empty() ||
-				prepared.bindings.size() != scene.geometry.size() || prepared.bindings.size() > 65535u * 64u) return {};
+				prepared.bindings.size() != sources.size() || prepared.bindings.size() > 65535u * 64u) return {};
 			VideoMemoryBudget budget;
 			auto available = budget.Query(device, 0);
 			if (!available.localBudget) return {};
@@ -414,17 +440,18 @@ namespace DX12Native
 						binding.flags |= MaterialFrameContract::kMissingBaseTexturesBinding;
 					continue;
 				}
-				if (!scene.geometry[i] || !scene.geometry[i]->material) continue;
-				const auto& source = *scene.geometry[i]->material;
-				if (!source.authoredShaderFlags) continue;
+				const auto& source = sources[i];
+				if (!source.valid) continue;
+				const auto& recipe = prepared.recipes[it->second];
+				const uint64_t revision = uint64_t(binding.revision[0]) | (uint64_t(binding.revision[1]) << 32);
+				if (recipe.revision != revision) continue;
 				binding.materialIndex = it->second;
 				using F = RE::BSShaderProperty::EShaderPropertyFlag;
-				const auto flags = *source.authoredShaderFlags;
-				binding.flags = source.colorOffset != UINT32_MAX && (flags & (uint64_t(1) << 37)) ? NativePBR::kGpuDrawUsesVertexColor : 0;
-				const auto& recipe = prepared.recipes[it->second];
+				const auto flags = source.authoredFlags;
+				binding.flags = source.hasVertexColor && (flags & (uint64_t(1) << 37)) ? NativePBR::kGpuDrawUsesVertexColor : 0;
 				const bool authoredProjectedUv = (flags & static_cast<uint64_t>(F::kProjectedUV)) != 0;
-				const bool projectedUv = authoredProjectedUv || (source.observedShaderFlags & static_cast<uint64_t>(F::kProjectedUV)) != 0;
-				const bool projectionKnown = projectedUv || scene.geometry[i]->materialObjectEditorId.empty();
+				const bool projectedUv = authoredProjectedUv || (source.observedFlags & static_cast<uint64_t>(F::kProjectedUV)) != 0;
+				const bool projectionKnown = projectedUv || !source.hasMaterialObject;
 				auto capability = NativePBR::ClassifyScreenSurface(recipe, projectedUv, true, projectionKnown);
 				constexpr uint32_t coat = uint32_t(PBRFlags::TwoLayer);
 				constexpr uint32_t interlayer = uint32_t(PBRFlags::InterlayerParallax);
