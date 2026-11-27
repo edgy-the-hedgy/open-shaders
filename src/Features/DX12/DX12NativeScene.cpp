@@ -6,6 +6,8 @@
 #include "Features/CSUtility.h"
 
 #include "../LightLimitFix/ShadowCasterMath.h"
+#include "../LightLimitFix/Common.h"
+#include "../LightLimitFix/RadiusMath.h"
 #include "../Upscaling.h"
 #include "DX12Control.h"
 #include "DX12Resources.h"
@@ -652,7 +654,7 @@ void DX12NativeScene::DispatchFullNativeMaterial()
 		return;
 	const auto scene = acceleration.GetScene();
 	const auto grid = globals::features::dx12Resources.GetGrid();
-	if (!scene || !grid || scene->scope != grid->requested.front().scope ||
+	if (!scene || !grid || grid->requested.empty() || scene->scope != grid->requested.front().scope ||
 		scene->geometryRevision != grid->geometryRevision || !scene->materialEvaluation || !scene->shadingGeometry)
 		return;
 	if (!backend) {
@@ -673,7 +675,7 @@ void DX12NativeScene::DispatchFullNativeMaterial()
 		fullNativeDirect = std::make_unique<DX12Native::DirectLightingTrace>();
 	const auto prepared = DX12Resources::CollectPreparedLights(*scene->inputs->residency);
 	std::vector<DX12Native::DirectPointLight> directLights;
-	directLights.reserve(prepared.size());
+	directLights.reserve(std::min(prepared.size(), size_t(DX12::kMaxPreparedLights)));
 	const auto toLinear = [](float value) { return DX12Native::LightMath::ToLinear(value, false); };
 	for (const auto& light : prepared) {
 		if (directLights.size() >= DX12::kMaxPreparedLights)
@@ -682,8 +684,95 @@ void DX12NativeScene::DispatchFullNativeMaterial()
 			{ toLinear(light.color.x) * light.fade, toLinear(light.color.y) * light.fade, toLinear(light.color.z) * light.fade },
 			light.radius, light.emitterRadius, 0.0f, false });
 	}
-	// This is selected prepared point-light coverage, not the entire raster lighting solution.
-	fullNativeDirect->Dispatch(*backend, material, directLights, !prepared.empty(), uint32_t(viewport.x), uint32_t(viewport.y));
+
+	// Full Native samples live values without changing LLF, SCM, or their cached
+	// shadow selections. Never call ProcessLight(), which mutates engine data.
+	const auto node = globals::game::smState ? globals::game::smState->shadowSceneNode[0] : nullptr;
+	bool runtimeAvailable = node != nullptr;
+	if (node) {
+		std::unordered_set<const RE::NiLight*> visited;
+		std::vector<bool> matched(directLights.size(), false);
+		const size_t preparedCount = directLights.size();
+		const auto collect = [&](RE::BSLight* light) {
+			if (!light || !light->pointLight || !light->light)
+				return;
+			auto* ni = light->light.get();
+			if (!visited.insert(ni).second || ni->GetFlags().any(RE::NiAVObject::Flag::kHidden))
+				return;
+			const auto flags = PointLightFlags::GetVanillaPointLightFlags(light, ni);
+			const auto runtimeFlags = PointLightFlags::GetRuntimeLightFlags(ni);
+			using F = PointLightFlags::Flags;
+			if ((flags & PointLightFlags::ToMask(F::Spot)) ||
+				(runtimeFlags & PointLightFlags::ToMask(F::Disabled)))
+				return;
+			const auto& rt = ni->GetLightRuntimeData();
+			const auto& position = ni->world.translate;
+			if (!std::isfinite(rt.radius.x) || rt.radius.x <= 0.0f ||
+				!std::isfinite(rt.fade) || rt.fade <= 0.0f ||
+				!std::isfinite(rt.diffuse.red) || !std::isfinite(rt.diffuse.green) || !std::isfinite(rt.diffuse.blue) ||
+				!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z))
+				return;
+			DX12Native::DirectPointLight value{ { position.x, position.y, position.z },
+				{ toLinear(rt.diffuse.red) * rt.fade, toLinear(rt.diffuse.green) * rt.fade, toLinear(rt.diffuse.blue) * rt.fade },
+				rt.radius.x, 0.0f, 0.0f, false };
+			if (runtimeFlags & PointLightFlags::ToMask(F::InverseSquare)) {
+				const auto* ext = LLFCommon::RuntimeLightDataExt::Get(ni);
+				if (!std::isfinite(ext->size) || ext->size <= 0.0f || !std::isfinite(ext->cutoffOverride) ||
+					ext->cutoffOverride <= 0.0f)
+					return;
+				value.inverseSquare = true;
+				value.radius = ISLMath::CalculateRadius(rt.fade * 4.0f,
+					ShadowCasterManager::IsShadowLightType(light), ext->cutoffOverride, ext->size);
+				value.fadeZone = 1.0f / std::min(value.radius, ISLMath::FadeZoneBase);
+				value.sourceRadius = std::sqrt(ISLMath::ScaledUnitsSq * 0.5f) * ext->size;
+				// DirectLighting uses a unitless reciprocal denominator; fold
+				// LLF's intensity and unit conversion into the radiance record.
+				const float intensity = 4.0f * ISLMath::ScaledUnitsSq;
+				value.radiance.x *= intensity;
+				value.radiance.y *= intensity;
+				value.radiance.z *= intensity;
+			}
+			uint32_t owner = 0, placed = 0;
+			ReadFullLightOwner(ni, owner, placed);
+			auto rest = value.position;
+			ReadFullLightRestPosition(ni, placed, rest);
+			size_t best = preparedCount;
+			float bestDistance = std::numeric_limits<float>::infinity();
+			bool ambiguous = false;
+			for (size_t i = 0; i < preparedCount; ++i) {
+				const auto& candidate = prepared[i];
+				const float dx = rest.x - candidate.position.x, dy = rest.y - candidate.position.y, dz = rest.z - candidate.position.z;
+				const float d2 = dx * dx + dy * dy + dz * dz;
+				if (!DX12Native::LightMath::SameEmitterCandidate(candidate.referenceID, placed, d2, candidate.radius))
+					continue;
+				if (d2 < bestDistance) {
+					best = i;
+					bestDistance = d2;
+					ambiguous = false;
+				} else if (d2 == bestDistance) {
+					ambiguous = true;
+				}
+			}
+			if (best != preparedCount) {
+				if (!ambiguous && !matched[best]) {
+					directLights[best] = value;
+					matched[best] = true;
+				}
+				return;  // Never add a second representation of a prepared emitter.
+			}
+			if (directLights.size() < DX12::kMaxPreparedLights)
+				directLights.push_back(value);
+		};
+		const auto& lights = node->GetRuntimeData();
+		for (const auto& light : lights.activeShadowLights)
+			collect(light.get());
+		for (const auto& light : lights.activeLights)
+			collect(light.get());
+	}
+	// Selected point-light coverage remains partial (sun, spot and unsupported
+	// emitters are not represented). Raster ownership is unchanged.
+	fullNativeDirect->Dispatch(*backend, material, directLights, runtimeAvailable || !prepared.empty(),
+		uint32_t(viewport.x), uint32_t(viewport.y));
 }
 
 void DX12NativeScene::ResetFullNativeEnvironment()
@@ -712,7 +801,7 @@ void DX12NativeScene::DispatchFullNativeIndirect()
 		(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
 		return;
 	const auto grid = globals::features::dx12Resources.GetGrid();
-	if (!grid || !grid->requested.front().scope)
+	if (!grid || grid->requested.empty() || !grid->requested.front().scope)
 		return;
 	const auto frame = globals::game::graphicsState->GetFrameCount();
 	const auto color = globals::features::linearLighting.GetCommonBufferData();
