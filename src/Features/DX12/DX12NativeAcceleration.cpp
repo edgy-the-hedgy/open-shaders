@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cstring>
 #include <directx/d3dx12.h>
+#include <DirectXPackedVector.h>
+#include <cmath>
 #include <limits>
 #include <ranges>
 #include <stdexcept>
@@ -194,6 +196,110 @@ namespace DX12Native
 		return true;
 	}
 
+	void AccelerationScene::PrepareShadingGeometry(Build& a_build, TopLevel& top)
+	{
+		const auto& scene = *top.inputs;
+		if (!scene.materials || scene.geometry.empty() ||
+			scene.geometry.size() > UINT32_MAX / sizeof(ShadingGeometryBinding))
+			return;
+		std::vector<ShadingGeometryBinding> table(scene.geometry.size());
+		std::vector<std::vector<float>> attributes(scene.geometry.size());
+		struct CopyRange { const void* data; uint64_t offset, bytes; };
+		std::vector<CopyRange> copies;
+		uint64_t bytes = uint64_t(table.size()) * sizeof(ShadingGeometryBinding);
+		const uint64_t budget = videoBudget.Query(device.get(), 0).effectiveBytes / 2;
+		if (bytes >= budget)
+			return;
+		const auto append = [&](const void* data, uint64_t length) {
+			const auto offset = uint32_t(bytes);
+			copies.push_back({ data, bytes, length });
+			bytes += length;
+			return offset;
+		};
+		uint32_t ready = 0;
+		for (size_t i = 0; i < scene.geometry.size(); ++i) {
+			const auto& shape = scene.geometry[i];
+			if (!shape || !shape->material || scene.materials->candidateIndices[i] == UINT32_MAX)
+				continue;
+			const auto& source = *shape->material;
+			const auto validOffset = [&](uint32_t offset) {
+				return source.vertexStride >= 16 && offset >= 16 && offset <= source.vertexStride - 4;
+			};
+			if (source.vertexCount != shape->positions.size() ||
+				uint64_t(source.vertexCount) * source.vertexStride != source.vertexBytes.size() ||
+				!validOffset(source.uvOffset) || !validOffset(source.normalOffset) ||
+				(source.tangentOffset != UINT32_MAX && !validOffset(source.tangentOffset)) ||
+				(source.colorOffset != UINT32_MAX && !validOffset(source.colorOffset)) ||
+				shape->indices.empty() || shape->indices.size() > UINT32_MAX)
+				continue;
+			const uint32_t stride = source.tangentOffset == UINT32_MAX ? 36u : 60u;
+			const uint64_t positionBytes = uint64_t(shape->positions.size()) * sizeof(float3);
+			const uint64_t indexBytes = uint64_t(shape->indices.size()) * sizeof(uint32_t);
+			const uint64_t attributeBytes = uint64_t(source.vertexCount) * stride;
+			const uint64_t total = positionBytes + indexBytes + attributeBytes;
+			if (total >= UINT32_MAX - bytes || total > budget - bytes)
+				continue;
+			auto& decoded = attributes[i];
+			decoded.reserve(size_t(attributeBytes / sizeof(float)));
+			const auto sn = [](uint8_t value) { return float(value) * (2.0f / 255.0f) - 1.0f; };
+			for (uint32_t j = 0; j < source.vertexCount; ++j) {
+				const auto* vertex = source.vertexBytes.data() + size_t(j) * source.vertexStride;
+				uint16_t uv[2];
+				float bx;
+				std::memcpy(uv, vertex + source.uvOffset, sizeof(uv));
+				std::memcpy(&bx, vertex + 12, sizeof(bx));
+				const auto* n = vertex + source.normalOffset;
+				const auto* t = source.tangentOffset == UINT32_MAX ? nullptr : vertex + source.tangentOffset;
+				const auto* color = source.colorOffset == UINT32_MAX ? nullptr : vertex + source.colorOffset;
+				const float u = DirectX::PackedVector::XMConvertHalfToFloat(uv[0]);
+				const float v = DirectX::PackedVector::XMConvertHalfToFloat(uv[1]);
+				if ((t && !std::isfinite(bx)) || !std::isfinite(u) || !std::isfinite(v)) {
+					decoded.clear();
+					break;
+				}
+				decoded.insert(decoded.end(), { sn(n[0]), sn(n[1]), sn(n[2]), u, v,
+					color ? float(color[0])/255.0f : 1.0f, color ? float(color[1])/255.0f : 1.0f,
+					color ? float(color[2])/255.0f : 1.0f, color ? float(color[3])/255.0f : 1.0f });
+				if (t)
+					decoded.insert(decoded.end(), { sn(t[0]), sn(t[1]), sn(t[2]), bx, sn(n[3]), sn(t[3]) });
+			}
+			if (decoded.empty())
+				continue;
+			table[i] = { append(shape->positions.data(), positionBytes), append(shape->indices.data(), indexBytes),
+				append(decoded.data(), attributeBytes), stride, source.vertexCount, uint32_t(shape->indices.size()), uint32_t(sizeof(float3)), 0 };
+			++ready;
+		}
+		if (!ready) {
+			top.shadingFailure = "No supported native shading geometry";
+			return;
+		}
+		const auto desc = CD3DX12_RESOURCE_DESC::Buffer(bytes);
+		const auto allocation = device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
+		if (allocation == UINT64_MAX || allocation > videoBudget.Query(device.get(), 0).effectiveBytes / 2) {
+			top.shadingFailure = "Native shading geometry deferred by DXGI budget";
+			return;
+		}
+		auto resident = std::make_shared<ShadingGeometry>();
+		resident->bytes = bytes;
+		resident->revision = top.geometryRevision;
+		resident->instanceCount = uint32_t(table.size());
+		resident->readyInstances = ready;
+		const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+		DX::ThrowIfFailed(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+			D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(resident->buffer.put())));
+		resident->buffer->SetName(L"DX12NativeScene::FullNativeShadingGeometry");
+		auto staging = Buffer(bytes, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ, L"DX12NativeScene::FullNativeShadingUpload");
+		void* mapped = nullptr;
+		const D3D12_RANGE noRead{};
+		DX::ThrowIfFailed(staging->Map(0, &noRead, &mapped));
+		std::memcpy(mapped, table.data(), table.size() * sizeof(table.front()));
+		for (const auto& range : copies)
+			std::memcpy(static_cast<uint8_t*>(mapped) + size_t(range.offset), range.data, size_t(range.bytes));
+		staging->Unmap(0, nullptr);
+		a_build.shadingUpload = std::move(staging);
+		top.shadingGeometry = std::move(resident);
+	}
+
 	bool AccelerationScene::BuildTop(Build& a_build)
 	{
 		ZoneScopedN("DX12::Acceleration::BuildTLAS");
@@ -251,6 +357,13 @@ namespace DX12Native
 		// Only Full Native publishes material candidates. Shadow modes do not enter this path.
 		if (target->materials && !target->materials->recipes.empty()) {
 			try {
+				PrepareShadingGeometry(a_build, *top);
+			} catch (const AllocationDeferred&) {
+				top->shadingFailure = "Native shading geometry allocation deferred";
+			} catch (const std::exception& error) {
+				top->shadingFailure = error.what();
+			}
+			try {
 				top->materialEvaluation = NativeMaterialEvaluation::Prepare(device.get(), *target->materials, *target, materialTextures, a_build.materialUploads);
 				if (!top->materialEvaluation)
 					top->materialFailure = "Material allocation deferred or unavailable";
@@ -269,6 +382,12 @@ namespace DX12Native
 		a_build.commands->BuildRaytracingAccelerationStructure(&build, 0, nullptr);
 		const auto barrier = CD3DX12_RESOURCE_BARRIER::UAV(a_build.top->acceleration.get());
 		a_build.commands->ResourceBarrier(1, &barrier);
+		if (const auto& shading = a_build.top->shadingGeometry) {
+			a_build.commands->CopyBufferRegion(shading->buffer.get(), 0, a_build.shadingUpload.get(), 0, shading->bytes);
+			const auto shadingBarrier = CD3DX12_RESOURCE_BARRIER::Transition(shading->buffer.get(),
+				D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+			a_build.commands->ResourceBarrier(1, &shadingBarrier);
+		}
 		if (a_build.top->materialEvaluation)
 			NativeMaterialEvaluation::RecordUploads(a_build.commands.get(), a_build.materialUploads);
 		Submit(a_build);

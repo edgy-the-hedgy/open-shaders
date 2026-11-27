@@ -21,10 +21,26 @@ namespace DX12Native
 		winrt::com_ptr<ID3D12Resource> acceleration;
 	};
 
+	struct ShadingGeometryBinding
+	{
+		uint32_t positionOffset = UINT32_MAX, indexOffset = UINT32_MAX, attributeOffset = UINT32_MAX, stride = 0;
+		uint32_t vertexCount = 0, indexCount = 0, positionStride = 0, reserved = 0;
+	};
+	static_assert(sizeof(ShadingGeometryBinding) == 32);
+
+	struct ShadingGeometry
+	{
+		winrt::com_ptr<ID3D12Resource> buffer;
+		uint64_t bytes = 0, revision = 0;
+		uint32_t instanceCount = 0, readyInstances = 0;
+	};
+
 	struct TopLevel
 	{
 		std::shared_ptr<const SceneInputs> inputs;
 		std::shared_ptr<const NativeMaterialEvaluation> materialEvaluation;
+		std::shared_ptr<const ShadingGeometry> shadingGeometry;
+		std::string shadingFailure;
 		std::string materialFailure;
 		std::vector<std::shared_ptr<const BottomLevel>> bottoms;
 		winrt::com_ptr<ID3D12Resource> acceleration;
@@ -70,6 +86,7 @@ namespace DX12Native
 			winrt::com_ptr<ID3D12Resource> sourceUpload;
 			winrt::com_ptr<ID3D12Resource> scratch;
 			std::vector<NativeMaterialEvaluation::Upload> materialUploads;
+			winrt::com_ptr<ID3D12Resource> shadingUpload;
 			std::shared_ptr<BottomLevel> bottom;
 			std::shared_ptr<TopLevel> top;
 			uint64_t fence = 0, generation = 0;
@@ -81,6 +98,7 @@ namespace DX12Native
 		void Retire();
 		bool BuildBottom(Build& a_build, const std::shared_ptr<const DX12::Shape>& a_shape);
 		bool BuildTop(Build& a_build);
+		void PrepareShadingGeometry(Build& a_build, TopLevel& top);
 		bool HasPendingBottom(uint64_t a_identity, const DX12::Shape* a_shape) const;
 
 		GraphicsBackend backend;
