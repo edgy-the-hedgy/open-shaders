@@ -1451,26 +1451,26 @@ bool FidelityFX::UpscaleRegion(uint32_t a_contextIndex, ID3D11Resource* a_color,
 			runtimeNativeHistoryDiscontinuous = true;
 			runtimeFallbackResetDispatchesRemaining = std::max(runtimeFallbackResetDispatchesRemaining, runtimeContextCount);
 		} else {
-		// Try the runtime FSR3 provider in the upscaler DLL before falling back to the host SDK.
-		// CanUseRuntimeUpscalerPath() re-check: the upgrade attempt above may have just quarantined
-		// the provider, which must stop this fallback from dispatching into it too.
-		if (runtimeUpgradeRequested && ShouldUseRuntimeUpscalerForFSR() && CanUseRuntimeUpscalerPath()) {
-			LatchRuntimeUpgradeFailure();
-			runtimeFallbackResetDispatchesRemaining = std::max(runtimeFallbackResetDispatchesRemaining, runtimeContextCount);
-			const uint32_t fallbackRenderWidth = splitPerEyeContexts ? fullRenderWidth : a_renderWidth;
-			const uint32_t fallbackRenderHeight = splitPerEyeContexts ? fullRenderHeight : a_renderHeight;
-			if (tryRuntimeUpscaler(Fsr3Version, fallbackRenderWidth, fallbackRenderHeight))
-				return true;
-		}
+			// Try the runtime FSR3 provider in the upscaler DLL before falling back to the host SDK.
+			// CanUseRuntimeUpscalerPath() re-check: the upgrade attempt above may have just quarantined
+			// the provider, which must stop this fallback from dispatching into it too.
+			if (runtimeUpgradeRequested && ShouldUseRuntimeUpscalerForFSR() && CanUseRuntimeUpscalerPath()) {
+				LatchRuntimeUpgradeFailure();
+				runtimeFallbackResetDispatchesRemaining = std::max(runtimeFallbackResetDispatchesRemaining, runtimeContextCount);
+				const uint32_t fallbackRenderWidth = splitPerEyeContexts ? fullRenderWidth : a_renderWidth;
+				const uint32_t fallbackRenderHeight = splitPerEyeContexts ? fullRenderHeight : a_renderHeight;
+				if (tryRuntimeUpscaler(Fsr3Version, fallbackRenderWidth, fallbackRenderHeight))
+					return true;
+			}
 
-		if (!runtimeUpscalerFailureLatched) {
-			runtimeFallbackResetDispatchesRemaining = std::max(runtimeFallbackResetDispatchesRemaining, runtimeContextCount);
-		}
-		if (runtimeCommandContextBusy) {
-			runtimeNativeHistoryDiscontinuous = true;
-		} else {
-			LatchRuntimeUpscalerFailure();
-		}
+			if (!runtimeUpscalerFailureLatched) {
+				runtimeFallbackResetDispatchesRemaining = std::max(runtimeFallbackResetDispatchesRemaining, runtimeContextCount);
+			}
+			if (runtimeCommandContextBusy) {
+				runtimeNativeHistoryDiscontinuous = true;
+			} else {
+				LatchRuntimeUpscalerFailure();
+			}
 		}
 
 		// A sibling eye already published a runtime-provider frame; falling through to host

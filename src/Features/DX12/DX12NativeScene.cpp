@@ -433,7 +433,7 @@ void DX12NativeScene::PreShadowMaps()
 		}
 		if (backend) {
 			if (!characterCasters) characterCasters = std::make_unique<DX12Native::NativeCharacterCasters>();
-			characterCasters->Publish(*backend, frame, grid->requested.front().scope);
+			// Publish at the opaque boundary after rigid mover observations.
 		}
 		if (acceleration.Start(globals::d3d::device, globals::d3d::context))
 			acceleration.Request(std::move(grid));
@@ -736,6 +736,13 @@ void DX12NativeScene::OnOpaqueRasterReady()
 {
 	if (globals::features::dx12Control.WantsMaterialPreparation()) {
 		FinishFullNativeRasterDraws();
+		const auto grid = globals::features::dx12Resources.GetGrid();
+		if (characterCasters && backend && globals::game::graphicsState && globals::state &&
+			!globals::state->isMapMenuOpen && !globals::features::dx12Resources.IsLoading() &&
+			!(globals::state->permutationData.ExtraShaderDescriptor &
+				static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)) &&
+			grid && !grid->requested.empty())
+			characterCasters->Publish(*backend, globals::game::graphicsState->GetFrameCount(), grid->requested.front().scope);
 		DispatchFullNativeMaterial(true);
 		DispatchFullNativeIndirect();
 		return;
@@ -865,6 +872,14 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 			static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
 		return;
 	const auto frame = globals::game::graphicsState->GetFrameCount();
+	// Only known dynamic non-actor owners are admitted here. Actor attachments
+	// are already captured by the actor path; static geometry must not be duplicated.
+	if (characterCasters) {
+		bool ancestryRead = false;
+		const auto* reference = Util::FindSceneOwner(&geometry, false, &ancestryRead);
+		if (ancestryRead && reference && reference->IsDynamicForm() && !reference->IsActor())
+			characterCasters->ObserveRigidMover(geometry, frame);
+	}
 	const auto scene = acceleration.GetScene();
 	const auto grid = globals::features::dx12Resources.GetGrid();
 	if (!scene || !scene->inputs || !scene->materialEvaluation || !scene->shadingGeometry ||

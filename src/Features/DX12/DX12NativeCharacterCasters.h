@@ -248,7 +248,7 @@ namespace DX12Native
             return true;
         }
 
-        static Snapshot Capture()
+        Snapshot Capture(uint32_t frame)
         {
             Snapshot result;
             uint32_t actors = 0;
@@ -262,6 +262,25 @@ namespace DX12Native
                         !CapturePart(geometry, result)) ++result.rejected;
                 });
             });
+            // Rigid non-actor movers are captured by the ordinary draw hook.
+            // Their CPU data is copied at observation time, never borrowed across frames.
+            if (moverFrame == frame) {
+                const auto vertexBase = uint32_t(result.vertices.size());
+                const auto boneBase = uint32_t(result.bones.size());
+                if (result.parts + observedMovers.parts <= kMaxParts &&
+                    result.vertices.size() + observedMovers.vertices.size() <= kMaxVertices &&
+                    result.indices.size() + observedMovers.indices.size() <= kMaxIndices &&
+                    result.bones.size() + observedMovers.bones.size() <= kMaxBones) {
+                    for (auto v : observedMovers.vertices) {
+                        for (auto& bone : v.bones) bone += boneBase;
+                        result.vertices.push_back(v);
+                    }
+                    result.bones.insert(result.bones.end(), observedMovers.bones.begin(), observedMovers.bones.end());
+                    for (auto index : observedMovers.indices) result.indices.push_back(vertexBase + index);
+                    result.parts += observedMovers.parts;
+                }
+                result.rejected += observedMovers.rejected;
+            }
             return result;
         }
 
@@ -305,7 +324,27 @@ namespace DX12Native
                 }
         }
 
-        void Reset() { current.reset(); attemptedFrame = UINT32_MAX; attemptedScope = 0; }
+        void ObserveRigidMover(RE::BSGeometry& geometry, uint32_t frame)
+        {
+            if (moverFrame != frame) {
+                observedMovers = {};
+                seenMovers.clear();
+                moverFrame = frame;
+            }
+            if (observedMovers.parts >= kMaxParts || seenMovers.size() >= kMaxParts ||
+                std::ranges::find(seenMovers, &geometry) != seenMovers.end() ||
+                geometry.GetGeometryRuntimeData().skinInstance)
+                return;
+            seenMovers.push_back(&geometry);
+            if (!CapturePart(&geometry, observedMovers)) ++observedMovers.rejected;
+        }
+
+        void Reset()
+        {
+            current.reset();
+            attemptedFrame = UINT32_MAX; attemptedScope = 0;
+            moverFrame = UINT32_MAX; observedMovers = {}; seenMovers.clear();
+        }
         std::shared_ptr<const CharacterCasterFrame> Get(uint32_t frame, uint32_t scope) const
         {
             return current && current->Submitted(frame, scope) ? current : nullptr;
@@ -317,10 +356,11 @@ namespace DX12Native
         {
             if (!scope || (attemptedFrame == frame && attemptedScope == scope)) return;
             attemptedFrame = frame; attemptedScope = scope; current.reset();
+            std::shared_ptr<CharacterCasterFrame>* selected = nullptr;
+            bool reusedUnsubmitted = false;
             try {
                 Initialize(backend);
                 if (completion->GetCompletedValue() == UINT64_MAX) return;
-                std::shared_ptr<CharacterCasterFrame>* selected = nullptr;
                 for (auto& slot : slots) {
                     if (slot && slot->readyValue == UINT64_MAX) {
                         const auto rescue = ++nextFence;
@@ -330,7 +370,7 @@ namespace DX12Native
                         selected = &slot;
                 }
                 if (!selected) { failure = "Character caster frame pool busy"; return; }
-                auto snapshot = Capture();
+                auto snapshot = Capture(frame);
                 rejectedParts = snapshot.rejected;
                 if (snapshot.vertices.empty() || snapshot.indices.empty()) { failure = "No admitted character parts"; return; }
                 auto device = backend.d3d12Device.try_as<ID3D12Device5>();
@@ -391,6 +431,7 @@ namespace DX12Native
                 if (!reuse && (!allowance.localBudget || required > allowance.effectiveBytes ||
                     tracked > allowance.effectiveBytes - required)) { failure = "Character caster DXGI budget deferred"; return; }
 
+                reusedUnsubmitted = reuse;
                 auto next = reuse ? *selected : std::make_shared<CharacterCasterFrame>();
                 next->frame = frame; next->scope = scope; next->parts = snapshot.parts;
                 next->vertices = uint32_t(snapshot.vertices.size()); next->triangles = uint32_t(snapshot.indices.size()/3);
@@ -398,16 +439,16 @@ namespace DX12Native
                 next->root = root; next->pipeline = pipeline;
                 next->readyFence = completion;
                 if (!reuse) {
-                next->bind = Eval::Table(device.get(), snapshot.vertices);
-                next->palette = Eval::Table(device.get(), snapshot.bones);
-                next->indices = Eval::Table(device.get(), snapshot.indices);
-                const auto buffer = [&](uint64_t bytes, D3D12_RESOURCE_STATES state) {
-                    return Eval::Buffer(device.get(), bytes, D3D12_HEAP_TYPE_DEFAULT, state, uav);
-                };
-                next->positions = buffer(positionBytes, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                next->scratch = buffer(scratchBytes, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                next->bottom = buffer(bottomInfo.ResultDataMaxSizeInBytes, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE);
-                next->acceleration = buffer(topInfo.ResultDataMaxSizeInBytes, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE);
+                    next->bind = Eval::Table(device.get(), snapshot.vertices);
+                    next->palette = Eval::Table(device.get(), snapshot.bones);
+                    next->indices = Eval::Table(device.get(), snapshot.indices);
+                    const auto buffer = [&](uint64_t bytes, D3D12_RESOURCE_STATES state) {
+                        return Eval::Buffer(device.get(), bytes, D3D12_HEAP_TYPE_DEFAULT, state, uav);
+                    };
+                    next->positions = buffer(positionBytes, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                    next->scratch = buffer(scratchBytes, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                    next->bottom = buffer(bottomInfo.ResultDataMaxSizeInBytes, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE);
+                    next->acceleration = buffer(topInfo.ResultDataMaxSizeInBytes, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE);
                 } else {
                     UpdateTable(next->bind.get(), snapshot.vertices);
                     UpdateTable(next->palette.get(), snapshot.bones);
@@ -455,12 +496,18 @@ namespace DX12Native
                 cmd->ResourceBarrier(1, &ready);
                 Eval::Check(cmd->Close());
                 next->readyValue = UINT64_MAX; *selected = next;
+                reusedUnsubmitted = false;
                 ID3D12CommandList* lists[]{cmd};
                 backend.commandQueue->ExecuteCommandLists(1, lists);
                 const auto value = ++nextFence;
                 Eval::Check(backend.commandQueue->Signal(completion.get(), value));
                 next->readyValue = value; current = std::move(next); failure.clear();
-            } catch (const std::exception& e) { failure = e.what(); }
+            } catch (const std::exception& e) {
+                // A failed recording may leave the reused command list open. The
+                // old GPU work has retired; discard that slot rather than reset it again.
+                if (reusedUnsubmitted && selected) selected->reset();
+                failure = e.what();
+            }
         }
 
     private:
@@ -473,6 +520,9 @@ namespace DX12Native
         winrt::com_ptr<ID3D12Fence> completion;
         uint64_t nextFence = 0;
         uint32_t attemptedFrame = UINT32_MAX, attemptedScope = 0, rejectedParts = 0;
+        uint32_t moverFrame = UINT32_MAX;
+        Snapshot observedMovers;
+        std::vector<const RE::BSGeometry*> seenMovers;
         std::string failure;
     };
 }
