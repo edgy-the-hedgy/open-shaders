@@ -436,7 +436,7 @@ uint2 PackHalf4(float4 value)
     uint4 bits=f32tof16(clamp(value,-65504.0,65504.0));
     return uint2(bits.x | (bits.y<<16),bits.z | (bits.w<<16));
 }
-groupshared uint GroupCounts[9];
+groupshared uint GroupCounts[12];
 
 // Non-opaque instances are marked in the TLAS; do not commit a candidate
 // without a resident alpha texture and an authoritative comparison function.
@@ -487,9 +487,9 @@ bool IntersectRasterCandidate(uint2 identity, float3 origin, float3 direction, f
         hitDistance>0.5 && abs(hitDistance-distance)<=tolerance;
 }
 
-Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow)
+Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow, out bool rayIssued, out bool unresolvedUntraced)
 {
-    rawUsed=false;
+    rawUsed=false; rayIssued=false; unresolvedUntraced=false;
     coat=(NativeCoatSample)0;
     shadow=(NativeParallaxShadowSample)0;
     hitIdentity = uint2(0xffffffffu, 0xffffffffu);
@@ -524,7 +524,8 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed,
     float3x3 worldToObject, objectToWorld;
     bool frontFace;
     RawRasterSurface raw=(RawRasterSurface)0;
-    if (traced) {
+    [branch] if (traced) {
+        rayIssued=true;
         RayQuery<RAY_FLAG_NONE> query;
         query.TraceRayInline(ProbeScene,RAY_FLAG_NONE,0xff,ray);
         while(query.Proceed()) {
@@ -544,8 +545,9 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed,
     } else {
         uint2 candidate;
         if (!ReadRawRasterCandidate(pixel,z,RawTokenCount,candidate,raw) ||
-            !IntersectRasterCandidate(candidate,origin,ray.Direction,distance,tolerance,bary,hitDistance,worldToObject,objectToWorld))
-            return result;
+            !IntersectRasterCandidate(candidate,origin,ray.Direction,distance,tolerance,bary,hitDistance,worldToObject,objectToWorld)) {
+            unresolvedUntraced=true; return result;
+        }
         instance=candidate.x; primitive=candidate.y; frontFace=raw.front;
         if ((Bindings[instance].flags & 1024u) != 0u && !AcceptAlpha(instance,primitive,bary,InstanceCount))
             return result;
@@ -571,6 +573,7 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed,
         mul(worldToObject,delta),rayOffsetX,rayOffsetY,hitDistance/distance,hitDistance,
         worldToObject,objectToWorld,ParallaxEnabled!=0u,ParallaxWarpFixEnabled!=0u,ParallaxShadowEnabled!=0u,MaterialMipBias,projectionRow,origin+ray.Direction*hitDistance,Random::InterleavedGradientNoise(float2(pixel),ProjectionFrame),raw,rawUsed,coat,shadow);
     if (!traced && !rawUsed) {
+        unresolvedUntraced=true;
         result=(Sample)0; result.color.a=SurfaceMissingGeometry;
         coat=(NativeCoatSample)0; shadow=(NativeParallaxShadowSample)0;
         return result;
@@ -613,15 +616,15 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed,
 void screenMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
 {
     if (CollectStats != 0u) {
-        if (lane < 9) GroupCounts[lane]=0;
+        if (lane < 12) GroupCounts[lane]=0;
         GroupMemoryBarrierWithGroupSync();
     }
     if (all(id.xy < GridSize)) {
         uint2 hitIdentity;
         NativeCoatSample coat;
         NativeParallaxShadowSample shadow;
-        bool rawUsed;
-        Sample result=EvaluateScreen(id.xy, hitIdentity, rawUsed, coat, shadow);
+        bool rawUsed, rayIssued, unresolvedUntraced;
+        Sample result=EvaluateScreen(id.xy, hitIdentity, rawUsed, coat, shadow, rayIssued, unresolvedUntraced);
         uint ordinal = id.y*((GridSize.x+7u)&~7u)+id.x;
         uint offset=ordinal*NativeSurfaceStride;
         RayIdentity.Store2(ordinal*8u,hitIdentity);
@@ -643,11 +646,14 @@ void screenMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
         if (CollectStats != 0u) {
             InterlockedAdd(GroupCounts[category],1u);
             if (rawUsed && HasEvaluatedNativeBase(result.color.a)) InterlockedAdd(GroupCounts[8],1u);
+            if (rayIssued) InterlockedAdd(GroupCounts[9],1u);
+            if (!rayIssued && rawUsed && HasEvaluatedNativeBase(result.color.a)) InterlockedAdd(GroupCounts[10],1u);
+            if (unresolvedUntraced) InterlockedAdd(GroupCounts[11],1u);
         }
     }
     if (CollectStats != 0u) {
         GroupMemoryBarrierWithGroupSync();
-        if (lane < 9) {
+        if (lane < 12) {
             uint ignored;
             ProbeCounts.InterlockedAdd(lane*4,GroupCounts[lane],ignored);
         }

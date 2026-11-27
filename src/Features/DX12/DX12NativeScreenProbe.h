@@ -17,7 +17,7 @@ namespace DX12Native
 	{
 		using Eval = NativeMaterialEvaluation;
 		static constexpr uint32_t kWidth = 64, kHeight = 36;
-		static constexpr uint32_t kCounterCount = 9;
+		static constexpr uint32_t kCounterCount = 12;
 		static constexpr uint64_t kCounterBytes = kCounterCount * sizeof(uint32_t);
 		static constexpr uint32_t kSampleStride = MaterialFrameContract::kMaterialStride; // 16 IEEE binary16 values, same component ordering as Eval::Sample.
 		struct Camera
@@ -125,6 +125,7 @@ namespace DX12Native
 		{
 			uint32_t frame=0, sampled=0, evaluated=0, noHit=0, depthMismatch=0, missingMaterial=0, invalid=0, baseOnly=0;
 			uint32_t width=0, height=0, unsupportedMaterial=0, missingTextures=0, rawInputPixels=0;
+			uint32_t primaryRayQueries=0, rasterDerivedPixels=0, unresolvedUntracedPixels=0;
 			uint64_t outputBytes=0;
 			uint32_t reusedAllocations=0, submittedFrames=0;
 		};
@@ -246,6 +247,7 @@ namespace DX12Native
 					result.missingMaterial=counts[3]; result.invalid=counts[4]; result.baseOnly=counts[5];
 					result.unsupportedMaterial=counts[6]; result.missingTextures=counts[7];
 					result.rawInputPixels=counts[8];
+					result.primaryRayQueries=counts[9]; result.rasterDerivedPixels=counts[10]; result.unresolvedUntracedPixels=counts[11];
 					const D3D12_RANGE noWrite{};
 					pending->readback->Unmap(0,&noWrite);
 					if (uint64_t(result.evaluated)+result.noHit+result.depthMismatch+result.missingMaterial+result.invalid+result.baseOnly+result.unsupportedMaterial+result.missingTextures==result.sampled) {

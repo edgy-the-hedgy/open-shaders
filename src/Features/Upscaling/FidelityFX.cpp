@@ -500,6 +500,8 @@ void FidelityFX::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_d
 
 	auto screenSize = state->screenSize;
 	auto renderSize = Util::ConvertToDynamic(screenSize);
+	if (globals::features::dx12Control.UsesExclusiveMaterials())
+		renderSize = globals::features::upscaling.GetNativeRenderSize(state->frameCount, renderSize);
 
 	auto& upscaling = globals::features::upscaling;
 

@@ -3242,6 +3242,8 @@ void Upscaling::Upscale()
 			EnsureVRIntermediateTextures();
 
 		auto renderSize = Util::ConvertToDynamic(globals::state->screenSize);
+		if (globals::features::dx12Control.UsesExclusiveMaterials())
+			renderSize = GetNativeRenderSize(globals::state->frameCount, renderSize);
 		uint32_t numEyes = Util::EyeCount();
 		uint32_t eyeRenderWidth = NR::EyeRenderWidth((uint32_t)renderSize.x, numEyes);
 		uint32_t eyeRenderHeight = (uint32_t)renderSize.y;
@@ -3773,7 +3775,9 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 
 	auto& upscaling = globals::features::upscaling;
 	auto upscaleMethod = upscaling.GetUpscaleMethod();
-	const auto nrRenderSize = Util::ConvertToDynamic(globals::state->screenSize);
+	const auto baselineRenderSize = Util::ConvertToDynamic(globals::state->screenSize);
+	const auto nrRenderSize = globals::features::dx12Control.UsesExclusiveMaterials() ?
+		upscaling.GetNativeRenderSize(globals::state->frameCount, baselineRenderSize) : baselineRenderSize;
 	upscaling.neuralRendering.DrawBeforeUpscaling(upscaling.loaded && upscaling.settings.neuralRenderingEnabled, upscaling.settings.neuralRenderingContexts, upscaling.settings.neuralRenderingTuning, uint32_t(a_target), nrRenderSize);
 	upscaling.neuralRendering.CaptureBeforeUpscaling();
 
@@ -3804,7 +3808,7 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 		upscaling.dx12SwapChain.EnsureSharedDevice()) {
 		auto* renderer = globals::game::renderer;
 		auto* scene = renderer ? Util::AsReal(renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].texture) : nullptr;
-		const auto renderSize = Util::ConvertToDynamic(globals::state->screenSize);
+		const auto renderSize = nrRenderSize;
 		const auto transfer = globals::state->IsMainOrLoadingMenuOpen()                  ? DX12Native::NativeComposite::Transfer::Unknown :
 		                      globals::features::linearLighting.IsLinearLightingActive() ? DX12Native::NativeComposite::Transfer::Linear :
 		                                                                                   DX12Native::NativeComposite::Transfer::LegacyScene;

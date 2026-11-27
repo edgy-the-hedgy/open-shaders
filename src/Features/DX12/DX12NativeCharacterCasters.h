@@ -378,10 +378,15 @@ namespace DX12Native
             if (!scope || (attemptedFrame == frame && attemptedScope == scope)) return;
             attemptedFrame = frame; attemptedScope = scope;
             combined.reset();
-            for (auto& slot : moverSlots)
+            for (auto& slot : moverSlots) {
+                if (slot && slot->readyValue == UINT64_MAX && completion && completion->GetCompletedValue() != UINT64_MAX) {
+                    const auto rescue = ++nextFence;
+                    if (SUCCEEDED(backend.commandQueue->Signal(completion.get(), rescue))) slot->readyValue = rescue;
+                }
                 if (slot && slot.use_count() == 1 && GpuFenceRetired(slot->readyFence.get(), slot->readyValue)) {
                     slot->actorSource.reset(); slot->rigidResources.clear();
                 }
+            }
             const bool reuseActor = interval == 2u && current && current->allowedAge == 1u &&
                 frame - current->frame == 1u && current->Submitted(frame, scope);
             if (!reuseActor) PublishActor(backend, frame, scope, interval);
@@ -678,7 +683,7 @@ namespace DX12Native
             } catch (const std::exception& error) {
                 failure = error.what();
                 // Drop failed, unsubmitted recording contexts. Submitted but
-                // untracked ones stay quarantined until shutdown/device loss.
+                // untracked ones stay quarantined until a later rescue signal or device loss.
                 for (auto& slot : moverSlots)
                     if (slot && slot->frame == frame && slot->readyValue != UINT64_MAX) slot.reset();
             }

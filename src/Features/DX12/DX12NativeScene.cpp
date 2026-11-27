@@ -662,7 +662,8 @@ void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 	// Evaluate after the opaque boundary so the raw FXC publication and final
 	// depth belong to the same frame. The early hook only establishes readiness.
 	if (!opaqueReady) return;
-	const auto viewport = Util::ConvertToDynamic(globals::state->screenSize);
+	const auto viewport = globals::features::upscaling.GetNativeRenderSize(globals::state->frameCount,
+		Util::ConvertToDynamic(globals::state->screenSize));
 	if (!std::isfinite(viewport.x) || !std::isfinite(viewport.y) || viewport.x < 1.0f || viewport.y < 1.0f)
 		return;
 	if (globals::features::nativePBR.WantsFrame(frame)) {

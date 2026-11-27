@@ -58,6 +58,13 @@ public:
 	float2 jitter = { 0, 0 };
 	DX12Native::MaterialFrameContract::PixelJitter nativeRasterJitter{};
 	uint32_t nativeRasterJitterFrame = UINT32_MAX, nativeRasterJitterWidth = 0, nativeRasterJitterHeight = 0;
+	// Full Native's configured render extent is independent of temporary
+	// engine dynamic-resolution locks used by UI and auxiliary passes.
+	float2 GetNativeRenderSize(uint32_t pluginFrame, float2 fallback) const
+	{
+		return nativeRasterJitterFrame == pluginFrame && nativeRasterJitterWidth && nativeRasterJitterHeight ?
+			float2(float(nativeRasterJitterWidth), float(nativeRasterJitterHeight)) : fallback;
+	}
 	DX12Native::MaterialFrameContract::PixelJitter GetNativeRasterJitter(uint32_t pluginFrame, uint32_t width, uint32_t height) const
 	{
 		return nativeRasterJitterFrame == pluginFrame && nativeRasterJitterWidth == width && nativeRasterJitterHeight == height ?
