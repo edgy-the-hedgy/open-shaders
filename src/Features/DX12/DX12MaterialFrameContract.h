@@ -57,6 +57,7 @@ namespace DX12Native::MaterialFrameContract
 	};
 	static_assert(sizeof(RasterPixelIdentity) == kRayIdentityStride);
 	inline constexpr uint32_t kMaxRasterPrimitiveToken = 65535;
+	inline constexpr uint32_t kRasterDerivedPrimitive = 0x80000000u;
 
 	constexpr uint32_t RasterTokenBase(uint32_t used, uint32_t count)
 	{
@@ -68,12 +69,18 @@ namespace DX12Native::MaterialFrameContract
 		return identity.instance != UINT32_MAX && identity.primitive != UINT32_MAX;
 	}
 
+	constexpr bool IsRasterDerived(RasterPixelIdentity identity)
+	{
+		return ValidRayIdentity(identity) && (identity.primitive & kRasterDerivedPrimitive) != 0u;
+	}
+	constexpr uint32_t SurfacePrimitive(RasterPixelIdentity identity) { return identity.primitive & ~kRasterDerivedPrimitive; }
+
 	// Spatial filtering may cross a triangle edge within one rigid instance.
 	// Temporal history requires the same triangle within the same generation.
 	constexpr bool SameNativeReceiver(RasterPixelIdentity a, RasterPixelIdentity b, bool temporal)
 	{
 		return ValidRayIdentity(a) && ValidRayIdentity(b) && a.instance == b.instance &&
-			(!temporal || a.primitive == b.primitive);
+			(!temporal || SurfacePrimitive(a) == SurfacePrimitive(b));
 	}
 
 	constexpr bool MatchesRasterPixel(const RasterIdentityStamp& raster, const RasterIdentityStamp& ray,
@@ -81,7 +88,7 @@ namespace DX12Native::MaterialFrameContract
 	{
 		return raster.scope && raster.geometryRevision && raster.materialRevision && raster == ray &&
 			pixel.instance < instanceCount && pixel.primitive < primitiveCount &&
-			pixel.instance == hit.instance && pixel.primitive == hit.primitive;
+			pixel.instance == hit.instance && pixel.primitive == SurfacePrimitive(hit) && !IsRasterDerived(hit);
 	}
 
 	/** @brief Raw per-draw projector property values; not yet a shader projection contract.

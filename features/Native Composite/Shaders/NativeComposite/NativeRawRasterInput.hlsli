@@ -48,4 +48,15 @@ RawRasterSurface ReadRawRaster(uint2 pixel, float depth, uint instance, uint pri
         all(isfinite(result.tangent)) && all(isfinite(result.bitangent)) && all(isfinite(result.normal));
     return result;
 }
+bool ReadRawRasterCandidate(uint2 pixel, float depth, uint tokenCount, out uint2 identity, out RawRasterSurface raw)
+{
+    identity = uint2(0xffffffffu, 0xffffffffu);
+    raw = (RawRasterSurface)0;
+    if (!tokenCount) return false;
+    uint4 a = RawRasterPlanes.Load(int4(pixel,0,0));
+    if (!a.x || (a.y & 0x80000000u) != 0u) return false;
+    identity = uint2(a.x - 1u, a.y);
+    raw = ReadRawRaster(pixel, depth, identity.x, identity.y, tokenCount);
+    return raw.valid;
+}
 #endif

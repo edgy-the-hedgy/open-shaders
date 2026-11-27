@@ -6,6 +6,7 @@
 #include "DX12GpuRetirement.h"
 #include "DX12MaterialFrameContract.h"
 #include "Features/NativePBR/NativeRawInputCapture.h"
+#include "../../../package/Shaders/Common/NativeShadowRT.hlsli"
 #include "Utils/FileSystem.h"
 
 namespace DX12Native
@@ -25,7 +26,7 @@ namespace DX12Native
 			float4 positionAdjust;
 			uint32_t width, height, gridWidth, gridHeight, collectStats, parallaxEnabled, parallaxWarpFixEnabled, parallaxShadowEnabled;
 			float mipBias;
-			uint32_t projectionRows, projectionFrame, rawTokenCount;
+			uint32_t projectionRows, projectionFrame, rawTokenCount, quality, transformCount;
 		};
 		static_assert(sizeof(Camera) <= 256);
 		struct OutputAllocation
@@ -40,7 +41,7 @@ namespace DX12Native
 			std::shared_ptr<const TopLevel> scene;
 			std::shared_ptr<const ProjectedInputFrame> projection;
 			std::shared_ptr<const NativePBR::RawInputFrame> rawInputs;
-			winrt::com_ptr<ID3D12Resource> projectionLookup;
+			winrt::com_ptr<ID3D12Resource> projectionLookup, transforms;
 			std::shared_ptr<OutputAllocation> output;
 			winrt::com_ptr<ID3D12Resource> readback, camera, counters, counterInit;
 			winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
@@ -63,6 +64,9 @@ namespace DX12Native
 		winrt::com_ptr<ID3D12Fence> fence;
 		uint64_t nextValue = 0;
 		uint32_t lastFrame = UINT32_MAX;
+		std::weak_ptr<const TopLevel> transformScene;
+		winrt::com_ptr<ID3D12Resource> transformTable;
+		uint32_t transformCount = 0;
 
 		void Initialize(const GraphicsBackend& backend)
 		{
@@ -80,7 +84,7 @@ namespace DX12Native
 			projectionRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1 + kProjectedTextureCapacity, 518);
 			CD3DX12_DESCRIPTOR_RANGE rawRange;
 			rawRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 1031);
-			CD3DX12_ROOT_PARAMETER parameters[15];
+			CD3DX12_ROOT_PARAMETER parameters[16];
 			parameters[0].InitAsShaderResourceView(0);
 			parameters[1].InitAsShaderResourceView(1);
 			parameters[2].InitAsShaderResourceView(2);
@@ -96,6 +100,7 @@ namespace DX12Native
 			parameters[12].InitAsDescriptorTable(1, &projectionRange);
 			parameters[13].InitAsDescriptorTable(1, &rawRange);
 			parameters[14].InitAsShaderResourceView(1033);
+			parameters[15].InitAsShaderResourceView(1034);
 			std::array<CD3DX12_STATIC_SAMPLER_DESC, 4> samplers;
 			for (uint32_t mode = 0; mode < 4; ++mode)
 				samplers[mode] = CD3DX12_STATIC_SAMPLER_DESC(mode, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
@@ -199,6 +204,7 @@ namespace DX12Native
 		void Reset()
 		{
 			stats={}; failure.clear(); lastFrame=UINT32_MAX; published.reset();
+			transformScene.reset(); transformTable = nullptr; transformCount = 0;
 			reusedAllocations=0; submittedFrames=0;
 			for (auto& pending : submissions) if (pending) pending->discard=true;
 		}
@@ -261,7 +267,7 @@ namespace DX12Native
 		}
 		void Dispatch(const GraphicsBackend& backend,std::shared_ptr<const RasterFrame> raster,
 			std::shared_ptr<const TopLevel> scene,uint32_t frame,uint32_t width,uint32_t height,bool fullResolution,bool continuous=false,bool collectStats=false,bool parallaxEnabled=false,bool parallaxWarpFixEnabled=false,bool parallaxShadowEnabled=false,float mipBias=0.0f,std::shared_ptr<const ProjectedInputFrame> projection=nullptr,
-			std::shared_ptr<const NativePBR::RawInputFrame> rawInputs=nullptr)
+			std::shared_ptr<const NativePBR::RawInputFrame> rawInputs=nullptr, uint32_t quality = kShadowQualityQuality)
 		{
 			if (!WantsFrame(frame,continuous)) return;
 			published.reset();
@@ -340,6 +346,23 @@ namespace DX12Native
 						if (instance<projectionLookup.size()) projectionLookup[instance]=row;
 					}
 				slot->projectionLookup=Eval::Table(device,projectionLookup);
+				// TLAS instance ordinals are the order of SceneInputs::geometry.
+				// Cache the local-to-world rows rather than uploading them every frame.
+				if (transformScene.lock() != slot->scene || !transformTable) {
+					std::vector<std::array<float, 12>> rows;
+					if (slot->scene->inputs && slot->scene->inputs->geometry.size() == evaluation.instanceCount) {
+						rows.reserve(evaluation.instanceCount);
+						for (const auto& shape : slot->scene->inputs->geometry) {
+							if (!shape) { rows.clear(); break; }
+							rows.push_back(shape->transform);
+						}
+					}
+					transformCount = uint32_t(rows.size());
+					if (rows.empty()) rows.emplace_back();
+					transformTable = Eval::Table(device, rows);
+					transformScene = slot->scene;
+				}
+				slot->transforms = transformTable;
 				slot->frame=frame; slot->width=gridWidth; slot->height=gridHeight; slot->fullResolution=fullResolution; slot->collectStats=collectStats; slot->fence=fence; slot->root=root; slot->pipeline=pipeline;
 				if (!reuse) {
 					auto replacement=std::make_shared<OutputAllocation>();
@@ -362,7 +385,7 @@ namespace DX12Native
 				}
 				slot->camera=Eval::Buffer(device,256,D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ);
 				const Camera constants{slot->raster->camera.CameraProjInverse,slot->raster->camera.CameraViewInverse,
-					slot->raster->camera.CameraPosAdjust,width,height,gridWidth,gridHeight,collectStats ? 1u : 0u,parallaxEnabled ? 1u : 0u,parallaxWarpFixEnabled ? 1u : 0u,shadowPlane ? 1u : 0u,std::isfinite(mipBias) ? mipBias : 0.0f,slot->projection ? slot->projection->rowCount : 0u,frame,slot->rawInputs ? slot->rawInputs->evidence->tokenCount : 0u};
+					slot->raster->camera.CameraPosAdjust,width,height,gridWidth,gridHeight,collectStats ? 1u : 0u,parallaxEnabled ? 1u : 0u,parallaxWarpFixEnabled ? 1u : 0u,shadowPlane ? 1u : 0u,std::isfinite(mipBias) ? mipBias : 0.0f,slot->projection ? slot->projection->rowCount : 0u,frame,slot->rawInputs ? slot->rawInputs->evidence->tokenCount : 0u, SanitizeRTQuality(quality), transformCount};
 				void* mapped=nullptr; const D3D12_RANGE noRead{};
 				Eval::Check(slot->camera->Map(0,&noRead,&mapped));
 				std::memcpy(mapped,&constants,sizeof(constants)); slot->camera->Unmap(0,nullptr);
@@ -432,6 +455,7 @@ namespace DX12Native
 				rawGpu.ptr+=UINT64(rawDescriptor)*step;
 				command->SetComputeRootDescriptorTable(13,rawGpu);
 				command->SetComputeRootShaderResourceView(14,(slot->rawInputs ? slot->rawInputs->evidence->tokenTable.get() : slot->projectionLookup.get())->GetGPUVirtualAddress());
+				command->SetComputeRootShaderResourceView(15,slot->transforms->GetGPUVirtualAddress());
 				if (collectStats) {
 					command->CopyBufferRegion(slot->counters.get(),0,slot->counterInit.get(),0,kCounterBytes);
 					const auto counterBarrier=CD3DX12_RESOURCE_BARRIER::Transition(slot->counters.get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);

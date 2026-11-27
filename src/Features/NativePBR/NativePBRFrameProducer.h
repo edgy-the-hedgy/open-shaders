@@ -29,7 +29,7 @@ namespace NativePBR
 		bool WantsFrame(uint32_t frame) const { return !probe || probe->WantsFrame(frame, true); }
 		bool HasEvaluator() const { return bool(probe); }
 		void Dispatch(const GraphicsBackend& backend, std::shared_ptr<const DX12Native::RasterFrame> raster,
-			std::shared_ptr<const DX12Native::TopLevel> scene, uint32_t frame, uint32_t width, uint32_t height, bool opaqueReady);
+			std::shared_ptr<const DX12Native::TopLevel> scene, uint32_t frame, uint32_t width, uint32_t height, bool opaqueReady, uint32_t quality);
 		void PublishProjection(const GraphicsBackend& backend, DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,
 			std::span<const DX12Native::ProjectedInputDraw> inputs);
 		std::shared_ptr<const DX12Native::ProjectedInputFrame> GetProjection(const DX12Native::MaterialFrameContract::RasterIdentityStamp& stamp) const

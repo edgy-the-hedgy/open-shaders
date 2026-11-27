@@ -157,7 +157,8 @@ float SkyCapVisibility(float3 world, float3 n, float3 lobeDirection, float expon
     if (TraceSkyVisibility == 0u || Interior != 0u) return 1.0;
     // Fixed low-discrepancy cap samples: deterministic until motion-aware
     // reconstruction is available. Weight by the requested lighting lobe.
-    const uint sampleCount = 8u;
+    // Match the shared profile for every sky lobe, not just direct shadows.
+    const uint sampleCount = QualityMode == kShadowQualityPerformance ? 4u : 8u;
     float total = 0.0, visible = 0.0;
     [loop] for (uint i = 0u; i < sampleCount; ++i) {
         float z = lerp(saturate(SkyMinZ), 1.0, (float(i) + 0.5) / float(sampleCount));

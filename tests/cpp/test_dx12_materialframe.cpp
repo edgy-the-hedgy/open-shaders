@@ -396,3 +396,15 @@ TEST_CASE("Native temporal lookup adds raster jitter delta once", "[dx12][materi
 	REQUIRE(delta.y < -0.749f);
 	REQUIRE_FALSE(HistoryJitterDelta({}, previous).valid);
 }
+
+TEST_CASE("Raster-derived material identity can filter but cannot certify a ray hit", "[dx12][materials]")
+{
+	using namespace DX12Native::MaterialFrameContract;
+	const RasterPixelIdentity ray{3u, 42u};
+	const RasterPixelIdentity candidate{3u, 42u | kRasterDerivedPrimitive};
+	const RasterIdentityStamp stamp{1u, 2u, 3u, 4u};
+	REQUIRE(IsRasterDerived(candidate));
+	REQUIRE(SameNativeReceiver(ray, candidate, true));
+	REQUIRE(MatchesRasterPixel(stamp, stamp, ray, ray, 5u, 100u));
+	REQUIRE_FALSE(MatchesRasterPixel(stamp, stamp, ray, candidate, 5u, 100u));
+}

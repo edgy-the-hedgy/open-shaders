@@ -672,7 +672,7 @@ void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 			const auto jitter = globals::features::upscaling.GetNativeRasterJitter(globals::state->frameCount, uint32_t(viewport.x), uint32_t(viewport.y));
 			raster.Capture(*backend, Util::GetCurrentSceneDepthSRV(false), &globals::game::frameBufferCached.nonVR, frame, motion, jitter);
 		}
-		globals::features::nativePBR.Dispatch(*backend, raster.Get(frame), scene, frame, uint32_t(viewport.x), uint32_t(viewport.y), opaqueReady);
+		globals::features::nativePBR.Dispatch(*backend, raster.Get(frame), scene, frame, uint32_t(viewport.x), uint32_t(viewport.y), opaqueReady, FullNativeFrameQuality(frame));
 	}
 	const auto material = globals::features::nativePBR.Get(frame);
 	if (!material || material->scene != scene || !scene->inputs || !scene->inputs->residency)

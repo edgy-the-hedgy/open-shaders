@@ -33,7 +33,7 @@ void NativePBR::FrameProducer::Poll(uint32_t frame)
 }
 
 void NativePBR::FrameProducer::Dispatch(const GraphicsBackend& backend, std::shared_ptr<const DX12Native::RasterFrame> raster,
-	std::shared_ptr<const DX12Native::TopLevel> scene, uint32_t frame, uint32_t width, uint32_t height, bool opaqueReady)
+	std::shared_ptr<const DX12Native::TopLevel> scene, uint32_t frame, uint32_t width, uint32_t height, bool opaqueReady, uint32_t quality)
 {
 	if (!scene || !scene->materialEvaluation)
 		return;
@@ -49,7 +49,7 @@ void NativePBR::FrameProducer::Dispatch(const GraphicsBackend& backend, std::sha
 		extended.loaded && extended.settings.EnableParallax != 0,
 		extended.loaded && extended.settings.EnableParallaxWarpingFix != 0,
 		extended.loaded && extended.settings.EnableShadows != 0,
-		globals::state->GetMaterialMipBias(Util::GetTemporal()), std::move(projected), GetRawInput(stamp));
+		globals::state->GetMaterialMipBias(Util::GetTemporal()), std::move(projected), GetRawInput(stamp), quality);
 }
 
 void NativePBR::FrameProducer::PublishProjection(const GraphicsBackend& backend, DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,

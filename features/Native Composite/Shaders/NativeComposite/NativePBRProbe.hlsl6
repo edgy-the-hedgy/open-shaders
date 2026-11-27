@@ -7,6 +7,7 @@
 #include "NativeMaterialAlpha.hlsli"
 #include "NativeSurface.hlsli"
 #include "NativeRawRasterInput.hlsli"
+#include "FullNativeSampling.hlsli"
 struct Sample { float4 color; float4 normal; float4 f0; float4 emission; };
 RWStructuredBuffer<Sample> Output : register(u0);
 cbuffer Constants : register(b0) { uint InstanceCount; };
@@ -406,6 +407,7 @@ void main(uint3 id : SV_DispatchThreadID)
 
 Texture2D<float> ProbeDepth : register(t515);
 RaytracingAccelerationStructure ProbeScene : register(t516);
+ByteAddressBuffer ProbeInstanceTransforms : register(t1034);
 cbuffer ProbeCamera : register(b1)
 {
     row_major float4x4 InverseProjection;
@@ -421,6 +423,8 @@ cbuffer ProbeCamera : register(b1)
     uint ProjectionRowCount;
     uint ProjectionFrame;
     uint RawTokenCount;
+    uint QualityMode;
+    uint TransformCount;
 };
 RWByteAddressBuffer ProbeCounts : register(u1);
 RWByteAddressBuffer ScreenOutput : register(u2);
@@ -445,6 +449,44 @@ float3 ProbeRayOffset(float2 clip, float z, float3 centerWorld)
     if (!all(isfinite(w)) || abs(w.w)<1e-8) return 0.0;
     return w.xyz/w.w-centerWorld;
 }
+// Intersect only the raster-indicated primitive in its local space. This is
+// not a scene traversal and cannot establish that it was the closest TLAS hit.
+// A separate identity bit preserves that distinction through reconstruction.
+bool IntersectRasterCandidate(uint2 identity, float3 origin, float3 direction, float distance, float tolerance,
+    out float2 bary, out float hitDistance, out float3x3 worldToObject, out float3x3 objectToWorld)
+{
+    bary=0; hitDistance=0; worldToObject=(float3x3)0; objectToWorld=(float3x3)0;
+    if (identity.x >= InstanceCount || identity.x >= TransformCount) return false;
+    uint4 offsets=Geometry.Load4(identity.x*32u), counts=Geometry.Load4(identity.x*32u+16u);
+    if (offsets.x==0xffffffffu || offsets.y==0xffffffffu || counts.z<12u ||
+        identity.y>=counts.y/3u) return false;
+    uint3 ix=Geometry.Load3(offsets.y+identity.y*12u);
+    if (any(ix>=counts.x)) return false;
+    uint transform=identity.x*48u;
+    float4 r0=asfloat(ProbeInstanceTransforms.Load4(transform));
+    float4 r1=asfloat(ProbeInstanceTransforms.Load4(transform+16u));
+    float4 r2=asfloat(ProbeInstanceTransforms.Load4(transform+32u));
+    float determinant=dot(r0.xyz,cross(r1.xyz,r2.xyz));
+    if (!isfinite(determinant) || abs(determinant)<1e-12) return false;
+    objectToWorld=float3x3(r0.xyz,r1.xyz,r2.xyz);
+    worldToObject=transpose(float3x3(cross(r1.xyz,r2.xyz),cross(r2.xyz,r0.xyz),cross(r0.xyz,r1.xyz)))/determinant;
+    float3 rayOrigin=mul(worldToObject,origin-float3(r0.w,r1.w,r2.w));
+    float3 rayDirection=mul(worldToObject,direction);
+    float3 p0=asfloat(Geometry.Load3(offsets.x+ix.x*counts.z));
+    float3 e1=asfloat(Geometry.Load3(offsets.x+ix.y*counts.z))-p0;
+    float3 e2=asfloat(Geometry.Load3(offsets.x+ix.z*counts.z))-p0;
+    float3 p=cross(rayDirection,e2);
+    float det=dot(e1,p);
+    if (!isfinite(det) || abs(det)<1e-12) return false;
+    float3 t=rayOrigin-p0;
+    float3 q=cross(t,e1);
+    bary=float2(dot(t,p),dot(rayDirection,q))/det;
+    hitDistance=dot(e2,q)/det;
+    return all(isfinite(bary)) && isfinite(hitDistance) &&
+        all(bary>=-0.0001) && bary.x+bary.y<=1.0001 &&
+        hitDistance>0.5 && abs(hitDistance-distance)<=tolerance;
+}
+
 Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow)
 {
     rawUsed=false;
@@ -472,28 +514,49 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed,
     float tolerance = max(2.0, distance*0.002);
     RayDesc ray;
     ray.Origin=origin; ray.Direction=delta/distance; ray.TMin=0.5; ray.TMax=distance+tolerance;
-    RayQuery<RAY_FLAG_NONE> query;
-    query.TraceRayInline(ProbeScene,RAY_FLAG_NONE,0xff,ray);
-    while(query.Proceed()) {
-        if (query.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE && AcceptAlpha(query.CandidateInstanceID(),query.CandidatePrimitiveIndex(),query.CandidateTriangleBarycentrics(),InstanceCount))
-            query.CommitNonOpaqueTriangleHit();
+    // All expensive scene queries use the same frame/quality sampling grid.
+    // Non-sampled receivers retain full-resolution material evaluation only
+    // when the raster sidecar corroborates a concrete triangle and depth.
+    const bool traced = NativeIsSampled(pixel, ViewSize, QualityMode, ProjectionFrame);
+    uint instance, primitive;
+    float2 bary;
+    float hitDistance;
+    float3x3 worldToObject, objectToWorld;
+    bool frontFace;
+    RawRasterSurface raw=(RawRasterSurface)0;
+    if (traced) {
+        RayQuery<RAY_FLAG_NONE> query;
+        query.TraceRayInline(ProbeScene,RAY_FLAG_NONE,0xff,ray);
+        while(query.Proceed()) {
+            if (query.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE && AcceptAlpha(query.CandidateInstanceID(),query.CandidatePrimitiveIndex(),query.CandidateTriangleBarycentrics(),InstanceCount))
+                query.CommitNonOpaqueTriangleHit();
+        }
+        if(query.CommittedStatus()!=COMMITTED_TRIANGLE_HIT) return result;
+        hitDistance=query.CommittedRayT();
+        if(abs(hitDistance-distance)>tolerance) { result.color.a=SurfaceDepthMismatch; return result; }
+        instance=query.CommittedInstanceID();
+        primitive=query.CommittedPrimitiveIndex();
+        bary=query.CommittedTriangleBarycentrics();
+        worldToObject=(float3x3)query.CommittedWorldToObject3x4();
+        objectToWorld=(float3x3)query.CommittedObjectToWorld3x4();
+        frontFace=query.CommittedTriangleFrontFace();
+        raw=ReadRawRaster(pixel,z,instance,primitive,RawTokenCount);
+    } else {
+        uint2 candidate;
+        if (!ReadRawRasterCandidate(pixel,z,RawTokenCount,candidate,raw) ||
+            !IntersectRasterCandidate(candidate,origin,ray.Direction,distance,tolerance,bary,hitDistance,worldToObject,objectToWorld))
+            return result;
+        instance=candidate.x; primitive=candidate.y; frontFace=raw.front;
+        if ((Bindings[instance].flags & 1024u) != 0u && !AcceptAlpha(instance,primitive,bary,InstanceCount))
+            return result;
     }
-    if(query.CommittedStatus()!=COMMITTED_TRIANGLE_HIT) return result;
-    if(abs(query.CommittedRayT()-distance)>tolerance) {
-        result.color.a=SurfaceDepthMismatch; return result;
-    }
-    uint instance = query.CommittedInstanceID();
-    if (instance >= InstanceCount) {
-        result.color.a = SurfaceEvaluationFailed; return result;
-    }
+    if (instance >= InstanceCount) { result.color.a=SurfaceEvaluationFailed; return result; }
     Binding binding = Bindings[instance];
     if (binding.materialIndex == 0xffffffffu) {
         result.color.a = (binding.flags & SurfaceMissingBaseTexturesBinding) != 0u ?
             SurfaceMissingTextures : SurfaceUnsupportedMaterial;
         return result;
     }
-    float2 bary=query.CommittedTriangleBarycentrics();
-    float3x3 worldToObject=(float3x3)query.CommittedWorldToObject3x4();
     float3 rayOffsetX=0.0, rayOffsetY=0.0;
     uint projectionRow=0xffffffffu;
     [branch] if (ProjectionRowCount>0u) projectionRow=ProjectionLookup.Load(instance*4u);
@@ -504,30 +567,34 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed,
         rayOffsetX=mul(worldToObject,ProbeRayOffset(clip+float2(clipStep.x,0.0),z,centerWorld));
         rayOffsetY=mul(worldToObject,ProbeRayOffset(clip-float2(0.0,clipStep.y),z,centerWorld));
     }
-    RawRasterSurface raw=ReadRawRaster(pixel,z,instance,query.CommittedPrimitiveIndex(),RawTokenCount);
-    result=EvaluateMaterial(instance,query.CommittedPrimitiveIndex(),float3(1.0-bary.x-bary.y,bary),
-        mul(worldToObject,delta),rayOffsetX,rayOffsetY,query.CommittedRayT()/distance,query.CommittedRayT(),
-        worldToObject,(float3x3)query.CommittedObjectToWorld3x4(),ParallaxEnabled!=0u,ParallaxWarpFixEnabled!=0u,ParallaxShadowEnabled!=0u,MaterialMipBias,projectionRow,origin+ray.Direction*query.CommittedRayT(),Random::InterleavedGradientNoise(float2(pixel),ProjectionFrame),raw,rawUsed,coat,shadow);
+    result=EvaluateMaterial(instance,primitive,float3(1.0-bary.x-bary.y,bary),
+        mul(worldToObject,delta),rayOffsetX,rayOffsetY,hitDistance/distance,hitDistance,
+        worldToObject,objectToWorld,ParallaxEnabled!=0u,ParallaxWarpFixEnabled!=0u,ParallaxShadowEnabled!=0u,MaterialMipBias,projectionRow,origin+ray.Direction*hitDistance,Random::InterleavedGradientNoise(float2(pixel),ProjectionFrame),raw,rawUsed,coat,shadow);
+    if (!traced && !rawUsed) {
+        result=(Sample)0; result.color.a=SurfaceMissingGeometry;
+        coat=(NativeCoatSample)0; shadow=(NativeParallaxShadowSample)0;
+        return result;
+    }
     if(result.color.a==SurfaceInvalidReceiver) result.color.a=SurfaceEvaluationFailed;
     // The native output is consumed in world space, including rotated instances.
     if (HasEvaluatedNativeBase(result.color.a)) {
-        float3 worldNormal = mul(result.normal.xyz, (float3x3)query.CommittedWorldToObject3x4());
+        float3 worldNormal = mul(result.normal.xyz, worldToObject);
         if (all(isfinite(worldNormal)) && dot(worldNormal,worldNormal)>1e-8) {
             result.normal.xyz = normalize(worldNormal);
             if (HasNativeThinSurface(coat)) {
-                float3 face=mul(coat.normalRoughness.xyz,(float3x3)query.CommittedWorldToObject3x4());
+                float3 face=mul(coat.normalRoughness.xyz,worldToObject);
                 if (!all(isfinite(face)) || dot(face,face)<1e-8) { coat=(NativeCoatSample)0; result.color.a=SurfaceFeatureLimited; }
                 else {
                     face=normalize(face);
                     coat.normalRoughness.xyz=dot(face,delta)>0.0 ? -face : face;
-                    bool front=query.CommittedTriangleFrontFace();
+                    bool front=frontFace;
                     coat.f0Colored.x=front ? coat.f0Colored.x : coat.f0Colored.y;
                     result.normal.w=clamp(result.normal.w*(front ? 1.0 : coat.f0Colored.z),0.045,1.0);
                     if (dot(result.normal.xyz,delta)>0.0) result.normal.xyz=-result.normal.xyz;
                 }
             }
             if (HasNativeCoat(coat)) {
-                float3 worldCoat = mul(coat.normalRoughness.xyz,(float3x3)query.CommittedWorldToObject3x4());
+                float3 worldCoat = mul(coat.normalRoughness.xyz,worldToObject);
                 if (all(isfinite(worldCoat)) && dot(worldCoat,worldCoat)>1e-8) coat.normalRoughness.xyz=normalize(worldCoat);
                 else { coat=(NativeCoatSample)0; result.color.a=SurfaceFeatureLimited; }
             }
@@ -536,9 +603,9 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed,
         else result.color.a = SurfaceEvaluationFailed;
     }
     // Only a supported, fully evaluated receiver may provide a candidate identity.
-    // This remains a ray-hit stamp, not evidence of a winning raster primitive.
+    // The high bit identifies a raster-derived candidate, not a scene RayQuery hit.
     if (result.color.a == SurfaceEvaluatedBase)
-        hitIdentity = uint2(instance, query.CommittedPrimitiveIndex());
+        hitIdentity = uint2(instance, primitive | (traced ? 0u : 0x80000000u));
     return result;
 }
 

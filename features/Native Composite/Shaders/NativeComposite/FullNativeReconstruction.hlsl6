@@ -47,6 +47,10 @@ uint2 ReadRayIdentity(uint2 p)
 {
     return RayIdentity.Load2(p.y * RayIdentityPitch + p.x * 8u);
 }
+uint2 SurfaceIdentity(uint2 identity)
+{
+    return ValidRayIdentity(identity) ? uint2(identity.x, identity.y & 0x7fffffffu) : identity;
+}
 
 float4 Unpack(uint2 v)
 {
@@ -147,7 +151,7 @@ bool HistorySurfaceMatches(uint2 p, float4 base, float4 normal, float depth, out
     oldPixel = uint2(oldPosition);
     uint2 currentIdentity = ReadRayIdentity(p);
     uint2 previousIdentity = HistoryRayIdentity.Load2(oldPixel.y * HistoryRayIdentityPitch + oldPixel.x * 8u);
-    if (!ValidRayIdentity(currentIdentity) || !ValidRayIdentity(previousIdentity) || any(currentIdentity != previousIdentity)) return false;
+    if (!ValidRayIdentity(currentIdentity) || !ValidRayIdentity(previousIdentity) || any(SurfaceIdentity(currentIdentity) != SurfaceIdentity(previousIdentity))) return false;
     uint offset = oldPixel.y * HistoryMaterialPitch + oldPixel.x * NativeSurfaceStride;
     float4 oldBase = Unpack(HistoryMaterials.Load2(offset));
     float4 oldNormal = Unpack(HistoryMaterials.Load2(offset + 8u));
@@ -185,9 +189,9 @@ void main(uint3 id : SV_DispatchThreadID)
         if (token > 0u && token <= RasterTokenCount) {
             uint2 raster = RasterTokenTable.Load2((token - 1u) * 8u);
             uint2 hit = ReadRayIdentity(id.xy);
-            if (ValidRayIdentity(hit) && all(raster == hit)) {
+            if (ValidRayIdentity(hit) && all(raster == SurfaceIdentity(hit))) {
                 ownership |= RasterIdentityCandidate;
-                if (RasterWinnerCertified != 0u) ownership |= ExactRasterWinner;
+                if (RasterWinnerCertified != 0u && (hit.y & 0x80000000u) == 0u) ownership |= ExactRasterWinner;
             }
         }
     }
