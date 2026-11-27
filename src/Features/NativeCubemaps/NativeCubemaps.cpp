@@ -16,6 +16,7 @@
 #include "Utils/Game.h"
 #include "GpuPass.h"
 #include <cmath>
+#include <DirectXTex.h>
 #include <stdexcept>
 
 namespace
@@ -114,6 +115,50 @@ bool NativeCubemaps::Producer::CaptureRaw(const GraphicsBackend& backend, ID3D11
     for(auto* view:oldReads) if(view) view->Release();
     return valid;
 }
+DX12Native::EnvironmentSource NativeCubemaps::Producer::GetDefaultSource(const GraphicsBackend& backend)
+{
+    // Static asset decode only; no GPU readback and no legacy feature activation.
+    if(!defaultAttempted && backend.d3d11Device) {
+        defaultAttempted=true;
+        try {
+            const auto path=Util::PathHelpers::GetShadersPath()/"DynamicCubemaps"/"defaultcubemap.dds";
+            DirectX::ScratchImage loadedImage,decoded,converted;
+            DirectX::TexMetadata metadata{};
+            DX::ThrowIfFailed(DirectX::LoadFromDDSFile(path.c_str(),DirectX::DDS_FLAGS_NONE,&metadata,loadedImage));
+            if(!metadata.IsCubemap() || metadata.arraySize!=6 || metadata.width!=metadata.height ||
+                !metadata.width || metadata.width>256)
+                throw std::runtime_error("Unsupported default environment cube");
+            const DirectX::ScratchImage* image=&loadedImage;
+            if(DirectX::IsCompressed(metadata.format)) {
+                DX::ThrowIfFailed(DirectX::Decompress(loadedImage.GetImages(),loadedImage.GetImageCount(),
+                    metadata,DXGI_FORMAT_UNKNOWN,decoded));
+                image=&decoded;
+            }
+            if(image->GetMetadata().format!=DXGI_FORMAT_R16G16B16A16_FLOAT) {
+                DX::ThrowIfFailed(DirectX::Convert(image->GetImages(),image->GetImageCount(),image->GetMetadata(),
+                    DXGI_FORMAT_R16G16B16A16_FLOAT,DirectX::TEX_FILTER_DEFAULT,DirectX::TEX_THRESHOLD_DEFAULT,converted));
+                image=&converted;
+            }
+            D3D11_TEXTURE2D_DESC desc{};
+            desc.Width=desc.Height=UINT(metadata.width);desc.MipLevels=1;desc.ArraySize=6;
+            desc.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;desc.SampleDesc.Count=1;
+            desc.Usage=D3D11_USAGE_IMMUTABLE;desc.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+            desc.MiscFlags=D3D11_RESOURCE_MISC_TEXTURECUBE;
+            std::array<D3D11_SUBRESOURCE_DATA,6> initial{};
+            for(size_t face=0;face<initial.size();++face){
+                const auto* pixels=image->GetImage(0,face,0);
+                if(!pixels || !pixels->pixels || pixels->rowPitch>UINT32_MAX || pixels->slicePitch>UINT32_MAX)
+                    throw std::runtime_error("Invalid default environment face");
+                initial[face]={pixels->pixels,UINT(pixels->rowPitch),UINT(pixels->slicePitch)};
+            }
+            DX::ThrowIfFailed(backend.d3d11Device->CreateTexture2D(&desc,initial.data(),defaultCube.put()));
+        } catch(const std::exception& e) {
+            logger::warn("[NativeCubemaps] Default environment unavailable: {}",e.what());
+        }
+    }
+    return defaultCube?DX12Native::EnvironmentSource{defaultCube.get(),1,currentStamp}:DX12Native::EnvironmentSource{};
+}
+
 void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend, ID3D11ShaderResourceView* sceneColor, uint32_t frame,
     std::shared_ptr<const DX12Native::FullNativeReconstructionFrame> native)
 {
@@ -157,7 +202,7 @@ void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend, ID3D11Sha
             const auto& target=globals::game::renderer->GetRendererData().cubemapRenderTargets[RE::RENDER_TARGETS_CUBEMAP::kREFLECTIONS];
             reflection={Util::AsReal(target.texture),sky.revision,sky.stamp};
         }
-        inputs->Capture(backend,currentStamp,source,reflection,sky,bool(native));
+        inputs->Capture(backend,currentStamp,source,reflection,sky,bool(native),GetDefaultSource(backend));
         auto captured=inputs->Get();
         if(!captured) return;
         if(captured->base && captured->base->revision!=source.revision) {
@@ -306,7 +351,7 @@ json NativeCubemaps::Producer::GetDiagnostics()
         {"basePublished",publication && bool(publication->base)}, {"reflectionPublished",publication && bool(publication->reflection)},
         {"skyFacesValid",skyCapture.ValidFaces()}, {"skyRevision",skyRevision},
         {"skyAcquisitionFresh",bool(GetSkySource(currentStamp).texture)}, {"skyHidden",currentStamp.skyHidden},
-        {"skyPublished",publication && bool(publication->sky)}, {"inputAllocationBytes",inputs ? inputs->AllocationBytes() : 0},
+        {"skyPublished",publication && bool(publication->sky)}, {"defaultCubeLoaded",bool(defaultCube)}, {"inputAllocationBytes",inputs ? inputs->AllocationBytes() : 0},
         {"inputFailure",inputs ? inputs->Failure() : ""},
         {"processing",processing ? processing->GetDiagnostics() : json::object()},
         {"waterSSR",waterSSR ? waterSSR->Diagnostics() : json::object()},
@@ -331,5 +376,6 @@ void NativeCubemaps::Producer::Release()
     forward.reset(); waterSSR.reset();
     processing.reset(); inputs.reset();
     raw=nullptr; rawUAV=nullptr; inputShader=nullptr; inputConstants=nullptr;
+    defaultCube=nullptr; defaultAttempted=false;
     lastCaptureFrame=UINT32_MAX;
 }

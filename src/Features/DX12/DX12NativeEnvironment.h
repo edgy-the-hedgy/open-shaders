@@ -37,7 +37,7 @@ namespace DX12Native
 		uint64_t revision = 0;
 		// Input admission, not proof that any particular texel matched native evidence.
 		bool nativeRadianceInput = false, rasterCompatibilityInput = false;
-		std::shared_ptr<const EnvironmentCube> base, reflection, sky;
+		std::shared_ptr<const EnvironmentCube> base, reflection, sky, defaultCube;
 		winrt::com_ptr<ID3D12Fence> producerFence;
 		uint64_t producerValue = 0;
 	};
@@ -49,7 +49,7 @@ namespace DX12Native
 		~NativeEnvironment();
 		void Capture(const GraphicsBackend& backend, const EnvironmentStamp& requested,
 			const EnvironmentSource& base, const EnvironmentSource& reflection, const EnvironmentSource& sky,
-			bool allowMissingBase = false);
+			bool allowMissingBase = false, const EnvironmentSource& defaultCube = {});
 		void Poll(bool releaseUnused = false);
 		void Reset();
 		std::shared_ptr<const EnvironmentFrame> Get() const { return current; }
@@ -70,7 +70,7 @@ namespace DX12Native
 		winrt::com_ptr<ID3D12Fence> copyFence;
 		uint64_t nextCopyValue = 0;
 		VideoMemoryBudget videoBudget;
-		std::array<CubePool, 3> pools;
+		std::array<CubePool, 4> pools;
 		std::shared_ptr<const EnvironmentFrame> current;
 		uint64_t publications = 0;
 		std::string failure;

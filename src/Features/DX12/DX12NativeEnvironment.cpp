@@ -224,7 +224,8 @@ namespace DX12Native
 	}
 
 	void NativeEnvironment::Capture(const GraphicsBackend& backend, const EnvironmentStamp& requested,
-		const EnvironmentSource& base, const EnvironmentSource& reflection, const EnvironmentSource& sky, bool allowMissingBase)
+		const EnvironmentSource& base, const EnvironmentSource& reflection, const EnvironmentSource& sky, bool allowMissingBase,
+		const EnvironmentSource& defaultSource)
 	{
 		CS_GPU_PASS("NativeLighting::EnvironmentPublication");
 		if (!requested.epoch || !requested.scope) {
@@ -258,13 +259,14 @@ namespace DX12Native
 			const auto baseCube = capture(0, base, "NativeLighting::BaseEnvironment");
 			const auto reflectionCube = capture(1, reflection, "NativeLighting::ReflectionEnvironment");
 			const auto skyCube = capture(2, sky, "NativeLighting::SkyRadiance");
+			const auto defaultCube = capture(3, defaultSource, "NativeLighting::DefaultEnvironment");
 			if (!baseCube && !allowMissingBase) {
 				current.reset();
 				return;
 			}
 			if (current && current->stamp.SameEnvironment(requested) &&
 				(!allowMissingBase || current->stamp.engineFrame == requested.engineFrame) && current->base == baseCube &&
-				current->reflection == reflectionCube && current->sky == skyCube)
+				current->reflection == reflectionCube && current->sky == skyCube && current->defaultCube == defaultCube)
 				return;
 
 			auto frame = std::make_shared<EnvironmentFrame>();
@@ -273,9 +275,10 @@ namespace DX12Native
 			frame->base = baseCube;
 			frame->reflection = reflectionCube;
 			frame->sky = skyCube;
+			frame->defaultCube = defaultCube;
 			frame->producerFence = copyFence;
 			frame->producerValue = std::max({ baseCube ? baseCube->readyValue : 0, reflectionCube ? reflectionCube->readyValue : 0,
-				skyCube ? skyCube->readyValue : 0 });
+				skyCube ? skyCube->readyValue : 0, defaultCube ? defaultCube->readyValue : 0 });
 			current = std::move(frame);
 		} catch (const std::exception& e) {
 			current.reset();

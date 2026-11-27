@@ -19,7 +19,7 @@ namespace
     using NativeCubemaps::Policy::kMips;
     constexpr DXGI_FORMAT kFormat=DXGI_FORMAT_R16G16B16A16_FLOAT;
     constexpr UINT kTables=NativeCubemaps::Policy::kMipsPerStep;
-    constexpr UINT kDescriptorsPerTable=7;
+    constexpr UINT kDescriptorsPerTable=8;
     struct NativeCaptureConstants {
         Matrix view{}, projection{};
         uint32_t width=0,height=0,materialPitch=0,radiancePitch=0;
@@ -177,7 +177,7 @@ void NativeCubemaps::CubeProcessing::Initialize(const GraphicsBackend& backend)
     }
     auto* device=backend.d3d12Device.get();
     CD3DX12_DESCRIPTOR_RANGE ranges[2];
-    ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,6,0);
+    ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,7,0);
     ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV,1,0);
     CD3DX12_ROOT_PARAMETER params[4];
     params[0].InitAsDescriptorTable(2,ranges);
@@ -291,7 +291,7 @@ bool NativeCubemaps::CubeProcessing::Dispatch(const GraphicsBackend& backend,
         useHistory=Policy::CanReuseHistory(latest->base.stamp.SameEnvironment(input->stamp),elapsed,x*x+y*y+z*z);
     }
     if(useHistory) slot->previous=latest;
-    slot->constants={dalc,uint32_t(input->stamp.encoding),uint32_t(useHistory),uint32_t(engineReflection) | (!input->stamp.skyHidden ? 2u : 0u),elapsed};
+    slot->constants={dalc,uint32_t(input->stamp.encoding),uint32_t(useHistory),uint32_t(engineReflection) | (!input->stamp.skyHidden ? 2u : 0u) | (input->defaultCube && input->defaultCube->IsReadyFor(input->stamp) ? 4u : 0u),elapsed};
     slot->cursor={}; slot->rasterReady=rasterReady; slot->nativeAdmitted=bool(native); slot->reflectionEnabled=reflection;
     slot->value=0;
     *found=slot; pending=slot;
@@ -331,10 +331,11 @@ void NativeCubemaps::CubeProcessing::SubmitStep(const std::shared_ptr<Generation
         RawSRV(device,history && native ? native->material->samples.get():nullptr,{cpu.ptr+SIZE_T(offset+3)*step});
         RawSRV(device,history && native ? native->environmentRadiance.get():nullptr,{cpu.ptr+SIZE_T(offset+4)*step});
         RawSRV(device,history && native ? native->ownershipMask.get():nullptr,{cpu.ptr+SIZE_T(offset+5)*step});
+        CubeSRV(device,!history && mip==0 && (slot->constants.reflection&4u)!=0u?input->defaultCube.get():nullptr,{cpu.ptr+SIZE_T(offset+6)*step});
         D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
         uav.Format=kFormat; uav.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
         uav.Texture2DArray.MipSlice=mip; uav.Texture2DArray.ArraySize=6;
-        device->CreateUnorderedAccessView(destination.resource.get(),nullptr,&uav,{cpu.ptr+SIZE_T(offset+6)*step});
+        device->CreateUnorderedAccessView(destination.resource.get(),nullptr,&uav,{cpu.ptr+SIZE_T(offset+7)*step});
         const uint32_t size=std::max(1u,kSize>>mip);
         const uint32_t dispatch[]{size,mip,kMips,uint32_t(isReflection)};
         cmd->SetComputeRootDescriptorTable(0,{gpu.ptr+UINT64(offset)*step});
@@ -360,12 +361,15 @@ void NativeCubemaps::CubeProcessing::SubmitStep(const std::shared_ptr<Generation
         if(inference) Transition(cmd,slot->history.resource.get(),common,read);
         else TransitionCubeMip(cmd,cube,0,common,read);
         if(engineReflection) Transition(cmd,input->reflection->resource.get(),common,read);
+        const bool useDefault=inference && (slot->constants.reflection&4u)!=0u;
+        if(useDefault) Transition(cmd,input->defaultCube->resource.get(),common,read);
         for(uint32_t mip=slot->cursor.mip;mip<slot->cursor.EndMip();++mip) {
             TransitionCubeMip(cmd,cube,mip,common,write);
             run(inference?&slot->history:&cube,nullptr,engineReflection?input->reflection.get():nullptr,cube,mip,reflected);
             TransitionCubeMip(cmd,cube,mip,write,common);
         }
         if(engineReflection) Transition(cmd,input->reflection->resource.get(),read,common);
+        if(useDefault) Transition(cmd,input->defaultCube->resource.get(),read,common);
         if(inference) Transition(cmd,slot->history.resource.get(),read,common);
         else TransitionCubeMip(cmd,cube,0,read,common);
     }

@@ -9,6 +9,7 @@ TextureCube<float4> EngineReflection : register(t2);
 ByteAddressBuffer NativeMaterials : register(t3);
 ByteAddressBuffer NativeEnvironmentRadiance : register(t4);
 ByteAddressBuffer RasterEvidence : register(t5);
+TextureCube<float4> DefaultEnvironment : register(t6);
 RWTexture2DArray<float4> Destination : register(u0);
 SamplerState PointClamp : register(s0);
 SamplerState LinearClamp : register(s1);
@@ -103,7 +104,9 @@ float3 Fallback(float3 direction)
         return max(0,DecodeEnvironmentRadiance(EngineReflection.SampleLevel(LinearClamp,direction,0).rgb,Encoding));
     float4 basis = SphericalHarmonics::Evaluate(direction);
     float3 gamma = max(0,float3(dot(DALC[0],basis),dot(DALC[1],basis),dot(DALC[2],basis)));
-    return Encoding == 0 ? SceneRadiance(gamma) : lerp(gamma/12.92,pow((gamma+0.055)/1.055,2.4),step(0.04045,gamma));
+    float3 ambient=Encoding == 0 ? SceneRadiance(gamma) : lerp(gamma/12.92,pow((gamma+0.055)/1.055,2.4),step(0.04045,gamma));
+    if((HasReflection&4u)!=0u) ambient*=max(0,DefaultEnvironment.SampleLevel(LinearClamp,direction,0).rgb);
+    return ambient;
 }
 bool Observed(float4 c)
 {

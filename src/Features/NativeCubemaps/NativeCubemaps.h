@@ -70,13 +70,15 @@ namespace NativeCubemaps
         std::shared_ptr<const DX12Native::EnvironmentFrame> Get() const;
     private:
         bool CaptureRaw(const GraphicsBackend&, ID3D11ShaderResourceView* sceneColor);
+        DX12Native::EnvironmentSource GetDefaultSource(const GraphicsBackend&);
         std::unique_ptr<DX12Native::NativeEnvironment> inputs;
         std::unique_ptr<CubeProcessing> processing;
         std::unique_ptr<WaterSSR> waterSSR;
         std::unique_ptr<ForwardEnvironment> forward;
         uint32_t waterScopeDepth = 0;
         bool waterScopeInvalid = false;
-        winrt::com_ptr<ID3D11Texture2D> raw;
+        winrt::com_ptr<ID3D11Texture2D> raw, defaultCube;
+        bool defaultAttempted=false;
         winrt::com_ptr<ID3D11UnorderedAccessView> rawUAV;
         winrt::com_ptr<ID3D11ComputeShader> inputShader;
         winrt::com_ptr<ID3D11Buffer> inputConstants;
