@@ -64,6 +64,7 @@ std::function<void()> NativeIBL::Producer::OnReflectionsRenderBegin()
 	}
 	return [this, stamp, cleanup = std::move(cleanup)] {
 		cleanup();
+		if (capture.IsCapturing()) return; // Nested cleanup is not a publication boundary.
 		if (!stamp.SameEnvironment(context) || !capture.Ready()) {
 			publishedStamp = {};
 			return;

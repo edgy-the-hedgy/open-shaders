@@ -24,7 +24,9 @@ namespace IBLInput
 			for (auto& view : radianceViews) view = nullptr;
 			captureBlendStates.clear();
 			capturingRadiance = false;
+			suspendedCaptureDepth = 0;
 		}
+		bool IsCapturing() const { return capturingRadiance; }
 		bool Allocated() const { return bool(reflectionRadiance); }
 		bool Ready() const { return reflectionRadiance && validFaces == kAllCubeFaces; }
 		UINT ValidFaces() const { return validFaces; }
@@ -45,6 +47,7 @@ namespace IBLInput
 		UINT clearedFaces = 0;
 		UINT validFaces = 0;
 		bool capturingRadiance = false;
+		uint32_t suspendedCaptureDepth = 0;
 		bool captureFailed = false;
 		bool captureTargetBound = false;
 		ID3D11BlendState* boundRadianceBlend = nullptr;

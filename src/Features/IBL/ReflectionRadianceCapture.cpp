@@ -44,6 +44,22 @@ void IBLInput::ReflectionRadianceCapture::Setup()
 
 std::function<void()> IBLInput::ReflectionRadianceCapture::Begin(bool enabled)
 {
+	const bool exclusive = globals::features::dx12Control.UsesExclusiveMaterials();
+	const auto flag = static_cast<uint32_t>(State::ExtraShaderDescriptors::CaptureReflectionRadiance);
+	if (exclusive && capturingRadiance) {
+		// Nested reflection passes cannot certify the outer cube's face coverage.
+		RestoreCaptureTargets();
+		captureFailed = true;
+		validFaces = 0;
+		++suspendedCaptureDepth;
+		const bool previous = (globals::state->permutationData.ExtraShaderDescriptor & flag) != 0;
+		globals::state->permutationData.ExtraShaderDescriptor &= ~flag;
+		return [this, flag, previous]() {
+			if (suspendedCaptureDepth) --suspendedCaptureDepth;
+			if (previous) globals::state->permutationData.ExtraShaderDescriptor |= flag;
+			else globals::state->permutationData.ExtraShaderDescriptor &= ~flag;
+		};
+	}
 	if (!enabled || !Allocated()) {
 		validFaces = 0;
 		return nullptr;
@@ -58,26 +74,28 @@ std::function<void()> IBLInput::ReflectionRadianceCapture::Begin(bool enabled)
 	clearedFaces = 0;
 	captureFailed = false;
 	capturingRadiance = true;
-	const auto flag = static_cast<uint32_t>(State::ExtraShaderDescriptors::CaptureReflectionRadiance);
+	const bool previous = (globals::state->permutationData.ExtraShaderDescriptor & flag) != 0;
 	globals::state->permutationData.ExtraShaderDescriptor |= flag;
-	return [this, flag]() {
+	return [this, flag, exclusive, previous]() {
 		RestoreCaptureTargets();
-		globals::state->permutationData.ExtraShaderDescriptor &= ~flag;
+		if (exclusive && previous) globals::state->permutationData.ExtraShaderDescriptor |= flag;
+		else globals::state->permutationData.ExtraShaderDescriptor &= ~flag;
 		capturingRadiance = false;
+		suspendedCaptureDepth = 0;
 		validFaces = captureFailed ? 0 : validFaces | clearedFaces;
 	};
 }
 
 std::function<void()> IBLInput::ReflectionRadianceCapture::OnRenderPassBegin()
 {
-	if (!capturingRadiance)
+	if (!capturingRadiance || suspendedCaptureDepth)
 		return nullptr;
 	return [this]() { RestoreCaptureTargets(); };
 }
 
 void IBLInput::ReflectionRadianceCapture::OnDraw()
 {
-	if (!capturingRadiance)
+	if (!capturingRadiance || suspendedCaptureDepth)
 		return;
 	auto* context = globals::d3d::context;
 	std::array<ID3D11RenderTargetView*, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> targets{};
@@ -110,6 +128,7 @@ void IBLInput::ReflectionRadianceCapture::OnDraw()
 								  currentShader->shaderType.get() != RE::BSShader::Type::DistantTree &&
 								  currentShader->shaderType.get() != RE::BSShader::Type::Effect)) {
 			captureFailed = true;
+			if (globals::features::dx12Control.UsesExclusiveMaterials()) RestoreCaptureTargets();
 			return;
 		}
 		auto* shader = globals::state->customPixelShader;
@@ -117,6 +136,7 @@ void IBLInput::ReflectionRadianceCapture::OnDraw()
 		context->PSGetShader(boundShader.put(), nullptr, nullptr);
 		if (!shader || Util::AsReal(shader->shader) != boundShader.get()) {
 			captureFailed = true;
+			if (globals::features::dx12Control.UsesExclusiveMaterials()) RestoreCaptureTargets();
 			return;
 		}
 		winrt::com_ptr<ID3D11BlendState> currentBlend;
@@ -132,6 +152,7 @@ void IBLInput::ReflectionRadianceCapture::OnDraw()
 			RestoreCaptureTargets();
 		if (targets[kRadianceTarget] && !radianceTargetBound) {
 			captureFailed = true;
+			if (globals::features::dx12Control.UsesExclusiveMaterials()) RestoreCaptureTargets();
 			return;
 		}
 		savedBlend = currentBlend;
@@ -153,6 +174,7 @@ void IBLInput::ReflectionRadianceCapture::OnDraw()
 			desc.RenderTarget[kRadianceTarget] = desc.RenderTarget[0];
 			if (FAILED(globals::d3d::device->CreateBlendState(&desc, entry.capture.put()))) {
 				captureFailed = true;
+				if (globals::features::dx12Control.UsesExclusiveMaterials()) RestoreCaptureTargets();
 				return;
 			}
 			Util::SetResourceName(entry.capture.get(), "IBL::ReflectionRadiance Blend");

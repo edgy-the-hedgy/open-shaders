@@ -525,14 +525,19 @@ bool Streamline::CheckFrameConstants(sl::ViewportHandle p_viewport, uint32_t eye
 	// The per-frame camera cache holds whichever camera uploaded last, often the first-person camera, which breaks DLSS-G's background reprojection.
 	const bool fullNativeWorld = globals::features::dx12Control.UsesExclusiveMaterials() && state->worldRenderedThisFrame && !globals::game::isVR;
 	std::optional<UpscalingCamera::CameraFrame> camera;
+	std::shared_ptr<const DX12Native::NativeWorldFrame> world;
 	if (fullNativeWorld) {
 		if (!globals::game::graphicsState) return false;
-		const auto world = globals::features::dx12NativeScene.GetWorldFrame(
+		world = globals::features::dx12NativeScene.GetWorldFrame(
 			globals::game::graphicsState->GetFrameCount(), state->frameCount);
 		if (!world) {
 			pendingHistoryReset = true;
 			return false;
 		}
+		slConstants.cameraAspectRatio = float(world->displayWidth) / float(world->displayHeight);
+		slConstants.cameraFOV = world->cameraFov;
+		slConstants.cameraNear = world->cameraNear;
+		slConstants.cameraFar = world->cameraFar;
 		camera = UpscalingCamera::FromConstantBuffer(world->camera.CameraViewInverse,
 			world->camera.CameraViewProjUnjittered, world->camera.CameraPreviousViewProjUnjittered,
 			float3(world->camera.CameraPosAdjust.x, world->camera.CameraPosAdjust.y, world->camera.CameraPosAdjust.z),
@@ -561,24 +566,25 @@ bool Streamline::CheckFrameConstants(sl::ViewportHandle p_viewport, uint32_t eye
 	slConstants.clipToCameraView = std::bit_cast<sl::float4x4>(cameraMatrices.clipToCameraView);
 	slConstants.clipToPrevClip = std::bit_cast<sl::float4x4>(cameraMatrices.clipToPrevClip);
 	slConstants.prevClipToClip = std::bit_cast<sl::float4x4>(cameraMatrices.prevClipToClip);
-	slConstants.depthInverted = globals::features::reverseZ.IsActive() ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+	slConstants.depthInverted = (world ? world->reverseZ : globals::features::reverseZ.IsActive()) ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 
 	auto& upscaling = globals::features::upscaling;
 	auto jitter = upscaling.jitter;
 	const auto prepared = upscaling.nativePreparedFrame;
 	const bool nativePrepared = globals::features::dx12Control.UsesExclusiveMaterials() && prepared && prepared->frame == state->frameCount && eyeIndex == 0u;
-	if (nativePrepared) {
+	if (nativePrepared && !world) {
 		slConstants.cameraFOV = prepared->cameraFov;
 		slConstants.cameraNear = prepared->cameraNear;
 		slConstants.cameraFar = prepared->cameraFar;
 	}
-	slConstants.jitterOffset = { nativePrepared ? prepared->jitterX : -jitter.x, nativePrepared ? prepared->jitterY : -jitter.y };
+	slConstants.jitterOffset = { world ? world->jitter.x : (nativePrepared ? prepared->jitterX : -jitter.x),
+		world ? world->jitter.y : (nativePrepared ? prepared->jitterY : -jitter.y) };
 	// Menus render no motion vectors; camera-derived MVs restore valid reprojection there.
 	// Reset only when that fill couldn't run — accumulating against zero MVs ghosts.
 	const bool menuReset = state->IsMainOrLoadingMenuOpen() && !upscaling.menuCameraMVsValid;
 	const bool gazeReset = upscaling.foveatedRender.ConsumeGazeEyeReset(eyeIndex);
 	const bool historyReset = std::exchange(pendingHistoryReset, false);
-	slConstants.reset = (menuReset || gazeReset || historyReset || (nativePrepared && prepared->resetHistory)) ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+	slConstants.reset = (menuReset || gazeReset || historyReset || (world && world->resetHistory) || (nativePrepared && prepared->resetHistory)) ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 
 	// Apply foveated mvec scale only when the subrect execute path is actually
 	// running this frame (flag set by ExecuteFoveatedRoute). The standard full-frame
