@@ -118,37 +118,43 @@ float4 NativeSurfaceTex(uint index, float2 uv, uint mode, RawRasterSurface raw, 
     if (mode==2u) return Textures[slot].SampleGrad(WrapClamp,float3(uv,0),dx,dy);
     return Textures[slot].SampleGrad(WrapWrap,float3(uv,0),dx,dy);
 }
-Sample EvaluateMaterial(uint instanceCount, uint instance, uint primitive, float3 weights, float3 rayObject, float3 rayOffsetX, float3 rayOffsetY, float rayScale, float viewDistance, float3x3 worldToObject, float3x3 objectToWorld, bool parallaxEnabled, bool warpFixEnabled, bool shadowEnabled, float mipBias, uint projectionRow, float3 worldPosition, float projectionNoise, RawRasterSurface raw, out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow)
+// Local-space for static instances; posed world-space for character geometry.
+// The caller must supply the triangle and material from the same publication.
+struct NativeMaterialTriangle
+{
+    float3 positions[3];
+    float3 normals[3];
+    float2 uv[3];
+    float4 colors[3];
+    float3 tangents[3];
+    float3 bitangents[3];
+    bool hasPositions;
+    bool hasTangents;
+};
+
+Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, NativeMaterialTriangle triangle, uint instance, float3 weights, float3 rayObject, float3 rayOffsetX, float3 rayOffsetY, float rayScale, float viewDistance, float3x3 worldToObject, float3x3 objectToWorld, bool parallaxEnabled, bool warpFixEnabled, bool shadowEnabled, float mipBias, uint projectionRow, float3 worldPosition, float projectionNoise, RawRasterSurface raw, out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow)
 {
     rawUsed = false;
     coat = (NativeCoatSample)0;
     shadow = (NativeParallaxShadowSample)0;
     Sample result = (Sample)0;
-    if (instance >= instanceCount) return result;
-    Binding binding = Bindings[instance];
-    uint4 offsets = Geometry.Load4(instance*32);
-    uint4 counts = Geometry.Load4(instance*32+16);
-    if (binding.materialIndex == 0xffffffffu || offsets.z == 0xffffffffu || (offsets.w != 60u && offsets.w != 36u) || counts.y < 3u || primitive >= counts.y / 3u) return result;
-    MaterialRecord material = MaterialRecords[binding.materialIndex];
-    if (any(material.identity.xy != binding.identity) || any(material.identity.zw != binding.revision)) return result;
-    uint3 ix = Geometry.Load3(offsets.y + primitive*12u);
-    if (any(ix >= counts.x)) return result;
+    if (binding.materialIndex == 0xffffffffu ||
+        any(material.identity.xy != binding.identity) || any(material.identity.zw != binding.revision)) return result;
     float3 n = 0, t = 0, b = 0, color = 0;
     float vertexAlpha=0.0;
     float2 uv = 0;
     float2 triangleUV[3];
     float3 triangleNormal[3];
     [unroll] for (uint i = 0; i < 3u; ++i) {
-        uint a = offsets.z + ix[i]*offsets.w;
-        triangleNormal[i]=asfloat(Geometry.Load3(a));
+        triangleNormal[i]=triangle.normals[i];
         n += weights[i]*triangleNormal[i];
-        triangleUV[i]=asfloat(Geometry.Load2(a+12));
+        triangleUV[i]=triangle.uv[i];
         uv += weights[i]*triangleUV[i];
-        color += weights[i]*asfloat(Geometry.Load3(a+20));
-        vertexAlpha += weights[i]*asfloat(Geometry.Load(a+32));
-        if (offsets.w == 60u) {
-            t += weights[i]*asfloat(Geometry.Load3(a+36));
-            b += weights[i]*asfloat(Geometry.Load3(a+48));
+        color += weights[i]*triangle.colors[i].rgb;
+        vertexAlpha += weights[i]*triangle.colors[i].a;
+        if (triangle.hasTangents) {
+            t += weights[i]*triangle.tangents[i];
+            b += weights[i]*triangle.bitangents[i];
         }
     }
     uv = uv*material.uv[0].zw+material.uv[0].xy;
@@ -166,11 +172,11 @@ Sample EvaluateMaterial(uint instanceCount, uint instance, uint primitive, float
     n = normalize(n);
     // Legacy 36-byte RSGA and rigid meshes without stored tangents can
     // derive a local basis from the actual triangle and its UV gradients.
-    if (!raw.valid && (offsets.w == 36u || dot(t,t) < 1e-8 || dot(b,b) < 1e-8)) {
-        if (counts.z < 12u) return result;
-        float3 p0=asfloat(Geometry.Load3(offsets.x+ix.x*counts.z));
-        float3 e1=asfloat(Geometry.Load3(offsets.x+ix.y*counts.z))-p0;
-        float3 e2=asfloat(Geometry.Load3(offsets.x+ix.z*counts.z))-p0;
+    if (!raw.valid && (!triangle.hasTangents || dot(t,t) < 1e-8 || dot(b,b) < 1e-8)) {
+        if (!triangle.hasPositions) return result;
+        float3 p0=triangle.positions[0];
+        float3 e1=triangle.positions[1]-p0;
+        float3 e2=triangle.positions[2]-p0;
         float2 duv1=triangleUV[1]-triangleUV[0], duv2=triangleUV[2]-triangleUV[0];
         float determinant=duv1.x*duv2.y-duv1.y*duv2.x;
         if (!isfinite(determinant) || abs(determinant)<1e-10) {
@@ -193,7 +199,7 @@ Sample EvaluateMaterial(uint instanceCount, uint instance, uint primitive, float
     float eta=1.0;
     bool interlayerActive=false;
     if (parallaxEnabled && (binding.flags & SurfaceParallaxReadyBinding)!=0u && material.textures[2].x!=0xffffffffu &&
-        (binding.flags & 512u)==0u && dot(rayObject,rayObject)>1e-8 && counts.z>=12u) {
+        (binding.flags & 512u)==0u && dot(rayObject,rayObject)>1e-8 && triangle.hasPositions) {
         float3 view=normalize(-rayObject);
         if (interlayer) {
             float strength=saturate(material.coat.x);
@@ -216,9 +222,9 @@ Sample EvaluateMaterial(uint instanceCount, uint instance, uint primitive, float
             interlayerActive=true;
         }
         float3 viewTS=float3(dot(t,view),dot(b,view),dot(n,view));
-        float3 p0=asfloat(Geometry.Load3(offsets.x+ix.x*counts.z));
-        float3 e1=asfloat(Geometry.Load3(offsets.x+ix.y*counts.z))-p0;
-        float3 e2=asfloat(Geometry.Load3(offsets.x+ix.z*counts.z))-p0;
+        float3 p0=triangle.positions[0];
+        float3 e1=triangle.positions[1]-p0;
+        float3 e2=triangle.positions[2]-p0;
         float2 uv1=(triangleUV[1]-triangleUV[0])*material.uv[0].zw;
         float2 uv2=(triangleUV[2]-triangleUV[0])*material.uv[0].zw;
         float2 baryX,baryY;
@@ -275,10 +281,10 @@ Sample EvaluateMaterial(uint instanceCount, uint instance, uint primitive, float
     float projectionWeight=0.0;
     bool projectionApplied=false;
 #if defined(NATIVE_MATERIAL_PROJECTION)
-    if (projectionRow!=0xffffffffu && counts.z>=12u && (binding.flags&512u)==0u) {
-        float3 p0=asfloat(Geometry.Load3(offsets.x+ix.x*counts.z));
-        float3 e1=asfloat(Geometry.Load3(offsets.x+ix.y*counts.z))-p0;
-        float3 e2=asfloat(Geometry.Load3(offsets.x+ix.z*counts.z))-p0;
+    if (projectionRow!=0xffffffffu && triangle.hasPositions && (binding.flags&512u)==0u) {
+        float3 p0=triangle.positions[0];
+        float3 e1=triangle.positions[1]-p0;
+        float3 e2=triangle.positions[2]-p0;
         float2 baryX,baryY;
         float3 dx,dy;
         bool validX=NativeTriangleDifferential(rayObject,rayOffsetX,rayScale,e1,e2,baryX,dx);
@@ -317,6 +323,7 @@ Sample EvaluateMaterial(uint instanceCount, uint instance, uint primitive, float
         else result.color.a=SurfaceFeatureLimited;
     }
     if ((binding.flags & SurfaceThinSurfaceReadyBinding) != 0u) {
+        if (!triangle.hasPositions) { result.color.a=SurfaceFeatureLimited; return result; }
         float3 scatterColor=0.0;
         float thickness=1.0;
         if ((material.properties.x & 1u)!=0u) {
@@ -328,9 +335,9 @@ Sample EvaluateMaterial(uint instanceCount, uint instance, uint primitive, float
                 thickness*=saturate(feature0.a);
             } else scatterColor*=base*(1.0-metallic);
         }
-        float3 p0=asfloat(Geometry.Load3(offsets.x+ix.x*counts.z));
-        float3 p1=asfloat(Geometry.Load3(offsets.x+ix.y*counts.z));
-        float3 p2=asfloat(Geometry.Load3(offsets.x+ix.z*counts.z));
+        float3 p0=triangle.positions[0];
+        float3 p1=triangle.positions[1];
+        float3 p2=triangle.positions[2];
         float3 face=cross(p1-p0,p2-p0);
         if (!all(isfinite(face)) || dot(face,face)<1e-8 || !all(isfinite(scatterColor)) ||
             !isfinite(thickness) || !isfinite(material.surface.y) || !all(isfinite(material.thinSurface.xyz))) {
@@ -400,6 +407,41 @@ Sample EvaluateMaterial(uint instanceCount, uint instance, uint primitive, float
         if (HasNativeSubsurface(coat) || HasNativeThinSurface(coat)) coat.subsurface.w=lerp(coat.subsurface.w,1.0,projectionWeight);
     }
     return result;
+}
+
+Sample EvaluateMaterial(uint instanceCount, uint instance, uint primitive, float3 weights, float3 rayObject, float3 rayOffsetX, float3 rayOffsetY, float rayScale, float viewDistance, float3x3 worldToObject, float3x3 objectToWorld, bool parallaxEnabled, bool warpFixEnabled, bool shadowEnabled, float mipBias, uint projectionRow, float3 worldPosition, float projectionNoise, RawRasterSurface raw, out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow)
+{
+    rawUsed = false;
+    coat = (NativeCoatSample)0;
+    shadow = (NativeParallaxShadowSample)0;
+    if (instance >= instanceCount) return (Sample)0;
+    Binding binding = Bindings[instance];
+    uint4 offsets = Geometry.Load4(instance*32);
+    uint4 counts = Geometry.Load4(instance*32+16);
+    if (binding.materialIndex == 0xffffffffu || offsets.z == 0xffffffffu ||
+        (offsets.w != 60u && offsets.w != 36u) || counts.y < 3u || primitive >= counts.y / 3u) return (Sample)0;
+    MaterialRecord material = MaterialRecords[binding.materialIndex];
+    if (any(material.identity.xy != binding.identity) || any(material.identity.zw != binding.revision)) return (Sample)0;
+    uint3 ix = Geometry.Load3(offsets.y + primitive*12u);
+    if (any(ix >= counts.x)) return (Sample)0;
+    NativeMaterialTriangle triangle = (NativeMaterialTriangle)0;
+    triangle.hasPositions = counts.z >= 12u;
+    triangle.hasTangents = offsets.w == 60u;
+    [unroll] for (uint i = 0; i < 3u; ++i) {
+        uint a = offsets.z + ix[i]*offsets.w;
+        triangle.normals[i] = asfloat(Geometry.Load3(a));
+        triangle.uv[i] = asfloat(Geometry.Load2(a+12));
+        triangle.colors[i] = asfloat(Geometry.Load4(a+20));
+        if (triangle.hasTangents) {
+            triangle.tangents[i] = asfloat(Geometry.Load3(a+36));
+            triangle.bitangents[i] = asfloat(Geometry.Load3(a+48));
+        }
+        if (triangle.hasPositions)
+            triangle.positions[i] = asfloat(Geometry.Load3(offsets.x+ix[i]*counts.z));
+    }
+    return EvaluateMaterialTriangle(binding,material,triangle,instance,weights,rayObject,rayOffsetX,rayOffsetY,
+        rayScale,viewDistance,worldToObject,objectToWorld,parallaxEnabled,warpFixEnabled,shadowEnabled,mipBias,
+        projectionRow,worldPosition,projectionNoise,raw,rawUsed,coat,shadow);
 }
 
 #endif

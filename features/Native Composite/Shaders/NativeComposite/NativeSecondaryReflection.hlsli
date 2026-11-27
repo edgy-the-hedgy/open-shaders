@@ -83,33 +83,16 @@ SecondaryLight ReadSecondaryLight(uint index,float3 world,float3 n,NativeCoatSam
     return result;
 }
 
-bool ShadeNativeSecondary(uint instance,uint primitive,float2 bary,float3x3 worldToObject,float3x3 objectToWorld,
-    bool front,float3 world,float3 rayDirection,float distance,float footprint,uint2 pixel,uint lobe,uint frame,uint quality,
-    uint instanceCount,uint characters,uint lightCount,float4 sunDirection,float4 sunRadiance,uint foliage,uint materialControls,uint projectionRows,out float3 radiance)
+// Shared reflected-hit lighting. Material evaluation may come from a static
+// instance or a separately published posed triangle; no scene IDs are inferred.
+bool ShadeNativeSecondarySurface(Sample s,NativeCoatSample coat,NativeParallaxShadowSample height,
+    float3x3 worldToObject,bool front,float3 world,float3 rayDirection,float distance,uint2 pixel,
+    uint lobe,uint frame,uint quality,uint instanceCount,uint characters,uint lightCount,
+    float4 sunDirection,float4 sunRadiance,uint foliage,out float3 radiance)
 {
     radiance=0;
-    if(instance>=instanceCount||lightCount>SecondaryMaxLightCount)return false;
-    Binding binding=Bindings[instance];
-    // Projected or otherwise incomplete native recipes must retain fallback.
-    if(binding.materialIndex==0xffffffffu||(binding.flags&SurfaceMissingBaseTexturesBinding)!=0u)return false;
-    uint projectionRow=0xffffffffu;
-    if((binding.flags&SurfaceBaseOnlyBinding)!=0u){
-        if((binding.flags&SurfaceSecondaryProjectionBinding)==0u||projectionRows==0u)return false;
-        projectionRow=ProjectionLookup.Load(instance*4u);
-        if(projectionRow>=projectionRows)return false;
-    }
+    if(lightCount>SecondaryMaxLightCount)return false;
     float3 view=-rayDirection;
-    // A conservative ray-cone LOD avoids always sampling mip zero on long,
-    // rough reflection rays. Primary raster gradients remain unchanged.
-    float lod=clamp(log2(max(1.0,distance*max(footprint,0.001)/16.0)),0.0,8.0);
-    bool rawUsed;NativeCoatSample coat;NativeParallaxShadowSample height;
-    float3 tangent=normalize(cross(rayDirection,abs(rayDirection.z)<0.99?float3(0,0,1):float3(0,1,0)));
-    float3 bitangent=cross(rayDirection,tangent);
-    float footprintWorld=max(0.01,distance*max(footprint,0.001)*0.01);
-    float noise=NativeEmitterRandom(NativeEmitterHash(pixel.x^NativeEmitterHash(pixel.y)^frame),0x68bc21ebu);
-    Sample s=EvaluateMaterial(instanceCount,instance,primitive,float3(1.0-bary.x-bary.y,bary),
-        mul(worldToObject,rayDirection*distance),mul(worldToObject,tangent*footprintWorld),mul(worldToObject,bitangent*footprintWorld),1.0,distance,worldToObject,objectToWorld,
-        (materialControls&1u)!=0u && (binding.flags&SurfaceParallaxReadyBinding)!=0u,false,(materialControls&2u)!=0u,lod,projectionRow,world,noise,(RawRasterSurface)0,rawUsed,coat,height);
     if(s.color.a!=SurfaceEvaluatedBase||!all(isfinite(s.color))||!all(isfinite(s.normal))||
        !all(isfinite(s.f0))||!all(isfinite(s.emission)))return false;
     float3 n=mul(s.normal.xyz,worldToObject);
@@ -176,4 +159,34 @@ bool ShadeNativeSecondary(uint instance,uint primitive,float2 bary,float3x3 worl
     radiance=max(diffuse+specular+transmission+s.emission.rgb,0.0);
     return all(isfinite(radiance))&&all(radiance<=65504.0);
 }
+bool ShadeNativeSecondary(uint instance,uint primitive,float2 bary,float3x3 worldToObject,float3x3 objectToWorld,
+    bool front,float3 world,float3 rayDirection,float distance,float footprint,uint2 pixel,uint lobe,uint frame,uint quality,
+    uint instanceCount,uint characters,uint lightCount,float4 sunDirection,float4 sunRadiance,uint foliage,uint materialControls,uint projectionRows,out float3 radiance)
+{
+    radiance=0;
+    if(instance>=instanceCount||lightCount>SecondaryMaxLightCount)return false;
+    Binding binding=Bindings[instance];
+    // Projected or otherwise incomplete native recipes must retain fallback.
+    if(binding.materialIndex==0xffffffffu||(binding.flags&SurfaceMissingBaseTexturesBinding)!=0u)return false;
+    uint projectionRow=0xffffffffu;
+    if((binding.flags&SurfaceBaseOnlyBinding)!=0u){
+        if((binding.flags&SurfaceSecondaryProjectionBinding)==0u||projectionRows==0u)return false;
+        projectionRow=ProjectionLookup.Load(instance*4u);
+        if(projectionRow>=projectionRows)return false;
+    }
+    // A conservative ray-cone LOD avoids always sampling mip zero on long,
+    // rough reflection rays. Primary raster gradients remain unchanged.
+    float lod=clamp(log2(max(1.0,distance*max(footprint,0.001)/16.0)),0.0,8.0);
+    bool rawUsed;NativeCoatSample coat;NativeParallaxShadowSample height;
+    float3 tangent=normalize(cross(rayDirection,abs(rayDirection.z)<0.99?float3(0,0,1):float3(0,1,0)));
+    float3 bitangent=cross(rayDirection,tangent);
+    float footprintWorld=max(0.01,distance*max(footprint,0.001)*0.01);
+    float noise=NativeEmitterRandom(NativeEmitterHash(pixel.x^NativeEmitterHash(pixel.y)^frame),0x68bc21ebu);
+    Sample s=EvaluateMaterial(instanceCount,instance,primitive,float3(1.0-bary.x-bary.y,bary),
+        mul(worldToObject,rayDirection*distance),mul(worldToObject,tangent*footprintWorld),mul(worldToObject,bitangent*footprintWorld),1.0,distance,worldToObject,objectToWorld,
+        (materialControls&1u)!=0u && (binding.flags&SurfaceParallaxReadyBinding)!=0u,false,(materialControls&2u)!=0u,lod,projectionRow,world,noise,(RawRasterSurface)0,rawUsed,coat,height);
+    return ShadeNativeSecondarySurface(s,coat,height,worldToObject,front,world,rayDirection,distance,pixel,
+        lobe,frame,quality,instanceCount,characters,lightCount,sunDirection,sunRadiance,foliage,radiance);
+}
+
 #endif
