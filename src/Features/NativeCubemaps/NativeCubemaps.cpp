@@ -1,7 +1,7 @@
 #include "NativeCubemaps.h"
 
 #include "Features/DynamicCubemaps.h"
-#include "Features/IBL.h"
+#include "Features/NativeIBL/NativeIBL.h"
 #include "Features/LinearLighting.h"
 #include "Globals.h"
 #include "State.h"
@@ -33,9 +33,8 @@ DX12Native::EnvironmentStamp NativeCubemaps::Producer::Prepare(uint32_t scope, u
 		auto& cubes = globals::features::dynamicCubemaps;
 		cubes.resetCapture[0] = cubes.resetCapture[1] = true;
 	}
-	if (!skyContext.SameEnvironment(stamp))
-		ResetLegacySkyBridge();
-	cubeContext = skyContext = stamp;
+	cubeContext = stamp;
+	globals::features::nativeIBL.SetCaptureContext(stamp);
 	return stamp;
 }
 
@@ -45,11 +44,10 @@ void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend)
 	if (!environment)
 		environment = std::make_unique<NativeEnvironment>();
 	const auto& cubes = globals::features::dynamicCubemaps;
-	const auto& ibl = globals::features::ibl;
 	environment->Capture(backend, currentStamp,
 		cubes.loaded ? cubeSources[0].Get(currentStamp) : EnvironmentSource{},
 		cubes.loaded && !currentStamp.interior ? cubeSources[1].Get(currentStamp) : EnvironmentSource{},
-		ibl.loaded && !currentStamp.interior ? skySource.Get(currentStamp) : EnvironmentSource{});
+		!currentStamp.interior ? globals::features::nativeIBL.GetSkySource(currentStamp) : EnvironmentSource{});
 }
 
 void NativeCubemaps::Producer::InvalidateGeneration()
@@ -57,7 +55,7 @@ void NativeCubemaps::Producer::InvalidateGeneration()
 	if (environment)
 		environment->Reset();
 	ResetLegacyCubeBridge();
-	ResetLegacySkyBridge();
+	globals::features::nativeIBL.SetCaptureContext({});
 	currentStamp = {};
 	++epoch;
 }
@@ -92,50 +90,4 @@ void NativeCubemaps::Producer::PublishLegacyCube(uint32_t index, ID3D11Texture2D
 		source.revision = ++cubeRevision;
 	}
 	cubePending[index] = {};
-}
-
-void NativeCubemaps::Producer::InvalidateLegacySkyFaces()
-{
-	skyFaces = 0;
-	skyPending = {};
-	skySource = {};
-}
-
-void NativeCubemaps::Producer::ResetLegacySkyBridge()
-{
-	skyContext = {};
-	InvalidateLegacySkyFaces();
-}
-
-void NativeCubemaps::Producer::BeginLegacySkyCapture(DX12Native::EnvironmentEncoding encoding)
-{
-	skyPending = skyContext;
-	if (!skyPending.epoch || !globals::game::graphicsState || !globals::state ||
-		skyPending.encoding != encoding || skyPending.interior) {
-		skyPending = {};
-		return;
-	}
-	skyPending.engineFrame = globals::game::graphicsState->GetFrameCount();
-	skyPending.pluginFrame = globals::state->frameCount;
-}
-
-void NativeCubemaps::Producer::PublishLegacySky(bool failed, uint32_t clearedFaces, uint32_t validFaces, uint32_t allFaces, ID3D11Texture2D* texture)
-{
-	if (!skyContext.epoch)
-		return;
-	if (failed || !skyPending.SameEnvironment(skyContext)) {
-		InvalidateLegacySkyFaces();
-		return;
-	}
-	if (clearedFaces) {
-		skyFaces |= clearedFaces;
-		if (skyFaces == allFaces && validFaces == allFaces && texture) {
-			skySource.texture.copy_from(texture);
-			skySource.stamp = skyPending;
-			skySource.revision = ++skyRevision;
-		}
-	}
-	if (validFaces != allFaces)
-		skySource = {};
-	skyPending = {};
 }

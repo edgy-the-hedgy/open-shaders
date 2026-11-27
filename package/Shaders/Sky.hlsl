@@ -256,7 +256,7 @@ typedef VS_OUTPUT PS_INPUT;
 struct PS_OUTPUT
 {
 	float4 Color: SV_Target0;
-#if defined(IBL) && !defined(DEFERRED)
+#if (defined(IBL) || defined(NATIVE_IBL_INPUT)) && !defined(DEFERRED)
 	float4 ReflectionRadiance: SV_Target7;
 #endif
 	float4 MotionVectors: SV_Target1;
@@ -762,7 +762,7 @@ PS_OUTPUT main(PS_INPUT input)
 	}
 #	endif
 
-#	if defined(IBL) && !defined(DEFERRED)
+#	if (defined(IBL) || defined(NATIVE_IBL_INPUT)) && !defined(DEFERRED)
 	psout.ReflectionRadiance = psout.Color;
 #	endif
 

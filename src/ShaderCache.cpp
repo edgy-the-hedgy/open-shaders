@@ -2076,6 +2076,12 @@ namespace SIE
 			// Keep the boot-latched material input ABI out of baseline disk-cache entries.
 			if (shader.shaderType == RE::BSShader::Type::Lighting && globals::features::dx12Control.UsesExclusiveMaterials())
 				suffix += L"_native_pbr_input_v1";
+			if (globals::features::dx12Control.UsesExclusiveMaterials()) {
+				using Type = RE::BSShader::Type;
+				const auto type = shader.shaderType.get();
+				if (type == Type::Lighting || type == Type::Sky || type == Type::DistantTree || type == Type::Effect)
+					suffix += L"_native_ibl_input_v1";
+			}
 
 			const std::wstring wname(name.begin(), name.end());
 			switch (shaderClass) {

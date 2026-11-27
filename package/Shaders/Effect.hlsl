@@ -462,7 +462,7 @@ struct PS_OUTPUT
 struct PS_OUTPUT
 {
 	float4 Diffuse: SV_Target0;
-#	if defined(IBL)
+#	if defined(IBL) || defined(NATIVE_IBL_INPUT)
 	float4 ReflectionRadiance: SV_Target7;
 #	endif
 #	if defined(MOTIONVECTORS_NORMALS)
@@ -1394,7 +1394,7 @@ PS_OUTPUT ShadeEffect(PS_INPUT input, bool sampleDistantShadow)
 PS_OUTPUT main(PS_INPUT input)
 {
 	PS_OUTPUT output = ShadeEffect(input, true);
-#	if defined(IBL) && !defined(DEFERRED)
+#	if (defined(IBL) || defined(NATIVE_IBL_INPUT)) && !defined(DEFERRED)
 	output.ReflectionRadiance = output.Diffuse;
 	[branch] if (Permutation::IsReflectionRadianceCapture() && ShadowSampling::HasDistantShadows())
 		output.ReflectionRadiance = ShadeEffect(input, false).Diffuse;

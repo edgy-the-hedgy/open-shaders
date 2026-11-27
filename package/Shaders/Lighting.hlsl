@@ -52,7 +52,7 @@ float GetFurWet()
 #	undef IBL
 #endif
 
-#if defined(IBL) && !defined(DEFERRED)
+#if (defined(IBL) || defined(NATIVE_IBL_INPUT)) && !defined(DEFERRED)
 #	define CAPTURE_REFLECTION_RADIANCE
 #endif
 
@@ -584,7 +584,7 @@ struct PS_OUTPUT
 	float4 Diffuse: SV_Target0;
 	float4 MotionVectors: SV_Target1;
 	float4 NormalGlossiness: SV_Target2;
-#	if defined(IBL)
+#	if defined(CAPTURE_REFLECTION_RADIANCE)
 	float4 ReflectionRadiance: SV_Target7;
 #	endif
 #	if defined(EYE)
