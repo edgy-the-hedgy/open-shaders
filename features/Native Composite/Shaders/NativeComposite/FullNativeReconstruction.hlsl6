@@ -16,6 +16,8 @@ Texture2D<float2> Motion : register(t11);
 RWByteAddressBuffer OwnershipMask : register(u1);
 RWByteAddressBuffer Reconstructed : register(u0);
 RWByteAddressBuffer EnvironmentRadiance : register(u2);
+RWByteAddressBuffer HistorySignals : register(u3);
+static const uint NativeHistoryStride = 6u * NativeOpaqueRadianceStride;
 cbuffer ReconstructionConstants : register(b0)
 {
     uint2 Size;
@@ -37,6 +39,8 @@ cbuffer ReconstructionConstants : register(b0)
     uint HasMotion;
     float JitterDeltaX;
     float JitterDeltaY;
+    uint HasIndirectHistory;
+    uint SameEnvironmentRevision;
 };
 
 bool ValidRayIdentity(uint2 identity)
@@ -187,6 +191,9 @@ void main(uint3 id : SV_DispatchThreadID)
     OwnershipMask.Store(ownershipOffset, 0u);
     const uint radianceOffset = (id.y * Size.x + id.x) * 8u;
     EnvironmentRadiance.Store2(radianceOffset, uint2(0,0));
+    const uint historyOffset = (id.y * Size.x + id.x) * NativeHistoryStride;
+    [unroll] for (uint signal = 0u; signal < 6u; ++signal)
+        HistorySignals.Store2(historyOffset + signal * NativeOpaqueRadianceStride, uint2(0,0));
     if (RasterTokenCount != 0u) {
         uint token = uint(round(saturate(RasterTokens.Load(int3(id.xy, 0)).b) * 65535.0));
         if (token > 0u && token <= RasterTokenCount) {
@@ -212,28 +219,41 @@ void main(uint3 id : SV_DispatchThreadID)
     float3 indirectSpecular = FilterSignal(id.xy, ContributionIndirectSpecular, base, normal, depth, ispec, isLow, isHigh);
     float3 directTransmission = FilterSignal(id.xy, DirectTransmissionSignal, base, normal, depth, dt, dtLow, dtHigh);
     float3 indirectTransmission = FilterSignal(id.xy, IndirectTransmissionSignal, base, normal, depth, it, itLow, itHigh);
-    // Separate spatially reconstructed direct-only publication. Never include
-    // indirect or view-dependent specular in the environment feedback path.
+    uint2 oldPixel;
+    if (HistorySurfaceMatches(id.xy, base, normal, depth, oldPixel)) {
+        const uint oldOffset = (oldPixel.y * Size.x + oldPixel.x) * NativeHistoryStride;
+        directDiffuse = AccumulateStationary(directDiffuse, dd ? ContributionDirectDiffuse : 0u, oldOffset, ddLow, ddHigh);
+        directSpecular = AccumulateStationary(directSpecular, ds ? ContributionDirectSpecular : 0u, oldOffset + 8u, dsLow, dsHigh);
+        directTransmission = AccumulateStationary(directTransmission, dt ? ContributionTransmission : 0u, oldOffset + 16u, dtLow, dtHigh);
+        // Diffuse irradiance may evolve smoothly within an environment epoch.
+        // Specular and indirect transmission conservatively reject a new publication.
+        if (HasIndirectHistory != 0u) {
+            indirectDiffuse = AccumulateStationary(indirectDiffuse, idiff ? ContributionIndirectDiffuse : 0u, oldOffset + 24u, idLow, idHigh);
+            if (SameEnvironmentRevision != 0u) {
+                indirectSpecular = AccumulateStationary(indirectSpecular, ispec ? ContributionIndirectSpecular : 0u, oldOffset + 32u, isLow, isHigh);
+                indirectTransmission = AccumulateStationary(indirectTransmission, it ? ContributionTransmission : 0u, oldOffset + 40u, itLow, itHigh);
+            }
+        }
+    }
+    HistorySignals.Store2(historyOffset, PackOpaqueRadiance(directDiffuse, dd ? ContributionDirectDiffuse : 0u));
+    HistorySignals.Store2(historyOffset + 8u, PackOpaqueRadiance(directSpecular, ds ? ContributionDirectSpecular : 0u));
+    HistorySignals.Store2(historyOffset + 16u, PackOpaqueRadiance(directTransmission, dt ? ContributionTransmission : 0u));
+    HistorySignals.Store2(historyOffset + 24u, PackOpaqueRadiance(indirectDiffuse, idiff ? ContributionIndirectDiffuse : 0u));
+    HistorySignals.Store2(historyOffset + 32u, PackOpaqueRadiance(indirectSpecular, ispec ? ContributionIndirectSpecular : 0u));
+    HistorySignals.Store2(historyOffset + 40u, PackOpaqueRadiance(indirectTransmission, it ? ContributionTransmission : 0u));
+    // The environment input contains only direct reconstructed light and emission.
     if (dd && dt && base.a == SurfaceEvaluatedBase && (ownership & RasterIdentityCandidate) != 0u) {
         float3 emission = ReadMaterial(id.xy, 24u).rgb;
         float3 radiance = max(directDiffuse + directTransmission + max(emission, 0.0), 0.0);
         if (all(isfinite(emission)) && all(isfinite(radiance)) && all(radiance <= 65504.0))
             EnvironmentRadiance.Store2(radianceOffset, PackOpaqueRadiance(radiance, ContributionDirectDiffuse));
     }
-    float3 transmission=directTransmission+indirectTransmission;
-    const uint transmissionValid=dt && it ? ContributionTransmission : 0u;
-    // Only intentional sparse holes with compatible evidence are reconstructed.
+    const float3 transmission = directTransmission + indirectTransmission;
+    const uint transmissionValid = dt && it ? ContributionTransmission : 0u;
     const uint diffuseValid = (dd ? ContributionDirectDiffuse : 0u) | (idiff ? ContributionIndirectDiffuse : 0u);
     const uint specularValid = (ds ? ContributionDirectSpecular : 0u) | (ispec ? ContributionIndirectSpecular : 0u);
-    float3 diffuse = directDiffuse + indirectDiffuse;
-    float3 specular = directSpecular + indirectSpecular;
-    uint2 oldPixel;
-    if (HistorySurfaceMatches(id.xy, base, normal, depth, oldPixel)) {
-        uint oldOffset = (oldPixel.y * Size.x + oldPixel.x) * NativeLightingStride;
-        diffuse = AccumulateStationary(diffuse, diffuseValid, oldOffset, ddLow + idLow, ddHigh + idHigh);
-        specular = AccumulateStationary(specular, specularValid, oldOffset + 8u, dsLow + isLow, dsHigh + isHigh);
-        transmission=AccumulateStationary(transmission, transmissionValid, oldOffset+16u, dtLow + itLow, dtHigh + itHigh);
-    }
+    const float3 diffuse = directDiffuse + indirectDiffuse;
+    const float3 specular = directSpecular + indirectSpecular;
     const uint2 packedDiffuse = PackOpaqueRadiance(diffuse, diffuseValid);
     const uint2 packedSpecular = PackOpaqueRadiance(specular, specularValid);
     const uint2 packedTransmission=PackOpaqueRadiance(transmission,transmissionValid);

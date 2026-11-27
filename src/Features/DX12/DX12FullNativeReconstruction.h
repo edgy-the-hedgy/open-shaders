@@ -21,6 +21,10 @@ namespace DX12Native
 		// Direct diffuse + direct transmission + emission, with explicit validity.
 		// The environment producer must never consume combined indirect radiance.
 		winrt::com_ptr<ID3D12Resource> environmentRadiance;
+		// Six independently valid half4 signals: direct/indirect diffuse,
+		// specular and transmission. The combined display output is not history.
+		winrt::com_ptr<ID3D12Resource> historySignals;
+		static constexpr uint32_t historySignalStride = 6 * MaterialFrameContract::kOpaqueRadianceStride;
 		static constexpr uint32_t environmentRadianceStride = 8;
 		// The GPU writes explicit evidence and owner bits. A candidate alone is not authority.
 		bool rasterWinnerCertified = false, completeLightingCoverage = false;

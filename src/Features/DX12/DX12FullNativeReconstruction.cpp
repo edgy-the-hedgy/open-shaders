@@ -77,13 +77,13 @@ namespace DX12Native
 		depthRanges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 6, 0, 1);
 		depthRanges[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 9, 0, 2);
 		depthRanges[3].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 11, 0, 3);
-		CD3DX12_ROOT_PARAMETER parameters[13];
+		CD3DX12_ROOT_PARAMETER parameters[14];
 		parameters[0].InitAsShaderResourceView(0);
 		parameters[1].InitAsShaderResourceView(1);
 		parameters[2].InitAsShaderResourceView(2);
 		parameters[3].InitAsDescriptorTable(4, depthRanges);
 		parameters[4].InitAsUnorderedAccessView(0);
-		parameters[5].InitAsConstants(20, 0);
+		parameters[5].InitAsConstants(22, 0);
 		parameters[6].InitAsShaderResourceView(4);
 		parameters[7].InitAsShaderResourceView(5);
 		parameters[8].InitAsShaderResourceView(7);
@@ -91,7 +91,8 @@ namespace DX12Native
 		parameters[10].InitAsShaderResourceView(10);
 		parameters[11].InitAsUnorderedAccessView(1);
 		parameters[12].InitAsUnorderedAccessView(2);
-		CD3DX12_ROOT_SIGNATURE_DESC signature(13, parameters);
+		parameters[13].InitAsUnorderedAccessView(3);
+		CD3DX12_ROOT_SIGNATURE_DESC signature(14, parameters);
 		winrt::com_ptr<ID3DBlob> blob, errors;
 		winrt::com_ptr<ID3D12RootSignature> newRoot;
 		winrt::com_ptr<ID3D12PipelineState> newPipeline;
@@ -134,12 +135,13 @@ namespace DX12Native
 		const uint32_t available = (direct ? DirectLightingFrame::available : 0u) | (indirect ? indirect->available : 0u) |
 			uint32_t(Emission);
 		const uint64_t bytes = uint64_t(material->width) * material->height * kLightingStride;
-		if (!available || !bytes || bytes > UINT32_MAX)
+		if (!available || !bytes || bytes > UINT32_MAX / 2u)
 			return;
 		const RasterIdentityStamp rayStamp{ material->frame, material->scope, material->geometryRevision, material->materialRevision };
 		const StationaryHistoryIdentity stamp{ material->frame, pluginFrame, material->width, material->height,
 			material->scope, available, material->geometryRevision, material->materialRevision,
-			indirect && indirect->environment ? indirect->environment->revision : 0u, resetHistory };
+			indirect && indirect->environment ? indirect->environment->revision : 0u, resetHistory,
+			indirect && indirect->environment ? indirect->environment->stamp.epoch : 0u };
 		const auto sameCamera = [](const auto& a, const auto& b) {
 			return std::memcmp(&a.CameraProjUnjitteredInverse, &b.CameraProjUnjitteredInverse, sizeof(a.CameraProjUnjitteredInverse)) == 0 &&
 				std::memcmp(&a.CameraViewInverse, &b.CameraViewInverse, sizeof(a.CameraViewInverse)) == 0 &&
@@ -187,17 +189,23 @@ namespace DX12Native
 				const uint64_t radianceBytes = uint64_t(material->width) * material->height * FullNativeReconstructionFrame::environmentRadianceStride;
 				const auto radianceDesc = CD3DX12_RESOURCE_DESC::Buffer(radianceBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 				const auto radianceAllocation = device->GetResourceAllocationInfo(0, 1, &radianceDesc).SizeInBytes;
+				const uint64_t historyBytes = uint64_t(material->width) * material->height * FullNativeReconstructionFrame::historySignalStride;
+				const auto historyDesc = CD3DX12_RESOURCE_DESC::Buffer(historyBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+				const auto historyAllocation = device->GetResourceAllocationInfo(0, 1, &historyDesc).SizeInBytes;
 				const auto sampleAllocation = device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
 				const auto maskAllocation = device->GetResourceAllocationInfo(0, 1, &maskDesc).SizeInBytes;
 				if (sampleAllocation == UINT64_MAX || maskAllocation == UINT64_MAX || sampleAllocation > UINT64_MAX - maskAllocation ||
 					radianceAllocation == UINT64_MAX || sampleAllocation + maskAllocation > UINT64_MAX - radianceAllocation ||
-					sampleAllocation + maskAllocation + radianceAllocation > budget.Query(device, 0).effectiveBytes)
+					historyAllocation == UINT64_MAX ||
+					sampleAllocation + maskAllocation + radianceAllocation > UINT64_MAX - historyAllocation ||
+					sampleAllocation + maskAllocation + radianceAllocation + historyAllocation > budget.Query(device, 0).effectiveBytes)
 					return;
 				auto replacement = std::make_shared<FullNativeReconstructionFrame>();
 				replacement->samples = Eval::Buffer(device, bytes, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 				replacement->ownershipMask = Eval::Buffer(device, bytes / 4, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 				replacement->environmentRadiance = Eval::Buffer(device, radianceBytes, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-				replacement->allocationBytes = sampleAllocation + maskAllocation + radianceAllocation;
+				replacement->historySignals = Eval::Buffer(device, historyBytes, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+				replacement->allocationBytes = sampleAllocation + maskAllocation + radianceAllocation + historyAllocation;
 				const D3D12_DESCRIPTOR_HEAP_DESC heap{ D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 4,
 					D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
 				DX::ThrowIfFailed(device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(replacement->depthDescriptors.put())));
@@ -273,7 +281,7 @@ namespace DX12Native
 			cmd->SetComputeRootShaderResourceView(1, slot->direct ? slot->direct->samples->GetGPUVirtualAddress() : address);
 			cmd->SetComputeRootShaderResourceView(2, slot->indirect ? slot->indirect->samples->GetGPUVirtualAddress() : address);
 			cmd->SetComputeRootDescriptorTable(3, slot->depthDescriptors->GetGPUDescriptorHandleForHeapStart());
-			cmd->SetComputeRootShaderResourceView(6, previous ? previous->samples->GetGPUVirtualAddress() : address);
+			cmd->SetComputeRootShaderResourceView(6, previous ? previous->historySignals->GetGPUVirtualAddress() : address);
 			cmd->SetComputeRootShaderResourceView(7, previous ? previous->material->samples->GetGPUVirtualAddress() : address);
 			cmd->SetComputeRootShaderResourceView(8, slot->material->rayIdentity->GetGPUVirtualAddress());
 			cmd->SetComputeRootShaderResourceView(9, previous ? previous->material->rayIdentity->GetGPUVirtualAddress() : slot->material->rayIdentity->GetGPUVirtualAddress());
@@ -281,19 +289,23 @@ namespace DX12Native
 			cmd->SetComputeRootShaderResourceView(10, evidence ? evidence->tokenTable->GetGPUVirtualAddress() : slot->material->rayIdentity->GetGPUVirtualAddress());
 			cmd->SetComputeRootUnorderedAccessView(11, slot->ownershipMask->GetGPUVirtualAddress());
 			cmd->SetComputeRootUnorderedAccessView(12, slot->environmentRadiance->GetGPUVirtualAddress());
+			cmd->SetComputeRootUnorderedAccessView(13, slot->historySignals->GetGPUVirtualAddress());
 			const uint32_t constants[]{ slot->width, slot->height, slot->material->rowPitch,
 				slot->direct ? slot->direct->rowPitch : 0u, slot->indirect ? slot->indirect->rowPitch : 0u, available,
 				previous ? previous->material->rowPitch : 0u, previous ? 1u : 0u,
 				slot->material->rayIdentityRowPitch, previous ? previous->material->rayIdentityRowPitch : 0u, evidence ? evidence->tokenCount : 0u,
 				slot->rasterWinnerCertified ? 1u : 0u, slot->completeLightingCoverage ? 1u : 0u,
 				slot->direct ? DirectLightingFrame::available : 0u, slot->indirect ? slot->indirect->available : 0u, quality, slot->frame,
-				motion ? 1u : 0u, std::bit_cast<uint32_t>(jitterDelta.x), std::bit_cast<uint32_t>(jitterDelta.y) };
-			cmd->SetComputeRoot32BitConstants(5, 20, constants, 0);
+				motion ? 1u : 0u, std::bit_cast<uint32_t>(jitterDelta.x), std::bit_cast<uint32_t>(jitterDelta.y),
+				previous && stamp.CanReuseIndirect(previous->historyIdentity) ? 1u : 0u,
+				previous && stamp.SameEnvironmentContent(previous->historyIdentity) ? 1u : 0u };
+			cmd->SetComputeRoot32BitConstants(5, 22, constants, 0);
 			const D3D12_RESOURCE_BARRIER begin[]{
 				CD3DX12_RESOURCE_BARRIER::Transition(depth, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
 				CD3DX12_RESOURCE_BARRIER::Transition(slot->samples.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
 				CD3DX12_RESOURCE_BARRIER::Transition(slot->ownershipMask.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-				CD3DX12_RESOURCE_BARRIER::Transition(slot->environmentRadiance.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->environmentRadiance.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->historySignals.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
 			};
 			cmd->ResourceBarrier(ARRAYSIZE(begin), begin);
 			if (motion) {
@@ -313,7 +325,8 @@ namespace DX12Native
 				CD3DX12_RESOURCE_BARRIER::Transition(depth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
 				CD3DX12_RESOURCE_BARRIER::Transition(slot->samples.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON),
 				CD3DX12_RESOURCE_BARRIER::Transition(slot->ownershipMask.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON),
-				CD3DX12_RESOURCE_BARRIER::Transition(slot->environmentRadiance.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON)
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->environmentRadiance.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON),
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->historySignals.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON)
 			};
 			cmd->ResourceBarrier(ARRAYSIZE(end), end);
 			if (motion) {

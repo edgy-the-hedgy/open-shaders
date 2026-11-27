@@ -20,6 +20,7 @@
 #include "../../Util.h"
 #include "../../Utils/NvApiDrs.h"
 #include "../DX12/DX12Control.h"
+#include "../DX12/DX12NativeScene.h"
 #include "../Upscaling.h"
 #include "WorldCameraLookup.h"
 #include "DLSSGDynamic.h"

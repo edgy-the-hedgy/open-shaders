@@ -167,7 +167,7 @@ TEST_CASE("Red-only native texture bindings require height-only data", "[dx12][m
 
 TEST_CASE("Full Native stationary history requires uninterrupted coherent publications", "[dx12][materials]")
 {
-	StationaryHistoryIdentity previous{ 5, 8, 1920, 1080, 12, DirectDiffuse, 7, 7, 4, true };
+	StationaryHistoryIdentity previous{ 5, 8, 1920, 1080, 12, DirectDiffuse, 7, 7, 4, true, 2 };
 	auto now = previous;
 	now.frame++;
 	now.pluginFrame++;
@@ -176,11 +176,18 @@ TEST_CASE("Full Native stationary history requires uninterrupted coherent public
 	now.reset = true;
 	REQUIRE_FALSE(now.CanReuse(previous));
 	now.reset = false;
+	REQUIRE(now.SameEnvironmentContent(previous));
 	now.environmentRevision++;
-	REQUIRE_FALSE(now.CanReuse(previous));
+	REQUIRE(now.CanReuse(previous));
+	REQUIRE(now.CanReuseIndirect(previous));
+	REQUIRE_FALSE(now.SameEnvironmentContent(previous));
+	now.environmentEpoch++;
+	REQUIRE(now.CanReuse(previous));
+	REQUIRE_FALSE(now.CanReuseIndirect(previous));
+	now.environmentEpoch--;
 	now.environmentRevision--;
 	now.available |= IndirectDiffuse;
-	REQUIRE_FALSE(now.CanReuse(previous));
+	REQUIRE(now.CanReuse(previous));
 	now.available = previous.available;
 	now.frame++;
 	REQUIRE_FALSE(now.CanReuse(previous));

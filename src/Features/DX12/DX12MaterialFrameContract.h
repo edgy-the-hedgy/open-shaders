@@ -246,19 +246,27 @@ namespace DX12Native::MaterialFrameContract
 		return NativeOwnsOpaque(bits) && sameFrame && encodingCompatible && earlyOpaqueStage;
 	}
 
-	/** @brief Conservative same-pixel history, not motion-vector reprojection. */
+	/** @brief Frame-level identity; per-pixel acceptance additionally requires motion and surface agreement. */
 	struct StationaryHistoryIdentity
 	{
 		uint32_t frame = 0, pluginFrame = 0, width = 0, height = 0, scope = 0, available = 0;
 		uint64_t geometryRevision = 0, materialRevision = 0, environmentRevision = 0;
 		bool reset = true;
+		uint64_t environmentEpoch = 0;
 		constexpr bool CanReuse(const StationaryHistoryIdentity& previous) const
 		{
 			return !reset && frame - previous.frame == 1u && pluginFrame - previous.pluginFrame == 1u &&
 				width && height && width == previous.width && height == previous.height &&
-				scope && scope == previous.scope && available && available == previous.available &&
-				geometryRevision == previous.geometryRevision && materialRevision == previous.materialRevision &&
-				environmentRevision == previous.environmentRevision;
+				scope && scope == previous.scope && available && previous.available &&
+				geometryRevision == previous.geometryRevision && materialRevision == previous.materialRevision;
+		}
+		constexpr bool CanReuseIndirect(const StationaryHistoryIdentity& previous) const
+		{
+			return CanReuse(previous) && environmentEpoch && environmentEpoch == previous.environmentEpoch;
+		}
+		constexpr bool SameEnvironmentContent(const StationaryHistoryIdentity& previous) const
+		{
+			return CanReuseIndirect(previous) && environmentRevision && environmentRevision == previous.environmentRevision;
 		}
 	};
 

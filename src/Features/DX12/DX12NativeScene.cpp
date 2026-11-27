@@ -787,8 +787,7 @@ void DX12NativeScene::DispatchFullNativeIndirect()
 	bool environmentChanged = false;
 	const auto stamp = globals::features::nativeCubemaps.Prepare(grid->requested.front().scope, frame, environmentChanged);
 	if (environmentChanged) {
-		if (globals::features::nativePBR.HasEvaluator())
-			globals::features::upscaling.nativeComposite.ResetFullNative();
+		// Environment epochs invalidate indirect history, not unrelated direct signals.
 		globals::features::nativeIBL.InvalidateGeneration();
 	}
 	if (!backend)
