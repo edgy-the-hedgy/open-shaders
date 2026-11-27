@@ -6,7 +6,6 @@
 #include "DX12GpuRetirement.h"
 #include "DX12MaterialFrameContract.h"
 #include "Utils/FileSystem.h"
-#include <fstream>
 
 namespace DX12Native
 {
@@ -71,13 +70,7 @@ namespace DX12Native
 				return;
 			}
 			auto* device = backend.d3d12Device.get();
-			std::ifstream file(Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativePBRScreenProbe.dxil", std::ios::binary | std::ios::ate);
-			if (!file || file.tellg() <= 0 || file.tellg() > 16*1024*1024)
-				throw std::runtime_error("NativePBRScreenProbe.dxil unavailable");
-			std::vector<char> shader(static_cast<size_t>(file.tellg()));
-			file.seekg(0);
-			if (!file.read(shader.data(), std::streamsize(shader.size())))
-				throw std::runtime_error("Screen probe DXIL read failed");
+			const auto shader = Util::FileHelpers::ReadBoundedBinary(Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativePBRScreenProbe.dxil", 16 * VideoMemoryBudget::kMiB);
 			CD3DX12_DESCRIPTOR_RANGE range;
 			range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NativePBR::kGpuTextureDescriptorCapacity + 1, 3);
 			CD3DX12_DESCRIPTOR_RANGE projectionRange;

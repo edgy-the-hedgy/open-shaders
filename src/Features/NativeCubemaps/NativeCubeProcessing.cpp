@@ -10,7 +10,6 @@
 #include <cmath>
 #include <cstring>
 #include <directx/d3dx12.h>
-#include <fstream>
 #include <stdexcept>
 
 using namespace DX12Native;
@@ -129,11 +128,7 @@ void NativeCubemaps::CubeProcessing::Initialize(const GraphicsBackend& backend)
     winrt::com_ptr<ID3D12RootSignature> newRoot;
     Check(device->CreateRootSignature(0,blob->GetBufferPointer(),blob->GetBufferSize(),IID_PPV_ARGS(newRoot.put())));
     const auto load=[&](const char* name) {
-        std::ifstream file(Util::PathHelpers::GetShadersPath()/"NativeComposite"/name,std::ios::binary|std::ios::ate);
-        if(!file || file.tellg()<=0 || file.tellg()>16*1024*1024) throw std::runtime_error("NativeCubemaps DXIL unavailable");
-        std::vector<char> bytes(static_cast<size_t>(file.tellg()));
-        file.seekg(0);
-        if(!file.read(bytes.data(),std::streamsize(bytes.size()))) throw std::runtime_error("NativeCubemaps DXIL read failed");
+        const auto bytes = Util::FileHelpers::ReadBoundedBinary(Util::PathHelpers::GetShadersPath()/"NativeComposite"/name, 16 * VideoMemoryBudget::kMiB);
         D3D12_COMPUTE_PIPELINE_STATE_DESC pso{};
         pso.pRootSignature=newRoot.get(); pso.CS={bytes.data(),bytes.size()};
         winrt::com_ptr<ID3D12PipelineState> result;

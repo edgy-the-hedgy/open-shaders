@@ -3,7 +3,6 @@
 #include "Utils/FileSystem.h"
 
 #include <directx/d3dx12.h>
-#include <fstream>
 #include <cstring>
 
 namespace DX12Native
@@ -71,13 +70,7 @@ namespace DX12Native
 			return;
 		}
 		auto* device = backend.d3d12Device.get();
-		std::ifstream file(Util::PathHelpers::GetShadersPath() / "NativeComposite" / "FullNativeReconstruction.dxil", std::ios::binary | std::ios::ate);
-		if (!file || file.tellg() <= 0 || file.tellg() > 16 * 1024 * 1024)
-			throw std::runtime_error("Full Native reconstruction DXIL unavailable");
-		std::vector<char> shader(static_cast<size_t>(file.tellg()));
-		file.seekg(0);
-		if (!file.read(shader.data(), std::streamsize(shader.size())))
-			throw std::runtime_error("Full Native reconstruction DXIL read failed");
+		const auto shader = Util::FileHelpers::ReadBoundedBinary(Util::PathHelpers::GetShadersPath() / "NativeComposite" / "FullNativeReconstruction.dxil", 16 * VideoMemoryBudget::kMiB);
 		CD3DX12_DESCRIPTOR_RANGE depthRanges[3];
 		depthRanges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 3, 0, 0);
 		depthRanges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 6, 0, 1);

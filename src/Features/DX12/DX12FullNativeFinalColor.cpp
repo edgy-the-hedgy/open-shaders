@@ -8,7 +8,6 @@
 #include "Utils/FileSystem.h"
 
 #include <directx/d3dx12.h>
-#include <fstream>
 
 namespace DX12Native
 {
@@ -38,13 +37,7 @@ namespace DX12Native
 			return;
 		}
 		auto* device = backend.d3d12Device.get();
-		std::ifstream file(Util::PathHelpers::GetShadersPath() / "NativeComposite" / "CompositeFullNative.dxil", std::ios::binary | std::ios::ate);
-		if (!file || file.tellg() <= 0 || file.tellg() > 16 * VideoMemoryBudget::kMiB)
-			throw std::runtime_error("Full Native final color DXIL unavailable");
-		std::vector<char> shader(static_cast<size_t>(file.tellg()));
-		file.seekg(0);
-		if (!file.read(shader.data(), std::streamsize(shader.size())))
-			throw std::runtime_error("Full Native final color DXIL read failed");
+		const auto shader = Util::FileHelpers::ReadBoundedBinary(Util::PathHelpers::GetShadersPath() / "NativeComposite" / "CompositeFullNative.dxil", 16 * VideoMemoryBudget::kMiB);
 		CD3DX12_DESCRIPTOR_RANGE range;
 		range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
 		CD3DX12_ROOT_PARAMETER parameters[5];

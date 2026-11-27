@@ -7,7 +7,6 @@
 #include <cmath>
 #include <cstring>
 #include <directx/d3dx12.h>
-#include <fstream>
 #include <ranges>
 #include <stdexcept>
 #include <utility>
@@ -97,13 +96,7 @@ namespace DX12Native
 			return;
 		}
 		auto* device = backend.d3d12Device.get();
-		std::ifstream file(Util::PathHelpers::GetShadersPath() / "NativeComposite" / "DirectLighting.dxil", std::ios::binary | std::ios::ate);
-		if (!file || file.tellg() <= 0 || file.tellg() > 16 * 1024 * 1024)
-			throw std::runtime_error("DirectLighting.dxil unavailable");
-		std::vector<char> shader(static_cast<size_t>(file.tellg()));
-		file.seekg(0);
-		if (!file.read(shader.data(), std::streamsize(shader.size())))
-			throw std::runtime_error("Direct lighting DXIL read failed");
+		const auto shader = Util::FileHelpers::ReadBoundedBinary(Util::PathHelpers::GetShadersPath() / "NativeComposite" / "DirectLighting.dxil", 16 * VideoMemoryBudget::kMiB);
 		CD3DX12_DESCRIPTOR_RANGE ranges[2];
 		ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NativePBR::kGpuTextureDescriptorCapacity, 7, 0, 0);
 		ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 3, 0, NativePBR::kGpuTextureDescriptorCapacity);

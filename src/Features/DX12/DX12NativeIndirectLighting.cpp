@@ -7,7 +7,6 @@
 #include <cmath>
 #include <cstring>
 #include <directx/d3dx12.h>
-#include <fstream>
 #include <set>
 #include <stdexcept>
 #include <vector>
@@ -35,13 +34,7 @@ namespace DX12Native
         void BuildPipeline(ID3D12Device* device, const std::filesystem::path& path, UINT count, CD3DX12_ROOT_PARAMETER* parameters,
             winrt::com_ptr<ID3D12RootSignature>& root, winrt::com_ptr<ID3D12PipelineState>& pipeline)
         {
-            std::ifstream file(path, std::ios::binary | std::ios::ate);
-            if (!file || file.tellg() <= 0 || file.tellg() > 16 * 1024 * 1024)
-                throw std::runtime_error("Native indirect DXIL unavailable");
-            std::vector<char> shader(static_cast<size_t>(file.tellg()));
-            file.seekg(0);
-            if (!file.read(shader.data(), std::streamsize(shader.size())))
-                throw std::runtime_error("Native indirect DXIL read failed");
+            const auto shader = Util::FileHelpers::ReadBoundedBinary(path, 16 * VideoMemoryBudget::kMiB);
             std::array<CD3DX12_STATIC_SAMPLER_DESC, 4> samplers;
             for (uint32_t mode = 0; mode < samplers.size(); ++mode)
                 samplers[mode] = CD3DX12_STATIC_SAMPLER_DESC(mode, D3D12_FILTER_MIN_MAG_MIP_LINEAR,

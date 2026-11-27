@@ -13,7 +13,6 @@
 #include <array>
 #include <cmath>
 #include <cstring>
-#include <fstream>
 #include <memory>
 #include <ranges>
 #include <stdexcept>
@@ -265,13 +264,7 @@ namespace DX12Native
                 return;
             }
             auto* device = backend.d3d12Device.get();
-            std::ifstream file(Util::PathHelpers::GetShadersPath() / "DX12NativeScene" / "CharacterSkinning.dxil", std::ios::binary | std::ios::ate);
-            if (!file || file.tellg() <= 0 || file.tellg() > 16 * 1024 * 1024)
-                throw std::runtime_error("CharacterSkinning.dxil unavailable");
-            std::vector<char> shader(static_cast<size_t>(file.tellg()));
-            file.seekg(0);
-            if (!file.read(shader.data(), std::streamsize(shader.size())))
-                throw std::runtime_error("Character skinning DXIL read failed");
+            const auto shader = Util::FileHelpers::ReadBoundedBinary(Util::PathHelpers::GetShadersPath() / "DX12NativeScene" / "CharacterSkinning.dxil", 16 * VideoMemoryBudget::kMiB);
             CD3DX12_ROOT_PARAMETER params[4];
             params[0].InitAsShaderResourceView(0);
             params[1].InitAsShaderResourceView(1);
