@@ -7,6 +7,8 @@ Texture2D<float> Depth : register(t3);
 ByteAddressBuffer History : register(t4);
 ByteAddressBuffer HistoryMaterials : register(t5);
 Texture2D<float> HistoryDepth : register(t6);
+ByteAddressBuffer RayIdentity : register(t7);
+ByteAddressBuffer HistoryRayIdentity : register(t8);
 RWByteAddressBuffer Reconstructed : register(u0);
 cbuffer ReconstructionConstants : register(b0)
 {
@@ -17,7 +19,19 @@ cbuffer ReconstructionConstants : register(b0)
     uint Available;
     uint HistoryMaterialPitch;
     uint HasHistory;
+    uint RayIdentityPitch;
+    uint HistoryRayIdentityPitch;
 };
+
+bool ValidRayIdentity(uint2 identity)
+{
+    return all(identity != 0xffffffffu);
+}
+
+uint2 ReadRayIdentity(uint2 p)
+{
+    return RayIdentity.Load2(p.y * RayIdentityPitch + p.x * 8u);
+}
 
 float4 Unpack(uint2 v)
 {
@@ -52,6 +66,10 @@ float3 FilterSignal(uint2 pixel, uint contribution, float4 centerBase, float4 ce
     float4 center = ReadSignal(pixel, contribution);
     valid = ValidSignal(center, contribution);
     if (!valid) return 0.0;
+    // Feature-limited surfaces do not publish eligible identity. Preserve
+    // their raw diagnostic contribution rather than filtering across receivers.
+    uint2 centerIdentity = ReadRayIdentity(pixel);
+    if (!ValidRayIdentity(centerIdentity)) return center.rgb;
     float3 sum = center.rgb;
     float weightSum = 1.0;
     [unroll] for (int y = -1; y <= 1; ++y) {
@@ -59,6 +77,8 @@ float3 FilterSignal(uint2 pixel, uint contribution, float4 centerBase, float4 ce
             if (x == 0 && y == 0) continue;
             int2 q = int2(pixel) + int2(x, y);
             if (any(q < 0) || any(q >= int2(Size))) continue;
+            uint2 neighborIdentity = ReadRayIdentity(uint2(q));
+            if (!ValidRayIdentity(neighborIdentity) || neighborIdentity.x != centerIdentity.x) continue;
             float4 base = ReadMaterial(uint2(q), 0u);
             float4 normal = ReadMaterial(uint2(q), 8u);
             float depth = Depth.Load(int3(q, 0));
@@ -81,6 +101,9 @@ float3 FilterSignal(uint2 pixel, uint contribution, float4 centerBase, float4 ce
 bool HistorySurfaceMatches(uint2 p, float4 base, float4 normal, float depth)
 {
     if (HasHistory == 0u) return false;
+    uint2 currentIdentity = ReadRayIdentity(p);
+    uint2 previousIdentity = HistoryRayIdentity.Load2(p.y * HistoryRayIdentityPitch + p.x * 8u);
+    if (!ValidRayIdentity(currentIdentity) || !ValidRayIdentity(previousIdentity) || any(currentIdentity != previousIdentity)) return false;
     uint offset = p.y * HistoryMaterialPitch + p.x * NativeSurfaceStride;
     float4 oldBase = Unpack(HistoryMaterials.Load2(offset));
     float4 oldNormal = Unpack(HistoryMaterials.Load2(offset + 8u));

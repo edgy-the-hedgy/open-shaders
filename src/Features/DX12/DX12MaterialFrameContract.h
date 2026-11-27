@@ -45,6 +45,19 @@ namespace DX12Native::MaterialFrameContract
 	};
 	static_assert(sizeof(RasterPixelIdentity) == kRayIdentityStride);
 
+	constexpr bool ValidRayIdentity(RasterPixelIdentity identity)
+	{
+		return identity.instance != UINT32_MAX && identity.primitive != UINT32_MAX;
+	}
+
+	// Spatial filtering may cross a triangle edge within one rigid instance.
+	// Temporal history requires the same triangle within the same generation.
+	constexpr bool SameNativeReceiver(RasterPixelIdentity a, RasterPixelIdentity b, bool temporal)
+	{
+		return ValidRayIdentity(a) && ValidRayIdentity(b) && a.instance == b.instance &&
+			(!temporal || a.primitive == b.primitive);
+	}
+
 	constexpr bool MatchesRasterPixel(const RasterIdentityStamp& raster, const RasterIdentityStamp& ray,
 		RasterPixelIdentity pixel, RasterPixelIdentity hit, uint32_t instanceCount, uint32_t primitiveCount)
 	{

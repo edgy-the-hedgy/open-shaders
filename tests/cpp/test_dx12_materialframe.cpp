@@ -229,3 +229,14 @@ TEST_CASE("Native ray identity has an independent bounded row layout", "[dx12][m
 	REQUIRE_FALSE(ValidLayout(1921, 1080, 1928 * kRayIdentityStride + 1, kRayIdentityStride));
 	REQUIRE_FALSE(ValidLayout(16384, 65536, 16384 * kRayIdentityStride, kRayIdentityStride));
 }
+
+TEST_CASE("Full Native reconstruction rejects cross-instance history and invalid hits", "[dx12][materials]")
+{
+	const RasterPixelIdentity a{ 4, 12 };
+	REQUIRE(SameNativeReceiver(a, a, true));
+	REQUIRE(SameNativeReceiver(a, { 4, 13 }, false));
+	REQUIRE_FALSE(SameNativeReceiver(a, { 4, 13 }, true));
+	REQUIRE_FALSE(SameNativeReceiver(a, { 5, 12 }, false));
+	REQUIRE_FALSE(SameNativeReceiver(a, {}, false));
+	REQUIRE_FALSE(SameNativeReceiver({ 4, UINT32_MAX }, a, true));
+}

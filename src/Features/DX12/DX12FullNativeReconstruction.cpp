@@ -80,16 +80,18 @@ namespace DX12Native
 		CD3DX12_DESCRIPTOR_RANGE depthRanges[2];
 		depthRanges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 3, 0, 0);
 		depthRanges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 6, 0, 1);
-		CD3DX12_ROOT_PARAMETER parameters[8];
+		CD3DX12_ROOT_PARAMETER parameters[10];
 		parameters[0].InitAsShaderResourceView(0);
 		parameters[1].InitAsShaderResourceView(1);
 		parameters[2].InitAsShaderResourceView(2);
 		parameters[3].InitAsDescriptorTable(2, depthRanges);
 		parameters[4].InitAsUnorderedAccessView(0);
-		parameters[5].InitAsConstants(8, 0);
+		parameters[5].InitAsConstants(10, 0);
 		parameters[6].InitAsShaderResourceView(4);
 		parameters[7].InitAsShaderResourceView(5);
-		CD3DX12_ROOT_SIGNATURE_DESC signature(8, parameters);
+		parameters[8].InitAsShaderResourceView(7);
+		parameters[9].InitAsShaderResourceView(8);
+		CD3DX12_ROOT_SIGNATURE_DESC signature(10, parameters);
 		winrt::com_ptr<ID3DBlob> blob, errors;
 		winrt::com_ptr<ID3D12RootSignature> newRoot;
 		winrt::com_ptr<ID3D12PipelineState> newPipeline;
@@ -228,11 +230,14 @@ namespace DX12Native
 			cmd->SetComputeRootDescriptorTable(3, slot->depthDescriptors->GetGPUDescriptorHandleForHeapStart());
 			cmd->SetComputeRootShaderResourceView(6, previous ? previous->samples->GetGPUVirtualAddress() : address);
 			cmd->SetComputeRootShaderResourceView(7, previous ? previous->material->samples->GetGPUVirtualAddress() : address);
+			cmd->SetComputeRootShaderResourceView(8, slot->material->rayIdentity->GetGPUVirtualAddress());
+			cmd->SetComputeRootShaderResourceView(9, previous ? previous->material->rayIdentity->GetGPUVirtualAddress() : slot->material->rayIdentity->GetGPUVirtualAddress());
 			cmd->SetComputeRootUnorderedAccessView(4, slot->samples->GetGPUVirtualAddress());
 			const uint32_t constants[]{ slot->width, slot->height, slot->material->rowPitch,
 				slot->direct ? slot->direct->rowPitch : 0u, slot->indirect ? slot->indirect->rowPitch : 0u, available,
-				previous ? previous->material->rowPitch : 0u, previous ? 1u : 0u };
-			cmd->SetComputeRoot32BitConstants(5, 8, constants, 0);
+				previous ? previous->material->rowPitch : 0u, previous ? 1u : 0u,
+				slot->material->rayIdentityRowPitch, previous ? previous->material->rayIdentityRowPitch : 0u };
+			cmd->SetComputeRoot32BitConstants(5, 10, constants, 0);
 			const D3D12_RESOURCE_BARRIER begin[]{
 				CD3DX12_RESOURCE_BARRIER::Transition(depth, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
 				CD3DX12_RESOURCE_BARRIER::Transition(slot->samples.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
