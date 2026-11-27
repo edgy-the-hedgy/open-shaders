@@ -1,4 +1,5 @@
 #include "DX12NativeScene.h"
+#include "DX12LightSourceIdentity.h"
 #include "Features/NativeLLF/NativeLLF.h"
 #include "Features/NativeCubemaps/NativeCubemaps.h"
 #include "Features/NativeIBL/NativeIBL.h"
