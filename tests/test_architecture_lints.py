@@ -103,6 +103,10 @@ class ArchitectureLintTests(unittest.TestCase):
         self.assertNotIn("nativeCubemaps", legacy)
         self.assertIn("CaptureRaw(backend,sceneColor)", native)
         self.assertIn("processing->Dispatch", native)
+        shader = (ROOT / "features/Native Composite/Shaders/NativeComposite/NativeCubemapFilter.hlsl6").read_text(encoding="utf-8")
+        self.assertIn("ReadNativeRadiance", shader)
+        self.assertIn("RasterIdentityCandidate", shader)
+        self.assertIn("NativeDirect.Load2", shader)
 
     def test_full_native_shader_inputs_share_one_boot_latched_cache_identity(self):
         cache = (ROOT / "src/ShaderCache.cpp").read_text(encoding="utf-8")

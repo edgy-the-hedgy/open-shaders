@@ -727,7 +727,8 @@ void DX12NativeScene::CaptureFullNativeEnvironment(ID3D11ShaderResourceView* sce
 		if (!backend)
 			return;
 	}
-	globals::features::nativeCubemaps.Capture(*backend, sceneColor, frame);
+	globals::features::nativeCubemaps.Capture(*backend, sceneColor, frame,
+		globals::features::upscaling.nativeComposite.GetFullNativeReconstruction(frame));
 }
 
 void DX12NativeScene::OnOpaqueRasterReady()

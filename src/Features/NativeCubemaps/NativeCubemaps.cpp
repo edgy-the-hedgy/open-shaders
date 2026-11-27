@@ -1,5 +1,6 @@
 #include "NativeCubemaps.h"
 #include "NativeCubemapPolicy.h"
+#include "Features/DX12/DX12FullNativeReconstruction.h"
 
 #include "Features/NativeIBL/NativeIBL.h"
 #include "Features/LinearLighting.h"
@@ -104,18 +105,36 @@ bool NativeCubemaps::Producer::CaptureRaw(const GraphicsBackend& backend, ID3D11
     for(auto* view:oldReads) if(view) view->Release();
     return valid;
 }
-void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend, ID3D11ShaderResourceView* sceneColor, uint32_t frame)
+void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend, ID3D11ShaderResourceView* sceneColor, uint32_t frame,
+    std::shared_ptr<const DX12Native::FullNativeReconstructionFrame> native)
 {
     using namespace DX12Native;
     if(!loaded || !currentStamp.scope || currentStamp.engineFrame != frame || !globals::state ||
-        currentStamp.pluginFrame != globals::state->frameCount || !sceneColor || !globals::game::renderer) return;
+        currentStamp.pluginFrame != globals::state->frameCount || !globals::game::renderer) return;
     if(processing) processing->Poll();
     if(!Policy::CaptureDue(lastCaptureFrame,currentStamp.engineFrame)) return;
     try {
+        // A depth match alone is not sufficient for native radiance acquisition:
+        // require a same-frame raster identity candidate and direct-light input.
+        // This is environment observation, not final-color ownership.
+        if (!native || native->frame != frame || !native->material ||
+            native->material->scope != currentStamp.scope || !native->direct ||
+            native->direct->material != native->material || !native->rasterEvidence ||
+            !native->rasterEvidence->tokenCount || !native->ownershipMask)
+            native.reset();
         std::array<float4,3> dalc{};
-        if(!globals::state->GetAmbientSH(currentStamp.engineFrame,currentStamp.pluginFrame,dalc) || !CaptureRaw(backend,sceneColor)) return;
+        if(!globals::state->GetAmbientSH(currentStamp.engineFrame,currentStamp.pluginFrame,dalc)) return;
+        EnvironmentSource source{};
+        if(sceneColor) {
+            try {
+                if(CaptureRaw(backend,sceneColor)) source={raw.get(),++rawRevision,currentStamp};
+            } catch(const std::exception& e) {
+                if(!failureLogged) logger::warn("[NativeCubemaps] Raster compatibility capture unavailable: {}",e.what());
+                failureLogged=true;
+            }
+        }
+        if(!source.texture && !native) return;
         if(!inputs) inputs=std::make_unique<NativeEnvironment>();
-        EnvironmentSource source{raw.get(),++rawRevision,currentStamp};
         const auto sky=!currentStamp.interior?globals::features::nativeIBL.GetSkySource(currentStamp):EnvironmentSource{};
         EnvironmentSource reflection{};
         // The native reflection hook certifies complete face coverage for the
@@ -124,14 +143,21 @@ void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend, ID3D11Sha
             const auto& target=globals::game::renderer->GetRendererData().cubemapRenderTargets[RE::RENDER_TARGETS_CUBEMAP::kREFLECTIONS];
             reflection={Util::AsReal(target.texture),sky.revision,sky.stamp};
         }
-        inputs->Capture(backend,currentStamp,source,reflection,sky);
-        const auto frame=inputs->Get();
-        if(frame && frame->base && frame->base->revision==source.revision) {
-            if(!processing) processing=std::make_unique<CubeProcessing>();
-            if (processing->Dispatch(backend,frame,dalc,globals::game::frameBufferCached.nonVR.CameraPosAdjust)) {
-                lastCaptureFrame=currentStamp.engineFrame;
-                failureLogged=false;
-            }
+        inputs->Capture(backend,currentStamp,source,reflection,sky,bool(native));
+        auto captured=inputs->Get();
+        if(!captured) return;
+        if(captured->base && captured->base->revision!=source.revision) {
+            auto fresh=std::make_shared<EnvironmentFrame>(*captured);
+            fresh->base.reset();
+            captured=std::move(fresh);
+        }
+        if(!captured->base && !native) return;
+        if(!processing) processing=std::make_unique<CubeProcessing>();
+        if(processing->Dispatch(backend,captured,dalc,globals::game::frameBufferCached.nonVR.CameraPosAdjust,native)) {
+            lastCaptureFrame=currentStamp.engineFrame;
+            nativeInputSubmitted=bool(native);
+            rasterInputSubmitted=bool(captured->base);
+            failureLogged=false;
         }
     } catch(const std::exception& e) {
         if(!failureLogged) logger::warn("[NativeCubemaps] {}",e.what());
@@ -150,16 +176,28 @@ std::shared_ptr<const DX12Native::EnvironmentFrame> NativeCubemaps::Producer::Ge
     return frame;
 }
 
+json NativeCubemaps::Producer::GetDiagnostics()
+{
+    const auto publication=Get();
+    return { {"nativeInputSubmitted",nativeInputSubmitted}, {"transitionalRasterInputSubmitted",rasterInputSubmitted},
+        {"lastCaptureFrame",lastCaptureFrame}, {"environmentRevision",publication ? publication->revision : 0},
+        {"basePublished",publication && bool(publication->base)}, {"reflectionPublished",publication && bool(publication->reflection)},
+        {"skyPublished",publication && bool(publication->sky)}, {"inputAllocationBytes",inputs ? inputs->AllocationBytes() : 0},
+        {"inputFailure",inputs ? inputs->Failure() : ""} };
+}
+
 void NativeCubemaps::Producer::InvalidateGeneration()
 {
     if(processing) processing->Reset();
     if(inputs) inputs->Reset();
     globals::features::nativeIBL.SetCaptureContext({});
     currentStamp={}; ++epoch; lastCaptureFrame=UINT32_MAX; failureLogged=false;
+    nativeInputSubmitted=rasterInputSubmitted=false;
 }
 void NativeCubemaps::Producer::Release()
 {
     processing.reset(); inputs.reset();
     raw=nullptr; rawUAV=nullptr; inputShader=nullptr; inputConstants=nullptr;
     lastCaptureFrame=UINT32_MAX;
+    nativeInputSubmitted=rasterInputSubmitted=false;
 }

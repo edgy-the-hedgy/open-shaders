@@ -46,7 +46,8 @@ namespace DX12Native
 	public:
 		~NativeEnvironment();
 		void Capture(const GraphicsBackend& backend, const EnvironmentStamp& requested,
-			const EnvironmentSource& base, const EnvironmentSource& reflection, const EnvironmentSource& sky);
+			const EnvironmentSource& base, const EnvironmentSource& reflection, const EnvironmentSource& sky,
+			bool allowMissingBase = false);
 		void Poll(bool releaseUnused = false);
 		void Reset();
 		std::shared_ptr<const EnvironmentFrame> Get() const { return current; }

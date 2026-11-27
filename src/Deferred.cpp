@@ -529,8 +529,7 @@ void Deferred::DeferredPasses()
 	// before forward geometry and effects, after raster fallback is complete.
 	if (globals::features::dx12Control.WantsMaterialPreparation() && globals::game::graphicsState) {
 		const auto frame = globals::game::graphicsState->GetFrameCount();
-		if (rasterRadianceReady)
-			globals::features::dx12NativeScene.CaptureFullNativeEnvironment(Util::AsReal(main.SRV), frame);
+		globals::features::dx12NativeScene.CaptureFullNativeEnvironment(rasterRadianceReady ? Util::AsReal(main.SRV) : nullptr, frame);
 		globals::features::upscaling.nativeComposite.ApplyFullNativeOpaque(frame, Util::AsReal(main.UAV));
 	}
 

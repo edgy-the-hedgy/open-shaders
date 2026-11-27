@@ -1,10 +1,14 @@
 #include "Common/NativeCubeDirection.hlsli"
 #include "NativeEnvironmentColor.hlsli"
+#include "NativeSurface.hlsli"
 #include "Common/Spherical Harmonics/SphericalHarmonics.hlsli"
 
 TextureCube<float4> Source : register(t0);
 TextureCube<float4> Previous : register(t1);
 TextureCube<float4> EngineReflection : register(t2);
+ByteAddressBuffer NativeMaterials : register(t3);
+ByteAddressBuffer NativeDirect : register(t4);
+ByteAddressBuffer RasterEvidence : register(t5);
 RWTexture2DArray<float4> Destination : register(u0);
 SamplerState PointClamp : register(s0);
 SamplerState LinearClamp : register(s1);
@@ -23,6 +27,44 @@ cbuffer Dispatch : register(b1)
     uint Mips;
     uint Reflection;
 };
+cbuffer NativeCapture : register(b2)
+{
+    row_major float4x4 NativeView;
+    row_major float4x4 NativeProjection;
+    uint2 NativeSize;
+    uint NativeMaterialPitch;
+    uint NativeDirectPitch;
+};
+
+// The outgoing diffuse, emission and thin transmission are usable for
+// environment observation, not proof of complete opaque raster replacement.
+// Do not feed previous indirect light or view-dependent specular into history.
+bool ReadNativeRadiance(float3 direction, out float3 radiance)
+{
+    radiance = 0;
+    if (any(NativeSize == 0)) return false;
+    float3 v = mul((float3x3)NativeView, -direction);
+    if (v.z >= 0) return false;
+    float4 clip = mul(NativeProjection,float4(v,0));
+    if (!all(isfinite(clip)) || abs(clip.w) < 1e-8) return false;
+    float2 uv = clip.xy/clip.w*float2(0.5,-0.5)+0.5;
+    if (any(uv < 0) || any(uv >= 1)) return false;
+    uint2 pixel = min(uint2(uv*float2(NativeSize)),NativeSize-1u);
+    uint evidence = RasterEvidence.Load((pixel.y*NativeSize.x+pixel.x)*4u);
+    if ((evidence & RasterIdentityCandidate) == 0u) return false;
+    uint material = pixel.y*NativeMaterialPitch+pixel.x*NativeSurfaceStride;
+    float4 base = UnpackNativeLobeHalf4(NativeMaterials.Load2(material));
+    float4 emission = UnpackNativeLobeHalf4(NativeMaterials.Load2(material+24u));
+    uint signal = pixel.y*NativeDirectPitch+pixel.x*NativeLightingStride;
+    float4 diffuse = UnpackNativeLobeHalf4(NativeDirect.Load2(signal));
+    float4 transmission = UnpackNativeLobeHalf4(NativeDirect.Load2(signal+16u));
+    if (base.a != SurfaceEvaluatedBase || !all(isfinite(base)) || !all(isfinite(emission)) ||
+        !all(isfinite(diffuse)) || diffuse.a <= 0 || !all(isfinite(transmission)) ||
+        transmission.a != float(ContributionTransmission)) return false;
+    radiance = max(diffuse.rgb+transmission.rgb+max(emission.rgb,0),0);
+    return all(isfinite(radiance)) && all(radiance <= 65504);
+}
+
 float3 Encode(float3 c)
 {
     c = max(c,0);
@@ -39,9 +81,14 @@ void historyMain(uint3 id : SV_DispatchThreadID)
 {
     if (any(id.xy >= Size) || id.z >= 6) return;
     float3 d = NativeCubeDirection(id, Size);
+    float3 nativeRadiance;
+    if (ReadNativeRadiance(d,nativeRadiance)) {
+        Destination[id] = float4(nativeRadiance,1);
+        return;
+    }
     float4 captured = Source.SampleLevel(PointClamp,d,0);
     if (abs(captured.a) > 0) {
-        Destination[id] = float4(captured.rgb, sign(captured.a));
+        Destination[id] = float4(SceneRadiance(captured.rgb), sign(captured.a));
         return;
     }
     if (HasHistory != 0) {
@@ -68,7 +115,7 @@ float3 Resolve(float3 direction)
 {
     float4 c = Source.SampleLevel(PointClamp,direction,0);
     if (c.a > 0 || (Reflection != 0 && c.a < 0))
-        return SceneRadiance(c.rgb);
+        return c.rgb;
     return Fallback(direction);
 }
 [numthreads(8,8,1)]

@@ -3,6 +3,8 @@
 #include "Features/DX12/FullNativeFeature.h"
 #include "Features/DX12/DX12NativeEnvironment.h"
 
+namespace DX12Native { struct FullNativeReconstructionFrame; }
+
 namespace NativeCubemaps
 {
     class CubeProcessing
@@ -10,7 +12,8 @@ namespace NativeCubemaps
     public:
         ~CubeProcessing();
         bool Dispatch(const GraphicsBackend&, std::shared_ptr<const DX12Native::EnvironmentFrame>,
-            const std::array<float4,3>&, const float4& cameraPosition);
+            const std::array<float4,3>&, const float4& cameraPosition,
+            std::shared_ptr<const DX12Native::FullNativeReconstructionFrame> native);
         void Reset();
         void Poll();
         std::shared_ptr<const DX12Native::EnvironmentFrame> Get() const { return current; }
@@ -36,7 +39,9 @@ namespace NativeCubemaps
         void OnRuntimeDisabled() override { InvalidateGeneration(); Release(); }
         void ClearShaderCache() override { InvalidateGeneration(); Release(); }
         DX12Native::EnvironmentStamp Prepare(uint32_t scope,uint32_t frame,bool& changed);
-        void Capture(const GraphicsBackend&, ID3D11ShaderResourceView* sceneColor, uint32_t frame);
+        void Capture(const GraphicsBackend&, ID3D11ShaderResourceView* sceneColor, uint32_t frame,
+            std::shared_ptr<const DX12Native::FullNativeReconstructionFrame> native);
+        json GetDiagnostics() override;
         void InvalidateGeneration();
         void Release();
         std::shared_ptr<const DX12Native::EnvironmentFrame> Get() const;
@@ -53,5 +58,6 @@ namespace NativeCubemaps
         uint32_t lastCaptureFrame = UINT32_MAX;
         float lastHours = 0;
         bool failureLogged = false;
+        bool nativeInputSubmitted = false, rasterInputSubmitted = false;
     };
 }
