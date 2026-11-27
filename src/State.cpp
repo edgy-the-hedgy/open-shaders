@@ -507,7 +507,8 @@ void State::Reset()
 
 void State::Setup()
 {
-	globals::features::truePBR.SetupResources();
+	if (!globals::features::dx12Control.UsesExclusiveMaterials())
+		globals::features::truePBR.SetupResources();
 	SetupResources();
 	globals::hiZPyramid->SetupResources();
 

@@ -28,7 +28,7 @@ struct DX12Control final : Feature
 	bool IsFullRTMode() const { return GetMode() == DX12::ControlMode::FullRT; }
 	bool IsFullNativeMode() const { return GetMode() == DX12::ControlMode::FullNative; }
 	/** @brief Material capture is admitted only for an active Full Native session. */
-	bool WantsMaterialPreparation() const { return IsActive() && DX12::RequiresMaterialPreparation(GetMode()); }
+	bool WantsMaterialPreparation() const { return IsActive() && UsesExclusiveMaterials(); }
 	/** @brief Session authority is independent of runtime DX12 availability. */
 	DX12::FeatureBackend GetFeatureBackend() const { return featureBackend.load(std::memory_order_acquire); }
 	bool UsesExclusiveMaterials() const { return GetFeatureBackend() == DX12::FeatureBackend::FullNative; }

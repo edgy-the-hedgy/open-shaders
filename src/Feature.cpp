@@ -80,6 +80,12 @@ void Feature::MigrateConfigSettings(json& settings)
 
 void Feature::Load(json& o_json)
 {
+	// Full Native owns material authority for the session, including config reloads.
+	if (this == &globals::features::truePBR && globals::features::dx12Control.UsesExclusiveMaterials()) {
+		loaded = false;
+		return;
+	}
+
 	// AIO ships every feature's ini to every runtime; loaded must stay false
 	// here on VR unless dev mode's own test-all-features bypass is active.
 	if (globals::game::isVR && !SupportsVR() && !globals::state->IsDeveloperMode()) {
