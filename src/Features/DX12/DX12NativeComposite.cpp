@@ -581,6 +581,22 @@ namespace DX12Native
 		}
 	}
 
+	void NativeComposite::ReconstructFullNative(const GraphicsBackend& backend,
+		std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
+		std::shared_ptr<const DirectLightingFrame> direct, std::shared_ptr<const IndirectLightingFrame> indirect)
+	{
+		if (!material || (!direct && !indirect))
+			return;
+		if (!fullNativeReconstruction)
+			fullNativeReconstruction = std::make_unique<FullNativeReconstruction>();
+		fullNativeReconstruction->Dispatch(backend, std::move(material), std::move(direct), std::move(indirect));
+	}
+
+	std::shared_ptr<const FullNativeReconstructionFrame> NativeComposite::GetFullNativeReconstruction(uint32_t frame) const
+	{
+		return fullNativeReconstruction ? fullNativeReconstruction->Get(frame) : nullptr;
+	}
+
 	bool NativeComposite::Retain(const std::shared_ptr<const Frame>& frame, ID3D12Fence* fence, uint64_t value)
 	{
 		if (!frame || !fence || !value)

@@ -35,6 +35,7 @@ if(EXCLUDE_NATIVE_DXIL)
         "NativeComposite/DirectLighting.dxil"
         "NativeComposite/NativeDiffuseSH.dxil"
         "NativeComposite/NativeIndirectLighting.dxil"
+        "NativeComposite/FullNativeReconstruction.dxil"
     )
 endif()
 

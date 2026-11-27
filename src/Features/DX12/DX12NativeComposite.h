@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DX12NativeShadowTrace.h"
+#include "DX12FullNativeReconstruction.h"
 #include "GraphicsInterop.h"
 #include "NativeShadowHistory.h"
 #include "VideoMemoryBudget.h"
@@ -54,6 +55,11 @@ namespace DX12Native
 			const std::shared_ptr<const ShadowMaskFrame>& shadow,
 			bool returnColorToDX11, bool publishReconstructedMask = false);
 		bool Retain(const std::shared_ptr<const Frame>& frame, ID3D12Fence* fence, uint64_t value);
+		void ReconstructFullNative(const GraphicsBackend& backend,
+			std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
+			std::shared_ptr<const DirectLightingFrame> direct, std::shared_ptr<const IndirectLightingFrame> indirect);
+		std::shared_ptr<const FullNativeReconstructionFrame> GetFullNativeReconstruction(uint32_t frame) const;
+		void ResetFullNative() { fullNativeReconstruction.reset(); }
 		~NativeComposite();
 		/** @brief Release completed input publications on the render thread. */
 		void RetireCompletedInputs();
@@ -108,6 +114,7 @@ namespace DX12Native
 		};
 
 		std::array<std::unique_ptr<Slot>, 4> slots;
+		std::unique_ptr<FullNativeReconstruction> fullNativeReconstruction;
 		struct ShadowVariantState
 		{
 			winrt::com_ptr<ID3D12RootSignature> root;

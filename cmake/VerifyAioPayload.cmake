@@ -22,6 +22,7 @@ set(_required
     "Shaders/NativeComposite/DirectLighting.dxil"
     "Shaders/NativeComposite/NativeDiffuseSH.dxil"
     "Shaders/NativeComposite/NativeIndirectLighting.dxil"
+    "Shaders/NativeComposite/FullNativeReconstruction.dxil"
     "Shaders/Upscaling/FidelityFX/amd_fidelityfx_framegeneration_dx12.dll"
     "Shaders/Upscaling/FidelityFX/amd_fidelityfx_loader_dx12.dll"
     "Shaders/Upscaling/FidelityFX/amd_fidelityfx_upscaler_dx12.dll"
