@@ -84,8 +84,9 @@ void Feature::MigrateConfigSettings(json& settings)
 
 void Feature::Load(json& o_json)
 {
-	// Full Native owns material authority for the session, including config reloads.
-	if (DX12Control::ClassifyCounterpart(this) == DX12::CounterpartKind::LegacyMaterial &&
+	// Session authority also applies to configuration reloads. Native producers
+	// are admitted separately during the boot-time backend validation.
+	if (!DX12Control::IsNativeCounterpart(this) &&
 		globals::features::dx12Control.GetExecutionRole(this) == DX12::ExecutionRole::Dormant) {
 		loaded = false;
 		return;

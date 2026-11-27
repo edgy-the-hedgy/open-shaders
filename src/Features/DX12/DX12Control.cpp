@@ -109,7 +109,7 @@ void DX12Control::InitializeFeatureBackend()
 	if (backend != DX12::FeatureBackend::FullNative)
 		return;
 
-	// Validate core registration before excluding the legacy material owner.
+	// Validate all native core registrations before excluding legacy counterparts.
 	// These features have no independent settings; their GPU resources remain lazy.
 	const auto counterparts = NativeCounterparts();
 	json unused = json::object();
@@ -127,9 +127,16 @@ void DX12Control::InitializeFeatureBackend()
 		return;
 	}
 
-	globals::features::truePBR.loaded = false;
+	// Boot settings were read by State::Load, but no feature execution hooks
+	// have been installed yet. Apply the session role to every registered counterpart.
 	featureBackend.store(backend, std::memory_order_release);
-	logger::info("[DX12] Full Native selected; TruePBR is disabled for this session. Vanilla raster lighting remains the fallback.");
+	for (auto* feature : Feature::GetFeatureList()) {
+		if (GetExecutionRole(feature) == DX12::ExecutionRole::Dormant) {
+			feature->loaded = false;
+			logger::info("[DX12] {} dormant for Full Native session", feature->GetShortName());
+		}
+	}
+	logger::info("[DX12] Full Native selected; all legacy counterparts are dormant. Vanilla raster lighting remains the fallback.");
 }
 
 void DX12Control::InstallMaterialBackendHooks()
