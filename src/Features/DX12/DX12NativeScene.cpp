@@ -23,6 +23,8 @@
 #include "RE/T/TESObjectLIGH.h"
 #include "RE/U/UI.h"
 #include "State.h"
+#include "ShaderCache.h"
+#include "RE/R/RendererShadowState.h"
 #include "Utils/D3D.h"
 #include "Utils/DevBenchUx.h"
 #include "Utils/Game.h"
@@ -1115,6 +1117,8 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 			const auto& color = property->projectedUVColor;
 			observation.Observe(true, { { params.red, params.green, params.blue, params.alpha },
 				{ color.red, color.green, color.blue, color.alpha } });
+			if (observation.ValidProjection())
+				draws.activeProjectedInstance = match.ordinal;
 		} else observation.Observe(false);
 		// Live projection overrides stale preparation classification for admission.
 		if (observation.RejectRasterCandidate()) {
@@ -1151,6 +1155,68 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 	globals::state->permutationData.nativeRasterPrimitiveCount = primitiveCount;
 }
 
+void DX12NativeScene::ObserveProjectedDrawBindings(const RE::BSRenderPass* pass)
+{
+	// The render-pass scope is the sole admission path. No D3D state reads
+	// or retained COM references are needed for unrelated draws.
+	auto& draws = fullNativeRasterDraws;
+	const auto ordinal = draws.activeProjectedInstance;
+	if (ordinal == UINT32_MAX || draws.finalized || !pass || !pass->geometry ||
+		!globals::features::dx12Control.WantsMaterialPreparation() || !globals::game::shadowState ||
+		!globals::game::graphicsState || draws.stamp.frame != globals::game::graphicsState->GetFrameCount() ||
+		!draws.scene || !draws.scene->inputs || ordinal >= draws.scene->inputs->geometry.size())
+		return;
+	const auto& shape = draws.scene->inputs->geometry[ordinal];
+	if (!shape || shape->casterSource.geometry != reinterpret_cast<uintptr_t>(pass->geometry))
+		return;
+	const auto property = draws.projection.find(ordinal);
+	if (property == draws.projection.end() || !property->second.ValidProjection())
+		return;
+	const auto& state = globals::game::shadowState->GetRuntimeData();
+	if (!state.currentPixelShader)
+		return;
+	using Cache = SIE::ShaderCache;
+	using Flags = Cache::LightingShaderFlags;
+	const auto descriptor = state.currentPixelShader->id;
+	// Restrict to the ordinary object permutation. Other techniques alias
+	// the same slots for unrelated resources (parallax, sparkle, LOD).
+	if (!(descriptor & static_cast<uint32_t>(Flags::ProjectedUV)) ||
+		(descriptor & static_cast<uint32_t>(Flags::Skinned)) ||
+		Cache::GetLightingTechnique(descriptor) != Cache::LightingShaderTechniques::None)
+		return;
+	constexpr std::array<uint32_t, 4> slots{ 3, 8, 10, 11 };
+	std::array<winrt::com_ptr<ID3D11ShaderResourceView>, slots.size()> views;
+	for (size_t i = 0; i < slots.size(); ++i) {
+		auto* view = Util::AsReal(state.PSTexture[slots[i]]);
+		if (view) {
+			D3D11_SHADER_RESOURCE_VIEW_DESC desc{};
+			view->GetDesc(&desc);
+			if (desc.ViewDimension != D3D11_SRV_DIMENSION_TEXTURE2D || desc.Format == DXGI_FORMAT_UNKNOWN)
+				return;
+			views[i].copy_from(view);
+		}
+	}
+	// Noise is required even for the solid-color projection permutation.
+	if (!views.back())
+		return;
+	auto& observation = draws.projectionTextures[ordinal];
+	if (observation.conflicted)
+		return;
+	if (observation.observed) {
+		bool same = observation.descriptor == descriptor;
+		for (size_t i = 0; i < views.size(); ++i)
+			same = same && observation.views[i].get() == views[i].get();
+		if (!same) {
+			observation.conflicted = true;
+			observation.views = {};
+		}
+		return;
+	}
+	observation.descriptor = descriptor;
+	observation.views = std::move(views);
+	observation.observed = true;
+}
+
 void DX12NativeScene::FinishFullNativeRasterDraws()
 {
 	if (!globals::game::graphicsState)
@@ -1179,10 +1245,15 @@ std::function<void()> DX12NativeScene::OnRenderPassBegin(const RE::BSRenderPass*
 		auto& data = globals::state->permutationData;
 		const auto oldBase = data.nativeRasterTokenBase;
 		const auto oldCount = data.nativeRasterPrimitiveCount;
+		const auto oldProjection = fullNativeRasterDraws.activeProjectedInstance;
+		const auto oldStamp = fullNativeRasterDraws.stamp;
+		fullNativeRasterDraws.activeProjectedInstance = UINT32_MAX;
 		data.nativeRasterTokenBase = data.nativeRasterPrimitiveCount = 0;
 		if (pass && pass->geometry)
 			ObserveFullNativeRasterDraw(*pass->geometry);
-		return [oldBase, oldCount] {
+		return [this, oldBase, oldCount, oldProjection, oldStamp] {
+			fullNativeRasterDraws.activeProjectedInstance =
+				fullNativeRasterDraws.stamp == oldStamp && !fullNativeRasterDraws.finalized ? oldProjection : UINT32_MAX;
 			if (globals::state) {
 				globals::state->permutationData.nativeRasterTokenBase = oldBase;
 				globals::state->permutationData.nativeRasterPrimitiveCount = oldCount;
@@ -1422,9 +1493,23 @@ json DX12NativeScene::GetStatus() const
 			validProjection += observation.ValidProjection() ? 1u : 0u;
 			conflictingProjection += observation.conflicted ? 1u : 0u;
 		}
+		uint32_t selectedTextureInstances = 0, completeTextureViews = 0, conflictingTextures = 0;
+		for (const auto& [ordinal, observation] : draws.projectionTextures) {
+			const auto property = draws.projection.find(ordinal);
+			if (property == draws.projection.end() || !property->second.ValidProjection())
+				continue;
+			if (observation.conflicted) ++conflictingTextures;
+			else if (observation.observed) {
+				++selectedTextureInstances;
+				if (std::ranges::all_of(observation.views, [](const auto& view) { return bool(view); }))
+					++completeTextureViews;
+			}
+		}
 		status["fullNativeProjectionInputs"] = { { "frame", draws.stamp.frame }, { "finalized", draws.finalized },
 			{ "projectedDraws", draws.projectedDraws }, { "unmatchedDraws", draws.unmatchedProjectedDraws },
 			{ "validPropertyInstances", validProjection }, { "conflictingInstances", conflictingProjection },
+			{ "selectedTextureInstances", selectedTextureInstances }, { "completeTextureViews", completeTextureViews },
+			{ "conflictingTextureInstances", conflictingTextures },
 			{ "projectorConstantsReady", false }, { "projectedTexturesReady", false } };
 		status["fullNativeRasterAdmission"] = { { "frame", draws.stamp.frame }, { "scope", draws.stamp.scope },
 			{ "geometryRevision", draws.stamp.geometryRevision }, { "materialRevision", draws.stamp.materialRevision },

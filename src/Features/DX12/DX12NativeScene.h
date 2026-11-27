@@ -72,6 +72,8 @@ struct DX12NativeScene final : OverlayFeature
 	void OnDepthPrepassReady() override;
 	/** @brief Observe CPU-backed opaque rigid geometry from SCM or normal render passes. */
 	void ObserveSCMRigidCaster(RE::BSGeometry& geometry, bool requireStability = false);
+	/** @brief Snapshot engine-selected projection views after Lighting SetupGeometry; never read unmapped constants. */
+	void ObserveProjectedDrawBindings(const RE::BSRenderPass* pass);
 	/** @brief SCM hands native-owned lights' static casters to RayQuery and retains movers. */
 	bool OwnsStaticForLight(RE::BSShadowLight* light, int32_t slot) const;
 	/** @brief Frame-wide policy established before SCM scheduling. */
@@ -112,6 +114,13 @@ private:
 	void DispatchFullNativeMaterial(bool opaqueReady = false);
 	void ObserveFullNativeRasterDraw(RE::BSGeometry& geometry);
 	void FinishFullNativeRasterDraws();
+	struct ProjectedTextureObservation
+	{
+		// Lighting.hlsl projected diffuse, normal, detail, and noise SRVs.
+		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 4> views;
+		bool observed = false, conflicted = false;
+		uint32_t descriptor = 0;
+	};
 	// Render-thread-only observations, deliberately separate from SCM ownership.
 	struct FullNativeRasterDrawState
 	{
@@ -121,6 +130,8 @@ private:
 		std::vector<uint32_t> tokenBases;
 		// Sparse, frame-local observations indexed by the matched TLAS instance.
 		std::unordered_map<uint32_t, DX12Native::MaterialFrameContract::ProjectedPropertyObservation> projection;
+		std::unordered_map<uint32_t, ProjectedTextureObservation> projectionTextures;
+		uint32_t activeProjectedInstance = UINT32_MAX;
 		uint32_t projectedDraws = 0, unmatchedProjectedDraws = 0;
 		std::vector<DX12Native::MaterialFrameContract::RasterPixelIdentity> tokens;
 		uint32_t tokenBudgetRejected = 0;
