@@ -1,0 +1,334 @@
+#include "DX12NativeIndirectLighting.h"
+#include "DX12GpuRetirement.h"
+#include "GpuPass.h"
+#include "Utils/FileSystem.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <directx/d3dx12.h>
+#include <fstream>
+#include <set>
+#include <stdexcept>
+#include <vector>
+
+namespace DX12Native
+{
+    namespace
+    {
+        using Eval = NativeMaterialEvaluation;
+        using namespace MaterialFrameContract;
+        struct Constants
+        {
+            Matrix projectionInverse, viewInverse;
+            uint32_t width, height, materialPitch, lightingPitch;
+            uint32_t enabled, available, environmentMips, reflectionMips;
+            float environmentScale, skyScale;
+            uint32_t interior, colorEncoding;
+            NativeAmbientParameters ambient;
+        };
+        static_assert(sizeof(Constants) == 272);
+        constexpr uint64_t kSHBytes = 48;
+
+        void BuildPipeline(ID3D12Device* device, const std::filesystem::path& path, UINT count, CD3DX12_ROOT_PARAMETER* parameters,
+            winrt::com_ptr<ID3D12RootSignature>& root, winrt::com_ptr<ID3D12PipelineState>& pipeline)
+        {
+            std::ifstream file(path, std::ios::binary | std::ios::ate);
+            if (!file || file.tellg() <= 0 || file.tellg() > 16 * 1024 * 1024)
+                throw std::runtime_error("Native indirect DXIL unavailable");
+            std::vector<char> shader(static_cast<size_t>(file.tellg()));
+            file.seekg(0);
+            if (!file.read(shader.data(), std::streamsize(shader.size())))
+                throw std::runtime_error("Native indirect DXIL read failed");
+            const CD3DX12_STATIC_SAMPLER_DESC sampler(0, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+                D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
+            const CD3DX12_ROOT_SIGNATURE_DESC signature(count, parameters, 1, &sampler);
+            winrt::com_ptr<ID3DBlob> blob, errors;
+            Eval::Check(D3D12SerializeRootSignature(&signature, D3D_ROOT_SIGNATURE_VERSION_1, blob.put(), errors.put()));
+            Eval::Check(device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(root.put())));
+            D3D12_COMPUTE_PIPELINE_STATE_DESC pso{};
+            pso.pRootSignature = root.get();
+            pso.CS = { shader.data(), shader.size() };
+            Eval::Check(device->CreateComputePipelineState(&pso, IID_PPV_ARGS(pipeline.put())));
+        }
+
+        void Transition(ID3D12GraphicsCommandList* cmd, ID3D12Resource* resource,
+            D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
+        {
+            const auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(resource, before, after);
+            cmd->ResourceBarrier(1, &barrier);
+        }
+
+        void CubeView(ID3D12Device* device, const EnvironmentCube& cube, D3D12_CPU_DESCRIPTOR_HANDLE handle)
+        {
+            D3D12_SHADER_RESOURCE_VIEW_DESC view{};
+            view.Format = cube.format;
+            view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+            view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            view.TextureCube.MipLevels = cube.mipCount;
+            device->CreateShaderResourceView(cube.resource.get(), &view, handle);
+        }
+    }
+
+    NativeIndirectLighting::~NativeIndirectLighting()
+    {
+        current.reset();
+        baseCache.reset();
+        skyCache.reset();
+        for (auto& slot : slots) {
+            if (!slot || GpuFenceRetired(slot->readyFence.get(), slot->readyValue))
+                continue;
+            std::vector<FenceDependency> dependencies{ FencePoint(slot->readyFence.get(), slot->readyValue) };
+            RetireAfterFences(std::move(slot), owner.d3d12Device, std::move(dependencies));
+        }
+    }
+
+    uint64_t NativeIndirectLighting::AllocationBytes() const
+    {
+        uint64_t bytes = 0;
+        std::set<const EnvironmentIrradiance*> seen;
+        const auto count = [&](const auto& sh) {
+            if (sh && seen.insert(sh.get()).second) bytes += sh->allocationBytes;
+        };
+        count(baseCache); count(skyCache);
+        for (const auto& slot : slots)
+            if (slot) { bytes += slot->allocationBytes; count(slot->baseSH); count(slot->skySH); }
+        return bytes;
+    }
+
+    void NativeIndirectLighting::Poll(uint32_t frame, bool release)
+    {
+        if (current && (current->frame != frame || release)) current.reset();
+        if (release) { baseCache.reset(); skyCache.reset(); }
+        for (auto& slot : slots) {
+            if (!slot) continue;
+            if (slot->readyValue == UINT64_MAX && completion && owner.commandQueue &&
+                completion->GetCompletedValue() != UINT64_MAX) {
+                const uint64_t rescue = nextFence + 1;
+                if (SUCCEEDED(owner.commandQueue->Signal(completion.get(), rescue))) {
+                    nextFence = rescue; slot->readyValue = rescue;
+                }
+            }
+            if (slot.use_count() == 1 && GpuFenceRetired(slot->readyFence.get(), slot->readyValue)) {
+                if (release) { slot.reset(); continue; }
+                slot->material.reset(); slot->environment.reset();
+                slot->baseSH.reset(); slot->skySH.reset();
+            }
+        }
+    }
+
+    void NativeIndirectLighting::Reset()
+    {
+        Poll(UINT32_MAX, true);
+        failure.clear();
+    }
+
+    std::shared_ptr<const IndirectLightingFrame> NativeIndirectLighting::Get(uint32_t frame) const
+    {
+        return current && current->frame == frame && current->readyFence &&
+            ValidProducerSignal(current->readyValue, current->readyFence->GetCompletedValue()) ? current : nullptr;
+    }
+
+    void NativeIndirectLighting::Initialize(const GraphicsBackend& backend)
+    {
+        if (pipeline) {
+            if (owner.d3d12Device.get() != backend.d3d12Device.get() || owner.commandQueue.get() != backend.commandQueue.get())
+                throw std::runtime_error("Native indirect device changed; restart required");
+            return;
+        }
+        auto* device = backend.d3d12Device.get();
+        CD3DX12_DESCRIPTOR_RANGE projectionRange;
+        projectionRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+        CD3DX12_ROOT_PARAMETER projectionParameters[3];
+        projectionParameters[0].InitAsDescriptorTable(1, &projectionRange);
+        projectionParameters[1].InitAsUnorderedAccessView(0);
+        projectionParameters[2].InitAsConstants(1, 0);
+        CD3DX12_DESCRIPTOR_RANGE ranges[2];
+        ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1, 0, 0);
+        ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 4, 0, 1);
+        CD3DX12_ROOT_PARAMETER parameters[6];
+        parameters[0].InitAsShaderResourceView(0);
+        parameters[1].InitAsDescriptorTable(2, ranges);
+        parameters[2].InitAsShaderResourceView(2);
+        parameters[3].InitAsShaderResourceView(3);
+        parameters[4].InitAsUnorderedAccessView(0);
+        parameters[5].InitAsConstantBufferView(0);
+        winrt::com_ptr<ID3D12RootSignature> pr, ir;
+        winrt::com_ptr<ID3D12PipelineState> pp, ip;
+        winrt::com_ptr<ID3D12Fence> fence;
+        BuildPipeline(device, Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativeDiffuseSH.dxil", 3, projectionParameters, pr, pp);
+        BuildPipeline(device, Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativeIndirectLighting.dxil", 6, parameters, ir, ip);
+        Eval::Check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(fence.put())));
+        owner = backend;
+        projectionRoot = std::move(pr); projectionPipeline = std::move(pp);
+        root = std::move(ir); pipeline = std::move(ip); completion = std::move(fence);
+    }
+
+    void NativeIndirectLighting::Dispatch(const GraphicsBackend& backend,
+        std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
+        std::shared_ptr<const EnvironmentFrame> environment, uint32_t enabled, float environmentScale, float skyScale, const NativeAmbientParameters& ambient)
+    {
+        CS_GPU_PASS("NativeLighting::Indirect");
+        if (!material || !environment || !enabled) return;
+        if (current && current->material == material) return;
+        Poll(material->frame);
+        if (!material->IsCoherent(material->frame, material->width, material->height) ||
+            material->scope != environment->stamp.scope || !environment->base ||
+            !environment->producerFence || !ValidProducerSignal(environment->producerValue, environment->producerFence->GetCompletedValue()) ||
+            !std::isfinite(environmentScale) || !std::isfinite(skyScale)) {
+            failure = "Incoherent indirect inputs"; return;
+        }
+        if ((!ambient.iblEnabled || ambient.dalcMode >= 2 || ambient.dalcAmount != 0) && !ambient.dalcValid) {
+            failure = "Waiting for same-frame engine DALC"; return;
+        }
+        uint32_t available = 0;
+        if ((enabled & IndirectDiffuse) && (!ambient.iblEnabled || environment->stamp.interior || environment->sky)) available |= IndirectDiffuse;
+        if ((enabled & IndirectSpecular) && (environment->stamp.interior || environment->reflection)) available |= IndirectSpecular;
+        if (!available) { failure = "Waiting for completed environment inputs"; return; }
+        const uint32_t width = material->width, height = material->height;
+        const uint64_t bytes = uint64_t(width) * height * kLightingStride;
+        if (!bytes || bytes > UINT32_MAX || width > UINT32_MAX / kLightingStride) return;
+        std::shared_ptr<IndirectLightingFrame>* selected = nullptr;
+        bool submitted = false;
+        try {
+            Initialize(backend);
+            if (completion->GetCompletedValue() == UINT64_MAX) throw std::runtime_error("Indirect device removed");
+            for (auto& slot : slots)
+                if (!slot || (slot.use_count() == 1 && GpuFenceRetired(slot->readyFence.get(), slot->readyValue))) {
+                    selected = &slot;
+                    if (slot && slot->width == width && slot->height == height) break;
+                }
+            if (!selected) { failure = "Indirect frame pool busy"; return; }
+            auto& slot = *selected;
+            auto* device = backend.d3d12Device.get();
+            const bool fresh = !slot || slot->width != width || slot->height != height;
+            const auto allocation = [&](uint64_t size) {
+                const auto desc = CD3DX12_RESOURCE_DESC::Buffer(size, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+                return device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
+            };
+            const bool needsBaseSH = ambient.iblEnabled && ambient.dalcMode < 2;
+            const bool needsSkySH = ambient.iblEnabled && (available & IndirectDiffuse) && !environment->stamp.interior;
+            if (!needsBaseSH) baseCache.reset();
+            if (!needsSkySH) skyCache.reset();
+            const bool projectBase = needsBaseSH && (!baseCache || baseCache->cube != environment->base);
+            const bool projectSky = needsSkySH &&
+                (!skyCache || skyCache->cube != environment->sky);
+            const uint64_t outputAllocation = fresh ? allocation(bytes) : 0;
+            const uint64_t shAllocation = (projectBase || projectSky) ? allocation(kSHBytes) : 0;
+            if (outputAllocation == UINT64_MAX || shAllocation == UINT64_MAX) throw std::runtime_error("Indirect allocation unsupported");
+            const uint64_t required = outputAllocation + (fresh ? 1024 * 1024 : 0) +
+                shAllocation * (uint64_t(projectBase) + uint64_t(projectSky));
+            if (required) {
+                const uint64_t tracked = AllocationBytes();
+                const auto allowance = budget.Query(device, tracked);
+                if (!allowance.localBudget || required > allowance.effectiveBytes || tracked > allowance.effectiveBytes - required)
+                    throw std::runtime_error("Indirect lighting deferred by DXGI budget");
+            }
+            if (fresh) {
+                auto replacement = std::make_shared<IndirectLightingFrame>();
+                replacement->width = width; replacement->height = height; replacement->rowPitch = width * kLightingStride;
+                replacement->allocationBytes = outputAllocation + 1024 * 1024;
+                replacement->samples = Eval::Buffer(device, bytes, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON,
+                    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+                replacement->samples->SetName(L"NativeLighting::IndirectDiffuseSpecular");
+                replacement->constants = Eval::Buffer(device, 512, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
+                D3D12_DESCRIPTOR_HEAP_DESC heap{};
+                heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; heap.NumDescriptors = 4; heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+                Eval::Check(device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(replacement->descriptors.put())));
+                Eval::Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(replacement->allocator.put())));
+                Eval::Check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, replacement->allocator.get(), pipeline.get(), IID_PPV_ARGS(replacement->commands.put())));
+                slot = std::move(replacement);
+            } else {
+                Eval::Check(slot->allocator->Reset());
+                Eval::Check(slot->commands->Reset(slot->allocator.get(), pipeline.get()));
+            }
+            slot->material = std::move(material); slot->environment = std::move(environment);
+            slot->frame = slot->material->frame; slot->available = available;
+            slot->root = root; slot->pipeline = pipeline;
+            slot->projectionRoot = projectionRoot; slot->projectionPipeline = projectionPipeline;
+            slot->readyFence = completion; slot->readyValue = UINT64_MAX;
+            const auto& env = *slot->environment;
+            const auto& raster = *slot->material->raster;
+            auto* cmd = slot->commands.get();
+            const UINT increment = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            const auto cpu = [&](UINT i) { return CD3DX12_CPU_DESCRIPTOR_HANDLE(slot->descriptors->GetCPUDescriptorHandleForHeapStart(), INT(i), increment); };
+            const auto gpu = [&](UINT i) { return CD3DX12_GPU_DESCRIPTOR_HANDLE(slot->descriptors->GetGPUDescriptorHandleForHeapStart(), INT(i), increment); };
+            D3D12_SHADER_RESOURCE_VIEW_DESC depthView{};
+            depthView.Format = DXGI_FORMAT_R32_FLOAT; depthView.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            depthView.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; depthView.Texture2D.MipLevels = 1;
+            auto* depth = raster.depth->resource.get();
+            device->CreateShaderResourceView(depth, &depthView, cpu(0));
+            CubeView(device, *env.base, cpu(1));
+            CubeView(device, env.reflection ? *env.reflection : *env.base, cpu(2));
+            CubeView(device, env.sky ? *env.sky : *env.base, cpu(3));
+            ID3D12DescriptorHeap* heaps[]{ slot->descriptors.get() };
+            cmd->SetDescriptorHeaps(1, heaps);
+            const auto project = [&](const std::shared_ptr<const EnvironmentCube>& cube, UINT descriptor) {
+                auto sh = std::make_shared<EnvironmentIrradiance>();
+                sh->cube = cube; sh->allocationBytes = shAllocation;
+                sh->coefficients = Eval::Buffer(device, kSHBytes, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+                auto* resource = cube->resource.get();
+                Transition(cmd, resource, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                cmd->SetPipelineState(projectionPipeline.get()); cmd->SetComputeRootSignature(projectionRoot.get());
+                cmd->SetComputeRootDescriptorTable(0, gpu(descriptor));
+                cmd->SetComputeRootUnorderedAccessView(1, sh->coefficients->GetGPUVirtualAddress());
+                cmd->SetComputeRoot32BitConstant(2, uint32_t(cube->stamp.encoding), 0);
+                cmd->Dispatch(1, 1, 1);
+                Transition(cmd, sh->coefficients.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+                Transition(cmd, resource, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+                return sh;
+            };
+            slot->baseSH = needsBaseSH ? (projectBase ? project(env.base, 1) : baseCache) : nullptr;
+            slot->skySH = needsSkySH ? (projectSky ? project(env.sky, 3) : skyCache) : nullptr;
+            const Constants constants{ raster.camera.CameraProjInverse, raster.camera.CameraViewInverse,
+                width, height, slot->material->rowPitch, slot->rowPitch, enabled, available, env.base->mipCount,
+                env.reflection ? env.reflection->mipCount : 0u, environmentScale, skyScale,
+                env.stamp.interior ? 1u : 0u, uint32_t(env.stamp.encoding), ambient };
+            void* mapped = nullptr; const D3D12_RANGE noRead{};
+            Eval::Check(slot->constants->Map(0, &noRead, &mapped));
+            std::memcpy(mapped, &constants, sizeof(constants)); slot->constants->Unmap(0, nullptr);
+            auto* base = env.base->resource.get();
+            auto* reflection = env.reflection ? env.reflection->resource.get() : base;
+            Transition(cmd, depth, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            Transition(cmd, base, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            if (reflection != base) Transition(cmd, reflection, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            Transition(cmd, slot->samples.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            cmd->SetPipelineState(pipeline.get()); cmd->SetComputeRootSignature(root.get());
+            const auto materialAddress = slot->material->samples->GetGPUVirtualAddress();
+            cmd->SetComputeRootShaderResourceView(0, materialAddress);
+            cmd->SetComputeRootDescriptorTable(1, gpu(0));
+            cmd->SetComputeRootShaderResourceView(2, slot->baseSH ? slot->baseSH->coefficients->GetGPUVirtualAddress() : materialAddress);
+            cmd->SetComputeRootShaderResourceView(3, slot->skySH ? slot->skySH->coefficients->GetGPUVirtualAddress() : materialAddress);
+            cmd->SetComputeRootUnorderedAccessView(4, slot->samples->GetGPUVirtualAddress());
+            cmd->SetComputeRootConstantBufferView(5, slot->constants->GetGPUVirtualAddress());
+            cmd->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
+            Transition(cmd, slot->samples.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+            Transition(cmd, depth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+            Transition(cmd, base, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+            if (reflection != base) Transition(cmd, reflection, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+            Eval::Check(cmd->Close());
+            Eval::Check(backend.commandQueue->Wait(slot->material->producerFence.get(), slot->material->producerValue));
+            Eval::Check(backend.commandQueue->Wait(env.producerFence.get(), env.producerValue));
+            ID3D12CommandList* lists[]{ cmd };
+            backend.commandQueue->ExecuteCommandLists(1, lists); submitted = true;
+            const uint64_t value = nextFence + 1;
+            Eval::Check(backend.commandQueue->Signal(completion.get(), value));
+            nextFence = value; slot->readyValue = value;
+            if (slot->baseSH) baseCache = slot->baseSH;
+            if (slot->skySH) skyCache = slot->skySH;
+            current = slot; ++submissions; projections += uint64_t(projectBase) + uint64_t(projectSky);
+            failure.clear();
+        } catch (const std::exception& e) {
+            failure = e.what();
+            if (!selected || !*selected) return;
+            if (!submitted) selected->reset();
+            else {
+                const uint64_t rescue = nextFence + 1;
+                if (SUCCEEDED(backend.commandQueue->Signal(completion.get(), rescue))) {
+                    nextFence = rescue; (*selected)->readyValue = rescue;
+                }
+            }
+        }
+    }
+}
