@@ -1013,6 +1013,7 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 		draws.scene = scene;
 		draws.stamp = stamp;
 		draws.seen.resize(scene->inputs->geometry.size());
+		draws.tokenBases.resize(scene->inputs->geometry.size());
 	}
 	// Never merge observations across scene generations in the same frame.
 	if (draws.finalized || draws.scene != scene || draws.stamp != stamp)
@@ -1059,8 +1060,20 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 		draws.seen[match.ordinal] = 1;
 		++draws.uniqueInstances;
 	}
-	// This is draw admission only. The raster winner/primitive still needs a
-	// dedicated per-pixel producer before any replacement can be allowed.
+	const auto primitiveCount = uint32_t(counts.triangleCount);
+	auto& base = draws.tokenBases[match.ordinal];
+	if (!base) {
+		const auto next = RasterTokenBase(uint32_t(draws.tokens.size()), primitiveCount);
+		if (!next) {
+			++draws.tokenBudgetRejected;
+			return;
+		}
+		for (uint32_t primitive = 0; primitive < primitiveCount; ++primitive)
+			draws.tokens.push_back({ match.ordinal, primitive });
+		base = next;
+	}
+	globals::state->permutationData.nativeRasterTokenBase = base;
+	globals::state->permutationData.nativeRasterPrimitiveCount = primitiveCount;
 }
 
 void DX12NativeScene::FinishFullNativeRasterDraws()
@@ -1079,9 +1092,20 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 std::function<void()> DX12NativeScene::OnRenderPassBegin(const RE::BSRenderPass* pass)
 {
 	if (loaded && !globals::game::isVR && globals::features::dx12Control.WantsMaterialPreparation()) {
+		if (!globals::state)
+			return nullptr;
+		auto& data = globals::state->permutationData;
+		const auto oldBase = data.nativeRasterTokenBase;
+		const auto oldCount = data.nativeRasterPrimitiveCount;
+		data.nativeRasterTokenBase = data.nativeRasterPrimitiveCount = 0;
 		if (pass && pass->geometry)
 			ObserveFullNativeRasterDraw(*pass->geometry);
-		return nullptr;
+		return [oldBase, oldCount] {
+			if (globals::state) {
+				globals::state->permutationData.nativeRasterTokenBase = oldBase;
+				globals::state->permutationData.nativeRasterPrimitiveCount = oldCount;
+			}
+		};
 	}
 	// Observe visible static geometry already drawn by the existing opaque
 	// render path. This does not change render-pass state or DX11 draw behavior.
@@ -1315,6 +1339,7 @@ json DX12NativeScene::GetStatus() const
 			{ "geometryRevision", draws.stamp.geometryRevision }, { "materialRevision", draws.stamp.materialRevision },
 			{ "draws", draws.draws }, { "candidateDraws", draws.candidates }, { "uniqueInstances", draws.uniqueInstances },
 			{ "ambiguousDraws", draws.ambiguous }, { "rejectedDraws", draws.rejected }, { "finalized", draws.finalized },
+			{ "primitiveTokens", draws.tokens.size() }, { "tokenBudgetRejected", draws.tokenBudgetRejected },
 			{ "exactPixelIdentity", false }, { "rasterReplacement", false } };
 	}
 	status["ownership"] = { { "granted", ownershipGranted.load(std::memory_order_relaxed) },

@@ -240,3 +240,13 @@ TEST_CASE("Full Native reconstruction rejects cross-instance history and invalid
 	REQUIRE_FALSE(SameNativeReceiver(a, {}, false));
 	REQUIRE_FALSE(SameNativeReceiver({ 4, UINT32_MAX }, a, true));
 }
+
+TEST_CASE("Full Native raster primitive tokens never alias on exhaustion", "[dx12][materials]")
+{
+	REQUIRE(RasterTokenBase(0, 1) == 1);
+	REQUIRE(RasterTokenBase(65534, 1) == 65535);
+	REQUIRE(RasterTokenBase(65534, 2) == 0);
+	REQUIRE(RasterTokenBase(65535, 1) == 0);
+	REQUIRE(RasterTokenBase(0, 0) == 0);
+	REQUIRE(RasterTokenBase(UINT32_MAX, 1) == 0);
+}

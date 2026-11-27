@@ -1297,7 +1297,11 @@ bool UseSkylightingShadowVisibility()
 #		define FUR_EARLY_DEPTH_STENCIL
 #	endif
 
-FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
+FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace
+#	if defined(NATIVE_RASTER_IDENTITY) && defined(DEFERRED)
+	, uint nativePrimitiveID : SV_PrimitiveID
+#	endif
+)
 {
 	PS_OUTPUT psout;
 	uint eyeIndex = Stereo::GetEyeIndexPS(input.Position, VPOSOffset);
@@ -4466,6 +4470,16 @@ FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFro
 
 #	if defined(CAPTURE_REFLECTION_RADIANCE)
 	psout.ReflectionRadiance = captureRadiance ? float4(radianceColor, psout.Diffuse.w) : psout.Diffuse;
+#	endif
+
+#	if defined(NATIVE_RASTER_IDENTITY) && defined(DEFERRED)
+	// Diagnostic token: a blend or a nonparticipating writer can invalidate winner evidence.
+	uint nativeToken = 0;
+	if (Permutation::NativeRasterTokenBase != 0 && nativePrimitiveID < Permutation::NativeRasterPrimitiveCount &&
+		psout.Diffuse.w >= 1.0 && !(Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::AdditiveLighting)) {
+		nativeToken = Permutation::NativeRasterTokenBase + nativePrimitiveID;
+	}
+	psout.Masks2.z = nativeToken <= 65535u ? float(nativeToken) / 65535.0 : 0.0;
 #	endif
 
 #	if defined(FUR_SHELLS_DEPTH)

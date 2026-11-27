@@ -32,6 +32,8 @@ struct DX12Control final : Feature
 	/** @brief Boot-latched NativePBR authority; disabling DX12 at runtime cannot reinstall legacy hooks. */
 	bool UsesExclusiveMaterials() const { return exclusiveMaterials.load(std::memory_order_acquire); }
 	void InitializeMaterialAuthority();
+	std::string_view GetShaderDefineName() override { return "NATIVE_RASTER_IDENTITY"; }
+	bool HasShaderDefine(RE::BSShader::Type type) override { return UsesExclusiveMaterials() && type == RE::BSShader::Type::Lighting; }
 	void DrawSettings() override;
 	void RegisterUxActions() override;
 	void LoadSettings(json& input) override;

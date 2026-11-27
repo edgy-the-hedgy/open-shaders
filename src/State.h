@@ -622,7 +622,9 @@ public:
 		float4 TreeWindProbeBase;
 		float4 TreeWindProbeTop;
 		float GrassCanopyHeight;
-		float3 canopyPadding;
+		uint nativeRasterTokenBase;
+		uint nativeRasterPrimitiveCount;
+		float canopyPadding;
 
 		float4 PerDrawFeatureData[2];
 
@@ -660,6 +662,8 @@ public:
 			       TreeWindProbeTop.y == other.TreeWindProbeTop.y &&
 			       TreeWindProbeTop.z == other.TreeWindProbeTop.z &&
 			       GrassCanopyHeight == other.GrassCanopyHeight &&
+			       nativeRasterTokenBase == other.nativeRasterTokenBase &&
+			       nativeRasterPrimitiveCount == other.nativeRasterPrimitiveCount &&
 			       PerDrawFeatureData[0].x == other.PerDrawFeatureData[0].x &&
 			       PerDrawFeatureData[0].y == other.PerDrawFeatureData[0].y &&
 			       PerDrawFeatureData[0].z == other.PerDrawFeatureData[0].z &&

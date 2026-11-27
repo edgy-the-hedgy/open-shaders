@@ -118,6 +118,9 @@ private:
 		std::shared_ptr<const DX12Native::TopLevel> scene;
 		DX12Native::MaterialFrameContract::RasterIdentityStamp stamp{};
 		std::vector<uint8_t> seen;
+		std::vector<uint32_t> tokenBases;
+		std::vector<DX12Native::MaterialFrameContract::RasterPixelIdentity> tokens;
+		uint32_t tokenBudgetRejected = 0;
 		uint32_t draws = 0, candidates = 0, uniqueInstances = 0, ambiguous = 0, rejected = 0;
 		bool finalized = false;
 	};
