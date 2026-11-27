@@ -423,3 +423,12 @@ TEST_CASE("Raster-derived material identity can filter but cannot certify a ray 
 	REQUIRE(MatchesRasterPixel(stamp, stamp, ray, ray, 5u, 100u));
 	REQUIRE_FALSE(MatchesRasterPixel(stamp, stamp, ray, candidate, 5u, 100u));
 }
+
+TEST_CASE("Character reflection geometry requires complete posed and primitive streams", "[dx12][materials]")
+{
+	STATIC_REQUIRE(ValidCharacterPrimitiveLayout(3, 1, 1, 216, 16));
+	STATIC_REQUIRE_FALSE(ValidCharacterPrimitiveLayout(3, 1, 1, 215, 16));
+	STATIC_REQUIRE_FALSE(ValidCharacterPrimitiveLayout(3, 1, 1, 216, 12));
+	STATIC_REQUIRE_FALSE(ValidCharacterPrimitiveLayout(3, 1, 0, 216, 16));
+	STATIC_REQUIRE_FALSE(ValidCharacterPrimitiveLayout(UINT32_MAX, UINT32_MAX, 1, UINT32_MAX, UINT32_MAX));
+}

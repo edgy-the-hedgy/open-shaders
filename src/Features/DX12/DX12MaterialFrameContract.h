@@ -21,6 +21,13 @@ namespace DX12Native::MaterialFrameContract
 	inline constexpr uint32_t kSecondaryProjectionBinding = 1u << 7;
 	// Only screen displacement remains limited; secondary rays can evaluate the resident height field.
 	inline constexpr uint32_t kSecondaryParallaxBinding = 1u << 30;
+	inline constexpr uint32_t kCharacterPosedVertexStride = 72u;
+	constexpr bool ValidCharacterPrimitiveLayout(uint32_t vertices, uint32_t triangles, uint32_t parts,
+		uint64_t vertexBytes, uint64_t indexBytes)
+	{
+		return vertices && triangles && parts && uint64_t(vertices) * kCharacterPosedVertexStride <= vertexBytes &&
+			uint64_t(triangles) * 4u * sizeof(uint32_t) <= indexBytes;
+	}
 	inline constexpr uint32_t kLightingStride = 24;
 	// Transmission is independently evaluated by both lighting producers.
 	constexpr bool CompleteTransmission(bool directValid, bool indirectValid) { return directValid && indirectValid; }

@@ -10,6 +10,8 @@
 #include "RE/B/BSLightingShaderProperty.h"
 #include "RE/B/BSTextureSet.h"
 
+#include <algorithm>
+#include <cmath>
 #include <mutex>
 #include <memory>
 #include <vector>
@@ -27,7 +29,7 @@ namespace DX12Native
             property->material->GetFeature() != RE::BSShaderMaterial::Feature::kDefault)
             return source;
         source.authoredShaderFlags = NativePBR::ReadAuthoredFlags(*property);
-        if (!source.authoredShaderFlags) return {};
+        if (!source.authoredShaderFlags || (!hasColor && (*source.authoredShaderFlags & (uint64_t(1) << 37)))) return {};
         const auto* material = static_cast<const RE::BSLightingShaderMaterialBase*>(property->material);
         auto* textures = material->textureSet.get();
         const auto* expected = REL::Relocation<const RE::NiRTTI*>{ RE::BSTextureSet::Ni_RTTI }.get();
@@ -132,6 +134,10 @@ namespace DX12Native
                     if (!evaluation) retry = true;
                     else {
                         result = std::make_shared<CharacterMaterialPublication>();
+                        // Retry transient budget/allocation deferrals without discarding a usable partial publication.
+                        retry = evaluation->failureReasons.contains("DXGI upload budget") ||
+                            evaluation->failureReasons.contains("source budget") ||
+                            evaluation->failureReasons.contains("GPU allocation/upload setup");
                         result->generation = generation; result->scope = scope; result->evaluation = std::move(evaluation);
                         if (!batch->uploads.empty()) {
                             auto* device = backend.d3d12Device.get();
@@ -198,7 +204,8 @@ namespace DX12Native
                 ++state->generation; state->retryFrame = 0;
             }
             const bool retry = state->retryFrame && int32_t(frame - state->retryFrame) >= 0;
-            if (!state->scheduled && (state->attempted != state->generation || retry) && globals::shaderCache) {
+            const bool uploadPending = state->last && state->last->generation == state->generation && !state->last->Ready();
+            if (!state->scheduled && !uploadPending && (state->attempted != state->generation || retry) && globals::shaderCache) {
                 if (const auto gate = globals::shaderCache->GetRuntimeTaskGate()) {
                     state->scheduled = true;
                     if (!gate->TrySubmit([retained = state, frame] { Run(retained, frame); }))

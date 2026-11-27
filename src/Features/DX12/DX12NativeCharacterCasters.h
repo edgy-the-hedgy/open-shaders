@@ -34,9 +34,7 @@ namespace DX12Native
         uint32_t frame = UINT32_MAX, scope = 0, parts = 0, vertices = 0, triangles = 0;
         uint64_t allocationBytes = 0, readyValue = 0;
         uint32_t allowedAge = 0, rigidInstances = 0;
-        static constexpr uint32_t kPosedVertexStride = 72;
-        // The index resource holds triangles followed by one part ordinal per primitive.
-        uint32_t PrimitivePartOffset() const { return triangles * 3u * sizeof(uint32_t); }
+        static constexpr uint32_t kPosedVertexStride = MaterialFrameContract::kCharacterPosedVertexStride;
         std::shared_ptr<const CharacterCasterFrame> actorSource;
         std::shared_ptr<const CharacterMaterialPublication> materials;
         std::vector<winrt::com_ptr<ID3D12Resource>> rigidResources;
@@ -52,9 +50,13 @@ namespace DX12Native
         // no actor material ordinals and must never sample the actor tables.
         const CharacterCasterFrame* ReflectionActor() const
         {
+            if (rigidInstances && !actorSource) return nullptr;
             const auto* actor = actorSource ? actorSource.get() : this;
             return actor->scope == scope && actor->vertices && actor->triangles && actor->parts &&
-                actor->positions && actor->indices && actor->materials && actor->materials->scope == scope &&
+                actor->positions && actor->indices &&
+                MaterialFrameContract::ValidCharacterPrimitiveLayout(actor->vertices, actor->triangles, actor->parts,
+                    actor->positions->GetDesc().Width, actor->indices->GetDesc().Width) &&
+                actor->materials && actor->materials->scope == scope &&
                 actor->materials->Ready() && actor->materials->evaluation->instanceCount == actor->parts &&
                 actor->materials->evaluation->revision == actor->materials->generation ? actor : nullptr;
         }

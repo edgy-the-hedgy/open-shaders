@@ -113,8 +113,10 @@ float4 Trace(uint2 receiver,float3 world,float3 incident)
                 ray.Origin+direction*hitDistance,direction,hitDistance,EmitterRadius,receiver,0u,Frame,Quality,
                 InstanceCount,CharacterEnabled,SecondaryLightCount,SecondarySunDirection,SecondarySunRadiance,
                 SecondaryFoliage,SecondaryMaterialControls,CharacterVertexCount,CharacterTriangleCount,CharacterPartCount,characterRadiance))
-                return float4(clamp(EncodeRadiance(characterRadiance),0,65504),1);
-            return Fallback(direction);
+                return float4(clamp(EncodeRadiance(characterRadiance),0,65504),2);
+            float4 dynamicFallback=Fallback(direction);
+            if(dynamicFallback.a>0.0)dynamicFallback.a=2.0;
+            return dynamicFallback;
         }
     }
     if(!staticHit)return Fallback(direction);
@@ -146,7 +148,9 @@ float4 Trace(uint2 receiver,float3 world,float3 incident)
 }
 float4 Accumulate(float4 current,float3 world,float3 lo,float3 hi)
 {
-    if(HasHistory==0u||current.a<=0.0)return current;
+    // The water receiver can be stationary while the reflected actor moves.
+    // Preserve the dynamic-hit tag internally; never reuse that history.
+    if(HasHistory==0u||current.a!=1.0)return current;
     float4 clip=mul(PreviousViewProjection,float4(world-PreviousPositionAdjust.xyz,1));
     if(!all(isfinite(clip))||abs(clip.w)<1e-5)return current;
     float2 uv=clip.xy/clip.w*float2(0.5,-0.5)+0.5;
@@ -157,7 +161,7 @@ float4 Accumulate(float4 current,float3 world,float3 lo,float3 hi)
     float oldDepth=PreviousRaw.Load(int3(p,0));
     if(!isfinite(oldDepth)||abs(oldDepth-depth)>0.0005)return current;
     float4 prior=PreviousResult.Load(int3(min(uint2(uv*float2(OutputSize)),OutputSize-1u),0));
-    if(!all(isfinite(prior))||prior.a<=0.0)return current;
+    if(!all(isfinite(prior))||prior.a!=1.0)return current;
     if(ShadowClampHistory(Quality))prior.rgb=clamp(prior.rgb,lo,hi);
     return lerp(prior,current,1.0/float(ShadowTemporalFrames(Quality)));
 }
@@ -178,7 +182,7 @@ void main(uint3 id:SV_DispatchThreadID)
     if(!Receiver(p,world,direction))return;
     bool direct=NativeIsSampled(p,OutputSize,Quality,Frame)&&!ShadowFilterDirectSamples(Quality);
     int radius=int(ShadowReconstructionRadius(Quality));
-    float4 sum=0;float total=0;
+    float4 sum=0;float total=0;bool dynamicHit=false;
     float3 lo=65504.0,hi=0.0;
     [loop]for(int y=-radius;y<=radius;++y)[loop]for(int x=-radius;x<=radius;++x){
         int2 q=int2(p)+int2(x,y);
@@ -188,9 +192,11 @@ void main(uint3 id:SV_DispatchThreadID)
         float w=1.0/(1.0+float(x*x+y*y));
         float4 sample=Sparse[q];
         if(!all(isfinite(sample))||sample.a<=0.0)continue;
-        sum+=sample*w;total+=w;lo=min(lo,sample.rgb);hi=max(hi,sample.rgb);
+        dynamicHit=dynamicHit||sample.a>1.0;
+        sum+=float4(sample.rgb,1.0)*w;total+=w;lo=min(lo,sample.rgb);hi=max(hi,sample.rgb);
     }
     float4 current=direct?Sparse[p]:(total>0?sum/total:Fallback(reflect(direction,float3(0,0,1))));
+    if(!direct&&dynamicHit&&current.a>0.0)current.a=2.0;
     if(total<=0){lo=current.rgb;hi=current.rgb;}
     Result[p]=Accumulate(current,world,lo,hi);
 }
