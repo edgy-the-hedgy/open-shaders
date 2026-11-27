@@ -1,5 +1,6 @@
 #include "ShaderCache.h"
 #include "Globals.h"
+#include "Features/DX12/DX12Control.h"
 #include "LightingBudget.h"
 #include "ShaderCompileStatus.h"
 #include "ShaderFileWatcher.h"
@@ -2071,7 +2072,10 @@ namespace SIE
 			}
 
 			const auto suffixNarrow = Util::GetShaderDefinesSuffix(globals::state->GetDefinesString());
-			const std::wstring suffix(suffixNarrow.begin(), suffixNarrow.end());
+			std::wstring suffix(suffixNarrow.begin(), suffixNarrow.end());
+			// Keep the boot-latched material input ABI out of baseline disk-cache entries.
+			if (shader.shaderType == RE::BSShader::Type::Lighting && globals::features::dx12Control.UsesExclusiveMaterials())
+				suffix += L"_native_pbr_input_v1";
 
 			const std::wstring wname(name.begin(), name.end());
 			switch (shaderClass) {

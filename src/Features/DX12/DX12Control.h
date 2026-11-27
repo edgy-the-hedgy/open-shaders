@@ -34,7 +34,7 @@ struct DX12Control final : Feature
 	bool UsesExclusiveMaterials() const { return GetFeatureBackend() == DX12::FeatureBackend::FullNative; }
 	void InitializeFeatureBackend();
 	void InstallMaterialBackendHooks();
-	std::string_view GetShaderDefineName() override { return "NATIVE_RASTER_IDENTITY"; }
+	std::string_view GetShaderDefineName() override { return "NATIVE_PBR_INPUT"; }
 	bool HasShaderDefine(RE::BSShader::Type type) override { return UsesExclusiveMaterials() && type == RE::BSShader::Type::Lighting; }
 	void DrawSettings() override;
 	void RegisterUxActions() override;

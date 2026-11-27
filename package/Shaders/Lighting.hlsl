@@ -1297,11 +1297,11 @@ bool UseSkylightingShadowVisibility()
 #		define FUR_EARLY_DEPTH_STENCIL
 #	endif
 
-FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace
-#	if defined(NATIVE_RASTER_IDENTITY) && defined(DEFERRED)
-	, uint nativePrimitiveID : SV_PrimitiveID
+FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input,
+#	if defined(NATIVE_PBR_INPUT) && defined(DEFERRED)
+	uint nativePrimitiveID : SV_PrimitiveID,
 #	endif
-)
+	bool frontFace : SV_IsFrontFace)
 {
 	PS_OUTPUT psout;
 	uint eyeIndex = Stereo::GetEyeIndexPS(input.Position, VPOSOffset);
@@ -4472,8 +4472,9 @@ FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFro
 	psout.ReflectionRadiance = captureRadiance ? float4(radianceColor, psout.Diffuse.w) : psout.Diffuse;
 #	endif
 
-#	if defined(NATIVE_RASTER_IDENTITY) && defined(DEFERRED)
-	// Diagnostic token: a blend or a nonparticipating writer can invalidate winner evidence.
+#	if defined(NATIVE_PBR_INPUT) && defined(DEFERRED)
+	// Native material input evidence; raster shading remains the fallback until ownership is proven.
+	// A blend or a nonparticipating writer can invalidate winner evidence.
 	uint nativeToken = 0;
 	if (Permutation::NativeRasterTokenBase != 0 && nativePrimitiveID < Permutation::NativeRasterPrimitiveCount &&
 		psout.Diffuse.w >= 1.0 && !(Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::AdditiveLighting)) {
