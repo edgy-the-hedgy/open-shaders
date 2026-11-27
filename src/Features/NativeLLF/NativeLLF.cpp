@@ -104,6 +104,7 @@ std::optional<NativeLLF::Policy::AuthoredLight> NativeLLF::Producer::FindMetadat
 void NativeLLF::Producer::ResetSpatialInput()
 {
 	spatialWorker.store(nullptr, std::memory_order_release);
+	preparedCache.store(nullptr, std::memory_order_release);
 	spatialInputCount = spatialOutputCount = 0;
 	spatialPlanApplied = false;
 }
@@ -116,7 +117,7 @@ std::shared_ptr<const NativeLLF::SpatialPolicy::Publication> NativeLLF::Producer
 		spatialWorker.store(worker, std::memory_order_release);
 	}
 	auto latest = worker->latest.load(std::memory_order_acquire);
-	if (latest && SpatialPolicy::SameSignature(latest->signature, signature))
+	if (latest && SpatialPolicy::CanReuseGrouping(latest->signature, signature, globals::features::dx12NativeScene.GetLightObservationFrames()))
 		return latest;
 	const auto gate = globals::shaderCache ? globals::shaderCache->GetRuntimeTaskGate() : nullptr;
 	if (!gate || worker->busy.exchange(true, std::memory_order_acq_rel))
@@ -140,6 +141,21 @@ std::shared_ptr<const NativeLLF::SpatialPolicy::Publication> NativeLLF::Producer
 	worker->busy.store(false, std::memory_order_release);
 	worker->deferred.fetch_add(1, std::memory_order_relaxed);
 	return {};
+}
+
+std::shared_ptr<const NativeLLF::Producer::PreparedCache> NativeLLF::Producer::GetPreparedCache(std::shared_ptr<const DX12::Grid> grid)
+{
+	auto cached = preparedCache.load(std::memory_order_acquire);
+	if (cached && (cached->grid == grid || (cached->grid->resident == grid->resident &&
+		cached->grid->predictiveResident == grid->predictiveResident)))
+		return cached;
+	auto next = std::make_shared<PreparedCache>();
+	next->grid = std::move(grid);
+	next->lights = DX12Resources::CollectPreparedLights(*next->grid);
+	for (size_t i = 0; i < next->lights.size(); ++i)
+		next->byReference[next->lights[i].referenceID].push_back(i);
+	preparedCache.store(next, std::memory_order_release);
+	return next;
 }
 
 void NativeLLF::Producer::OnRuntimeDisabled()
@@ -327,7 +343,8 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 	if (particleSettings.EnableParticleLights && !particleSnapshotReady && !opaqueReady)
 		return std::nullopt;
 	BeginMetadataFrame();
-	const auto prepared = DX12Resources::CollectPreparedLights(*scene.inputs->residency);
+	const auto cachedPrepared = GetPreparedCache(scene.inputs->residency);
+	const auto& prepared = cachedPrepared->lights;
 	preparedInputCount.store(uint32_t(prepared.size()),std::memory_order_relaxed);
 	DirectInputFrame result;
 	result.frame = frame;
@@ -367,9 +384,7 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 		std::unordered_set<const RE::NiLight*> visited;
 		std::vector<bool> matched(directLights.size(), false);
 		const size_t preparedCount = directLights.size();
-		std::unordered_map<uint32_t, std::vector<size_t>> preparedByReference;
-		for (size_t i = 0; i < preparedCount; ++i)
-			preparedByReference[prepared[i].referenceID].push_back(i);
+		const auto& preparedByReference = cachedPrepared->byReference;
 		const auto collect = [&](RE::BSLight* light) {
 			if (!light || !light->pointLight || !light->light)
 				return;
@@ -504,16 +519,17 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 	// Reapply its grouping to this frame's radiance, radii and live positions.
 	SpatialPolicy::Signature signature;
 	signature.scope = scene.scope;
+	signature.frame = frame;
 	signature.revision = scene.geometryRevision;
 	signature.settings = globals::features::dx12NativeScene.GetFullNativeLightSettings();
-	std::vector<DX12Native::DirectPointLight> spatialPrepared, spatialRuntime, exact;
+	std::vector<DX12Native::DirectPointLight> spatialPrepared, spatialRuntime, preparedExact, runtimeExact;
 	const auto key = [](const float3& position, uint32_t owner, uint64_t identity) {
 		return SpatialPolicy::Source{ { position.x, position.y, position.z }, owner, identity };
 	};
 	for (size_t i = 0; i < preparedSlots; ++i) {
 		const auto& light = directLights[i];
 		if (light.radius <= 0.0f) continue;
-		if (light.spot || light.inverseSquare) exact.push_back(light);
+		if (light.spot || light.inverseSquare) preparedExact.push_back(light);
 		else {
 			signature.prepared.push_back(key(prepared[i].position, prepared[i].referenceID, i));
 			spatialPrepared.push_back(light);
@@ -525,12 +541,12 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 	for (auto i : ordered) {
 		const auto& light = directLights[preparedSlots + i];
 		if (light.radius <= 0.0f) continue;
-		if (light.spot || light.inverseSquare) exact.push_back(light);
+		if (light.spot || light.inverseSquare) runtimeExact.push_back(light);
 		else {
 			const auto& source = supplemental[i];
 			// Non-finite rest positions cannot establish a safe spatial grouping.
 			if (!std::isfinite(source.rest.x) || !std::isfinite(source.rest.y) || !std::isfinite(source.rest.z)) {
-				exact.push_back(light);
+				runtimeExact.push_back(light);
 				continue;
 			}
 			signature.runtime.push_back(key(source.rest, source.owner, source.identity));
@@ -541,16 +557,20 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 	spatialInputCount.store(uint32_t(ordinaryCount), std::memory_order_relaxed);
 	const auto publication = UpdateSpatialInput(std::move(signature));
 	spatialPlanApplied.store(bool(publication), std::memory_order_relaxed);
-	directLights = std::move(exact);
+	directLights = std::move(preparedExact);
 	if (publication) {
 		auto merged = SpatialPolicy::ApplyGrouping<DX12Native::DirectPointLight>(publication->grouping, spatialPrepared, spatialRuntime);
 		spatialOutputCount.store(uint32_t(merged.size()), std::memory_order_relaxed);
-		directLights.insert(directLights.end(), merged.begin(), merged.end());
+		const auto runtimeBegin = merged.begin() + spatialPrepared.size();
+		directLights.insert(directLights.end(), merged.begin(), runtimeBegin);
+		directLights.insert(directLights.end(), runtimeExact.begin(), runtimeExact.end());
+		directLights.insert(directLights.end(), runtimeBegin, merged.end());
 	} else {
 		// Cold, dirty, or saturated task gate: use current unmerged inputs, never
 		// wait or reuse a plan for changed membership/scene/settings.
 		spatialOutputCount.store(uint32_t(ordinaryCount), std::memory_order_relaxed);
 		directLights.insert(directLights.end(), spatialPrepared.begin(), spatialPrepared.end());
+		directLights.insert(directLights.end(), runtimeExact.begin(), runtimeExact.end());
 		directLights.insert(directLights.end(), spatialRuntime.begin(), spatialRuntime.end());
 	}
 	directLights.resize(std::min(directLights.size(), size_t(DX12::kMaxPreparedLights)));

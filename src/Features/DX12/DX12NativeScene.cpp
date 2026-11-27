@@ -57,9 +57,29 @@ void DX12NativeScene::DrawSettings()
 	}
 }
 
+void DX12NativeScene::DrawLightConsolidationSettings()
+{
+	int unify = int(runtimeUnificationRadius.load(std::memory_order_relaxed));
+	int exclude = int(preparedExclusionRadius.load(std::memory_order_relaxed));
+	if (ImGui::SliderInt(T("menu.dx12.scene.runtime_unification_radius", "Runtime light unification radius (units)"), &unify, 0, int(DX12Native::kFullShadowRadiusMax), "%d", ImGuiSliderFlags_AlwaysClamp))
+		runtimeUnificationRadius.store(DX12Native::SanitizeFullShadowRadius(uint32_t(unify)), std::memory_order_relaxed);
+	if (ImGui::SliderInt(T("menu.dx12.scene.prepared_exclusion_radius", "Prepared light exclusion radius (units)"), &exclude, 0, int(DX12Native::kFullShadowRadiusMax), "%d", ImGuiSliderFlags_AlwaysClamp))
+		preparedExclusionRadius.store(DX12Native::SanitizeFullShadowRadius(uint32_t(exclude)), std::memory_order_relaxed);
+	bool additive = additivePreparedEmission.load(std::memory_order_relaxed);
+	if (ImGui::Checkbox(T("menu.dx12.scene.additive_prepared_emission", "Add excluded runtime emission to prepared lights"), &additive))
+		additivePreparedEmission.store(additive, std::memory_order_relaxed);
+	int interval = int(lightObservationFrames.load(std::memory_order_relaxed));
+	if (ImGui::SliderInt(T("menu.dx12.scene.light_observation_interval", "Light observation interval (frames)"), &interval, 1, int(DX12Native::kMaxLightObservationFrames)))
+		lightObservationFrames.store(uint32_t(interval), std::memory_order_relaxed);
+}
+
 void DX12NativeScene::DrawDevSettings()
 {
 	const auto& control = globals::features::dx12Control;
+	if (control.UsesExclusiveMaterials()) {
+		DrawLightConsolidationSettings();
+		return;
+	}
 	if (!control.IsShadowOffloadMode() && !control.IsFullRTMode())
 		return;
 	bool early = earlyTraceExperiment.load(std::memory_order_relaxed);
@@ -80,18 +100,7 @@ void DX12NativeScene::DrawDevSettings()
 		bool exact = exactShadowLights.load(std::memory_order_relaxed);
 		if (ImGui::Checkbox(T("menu.dx12.scene.exact_shadow_lights", "Experimental exact shadow-light origins"), &exact))
 			exactShadowLights.store(exact, std::memory_order_relaxed);
-		int unify = int(runtimeUnificationRadius.load(std::memory_order_relaxed));
-		int exclude = int(preparedExclusionRadius.load(std::memory_order_relaxed));
-		if (ImGui::SliderInt(T("menu.dx12.scene.runtime_unification_radius", "Runtime light unification radius (units)"), &unify, 0, int(DX12Native::kFullShadowRadiusMax), "%d", ImGuiSliderFlags_AlwaysClamp))
-			runtimeUnificationRadius.store(DX12Native::SanitizeFullShadowRadius(uint32_t(unify)), std::memory_order_relaxed);
-		if (ImGui::SliderInt(T("menu.dx12.scene.prepared_exclusion_radius", "Prepared light exclusion radius (units)"), &exclude, 0, int(DX12Native::kFullShadowRadiusMax), "%d", ImGuiSliderFlags_AlwaysClamp))
-			preparedExclusionRadius.store(DX12Native::SanitizeFullShadowRadius(uint32_t(exclude)), std::memory_order_relaxed);
-		bool additive = additivePreparedEmission.load(std::memory_order_relaxed);
-		if (ImGui::Checkbox(T("menu.dx12.scene.additive_prepared_emission", "Add excluded runtime emission to prepared lights"), &additive))
-			additivePreparedEmission.store(additive, std::memory_order_relaxed);
-		int interval = int(lightObservationFrames.load(std::memory_order_relaxed));
-		if (ImGui::SliderInt(T("menu.dx12.scene.light_observation_interval", "Light observation interval (frames)"), &interval, 1, int(DX12Native::kMaxLightObservationFrames)))
-			lightObservationFrames.store(uint32_t(interval), std::memory_order_relaxed);
+		DrawLightConsolidationSettings();
 		std::scoped_lock lock(runtimeLightMutex);
 		const auto stats = lightWorker.GetStats();
 		ImGui::Text("%s", std::format("Light tasks: {} | Publications: {} | Unchanged: {} | Deferred: {} | Busy: {}",

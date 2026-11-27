@@ -49,6 +49,14 @@ namespace NativeLLF
 			std::atomic<uint64_t> tasks{0}, publications{0}, deferred{0};
 		};
 		std::atomic<std::shared_ptr<SpatialWorkerState>> spatialWorker;
+		struct PreparedCache
+		{
+			std::shared_ptr<const DX12::Grid> grid;
+			std::vector<DX12::PreparedLight> lights;
+			std::unordered_map<uint32_t, std::vector<size_t>> byReference;
+		};
+		std::atomic<std::shared_ptr<const PreparedCache>> preparedCache;
+		std::shared_ptr<const PreparedCache> GetPreparedCache(std::shared_ptr<const DX12::Grid> grid);
 		std::atomic<uint32_t> spatialInputCount{0}, spatialOutputCount{0};
 		std::atomic<bool> spatialPlanApplied{false};
 		void ResetSpatialInput();

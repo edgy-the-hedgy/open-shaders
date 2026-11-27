@@ -79,3 +79,25 @@ TEST_CASE("Native spatial grouping retains prepared authority and evaluates live
 	BuildGrouping(publication);
 	REQUIRE(publication.grouping.preparedRuntime[0].empty());
 }
+
+TEST_CASE("Native light grouping refresh is cadence bounded and membership safe", "[dx12][lighting]")
+{
+	using namespace NativeLLF::SpatialPolicy;
+	Signature ready;
+	ready.scope = 1;
+	ready.revision = 2;
+	ready.frame = 100;
+	ready.runtime = { { { 0, 0, 0 }, 3, 10 } };
+	auto current = ready;
+	current.frame = 110;
+	current.runtime[0].position.x = 5;
+	REQUIRE(CanReuseGrouping(ready, current, 30));
+	current.frame = 130;
+	REQUIRE_FALSE(CanReuseGrouping(ready, current, 30));
+	current.frame = 110;
+	current.runtime[0].runtimeIdentity++;
+	REQUIRE_FALSE(CanReuseGrouping(ready, current, 30));
+	current = ready;
+	current.frame = 200;
+	REQUIRE(CanReuseGrouping(ready, current, 30));
+}

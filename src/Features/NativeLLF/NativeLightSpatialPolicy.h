@@ -14,7 +14,7 @@ namespace NativeLLF::SpatialPolicy
 	};
 	struct Signature
 	{
-		uint32_t scope = 0;
+		uint32_t scope = 0, frame = 0;
 		uint64_t revision = 0;
 		DX12Native::NativeLightSettings settings;
 		std::vector<Source> prepared, runtime;
@@ -23,6 +23,23 @@ namespace NativeLLF::SpatialPolicy
 	{
 		return a.scope == b.scope && a.revision == b.revision && a.settings == b.settings &&
 			a.prepared == b.prepared && a.runtime == b.runtime;
+	}
+	inline bool SameMembership(const Signature& a, const Signature& b)
+	{
+		const auto sameSource = [](const Source& x, const Source& y) {
+			return x.referenceID == y.referenceID && x.runtimeIdentity == y.runtimeIdentity;
+		};
+		return a.scope == b.scope && a.revision == b.revision && a.settings == b.settings &&
+			a.prepared == b.prepared && std::ranges::equal(a.runtime, b.runtime, sameSource);
+	}
+
+	// Match the RT Shadows observation cadence, while keeping source membership
+	// exact and always applying fresh lighting values. A changing geometry or
+	// settings generation may never consume an older spatial grouping.
+	inline bool CanReuseGrouping(const Signature& ready, const Signature& current, uint32_t interval)
+	{
+		return SameSignature(ready, current) ||
+			(SameMembership(ready, current) && !DX12Native::NativeLightObservationDue(current.frame, ready.frame, interval));
 	}
 	struct Publication
 	{
