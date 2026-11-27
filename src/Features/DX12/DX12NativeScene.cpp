@@ -2,6 +2,7 @@
 #include "DX12LightMath.h"
 #include "Features/DynamicCubemaps.h"
 #include "Features/IBL.h"
+#include "Features/Skylighting.h"
 #include "Features/LinearLighting.h"
 #include "Features/CSUtility.h"
 
@@ -893,6 +894,11 @@ void DX12NativeScene::DispatchFullNativeIndirect()
 	ambient.conversionSaturation = color.conversionSaturation;
 	ambient.utilitySaturation = utility.ambientLightColor.saturation;
 	ambient.utilityGammaOffset = utility.ambientLightColor.gammaOffset;
+	const auto& skylighting = globals::features::skylighting;
+	ambient.traceSkyVisibility = skylighting.loaded && skylighting.settings.EnableSkylighting && !stamp.interior;
+	ambient.minDiffuseSkyVisibility = std::clamp(skylighting.settings.MinDiffuseVisibility, 0.0f, 1.0f);
+	ambient.minSpecularSkyVisibility = std::clamp(skylighting.settings.MinSpecularVisibility, 0.0f, 1.0f);
+	ambient.skyMinZ = std::max(0.0f, std::cos(std::clamp(skylighting.settings.MaxZenith, 0.0f, 1.57079632679f)));
 	fullNativeEnvironment->Capture(*backend, stamp,
 		cubes.loaded ? cubes.GetNativeEnvironment(false) : EnvironmentSource{},
 		cubes.loaded && !stamp.interior ? cubes.GetNativeEnvironment(true) : EnvironmentSource{},

@@ -14,8 +14,10 @@ namespace DX12Native
         float conversionSaturation = 1, utilitySaturation = 1, utilityGammaOffset = 0;
         uint32_t dalcMode = 0;
         uint32_t iblEnabled = 0, dalcValid = 0, pad0 = 0, pad1 = 0;
+        float minDiffuseSkyVisibility = 0.1f, minSpecularSkyVisibility = 0.1f, skyMinZ = 0.0f;
+        uint32_t traceSkyVisibility = 0;
     };
-    static_assert(sizeof(NativeAmbientParameters) == 96);
+    static_assert(sizeof(NativeAmbientParameters) == 112);
 
     // SH is immutable after projection. Every consumer retains the source revision.
     struct EnvironmentIrradiance
@@ -43,6 +45,7 @@ namespace DX12Native
         winrt::com_ptr<ID3D12Fence> readyFence;
         uint64_t readyValue = 0, allocationBytes = 0;
         uint32_t frame = 0, width = 0, height = 0, rowPitch = 0, available = 0;
+        bool skyVisibilityTraced = false;
     };
 
     // Environment-only raw signals; never advertise complete opaque ownership.

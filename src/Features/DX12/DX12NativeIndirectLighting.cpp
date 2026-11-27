@@ -26,8 +26,10 @@ namespace DX12Native
             float environmentScale, skyScale;
             uint32_t interior, colorEncoding;
             NativeAmbientParameters ambient;
+            float4 positionAdjust;
+            uint32_t instanceCount, pad0 = 0, pad1 = 0, pad2 = 0;
         };
-        static_assert(sizeof(Constants) == 272);
+        static_assert(sizeof(Constants) == 320);
         constexpr uint64_t kSHBytes = 48;
 
         void BuildPipeline(ID3D12Device* device, const std::filesystem::path& path, UINT count, CD3DX12_ROOT_PARAMETER* parameters,
@@ -40,9 +42,13 @@ namespace DX12Native
             file.seekg(0);
             if (!file.read(shader.data(), std::streamsize(shader.size())))
                 throw std::runtime_error("Native indirect DXIL read failed");
-            const CD3DX12_STATIC_SAMPLER_DESC sampler(0, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
-                D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
-            const CD3DX12_ROOT_SIGNATURE_DESC signature(count, parameters, 1, &sampler);
+            std::array<CD3DX12_STATIC_SAMPLER_DESC, 4> samplers;
+            for (uint32_t mode = 0; mode < samplers.size(); ++mode)
+                samplers[mode] = CD3DX12_STATIC_SAMPLER_DESC(mode, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+                    (mode & 2) ? D3D12_TEXTURE_ADDRESS_MODE_WRAP : D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+                    (mode & 1) ? D3D12_TEXTURE_ADDRESS_MODE_WRAP : D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+                    D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
+            const CD3DX12_ROOT_SIGNATURE_DESC signature(count, parameters, UINT(samplers.size()), samplers.data());
             winrt::com_ptr<ID3DBlob> blob, errors;
             Eval::Check(D3D12SerializeRootSignature(&signature, D3D_ROOT_SIGNATURE_VERSION_1, blob.put(), errors.put()));
             Eval::Check(device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(root.put())));
@@ -143,21 +149,26 @@ namespace DX12Native
         projectionParameters[0].InitAsDescriptorTable(1, &projectionRange);
         projectionParameters[1].InitAsUnorderedAccessView(0);
         projectionParameters[2].InitAsConstants(1, 0);
-        CD3DX12_DESCRIPTOR_RANGE ranges[2];
+        CD3DX12_DESCRIPTOR_RANGE ranges[3];
         ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1, 0, 0);
         ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 4, 0, 1);
-        CD3DX12_ROOT_PARAMETER parameters[6];
+        ranges[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NativePBR::kGpuTextureDescriptorCapacity, 10, 0, 4);
+        CD3DX12_ROOT_PARAMETER parameters[10];
         parameters[0].InitAsShaderResourceView(0);
-        parameters[1].InitAsDescriptorTable(2, ranges);
+        parameters[1].InitAsDescriptorTable(3, ranges);
         parameters[2].InitAsShaderResourceView(2);
         parameters[3].InitAsShaderResourceView(3);
         parameters[4].InitAsUnorderedAccessView(0);
         parameters[5].InitAsConstantBufferView(0);
+        parameters[6].InitAsShaderResourceView(6);
+        parameters[7].InitAsShaderResourceView(7);
+        parameters[8].InitAsShaderResourceView(8);
+        parameters[9].InitAsShaderResourceView(9);
         winrt::com_ptr<ID3D12RootSignature> pr, ir;
         winrt::com_ptr<ID3D12PipelineState> pp, ip;
         winrt::com_ptr<ID3D12Fence> fence;
         BuildPipeline(device, Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativeDiffuseSH.dxil", 3, projectionParameters, pr, pp);
-        BuildPipeline(device, Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativeIndirectLighting.dxil", 6, parameters, ir, ip);
+        BuildPipeline(device, Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativeIndirectLighting.dxil", 10, parameters, ir, ip);
         Eval::Check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(fence.put())));
         owner = backend;
         projectionRoot = std::move(pr); projectionPipeline = std::move(pp);
@@ -233,7 +244,7 @@ namespace DX12Native
                 replacement->samples->SetName(L"NativeLighting::IndirectDiffuseSpecular");
                 replacement->constants = Eval::Buffer(device, 512, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
                 D3D12_DESCRIPTOR_HEAP_DESC heap{};
-                heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; heap.NumDescriptors = 4; heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+                heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; heap.NumDescriptors = 4 + NativePBR::kGpuTextureDescriptorCapacity; heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
                 Eval::Check(device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(replacement->descriptors.put())));
                 Eval::Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(replacement->allocator.put())));
                 Eval::Check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, replacement->allocator.get(), pipeline.get(), IID_PPV_ARGS(replacement->commands.put())));
@@ -244,6 +255,7 @@ namespace DX12Native
             }
             slot->material = std::move(material); slot->environment = std::move(environment);
             slot->frame = slot->material->frame; slot->available = available;
+            slot->skyVisibilityTraced = ambient.traceSkyVisibility != 0 && !slot->environment->stamp.interior;
             slot->root = root; slot->pipeline = pipeline;
             slot->projectionRoot = projectionRoot; slot->projectionPipeline = projectionPipeline;
             slot->readyFence = completion; slot->readyValue = UINT64_MAX;
@@ -261,6 +273,8 @@ namespace DX12Native
             CubeView(device, *env.base, cpu(1));
             CubeView(device, env.reflection ? *env.reflection : *env.base, cpu(2));
             CubeView(device, env.sky ? *env.sky : *env.base, cpu(3));
+            device->CopyDescriptorsSimple(NativePBR::kGpuTextureDescriptorCapacity, cpu(4),
+                slot->material->descriptors->GetCPUDescriptorHandleForHeapStart(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
             ID3D12DescriptorHeap* heaps[]{ slot->descriptors.get() };
             cmd->SetDescriptorHeaps(1, heaps);
             const auto project = [&](const std::shared_ptr<const EnvironmentCube>& cube, UINT descriptor) {
@@ -284,7 +298,8 @@ namespace DX12Native
             const Constants constants{ raster.camera.CameraProjInverse, raster.camera.CameraViewInverse,
                 width, height, slot->material->rowPitch, slot->rowPitch, enabled, available, env.base->mipCount,
                 env.reflection ? env.reflection->mipCount : 0u, environmentScale, skyScale,
-                env.stamp.interior ? 1u : 0u, uint32_t(env.stamp.encoding), ambient };
+                env.stamp.interior ? 1u : 0u, uint32_t(env.stamp.encoding), ambient,
+                raster.camera.CameraPosAdjust, slot->material->scene->materialEvaluation->instanceCount };
             void* mapped = nullptr; const D3D12_RANGE noRead{};
             Eval::Check(slot->constants->Map(0, &noRead, &mapped));
             std::memcpy(mapped, &constants, sizeof(constants)); slot->constants->Unmap(0, nullptr);
@@ -302,6 +317,11 @@ namespace DX12Native
             cmd->SetComputeRootShaderResourceView(3, slot->skySH ? slot->skySH->coefficients->GetGPUVirtualAddress() : materialAddress);
             cmd->SetComputeRootUnorderedAccessView(4, slot->samples->GetGPUVirtualAddress());
             cmd->SetComputeRootConstantBufferView(5, slot->constants->GetGPUVirtualAddress());
+            const auto& scene = *slot->material->scene;
+            cmd->SetComputeRootShaderResourceView(6, scene.acceleration->GetGPUVirtualAddress());
+            cmd->SetComputeRootShaderResourceView(7, scene.shadingGeometry->buffer->GetGPUVirtualAddress());
+            cmd->SetComputeRootShaderResourceView(8, scene.materialEvaluation->records->GetGPUVirtualAddress());
+            cmd->SetComputeRootShaderResourceView(9, scene.materialEvaluation->bindings->GetGPUVirtualAddress());
             cmd->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
             Transition(cmd, slot->samples.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
             Transition(cmd, depth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
