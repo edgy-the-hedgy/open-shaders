@@ -8,9 +8,8 @@
 
 void NativePBR::FrameProducer::Poll(uint32_t frame)
 {
-	if (!probe)
-		probe = std::make_unique<DX12Native::NativeScreenProbe>();
-	probe->Poll(frame);
+	if (probe)
+		probe->Poll(frame);
 }
 
 void NativePBR::FrameProducer::Dispatch(const GraphicsBackend& backend, std::shared_ptr<const DX12Native::RasterFrame> raster,
@@ -53,4 +52,16 @@ void NativePBR::FrameProducer::Release()
 {
 	ReleaseProjection();
 	probe.reset();
+}
+
+json NativePBR::FrameProducer::GetDiagnostics()
+{
+	const auto frame = globals::game::graphicsState ? globals::game::graphicsState->GetFrameCount() : UINT32_MAX;
+	const auto publication = Get(frame);
+	return { { "materialPublished", bool(publication) }, { "materialRevision", publication ? publication->materialRevision : 0 },
+		{ "geometryRevision", publication ? publication->geometryRevision : 0 },
+		{ "width", publication ? publication->width : 0u }, { "height", publication ? publication->height : 0u },
+		{ "producerValue", publication ? publication->producerValue : 0 },
+		{ "submittedFrames", probe ? probe->submittedFrames : 0u }, { "reusedAllocations", probe ? probe->reusedAllocations : 0u },
+		{ "coverageMeasured", probe && probe->stats.sampled != 0 }, { "failure", probe ? probe->failure : "" } };
 }

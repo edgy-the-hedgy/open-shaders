@@ -300,6 +300,8 @@ bool NativeCubemaps::CubeProcessing::Dispatch(const GraphicsBackend& backend,
     slot->history.readyValue=value; slot->base.readyValue=value; slot->reflection.readyValue=value;
     auto publication=std::make_shared<EnvironmentFrame>();
     publication->stamp=input->stamp; publication->revision=value;
+    publication->nativeRadianceInput=bool(native);
+    publication->rasterCompatibilityInput=rasterReady;
     publication->base=std::shared_ptr<const EnvironmentCube>(slot,&slot->base);
     if(reflection) publication->reflection=std::shared_ptr<const EnvironmentCube>(slot,&slot->reflection);
     if(input->sky && input->sky->IsReadyFor(input->stamp) &&

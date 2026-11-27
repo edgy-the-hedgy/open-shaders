@@ -35,6 +35,8 @@ namespace DX12Native
 	{
 		EnvironmentStamp stamp{};
 		uint64_t revision = 0;
+		// Input admission, not proof that any particular texel matched native evidence.
+		bool nativeRadianceInput = false, rasterCompatibilityInput = false;
 		std::shared_ptr<const EnvironmentCube> base, reflection, sky;
 		winrt::com_ptr<ID3D12Fence> producerFence;
 		uint64_t producerValue = 0;

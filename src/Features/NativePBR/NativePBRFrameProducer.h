@@ -15,6 +15,7 @@ namespace NativePBR
 		void OnRuntimeDisabled() override { InvalidateGeneration(); Release(); }
 		void ClearShaderCache() override { InvalidateGeneration(); Release(); }
 		void Poll(uint32_t frame);
+		json GetDiagnostics() override;
 		bool WantsFrame(uint32_t frame) const { return !probe || probe->WantsFrame(frame, true); }
 		bool HasEvaluator() const { return bool(probe); }
 		void Dispatch(const GraphicsBackend& backend, std::shared_ptr<const DX12Native::RasterFrame> raster,

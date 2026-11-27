@@ -105,13 +105,16 @@ void NativeLLF::Producer::OnRuntimeDisabled()
 	metadata.clear();
 	metadataFrame = 0;
 	metadataRejected = 0;
+	preparedInputCount = directInputCount = spotInputCount = particleInputCount = 0;
 }
 
 json NativeLLF::Producer::GetDiagnostics()
 {
 	std::scoped_lock lock(metadataMutex, observationMutex);
 	return { { "authoredLightRecords", metadata.size() }, { "authoredLightRejected", metadataRejected },
-		{ "particleSnapshotFrame", currentPluginFrame }, { "particleEmitters", current.size() } };
+		{ "particleSnapshotFrame", currentPluginFrame }, { "particleEmitters", current.size() },
+		{ "preparedInputs", preparedInputCount.load(std::memory_order_relaxed) }, { "directInputs", directInputCount.load(std::memory_order_relaxed) },
+		{ "spotInputs", spotInputCount.load(std::memory_order_relaxed) }, { "particleInputs", particleInputCount.load(std::memory_order_relaxed) } };
 }
 
 void NativeLLF::Producer::PostPostLoad()
@@ -272,6 +275,7 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 		return std::nullopt;
 	BeginMetadataFrame();
 	const auto prepared = DX12Resources::CollectPreparedLights(*scene.inputs->residency);
+	preparedInputCount.store(uint32_t(prepared.size()),std::memory_order_relaxed);
 	DirectInputFrame result;
 	result.frame = frame;
 	result.scope = scene.scope;
@@ -402,6 +406,7 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 	// Discard prepared spots for which no live projection was resolved, only
 	// after matching so prepared ordinals remain stable during the merge.
 	std::erase_if(directLights, [](const auto& light) { return light.radius <= 0.0f; });
+	const auto nonParticleCount = directLights.size();
 	{
 		std::scoped_lock observationLock(observationMutex);
 		if (particleSnapshotReady && currentPluginFrame == globals::state->frameCount) {
@@ -442,6 +447,9 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 			directional.radiance = { toLinear(sunColor.x), toLinear(sunColor.y), toLinear(sunColor.z), 0.0f };
 		}
 	}
+	directInputCount.store(uint32_t(directLights.size()),std::memory_order_relaxed);
+	particleInputCount.store(uint32_t(directLights.size()-nonParticleCount),std::memory_order_relaxed);
+	spotInputCount.store(uint32_t(std::ranges::count_if(directLights,[](const auto& light){return light.spot;})),std::memory_order_relaxed);
 	result.available = runtimeAvailable || !directLights.empty() || directional.direction.w != 0.0f;
 	return result;
 }

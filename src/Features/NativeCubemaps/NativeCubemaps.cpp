@@ -155,8 +155,6 @@ void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend, ID3D11Sha
         if(!processing) processing=std::make_unique<CubeProcessing>();
         if(processing->Dispatch(backend,captured,dalc,globals::game::frameBufferCached.nonVR.CameraPosAdjust,native)) {
             lastCaptureFrame=currentStamp.engineFrame;
-            nativeInputSubmitted=bool(native);
-            rasterInputSubmitted=bool(captured->base);
             failureLogged=false;
         }
     } catch(const std::exception& e) {
@@ -179,7 +177,8 @@ std::shared_ptr<const DX12Native::EnvironmentFrame> NativeCubemaps::Producer::Ge
 json NativeCubemaps::Producer::GetDiagnostics()
 {
     const auto publication=Get();
-    return { {"nativeInputSubmitted",nativeInputSubmitted}, {"transitionalRasterInputSubmitted",rasterInputSubmitted},
+    return { {"nativeRadianceInputAdmitted",publication && publication->nativeRadianceInput},
+        {"transitionalRasterInputAdmitted",publication && publication->rasterCompatibilityInput},
         {"lastCaptureFrame",lastCaptureFrame}, {"environmentRevision",publication ? publication->revision : 0},
         {"basePublished",publication && bool(publication->base)}, {"reflectionPublished",publication && bool(publication->reflection)},
         {"skyPublished",publication && bool(publication->sky)}, {"inputAllocationBytes",inputs ? inputs->AllocationBytes() : 0},
@@ -192,12 +191,10 @@ void NativeCubemaps::Producer::InvalidateGeneration()
     if(inputs) inputs->Reset();
     globals::features::nativeIBL.SetCaptureContext({});
     currentStamp={}; ++epoch; lastCaptureFrame=UINT32_MAX; failureLogged=false;
-    nativeInputSubmitted=rasterInputSubmitted=false;
 }
 void NativeCubemaps::Producer::Release()
 {
     processing.reset(); inputs.reset();
     raw=nullptr; rawUAV=nullptr; inputShader=nullptr; inputConstants=nullptr;
     lastCaptureFrame=UINT32_MAX;
-    nativeInputSubmitted=rasterInputSubmitted=false;
 }

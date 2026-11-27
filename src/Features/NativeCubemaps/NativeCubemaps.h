@@ -58,6 +58,5 @@ namespace NativeCubemaps
         uint32_t lastCaptureFrame = UINT32_MAX;
         float lastHours = 0;
         bool failureLogged = false;
-        bool nativeInputSubmitted = false, rasterInputSubmitted = false;
     };
 }

@@ -132,3 +132,19 @@ void NativeIBL::Producer::Dispatch(const GraphicsBackend& backend,
 		uint32_t(IndirectDiffuse) | uint32_t(IndirectSpecular) | uint32_t(Transmission),
 		resolved.EnvIBLScale, resolved.SkyIBLScale, ambient, std::move(characters));
 }
+
+json NativeIBL::Producer::GetDiagnostics()
+{
+	const auto frame = globals::game::graphicsState ? globals::game::graphicsState->GetFrameCount() : UINT32_MAX;
+	const auto publication = Get(frame);
+	return { { "skyFacesValid", capture.ValidFaces() }, { "skyRevision", skyRevision },
+		{ "skyPublished", bool(GetSkySource(context).texture) },
+		{ "indirectPublished", bool(publication) },
+		{ "availableContributions", publication ? publication->available : 0u },
+		{ "environmentRevision", publication && publication->environment ? publication->environment->revision : 0u },
+		{ "skyVisibilityTraced", publication && publication->skyVisibilityTraced },
+		{ "allocationBytes", lighting ? lighting->AllocationBytes() : 0 },
+		{ "submissions", lighting ? lighting->Submissions() : 0 },
+		{ "shProjections", lighting ? lighting->Projections() : 0 },
+		{ "failure", lighting ? lighting->Failure() : "" } };
+}

@@ -88,8 +88,11 @@ json DX12Control::GetDiagnostics()
 		}
 	};
 	json roles = json::object();
-	for (auto* feature : NativeCounterparts())
-		roles[feature->GetShortName()] = { { "role", name(GetExecutionRole(feature)) }, { "loaded", feature->loaded } };
+	for (auto* feature : NativeCounterparts()) {
+		auto entry = json{ { "role", name(GetExecutionRole(feature)) }, { "loaded", feature->loaded } };
+		if (feature->loaded && UsesExclusiveMaterials()) entry["producer"] = feature->GetDiagnostics();
+		roles[feature->GetShortName()] = std::move(entry);
+	}
 	for (Feature* feature : std::array<Feature*, 4>{ &globals::features::lightLimitFix,
 		&globals::features::dynamicCubemaps, &globals::features::ibl, &globals::features::truePBR })
 		roles[feature->GetShortName()] = { { "role", name(GetExecutionRole(feature)) }, { "loaded", feature->loaded } };

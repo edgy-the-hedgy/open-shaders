@@ -49,6 +49,7 @@ namespace NativeLLF
 		std::mutex metadataMutex;
 		std::unordered_map<const RE::NiLight*, MetadataEntry> metadata;
 		uint32_t metadataFrame = 0, metadataRejected = 0;
+		std::atomic<uint32_t> preparedInputCount{0}, directInputCount{0}, spotInputCount{0}, particleInputCount{0};
 		std::optional<Policy::AuthoredLight> FindMetadata(RE::NiLight* light, uint32_t placed);
 		void BeginMetadataFrame();
 		struct ParticleEmitter

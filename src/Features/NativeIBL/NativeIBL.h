@@ -14,6 +14,7 @@ namespace NativeIBL
 		std::string GetName() override { return "Native IBL"; }
 		std::string GetShortName() override { return "NativeIBL"; }
 		void PostPostLoad() override;
+		json GetDiagnostics() override;
 		void SetupResources() override;
 		bool WantsDrawHook() const override { return true; }
 		bool WantsRenderPassHook() const override { return true; }
