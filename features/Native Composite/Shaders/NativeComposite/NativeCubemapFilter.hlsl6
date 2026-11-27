@@ -1,6 +1,7 @@
 #include "Common/NativeCubeDirection.hlsli"
 #include "NativeEnvironmentColor.hlsli"
 #include "NativeSurface.hlsli"
+#include "FullNativeSampling.hlsli"
 #include "Common/Spherical Harmonics/SphericalHarmonics.hlsli"
 
 TextureCube<float4> Source : register(t0);
@@ -34,6 +35,8 @@ cbuffer NativeCapture : register(b2)
     uint2 NativeSize;
     uint NativeMaterialPitch;
     uint NativeDirectPitch;
+    uint NativeQuality;
+    uint NativeFrame;
 };
 
 // The outgoing diffuse, emission and thin transmission are usable for
@@ -55,6 +58,9 @@ bool ReadNativeRadiance(float3 direction, out float3 radiance)
     uint material = pixel.y*NativeMaterialPitch+pixel.x*NativeSurfaceStride;
     float4 base = UnpackNativeLobeHalf4(NativeMaterials.Load2(material));
     float4 emission = UnpackNativeLobeHalf4(NativeMaterials.Load2(material+24u));
+    // Raw direct-light slots are sparse; material identity does not certify a
+    // current-frame lighting write. Reject unsampled lanes before any load.
+    if (!NativeIsSampled(pixel, NativeSize, NativeQuality, NativeFrame)) return false;
     uint signal = pixel.y*NativeDirectPitch+pixel.x*NativeLightingStride;
     float4 diffuse = UnpackNativeLobeHalf4(NativeDirect.Load2(signal));
     float4 transmission = UnpackNativeLobeHalf4(NativeDirect.Load2(signal+16u));

@@ -23,8 +23,10 @@ namespace
     struct NativeCaptureConstants {
         Matrix view{}, projection{};
         uint32_t width=0,height=0,materialPitch=0,directPitch=0;
+        uint32_t quality=0,frame=0;
     };
-    static_assert(sizeof(NativeCaptureConstants)==36*sizeof(uint32_t));
+    constexpr UINT kNativeCaptureDwords=38;
+    static_assert(sizeof(NativeCaptureConstants)==kNativeCaptureDwords*sizeof(uint32_t));
     struct Constants {
         std::array<float4,3> dalc;
         uint32_t encoding, history, reflection, frameDelta;
@@ -118,7 +120,7 @@ void NativeCubemaps::CubeProcessing::Initialize(const GraphicsBackend& backend)
     params[0].InitAsDescriptorTable(2,ranges);
     params[1].InitAsConstants(16,0);
     params[2].InitAsConstants(4,1);
-    params[3].InitAsConstants(36,2);
+    params[3].InitAsConstants(kNativeCaptureDwords,2);
     CD3DX12_STATIC_SAMPLER_DESC samplers[2]{
         CD3DX12_STATIC_SAMPLER_DESC(0,D3D12_FILTER_MIN_MAG_MIP_POINT,D3D12_TEXTURE_ADDRESS_MODE_CLAMP,D3D12_TEXTURE_ADDRESS_MODE_CLAMP,D3D12_TEXTURE_ADDRESS_MODE_CLAMP),
         CD3DX12_STATIC_SAMPLER_DESC(1,D3D12_FILTER_MIN_MAG_MIP_LINEAR,D3D12_TEXTURE_ADDRESS_MODE_CLAMP,D3D12_TEXTURE_ADDRESS_MODE_CLAMP,D3D12_TEXTURE_ADDRESS_MODE_CLAMP)};
@@ -239,9 +241,9 @@ bool NativeCubemaps::CubeProcessing::Dispatch(const GraphicsBackend& backend,
     NativeCaptureConstants nativeConstants{};
     if(native) {
         const auto& camera=native->material->raster->camera;
-        nativeConstants={camera.CameraView,camera.CameraProj,native->width,native->height,native->material->rowPitch,native->direct->rowPitch};
+        nativeConstants={camera.CameraView,camera.CameraProj,native->width,native->height,native->material->rowPitch,native->direct->rowPitch,native->direct->quality,native->direct->frame};
     }
-    cmd->SetComputeRoot32BitConstants(3,36,&nativeConstants,0);
+    cmd->SetComputeRoot32BitConstants(3,kNativeCaptureDwords,&nativeConstants,0);
     UINT table=0;
     const auto run=[&](const EnvironmentCube* source,const EnvironmentCube* previous,const EnvironmentCube* reflected,EnvironmentCube& destination,uint32_t mip,bool isReflection) {
         const UINT offset=kDescriptorsPerTable*table++;
