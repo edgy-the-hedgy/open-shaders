@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Buffer.h"
+#include "DX12/DX12EnvironmentSource.h"
 #include "Utils/BootSnapshot.h"
 #include "Utils/LazyShader.h"
 
@@ -174,6 +175,13 @@ public:
 	size_t GetSettingsBlobSize() const override { return sizeof(settings); }
 
 	void UpdateCubemap();
+	void SetNativeCaptureContext(const DX12Native::EnvironmentStamp& stamp);
+	DX12Native::EnvironmentSource GetNativeEnvironment(bool reflections) const;
+private:
+	DX12Native::EnvironmentStamp nativeCaptureContext{}, nativePendingCapture[2]{};
+	DX12Native::EnvironmentSource nativeCompleted[2]{};
+	uint64_t nativeEnvironmentRevision = 0;
+public:
 
 	void PostDeferred();
 

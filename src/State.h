@@ -749,6 +749,20 @@ public:
 	static_assert(offsetof(SharedDataCB, WindFieldPreviousTransientImpulses) % 16 == 0);
 	static_assert(sizeof(SharedDataCB) <= D3D11_REQ_CONSTANT_BUFFER_ELEMENT_COUNT * 16);
 
+	struct AmbientSHSnapshot
+	{
+		std::array<float4, 3> coefficients{};
+		uint32_t engineFrame = UINT32_MAX, pluginFrame = UINT32_MAX;
+	};
+	AmbientSHSnapshot ambientSHSnapshot;
+	bool GetAmbientSH(uint32_t engineFrame, uint32_t pluginFrame, std::array<float4, 3>& result) const
+	{
+		if (ambientSHSnapshot.engineFrame != engineFrame || ambientSHSnapshot.pluginFrame != pluginFrame)
+			return false;
+		result = ambientSHSnapshot.coefficients;
+		return true;
+	}
+
 	std::unique_ptr<ConstantBuffer> sharedDataCB;
 	std::unique_ptr<ConstantBuffer> featureDataCB;
 

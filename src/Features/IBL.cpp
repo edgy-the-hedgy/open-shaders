@@ -316,10 +316,28 @@ bool IBL::UsesReflectionRadiance() const
 	       !IsDisabledForCurrentScene() && !Util::IsInterior() && (settings.EnableIBL || IsManagedByENB());
 }
 
+void IBL::SetNativeCaptureContext(const DX12Native::EnvironmentStamp& stamp)
+{
+	if (!nativeCaptureContext.SameEnvironment(stamp)) {
+		nativeSkyFaces = 0;
+		nativeSkyStamp = {};
+	}
+	nativeCaptureContext = stamp;
+}
+
+DX12Native::EnvironmentSource IBL::GetNativeSkyRadiance() const
+{
+	if (!reflectionRadiance || nativeSkyFaces != kAllCubeFaces || validFaces != kAllCubeFaces ||
+		!nativeSkyStamp.SameEnvironment(nativeCaptureContext))
+		return {};
+	return { reflectionRadiance->resource.get(), nativeSkyRevision, nativeSkyStamp };
+}
+
 std::function<void()> IBL::OnReflectionsRenderBegin()
 {
 	if (!UsesReflectionRadiance()) {
 		validFaces = 0;
+		if (nativeCaptureContext.epoch) nativeSkyFaces = 0;
 		return nullptr;
 	}
 
@@ -327,6 +345,7 @@ std::function<void()> IBL::OnReflectionsRenderBegin()
 	const std::array<uint, 2> colorSpace{ lighting.enableLinearLighting, lighting.enableACEScg };
 	if (captureColorSpace != colorSpace) {
 		validFaces = 0;
+		if (nativeCaptureContext.epoch) nativeSkyFaces = 0;
 		captureColorSpace = colorSpace;
 	}
 	clearedFaces = 0;
@@ -334,16 +353,38 @@ std::function<void()> IBL::OnReflectionsRenderBegin()
 	capturingRadiance = true;
 	const auto flag = static_cast<uint32_t>(State::ExtraShaderDescriptors::CaptureReflectionRadiance);
 	globals::state->permutationData.ExtraShaderDescriptor |= flag;
-	return [this, flag]() {
+	auto nativeStamp = nativeCaptureContext;
+	if (nativeStamp.epoch && globals::game::graphicsState && globals::state) {
+		nativeStamp.engineFrame = globals::game::graphicsState->GetFrameCount();
+		nativeStamp.pluginFrame = globals::state->frameCount;
+		const auto encoding = lighting.enableLinearLighting ?
+			(lighting.enableACEScg ? DX12Native::EnvironmentEncoding::LinearAP1 : DX12Native::EnvironmentEncoding::LinearRec709) : DX12Native::EnvironmentEncoding::LegacyScene;
+		if (nativeStamp.encoding != encoding || nativeStamp.interior) nativeStamp = {};
+	}
+	return [this, flag, nativeStamp]() {
 		RestoreCaptureTargets();
 		globals::state->permutationData.ExtraShaderDescriptor &= ~flag;
 		capturingRadiance = false;
 		validFaces = captureFailed ? 0 : validFaces | clearedFaces;
+		if (nativeCaptureContext.epoch) {
+			if (captureFailed || !nativeStamp.SameEnvironment(nativeCaptureContext)) {
+				nativeSkyFaces = 0;
+				nativeSkyStamp = {};
+			} else if (clearedFaces) {
+				nativeSkyFaces |= clearedFaces;
+				if (nativeSkyFaces == kAllCubeFaces) {
+					nativeSkyStamp = nativeStamp;
+					++nativeSkyRevision;
+				}
+			}
+		}
 	};
 }
 
 void IBL::OnSceneTransitionReset(bool)
 {
+	if (nativeCaptureContext.epoch)
+		SetNativeCaptureContext({});
 	validFaces = 0;
 }
 
@@ -557,6 +598,8 @@ void IBL::Prepass()
 
 void IBL::SetupResources()
 {
+	if (nativeCaptureContext.epoch)
+		SetNativeCaptureContext({});
 	GetDiffuseIBLCS();
 	validFaces = 0;
 	capturingRadiance = false;
@@ -698,6 +741,8 @@ void IBL::SetupResources()
 
 void IBL::ClearShaderCache()
 {
+	if (nativeCaptureContext.epoch)
+		SetNativeCaptureContext({});
 	diffuseIBLCS.Reset();
 	dynamicIBLValid = false;
 	validFaces = 0;
