@@ -634,7 +634,7 @@ void DX12NativeScene::ObserveScheduledShadowOrigin(const RE::NiLight* light, con
 		scheduledOrigins.try_emplace(reinterpret_cast<uintptr_t>(light), float3{ origin.x, origin.y, origin.z });
 }
 
-void DX12NativeScene::DispatchFullNativeMaterial()
+void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 {
 	if (!loaded || globals::game::isVR || !globals::features::dx12Control.WantsMaterialPreparation() ||
 		!globals::game::graphicsState || !globals::state || globals::state->isMapMenuOpen ||
@@ -651,8 +651,6 @@ void DX12NativeScene::DispatchFullNativeMaterial()
 	if (fullNativeDirect)
 		fullNativeDirect->Poll(frame);
 	fullNativeMaterial->Poll(frame);
-	if (!fullNativeMaterial->WantsFrame(frame, true))
-		return;
 	const auto scene = acceleration.GetScene();
 	const auto grid = globals::features::dx12Resources.GetGrid();
 	if (!scene || !grid || grid->requested.empty() || scene->scope != grid->requested.front().scope ||
@@ -667,10 +665,21 @@ void DX12NativeScene::DispatchFullNativeMaterial()
 	const auto viewport = Util::ConvertToDynamic(globals::state->screenSize);
 	if (!std::isfinite(viewport.x) || !std::isfinite(viewport.y) || viewport.x < 1.0f || viewport.y < 1.0f)
 		return;
-	raster.Capture(*backend, Util::GetCurrentSceneDepthSRV(false), &globals::game::frameBufferCached.nonVR, frame);
-	fullNativeMaterial->Dispatch(*backend, raster.Get(frame), scene, frame, uint32_t(viewport.x), uint32_t(viewport.y), true, true, false);
+	if (fullNativeMaterial->WantsFrame(frame, true)) {
+		raster.Capture(*backend, Util::GetCurrentSceneDepthSRV(false), &globals::game::frameBufferCached.nonVR, frame);
+		fullNativeMaterial->Dispatch(*backend, raster.Get(frame), scene, frame, uint32_t(viewport.x), uint32_t(viewport.y), true, true, false);
+	}
 	const auto material = fullNativeMaterial->GetMaterialFrame(frame);
-	if (!material || !scene->inputs || !scene->inputs->residency)
+	if (!material || material->scene != scene || !scene->inputs || !scene->inputs->residency)
+		return;
+	const auto& llf = globals::features::lightLimitFix;
+	const bool particleSnapshotReady = llf.loaded && llf.nativeParticleFrame == frame &&
+		llf.nativeParticlePluginFrame == globals::state->frameCount;
+	// Prefer early material dispatch, but defer direct lighting to opaque-ready if
+	// the current LLF emitter publication has not arrived yet.
+	if (llf.loaded && !particleSnapshotReady && !opaqueReady)
+		return;
+	if (fullNativeDirect && fullNativeDirect->Get(frame))
 		return;
 	if (!fullNativeDirect)
 		fullNativeDirect = std::make_unique<DX12Native::DirectLightingTrace>();
@@ -770,11 +779,24 @@ void DX12NativeScene::DispatchFullNativeMaterial()
 		for (const auto& light : lights.activeLights)
 			collect(light.get());
 	}
+	if (particleSnapshotReady) {
+		for (const auto& particle : llf.nativeParticleEmitters) {
+			if (directLights.size() >= DX12::kMaxPreparedLights)
+				break;
+			if (!std::isfinite(particle.radius) || particle.radius <= 0.0f || !std::isfinite(particle.fade) || particle.fade <= 0.0f ||
+				!std::isfinite(particle.position.x) || !std::isfinite(particle.position.y) || !std::isfinite(particle.position.z) ||
+				!std::isfinite(particle.color.x) || !std::isfinite(particle.color.y) || !std::isfinite(particle.color.z))
+				continue;
+			directLights.push_back({ particle.position,
+				{ toLinear(particle.color.x) * particle.fade, toLinear(particle.color.y) * particle.fade,
+					toLinear(particle.color.z) * particle.fade }, particle.radius, 0.0f, 0.0f, false });
+		}
+	}
 	DX12Native::DirectDirectionalLight directional;
 	// Use the same directional values published by the existing raster
 	// constant-buffer producer. Missing/late snapshots never fabricate light.
 	float4 sunDirection{}, sunColor{};
-	if (!Util::IsInterior() && globals::state->GetNativeDirectionalLight(frame, globals::state->frameCount, sunDirection, sunColor) &&
+	if (globals::state->HasDirectionalShadows() && globals::state->GetNativeDirectionalLight(frame, globals::state->frameCount, sunDirection, sunColor) &&
 		std::isfinite(sunDirection.x) && std::isfinite(sunDirection.y) && std::isfinite(sunDirection.z) &&
 		std::isfinite(sunColor.x) && std::isfinite(sunColor.y) && std::isfinite(sunColor.z)) {
 		const float lengthSquared = sunDirection.x * sunDirection.x + sunDirection.y * sunDirection.y + sunDirection.z * sunDirection.z;
@@ -784,8 +806,8 @@ void DX12NativeScene::DispatchFullNativeMaterial()
 			directional.radiance = { toLinear(sunColor.x), toLinear(sunColor.y), toLinear(sunColor.z), 0.0f };
 		}
 	}
-	// Selected direct coverage remains partial: exterior sun visibility is
-	// limited to the resident TLAS, with no spot/particle/interior-sun guarantee.
+	// Selected direct coverage remains partial: sun and particle visibility are
+	// limited to the resident TLAS, and spot/unsupported emitters are not yet represented.
 	fullNativeDirect->Dispatch(*backend, material, directLights, runtimeAvailable || !prepared.empty() || directional.direction.w != 0.0f,
 		directional, uint32_t(viewport.x), uint32_t(viewport.y));
 }
@@ -876,7 +898,7 @@ void DX12NativeScene::OnOpaqueRasterReady()
 {
 	if (globals::features::dx12Control.WantsMaterialPreparation()) {
 		FinishFullNativeRasterDraws();
-		DispatchFullNativeMaterial();
+		DispatchFullNativeMaterial(true);
 		DispatchFullNativeIndirect();
 		return;
 	}

@@ -109,7 +109,7 @@ private:
 	std::optional<GraphicsBackend> backend;
 	DX12Native::RasterCapture raster;
 	std::unique_ptr<DX12Native::NativeScreenProbe> fullNativeMaterial;  // Allocated only in Full Native.
-	void DispatchFullNativeMaterial();
+	void DispatchFullNativeMaterial(bool opaqueReady = false);
 	void ObserveFullNativeRasterDraw(RE::BSGeometry& geometry);
 	void FinishFullNativeRasterDraws();
 	// Render-thread-only observations, deliberately separate from SCM ownership.

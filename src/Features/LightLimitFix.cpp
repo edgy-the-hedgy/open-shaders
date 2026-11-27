@@ -1,4 +1,5 @@
 #include "LightLimitFix.h"
+#include "DX12/DX12Control.h"
 #include "CSEditor/EditorWindow.h"
 #include "Features/LightLimitFix/Common.h"
 #include "Features/LightLimitFix/LightAttach.h"
@@ -728,6 +729,10 @@ void LightLimitFix::SetupResources()
 
 void LightLimitFix::Reset()
 {
+	if (nativeParticleFrame != UINT32_MAX) {
+		nativeParticleEmitters.clear();
+		nativeParticleFrame = nativeParticlePluginFrame = UINT32_MAX;
+	}
 	effectLightValidationCache.clear();
 	bufferedParticleLightCount.store(0, std::memory_order_relaxed);
 
@@ -1309,6 +1314,11 @@ void LightLimitFix::CompileComputeShaders()
 void LightLimitFix::UpdateLights()
 {
 	ZoneScopedN("LLF::UpdateLights");
+	const bool publishNative = globals::features::dx12Control.WantsMaterialPreparation();
+	if (publishNative || nativeParticleFrame != UINT32_MAX) {
+		nativeParticleFrame = nativeParticlePluginFrame = UINT32_MAX;
+		nativeParticleEmitters.clear();
+	}
 
 	auto context = globals::d3d::context;
 	if (!context || !lights || !lights->resource) {
@@ -1525,6 +1535,17 @@ void LightLimitFix::UpdateLights()
 		CS_PROFILE_CPU_SCOPE(globals::profiler, "LightLimitFix::ParticleLightsCPU");
 		const auto particleBufferStart = lightsData.size();
 		ProcessQueuedParticleLights(lightsData);
+		if (publishNative && globals::game::graphicsState && globals::state) {
+			nativeParticleEmitters.reserve(lightsData.size() - particleBufferStart);
+			for (size_t i = particleBufferStart; i < lightsData.size(); ++i) {
+				const auto& light = lightsData[i];
+				const auto& p = light.positionWS[0].data;
+				nativeParticleEmitters.push_back({ { p.x + eyePositionCached[0].x,
+					p.y + eyePositionCached[0].y, p.z + eyePositionCached[0].z }, light.color, light.radius, light.fade });
+			}
+			nativeParticleFrame = globals::game::graphicsState->GetFrameCount();
+			nativeParticlePluginFrame = globals::state->frameCount;
+		}
 		bufferedParticleLightCount.store(static_cast<uint32_t>(lightsData.size() - particleBufferStart), std::memory_order_relaxed);
 	}
 
