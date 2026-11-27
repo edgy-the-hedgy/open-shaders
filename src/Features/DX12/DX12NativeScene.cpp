@@ -1,4 +1,5 @@
 #include "DX12NativeScene.h"
+#include "DX12LightMath.h"
 
 #include "../LightLimitFix/ShadowCasterMath.h"
 #include "../Upscaling.h"
@@ -637,6 +638,8 @@ void DX12NativeScene::DispatchFullNativeMaterial()
 	const auto frame = globals::game::graphicsState->GetFrameCount();
 	if (!fullNativeMaterial)
 		fullNativeMaterial = std::make_unique<DX12Native::NativeScreenProbe>();
+	if (fullNativeDirect)
+		fullNativeDirect->Poll(frame);
 	fullNativeMaterial->Poll(frame);
 	if (!fullNativeMaterial->WantsFrame(frame, true))
 		return;
@@ -656,6 +659,24 @@ void DX12NativeScene::DispatchFullNativeMaterial()
 		return;
 	raster.Capture(*backend, Util::GetCurrentSceneDepthSRV(false), &globals::game::frameBufferCached.nonVR, frame);
 	fullNativeMaterial->Dispatch(*backend, raster.Get(frame), scene, frame, uint32_t(viewport.x), uint32_t(viewport.y), true, true, false);
+	const auto material = fullNativeMaterial->GetMaterialFrame(frame);
+	if (!material || !scene->inputs || !scene->inputs->residency)
+		return;
+	if (!fullNativeDirect)
+		fullNativeDirect = std::make_unique<DX12Native::DirectLightingTrace>();
+	const auto prepared = DX12Resources::CollectPreparedLights(*scene->inputs->residency);
+	std::vector<DX12Native::DirectPointLight> directLights;
+	directLights.reserve(prepared.size());
+	const auto toLinear = [](float value) { return DX12Native::LightMath::ToLinear(value, false); };
+	for (const auto& light : prepared) {
+		if (directLights.size() >= DX12::kMaxPreparedLights)
+			break;
+		directLights.push_back({ light.position,
+			{ toLinear(light.color.x) * light.fade, toLinear(light.color.y) * light.fade, toLinear(light.color.z) * light.fade },
+			light.radius, light.emitterRadius, 0.0f, false });
+	}
+	// This is selected prepared point-light coverage, not the entire raster lighting solution.
+	fullNativeDirect->Dispatch(*backend, material, directLights, !prepared.empty(), uint32_t(viewport.x), uint32_t(viewport.y));
 }
 
 void DX12NativeScene::OnOpaqueRasterReady()
@@ -890,6 +911,8 @@ void DX12NativeScene::ApplyPendingLoadingReset()
 			ResetFullLightInventory();
 		}
 		globals::features::upscaling.nativeComposite.ResetShadowHistory();
+		if (fullNativeDirect)
+			fullNativeDirect->Reset();
 		if (fullNativeMaterial)
 			fullNativeMaterial->Reset();
 		raster.Reset();
@@ -918,6 +941,7 @@ void DX12NativeScene::OnRuntimeDisabled()
 		ResetFullLightInventory();
 	}
 	globals::features::upscaling.nativeComposite.ResetShadowHistory();
+	fullNativeDirect.reset();
 	fullNativeMaterial.reset();
 	raster.Reset();
 	shadows.Reset();
