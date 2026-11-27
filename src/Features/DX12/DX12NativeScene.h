@@ -114,13 +114,27 @@ private:
 	void DispatchFullNativeMaterial(bool opaqueReady = false);
 	void ObserveFullNativeRasterDraw(RE::BSGeometry& geometry);
 	void FinishFullNativeRasterDraws();
+	// D3D11-only GPU snapshots, never CPU-mapped. Reused in immediate-context
+	// submission order; not exported to DX12 until a fenced publication exists.
+	struct ProjectedConstantSlot
+	{
+		std::array<winrt::com_ptr<ID3D11Buffer>, 2> buffers;
+		std::array<uint32_t, 2> byteWidths{};
+	};
+	static constexpr uint32_t kMaxProjectedConstantSnapshots = 128;
+	std::array<ProjectedConstantSlot, kMaxProjectedConstantSnapshots> projectedConstantPool;
+	winrt::com_ptr<ID3D11Device> projectedConstantDevice;
 	struct ProjectedTextureObservation
 	{
 		// Lighting.hlsl projected diffuse, normal, detail, and noise SRVs.
 		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 4> views;
 		bool observed = false, conflicted = false;
 		uint32_t descriptor = 0;
+		uint32_t constantSlot = UINT32_MAX;
+		std::array<uint32_t, 4> constantOffsets{};
+		bool repeatedConstants = false;
 	};
+	bool CaptureProjectedConstants(ProjectedTextureObservation& observation);
 	// Render-thread-only observations, deliberately separate from SCM ownership.
 	struct FullNativeRasterDrawState
 	{
@@ -132,6 +146,7 @@ private:
 		std::unordered_map<uint32_t, DX12Native::MaterialFrameContract::ProjectedPropertyObservation> projection;
 		std::unordered_map<uint32_t, ProjectedTextureObservation> projectionTextures;
 		uint32_t activeProjectedInstance = UINT32_MAX;
+		uint32_t constantSnapshots = 0, constantSnapshotFailures = 0;
 		uint32_t projectedDraws = 0, unmatchedProjectedDraws = 0;
 		std::vector<DX12Native::MaterialFrameContract::RasterPixelIdentity> tokens;
 		uint32_t tokenBudgetRejected = 0;

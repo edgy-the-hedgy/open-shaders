@@ -98,6 +98,12 @@ namespace DX12Native::MaterialFrameContract
 			return true;
 		}
 	};
+	/** @brief Byte extent of one aligned shader constant field. */
+	constexpr bool ValidProjectionConstantExtent(uint32_t offset, uint32_t bytes, uint32_t bufferBytes)
+	{
+		return bytes != 0 && offset % 16u == 0 && bytes % 16u == 0 &&
+			offset <= bufferBytes && bytes <= bufferBytes - offset;
+	}
 	struct ProjectedPropertyObservation
 	{
 		ProjectedPropertyValues values{};

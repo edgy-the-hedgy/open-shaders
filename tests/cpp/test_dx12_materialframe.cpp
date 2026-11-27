@@ -339,3 +339,13 @@ TEST_CASE("Live projected properties reject conflicting observations and raster 
 	REQUIRE_FALSE(invalid.ValidProjection());
 	REQUIRE(invalid.RejectRasterCandidate());
 }
+
+TEST_CASE("Projection constant extents reject invalid buffer ranges", "[dx12][materials]")
+{
+	STATIC_REQUIRE(ValidProjectionConstantExtent(160, 48, 208));
+	STATIC_REQUIRE(ValidProjectionConstantExtent(96, 16, 112));
+	STATIC_REQUIRE_FALSE(ValidProjectionConstantExtent(96, 16, 100));
+	STATIC_REQUIRE_FALSE(ValidProjectionConstantExtent(95, 16, 112));
+	STATIC_REQUIRE_FALSE(ValidProjectionConstantExtent(96, 12, 112));
+	STATIC_REQUIRE_FALSE(ValidProjectionConstantExtent(UINT32_MAX, 16, 112));
+}

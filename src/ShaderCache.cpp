@@ -1465,7 +1465,7 @@ namespace SIE
 				{ "LandBlendParams", 3 },
 				{ "TreeParams", 4 },
 				{ "WindTimers", 5 },
-				{ "TextureProj", 6 },
+				{ "TextureProj", ShaderConstants::LightingTextureProj },
 				{ "IndexScale", 7 },
 				{ "WorldMapOverlayParameters", 8 },
 				{ "LeftEyeCenter", 9 },

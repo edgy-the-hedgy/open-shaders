@@ -1155,6 +1155,78 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 	globals::state->permutationData.nativeRasterPrimitiveCount = primitiveCount;
 }
 
+bool DX12NativeScene::CaptureProjectedConstants(ProjectedTextureObservation& observation)
+{
+	using namespace DX12Native::MaterialFrameContract;
+	auto& draws = fullNativeRasterDraws;
+	if (draws.constantSnapshots >= kMaxProjectedConstantSnapshots || !globals::d3d::device || !globals::d3d::context)
+		return false;
+	const auto& state = globals::game::shadowState->GetRuntimeData();
+	if (!state.currentVertexShader || !state.currentPixelShader)
+		return false;
+	constexpr auto group = static_cast<size_t>(RE::BSGraphics::ConstantGroupLevel::PerGeometry);
+	const auto& vs = *state.currentVertexShader;
+	const auto& ps = *state.currentPixelShader;
+	const auto& constants = ShaderConstants::LightingPS::Get();
+	const std::array<uint32_t, 4> offsets{
+		uint32_t(vs.constantTable[ShaderConstants::LightingTextureProj]) * uint32_t(sizeof(float)),
+		uint32_t(ps.constantTable[constants.ProjectedUVParams]) * uint32_t(sizeof(float)),
+		uint32_t(ps.constantTable[constants.ProjectedUVParams2]) * uint32_t(sizeof(float)),
+		uint32_t(ps.constantTable[constants.ProjectedUVParams3]) * uint32_t(sizeof(float))
+	};
+	// TextureProj is a row-major float3x4; the PS fields are float4.
+	// Zero offsets cannot identify these non-leading fields.
+	if (std::ranges::any_of(offsets, [](uint32_t offset) { return offset == 0; }) ||
+		offsets[1] == offsets[2] || offsets[1] == offsets[3] || offsets[2] == offsets[3])
+		return false;
+	std::array<ID3D11Buffer*, 2> sources{ Util::AsReal(vs.constantBuffers[group].buffer),
+		Util::AsReal(ps.constantBuffers[group].buffer) };
+	// Confirm the actual bound buffers agree with the engine shader groups.
+	// Reject a stale group rather than copying an unrelated constant buffer.
+	winrt::com_ptr<ID3D11Buffer> boundVS, boundPS;
+	globals::d3d::context->VSGetConstantBuffers(uint32_t(group), 1, boundVS.put());
+	globals::d3d::context->PSGetConstantBuffers(uint32_t(group), 1, boundPS.put());
+	if (boundVS.get() != sources[0] || boundPS.get() != sources[1])
+		return false;
+	std::array<D3D11_BUFFER_DESC, 2> descriptions{};
+	for (size_t i = 0; i < sources.size(); ++i) {
+		if (!sources[i]) return false;
+		sources[i]->GetDesc(&descriptions[i]);
+		if (!(descriptions[i].BindFlags & D3D11_BIND_CONSTANT_BUFFER) ||
+			descriptions[i].ByteWidth > D3D11_REQ_CONSTANT_BUFFER_ELEMENT_COUNT * 16u)
+			return false;
+	}
+	for (size_t i = 0; i < offsets.size(); ++i)
+		if (!ValidProjectionConstantExtent(offsets[i], i == 0 ? 48u : 16u, descriptions[i == 0 ? 0 : 1].ByteWidth))
+			return false;
+	if (projectedConstantDevice.get() != globals::d3d::device) {
+		projectedConstantPool = {};
+		projectedConstantDevice.copy_from(globals::d3d::device);
+	}
+	auto& slot = projectedConstantPool[draws.constantSnapshots];
+	for (size_t i = 0; i < sources.size(); ++i) {
+		if (!slot.buffers[i] || slot.byteWidths[i] != descriptions[i].ByteWidth) {
+			D3D11_BUFFER_DESC desc{};
+			desc.ByteWidth = descriptions[i].ByteWidth;
+			desc.Usage = D3D11_USAGE_DEFAULT;
+			desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+			winrt::com_ptr<ID3D11Buffer> replacement;
+			if (FAILED(globals::d3d::device->CreateBuffer(&desc, nullptr, replacement.put())))
+				return false;
+			slot.buffers[i] = std::move(replacement);
+			slot.byteWidths[i] = desc.ByteWidth;
+		}
+	}
+	// CopyResource preserves the submitted GPU buffer version and does not
+	// access the engine's invalidated mapped pointer. Both copies are queued
+	// before the next draw can replace the engine geometry constants.
+	for (size_t i = 0; i < sources.size(); ++i)
+		globals::d3d::context->CopyResource(slot.buffers[i].get(), sources[i]);
+	observation.constantSlot = draws.constantSnapshots++;
+	observation.constantOffsets = offsets;
+	return true;
+}
+
 void DX12NativeScene::ObserveProjectedDrawBindings(const RE::BSRenderPass* pass)
 {
 	// The render-pass scope is the sole admission path. No D3D state reads
@@ -1203,6 +1275,9 @@ void DX12NativeScene::ObserveProjectedDrawBindings(const RE::BSRenderPass* pass)
 	if (observation.conflicted)
 		return;
 	if (observation.observed) {
+		// Equal texture identities do not prove equal per-draw constants.
+		// Do not certify a repeated instance until GPU equality is implemented.
+		observation.repeatedConstants = true;
 		bool same = observation.descriptor == descriptor;
 		for (size_t i = 0; i < views.size(); ++i)
 			same = same && observation.views[i].get() == views[i].get();
@@ -1215,6 +1290,8 @@ void DX12NativeScene::ObserveProjectedDrawBindings(const RE::BSRenderPass* pass)
 	observation.descriptor = descriptor;
 	observation.views = std::move(views);
 	observation.observed = true;
+	if (!CaptureProjectedConstants(observation))
+		++draws.constantSnapshotFailures;
 }
 
 void DX12NativeScene::FinishFullNativeRasterDraws()
@@ -1383,6 +1460,8 @@ void DX12NativeScene::ApplyPendingLoadingReset()
 
 void DX12NativeScene::OnRuntimeDisabled()
 {
+	projectedConstantPool = {};
+	projectedConstantDevice = nullptr;
 	loadingResetPending.store(false, std::memory_order_release);
 	frameNativeModeID.store(UINT32_MAX, std::memory_order_release);
 	frameNativeMode.store(DX12::SCMNativeMode::Disabled, std::memory_order_release);
@@ -1493,7 +1572,7 @@ json DX12NativeScene::GetStatus() const
 			validProjection += observation.ValidProjection() ? 1u : 0u;
 			conflictingProjection += observation.conflicted ? 1u : 0u;
 		}
-		uint32_t selectedTextureInstances = 0, completeTextureViews = 0, conflictingTextures = 0;
+		uint32_t selectedTextureInstances = 0, completeTextureViews = 0, conflictingTextures = 0, uniqueConstantSnapshots = 0;
 		for (const auto& [ordinal, observation] : draws.projectionTextures) {
 			const auto property = draws.projection.find(ordinal);
 			if (property == draws.projection.end() || !property->second.ValidProjection())
@@ -1501,6 +1580,7 @@ json DX12NativeScene::GetStatus() const
 			if (observation.conflicted) ++conflictingTextures;
 			else if (observation.observed) {
 				++selectedTextureInstances;
+				if (observation.constantSlot != UINT32_MAX && !observation.repeatedConstants) ++uniqueConstantSnapshots;
 				if (std::ranges::all_of(observation.views, [](const auto& view) { return bool(view); }))
 					++completeTextureViews;
 			}
@@ -1510,6 +1590,8 @@ json DX12NativeScene::GetStatus() const
 			{ "validPropertyInstances", validProjection }, { "conflictingInstances", conflictingProjection },
 			{ "selectedTextureInstances", selectedTextureInstances }, { "completeTextureViews", completeTextureViews },
 			{ "conflictingTextureInstances", conflictingTextures },
+			{ "constantSnapshots", draws.constantSnapshots }, { "uniqueConstantSnapshots", uniqueConstantSnapshots },
+			{ "constantSnapshotFailures", draws.constantSnapshotFailures },
 			{ "projectorConstantsReady", false }, { "projectedTexturesReady", false } };
 		status["fullNativeRasterAdmission"] = { { "frame", draws.stamp.frame }, { "scope", draws.stamp.scope },
 			{ "geometryRevision", draws.stamp.geometryRevision }, { "materialRevision", draws.stamp.materialRevision },
