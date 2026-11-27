@@ -784,7 +784,7 @@ std::optional<std::array<ID3D12Resource*, DX12SwapChain::kDLSSGInputCount>> DX12
 	const auto prepared = globals::features::upscaling.nativePreparedFrame;
 	const bool fullNative = globals::features::dx12Control.UsesExclusiveMaterials();
 	if (fullNative && (!prepared || !globals::state || prepared->frame != globals::state->frameCount ||
-		!prepared->generationDepth || !prepared->generationMotion)) return std::nullopt;
+		!prepared->HasGenerationInputs())) return std::nullopt;
 	ID3D12Resource* sources[kDLSSGInputCount] = {
 		fullNative ? prepared->generationDepth.get() : (depthBufferShared12 ? depthBufferShared12->resource.get() : nullptr),
 		fullNative ? prepared->generationMotion.get() : (motionVectorBufferShared12 ? motionVectorBufferShared12->resource.get() : nullptr),

@@ -28,17 +28,38 @@ namespace DX12Native
 		std::shared_ptr<const NativeWorldFrame> world;
 		std::shared_ptr<const UpscalerGuideSet> guides;
 		std::array<ID3D11Resource*, UpscalerGuideSet::Count> sourceIdentities{};
+		std::array<winrt::com_ptr<ID3D11Resource>, UpscalerGuideSet::Count> sourceLeases;
+		bool encoderProduced = false;
 		float jitterX = 0, jitterY = 0, cameraNear = 0, cameraFar = 0, cameraFov = 0, frameTimeMs = 0, preExposure = 1;
 		float generationFrameTimeMs = 0;
 		uint32_t lightingQuality = kShadowQualityQuality;
 		winrt::com_ptr<ID3D12Resource> generationDepth, generationMotion;
 		bool resetHistory = false;
 		bool MatchesFrame(uint32_t currentFrame, uint32_t w, uint32_t h) const { return frame == currentFrame && width == w && height == h; }
+		bool MatchesInputs(uint32_t currentFrame, uint32_t w, uint32_t h,
+			const std::array<ID3D11Resource*, UpscalerGuideSet::Count>& sources) const
+		{
+			if (!encoderProduced || !MatchesFrame(currentFrame,w,h) || sourceIdentities != sources) return false;
+			for (size_t i=0;i<sources.size();++i) if (!sources[i] || sourceLeases[i].get()!=sources[i]) return false;
+			return true;
+		}
+		bool MatchesColor(const std::shared_ptr<const NativeComposite::Frame>& candidate) const
+		{
+			return candidate && candidate == color && candidate->valid && candidate->color && candidate->producerFence &&
+				candidate->producerValue && candidate->frame==frame && candidate->width==width && candidate->height==height;
+		}
+		bool HasGenerationInputs() const
+		{
+			if (!generationDepth || !generationMotion || !width || !height) return false;
+			const auto d=generationDepth->GetDesc(), m=generationMotion->GetDesc();
+			return d.Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && m.Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+				d.Format==DXGI_FORMAT_R32_FLOAT && d.Width>=width && d.Height>=height && m.Width>=width && m.Height>=height &&
+				d.DepthOrArraySize==1 && m.DepthOrArraySize==1 && d.SampleDesc.Count==1 && m.SampleDesc.Count==1;
+		}
 		bool Matches(uint32_t currentFrame, uint32_t w, uint32_t h, ID3D12Device* device,
 			const std::array<ID3D11Resource*, UpscalerGuideSet::Count>& sources) const
 		{
-			return MatchesFrame(currentFrame, w, h) && guides && guides->complete &&
-				guides->device.get() == device && sourceIdentities == sources;
+			return MatchesInputs(currentFrame,w,h,sources) && guides && guides->complete && guides->device.get()==device;
 		}
 	};
 }

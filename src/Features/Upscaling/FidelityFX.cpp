@@ -197,7 +197,7 @@ void FidelityFX::Present(bool a_useFrameGeneration, bool a_isHDR)
 	const auto prepared = upscaling.nativePreparedFrame;
 	const bool fullNative = globals::features::dx12Control.UsesExclusiveMaterials();
 	const bool currentNative = fullNative && prepared && globals::state && prepared->frame == globals::state->frameCount;
-	if (fullNative && (!currentNative || !prepared->generationDepth || !prepared->generationMotion)) a_useFrameGeneration = false;
+	if (fullNative && (!currentNative || !prepared->HasGenerationInputs())) a_useFrameGeneration = false;
 	const bool nativeReset = currentNative && prepared->resetHistory;
 
 	// Cache peak nits first since we need HDR feature access

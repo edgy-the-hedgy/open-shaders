@@ -38,7 +38,9 @@ bool NativeDLSS::Upscale(ID3D11Resource* a_colorOut, ID3D11Resource* a_motionVec
 
 	const auto prepared = upscaling.nativePreparedFrame;
 	if (globals::features::dx12Control.UsesExclusiveMaterials() && state->worldRenderedThisFrame &&
-		(!prepared || !prepared->world || !prepared->MatchesFrame(state->frameCount, a_extentIn.width, a_extentIn.height) ||
+		(!prepared || !prepared->world || !prepared->MatchesColor(composite) ||
+			!prepared->MatchesInputs(state->frameCount,a_extentIn.width,a_extentIn.height,
+				{typedDepth->resource.get(),a_motionVectors,a_reactiveMask,a_transparencyMask}) ||
 			prepared->displayWidth != a_extentOut.width || prepared->displayHeight != a_extentOut.height))
 		return false;
 

@@ -162,9 +162,11 @@ void NativeCubemaps::ForwardEnvironment::Update(const GraphicsBackend& backend,s
         failure=e.what();pending.reset();
     }
 }
-void NativeCubemaps::ForwardEnvironment::Bind(const GraphicsBackend& backend,const EnvironmentStamp& requested)
+bool NativeCubemaps::ForwardEnvironment::Bind(const GraphicsBackend& backend,const EnvironmentStamp& requested)
 {
-    if(bound||!backend.d3d11Context)return;
+    if(bound) Unbind();
+    if(!backend.d3d11Context || !current || !current->cubes[0].view ||
+       !Policy::PublicationFresh(current->stamp.SameEnvironment(requested),current->stamp.engineFrame,requested.engineFrame)) return false;
     boundContext=backend.d3d11Context;
     ID3D11ShaderResourceView* saved[2]{};boundContext->PSGetShaderResources(kReflectionSlot,2,saved);
     for(size_t i=0;i<prior.size();++i)prior[i].attach(saved[i]);
@@ -174,6 +176,11 @@ void NativeCubemaps::ForwardEnvironment::Bind(const GraphicsBackend& backend,con
     }
     ID3D11ShaderResourceView* views[]{boundViews[0].get(),boundViews[1].get()};
     boundContext->PSSetShaderResources(kReflectionSlot,2,views);bound=true;
+    ID3D11ShaderResourceView* actual[2]{};boundContext->PSGetShaderResources(kReflectionSlot,2,actual);
+    const bool ready=actual[0]==views[0]&&actual[1]==views[1]&&actual[0]&&actual[1];
+    for(auto* view:actual)if(view)view->Release();
+    if(!ready)Unbind();
+    return ready;
 }
 void NativeCubemaps::ForwardEnvironment::Unbind()
 {
@@ -182,6 +189,12 @@ void NativeCubemaps::ForwardEnvironment::Unbind()
     for(UINT i=0;i<2;++i){
         if(views[i]==boundViews[i].get()){auto* restore=prior[i].get();boundContext->PSSetShaderResources(kReflectionSlot+i,1,&restore);}
         if(views[i])views[i]->Release();
+    }
+    // Retire after the last draw, not merely after the strip-to-cube copy.
+    if(current && consumed.fence11){
+        current->read=UINT64_MAX;
+        const uint64_t value=consumed.Next();
+        if(SUCCEEDED(boundContext->Signal(consumed.fence11.get(),value)))current->read=value;
     }
     prior={};boundViews={};boundContext=nullptr;bound=false;
 }

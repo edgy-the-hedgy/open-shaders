@@ -189,6 +189,7 @@ std::shared_ptr<const DX12Native::EnvironmentFrame> NativeCubemaps::Producer::Ge
 
 void NativeCubemaps::Producer::BeginForward()
 {
+    EndForward();
     if(!loaded || !globals::features::dx12Control.WantsMaterialPreparation() ||
         !globals::state || !globals::state->inWorld || globals::state->nativeFirstPersonDepth ||
         (globals::state->permutationData.ExtraShaderDescriptor & uint32_t(State::ExtraShaderDescriptors::IsReflections))) return;
@@ -198,10 +199,12 @@ void NativeCubemaps::Producer::BeginForward()
     if(currentStamp.engineFrame!=frame || currentStamp.pluginFrame!=globals::state->frameCount) return;
     if(!forward) forward=std::make_unique<ForwardEnvironment>();
     forward->Update(*backend,Get(),currentStamp);
-    forward->Bind(*backend,currentStamp);
+    if(forward->Bind(*backend,currentStamp))
+        globals::state->permutationData.ExtraShaderDescriptor |= uint32_t(State::ExtraShaderDescriptors::NativeForwardEnvironment);
 }
 void NativeCubemaps::Producer::EndForward()
 {
+    if(globals::state) globals::state->permutationData.ExtraShaderDescriptor &= ~uint32_t(State::ExtraShaderDescriptors::NativeForwardEnvironment);
     if(forward) forward->Unbind();
 }
 
@@ -262,6 +265,7 @@ json NativeCubemaps::Producer::GetDiagnostics()
 
 void NativeCubemaps::Producer::InvalidateGeneration()
 {
+    EndForward();
     if(forward) forward->Reset();
     if(waterSSR) { waterSSR->End(); waterSSR->ResetHistory(); }
     waterScopeDepth=0; waterScopeInvalid=false;
@@ -272,6 +276,7 @@ void NativeCubemaps::Producer::InvalidateGeneration()
 }
 void NativeCubemaps::Producer::Release()
 {
+    EndForward();
     forward.reset(); waterSSR.reset();
     processing.reset(); inputs.reset();
     raw=nullptr; rawUAV=nullptr; inputShader=nullptr; inputConstants=nullptr;

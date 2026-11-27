@@ -493,7 +493,8 @@ public:
 		SnowLODTree = 1u << 22,
 		SnowInactive = 1u << 21,
 		MenuItem = 1u << 20,
-		CarriedShadowLight = 1u << 19
+		CarriedShadowLight = 1u << 19,
+		NativeForwardEnvironment = 1u << 18
 	};
 
 	/** @brief Bitflags describing extra feature-specific properties related to terrain displacement and material models. */

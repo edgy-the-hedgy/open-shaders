@@ -92,6 +92,7 @@ namespace Permutation
 		static const uint CaptureReflectionRadiance = (1u << 26);
 		static const uint MenuItem = (1u << 20);
 		static const uint CarriedShadowLight = (1u << 19);
+		static const uint NativeForwardEnvironment = (1u << 18);
 #if defined(SNOW_COVER) && defined(PSHADER)
 		static const uint NoSnow = (1u << 25);
 		static const uint NoFoliageTint = (1u << 24);

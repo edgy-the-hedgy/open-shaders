@@ -3147,7 +3147,8 @@ void Upscaling::PublishNativeFrameParameters(uint32_t width, uint32_t height)
 	publication->displayWidth = uint32_t(globals::state->screenSize.x);
 	publication->displayHeight = uint32_t(globals::state->screenSize.y);
 	publication->color = nativeCompositeFrame;
-	if (globals::state->worldRenderedThisFrame && globals::game::graphicsState) {
+	if (globals::state->worldRenderedThisFrame) {
+		if (!globals::game::graphicsState) { nativePreparedFrame.reset(); return; }
 		publication->world = globals::features::dx12NativeScene.GetWorldFrame(
 			globals::game::graphicsState->GetFrameCount(), publication->frame);
 		if (!publication->world || publication->world->width != width || publication->world->height != height) {
@@ -3188,11 +3189,21 @@ void Upscaling::PublishNativeUpscalerInputs(UpscaleMethod method, uint32_t width
 	PublishNativeFrameParameters(width, height);
 	if (!globals::features::dx12Control.UsesExclusiveMaterials() || globals::game::isVR || !globals::state ||
 		!typedDepthTexture || !motionVectorCopyTexture || !reactiveMaskTexture || !transparencyCompositionMaskTexture ||
-		!dx12SwapChain.EnsureSharedDevice() || !width || !height)
+		!nativePreparedFrame || !width || !height)
 		return;
 	const std::array<ID3D11Resource*, UpscalerGuideSet::Count> outputs{
 		typedDepthTexture->resource.get(), motionVectorCopyTexture->resource.get(),
 		reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get() };
+	auto provenance = std::make_shared<NativeUpscalerFrame>(*nativePreparedFrame);
+	provenance->sourceIdentities = outputs;
+	if (method == UpscaleMethod::kFSR) provenance->sourceIdentities[UpscalerGuideSet::Motion] = engineMotion;
+	for (size_t i=0;i<outputs.size();++i) {
+		if (!outputs[i] || !provenance->sourceIdentities[i]) return;
+		provenance->sourceLeases[i].copy_from(provenance->sourceIdentities[i]);
+	}
+	provenance->encoderProduced = true;
+	nativePreparedFrame = std::move(provenance);
+	if (!dx12SwapChain.EnsureSharedDevice()) return;
 	auto* device = dx12SwapChain.d3d12Device.get();
 	bool same = nativeGuideCache && nativeGuideCache->device.get() == device;
 	for (size_t i = 0; same && i < outputs.size(); ++i)
@@ -3227,11 +3238,6 @@ void Upscaling::PublishNativeUpscalerInputs(UpscaleMethod method, uint32_t width
 	if (!nativePreparedFrame) return;
 	auto publication = std::make_shared<NativeUpscalerFrame>(*nativePreparedFrame);
 	publication->guides = nativeGuideCache;
-	publication->sourceIdentities = outputs;
-	// FSR consumes undilated motion; the non-DLSS encoder copies the engine
-	// motion unchanged. Keep the provider's original DX11 source identity.
-	if (method == UpscaleMethod::kFSR)
-		publication->sourceIdentities[UpscalerGuideSet::Motion] = engineMotion;
 	nativePreparedFrame = std::move(publication);
 }
 
@@ -3279,6 +3285,7 @@ void Upscaling::Upscale()
 		EncodeInputViews views{};
 		const char* missingInput = nullptr;
 		ID3D11ComputeShader* encodeCS = nullptr;
+		bool nativeEncoded = false;
 		if (GetEncodeInputs(views, missingInput)) {
 			context->CSSetShaderResources(0, (uint)views.size(), views.data());
 			encodeCS = GetEncodeTexturesCS();
@@ -3320,6 +3327,18 @@ void Upscaling::Upscale()
 					depthOutput
 				};
 				context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
+				if (globals::features::dx12Control.UsesExclusiveMaterials() && !globals::game::isVR) {
+					ID3D11ShaderResourceView* actualInputs[4]{};
+					ID3D11UnorderedAccessView* actualOutputs[4]{};
+					context->CSGetShaderResources(0,4,actualInputs);
+					context->CSGetUnorderedAccessViews(0,4,actualOutputs);
+					nativeEncoded = eyeRenderWidth && eyeRenderHeight;
+					for (size_t j=0;j<4;++j) {
+						nativeEncoded = nativeEncoded && actualInputs[j] && actualInputs[j]==views[j] && actualOutputs[j] && actualOutputs[j]==uavs[j];
+						if (actualInputs[j]) actualInputs[j]->Release();
+						if (actualOutputs[j]) actualOutputs[j]->Release();
+					}
+				}
 
 				context->Dispatch((eyeRenderWidth + 7) / 8, (eyeRenderHeight + 7) / 8, 1);
 			}
@@ -3336,7 +3355,7 @@ void Upscaling::Upscale()
 
 		ID3D11ComputeShader* shader = nullptr;
 		context->CSSetShader(shader, nullptr, 0);
-		if (encodeCS && !globals::game::isVR)
+		if (encodeCS && !globals::game::isVR && nativeEncoded)
 			PublishNativeUpscalerInputs(upscaleMethod, eyeRenderWidth, eyeRenderHeight, Util::AsReal(motionVector.texture));
 	};
 

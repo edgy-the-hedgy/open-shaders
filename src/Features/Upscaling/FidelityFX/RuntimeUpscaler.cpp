@@ -1169,11 +1169,13 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 		return false;
 
 	const auto composite = upscaling.nativeCompositeFrame;
+	const auto prepared = upscaling.nativePreparedFrame;
+	const bool fullNative = globals::features::dx12Control.UsesExclusiveMaterials();
 	const bool nativeColor = !globals::game::isVR && composite && composite->valid &&
 	                         composite->color && composite->producerFence &&
 	                         composite->producerValue && composite->frame == state->frameCount &&
 	                         composite->width == a_renderWidth && composite->height == a_renderHeight &&
-	                         composite->format == colorDesc.Format;
+	                         composite->format == colorDesc.Format && (!fullNative || (prepared && prepared->MatchesColor(composite)));
 
 	auto isValidShared = [](WrappedResource* a_resource) {
 		return a_resource && a_resource->resource11 && a_resource->resource.get();
@@ -1199,7 +1201,6 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 	CS_GPU_PASS_INDEXED(globals::game::isVR ? 1 + a_contextIndex : 0,
 		"Upscaling::RuntimeUpscalerDispatch", "Upscaling::RuntimeUpscalerDispatch Eye 0", "Upscaling::RuntimeUpscalerDispatch Eye 1");
 
-	const auto prepared = upscaling.nativePreparedFrame;
 	const bool directGuides = prepared && prepared->Matches(state->frameCount, a_renderWidth, a_renderHeight,
 		swapChain.d3d12Device.get(), { a_depth, a_motionVectors, a_reactiveMask, a_transparencyCompositionMask });
 	if (directGuides) commandContext->prepared = prepared->guides;
@@ -1412,7 +1413,8 @@ bool FidelityFX::UpscaleRegion(uint32_t a_contextIndex, ID3D11Resource* a_color,
 	const bool fullNativeWorld = globals::features::dx12Control.UsesExclusiveMaterials() &&
 		currentState && currentState->worldRenderedThisFrame && !globals::game::isVR;
 	const bool coherentWorld = fullNativeWorld && preparedFrame && preparedFrame->world &&
-		preparedFrame->MatchesFrame(currentState->frameCount, a_renderWidth, a_renderHeight) &&
+		preparedFrame->MatchesInputs(currentState->frameCount,a_renderWidth,a_renderHeight,
+			{a_depth,a_motionVectors,a_reactiveMask,a_transparencyCompositionMask}) &&
 		preparedFrame->displayWidth == a_displayWidth && preparedFrame->displayHeight == a_displayHeight;
 	if (fullNativeWorld && !coherentWorld) {
 		runtimeNativeHistoryDiscontinuous = true;

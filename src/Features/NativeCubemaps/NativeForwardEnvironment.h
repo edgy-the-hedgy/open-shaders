@@ -13,7 +13,7 @@ namespace NativeCubemaps
     public:
         ~ForwardEnvironment();
         void Update(const GraphicsBackend&,std::shared_ptr<const DX12Native::EnvironmentFrame>,const DX12Native::EnvironmentStamp&);
-        void Bind(const GraphicsBackend&,const DX12Native::EnvironmentStamp&);
+        bool Bind(const GraphicsBackend&,const DX12Native::EnvironmentStamp&);
         void Unbind();
         void Reset();
         json Diagnostics() const;
