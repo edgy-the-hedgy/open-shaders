@@ -12,6 +12,11 @@ TEST_CASE("Native cubemap acquisition is bounded and wrap-safe", "[dx12][cubemap
     REQUIRE_FALSE(CaptureDue(100, 105));
     REQUIRE(CaptureDue(100, 106));
     REQUIRE(CaptureDue(UINT32_MAX - 2, 3));
+    REQUIRE(CaptureDue(100, 101, 1));
+    REQUIRE_FALSE(CaptureDue(100, 159, 60));
+    REQUIRE(CaptureDue(100, 160, 60));
+    REQUIRE(CaptureDue(100, 160, 999));
+    REQUIRE_FALSE(CaptureDue(100, 100, 0));
 }
 
 TEST_CASE("Native cubemap history rejects incompatible and stale observations", "[dx12][cubemaps]")

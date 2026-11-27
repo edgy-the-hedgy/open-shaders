@@ -127,7 +127,7 @@ void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend, ID3D11Sha
             processing->Advance(frame);
             if(processing->Pending()) return;
         }
-        if(!Policy::CaptureDue(lastCaptureFrame,currentStamp.engineFrame)) return;
+        if(!Policy::CaptureDue(lastCaptureFrame,currentStamp.engineFrame,globals::features::dx12Control.NativeCubemapCaptureInterval())) return;
         // A depth match alone is not sufficient for native radiance acquisition:
         // require a same-frame raster identity candidate and direct-light input.
         // This is environment observation, not final-color ownership.
@@ -302,7 +302,7 @@ json NativeCubemaps::Producer::GetDiagnostics()
     const auto publication=Get();
     return { {"nativeRadianceInputAdmitted",publication && publication->nativeRadianceInput},
         {"transitionalRasterInputAdmitted",publication && publication->rasterCompatibilityInput},
-        {"lastCaptureFrame",lastCaptureFrame}, {"environmentRevision",publication ? publication->revision : 0},
+        {"lastCaptureFrame",lastCaptureFrame}, {"captureInterval",globals::features::dx12Control.NativeCubemapCaptureInterval()}, {"environmentRevision",publication ? publication->revision : 0},
         {"basePublished",publication && bool(publication->base)}, {"reflectionPublished",publication && bool(publication->reflection)},
         {"skyFacesValid",skyCapture.ValidFaces()}, {"skyRevision",skyRevision},
         {"skyAcquisitionFresh",bool(GetSkySource(currentStamp).texture)}, {"skyHidden",currentStamp.skyHidden},

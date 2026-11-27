@@ -181,6 +181,8 @@ void DX12Control::DrawSimpleSettings(bool developerMode)
 			nativeSSR.store(settings.NativeScreenSpaceReflections, std::memory_order_relaxed);
 		if (ImGui::SliderFloat(T("menu.dx12.water_reflection_radius", "Water reflection emitter radius"), &settings.NativeWaterReflectionRadius, 0.0f, 1.0f, "%.3f"))
 			waterReflectionRadius.store(settings.NativeWaterReflectionRadius, std::memory_order_relaxed);
+		if (ImGui::SliderInt(T("menu.dx12.cubemap_capture_interval", "Cubemap capture interval (frames)"), &settings.NativeCubemapCaptureInterval, 1, 60))
+			captureInterval.store(uint32_t(settings.NativeCubemapCaptureInterval), std::memory_order_relaxed);
 	}
 	ImGui::SeparatorText(T("menu.dx12.tab.resources", "Resources"));
 	globals::features::dx12Resources.DrawSettings();
@@ -232,6 +234,8 @@ void DX12Control::LoadSettings(json& input)
 	settings.NativeScreenSpaceReflections = input.value("NativeScreenSpaceReflections", defaults.NativeScreenSpaceReflections);
 	const float radius = input.value("NativeWaterReflectionRadius", defaults.NativeWaterReflectionRadius);
 	settings.NativeWaterReflectionRadius = std::isfinite(radius) ? std::clamp(radius, 0.0f, 1.0f) : defaults.NativeWaterReflectionRadius;
+	settings.NativeCubemapCaptureInterval = std::clamp(input.value("NativeCubemapCaptureInterval", defaults.NativeCubemapCaptureInterval), 1, 60);
+	captureInterval.store(uint32_t(settings.NativeCubemapCaptureInterval), std::memory_order_relaxed);
 	waterReflectionRadius.store(settings.NativeWaterReflectionRadius, std::memory_order_relaxed);
 	nativeSSR.store(settings.NativeScreenSpaceReflections, std::memory_order_relaxed);
 	settings.Mode = static_cast<int>(DX12::SanitizeControlMode(input.value("Mode", defaults.Mode),
@@ -250,12 +254,14 @@ void DX12Control::SaveSettings(json& output)
 	const auto saved = DX12::RequiresModeRestart(active, requested) ? requested : active;
 	output = { { "Enabled", settings.Enabled }, { "Mode", static_cast<int>(saved) },
 		{ "NativeScreenSpaceReflections", settings.NativeScreenSpaceReflections },
-		{ "NativeWaterReflectionRadius", settings.NativeWaterReflectionRadius } };
+		{ "NativeWaterReflectionRadius", settings.NativeWaterReflectionRadius },
+		{ "NativeCubemapCaptureInterval", settings.NativeCubemapCaptureInterval } };
 }
 
 void DX12Control::RestoreDefaultSettings()
 {
 	settings = {};
+	captureInterval.store(uint32_t(settings.NativeCubemapCaptureInterval), std::memory_order_relaxed);
 	waterReflectionRadius.store(settings.NativeWaterReflectionRadius, std::memory_order_relaxed);
 	nativeSSR.store(settings.NativeScreenSpaceReflections, std::memory_order_relaxed);
 	RequestMode(static_cast<DX12::ControlMode>(settings.Mode));

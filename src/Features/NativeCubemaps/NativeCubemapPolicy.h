@@ -77,10 +77,10 @@ namespace NativeCubemaps::Policy
         }
     };
 
-    constexpr bool CaptureDue(uint32_t previous, uint32_t current)
+    constexpr bool CaptureDue(uint32_t previous, uint32_t current, uint32_t interval=kCaptureInterval)
     {
         return previous == std::numeric_limits<uint32_t>::max() ||
-            current - previous >= kCaptureInterval;
+            current - previous >= (interval < 1u ? 1u : interval > 60u ? 60u : interval);
     }
 
     constexpr bool PublicationFresh(bool sameEnvironment, uint32_t observed, uint32_t requested)
