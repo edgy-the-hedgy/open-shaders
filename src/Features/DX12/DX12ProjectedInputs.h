@@ -13,6 +13,7 @@
 #include <span>
 #include <stdexcept>
 #include <vector>
+#include <DirectXTex.h>
 
 namespace DX12Native
 {
@@ -23,7 +24,7 @@ namespace DX12Native
 	inline constexpr uint32_t kProjectedRecordColumns = 8;
 	struct ProjectedInputDraw
 	{
-		uint32_t instance = UINT32_MAX, descriptor = 0;
+		uint32_t instance = UINT32_MAX, descriptor = 0, samplerModes = 0;
 		std::array<ID3D11ShaderResourceView*, 2> constants{};
 		std::array<uint32_t, 4> offsets{};
 		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, kProjectedTextureRoles> views;
@@ -101,11 +102,19 @@ namespace DX12Native
 			// Preserve the exact typed view and all original mips. Do not reinterpret
 			// typeless formats, multisampled/array views, or writable render targets.
 			if (!texture || sourceView.ViewDimension != D3D11_SRV_DIMENSION_TEXTURE2D ||
-				sourceView.Format == DXGI_FORMAT_UNKNOWN || sourceView.Format != desc.Format ||
+				sourceView.Format == DXGI_FORMAT_UNKNOWN || DirectX::MakeTypeless(sourceView.Format) != DirectX::MakeTypeless(desc.Format) ||
 				!desc.Width || !desc.Height || !desc.MipLevels || desc.ArraySize != 1 ||
 				desc.SampleDesc.Count != 1 || desc.CPUAccessFlags ||
 				(desc.BindFlags & (D3D11_BIND_RENDER_TARGET | D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_DEPTH_STENCIL)))
 				return UINT32_MAX;
+			// A float4 shader view must be filterable on the native device.
+			D3D12_FEATURE_DATA_FORMAT_SUPPORT support{ sourceView.Format };
+			if (FAILED(owner.d3d12Device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support))) ||
+				!(support.Support1 & D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE) ||
+				!(support.Support1 & D3D12_FORMAT_SUPPORT1_TEXTURE2D))
+				return UINT32_MAX;
+			// Use the observed typed view when importing a compatible typeless source.
+			desc.Format = sourceView.Format;
 			const auto firstMip = sourceView.Texture2D.MostDetailedMip;
 			if (firstMip >= desc.MipLevels) return UINT32_MAX;
 			auto& levels = sourceView.Texture2D.MipLevels;
@@ -162,6 +171,11 @@ namespace DX12Native
 		std::shared_ptr<const ProjectedInputFrame> Get(const MaterialFrameContract::RasterIdentityStamp& stamp) const
 		{
 			return current && current->Ready(stamp) ? current : nullptr;
+		}
+		std::shared_ptr<const ProjectedInputFrame> GetSubmitted(const MaterialFrameContract::RasterIdentityStamp& stamp) const
+		{
+			return current && current->stamp == stamp && current->rowCount && current->readyFence &&
+				current->readyValue && current->readyValue != UINT64_MAX ? current : nullptr;
 		}
 		void Publish(const GraphicsBackend& backend, MaterialFrameContract::RasterIdentityStamp stamp, std::span<const ProjectedInputDraw> draws)
 		{
@@ -230,7 +244,7 @@ namespace DX12Native
 					PackConstants constants{};
 					constants.offsets = draw.offsets;
 					pending->instances.push_back(draw.instance);
-					constants.metadata = { draw.instance, draw.descriptor, static_cast<uint32_t>(records.size()), 0 };
+					constants.metadata = { draw.instance, draw.descriptor, static_cast<uint32_t>(records.size()), draw.samplerModes };
 					for (size_t i = 0; i < draw.views.size(); ++i) {
 						submitted = true;
 						constants.textures[i] = ImportTexture(*pending, reusable, draw.views[i].get());

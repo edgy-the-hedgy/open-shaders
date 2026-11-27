@@ -671,13 +671,22 @@ void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 	const auto viewport = Util::ConvertToDynamic(globals::state->screenSize);
 	if (!std::isfinite(viewport.x) || !std::isfinite(viewport.y) || viewport.x < 1.0f || viewport.y < 1.0f)
 		return;
+	const auto& projectionTally = scene->materialEvaluation->surfaceCapabilities;
+	// Prepared projected surfaces require same-frame opaque draw inputs.
+	// Keep early material dispatch for scenes without known projection demand.
+	const bool needsProjection = projectionTally.projectedUv || projectionTally.unresolvedProjection;
 	if (fullNativeMaterial->WantsFrame(frame, true)) {
-		raster.Capture(*backend, Util::GetCurrentSceneDepthSRV(false), &globals::game::frameBufferCached.nonVR, frame);
+		if (!raster.Get(frame))
+			raster.Capture(*backend, Util::GetCurrentSceneDepthSRV(false), &globals::game::frameBufferCached.nonVR, frame);
+		if (needsProjection && !opaqueReady)
+			return;
+		const DX12Native::MaterialFrameContract::RasterIdentityStamp projectionStamp{ frame, scene->scope, scene->geometryRevision, scene->materialEvaluation->revision };
+		auto projection = opaqueReady && projectedInputs ? projectedInputs->GetSubmitted(projectionStamp) : nullptr;
 		fullNativeMaterial->Dispatch(*backend, raster.Get(frame), scene, frame, uint32_t(viewport.x), uint32_t(viewport.y), true, true, false,
 			globals::features::extendedMaterials.loaded && globals::features::extendedMaterials.settings.EnableParallax != 0,
 			globals::features::extendedMaterials.loaded && globals::features::extendedMaterials.settings.EnableParallaxWarpingFix != 0,
 			globals::features::extendedMaterials.loaded && globals::features::extendedMaterials.settings.EnableShadows != 0,
-			globals::state->GetMaterialMipBias(Util::GetTemporal()));
+			globals::state->GetMaterialMipBias(Util::GetTemporal()), std::move(projection));
 	}
 	const auto material = fullNativeMaterial->GetMaterialFrame(frame);
 	if (!material || material->scene != scene || !scene->inputs || !scene->inputs->residency)
@@ -685,7 +694,7 @@ void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 	const auto& llf = globals::features::lightLimitFix;
 	const bool particleSnapshotReady = llf.loaded && llf.nativeParticleFrame == frame &&
 		llf.nativeParticlePluginFrame == globals::state->frameCount;
-	// Prefer early material dispatch, but defer direct lighting to opaque-ready if
+	// Prefer early material dispatch where possible, but defer direct lighting to opaque-ready if
 	// the current LLF emitter publication has not arrived yet.
 	if (llf.loaded && !particleSnapshotReady && !opaqueReady)
 		return;
@@ -1268,7 +1277,9 @@ void DX12NativeScene::ObserveProjectedDrawBindings(const RE::BSRenderPass* pass)
 		return;
 	constexpr std::array<uint32_t, 4> slots{ 3, 8, 10, 11 };
 	std::array<winrt::com_ptr<ID3D11ShaderResourceView>, slots.size()> views;
+	uint32_t samplerModes = 0;
 	for (size_t i = 0; i < slots.size(); ++i) {
+		samplerModes |= (static_cast<uint32_t>(state.PSTextureAddressMode[slots[i]].get()) & 3u) << (2u * i);
 		auto* view = Util::AsReal(state.PSTexture[slots[i]]);
 		if (view) {
 			D3D11_SHADER_RESOURCE_VIEW_DESC desc{};
@@ -1276,6 +1287,7 @@ void DX12NativeScene::ObserveProjectedDrawBindings(const RE::BSRenderPass* pass)
 			if (desc.ViewDimension != D3D11_SRV_DIMENSION_TEXTURE2D || desc.Format == DXGI_FORMAT_UNKNOWN)
 				return;
 			views[i].copy_from(view);
+			if (i == 0 && DirectX::IsSRGB(desc.Format)) samplerModes |= 256u;
 		}
 	}
 	// Noise is required even for the solid-color projection permutation.
@@ -1288,7 +1300,7 @@ void DX12NativeScene::ObserveProjectedDrawBindings(const RE::BSRenderPass* pass)
 		// Equal texture identities do not prove equal per-draw constants.
 		// Do not certify a repeated instance until GPU equality is implemented.
 		observation.repeatedConstants = true;
-		bool same = observation.descriptor == descriptor;
+		bool same = observation.descriptor == descriptor && observation.samplerModes == samplerModes;
 		for (size_t i = 0; i < views.size(); ++i)
 			same = same && observation.views[i].get() == views[i].get();
 		if (!same) {
@@ -1298,6 +1310,7 @@ void DX12NativeScene::ObserveProjectedDrawBindings(const RE::BSRenderPass* pass)
 		return;
 	}
 	observation.descriptor = descriptor;
+	observation.samplerModes = samplerModes;
 	observation.views = std::move(views);
 	observation.observed = true;
 	if (!CaptureProjectedConstants(observation))
@@ -1333,7 +1346,7 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 				continue;
 			const auto& slot = projectedConstantPool[observation.constantSlot];
 			if (!slot.views[0] || !slot.views[1]) continue;
-			inputs.push_back({ ordinal, observation.descriptor, { slot.views[0].get(), slot.views[1].get() },
+			inputs.push_back({ ordinal, observation.descriptor, observation.samplerModes, { slot.views[0].get(), slot.views[1].get() },
 				observation.constantOffsets, observation.views });
 		}
 		if (!inputs.empty()) {

@@ -132,7 +132,7 @@ private:
 		// Lighting.hlsl projected diffuse, normal, detail, and noise SRVs.
 		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 4> views;
 		bool observed = false, conflicted = false;
-		uint32_t descriptor = 0;
+		uint32_t descriptor = 0, samplerModes = 0;
 		uint32_t constantSlot = UINT32_MAX;
 		std::array<uint32_t, 4> constantOffsets{};
 		bool repeatedConstants = false;

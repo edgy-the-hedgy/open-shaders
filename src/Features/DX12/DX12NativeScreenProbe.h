@@ -2,6 +2,7 @@
 
 #include "DX12NativeAcceleration.h"
 #include "DX12NativeRasterCapture.h"
+#include "DX12ProjectedInputs.h"
 #include "DX12GpuRetirement.h"
 #include "DX12MaterialFrameContract.h"
 #include "Utils/FileSystem.h"
@@ -23,6 +24,7 @@ namespace DX12Native
 			float4 positionAdjust;
 			uint32_t width, height, gridWidth, gridHeight, collectStats, parallaxEnabled, parallaxWarpFixEnabled, parallaxShadowEnabled;
 			float mipBias;
+			uint32_t projectionRows, projectionFrame;
 		};
 		static_assert(sizeof(Camera) <= 256);
 		struct OutputAllocation
@@ -35,6 +37,8 @@ namespace DX12Native
 		{
 			std::shared_ptr<const RasterFrame> raster;
 			std::shared_ptr<const TopLevel> scene;
+			std::shared_ptr<const ProjectedInputFrame> projection;
+			winrt::com_ptr<ID3D12Resource> projectionLookup;
 			std::shared_ptr<OutputAllocation> output;
 			winrt::com_ptr<ID3D12Resource> readback, camera, counters, counterInit;
 			winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
@@ -76,7 +80,9 @@ namespace DX12Native
 				throw std::runtime_error("Screen probe DXIL read failed");
 			CD3DX12_DESCRIPTOR_RANGE range;
 			range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NativePBR::kGpuTextureDescriptorCapacity + 1, 3);
-			CD3DX12_ROOT_PARAMETER parameters[11];
+			CD3DX12_DESCRIPTOR_RANGE projectionRange;
+			projectionRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1 + kProjectedTextureCapacity, 518);
+			CD3DX12_ROOT_PARAMETER parameters[13];
 			parameters[0].InitAsShaderResourceView(0);
 			parameters[1].InitAsShaderResourceView(1);
 			parameters[2].InitAsShaderResourceView(2);
@@ -88,13 +94,15 @@ namespace DX12Native
 			parameters[8].InitAsUnorderedAccessView(1);
 			parameters[9].InitAsUnorderedAccessView(3);
 			parameters[10].InitAsUnorderedAccessView(4);
+			parameters[11].InitAsShaderResourceView(517);
+			parameters[12].InitAsDescriptorTable(1, &projectionRange);
 			std::array<CD3DX12_STATIC_SAMPLER_DESC, 4> samplers;
 			for (uint32_t mode = 0; mode < 4; ++mode)
 				samplers[mode] = CD3DX12_STATIC_SAMPLER_DESC(mode, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
 					(mode & 2) ? D3D12_TEXTURE_ADDRESS_MODE_WRAP : D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
 					(mode & 1) ? D3D12_TEXTURE_ADDRESS_MODE_WRAP : D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
 					D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
-			const CD3DX12_ROOT_SIGNATURE_DESC desc(11, parameters, UINT(samplers.size()), samplers.data());
+			const CD3DX12_ROOT_SIGNATURE_DESC desc(UINT(std::size(parameters)), parameters, UINT(samplers.size()), samplers.data());
 			winrt::com_ptr<ID3DBlob> blob, errors;
 			winrt::com_ptr<ID3D12RootSignature> newRoot;
 			winrt::com_ptr<ID3D12PipelineState> newPipeline;
@@ -249,7 +257,7 @@ namespace DX12Native
 			return free && (lastFrame==UINT32_MAX || frame-lastFrame>=(continuous?1u:30u));
 		}
 		void Dispatch(const GraphicsBackend& backend,std::shared_ptr<const RasterFrame> raster,
-			std::shared_ptr<const TopLevel> scene,uint32_t frame,uint32_t width,uint32_t height,bool fullResolution,bool continuous=false,bool collectStats=false,bool parallaxEnabled=false,bool parallaxWarpFixEnabled=false,bool parallaxShadowEnabled=false,float mipBias=0.0f)
+			std::shared_ptr<const TopLevel> scene,uint32_t frame,uint32_t width,uint32_t height,bool fullResolution,bool continuous=false,bool collectStats=false,bool parallaxEnabled=false,bool parallaxWarpFixEnabled=false,bool parallaxShadowEnabled=false,float mipBias=0.0f,std::shared_ptr<const ProjectedInputFrame> projection=nullptr)
 		{
 			if (!WantsFrame(frame,continuous)) return;
 			published.reset();
@@ -315,6 +323,17 @@ namespace DX12Native
 				}
 				auto slot=std::make_shared<Submission>();
 				slot->raster=std::move(raster); slot->scene=std::move(scene);
+				if (projection && projection->stamp == MaterialFrameContract::RasterIdentityStamp{frame,slot->scene->scope,
+						slot->scene->geometryRevision,evaluation.revision} && projection->rowCount==projection->instances.size())
+					slot->projection=std::move(projection);
+				// Root SRVs have no hardware range; keep even the disabled lookup in bounds.
+				std::vector<uint32_t> projectionLookup(evaluation.instanceCount,UINT32_MAX);
+				if (slot->projection)
+					for (uint32_t row=0;row<slot->projection->rowCount;++row) {
+						const auto instance=slot->projection->instances[row];
+						if (instance<projectionLookup.size()) projectionLookup[instance]=row;
+					}
+				slot->projectionLookup=Eval::Table(device,projectionLookup);
 				slot->frame=frame; slot->width=gridWidth; slot->height=gridHeight; slot->fullResolution=fullResolution; slot->collectStats=collectStats; slot->fence=fence; slot->root=root; slot->pipeline=pipeline;
 				if (!reuse) {
 					auto replacement=std::make_shared<OutputAllocation>();
@@ -337,12 +356,12 @@ namespace DX12Native
 				}
 				slot->camera=Eval::Buffer(device,256,D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ);
 				const Camera constants{slot->raster->camera.CameraProjInverse,slot->raster->camera.CameraViewInverse,
-					slot->raster->camera.CameraPosAdjust,width,height,gridWidth,gridHeight,collectStats ? 1u : 0u,parallaxEnabled ? 1u : 0u,parallaxWarpFixEnabled ? 1u : 0u,shadowPlane ? 1u : 0u,std::isfinite(mipBias) ? mipBias : 0.0f};
+					slot->raster->camera.CameraPosAdjust,width,height,gridWidth,gridHeight,collectStats ? 1u : 0u,parallaxEnabled ? 1u : 0u,parallaxWarpFixEnabled ? 1u : 0u,shadowPlane ? 1u : 0u,std::isfinite(mipBias) ? mipBias : 0.0f,slot->projection ? slot->projection->rowCount : 0u,frame};
 				void* mapped=nullptr; const D3D12_RANGE noRead{};
 				Eval::Check(slot->camera->Map(0,&noRead,&mapped));
 				std::memcpy(mapped,&constants,sizeof(constants)); slot->camera->Unmap(0,nullptr);
 				const D3D12_DESCRIPTOR_HEAP_DESC heap{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-					NativePBR::kGpuTextureDescriptorCapacity+1,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
+					NativePBR::kGpuTextureDescriptorCapacity+2+kProjectedTextureCapacity,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
 				Eval::Check(device->CreateDescriptorHeap(&heap,IID_PPV_ARGS(slot->descriptors.put())));
 				const auto cpu=slot->descriptors->GetCPUDescriptorHandleForHeapStart();
 				const auto step=device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -352,6 +371,24 @@ namespace DX12Native
 				depth.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; depth.Texture2D.MipLevels=1;
 				device->CreateShaderResourceView(slot->raster->depth->resource.get(),&depth,
 					{cpu.ptr+SIZE_T(NativePBR::kGpuTextureDescriptorCapacity)*step});
+				const auto projectionDescriptor=NativePBR::kGpuTextureDescriptorCapacity+1;
+				auto projectionView=depth;
+				projectionView.Format=DXGI_FORMAT_R32G32B32A32_UINT;
+				device->CreateShaderResourceView(slot->projection ? slot->projection->records->resource.get() : nullptr,
+					&projectionView,{cpu.ptr+SIZE_T(projectionDescriptor)*step});
+				for (uint32_t index=0;index<kProjectedTextureCapacity;++index) {
+					auto view=depth;
+					view.Format=DXGI_FORMAT_R8G8B8A8_UNORM;
+					ID3D12Resource* resource=nullptr;
+					if (slot->projection && index<slot->projection->textures.size()) {
+						const auto& texture=slot->projection->textures[index];
+						view.Format=texture.view.Format;
+						view.Texture2D.MostDetailedMip=texture.view.Texture2D.MostDetailedMip;
+						view.Texture2D.MipLevels=texture.view.Texture2D.MipLevels;
+						resource=texture.shared->resource.get();
+					}
+					device->CreateShaderResourceView(resource,&view,{cpu.ptr+SIZE_T(projectionDescriptor+1+index)*step});
+				}
 				Eval::Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,IID_PPV_ARGS(slot->allocator.put())));
 				Eval::Check(device->CreateCommandList(0,D3D12_COMMAND_LIST_TYPE_DIRECT,slot->allocator.get(),pipeline.get(),IID_PPV_ARGS(slot->commands.put())));
 				auto* command=slot->commands.get();
@@ -368,6 +405,10 @@ namespace DX12Native
 				command->SetComputeRootUnorderedAccessView(8,slot->counters->GetGPUVirtualAddress());
 				command->SetComputeRootUnorderedAccessView(9,slot->output->rayIdentity->GetGPUVirtualAddress());
 				command->SetComputeRootUnorderedAccessView(10,slot->output->materialLobes->GetGPUVirtualAddress());
+				command->SetComputeRootShaderResourceView(11,slot->projectionLookup->GetGPUVirtualAddress());
+				auto projectedGpu=slot->descriptors->GetGPUDescriptorHandleForHeapStart();
+				projectedGpu.ptr+=UINT64(projectionDescriptor)*step;
+				command->SetComputeRootDescriptorTable(12,projectedGpu);
 				if (collectStats) {
 					command->CopyBufferRegion(slot->counters.get(),0,slot->counterInit.get(),0,kCounterBytes);
 					const auto counterBarrier=CD3DX12_RESOURCE_BARRIER::Transition(slot->counters.get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -376,6 +417,15 @@ namespace DX12Native
 				const auto begin=CD3DX12_RESOURCE_BARRIER::Transition(slot->raster->depth->resource.get(),
 					D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 				command->ResourceBarrier(1,&begin);
+				std::vector<D3D12_RESOURCE_BARRIER> projectionBarriers;
+				if (slot->projection) {
+					projectionBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(slot->projection->records->resource.get(),
+						D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
+					for (const auto& texture:slot->projection->textures)
+						projectionBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(texture.shared->resource.get(),
+							D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
+					command->ResourceBarrier(UINT(projectionBarriers.size()),projectionBarriers.data());
+				}
 				if (slot->output->shaderReadable) {
 					const std::array outputBarriers{
 						CD3DX12_RESOURCE_BARRIER::Transition(slot->output->resource.get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
@@ -384,6 +434,10 @@ namespace DX12Native
 					command->ResourceBarrier(UINT(outputBarriers.size()),outputBarriers.data());
 				}
 				command->Dispatch((gridWidth+7)/8,(gridHeight+7)/8,1);
+				if (!projectionBarriers.empty()) {
+					for (auto& barrier:projectionBarriers) std::swap(barrier.Transition.StateBefore,barrier.Transition.StateAfter);
+					command->ResourceBarrier(UINT(projectionBarriers.size()),projectionBarriers.data());
+				}
 				const std::array end{
 					CD3DX12_RESOURCE_BARRIER::Transition(slot->output->resource.get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COMMON),
 					CD3DX12_RESOURCE_BARRIER::Transition(slot->output->rayIdentity.get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COMMON),
@@ -398,6 +452,7 @@ namespace DX12Native
 				Eval::Check(command->Close());
 				Eval::Check(backend.commandQueue->Wait(slot->raster->readyFence.get(),slot->raster->readyValue));
 				Eval::Check(backend.commandQueue->Wait(slot->scene->producerFence.get(),slot->scene->producerValue));
+				if (slot->projection) Eval::Check(backend.commandQueue->Wait(slot->projection->readyFence.get(),slot->projection->readyValue));
 				pending=std::move(slot);
 				ID3D12CommandList* lists[]{command}; backend.commandQueue->ExecuteCommandLists(1,lists);
 				submitted=true;
