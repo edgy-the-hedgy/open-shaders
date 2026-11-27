@@ -239,6 +239,9 @@ namespace DX12Native
 				raster.camera.CameraPosAdjust, width, height, slot->material->rowPitch, lightCount,
 				0.0f, 0u, slot->material->scene->materialEvaluation->instanceCount, slot->material->parallaxShadows ? 1u : 0u, directional.direction, directional.radiance, foliageScatteringEnabled ? 1u : 0u, slot->characters ? 1u : 0u, slot->quality, slot->frame };
 			slot->directionalIncluded = directional.direction.w != 0.0f;
+			slot->directional = directional;
+			slot->lightCount = lightCount;
+			slot->foliageScattering = foliageScatteringEnabled;
 			WriteConstants(slot->camera.get(), constants);
 			auto* depthResource = raster.depth->resource.get();
 			const auto& evaluation = *slot->material->scene->materialEvaluation;

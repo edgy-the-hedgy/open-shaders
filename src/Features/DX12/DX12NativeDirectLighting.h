@@ -49,6 +49,10 @@ namespace DX12Native
 		uint32_t frame = 0, width = 0, height = 0, rowPitch = 0;
 		bool statsPending = false;
 		bool directionalIncluded = false;
+		// Immutable secondary-ray light inputs, owned by this fenced frame.
+		uint32_t lightCount = 0;
+		DirectDirectionalLight directional{};
+		bool foliageScattering = false;
 	};
 
 	/** @brief Consumes the published material frame without retracing primary rays. */

@@ -22,6 +22,7 @@ ByteAddressBuffer SSRDirect : register(t524);
 ByteAddressBuffer SSRRayIdentity : register(t525);
 ByteAddressBuffer SSRTokenTable : register(t526);
 Texture2D<float4> SSRTokens : register(t527);
+ByteAddressBuffer SecondaryLights : register(t528);
 RWByteAddressBuffer Lighting : register(u0);
 
 cbuffer IndirectInputs : register(b0)
@@ -66,7 +67,11 @@ cbuffer IndirectInputs : register(b0)
     uint SSRDirectPitch;
     uint SSRRayPitch;
     uint SSRTokenCount;
+    float4 SecondarySunDirection, SecondarySunRadiance;
+    uint SecondaryLightCount, SecondaryFoliage;
+    uint2 SecondaryPadding;
 };
+#include "NativeSecondaryReflection.hlsli"
 
 float Luminance(float3 c) { return dot(c, float3(0.2125, 0.7154, 0.0721)); }
 float3 SaturateColor(float3 c, float amount) { return max(0.0, lerp(Luminance(c).xxx, c, amount)); }
@@ -184,6 +189,12 @@ float3 ResolveRayReflection(uint2 receiver,float3 world,float3 normal,float3 dir
         if(character.CommittedStatus()!=COMMITTED_NOTHING) return fallback;
     }
     const uint2 committed=uint2(query.CommittedInstanceID(),query.CommittedPrimitiveIndex());
+    float3 secondary;
+    if (ShadeNativeSecondary(committed.x,committed.y,query.CommittedTriangleBarycentrics(),
+        (float3x3)query.CommittedWorldToObject3x4(),(float3x3)query.CommittedObjectToWorld3x4(),query.CommittedTriangleFrontFace(),
+        ray.Origin+d*distance,d,distance,roughness,receiver,lobe,FrameIndex,QualityMode,InstanceCount,CharacterCastersEnabled,
+        SecondaryLightCount,SecondarySunDirection,SecondarySunRadiance,SecondaryFoliage,secondary))
+        return lerp(fallback,secondary,saturate(1.0-roughness/0.45));
     uint2 hit,hitIdentity; float2 uv; float projectedDepth;
     if (!SSRProject(ray.Origin+d*distance,hit,uv,projectedDepth) ||
         all(hit==receiver) || !NativeIsSampled(hit,Size,QualityMode,FrameIndex) ||

@@ -28,8 +28,10 @@ namespace
         uint32_t hasHistory,padding[2]{};
         Matrix previousViewProjection;
         float4 previousPositionAdjust;
+        float4 secondarySunDirection,secondarySunRadiance;
+        uint32_t secondaryLightCount,secondaryFoliage,paddingSecondary[2]{};
     };
-    static_assert(sizeof(Constants)==416);
+    static_assert(sizeof(Constants)==464);
     constexpr UINT kTextureOffset=7;
     constexpr UINT kHistoryOffset=kTextureOffset+NativePBR::kGpuTextureDescriptorCapacity;
     void Transition(ID3D12GraphicsCommandList* cmd, ID3D12Resource* resource, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to)
@@ -95,18 +97,19 @@ void NativeCubemaps::WaterSSR::Initialize(const GraphicsBackend& backend)
     ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV,2,0,0,5);
     ranges[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,NativePBR::kGpuTextureDescriptorCapacity,9,0,kTextureOffset);
     ranges[3].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,3,525,0,kHistoryOffset);
-    CD3DX12_ROOT_PARAMETER params[11];
+    CD3DX12_ROOT_PARAMETER params[12];
     params[0].InitAsDescriptorTable(4,ranges);
     params[1].InitAsConstantBufferView(0);
     params[2].InitAsConstants(1,1);
     for(UINT i=0;i<4;++i)params[3+i].InitAsShaderResourceView(5+i);
     for(UINT i=0;i<4;++i)params[7+i].InitAsShaderResourceView(521+i);
+    params[11].InitAsShaderResourceView(528);
     std::array<CD3DX12_STATIC_SAMPLER_DESC,4> samplers;
     for(UINT i=0;i<samplers.size();++i)
         samplers[i]=CD3DX12_STATIC_SAMPLER_DESC(i,D3D12_FILTER_MIN_MAG_MIP_LINEAR,
             (i&2)?D3D12_TEXTURE_ADDRESS_MODE_WRAP:D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
             (i&1)?D3D12_TEXTURE_ADDRESS_MODE_WRAP:D3D12_TEXTURE_ADDRESS_MODE_CLAMP,D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
-    const CD3DX12_ROOT_SIGNATURE_DESC signature(11,params,UINT(samplers.size()),samplers.data());
+    const CD3DX12_ROOT_SIGNATURE_DESC signature(12,params,UINT(samplers.size()),samplers.data());
     winrt::com_ptr<ID3DBlob> blob,errors;
     winrt::com_ptr<ID3D12RootSignature> nextRoot;
     winrt::com_ptr<ID3D12PipelineState> nextPipeline;
@@ -155,6 +158,7 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
     if(evidence.stamp!=stamp || !evidence.tokenCount || !evidence.tokenTable || !evidence.texture || !evidence.texture->resource ||
         evidence.width<world.width || evidence.height<world.height || !evidence.readyFence ||
         !ValidProducerSignal(evidence.readyValue,evidence.readyFence->GetCompletedValue())) {++rejected;return;}
+    if(!native->direct->lights || native->direct->lightCount>DX12::kMaxPreparedLights){++rejected;return;}
     const auto characters=native->direct->characters;
     const auto& scene=*material.scene;
     const auto& evaluation=*scene.materialEvaluation;
@@ -290,7 +294,9 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         const Constants constants{world.camera.CameraProj,world.camera.CameraProjInverse,world.camera.CameraViewInverse,world.camera.CameraView,
             world.camera.CameraPosAdjust,world.width,world.height,ow,oh,uint32_t(bool(sky)),uint32_t(encoding),quality,world.engineFrame,
             evaluation.instanceCount,uint32_t(bool(characters)),material.rayIdentityRowPitch,evidence.tokenCount,
-            emitterRadius,uint32_t(bool(previous)),{},previous?previous->viewProjection:Matrix{},previous?previous->positionAdjust:float4{}};
+            emitterRadius,uint32_t(bool(previous)),{},previous?previous->viewProjection:Matrix{},previous?previous->positionAdjust:float4{},
+            native->direct->directional.direction,native->direct->directional.radiance,
+            native->direct->lightCount,uint32_t(native->direct->foliageScattering)};
         void* mapped=nullptr;const D3D12_RANGE noRead{};
         DX::ThrowIfFailed(slot->constants->Map(0,&noRead,&mapped));
         std::memcpy(mapped,&constants,sizeof(constants));slot->constants->Unmap(0,nullptr);
@@ -303,6 +309,7 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         cmd->SetComputeRootShaderResourceView(8,material.rayIdentity->GetGPUVirtualAddress());
         cmd->SetComputeRootShaderResourceView(9,evidence.tokenTable->GetGPUVirtualAddress());
         cmd->SetComputeRootShaderResourceView(10,native->environmentRadiance->GetGPUVirtualAddress());
+        cmd->SetComputeRootShaderResourceView(11,native->direct->lights->GetGPUVirtualAddress());
         cmd->SetComputeRoot32BitConstant(2,0,0);
         cmd->Dispatch((ShadowPhysicalWidth(ShadowLogicalExtent(ow,quality),quality)+kGroup-1)/kGroup,
             (ShadowLogicalExtent(oh,quality)+kGroup-1)/kGroup,1);
