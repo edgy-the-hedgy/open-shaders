@@ -11,6 +11,21 @@ namespace
 	constexpr uint32_t kDeveloperCoverageInterval = 120;
 }
 
+void NativePBR::FrameProducer::ReplayInput(const GraphicsBackend& backend, ID3D11DeviceContext* context, ID3D11Texture2D* mask,
+	ID3D11VertexShader* vs, ID3D11PixelShader* ps, DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,
+	uint32_t instance, uint32_t tokenBase, uint32_t primitiveCount, const std::function<void()>& draw)
+{
+	if (!loaded) return;
+	if (!rawInputs) rawInputs = std::make_unique<RawInputCapture>();
+	rawInputs->Replay(backend, context, mask, vs, ps, stamp, instance, tokenBase, primitiveCount, draw);
+}
+
+void NativePBR::FrameProducer::PublishRawInput(ID3D11Texture2D* mask, DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,
+	std::span<const DX12Native::MaterialFrameContract::RasterPixelIdentity> tokens)
+{
+	if (rawInputs) rawInputs->Publish(mask, stamp, tokens);
+}
+
 void NativePBR::FrameProducer::Poll(uint32_t frame)
 {
 	if (probe)
@@ -48,6 +63,8 @@ void NativePBR::FrameProducer::PublishProjection(const GraphicsBackend& backend,
 
 void NativePBR::FrameProducer::InvalidateGeneration()
 {
+	if (rawInputs)
+		rawInputs->Reset();
 	if (projection)
 		projection->Reset();
 	if (probe)
@@ -57,6 +74,7 @@ void NativePBR::FrameProducer::InvalidateGeneration()
 void NativePBR::FrameProducer::Release()
 {
 	ReleaseProjection();
+	rawInputs.reset();
 	probe.reset();
 }
 
@@ -68,6 +86,7 @@ json NativePBR::FrameProducer::GetDiagnostics()
 		{ "geometryRevision", publication ? publication->geometryRevision : 0 },
 		{ "width", publication ? publication->width : 0u }, { "height", publication ? publication->height : 0u },
 		{ "producerValue", publication ? publication->producerValue : 0 },
+		{ "rawInputFailure", rawInputs ? rawInputs->Failure() : "" },
 		{ "submittedFrames", probe ? probe->submittedFrames : 0u }, { "reusedAllocations", probe ? probe->reusedAllocations : 0u },
 		{ "coverageMeasured", probe && probe->stats.sampled != 0 },
 		{ "coverageFrame", probe ? probe->stats.frame : 0u },

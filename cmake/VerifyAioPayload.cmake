@@ -13,6 +13,7 @@ set(_required
     "Shaders/Features/NativePBR.ini"
     "Shaders/Common/FullNativeInput.hlsli"
     "Shaders/NativeCubemaps/CaptureRaw.cs.hlsl"
+    "Shaders/NativePBR/InputOnly.ps.hlsl"
     "Shaders/DX12NativeScene/ShadowOffload.hlsl6"
     "Shaders/DX12NativeScene/ShadowOffload.dxil"
     "Shaders/DX12NativeScene/ShadowRTQuality.dxil"

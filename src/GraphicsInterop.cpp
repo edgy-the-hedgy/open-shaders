@@ -88,8 +88,13 @@ WrappedResource::WrappedResource(D3D11_TEXTURE2D_DESC a_texDesc, ID3D11Device5* 
 	if (a_texDesc.BindFlags & D3D11_BIND_RENDER_TARGET) {
 		D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {};
 		rtvDesc.Format = a_texDesc.Format;
-		rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
-		rtvDesc.Texture2D.MipSlice = 0;
+		if (a_texDesc.ArraySize > 1) {
+			rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
+			rtvDesc.Texture2DArray.ArraySize = a_texDesc.ArraySize;
+		} else {
+			rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+			rtvDesc.Texture2D.MipSlice = 0;
+		}
 		throwIfFailed(a_d3d11Device->CreateRenderTargetView(texture11.get(), &rtvDesc, rtv11.put()), "CreateRenderTargetView");
 		if (!a_name.empty())
 			Util::SetResourceName(rtv11.get(), "%s RTV", a_name.c_str());

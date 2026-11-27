@@ -481,10 +481,23 @@ namespace globals
  *
  * This enables interception of resource mapping and unmapping operations for frame buffer caching.
  */
+	struct ID3D11DeviceContext_DrawIndexedNativeInput
+	{
+		static void thunk(ID3D11DeviceContext* context, UINT count, UINT start, INT base)
+		{
+			func(context, count, start, base);
+			if (context == globals::d3d::context && globals::state && globals::state->permutationData.nativeRasterTokenBase)
+				globals::features::dx12NativeScene.ReplayFullNativeInput(context, count, [=] { func(context, count, start, base); });
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
 	void InstallD3DHooks(ID3D11DeviceContext* a_context)
 	{
 		stl::detour_vfunc<14, ID3D11DeviceContext_Map>(a_context);
 		stl::detour_vfunc<15, ID3D11DeviceContext_Unmap>(a_context);
+		if (globals::features::dx12Control.UsesExclusiveMaterials())
+			stl::detour_vfunc<12, ID3D11DeviceContext_DrawIndexedNativeInput>(a_context);
 
 		// VR stereo optimization hooks: installed only when stereo reprojection is enabled at startup.
 		// Changing stereoMode at runtime requires a restart; the UI communicates this to the user.

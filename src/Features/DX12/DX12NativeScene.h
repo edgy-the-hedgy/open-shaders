@@ -70,6 +70,7 @@ struct DX12NativeScene final : OverlayFeature
 	void RestoreDefaultSettings() override;
 	bool WantsOpaqueRasterReadyHook() const override;
 	void OnOpaqueRasterReady() override;
+	void ReplayFullNativeInput(ID3D11DeviceContext* context, uint32_t indexCount, const std::function<void()>& draw);
 	// Capture the completed fallback radiance before native final-color application.
 	void CaptureFullNativeEnvironment(ID3D11ShaderResourceView* sceneColor, uint32_t frame);
 	bool WantsDepthPrepassReadyHook() const override;

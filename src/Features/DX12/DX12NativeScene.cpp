@@ -1117,6 +1117,43 @@ void DX12NativeScene::ObserveProjectedDrawBindings(const RE::BSRenderPass* pass)
 		++draws.constantSnapshotFailures;
 }
 
+void DX12NativeScene::ReplayFullNativeInput(ID3D11DeviceContext* context, uint32_t indexCount, const std::function<void()>& draw)
+{
+	auto* state = globals::state;
+	auto& draws = fullNativeRasterDraws;
+	if (!loaded || !backend || !state || !state->customVertexShader || !state->customPixelShader ||
+		!state->currentShader || state->currentShader->shaderType.get() != RE::BSShader::Type::Lighting ||
+		!globals::features::dx12Control.WantsMaterialPreparation() || !globals::game::graphicsState ||
+		!globals::game::renderer || !globals::deferred || !globals::deferred->deferredPass ||
+		draws.finalized || draws.stamp.frame != globals::game::graphicsState->GetFrameCount())
+		return;
+	const auto base = state->permutationData.nativeRasterTokenBase;
+	const auto count = state->permutationData.nativeRasterPrimitiveCount;
+	if (!NativePBR::InputOnly::WholeTriangleList(indexCount,count) || !NativePBR::InputOnly::ValidToken(base,count) ||
+		uint64_t(base-1)+count > draws.tokens.size())
+		return;
+	using Cache = SIE::ShaderCache;
+	using Flag = Cache::LightingShaderFlags;
+	constexpr uint32_t unsupported = uint32_t(Flag::Skinned) | uint32_t(Flag::ModelSpaceNormals) |
+		uint32_t(Flag::ProjectedUV) | uint32_t(Flag::WorldMap) | uint32_t(Flag::DoAlphaTest) |
+		uint32_t(Flag::AdditionalAlphaMask) | uint32_t(Flag::Snow) | uint32_t(Flag::BaseObjectIsSnow) |
+		uint32_t(Flag::FurShells) | uint32_t(Flag::FurShellsDepth);
+	const auto descriptor = state->modifiedPixelDescriptor;
+	if (!(descriptor & uint32_t(Flag::Deferred)) ||
+		((descriptor | state->modifiedVertexDescriptor) & unsupported) ||
+		Cache::GetLightingTechnique(descriptor) != Cache::LightingShaderTechniques::None ||
+		Cache::GetLightingTechnique(state->modifiedVertexDescriptor) != Cache::LightingShaderTechniques::None)
+		return;
+	const auto instance = draws.tokens[base-1].instance;
+	if (instance == UINT32_MAX || draws.tokens[base-1].primitive != 0 ||
+		draws.tokens[base+count-2].instance != instance || draws.tokens[base+count-2].primitive != count-1)
+		return;
+	auto* mask = Util::AsReal(globals::game::renderer->GetRuntimeData().renderTargets[MASKS2].texture);
+	globals::features::nativePBR.ReplayInput(*backend, context, mask,
+		Util::AsReal(state->customVertexShader->shader), Util::AsReal(state->customPixelShader->shader),
+		draws.stamp, instance, base, count, draw);
+}
+
 void DX12NativeScene::FinishFullNativeRasterDraws()
 {
 	if (!globals::game::graphicsState)
@@ -1136,6 +1173,8 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 			token = {};
 	}
 	draws.finalized = true;
+	if (backend && globals::game::renderer)
+		globals::features::nativePBR.PublishRawInput(Util::AsReal(globals::game::renderer->GetRuntimeData().renderTargets[MASKS2].texture), draws.stamp, draws.tokens);
 	if (backend && draws.constantSnapshots) {
 		std::vector<DX12Native::ProjectedInputDraw> inputs;
 		inputs.reserve(draws.constantSnapshots);
