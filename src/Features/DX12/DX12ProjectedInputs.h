@@ -11,7 +11,6 @@
 #include <array>
 #include <memory>
 #include <map>
-#include <set>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -48,6 +47,8 @@ namespace DX12Native
 		std::vector<Texture> textures;
 		std::vector<uint32_t> instances;
 		uint32_t rowCount = 0, missingTextures = 0;
+		uint32_t transferredTextures = 0, newTextures = 0, cacheHits = 0, suppressedTextures = 0, deferredTextures = 0;
+		uint64_t immutableCacheBytes = 0;
 		uint64_t allocationBytes = 0, recordBytes = 0, readyValue = 0;
 		winrt::com_ptr<ID3D12Fence> readyFence;
 		winrt::com_ptr<ID3D12CommandAllocator> transferAllocator;
@@ -113,7 +114,8 @@ namespace DX12Native
 		static constexpr uint64_t kCacheBudget = 256ull * VideoMemoryBudget::kMiB;
 		static constexpr uint32_t kMaxNewTextures = 16;
 		using FailureKey = std::array<uint32_t, 4>;
-		std::set<FailureKey> failedDescriptors;
+		static constexpr uint32_t kFailureCooldown = 600;
+		std::map<FailureKey, uint32_t> failedDescriptors;
 		struct CachedTexture {
 			ProjectedInputFrame::Texture texture;
 			uint32_t lastFrame = 0;
@@ -151,7 +153,7 @@ namespace DX12Native
 				return true;
 			});
 		}
-		void CacheCompleted(const ProjectedInputFrame& frame)
+		void CacheSubmitted(const ProjectedInputFrame& frame)
 		{
 			for (const auto& texture : frame.textures) {
 				if (!texture.immutable || !texture.uploaded ||
@@ -211,12 +213,20 @@ namespace DX12Native
 				const auto cached = std::ranges::find_if(immutableCache, [view](const auto& item) { return item.texture.source.get() == view; });
 				if (cached != immutableCache.end()) {
 					cached->lastFrame = frame.stamp.frame;
+					++frame.cacheHits;
 					frame.allocationBytes += cached->texture.bytes;
 					return publish(cached->texture);
 				}
 			}
 			const FailureKey key{ uint32_t(sourceView.Format), desc.Width, desc.Height, desc.MipLevels };
-			if (failedDescriptors.contains(key) || failedDescriptors.size() >= kMaxFailedDescriptors) return UINT32_MAX;
+			if (const auto rejected = failedDescriptors.find(key); rejected != failedDescriptors.end()) {
+				if (!MaterialFrameContract::ProjectionRetryDue(frame.stamp.frame, rejected->second, kFailureCooldown)) {
+					++frame.suppressedTextures;
+					return UINT32_MAX;
+				}
+				failedDescriptors.erase(rejected);
+			}
+			if (failedDescriptors.size() >= kMaxFailedDescriptors) { ++frame.deferredTextures; return UINT32_MAX; }
 			D3D12_FEATURE_DATA_FORMAT_SUPPORT support{ sourceView.Format };
 			if (FAILED(owner.d3d12Device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support))) ||
 				!(support.Support1 & D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE) ||
@@ -235,8 +245,8 @@ namespace DX12Native
 			mips.reserve(desc.MipLevels);
 			uint32_t atlasWidth = 0, atlasHeight = 0;
 			for (uint32_t mip = 0; mip < desc.MipLevels; ++mip) {
-				uint32_t width = std::max(1u, desc.Width >> mip), height = std::max(1u, desc.Height >> mip);
-				if (bc) { width = (width + 3u) / 4u; height = (height + 3u) / 4u; }
+				const auto width = MaterialFrameContract::ProjectionTransferExtent(desc.Width, mip, bc);
+				const auto height = MaterialFrameContract::ProjectionTransferExtent(desc.Height, mip, bc);
 				mips.push_back({ width, height, atlasHeight });
 				atlasWidth = std::max(atlasWidth, width);
 				atlasHeight += height;
@@ -252,13 +262,15 @@ namespace DX12Native
 				old->bytes = 0;
 				if (entry.immutable && !entry.bridge) { entry.uploaded = false; return publish(std::move(entry)); }
 			} else {
-				if (allocated >= kMaxNewTextures) return UINT32_MAX;
+				if (allocated >= kMaxNewTextures) { ++frame.deferredTextures; return UINT32_MAX; }
 				const auto nativeDesc = CD3DX12_RESOURCE_DESC::Tex2D(sourceView.Format, desc.Width, desc.Height, 1, static_cast<UINT16>(desc.MipLevels));
 				const auto bridgeDesc = CD3DX12_RESOURCE_DESC::Tex2D(bridgeFormat, atlasWidth, atlasHeight, 1, 1);
 				const uint64_t nativeBytes = Allocation(nativeDesc), bridgeBytes = Allocation(bridgeDesc);
 				const auto allowance = budget.Query(owner.d3d12Device.get(), 0).effectiveBytes;
-				if (!nativeBytes || !bridgeBytes || nativeBytes > allowance || bridgeBytes > allowance - nativeBytes)
+				if (!nativeBytes || !bridgeBytes || nativeBytes > allowance || bridgeBytes > allowance - nativeBytes) {
+					++frame.deferredTextures;
 					return UINT32_MAX;
+				}
 				try {
 					const CD3DX12_HEAP_PROPERTIES heap(D3D12_HEAP_TYPE_DEFAULT);
 					DX::ThrowIfFailed(owner.d3d12Device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &nativeDesc,
@@ -271,8 +283,8 @@ namespace DX12Native
 					entry.bridge = std::make_shared<WrappedResource>(shared, owner.d3d11Device.get(), owner.d3d12Device.get(),
 						"DX12NativeScene::ProjectedMipBridge");
 				} catch (...) {
-					failedDescriptors.insert(key);
-					logger::warn("[DX12NativeScene] Projection transfer rejected: format {}, {}x{}, {} mips; descriptor suppressed",
+					failedDescriptors.insert_or_assign(key, frame.stamp.frame);
+					logger::warn("[DX12NativeScene] Projection transfer rejected: format {}, {}x{}, {} mips; descriptor cooled down for 600 frames",
 						uint32_t(sourceView.Format), desc.Width, desc.Height, desc.MipLevels);
 					return UINT32_MAX;
 				}
@@ -381,6 +393,9 @@ namespace DX12Native
 				}
 				pending = *free;
 				TrimCache(stamp.frame);
+				std::erase_if(failedDescriptors, [&](const auto& entry) {
+					return MaterialFrameContract::ProjectionRetryDue(stamp.frame, entry.second, kFailureCooldown);
+				});
 				frameImports.clear(); transferred = allocated = 0;
 				// Slot selection already checks both GPU completion and borrowers.
 				if (!pending->transferAllocator) {
@@ -397,6 +412,8 @@ namespace DX12Native
 				pending->instances.clear();
 				pending->instances.reserve(draws.size());
 				pending->stamp = stamp; pending->rowCount = 0; pending->missingTextures = 0;
+				pending->cacheHits = pending->suppressedTextures = pending->deferredTextures = 0;
+				pending->transferredTextures = pending->newTextures = 0;
 				pending->readyFence = producer.fence12; pending->readyValue = UINT64_MAX;
 				auto* context = owner.d3d11Context.get();
 				// Import all sources before changing compute state. Copy commands are
@@ -463,7 +480,10 @@ namespace DX12Native
 				current = pending;
 				// All subsequent consumers use this same ordered DX12 queue.
 				// Cached native resources are immutable; no upload bridge is retained.
-				try { CacheCompleted(*pending); } catch (const std::bad_alloc&) {}
+				try { CacheSubmitted(*pending); } catch (const std::bad_alloc&) {}
+				pending->transferredTextures = transferred;
+				pending->newTextures = allocated;
+				pending->immutableCacheBytes = cacheBytes;
 				failureLogged = false;
 			} catch (...) {
 				if (pending && !transferSubmitted && pending->transferCommands)

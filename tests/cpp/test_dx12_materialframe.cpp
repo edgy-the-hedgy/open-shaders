@@ -432,3 +432,19 @@ TEST_CASE("Character reflection geometry requires complete posed and primitive s
 	STATIC_REQUIRE_FALSE(ValidCharacterPrimitiveLayout(3, 1, 0, 216, 16));
 	STATIC_REQUIRE_FALSE(ValidCharacterPrimitiveLayout(UINT32_MAX, UINT32_MAX, 1, UINT32_MAX, UINT32_MAX));
 }
+
+TEST_CASE("Projection transfer preserves physical BC mip extents", "[dx12][materials]")
+{
+	using namespace DX12Native::MaterialFrameContract;
+	STATIC_REQUIRE(ProjectionTransferExtent(2048u, 0u, true) == 512u);
+	STATIC_REQUIRE(ProjectionTransferExtent(2048u, 9u, true) == 1u);
+	STATIC_REQUIRE(ProjectionTransferExtent(2048u, 10u, true) == 1u);
+	STATIC_REQUIRE(ProjectionTransferExtent(2048u, 11u, true) == 1u);
+	STATIC_REQUIRE(ProjectionTransferExtent(20u, 1u, true) == 3u);
+	STATIC_REQUIRE(ProjectionTransferExtent(20u, 1u, false) == 10u);
+	STATIC_REQUIRE(ProjectionTransferExtent(0u, 0u, true) == 0u);
+	STATIC_REQUIRE(ProjectionTransferExtent(2048u, 32u, true) == 0u);
+	STATIC_REQUIRE_FALSE(ProjectionRetryDue(699u, 100u, 600u));
+	STATIC_REQUIRE(ProjectionRetryDue(700u, 100u, 600u));
+	STATIC_REQUIRE(ProjectionRetryDue(0u, UINT32_MAX, 1u));
+}

@@ -6,6 +6,18 @@
 
 namespace DX12Native::MaterialFrameContract
 {
+	// BC mips are physically rounded to 4x4 blocks, including the mip tail.
+	constexpr uint32_t ProjectionTransferExtent(uint32_t base, uint32_t mip, bool compressed)
+	{
+		if (!base || mip >= 32u) return 0;
+		const auto shifted = base >> mip;
+		const auto extent = shifted ? shifted : 1u;
+		return compressed ? extent / 4u + (extent % 4u != 0u) : extent;
+	}
+	constexpr bool ProjectionRetryDue(uint32_t frame, uint32_t lastFailure, uint32_t cooldown)
+	{
+		return frame - lastFailure >= cooldown;
+	}
 	inline constexpr uint32_t kMaterialAbiVersion = 1;
 	inline constexpr uint32_t kMaterialStride = 32;
 	inline constexpr uint32_t kRayIdentityStride = 8;

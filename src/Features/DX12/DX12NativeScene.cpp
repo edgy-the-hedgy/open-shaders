@@ -1617,6 +1617,13 @@ json DX12NativeScene::GetStatus() const
 			{ "publishedRows", projectionFrame ? projectionFrame->rowCount : 0u },
 			{ "residentProjectedTextures", projectionFrame ? projectionFrame->textures.size() : 0u },
 			{ "missingProjectedTextures", projectionFrame ? projectionFrame->missingTextures : 0u },
+			{ "projectionTransfers", projectionFrame ? projectionFrame->transferredTextures : 0u },
+			{ "projectionNewTextures", projectionFrame ? projectionFrame->newTextures : 0u },
+			{ "projectionCacheHits", projectionFrame ? projectionFrame->cacheHits : 0u },
+			{ "projectionSuppressedTextures", projectionFrame ? projectionFrame->suppressedTextures : 0u },
+			{ "projectionDeferredTextures", projectionFrame ? projectionFrame->deferredTextures : 0u },
+			{ "projectionSlotBytes", projectionFrame ? projectionFrame->allocationBytes : 0ull },
+			{ "projectionImmutableCacheBytes", projectionFrame ? projectionFrame->immutableCacheBytes : 0ull },
 			{ "projectedTexturesReady", projectionFrame && !projectionFrame->missingTextures } };
 		status["fullNativeRasterAdmission"] = { { "frame", draws.stamp.frame }, { "scope", draws.stamp.scope },
 			{ "geometryRevision", draws.stamp.geometryRevision }, { "materialRevision", draws.stamp.materialRevision },
