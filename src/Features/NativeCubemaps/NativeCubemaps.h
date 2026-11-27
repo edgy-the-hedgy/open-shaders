@@ -12,10 +12,10 @@ namespace NativeCubemaps
         bool Dispatch(const GraphicsBackend&, std::shared_ptr<const DX12Native::EnvironmentFrame>,
             const std::array<float4,3>&, const float4& cameraPosition);
         void Reset();
+        void Poll();
         std::shared_ptr<const DX12Native::EnvironmentFrame> Get() const { return current; }
     private:
         struct Generation;
-        void Poll();
         void Initialize(const GraphicsBackend&);
         GraphicsBackend owner;
         winrt::com_ptr<ID3D12RootSignature> root;
@@ -36,12 +36,12 @@ namespace NativeCubemaps
         void OnRuntimeDisabled() override { InvalidateGeneration(); Release(); }
         void ClearShaderCache() override { InvalidateGeneration(); Release(); }
         DX12Native::EnvironmentStamp Prepare(uint32_t scope,uint32_t frame,bool& changed);
-        void Capture(const GraphicsBackend&);
+        void Capture(const GraphicsBackend&, ID3D11ShaderResourceView* sceneColor, uint32_t frame);
         void InvalidateGeneration();
         void Release();
-        std::shared_ptr<const DX12Native::EnvironmentFrame> Get() const { return processing.Get(); }
+        std::shared_ptr<const DX12Native::EnvironmentFrame> Get() const { return processing ? processing->Get() : nullptr; }
     private:
-        bool CaptureRaw(const GraphicsBackend&);
+        bool CaptureRaw(const GraphicsBackend&, ID3D11ShaderResourceView* sceneColor);
         std::unique_ptr<DX12Native::NativeEnvironment> inputs;
         std::unique_ptr<CubeProcessing> processing;
         winrt::com_ptr<ID3D11Texture2D> raw;

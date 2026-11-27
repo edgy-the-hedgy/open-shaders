@@ -35,6 +35,7 @@ void NativeLLF::Producer::Reset()
 {
 	// The hook observes effects throughout the frame, including after opaque
 	// lighting. Publish copied values at the next frame boundary, never pointers.
+		std::scoped_lock observationLock(observationMutex);
 	current.swap(pending);
 	pending.clear();
 	observed.clear();
@@ -48,6 +49,7 @@ void NativeLLF::Producer::Reset()
 
 void NativeLLF::Producer::ResetParticleInput()
 {
+	std::scoped_lock observationLock(observationMutex);
 	pending.clear();
 	current.clear();
 	observed.clear();
@@ -62,14 +64,15 @@ void NativeLLF::Producer::ObserveParticlePass(RE::BSRenderPass* pass)
 {
 	if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation() ||
 		!particleSettings.EnableParticleLights || !pass || !pass->geometry || !pass->shaderProperty ||
-		!globals::shaderCache || !globals::shaderCache->IsEnabled() || pending.size() >= DX12::kMaxPreparedLights ||
+		!globals::shaderCache || !globals::shaderCache->IsEnabled() ||
 		!globals::state || globals::state->isMapMenuOpen || globals::features::dx12Resources.IsLoading() ||
-		(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)) ||
-		observed.size() >= 16u * DX12::kMaxPreparedLights)
+		(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
 		return;
 	if (pass->shaderProperty->GetRTTI() != globals::rtti::BSEffectShaderPropertyRTTI.get())
 		return;
-	if (!observed.insert(pass->geometry).second)
+	std::scoped_lock observationLock(observationMutex);
+	if (pending.size() >= DX12::kMaxPreparedLights || observed.size() >= 16u * DX12::kMaxPreparedLights ||
+		!observed.insert(pass->geometry).second)
 		return;
 	const auto reference = ParticleInput::Recognize(pass, true, configs, references, referenceMutex);
 	if (!reference.valid)
@@ -166,6 +169,7 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 		return std::nullopt;
 	// Native particles are published by the frame reset, independently of
 	// raster LLF prepass timing. Opaque-ready remains part of the caller contract.
+	std::scoped_lock observationLock(observationMutex);
 	const bool particleSnapshotReady = currentPluginFrame == globals::state->frameCount;
 	if (particleSettings.EnableParticleLights && !particleSnapshotReady && !opaqueReady)
 		return std::nullopt;
@@ -320,6 +324,6 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 			directional.radiance = { toLinear(sunColor.x), toLinear(sunColor.y), toLinear(sunColor.z), 0.0f };
 		}
 	}
-	result.available = runtimeAvailable || !prepared.empty() || directional.direction.w != 0.0f;
+	result.available = runtimeAvailable || !directLights.empty() || directional.direction.w != 0.0f;
 	return result;
 }

@@ -50,6 +50,8 @@ std::function<void()> NativeIBL::Producer::OnReflectionsRenderBegin()
 	// availability is independent of whether indirect IBL contribution is enabled.
 	const bool enabled = !Util::IsInterior() &&
 		globals::shaderCache && globals::shaderCache->IsEnabled();
+	if (enabled && !capture.Allocated())
+		capture.Setup();
 	auto cleanup = capture.Begin(enabled);
 	if (!cleanup) {
 		publishedStamp = {};

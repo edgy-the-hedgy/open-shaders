@@ -701,8 +701,6 @@ void DX12NativeScene::DispatchFullNativeIndirect()
 	}
 	if (!backend)
 		return;
-	// Environment acquisition is independent of material evaluation readiness.
-	globals::features::nativeCubemaps.Capture(*backend);
 	const auto material = GetFullNativeMaterial(frame);
 	if (!material || material->scope != stamp.scope)
 		return;
@@ -715,6 +713,21 @@ void DX12NativeScene::DispatchFullNativeIndirect()
 	globals::features::upscaling.nativeComposite.ReconstructFullNative(*backend, material, GetFullNativeDirect(frame), GetFullNativeIndirect(frame),
 		globals::state->frameCount, globals::state->ShouldResetHistory(), tokenSource, draws.stamp,
 		matchingDraws ? std::span<const RasterPixelIdentity>(draws.tokens) : std::span<const RasterPixelIdentity>{});
+}
+
+void DX12NativeScene::CaptureFullNativeEnvironment(ID3D11ShaderResourceView* sceneColor, uint32_t frame)
+{
+	if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation() || !nativeSessionStarted ||
+		!globals::state || globals::state->isMapMenuOpen || globals::features::dx12Resources.IsLoading() ||
+		(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
+		return;
+	if (!backend) {
+		std::string reason;
+		backend = GraphicsBackend::Create(globals::d3d::device, globals::d3d::context, reason);
+		if (!backend)
+			return;
+	}
+	globals::features::nativeCubemaps.Capture(*backend, sceneColor, frame);
 }
 
 void DX12NativeScene::OnOpaqueRasterReady()

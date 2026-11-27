@@ -40,7 +40,7 @@ DX12Native::EnvironmentStamp NativeCubemaps::Producer::Prepare(uint32_t scope,ui
     globals::features::nativeIBL.SetCaptureContext(stamp);
     return stamp;
 }
-bool NativeCubemaps::Producer::CaptureRaw(const GraphicsBackend& backend)
+bool NativeCubemaps::Producer::CaptureRaw(const GraphicsBackend& backend, ID3D11ShaderResourceView* sceneColor)
 {
     CS_GPU_PASS("NativeCubemaps::RawInput");
     auto* renderer=globals::game::renderer;
@@ -70,8 +70,7 @@ bool NativeCubemaps::Producer::CaptureRaw(const GraphicsBackend& backend)
         raw=std::move(texture); rawUAV=std::move(uav); inputConstants=std::move(constants); inputShader=std::move(shader);
     }
     auto& depth=renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
-    auto& main=renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
-    ID3D11ShaderResourceView* reads[]{Util::AsReal(main.SRV),Util::AsReal(depth.depthSRV)};
+    ID3D11ShaderResourceView* reads[]{sceneColor,Util::AsReal(depth.depthSRV)};
     if(!reads[0] || !reads[1]) return false;
     const auto& camera=globals::game::frameBufferCached.nonVR;
     const RawConstants data{camera.CameraView,camera.CameraProj,camera.CameraViewProjInverse,
@@ -105,16 +104,16 @@ bool NativeCubemaps::Producer::CaptureRaw(const GraphicsBackend& backend)
     for(auto* view:oldReads) if(view) view->Release();
     return valid;
 }
-void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend)
+void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend, ID3D11ShaderResourceView* sceneColor, uint32_t frame)
 {
     using namespace DX12Native;
-    if(!loaded || !currentStamp.scope || !globals::state || !globals::game::renderer) return;
+    if(!loaded || !currentStamp.scope || currentStamp.engineFrame != frame || !globals::state ||
+        currentStamp.pluginFrame != globals::state->frameCount || !sceneColor || !globals::game::renderer) return;
     if(processing) processing->Poll();
     if(!Policy::CaptureDue(lastCaptureFrame,currentStamp.engineFrame)) return;
-    lastCaptureFrame=currentStamp.engineFrame;
     try {
         std::array<float4,3> dalc{};
-        if(!globals::state->GetAmbientSH(currentStamp.engineFrame,currentStamp.pluginFrame,dalc) || !CaptureRaw(backend)) return;
+        if(!globals::state->GetAmbientSH(currentStamp.engineFrame,currentStamp.pluginFrame,dalc) || !CaptureRaw(backend,sceneColor)) return;
         if(!inputs) inputs=std::make_unique<NativeEnvironment>();
         EnvironmentSource source{raw.get(),++rawRevision,currentStamp};
         const auto sky=!currentStamp.interior?globals::features::nativeIBL.GetSkySource(currentStamp):EnvironmentSource{};
@@ -129,8 +128,10 @@ void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend)
         const auto frame=inputs->Get();
         if(frame && frame->base && frame->base->revision==source.revision) {
             if(!processing) processing=std::make_unique<CubeProcessing>();
-            processing->Dispatch(backend,frame,dalc,globals::game::frameBufferCached.nonVR.CameraPosAdjust);
-            failureLogged=false;
+            if (processing->Dispatch(backend,frame,dalc,globals::game::frameBufferCached.nonVR.CameraPosAdjust)) {
+                lastCaptureFrame=currentStamp.engineFrame;
+                failureLogged=false;
+            }
         }
     } catch(const std::exception& e) {
         if(!failureLogged) logger::warn("[NativeCubemaps] {}",e.what());

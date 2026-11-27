@@ -462,7 +462,7 @@ struct PS_OUTPUT
 struct PS_OUTPUT
 {
 	float4 Diffuse: SV_Target0;
-#	if defined(IBL) || defined(NATIVE_IBL_INPUT)
+#	if (defined(IBL) || defined(NATIVE_IBL_INPUT)) && !defined(DEFERRED)
 	float4 ReflectionRadiance: SV_Target7;
 #	endif
 #	if defined(MOTIONVECTORS_NORMALS)

@@ -16,6 +16,15 @@ namespace IBLInput
 		void OnDraw();
 		std::function<void()> OnRenderPassBegin();
 		void Invalidate() { validFaces = 0; }
+		void Release()
+		{
+			RestoreCaptureTargets();
+			Invalidate();
+			reflectionRadiance.reset();
+			for (auto& view : radianceViews) view = nullptr;
+			captureBlendStates.clear();
+			capturingRadiance = false;
+		}
 		bool Allocated() const { return bool(reflectionRadiance); }
 		bool Ready() const { return reflectionRadiance && validFaces == kAllCubeFaces; }
 		UINT ValidFaces() const { return validFaces; }

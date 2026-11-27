@@ -44,6 +44,7 @@ namespace NativeLLF
 		LightLimitFix::Settings particleSettings;
 		ParticleInput::ReferenceCache references;
 		std::mutex referenceMutex;
+		std::mutex observationMutex;
 		std::unordered_set<const RE::BSGeometry*> observed;
 		std::vector<ParticleEmitter> pending, current;
 		uint32_t currentPluginFrame = UINT32_MAX;

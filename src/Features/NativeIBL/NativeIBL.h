@@ -29,7 +29,7 @@ namespace NativeIBL
 		ID3D11ShaderResourceView* GetRasterSkyView() const { return capture.View(); }
 		void Poll(uint32_t frame) { if (lighting) lighting->Poll(frame); }
 		void InvalidateGeneration() { if (lighting) lighting->Reset(); }
-		void Release() { lighting.reset(); }
+		void Release() { lighting.reset(); capture.Release(); }
 		void Dispatch(const GraphicsBackend& backend,
 			std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> material,
 			std::shared_ptr<const DX12Native::EnvironmentFrame> environment,

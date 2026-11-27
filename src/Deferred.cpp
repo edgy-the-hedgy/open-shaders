@@ -10,6 +10,7 @@
 
 #include "Features/CSEditor.h"
 #include "Features/DX12/DX12Control.h"
+#include "Features/DX12/DX12NativeScene.h"
 #include "Features/DynamicCubemaps.h"
 #include "Features/Effects11.h"
 #include "Features/IBL.h"
@@ -524,9 +525,11 @@ void Deferred::DeferredPasses()
 
 	// Native Composite is the only Full Native color application owner. Apply
 	// before forward geometry and effects, after raster fallback is complete.
-	if (globals::features::dx12Control.WantsMaterialPreparation() && globals::game::graphicsState)
-		globals::features::upscaling.nativeComposite.ApplyFullNativeOpaque(
-			globals::game::graphicsState->GetFrameCount(), Util::AsReal(main.UAV));
+	if (globals::features::dx12Control.WantsMaterialPreparation() && globals::game::graphicsState) {
+		const auto frame = globals::game::graphicsState->GetFrameCount();
+		globals::features::dx12NativeScene.CaptureFullNativeEnvironment(Util::AsReal(main.SRV), frame);
+		globals::features::upscaling.nativeComposite.ApplyFullNativeOpaque(frame, Util::AsReal(main.UAV));
+	}
 
 	if (dynamicCubemaps.loaded)
 		dynamicCubemaps.PostDeferred();

@@ -70,6 +70,8 @@ struct DX12NativeScene final : OverlayFeature
 	void RestoreDefaultSettings() override;
 	bool WantsOpaqueRasterReadyHook() const override;
 	void OnOpaqueRasterReady() override;
+	// Capture the completed fallback radiance before native final-color application.
+	void CaptureFullNativeEnvironment(ID3D11ShaderResourceView* sceneColor, uint32_t frame);
 	bool WantsDepthPrepassReadyHook() const override;
 	void OnDepthPrepassReady() override;
 	/** @brief Observe CPU-backed opaque rigid geometry from SCM or normal render passes. */
