@@ -1,6 +1,7 @@
 #pragma once
 #include "DX12NativeEnvironment.h"
 #include "DX12NativeScreenProbe.h"
+#include "../../../package/Shaders/Common/NativeShadowRT.hlsli"
 #include "DX12NativeCharacterCasters.h"
 #include <array>
 #include <memory>
@@ -32,7 +33,8 @@ namespace DX12Native
     {
         static constexpr auto coverage = MaterialFrameContract::LightingCoverage::EnvironmentOnly;
         static constexpr auto encoding = MaterialFrameContract::SignalEncoding::MaterialModulated;
-        static constexpr auto sampling = MaterialFrameContract::SamplingLayout::FullResolution;
+        static constexpr auto sampling = MaterialFrameContract::SamplingLayout::Sparse;
+        uint32_t quality = kShadowQualityQuality;
         static constexpr auto reconstruction = MaterialFrameContract::ReconstructionState::Raw;
         std::shared_ptr<const NativeScreenProbe::MaterialFrame> material;
         std::shared_ptr<const CharacterCasterFrame> characters;
@@ -59,7 +61,7 @@ namespace DX12Native
         void Reset();
         void Dispatch(const GraphicsBackend&, std::shared_ptr<const NativeScreenProbe::MaterialFrame>,
             std::shared_ptr<const EnvironmentFrame>, uint32_t enabled, float environmentScale, float skyScale, const NativeAmbientParameters& ambient,
-            std::shared_ptr<const CharacterCasterFrame> characters = nullptr);
+            std::shared_ptr<const CharacterCasterFrame> characters = nullptr, uint32_t quality = kShadowQualityQuality);
         std::shared_ptr<const IndirectLightingFrame> Get(uint32_t frame) const;
         const std::string& Failure() const { return failure; }
         uint64_t AllocationBytes() const;

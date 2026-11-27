@@ -33,7 +33,7 @@ namespace NativeIBL
 			std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> material,
 			std::shared_ptr<const DX12Native::EnvironmentFrame> environment,
 			const DX12Native::EnvironmentStamp& stamp,
-			std::shared_ptr<const DX12Native::CharacterCasterFrame> characters);
+			std::shared_ptr<const DX12Native::CharacterCasterFrame> characters, uint32_t quality);
 		std::shared_ptr<const DX12Native::IndirectLightingFrame> Get(uint32_t frame) const
 		{
 			return lighting ? lighting->Get(frame) : nullptr;

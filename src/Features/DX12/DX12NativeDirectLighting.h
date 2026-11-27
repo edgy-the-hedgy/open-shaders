@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DX12NativeScreenProbe.h"
+#include "../../../package/Shaders/Common/NativeShadowRT.hlsli"
 #include "DX12NativeCharacterCasters.h"
 #include "DX12Resources.h"
 #include "VideoMemoryBudget.h"
@@ -32,7 +33,8 @@ namespace DX12Native
 	{
 		static constexpr auto coverage = MaterialFrameContract::LightingCoverage::SelectedDirectLights;
 		static constexpr auto encoding = MaterialFrameContract::SignalEncoding::MaterialModulated;
-		static constexpr auto sampling = MaterialFrameContract::SamplingLayout::FullResolution;
+		static constexpr auto sampling = MaterialFrameContract::SamplingLayout::Sparse;
+		uint32_t quality = kShadowQualityQuality;
 		static constexpr auto reconstruction = MaterialFrameContract::ReconstructionState::Raw;
 		static constexpr uint32_t available = MaterialFrameContract::DirectDiffuse | MaterialFrameContract::DirectSpecular | MaterialFrameContract::Transmission;
 		std::shared_ptr<const NativeScreenProbe::MaterialFrame> material;
@@ -59,7 +61,7 @@ namespace DX12Native
 		void Dispatch(const GraphicsBackend& backend, std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
 			std::span<const DirectPointLight> lights, bool inputsAvailable, const DirectDirectionalLight& directional,
 			uint32_t viewportWidth, uint32_t viewportHeight, bool foliageScatteringEnabled = false,
-			std::shared_ptr<const CharacterCasterFrame> characters = nullptr);
+			std::shared_ptr<const CharacterCasterFrame> characters = nullptr, uint32_t quality = kShadowQualityQuality);
 		std::shared_ptr<const DirectLightingFrame> Get(uint32_t frame) const
 		{
 			return current && current->frame == frame && current->readyFence &&

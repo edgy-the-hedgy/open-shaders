@@ -22,6 +22,7 @@ RWByteAddressBuffer Counters : register(u1);
 #define NATIVE_TEXTURE_REGISTER t7
 #include "NativeMaterialAlpha.hlsli"
 #include "NativeSurface.hlsli"
+#include "FullNativeSampling.hlsli"
 #include "NativeFuzz.hlsli"
 #include "Common/LightingCommon.hlsli"
 #include "Common/BRDF.hlsli"
@@ -44,6 +45,8 @@ cbuffer DirectInputs : register(b0)
     float4 DirectionalRadiance;
     uint FoliageScatteringEnabled;
     uint CharacterCastersEnabled;
+    uint QualityMode;
+    uint FrameIndex;
 };
 
 float4 UnpackHalf4(uint2 value)
@@ -318,7 +321,12 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
         ++inReach;
         bool traced;
         float3 biasNormal=HasNativeThinSurface(coat) ? coat.normalRoughness.xyz : n;
-        bool unoccluded = Visible(world,dot(biasNormal,l)<0.0 ? -biasNormal : biasNormal,l,distance,traced);
+        // Jitter only the visibility ray, never the light's BRDF or emitted intensity.
+        float emitterRadius = min(max(params.x, 0.0) * ShadowEmitterMultiplier(QualityMode), distance * 0.5);
+        float3 sampledDelta = delta + NativeEmitterOffset(l, emitterRadius, pixel, i, FrameIndex);
+        float sampledDistance = length(sampledDelta);
+        float3 sampledDirection = sampledDelta / max(sampledDistance, 1e-5);
+        bool unoccluded = Visible(world,dot(biasNormal,sampledDirection)<0.0 ? -biasNormal : biasNormal,sampledDirection,sampledDistance,traced);
         if (traced) ++rays;
         if (!unoccluded) continue;
         ++visible;
@@ -335,8 +343,9 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
 [numthreads(8,8,1)]
 void main(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
 {
+    uint2 pixel = NativeSamplePixel(id.xy, Size, QualityMode, FrameIndex);
     float3 world, cameraWorld;
-    bool receiver = Reconstruct(id.xy, world, cameraWorld);
+    bool receiver = Reconstruct(pixel, world, cameraWorld);
     TileMin[lane] = receiver ? world : float3(3.402823e38,3.402823e38,3.402823e38);
     TileMax[lane] = receiver ? world : float3(-3.402823e38,-3.402823e38,-3.402823e38);
     if (lane == 0u) { TileCount = 0u; TileRays = 0u; }
@@ -362,12 +371,12 @@ void main(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
         }
     }
     GroupMemoryBarrierWithGroupSync();
-    if (all(id.xy < Size)) {
+    if (all(pixel < Size)) {
         uint category = 0u;
         uint rays = 0u;
-        if (receiver) category = Shade(id.xy,world,cameraWorld,rays);
+        if (receiver) category = Shade(pixel,world,cameraWorld,rays);
         else {
-            uint outputOffset=(id.y*Size.x+id.x)*NativeLightingStride;
+            uint outputOffset=(pixel.y*Size.x+pixel.x)*NativeLightingStride;
             Lighting.Store4(outputOffset,uint4(0,0,0,0));
             Lighting.Store2(outputOffset+16u,uint2(0,0));
         }

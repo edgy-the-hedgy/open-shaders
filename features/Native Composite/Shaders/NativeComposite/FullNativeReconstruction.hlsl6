@@ -1,4 +1,5 @@
 #include "NativeSurface.hlsli"
+#include "FullNativeSampling.hlsli"
 
 ByteAddressBuffer Materials : register(t0);
 ByteAddressBuffer Direct : register(t1);
@@ -29,6 +30,8 @@ cbuffer ReconstructionConstants : register(b0)
     uint CompleteLightingCoverage;
     uint DirectAvailable;
     uint IndirectAvailable;
+    uint QualityMode;
+    uint FrameIndex;
 };
 
 bool ValidRayIdentity(uint2 identity)
@@ -55,6 +58,8 @@ static const uint DirectTransmissionSignal = 256u;
 static const uint IndirectTransmissionSignal = 512u;
 float4 ReadSignal(uint2 p, uint contribution)
 {
+    // Unwritten sparse pixels can contain an older slot's bytes. Never load them.
+    if (!NativeIsSampled(p, Size, QualityMode, FrameIndex)) return 0.0;
     if (contribution == DirectTransmissionSignal)
         return (DirectAvailable & ContributionTransmission) != 0u ? Unpack(Direct.Load2(p.y*DirectPitch+p.x*NativeLightingStride+16u)) : 0.0;
     if (contribution == IndirectTransmissionSignal)
@@ -79,37 +84,47 @@ bool ValidSignal(float4 value, uint contribution)
 
 float3 FilterSignal(uint2 pixel, uint contribution, float4 centerBase, float4 centerNormal, float centerDepth, out bool valid)
 {
+    const bool sampled = NativeIsSampled(pixel, Size, QualityMode, FrameIndex);
     float4 center = ReadSignal(pixel, contribution);
     valid = ValidSignal(center, contribution);
-    if (!valid) return 0.0;
-    // Feature-limited surfaces do not publish eligible identity. Preserve
-    // their raw diagnostic contribution rather than filtering across receivers.
+    // A traced but invalid receiver is not an intentionally missing sample.
+    if (sampled && !valid) return 0.0;
     uint2 centerIdentity = ReadRayIdentity(pixel);
-    if (!ValidRayIdentity(centerIdentity)) return center.rgb;
-    float3 sum = center.rgb;
-    float weightSum = 1.0;
-    [unroll] for (int y = -1; y <= 1; ++y) {
-        [unroll] for (int x = -1; x <= 1; ++x) {
-            if (x == 0 && y == 0) continue;
-            int2 q = int2(pixel) + int2(x, y);
-            if (any(q < 0) || any(q >= int2(Size))) continue;
-            uint2 neighborIdentity = ReadRayIdentity(uint2(q));
+    if (!ValidRayIdentity(centerIdentity)) return valid ? center.rgb : 0.0;
+    if (valid && !ShadowFilterDirectSamples(QualityMode)) return center.rgb;
+    float3 sum = valid ? center.rgb : 0.0;
+    float weightSum = valid ? 1.0 : 0.0;
+    const int radius = int(ShadowReconstructionRadius(QualityMode));
+    const int scale = int(ShadowScale(QualityMode));
+    int2 logicalCenter = int2(pixel / uint(scale));
+    int2 logicalSize = int2(ShadowLogicalExtent(Size.x, QualityMode), ShadowLogicalExtent(Size.y, QualityMode));
+    [loop] for (int y = -radius; y <= radius; ++y) {
+        [loop] for (int x = -radius; x <= radius; ++x) {
+            int2 logical = logicalCenter + int2(x,y);
+            if (any(logical < 0) || any(logical >= logicalSize) ||
+                ((uint(logical.x) ^ uint(logical.y) ^ FrameIndex) & 1u) != 0u) continue;
+            uint2 q = uint2(ShadowRenderCoordinate(uint(logical.x), Size.x, QualityMode),
+                ShadowRenderCoordinate(uint(logical.y), Size.y, QualityMode));
+            if (all(q == pixel)) continue;
+            uint2 neighborIdentity = ReadRayIdentity(q);
             if (!ValidRayIdentity(neighborIdentity) || neighborIdentity.x != centerIdentity.x) continue;
-            float4 base = ReadMaterial(uint2(q), 0u);
-            float4 normal = ReadMaterial(uint2(q), 8u);
+            float4 base = ReadMaterial(q, 0u);
+            float4 normal = ReadMaterial(q, 8u);
             float depth = Depth.Load(int3(q, 0));
             if (base.a != centerBase.a || !all(isfinite(base)) || !all(isfinite(normal)) ||
                 !isfinite(depth) || abs(depth - centerDepth) > 0.001 ||
                 dot(normal.xyz, centerNormal.xyz) < 0.95 || abs(normal.w - centerNormal.w) > 0.1 ||
                 any(abs(base.rgb - centerBase.rgb) > 0.15)) continue;
-            float4 sample = ReadSignal(uint2(q), contribution);
+            float4 sample = ReadSignal(q, contribution);
             if (!ValidSignal(sample, contribution)) continue;
-            float weight = (x == 0 || y == 0) ? 0.5 : 0.25;
+            float2 delta = (float2(q) - float2(pixel)) / float(scale);
+            float weight = rcp(1.0 + dot(delta, delta));
             sum += weight * sample.rgb;
             weightSum += weight;
         }
     }
-    return sum / weightSum;
+    valid = weightSum > 0.0;
+    return valid ? sum / weightSum : 0.0;
 }
 
 // No motion-vector reprojection yet: history is admitted only for bit-identical
@@ -137,8 +152,9 @@ float3 AccumulateStationary(float3 current, uint valid, uint offset)
     if (!all(isfinite(previous)) || previous.a != float(valid)) return current;
     // Limit reuse on lighting changes rather than carrying stale highlights.
     float3 bound = max(abs(current) * 0.25, 0.002);
-    if (any(abs(previous.rgb - current) > bound)) return current;
-    return lerp(current, previous.rgb, 0.5);
+    if (ShadowClampHistory(QualityMode)) previous.rgb = clamp(previous.rgb, current - bound, current + bound);
+    else if (any(abs(previous.rgb - current) > bound)) return current;
+    return lerp(previous.rgb, current, rcp(float(ShadowTemporalFrames(QualityMode))));
 }
 
 [numthreads(8, 8, 1)]
@@ -177,7 +193,7 @@ void main(uint3 id : SV_DispatchThreadID)
     float3 indirectTransmission=FilterSignal(id.xy,IndirectTransmissionSignal,base,normal,depth,it);
     float3 transmission=directTransmission+indirectTransmission;
     const uint transmissionValid=dt && it ? ContributionTransmission : 0u;
-    // Never fill invalid center pixels or claim remaining opaque ownership.
+    // Only intentional sparse holes with compatible evidence are reconstructed.
     const uint diffuseValid = (dd ? ContributionDirectDiffuse : 0u) | (idiff ? ContributionIndirectDiffuse : 0u);
     const uint specularValid = (ds ? ContributionDirectSpecular : 0u) | (ispec ? ContributionIndirectSpecular : 0u);
     float3 diffuse = directDiffuse + indirectDiffuse;

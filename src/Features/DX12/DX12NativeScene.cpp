@@ -42,11 +42,12 @@
 void DX12NativeScene::DrawSettings()
 {
 	const auto& control = globals::features::dx12Control;
-	if (control.IsFullRTMode()) {
+	if (control.IsFullRTMode() || control.UsesExclusiveMaterials()) {
 		const char* qualities[]{ T("menu.dx12.scene.rt_quality", "Quality"), T("menu.dx12.scene.rt_performance", "Performance") };
 		int quality = fullRTQuality == DX12Native::kShadowQualityPerformance ? 1 : 0;
 		if (ImGui::Combo(T("menu.dx12.scene.shadow_quality", "Shadow quality"), &quality, qualities, int(std::size(qualities))))
 			fullRTQuality = quality == 0 ? DX12Native::kShadowQualityQuality : DX12Native::kShadowQualityPerformance;
+		if (control.UsesExclusiveMaterials()) return;
 		bool outdoor = outdoorFullRT.load(std::memory_order_relaxed);
 		if (ImGui::Checkbox(T("menu.dx12.scene.outdoor_shadow_offloading", "Enable outdoor shadow offloading (DX12 only)"), &outdoor))
 			outdoorFullRT.store(outdoor, std::memory_order_relaxed);
@@ -676,7 +677,7 @@ void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 	fullNativeDirect->Dispatch(*backend, material, lights->points, lights->available,
 		lights->directional, uint32_t(viewport.x), uint32_t(viewport.y),
 		globals::features::foliageLighting.loaded && globals::features::foliageLighting.GetCommonBufferData().EnableFoliageScattering != 0,
-		characterCasters ? characterCasters->Get(frame, material->scope) : nullptr);
+		characterCasters ? characterCasters->Get(frame, material->scope) : nullptr, FullNativeFrameQuality(frame));
 }
 
 void DX12NativeScene::ResetFullNativeEnvironment()
@@ -715,7 +716,7 @@ void DX12NativeScene::DispatchFullNativeIndirect()
 	if (!material || material->scope != stamp.scope)
 		return;
 	globals::features::nativeIBL.Dispatch(*backend, material, globals::features::nativeCubemaps.Get(), stamp,
-		characterCasters ? characterCasters->Get(frame, material->scope) : nullptr);
+		characterCasters ? characterCasters->Get(frame, material->scope) : nullptr, FullNativeFrameQuality(frame));
 	const auto& draws = fullNativeRasterDraws;
 	const bool matchingDraws = draws.finalized && draws.scene == material->scene && draws.stamp.frame == frame;
 	auto* tokenSource = matchingDraws && globals::game::renderer ?

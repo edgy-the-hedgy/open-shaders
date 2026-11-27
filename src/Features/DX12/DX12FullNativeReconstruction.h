@@ -28,6 +28,7 @@ namespace DX12Native
 		winrt::com_ptr<ID3D12Fence> readyFence;
 		uint64_t readyValue = 0, allocationBytes = 0;
 		uint32_t frame = 0, width = 0, height = 0, rowPitch = 0, available = 0;
+		uint32_t quality = kShadowQualityQuality;
 	};
 
 	class FullNativeReconstruction

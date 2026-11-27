@@ -28,7 +28,7 @@ namespace DX12Native
 			float nearLightRadius;
 			uint32_t nearLightExclusion, instanceCount, parallaxShadows = 0;
 			float4 directionalDirection, directionalRadiance;
-			uint32_t foliageScatteringEnabled, characterCastersEnabled;
+			uint32_t foliageScatteringEnabled, characterCastersEnabled, quality, frame;
 		};
 		static_assert(sizeof(Constants) <= 256);
 
@@ -140,7 +140,7 @@ namespace DX12Native
 	void DirectLightingTrace::Dispatch(const GraphicsBackend& backend,
 		std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
 		std::span<const DirectPointLight> lights, bool inputsAvailable, const DirectDirectionalLight& directional,
-		uint32_t viewportWidth, uint32_t viewportHeight, bool foliageScatteringEnabled, std::shared_ptr<const CharacterCasterFrame> characters)
+		uint32_t viewportWidth, uint32_t viewportHeight, bool foliageScatteringEnabled, std::shared_ptr<const CharacterCasterFrame> characters, uint32_t quality)
 	{
 		CS_GPU_PASS("NativeLighting::Direct");
 		if (!material || (current && current->material == material)) return;
@@ -205,7 +205,7 @@ namespace DX12Native
 			}
 			slot->readyFence = completion; slot->readyValue = UINT64_MAX; slot->statsPending = false;
 			slot->root = root; slot->pipeline = pipeline;
-			slot->frame = material->frame; slot->material = std::move(material);
+			slot->frame = material->frame; slot->quality = SanitizeRTQuality(quality); slot->material = std::move(material);
 			slot->characters = characters && characters->Submitted(slot->frame, slot->material->scope) ? std::move(characters) : nullptr;
 			const auto& raster = *slot->material->raster;
 			std::vector<std::array<float, 4>> records;
@@ -237,7 +237,7 @@ namespace DX12Native
 			slot->lights->Unmap(0, &written);
 			const Constants constants{ raster.camera.CameraProjInverse, raster.camera.CameraViewInverse,
 				raster.camera.CameraPosAdjust, width, height, slot->material->rowPitch, lightCount,
-				0.0f, 0u, slot->material->scene->materialEvaluation->instanceCount, slot->material->parallaxShadows ? 1u : 0u, directional.direction, directional.radiance, foliageScatteringEnabled ? 1u : 0u, slot->characters ? 1u : 0u };
+				0.0f, 0u, slot->material->scene->materialEvaluation->instanceCount, slot->material->parallaxShadows ? 1u : 0u, directional.direction, directional.radiance, foliageScatteringEnabled ? 1u : 0u, slot->characters ? 1u : 0u, slot->quality, slot->frame };
 			slot->directionalIncluded = directional.direction.w != 0.0f;
 			WriteConstants(slot->camera.get(), constants);
 			auto* depthResource = raster.depth->resource.get();
@@ -271,7 +271,8 @@ namespace DX12Native
 				const auto outputStart = CD3DX12_RESOURCE_BARRIER::Transition(slot->samples.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 				command->ResourceBarrier(1, &outputStart);
 			}
-			command->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
+			command->Dispatch((ShadowPhysicalWidth(ShadowLogicalExtent(width, slot->quality), slot->quality) + 7) / 8,
+				(ShadowLogicalExtent(height, slot->quality) + 7) / 8, 1);
 			const std::array end{
 				CD3DX12_RESOURCE_BARRIER::Transition(slot->samples.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON),
 				CD3DX12_RESOURCE_BARRIER::Transition(depthResource, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON)

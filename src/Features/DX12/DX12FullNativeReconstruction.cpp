@@ -81,7 +81,7 @@ namespace DX12Native
 		parameters[2].InitAsShaderResourceView(2);
 		parameters[3].InitAsDescriptorTable(3, depthRanges);
 		parameters[4].InitAsUnorderedAccessView(0);
-		parameters[5].InitAsConstants(15, 0);
+		parameters[5].InitAsConstants(17, 0);
 		parameters[6].InitAsShaderResourceView(4);
 		parameters[7].InitAsShaderResourceView(5);
 		parameters[8].InitAsShaderResourceView(7);
@@ -126,6 +126,8 @@ namespace DX12Native
 		};
 		if (!matches(direct)) direct.reset();
 		if (!matches(indirect)) indirect.reset();
+		const uint32_t quality = direct ? direct->quality : (indirect ? indirect->quality : kShadowQualityQuality);
+		if (indirect && indirect->quality != quality) indirect.reset();
 		const uint32_t available = (direct ? DirectLightingFrame::available : 0u) | (indirect ? indirect->available : 0u) |
 			uint32_t(Emission);
 		const uint64_t bytes = uint64_t(material->width) * material->height * kLightingStride;
@@ -140,7 +142,7 @@ namespace DX12Native
 				std::memcmp(&a.CameraViewInverse, &b.CameraViewInverse, sizeof(a.CameraViewInverse)) == 0 &&
 				std::memcmp(&a.CameraPosAdjust, &b.CameraPosAdjust, sizeof(a.CameraPosAdjust)) == 0;
 		};
-		if (!history || !history->material || !history->readyFence || !stamp.CanReuse(history->historyIdentity) ||
+		if (!history || !history->material || !history->readyFence || history->quality != quality || !stamp.CanReuse(history->historyIdentity) ||
 			!ValidProducerSignal(history->readyValue, history->readyFence->GetCompletedValue()) ||
 			!history->material->IsCoherent(history->frame, history->width, history->height) ||
 			history->material->scene != material->scene ||
@@ -223,6 +225,7 @@ namespace DX12Native
 			if (slot->rasterEvidence && (slot->rasterEvidence->width < slot->width || slot->rasterEvidence->height < slot->height))
 				slot->rasterEvidence.reset();
 			slot->historyIdentity = stamp;
+			slot->quality = quality;
 			slot->historyInput = std::move(history);
 			slot->reconstruction = slot->historyInput ? ReconstructionState::Temporal : ReconstructionState::Spatial;
 			slot->root = root;
@@ -268,8 +271,8 @@ namespace DX12Native
 				previous ? previous->material->rowPitch : 0u, previous ? 1u : 0u,
 				slot->material->rayIdentityRowPitch, previous ? previous->material->rayIdentityRowPitch : 0u, evidence ? evidence->tokenCount : 0u,
 				slot->rasterWinnerCertified ? 1u : 0u, slot->completeLightingCoverage ? 1u : 0u,
-				slot->direct ? DirectLightingFrame::available : 0u, slot->indirect ? slot->indirect->available : 0u };
-			cmd->SetComputeRoot32BitConstants(5, 15, constants, 0);
+				slot->direct ? DirectLightingFrame::available : 0u, slot->indirect ? slot->indirect->available : 0u, quality, slot->frame };
+			cmd->SetComputeRoot32BitConstants(5, 17, constants, 0);
 			const D3D12_RESOURCE_BARRIER begin[]{
 				CD3DX12_RESOURCE_BARRIER::Transition(depth, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
 				CD3DX12_RESOURCE_BARRIER::Transition(slot->samples.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),

@@ -26,7 +26,7 @@ namespace DX12Native
             uint32_t interior, colorEncoding;
             NativeAmbientParameters ambient;
             float4 positionAdjust;
-            uint32_t instanceCount, characterCastersEnabled = 0, pad1 = 0, pad2 = 0;
+            uint32_t instanceCount, characterCastersEnabled = 0, quality = kShadowQualityQuality, frame = 0;
         };
         static_assert(sizeof(Constants) == 320);
         constexpr uint64_t kSHBytes = 48;
@@ -172,7 +172,7 @@ namespace DX12Native
 
     void NativeIndirectLighting::Dispatch(const GraphicsBackend& backend,
         std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
-        std::shared_ptr<const EnvironmentFrame> environment, uint32_t enabled, float environmentScale, float skyScale, const NativeAmbientParameters& ambient, std::shared_ptr<const CharacterCasterFrame> characters)
+        std::shared_ptr<const EnvironmentFrame> environment, uint32_t enabled, float environmentScale, float skyScale, const NativeAmbientParameters& ambient, std::shared_ptr<const CharacterCasterFrame> characters, uint32_t quality)
     {
         CS_GPU_PASS("NativeLighting::Indirect");
         if (!material || !environment || !enabled) return;
@@ -250,7 +250,7 @@ namespace DX12Native
                 Eval::Check(slot->commands->Reset(slot->allocator.get(), pipeline.get()));
             }
             slot->material = std::move(material); slot->environment = std::move(environment);
-            slot->frame = slot->material->frame; slot->available = available;
+            slot->frame = slot->material->frame; slot->quality = SanitizeRTQuality(quality); slot->available = available;
             slot->characters = characters && characters->Submitted(slot->frame, slot->material->scope) ? std::move(characters) : nullptr;
             slot->skyVisibilityTraced = ambient.traceSkyVisibility != 0 && !slot->environment->stamp.interior;
             slot->root = root; slot->pipeline = pipeline;
@@ -295,7 +295,7 @@ namespace DX12Native
                 width, height, slot->material->rowPitch, slot->rowPitch, enabled, available, env.base->mipCount,
                 env.reflection ? env.reflection->mipCount : 0u, environmentScale, skyScale,
                 env.stamp.interior ? 1u : 0u, uint32_t(env.stamp.encoding), ambient,
-                raster.camera.CameraPosAdjust, slot->material->scene->materialEvaluation->instanceCount, slot->characters ? 1u : 0u };
+                raster.camera.CameraPosAdjust, slot->material->scene->materialEvaluation->instanceCount, slot->characters ? 1u : 0u, slot->quality, slot->frame };
             void* mapped = nullptr; const D3D12_RANGE noRead{};
             Eval::Check(slot->constants->Map(0, &noRead, &mapped));
             std::memcpy(mapped, &constants, sizeof(constants)); slot->constants->Unmap(0, nullptr);
@@ -320,7 +320,8 @@ namespace DX12Native
             cmd->SetComputeRootShaderResourceView(9, scene.materialEvaluation->bindings->GetGPUVirtualAddress());
             cmd->SetComputeRootShaderResourceView(10, slot->material->materialLobes->GetGPUVirtualAddress());
             cmd->SetComputeRootShaderResourceView(11, slot->characters ? slot->characters->acceleration->GetGPUVirtualAddress() : scene.acceleration->GetGPUVirtualAddress());
-            cmd->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
+            cmd->Dispatch((ShadowPhysicalWidth(ShadowLogicalExtent(width, slot->quality), slot->quality) + 7) / 8,
+                (ShadowLogicalExtent(height, slot->quality) + 7) / 8, 1);
             Transition(cmd, slot->samples.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
             Transition(cmd, depth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
             Transition(cmd, base, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);

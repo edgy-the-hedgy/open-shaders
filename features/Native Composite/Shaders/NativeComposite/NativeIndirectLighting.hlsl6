@@ -1,4 +1,5 @@
 #include "NativeSurface.hlsli"
+#include "FullNativeSampling.hlsli"
 #include "NativeFuzz.hlsli"
 #include "NativeIndirectBRDF.hlsli"
 #include "NativeEnvironmentColor.hlsli"
@@ -53,7 +54,8 @@ cbuffer IndirectInputs : register(b0)
     float4 PositionAdjust;
     uint InstanceCount;
     uint CharacterCastersEnabled;
-    uint2 Padding2;
+    uint QualityMode;
+    uint FrameIndex;
 };
 
 float Luminance(float3 c) { return dot(c, float3(0.2125, 0.7154, 0.0721)); }
@@ -175,9 +177,10 @@ float SkyCapVisibility(float3 world, float3 n, float3 lobeDirection, float expon
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID)
 {
-    if (any(id.xy >= Size)) return;
-    uint offset = id.y * MaterialPitch + id.x * NativeSurfaceStride;
-    uint outputOffset = id.y * LightingPitch + id.x * NativeLightingStride;
+    uint2 pixel = NativeSamplePixel(id.xy, Size, QualityMode, FrameIndex);
+    if (any(pixel >= Size)) return;
+    uint offset = pixel.y * MaterialPitch + pixel.x * NativeSurfaceStride;
+    uint outputOffset = pixel.y * LightingPitch + pixel.x * NativeLightingStride;
     Lighting.Store4(outputOffset, uint4(0, 0, 0, 0));
     Lighting.Store2(outputOffset+16u,uint2(0,0));
     float4 base = UnpackHalf4(Materials.Load2(offset));
@@ -188,7 +191,7 @@ void main(uint3 id : SV_DispatchThreadID)
     if (!HasEvaluatedNativeBase(base.a) || !all(isfinite(base)) || !all(isfinite(normal)) ||
         !all(isfinite(f0)) || !all(isfinite(emissionAO)) || dot(normal.xyz, normal.xyz) < 1e-8) return;
     float3 view, world;
-    if (!ViewDirection(id.xy, view, world)) return;
+    if (!ViewDirection(pixel, view, world)) return;
     float3 n = normalize(normal.xyz);
     float3 baseView=NativeBaseDirection(view,coat);
     float roughness = clamp(normal.w, 0.045, 1.0);

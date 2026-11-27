@@ -86,7 +86,7 @@ void NativeIBL::Producer::Dispatch(const GraphicsBackend& backend,
 	std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> material,
 	std::shared_ptr<const DX12Native::EnvironmentFrame> environment,
 	const DX12Native::EnvironmentStamp& stamp,
-	std::shared_ptr<const DX12Native::CharacterCasterFrame> characters)
+	std::shared_ptr<const DX12Native::CharacterCasterFrame> characters, uint32_t quality)
 {
 	using namespace DX12Native;
 	using namespace DX12Native::MaterialFrameContract;
@@ -130,7 +130,7 @@ void NativeIBL::Producer::Dispatch(const GraphicsBackend& backend,
 	ambient.skyMinZ = std::max(0.0f, std::cos(std::clamp(skylighting.settings.MaxZenith, 0.0f, 1.57079632679f)));
 	lighting->Dispatch(backend, std::move(material), std::move(environment),
 		uint32_t(IndirectDiffuse) | uint32_t(IndirectSpecular) | uint32_t(Transmission),
-		resolved.EnvIBLScale, resolved.SkyIBLScale, ambient, std::move(characters));
+		resolved.EnvIBLScale, resolved.SkyIBLScale, ambient, std::move(characters), quality);
 }
 
 json NativeIBL::Producer::GetDiagnostics()
