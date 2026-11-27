@@ -1,0 +1,13 @@
+#ifndef FULL_NATIVE_INPUT_CONTRACT_HLSLI
+#define FULL_NATIVE_INPUT_CONTRACT_HLSLI
+
+// Full Native input ABI is selected once at boot. The raster color path is
+// retained for unsupported receivers until ownership coverage is certified.
+#if defined(FULL_NATIVE_INPUT)
+#   if defined(LIGHTING)
+#       define NATIVE_PBR_INPUT
+#   endif
+#   define NATIVE_IBL_INPUT
+#endif
+
+#endif

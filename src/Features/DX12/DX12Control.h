@@ -37,8 +37,6 @@ struct DX12Control final : Feature
 	static bool IsNativeCounterpart(const Feature* feature);
 	void InitializeFeatureBackend();
 	void InstallMaterialBackendHooks();
-	std::string_view GetShaderDefineName() override { return "NATIVE_PBR_INPUT"; }
-	bool HasShaderDefine(RE::BSShader::Type type) override { return UsesExclusiveMaterials() && type == RE::BSShader::Type::Lighting; }
 	void DrawSettings() override;
 	void RegisterUxActions() override;
 	void LoadSettings(json& input) override;

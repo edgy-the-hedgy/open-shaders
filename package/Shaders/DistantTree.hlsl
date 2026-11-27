@@ -3,6 +3,7 @@
 
 #define DISTANT_TREE
 
+#include "Common/FullNativeInput.hlsli"
 #include "Common/Color.hlsli"
 #include "Common/FrameBuffer.hlsli"
 #include "Common/GBuffer.hlsli"

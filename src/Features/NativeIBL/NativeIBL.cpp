@@ -13,12 +13,6 @@
 #include <algorithm>
 #include <cmath>
 
-bool NativeIBL::Producer::HasShaderDefine(RE::BSShader::Type type)
-{
-	using Type = RE::BSShader::Type;
-	return type == Type::Lighting || type == Type::Sky || type == Type::DistantTree || type == Type::Effect;
-}
-
 void NativeIBL::Producer::PostPostLoad()
 {
 	// Boot settings are inherited, but native evaluation does not depend on

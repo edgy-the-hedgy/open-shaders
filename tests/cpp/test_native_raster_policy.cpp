@@ -1,4 +1,5 @@
 #include "Materials/NativeRasterPolicy.h"
+#include "Features/DX12/DX12ControlMode.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -30,4 +31,18 @@ TEST_CASE("Disabled native raster strips stale route and input bits", "[dx12][ma
 	REQUIRE(NormalizePixel(stale, false, true) == preserved);
 	REQUIRE(NormalizePixel(stale, false, false) == preserved);
 	REQUIRE(NormalizePixel(preserved | kInputBit, true, true) == preserved);
+}
+
+TEST_CASE("Full Native input ABI is independent of fallback and runtime producer state", "[dx12][shaders]")
+{
+	using namespace DX12;
+	for (auto kind : { InputShaderKind::Lighting, InputShaderKind::Effect, InputShaderKind::Sky, InputShaderKind::DistantTree }) {
+		REQUIRE(HasFullNativeInput(FeatureBackend::FullNative, kind));
+		REQUIRE_FALSE(HasFullNativeInput(FeatureBackend::Baseline, kind));
+	}
+	REQUIRE_FALSE(HasFullNativeInput(FeatureBackend::FullNative, InputShaderKind::Other));
+	for (auto mode : { ControlMode::ShadowOffload, ControlMode::RasterComparison, ControlMode::FullRT })
+		REQUIRE(SelectFeatureBackend(true, mode, false) == FeatureBackend::Baseline);
+	REQUIRE(SelectFeatureBackend(false, ControlMode::FullNative, false) == FeatureBackend::Baseline);
+	REQUIRE(SelectFeatureBackend(true, ControlMode::FullNative, true) == FeatureBackend::Baseline);
 }

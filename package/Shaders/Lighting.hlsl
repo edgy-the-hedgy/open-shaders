@@ -5,6 +5,7 @@
 #endif
 
 #define LIGHTING
+#include "Common/FullNativeInput.hlsli"
 
 #include "Common/Color.hlsli"
 #include "Common/FrameBuffer.hlsli"

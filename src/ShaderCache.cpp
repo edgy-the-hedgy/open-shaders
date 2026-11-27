@@ -756,8 +756,31 @@ namespace SIE
 			return nullptr;
 		}
 
+		static DX12::InputShaderKind GetNativeInputKind(RE::BSShader::Type type)
+		{
+			using Kind = DX12::InputShaderKind;
+			using Type = RE::BSShader::Type;
+			switch (type) {
+			case Type::Lighting: return Kind::Lighting;
+			case Type::Effect: return Kind::Effect;
+			case Type::Sky: return Kind::Sky;
+			case Type::DistantTree: return Kind::DistantTree;
+			default: return Kind::Other;
+			}
+		}
+
+		static bool HasFullNativeInput(RE::BSShader::Type type)
+		{
+			return DX12::HasFullNativeInput(globals::features::dx12Control.GetFeatureBackend(), GetNativeInputKind(type));
+		}
+
 		static void GetLightingShaderDefines(uint32_t descriptor, std::span<D3D_SHADER_MACRO> defines)
 		{
+			// The native material owner never generates a legacy TruePBR/glint permutation,
+			// even if an old engine descriptor or background request carries that bit.
+			const auto pbr = static_cast<uint32_t>(ShaderCache::LightingShaderFlags::TruePbr);
+			if (HasFullNativeInput(RE::BSShader::Type::Lighting) && (descriptor & pbr))
+				descriptor &= ~(pbr | static_cast<uint32_t>(ShaderCache::LightingShaderFlags::AnisoLighting));
 			uint32_t variantMask = 0;
 			for (auto* feature : Feature::GetFeatureList()) {
 				if (feature->loaded)
@@ -1445,6 +1468,18 @@ namespace SIE
 			case RE::BSShader::Type::Total:
 				break;
 			}
+			// Boot-latched ABI: do not use producer.loaded here. A device failure
+			// may stop submissions, but must not alter shader input layouts.
+			if (HasFullNativeInput(shader.shaderType.get())) {
+				const auto end = std::ranges::find_if(defines, [](const auto& macro) { return macro.Name == nullptr; });
+				if (end != defines.end() && end + 1 != defines.end()) {
+					*end = { "FULL_NATIVE_INPUT", nullptr };
+					*(end + 1) = { nullptr, nullptr };
+				} else {
+					logger::error("Full Native shader define capacity exhausted");
+					throw std::runtime_error("Full Native shader define capacity exhausted");
+				}
+			}
 		}
 
 		static std::array<std::array<std::unordered_map<std::string, int32_t>,
@@ -2073,15 +2108,9 @@ namespace SIE
 
 			const auto suffixNarrow = Util::GetShaderDefinesSuffix(globals::state->GetDefinesString());
 			std::wstring suffix(suffixNarrow.begin(), suffixNarrow.end());
-			// Keep the boot-latched material input ABI out of baseline disk-cache entries.
-			if (shader.shaderType == RE::BSShader::Type::Lighting && globals::features::dx12Control.UsesExclusiveMaterials())
-				suffix += L"_native_pbr_input_v1";
-			if (globals::features::dx12Control.UsesExclusiveMaterials()) {
-				using Type = RE::BSShader::Type;
-				const auto type = shader.shaderType.get();
-				if (type == Type::Lighting || type == Type::Sky || type == Type::DistantTree || type == Type::Effect)
-					suffix += L"_native_ibl_input_v1";
-			}
+			// The same boot-latched predicate selects input defines and disk identity.
+			if (HasFullNativeInput(shader.shaderType.get()))
+				suffix += L"_full_native_input_v2";
 
 			const std::wstring wname(name.begin(), name.end());
 			switch (shaderClass) {

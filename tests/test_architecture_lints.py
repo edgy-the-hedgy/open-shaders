@@ -101,8 +101,17 @@ class ArchitectureLintTests(unittest.TestCase):
         legacy = (ROOT / "src/Features/DynamicCubemaps.cpp").read_text(encoding="utf-8")
         self.assertNotIn("globals::features::dynamicCubemaps", native)
         self.assertNotIn("nativeCubemaps", legacy)
-        self.assertIn("CaptureRaw(backend)", native)
+        self.assertIn("CaptureRaw(backend,sceneColor)", native)
         self.assertIn("processing->Dispatch", native)
+
+    def test_full_native_shader_inputs_share_one_boot_latched_cache_identity(self):
+        cache = (ROOT / "src/ShaderCache.cpp").read_text(encoding="utf-8")
+        self.assertIn('"FULL_NATIVE_INPUT"', cache)
+        self.assertIn('L"_full_native_input_v2"', cache)
+        self.assertNotIn('L"_native_pbr_input_v1"', cache)
+        for name in ("Lighting", "Effect", "Sky", "DistantTree"):
+            source = (ROOT / f"package/Shaders/{name}.hlsl").read_text(encoding="utf-8")
+            self.assertIn('#include "Common/FullNativeInput.hlsli"', source)
 
     def test_native_cube_processing_is_staged_as_dxil(self):
         cmake = (ROOT / "cmake/DX12NativeComposite.cmake").read_text(encoding="utf-8")

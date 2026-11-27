@@ -31,6 +31,13 @@ namespace DX12
 		return active && mode == ControlMode::FullNative && !isVR ? FeatureBackend::FullNative : FeatureBackend::Baseline;
 	}
 
+	// Shared between shader permutation routing and disk-cache identity.
+	enum class InputShaderKind { Other, Lighting, Effect, Sky, DistantTree };
+	constexpr bool HasFullNativeInput(FeatureBackend backend, InputShaderKind kind)
+	{
+		return backend == FeatureBackend::FullNative && kind != InputShaderKind::Other;
+	}
+
 	constexpr bool RequiresMaterialPreparation(ControlMode mode) { return mode == ControlMode::FullNative; }
 
 	constexpr bool RequiresModeRestart(ControlMode active, ControlMode requested)

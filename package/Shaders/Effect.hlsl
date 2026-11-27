@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT AND (LicenseRef-GPL-3.0-with-Modding-Exception WITH GPL-3.0-linking-source-exception)
 // Original code Copyright (c) 2022 Ilya Perapechka (MIT), modifications GPL-3.0 with Modding Exception (see EXCEPTIONS.md)
 
+#include "Common/FullNativeInput.hlsli"
 #include "Common/Color.hlsli"
 #include "Common/FrameBuffer.hlsli"
 #include "Common/GBuffer.hlsli"
@@ -462,7 +463,7 @@ struct PS_OUTPUT
 struct PS_OUTPUT
 {
 	float4 Diffuse: SV_Target0;
-#	if (defined(IBL) || defined(NATIVE_IBL_INPUT)) && !defined(DEFERRED)
+#	if defined(IBL) || (defined(NATIVE_IBL_INPUT) && !defined(DEFERRED))
 	float4 ReflectionRadiance: SV_Target7;
 #	endif
 #	if defined(MOTIONVECTORS_NORMALS)

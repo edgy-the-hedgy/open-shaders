@@ -13,8 +13,6 @@ namespace NativeIBL
 	public:
 		std::string GetName() override { return "Native IBL"; }
 		std::string GetShortName() override { return "NativeIBL"; }
-		std::string_view GetShaderDefineName() override { return "NATIVE_IBL_INPUT"; }
-		bool HasShaderDefine(RE::BSShader::Type type) override;
 		void PostPostLoad() override;
 		void SetupResources() override;
 		bool WantsDrawHook() const override { return true; }

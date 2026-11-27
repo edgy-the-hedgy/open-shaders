@@ -35,7 +35,7 @@ void NativeLLF::Producer::Reset()
 {
 	// The hook observes effects throughout the frame, including after opaque
 	// lighting. Publish copied values at the next frame boundary, never pointers.
-		std::scoped_lock observationLock(observationMutex);
+	std::scoped_lock observationLock(observationMutex);
 	current.swap(pending);
 	pending.clear();
 	observed.clear();
