@@ -142,33 +142,51 @@ bool NativeCubemaps::CubeProcessing::Dispatch(const GraphicsBackend& backend,
     });
     if(found==slots.end()) return false;
     auto* device=owner.d3d12Device.get();
-    const bool reflection=!input->stamp.interior && input->reflection && input->reflection->IsReadyFor(input->stamp);
+    const bool reflection=!input->stamp.interior && input->reflection && input->reflection->IsReadyFor(input->stamp) &&
+        Policy::PublicationFresh(input->reflection->stamp.SameEnvironment(input->stamp),
+            input->reflection->stamp.engineFrame,input->stamp.engineFrame);
     const auto resourceDesc=[](uint32_t mips) { return CD3DX12_RESOURCE_DESC::Tex2D(kFormat,kSize,kSize,6,static_cast<UINT16>(mips),1,0,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS); };
     const auto rawDesc=resourceDesc(1), filteredDesc=resourceDesc(kMips);
     const auto rawBytes=device->GetResourceAllocationInfo(0,1,&rawDesc).SizeInBytes;
     const auto filteredBytes=device->GetResourceAllocationInfo(0,1,&filteredDesc).SizeInBytes;
     if(!rawBytes || !filteredBytes || rawBytes==UINT64_MAX || filteredBytes==UINT64_MAX) return false;
     const uint64_t required=rawBytes+filteredBytes*(reflection?2:1)+65536;
-    uint64_t tracked=0;
-    for(const auto& slot:slots) if(slot) tracked+=slot->bytes;
-    const auto allowance=budget.Query(device,tracked);
-    if(!allowance.localBudget || required>allowance.effectiveBytes || tracked>allowance.effectiveBytes-required) return false;
-    auto slot=std::make_shared<Generation>();
-    slot->inputs=input; slot->cameraPosition=cameraPosition; slot->bytes=required;
+    // The selected slot has retired and has no external leases. Remove it
+    // from the pool before recording so an exception cannot leave a partially
+    // reset command list eligible for reuse.
+    auto slot=std::move(*found);
+    const bool reuse=slot && bool(slot->reflection.resource)==reflection;
+    if(!reuse) {
+        slot.reset();
+        uint64_t tracked=0;
+        for(const auto& other:slots) if(other) tracked+=other->bytes;
+        const auto allowance=budget.Query(device,tracked);
+        if(!allowance.localBudget || required>allowance.effectiveBytes || tracked>allowance.effectiveBytes-required) return false;
+        slot=std::make_shared<Generation>();
+        const auto allocate=[&](EnvironmentCube& cube,uint32_t mips) {
+            const auto desc=resourceDesc(mips);
+            const CD3DX12_HEAP_PROPERTIES heap(D3D12_HEAP_TYPE_DEFAULT);
+            Check(device->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&desc,D3D12_RESOURCE_STATE_COMMON,nullptr,IID_PPV_ARGS(cube.resource.put())));
+            cube.format=kFormat; cube.width=kSize; cube.mipCount=mips;
+        };
+        allocate(slot->history,1); allocate(slot->base,kMips);
+        if(reflection) allocate(slot->reflection,kMips);
+        const D3D12_DESCRIPTOR_HEAP_DESC heap{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,4*kTables,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
+        Check(device->CreateDescriptorHeap(&heap,IID_PPV_ARGS(slot->descriptors.put())));
+        Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,IID_PPV_ARGS(slot->allocator.put())));
+        Check(device->CreateCommandList(0,D3D12_COMMAND_LIST_TYPE_DIRECT,slot->allocator.get(),historyPipeline.get(),IID_PPV_ARGS(slot->commands.put())));
+    } else {
+        Check(slot->allocator->Reset());
+        Check(slot->commands->Reset(slot->allocator.get(),historyPipeline.get()));
+    }
+    slot->inputs=input; slot->previous.reset(); slot->cameraPosition=cameraPosition; slot->bytes=required;
     slot->root=root; slot->historyPipeline=historyPipeline; slot->filterPipeline=filterPipeline;
-    const auto allocate=[&](EnvironmentCube& cube,uint32_t mips) {
-        const auto desc=resourceDesc(mips);
-        const CD3DX12_HEAP_PROPERTIES heap(D3D12_HEAP_TYPE_DEFAULT);
-        Check(device->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&desc,D3D12_RESOURCE_STATE_COMMON,nullptr,IID_PPV_ARGS(cube.resource.put())));
-        cube.format=kFormat; cube.width=kSize; cube.mipCount=mips; cube.stamp=input->stamp;
-        cube.revision=input->base->revision; cube.readyFence=fence;
+    const auto stampCube=[&](EnvironmentCube& cube) {
+        cube.stamp=input->stamp; cube.revision=input->base->revision; cube.readyFence=fence;
+        cube.readyValue=0;
     };
-    allocate(slot->history,1); allocate(slot->base,kMips);
-    if(reflection) allocate(slot->reflection,kMips);
-    const D3D12_DESCRIPTOR_HEAP_DESC heap{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,4*kTables,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
-    Check(device->CreateDescriptorHeap(&heap,IID_PPV_ARGS(slot->descriptors.put())));
-    Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,IID_PPV_ARGS(slot->allocator.put())));
-    Check(device->CreateCommandList(0,D3D12_COMMAND_LIST_TYPE_DIRECT,slot->allocator.get(),historyPipeline.get(),IID_PPV_ARGS(slot->commands.put())));
+    stampCube(slot->history); stampCube(slot->base);
+    if(reflection) stampCube(slot->reflection);
     const uint32_t elapsed=latest ? input->stamp.engineFrame-latest->base.stamp.engineFrame:0;
     bool useHistory=false;
     if(latest) {
@@ -236,7 +254,9 @@ bool NativeCubemaps::CubeProcessing::Dispatch(const GraphicsBackend& backend,
     publication->stamp=input->stamp; publication->revision=value;
     publication->base=std::shared_ptr<const EnvironmentCube>(slot,&slot->base);
     if(reflection) publication->reflection=std::shared_ptr<const EnvironmentCube>(slot,&slot->reflection);
-    publication->sky=input->sky;
+    if(input->sky && input->sky->IsReadyFor(input->stamp) &&
+        Policy::PublicationFresh(input->sky->stamp.SameEnvironment(input->stamp),input->sky->stamp.engineFrame,input->stamp.engineFrame))
+        publication->sky=input->sky;
     publication->producerFence=fence; publication->producerValue=value;
     latest=slot; current=std::move(publication);
     return true;

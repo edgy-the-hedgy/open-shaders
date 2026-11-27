@@ -25,3 +25,13 @@ TEST_CASE("Native cubemap history rejects incompatible and stale observations", 
     REQUIRE_FALSE(CanReuseHistory(true, 6, -1));
     REQUIRE_FALSE(CanReuseHistory(true, 6, std::numeric_limits<float>::quiet_NaN()));
 }
+
+TEST_CASE("Environment publications expire and reject incompatible generations", "[dx12][cubemaps]")
+{
+    REQUIRE(PublicationFresh(true, 10, 10));
+    REQUIRE(PublicationFresh(true, 10, 130));
+    REQUIRE_FALSE(PublicationFresh(true, 10, 131));
+    REQUIRE_FALSE(PublicationFresh(false, 10, 10));
+    REQUIRE(PublicationFresh(true, UINT32_MAX - 2, 3));
+    REQUIRE_FALSE(PublicationFresh(true, 10, 9));
+}

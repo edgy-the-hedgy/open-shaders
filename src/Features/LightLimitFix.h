@@ -659,13 +659,14 @@ public:
 	static float GetAttenuation(float distance, float radius, float size);
 
 	// One installation shared by the baseline and native metadata consumers.
-	static void InstallLightCreationHook();
+	static void InstallLightCreationHook(bool legacyOwner);
 
 	/** @brief Hook that intercepts point light creation to inject inverse-square light extension data. */
 	struct CreatePointLight
 	{
 		static RE::NiPointLight* thunk(RE::TESObjectLIGH* ligh, RE::TESObjectREFR* refr, RE::NiAVObject* root, bool forceDynamic, bool useLightRadius, bool affectRequesterOnly);
 		static inline REL::Relocation<decltype(thunk)> func;
+		static inline std::atomic<bool> legacyOwner{ false };
 	};
 
 	/** @brief Hook that overrides BSLight luminance calculation to use inverse-square attenuation. */

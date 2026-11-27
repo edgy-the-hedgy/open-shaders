@@ -444,6 +444,7 @@ void Deferred::DeferredPasses()
 	// Matches SKYLIGHTING_COVERAGE_REGISTER in DeferredCompositeCS.hlsl; t17 is SharedData::DepthTexture
 	constexpr UINT SKYLIGHTING_COVERAGE_SLOT = 18;
 
+	bool rasterRadianceReady = false;
 	// Deferred Composite
 	{
 		CS_GPU_PASS("Deferred::DeferredComposite");
@@ -493,6 +494,7 @@ void Deferred::DeferredPasses()
 		if (auto* shader = interior ? GetComputeMainCompositeInterior() : GetComputeMainComposite()) {
 			context->CSSetShader(shader, nullptr, 0);
 			context->Dispatch(dispatchCount.x, dispatchCount.y, 1);
+			rasterRadianceReady = true;
 		}
 
 		// Unbind mode texture SRV
@@ -527,7 +529,8 @@ void Deferred::DeferredPasses()
 	// before forward geometry and effects, after raster fallback is complete.
 	if (globals::features::dx12Control.WantsMaterialPreparation() && globals::game::graphicsState) {
 		const auto frame = globals::game::graphicsState->GetFrameCount();
-		globals::features::dx12NativeScene.CaptureFullNativeEnvironment(Util::AsReal(main.SRV), frame);
+		if (rasterRadianceReady)
+			globals::features::dx12NativeScene.CaptureFullNativeEnvironment(Util::AsReal(main.SRV), frame);
 		globals::features::upscaling.nativeComposite.ApplyFullNativeOpaque(frame, Util::AsReal(main.UAV));
 	}
 

@@ -1147,12 +1147,14 @@ void LightLimitFix::PostPostLoad()
 	ShadowCasterManager::Init(settings.ShadowSettings);
 	ShadowCasterManager::Install(settings.ShadowSettings);
 
-	InstallLightCreationHook();
+	InstallLightCreationHook(true);
 	stl::detour_thunk<BSLight_GetLuminance>(REL::RelocationID(101303, 108292));
 }
 
-void LightLimitFix::InstallLightCreationHook()
+void LightLimitFix::InstallLightCreationHook(bool legacyOwner)
 {
+	if (legacyOwner)
+		CreatePointLight::legacyOwner.store(true, std::memory_order_release);
 	static const bool installed = [] {
 		stl::detour_thunk<CreatePointLight>(REL::RelocationID(17208, 17610));
 		return true;
@@ -1165,7 +1167,7 @@ RE::NiPointLight* LightLimitFix::CreatePointLight::thunk(RE::TESObjectLIGH* ligh
 	const auto niLight = func(ligh, refr, root, forceDynamic, useLightRadius, affectRequesterOnly);
 
 	if (ligh && root && niLight) {
-		if (globals::features::lightLimitFix.loaded)
+		if (legacyOwner.load(std::memory_order_acquire))
 			SetExtLightData(niLight, ligh);
 		if (globals::features::nativeLLF.loaded)
 			globals::features::nativeLLF.ObserveLightCreation(niLight, *ligh);

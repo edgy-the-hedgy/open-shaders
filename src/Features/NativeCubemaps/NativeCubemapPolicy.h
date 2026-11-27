@@ -10,12 +10,18 @@ namespace NativeCubemaps::Policy
     inline constexpr uint32_t kMips = 9;
     inline constexpr uint32_t kCaptureInterval = 6;
     inline constexpr uint32_t kMaxHistoryGap = 120;
+    inline constexpr uint32_t kMaxPublicationAge = kMaxHistoryGap;
     inline constexpr float kMaxHistoryTranslation = 128.0f;
 
     constexpr bool CaptureDue(uint32_t previous, uint32_t current)
     {
         return previous == std::numeric_limits<uint32_t>::max() ||
             current - previous >= kCaptureInterval;
+    }
+
+    constexpr bool PublicationFresh(bool sameEnvironment, uint32_t observed, uint32_t requested)
+    {
+        return sameEnvironment && requested - observed <= kMaxPublicationAge;
     }
 
     inline bool CanReuseHistory(bool sameEnvironment, uint32_t elapsed, float distanceSquared)

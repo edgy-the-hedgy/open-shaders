@@ -120,7 +120,7 @@ void NativeLLF::Producer::PostPostLoad()
 	// own INI catalog, observation cache, cluster records and lifetime.
 	particleSettings = globals::features::lightLimitFix.settings;
 	configs.GetConfigs();
-	LightLimitFix::InstallLightCreationHook();
+	LightLimitFix::InstallLightCreationHook(false);
 }
 
 void NativeLLF::Producer::Reset()
@@ -406,26 +406,26 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 		std::scoped_lock observationLock(observationMutex);
 		if (particleSnapshotReady && currentPluginFrame == globals::state->frameCount) {
 			const auto eye = Util::GetEyePosition(0);
-		const float fadeStart = RE::Sky::GetLightLODStartFadeSquared();
-		const float fadeEnd = RE::Sky::GetLightLODEndFadeSquared();
-		for (const auto& particle : current) {
-			if (directLights.size() >= DX12::kMaxPreparedLights)
-				break;
-			const float3 offset{ particle.position.x - eye.x, particle.position.y - eye.y, particle.position.z - eye.z };
-			const float distanceSq = offset.Dot(offset);
-			const float maxDistance = particleSettings.MaxParticleDistance;
-			if (maxDistance > 0.0f && distanceSq > maxDistance * maxDistance)
-				continue;
-			const float distance = distanceSq - particle.radius * particle.radius;
-			float fade = 1.0f;
-			if (fadeEnd > fadeStart && fadeEnd != 0.0f && distance >= fadeStart)
-				fade = std::clamp(1.0f - (distance - fadeStart) / (fadeEnd - fadeStart), 0.0f, 1.0f);
-			if (!std::isfinite(fade) || fade <= 0.0f)
-				continue;
-			directLights.push_back({ particle.position,
-				{ toLinear(particle.color.x) * fade, toLinear(particle.color.y) * fade,
-					toLinear(particle.color.z) * fade }, particle.radius, 0.0f, 0.0f, false });
-		}
+			const float fadeStart = RE::Sky::GetLightLODStartFadeSquared();
+			const float fadeEnd = RE::Sky::GetLightLODEndFadeSquared();
+			for (const auto& particle : current) {
+				if (directLights.size() >= DX12::kMaxPreparedLights)
+					break;
+				const float3 offset{ particle.position.x - eye.x, particle.position.y - eye.y, particle.position.z - eye.z };
+				const float distanceSq = offset.Dot(offset);
+				const float maxDistance = particleSettings.MaxParticleDistance;
+				if (maxDistance > 0.0f && distanceSq > maxDistance * maxDistance)
+					continue;
+				const float distance = distanceSq - particle.radius * particle.radius;
+				float fade = 1.0f;
+				if (fadeEnd > fadeStart && fadeEnd != 0.0f && distance >= fadeStart)
+					fade = std::clamp(1.0f - (distance - fadeStart) / (fadeEnd - fadeStart), 0.0f, 1.0f);
+				if (!std::isfinite(fade) || fade <= 0.0f)
+					continue;
+				directLights.push_back({ particle.position,
+					{ toLinear(particle.color.x) * fade, toLinear(particle.color.y) * fade,
+						toLinear(particle.color.z) * fade }, particle.radius, 0.0f, 0.0f, false });
+			}
 		}
 	}
 	auto& directional = result.directional;

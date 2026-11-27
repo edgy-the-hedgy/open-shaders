@@ -141,6 +141,15 @@ void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend, ID3D11Sha
         failureLogged=true;
     }
 }
+std::shared_ptr<const DX12Native::EnvironmentFrame> NativeCubemaps::Producer::Get() const
+{
+    const auto frame = processing ? processing->Get() : nullptr;
+    if (!frame || !frame->base || !Policy::PublicationFresh(frame->stamp.SameEnvironment(currentStamp),
+        frame->base->stamp.engineFrame, currentStamp.engineFrame))
+        return nullptr;
+    return frame;
+}
+
 void NativeCubemaps::Producer::InvalidateGeneration()
 {
     if(processing) processing->Reset();

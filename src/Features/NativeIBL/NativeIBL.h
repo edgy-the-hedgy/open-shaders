@@ -24,7 +24,7 @@ namespace NativeIBL
 		void ClearShaderCache() override { InvalidateGeneration(); Release(); SetCaptureContext({}); }
 		void SetCaptureContext(const DX12Native::EnvironmentStamp& stamp);
 		DX12Native::EnvironmentSource GetSkySource(const DX12Native::EnvironmentStamp& requested) const;
-		ID3D11ShaderResourceView* GetRasterSkyView() const { return capture.View(); }
+		ID3D11ShaderResourceView* GetRasterSkyView() const { return GetSkySource(context).texture ? capture.View() : nullptr; }
 		void Poll(uint32_t frame) { if (lighting) lighting->Poll(frame); }
 		void InvalidateGeneration() { if (lighting) lighting->Reset(); }
 		void Release() { lighting.reset(); capture.Release(); }

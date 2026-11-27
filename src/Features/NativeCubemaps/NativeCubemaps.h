@@ -39,7 +39,7 @@ namespace NativeCubemaps
         void Capture(const GraphicsBackend&, ID3D11ShaderResourceView* sceneColor, uint32_t frame);
         void InvalidateGeneration();
         void Release();
-        std::shared_ptr<const DX12Native::EnvironmentFrame> Get() const { return processing ? processing->Get() : nullptr; }
+        std::shared_ptr<const DX12Native::EnvironmentFrame> Get() const;
     private:
         bool CaptureRaw(const GraphicsBackend&, ID3D11ShaderResourceView* sceneColor);
         std::unique_ptr<DX12Native::NativeEnvironment> inputs;

@@ -2,6 +2,7 @@
 
 #include "Features/CSUtility.h"
 #include "Features/IBL/IBLSettingsInput.h"
+#include "Features/NativeCubemaps/NativeCubemapPolicy.h"
 #include "Features/DX12/DX12Control.h"
 #include "ShaderCache.h"
 #include "Util.h"
@@ -77,7 +78,8 @@ std::function<void()> NativeIBL::Producer::OnReflectionsRenderBegin()
 DX12Native::EnvironmentSource NativeIBL::Producer::GetSkySource(const DX12Native::EnvironmentStamp& requested) const
 {
 	DX12Native::EnvironmentSource source{ capture.Ready() ? capture.Texture() : nullptr, skyRevision, publishedStamp };
-	return source.IsValidFor(requested) ? source : DX12Native::EnvironmentSource{};
+	return source.IsValidFor(requested) && NativeCubemaps::Policy::PublicationFresh(
+		publishedStamp.SameEnvironment(requested), publishedStamp.engineFrame, requested.engineFrame) ? source : DX12Native::EnvironmentSource{};
 }
 
 void NativeIBL::Producer::Dispatch(const GraphicsBackend& backend,
@@ -88,8 +90,23 @@ void NativeIBL::Producer::Dispatch(const GraphicsBackend& backend,
 {
 	using namespace DX12Native;
 	using namespace DX12Native::MaterialFrameContract;
-	if (!material || material->scope != stamp.scope)
+	if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation() ||
+		!material || material->scope != stamp.scope || material->frame != stamp.engineFrame ||
+		!environment || !environment->base || !NativeCubemaps::Policy::PublicationFresh(
+			environment->stamp.SameEnvironment(stamp), environment->base->stamp.engineFrame, stamp.engineFrame))
 		return;
+	// An optional sky revision may be older than the newly filtered base.
+	// Drop only that expired input; never admit it as current irradiance.
+	const auto fresh = [&](const auto& cube) {
+		return !cube || (cube->IsReadyFor(stamp) && NativeCubemaps::Policy::PublicationFresh(
+			cube->stamp.SameEnvironment(stamp), cube->stamp.engineFrame, stamp.engineFrame));
+	};
+	if (!fresh(environment->reflection) || !fresh(environment->sky)) {
+		auto partial = std::make_shared<EnvironmentFrame>(*environment);
+		if (!fresh(partial->reflection)) partial->reflection.reset();
+		if (!fresh(partial->sky)) partial->sky.reset();
+		environment = std::move(partial);
+	}
 	if (!lighting)
 		lighting = std::make_unique<NativeIndirectLighting>();
 	const auto color = globals::features::linearLighting.GetCommonBufferData();
