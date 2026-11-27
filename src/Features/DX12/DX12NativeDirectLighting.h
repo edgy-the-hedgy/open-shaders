@@ -56,7 +56,7 @@ namespace DX12Native
 		void Reset() { current.reset(); for (auto& slot : slots) if (slot) slot->statsPending = false; Poll(UINT32_MAX); stats = {}; dispatchedLights = 0; failure.clear(); }
 		void Dispatch(const GraphicsBackend& backend, std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
 			std::span<const DirectPointLight> lights, bool inputsAvailable, const DirectDirectionalLight& directional,
-			uint32_t viewportWidth, uint32_t viewportHeight);
+			uint32_t viewportWidth, uint32_t viewportHeight, bool foliageScatteringEnabled = false);
 		std::shared_ptr<const DirectLightingFrame> Get(uint32_t frame) const
 		{
 			return current && current->frame == frame && current->readyFence &&

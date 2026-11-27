@@ -4,6 +4,7 @@
 #include "Features/IBL.h"
 #include "Features/Skylighting.h"
 #include "Features/ExtendedMaterials.h"
+#include "Features/FoliageLighting.h"
 #include "Features/LinearLighting.h"
 #include "Features/CSUtility.h"
 
@@ -829,7 +830,8 @@ void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 	// Selected direct coverage remains partial: sun and particle visibility are
 	// limited to the resident TLAS; spots require a valid live engine projection.
 	fullNativeDirect->Dispatch(*backend, material, directLights, runtimeAvailable || !prepared.empty() || directional.direction.w != 0.0f,
-		directional, uint32_t(viewport.x), uint32_t(viewport.y));
+		directional, uint32_t(viewport.x), uint32_t(viewport.y),
+		globals::features::foliageLighting.loaded && globals::features::foliageLighting.GetCommonBufferData().EnableFoliageScattering != 0);
 }
 
 void DX12NativeScene::ResetFullNativeEnvironment()

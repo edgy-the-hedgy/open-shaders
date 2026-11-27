@@ -285,7 +285,8 @@ Sample EvaluateMaterial(uint instance, uint primitive, float3 weights, float3 ra
             result.color.a=SurfaceFeatureLimited; return result;
         }
         coat.normalRoughness=float4(normalize(face),saturate(material.surface.y));
-        coat.f0Colored=float4(saturate(material.thinSurface.xy),max(material.thinSurface.z,0.0),NativeThinTag);
+        coat.f0Colored=float4(saturate(material.thinSurface.xy),max(material.thinSurface.z,0.0),
+            (binding.flags & SurfaceFoliageReadyBinding)!=0u ? NativeFoliageTag : NativeThinTag);
         coat.subsurface=float4(scatterColor,thickness);
     }
     if ((binding.flags & SurfaceFuzzReadyBinding) != 0u) {
@@ -305,7 +306,7 @@ Sample EvaluateMaterial(uint instance, uint primitive, float3 weights, float3 ra
             result.color.a=SurfaceFeatureLimited; return result;
         }
         if (HasNativeThinSurface(coat)) {
-            coat.f0Colored.w=EncodeNativeThinFuzz(fuzzRoughness);
+            coat.f0Colored.w=EncodeNativeThinFuzz(fuzzRoughness,HasNativeFoliage(coat));
         } else {
             coat.normalRoughness=float4(0.0,0.0,0.0,clamp(fuzzRoughness,-1.0,1.0));
             coat.f0Colored.w=NativeFuzzTag;

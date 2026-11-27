@@ -27,6 +27,7 @@ namespace DX12Native
 			float nearLightRadius;
 			uint32_t nearLightExclusion, instanceCount, parallaxShadows = 0;
 			float4 directionalDirection, directionalRadiance;
+			uint32_t foliageScatteringEnabled;
 		};
 		static_assert(sizeof(Constants) <= 256);
 
@@ -143,7 +144,7 @@ namespace DX12Native
 	void DirectLightingTrace::Dispatch(const GraphicsBackend& backend,
 		std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
 		std::span<const DirectPointLight> lights, bool inputsAvailable, const DirectDirectionalLight& directional,
-		uint32_t viewportWidth, uint32_t viewportHeight)
+		uint32_t viewportWidth, uint32_t viewportHeight, bool foliageScatteringEnabled)
 	{
 		CS_GPU_PASS("NativeLighting::Direct");
 		if (!material || (current && current->material == material)) return;
@@ -233,7 +234,7 @@ namespace DX12Native
 			slot->lights = Eval::Table(device, records);
 			const Constants constants{ raster.camera.CameraProjInverse, raster.camera.CameraViewInverse,
 				raster.camera.CameraPosAdjust, width, height, slot->material->rowPitch, lightCount,
-				0.0f, 0u, slot->material->scene->materialEvaluation->instanceCount, slot->material->parallaxShadows ? 1u : 0u, directional.direction, directional.radiance };
+				0.0f, 0u, slot->material->scene->materialEvaluation->instanceCount, slot->material->parallaxShadows ? 1u : 0u, directional.direction, directional.radiance, foliageScatteringEnabled ? 1u : 0u };
 			slot->directionalIncluded = directional.direction.w != 0.0f;
 			WriteConstants(slot->camera.get(), constants);
 			auto* depthResource = raster.depth->resource.get();

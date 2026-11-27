@@ -23,6 +23,7 @@ RWByteAddressBuffer Counters : register(u1);
 #include "NativeMaterialAlpha.hlsli"
 #include "NativeSurface.hlsli"
 #include "NativeFuzz.hlsli"
+#include "Common/LightingCommon.hlsli"
 #include "Common/BRDF.hlsli"
 ByteAddressBuffer MaterialLobes : register(t519);
 
@@ -40,6 +41,7 @@ cbuffer DirectInputs : register(b0)
     uint ParallaxShadows;
     float4 DirectionalDirection;
     float4 DirectionalRadiance;
+    uint FoliageScatteringEnabled;
 };
 
 float4 UnpackHalf4(uint2 value)
@@ -125,6 +127,11 @@ void AccumulateBRDF(float4 base, float4 f0, float3 n, float3 view, float3 l, flo
         float backVisibility=1.0-saturate(4.0*dot(coat.normalRoughness.xyz,l));
         diffuse+=reflected*saturate(signedCos)*incident*BRDF::Diffuse_Lambert()*kd;
         transmission+=(front*saturate(signedCos)+saturate(albedo*(1.0-saturate(coat.subsurface.w))+back)*saturate(-signedCos)*backVisibility)*incident*BRDF::Diffuse_Lambert()*kd;
+        if (FoliageScatteringEnabled!=0u && HasNativeFoliage(coat)) {
+            // Shared canopy approximation is independent of baked material thickness.
+            float scattering=saturate(-signedCos)*BRDF::Diffuse_Lambert()+GetFoliageTransmission(signedCos,dot(view,l));
+            transmission+=max(base.rgb,0.0)*scattering*incident*kd;
+        }
         float3 halfDelta=view+l;
         if (dot(halfDelta,halfDelta)>1e-8 && ndl>0.0) {
             float3 h=normalize(halfDelta);

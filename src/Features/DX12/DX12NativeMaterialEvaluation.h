@@ -441,12 +441,14 @@ namespace DX12Native
 				if (!projectedUv && NativePBR::SupportsOpaqueParallax(recipe) && residentMap(NativePBR::TextureRole::Displacement))
 					binding.flags |= MaterialFrameContract::kParallaxReadyBinding;
 				// Fuzz may coexist with thin or non-thin subsurface scattering.
-				// Foliage is still gated by its deformation and canopy contract.
+				// Foliage can evaluate diagnostic radiance, but retains the feature limitation until live deformation is available.
 				constexpr uint32_t fuzz = uint32_t(PBRFlags::Fuzz);
 				constexpr uint32_t subsurface = uint32_t(PBRFlags::Subsurface);
 				constexpr uint32_t thin = uint32_t(PBRFlags::ThinSurface);
-				constexpr uint32_t supportedScattering = fuzz | subsurface | thin;
-				const bool scatterMapsReady = !(capability.activeFlags & (subsurface | thin)) ||
+				constexpr uint32_t foliage = uint32_t(PBRFlags::Foliage);
+				constexpr uint32_t supportedScattering = fuzz | subsurface | thin | foliage;
+				const bool foliageActive = (capability.activeFlags & foliage) != 0;
+				const bool scatterMapsReady = !(capability.activeFlags & (subsurface | thin | foliage)) ||
 					!authoredMap(NativePBR::TextureRole::Features0) || residentMap(NativePBR::TextureRole::Features0);
 				const bool fuzzReady = (capability.activeFlags & fuzz) && !(capability.activeFlags & ~supportedScattering) &&
 					scatterMapsReady &&
@@ -455,7 +457,7 @@ namespace DX12Native
 					(!recipe.parameters.fuzzRoughnessTexture || residentMap(NativePBR::TextureRole::Displacement));
 				if (fuzzReady) {
 					binding.flags |= MaterialFrameContract::kFuzzReadyBinding;
-					capability.issues &= ~(NativePBR::ScreenPbrFeatures | NativePBR::ScreenFeatureTextures);
+					if (!foliageActive) capability.issues &= ~(NativePBR::ScreenPbrFeatures | NativePBR::ScreenFeatureTextures);
 					// A packed roughness-only map is not active displacement.
 					if (recipe.parameters.fuzzRoughnessTexture && recipe.parameters.displacementScale == 0.0f)
 						capability.issues &= ~NativePBR::ScreenDisplacement;
@@ -467,12 +469,15 @@ namespace DX12Native
 					binding.flags |= MaterialFrameContract::kSubsurfaceReadyBinding;
 					capability.issues &= ~(NativePBR::ScreenPbrFeatures | NativePBR::ScreenFeatureTextures);
 				}
-				const bool thinReady = (capability.activeFlags & thin) && !(capability.activeFlags & ~supportedScattering) &&
+				const bool thinReady = (capability.activeFlags & (thin | foliage)) && !(capability.activeFlags & ~supportedScattering) &&
 					(!(capability.activeFlags & fuzz) || fuzzReady) &&
 					(!authoredMap(NativePBR::TextureRole::Features0) || residentMap(NativePBR::TextureRole::Features0));
 				if (thinReady) {
 					binding.flags |= MaterialFrameContract::kThinSurfaceReadyBinding;
-					capability.issues &= ~(NativePBR::ScreenPbrFeatures | NativePBR::ScreenFeatureTextures);
+					if (foliageActive) {
+						binding.flags |= MaterialFrameContract::kFoliageReadyBinding;
+						capability.issues |= NativePBR::ScreenPbrFeatures;
+					} else capability.issues &= ~(NativePBR::ScreenPbrFeatures | NativePBR::ScreenFeatureTextures);
 				}
 				const bool coatReady = (capability.activeFlags & coat) && !(capability.activeFlags & ~supportedCoat) &&
 					(!authoredMap(NativePBR::TextureRole::Features0) || residentMap(NativePBR::TextureRole::Features0)) &&

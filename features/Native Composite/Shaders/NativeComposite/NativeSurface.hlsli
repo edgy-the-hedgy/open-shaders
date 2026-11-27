@@ -29,6 +29,7 @@ static const uint SurfaceSubsurfaceReadyBinding = 1u << 14;
 static const uint SurfaceThinSurfaceReadyBinding = 1u << 15;
 static const uint SurfaceParallaxReadyBinding = 1u << 4;
 static const uint SurfaceFuzzReadyBinding = 1u << 5;
+static const uint SurfaceFoliageReadyBinding = 1u << 6;
 struct NativeCoatSample { float4 normalRoughness; float4 colorStrength; float4 f0Colored; float4 subsurface; };
 float4 UnpackNativeLobeHalf4(uint2 v) { return f16tof32(uint4(v.x & 65535u, v.x >> 16, v.y & 65535u, v.y >> 16)); }
 NativeCoatSample ReadNativeCoat(ByteAddressBuffer lobes, uint offset)
@@ -53,18 +54,31 @@ static const float NativeFuzzTag = -2.0;
 // roughness in the tag instead: [-4,-3] explicit, -5 legacy substrate mode.
 static const float NativeThinFuzzTag = -3.0;
 static const float NativeThinFuzzLegacyTag = -5.0;
+static const float NativeFoliageTag = -6.0;
+static const float NativeFoliageFuzzTag = -7.0;
+static const float NativeFoliageFuzzLegacyTag = -9.0;
+bool IsNativeFoliageFuzzTag(float tag)
+{
+    return (tag>=NativeFoliageFuzzTag-1.0 && tag<=NativeFoliageFuzzTag) || tag==NativeFoliageFuzzLegacyTag;
+}
+bool HasNativeFoliage(NativeCoatSample material)
+{
+    return material.f0Colored.w==NativeFoliageTag || IsNativeFoliageFuzzTag(material.f0Colored.w);
+}
 bool IsNativeThinFuzzTag(float tag)
 {
-    return (tag>=NativeThinFuzzTag-1.0 && tag<=NativeThinFuzzTag) || tag==NativeThinFuzzLegacyTag;
+    return (tag>=NativeThinFuzzTag-1.0 && tag<=NativeThinFuzzTag) || tag==NativeThinFuzzLegacyTag || IsNativeFoliageFuzzTag(tag);
 }
-float EncodeNativeThinFuzz(float roughness)
+float EncodeNativeThinFuzz(float roughness, bool foliage)
 {
+    if (foliage) return roughness<0.0 ? NativeFoliageFuzzLegacyTag : NativeFoliageFuzzTag-saturate(roughness);
     return roughness<0.0 ? NativeThinFuzzLegacyTag : NativeThinFuzzTag-saturate(roughness);
 }
 float NativeFuzzRoughness(NativeCoatSample material)
 {
     float tag=material.f0Colored.w;
-    if (tag==NativeThinFuzzLegacyTag) return -1.0;
+    if (tag==NativeThinFuzzLegacyTag || tag==NativeFoliageFuzzLegacyTag) return -1.0;
+    if (IsNativeFoliageFuzzTag(tag)) return NativeFoliageFuzzTag-tag;
     return IsNativeThinFuzzTag(tag) ? NativeThinFuzzTag-tag : material.normalRoughness.w;
 }
 bool HasNativeFuzz(NativeCoatSample material)
@@ -95,7 +109,7 @@ float3 NativeBaseDirection(float3 direction, NativeCoatSample coat)
 // The thin variant reuses the coat fields for face normal, balance and specular controls.
 bool HasNativeThinSurface(NativeCoatSample material)
 {
-    return (material.f0Colored.w==NativeThinTag || IsNativeThinFuzzTag(material.f0Colored.w)) && all(isfinite(material.normalRoughness)) &&
+    return (material.f0Colored.w==NativeThinTag || material.f0Colored.w==NativeFoliageTag || IsNativeThinFuzzTag(material.f0Colored.w)) && all(isfinite(material.normalRoughness)) &&
         all(isfinite(material.f0Colored)) && all(isfinite(material.subsurface)) &&
         dot(material.normalRoughness.xyz,material.normalRoughness.xyz)>1e-8;
 }
