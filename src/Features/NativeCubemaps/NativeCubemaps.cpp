@@ -4,6 +4,8 @@
 #include "Features/DX12/DX12NativeScene.h"
 
 #include "Features/NativeIBL/NativeIBL.h"
+#include "Features/DX12/DX12Control.h"
+#include "ShaderCache.h"
 #include "Features/LinearLighting.h"
 #include "Features/ReverseZ.h"
 #include "Globals.h"
@@ -183,6 +185,45 @@ std::shared_ptr<const DX12Native::EnvironmentFrame> NativeCubemaps::Producer::Ge
     return frame;
 }
 
+void NativeCubemaps::Producer::BeginWaterSSR()
+{
+    if (!globals::features::dx12Control.WantsMaterialPreparation()) return;
+    if (waterScopeDepth++) {
+        waterScopeInvalid = true;
+        if (waterSSR) waterSSR->End();
+    } else waterScopeInvalid = false;
+}
+void NativeCubemaps::Producer::EndWaterSSR()
+{
+    if (!waterScopeDepth) return;
+    if (--waterScopeDepth == 0) {
+        if (waterSSR) waterSSR->End();
+        waterScopeInvalid = false;
+    }
+}
+void NativeCubemaps::Producer::OnDraw()
+{
+    if (waterScopeDepth != 1 || waterScopeInvalid ||
+        !globals::features::dx12Control.NativeSSREnabled() || !globals::state ||
+        !globals::game::graphicsState || !globals::state->currentShader ||
+        globals::state->nativeFirstPersonDepth || globals::state->isMapMenuOpen ||
+        (globals::state->permutationData.ExtraShaderDescriptor & uint32_t(State::ExtraShaderDescriptors::IsReflections))) return;
+    const auto* shader = globals::state->currentShader;
+    if (shader->shaderType.get() != RE::BSShader::Type::ImageSpace ||
+        std::string_view(static_cast<const RE::BSImagespaceShader&>(*shader).originalShaderName) != "ISReflectionsRayTracing") return;
+    const auto world = globals::features::dx12NativeScene.GetWorldFrame(
+        globals::game::graphicsState->GetFrameCount(),globals::state->frameCount);
+    if (!world || !globals::state->customPixelShader) return;
+    if (!waterSSR) waterSSR = std::make_unique<WaterSSR>();
+    const auto color=globals::features::linearLighting.GetCommonBufferData();
+    const auto encoding=color.enableLinearLighting ?
+        (color.enableACEScg?DX12Native::EnvironmentEncoding::LinearAP1:DX12Native::EnvironmentEncoding::LinearRec709):DX12Native::EnvironmentEncoding::LegacyScene;
+    waterSSR->Draw(*world,Get(),encoding,
+        color.enableLinearLighting && (globals::state->permutationData.ExtraShaderDescriptor & uint32_t(State::ExtraShaderDescriptors::GammaRenderTarget)),
+        !Util::IsInterior() && globals::game::sky && !globals::game::sky->flags.any(RE::Sky::Flags::kHideSky),
+        Util::AsReal(globals::state->customPixelShader->shader));
+}
+
 json NativeCubemaps::Producer::GetDiagnostics()
 {
     const auto publication=Get();
@@ -192,11 +233,14 @@ json NativeCubemaps::Producer::GetDiagnostics()
         {"basePublished",publication && bool(publication->base)}, {"reflectionPublished",publication && bool(publication->reflection)},
         {"skyPublished",publication && bool(publication->sky)}, {"inputAllocationBytes",inputs ? inputs->AllocationBytes() : 0},
         {"inputFailure",inputs ? inputs->Failure() : ""},
-        {"processing",processing ? processing->GetDiagnostics() : json::object()} };
+        {"processing",processing ? processing->GetDiagnostics() : json::object()},
+        {"waterSSR",waterSSR ? waterSSR->Diagnostics() : json::object()} };
 }
 
 void NativeCubemaps::Producer::InvalidateGeneration()
 {
+    if(waterSSR) waterSSR->End();
+    waterScopeDepth=0; waterScopeInvalid=false;
     if(processing) processing->Reset();
     if(inputs) inputs->Reset();
     globals::features::nativeIBL.SetCaptureContext({});
@@ -204,6 +248,7 @@ void NativeCubemaps::Producer::InvalidateGeneration()
 }
 void NativeCubemaps::Producer::Release()
 {
+    waterSSR.reset();
     processing.reset(); inputs.reset();
     raw=nullptr; rawUAV=nullptr; inputShader=nullptr; inputConstants=nullptr;
     lastCaptureFrame=UINT32_MAX;

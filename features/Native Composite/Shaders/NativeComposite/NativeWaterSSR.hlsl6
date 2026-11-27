@@ -1,0 +1,90 @@
+#include "Common/ColorSpaces.hlsli"
+Texture2D<float4> Raw : register(t0);
+Texture2D<float> Coverage : register(t1);
+TextureCube<float4> Sky : register(t2);
+RWTexture2D<float4> Result : register(u0);
+SamplerState LinearClamp : register(s0);
+cbuffer Constants : register(b0)
+{
+    row_major float4x4 Projection;
+    row_major float4x4 InverseProjection;
+    row_major float4x4 InverseView;
+    uint2 Size;
+    uint2 OutputSize;
+    uint ReverseZ;
+    uint HasSky;
+    uint Encoding;
+    uint GammaInput;
+};
+float StandardDepth(float d){return ReverseZ!=0u?1.0-d:d;}
+bool InFrame(float2 uv){return all(uv>=0.0)&&all(uv<1.0);}
+uint2 Pixel(float2 uv){return min(uint2(uv*float2(Size)),Size-1u);}
+float4 Read(float2 uv){return Raw.Load(int3(Pixel(uv),0));}
+float3 ConvertScene(float3 c)
+{
+    if(GammaInput!=0u&&Encoding!=0u){
+        c=sign(c)*pow(abs(c),1.6);
+        if(Encoding==2u)c=sRGBToAP1(c);
+    }
+    return max(c,0.0);
+}
+[numthreads(8,8,1)]
+void main(uint3 id:SV_DispatchThreadID)
+{
+    if(any(id.xy>=OutputSize))return;
+    Result[id.xy]=0;
+    float2 uv=(float2(id.xy)+0.5)/float2(OutputSize);
+    const float4 params=Raw.Load(int3(0,Size.y,0));
+    const float3 normal=Raw.Load(int3(1,Size.y,0)).xyz;
+    if(!all(isfinite(params))||params.y<=0.0||!all(isfinite(normal))||dot(normal,normal)<1e-8||
+        !(Coverage.Load(int3(Pixel(uv),0))>0))return;
+    float depth=Read(uv).a;
+    if(!isfinite(depth)||depth<=0||depth>=1)return;
+    float4 position=mul(InverseProjection,float4(uv*float2(2,-2)+float2(-1,1),depth,1));
+    if(!all(isfinite(position))||abs(position.w)<1e-8)return;
+    float3 view=normalize(position.xyz/position.w);
+    float3 reflection=reflect(view,normalize(normal));
+    if(!all(isfinite(reflection)))return;
+    float4 clip=mul(Projection,float4(reflection,0));
+    float3 ndc=float3(uv*float2(2,-2)+float2(-1,1),depth);
+    float3 direction=clip.xyz-ndc*clip.w;
+    direction.z=ReverseZ!=0u?-direction.z:direction.z;
+    direction.xy*=float2(0.5,-0.5);
+    float len=length(direction);
+    if(!isfinite(len)||len<1e-8)return;
+    direction/=len;
+    float3 origin=float3(uv,StandardDepth(depth));
+    float3 previous=origin;
+    const uint steps=64;
+    [loop]for(uint i=1;i<steps;++i){
+        float3 ray=origin+(float(i)/steps)*direction;
+        if(!InFrame(ray.xy))return;
+        float z=StandardDepth(Read(ray.xy).a);
+        if(!isfinite(z)||z<0||z>1)return;
+        if(z>0.9999&&z<1.0-1e-6){previous=ray;continue;}
+        if(ray.z<=z){previous=ray;continue;}
+        float3 lo=previous,hi=ray;
+        [unroll]for(uint k=0;k<6;++k){
+            float3 mid=(lo+hi)*0.5;
+            if(!InFrame(mid.xy))return;
+            float d=StandardDepth(Read(mid.xy).a);
+            if(!isfinite(d))return;
+            if(mid.z>d)hi=mid;else lo=mid;
+        }
+        float3 hit=(lo+hi)*0.5;
+        float4 sample=Read(hit.xy);
+        float hitDepth=StandardDepth(sample.a);
+        float confidence=1.0-saturate(abs(hit.z-hitDepth)/params.y);
+        confidence*=1.0-saturate(length(hit-origin));
+        float2 center=abs(hit.xy*2.0-1.0);
+        confidence*=smoothstep(0.0,0.1,saturate(1.0-center.x))*smoothstep(0.0,0.5,saturate(1.0-center.y));
+        if(confidence<=0)return;
+        float3 color=0;
+        if(hitDepth>=1.0-1e-6){
+            if(HasSky==0u)return;
+            color=Sky.SampleLevel(LinearClamp,mul((float3x3)InverseView,reflection),0).rgb;
+        }else color=ConvertScene(sample.rgb);
+        if(all(isfinite(color)))Result[id.xy]=float4(clamp(color,0,65504),confidence);
+        return;
+    }
+}

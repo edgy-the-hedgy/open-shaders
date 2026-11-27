@@ -5,6 +5,7 @@
 #include "../I18n/I18n.h"
 #include "DX12/DX12Control.h"
 #include "DX12/DX12NativeScene.h"
+#include "NativeCubemaps/NativeCubemaps.h"
 #include "Deferred.h"
 #include "HDRDisplay.h"
 #include "Hooks.h"
@@ -1543,16 +1544,21 @@ static constexpr tracy::SourceLocationData kSSRZoneSrcLoc{ "SSR ReflectionsRayTr
 // In-place holder (no per-frame heap): opened on PreRender, closed on PostRender, render-thread only
 // and non-nested for this shader.
 static std::optional<tracy::D3D11ZoneScope> g_ssrGpuZone;
+#endif
 
 struct SSRPreRender_Hook
 {
 	static void thunk(void* a_this)
 	{
 		func(a_this);  // original PreRender (engine SSR render-state setup)
+		if (globals::features::dx12Control.UsesExclusiveMaterials())
+			globals::features::nativeCubemaps.BeginWaterSSR();
+#ifdef TRACY_ENABLE
 		if (globals::state->tracyCtx) {
 			g_ssrGpuZone.reset();  // defensive: close a prior zone if PostRender was ever skipped
 			g_ssrGpuZone.emplace(globals::state->tracyCtx, &kSSRZoneSrcLoc, true);
 		}
+#endif
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
@@ -1560,12 +1566,15 @@ struct SSRPostRender_Hook
 {
 	static void thunk(void* a_this)
 	{
+		if (globals::features::dx12Control.UsesExclusiveMaterials())
+			globals::features::nativeCubemaps.EndWaterSSR();
+#ifdef TRACY_ENABLE
 		g_ssrGpuZone.reset();  // close the GPU zone right after the draw
+#endif
 		func(a_this);          // original PostRender
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
-#endif
 
 struct FaceGen_CopyRenderTarget
 {
@@ -1655,11 +1664,14 @@ void Upscaling::PostPostLoad()
 	stl::detour_thunk<BSImageSpace_Init_FXAA>(REL::RelocationID(98974, 105626));
 
 #ifdef TRACY_ENABLE
-	// SSR raymarch GPU zone — see the SSRPreRender_Hook / SSRPostRender_Hook definitions above.
-	stl::write_vfunc<0x0A, SSRPreRender_Hook>(RE::VTABLE_BSImagespaceShaderReflectionsRayTracing[0]);
-	stl::write_vfunc<0x0B, SSRPostRender_Hook>(RE::VTABLE_BSImagespaceShaderReflectionsRayTracing[0]);
-	logger::info("[Upscaling] Installed SSR ReflectionsRayTracing Tracy zone (PreRender/PostRender 0x0A/0x0B, TRACY_ENABLE)");
+	const bool installSSRHooks = true;
+#else
+	const bool installSSRHooks = globals::features::dx12Control.UsesExclusiveMaterials();
 #endif
+	if (installSSRHooks) {
+		stl::write_vfunc<0x0A, SSRPreRender_Hook>(RE::VTABLE_BSImagespaceShaderReflectionsRayTracing[0]);
+		stl::write_vfunc<0x0B, SSRPostRender_Hook>(RE::VTABLE_BSImagespaceShaderReflectionsRayTracing[0]);
+	}
 
 	logger::info("[Upscaling] Installed hooks");
 }
