@@ -1,16 +1,28 @@
 #include "DX12NativeScene.h"
+#include "DX12LightSourceIdentity.h"
+#include "Features/NativeLLF/NativeLLF.h"
+#include "Features/NativeCubemaps/NativeCubemaps.h"
+#include "Features/NativeIBL/NativeIBL.h"
+#include "Features/NativePBR/NativePBRFrameProducer.h"
+#include "Features/FoliageLighting.h"
 
 #include "../LightLimitFix/ShadowCasterMath.h"
+#include "../LightLimitFix/Common.h"
+#include "../LightLimitFix/RadiusMath.h"
 #include "../Upscaling.h"
 #include "DX12Control.h"
 #include "DX12Resources.h"
 #include "Globals.h"
+#include "Deferred.h"
 #include "GpuPass.h"
+#include "RE/B/BSLightingShaderProperty.h"
 #include "RE/M/MainMenu.h"
 #include "RE/T/TESObjectCELL.h"
 #include "RE/T/TESObjectLIGH.h"
 #include "RE/U/UI.h"
 #include "State.h"
+#include "ShaderCache.h"
+#include "RE/R/RendererShadowState.h"
 #include "Utils/D3D.h"
 #include "Utils/DevBenchUx.h"
 #include "Utils/Game.h"
@@ -197,11 +209,13 @@ void DX12NativeScene::RestoreDefaultSettings()
 bool DX12NativeScene::AllowsNativeSceneWork() const
 {
 	const auto& control = globals::features::dx12Control;
-	return control.IsShadowOffloadMode() || control.IsFullRTMode();
+	return control.IsShadowOffloadMode() || control.IsFullRTMode() || control.IsFullNativeMode();
 }
 
 bool DX12NativeScene::AllowsOutdoorContribution() const
 {
+	if (globals::features::dx12Control.IsFullNativeMode())
+		return true;  // Full Native preparation is independent of the shadow-mode outdoor toggles.
 	return globals::features::dx12Control.IsFullRTMode() ?
 	           outdoorFullRT.load(std::memory_order_relaxed) :
 	           outdoorShadowOffloading.load(std::memory_order_relaxed);
@@ -344,6 +358,10 @@ bool DX12NativeScene::WantsDepthPrepassReadyHook() const { return WantsRenderPas
 
 void DX12NativeScene::OnDepthPrepassReady()
 {
+	if (globals::features::dx12Control.WantsMaterialPreparation()) {
+		DispatchFullNativeMaterial();
+		return;
+	}
 	if (!earlyTraceExperiment.load(std::memory_order_relaxed) || !globals::state || !globals::state->IsDeveloperMode())
 		return;
 	CS_GPU_PASS("DX12NativeScene::DepthPrepassReady");
@@ -406,6 +424,20 @@ void DX12NativeScene::PreShadowMaps()
 		ResetFullLightInventory();
 		return;
 	}
+	if (globals::features::dx12Control.IsFullNativeMode()) {
+		// The static scene remains independent of moving character casters.
+		if (!backend) {
+			std::string reason;
+			backend = GraphicsBackend::Create(globals::d3d::device, globals::d3d::context, reason);
+		}
+		if (backend) {
+			if (!characterCasters) characterCasters = std::make_unique<DX12Native::NativeCharacterCasters>();
+			characterCasters->Publish(*backend, frame, grid->requested.front().scope);
+		}
+		if (acceleration.Start(globals::d3d::device, globals::d3d::context))
+			acceleration.Request(std::move(grid));
+		return;
+	}
 	shadowLightScope.store(grid->requested.front().scope, std::memory_order_release);
 	// SCM reads a single per-frame publication without re-enumerating tiles
 	// for every shadow light; the same ordered sources feed RayQuery.
@@ -417,47 +449,6 @@ void DX12NativeScene::PreShadowMaps()
 	// allocations and command recording run as bounded shared-pool tasks.
 	if (acceleration.Start(globals::d3d::device, globals::d3d::context))
 		acceleration.Request(std::move(grid));
-}
-
-namespace
-{
-	// Engine user data and parent pointers are not reference counted.
-	void ReadFullLightOwner(const RE::NiLight* ni, uint32_t& owner, uint32_t& placed) noexcept
-	{
-		__try {
-			const RE::NiAVObject* node = ni;
-			for (uint32_t depth = 0; node && depth < 16; ++depth, node = node->parent) {
-				if (auto* ref = node->GetUserData()) {
-					owner = ref->GetFormID();
-					auto* base = ref->GetObjectReference();
-					if (base && base->As<RE::TESObjectLIGH>())
-						placed = owner;
-					return;
-				}
-			}
-		} __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
-		}
-	}
-	void ReadFullLightRestPosition(RE::NiLight* ni, uint32_t placedReference, float3& position) noexcept
-	{
-		__try {
-			const auto formID = PointLightFlags::GetRuntimeLightFormID(ni);
-			const auto* light = formID ? RE::TESForm::LookupByID<RE::TESObjectLIGH>(formID) : nullptr;
-			if (!light && placedReference) {
-				auto* reference = RE::TESForm::LookupByID<RE::TESObjectREFR>(placedReference);
-				auto* base = reference ? reference->GetObjectReference() : nullptr;
-				light = base ? base->As<RE::TESObjectLIGH>() : nullptr;
-			}
-			const auto& local = ni->local.translate;
-			if (light && !light->GetNoFlicker() && ni->parent &&
-				ShadowCasterManager::WithinFlickerReach(local.x, local.y, local.z, light->data.flickerMovementAmplitude)) {
-				const auto& rest = ni->parent->world.translate;
-				if (std::isfinite(rest.x) && std::isfinite(rest.y) && std::isfinite(rest.z))
-					position = float3{ rest.x, rest.y, rest.z };
-			}
-		} __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
-		}
-	}
 }
 
 void DX12NativeScene::ResetFullLightInventory()
@@ -499,7 +490,7 @@ bool DX12NativeScene::ObserveFullRuntimeLights()
 			const auto flags = PointLightFlags::GetVanillaPointLightFlags(light, ni);
 			cached.supported = !(flags & PointLightFlags::ToMask(PointLightFlags::Flags::Spot));
 			cached.value.runtimeIdentity = reinterpret_cast<std::uintptr_t>(ni);
-			ReadFullLightOwner(ni, cached.value.referenceID, cached.placedReference);
+			DX12Native::ReadFullLightOwner(ni, cached.value.referenceID, cached.placedReference);
 		}
 		if (!cached.supported)
 			return;
@@ -517,7 +508,7 @@ bool DX12NativeScene::ObserveFullRuntimeLights()
 				value.radius = rt.radius.x;
 				value.color = float3{ rt.diffuse.red, rt.diffuse.green, rt.diffuse.blue };
 				value.fade = rt.fade;
-				ReadFullLightRestPosition(ni, cached.placedReference, value.position);
+				DX12Native::ReadFullLightRestPosition(ni, cached.placedReference, value.position);
 			}
 		}
 		const bool active = visible && cached.sampled;
@@ -614,8 +605,126 @@ void DX12NativeScene::ObserveScheduledShadowOrigin(const RE::NiLight* light, con
 		scheduledOrigins.try_emplace(reinterpret_cast<uintptr_t>(light), float3{ origin.x, origin.y, origin.z });
 }
 
+std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> DX12NativeScene::GetFullNativeMaterial(uint32_t frame) const
+{
+	return globals::features::nativePBR.Get(frame);
+}
+
+std::shared_ptr<const DX12Native::IndirectLightingFrame> DX12NativeScene::GetFullNativeIndirect(uint32_t frame) const
+{
+	return globals::features::nativeIBL.Get(frame);
+}
+
+void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
+{
+	if (!loaded || globals::game::isVR || !globals::features::dx12Control.WantsMaterialPreparation() ||
+		!globals::game::graphicsState || !globals::state || globals::state->isMapMenuOpen ||
+		globals::features::dx12Resources.IsLoading() || !nativeSessionStarted ||
+		(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
+		return;
+	CS_GPU_PASS("DX12NativeScene::FullNativeMaterial");
+	const auto frame = globals::game::graphicsState->GetFrameCount();
+	globals::features::upscaling.nativeComposite.PollFullNative(frame);
+	globals::features::nativeIBL.Poll(frame);
+	if (fullNativeDirect)
+		fullNativeDirect->Poll(frame);
+	globals::features::nativePBR.Poll(frame);
+	const auto scene = acceleration.GetScene();
+	const auto grid = globals::features::dx12Resources.GetGrid();
+	if (!scene || !grid || grid->requested.empty() || scene->scope != grid->requested.front().scope ||
+		scene->geometryRevision != grid->geometryRevision || !scene->materialEvaluation || !scene->shadingGeometry)
+		return;
+	if (!backend) {
+		std::string reason;
+		backend = GraphicsBackend::Create(globals::d3d::device, globals::d3d::context, reason);
+		if (!backend)
+			return;
+	}
+	const auto viewport = Util::ConvertToDynamic(globals::state->screenSize);
+	if (!std::isfinite(viewport.x) || !std::isfinite(viewport.y) || viewport.x < 1.0f || viewport.y < 1.0f)
+		return;
+	if (globals::features::nativePBR.WantsFrame(frame)) {
+		if (!raster.Get(frame))
+			raster.Capture(*backend, Util::GetCurrentSceneDepthSRV(false), &globals::game::frameBufferCached.nonVR, frame);
+		const auto& tally = scene->materialEvaluation->surfaceCapabilities;
+		if ((tally.projectedUv || tally.unresolvedProjection) && !opaqueReady)
+			return;
+		globals::features::nativePBR.Dispatch(*backend, raster.Get(frame), scene, frame, uint32_t(viewport.x), uint32_t(viewport.y), opaqueReady);
+	}
+	const auto material = globals::features::nativePBR.Get(frame);
+	if (!material || material->scene != scene || !scene->inputs || !scene->inputs->residency)
+		return;
+	if (fullNativeDirect && fullNativeDirect->Get(frame))
+		return;
+	const auto lights = globals::features::nativeLLF.CollectDirectInputs(*scene, frame, opaqueReady);
+	if (!lights)
+		return;
+	if (!fullNativeDirect)
+		fullNativeDirect = std::make_unique<DX12Native::DirectLightingTrace>();
+	// Selected direct coverage remains partial: sun and particle visibility are
+	// limited to the resident TLAS; spots require a valid live engine projection.
+	fullNativeDirect->Dispatch(*backend, material, lights->points, lights->available,
+		lights->directional, uint32_t(viewport.x), uint32_t(viewport.y),
+		globals::features::foliageLighting.loaded && globals::features::foliageLighting.GetCommonBufferData().EnableFoliageScattering != 0,
+		characterCasters ? characterCasters->Get(frame, material->scope) : nullptr);
+}
+
+void DX12NativeScene::ResetFullNativeEnvironment()
+{
+	if (!globals::features::dx12Control.UsesExclusiveMaterials())
+		return;
+	if (globals::features::nativePBR.HasEvaluator())
+		globals::features::upscaling.nativeComposite.ResetFullNative();
+	globals::features::nativeIBL.InvalidateGeneration();
+	globals::features::nativeCubemaps.InvalidateGeneration();
+}
+
+void DX12NativeScene::DispatchFullNativeIndirect()
+{
+	using namespace DX12Native;
+	using namespace DX12Native::MaterialFrameContract;
+	if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation() ||
+		!globals::state || !globals::game::graphicsState || globals::state->isMapMenuOpen ||
+		globals::features::dx12Resources.IsLoading() || !nativeSessionStarted ||
+		(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
+		return;
+	const auto grid = globals::features::dx12Resources.GetGrid();
+	if (!grid || grid->requested.empty() || !grid->requested.front().scope)
+		return;
+	const auto frame = globals::game::graphicsState->GetFrameCount();
+	bool environmentChanged = false;
+	const auto stamp = globals::features::nativeCubemaps.Prepare(grid->requested.front().scope, frame, environmentChanged);
+	if (environmentChanged) {
+		if (globals::features::nativePBR.HasEvaluator())
+			globals::features::upscaling.nativeComposite.ResetFullNative();
+		globals::features::nativeIBL.InvalidateGeneration();
+	}
+	if (!backend)
+		return;
+	// Environment acquisition is independent of material evaluation readiness.
+	globals::features::nativeCubemaps.Capture(*backend);
+	const auto material = GetFullNativeMaterial(frame);
+	if (!material || material->scope != stamp.scope)
+		return;
+	globals::features::nativeIBL.Dispatch(*backend, material, globals::features::nativeCubemaps.Get(), stamp,
+		characterCasters ? characterCasters->Get(frame, material->scope) : nullptr);
+	const auto& draws = fullNativeRasterDraws;
+	const bool matchingDraws = draws.finalized && draws.scene == material->scene && draws.stamp.frame == frame;
+	auto* tokenSource = matchingDraws && globals::game::renderer ?
+		Util::AsReal(globals::game::renderer->GetRuntimeData().renderTargets[MASKS2].texture) : nullptr;
+	globals::features::upscaling.nativeComposite.ReconstructFullNative(*backend, material, GetFullNativeDirect(frame), GetFullNativeIndirect(frame),
+		globals::state->frameCount, globals::state->ShouldResetHistory(), tokenSource, draws.stamp,
+		matchingDraws ? std::span<const RasterPixelIdentity>(draws.tokens) : std::span<const RasterPixelIdentity>{});
+}
+
 void DX12NativeScene::OnOpaqueRasterReady()
 {
+	if (globals::features::dx12Control.WantsMaterialPreparation()) {
+		FinishFullNativeRasterDraws();
+		DispatchFullNativeMaterial(true);
+		DispatchFullNativeIndirect();
+		return;
+	}
 	if (!loaded || globals::game::isVR || !globals::features::dx12Control.IsActive())
 		return;
 	if (!globals::game::graphicsState || !globals::state || globals::state->isMapMenuOpen ||
@@ -732,8 +841,328 @@ void DX12NativeScene::OnOpaqueRasterReady()
 	shadows.Dispatch(*backend, raster.Get(frame), built, submittedLights, frame, controls);
 }
 
+void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
+{
+	using namespace DX12Native::MaterialFrameContract;
+	if (!globals::deferred || !globals::deferred->deferredPass || !globals::game::graphicsState ||
+		!globals::state || globals::state->isMapMenuOpen || globals::features::dx12Resources.IsLoading() ||
+		(globals::state->permutationData.ExtraShaderDescriptor &
+			static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
+		return;
+	const auto frame = globals::game::graphicsState->GetFrameCount();
+	const auto scene = acceleration.GetScene();
+	const auto grid = globals::features::dx12Resources.GetGrid();
+	if (!scene || !scene->inputs || !scene->materialEvaluation || !scene->shadingGeometry ||
+		!grid || grid->requested.empty() || scene->scope != grid->requested.front().scope ||
+		scene->geometryRevision != grid->geometryRevision)
+		return;
+	auto& draws = fullNativeRasterDraws;
+	const RasterIdentityStamp stamp{ frame, scene->scope, scene->geometryRevision, scene->materialEvaluation->revision };
+	if (draws.stamp.frame != frame || !draws.scene) {
+		draws = {};
+		draws.scene = scene;
+		draws.stamp = stamp;
+		draws.seen.resize(scene->inputs->geometry.size());
+		draws.tokenBases.resize(scene->inputs->geometry.size());
+	}
+	// Never merge observations across scene generations in the same frame.
+	if (draws.finalized || draws.scene != scene || draws.stamp != stamp)
+		return;
+	++draws.draws;
+	const auto* tri = geometry.AsTriShape();
+	const auto& rt = geometry.GetGeometryRuntimeData();
+	if (!tri || !rt.rendererData || rt.skinInstance || rt.alphaProperty || geometry.AsDynamicTriShape() ||
+		!rt.shaderProperty || rt.shaderProperty->GetRTTI() != globals::rtti::BSLightingShaderPropertyRTTI.get()) {
+		++draws.rejected;
+		return;
+	}
+	const auto* property = static_cast<const RE::BSLightingShaderProperty*>(rt.shaderProperty.get());
+	using PropertyFlag = RE::BSShaderProperty::EShaderPropertyFlag;
+	const bool projected = property->flags.any(PropertyFlag::kProjectedUV);
+	if (projected) ++draws.projectedDraws;
+	const auto counts = tri->GetTrishapeRuntimeData();
+	auto desc = rt.vertexDesc;
+	const DX12::CasterSource live{ reinterpret_cast<uintptr_t>(&geometry),
+		reinterpret_cast<uintptr_t>(rt.rendererData->rawVertexData), reinterpret_cast<uintptr_t>(rt.rendererData->rawIndexData),
+		counts.vertexCount, uint32_t(counts.triangleCount) * 3u, desc.GetSize(), 0 };
+	std::array<float, 12> transform{};
+	for (uint32_t row = 0; row < 3; ++row)
+		for (uint32_t col = 0; col < 3; ++col)
+			transform[4 * row + col] = geometry.world.rotate.entry[row][col] * geometry.world.scale;
+	transform[3] = geometry.world.translate.x;
+	transform[7] = geometry.world.translate.y;
+	transform[11] = geometry.world.translate.z;
+	UniqueRasterCandidate match;
+	const auto [first, rangeEnd] = scene->inputs->casterSources.equal_range(live.geometry);
+	for (auto it = first; it != rangeEnd; ++it) {
+		const auto ordinal = it->second;
+		if (ordinal >= scene->inputs->geometry.size() || ordinal >= UINT32_MAX)
+			continue;
+		const auto& shape = scene->inputs->geometry[ordinal];
+		if (shape && DX12::SameCasterSource(shape->casterSource, live, shape->transform, transform))
+			match.Observe(uint32_t(ordinal));
+	}
+	// Observe projection before base admission: projected receivers are
+	// intentionally feature-limited, so they cannot pass exactBaseCandidates.
+	if (match.Valid()) {
+		auto& observation = draws.projection[match.ordinal];
+		if (projected) {
+			const auto& params = property->projectedUVParams;
+			const auto& color = property->projectedUVColor;
+			observation.Observe(true, { { params.red, params.green, params.blue, params.alpha },
+				{ color.red, color.green, color.blue, color.alpha } });
+			if (observation.ValidProjection())
+				draws.activeProjectedInstance = match.ordinal;
+		} else observation.Observe(false);
+		// Live projection overrides stale preparation classification for admission.
+		if (observation.RejectRasterCandidate()) {
+			++draws.rejected;
+			return;
+		}
+	} else if (projected) ++draws.unmatchedProjectedDraws;
+	const auto& eligible = scene->materialEvaluation->exactBaseCandidates;
+	if (!match.Valid() || match.ordinal >= eligible.size() || !eligible[match.ordinal]) {
+		if (match.ambiguous)
+			++draws.ambiguous;
+		else
+			++draws.rejected;
+		return;
+	}
+	++draws.candidates;
+	if (!draws.seen[match.ordinal]) {
+		draws.seen[match.ordinal] = 1;
+		++draws.uniqueInstances;
+	}
+	const auto primitiveCount = uint32_t(counts.triangleCount);
+	auto& base = draws.tokenBases[match.ordinal];
+	if (!base) {
+		const auto next = RasterTokenBase(uint32_t(draws.tokens.size()), primitiveCount);
+		if (!next) {
+			++draws.tokenBudgetRejected;
+			return;
+		}
+		for (uint32_t primitive = 0; primitive < primitiveCount; ++primitive)
+			draws.tokens.push_back({ match.ordinal, primitive });
+		base = next;
+	}
+	globals::state->permutationData.nativeRasterTokenBase = base;
+	globals::state->permutationData.nativeRasterPrimitiveCount = primitiveCount;
+}
+
+bool DX12NativeScene::CaptureProjectedConstants(ProjectedTextureObservation& observation)
+{
+	using namespace DX12Native::MaterialFrameContract;
+	auto& draws = fullNativeRasterDraws;
+	if (draws.constantSnapshots >= kMaxProjectedConstantSnapshots || !globals::d3d::device || !globals::d3d::context)
+		return false;
+	const auto& state = globals::game::shadowState->GetRuntimeData();
+	if (!state.currentVertexShader || !state.currentPixelShader)
+		return false;
+	constexpr auto group = static_cast<size_t>(RE::BSGraphics::ConstantGroupLevel::PerGeometry);
+	const auto& vs = *state.currentVertexShader;
+	const auto& ps = *state.currentPixelShader;
+	const auto& constants = ShaderConstants::LightingPS::Get();
+	const std::array<uint32_t, 4> offsets{
+		uint32_t(vs.constantTable[ShaderConstants::LightingTextureProj]) * uint32_t(sizeof(float)),
+		uint32_t(ps.constantTable[constants.ProjectedUVParams]) * uint32_t(sizeof(float)),
+		uint32_t(ps.constantTable[constants.ProjectedUVParams2]) * uint32_t(sizeof(float)),
+		uint32_t(ps.constantTable[constants.ProjectedUVParams3]) * uint32_t(sizeof(float))
+	};
+	// TextureProj is a row-major float3x4; the PS fields are float4.
+	// Zero offsets cannot identify these non-leading fields.
+	if (std::ranges::any_of(offsets, [](uint32_t offset) { return offset == 0; }) ||
+		offsets[1] == offsets[2] || offsets[1] == offsets[3] || offsets[2] == offsets[3])
+		return false;
+	std::array<ID3D11Buffer*, 2> sources{ Util::AsReal(vs.constantBuffers[group].buffer),
+		Util::AsReal(ps.constantBuffers[group].buffer) };
+	// Confirm the actual bound buffers agree with the engine shader groups.
+	// Reject a stale group rather than copying an unrelated constant buffer.
+	winrt::com_ptr<ID3D11Buffer> boundVS, boundPS;
+	globals::d3d::context->VSGetConstantBuffers(uint32_t(group), 1, boundVS.put());
+	globals::d3d::context->PSGetConstantBuffers(uint32_t(group), 1, boundPS.put());
+	if (boundVS.get() != sources[0] || boundPS.get() != sources[1])
+		return false;
+	std::array<D3D11_BUFFER_DESC, 2> descriptions{};
+	for (size_t i = 0; i < sources.size(); ++i) {
+		if (!sources[i]) return false;
+		sources[i]->GetDesc(&descriptions[i]);
+		if (!(descriptions[i].BindFlags & D3D11_BIND_CONSTANT_BUFFER) ||
+			descriptions[i].ByteWidth > D3D11_REQ_CONSTANT_BUFFER_ELEMENT_COUNT * 16u)
+			return false;
+	}
+	for (size_t i = 0; i < offsets.size(); ++i)
+		if (!ValidProjectionConstantExtent(offsets[i], i == 0 ? 48u : 16u, descriptions[i == 0 ? 0 : 1].ByteWidth))
+			return false;
+	if (projectedConstantDevice.get() != globals::d3d::device) {
+		projectedConstantPool = {};
+		projectedConstantDevice.copy_from(globals::d3d::device);
+	}
+	auto& slot = projectedConstantPool[draws.constantSnapshots];
+	for (size_t i = 0; i < sources.size(); ++i) {
+		if (!slot.buffers[i] || !slot.views[i] || slot.byteWidths[i] != descriptions[i].ByteWidth) {
+			D3D11_BUFFER_DESC desc{};
+			desc.ByteWidth = descriptions[i].ByteWidth;
+			desc.Usage = D3D11_USAGE_DEFAULT;
+			desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+			desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
+			winrt::com_ptr<ID3D11Buffer> replacement;
+			if (FAILED(globals::d3d::device->CreateBuffer(&desc, nullptr, replacement.put())))
+				return false;
+			D3D11_SHADER_RESOURCE_VIEW_DESC viewDesc{};
+			viewDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+			viewDesc.ViewDimension = D3D11_SRV_DIMENSION_BUFFEREX;
+			viewDesc.BufferEx.NumElements = desc.ByteWidth / sizeof(uint32_t);
+			viewDesc.BufferEx.Flags = D3D11_BUFFEREX_SRV_FLAG_RAW;
+			winrt::com_ptr<ID3D11ShaderResourceView> replacementView;
+			if (FAILED(globals::d3d::device->CreateShaderResourceView(replacement.get(), &viewDesc, replacementView.put())))
+				return false;
+			slot.buffers[i] = std::move(replacement);
+			slot.views[i] = std::move(replacementView);
+			slot.byteWidths[i] = desc.ByteWidth;
+		}
+	}
+	// CopyResource preserves the submitted GPU buffer version and does not
+	// access the engine's invalidated mapped pointer. Both copies are queued
+	// before the next draw can replace the engine geometry constants.
+	for (size_t i = 0; i < sources.size(); ++i)
+		globals::d3d::context->CopyResource(slot.buffers[i].get(), sources[i]);
+	observation.constantSlot = draws.constantSnapshots++;
+	observation.constantOffsets = offsets;
+	return true;
+}
+
+void DX12NativeScene::ObserveProjectedDrawBindings(const RE::BSRenderPass* pass)
+{
+	// The render-pass scope is the sole admission path. No D3D state reads
+	// or retained COM references are needed for unrelated draws.
+	auto& draws = fullNativeRasterDraws;
+	const auto ordinal = draws.activeProjectedInstance;
+	if (ordinal == UINT32_MAX || draws.finalized || !pass || !pass->geometry ||
+		!globals::features::dx12Control.WantsMaterialPreparation() || !globals::game::shadowState ||
+		!globals::game::graphicsState || draws.stamp.frame != globals::game::graphicsState->GetFrameCount() ||
+		!draws.scene || !draws.scene->inputs || ordinal >= draws.scene->inputs->geometry.size())
+		return;
+	const auto& shape = draws.scene->inputs->geometry[ordinal];
+	if (!shape || shape->casterSource.geometry != reinterpret_cast<uintptr_t>(pass->geometry))
+		return;
+	const auto property = draws.projection.find(ordinal);
+	if (property == draws.projection.end() || !property->second.ValidProjection())
+		return;
+	const auto& state = globals::game::shadowState->GetRuntimeData();
+	if (!state.currentPixelShader)
+		return;
+	using Cache = SIE::ShaderCache;
+	using Flags = Cache::LightingShaderFlags;
+	const auto descriptor = state.currentPixelShader->id;
+	// Restrict to the ordinary object permutation. Other techniques alias
+	// the same slots for unrelated resources (parallax, sparkle, LOD).
+	if (!(descriptor & static_cast<uint32_t>(Flags::ProjectedUV)) ||
+		(descriptor & static_cast<uint32_t>(Flags::Skinned)) ||
+		Cache::GetLightingTechnique(descriptor) != Cache::LightingShaderTechniques::None)
+		return;
+	constexpr std::array<uint32_t, 4> slots{ 3, 8, 10, 11 };
+	std::array<winrt::com_ptr<ID3D11ShaderResourceView>, slots.size()> views;
+	uint32_t samplerModes = 0;
+	for (size_t i = 0; i < slots.size(); ++i) {
+		samplerModes |= (static_cast<uint32_t>(state.PSTextureAddressMode[slots[i]].get()) & 3u) << (2u * i);
+		auto* view = Util::AsReal(state.PSTexture[slots[i]]);
+		if (view) {
+			D3D11_SHADER_RESOURCE_VIEW_DESC desc{};
+			view->GetDesc(&desc);
+			if (desc.ViewDimension != D3D11_SRV_DIMENSION_TEXTURE2D || desc.Format == DXGI_FORMAT_UNKNOWN)
+				return;
+			views[i].copy_from(view);
+			if (i == 0 && DirectX::IsSRGB(desc.Format)) samplerModes |= 256u;
+		}
+	}
+	// Noise is required even for the solid-color projection permutation.
+	if (!views.back())
+		return;
+	auto& observation = draws.projectionTextures[ordinal];
+	if (observation.conflicted)
+		return;
+	if (observation.observed) {
+		// Equal texture identities do not prove equal per-draw constants.
+		// Do not certify a repeated instance until GPU equality is implemented.
+		observation.repeatedConstants = true;
+		bool same = observation.descriptor == descriptor && observation.samplerModes == samplerModes;
+		for (size_t i = 0; i < views.size(); ++i)
+			same = same && observation.views[i].get() == views[i].get();
+		if (!same) {
+			observation.conflicted = true;
+			observation.views = {};
+		}
+		return;
+	}
+	observation.descriptor = descriptor;
+	observation.samplerModes = samplerModes;
+	observation.views = std::move(views);
+	observation.observed = true;
+	if (!CaptureProjectedConstants(observation))
+		++draws.constantSnapshotFailures;
+}
+
+void DX12NativeScene::FinishFullNativeRasterDraws()
+{
+	if (!globals::game::graphicsState)
+		return;
+	auto& draws = fullNativeRasterDraws;
+	if (draws.finalized) return;
+	if (draws.stamp.frame != globals::game::graphicsState->GetFrameCount() ||
+		draws.scene != acceleration.GetScene()) {
+		draws = {};
+		return;
+	}
+	// A later projected/conflicting pass invalidates tokens already emitted
+	// by an earlier pass for this instance. Preserve token ordinals.
+	for (auto& token : draws.tokens) {
+		const auto observation = draws.projection.find(token.instance);
+		if (observation != draws.projection.end() && observation->second.RejectRasterCandidate())
+			token = {};
+	}
+	draws.finalized = true;
+	if (backend && draws.constantSnapshots) {
+		std::vector<DX12Native::ProjectedInputDraw> inputs;
+		inputs.reserve(draws.constantSnapshots);
+		for (const auto& [ordinal, observation] : draws.projectionTextures) {
+			const auto property = draws.projection.find(ordinal);
+			if (property == draws.projection.end() || !property->second.ValidProjection() ||
+				observation.conflicted || observation.repeatedConstants || observation.constantSlot >= draws.constantSnapshots)
+				continue;
+			const auto& slot = projectedConstantPool[observation.constantSlot];
+			if (!slot.views[0] || !slot.views[1]) continue;
+			inputs.push_back({ ordinal, observation.descriptor, observation.samplerModes, { slot.views[0].get(), slot.views[1].get() },
+				observation.constantOffsets, observation.views });
+		}
+		if (!inputs.empty()) {
+			globals::features::nativePBR.PublishProjection(*backend, draws.stamp, inputs);
+		}
+	}
+}
+
 std::function<void()> DX12NativeScene::OnRenderPassBegin(const RE::BSRenderPass* pass)
 {
+	if (loaded && !globals::game::isVR && globals::features::dx12Control.WantsMaterialPreparation()) {
+		if (!globals::state)
+			return nullptr;
+		auto& data = globals::state->permutationData;
+		const auto oldBase = data.nativeRasterTokenBase;
+		const auto oldCount = data.nativeRasterPrimitiveCount;
+		const auto oldProjection = fullNativeRasterDraws.activeProjectedInstance;
+		const auto oldStamp = fullNativeRasterDraws.stamp;
+		fullNativeRasterDraws.activeProjectedInstance = UINT32_MAX;
+		data.nativeRasterTokenBase = data.nativeRasterPrimitiveCount = 0;
+		if (pass && pass->geometry)
+			ObserveFullNativeRasterDraw(*pass->geometry);
+		return [this, oldBase, oldCount, oldProjection, oldStamp] {
+			fullNativeRasterDraws.activeProjectedInstance =
+				fullNativeRasterDraws.stamp == oldStamp && !fullNativeRasterDraws.finalized ? oldProjection : UINT32_MAX;
+			if (globals::state) {
+				globals::state->permutationData.nativeRasterTokenBase = oldBase;
+				globals::state->permutationData.nativeRasterPrimitiveCount = oldCount;
+			}
+		};
+	}
 	// Observe visible static geometry already drawn by the existing opaque
 	// render path. This does not change render-pass state or DX11 draw behavior.
 	if (!loaded || !globals::features::dx12Control.IsActive() || globals::game::isVR ||
@@ -842,6 +1271,15 @@ void DX12NativeScene::ApplyPendingLoadingReset()
 			ResetFullLightInventory();
 		}
 		globals::features::upscaling.nativeComposite.ResetShadowHistory();
+		fullNativeRasterDraws = {};
+		if (characterCasters) characterCasters->Reset();
+		ResetFullNativeEnvironment();
+		if (fullNativeDirect)
+			fullNativeDirect->Reset();
+		if (globals::features::dx12Control.UsesExclusiveMaterials()) {
+			globals::features::nativePBR.InvalidateGeneration();
+			globals::features::nativeLLF.ResetParticleInput();
+		}
 		raster.Reset();
 		shadows.Reset();
 		acceleration.Reset();
@@ -851,13 +1289,25 @@ void DX12NativeScene::ApplyPendingLoadingReset()
 
 void DX12NativeScene::OnRuntimeDisabled()
 {
+	projectedConstantPool = {};
+	projectedConstantDevice = nullptr;
+	if (globals::features::dx12Control.UsesExclusiveMaterials())
+		globals::features::nativePBR.ReleaseProjection();
+	characterCasters.reset();
 	loadingResetPending.store(false, std::memory_order_release);
 	frameNativeModeID.store(UINT32_MAX, std::memory_order_release);
 	frameNativeMode.store(DX12::SCMNativeMode::Disabled, std::memory_order_release);
 	frameExactShadowLights.store(false, std::memory_order_relaxed);
 	movingOriginCount.store(0, std::memory_order_relaxed);
-	if (!nativeSessionStarted)
+	if (!nativeSessionStarted) {
+		if (globals::features::dx12Control.UsesExclusiveMaterials()) {
+			globals::features::nativeLLF.OnRuntimeDisabled();
+			globals::features::nativeIBL.OnRuntimeDisabled();
+			globals::features::nativeCubemaps.OnRuntimeDisabled();
+			globals::features::nativePBR.OnRuntimeDisabled();
+		}
 		return;
+	}
 	nativeSessionStarted = false;
 	shadowLightScope.store(0, std::memory_order_release);
 	shadowLights.store(nullptr, std::memory_order_release);
@@ -868,6 +1318,15 @@ void DX12NativeScene::OnRuntimeDisabled()
 		ResetFullLightInventory();
 	}
 	globals::features::upscaling.nativeComposite.ResetShadowHistory();
+	fullNativeRasterDraws = {};
+	ResetFullNativeEnvironment();
+	fullNativeDirect.reset();
+	if (globals::features::dx12Control.UsesExclusiveMaterials()) {
+		globals::features::nativeIBL.Release();
+		globals::features::nativeCubemaps.Release();
+		globals::features::nativePBR.Release();
+		globals::features::nativeLLF.ResetParticleInput();
+	}
 	raster.Reset();
 	shadows.Reset();
 	acceleration.Stop();
@@ -895,8 +1354,8 @@ bool DX12NativeScene::CasterInTlas(RE::BSGeometry& geometry) const
 	transform[3] = geometry.world.translate.x;
 	transform[7] = geometry.world.translate.y;
 	transform[11] = geometry.world.translate.z;
-	const auto [first, last] = scene->inputs->casterSources.equal_range(live.geometry);
-	for (auto it = first; it != last; ++it) {
+	const auto [first, rangeEnd] = scene->inputs->casterSources.equal_range(live.geometry);
+	for (auto it = first; it != rangeEnd; ++it) {
 		const auto& shape = scene->inputs->geometry[it->second];
 		if (DX12::SameCasterSource(shape->casterSource, live, shape->transform, transform))
 			return true;
@@ -947,6 +1406,61 @@ json DX12NativeScene::GetStatus() const
 			{ "triangles", scene->inputs->triangles } };
 	} else {
 		status["tlas"] = { { "published", false } };
+	}
+	if (globals::features::dx12Control.WantsMaterialPreparation()) {
+		const auto& draws = fullNativeRasterDraws;
+		uint32_t validProjection = 0, conflictingProjection = 0;
+		for (const auto& [ordinal, observation] : draws.projection) {
+			validProjection += observation.ValidProjection() ? 1u : 0u;
+			conflictingProjection += observation.conflicted ? 1u : 0u;
+		}
+		uint32_t selectedTextureInstances = 0, completeTextureViews = 0, conflictingTextures = 0, uniqueConstantSnapshots = 0;
+		for (const auto& [ordinal, observation] : draws.projectionTextures) {
+			const auto property = draws.projection.find(ordinal);
+			if (property == draws.projection.end() || !property->second.ValidProjection())
+				continue;
+			if (observation.conflicted) ++conflictingTextures;
+			else if (observation.observed) {
+				++selectedTextureInstances;
+				if (observation.constantSlot != UINT32_MAX && !observation.repeatedConstants) ++uniqueConstantSnapshots;
+				if (std::ranges::all_of(observation.views, [](const auto& view) { return bool(view); }))
+					++completeTextureViews;
+			}
+		}
+		const auto projectionFrame = globals::features::nativePBR.GetProjection(draws.stamp);
+		status["fullNativeProjectionInputs"] = { { "frame", draws.stamp.frame }, { "finalized", draws.finalized },
+			{ "projectedDraws", draws.projectedDraws }, { "unmatchedDraws", draws.unmatchedProjectedDraws },
+			{ "validPropertyInstances", validProjection }, { "conflictingInstances", conflictingProjection },
+			{ "selectedTextureInstances", selectedTextureInstances }, { "completeTextureViews", completeTextureViews },
+			{ "conflictingTextureInstances", conflictingTextures },
+			{ "constantSnapshots", draws.constantSnapshots }, { "uniqueConstantSnapshots", uniqueConstantSnapshots },
+			{ "constantSnapshotFailures", draws.constantSnapshotFailures },
+			{ "projectorConstantsReady", projectionFrame != nullptr },
+			{ "publishedRows", projectionFrame ? projectionFrame->rowCount : 0u },
+			{ "residentProjectedTextures", projectionFrame ? projectionFrame->textures.size() : 0u },
+			{ "missingProjectedTextures", projectionFrame ? projectionFrame->missingTextures : 0u },
+			{ "projectedTexturesReady", projectionFrame && !projectionFrame->missingTextures } };
+		status["fullNativeRasterAdmission"] = { { "frame", draws.stamp.frame }, { "scope", draws.stamp.scope },
+			{ "geometryRevision", draws.stamp.geometryRevision }, { "materialRevision", draws.stamp.materialRevision },
+			{ "draws", draws.draws }, { "candidateDraws", draws.candidates }, { "uniqueInstances", draws.uniqueInstances },
+			{ "ambiguousDraws", draws.ambiguous }, { "rejectedDraws", draws.rejected }, { "finalized", draws.finalized },
+			{ "primitiveTokens", draws.tokens.size() }, { "tokenBudgetRejected", draws.tokenBudgetRejected },
+			{ "exactPixelIdentity", false }, { "rasterReplacement", false } };
+		const auto frame = globals::game::graphicsState ? globals::game::graphicsState->GetFrameCount() : UINT32_MAX;
+		const auto characters = characterCasters ? characterCasters->Get(frame, draws.stamp.scope) : nullptr;
+		status["fullNativeCharacterCasters"] = { { "submitted", characters != nullptr },
+			{ "parts", characters ? characters->parts : 0u }, { "vertices", characters ? characters->vertices : 0u },
+			{ "triangles", characters ? characters->triangles : 0u },
+			{ "rejectedParts", characterCasters ? characterCasters->RejectedParts() : 0u },
+			{ "failure", characterCasters ? characterCasters->Failure() : "" } };
+		const auto reconstructed = globals::features::upscaling.nativeComposite.GetFullNativeReconstruction(frame);
+		const auto finalColor = globals::features::upscaling.nativeComposite.GetFullNativeFinalColor(frame);
+		status["fullNativeComposite"] = { { "reconstructed", reconstructed != nullptr },
+			{ "availableContributions", reconstructed ? reconstructed->available : 0u },
+			{ "winnerCertified", reconstructed && reconstructed->rasterWinnerCertified },
+			{ "completeLightingCoverage", reconstructed && reconstructed->completeLightingCoverage },
+			{ "finalColorPublished", finalColor != nullptr }, { "applicationEligible", finalColor && finalColor->applicationEligible },
+			{ "applicationSubmitted", finalColor && finalColor->applied } };
 	}
 	status["ownership"] = { { "granted", ownershipGranted.load(std::memory_order_relaxed) },
 		{ "coveredCasterChecks", coveredCasterChecks.load(std::memory_order_relaxed) },

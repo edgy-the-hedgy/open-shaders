@@ -1,6 +1,7 @@
 #include "DX12NativeAcceleration.h"
 
 #include "DX12GpuRetirement.h"
+#include "DX12Control.h"
 #include "Globals.h"
 #include "ShaderCache.h"
 #include "Utils/TracyZones.h"
@@ -25,6 +26,7 @@ namespace DX12Native
 		uint64_t resetSerial = 0;
 		uint64_t lastRevision = std::numeric_limits<uint64_t>::max();
 		uint32_t lastScope = 0;
+		bool includeMaterials = false;  // Session-latched profile; never changes on the worker.
 		bool scheduled = false;
 		bool closing = false;
 		bool needsAdvance = false;
@@ -60,6 +62,7 @@ namespace DX12Native
 				return false;
 			auto next = std::make_shared<State>();
 			next->taskGate = std::move(gate);
+			next->includeMaterials = globals::features::dx12Control.WantsMaterialPreparation();
 			next->device.copy_from(a_device);
 			next->context.copy_from(a_context);
 			state.store(std::move(next), std::memory_order_release);
@@ -208,7 +211,7 @@ namespace DX12Native
 			}
 			if (changed) {
 				ZoneScopedN("DX12::Acceleration::CollectInputs");
-				a_state->inputs = next ? CollectSceneInputs(std::move(next)) : nullptr;
+				a_state->inputs = next ? CollectSceneInputs(std::move(next), a_state->includeMaterials) : nullptr;
 			}
 
 			if (!a_state->acceleration && a_state->inputs) {

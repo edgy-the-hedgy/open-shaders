@@ -11,6 +11,10 @@
 #include "Features/CloudShadows.h"
 #include "Features/DX12/DX12Control.h"
 #include "Features/DX12/DX12NativeScene.h"
+#include "Features/NativeLLF/NativeLLF.h"
+#include "Features/NativeCubemaps/NativeCubemaps.h"
+#include "Features/NativeIBL/NativeIBL.h"
+#include "Features/NativePBR/NativePBRFrameProducer.h"
 #include "Features/DX12/DX12Resources.h"
 #include "Features/DetailMaps.h"
 #include "Features/DeveloperTools.h"
@@ -80,6 +84,17 @@ void Feature::MigrateConfigSettings(json& settings)
 
 void Feature::Load(json& o_json)
 {
+	// Full Native owns material authority for the session, including config reloads.
+	if (this == &globals::features::truePBR && globals::features::dx12Control.UsesExclusiveMaterials()) {
+		loaded = false;
+		return;
+	}
+	if (DX12Control::IsNativeCounterpart(this) &&
+		(!globals::features::dx12Control.IsActive() || !globals::features::dx12Control.IsFullNativeMode() || globals::game::isVR)) {
+		loaded = false;
+		return;
+	}
+
 	// AIO ships every feature's ini to every runtime; loaded must stay false
 	// here on VR unless dev mode's own test-all-features bypass is active.
 	if (globals::game::isVR && !SupportsVR() && !globals::state->IsDeveloperMode()) {
@@ -310,6 +325,10 @@ namespace
 			&globals::features::dx12Control,
 			&globals::features::dx12Resources,
 			&globals::features::dx12NativeScene,
+			&globals::features::nativeLLF,
+			&globals::features::nativeCubemaps,
+			&globals::features::nativeIBL,
+			&globals::features::nativePBR,
 			&globals::features::developerTools,
 			&globals::features::csEditor,
 			&globals::features::sceneSelector,
@@ -335,6 +354,16 @@ namespace
 		};
 		return features;
 	}
+
+	const std::vector<Feature*>& GetBaselineFeatures()
+	{
+		static const auto features = [] {
+			auto result = GetAllFeatures();
+			std::erase_if(result, [](Feature* feature) { return DX12Control::IsNativeCounterpart(feature); });
+			return result;
+		}();
+		return features;
+	}
 }
 
 /**
@@ -346,7 +375,7 @@ const std::vector<Feature*>& Feature::GetFeatureList()
 	if (globals::game::isVR) {
 		// Helper function to build VR feature list
 		static auto BuildVRList = []() -> std::vector<Feature*> {
-			auto v = GetAllFeatures();
+			auto v = GetBaselineFeatures();
 			v.push_back(&globals::features::vr);
 
 			// In developer mode, keep all features for testing
@@ -369,7 +398,7 @@ const std::vector<Feature*>& Feature::GetFeatureList()
 
 		return featuresVR;
 	} else {
-		return GetAllFeatures();
+		return globals::features::dx12Control.UsesExclusiveMaterials() ? GetAllFeatures() : GetBaselineFeatures();
 	}
 }
 

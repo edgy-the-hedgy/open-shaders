@@ -3,6 +3,7 @@
 #include "DX12ControlMode.h"
 #include "Feature.h"
 
+#include <array>
 #include <atomic>
 
 /** @brief Session-wide opt-in for DX12 Resources and future native features. */
@@ -26,6 +27,18 @@ struct DX12Control final : Feature
 	bool IsActive() const { return loaded && bootActive.load(std::memory_order_acquire); }
 	bool IsShadowOffloadMode() const { return GetMode() == DX12::ControlMode::ShadowOffload; }
 	bool IsFullRTMode() const { return GetMode() == DX12::ControlMode::FullRT; }
+	bool IsFullNativeMode() const { return GetMode() == DX12::ControlMode::FullNative; }
+	/** @brief Material capture is admitted only for an active Full Native session. */
+	bool WantsMaterialPreparation() const { return IsActive() && UsesExclusiveMaterials(); }
+	/** @brief Session authority is independent of runtime DX12 availability. */
+	DX12::FeatureBackend GetFeatureBackend() const { return featureBackend.load(std::memory_order_acquire); }
+	bool UsesExclusiveMaterials() const { return GetFeatureBackend() == DX12::FeatureBackend::FullNative; }
+	static std::array<Feature*, 4> NativeCounterparts();
+	static bool IsNativeCounterpart(const Feature* feature);
+	void InitializeFeatureBackend();
+	void InstallMaterialBackendHooks();
+	std::string_view GetShaderDefineName() override { return "NATIVE_PBR_INPUT"; }
+	bool HasShaderDefine(RE::BSShader::Type type) override { return UsesExclusiveMaterials() && type == RE::BSShader::Type::Lighting; }
 	void DrawSettings() override;
 	void RegisterUxActions() override;
 	void LoadSettings(json& input) override;
@@ -35,9 +48,12 @@ struct DX12Control final : Feature
 
 private:
 	std::atomic<bool> bootActive{ false };
+	std::atomic<DX12::FeatureBackend> featureBackend{ DX12::FeatureBackend::Baseline };
+	bool authorityCaptured = false;
 	bool bootCaptured = false;
 	DX12::ControlMode GetMode() const;
 	void DrawSimpleSettings(bool developerMode);
+	void RequestMode(DX12::ControlMode mode);
 	mutable std::atomic<int> selectedMode{ Settings{}.Mode };
 	Settings settings;
 };

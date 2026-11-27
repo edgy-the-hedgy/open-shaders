@@ -558,6 +558,8 @@ public:
 	 * @param a_prepass Whether this is a prepass rendering phase.
 	 */
 	void UpdateSharedData(bool a_inWorld, bool a_prepass);
+	/** @brief Shared material texture LOD bias for raster and native evaluation. */
+	float GetMaterialMipBias(bool temporal) const;
 	/** @brief Publishes feature constants after render-thread resource or readiness changes. */
 	void UpdateFeatureData(bool a_inWorld);
 	/**
@@ -622,7 +624,9 @@ public:
 		float4 TreeWindProbeBase;
 		float4 TreeWindProbeTop;
 		float GrassCanopyHeight;
-		float3 canopyPadding;
+		uint nativeRasterTokenBase;
+		uint nativeRasterPrimitiveCount;
+		float canopyPadding;
 
 		float4 PerDrawFeatureData[2];
 
@@ -660,6 +664,8 @@ public:
 			       TreeWindProbeTop.y == other.TreeWindProbeTop.y &&
 			       TreeWindProbeTop.z == other.TreeWindProbeTop.z &&
 			       GrassCanopyHeight == other.GrassCanopyHeight &&
+			       nativeRasterTokenBase == other.nativeRasterTokenBase &&
+			       nativeRasterPrimitiveCount == other.nativeRasterPrimitiveCount &&
 			       PerDrawFeatureData[0].x == other.PerDrawFeatureData[0].x &&
 			       PerDrawFeatureData[0].y == other.PerDrawFeatureData[0].y &&
 			       PerDrawFeatureData[0].z == other.PerDrawFeatureData[0].z &&
@@ -748,6 +754,30 @@ public:
 	static_assert(offsetof(SharedDataCB, WindFieldTransientImpulses) % 16 == 0);
 	static_assert(offsetof(SharedDataCB, WindFieldPreviousTransientImpulses) % 16 == 0);
 	static_assert(sizeof(SharedDataCB) <= D3D11_REQ_CONSTANT_BUFFER_ELEMENT_COUNT * 16);
+
+	struct AmbientSHSnapshot
+	{
+		std::array<float4, 3> coefficients{};
+		float4 directionalDirection{}, directionalColor{};
+		uint32_t engineFrame = UINT32_MAX, pluginFrame = UINT32_MAX;
+	};
+	AmbientSHSnapshot ambientSHSnapshot;
+	bool GetAmbientSH(uint32_t engineFrame, uint32_t pluginFrame, std::array<float4, 3>& result) const
+	{
+		if (ambientSHSnapshot.engineFrame != engineFrame || ambientSHSnapshot.pluginFrame != pluginFrame)
+			return false;
+		result = ambientSHSnapshot.coefficients;
+		return true;
+	}
+
+	bool GetNativeDirectionalLight(uint32_t engineFrame, uint32_t pluginFrame, float4& direction, float4& color) const
+	{
+		if (ambientSHSnapshot.engineFrame != engineFrame || ambientSHSnapshot.pluginFrame != pluginFrame)
+			return false;
+		direction = ambientSHSnapshot.directionalDirection;
+		color = ambientSHSnapshot.directionalColor;
+		return true;
+	}
 
 	std::unique_ptr<ConstantBuffer> sharedDataCB;
 	std::unique_ptr<ConstantBuffer> featureDataCB;

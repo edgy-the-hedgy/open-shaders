@@ -1,12 +1,13 @@
 #include "DX12NativeSceneInputs.h"
 #include "DX12ShapeEquivalence.h"
+#include "DX12PreparedMaterialFrame.h"
 
 #include <unordered_set>
 #include <utility>
 
 namespace DX12Native
 {
-	std::shared_ptr<const SceneInputs> CollectSceneInputs(std::shared_ptr<const DX12::Grid> a_grid)
+	std::shared_ptr<const SceneInputs> CollectSceneInputs(std::shared_ptr<const DX12::Grid> a_grid, bool a_includeMaterials)
 	{
 		auto inputs = std::make_shared<SceneInputs>();
 		inputs->residency = std::move(a_grid);
@@ -54,6 +55,8 @@ namespace DX12Native
 			appendShape(observed.shape);
 		}
 
+		if (a_includeMaterials)
+			inputs->materials = CompilePreparedMaterialFrame(*inputs);
 		return inputs;
 	}
 }

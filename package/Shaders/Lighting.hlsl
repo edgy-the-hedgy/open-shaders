@@ -52,7 +52,7 @@ float GetFurWet()
 #	undef IBL
 #endif
 
-#if defined(IBL) && !defined(DEFERRED)
+#if (defined(IBL) || defined(NATIVE_IBL_INPUT)) && !defined(DEFERRED)
 #	define CAPTURE_REFLECTION_RADIANCE
 #endif
 
@@ -584,7 +584,7 @@ struct PS_OUTPUT
 	float4 Diffuse: SV_Target0;
 	float4 MotionVectors: SV_Target1;
 	float4 NormalGlossiness: SV_Target2;
-#	if defined(IBL)
+#	if defined(CAPTURE_REFLECTION_RADIANCE)
 	float4 ReflectionRadiance: SV_Target7;
 #	endif
 #	if defined(EYE)
@@ -1297,7 +1297,11 @@ bool UseSkylightingShadowVisibility()
 #		define FUR_EARLY_DEPTH_STENCIL
 #	endif
 
-FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
+FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input,
+#	if defined(NATIVE_PBR_INPUT) && defined(DEFERRED)
+	uint nativePrimitiveID : SV_PrimitiveID,
+#	endif
+	bool frontFace : SV_IsFrontFace)
 {
 	PS_OUTPUT psout;
 	uint eyeIndex = Stereo::GetEyeIndexPS(input.Position, VPOSOffset);
@@ -4466,6 +4470,17 @@ FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFro
 
 #	if defined(CAPTURE_REFLECTION_RADIANCE)
 	psout.ReflectionRadiance = captureRadiance ? float4(radianceColor, psout.Diffuse.w) : psout.Diffuse;
+#	endif
+
+#	if defined(NATIVE_PBR_INPUT) && defined(DEFERRED)
+	// Native material input evidence; raster shading remains the fallback until ownership is proven.
+	// A blend or a nonparticipating writer can invalidate winner evidence.
+	uint nativeToken = 0;
+	if (Permutation::NativeRasterTokenBase != 0 && nativePrimitiveID < Permutation::NativeRasterPrimitiveCount &&
+		psout.Diffuse.w >= 1.0 && !(Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::AdditiveLighting)) {
+		nativeToken = Permutation::NativeRasterTokenBase + nativePrimitiveID;
+	}
+	psout.Masks2.z = nativeToken <= 65535u ? float(nativeToken) / 65535.0 : 0.0;
 #	endif
 
 #	if defined(FUR_SHELLS_DEPTH)

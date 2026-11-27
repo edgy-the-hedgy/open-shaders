@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Buffer.h"
+#include "Features/IBL/ReflectionRadianceCapture.h"
 #include "Utils/LazyShader.h"
 
 struct IBL : Feature
@@ -113,30 +114,5 @@ public:
 	ID3D11ComputeShader* GetDiffuseIBLCS();
 
 private:
-	static constexpr UINT kRadianceTarget = D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT - 1;
-	static constexpr UINT kCubeFaces = 6;
-	static constexpr UINT kAllCubeFaces = (1u << kCubeFaces) - 1u;
-
-	eastl::unique_ptr<Texture2D> reflectionRadiance;
-	std::array<winrt::com_ptr<ID3D11RenderTargetView>, kCubeFaces> radianceViews;
-	std::array<uint, 2> captureColorSpace{};
-	UINT clearedFaces = 0;
-	UINT validFaces = 0;
-	bool capturingRadiance = false;
-	bool captureFailed = false;
-	bool captureTargetBound = false;
-	ID3D11BlendState* boundRadianceBlend = nullptr;
-	std::array<winrt::com_ptr<ID3D11RenderTargetView>, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> savedTargets;
-	winrt::com_ptr<ID3D11DepthStencilView> savedDepth;
-	winrt::com_ptr<ID3D11BlendState> savedBlend;
-	std::array<float, 4> savedBlendFactor{};
-	UINT savedSampleMask = 0;
-	struct CaptureBlendState
-	{
-		winrt::com_ptr<ID3D11BlendState> source;
-		winrt::com_ptr<ID3D11BlendState> capture;
-	};
-	std::unordered_map<ID3D11BlendState*, CaptureBlendState> captureBlendStates;
-
-	void RestoreCaptureTargets();
+	IBLInput::ReflectionRadianceCapture capture;
 };

@@ -30,6 +30,8 @@ namespace DX12
 		std::shared_ptr<const CapturedMeshSlice> mesh;
 		std::array<float, 12> transform{};
 		CasterSource casterSource;
+		std::shared_ptr<const PreparedMaterialSource> material;
+		std::string materialObjectEditorId;
 	};
 
 	struct UnattachedModelPlacement
@@ -39,6 +41,7 @@ namespace DX12
 		std::string refPlugin;
 		std::string nifPath;
 		AffineTransform transform{};
+		std::string materialObjectEditorId;
 	};
 
 	struct InteriorPreparationBatch
@@ -64,6 +67,7 @@ namespace DX12
 		SubcellKey key{};
 		uint32_t size = kMinSubcellSize;
 		bool worldspace = false;
+		bool includeMaterials = false;
 		bool predictive = false;
 		bool corner = false;
 		bool consolidate = false;
@@ -104,7 +108,7 @@ namespace DX12
 	/** @brief Captures live references, terrain, lights, and unattached model descriptors on the game thread. */
 	[[nodiscard]] std::optional<ScenePrepRequest> CaptureScenePrepRequest(
 		SubcellKey a_key, uint32_t a_size, const RE::TESObjectCELL* a_cell,
-		const RE::TESWorldSpace* a_world, bool a_predictive, bool a_corner, bool a_consolidate, bool a_loading);
+		const RE::TESWorldSpace* a_world, bool a_predictive, bool a_corner, bool a_consolidate, bool a_loading, bool a_includeMaterials);
 
 	/** @brief Single bounded producer preparing immutable subcell geometry and lights off the render thread. */
 	class ScenePrepWorker

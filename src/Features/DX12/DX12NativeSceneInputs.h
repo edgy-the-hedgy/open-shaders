@@ -8,6 +8,7 @@
 
 namespace DX12Native
 {
+	struct PreparedMaterialFrame;
 	/** @brief Scene inputs retained independently of later BLAS/TLAS GPU lifetimes. */
 	struct SceneInputs
 	{
@@ -17,8 +18,9 @@ namespace DX12Native
 		uint64_t geometryRevision = 0;
 		size_t preparedShapes = 0, observedShapes = 0, duplicateShapes = 0;
 		uint64_t triangles = 0;
+		std::shared_ptr<const PreparedMaterialFrame> materials;  // Full Native only.
 	};
 
 	/** @brief Collects geometry from the active 3x3 and runtime rigid supplements. */
-	std::shared_ptr<const SceneInputs> CollectSceneInputs(std::shared_ptr<const DX12::Grid> a_grid);
+	std::shared_ptr<const SceneInputs> CollectSceneInputs(std::shared_ptr<const DX12::Grid> a_grid, bool a_includeMaterials = false);
 }

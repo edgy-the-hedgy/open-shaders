@@ -4,6 +4,11 @@
 #include "DX12NativeAcceleration.h"
 #include "DX12NativeLightWorker.h"
 #include "DX12NativeRasterCapture.h"
+#include "DX12ProjectedInputs.h"
+#include "DX12NativeCharacterCasters.h"
+#include "DX12NativeScreenProbe.h"
+#include "DX12NativeDirectLighting.h"
+#include "DX12NativeIndirectLighting.h"
 #include "DX12NativeRuntimeCapture.h"
 #include "DX12NativeShadowTrace.h"
 #include "SCMNativePolicy.h"
@@ -69,6 +74,8 @@ struct DX12NativeScene final : OverlayFeature
 	void OnDepthPrepassReady() override;
 	/** @brief Observe CPU-backed opaque rigid geometry from SCM or normal render passes. */
 	void ObserveSCMRigidCaster(RE::BSGeometry& geometry, bool requireStability = false);
+	/** @brief Snapshot engine-selected projection views after Lighting SetupGeometry; never read unmapped constants. */
+	void ObserveProjectedDrawBindings(const RE::BSRenderPass* pass);
 	/** @brief SCM hands native-owned lights' static casters to RayQuery and retains movers. */
 	bool OwnsStaticForLight(RE::BSShadowLight* light, int32_t slot) const;
 	/** @brief Frame-wide policy established before SCM scheduling. */
@@ -82,6 +89,14 @@ struct DX12NativeScene final : OverlayFeature
 
 	/** @brief Raw mode-sized shadow output, independently fenced for Native Composite. */
 	std::shared_ptr<const DX12Native::ShadowMaskFrame> GetShadowMask(uint32_t frame) const { return shadows.Get(frame); }
+	std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> GetFullNativeMaterial(uint32_t frame) const;
+
+	std::shared_ptr<const DX12Native::DirectLightingFrame> GetFullNativeDirect(uint32_t frame) const
+	{
+		return fullNativeDirect ? fullNativeDirect->Get(frame) : nullptr;
+	}
+
+	std::shared_ptr<const DX12Native::IndirectLightingFrame> GetFullNativeIndirect(uint32_t frame) const;
 
 private:
 	/** @brief Gates native scene work; never disables DX11 baseline shadows. */
@@ -91,6 +106,54 @@ private:
 	void ApplyPendingLoadingReset();
 	std::optional<GraphicsBackend> backend;
 	DX12Native::RasterCapture raster;
+	void DispatchFullNativeMaterial(bool opaqueReady = false);
+	void ObserveFullNativeRasterDraw(RE::BSGeometry& geometry);
+	void FinishFullNativeRasterDraws();
+	// D3D11-only GPU snapshots, never CPU-mapped. Reused in immediate-context
+	// submission order; not exported to DX12 until a fenced publication exists.
+	struct ProjectedConstantSlot
+	{
+		std::array<winrt::com_ptr<ID3D11Buffer>, 2> buffers;
+		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 2> views;
+		std::array<uint32_t, 2> byteWidths{};
+	};
+	static constexpr uint32_t kMaxProjectedConstantSnapshots = DX12Native::kMaxProjectedDraws;
+	std::unique_ptr<DX12Native::NativeCharacterCasters> characterCasters;
+	std::array<ProjectedConstantSlot, kMaxProjectedConstantSnapshots> projectedConstantPool;
+	winrt::com_ptr<ID3D11Device> projectedConstantDevice;
+	struct ProjectedTextureObservation
+	{
+		// Lighting.hlsl projected diffuse, normal, detail, and noise SRVs.
+		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 4> views;
+		bool observed = false, conflicted = false;
+		uint32_t descriptor = 0, samplerModes = 0;
+		uint32_t constantSlot = UINT32_MAX;
+		std::array<uint32_t, 4> constantOffsets{};
+		bool repeatedConstants = false;
+	};
+	bool CaptureProjectedConstants(ProjectedTextureObservation& observation);
+	// Render-thread-only observations, deliberately separate from SCM ownership.
+	struct FullNativeRasterDrawState
+	{
+		std::shared_ptr<const DX12Native::TopLevel> scene;
+		DX12Native::MaterialFrameContract::RasterIdentityStamp stamp{};
+		std::vector<uint8_t> seen;
+		std::vector<uint32_t> tokenBases;
+		// Sparse, frame-local observations indexed by the matched TLAS instance.
+		std::unordered_map<uint32_t, DX12Native::MaterialFrameContract::ProjectedPropertyObservation> projection;
+		std::unordered_map<uint32_t, ProjectedTextureObservation> projectionTextures;
+		uint32_t activeProjectedInstance = UINT32_MAX;
+		uint32_t constantSnapshots = 0, constantSnapshotFailures = 0;
+		uint32_t projectedDraws = 0, unmatchedProjectedDraws = 0;
+		std::vector<DX12Native::MaterialFrameContract::RasterPixelIdentity> tokens;
+		uint32_t tokenBudgetRejected = 0;
+		uint32_t draws = 0, candidates = 0, uniqueInstances = 0, ambiguous = 0, rejected = 0;
+		bool finalized = false;
+	};
+	FullNativeRasterDrawState fullNativeRasterDraws;
+	std::unique_ptr<DX12Native::DirectLightingTrace> fullNativeDirect;
+	void DispatchFullNativeIndirect();
+	void ResetFullNativeEnvironment();
 	DX12Native::RuntimeGeometryCapture geometryCapture;
 	DX12Native::AccelerationWorker acceleration;
 	DX12Native::ShadowMaskTrace shadows;

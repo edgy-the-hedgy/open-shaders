@@ -9,6 +9,7 @@
 #include "VanillaBinding.h"
 
 #include "Features/CSEditor.h"
+#include "Features/DX12/DX12Control.h"
 #include "Features/DynamicCubemaps.h"
 #include "Features/Effects11.h"
 #include "Features/IBL.h"
@@ -174,7 +175,10 @@ void Deferred::SetupResources()
 		// Masks
 		SetupRenderTarget(MASKS, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R11G11B10_FLOAT, gbufferBindFlags, "Deferred::Masks");
 		// Masks2 (vertexAO in r, material category in g; UNORM to allow blending)
-		SetupRenderTarget(MASKS2, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R16G16_UNORM, gbufferBindFlags, "Deferred::Masks2");
+		// Preserve the existing AO and category channels. The extra channel is experimental identity evidence only.
+		const auto masks2Format = globals::features::dx12Control.UsesExclusiveMaterials() ?
+			DXGI_FORMAT_R16G16B16A16_UNORM : DXGI_FORMAT_R16G16_UNORM;
+		SetupRenderTarget(MASKS2, texDesc, srvDesc, rtvDesc, uavDesc, masks2Format, gbufferBindFlags, "Deferred::Masks2");
 
 		// TAA water history buffers need RGBA16: alpha stores premultiplied coverage for ISWaterBlend
 		SetupRenderTarget(RE::RENDER_TARGETS::kWATER_1, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R16G16B16A16_FLOAT, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, "Deferred::Water1");
@@ -517,6 +521,12 @@ void Deferred::DeferredPasses()
 
 		context->CSSetShader(nullptr, nullptr, 0);
 	}
+
+	// Native Composite is the only Full Native color application owner. Apply
+	// before forward geometry and effects, after raster fallback is complete.
+	if (globals::features::dx12Control.WantsMaterialPreparation() && globals::game::graphicsState)
+		globals::features::upscaling.nativeComposite.ApplyFullNativeOpaque(
+			globals::game::graphicsState->GetFrameCount(), Util::AsReal(main.UAV));
 
 	if (dynamicCubemaps.loaded)
 		dynamicCubemaps.PostDeferred();

@@ -1,0 +1,307 @@
+#include "NativeSurface.hlsli"
+#include "NativeFuzz.hlsli"
+#include "NativeIndirectBRDF.hlsli"
+#include "NativeEnvironmentColor.hlsli"
+
+ByteAddressBuffer Materials : register(t0);
+Texture2D<float> RasterDepth : register(t1);
+ByteAddressBuffer EnvironmentSH : register(t2);
+ByteAddressBuffer SkySH : register(t3);
+TextureCube<float4> Environment : register(t4);
+TextureCube<float4> Reflections : register(t5);
+RaytracingAccelerationStructure Scene : register(t6);
+#define NATIVE_GEOMETRY_REGISTER t7
+#define NATIVE_RECORD_REGISTER t8
+#define NATIVE_BINDING_REGISTER t9
+#define NATIVE_TEXTURE_REGISTER t10
+#include "NativeMaterialAlpha.hlsli"
+ByteAddressBuffer MaterialLobes : register(t522);
+RaytracingAccelerationStructure CharacterScene : register(t523);
+RWByteAddressBuffer Lighting : register(u0);
+
+cbuffer IndirectInputs : register(b0)
+{
+    row_major float4x4 InverseProjection;
+    row_major float4x4 InverseView;
+    uint2 Size;
+    uint MaterialPitch;
+    uint LightingPitch;
+    uint EnabledContributions;
+    uint AvailableContributions;
+    uint EnvironmentMipCount;
+    uint ReflectionMipCount;
+    float EnvironmentScale;
+    float SkyScale;
+    uint Interior;
+    uint ColorEncoding;
+    float4 DALC[3];
+    float EnvironmentSaturation;
+    float SkySaturation;
+    float DALCAmount;
+    float AmbientMultiplier;
+    float ConversionSaturation;
+    float UtilitySaturation;
+    float UtilityGammaOffset;
+    uint DALCMode;
+    uint IBLEnabled;
+    uint DALCValid;
+    uint2 Padding;
+    float MinDiffuseSkyVisibility;
+    float MinSpecularSkyVisibility;
+    float SkyMinZ;
+    uint TraceSkyVisibility;
+    float4 PositionAdjust;
+    uint InstanceCount;
+    uint CharacterCastersEnabled;
+    uint2 Padding2;
+};
+
+float Luminance(float3 c) { return dot(c, float3(0.2125, 0.7154, 0.0721)); }
+float3 SaturateColor(float3 c, float amount) { return max(0.0, lerp(Luminance(c).xxx, c, amount)); }
+
+float3 EngineAmbient(float3 direction, float amount)
+{
+    float3 c = max(0.0, float3(dot(DALC[0], SphericalHarmonics::Evaluate(direction)),
+        dot(DALC[1], SphericalHarmonics::Evaluate(direction)),
+        dot(DALC[2], SphericalHarmonics::Evaluate(direction))));
+    float gamma = ColorEncoding == 0u ? 1.0 : 2.2;
+    if (ColorEncoding != 0u)
+    {
+        c = lerp(c / 12.92, pow((c + 0.055) / 1.055, 2.4), step(0.04045, c));
+        c = SaturateColor(c, min(ConversionSaturation, 1.0));
+    }
+    c = pow(c, clamp(gamma + UtilityGammaOffset, 0.1, 3.0) / gamma);
+    c = SaturateColor(c, UtilitySaturation) * AmbientMultiplier * amount;
+    return ColorEncoding == 0u ? pow(max(c, 0.0), 1.6) : c;
+}
+
+float3 BaseIrradiance(float3 direction)
+{
+    return NativeIndirect::EvaluateIrradiance(asfloat(EnvironmentSH.Load4(0u)),
+        asfloat(EnvironmentSH.Load4(16u)), asfloat(EnvironmentSH.Load4(32u)), direction);
+}
+
+float3 EnvironmentIrradiance(float3 direction)
+{
+    if (IBLEnabled == 0u) return EngineAmbient(direction, 1.0);
+    if (DALCMode >= 2u) return EngineAmbient(direction, DALCAmount);
+    float3 result = SaturateColor(BaseIrradiance(direction), EnvironmentSaturation);
+    if (DALCAmount != 0.0)
+    {
+        float3 reference = SaturateColor(BaseIrradiance(0.0), EnvironmentSaturation);
+        float3 target = EngineAmbient(0.0, 1.0);
+        float3 ratio = DALCMode == 0u ? (Luminance(target) / max(0.001, Luminance(reference))).xxx :
+            target / max(0.001, reference);
+        result *= lerp(1.0, ratio, saturate(DALCAmount));
+    }
+    return result * EnvironmentScale;
+}
+
+float4 UnpackHalf4(uint2 value)
+{
+    return f16tof32(uint4(value.x & 65535u, value.x >> 16, value.y & 65535u, value.y >> 16));
+}
+
+bool ViewDirection(uint2 pixel, out float3 view, out float3 world)
+{
+    view = 0.0; world = 0.0;
+    float depth = RasterDepth.Load(int3(pixel, 0));
+    if (!isfinite(depth) || depth <= 0.0 || depth >= 1.0) return false;
+    float2 clip = 2.0 * (float2(pixel) + 0.5) / float2(Size) - 1.0;
+    clip.y = -clip.y;
+    float4 p = mul(InverseProjection, float4(clip, depth, 1.0));
+    if (!all(isfinite(p)) || abs(p.w) < 1e-8) return false;
+    float3 delta = mul((float3x3)InverseView, -p.xyz / p.w);
+    float lengthSquared = dot(delta, delta);
+    if (!all(isfinite(delta)) || !isfinite(lengthSquared) || lengthSquared < 1e-8) return false;
+    view = delta * rsqrt(lengthSquared);
+    float4 absolute = mul(InverseView, float4(p.xyz / p.w, 1.0));
+    if (!all(isfinite(absolute)) || abs(absolute.w) < 1e-8) return false;
+    world = absolute.xyz / absolute.w + PositionAdjust.xyz;
+    return all(isfinite(world));
+}
+
+// Sky visibility only: trace the configured upper sky cap, not a generic
+// ambient-occlusion radius or a GI bounce. The resident TLAS bounds coverage.
+bool CharacterVisible(RayDesc ray)
+{
+    if (CharacterCastersEnabled == 0u) return true;
+    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
+    query.TraceRayInline(CharacterScene, RAY_FLAG_NONE, 0xff, ray);
+    while (query.Proceed()) {}
+    return query.CommittedStatus() == COMMITTED_NOTHING;
+}
+
+bool SkyVisible(float3 world, float3 n, float3 d)
+{
+    const float bias = 0.5;
+    RayDesc ray;
+    ray.Origin = world + n * bias + d * bias;
+    ray.Direction = d;
+    ray.TMin = bias;
+    ray.TMax = 3.402823e38;
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
+    query.TraceRayInline(Scene, RAY_FLAG_NONE, 0xff, ray);
+    while (query.Proceed()) {
+        if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
+            AcceptAlpha(query.CandidateInstanceID(), query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(), InstanceCount))
+            query.CommitNonOpaqueTriangleHit();
+    }
+    return query.CommittedStatus() == COMMITTED_NOTHING && CharacterVisible(ray);
+}
+
+float SkyCapVisibility(float3 world, float3 n, float3 lobeDirection, float exponent, float floorVisibility)
+{
+    if (TraceSkyVisibility == 0u || Interior != 0u) return 1.0;
+    // Fixed low-discrepancy cap samples: deterministic until motion-aware
+    // reconstruction is available. Weight by the requested lighting lobe.
+    const uint sampleCount = 8u;
+    float total = 0.0, visible = 0.0;
+    [loop] for (uint i = 0u; i < sampleCount; ++i) {
+        float z = lerp(saturate(SkyMinZ), 1.0, (float(i) + 0.5) / float(sampleCount));
+        float phi = float(i) * 2.39996323;
+        float r = sqrt(max(0.0, 1.0 - z*z));
+        float3 d = float3(r*cos(phi), r*sin(phi), z);
+        float weight = pow(saturate(dot(lobeDirection,d)), exponent);
+        if (weight > 1e-6 && dot(n,d) > 0.0) {
+            total += weight;
+            visible += SkyVisible(world,n,d) ? weight : 0.0;
+        }
+    }
+    // A lobe with no sampled support is not evidence of occlusion.
+    return lerp(saturate(floorVisibility), 1.0, total > 1e-6 ? saturate(visible / total) : 1.0);
+}
+
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id.xy >= Size)) return;
+    uint offset = id.y * MaterialPitch + id.x * NativeSurfaceStride;
+    uint outputOffset = id.y * LightingPitch + id.x * NativeLightingStride;
+    Lighting.Store4(outputOffset, uint4(0, 0, 0, 0));
+    Lighting.Store2(outputOffset+16u,uint2(0,0));
+    float4 base = UnpackHalf4(Materials.Load2(offset));
+    float4 normal = UnpackHalf4(Materials.Load2(offset + 8u));
+    float4 f0 = UnpackHalf4(Materials.Load2(offset + 16u));
+    float4 emissionAO = UnpackHalf4(Materials.Load2(offset + 24u));
+    NativeCoatSample coat=ReadNativeCoat(MaterialLobes,offset);
+    if (!HasEvaluatedNativeBase(base.a) || !all(isfinite(base)) || !all(isfinite(normal)) ||
+        !all(isfinite(f0)) || !all(isfinite(emissionAO)) || dot(normal.xyz, normal.xyz) < 1e-8) return;
+    float3 view, world;
+    if (!ViewDirection(id.xy, view, world)) return;
+    float3 n = normalize(normal.xyz);
+    float3 baseView=NativeBaseDirection(view,coat);
+    float roughness = clamp(normal.w, 0.045, 1.0);
+    NativeIndirect::LobeWeights lobes = NativeIndirect::EvaluateLobes(base.rgb, f0.rgb, f0.a,
+        roughness, emissionAO.a, saturate(dot(n, baseView)));
+    PBR::FuzzLayer fuzz=ResolveNativeFuzz(coat,roughness,n,view,false);
+    float3 transmissionWeight=0.0, backTransmissionWeight=0.0;
+    if (HasNativeThinSurface(coat)) {
+        float3 reflected,front,back;
+        float3 albedo=max(base.rgb,0.0)*(1.0-saturate(f0.a));
+        NativeThinAlbedos(albedo,coat,reflected,front,back);
+        float2 env=BRDF::EnvBRDF(roughness,saturate(abs(dot(n,view))));
+        float weight=saturate(coat.f0Colored.x);
+        float3 fresnel=saturate(f0.rgb*env.x+env.y)*weight;
+        float3 throughput=saturate(MultiBounceAO(saturate(albedo),saturate(emissionAO.a)))*(1.0-fresnel);
+        lobes.diffuse=reflected*throughput;
+        lobes.specular*=weight;
+        transmissionWeight=front*throughput;
+        backTransmissionWeight=back*throughput;
+    }
+    if (!HasNativeThinSurface(coat) && HasNativeSubsurface(coat)) {
+        float2 env=BRDF::EnvBRDF(roughness,saturate(dot(n,view)));
+        float3 reflected=saturate(f0.rgb*env.x+env.y);
+        transmissionWeight=coat.subsurface.rgb*(1.0-saturate(coat.subsurface.w))*BRDF::Diffuse_Lambert()*(1.0-reflected);
+    }
+    lobes.diffuse=lobes.diffuse*(1.0-fuzz.weightedAlbedo)+fuzz.weightedAlbedo*fuzz.color*saturate(emissionAO.a);
+    lobes.specular*=fuzz.specularThroughput;
+    transmissionWeight*=1.0-fuzz.weightedAlbedo;
+    backTransmissionWeight*=1.0-fuzz.weightedAlbedo;
+    bool hasCoat = HasNativeCoat(coat);
+    float3 cn = hasCoat ? normalize(coat.normalRoughness.xyz) : n;
+    float3 coatSpecularWeight = 0.0;
+    float3 coatDiffuseWeight = 0.0;
+    if (hasCoat) {
+        float2 coatBRDF = BRDF::EnvBRDF(coat.normalRoughness.w,saturate(abs(dot(cn,view))));
+        float3 reflected = saturate(coat.f0Colored.rgb*coatBRDF.x+coatBRDF.y);
+        float strength=saturate(coat.colorStrength.w);
+        lobes.diffuse *= 1.0-reflected*strength;
+        lobes.specular *= 1.0-reflected*strength;
+        coatSpecularWeight=reflected*strength;
+        if (coat.f0Colored.w != 0.0) coatDiffuseWeight=coat.colorStrength.rgb*(1.0-reflected)*strength;
+    }
+    uint active = EnabledContributions & AvailableContributions;
+    if ((active & ContributionIndirectDiffuse) != 0u)
+    {
+        float3 radiance = EnvironmentIrradiance(n);
+        float skyVisibility = SkyCapVisibility(world,n,n,1.0,MinDiffuseSkyVisibility);
+        if (IBLEnabled != 0u && Interior == 0u) {
+            if (DALCMode == 3u) radiance *= skyVisibility;
+            radiance += SaturateColor(NativeIndirect::EvaluateIrradiance(asfloat(SkySH.Load4(0u)),
+                asfloat(SkySH.Load4(16u)), asfloat(SkySH.Load4(32u)), n), SkySaturation) * SkyScale * skyVisibility;
+        } else if (IBLEnabled == 0u && Interior == 0u) {
+            radiance *= skyVisibility;
+        }
+        float3 diffuseRadiance = radiance * (lobes.diffuse + coatDiffuseWeight);
+        Lighting.Store2(outputOffset, PackOpaqueRadiance(diffuseRadiance, ContributionIndirectDiffuse));
+        if ((active & ContributionTransmission) != 0u) {
+            float3 backRadiance=0.0;
+            if (HasNativeThinSurface(coat) && any(backTransmissionWeight>0.0)) {
+                backRadiance=EnvironmentIrradiance(-n);
+                float backVisibility=SkyCapVisibility(world,-n,-n,1.0,MinDiffuseSkyVisibility);
+                if (IBLEnabled!=0u && Interior==0u) {
+                    if (DALCMode==3u) backRadiance*=backVisibility;
+                    backRadiance+=SaturateColor(NativeIndirect::EvaluateIrradiance(asfloat(SkySH.Load4(0u)),asfloat(SkySH.Load4(16u)),asfloat(SkySH.Load4(32u)),-n),SkySaturation)*SkyScale*backVisibility;
+                } else if (Interior==0u) backRadiance*=backVisibility;
+            }
+            Lighting.Store2(outputOffset+16u,PackOpaqueRadiance(radiance*transmissionWeight+backRadiance*backTransmissionWeight,base.a==SurfaceEvaluatedBase ? ContributionTransmission : 0u));
+        }
+    }
+    if ((active & ContributionIndirectSpecular) != 0u && EnvironmentMipCount != 0u &&
+        (Interior != 0u || ReflectionMipCount != 0u))
+    {
+        float3 r = reflect(-baseView, n);
+        float level = roughness * float(EnvironmentMipCount - 1u);
+        float3 env = DecodeEnvironmentRadiance(Environment.SampleLevel(ClampClamp, r, level).rgb, ColorEncoding);
+        float target = Luminance(EnvironmentIrradiance(-r));
+        float normalization = Luminance(DecodeEnvironmentRadiance(Environment.SampleLevel(ClampClamp, r, float(EnvironmentMipCount - 1u)).rgb, ColorEncoding));
+        float3 radiance = env * target / max(0.001, normalization);
+        if (Interior == 0u)
+        {
+            float3 full = DecodeEnvironmentRadiance(Reflections.SampleLevel(ClampClamp, r, roughness * float(ReflectionMipCount - 1u)).rgb, ColorEncoding);
+            if (IBLEnabled != 0u) {
+                float skyVisibility = SkyCapVisibility(world,n,r,clamp(2.0/(roughness*roughness)-2.0,1.0,128.0),MinSpecularSkyVisibility);
+                if (DALCMode == 3u) radiance *= SkyCapVisibility(world,n,float3(0,0,1),1.0,MinSpecularSkyVisibility);
+                radiance += max(0.0, full - env) * SkyScale * skyVisibility;
+            }
+            else
+            {
+                float reference = Luminance(DecodeEnvironmentRadiance(Reflections.SampleLevel(ClampClamp, r, float(ReflectionMipCount - 1u)).rgb, ColorEncoding));
+                radiance = full * target / max(0.001, reference);
+            }
+        }
+        float3 specularRadiance = radiance * lobes.specular;
+        if (hasCoat) {
+            float3 cr = reflect(-view,cn);
+            float crLevel = coat.normalRoughness.w * float(EnvironmentMipCount-1u);
+            float3 crEnv=DecodeEnvironmentRadiance(Environment.SampleLevel(ClampClamp,cr,crLevel).rgb,ColorEncoding);
+            float crTarget=Luminance(EnvironmentIrradiance(-cr));
+            float crNorm=Luminance(DecodeEnvironmentRadiance(Environment.SampleLevel(ClampClamp,cr,float(EnvironmentMipCount-1u)).rgb,ColorEncoding));
+            float3 crRadiance=crEnv*crTarget/max(0.001,crNorm);
+            if (Interior==0u) {
+                float3 crFull=DecodeEnvironmentRadiance(Reflections.SampleLevel(ClampClamp,cr,coat.normalRoughness.w*float(ReflectionMipCount-1u)).rgb,ColorEncoding);
+                if (IBLEnabled!=0u) {
+                    float visibility=SkyCapVisibility(world,cn,cr,clamp(2.0/(coat.normalRoughness.w*coat.normalRoughness.w)-2.0,1.0,128.0),MinSpecularSkyVisibility);
+                    if (DALCMode==3u) crRadiance*=SkyCapVisibility(world,cn,float3(0,0,1),1.0,MinSpecularSkyVisibility);
+                    crRadiance+=max(0.0,crFull-crEnv)*SkyScale*visibility;
+                } else {
+                    float crRef=Luminance(DecodeEnvironmentRadiance(Reflections.SampleLevel(ClampClamp,cr,float(ReflectionMipCount-1u)).rgb,ColorEncoding));
+                    crRadiance=crFull*crTarget/max(0.001,crRef);
+                }
+            }
+            specularRadiance += crRadiance*coatSpecularWeight;
+        }
+        Lighting.Store2(outputOffset + 8u, PackOpaqueRadiance(specularRadiance, ContributionIndirectSpecular));
+    }
+}

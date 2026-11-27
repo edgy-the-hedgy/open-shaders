@@ -1,4 +1,5 @@
 #include "State.h"
+#include "Features/DX12/DX12Control.h"
 #include <algorithm>
 
 #include <codecvt>
@@ -506,7 +507,8 @@ void State::Reset()
 
 void State::Setup()
 {
-	globals::features::truePBR.SetupResources();
+	if (!globals::features::dx12Control.UsesExclusiveMaterials())
+		globals::features::truePBR.SetupResources();
 	SetupResources();
 	globals::hiZPyramid->SetupResources();
 
@@ -2476,6 +2478,23 @@ void State::SetAdapterDescription(const std::wstring& description)
 	adapterDescription = converter.to_bytes(description);
 }
 
+float State::GetMaterialMipBias(bool temporal) const
+{
+	auto& upscaling = globals::features::upscaling;
+	if (!upscaling.loaded || !temporal)
+		return 0.0f;
+	const auto method = upscaling.GetUpscaleMethod();
+	if (method == Upscaling::UpscaleMethod::kTAA)
+		return 0.0f;
+	const auto& perfMode = upscaling.perfMode;
+	// PerfMode forces the DRS ratio to identity while rendering sub-native.
+	const float ratio = perfMode.IsHookActive() ?
+		static_cast<float>(perfMode.GetRenderEyeWidth()) / static_cast<float>(perfMode.GetDisplayEyeWidth()) :
+		Util::ConvertToDynamic(screenSize, true).x / screenSize.x;
+	const float bias = std::log2f(ratio);
+	return method == Upscaling::UpscaleMethod::kDLSS ? bias - 1.0f : bias;
+}
+
 void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] bool a_prepass)
 {
 	{
@@ -2570,28 +2589,7 @@ void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] b
 
 		auto& upscaling = globals::features::upscaling;
 
-		if (upscaling.loaded) {
-			auto upscaleMethod = upscaling.GetUpscaleMethod();
-			if (temporal && upscaleMethod != Upscaling::UpscaleMethod::kTAA) {
-				const auto& perfMode = upscaling.perfMode;
-				if (perfMode.IsHookActive()) {
-					// PerfMode forces the DRS ratio to identity while rendering
-					// sub-native, so bias off the latched eye dims instead.
-					data.MipBias = std::log2f(
-						static_cast<float>(perfMode.GetRenderEyeWidth()) /
-						static_cast<float>(perfMode.GetDisplayEyeWidth()));
-				} else {
-					auto renderSize = Util::ConvertToDynamic(screenSize, true);
-					data.MipBias = std::log2f(renderSize.x / screenSize.x);
-				}
-				if (upscaleMethod == Upscaling::UpscaleMethod::kDLSS)
-					data.MipBias -= 1.0f;
-			} else {
-				data.MipBias = 0;
-			}
-		} else {
-			data.MipBias = 0;
-		}
+		data.MipBias = GetMaterialMipBias(temporal);
 
 		if (auto sky = globals::game::sky) {
 			// Process sun
@@ -2635,6 +2633,11 @@ void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] b
 		data.AmbientSHR = float4{ dalcSH.r.c0, dalcSH.r.c1[0], dalcSH.r.c1[1], dalcSH.r.c1[2] };
 		data.AmbientSHG = float4{ dalcSH.g.c0, dalcSH.g.c1[0], dalcSH.g.c1[1], dalcSH.g.c1[2] };
 		data.AmbientSHB = float4{ dalcSH.b.c0, dalcSH.b.c1[0], dalcSH.b.c1[1], dalcSH.b.c1[2] };
+		if (globals::features::dx12Control.WantsMaterialPreparation() && a_inWorld && globals::game::graphicsState &&
+			!(permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(ExtraShaderDescriptors::IsReflections))) {
+			ambientSHSnapshot = { { data.AmbientSHR, data.AmbientSHG, data.AmbientSHB }, data.DirLightDirection, data.DirLightColor,
+				globals::game::graphicsState->GetFrameCount(), frameCount };
+		}
 
 		data.HDRData = globals::features::hdrDisplay.GetSharedDataHDR();
 		data.RefractionScale = refractionScale;

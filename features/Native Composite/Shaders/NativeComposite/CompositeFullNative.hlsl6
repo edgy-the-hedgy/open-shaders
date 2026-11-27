@@ -1,0 +1,44 @@
+#include "NativeSurface.hlsli"
+
+ByteAddressBuffer Materials : register(t0);
+ByteAddressBuffer Reconstructed : register(t1);
+ByteAddressBuffer Ownership : register(t2);
+RWTexture2D<float4> FinalColor : register(u0);
+cbuffer FinalConstants : register(b0)
+{
+    uint2 Size;
+    uint MaterialPitch;
+    uint LightingPitch;
+    uint ApplicationEligible;
+};
+
+float4 UnpackHalf4(uint2 p)
+{
+    return f16tof32(uint4(p.x & 65535u, p.x >> 16, p.y & 65535u, p.y >> 16));
+}
+
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id.xy >= Size)) return;
+    FinalColor[id.xy] = 0.0;
+    uint pixel = id.y * Size.x + id.x;
+    uint ownership = Ownership.Load(pixel * 4u);
+    if ((ownership & RasterIdentityCandidate) == 0u) return;
+    uint surface = id.y * MaterialPitch + id.x * NativeSurfaceStride;
+    float4 base = UnpackHalf4(Materials.Load2(surface));
+    float4 emissionAO = UnpackHalf4(Materials.Load2(surface + 24u));
+    if (base.a != SurfaceEvaluatedBase || !all(isfinite(emissionAO))) return;
+    uint signal = id.y * LightingPitch + id.x * NativeLightingStride;
+    float4 diffuse = UnpackHalf4(Reconstructed.Load2(signal));
+    float4 specular = UnpackHalf4(Reconstructed.Load2(signal + 8u));
+    float4 transmission=UnpackHalf4(Reconstructed.Load2(signal+16u));
+    if (!all(isfinite(diffuse)) || !all(isfinite(specular)) || !all(isfinite(transmission))) return;
+    float3 radiance = diffuse.rgb + specular.rgb + transmission.rgb + max(emissionAO.rgb, 0.0);
+    if (!all(isfinite(radiance)) || any(abs(radiance) > 65504.0)) return;
+    // Partial radiance is useful for diagnostics but cannot replace raster.
+    // The owner bit requires complete contributions including independently
+    // admitted material emission and independently reconstructed transmission.
+    // Remaining opaque lighting still needs its own complete producer.
+    FinalColor[id.xy] = float4(radiance, ApplicationEligible != 0u && HasNativeOpaqueOwnership(ownership) ? 1.0 : 0.0);
+}

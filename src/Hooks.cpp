@@ -23,10 +23,12 @@
 #include "VanillaBinding.h"
 
 #include "Features/CSUtility.h"
+#include "Features/DX12/DX12NativeScene.h"
 #include "Features/Effects11.h"
 #include "Features/HDRDisplay.h"
 #include "Features/InteriorSun.h"
 #include "Features/LightLimitFix.h"
+#include "Features/NativeLLF/NativeLLF.h"
 #include "Features/PostProcessing.h"
 #include "Features/ProceduralAurora.h"
 #include "Features/RainRefraction.h"
@@ -284,6 +286,7 @@ namespace LightingExtensions
 			globals::state->UpdateLightingShaderPermutation(pass);
 			func(shader, pass, renderFlags);
 			globals::deferred->BindForwardHairMasks();
+			globals::features::dx12NativeScene.ObserveProjectedDrawBindings(pass);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -1343,6 +1346,10 @@ namespace Hooks
 		__try
 #endif
 		{
+			// Independent native observation at the existing hook. Raster culling
+			// and fallback lighting retain their baseline behavior.
+			if (globals::features::nativeLLF.loaded)
+				globals::features::nativeLLF.ObserveParticlePass(a_pass);
 			return globals::features::lightLimitFix.loaded &&
 			       !globals::features::lightLimitFix.CheckParticleLights(a_pass, a_technique);
 		}

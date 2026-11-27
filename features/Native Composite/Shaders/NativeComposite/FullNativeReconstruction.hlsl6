@@ -1,0 +1,211 @@
+#include "NativeSurface.hlsli"
+
+ByteAddressBuffer Materials : register(t0);
+ByteAddressBuffer Direct : register(t1);
+ByteAddressBuffer Indirect : register(t2);
+Texture2D<float> Depth : register(t3);
+ByteAddressBuffer History : register(t4);
+ByteAddressBuffer HistoryMaterials : register(t5);
+Texture2D<float> HistoryDepth : register(t6);
+ByteAddressBuffer RayIdentity : register(t7);
+ByteAddressBuffer HistoryRayIdentity : register(t8);
+Texture2D<float4> RasterTokens : register(t9);
+ByteAddressBuffer RasterTokenTable : register(t10);
+RWByteAddressBuffer OwnershipMask : register(u1);
+RWByteAddressBuffer Reconstructed : register(u0);
+cbuffer ReconstructionConstants : register(b0)
+{
+    uint2 Size;
+    uint MaterialPitch;
+    uint DirectPitch;
+    uint IndirectPitch;
+    uint Available;
+    uint HistoryMaterialPitch;
+    uint HasHistory;
+    uint RayIdentityPitch;
+    uint HistoryRayIdentityPitch;
+    uint RasterTokenCount;
+    uint RasterWinnerCertified;
+    uint CompleteLightingCoverage;
+    uint DirectAvailable;
+    uint IndirectAvailable;
+};
+
+bool ValidRayIdentity(uint2 identity)
+{
+    return all(identity != 0xffffffffu);
+}
+
+uint2 ReadRayIdentity(uint2 p)
+{
+    return RayIdentity.Load2(p.y * RayIdentityPitch + p.x * 8u);
+}
+
+float4 Unpack(uint2 v)
+{
+    return f16tof32(uint4(v.x & 65535u, v.x >> 16, v.y & 65535u, v.y >> 16));
+}
+
+float4 ReadMaterial(uint2 p, uint offset)
+{
+    return Unpack(Materials.Load2(p.y * MaterialPitch + p.x * NativeSurfaceStride + offset));
+}
+
+static const uint DirectTransmissionSignal = 256u;
+static const uint IndirectTransmissionSignal = 512u;
+float4 ReadSignal(uint2 p, uint contribution)
+{
+    if (contribution == DirectTransmissionSignal)
+        return (DirectAvailable & ContributionTransmission) != 0u ? Unpack(Direct.Load2(p.y*DirectPitch+p.x*NativeLightingStride+16u)) : 0.0;
+    if (contribution == IndirectTransmissionSignal)
+        return (IndirectAvailable & ContributionTransmission) != 0u ? Unpack(Indirect.Load2(p.y*IndirectPitch+p.x*NativeLightingStride+16u)) : 0.0;
+    const bool specular = contribution == ContributionDirectSpecular || contribution == ContributionIndirectSpecular;
+    const uint offset = specular ? 8u : 0u;
+    if ((Available & contribution) == 0u) return 0.0;
+    if (contribution == ContributionDirectDiffuse || contribution == ContributionDirectSpecular)
+        return Unpack(Direct.Load2(p.y * DirectPitch + p.x * NativeLightingStride + offset));
+    return Unpack(Indirect.Load2(p.y * IndirectPitch + p.x * NativeLightingStride + offset));
+}
+
+bool ValidSignal(float4 value, uint contribution)
+{
+    if (!all(isfinite(value)) || value.a <= 0.0) return false;
+    // Direct uses a positive diagnostic count; indirect uses explicit contribution bits.
+    if (contribution == ContributionDirectDiffuse || contribution == ContributionDirectSpecular) return true;
+    if (contribution == DirectTransmissionSignal || contribution == IndirectTransmissionSignal)
+        contribution = ContributionTransmission;
+    return value.a <= 255.0 && value.a == floor(value.a) && (uint(value.a) & contribution) != 0u;
+}
+
+float3 FilterSignal(uint2 pixel, uint contribution, float4 centerBase, float4 centerNormal, float centerDepth, out bool valid)
+{
+    float4 center = ReadSignal(pixel, contribution);
+    valid = ValidSignal(center, contribution);
+    if (!valid) return 0.0;
+    // Feature-limited surfaces do not publish eligible identity. Preserve
+    // their raw diagnostic contribution rather than filtering across receivers.
+    uint2 centerIdentity = ReadRayIdentity(pixel);
+    if (!ValidRayIdentity(centerIdentity)) return center.rgb;
+    float3 sum = center.rgb;
+    float weightSum = 1.0;
+    [unroll] for (int y = -1; y <= 1; ++y) {
+        [unroll] for (int x = -1; x <= 1; ++x) {
+            if (x == 0 && y == 0) continue;
+            int2 q = int2(pixel) + int2(x, y);
+            if (any(q < 0) || any(q >= int2(Size))) continue;
+            uint2 neighborIdentity = ReadRayIdentity(uint2(q));
+            if (!ValidRayIdentity(neighborIdentity) || neighborIdentity.x != centerIdentity.x) continue;
+            float4 base = ReadMaterial(uint2(q), 0u);
+            float4 normal = ReadMaterial(uint2(q), 8u);
+            float depth = Depth.Load(int3(q, 0));
+            if (base.a != centerBase.a || !all(isfinite(base)) || !all(isfinite(normal)) ||
+                !isfinite(depth) || abs(depth - centerDepth) > 0.001 ||
+                dot(normal.xyz, centerNormal.xyz) < 0.95 || abs(normal.w - centerNormal.w) > 0.1 ||
+                any(abs(base.rgb - centerBase.rgb) > 0.15)) continue;
+            float4 sample = ReadSignal(uint2(q), contribution);
+            if (!ValidSignal(sample, contribution)) continue;
+            float weight = (x == 0 || y == 0) ? 0.5 : 0.25;
+            sum += weight * sample.rgb;
+            weightSum += weight;
+        }
+    }
+    return sum / weightSum;
+}
+
+// No motion-vector reprojection yet: history is admitted only for bit-identical
+// camera matrices on the CPU, then rejected per pixel on surface/validity changes.
+bool HistorySurfaceMatches(uint2 p, float4 base, float4 normal, float depth)
+{
+    if (HasHistory == 0u) return false;
+    uint2 currentIdentity = ReadRayIdentity(p);
+    uint2 previousIdentity = HistoryRayIdentity.Load2(p.y * HistoryRayIdentityPitch + p.x * 8u);
+    if (!ValidRayIdentity(currentIdentity) || !ValidRayIdentity(previousIdentity) || any(currentIdentity != previousIdentity)) return false;
+    uint offset = p.y * HistoryMaterialPitch + p.x * NativeSurfaceStride;
+    float4 oldBase = Unpack(HistoryMaterials.Load2(offset));
+    float4 oldNormal = Unpack(HistoryMaterials.Load2(offset + 8u));
+    float oldDepth = HistoryDepth.Load(int3(p, 0));
+    return oldBase.a == base.a && all(isfinite(oldBase)) && all(isfinite(oldNormal)) &&
+        isfinite(oldDepth) && abs(depth - oldDepth) <= 0.00001 &&
+        dot(normal.xyz, oldNormal.xyz) >= 0.995 && abs(normal.w - oldNormal.w) <= 0.02 &&
+        all(abs(base.rgb - oldBase.rgb) <= 0.02);
+}
+
+float3 AccumulateStationary(float3 current, uint valid, uint offset)
+{
+    if (valid == 0u) return current;
+    float4 previous = Unpack(History.Load2(offset));
+    if (!all(isfinite(previous)) || previous.a != float(valid)) return current;
+    // Limit reuse on lighting changes rather than carrying stale highlights.
+    float3 bound = max(abs(current) * 0.25, 0.002);
+    if (any(abs(previous.rgb - current) > bound)) return current;
+    return lerp(current, previous.rgb, 0.5);
+}
+
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id.xy >= Size)) return;
+    const uint offset = (id.y * Size.x + id.x) * NativeLightingStride;
+    Reconstructed.Store4(offset, uint4(0, 0, 0, 0));
+    Reconstructed.Store2(offset+16u,uint2(0,0));
+    const uint ownershipOffset = (id.y * Size.x + id.x) * 4u;
+    uint ownership = 0u;
+    OwnershipMask.Store(ownershipOffset, 0u);
+    if (RasterTokenCount != 0u) {
+        uint token = uint(round(saturate(RasterTokens.Load(int3(id.xy, 0)).b) * 65535.0));
+        if (token > 0u && token <= RasterTokenCount) {
+            uint2 raster = RasterTokenTable.Load2((token - 1u) * 8u);
+            uint2 hit = ReadRayIdentity(id.xy);
+            if (ValidRayIdentity(hit) && all(raster == hit)) {
+                ownership |= RasterIdentityCandidate;
+                if (RasterWinnerCertified != 0u) ownership |= ExactRasterWinner;
+            }
+        }
+    }
+    OwnershipMask.Store(ownershipOffset, ownership);
+    const float4 base = ReadMaterial(id.xy, 0u);
+    const float4 normal = ReadMaterial(id.xy, 8u);
+    const float depth = Depth.Load(int3(id.xy, 0));
+    if (!HasEvaluatedNativeBase(base.a) || !all(isfinite(base)) || !all(isfinite(normal)) ||
+        !isfinite(depth) || depth <= 0.0 || depth >= 1.0 || dot(normal.xyz, normal.xyz) < 1e-8) return;
+    bool dd, ds, idiff, ispec, dt, it;
+    float3 directDiffuse = FilterSignal(id.xy, ContributionDirectDiffuse, base, normal, depth, dd);
+    float3 directSpecular = FilterSignal(id.xy, ContributionDirectSpecular, base, normal, depth, ds);
+    float3 indirectDiffuse = FilterSignal(id.xy, ContributionIndirectDiffuse, base, normal, depth, idiff);
+    float3 indirectSpecular = FilterSignal(id.xy, ContributionIndirectSpecular, base, normal, depth, ispec);
+    float3 directTransmission=FilterSignal(id.xy,DirectTransmissionSignal,base,normal,depth,dt);
+    float3 indirectTransmission=FilterSignal(id.xy,IndirectTransmissionSignal,base,normal,depth,it);
+    float3 transmission=directTransmission+indirectTransmission;
+    const uint transmissionValid=dt && it ? ContributionTransmission : 0u;
+    // Never fill invalid center pixels or claim remaining opaque ownership.
+    const uint diffuseValid = (dd ? ContributionDirectDiffuse : 0u) | (idiff ? ContributionIndirectDiffuse : 0u);
+    const uint specularValid = (ds ? ContributionDirectSpecular : 0u) | (ispec ? ContributionIndirectSpecular : 0u);
+    float3 diffuse = directDiffuse + indirectDiffuse;
+    float3 specular = directSpecular + indirectSpecular;
+    if (HistorySurfaceMatches(id.xy, base, normal, depth)) {
+        diffuse = AccumulateStationary(diffuse, diffuseValid, offset);
+        specular = AccumulateStationary(specular, specularValid, offset + 8u);
+        transmission=AccumulateStationary(transmission,transmissionValid,offset+16u);
+    }
+    const uint2 packedDiffuse = PackOpaqueRadiance(diffuse, diffuseValid);
+    const uint2 packedSpecular = PackOpaqueRadiance(specular, specularValid);
+    const uint2 packedTransmission=PackOpaqueRadiance(transmission,transmissionValid);
+    Reconstructed.Store4(offset, uint4(packedDiffuse, packedSpecular));
+    Reconstructed.Store2(offset+16u,packedTransmission);
+    // Check the actual encoded output, not the pre-pack validity flags. Half
+    // overflow can invalidate the signal. Zero radiance still needs valid bits.
+    uint valid = uint(Unpack(packedDiffuse).a) | uint(Unpack(packedSpecular).a) | uint(Unpack(packedTransmission).a);
+    // Transmission requires independently valid direct AND indirect signals.
+    // Emissive radiance is read and applied separately by CompositeFullNative.
+    if (base.a == SurfaceEvaluatedBase && ValidRayIdentity(ReadRayIdentity(id.xy))) {
+        const float4 emissionAO = ReadMaterial(id.xy, 24u);
+        if ((Available & ContributionEmission) != 0u && all(isfinite(emissionAO.rgb)))
+            valid |= ContributionEmission;
+    }
+    const bool complete = CompleteLightingCoverage != 0u && (Available & ~255u) == 0u &&
+        (valid & ~Available) == 0u && (valid & NativeOpaqueRequired) == NativeOpaqueRequired;
+    if (complete) ownership |= CompleteOpaqueRadiance;
+    if (complete && base.a == SurfaceEvaluatedBase && (ownership & ExactRasterWinner) != 0u)
+        ownership |= NativeOwnsOpaque;
+    OwnershipMask.Store(ownershipOffset, ownership);
+}

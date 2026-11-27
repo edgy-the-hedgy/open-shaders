@@ -143,7 +143,7 @@ struct PS_OUTPUT
 	float4 Diffuse: SV_Target0;
 
 #if !defined(RENDER_DEPTH)
-#	if defined(IBL) && !defined(DEFERRED)
+#	if (defined(IBL) || defined(NATIVE_IBL_INPUT)) && !defined(DEFERRED)
 	float4 ReflectionRadiance: SV_Target7;
 #	endif
 #	if defined(DEFERRED)
@@ -375,7 +375,7 @@ PS_OUTPUT ShadeDistantTree(PS_INPUT input, bool sampleDistantShadow)
 PS_OUTPUT main(PS_INPUT input)
 {
 	PS_OUTPUT output = ShadeDistantTree(input, true);
-#	if defined(IBL) && !defined(DEFERRED) && !defined(RENDER_DEPTH)
+#	if (defined(IBL) || defined(NATIVE_IBL_INPUT)) && !defined(DEFERRED) && !defined(RENDER_DEPTH)
 	output.ReflectionRadiance = output.Diffuse;
 	[branch] if (Permutation::IsReflectionRadianceCapture() && ShadowSampling::HasDistantShadows())
 		output.ReflectionRadiance = ShadeDistantTree(input, false).Diffuse;

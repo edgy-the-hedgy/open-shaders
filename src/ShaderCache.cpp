@@ -1,5 +1,6 @@
 #include "ShaderCache.h"
 #include "Globals.h"
+#include "Features/DX12/DX12Control.h"
 #include "LightingBudget.h"
 #include "ShaderCompileStatus.h"
 #include "ShaderFileWatcher.h"
@@ -1465,7 +1466,7 @@ namespace SIE
 				{ "LandBlendParams", 3 },
 				{ "TreeParams", 4 },
 				{ "WindTimers", 5 },
-				{ "TextureProj", 6 },
+				{ "TextureProj", ShaderConstants::LightingTextureProj },
 				{ "IndexScale", 7 },
 				{ "WorldMapOverlayParameters", 8 },
 				{ "LeftEyeCenter", 9 },
@@ -2071,7 +2072,16 @@ namespace SIE
 			}
 
 			const auto suffixNarrow = Util::GetShaderDefinesSuffix(globals::state->GetDefinesString());
-			const std::wstring suffix(suffixNarrow.begin(), suffixNarrow.end());
+			std::wstring suffix(suffixNarrow.begin(), suffixNarrow.end());
+			// Keep the boot-latched material input ABI out of baseline disk-cache entries.
+			if (shader.shaderType == RE::BSShader::Type::Lighting && globals::features::dx12Control.UsesExclusiveMaterials())
+				suffix += L"_native_pbr_input_v1";
+			if (globals::features::dx12Control.UsesExclusiveMaterials()) {
+				using Type = RE::BSShader::Type;
+				const auto type = shader.shaderType.get();
+				if (type == Type::Lighting || type == Type::Sky || type == Type::DistantTree || type == Type::Effect)
+					suffix += L"_native_ibl_input_v1";
+			}
 
 			const std::wstring wname(name.begin(), name.end());
 			switch (shaderClass) {

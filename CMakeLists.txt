@@ -1132,7 +1132,7 @@ if(TARGET DX12NativeShadowAIO AND TARGET DX12NativeCompositeAIO)
         DX12NativeShadowAIO
         DX12NativeCompositeAIO
         ${_shadow_aio_outputs}
-        "${_native_composite_aio_dxil}"
+        ${_native_composite_aio_outputs}
     )
 endif()
 
@@ -1145,7 +1145,7 @@ if(TARGET DX12NativeShadowDXIL AND TARGET DX12NativeCompositeDXIL)
         DX12NativeShadowDXIL
         DX12NativeCompositeDXIL
         ${_shadow_outputs}
-        "${_native_composite_dxil}"
+        ${_native_composite_outputs}
     )
 endif()
 
@@ -1646,7 +1646,7 @@ if(AIO_ZIP_TO_DIST)
             PREPARE_AIO
             ${CMAKE_CURRENT_BINARY_DIR}/copy_shaders.stamp
             ${_shadow_aio_outputs}
-            ${_native_composite_aio_dxil}
+            ${_native_composite_aio_outputs}
             ${CMAKE_SOURCE_DIR}/cmake/VerifyAioPayload.cmake
         COMMENT "Creating AIO archive ${AIO_ARCHIVE}"
     )
@@ -1871,7 +1871,7 @@ add_custom_command(
         ${CORE_SOURCES}
         ${FFX_RUNTIME_FILES}
         ${_shadow_outputs}
-        ${_native_composite_dxil}
+        ${_native_composite_outputs}
         ${CMAKE_SOURCE_DIR}/cmake/VerifyAioPayload.cmake
         ${_aio_manual_cmds}
     COMMENT "Creating AIO zip package (manual)"

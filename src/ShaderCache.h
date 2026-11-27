@@ -24,6 +24,7 @@ using namespace std::chrono;
 
 namespace ShaderConstants
 {
+	inline constexpr uint32_t LightingTextureProj = 6;
 	struct LightingPS
 	{
 		static const LightingPS& Get()

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DX12NativeSceneInputs.h"
+#include "Features/NativePBR/MaterialResidency.h"
 #include "GraphicsBackend.h"
 #include "VideoMemoryBudget.h"
 
@@ -20,9 +21,27 @@ namespace DX12Native
 		winrt::com_ptr<ID3D12Resource> acceleration;
 	};
 
+	struct ShadingGeometryBinding
+	{
+		uint32_t positionOffset = UINT32_MAX, indexOffset = UINT32_MAX, attributeOffset = UINT32_MAX, stride = 0;
+		uint32_t vertexCount = 0, indexCount = 0, positionStride = 0, reserved = 0;
+	};
+	static_assert(sizeof(ShadingGeometryBinding) == 32);
+
+	struct ShadingGeometry
+	{
+		winrt::com_ptr<ID3D12Resource> buffer;
+		uint64_t bytes = 0, revision = 0;
+		uint32_t instanceCount = 0, readyInstances = 0;
+	};
+
 	struct TopLevel
 	{
 		std::shared_ptr<const SceneInputs> inputs;
+		std::shared_ptr<const NativeMaterialEvaluation> materialEvaluation;
+		std::shared_ptr<const ShadingGeometry> shadingGeometry;
+		std::string shadingFailure;
+		std::string materialFailure;
 		std::vector<std::shared_ptr<const BottomLevel>> bottoms;
 		winrt::com_ptr<ID3D12Resource> acceleration;
 		winrt::com_ptr<ID3D12Fence> producerFence;
@@ -66,6 +85,8 @@ namespace DX12Native
 			winrt::com_ptr<ID3D12GraphicsCommandList4> commands;
 			winrt::com_ptr<ID3D12Resource> sourceUpload;
 			winrt::com_ptr<ID3D12Resource> scratch;
+			std::vector<NativeMaterialEvaluation::Upload> materialUploads;
+			winrt::com_ptr<ID3D12Resource> shadingUpload;
 			std::shared_ptr<BottomLevel> bottom;
 			std::shared_ptr<TopLevel> top;
 			uint64_t fence = 0, generation = 0;
@@ -77,6 +98,7 @@ namespace DX12Native
 		void Retire();
 		bool BuildBottom(Build& a_build, const std::shared_ptr<const DX12::Shape>& a_shape);
 		bool BuildTop(Build& a_build);
+		void PrepareShadingGeometry(Build& a_build, TopLevel& top);
 		bool HasPendingBottom(uint64_t a_identity, const DX12::Shape* a_shape) const;
 
 		GraphicsBackend backend;
@@ -87,6 +109,7 @@ namespace DX12Native
 		std::unordered_map<uint64_t, std::shared_ptr<const BottomLevel>> bottoms;
 		std::shared_ptr<const SceneInputs> target;
 		std::shared_ptr<const TopLevel> published;
+		NativePBR::MaterialResidency materialResidency;
 		uint64_t generation = 0, nextFence = 0;
 		uint64_t targetRevision = 0;
 		uint32_t targetScope = 0;

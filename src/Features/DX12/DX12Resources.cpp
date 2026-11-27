@@ -2,7 +2,9 @@
 #include "TilePreparationPolicy.h"
 
 #include "DX12Control.h"
+#include "Features/NativePBR/MaterialCatalog.h"
 #include "DX12NativeScene.h"
+#include "DX12PreparedMaterialFrame.h"
 #include "Globals.h"
 #include "GpuPass.h"
 #include "RE/M/MainMenu.h"
@@ -725,6 +727,8 @@ void DX12Resources::DataLoaded()
 {
 	if (!IsActive())
 		return;
+	if (globals::features::dx12Control.WantsMaterialPreparation())
+		NativePBR::MaterialCatalog::Shared().Load();
 	Feature::RegisterSceneTransitionEvents();
 	if (globals::game::player)
 		globals::game::player->AsPositionPlayerEventSource()->AddEventSink(this);
@@ -894,6 +898,17 @@ void DX12Resources::DrawDevResourceStatus()
 			snapshot->runtimeShapes.size(), static_cast<unsigned long long>(snapshot->runtimeBytes));
 		if (scene && scene->inputs && scene->scope == snapshot->requested.front().scope) {
 			const auto& inputs = *scene->inputs;
+			if (globals::features::dx12Control.WantsMaterialPreparation() && inputs.materials) {
+				const auto& materials = *inputs.materials;
+				ImGui::Text("%s", std::format("Material sources: {} | Recipes: {} | Missing: {} | Unknown authored flags: {} | Limited: {}",
+					materials.sources, materials.recipes.size(), materials.missing, materials.unknownAuthored, materials.limited).c_str());
+				ImGui::Text("%s", std::format("Resolved TXST: {} | MATO: {}", materials.resolvedTxst, materials.resolvedMato).c_str());
+				if (const auto& gpu = scene->materialEvaluation) {
+					ImGui::Text("%s", std::format("GPU material recipes: {} | DDS pages: {} | failed: {} | reused: {} | bytes: {}", gpu->residentRecipes, gpu->textures.size(), gpu->failedTextures, gpu->reusedTextures, gpu->textureBytes).c_str());
+				} else if (!scene->materialFailure.empty()) {
+					ImGui::TextWrapped("%s", scene->materialFailure.c_str());
+				}
+			}
 			ImGui::Text(T("menu.dx12.resources.geometry_counts", "Published sources: prepared %zu | observed %zu | duplicates %zu"),
 				inputs.preparedShapes, inputs.observedShapes, inputs.duplicateShapes);
 			ImGui::Text(T("menu.dx12.resources.geometry_unique", "Unique shapes: %zu | triangles: %llu"),
@@ -1134,7 +1149,8 @@ void DX12Resources::PumpPreparation(DX12::ResourceGrid& target, const RE::TESObj
 			task->loading = loading;
 			task->interiorBatch = interiorBatch;
 		} else {
-			task = DX12::CaptureScenePrepRequest(*key, settings.SubcellSize, cell, world, predictive, corner, consolidate, loading);
+			task = DX12::CaptureScenePrepRequest(*key, settings.SubcellSize, cell, world, predictive, corner, consolidate, loading,
+				globals::features::dx12Control.WantsMaterialPreparation());
 		}
 		if (task && worker->Enqueue(std::move(*task))) {
 			inFlight = *key;

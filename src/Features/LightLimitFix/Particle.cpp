@@ -2,6 +2,7 @@
 // LightLimitFix.cpp to keep the core clustering pipeline focused.
 
 #include "Features/LightLimitFix.h"
+#include "ParticleInput.h"
 
 #include "Globals.h"
 #include "ShaderCache.h"
@@ -259,13 +260,14 @@ void LightLimitFix::AddParticleLightLuminance(RE::NiPoint3& targetPosition, int&
 	numHits += particleLightsDetectionHits;
 }
 
-LightLimitFix::ParticleLightReference LightLimitFix::GetParticleLightConfigs(RE::BSRenderPass* a_pass)
+LightLimitFix::ParticleLightReference ParticleInput::Recognize(RE::BSRenderPass* a_pass, bool enabled,
+	ParticleLights& particleLights, ReferenceCache& particleLightsReferences, std::mutex& particleLightsQueueMutex)
 {
 	if (!a_pass || !a_pass->geometry || !a_pass->shaderProperty)
 		return {};
 
 	auto cacheInvalidReference = [&](RE::BSGeometry* node) {
-		ParticleLightReference invalidReference{};
+		LightLimitFix::ParticleLightReference invalidReference{};
 		invalidReference.valid = false;
 		invalidReference.configVersion = particleLights.configVersion;
 		std::lock_guard<std::mutex> queueLock{ particleLightsQueueMutex };
@@ -274,7 +276,7 @@ LightLimitFix::ParticleLightReference LightLimitFix::GetParticleLightConfigs(RE:
 	};
 
 	// see https://www.nexusmods.com/skyrimspecialedition/articles/1391
-	if (!settings.EnableParticleLights)
+	if (!enabled)
 		return {};
 
 	auto shaderProperty = a_pass->shaderProperty->GetRTTI() == globals::rtti::BSEffectShaderPropertyRTTI.get() ?
@@ -336,7 +338,7 @@ LightLimitFix::ParticleLightReference LightLimitFix::GetParticleLightConfigs(RE:
 		gradientConfig = itGradient->second;
 	}
 
-	ParticleLightReference reference{};
+	LightLimitFix::ParticleLightReference reference{};
 	reference.valid = true;
 	reference.billboard = billboard;
 	reference.applyEffectMaterialTint = true;
@@ -408,6 +410,11 @@ LightLimitFix::ParticleLightReference LightLimitFix::GetParticleLightConfigs(RE:
 	return reference;
 }
 
+LightLimitFix::ParticleLightReference LightLimitFix::GetParticleLightConfigs(RE::BSRenderPass* a_pass)
+{
+	return ParticleInput::Recognize(a_pass, settings.EnableParticleLights, particleLights, particleLightsReferences, particleLightsQueueMutex);
+}
+
 bool LightLimitFix::CheckParticleLights(RE::BSRenderPass* a_pass, uint32_t)
 {
 	if (!settings.EnableParticleLights || !a_pass || !a_pass->geometry || !a_pass->shaderProperty)
@@ -430,30 +437,21 @@ bool LightLimitFix::CheckParticleLightPass(RE::BSRenderPass* a_pass)
 	return true;
 }
 
-bool LightLimitFix::AddParticleLight(RE::BSRenderPass* a_pass, ParticleLightReference a_reference)
+std::optional<LightLimitFix::ParticleLightInfo> ParticleInput::ReadEmitter(RE::BSRenderPass* a_pass, const LightLimitFix::ParticleLightReference& a_reference)
 {
 	if (!a_pass || !a_pass->geometry || !a_pass->shaderProperty)
-		return false;
+		return std::nullopt;
 
 	auto shaderProperty = a_pass->shaderProperty->GetRTTI() == globals::rtti::BSEffectShaderPropertyRTTI.get() ?
 	                          static_cast<RE::BSEffectShaderProperty*>(a_pass->shaderProperty) :
 	                          nullptr;
 	if (!shaderProperty)
-		return false;
+		return std::nullopt;
 
 	auto material = shaderProperty->GetMaterial();
 	if (!material)
-		return false;
+		return std::nullopt;
 	const auto& config = a_reference.config;
-
-	a_pass->geometry->IncRefCount();
-
-	if (!a_reference.billboard) {
-		if (auto particleSystem = static_cast<RE::NiParticleSystem*>(a_pass->geometry)) {
-			if (auto particleData = particleSystem->GetParticlesRuntimeData().particleData.get())
-				particleData->IncRefCount();
-		}
-	}
 
 	RE::NiColorA color = a_reference.baseColor;
 	if (a_reference.applyEffectMaterialTint) {
@@ -481,11 +479,31 @@ bool LightLimitFix::AddParticleLight(RE::BSRenderPass* a_pass, ParticleLightRefe
 	// Stash radiusMult as alpha for the downstream cluster pass.
 	color.alpha = std::max(config.radiusMult, 0.0f);
 
-	ParticleLightInfo info;
+	LightLimitFix::ParticleLightInfo info;
 	info.billboard = a_reference.billboard;
 	info.node = a_pass->geometry;
 	info.color = color;
 	info.radiusMult = config.radiusMult;
+
+	return info;
+}
+
+bool LightLimitFix::AddParticleLight(RE::BSRenderPass* a_pass, ParticleLightReference a_reference)
+{
+	const auto emitter = ParticleInput::ReadEmitter(a_pass, a_reference);
+	if (!emitter)
+		return false;
+	const auto& info = *emitter;
+
+	a_pass->geometry->IncRefCount();
+
+	if (!a_reference.billboard) {
+		if (auto particleSystem = static_cast<RE::NiParticleSystem*>(a_pass->geometry)) {
+			if (auto particleData = particleSystem->GetParticlesRuntimeData().particleData.get())
+				particleData->IncRefCount();
+		}
+	}
+
 
 	bool enqueued = false;
 	{

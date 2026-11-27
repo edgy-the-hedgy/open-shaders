@@ -2,6 +2,7 @@
 #include "Compatibility.h"
 #include "Deferred.h"
 #include "Features/Upscaling.h"
+#include "Features/DX12/DX12Control.h"
 #include "FrameAnnotations.h"
 #include "Globals.h"
 #include "Hooks.h"
@@ -112,6 +113,8 @@ void MessageHandler(SKSE::MessagingInterface::Message* message)
 
 				auto shaderCache = globals::shaderCache;
 
+				// Install metadata hooks for the backend selected before feature Load callbacks.
+				globals::features::dx12Control.InstallMaterialBackendHooks();
 				// Run feature PostPostLoad() first so features can disable themselves if needed
 				Feature::ForEachLoadedFeature("PostPostLoad", [](Feature* feature) { feature->PostPostLoad(); });
 
@@ -266,6 +269,7 @@ bool Load()
 	}
 
 	if (errors.empty()) {
+		globals::features::dx12Control.InitializeFeatureBackend();
 		Hooks::InstallEarlyHooks();
 		logger::info("Calling feature Load methods");
 		Feature::ForEachLoadedFeature("Load", [](Feature* feature) { feature->Load(); });

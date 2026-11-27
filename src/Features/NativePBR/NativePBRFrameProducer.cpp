@@ -1,0 +1,56 @@
+#include "NativePBRFrameProducer.h"
+
+#include "Features/ExtendedMaterials.h"
+#include "Globals.h"
+#include "State.h"
+#include "Utils/D3D.h"
+#include "Utils/Game.h"
+
+void NativePBR::FrameProducer::Poll(uint32_t frame)
+{
+	if (!probe)
+		probe = std::make_unique<DX12Native::NativeScreenProbe>();
+	probe->Poll(frame);
+}
+
+void NativePBR::FrameProducer::Dispatch(const GraphicsBackend& backend, std::shared_ptr<const DX12Native::RasterFrame> raster,
+	std::shared_ptr<const DX12Native::TopLevel> scene, uint32_t frame, uint32_t width, uint32_t height, bool opaqueReady)
+{
+	if (!scene || !scene->materialEvaluation)
+		return;
+	if (!probe)
+		probe = std::make_unique<DX12Native::NativeScreenProbe>();
+	const auto& tally = scene->materialEvaluation->surfaceCapabilities;
+	if ((tally.projectedUv || tally.unresolvedProjection) && !opaqueReady)
+		return;
+	const DX12Native::MaterialFrameContract::RasterIdentityStamp stamp{ frame, scene->scope, scene->geometryRevision, scene->materialEvaluation->revision };
+	auto projected = opaqueReady && projection ? projection->GetSubmitted(stamp) : nullptr;
+	const auto& extended = globals::features::extendedMaterials;
+	probe->Dispatch(backend, std::move(raster), std::move(scene), frame, width, height, true, true, false,
+		extended.loaded && extended.settings.EnableParallax != 0,
+		extended.loaded && extended.settings.EnableParallaxWarpingFix != 0,
+		extended.loaded && extended.settings.EnableShadows != 0,
+		globals::state->GetMaterialMipBias(Util::GetTemporal()), std::move(projected));
+}
+
+void NativePBR::FrameProducer::PublishProjection(const GraphicsBackend& backend, DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,
+	std::span<const DX12Native::ProjectedInputDraw> inputs)
+{
+	if (!projection)
+		projection = std::make_unique<DX12Native::ProjectedInputCapture>();
+	projection->Publish(backend, stamp, inputs);
+}
+
+void NativePBR::FrameProducer::InvalidateGeneration()
+{
+	if (projection)
+		projection->Reset();
+	if (probe)
+		probe->Reset();
+}
+
+void NativePBR::FrameProducer::Release()
+{
+	ReleaseProjection();
+	probe.reset();
+}

@@ -74,6 +74,17 @@ if(NATIVE_SHADOW_DXC)
         DEPENDS "${_shadow_source}" ${_shadow_contracts}
         VERBATIM
     )
+    set(_character_source "${NATIVE_SHADER_SOURCE_ROOT}/features/DX12 Native Scene/Shaders/DX12NativeScene/CharacterSkinning.hlsl6")
+    set(_character_dxil "${_shadow_dir}/CharacterSkinning.dxil")
+    add_custom_command(
+        OUTPUT "${_character_dxil}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${_shadow_dir}"
+        COMMAND "${NATIVE_SHADOW_DXC}" -T cs_6_5 -E main -HV 2021 -O3
+            ${NATIVE_SHADER_VALIDATION_FLAGS} -Fo "${_character_dxil}" "${_character_source}"
+        DEPENDS "${_character_source}"
+        VERBATIM
+    )
+    list(APPEND _shadow_outputs "${_character_dxil}")
     add_custom_target(DX12NativeShadowDXIL DEPENDS ${_shadow_outputs})
     add_dependencies(${PROJECT_NAME} DX12NativeShadowDXIL)
     if(DEFINED AIO_DIR)

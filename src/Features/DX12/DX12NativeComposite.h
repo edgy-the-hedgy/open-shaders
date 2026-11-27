@@ -1,6 +1,8 @@
 #pragma once
 
 #include "DX12NativeShadowTrace.h"
+#include "DX12FullNativeReconstruction.h"
+#include "DX12FullNativeFinalColor.h"
 #include "GraphicsInterop.h"
 #include "NativeShadowHistory.h"
 #include "VideoMemoryBudget.h"
@@ -54,6 +56,21 @@ namespace DX12Native
 			const std::shared_ptr<const ShadowMaskFrame>& shadow,
 			bool returnColorToDX11, bool publishReconstructedMask = false);
 		bool Retain(const std::shared_ptr<const Frame>& frame, ID3D12Fence* fence, uint64_t value);
+		void ReconstructFullNative(const GraphicsBackend& backend,
+			std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
+			std::shared_ptr<const DirectLightingFrame> direct, std::shared_ptr<const IndirectLightingFrame> indirect,
+			uint32_t pluginFrame, bool resetHistory, ID3D11Texture2D* rasterTokens,
+			MaterialFrameContract::RasterIdentityStamp rasterStamp,
+			std::span<const MaterialFrameContract::RasterPixelIdentity> tokens);
+		std::shared_ptr<const FullNativeReconstructionFrame> GetFullNativeReconstruction(uint32_t frame) const;
+		void PollFullNative(uint32_t frame)
+		{
+			if (fullNativeFinalColor) fullNativeFinalColor->Poll(frame);
+			if (fullNativeReconstruction) fullNativeReconstruction->Poll(frame);
+		}
+		void ResetFullNative() { fullNativeFinalColor.reset(); fullNativeReconstruction.reset(); }
+		bool ApplyFullNativeOpaque(uint32_t frame, ID3D11UnorderedAccessView* target);
+		std::shared_ptr<const FullNativeFinalColorFrame> GetFullNativeFinalColor(uint32_t frame) const;
 		~NativeComposite();
 		/** @brief Release completed input publications on the render thread. */
 		void RetireCompletedInputs();
@@ -108,6 +125,8 @@ namespace DX12Native
 		};
 
 		std::array<std::unique_ptr<Slot>, 4> slots;
+		std::unique_ptr<FullNativeReconstruction> fullNativeReconstruction;
+		std::unique_ptr<FullNativeFinalColor> fullNativeFinalColor;
 		struct ShadowVariantState
 		{
 			winrt::com_ptr<ID3D12RootSignature> root;

@@ -1,6 +1,12 @@
 #include "DX12Control.h"
 #include "DX12NativeScene.h"
+#include "Features/NativeLLF/NativeLLF.h"
+#include "Features/NativeCubemaps/NativeCubemaps.h"
+#include "Features/NativeIBL/NativeIBL.h"
+#include "Features/NativePBR/NativePBRFrameProducer.h"
 #include "DX12Resources.h"
+#include "Features/NativePBR/NativeMaterialMetadata.h"
+#include "TruePBR.h"
 #include "Globals.h"
 #include "State.h"
 #include "Utils/DevBenchUx.h"
@@ -22,22 +28,86 @@ DX12::ControlMode DX12Control::GetMode() const
 	return static_cast<ControlMode>(mode);
 }
 
+void DX12Control::RequestMode(DX12::ControlMode mode)
+{
+	settings.Mode = static_cast<int>(mode);
+	if (!bootCaptured || !DX12::RequiresModeRestart(GetMode(), mode))
+		selectedMode.store(settings.Mode, std::memory_order_relaxed);
+}
+
+	
+std::array<Feature*, 4> DX12Control::NativeCounterparts()
+{
+	return { &globals::features::nativeLLF, &globals::features::nativeCubemaps,
+		&globals::features::nativeIBL, &globals::features::nativePBR };
+}
+
+bool DX12Control::IsNativeCounterpart(const Feature* feature)
+{
+	const auto counterparts = NativeCounterparts();
+	return std::ranges::find(counterparts, feature) != counterparts.end();
+}
+
+void DX12Control::InitializeFeatureBackend()
+{
+	if (authorityCaptured)
+		return;
+	authorityCaptured = true;
+	const auto backend = DX12::SelectFeatureBackend(IsActive(), GetMode(), globals::game::isVR);
+	if (backend != DX12::FeatureBackend::FullNative)
+		return;
+
+	// Validate core registration before excluding the legacy material owner.
+	// These features have no independent settings; their GPU resources remain lazy.
+	const auto counterparts = NativeCounterparts();
+	json unused = json::object();
+	bool ready = true;
+	for (auto* feature : counterparts) {
+		feature->Load(unused);
+		feature->installed = feature->loaded;
+		ready = ready && feature->loaded;
+	}
+	if (!ready) {
+		for (auto* feature : counterparts)
+			feature->loaded = false;
+		selectedMode.store(static_cast<int>(DX12::ControlMode::FullRT), std::memory_order_relaxed);
+		logger::error("[DX12] Full Native core registration failed; retaining baseline authority and FullRT for this session.");
+		return;
+	}
+
+	globals::features::truePBR.loaded = false;
+	featureBackend.store(backend, std::memory_order_release);
+	logger::info("[DX12] Full Native selected; TruePBR is disabled for this session. Vanilla raster lighting remains the fallback.");
+}
+
+void DX12Control::InstallMaterialBackendHooks()
+{
+	if (UsesExclusiveMaterials())
+		NativePBR::InstallExclusiveMetadataHooks();
+}
+
 void DX12Control::DrawSimpleSettings(bool developerMode)
 {
 	using DX12::ControlMode;
 	const char* modes[] = {
 		T("menu.dx12.mode.shadow_offload", "Shadow offload"),
 		T("menu.dx12.mode.ray_traced_static_shadows", "Ray-Traced Static Shadows"),
+		T("menu.dx12.mode.full_native", "Full Native (experimental)"),
 		T("menu.dx12.mode.raster_comparison", "Raster comparison")
 	};
-	constexpr ControlMode modeIDs[]{ ControlMode::ShadowOffload, ControlMode::FullRT, ControlMode::RasterComparison };
-	const auto selected = DX12::SanitizeControlMode(static_cast<int>(GetMode()), developerMode);
+	constexpr ControlMode modeIDs[]{ ControlMode::ShadowOffload, ControlMode::FullRT, ControlMode::FullNative, ControlMode::RasterComparison };
+	const auto active = GetMode();
+	const auto requested = DX12::SanitizeControlMode(settings.Mode, developerMode);
+	const auto selected = DX12::RequiresModeRestart(active, requested) ? requested : active;
 	int index = static_cast<int>(std::find(std::begin(modeIDs), std::end(modeIDs), selected) - std::begin(modeIDs));
 	settings.Mode = static_cast<int>(selected);
 	if (ImGui::Combo(T("menu.dx12.mode.label", "Mode"), &index, modes, developerMode ? int(std::size(modes)) : int(std::size(modes)) - 1)) {
-		settings.Mode = static_cast<int>(modeIDs[index]);
-		selectedMode.store(settings.Mode, std::memory_order_relaxed);
+		RequestMode(modeIDs[index]);
 	}
+	if (DX12::RequiresModeRestart(GetMode(), static_cast<ControlMode>(settings.Mode)))
+		ImGui::TextDisabled(T("menu.dx12.mode.restart_full_native", "Entering or leaving Full Native requires a restart."));
+	if (IsFullNativeMode())
+		ImGui::TextDisabled(T("menu.dx12.mode.full_native_preview", "NativePBR material authority; vanilla raster remains the final-color fallback."));
 	ImGui::Checkbox(T("menu.dx12.master.enable", "Enable native DX12 features (restart required)"), &settings.Enabled);
 	if (settings.Enabled != bootActive.load(std::memory_order_acquire))
 		ImGui::TextDisabled(T("menu.dx12.master.restart_boot_state", "A game restart is required; DX12 Resources retains its boot state until then."));
@@ -80,7 +150,7 @@ void DX12Control::LoadSettings(json& input)
 	settings.Enabled = input.value("Enabled", defaults.Enabled);
 	settings.Mode = static_cast<int>(DX12::SanitizeControlMode(input.value("Mode", defaults.Mode),
 		globals::state && globals::state->IsDeveloperMode()));
-	selectedMode.store(settings.Mode, std::memory_order_relaxed);
+	RequestMode(static_cast<DX12::ControlMode>(settings.Mode));
 	if (!bootCaptured) {
 		bootActive.store(settings.Enabled, std::memory_order_release);
 		bootCaptured = true;
@@ -89,13 +159,20 @@ void DX12Control::LoadSettings(json& input)
 
 void DX12Control::SaveSettings(json& output)
 {
-	output = { { "Enabled", settings.Enabled }, { "Mode", static_cast<int>(GetMode()) } };
+	const auto active = GetMode();
+	const auto requested = DX12::SanitizeControlMode(settings.Mode, globals::state && globals::state->IsDeveloperMode());
+	const auto saved = DX12::RequiresModeRestart(active, requested) ? requested : active;
+	output = { { "Enabled", settings.Enabled }, { "Mode", static_cast<int>(saved) } };
 }
 
 void DX12Control::RestoreDefaultSettings()
 {
 	settings = {};
-	selectedMode.store(settings.Mode, std::memory_order_relaxed);
+	RequestMode(static_cast<DX12::ControlMode>(settings.Mode));
+	if (!bootCaptured) {
+		bootActive.store(settings.Enabled, std::memory_order_release);
+		bootCaptured = true;
+	}
 }
 
 void DX12Control::OnRuntimeDisabled()
@@ -104,6 +181,10 @@ void DX12Control::OnRuntimeDisabled()
 		return;
 	globals::features::dx12NativeScene.OnRuntimeDisabled();
 	globals::features::dx12Resources.OnRuntimeDisabled();
+	if (UsesExclusiveMaterials()) {
+		for (auto* feature : NativeCounterparts())
+			feature->loaded = false;
+	}
 }
 
 void DX12Control::RegisterUxActions()
@@ -116,7 +197,9 @@ void DX12Control::RegisterUxActions()
 			if (!control->IsActive())
 				return;
 			const auto mode = DX12::SanitizeControlMode(args.value("mode", 0), true);
-			control->settings.Mode = static_cast<int>(mode);
-			control->selectedMode.store(control->settings.Mode, std::memory_order_relaxed);
+			// The validation command remains restricted to the existing live shadow A/B modes.
+			if (mode == DX12::ControlMode::FullNative || control->IsFullNativeMode())
+				return;
+			control->RequestMode(mode);
 		});
 }
