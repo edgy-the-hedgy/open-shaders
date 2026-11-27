@@ -1,0 +1,203 @@
+// Representative opaque triangle material evaluation, not a screen renderer.
+// Layout matches GpuMaterialAbi.h and DX12NativeAcceleration.h.
+#define NATIVE_GEOMETRY_REGISTER t0
+#define NATIVE_RECORD_REGISTER t1
+#define NATIVE_BINDING_REGISTER t2
+#define NATIVE_TEXTURE_REGISTER t3
+#include "NativeMaterialAlpha.hlsli"
+#include "NativeSurface.hlsli"
+struct Sample { float4 color; float4 normal; float4 f0; float4 emission; };
+RWStructuredBuffer<Sample> Output : register(u0);
+cbuffer Constants : register(b0) { uint InstanceCount; };
+float3 SrgbToLinear(float3 v)
+{
+    v = max(v,0);
+    return lerp(v/12.92, pow((v+0.055)/1.055,2.4), v>0.04045);
+}
+Sample EvaluateMaterial(uint instance, uint primitive, float3 weights)
+{
+    Sample result = (Sample)0;
+    if (instance >= InstanceCount) return result;
+    Binding binding = Bindings[instance];
+    uint4 offsets = Geometry.Load4(instance*32);
+    uint4 counts = Geometry.Load4(instance*32+16);
+    if (binding.materialIndex == 0xffffffffu || offsets.z == 0xffffffffu || (offsets.w != 60u && offsets.w != 36u) || counts.y < 3u || primitive >= counts.y / 3u) return result;
+    MaterialRecord material = MaterialRecords[binding.materialIndex];
+    if (any(material.identity.xy != binding.identity) || any(material.identity.zw != binding.revision)) return result;
+    uint3 ix = Geometry.Load3(offsets.y + primitive*12u);
+    if (any(ix >= counts.x)) return result;
+    float3 n = 0, t = 0, b = 0, color = 0;
+    float2 uv = 0;
+    float2 triangleUV[3];
+    [unroll] for (uint i = 0; i < 3u; ++i) {
+        uint a = offsets.z + ix[i]*offsets.w;
+        n += weights[i]*asfloat(Geometry.Load3(a));
+        triangleUV[i]=asfloat(Geometry.Load2(a+12));
+        uv += weights[i]*triangleUV[i];
+        color += weights[i]*asfloat(Geometry.Load3(a+20));
+        if (offsets.w == 60u) {
+            t += weights[i]*asfloat(Geometry.Load3(a+36));
+            b += weights[i]*asfloat(Geometry.Load3(a+48));
+        }
+    }
+    uv = uv*material.uv[0].zw+material.uv[0].xy;
+    float4 baseTexel = Tex(material.textures[0].x,uv,material.properties.z);
+    float4 normalTexel = Tex(material.textures[0].z,uv,material.properties.z);
+    float4 packed = Tex(material.textures[1].x,uv,material.properties.z);
+    float3 sampled = normalTexel.xyz*2.0-1.0;
+    if ((binding.flags & 256u) != 0u) sampled.z = sqrt(saturate(1.0-dot(sampled.xy,sampled.xy)));
+    if (dot(n,n) < 1e-8 || dot(sampled,sampled) < 1e-8) return result;
+    n = normalize(n);
+    // Legacy 36-byte RSGA and rigid meshes without stored tangents can
+    // derive a local basis from the actual triangle and its UV gradients.
+    if (offsets.w == 36u || dot(t,t) < 1e-8 || dot(b,b) < 1e-8) {
+        if (counts.z < 12u) return result;
+        float3 p0=asfloat(Geometry.Load3(offsets.x+ix.x*counts.z));
+        float3 e1=asfloat(Geometry.Load3(offsets.x+ix.y*counts.z))-p0;
+        float3 e2=asfloat(Geometry.Load3(offsets.x+ix.z*counts.z))-p0;
+        float2 duv1=triangleUV[1]-triangleUV[0], duv2=triangleUV[2]-triangleUV[0];
+        float determinant=duv1.x*duv2.y-duv1.y*duv2.x;
+        if (!isfinite(determinant) || abs(determinant)<1e-10) {
+            // Object-space normal maps do not need a UV-derived basis.
+            if ((binding.flags & 512u)==0u) return result;
+            t=abs(n.z)<0.99 ? cross(float3(0,0,1),n) : cross(float3(0,1,0),n);
+            b=cross(n,t);
+        } else {
+            t=(e1*duv2.y-e2*duv1.y)/determinant;
+            b=(e2*duv1.x-e1*duv2.x)/determinant;
+        }
+    }
+    t -= n*dot(n,t);
+    if (dot(t,t) < 1e-8) return result;
+    t = normalize(t);
+    b = cross(n,t)*(dot(cross(n,t),b)<0.0 ? -1.0 : 1.0);
+    float3 normal = (binding.flags & 512u) != 0u ? normalize(sampled) : normalize(t*sampled.x+b*sampled.y+n*sampled.z);
+    float3 base = baseTexel.rgb;
+    if ((binding.flags & 1u) != 0u) base *= SrgbToLinear(color);
+    float metallic = saturate(packed.g);
+    float roughness = clamp(packed.r*material.base.y,0.045,1.0);
+    float3 f0 = lerp(saturate(packed.a*material.base.w).xxx,base,metallic);
+    float3 emission = 0;
+    if (material.textures[1].z != 0xffffffffu) emission = Tex(material.textures[1].z,uv,material.properties.z).rgb;
+    if (!all(isfinite(base)) || !all(isfinite(normal)) || !all(isfinite(f0)) || !all(isfinite(emission))) return result;
+    result.color = float4(base,1.0);
+    result.normal = float4(normal,roughness);
+    result.f0 = float4(f0,metallic);
+    result.emission = float4(emission,saturate(packed.b));
+    return result;
+}
+
+[numthreads(64,1,1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= InstanceCount) return;
+    Output[id.x] = EvaluateMaterial(id.x, 0u, float3(1.0/3.0,1.0/3.0,1.0/3.0));
+}
+
+Texture2D<float> ProbeDepth : register(t515);
+RaytracingAccelerationStructure ProbeScene : register(t516);
+cbuffer ProbeCamera : register(b1)
+{
+    row_major float4x4 InverseProjection;
+    row_major float4x4 InverseView;
+    float4 PositionAdjust;
+    uint2 ViewSize;
+    uint2 GridSize;
+    uint CollectStats;
+};
+RWByteAddressBuffer ProbeCounts : register(u1);
+RWByteAddressBuffer ScreenOutput : register(u2);
+uint2 PackHalf4(float4 value)
+{
+    uint4 bits=f32tof16(clamp(value,-65504.0,65504.0));
+    return uint2(bits.x | (bits.y<<16),bits.z | (bits.w<<16));
+}
+groupshared uint GroupCounts[8];
+
+// Non-opaque instances are marked in the TLAS; do not commit a candidate
+// without a resident alpha texture and an authoritative comparison function.
+
+Sample EvaluateScreen(uint2 pixelIndex)
+{
+    Sample result = (Sample)0;
+    uint2 pixel = min(uint2((float2(pixelIndex)+0.5)*float2(ViewSize)/float2(GridSize)),ViewSize-1u);
+    float z = ProbeDepth.Load(int3(pixel,0));
+    if (!isfinite(z) || z <= 0.0 || z >= 1.0) return result;
+    float2 clip = 2.0*(float2(pixel)+0.5)/float2(ViewSize)-1.0;
+    clip.y = -clip.y;
+    float4 v = mul(InverseProjection,float4(clip,z,1));
+    if (!all(isfinite(v)) || abs(v.w)<1e-8) return result;
+    float4 w = mul(InverseView,float4(v.xyz/v.w,1));
+    float4 camera = mul(InverseView,float4(0,0,0,1));
+    if (!all(isfinite(w)) || !all(isfinite(camera)) || abs(w.w)<1e-8 || abs(camera.w)<1e-8) return result;
+    float3 origin = camera.xyz/camera.w+PositionAdjust.xyz;
+    float3 delta = w.xyz/w.w+PositionAdjust.xyz-origin;
+    float distance = length(delta);
+    if (!isfinite(distance) || distance <= 0.5 || distance > 60000.0) return result;
+    // Only accept the closest native hit when it agrees with raster visibility.
+    // Unprepared foreground surfaces must not expose native geometry behind them.
+    result.color.a = SurfaceMissingGeometry;
+    float tolerance = max(2.0, distance*0.002);
+    RayDesc ray;
+    ray.Origin=origin; ray.Direction=delta/distance; ray.TMin=0.5; ray.TMax=distance+tolerance;
+    RayQuery<RAY_FLAG_NONE> query;
+    query.TraceRayInline(ProbeScene,RAY_FLAG_NONE,0xff,ray);
+    while(query.Proceed()) {
+        if (query.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE && AcceptAlpha(query.CandidateInstanceID(),query.CandidatePrimitiveIndex(),query.CandidateTriangleBarycentrics(),InstanceCount))
+            query.CommitNonOpaqueTriangleHit();
+    }
+    if(query.CommittedStatus()!=COMMITTED_TRIANGLE_HIT) return result;
+    if(abs(query.CommittedRayT()-distance)>tolerance) {
+        result.color.a=SurfaceDepthMismatch; return result;
+    }
+    uint instance = query.CommittedInstanceID();
+    if (instance >= InstanceCount) {
+        result.color.a = SurfaceEvaluationFailed; return result;
+    }
+    Binding binding = Bindings[instance];
+    if (binding.materialIndex == 0xffffffffu) {
+        result.color.a = (binding.flags & SurfaceMissingBaseTexturesBinding) != 0u ?
+            SurfaceMissingTextures : SurfaceUnsupportedMaterial;
+        return result;
+    }
+    float2 bary=query.CommittedTriangleBarycentrics();
+    result=EvaluateMaterial(query.CommittedInstanceID(),query.CommittedPrimitiveIndex(),float3(1.0-bary.x-bary.y,bary));
+    if(result.color.a==SurfaceInvalidReceiver) result.color.a=SurfaceEvaluationFailed;
+    // The native output is consumed in world space, including rotated instances.
+    if (result.color.a == SurfaceEvaluatedBase) {
+        float3 worldNormal = mul(result.normal.xyz, (float3x3)query.CommittedWorldToObject3x4());
+        if (all(isfinite(worldNormal)) && dot(worldNormal,worldNormal)>1e-8) {
+            result.normal.xyz = normalize(worldNormal);
+            if ((binding.flags & SurfaceBaseOnlyBinding) != 0u) result.color.a = SurfaceFeatureLimited;
+        }
+        else result.color.a = SurfaceEvaluationFailed;
+    }
+    return result;
+}
+
+[numthreads(8,8,1)]
+void screenMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
+{
+    if (CollectStats != 0u) {
+        if (lane < 8) GroupCounts[lane]=0;
+        GroupMemoryBarrierWithGroupSync();
+    }
+    if (all(id.xy < GridSize)) {
+        Sample result=EvaluateScreen(id.xy);
+        uint offset=(id.y*((GridSize.x+7u)&~7u)+id.x)*NativeSurfaceStride;
+        ScreenOutput.Store4(offset,uint4(PackHalf4(result.color),PackHalf4(result.normal)));
+        ScreenOutput.Store4(offset+16u,uint4(PackHalf4(result.f0),PackHalf4(result.emission)));
+        uint category = result.color.a==SurfaceEvaluatedBase ? 0 : result.color.a==SurfaceMissingGeometry ? 1 :
+            result.color.a==SurfaceDepthMismatch ? 2 : result.color.a==SurfaceEvaluationFailed ? 3 :
+            result.color.a==SurfaceFeatureLimited ? 5 : result.color.a==SurfaceUnsupportedMaterial ? 6 :
+            result.color.a==SurfaceMissingTextures ? 7 : 4;
+        if (CollectStats != 0u) InterlockedAdd(GroupCounts[category],1u);
+    }
+    if (CollectStats != 0u) {
+        GroupMemoryBarrierWithGroupSync();
+        if (lane < 8) {
+            uint ignored;
+            ProbeCounts.InterlockedAdd(lane*4,GroupCounts[lane],ignored);
+        }
+    }
+}

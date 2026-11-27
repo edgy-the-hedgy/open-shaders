@@ -51,6 +51,37 @@ if(NATIVE_SHADOW_DXC)
             "${_native_composite_flags}"
         VERBATIM
     )
+    # Full Native shader producers extend, rather than replace, the shadow paths.
+    set(_full_native_source_dir
+        "${NATIVE_SHADER_SOURCE_ROOT}/features/Native Composite/Shaders/NativeComposite"
+    )
+    set(_full_native_common "${NATIVE_SHADER_SOURCE_ROOT}/package/Shaders")
+    file(GLOB_RECURSE _full_native_common_deps CONFIGURE_DEPENDS
+        "${_full_native_common}/Common/*.hlsli"
+    )
+    file(GLOB _full_native_local_deps CONFIGURE_DEPENDS
+        "${_full_native_source_dir}/Native*.hlsli"
+    )
+    foreach(_shader IN ITEMS NativePBRProbe NativePBRScreenProbe DirectLighting NativeDiffuseSH NativeIndirectLighting)
+        set(_full_native_entry main)
+        set(_full_native_source "${_full_native_source_dir}/${_shader}.hlsl6")
+        if(_shader STREQUAL "NativePBRScreenProbe")
+            set(_full_native_source "${_full_native_source_dir}/NativePBRProbe.hlsl6")
+            set(_full_native_entry screenMain)
+        endif()
+        set(_full_native_output "${_native_composite_dir}/${_shader}.dxil")
+        add_custom_command(
+            OUTPUT "${_full_native_output}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${_native_composite_dir}"
+            COMMAND
+                "${NATIVE_SHADOW_DXC}" -T cs_6_5 -E ${_full_native_entry} -HV 2021 -O3
+                ${NATIVE_SHADER_VALIDATION_FLAGS} -Ges -Gis -I "${_full_native_common}"
+                -Fo "${_full_native_output}" "${_full_native_source}"
+            DEPENDS "${_full_native_source}" ${_full_native_local_deps} ${_full_native_common_deps}
+            VERBATIM
+        )
+        list(APPEND _native_composite_outputs "${_full_native_output}")
+    endforeach()
     add_custom_target(
         DX12NativeCompositeDXIL
         DEPENDS ${_native_composite_outputs}

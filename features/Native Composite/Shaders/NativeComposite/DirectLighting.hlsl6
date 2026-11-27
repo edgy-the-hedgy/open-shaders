@@ -1,0 +1,203 @@
+RaytracingAccelerationStructure Scene : register(t0);
+ByteAddressBuffer Materials : register(t1);
+StructuredBuffer<float4> Lights : register(t2);
+Texture2D<float> RasterDepth : register(t3);
+RWByteAddressBuffer Lighting : register(u0);
+RWByteAddressBuffer Counters : register(u1);
+#define NATIVE_GEOMETRY_REGISTER t4
+#define NATIVE_RECORD_REGISTER t5
+#define NATIVE_BINDING_REGISTER t6
+#define NATIVE_TEXTURE_REGISTER t7
+#include "NativeMaterialAlpha.hlsli"
+#include "NativeSurface.hlsli"
+
+cbuffer DirectInputs : register(b0)
+{
+    row_major float4x4 InverseProjection;
+    row_major float4x4 InverseView;
+    float4 PositionAdjust;
+    uint2 Size;
+    uint MaterialPitch;
+    uint LightCount;
+    float NearLightRadius;
+    uint NearLightExclusion;
+    uint InstanceCount;
+    uint Padding;
+};
+
+float4 UnpackHalf4(uint2 value)
+{
+    return f16tof32(uint4(value.x & 65535u, value.x >> 16, value.y & 65535u, value.y >> 16));
+}
+
+uint2 PackHalf4(float4 value)
+{
+    uint4 bits = f32tof16(clamp(value, -65504.0, 65504.0));
+    return uint2(bits.x | (bits.y << 16), bits.z | (bits.w << 16));
+}
+
+bool Visible(float3 world, float3 normal, float3 direction, float distance, out bool traced)
+{
+    traced = false;
+    const float bias = 0.5;
+    const float3 origin = world + normal * bias + direction * bias;
+    const float3 delta = world + direction * distance - origin;
+    const float lengthToLight = length(delta);
+    float limit = lengthToLight - bias;
+    if (NearLightExclusion != 0u)
+        limit = min(limit, lengthToLight - NearLightRadius - bias);
+    if (limit <= bias || lengthToLight <= bias) return true;
+    RayDesc ray;
+    ray.Origin = origin;
+    ray.Direction = delta / lengthToLight;
+    ray.TMin = bias;
+    ray.TMax = limit;
+    traced = true;
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
+    query.TraceRayInline(Scene, RAY_FLAG_NONE, 0xff, ray);
+    while (query.Proceed()) {
+        if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
+            AcceptAlpha(query.CandidateInstanceID(), query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(), InstanceCount))
+            query.CommitNonOpaqueTriangleHit();
+    }
+    return query.CommittedStatus() == COMMITTED_NOTHING;
+}
+
+groupshared float3 TileMin[64];
+groupshared float3 TileMax[64];
+groupshared uint TileLights[2048];
+groupshared uint TileCount;
+groupshared uint TileStats[4];
+groupshared uint TileRays;
+
+bool Reconstruct(uint2 pixel, out float3 world, out float3 cameraWorld)
+{
+    world = 0; cameraWorld = 0;
+    if (any(pixel >= Size)) return false;
+    float z = RasterDepth.Load(int3(pixel,0));
+    if (!isfinite(z) || z <= 0 || z >= 1) return false;
+    float2 clip = 2.0 * (float2(pixel) + 0.5) / float2(Size) - 1.0;
+    clip.y = -clip.y;
+    float4 v = mul(InverseProjection, float4(clip,z,1));
+    if (!all(isfinite(v)) || abs(v.w) < 1e-8) return false;
+    float4 w = mul(InverseView, float4(v.xyz/v.w,1));
+    float4 camera = mul(InverseView,float4(0,0,0,1));
+    if (!all(isfinite(w)) || !all(isfinite(camera)) || abs(w.w) < 1e-8 || abs(camera.w) < 1e-8) return false;
+    world = w.xyz/w.w + PositionAdjust.xyz;
+    cameraWorld = camera.xyz/camera.w + PositionAdjust.xyz;
+    return all(isfinite(world)) && all(isfinite(cameraWorld));
+}
+
+uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
+{
+    rays = 0u;
+    const uint outputOffset = (pixel.y * Size.x + pixel.x) * 16u;
+    Lighting.Store4(outputOffset, uint4(0,0,0,0));
+    const uint offset = pixel.y * MaterialPitch + pixel.x * NativeSurfaceStride;
+    float4 base = UnpackHalf4(Materials.Load2(offset));
+    float4 normal = UnpackHalf4(Materials.Load2(offset + 8u));
+    float4 f0 = UnpackHalf4(Materials.Load2(offset + 16u));
+    if (!HasEvaluatedNativeBase(base.a) || !all(isfinite(base)) || !all(isfinite(normal)) || !all(isfinite(f0)) ||
+        dot(normal.xyz, normal.xyz) < 1e-8) return 0u;
+    float3 deltaView = cameraWorld - world;
+    if (dot(deltaView,deltaView) < 1e-8) return 0u;
+    float3 n = normalize(normal.xyz), view = normalize(deltaView);
+    float ndv = max(saturate(dot(n,view)), 1e-4);
+    float roughness = clamp(normal.w, 0.045, 1.0);
+    float alpha = roughness * roughness, a2 = alpha * alpha;
+    float3 diffuse = 0, specular = 0;
+    uint inReach = 0, visible = 0;
+    [loop] for (uint candidate = 0; candidate < TileCount; ++candidate) {
+        uint i = TileLights[candidate];
+        float4 light = Lights[i*3u], color = Lights[i*3u+1u], params = Lights[i*3u+2u];
+        float3 delta = light.xyz - world;
+        float d2 = dot(delta,delta);
+        if (!isfinite(d2) || d2 <= 0.25 || d2 >= light.w*light.w) continue;
+        float distance = sqrt(d2);
+        float3 l = delta/distance;
+        float ndl = saturate(dot(n,l));
+        if (ndl <= 0) continue;
+        float relativeDistance = distance / light.w;
+        float fade = saturate((light.w-distance)*max(params.y,0.0));
+        float attenuation = params.z != 0.0 ?
+            fade*fade*(3.0-2.0*fade)/max(d2+params.x*params.x,1.0) :
+            1.0-saturate(relativeDistance*relativeDistance);
+        if (attenuation <= 0.0 || !isfinite(attenuation) || !any(color.rgb > 0.0)) continue;
+        ++inReach;
+        bool traced;
+        bool unoccluded = Visible(world,n,l,distance,traced);
+        if (traced) ++rays;
+        if (!unoccluded) continue;
+        ++visible;
+        float3 halfDelta = view + l;
+        if (dot(halfDelta,halfDelta) < 1e-8) continue;
+        float3 h = normalize(halfDelta);
+        float ndh = saturate(dot(n,h)), vdh = saturate(dot(view,h));
+        float3 fresnel = saturate(f0.rgb) + (1.0-saturate(f0.rgb))*pow(1.0-vdh,5.0);
+        float dDenom = ndh*ndh*(a2-1.0)+1.0;
+        float distribution = a2 / max(3.14159265*dDenom*dDenom,1e-7);
+        float gV = ndl*sqrt(ndv*ndv*(1.0-a2)+a2);
+        float gL = ndv*sqrt(ndl*ndl*(1.0-a2)+a2);
+        float visibility = 0.5/max(gV+gL,1e-5);
+        float3 irradiance = max(color.rgb,0.0)*attenuation*ndl;
+        diffuse += max(base.rgb,0.0)*(1.0-saturate(f0.a))*(1.0-fresnel)*(1.0/3.14159265)*irradiance;
+        specular += fresnel*distribution*visibility*irradiance;
+    }
+    if (!all(isfinite(diffuse)) || !all(isfinite(specular))) return 0u;
+    // Half precision stores counts up to 2047 plus one for validity.
+    Lighting.Store4(outputOffset,uint4(PackHalf4(float4(diffuse,float(min(inReach,2047u))+1.0)),PackHalf4(float4(specular,float(min(visible,2047u))+1.0))));
+    return visible > 0u ? 3u : (inReach > 0u ? 2u : 1u);
+}
+
+
+[numthreads(8,8,1)]
+void main(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
+{
+    float3 world, cameraWorld;
+    bool receiver = Reconstruct(id.xy, world, cameraWorld);
+    TileMin[lane] = receiver ? world : float3(3.402823e38,3.402823e38,3.402823e38);
+    TileMax[lane] = receiver ? world : float3(-3.402823e38,-3.402823e38,-3.402823e38);
+    if (lane == 0u) { TileCount = 0u; TileRays = 0u; }
+    if (lane < 4u) TileStats[lane] = 0u;
+    GroupMemoryBarrierWithGroupSync();
+    [unroll] for (uint step=32u; step>0u; step>>=1u) {
+        if (lane < step) {
+            TileMin[lane] = min(TileMin[lane],TileMin[lane+step]);
+            TileMax[lane] = max(TileMax[lane],TileMax[lane+step]);
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+    if (all(TileMin[0] <= TileMax[0])) {
+        [loop] for (uint i=lane; i<min(LightCount,2048u); i+=64u) {
+            float4 light = Lights[i*3u];
+            float3 nearest = clamp(light.xyz,TileMin[0],TileMax[0]);
+            float3 delta = light.xyz-nearest;
+            if (dot(delta,delta) <= light.w*light.w) {
+                uint index;
+                InterlockedAdd(TileCount,1u,index);
+                TileLights[index]=i;
+            }
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (all(id.xy < Size)) {
+        uint category = 0u;
+        uint rays = 0u;
+        if (receiver) category = Shade(id.xy,world,cameraWorld,rays);
+        else Lighting.Store4((id.y*Size.x+id.x)*16u,uint4(0,0,0,0));
+        InterlockedAdd(TileStats[category],1u);
+        InterlockedAdd(TileRays,rays);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    uint ignored;
+    if (lane == 0u) {
+        Counters.InterlockedAdd(0u,TileStats[1]+TileStats[2]+TileStats[3],ignored);
+        Counters.InterlockedAdd(16u,TileCount,ignored);
+        Counters.InterlockedAdd(20u,1u,ignored);
+        uint previous;
+        Counters.InterlockedAdd(24u,TileRays,previous);
+        if (previous > 0xffffffffu - TileRays) Counters.InterlockedAdd(28u,1u,ignored);
+    }
+    if (lane > 0u && lane < 4u)
+        Counters.InterlockedAdd(lane*4u,TileStats[lane],ignored);
+}

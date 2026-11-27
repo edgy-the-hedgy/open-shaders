@@ -30,6 +30,11 @@ if(EXCLUDE_NATIVE_DXIL)
         "NativeComposite/CompositeOffload.dxil"
         "NativeComposite/CompositeRTQuality.dxil"
         "NativeComposite/CompositeRTPerformance.dxil"
+        "NativeComposite/NativePBRProbe.dxil"
+        "NativeComposite/NativePBRScreenProbe.dxil"
+        "NativeComposite/DirectLighting.dxil"
+        "NativeComposite/NativeDiffuseSH.dxil"
+        "NativeComposite/NativeIndirectLighting.dxil"
     )
 endif()
 
