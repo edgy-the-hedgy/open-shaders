@@ -1338,7 +1338,7 @@ void DX12NativeScene::OnRuntimeDisabled()
 		globals::features::nativeIBL.Release();
 		globals::features::nativeCubemaps.Release();
 		globals::features::nativePBR.Release();
-		globals::features::nativeLLF.ResetParticleInput();
+		globals::features::nativeLLF.OnRuntimeDisabled();
 	}
 	raster.Reset();
 	shadows.Reset();

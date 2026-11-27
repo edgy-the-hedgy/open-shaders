@@ -1,4 +1,5 @@
 #include "Materials/NativeRasterPolicy.h"
+#include "Features/NativeLLF/NativeLightMetadataPolicy.h"
 #include "Features/DX12/DX12ControlMode.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -56,4 +57,22 @@ TEST_CASE("Full Native classifies legacy fallback separately from native authori
 	REQUIRE(SelectExecutionRole(FeatureBackend::Baseline, CounterpartKind::NativeProducer) == ExecutionRole::Dormant);
 	REQUIRE(SelectExecutionRole(FeatureBackend::Baseline, CounterpartKind::LegacyLighting) == ExecutionRole::Baseline);
 	REQUIRE(SelectExecutionRole(FeatureBackend::Baseline, CounterpartKind::LegacyMaterial) == ExecutionRole::Baseline);
+}
+
+TEST_CASE("Native authored light metadata sanitizes inputs without legacy state", "[dx12][lights]")
+{
+	using namespace NativeLLF::Policy;
+	const auto normal = MakeAuthoredLight(42, true, false, 0.05f, 2.0f);
+	REQUIRE(normal.formID == 42);
+	REQUIRE(normal.inverseSquare);
+	REQUIRE_FALSE(normal.spot);
+	REQUIRE(normal.cutoff == 0.05f);
+	REQUIRE(normal.size == 2.0f);
+	const auto spot = MakeAuthoredLight(7, false, true, -1.0f, 90.0f);
+	REQUIRE(spot.spot);
+	REQUIRE(spot.cutoff == 0.01f);
+	REQUIRE(spot.size == std::numbers::sqrt2_v<float>);
+	REQUIRE_FALSE(Expired(130, 10));
+	REQUIRE(Expired(131, 10));
+	REQUIRE_FALSE(Expired(1, UINT32_MAX));
 }

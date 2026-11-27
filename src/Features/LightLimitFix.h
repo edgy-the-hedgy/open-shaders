@@ -658,6 +658,9 @@ public:
 	 */
 	static float GetAttenuation(float distance, float radius, float size);
 
+	// One installation shared by the baseline and native metadata consumers.
+	static void InstallLightCreationHook();
+
 	/** @brief Hook that intercepts point light creation to inject inverse-square light extension data. */
 	struct CreatePointLight
 	{

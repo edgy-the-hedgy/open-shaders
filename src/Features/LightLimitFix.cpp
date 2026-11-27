@@ -4,6 +4,7 @@
 #include "Features/LightLimitFix/LightAttach.h"
 #include "Features/LightLimitFix/LightReadSafety.h"
 #include "Features/LightLimitFix/RadiusMath.h"
+#include "Features/NativeLLF/NativeLLF.h"
 #include "Features/LightLimitFix/SettingsSanitize.h"
 #include "Features/LightLimitFix/ShadowCasterMath.h"
 #include "Features/LightLimitFix/ShadowMeshExclusions.h"
@@ -1146,16 +1147,29 @@ void LightLimitFix::PostPostLoad()
 	ShadowCasterManager::Init(settings.ShadowSettings);
 	ShadowCasterManager::Install(settings.ShadowSettings);
 
-	stl::detour_thunk<CreatePointLight>(REL::RelocationID(17208, 17610));
+	InstallLightCreationHook();
 	stl::detour_thunk<BSLight_GetLuminance>(REL::RelocationID(101303, 108292));
+}
+
+void LightLimitFix::InstallLightCreationHook()
+{
+	static const bool installed = [] {
+		stl::detour_thunk<CreatePointLight>(REL::RelocationID(17208, 17610));
+		return true;
+	}();
+	(void)installed;
 }
 
 RE::NiPointLight* LightLimitFix::CreatePointLight::thunk(RE::TESObjectLIGH* ligh, RE::TESObjectREFR* refr, RE::NiAVObject* root, bool forceDynamic, bool useLightRadius, bool affectRequesterOnly)
 {
 	const auto niLight = func(ligh, refr, root, forceDynamic, useLightRadius, affectRequesterOnly);
 
-	if (ligh && root && niLight)
-		SetExtLightData(niLight, ligh);
+	if (ligh && root && niLight) {
+		if (globals::features::lightLimitFix.loaded)
+			SetExtLightData(niLight, ligh);
+		if (globals::features::nativeLLF.loaded)
+			globals::features::nativeLLF.ObserveLightCreation(niLight, *ligh);
+	}
 
 	return niLight;
 }

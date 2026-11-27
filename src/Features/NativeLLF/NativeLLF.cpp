@@ -10,6 +10,7 @@
 #include "Features/LightLimitFix/ShadowCasterMath.h"
 #include "Globals.h"
 #include "RE/T/TESObjectLIGH.h"
+#include "RE/T/TESObjectREFR.h"
 #include "State.h"
 #include "ShaderCache.h"
 #include "Util.h"
@@ -23,12 +24,103 @@
 #include <ranges>
 #include <unordered_set>
 
+namespace
+{
+	using NativeLLF::Policy::AuthoredLight;
+	AuthoredLight ReadAuthoredLight(const RE::TESObjectLIGH& light)
+	{
+		return NativeLLF::Policy::MakeAuthoredLight(light.formID,
+			light.data.flags.any(static_cast<RE::TES_LIGHT_FLAGS>(LLFCommon::TES_LIGHT_FLAGS_EXT::kInverseSquare)),
+			light.data.flags.any(RE::TES_LIGHT_FLAGS::kSpotlight, RE::TES_LIGHT_FLAGS::kSpotShadow),
+			light.data.fallofExponent, light.data.fov);
+	}
+
+	std::optional<AuthoredLight> ReadPlacedLight(uint32_t placed)
+	{
+		auto* reference = placed ? RE::TESForm::LookupByID<RE::TESObjectREFR>(placed) : nullptr;
+		auto* base = reference ? reference->GetObjectReference() : nullptr;
+		const auto* light = base ? base->As<RE::TESObjectLIGH>() : nullptr;
+		return light ? std::optional{ReadAuthoredLight(*light)} : std::nullopt;
+	}
+
+	void ApplyInverseSquare(DX12Native::DirectPointLight& value, float fade, bool shadowCaster, float cutoff, float size)
+	{
+		value.inverseSquare = true;
+		value.radius = ISLMath::CalculateRadius(fade * 4.0f, shadowCaster, cutoff, size);
+		value.fadeZone = 1.0f / std::min(value.radius, ISLMath::FadeZoneBase);
+		value.sourceRadius = std::sqrt(ISLMath::ScaledUnitsSq * 0.5f) * size;
+		value.radiance *= 4.0f * ISLMath::ScaledUnitsSq;
+	}
+}
+
+void NativeLLF::Producer::ObserveLightCreation(RE::NiLight* light, const RE::TESObjectLIGH& authored)
+{
+	if (!light || !globals::features::dx12Control.WantsMaterialPreparation())
+		return;
+	try {
+		std::scoped_lock lock(metadataMutex);
+		if (metadata.size() >= Policy::kMetadataCapacityMultiplier * DX12::kMaxPreparedLights && !metadata.contains(light)) {
+			++metadataRejected;
+			return;
+		}
+		metadata.insert_or_assign(light, MetadataEntry{RE::NiPointer<RE::NiLight>(light), ReadAuthoredLight(authored), metadataFrame});
+	} catch (const std::exception& e) {
+		logger::warn("[NativeLLF] Authored light observation failed: {}", e.what());
+	}
+}
+
+void NativeLLF::Producer::BeginMetadataFrame()
+{
+	std::scoped_lock lock(metadataMutex);
+	++metadataFrame;
+	if (metadataFrame % Policy::kMetadataRetentionFrames == 0)
+		std::erase_if(metadata, [&](const auto& entry) { return Policy::Expired(metadataFrame, entry.second.lastSeen); });
+}
+
+std::optional<NativeLLF::Policy::AuthoredLight> NativeLLF::Producer::FindMetadata(RE::NiLight* light, uint32_t placed)
+{
+	{
+		std::scoped_lock lock(metadataMutex);
+		if (auto it = metadata.find(light); it != metadata.end()) {
+			it->second.lastSeen = metadataFrame;
+			return it->second.authored;
+		}
+	}
+	// Placed sources can be resolved even if they predate hook installation.
+	if (auto authored = ReadPlacedLight(placed))
+		return authored;
+	// Compatibility for pre-existing attached lights while LLF is installed.
+	if (globals::features::lightLimitFix.loaded) {
+		const auto id = PointLightFlags::GetRuntimeLightFormID(light);
+		if (const auto* form = id ? RE::TESForm::LookupByID<RE::TESObjectLIGH>(id) : nullptr)
+			return ReadAuthoredLight(*form);
+	}
+	return std::nullopt;
+}
+
+void NativeLLF::Producer::OnRuntimeDisabled()
+{
+	ResetParticleInput();
+	std::scoped_lock lock(metadataMutex);
+	metadata.clear();
+	metadataFrame = 0;
+	metadataRejected = 0;
+}
+
+json NativeLLF::Producer::GetDiagnostics()
+{
+	std::scoped_lock lock(metadataMutex, observationMutex);
+	return { { "authoredLightRecords", metadata.size() }, { "authoredLightRejected", metadataRejected },
+		{ "particleSnapshotFrame", currentPluginFrame }, { "particleEmitters", current.size() } };
+}
+
 void NativeLLF::Producer::PostPostLoad()
 {
 	// Inherit authored particle settings at boot; native acquisition owns its
 	// own INI catalog, observation cache, cluster records and lifetime.
 	particleSettings = globals::features::lightLimitFix.settings;
 	configs.GetConfigs();
+	LightLimitFix::InstallLightCreationHook();
 }
 
 void NativeLLF::Producer::Reset()
@@ -178,6 +270,7 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 	}
 	if (particleSettings.EnableParticleLights && !particleSnapshotReady && !opaqueReady)
 		return std::nullopt;
+	BeginMetadataFrame();
 	const auto prepared = DX12Resources::CollectPreparedLights(*scene.inputs->residency);
 	DirectInputFrame result;
 	result.frame = frame;
@@ -195,6 +288,13 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 		// A prepared spotlight without a current projection is not an omni light.
 		if (light.flags & (static_cast<uint32_t>(RE::TES_LIGHT_FLAGS::kSpotlight) | static_cast<uint32_t>(RE::TES_LIGHT_FLAGS::kSpotShadow)))
 			directLights.back().radius = 0.0f;
+		else if (light.flags & static_cast<uint32_t>(LLFCommon::TES_LIGHT_FLAGS_EXT::kInverseSquare)) {
+			const auto authored = ReadPlacedLight(light.referenceID);
+			if (authored && authored->inverseSquare)
+				ApplyInverseSquare(directLights.back(), light.fade, false, authored->cutoff, authored->size);
+			else
+				directLights.back().radius = 0.0f; // Never silently reinterpret an unresolved ISL source.
+		}
 	}
 
 	// Full Native samples live values without changing LLF, SCM, or their cached
@@ -209,52 +309,12 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 			if (!light || !light->pointLight || !light->light)
 				return;
 			auto* ni = light->light.get();
-			if (!visited.insert(ni).second || ni->GetFlags().any(RE::NiAVObject::Flag::kHidden))
+			if (!visited.insert(ni).second)
 				return;
-			const auto flags = PointLightFlags::GetVanillaPointLightFlags(light, ni);
-			const auto runtimeFlags = PointLightFlags::GetRuntimeLightFlags(ni);
-			using F = PointLightFlags::Flags;
-			if (runtimeFlags & PointLightFlags::ToMask(F::Disabled))
-				return;
-			const auto& rt = ni->GetLightRuntimeData();
-			const auto& position = ni->world.translate;
-			if (!std::isfinite(rt.radius.x) || rt.radius.x <= 0.0f ||
-				!std::isfinite(rt.fade) || rt.fade <= 0.0f ||
-				!std::isfinite(rt.diffuse.red) || !std::isfinite(rt.diffuse.green) || !std::isfinite(rt.diffuse.blue) ||
-				!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z))
-				return;
-			DX12Native::DirectPointLight value{ { position.x, position.y, position.z },
-				{ toLinear(rt.diffuse.red) * rt.fade, toLinear(rt.diffuse.green) * rt.fade, toLinear(rt.diffuse.blue) * rt.fade },
-				rt.radius.x, 0.0f, 0.0f, false };
-			if (flags & PointLightFlags::ToMask(F::Spot)) {
-				auto* spot = skyrim_cast<RE::BSShadowLight*>(light);
-				std::array<float, 16> inverse{};
-				if (!spot || !spot->GetIsFrustumLight() ||
-					!ShadowCasterManager::GetLightProjection(spot, value.worldToSpot.data(), inverse.data()) ||
-					!std::ranges::all_of(value.worldToSpot, [](float v) { return std::isfinite(v); }))
-					return;
-				value.spot = true;
-			}
-			if (runtimeFlags & PointLightFlags::ToMask(F::InverseSquare)) {
-				const auto* ext = LLFCommon::RuntimeLightDataExt::Get(ni);
-				if (!std::isfinite(ext->size) || ext->size <= 0.0f || !std::isfinite(ext->cutoffOverride) ||
-					ext->cutoffOverride <= 0.0f)
-					return;
-				value.inverseSquare = true;
-				value.radius = ISLMath::CalculateRadius(rt.fade * 4.0f,
-					ShadowCasterManager::IsShadowLightType(light), ext->cutoffOverride, ext->size);
-				value.fadeZone = 1.0f / std::min(value.radius, ISLMath::FadeZoneBase);
-				value.sourceRadius = std::sqrt(ISLMath::ScaledUnitsSq * 0.5f) * ext->size;
-				// DirectLighting uses a unitless reciprocal denominator; fold
-				// LLF's intensity and unit conversion into the radiance record.
-				const float intensity = 4.0f * ISLMath::ScaledUnitsSq;
-				value.radiance.x *= intensity;
-				value.radiance.y *= intensity;
-				value.radiance.z *= intensity;
-			}
 			uint32_t owner = 0, placed = 0;
 			DX12Native::ReadFullLightOwner(ni, owner, placed);
-			auto rest = value.position;
+			const auto& position = ni->world.translate;
+			float3 rest{ position.x, position.y, position.z };
 			DX12Native::ReadFullLightRestPosition(ni, placed, rest);
 			size_t best = preparedCount;
 			float bestDistance = std::numeric_limits<float>::infinity();
@@ -273,12 +333,62 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 					ambiguous = true;
 				}
 			}
+			// A hidden, disabled, or invalid live source must not leave its prepared
+			// proxy emitting stale radiance. Never erase a previously admitted live match.
+			const auto reject = [&] {
+				if (best != preparedCount && !ambiguous && !matched[best])
+					directLights[best].radius = 0.0f;
+			};
+			using F = PointLightFlags::Flags;
+			const auto runtimeFlags = globals::features::lightLimitFix.loaded ? PointLightFlags::GetRuntimeLightFlags(ni) : 0u;
+			const auto authored = FindMetadata(ni, placed);
+			if (ni->GetFlags().any(RE::NiAVObject::Flag::kHidden) || (runtimeFlags & PointLightFlags::ToMask(F::Disabled))) {
+				reject();
+				return;
+			}
+			const auto& rt = ni->GetLightRuntimeData();
+			if (!std::isfinite(rt.radius.x) || rt.radius.x <= 0.0f ||
+				!std::isfinite(rt.fade) || rt.fade <= 0.0f ||
+				!std::isfinite(rt.diffuse.red) || !std::isfinite(rt.diffuse.green) || !std::isfinite(rt.diffuse.blue) ||
+				!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z)) {
+				reject();
+				return;
+			}
+			DX12Native::DirectPointLight value{ { position.x, position.y, position.z },
+				{ toLinear(rt.diffuse.red) * rt.fade, toLinear(rt.diffuse.green) * rt.fade, toLinear(rt.diffuse.blue) * rt.fade },
+				rt.radius.x, 0.0f, 0.0f, false };
+			const bool spotSource = (authored && authored->spot) ||
+				((runtimeFlags | PointLightFlags::GetPointLightTypeFlags(light)) & PointLightFlags::ToMask(F::Spot));
+			if (spotSource) {
+				auto* spot = skyrim_cast<RE::BSShadowLight*>(light);
+				std::array<float, 16> inverse{};
+				if (!spot || !spot->GetIsFrustumLight() ||
+					!ShadowCasterManager::GetLightProjection(spot, value.worldToSpot.data(), inverse.data()) ||
+					!std::ranges::all_of(value.worldToSpot, [](float v) { return std::isfinite(v); })) {
+					reject();
+					return;
+				}
+				value.spot = true;
+			}
+			const bool hasLegacyMetadata = (runtimeFlags & PointLightFlags::ToMask(F::Initialised)) != 0;
+			const bool inverseSquare = hasLegacyMetadata ? (runtimeFlags & PointLightFlags::ToMask(F::InverseSquare)) != 0 :
+				(authored && authored->inverseSquare);
+			if (inverseSquare) {
+				const auto* ext = hasLegacyMetadata ? LLFCommon::RuntimeLightDataExt::Get(ni) : nullptr;
+				const float size = ext ? ext->size : authored->size;
+				const float cutoff = ext ? ext->cutoffOverride : authored->cutoff;
+				if (!std::isfinite(size) || size <= 0.0f || !std::isfinite(cutoff) || cutoff <= 0.0f) {
+					reject();
+					return;
+				}
+				ApplyInverseSquare(value, rt.fade, ShadowCasterManager::IsShadowLightType(light), cutoff, size);
+			}
 			if (best != preparedCount) {
 				if (!ambiguous && !matched[best]) {
 					directLights[best] = value;
 					matched[best] = true;
 				}
-				return;  // Never add a second representation of a prepared emitter.
+				return; // Never add a second representation of a prepared emitter.
 			}
 			if (directLights.size() < DX12::kMaxPreparedLights)
 				directLights.push_back(value);
@@ -295,7 +405,7 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 	{
 		std::scoped_lock observationLock(observationMutex);
 		if (particleSnapshotReady && currentPluginFrame == globals::state->frameCount) {
-		const auto eye = Util::GetEyePosition(0);
+			const auto eye = Util::GetEyePosition(0);
 		const float fadeStart = RE::Sky::GetLightLODStartFadeSquared();
 		const float fadeEnd = RE::Sky::GetLightLODEndFadeSquared();
 		for (const auto& particle : current) {

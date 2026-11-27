@@ -3,6 +3,8 @@
 #include "Features/DX12/DX12NativeDirectLighting.h"
 #include "Features/DX12/FullNativeFeature.h"
 #include "Features/LightLimitFix/ParticleInput.h"
+#include "NativeLightMetadataPolicy.h"
+#include <unordered_map>
 
 #include <unordered_set>
 
@@ -29,12 +31,26 @@ namespace NativeLLF
 		void PostPostLoad() override;
 		void Reset() override;
 		void ResetParticleInput();
-		void OnRuntimeDisabled() override { ResetParticleInput(); }
+		void OnRuntimeDisabled() override;
+		void ObserveLightCreation(RE::NiLight* light, const RE::TESObjectLIGH& authored);
+		json GetDiagnostics() override;
 		void OnSceneTransitionReset(bool opening) override { if (opening) ResetParticleInput(); }
 		std::optional<ParticleInput::Observation> ObserveParticlePass(RE::BSRenderPass* pass);
 		std::optional<DirectInputFrame> CollectDirectInputs(const DX12Native::TopLevel& scene, uint32_t frame, bool opaqueReady);
 
 	private:
+		struct MetadataEntry
+		{
+			// Retain identity until bounded retirement; a recycled address cannot alias a live entry.
+			RE::NiPointer<RE::NiLight> identity;
+			Policy::AuthoredLight authored;
+			uint32_t lastSeen = 0;
+		};
+		std::mutex metadataMutex;
+		std::unordered_map<const RE::NiLight*, MetadataEntry> metadata;
+		uint32_t metadataFrame = 0, metadataRejected = 0;
+		std::optional<Policy::AuthoredLight> FindMetadata(RE::NiLight* light, uint32_t placed);
+		void BeginMetadataFrame();
 		struct ParticleEmitter
 		{
 			float3 position{}, color{};
