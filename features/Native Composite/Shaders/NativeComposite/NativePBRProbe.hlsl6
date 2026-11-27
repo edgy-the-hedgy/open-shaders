@@ -107,6 +107,8 @@ cbuffer ProbeCamera : register(b1)
 };
 RWByteAddressBuffer ProbeCounts : register(u1);
 RWByteAddressBuffer ScreenOutput : register(u2);
+// Separate identity plane: material ABI remains 32 bytes per sample.
+RWByteAddressBuffer RayIdentity : register(u3);
 uint2 PackHalf4(float4 value)
 {
     uint4 bits=f32tof16(clamp(value,-65504.0,65504.0));
@@ -117,8 +119,9 @@ groupshared uint GroupCounts[8];
 // Non-opaque instances are marked in the TLAS; do not commit a candidate
 // without a resident alpha texture and an authoritative comparison function.
 
-Sample EvaluateScreen(uint2 pixelIndex)
+Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity)
 {
+    hitIdentity = uint2(0xffffffffu, 0xffffffffu);
     Sample result = (Sample)0;
     uint2 pixel = min(uint2((float2(pixelIndex)+0.5)*float2(ViewSize)/float2(GridSize)),ViewSize-1u);
     float z = ProbeDepth.Load(int3(pixel,0));
@@ -172,6 +175,10 @@ Sample EvaluateScreen(uint2 pixelIndex)
         }
         else result.color.a = SurfaceEvaluationFailed;
     }
+    // Only a supported, fully evaluated receiver may provide a candidate identity.
+    // This remains a ray-hit stamp, not evidence of a winning raster primitive.
+    if (result.color.a == SurfaceEvaluatedBase)
+        hitIdentity = uint2(instance, query.CommittedPrimitiveIndex());
     return result;
 }
 
@@ -183,8 +190,11 @@ void screenMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
         GroupMemoryBarrierWithGroupSync();
     }
     if (all(id.xy < GridSize)) {
-        Sample result=EvaluateScreen(id.xy);
-        uint offset=(id.y*((GridSize.x+7u)&~7u)+id.x)*NativeSurfaceStride;
+        uint2 hitIdentity;
+        Sample result=EvaluateScreen(id.xy, hitIdentity);
+        uint ordinal = id.y*((GridSize.x+7u)&~7u)+id.x;
+        uint offset=ordinal*NativeSurfaceStride;
+        RayIdentity.Store2(ordinal*8u,hitIdentity);
         ScreenOutput.Store4(offset,uint4(PackHalf4(result.color),PackHalf4(result.normal)));
         ScreenOutput.Store4(offset+16u,uint4(PackHalf4(result.f0),PackHalf4(result.emission)));
         uint category = result.color.a==SurfaceEvaluatedBase ? 0 : result.color.a==SurfaceMissingGeometry ? 1 :

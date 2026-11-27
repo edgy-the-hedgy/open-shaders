@@ -221,3 +221,11 @@ TEST_CASE("Duplicate native draw candidates cannot claim a unique instance ordin
 	match.Observe(3);
 	REQUIRE_FALSE(match.Valid());
 }
+
+TEST_CASE("Native ray identity has an independent bounded row layout", "[dx12][materials]")
+{
+	REQUIRE(ValidLayout(1921, 1080, 1928 * kRayIdentityStride, kRayIdentityStride));
+	REQUIRE_FALSE(ValidLayout(1921, 1080, 1920 * kRayIdentityStride, kRayIdentityStride));
+	REQUIRE_FALSE(ValidLayout(1921, 1080, 1928 * kRayIdentityStride + 1, kRayIdentityStride));
+	REQUIRE_FALSE(ValidLayout(16384, 65536, 16384 * kRayIdentityStride, kRayIdentityStride));
+}
