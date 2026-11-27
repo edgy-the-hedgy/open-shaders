@@ -92,7 +92,8 @@ bool NativeCubemaps::Producer::CaptureRaw(const GraphicsBackend& backend, ID3D11
     winrt::com_ptr<ID3D11UnorderedAccessView> oldUAV;
     ID3D11ShaderResourceView* oldReads[2]{};
     context->CSGetShader(oldShader.put(),nullptr,nullptr);
-    context->CSGetConstantBuffers(0,1,oldCB.put());
+    UINT oldFirst=0,oldCount=0;
+    context->CSGetConstantBuffers1(0,1,oldCB.put(),&oldFirst,&oldCount);
     context->CSGetUnorderedAccessViews(0,1,oldUAV.put());
     context->CSGetShaderResources(0,2,oldReads);
     context->CSSetShaderResources(0,2,reads);
@@ -109,7 +110,7 @@ bool NativeCubemaps::Producer::CaptureRaw(const GraphicsBackend& backend, ID3D11
     }
     auto* uav=oldUAV.get(); auto* cb=oldCB.get();
     context->CSSetUnorderedAccessViews(0,1,&uav,nullptr);
-    context->CSSetConstantBuffers(0,1,&cb);
+    context->CSSetConstantBuffers1(0,1,&cb,&oldFirst,&oldCount);
     context->CSSetShader(oldShader.get(),nullptr,0);
     context->CSSetShaderResources(0,2,oldReads);
     for(auto* view:oldReads) if(view) view->Release();

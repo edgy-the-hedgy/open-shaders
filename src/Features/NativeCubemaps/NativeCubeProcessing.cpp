@@ -71,7 +71,7 @@ struct NativeCubemaps::CubeProcessing::Generation
 {
     EnvironmentCube history,positions,base,reflection;
     winrt::com_ptr<ID3D12Resource> captureConstants,lightingDecision;
-    float referenceLuminance=0.0f;
+    float ambientLuminance=0.0f, sunLuminance=0.0f;
     winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
     winrt::com_ptr<ID3D12CommandAllocator> allocator;
     winrt::com_ptr<ID3D12GraphicsCommandList> commands;
@@ -295,14 +295,18 @@ bool NativeCubemaps::CubeProcessing::Dispatch(const GraphicsBackend& backend,
     if(reflection) stampCube(slot->reflection);
     const uint32_t elapsed=latest ? input->stamp.engineFrame-latest->base.stamp.engineFrame:0;
     const auto luminance=[](float r,float g,float b){return 0.2126f*r+0.7152f*g+0.0722f*b;};
-    const float ambient=std::max(0.0f,luminance(dalc[0].x,dalc[1].x,dalc[2].x));
+    // x is the constant SH coefficient. Keep native sunlight separate so a
+    // deferred native frame cannot masquerade as an actual lighting step.
+    slot->ambientLuminance=std::max(0.0f,luminance(dalc[0].x,dalc[1].x,dalc[2].x));
     const auto sun=native?native->direct->directional.radiance:float4{};
-    slot->referenceLuminance=ambient+std::max(0.0f,luminance(sun.x,sun.y,sun.z));
+    slot->sunLuminance=std::max(0.0f,luminance(sun.x,sun.y,sun.z));
     bool useHistory=false;
     if(latest) {
         const auto& old=latest->cameraPosition;
         const float x=old.x-cameraPosition.x,y=old.y-cameraPosition.y,z=old.z-cameraPosition.z;
-        useHistory=Policy::CanReuseHistory(latest->base.stamp.SameEnvironment(input->stamp),elapsed,x*x+y*y+z*z) && !Policy::LightingDiscontinuity(latest->referenceLuminance,slot->referenceLuminance);
+        const bool lightChanged=Policy::LightingDiscontinuity(latest->ambientLuminance,slot->ambientLuminance) ||
+            (latest->nativeAdmitted && native && Policy::LightingDiscontinuity(latest->sunLuminance,slot->sunLuminance));
+        useHistory=Policy::CanReuseHistory(latest->base.stamp.SameEnvironment(input->stamp),elapsed,x*x+y*y+z*z) && !lightChanged;
     }
     if(useHistory) slot->previous=latest;
     slot->constants={dalc,uint32_t(input->stamp.encoding),uint32_t(useHistory),uint32_t(engineReflection) | (!input->stamp.skyHidden ? 2u : 0u) | (input->defaultCube && input->defaultCube->IsReadyFor(input->stamp) ? 4u : 0u),elapsed};
