@@ -4,6 +4,7 @@
 #include "Features/DX12/DX12NativeEnvironment.h"
 #include "Features/DX12/VideoMemoryBudget.h"
 #include "NativeWaterSSR.h"
+#include "NativeForwardEnvironment.h"
 
 namespace DX12Native { struct FullNativeReconstructionFrame; }
 
@@ -46,6 +47,8 @@ namespace NativeCubemaps
         std::string GetShortName() override { return "NativeCubemaps"; }
         bool WantsDrawHook() const override { return true; }
         void OnDraw() override;
+        void BeginForward();
+        void EndForward();
         void BeginWaterSSR();
         void EndWaterSSR();
         void OnRuntimeDisabled() override { InvalidateGeneration(); Release(); }
@@ -62,6 +65,7 @@ namespace NativeCubemaps
         std::unique_ptr<DX12Native::NativeEnvironment> inputs;
         std::unique_ptr<CubeProcessing> processing;
         std::unique_ptr<WaterSSR> waterSSR;
+        std::unique_ptr<ForwardEnvironment> forward;
         uint32_t waterScopeDepth = 0;
         bool waterScopeInvalid = false;
         winrt::com_ptr<ID3D11Texture2D> raw;

@@ -187,6 +187,24 @@ std::shared_ptr<const DX12Native::EnvironmentFrame> NativeCubemaps::Producer::Ge
     return frame;
 }
 
+void NativeCubemaps::Producer::BeginForward()
+{
+    if(!loaded || !globals::features::dx12Control.WantsMaterialPreparation() ||
+        !globals::state || !globals::state->inWorld || globals::state->nativeFirstPersonDepth ||
+        (globals::state->permutationData.ExtraShaderDescriptor & uint32_t(State::ExtraShaderDescriptors::IsReflections))) return;
+    const auto* backend=globals::features::dx12NativeScene.GetNativeBackend();
+    if(!backend || !globals::game::graphicsState) return;
+    const uint32_t frame=globals::game::graphicsState->GetFrameCount();
+    if(currentStamp.engineFrame!=frame || currentStamp.pluginFrame!=globals::state->frameCount) return;
+    if(!forward) forward=std::make_unique<ForwardEnvironment>();
+    forward->Update(*backend,Get(),currentStamp);
+    forward->Bind(*backend,currentStamp);
+}
+void NativeCubemaps::Producer::EndForward()
+{
+    if(forward) forward->Unbind();
+}
+
 void NativeCubemaps::Producer::BeginWaterSSR()
 {
     if (!globals::features::dx12Control.WantsMaterialPreparation()) return;
@@ -238,11 +256,13 @@ json NativeCubemaps::Producer::GetDiagnostics()
         {"skyPublished",publication && bool(publication->sky)}, {"inputAllocationBytes",inputs ? inputs->AllocationBytes() : 0},
         {"inputFailure",inputs ? inputs->Failure() : ""},
         {"processing",processing ? processing->GetDiagnostics() : json::object()},
-        {"waterSSR",waterSSR ? waterSSR->Diagnostics() : json::object()} };
+        {"waterSSR",waterSSR ? waterSSR->Diagnostics() : json::object()},
+        {"forwardEnvironment",forward ? forward->Diagnostics() : json::object()} };
 }
 
 void NativeCubemaps::Producer::InvalidateGeneration()
 {
+    if(forward) forward->Reset();
     if(waterSSR) { waterSSR->End(); waterSSR->ResetHistory(); }
     waterScopeDepth=0; waterScopeInvalid=false;
     if(processing) processing->Reset();
@@ -252,7 +272,7 @@ void NativeCubemaps::Producer::InvalidateGeneration()
 }
 void NativeCubemaps::Producer::Release()
 {
-    waterSSR.reset();
+    forward.reset(); waterSSR.reset();
     processing.reset(); inputs.reset();
     raw=nullptr; rawUAV=nullptr; inputShader=nullptr; inputConstants=nullptr;
     lastCaptureFrame=UINT32_MAX;

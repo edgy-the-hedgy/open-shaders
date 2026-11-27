@@ -11,6 +11,7 @@
 #include "Features/CSEditor.h"
 #include "Features/DX12/DX12Control.h"
 #include "Features/DX12/DX12NativeScene.h"
+#include "Features/NativeCubemaps/NativeCubemaps.h"
 #include "Features/DynamicCubemaps.h"
 #include "Features/Effects11.h"
 #include "Features/IBL.h"
@@ -533,6 +534,7 @@ void Deferred::DeferredPasses()
 		const auto frame = globals::game::graphicsState->GetFrameCount();
 		globals::features::dx12NativeScene.CaptureFullNativeEnvironment(rasterRadianceReady ? Util::AsReal(main.SRV) : nullptr, frame);
 		globals::features::upscaling.nativeComposite.ApplyFullNativeOpaque(frame, Util::AsReal(main.UAV));
+		globals::features::nativeCubemaps.BeginForward();
 	}
 
 	if (dynamicCubemaps.loaded)
@@ -888,6 +890,8 @@ void Deferred::Hooks::Main_RenderWorld::thunk(bool a1)
 	state->worldRenderedThisFrame = true;
 	Feature::ForEachLoadedFeature("OnWorldRenderBegin", [](Feature* feature) { feature->OnWorldRenderBegin(); });
 	func(a1);
+	if (globals::features::dx12Control.UsesExclusiveMaterials())
+		globals::features::nativeCubemaps.EndForward();
 	if (globals::game::isVR)
 		Feature::ForEachLoadedFeature("OnWorldRenderEnd", [](Feature* feature) { feature->OnWorldRenderEnd(RE::RENDER_TARGET::kMAIN); });
 

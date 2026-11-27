@@ -727,6 +727,8 @@ FlowmapData GetFlowmapDataWorldSpace(FlowmapData textureSpaceData)
 
 #			if defined(DYNAMIC_CUBEMAPS)
 #				include "DynamicCubemaps/DynamicCubemaps.hlsli"
+#			elif defined(FULL_NATIVE_INPUT)
+#				include "Common/NativeForwardEnvironment.hlsli"
 #			endif
 
 #			if defined(WETNESS_EFFECTS)
@@ -920,12 +922,19 @@ WaterNormalData GetWaterNormal(PS_INPUT input, float distanceFactor, float norma
 
 float3 GetWaterSpecularColor(PS_INPUT input, float3 normal, float3 viewDirection, float distanceFactor, float skylightingSpecular)
 {
-#			if !defined(DYNAMIC_CUBEMAPS)
+#			if defined(FULL_NATIVE_INPUT)
+	bool nativeEnvironment = NativeForwardEnvironment::Available();
+	if (!nativeEnvironment && !(Permutation::PixelShaderDescriptor & Permutation::WaterFlags::Reflections))
+		return ReflectionColor.xyz * VarAmounts.y * SharedData::csUtilitySettings.waterReflectionAmount;
+#			elif !defined(DYNAMIC_CUBEMAPS)
 	if (!(Permutation::PixelShaderDescriptor & Permutation::WaterFlags::Reflections))
 		return ReflectionColor.xyz * VarAmounts.y * SharedData::csUtilitySettings.waterReflectionAmount;
 #			endif
 
 	float3 R = reflect(viewDirection, WaterParams.y * normal + float3(0, 0, 1 - WaterParams.y));
+#			if defined(FULL_NATIVE_INPUT)
+	if (nativeEnvironment) R = reflect(viewDirection,float3(0,0,1));
+#			endif
 
 #			if defined(DYNAMIC_CUBEMAPS)
 	// [flatten] keeps fxc from raising X4000 on this early return
@@ -957,6 +966,10 @@ float3 GetWaterSpecularColor(PS_INPUT input, float3 normal, float3 viewDirection
 	}
 
 	float3 reflectionColor = Color::IrradianceToGamma(lerp(specularIrradiance, specularIrradianceReflections, skylightingSpecular));
+#			elif defined(FULL_NATIVE_INPUT)
+	float3 reflectionColor = nativeEnvironment ?
+		Color::IrradianceToGamma(NativeForwardEnvironment::Sample(CubeMapSampler,R,0.0,skylightingSpecular)) :
+		CubeMapTex.SampleLevel(CubeMapSampler,R,0).xyz;
 #			else
 	float3 reflectionColor = CubeMapTex.SampleLevel(CubeMapSampler, R, 0).xyz;
 #			endif
@@ -965,7 +978,10 @@ float3 GetWaterSpecularColor(PS_INPUT input, float3 normal, float3 viewDirection
 	float pointingDirection = dot(viewDirection, R) * 0.5 + 0.5;
 	float pointingAlignment = dot(reflect(viewDirection, float3(0, 0, 1)), R) * 0.5 + 0.5;
 	float ssrAmount = sqrt(min(pointingAlignment, pointingDirection));
-	float2 ssrReflectionUv = ((FrameBuffer::DynamicResolutionParams2.xy * input.HPosition.xy) * SSRParams.zw) + 0.05 * normal.xy;
+	float2 ssrReflectionUv = ((FrameBuffer::DynamicResolutionParams2.xy * input.HPosition.xy) * SSRParams.zw);
+#			if !defined(FULL_NATIVE_INPUT)
+	ssrReflectionUv += 0.05 * normal.xy;
+#			endif
 	float2 ssrReflectionUvDR = FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(ssrReflectionUv);
 	float4 ssrReflectionColorBlurred = SSRReflectionTex.Sample(SSRReflectionSampler, ssrReflectionUvDR);
 	float4 ssrReflectionColorRaw = RawSSRReflectionTex.Sample(RawSSRReflectionSampler, ssrReflectionUvDR);
