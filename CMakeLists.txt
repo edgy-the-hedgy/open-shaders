@@ -459,6 +459,7 @@ foreach(FEATURE_PATH ${FEATURE_CONFIG_FILES})
             set(ver_major ${CMAKE_MATCH_1})
             set(ver_minor ${CMAKE_MATCH_2})
             set(ver_patch ${CMAKE_MATCH_3})
+            list(APPEND _registered_feature_names "${FEATURE}")
             list(
                 APPEND FEATURE_VERSIONS
                 "\t\t{\"${FEATURE}\"sv, {${ver_major},${ver_minor},${ver_patch}}}"
@@ -511,6 +512,16 @@ foreach(FEATURE_PATH ${FEATURE_CONFIG_FILES})
         list(APPEND FEATURE_CORE_NAMES "\t\t\"${FEATURE}\"sv")
     endif()
 endforeach()
+
+# Full Native counterparts are built into this branch. Catch missing version
+# registrations at configure time rather than disabling them in Feature::Load.
+foreach(_native_feature IN ITEMS NativeLLF NativeIBL NativeCubemaps NativePBR)
+    if(NOT _native_feature IN_LIST _registered_feature_names)
+        message(FATAL_ERROR "Missing feature version registration for ${_native_feature}")
+    endif()
+endforeach()
+unset(_registered_feature_names)
+unset(_native_feature)
 
 set_property(
     DIRECTORY
