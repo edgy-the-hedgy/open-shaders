@@ -21,6 +21,29 @@ namespace DX12Native
 		}
 	}
 
+	void FullNativeReconstruction::Poll(uint32_t frame)
+	{
+		if (current && current->frame != frame)
+			current.reset();
+		for (auto& slot : slots) {
+			if (!slot || slot.use_count() != 1)
+				continue;
+			if (slot->readyValue == UINT64_MAX && completion && owner.commandQueue &&
+				completion->GetCompletedValue() != UINT64_MAX) {
+				const auto rescue = nextValue + 1;
+				if (SUCCEEDED(owner.commandQueue->Signal(completion.get(), rescue))) {
+					nextValue = rescue;
+					slot->readyValue = rescue;
+				}
+			}
+			if (GpuFenceRetired(slot->readyFence.get(), slot->readyValue)) {
+				slot->material.reset();
+				slot->direct.reset();
+				slot->indirect.reset();
+			}
+		}
+	}
+
 	std::shared_ptr<const FullNativeReconstructionFrame> FullNativeReconstruction::Get(uint32_t frame) const
 	{
 		return current && current->frame == frame && current->readyFence &&
@@ -75,6 +98,7 @@ namespace DX12Native
 	{
 		if (!material || !material->IsCoherent(material->frame, material->width, material->height))
 			return;
+		Poll(material->frame);
 		if (current && current->frame == material->frame)
 			return;
 		current.reset();

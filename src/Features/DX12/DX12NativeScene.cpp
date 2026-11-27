@@ -640,6 +640,7 @@ void DX12NativeScene::DispatchFullNativeMaterial()
 		return;
 	CS_GPU_PASS("DX12NativeScene::FullNativeMaterial");
 	const auto frame = globals::game::graphicsState->GetFrameCount();
+	globals::features::upscaling.nativeComposite.PollFullNative(frame);
 	if (!fullNativeMaterial)
 		fullNativeMaterial = std::make_unique<DX12Native::NativeScreenProbe>();
 	if (fullNativeIndirect)

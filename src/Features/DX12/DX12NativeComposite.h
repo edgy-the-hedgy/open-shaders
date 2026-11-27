@@ -59,6 +59,7 @@ namespace DX12Native
 			std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
 			std::shared_ptr<const DirectLightingFrame> direct, std::shared_ptr<const IndirectLightingFrame> indirect);
 		std::shared_ptr<const FullNativeReconstructionFrame> GetFullNativeReconstruction(uint32_t frame) const;
+		void PollFullNative(uint32_t frame) { if (fullNativeReconstruction) fullNativeReconstruction->Poll(frame); }
 		void ResetFullNative() { fullNativeReconstruction.reset(); }
 		~NativeComposite();
 		/** @brief Release completed input publications on the render thread. */

@@ -27,6 +27,7 @@ namespace DX12Native
 	{
 	public:
 		~FullNativeReconstruction();
+		void Poll(uint32_t frame);
 		void Dispatch(const GraphicsBackend& backend, std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
 			std::shared_ptr<const DirectLightingFrame> direct, std::shared_ptr<const IndirectLightingFrame> indirect);
 		std::shared_ptr<const FullNativeReconstructionFrame> Get(uint32_t frame) const;
