@@ -42,7 +42,8 @@ void NativeLLF::Producer::Reset()
 		std::scoped_lock lock(referenceMutex);
 		references.clear();
 	}
-	currentPluginFrame = globals::state ? globals::state->frameCount : UINT32_MAX;
+	// State::Reset increments the plugin frame after feature Reset callbacks.
+	currentPluginFrame = globals::state ? globals::state->frameCount + 1u : UINT32_MAX;
 }
 
 void NativeLLF::Producer::ResetParticleInput()
