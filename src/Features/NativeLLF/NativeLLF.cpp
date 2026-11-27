@@ -62,7 +62,10 @@ void NativeLLF::Producer::ObserveParticlePass(RE::BSRenderPass* pass)
 {
 	if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation() ||
 		!particleSettings.EnableParticleLights || !pass || !pass->geometry || !pass->shaderProperty ||
-		!globals::shaderCache || !globals::shaderCache->IsEnabled() || pending.size() >= DX12::kMaxPreparedLights)
+		!globals::shaderCache || !globals::shaderCache->IsEnabled() || pending.size() >= DX12::kMaxPreparedLights ||
+		!globals::state || globals::state->isMapMenuOpen || globals::features::dx12Resources.IsLoading() ||
+		(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)) ||
+		observed.size() >= 16u * DX12::kMaxPreparedLights)
 		return;
 	if (pass->shaderProperty->GetRTTI() != globals::rtti::BSEffectShaderPropertyRTTI.get())
 		return;

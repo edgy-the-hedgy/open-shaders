@@ -62,12 +62,15 @@ if(NATIVE_SHADOW_DXC)
     file(GLOB _full_native_local_deps CONFIGURE_DEPENDS
         "${_full_native_source_dir}/Native*.hlsli"
     )
-    foreach(_shader IN ITEMS NativePBRProbe NativePBRScreenProbe DirectLighting NativeDiffuseSH NativeIndirectLighting FullNativeReconstruction CompositeFullNative)
+    foreach(_shader IN ITEMS NativePBRProbe NativePBRScreenProbe DirectLighting NativeDiffuseSH NativeIndirectLighting NativeCubemapHistory NativeCubemapFilter FullNativeReconstruction CompositeFullNative)
         set(_full_native_entry main)
         set(_full_native_source "${_full_native_source_dir}/${_shader}.hlsl6")
         if(_shader STREQUAL "NativePBRScreenProbe")
             set(_full_native_source "${_full_native_source_dir}/NativePBRProbe.hlsl6")
             set(_full_native_entry screenMain)
+        elseif(_shader STREQUAL "NativeCubemapHistory")
+            set(_full_native_source "${_full_native_source_dir}/NativeCubemapFilter.hlsl6")
+            set(_full_native_entry historyMain)
         endif()
         set(_full_native_output "${_native_composite_dir}/${_shader}.dxil")
         add_custom_command(

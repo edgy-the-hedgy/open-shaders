@@ -1,0 +1,99 @@
+#include "Common/NativeCubeDirection.hlsli"
+#include "NativeEnvironmentColor.hlsli"
+#include "Common/Spherical Harmonics/SphericalHarmonics.hlsli"
+
+TextureCube<float4> Source : register(t0);
+TextureCube<float4> Previous : register(t1);
+TextureCube<float4> EngineReflection : register(t2);
+RWTexture2DArray<float4> Destination : register(u0);
+SamplerState PointClamp : register(s0);
+SamplerState LinearClamp : register(s1);
+cbuffer Environment : register(b0)
+{
+    float4 DALC[3];
+    uint Encoding;
+    uint HasHistory;
+    uint HasReflection;
+    uint FrameDelta;
+};
+cbuffer Dispatch : register(b1)
+{
+    uint Size;
+    uint Mip;
+    uint Mips;
+    uint Reflection;
+};
+float3 Encode(float3 c)
+{
+    c = max(c,0);
+    if (Encoding == 0) return pow(c, 1.0/1.6);
+    if (Encoding == 2) return max(0,sRGBToAP1(c));
+    return c;
+}
+float3 SceneRadiance(float3 c)
+{
+    return pow(max(c,0),1.6);
+}
+[numthreads(8,8,1)]
+void historyMain(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id.xy >= Size) || id.z >= 6) return;
+    float3 d = NativeCubeDirection(id, Size);
+    float4 sample = Source.SampleLevel(PointClamp,d,0);
+    if (abs(sample.a) > 0) {
+        Destination[id] = float4(sample.rgb, sign(sample.a));
+        return;
+    }
+    if (HasHistory != 0) {
+        sample = Previous.SampleLevel(PointClamp,d,0);
+        float age = abs(sample.a) + float(FrameDelta);
+        // Never refresh the age of inferred or unobserved directions.
+        if (abs(sample.a) > 0 && age <= 1800.0) {
+            Destination[id] = float4(sample.rgb, sign(sample.a)*age);
+            return;
+        }
+    }
+    Destination[id] = 0;
+}
+float3 Fallback(float3 direction)
+{
+    if (Reflection != 0 && HasReflection != 0)
+        return SceneRadiance(EngineReflection.SampleLevel(LinearClamp,direction,0).rgb);
+    float4 basis = SphericalHarmonics::Evaluate(direction);
+    float3 gamma = max(0,float3(dot(DALC[0],basis),dot(DALC[1],basis),dot(DALC[2],basis)));
+    return Encoding == 0 ? SceneRadiance(gamma) : lerp(gamma/12.92,pow((gamma+0.055)/1.055,2.4),step(0.04045,gamma));
+}
+float3 Resolve(float3 direction)
+{
+    float4 c = Source.SampleLevel(PointClamp,direction,0);
+    if (c.a > 0 || (Reflection != 0 && c.a < 0))
+        return SceneRadiance(c.rgb);
+    return Fallback(direction);
+}
+[numthreads(8,8,1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id.xy >= Size) || id.z >= 6) return;
+    float3 n = NativeCubeDirection(id,Size);
+    if (Mip == 0) {
+        Destination[id] = float4(min(Encode(Resolve(n)),65504),1);
+        return;
+    }
+    float3 t = normalize(cross(abs(n.z)<0.999 ? float3(0,0,1) : float3(1,0,0), n));
+    float3 b = cross(n,t);
+    float roughness = float(Mip)/max(1.0,float(Mips-1));
+    float a = max(0.001,roughness*roughness);
+    float3 sum = 0;
+    float weight = 0;
+    [unroll] for (uint i=0;i<32;++i) {
+        float2 xi = float2((float(i)+0.5)/32.0,float(reversebits(i))*2.3283064365386963e-10);
+        float phi = 6.28318530718 * xi.x;
+        float cosTheta = sqrt((1-xi.y)/(1+(a*a-1)*xi.y));
+        float sinTheta = sqrt(max(0,1-cosTheta*cosTheta));
+        float3 h = t*(cos(phi)*sinTheta)+b*(sin(phi)*sinTheta)+n*cosTheta;
+        float3 l = reflect(-n,h);
+        float ndl = saturate(dot(n,l));
+        if (ndl > 0) { sum += Resolve(l)*ndl; weight += ndl; }
+    }
+    Destination[id] = float4(min(Encode(weight>0 ? sum/weight : Resolve(n)),65504),1);
+}

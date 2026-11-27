@@ -1,49 +1,57 @@
 #pragma once
 
 #include "Features/DX12/FullNativeFeature.h"
-
 #include "Features/DX12/DX12NativeEnvironment.h"
 
 namespace NativeCubemaps
 {
-	/** @brief Owns native environment generations and fenced DX12 environment resources. */
-	class Producer final : public DX12::FullNativeFeature
-	{
-	public:
-		std::string GetName() override { return "Native Cubemaps"; }
-		std::string GetShortName() override { return "NativeCubemaps"; }
-		void OnRuntimeDisabled() override { InvalidateGeneration(); Release(); }
-		void ClearShaderCache() override { InvalidateGeneration(); Release(); }
-		DX12Native::EnvironmentStamp Prepare(uint32_t scope, uint32_t frame, bool& changed);
-		void Capture(const GraphicsBackend& backend);
-		void InvalidateGeneration();
-		void Release() { environment.reset(); }
-		std::shared_ptr<const DX12Native::EnvironmentFrame> Get() const { return environment ? environment->Get() : nullptr; }
+    class CubeProcessing
+    {
+    public:
+        ~CubeProcessing();
+        bool Dispatch(const GraphicsBackend&, std::shared_ptr<const DX12Native::EnvironmentFrame>,
+            const std::array<float4,3>&, const float4& cameraPosition);
+        void Reset();
+        std::shared_ptr<const DX12Native::EnvironmentFrame> Get() const { return current; }
+    private:
+        struct Generation;
+        void Poll();
+        void Initialize(const GraphicsBackend&);
+        GraphicsBackend owner;
+        winrt::com_ptr<ID3D12RootSignature> root;
+        winrt::com_ptr<ID3D12PipelineState> historyPipeline, filterPipeline;
+        winrt::com_ptr<ID3D12Fence> fence;
+        std::array<std::shared_ptr<Generation>,3> slots;
+        std::shared_ptr<Generation> latest;
+        std::shared_ptr<const DX12Native::EnvironmentFrame> current;
+        VideoMemoryBudget budget;
+        uint64_t nextFence = 0;
+    };
 
-		// Transitional acquisition callbacks at the existing legacy capture boundaries.
-		void ResetLegacyCubeBridge();
-		void RecordLegacyCubeCapture(uint32_t index, bool successful);
-		void PublishLegacyCube(uint32_t index, ID3D11Texture2D* texture);
-
-	private:
-		struct RetainedSource
-		{
-			winrt::com_ptr<ID3D11Texture2D> texture;
-			uint64_t revision = 0;
-			DX12Native::EnvironmentStamp stamp{};
-			DX12Native::EnvironmentSource Get(const DX12Native::EnvironmentStamp& requested) const
-			{
-				DX12Native::EnvironmentSource source{ texture.get(), revision, stamp };
-				return source.IsValidFor(requested) ? source : DX12Native::EnvironmentSource{};
-			}
-		};
-		DX12Native::EnvironmentStamp cubeContext{};
-		std::array<DX12Native::EnvironmentStamp, 2> cubePending{};
-		std::array<RetainedSource, 2> cubeSources{};
-		uint64_t cubeRevision = 0;
-		std::unique_ptr<DX12Native::NativeEnvironment> environment;
-		DX12Native::EnvironmentStamp currentStamp{};
-		uint64_t epoch = 1;
-		float lastHours = 0.0f;
-	};
+    class Producer final : public DX12::FullNativeFeature
+    {
+    public:
+        std::string GetName() override { return "Native Cubemaps"; }
+        std::string GetShortName() override { return "NativeCubemaps"; }
+        void OnRuntimeDisabled() override { InvalidateGeneration(); Release(); }
+        void ClearShaderCache() override { InvalidateGeneration(); Release(); }
+        DX12Native::EnvironmentStamp Prepare(uint32_t scope,uint32_t frame,bool& changed);
+        void Capture(const GraphicsBackend&);
+        void InvalidateGeneration();
+        void Release();
+        std::shared_ptr<const DX12Native::EnvironmentFrame> Get() const { return processing.Get(); }
+    private:
+        bool CaptureRaw(const GraphicsBackend&);
+        std::unique_ptr<DX12Native::NativeEnvironment> inputs;
+        CubeProcessing processing;
+        winrt::com_ptr<ID3D11Texture2D> raw;
+        winrt::com_ptr<ID3D11UnorderedAccessView> rawUAV;
+        winrt::com_ptr<ID3D11ComputeShader> inputShader;
+        winrt::com_ptr<ID3D11Buffer> inputConstants;
+        DX12Native::EnvironmentStamp currentStamp{};
+        uint64_t epoch = 1, rawRevision = 0;
+        uint32_t lastCaptureFrame = UINT32_MAX;
+        float lastHours = 0;
+        bool failureLogged = false;
+    };
 }

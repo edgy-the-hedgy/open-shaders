@@ -1,6 +1,4 @@
 #include "DynamicCubemaps.h"
-#include "Features/DX12/DX12Control.h"
-#include "Features/NativeCubemaps/NativeCubemaps.h"
 
 #include <DDSTextureLoader.h>
 #include <DirectXTex.h>
@@ -183,8 +181,6 @@ void DynamicCubemaps::PostPostLoad()
 
 void DynamicCubemaps::OnSceneTransitionReset(bool opening)
 {
-	if (globals::features::dx12Control.WantsMaterialPreparation())
-		globals::features::nativeCubemaps.ResetLegacyCubeBridge();
 	// On LoadingMenu close (new cell loaded) re-trigger the cubemap capture. Dispatched on the
 	// render thread by Feature::DrainSceneTransitions; resetCapture is consumed there too.
 	if (!opening) {
@@ -195,8 +191,6 @@ void DynamicCubemaps::OnSceneTransitionReset(bool opening)
 
 void DynamicCubemaps::ClearShaderCache()
 {
-	if (globals::features::dx12Control.WantsMaterialPreparation())
-		globals::features::nativeCubemaps.ResetLegacyCubeBridge();
 	resetCapture[0] = resetCapture[1] = true;
 	cubemapValid[0] = cubemapValid[1] = false;
 	nextTask = NextTask::kCaptureInferAndIrradianceA;
@@ -338,8 +332,6 @@ bool DynamicCubemaps::UpdateCubemapCapture(bool a_reflections)
 	ID3D11SamplerState* nullSampler = { nullptr };
 	context->CSSetSamplers(0, 1, &nullSampler);
 
-	if (globals::features::dx12Control.WantsMaterialPreparation())
-		globals::features::nativeCubemaps.RecordLegacyCubeCapture(index, shader && detectShader);
 	return shader && detectShader;
 }
 
@@ -541,10 +533,6 @@ bool DynamicCubemaps::CompressToBC6H(bool a_reflections)
 		}
 		context->CopyResource((a_reflections ? envReflectionsTexture : envTexture)->resource.get(), envFilteredTexture->resource.get());
 		cubemapValid[a_reflections ? 1 : 0] = true;
-		if (globals::features::dx12Control.WantsMaterialPreparation()) {
-			const auto* texture = a_reflections ? envReflectionsTexture : envTexture;
-			globals::features::nativeCubemaps.PublishLegacyCube(a_reflections ? 1u : 0u, texture ? texture->resource.get() : nullptr);
-		}
 	}
 
 	return true;
@@ -640,8 +628,6 @@ void DynamicCubemaps::PostDeferred()
 
 void DynamicCubemaps::SetupResources()
 {
-	if (globals::features::dx12Control.WantsMaterialPreparation())
-		globals::features::nativeCubemaps.ResetLegacyCubeBridge();
 	GetComputeShaderDetectLighting();
 	GetComputeShaderUpdate();
 	GetComputeShaderUpdateReflections();

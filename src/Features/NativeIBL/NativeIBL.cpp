@@ -46,8 +46,9 @@ std::function<void()> NativeIBL::Producer::OnReflectionsRenderBegin()
 	using namespace DX12Native;
 	if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation())
 		return nullptr;
-	const auto resolved = IBLInput::ResolveSettings(settings);
-	const bool enabled = resolved.EnableIBL && !Util::IsInterior() &&
+	// Cubemap acquisition also uses this face-coverage certification. Capture
+	// availability is independent of whether indirect IBL contribution is enabled.
+	const bool enabled = !Util::IsInterior() &&
 		globals::shaderCache && globals::shaderCache->IsEnabled();
 	auto cleanup = capture.Begin(enabled);
 	if (!cleanup) {
