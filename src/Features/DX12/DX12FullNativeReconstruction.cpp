@@ -210,8 +210,16 @@ namespace DX12Native
 				slot->direct->coverage == LightingCoverage::CompleteRasterReplacement &&
 				slot->indirect->coverage == LightingCoverage::CompleteRasterReplacement &&
 				(available & kOpaqueRequired) == kOpaqueRequired;
-			if (rayStamp == rasterStamp)
-				slot->rasterEvidence = evidenceCapture.Capture(backend, rasterTokens, rasterStamp, tokens);
+			if (rayStamp == rasterStamp) {
+				const auto& evidence = slot->material->rawRasterEvidence;
+				if (evidence && evidence->stamp == rasterStamp && evidence->tokenCount == tokens.size() &&
+					evidence->width >= slot->width && evidence->height >= slot->height &&
+					evidence->texture && evidence->texture->resource && evidence->tokenTable &&
+					evidence->readyFence && ValidProducerSignal(evidence->readyValue, evidence->readyFence->GetCompletedValue()))
+					slot->rasterEvidence = evidence;
+				else
+					slot->rasterEvidence = evidenceCapture.Capture(backend, rasterTokens, rasterStamp, tokens);
+			}
 			if (slot->rasterEvidence && (slot->rasterEvidence->width < slot->width || slot->rasterEvidence->height < slot->height))
 				slot->rasterEvidence.reset();
 			slot->historyIdentity = stamp;

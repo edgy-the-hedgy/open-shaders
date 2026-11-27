@@ -134,6 +134,7 @@ namespace DX12Native
 			uint32_t rayIdentityRowPitch = 0, materialLobeRowPitch = 0;
 			bool parallaxShadows = false;
 			uint32_t rawInputDraws = 0;
+			std::shared_ptr<const FullNativeRasterEvidence> rawRasterEvidence;
 			uint32_t abiVersion=MaterialFrameContract::kMaterialAbiVersion, sampleStride=kSampleStride, rowPitch=0;
 			static constexpr D3D12_RESOURCE_STATES publishedState = D3D12_RESOURCE_STATE_COMMON;
 			MaterialFrameContract::SurfaceCorrespondence correspondence = MaterialFrameContract::SurfaceCorrespondence::DepthOnly;
@@ -510,6 +511,7 @@ namespace DX12Native
 					materialFrame->materialLobeRowPitch=pitchPixels*MaterialFrameContract::kMaterialLobeStride;
 					materialFrame->parallaxShadows=shadowPlane;
 					materialFrame->rawInputDraws=pending->rawInputs ? pending->rawInputs->draws : 0u;
+					materialFrame->rawRasterEvidence=pending->rawInputs ? pending->rawInputs->evidence : nullptr;
 					materialFrame->raster=pending->raster; materialFrame->scene=pending->scene;
 					materialFrame->descriptors=pending->descriptors;
 					materialFrame->producerValue=value; materialFrame->geometryRevision=pending->scene->geometryRevision;

@@ -34,9 +34,10 @@ namespace NativePBR
 	{
 		Reset();
 		for (auto& slot : slots) {
-			if (slot && !GpuFenceRetired(slot->readyFence.get(), slot->readyValue))
-				RetireAfterFences(std::move(slot), owner.d3d12Device,
-					std::vector<FenceDependency>{FencePoint(producer.fence12.get(), slot->readyValue)});
+			if (slot && !GpuFenceRetired(slot->readyFence.get(), slot->readyValue)) {
+				std::vector<FenceDependency> dependencies{ FencePoint(slot->readyFence.get(), slot->readyValue) };
+				RetireAfterFences(std::move(slot), owner.d3d12Device, std::move(dependencies));
+			}
 		}
 	}
 
@@ -185,6 +186,7 @@ namespace NativePBR
 	{
 		if (!context || !mask || !expectedVS || !expectedPS || !draw || !InputOnly::ValidToken(tokenBase, primitiveCount) ||
 			!stamp.scope || !stamp.geometryRevision || !stamp.materialRevision || !globals::shaderCache ||
+			!backend.d3d11Device || !backend.d3d11Context ||
 			backend.d3d11Device->GetFeatureLevel() < D3D_FEATURE_LEVEL_11_1 || failedAllocationFrame == stamp.frame)
 			return false;
 		try {
@@ -233,11 +235,11 @@ namespace NativePBR
 			winrt::com_ptr<ID3D11DepthStencilState> oldDepth;
 			winrt::com_ptr<ID3D11BlendState> oldBlend;
 			winrt::com_ptr<ID3D11Buffer> oldCB;
-			UINT stencilRef = 0, sampleMask = 0;
+			UINT stencilRef = 0, sampleMask = 0, firstConstant = 0, constantCount = 0;
 			float blendFactor[4]{};
 			context->OMGetDepthStencilState(oldDepth.put(), &stencilRef);
 			context->OMGetBlendState(oldBlend.put(), blendFactor, &sampleMask);
-			context->PSGetConstantBuffers(0, 1, oldCB.put());
+			backend.d3d11Context->PSGetConstantBuffers1(0, 1, oldCB.put(), &firstConstant, &constantCount);
 			if (!oldDepth) return false;
 			D3D11_DEPTH_STENCIL_DESC originalDepth{};
 			oldDepth->GetDesc(&originalDepth);
@@ -265,7 +267,10 @@ namespace NativePBR
 			context->PSSetConstantBuffers(0, 1, &cb);
 			const auto restore = [&] {
 				auto* restoreCB = oldCB.get();
-				context->PSSetConstantBuffers(0, 1, &restoreCB);
+				if (restoreCB)
+					backend.d3d11Context->PSSetConstantBuffers1(0, 1, &restoreCB, &firstConstant, &constantCount);
+				else
+					context->PSSetConstantBuffers(0, 1, &restoreCB);
 				context->PSSetShader(ps.get(), nullptr, 0);
 				context->OMSetDepthStencilState(oldDepth.get(), stencilRef);
 				context->OMSetBlendState(oldBlend.get(), blendFactor, sampleMask);

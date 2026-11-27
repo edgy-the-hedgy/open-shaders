@@ -486,8 +486,13 @@ namespace globals
 		static void thunk(ID3D11DeviceContext* context, UINT count, UINT start, INT base)
 		{
 			func(context, count, start, base);
-			if (context == globals::d3d::context && globals::state && globals::state->permutationData.nativeRasterTokenBase)
-				globals::features::dx12NativeScene.ReplayFullNativeInput(context, count, [=] { func(context, count, start, base); });
+			if (context == globals::d3d::context && globals::state && globals::state->permutationData.nativeRasterTokenBase) {
+				try {
+					globals::features::dx12NativeScene.ReplayFullNativeInput(context, count, [=] { func(context, count, start, base); });
+				} catch (...) {
+					// The original raster draw already completed. Never unwind into the engine.
+				}
+			}
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
