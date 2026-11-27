@@ -36,6 +36,12 @@ bool NativeDLSS::Upscale(ID3D11Resource* a_colorOut, ID3D11Resource* a_motionVec
 		composite->width != a_extentIn.width || composite->height != a_extentIn.height)
 		return false;
 
+	const auto prepared = upscaling.nativePreparedFrame;
+	if (globals::features::dx12Control.UsesExclusiveMaterials() && state->worldRenderedThisFrame &&
+		(!prepared || !prepared->world || !prepared->MatchesFrame(state->frameCount, a_extentIn.width, a_extentIn.height) ||
+			prepared->displayWidth != a_extentOut.width || prepared->displayHeight != a_extentOut.height))
+		return false;
+
 	if (!EnsureStreamline() || !EnsureCommandContexts())
 		return false;
 
@@ -87,7 +93,6 @@ bool NativeDLSS::Upscale(ID3D11Resource* a_colorOut, ID3D11Resource* a_motionVec
 		}
 		featureKey = key;
 
-		const auto prepared = upscaling.nativePreparedFrame;
 		const bool directGuides = prepared && prepared->Matches(state->frameCount, a_extentIn.width, a_extentIn.height,
 			swapChain.d3d12Device.get(), { sources[kDepth], sources[kMotionVectors], sources[kReactiveMask], sources[kTransparencyMask] });
 		const D3D11_BOX inputBox{ 0, 0, 0, a_extentIn.width, a_extentIn.height, 1 };

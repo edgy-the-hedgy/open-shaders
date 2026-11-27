@@ -1407,6 +1407,19 @@ bool FidelityFX::UpscaleRegion(uint32_t a_contextIndex, ID3D11Resource* a_color,
 		return false;
 	}
 
+	const auto preparedFrame = globals::features::upscaling.nativePreparedFrame;
+	const auto* currentState = globals::state;
+	const bool fullNativeWorld = globals::features::dx12Control.UsesExclusiveMaterials() &&
+		currentState && currentState->worldRenderedThisFrame && !globals::game::isVR;
+	const bool coherentWorld = fullNativeWorld && preparedFrame && preparedFrame->world &&
+		preparedFrame->MatchesFrame(currentState->frameCount, a_renderWidth, a_renderHeight) &&
+		preparedFrame->displayWidth == a_displayWidth && preparedFrame->displayHeight == a_displayHeight;
+	if (fullNativeWorld && !coherentWorld) {
+		runtimeNativeHistoryDiscontinuous = true;
+		runtimeFallbackResetDispatchesRemaining = std::max(runtimeFallbackResetDispatchesRemaining, 1u);
+		return false;
+	}
+
 	// Snapshot before this eye's own dispatch -- and before the quarantine teardown below,
 	// which clears the frame-path tracking this reads -- so it reflects only a sibling eye.
 	const bool runtimeAlreadyUsedThisFrame = WasRuntimeUpscalerUsedThisFrame();
@@ -1552,23 +1565,24 @@ bool FidelityFX::UpscaleRegion(uint32_t a_contextIndex, ID3D11Resource* a_color,
 	// reconstructs the crop magnified onto the full-eye canvas.
 	dispatchParameters.upscaleSize.width = a_displayWidth;
 	dispatchParameters.upscaleSize.height = a_displayHeight;
-	dispatchParameters.jitterOffset.x = -jitter.x;
-	dispatchParameters.jitterOffset.y = -jitter.y;
-	dispatchParameters.frameTimeDelta = *globals::game::deltaTime * 1000.f;
-	dispatchParameters.cameraFar = *globals::game::cameraFar;
-	dispatchParameters.cameraNear = *globals::game::cameraNear;
+	dispatchParameters.jitterOffset.x = coherentWorld ? preparedFrame->jitterX : -jitter.x;
+	dispatchParameters.jitterOffset.y = coherentWorld ? preparedFrame->jitterY : -jitter.y;
+	dispatchParameters.frameTimeDelta = coherentWorld ? preparedFrame->frameTimeMs : *globals::game::deltaTime * 1000.f;
+	dispatchParameters.cameraFar = coherentWorld ? preparedFrame->cameraFar : *globals::game::cameraFar;
+	dispatchParameters.cameraNear = coherentWorld ? preparedFrame->cameraNear : *globals::game::cameraNear;
 	dispatchParameters.enableSharpening = true;
 	dispatchParameters.sharpness = a_sharpness;
 	// Narrows FOV by the crop's height fraction (a no-op ratio of 1.0 when uncropped);
 	// FSR3 has no principal-point field, so an off-center crop still gets a centered FOV.
-	const float verticalFovFull = Util::GetVerticalFOVRad();
+	const float verticalFovFull = coherentWorld ? preparedFrame->cameraFov : Util::GetVerticalFOVRad();
 	const float cropHeightFraction = a_motionVectorScaleY > 0.0f ? (float)a_renderHeight / a_motionVectorScaleY : 1.0f;
 	dispatchParameters.cameraFovAngleVertical = 2.0f * std::atan(std::tan(verticalFovFull * 0.5f) * cropHeightFraction);
 	dispatchParameters.viewSpaceToMetersFactor = 0.01428222656f;
 	const bool runtimeFallbackReset = runtimeRequested && runtimeFallbackResetDispatchesRemaining > 0;
 	if (runtimeFallbackReset)
 		runtimeFallbackResetDispatchesRemaining--;
-	dispatchParameters.reset = (state->IsMainOrLoadingMenuOpen() && !upscaling.menuCameraMVsValid) || runtimeFallbackReset;
+	dispatchParameters.reset = (state->IsMainOrLoadingMenuOpen() && !upscaling.menuCameraMVsValid) || runtimeFallbackReset ||
+		(coherentWorld && preparedFrame->resetHistory);
 	dispatchParameters.preExposure = 1.0f;
 	dispatchParameters.flags = 0;
 

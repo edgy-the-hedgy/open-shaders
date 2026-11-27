@@ -705,7 +705,7 @@ void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 {
 	if (!loaded || globals::game::isVR || !globals::features::dx12Control.WantsMaterialPreparation() ||
 		!globals::game::graphicsState || !globals::state || globals::state->isMapMenuOpen ||
-		globals::features::dx12Resources.IsLoading() || !nativeSessionStarted ||
+		globals::features::dx12Resources.IsLoading() || !nativeSessionStarted || globals::state->nativeFirstPersonDepth ||
 		(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
 		return;
 	CS_GPU_PASS("DX12NativeScene::FullNativeMaterial");
@@ -777,7 +777,7 @@ void DX12NativeScene::DispatchFullNativeIndirect()
 	using namespace DX12Native::MaterialFrameContract;
 	if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation() ||
 		!globals::state || !globals::game::graphicsState || globals::state->isMapMenuOpen ||
-		globals::features::dx12Resources.IsLoading() || !nativeSessionStarted ||
+		globals::features::dx12Resources.IsLoading() || !nativeSessionStarted || globals::state->nativeFirstPersonDepth ||
 		(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
 		return;
 	const auto grid = globals::features::dx12Resources.GetGrid();
@@ -809,7 +809,7 @@ void DX12NativeScene::DispatchFullNativeIndirect()
 void DX12NativeScene::CaptureFullNativeEnvironment(ID3D11ShaderResourceView* sceneColor, uint32_t frame)
 {
 	if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation() || !nativeSessionStarted ||
-		!globals::state || globals::state->isMapMenuOpen || globals::features::dx12Resources.IsLoading() ||
+		!globals::state || globals::state->isMapMenuOpen || globals::features::dx12Resources.IsLoading() || globals::state->nativeFirstPersonDepth ||
 		(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
 		return;
 	if (!backend) {
@@ -825,6 +825,9 @@ void DX12NativeScene::CaptureFullNativeEnvironment(ID3D11ShaderResourceView* sce
 void DX12NativeScene::OnOpaqueRasterReady()
 {
 	if (globals::features::dx12Control.WantsMaterialPreparation()) {
+		if (!globals::state || globals::state->nativeFirstPersonDepth ||
+			(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
+			return;
 		FinishFullNativeRasterDraws();
 		const auto grid = globals::features::dx12Resources.GetGrid();
 		if (characterCasters && backend && globals::game::graphicsState && globals::state &&
@@ -957,7 +960,7 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 {
 	using namespace DX12Native::MaterialFrameContract;
 	if (!globals::deferred || !globals::deferred->deferredPass || !globals::game::graphicsState ||
-		!globals::state || globals::state->isMapMenuOpen || globals::features::dx12Resources.IsLoading() ||
+		!globals::state || globals::state->isMapMenuOpen || globals::features::dx12Resources.IsLoading() || globals::state->nativeFirstPersonDepth ||
 		(globals::state->permutationData.ExtraShaderDescriptor &
 			static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
 		return;
@@ -1227,7 +1230,9 @@ void DX12NativeScene::ReplayFullNativeInput(ID3D11DeviceContext* context, uint32
 {
 	auto* state = globals::state;
 	auto& draws = fullNativeRasterDraws;
-	if (!loaded || !backend || !state || !state->customVertexShader || !state->customPixelShader ||
+	if (!loaded || !backend || !state || state->nativeFirstPersonDepth ||
+		(state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)) ||
+		!state->customVertexShader || !state->customPixelShader ||
 		!state->currentShader || state->currentShader->shaderType.get() != RE::BSShader::Type::Lighting ||
 		!globals::features::dx12Control.WantsMaterialPreparation() || !globals::game::graphicsState ||
 		!globals::game::renderer || !globals::deferred || !globals::deferred->deferredPass ||

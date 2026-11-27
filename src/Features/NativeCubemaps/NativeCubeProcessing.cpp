@@ -89,6 +89,9 @@ NativeCubemaps::CubeProcessing::~CubeProcessing()
 void NativeCubemaps::CubeProcessing::Poll()
 {
     using Policy::ProcessingPhase;
+    if(fence && fence->GetCompletedValue()==UINT64_MAX) {
+        pending.reset(); current.reset(); latest.reset();
+    }
     for(auto& slot:slots) {
         if(!slot) continue;
         if(slot->value==UINT64_MAX && fence && owner.commandQueue && fence->GetCompletedValue()!=UINT64_MAX) {
@@ -97,6 +100,7 @@ void NativeCubemaps::CubeProcessing::Poll()
                 nextFence=rescue; slot->value=rescue;
             }
         }
+        if(slot==pending && !slot->value) continue; // initial step has not been submitted
         if(GpuFenceRetired(fence.get(),slot->value)) {
             slot->previous.reset(); slot->nativeInput.reset();
             if(slot!=pending) slot->inputs.reset();
@@ -105,7 +109,7 @@ void NativeCubemaps::CubeProcessing::Poll()
     // Publish only a complete, successfully retired generation. The last
     // complete environment remains visible during every intermediate step.
     if(!pending || pending->cursor.phase!=ProcessingPhase::Complete ||
-        !GpuFenceRetired(fence.get(),pending->value)) return;
+        !FenceValueCompleted(bool(fence),fence->GetCompletedValue(),pending->value)) return;
     auto slot=pending;
     const auto input=slot->inputs;
     const auto value=slot->value;
@@ -129,7 +133,7 @@ void NativeCubemaps::CubeProcessing::Advance(uint32_t frame)
 {
     Poll();
     if(!pending || lastStepFrame==frame) return;
-    if(!GpuFenceRetired(fence.get(),pending->value)) { ++deferredSteps; return; }
+    if(!FenceValueCompleted(bool(fence),fence->GetCompletedValue(),pending->value)) { ++deferredSteps; return; }
     auto slot=pending;
     try {
         SubmitStep(slot,frame);

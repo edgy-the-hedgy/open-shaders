@@ -229,7 +229,7 @@ std::optional<ParticleInput::Observation> NativeLLF::Producer::ObserveParticlePa
 	if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation() ||
 		!particleSettings.EnableParticleLights || !pass || !pass->geometry || !pass->shaderProperty ||
 		!globals::shaderCache || !globals::shaderCache->IsEnabled() ||
-		!globals::state || globals::state->isMapMenuOpen || globals::features::dx12Resources.IsLoading() ||
+		!globals::state || globals::state->isMapMenuOpen || globals::features::dx12Resources.IsLoading() || globals::state->nativeFirstPersonDepth ||
 		(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
 		return std::nullopt;
 	if (pass->shaderProperty->GetRTTI() != globals::rtti::BSEffectShaderPropertyRTTI.get())

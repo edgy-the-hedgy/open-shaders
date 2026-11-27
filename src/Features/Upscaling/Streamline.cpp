@@ -526,9 +526,13 @@ bool Streamline::CheckFrameConstants(sl::ViewportHandle p_viewport, uint32_t eye
 	const bool fullNativeWorld = globals::features::dx12Control.UsesExclusiveMaterials() && state->worldRenderedThisFrame && !globals::game::isVR;
 	std::optional<UpscalingCamera::CameraFrame> camera;
 	if (fullNativeWorld) {
+		if (!globals::game::graphicsState) return false;
 		const auto world = globals::features::dx12NativeScene.GetWorldFrame(
 			globals::game::graphicsState->GetFrameCount(), state->frameCount);
-		if (!world) return false;
+		if (!world) {
+			pendingHistoryReset = true;
+			return false;
+		}
 		camera = UpscalingCamera::FromConstantBuffer(world->camera.CameraViewInverse,
 			world->camera.CameraViewProjUnjittered, world->camera.CameraPreviousViewProjUnjittered,
 			float3(world->camera.CameraPosAdjust.x, world->camera.CameraPosAdjust.y, world->camera.CameraPosAdjust.z),
