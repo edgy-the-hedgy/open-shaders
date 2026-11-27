@@ -49,7 +49,27 @@ namespace DX12
 		int32_t blockIndex = -1;  // -1: entire NIF/model unresolved.
 	};
 
-	/** @brief The preparation publishes triangle geometry without textures or materials. */
+	/** @brief Optional Full Native source metadata, not a GPU material or ownership claim. */
+	struct PreparedMaterialSource
+	{
+		uint64_t observedShaderFlags = 0;
+		uint32_t vertexStride = 0, vertexCount = 0;
+		uint32_t uvOffset = UINT32_MAX, normalOffset = UINT32_MAX, tangentOffset = UINT32_MAX, colorOffset = UINT32_MAX;
+		float alpha = 1.0f;
+		int32_t clampMode = -1;
+		std::array<float, 4> uvTransform{};
+		std::array<std::string, 8> texturePaths;
+		std::vector<uint8_t> vertexBytes;
+		uint64_t ByteSize() const
+		{
+			uint64_t bytes = sizeof(PreparedMaterialSource) + vertexBytes.size();
+			for (const auto& path : texturePaths)
+				bytes += path.size();
+			return bytes;
+		}
+	};
+
+	/** @brief Shared triangle geometry; optional material payload exists only in Full Native. */
 	struct Shape
 	{
 		uint64_t identity = 0;
@@ -58,6 +78,7 @@ namespace DX12
 		std::vector<float3> positions;
 		std::vector<uint32_t> indices;
 		std::array<float, 12> transform{};
+		std::shared_ptr<const PreparedMaterialSource> material;
 	};
 
 	struct Tile

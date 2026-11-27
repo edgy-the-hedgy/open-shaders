@@ -26,6 +26,9 @@ struct DX12Control final : Feature
 	bool IsActive() const { return loaded && bootActive.load(std::memory_order_acquire); }
 	bool IsShadowOffloadMode() const { return GetMode() == DX12::ControlMode::ShadowOffload; }
 	bool IsFullRTMode() const { return GetMode() == DX12::ControlMode::FullRT; }
+	bool IsFullNativeMode() const { return GetMode() == DX12::ControlMode::FullNative; }
+	/** @brief Material capture is admitted only for an active Full Native session. */
+	bool WantsMaterialPreparation() const { return IsActive() && DX12::RequiresMaterialPreparation(GetMode()); }
 	void DrawSettings() override;
 	void RegisterUxActions() override;
 	void LoadSettings(json& input) override;
@@ -38,6 +41,7 @@ private:
 	bool bootCaptured = false;
 	DX12::ControlMode GetMode() const;
 	void DrawSimpleSettings(bool developerMode);
+	void RequestMode(DX12::ControlMode mode);
 	mutable std::atomic<int> selectedMode{ Settings{}.Mode };
 	Settings settings;
 };

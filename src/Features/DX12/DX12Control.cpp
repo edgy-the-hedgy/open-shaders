@@ -22,22 +22,33 @@ DX12::ControlMode DX12Control::GetMode() const
 	return static_cast<ControlMode>(mode);
 }
 
+void DX12Control::RequestMode(DX12::ControlMode mode)
+{
+	settings.Mode = static_cast<int>(mode);
+	if (!bootCaptured || !DX12::RequiresModeRestart(GetMode(), mode))
+		selectedMode.store(settings.Mode, std::memory_order_relaxed);
+}
+
 void DX12Control::DrawSimpleSettings(bool developerMode)
 {
 	using DX12::ControlMode;
 	const char* modes[] = {
 		T("menu.dx12.mode.shadow_offload", "Shadow offload"),
 		T("menu.dx12.mode.ray_traced_static_shadows", "Ray-Traced Static Shadows"),
+		T("menu.dx12.mode.full_native", "Full Native (preparation preview)"),
 		T("menu.dx12.mode.raster_comparison", "Raster comparison")
 	};
-	constexpr ControlMode modeIDs[]{ ControlMode::ShadowOffload, ControlMode::FullRT, ControlMode::RasterComparison };
-	const auto selected = DX12::SanitizeControlMode(static_cast<int>(GetMode()), developerMode);
+	constexpr ControlMode modeIDs[]{ ControlMode::ShadowOffload, ControlMode::FullRT, ControlMode::FullNative, ControlMode::RasterComparison };
+	const auto selected = DX12::SanitizeControlMode(settings.Mode, developerMode);
 	int index = static_cast<int>(std::find(std::begin(modeIDs), std::end(modeIDs), selected) - std::begin(modeIDs));
 	settings.Mode = static_cast<int>(selected);
 	if (ImGui::Combo(T("menu.dx12.mode.label", "Mode"), &index, modes, developerMode ? int(std::size(modes)) : int(std::size(modes)) - 1)) {
-		settings.Mode = static_cast<int>(modeIDs[index]);
-		selectedMode.store(settings.Mode, std::memory_order_relaxed);
+		RequestMode(modeIDs[index]);
 	}
+	if (DX12::RequiresModeRestart(GetMode(), static_cast<ControlMode>(settings.Mode)))
+		ImGui::TextDisabled(T("menu.dx12.mode.restart_full_native", "Entering or leaving Full Native requires a restart."));
+	if (IsFullNativeMode())
+		ImGui::TextDisabled(T("menu.dx12.mode.full_native_preview", "Material preparation preview; raster lighting remains authoritative."));
 	ImGui::Checkbox(T("menu.dx12.master.enable", "Enable native DX12 features (restart required)"), &settings.Enabled);
 	if (settings.Enabled != bootActive.load(std::memory_order_acquire))
 		ImGui::TextDisabled(T("menu.dx12.master.restart_boot_state", "A game restart is required; DX12 Resources retains its boot state until then."));
@@ -80,7 +91,7 @@ void DX12Control::LoadSettings(json& input)
 	settings.Enabled = input.value("Enabled", defaults.Enabled);
 	settings.Mode = static_cast<int>(DX12::SanitizeControlMode(input.value("Mode", defaults.Mode),
 		globals::state && globals::state->IsDeveloperMode()));
-	selectedMode.store(settings.Mode, std::memory_order_relaxed);
+	RequestMode(static_cast<DX12::ControlMode>(settings.Mode));
 	if (!bootCaptured) {
 		bootActive.store(settings.Enabled, std::memory_order_release);
 		bootCaptured = true;
@@ -89,13 +100,14 @@ void DX12Control::LoadSettings(json& input)
 
 void DX12Control::SaveSettings(json& output)
 {
-	output = { { "Enabled", settings.Enabled }, { "Mode", static_cast<int>(GetMode()) } };
+	const auto requested = DX12::SanitizeControlMode(settings.Mode, globals::state && globals::state->IsDeveloperMode());
+	output = { { "Enabled", settings.Enabled }, { "Mode", static_cast<int>(requested) } };
 }
 
 void DX12Control::RestoreDefaultSettings()
 {
 	settings = {};
-	selectedMode.store(settings.Mode, std::memory_order_relaxed);
+	RequestMode(static_cast<DX12::ControlMode>(settings.Mode));
 }
 
 void DX12Control::OnRuntimeDisabled()
@@ -116,7 +128,9 @@ void DX12Control::RegisterUxActions()
 			if (!control->IsActive())
 				return;
 			const auto mode = DX12::SanitizeControlMode(args.value("mode", 0), true);
-			control->settings.Mode = static_cast<int>(mode);
-			control->selectedMode.store(control->settings.Mode, std::memory_order_relaxed);
+			// The validation command remains restricted to the existing live shadow A/B modes.
+			if (mode == DX12::ControlMode::FullNative || control->IsFullNativeMode())
+				return;
+			control->RequestMode(mode);
 		});
 }

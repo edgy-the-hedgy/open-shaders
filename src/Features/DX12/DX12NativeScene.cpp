@@ -197,11 +197,13 @@ void DX12NativeScene::RestoreDefaultSettings()
 bool DX12NativeScene::AllowsNativeSceneWork() const
 {
 	const auto& control = globals::features::dx12Control;
-	return control.IsShadowOffloadMode() || control.IsFullRTMode();
+	return control.IsShadowOffloadMode() || control.IsFullRTMode() || control.IsFullNativeMode();
 }
 
 bool DX12NativeScene::AllowsOutdoorContribution() const
 {
+	if (globals::features::dx12Control.IsFullNativeMode())
+		return true;  // Full Native preparation is independent of the shadow-mode outdoor toggles.
 	return globals::features::dx12Control.IsFullRTMode() ?
 	           outdoorFullRT.load(std::memory_order_relaxed) :
 	           outdoorShadowOffloading.load(std::memory_order_relaxed);
@@ -404,6 +406,12 @@ void DX12NativeScene::PreShadowMaps()
 		shadowLights.store(nullptr, std::memory_order_release);
 		std::scoped_lock lock(runtimeLightMutex);
 		ResetFullLightInventory();
+		return;
+	}
+	if (globals::features::dx12Control.IsFullNativeMode()) {
+		// Preparation-only staging: do not publish SCM ownership or dispatch either shadow shader.
+		if (acceleration.Start(globals::d3d::device, globals::d3d::context))
+			acceleration.Request(std::move(grid));
 		return;
 	}
 	shadowLightScope.store(grid->requested.front().scope, std::memory_order_release);

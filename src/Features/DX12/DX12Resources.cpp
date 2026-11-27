@@ -1134,7 +1134,8 @@ void DX12Resources::PumpPreparation(DX12::ResourceGrid& target, const RE::TESObj
 			task->loading = loading;
 			task->interiorBatch = interiorBatch;
 		} else {
-			task = DX12::CaptureScenePrepRequest(*key, settings.SubcellSize, cell, world, predictive, corner, consolidate, loading);
+			task = DX12::CaptureScenePrepRequest(*key, settings.SubcellSize, cell, world, predictive, corner, consolidate, loading,
+				globals::features::dx12Control.WantsMaterialPreparation());
 		}
 		if (task && worker->Enqueue(std::move(*task))) {
 			inFlight = *key;

@@ -6,6 +6,9 @@
 #include "RE/B/BSMeshLODTriShape.h"
 #include "RE/B/BSModelDB.h"
 #include "RE/B/BSShaderProperty.h"
+#include "RE/B/BSLightingShaderProperty.h"
+#include "RE/B/BSLightingShaderMaterialBase.h"
+#include "RE/B/BSTextureSet.h"
 #include "RE/B/BSTriShape.h"
 #include "RE/G/GridCellArray.h"
 #include "RE/N/NiNode.h"
@@ -220,6 +223,52 @@ namespace DX12
 			return GeometryInspectResult::Accepted;
 		}
 
+		// Copy immutable source attributes only in the material preparation profile.
+		// Observed flags are not authored metadata; no material authority is inferred.
+		std::shared_ptr<const PreparedMaterialSource> CaptureMaterialSource(
+			RE::BSGeometry& geometry, const ExtractedShapeDesc& extracted, uint64_t remaining)
+		{
+			const auto& runtime = geometry.GetGeometryRuntimeData();
+			const auto* property = static_cast<const RE::BSLightingShaderProperty*>(runtime.shaderProperty.get());
+			if (!property || !property->material || property->material->GetType() != RE::BSShaderMaterial::Type::kLighting)
+				return {};
+			const auto* material = static_cast<const RE::BSLightingShaderMaterialBase*>(property->material);
+			const auto* textures = material->textureSet.get();
+			const auto* expected = REL::Relocation<const RE::NiRTTI*>{ RE::BSTextureSet::Ni_RTTI }.get();
+			if (!textures || !expected || !textures->GetRTTI() || !textures->GetRTTI()->IsKindOf(expected))
+				return {};
+			const uint64_t vertexBytes = uint64_t(extracted.vertexCount) * extracted.stride;
+			if (vertexBytes > remaining || sizeof(PreparedMaterialSource) > remaining - vertexBytes)
+				return {};
+			auto source = std::make_shared<PreparedMaterialSource>();
+			source->observedShaderFlags = static_cast<uint64_t>(property->flags.underlying());
+			source->vertexStride = extracted.stride;
+			source->vertexCount = extracted.vertexCount;
+			source->alpha = material->materialAlpha;
+			source->clampMode = material->textureClampMode;
+			source->uvTransform = { material->texCoordOffset[0].x, material->texCoordOffset[0].y,
+				material->texCoordScale[0].x, material->texCoordScale[0].y };
+			using V = RE::BSGraphics::Vertex;
+			auto desc = runtime.vertexDesc;
+			if (desc.HasFlag(V::VF_UV)) source->uvOffset = desc.GetAttributeOffset(V::VA_TEXCOORD0);
+			if (desc.HasFlag(V::VF_NORMAL)) source->normalOffset = desc.GetAttributeOffset(V::VA_NORMAL);
+			if (desc.HasFlag(V::VF_TANGENT)) source->tangentOffset = desc.GetAttributeOffset(V::VA_BINORMAL);
+			if (desc.HasFlag(V::VF_COLORS)) source->colorOffset = desc.GetAttributeOffset(V::VA_COLOR);
+			for (uint32_t i = 0; i < source->texturePaths.size(); ++i) {
+				const char* path = textures->GetTexturePath(static_cast<RE::BSTextureSet::Texture>(i));
+				if (path) {
+					const std::string_view value(path);
+					if (value.size() > 260)
+						return {};
+					source->texturePaths[i] = value;
+				}
+			}
+			if (source->ByteSize() > remaining - vertexBytes)
+				return {};
+			source->vertexBytes.assign(extracted.rawVertices, extracted.rawVertices + size_t(vertexBytes));
+			return source;
+		}
+
 		struct CaptureCache
 		{
 			using Key = std::tuple<uintptr_t, uint32_t, uint32_t, uint32_t, uint32_t>;
@@ -295,11 +344,17 @@ namespace DX12
 				a_cache.bytes += bytes;
 				a_cache.meshes.emplace(key, mesh);
 			}
+			std::shared_ptr<const PreparedMaterialSource> material;
+			if (a_request.includeMaterials) {
+				material = CaptureMaterialSource(*geom, extracted, kMaxCapturedMeshBytes - a_cache.bytes);
+				if (material)
+					a_cache.bytes += material->ByteSize();
+			}
 			// Only owned bytes cross the worker boundary.
 			a_request.attachedShapes.push_back({ MakeShapeIdentity(a_ownerFormID, ordinal), std::move(mesh), rows,
 				{ reinterpret_cast<uintptr_t>(geom), reinterpret_cast<uintptr_t>(extracted.rawVertices),
 					reinterpret_cast<uintptr_t>(extracted.rawIndices), extracted.vertexCount, extracted.indexCount,
-					extracted.stride, extracted.firstIndex } });
+					extracted.stride, extracted.firstIndex }, std::move(material) });
 		}
 
 		struct CachedDecodedMesh
@@ -314,6 +369,7 @@ namespace DX12
 			uint32_t ordinal = 0;
 			std::shared_ptr<const CachedDecodedMesh> mesh;
 			AffineTransform toModel{};
+			std::shared_ptr<const PreparedMaterialSource> material;
 		};
 
 		struct CachedModelExtraction
@@ -326,7 +382,7 @@ namespace DX12
 
 		void WalkDemandModelSubtree(
 			RE::NiAVObject* a_obj, const AffineTransform& a_parentTransform, uint32_t& a_shapeOrdinal,
-			uint32_t a_depth, CachedModelExtraction& a_out)
+			uint32_t a_depth, CachedModelExtraction& a_out, bool a_includeMaterials)
 		{
 			if (!a_obj || a_depth > kMaxSceneGraphDepth || a_obj->GetAppCulled())
 				return;
@@ -339,7 +395,7 @@ namespace DX12
 			const auto currentTransform = ComposeAffine(a_parentTransform, FromNiTransform(a_obj->local));
 			if (auto* node = a_obj->AsNode()) {
 				for (const auto& child : node->GetChildren())
-					WalkDemandModelSubtree(child.get(), currentTransform, a_shapeOrdinal, a_depth + 1, a_out);
+					WalkDemandModelSubtree(child.get(), currentTransform, a_shapeOrdinal, a_depth + 1, a_out, a_includeMaterials);
 				return;
 			}
 			auto* geom = a_obj->AsGeometry();
@@ -377,13 +433,19 @@ namespace DX12
 			mesh->bytes = uint64_t(mesh->positions.size()) * sizeof(float3) +
 			              uint64_t(mesh->indices.size()) * sizeof(uint32_t);
 			a_out.bytes += 128ull + mesh->bytes;
-			a_out.shapes.push_back({ ordinal, std::move(mesh), currentTransform });
+			std::shared_ptr<const PreparedMaterialSource> material;
+			if (a_includeMaterials && a_out.bytes < kMaxDecodedCacheBytes) {
+				material = CaptureMaterialSource(*geom, extracted, kMaxDecodedCacheBytes - a_out.bytes);
+				if (material)
+					a_out.bytes += material->ByteSize();
+			}
+			a_out.shapes.push_back({ ordinal, std::move(mesh), currentTransform, std::move(material) });
 		}
 	}
 
 	std::optional<ScenePrepRequest> CaptureScenePrepRequest(
 		SubcellKey a_key, uint32_t a_size, const RE::TESObjectCELL* a_cell,
-		const RE::TESWorldSpace* a_world, bool a_predictive, bool a_corner, bool a_consolidate, bool a_loading)
+		const RE::TESWorldSpace* a_world, bool a_predictive, bool a_corner, bool a_consolidate, bool a_loading, bool a_includeMaterials)
 	{
 		if (!a_key.scope || !std::ranges::contains(kSubcellSizes, a_size) || !a_cell)
 			return std::nullopt;
@@ -403,6 +465,7 @@ namespace DX12
 		request.corner = a_corner;
 		request.consolidate = a_consolidate && !a_world;
 		request.loading = a_loading;
+		request.includeMaterials = a_includeMaterials;
 
 		ankerl::unordered_dense::set<uint32_t> visitedRefs;
 		size_t candidateCount = 0;
@@ -828,7 +891,7 @@ namespace DX12
 								   uint64_t a_identity, const std::vector<float3>& a_positions,
 								   const std::vector<uint32_t>& a_indices, const std::array<float, 12>& a_transform,
 								   std::string_view a_plugin, uint32_t a_localID, std::string_view a_nifPath,
-								   int32_t a_blockIndex, CasterSource a_source = {}) {
+								   int32_t a_blockIndex, CasterSource a_source = {}, std::shared_ptr<const PreparedMaterialSource> a_material = {}) {
 			const auto overlaps = OverlapsSubcellXY(a_positions, a_transform, a_request.key.x, a_request.key.y, a_request.size);
 			if (!overlaps) {
 				RecordRejection(pub.rejectionReasons, pub.failedShapes, "invalid placed bounds");
@@ -850,7 +913,7 @@ namespace DX12
 
 			++pub.eligibleShapes;
 			const uint64_t bytes = uint64_t(a_positions.size()) * sizeof(float3) +
-			                       uint64_t(a_indices.size()) * sizeof(uint32_t);
+			                       uint64_t(a_indices.size()) * sizeof(uint32_t) + (a_material ? a_material->ByteSize() : 0);
 			if (pub.shapes.size() >= kMaxTileShapes || bytes > kMaxTileGeometryBytes - pub.geometryBytes) {
 				budgetExceeded = true;
 				RecordRejection(pub.rejectionReasons, pub.failedShapes, "tile shape or byte budget exceeded");
@@ -867,6 +930,7 @@ namespace DX12
 			shape->positions = a_positions;
 			shape->indices = a_indices;
 			shape->transform = a_transform;
+			shape->material = std::move(a_material);
 			pub.geometryBytes += bytes;
 			if (a_request.consolidate)
 				batchShapes.push_back({ shape, shapeBounds, bytes });
@@ -906,7 +970,7 @@ namespace DX12
 					rawCache.emplace(sliceKey, decoded);
 				}
 			}
-			emitShape(attached.identity, decoded->positions, decoded->indices, attached.transform, {}, 0, {}, -1, attached.casterSource);
+			emitShape(attached.identity, decoded->positions, decoded->indices, attached.transform, {}, 0, {}, -1, attached.casterSource, attached.material);
 		}
 		rawCache.clear();
 
@@ -941,7 +1005,7 @@ namespace DX12
 					fresh->missing.emplace_back(-1, "NIF unavailable or unsupported");
 				} else {
 					uint32_t ordinal = 0;
-					WalkDemandModelSubtree(modelRoot.get(), AffineTransform{}, ordinal, 0, *fresh);
+					WalkDemandModelSubtree(modelRoot.get(), AffineTransform{}, ordinal, 0, *fresh, a_request.includeMaterials);
 					if (fresh->shapes.empty() && fresh->missing.empty()) {
 						uint32_t ignored = 0;
 						RecordRejection(fresh->rejections, ignored, "no supported opaque rigid triangles");
@@ -982,7 +1046,7 @@ namespace DX12
 				emitShape(
 					MakeShapeIdentity(placement.refFormID, modelShape.ordinal),
 					modelShape.mesh->positions, modelShape.mesh->indices, rows,
-					placement.refPlugin, placement.refLocal, placement.nifPath, int32_t(modelShape.ordinal));
+					placement.refPlugin, placement.refLocal, placement.nifPath, int32_t(modelShape.ordinal), {}, modelShape.material);
 			}
 		}
 
