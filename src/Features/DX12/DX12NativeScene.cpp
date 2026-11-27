@@ -1107,9 +1107,10 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 	const bool projected = property->flags.any(PropertyFlag::kProjectedUV);
 	if (projected) ++draws.projectedDraws;
 	const auto counts = tri->GetTrishapeRuntimeData();
+	auto desc = rt.vertexDesc;
 	const DX12::CasterSource live{ reinterpret_cast<uintptr_t>(&geometry),
 		reinterpret_cast<uintptr_t>(rt.rendererData->rawVertexData), reinterpret_cast<uintptr_t>(rt.rendererData->rawIndexData),
-		counts.vertexCount, uint32_t(counts.triangleCount) * 3u, rt.vertexDesc.GetSize(), 0 };
+		counts.vertexCount, uint32_t(counts.triangleCount) * 3u, desc.GetSize(), 0 };
 	std::array<float, 12> transform{};
 	for (uint32_t row = 0; row < 3; ++row)
 		for (uint32_t col = 0; col < 3; ++col)
@@ -1118,8 +1119,8 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 	transform[7] = geometry.world.translate.y;
 	transform[11] = geometry.world.translate.z;
 	UniqueRasterCandidate match;
-	const auto [first, last] = scene->inputs->casterSources.equal_range(live.geometry);
-	for (auto it = first; it != last; ++it) {
+	const auto [first, rangeEnd] = scene->inputs->casterSources.equal_range(live.geometry);
+	for (auto it = first; it != rangeEnd; ++it) {
 		const auto ordinal = it->second;
 		if (ordinal >= scene->inputs->geometry.size() || ordinal >= UINT32_MAX)
 			continue;
@@ -1568,8 +1569,8 @@ bool DX12NativeScene::CasterInTlas(RE::BSGeometry& geometry) const
 	transform[3] = geometry.world.translate.x;
 	transform[7] = geometry.world.translate.y;
 	transform[11] = geometry.world.translate.z;
-	const auto [first, last] = scene->inputs->casterSources.equal_range(live.geometry);
-	for (auto it = first; it != last; ++it) {
+	const auto [first, rangeEnd] = scene->inputs->casterSources.equal_range(live.geometry);
+	for (auto it = first; it != rangeEnd; ++it) {
 		const auto& shape = scene->inputs->geometry[it->second];
 		if (DX12::SameCasterSource(shape->casterSource, live, shape->transform, transform))
 			return true;
