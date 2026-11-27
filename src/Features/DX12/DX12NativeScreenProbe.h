@@ -21,7 +21,7 @@ namespace DX12Native
 		{
 			Matrix projectionInverse, viewInverse;
 			float4 positionAdjust;
-			uint32_t width, height, gridWidth, gridHeight, collectStats, parallaxEnabled;
+			uint32_t width, height, gridWidth, gridHeight, collectStats, parallaxEnabled, parallaxWarpFixEnabled;
 		};
 		static_assert(sizeof(Camera) <= 256);
 		struct OutputAllocation
@@ -246,7 +246,7 @@ namespace DX12Native
 			return free && (lastFrame==UINT32_MAX || frame-lastFrame>=(continuous?1u:30u));
 		}
 		void Dispatch(const GraphicsBackend& backend,std::shared_ptr<const RasterFrame> raster,
-			std::shared_ptr<const TopLevel> scene,uint32_t frame,uint32_t width,uint32_t height,bool fullResolution,bool continuous=false,bool collectStats=false,bool parallaxEnabled=false)
+			std::shared_ptr<const TopLevel> scene,uint32_t frame,uint32_t width,uint32_t height,bool fullResolution,bool continuous=false,bool collectStats=false,bool parallaxEnabled=false,bool parallaxWarpFixEnabled=false)
 		{
 			if (!WantsFrame(frame,continuous)) return;
 			published.reset();
@@ -332,7 +332,7 @@ namespace DX12Native
 				}
 				slot->camera=Eval::Buffer(device,256,D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ);
 				const Camera constants{slot->raster->camera.CameraProjInverse,slot->raster->camera.CameraViewInverse,
-					slot->raster->camera.CameraPosAdjust,width,height,gridWidth,gridHeight,collectStats ? 1u : 0u,parallaxEnabled ? 1u : 0u};
+					slot->raster->camera.CameraPosAdjust,width,height,gridWidth,gridHeight,collectStats ? 1u : 0u,parallaxEnabled ? 1u : 0u,parallaxWarpFixEnabled ? 1u : 0u};
 				void* mapped=nullptr; const D3D12_RANGE noRead{};
 				Eval::Check(slot->camera->Map(0,&noRead,&mapped));
 				std::memcpy(mapped,&constants,sizeof(constants)); slot->camera->Unmap(0,nullptr);

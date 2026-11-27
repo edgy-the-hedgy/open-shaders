@@ -18,10 +18,12 @@ float3 SrgbToLinear(float3 v)
 // red-channel height, normalized height bound, centered 0.1*scale UV travel,
 // Bounded coarse march and contact refinement. Recover UV gradients from the
 // committed triangle and adjacent camera rays without extra scene queries.
-bool NativeTriangleUVGradient(float3 ray, float3 rayOffset, float rayScale,
-    float3 e1, float3 e2, float2 uv1, float2 uv2, out float2 gradient)
+bool NativeTriangleDifferential(float3 ray, float3 rayOffset, float rayScale,
+    float3 e1, float3 e2, out float2 baryOffset, out float3 offset)
 {
-    gradient=0.0;
+    baryOffset=0.0;
+    offset=0.0;
+    if (!all(isfinite(rayOffset)) || dot(rayOffset,rayOffset)<=0.0) return false;
     float3 face=cross(e1,e2);
     float areaSquared=dot(face,face);
     float3 neighbor=ray+rayOffset;
@@ -30,10 +32,26 @@ bool NativeTriangleUVGradient(float3 ray, float3 rayOffset, float rayScale,
         abs(denominator)<=1e-6*sqrt(areaSquared)*length(neighbor)) return false;
     // Intersect the adjacent camera ray with the same triangle plane.
     // The raster-depth ray is rescaled to the actual committed hit distance.
-    float3 offset=rayScale*(rayOffset-neighbor*(dot(face,rayOffset)/denominator));
-    float2 baryOffset=float2(dot(cross(offset,e2),face),dot(cross(e1,offset),face))/areaSquared;
-    gradient=baryOffset.x*uv1+baryOffset.y*uv2;
-    return all(isfinite(gradient));
+    offset=rayScale*(rayOffset-neighbor*(dot(face,rayOffset)/denominator));
+    baryOffset=float2(dot(cross(offset,e2),face),dot(cross(e1,offset),face))/areaSquared;
+    return all(isfinite(baryOffset)) && all(isfinite(offset));
+}
+// Extended Materials' object warp fix: preserve height scale and flatten the
+// view-ray slope only at bent, grazing surfaces. Use world-space derivatives
+// so instance scale does not change the curvature calculation.
+float NativeParallaxFlatten(float3 normal, float3 normalX, float3 normalY,
+    float3 positionX, float3 positionY, float3 viewWorld)
+{
+    float fragmentSize=length(max(abs(positionX),abs(positionY)));
+    float3 flat=-cross(positionX,positionY);
+    if (!isfinite(fragmentSize) || fragmentSize<=0.0 || !all(isfinite(flat)) ||
+        dot(flat,flat)<=0.0 || !all(isfinite(normal)) || !all(isfinite(normalX)) ||
+        !all(isfinite(normalY)) || !all(isfinite(viewWorld))) return 0.0;
+    float curvature=length(max(abs(normalX-normal),abs(normalY-normal)))/fragmentSize;
+    float smoothness=saturate(1.0-dot(normal,normalize(flat)));
+    float facing=saturate(dot(normal,viewWorld));
+    float bend=saturate(smoothness+curvature);
+    return saturate(saturate(1.0-2.0*facing)*bend/max(facing,0.0625));
 }
 float NativeParallaxMarchMip(uint textureIndex, float2 dx, float2 dy, float viewDistance, bool validGradients)
 {
@@ -51,10 +69,10 @@ float NativeParallaxMarchMip(uint textureIndex, float2 dx, float2 dy, float view
     float farFloor=lerp(0.0,3.0,saturate((viewDistance-512.0)/1536.0));
     return min(floor(max(marchMip,farFloor)),float(max(levels,1u)-1u));
 }
-float2 NativeParallaxUV(uint textureIndex, uint mode, float2 coords, float3 viewTS, float scale, float mip)
+float2 NativeParallaxUV(uint textureIndex, uint mode, float2 coords, float3 viewTS, float scale, float mip, float flattenAmount)
 {
     if (!isfinite(scale) || scale<=0.0 || !all(isfinite(viewTS)) || viewTS.z<=0.0) return coords;
-    float2 slope=viewTS.xy/max(viewTS.z*0.7+0.3,0.001);
+    float2 slope=viewTS.xy/max(viewTS.z*0.7+0.3+flattenAmount,0.001);
     float maxHeight=0.1*scale;
     // Preserve bounded work even for extreme authored scales.
     uint steps=(uint(clamp(scale*16.0,4.0,16.0))+2u)&~3u;
@@ -84,7 +102,7 @@ float2 NativeParallaxUV(uint textureIndex, uint mode, float2 coords, float3 view
     float2 result=coords+travel*(saturate(contact)-0.5);
     return all(isfinite(result)) ? result : coords;
 }
-Sample EvaluateMaterial(uint instance, uint primitive, float3 weights, float3 rayObject, float3 rayOffsetX, float3 rayOffsetY, float rayScale, float viewDistance, bool parallaxEnabled, out NativeCoatSample coat)
+Sample EvaluateMaterial(uint instance, uint primitive, float3 weights, float3 rayObject, float3 rayOffsetX, float3 rayOffsetY, float rayScale, float viewDistance, float3x3 worldToObject, float3x3 objectToWorld, bool parallaxEnabled, bool warpFixEnabled, out NativeCoatSample coat)
 {
     coat = (NativeCoatSample)0;
     Sample result = (Sample)0;
@@ -100,9 +118,11 @@ Sample EvaluateMaterial(uint instance, uint primitive, float3 weights, float3 ra
     float3 n = 0, t = 0, b = 0, color = 0;
     float2 uv = 0;
     float2 triangleUV[3];
+    float3 triangleNormal[3];
     [unroll] for (uint i = 0; i < 3u; ++i) {
         uint a = offsets.z + ix[i]*offsets.w;
-        n += weights[i]*asfloat(Geometry.Load3(a));
+        triangleNormal[i]=asfloat(Geometry.Load3(a));
+        n += weights[i]*triangleNormal[i];
         triangleUV[i]=asfloat(Geometry.Load2(a+12));
         uv += weights[i]*triangleUV[i];
         color += weights[i]*asfloat(Geometry.Load3(a+20));
@@ -146,11 +166,28 @@ Sample EvaluateMaterial(uint instance, uint primitive, float3 weights, float3 ra
         float3 e2=asfloat(Geometry.Load3(offsets.x+ix.z*counts.z))-p0;
         float2 uv1=(triangleUV[1]-triangleUV[0])*material.uv[0].zw;
         float2 uv2=(triangleUV[2]-triangleUV[0])*material.uv[0].zw;
-        float2 dx,dy;
-        bool validX=NativeTriangleUVGradient(rayObject,rayOffsetX,rayScale,e1,e2,uv1,uv2,dx);
-        bool validY=NativeTriangleUVGradient(rayObject,rayOffsetY,rayScale,e1,e2,uv1,uv2,dy);
+        float2 baryX,baryY;
+        float3 positionX,positionY;
+        bool validX=NativeTriangleDifferential(rayObject,rayOffsetX,rayScale,e1,e2,baryX,positionX);
+        bool validY=NativeTriangleDifferential(rayObject,rayOffsetY,rayScale,e1,e2,baryY,positionY);
+        float2 dx=baryX.x*uv1+baryX.y*uv2;
+        float2 dy=baryY.x*uv1+baryY.y*uv2;
         float mip=NativeParallaxMarchMip(material.textures[2].x,dx,dy,viewDistance,validX && validY);
-        uv=NativeParallaxUV(material.textures[2].x,material.properties.z,uv,viewTS,material.base.z,mip);
+        float flattenAmount=0.0;
+        if (warpFixEnabled && validX && validY) {
+            float3 normal1=triangleNormal[1]-triangleNormal[0];
+            float3 normal2=triangleNormal[2]-triangleNormal[0];
+            float3 interpolatedNormal=weights.x*triangleNormal[0]+weights.y*triangleNormal[1]+weights.z*triangleNormal[2];
+            float3 normalWorld=mul(interpolatedNormal,worldToObject);
+            float3 normalX=mul(interpolatedNormal+baryX.x*normal1+baryX.y*normal2,worldToObject);
+            float3 normalY=mul(interpolatedNormal+baryY.x*normal1+baryY.y*normal2,worldToObject);
+            float3 viewWorld=mul(objectToWorld,-rayObject);
+            if (dot(normalWorld,normalWorld)>0.0 && dot(normalX,normalX)>0.0 &&
+                dot(normalY,normalY)>0.0 && dot(viewWorld,viewWorld)>0.0)
+                flattenAmount=NativeParallaxFlatten(normalize(normalWorld),normalize(normalX),normalize(normalY),
+                    mul(objectToWorld,positionX),mul(objectToWorld,positionY),normalize(viewWorld));
+        }
+        uv=NativeParallaxUV(material.textures[2].x,material.properties.z,uv,viewTS,material.base.z,mip,flattenAmount);
     }
     float4 baseTexel = Tex(material.textures[0].x,uv,material.properties.z);
     float4 normalTexel = Tex(material.textures[0].z,uv,material.properties.z);
@@ -242,7 +279,8 @@ void main(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= InstanceCount) return;
     NativeCoatSample coat;
-    Output[id.x] = EvaluateMaterial(id.x, 0u, float3(1.0/3.0,1.0/3.0,1.0/3.0), float3(0,0,-1), float3(0,0,0), float3(0,0,0), 1.0, 0.0, false, coat);
+    const float3x3 identity=float3x3(1,0,0,0,1,0,0,0,1);
+    Output[id.x] = EvaluateMaterial(id.x, 0u, float3(1.0/3.0,1.0/3.0,1.0/3.0), float3(0,0,-1), float3(0,0,0), float3(0,0,0), 1.0, 0.0, identity, identity, false, false, coat);
 }
 
 Texture2D<float> ProbeDepth : register(t515);
@@ -256,6 +294,7 @@ cbuffer ProbeCamera : register(b1)
     uint2 GridSize;
     uint CollectStats;
     uint ParallaxEnabled;
+    uint ParallaxWarpFixEnabled;
 };
 RWByteAddressBuffer ProbeCounts : register(u1);
 RWByteAddressBuffer ScreenOutput : register(u2);
@@ -335,7 +374,8 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out NativeCoatSam
         rayOffsetY=mul(worldToObject,ProbeRayOffset(clip-float2(0.0,clipStep.y),z,centerWorld));
     }
     result=EvaluateMaterial(instance,query.CommittedPrimitiveIndex(),float3(1.0-bary.x-bary.y,bary),
-        mul(worldToObject,delta),rayOffsetX,rayOffsetY,query.CommittedRayT()/distance,query.CommittedRayT(),ParallaxEnabled!=0u,coat);
+        mul(worldToObject,delta),rayOffsetX,rayOffsetY,query.CommittedRayT()/distance,query.CommittedRayT(),
+        worldToObject,(float3x3)query.CommittedObjectToWorld3x4(),ParallaxEnabled!=0u,ParallaxWarpFixEnabled!=0u,coat);
     if(result.color.a==SurfaceInvalidReceiver) result.color.a=SurfaceEvaluationFailed;
     // The native output is consumed in world space, including rotated instances.
     if (HasEvaluatedNativeBase(result.color.a)) {
