@@ -5,6 +5,7 @@
 #include "Globals.h"
 #include "RE/B/BSLightingShaderProperty.h"
 #include "DX12NativeMaterialEvaluation.h"
+#include "VideoMemoryBudget.h"
 #include "Utils/ActorUtils.h"
 #include "Utils/FileSystem.h"
 #include "Utils/SkinnedMesh.h"
@@ -17,6 +18,8 @@
 #include <map>
 #include <ranges>
 #include <stdexcept>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace DX12Native
@@ -326,17 +329,18 @@ namespace DX12Native
             if (moverFrame != frame) {
                 movers.clear(); seenMovers.clear(); moverFrame = frame; newMoverMeshes = 0;
             }
-            if (movers.size() >= kMaxMovers || std::ranges::find(seenMovers, &geometry) != seenMovers.end())
+            if (movers.size() >= kMaxMovers || std::find(seenMovers.begin(), seenMovers.end(), static_cast<const RE::BSGeometry*>(&geometry)) != seenMovers.end())
                 return;
             auto* tri = geometry.AsTriShape();
             const auto& runtime = geometry.GetGeometryRuntimeData();
             if (!tri || geometry.AsDynamicTriShape() || runtime.skinInstance || runtime.alphaProperty ||
                 !runtime.rendererData || !runtime.rendererData->rawVertexData || !runtime.rendererData->rawIndexData)
                 return;
+            auto desc = runtime.vertexDesc;
             const auto counts = tri->GetTrishapeRuntimeData();
             const MeshKey key{ reinterpret_cast<uintptr_t>(runtime.rendererData->rawVertexData),
                 reinterpret_cast<uintptr_t>(runtime.rendererData->rawIndexData),
-                uintptr_t(counts.vertexCount), uintptr_t(counts.triangleCount), uintptr_t(runtime.vertexDesc.GetSize()) };
+                uintptr_t(counts.vertexCount), uintptr_t(counts.triangleCount), uintptr_t(desc.GetSize()) };
             const auto transform = Rows(geometry.world);
             if (!Finite(transform)) return;
             auto found = moverMeshes.find(key);
