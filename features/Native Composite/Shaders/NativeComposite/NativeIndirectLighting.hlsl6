@@ -133,87 +133,77 @@ bool ViewDirection(uint2 pixel, out float3 view, out float3 world)
     return all(isfinite(world));
 }
 
-// Screen-space reflection is a conditional replacement of environment radiance,
- // never an extra specular contribution. Use only direct+emissive radiance to
- // prevent indirect feedback. Sparse samples and ambiguous surfaces are misses.
-bool SSRViewPosition(uint2 p, out float3 position)
+// Inline DXR determines the nearest reflection intersection. Projection is
+// only a lookup of validated, same-frame direct+emissive hit radiance.
+bool SSRProject(float3 absolute, out uint2 pixel, out float2 uv, out float depth)
 {
-    position = 0;
-    float depth = RasterDepth.Load(int3(p,0));
-    if (!isfinite(depth) || depth <= 0 || depth >= 1) return false;
-    float2 uv = (float2(p)+0.5)/float2(Size);
-    float4 view = mul(InverseProjection,float4(uv*float2(2,-2)+float2(-1,1),depth,1));
-    if (!all(isfinite(view)) || abs(view.w)<1e-8) return false;
-    position = view.xyz/view.w;
-    return all(isfinite(position));
-}
-bool SSRProject(float3 p, out uint2 pixel, out float2 uv)
-{
-    pixel=0; uv=0;
-    float4 clip=mul(SSRProjection,float4(p,1));
-    if (!all(isfinite(clip)) || clip.w<=1e-5) return false;
+    pixel=0; uv=0; depth=0;
+    float4 clip=mul(SSRProjection,mul(SSRView,float4(absolute-PositionAdjust.xyz,1)));
+    if (!all(isfinite(clip)) || abs(clip.w)<1e-5) return false;
     uv=clip.xy/clip.w*float2(0.5,-0.5)+0.5;
-    if (any(uv<0) || any(uv>=1)) return false;
+    depth=clip.z/clip.w;
+    if (any(uv<0) || any(uv>=1) || depth<=0 || depth>=1) return false;
     pixel=uint2(uv*float2(Size));
     return all(pixel<Size);
 }
-bool SSREvidence(uint2 p)
+bool SSREvidence(uint2 p, out uint2 identity)
 {
+    identity=uint2(0xffffffffu,0xffffffffu);
     uint token=uint(round(saturate(SSRTokens.Load(int3(p,0)).b)*65535.0));
     if (token==0 || token>SSRTokenCount) return false;
     uint2 hit=SSRRayIdentity.Load2(p.y*SSRRayPitch+p.x*8u);
-    return all(hit!=0xffffffffu) && all(SSRTokenTable.Load2((token-1u)*8u)==uint2(hit.x,hit.y&0x7fffffffu));
+    identity=uint2(hit.x,hit.y&0x7fffffffu);
+    return all(hit!=0xffffffffu) && all(SSRTokenTable.Load2((token-1u)*8u)==identity);
 }
-float3 ResolveScreenReflection(uint2 receiver,float3 direction,float roughness,float3 fallback)
+float3 ResolveRayReflection(uint2 receiver,float3 world,float3 normal,float3 direction,float roughness,uint lobe,float3 fallback)
 {
-    if (SSREnabled==0 || roughness>=0.45 || !SSREvidence(receiver)) return fallback;
-    float3 origin;
-    if (!SSRViewPosition(receiver,origin)) return fallback;
-    float3 ray=normalize(mul((float3x3)SSRView,direction));
-    if (!all(isfinite(ray))) return fallback;
-    const uint steps=QualityMode==kShadowQualityPerformance ? 16u : 32u;
-    const float stepLength=max(2.0,abs(origin.z)*0.0125);
-    float previousT=stepLength;
-    bool front=false;
-    [loop] for(uint i=0;i<steps;++i) {
-        float t=stepLength*(2.0+float(i)+0.12*float(i*i));
-        float3 p=origin+ray*t;
-        uint2 hit; float2 uv;
-        if (!SSRProject(p,hit,uv)) break;
-        float3 surface;
-        if (all(hit==receiver) || !SSRViewPosition(hit,surface)) {front=false;previousT=t;continue;}
-        float delta=abs(p.z)-abs(surface.z);
-        if (delta<0) {front=true;previousT=t;continue;}
-        if (!front) break;
-        // Refine the first crossing. Never search through a rejected occluder.
-        float lo=previousT,hi=t;
-        [unroll] for(uint j=0;j<4;++j) {
-            float mid=(lo+hi)*0.5;
-            uint2 q;float2 quv;float3 v;
-            if (!SSRProject(origin+ray*mid,q,quv) || !SSRViewPosition(q,v)) return fallback;
-            if (abs((origin+ray*mid).z)<abs(v.z)) lo=mid; else hi=mid;
-        }
-        p=origin+ray*hi;
-        if (!SSRProject(p,hit,uv) || !SSRViewPosition(hit,surface) ||
-            abs(abs(p.z)-abs(surface.z))>max(2.0,abs(surface.z)*0.005) ||
-            all(hit==receiver) || !NativeIsSampled(hit,Size,QualityMode,FrameIndex) || !SSREvidence(hit)) break;
-        const uint materialOffset=hit.y*MaterialPitch+hit.x*NativeSurfaceStride;
-        float4 b=UnpackHalf4(Materials.Load2(materialOffset));
-        float4 n=UnpackHalf4(Materials.Load2(materialOffset+8u));
-        float4 e=UnpackHalf4(Materials.Load2(materialOffset+24u));
-        if (b.a!=SurfaceEvaluatedBase || !all(isfinite(n)) || !all(isfinite(e)) || dot(n.xyz,-direction)<=0.0) break;
-        uint offset=hit.y*SSRDirectPitch+hit.x*NativeLightingStride;
-        float4 diffuse=UnpackHalf4(SSRDirect.Load2(offset));
-        float4 transmission=UnpackHalf4(SSRDirect.Load2(offset+16u));
-        if (!all(isfinite(diffuse)) || diffuse.a<=0 || !all(isfinite(transmission)) ||
-            transmission.a!=float(ContributionTransmission)) break;
-        float3 radiance=max(diffuse.rgb+transmission.rgb+e.rgb,0.0);
-        if (!all(isfinite(radiance)) || any(radiance>65504.0)) break;
-        float edge=saturate(min(min(uv.x,uv.y),min(1-uv.x,1-uv.y))*12.0);
-        float confidence=edge*saturate(1.0-roughness/0.45);
-        return lerp(fallback,radiance,confidence);
+    uint2 receiverIdentity;
+    if (SSREnabled==0 || roughness>=0.45 || !SSREvidence(receiver,receiverIdentity)) return fallback;
+    const float spread=roughness*roughness*ShadowEmitterMultiplier(QualityMode);
+    float3 d=normalize(direction+NativeEmitterOffset(direction,spread,receiver,lobe,FrameIndex));
+    if (!all(isfinite(d)) || dot(normal,d)<=0.0) return fallback;
+    RayDesc ray;
+    ray.Origin=world+normal*0.5;
+    ray.Direction=d;
+    ray.TMin=0.5;
+    ray.TMax=3.402823e38;
+    RayQuery<RAY_FLAG_NONE> query;
+    query.TraceRayInline(Scene,RAY_FLAG_NONE,0xff,ray);
+    while(query.Proceed()) {
+        if(query.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE &&
+            AcceptAlpha(query.CandidateInstanceID(),query.CandidatePrimitiveIndex(),query.CandidateTriangleBarycentrics(),InstanceCount))
+            query.CommitNonOpaqueTriangleHit();
     }
-    return fallback;
+    if(query.CommittedStatus()!=COMMITTED_TRIANGLE_HIT) return fallback;
+    const float distance=query.CommittedRayT();
+    if(CharacterCastersEnabled!=0u) {
+        ray.TMax=distance;
+        RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> character;
+        character.TraceRayInline(CharacterScene,RAY_FLAG_NONE,0xff,ray);
+        while(character.Proceed()) {}
+        if(character.CommittedStatus()!=COMMITTED_NOTHING) return fallback;
+    }
+    const uint2 committed=uint2(query.CommittedInstanceID(),query.CommittedPrimitiveIndex());
+    uint2 hit,hitIdentity; float2 uv; float projectedDepth;
+    if (!SSRProject(ray.Origin+d*distance,hit,uv,projectedDepth) ||
+        all(hit==receiver) || !NativeIsSampled(hit,Size,QualityMode,FrameIndex) ||
+        !SSREvidence(hit,hitIdentity) || any(hitIdentity!=committed)) return fallback;
+    float rasterDepth=RasterDepth.Load(int3(hit,0));
+    if(!isfinite(rasterDepth) || abs(rasterDepth-projectedDepth)>0.0005) return fallback;
+    const uint materialOffset=hit.y*MaterialPitch+hit.x*NativeSurfaceStride;
+    float4 b=UnpackHalf4(Materials.Load2(materialOffset));
+    float4 n=UnpackHalf4(Materials.Load2(materialOffset+8u));
+    float4 e=UnpackHalf4(Materials.Load2(materialOffset+24u));
+    if (b.a!=SurfaceEvaluatedBase || !all(isfinite(n)) || !all(isfinite(e)) || dot(n.xyz,-d)<=0.0) return fallback;
+    uint offset=hit.y*SSRDirectPitch+hit.x*NativeLightingStride;
+    float4 diffuse=UnpackHalf4(SSRDirect.Load2(offset));
+    float4 transmission=UnpackHalf4(SSRDirect.Load2(offset+16u));
+    if (!all(isfinite(diffuse)) || diffuse.a<=0 || !all(isfinite(transmission)) ||
+        transmission.a!=float(ContributionTransmission)) return fallback;
+    float3 radiance=max(diffuse.rgb+transmission.rgb+e.rgb,0.0);
+    if (!all(isfinite(radiance)) || any(radiance>65504.0)) return fallback;
+    float edge=saturate(min(min(uv.x,uv.y),min(1-uv.x,1-uv.y))*12.0);
+    return lerp(fallback,radiance,edge*saturate(1.0-roughness/0.45));
 }
 
 // Sky visibility only: trace the configured upper sky cap, not a generic
@@ -378,7 +368,7 @@ void main(uint3 id : SV_DispatchThreadID)
                 radiance = full * target / max(0.001, reference);
             }
         }
-        radiance=ResolveScreenReflection(pixel,r,roughness,radiance);
+        radiance=ResolveRayReflection(pixel,world,n,r,roughness,0u,radiance);
         float3 specularRadiance = radiance * lobes.specular;
         if (hasCoat) {
             float3 cr = reflect(-view,cn);
@@ -398,7 +388,7 @@ void main(uint3 id : SV_DispatchThreadID)
                     crRadiance=crFull*crTarget/max(0.001,crRef);
                 }
             }
-            crRadiance=ResolveScreenReflection(pixel,cr,coat.normalRoughness.w,crRadiance);
+            crRadiance=ResolveRayReflection(pixel,world,cn,cr,coat.normalRoughness.w,1u,crRadiance);
             specularRadiance += crRadiance*coatSpecularWeight;
         }
         Lighting.Store2(outputOffset + 8u, PackOpaqueRadiance(specularRadiance, ContributionIndirectSpecular));
