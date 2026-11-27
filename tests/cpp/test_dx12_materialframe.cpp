@@ -189,6 +189,14 @@ TEST_CASE("Full Native stationary history requires uninterrupted coherent public
 	now.available |= IndirectDiffuse;
 	REQUIRE(now.CanReuse(previous));
 	now.available = previous.available;
+	now.screenSpaceReflections = true;
+	REQUIRE(now.CanReuse(previous));
+	REQUIRE(now.CanReuseIndirect(previous));
+	REQUIRE_FALSE(now.SameEnvironmentContent(previous));
+	now.screenSpaceReflections = false;
+	now.available = IndirectDiffuse;
+	REQUIRE_FALSE(now.CanReuse(previous));
+	now.available = previous.available;
 	now.frame++;
 	REQUIRE_FALSE(now.CanReuse(previous));
 	now.frame--;

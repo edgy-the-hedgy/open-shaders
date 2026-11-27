@@ -15,6 +15,7 @@ cbuffer Constants : register(b0)
     uint HasSky;
     uint Encoding;
     uint GammaInput;
+    uint Performance;
 };
 float StandardDepth(float d){return ReverseZ!=0u?1.0-d:d;}
 bool InFrame(float2 uv){return all(uv>=0.0)&&all(uv<1.0);}
@@ -55,7 +56,7 @@ void main(uint3 id:SV_DispatchThreadID)
     direction/=len;
     float3 origin=float3(uv,StandardDepth(depth));
     float3 previous=origin;
-    const uint steps=64;
+    const uint steps=Performance!=0u?32u:64u;
     [loop]for(uint i=1;i<steps;++i){
         float3 ray=origin+(float(i)/steps)*direction;
         if(!InFrame(ray.xy))return;

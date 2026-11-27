@@ -37,10 +37,11 @@ DX12Native::EnvironmentStamp NativeCubemaps::Producer::Prepare(uint32_t scope,ui
     EnvironmentStamp stamp{epoch,scope,frame,globals::state->frameCount,encoding,Util::IsInterior()};
     const float hours=globals::game::calendar?globals::game::calendar->GetHoursPassed():lastHours;
     changed=currentStamp.epoch && (!currentStamp.SameEnvironment(stamp) ||
-        (std::isfinite(hours) && std::abs(hours-lastHours)>0.01f));
+        Policy::ClockDiscontinuity(lastHours,hours));
     if(changed) { InvalidateGeneration(); stamp.epoch=epoch; }
     currentStamp=stamp;
     if(processing) processing->Poll();
+    if(waterSSR) waterSSR->Poll();
     if(std::isfinite(hours)) lastHours=hours;
     globals::features::nativeIBL.SetCaptureContext(stamp);
     return stamp;
@@ -213,14 +214,16 @@ void NativeCubemaps::Producer::OnDraw()
         std::string_view(static_cast<const RE::BSImagespaceShader&>(*shader).originalShaderName) != "ISReflectionsRayTracing") return;
     const auto world = globals::features::dx12NativeScene.GetWorldFrame(
         globals::game::graphicsState->GetFrameCount(),globals::state->frameCount);
-    if (!world || !globals::state->customPixelShader) return;
+    const auto* backend=globals::features::dx12NativeScene.GetNativeBackend();
+    if (!world || !backend || !globals::state->customPixelShader) return;
     if (!waterSSR) waterSSR = std::make_unique<WaterSSR>();
     const auto color=globals::features::linearLighting.GetCommonBufferData();
     const auto encoding=color.enableLinearLighting ?
         (color.enableACEScg?DX12Native::EnvironmentEncoding::LinearAP1:DX12Native::EnvironmentEncoding::LinearRec709):DX12Native::EnvironmentEncoding::LegacyScene;
-    waterSSR->Draw(*world,Get(),encoding,
+    waterSSR->Draw(*backend,*world,Get(),encoding,
         color.enableLinearLighting && (globals::state->permutationData.ExtraShaderDescriptor & uint32_t(State::ExtraShaderDescriptors::GammaRenderTarget)),
         !Util::IsInterior() && globals::game::sky && !globals::game::sky->flags.any(RE::Sky::Flags::kHideSky),
+        globals::features::dx12NativeScene.GetFullNativeQuality(world->engineFrame)==DX12Native::kShadowQualityPerformance,
         Util::AsReal(globals::state->customPixelShader->shader));
 }
 

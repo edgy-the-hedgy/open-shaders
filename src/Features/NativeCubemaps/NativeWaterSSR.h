@@ -12,13 +12,14 @@ namespace NativeCubemaps
     {
     public:
         ~WaterSSR();
-        void Draw(const DX12Native::NativeWorldFrame&, std::shared_ptr<const DX12Native::EnvironmentFrame>,
-            DX12Native::EnvironmentEncoding, bool gammaInput, bool skyVisible, ID3D11PixelShader* expected);
+        void Poll();
+        void Draw(const GraphicsBackend&, const DX12Native::NativeWorldFrame&, std::shared_ptr<const DX12Native::EnvironmentFrame>,
+            DX12Native::EnvironmentEncoding, bool gammaInput, bool skyVisible, bool performance, ID3D11PixelShader* expected);
         void End();
         json Diagnostics() const;
     private:
         struct Slot;
-        void Initialize();
+        void Initialize(const GraphicsBackend&);
         GraphicsBackend owner;
         DX12Native::VideoMemoryBudget budget;
         SharedFence inputFence, outputFence, consumedFence;

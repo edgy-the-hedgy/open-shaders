@@ -666,7 +666,9 @@ void DX12NativeScene::ObserveWorldCamera(const globals::FrameBuffer& camera)
 			}
 		return true;
 	};
-	if (!world || !identity || !sameMatrix(camera.CameraViewProjUnjittered.Transpose(), world->viewProjection) ||
+	if (!world || !identity || !std::isfinite(camera.CameraPosAdjust.x) || !std::isfinite(camera.CameraPosAdjust.y) ||
+		!std::isfinite(camera.CameraPosAdjust.z) || !std::isfinite(world->origin.x) || !std::isfinite(world->origin.y) ||
+		!std::isfinite(world->origin.z) || !sameMatrix(camera.CameraViewProjUnjittered.Transpose(), world->viewProjection) ||
 		!sameMatrix(camera.CameraPreviousViewProjUnjittered.Transpose(), world->previousViewProjection) ||
 		std::abs(camera.CameraPosAdjust.x-world->origin.x) > 0.001f ||
 		std::abs(camera.CameraPosAdjust.y-world->origin.y) > 0.001f ||
@@ -676,7 +678,9 @@ void DX12NativeScene::ObserveWorldCamera(const globals::FrameBuffer& camera)
 	}
 	const auto& upscaling = globals::features::upscaling;
 	const auto size = upscaling.GetNativeRenderSize(plugin, {});
-	if (size.x < 1 || size.y < 1) return;
+	if (!std::isfinite(size.x) || !std::isfinite(size.y) || size.x < 1 || size.y < 1 ||
+		!std::isfinite(state->screenSize.x) || !std::isfinite(state->screenSize.y) ||
+		state->screenSize.x < 1 || state->screenSize.y < 1 || !globals::game::cameraNear || !globals::game::cameraFar) return;
 	const auto jitter = upscaling.GetNativeRasterJitter(plugin, uint32_t(size.x), uint32_t(size.y));
 	if (!jitter.valid) return;
 	auto frame = std::make_shared<NativeWorldFrame>();
@@ -689,9 +693,14 @@ void DX12NativeScene::ObserveWorldCamera(const globals::FrameBuffer& camera)
 	frame->cameraNear = *globals::game::cameraNear; frame->cameraFar = *globals::game::cameraFar;
 	frame->cameraFov = Util::GetVerticalFOVRad();
 	frame->reverseZ = globals::features::reverseZ.IsActive();
+	if (!std::isfinite(frame->cameraNear) || !std::isfinite(frame->cameraFar) || !std::isfinite(frame->cameraFov) ||
+		frame->cameraNear <= 0 || frame->cameraFar <= frame->cameraNear || frame->cameraFov <= 0) return;
 	const auto previous = worldFrame.load(std::memory_order_acquire);
 	const bool consecutive = previous && previous->engineFrame + 1u == engine && previous->pluginFrame + 1u == plugin &&
-		previous->cameraIdentity == frame->cameraIdentity;
+		previous->cameraIdentity == frame->cameraIdentity && previous->width == frame->width && previous->height == frame->height &&
+		previous->displayWidth == frame->displayWidth && previous->displayHeight == frame->displayHeight &&
+		previous->reverseZ == frame->reverseZ && previous->cameraNear == frame->cameraNear &&
+		previous->cameraFar == frame->cameraFar && std::abs(previous->cameraFov - frame->cameraFov) < 0.001f;
 	if (consecutive) {
 		frame->previousJitter = previous->jitter;
 		frame->previousDynamicResolution1 = previous->camera.DynamicResolutionParams1;
@@ -792,8 +801,9 @@ void DX12NativeScene::DispatchFullNativeIndirect()
 	}
 	if (!backend)
 		return;
+	const auto world = GetWorldFrame(frame, globals::state->frameCount);
 	const auto material = GetFullNativeMaterial(frame);
-	if (!material || material->scope != stamp.scope)
+	if (!world || !material || material->scope != stamp.scope)
 		return;
 	globals::features::nativeIBL.Dispatch(*backend, material, globals::features::nativeCubemaps.Get(), stamp,
 		characterCasters ? characterCasters->Get(frame, material->scope) : nullptr, FullNativeFrameQuality(frame),
@@ -803,7 +813,7 @@ void DX12NativeScene::DispatchFullNativeIndirect()
 	auto* tokenSource = matchingDraws && globals::game::renderer ?
 		Util::AsReal(globals::game::renderer->GetRuntimeData().renderTargets[MASKS2].texture) : nullptr;
 	globals::features::upscaling.nativeComposite.ReconstructFullNative(*backend, material, GetFullNativeDirect(frame), GetFullNativeIndirect(frame),
-		globals::state->frameCount, globals::state->ShouldResetHistory(), tokenSource, draws.stamp,
+		globals::state->frameCount, world->resetHistory || globals::state->ShouldResetHistory(), tokenSource, draws.stamp,
 		matchingDraws ? std::span<const RasterPixelIdentity>(draws.tokens) : std::span<const RasterPixelIdentity>{});
 }
 

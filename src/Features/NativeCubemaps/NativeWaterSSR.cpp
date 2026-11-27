@@ -1,4 +1,5 @@
 #include "NativeWaterSSR.h"
+#include "NativeCubemapPolicy.h"
 #include "Features/DX12/DX12GpuRetirement.h"
 #include "Globals.h"
 #include "GpuPass.h"
@@ -19,8 +20,9 @@ namespace
         Matrix projection,inverseProjection,inverseView;
         uint32_t width,height,outputWidth,outputHeight;
         uint32_t reverseZ,sky,encoding,gammaInput;
+        uint32_t performance,padding[3]{};
     };
-    static_assert(sizeof(Constants)==224);
+    static_assert(sizeof(Constants)==240);
     constexpr UINT kConstants=sizeof(Constants)/sizeof(uint32_t);
     void Transition(ID3D12GraphicsCommandList* cmd, ID3D12Resource* resource, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to)
     {
@@ -65,13 +67,14 @@ NativeCubemaps::WaterSSR::~WaterSSR()
     }
 }
 
-void NativeCubemaps::WaterSSR::Initialize()
+void NativeCubemaps::WaterSSR::Initialize(const GraphicsBackend& backend)
 {
-    if (pipeline) return;
-    std::string error;
-    auto backend=GraphicsBackend::Create(globals::d3d::device,globals::d3d::context,error);
-    if (!backend) throw std::runtime_error(error);
-    auto* device=backend->d3d12Device.get();
+    if (pipeline) {
+        if(owner.d3d12Device.get()!=backend.d3d12Device.get() || owner.commandQueue.get()!=backend.commandQueue.get())
+            throw std::runtime_error("Native water SSR backend changed");
+        return;
+    }
+    auto* device=backend.d3d12Device.get();
     CD3DX12_DESCRIPTOR_RANGE ranges[2];
     ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,3,0);
     ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV,1,0);
@@ -98,22 +101,28 @@ void NativeCubemaps::WaterSSR::Initialize()
     if (!nextCapture || !nextReturn) throw std::runtime_error("Native water SSR interop shaders unavailable");
     D3D11_BUFFER_DESC cb{};cb.ByteWidth=sizeof(CaptureConstants);cb.Usage=D3D11_USAGE_DEFAULT;cb.BindFlags=D3D11_BIND_CONSTANT_BUFFER;
     winrt::com_ptr<ID3D11Buffer> nextCB;
-    DX::ThrowIfFailed(backend->d3d11Device->CreateBuffer(&cb,nullptr,nextCB.put()));
+    DX::ThrowIfFailed(backend.d3d11Device->CreateBuffer(&cb,nullptr,nextCB.put()));
     SharedFence in,out,done;
-    in.Create(device,backend->d3d11Device.get(),"NativeWaterSSR::Inputs");
-    out.Create(device,backend->d3d11Device.get(),"NativeWaterSSR::Result");
-    done.Create(device,backend->d3d11Device.get(),"NativeWaterSSR::Consumed");
-    owner=*backend;root=std::move(nextRoot);pipeline=std::move(nextPipeline);
+    in.Create(device,backend.d3d11Device.get(),"NativeWaterSSR::Inputs");
+    out.Create(device,backend.d3d11Device.get(),"NativeWaterSSR::Result");
+    done.Create(device,backend.d3d11Device.get(),"NativeWaterSSR::Consumed");
+    owner=backend;root=std::move(nextRoot);pipeline=std::move(nextPipeline);
     capture=std::move(nextCapture);returnShader=std::move(nextReturn);captureCB=std::move(nextCB);
     inputFence=std::move(in);outputFence=std::move(out);consumedFence=std::move(done);
 }
 
-void NativeCubemaps::WaterSSR::Draw(const NativeWorldFrame& world,std::shared_ptr<const EnvironmentFrame> environment,
-    EnvironmentEncoding encoding,bool gammaInput,bool skyVisible,ID3D11PixelShader* expected)
+void NativeCubemaps::WaterSSR::Poll()
+{
+    for(auto& slot:slots) if(slot && GpuFenceRetired(outputFence.fence12.get(),slot->ready)) slot->environment.reset();
+}
+
+void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeWorldFrame& world,std::shared_ptr<const EnvironmentFrame> environment,
+    EnvironmentEncoding encoding,bool gammaInput,bool skyVisible,bool performance,ID3D11PixelShader* expected)
 {
     if (active || !expected || world.width<2 || !world.height || !globals::d3d::context) return;
     CS_GPU_PASS("NativeCubemaps::WaterSSR");
-    auto* context=globals::d3d::context;
+    auto* context=backend.d3d11Context.get();
+    if(!context) return;
     winrt::com_ptr<ID3D11PixelShader> boundShader;
     context->PSGetShader(boundShader.put(),nullptr,nullptr);
     if (boundShader.get()!=expected) {++rejected;return;}
@@ -127,9 +136,10 @@ void NativeCubemaps::WaterSSR::Draw(const NativeWorldFrame& world,std::shared_pt
     ID3D11ShaderResourceView* reads[3]{};context->PSGetShaderResources(0,3,reads);
     for(size_t i=0;i<input.size();++i) input[i].attach(reads[i]);
     winrt::com_ptr<ID3D11Buffer> geometry;
-    context->PSGetConstantBuffers(2,1,geometry.put());
+    UINT firstConstant=0,numConstants=0;
+    context->PSGetConstantBuffers1(2,1,geometry.put(),&firstConstant,&numConstants);
     D3D11_BUFFER_DESC gd{};if(geometry)geometry->GetDesc(&gd);
-    if(!geometry || gd.ByteWidth<32 || !std::ranges::all_of(input,[](const auto& v){return TextureInput(v.get());})) {++rejected;return;}
+    if(!geometry || numConstants<2 || uint64_t(firstConstant)*16+32>gd.ByteWidth || !std::ranges::all_of(input,[](const auto& v){return TextureInput(v.get());})) {++rejected;return;}
     winrt::com_ptr<ID3D11RenderTargetView> target;
     context->OMGetRenderTargets(1,target.put(),nullptr);
     if(!target){++rejected;return;}
@@ -141,7 +151,8 @@ void NativeCubemaps::WaterSSR::Draw(const NativeWorldFrame& world,std::shared_pt
     if(!std::isfinite(scale.x)||!std::isfinite(scale.y)||scale.x<=0||scale.y<=0||scale.x>1||scale.y>1){++rejected;return;}
     std::shared_ptr<Slot>* selected=nullptr;
     try {
-        Initialize();
+        Initialize(backend);
+        Poll();
         auto* device=owner.d3d12Device.get();
         if(outputFence.fence12->GetCompletedValue()==UINT64_MAX) throw std::runtime_error("Water SSR device removed");
         for(auto& slot:slots) if(!slot || (GpuFenceRetired(inputFence.fence12.get(),slot->input)&&
@@ -183,6 +194,8 @@ void NativeCubemaps::WaterSSR::Draw(const NativeWorldFrame& world,std::shared_pt
         slot->input=slot->ready=slot->consumed=0;
         slot->environment.reset();
         if(skyVisible&&environment&&environment->reflection&&environment->stamp.encoding==encoding&&
+            environment->reflection->IsReadyFor(environment->stamp)&&
+            Policy::PublicationFresh(true,environment->reflection->stamp.engineFrame,world.engineFrame)&&
             environment->producerFence&&MaterialFrameContract::ValidProducerSignal(environment->producerValue,environment->producerFence->GetCompletedValue()))
             slot->environment=std::move(environment);
         DX::ThrowIfFailed(slot->allocator->Reset());
@@ -210,7 +223,7 @@ void NativeCubemaps::WaterSSR::Draw(const NativeWorldFrame& world,std::shared_pt
         ID3D12DescriptorHeap* heaps[]{slot->descriptors.get()};cmd->SetDescriptorHeaps(1,heaps);cmd->SetComputeRootSignature(root.get());
         cmd->SetComputeRootDescriptorTable(0,slot->descriptors->GetGPUDescriptorHandleForHeapStart());
         const Constants constants{world.camera.CameraProj,world.camera.CameraProjInverse,world.camera.CameraViewInverse,
-            world.width,world.height,ow,oh,uint32_t(world.reverseZ),uint32_t(bool(sky)),uint32_t(encoding),uint32_t(gammaInput)};
+            world.width,world.height,ow,oh,uint32_t(world.reverseZ),uint32_t(bool(sky)),uint32_t(encoding),uint32_t(gammaInput),uint32_t(performance)};
         cmd->SetComputeRoot32BitConstants(1,kConstants,&constants,0);
         cmd->Dispatch((ow+kGroup-1)/kGroup,(oh+kGroup-1)/kGroup,1);
         Transition(cmd,slot->raw->resource.get(),read,common);Transition(cmd,slot->mask->resource.get(),read,common);
@@ -224,17 +237,19 @@ void NativeCubemaps::WaterSSR::Draw(const NativeWorldFrame& world,std::shared_pt
         winrt::com_ptr<ID3D11ComputeShader> oldCS;context->CSGetShader(oldCS.put(),nullptr,nullptr);
         ID3D11ShaderResourceView* oldReads[3]{};context->CSGetShaderResources(0,3,oldReads);
         ID3D11UnorderedAccessView* oldWrites[2]{};context->CSGetUnorderedAccessViews(0,2,oldWrites);
-        ID3D11Buffer* oldCB[3]{};context->CSGetConstantBuffers(0,3,oldCB);
+        ID3D11Buffer* oldCB[3]{};UINT oldFirst[3]{},oldCount[3]{};
+        context->CSGetConstantBuffers1(0,3,oldCB,oldFirst,oldCount);
         ID3D11UnorderedAccessView* writes[]{slot->raw->uav,slot->mask->uav};
         ID3D11Buffer* buffers[]{captureCB.get(),nullptr,geometry.get()};
         context->CSSetShaderResources(0,3,reads);
         context->CSSetUnorderedAccessViews(0,2,writes,nullptr);
-        context->CSSetConstantBuffers(0,3,buffers);context->CSSetShader(capture.get(),nullptr,0);
+        context->CSSetConstantBuffers(0,3,buffers);
+        context->CSSetConstantBuffers1(2,1,&buffers[2],&firstConstant,&numConstants);context->CSSetShader(capture.get(),nullptr,0);
         ID3D11ShaderResourceView* check[3]{};context->CSGetShaderResources(0,3,check);
         bool bound=true;for(UINT i=0;i<3;++i){bound=bound&&check[i]==reads[i];if(check[i])check[i]->Release();}
         if(bound){slot->input=UINT64_MAX;context->Dispatch((world.width+kGroup-1)/kGroup,(world.height+kGroup-1)/kGroup,1);}
         context->CSSetUnorderedAccessViews(0,2,oldWrites,nullptr);context->CSSetShaderResources(0,3,oldReads);
-        context->CSSetConstantBuffers(0,3,oldCB);context->CSSetShader(oldCS.get(),nullptr,0);
+        context->CSSetConstantBuffers1(0,3,oldCB,oldFirst,oldCount);context->CSSetShader(oldCS.get(),nullptr,0);
         for(auto* v:oldReads)if(v)v->Release();for(auto* v:oldWrites)if(v)v->Release();for(auto* v:oldCB)if(v)v->Release();
         if(!bound){++rejected;return;}
         auto* context4=owner.d3d11Context.get();

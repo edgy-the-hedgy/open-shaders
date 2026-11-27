@@ -35,6 +35,13 @@ namespace NativeCubemaps::Policy
     inline constexpr uint32_t kMaxPublicationAge = kMaxHistoryGap;
     inline constexpr float kMaxHistoryTranslation = 128.0f;
 
+    inline bool ClockDiscontinuity(float previous, float current)
+    {
+        // A normal advancing game clock must not invalidate an in-flight cube.
+        return std::isfinite(previous) && std::isfinite(current) &&
+            (current < previous || current - previous > 0.25f);
+    }
+
     constexpr bool CaptureDue(uint32_t previous, uint32_t current)
     {
         return previous == std::numeric_limits<uint32_t>::max() ||

@@ -253,11 +253,12 @@ namespace DX12Native::MaterialFrameContract
 		uint64_t geometryRevision = 0, materialRevision = 0, environmentRevision = 0;
 		bool reset = true;
 		uint64_t environmentEpoch = 0;
+		bool screenSpaceReflections = false;
 		constexpr bool CanReuse(const StationaryHistoryIdentity& previous) const
 		{
 			return !reset && frame - previous.frame == 1u && pluginFrame - previous.pluginFrame == 1u &&
 				width && height && width == previous.width && height == previous.height &&
-				scope && scope == previous.scope && available && previous.available &&
+				scope && scope == previous.scope && (available & previous.available) != 0u &&
 				geometryRevision == previous.geometryRevision && materialRevision == previous.materialRevision;
 		}
 		constexpr bool CanReuseIndirect(const StationaryHistoryIdentity& previous) const
@@ -266,7 +267,7 @@ namespace DX12Native::MaterialFrameContract
 		}
 		constexpr bool SameEnvironmentContent(const StationaryHistoryIdentity& previous) const
 		{
-			return CanReuseIndirect(previous) && environmentRevision && environmentRevision == previous.environmentRevision;
+			return CanReuseIndirect(previous) && environmentRevision && environmentRevision == previous.environmentRevision && screenSpaceReflections == previous.screenSpaceReflections;
 		}
 	};
 
