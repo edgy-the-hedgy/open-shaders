@@ -279,6 +279,18 @@ DX12Native::EnvironmentSource NativeCubemaps::Producer::GetSkySource(const DX12N
         source:DX12Native::EnvironmentSource{};
 }
 
+ID3D11ShaderResourceView* NativeCubemaps::Producer::GetRasterSkyView() const
+{
+    if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation() ||
+        !globals::game::graphicsState || !globals::state || skyCapture.IsCapturing() ||
+        Util::IsInterior() || !globals::game::sky || globals::game::sky->flags.any(RE::Sky::Flags::kHideSky))
+        return nullptr;
+    auto requested = currentStamp;
+    requested.engineFrame = globals::game::graphicsState->GetFrameCount();
+    requested.pluginFrame = globals::state->frameCount;
+    return GetSkySource(requested).texture ? skyCapture.View() : nullptr;
+}
+
 void NativeCubemaps::Producer::BeginForward()
 {
     EndForward();

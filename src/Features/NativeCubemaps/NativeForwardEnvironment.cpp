@@ -29,7 +29,7 @@ namespace
     }
     bool ValidCube(const EnvironmentCube& cube,const EnvironmentStamp& requested)
     {
-        return cube.IsReadyFor(requested)&&Policy::PublicationFresh(true,cube.stamp.engineFrame,requested.engineFrame)&&
+        return cube.IsReadyFor(requested)&&NativeCubemaps::Policy::PublicationFresh(true,cube.stamp.engineFrame,requested.engineFrame)&&
             cube.format==DXGI_FORMAT_R16G16B16A16_FLOAT&&cube.width<=D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION/kFaces&&cube.mipCount<=kMaxMips;
     }
 }

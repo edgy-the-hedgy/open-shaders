@@ -74,7 +74,7 @@ ID3D11ShaderResourceView* DX12Control::GetFallbackSkyRadiance(ID3D11ShaderResour
 {
 	if (UsesLegacyReflectionCapture())
 		return legacyView;
-	return WantsMaterialPreparation() ? globals::features::nativeIBL.GetRasterSkyView() : nullptr;
+	return WantsMaterialPreparation() ? globals::features::nativeCubemaps.GetRasterSkyView() : nullptr;
 }
 
 json DX12Control::GetDiagnostics()

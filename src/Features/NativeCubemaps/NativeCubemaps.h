@@ -55,6 +55,7 @@ namespace NativeCubemaps
         void SetupResources() override;
         void OnSceneTransitionReset(bool opening) override { if(opening) InvalidateGeneration(); }
         DX12Native::EnvironmentSource GetSkySource(const DX12Native::EnvironmentStamp&) const;
+        ID3D11ShaderResourceView* GetRasterSkyView() const;
         void BeginForward();
         void EndForward();
         void BeginWaterSSR();
