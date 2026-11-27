@@ -2,6 +2,9 @@
 
 #include "Features/NativePBR/GpuMaterialAbi.h"
 
+namespace DX12 { struct PreparedMaterialSource; }
+namespace NativePBR { struct MaterialCatalogSnapshot; }
+
 namespace DX12Native
 {
 	struct SceneInputs;
@@ -21,5 +24,9 @@ namespace DX12Native
 		size_t resolvedTxst = 0, resolvedMato = 0;
 	};
 
+	/** @brief Compile copied, authored mesh metadata independently of geometry storage. */
+	std::optional<NativePBR::Recipe> CompilePreparedMeshRecipe(const DX12::PreparedMaterialSource& source,
+		uint64_t identity, uint64_t revision, const NativePBR::MaterialCatalogSnapshot* catalog,
+		std::string_view materialObject = {}, size_t* resolvedTxst = nullptr, size_t* resolvedMato = nullptr);
 	std::shared_ptr<const PreparedMaterialFrame> CompilePreparedMaterialFrame(const SceneInputs& inputs);
 }

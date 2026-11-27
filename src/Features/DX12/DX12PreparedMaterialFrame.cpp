@@ -52,6 +52,53 @@ namespace DX12Native
 		}
 	}
 
+	std::optional<NativePBR::Recipe> CompilePreparedMeshRecipe(const DX12::PreparedMaterialSource& source,
+		uint64_t identity, uint64_t revision, const NativePBR::MaterialCatalogSnapshot* catalog,
+		std::string_view materialObject, size_t* resolvedTxst, size_t* resolvedMato)
+	{
+		if (!source.authoredShaderFlags || !HasFlag(*source.authoredShaderFlags, F::kMenuScreen)) return {};
+		const auto flags = *source.authoredShaderFlags;
+		if (HasFlag(flags, F::kLODLandscape) || HasFlag(flags, F::kMultiTextureLandscape) ||
+			HasFlag(flags, F::kFace) || HasFlag(flags, F::kHairTint) || HasFlag(flags, F::kTreeAnim) ||
+			HasFlag(flags, F::kRefraction) || HasFlag(flags, F::kTempRefraction) ||
+			HasFlag(flags, F::kVertexAlpha) || HasFlag(flags, F::kGrayscaleToPaletteAlpha) ||
+			source.alpha != 1.0f || source.clampMode < 0 || source.clampMode > 3) return {};
+		constexpr std::array<size_t, 7> slots{ 0, 1, 5, 2, 3, 7, 6 };
+		NativePBR::MaterialData material;
+		material.materialAlpha = source.alpha;
+		material.clampMode = uint32_t(source.clampMode);
+		material.uvOffsetScale[0] = source.uvTransform;
+		material.uvOffsetScale[1] = source.uvTransform;
+		InterpretAuthoredFlags(flags, material);
+		for (size_t role = 0; role < slots.size(); ++role)
+			material.texturePaths[role] = source.texturePaths[slots[role]];
+		material.texturePathsComplete = true;
+		if (catalog && !source.textureSetEditorId.empty()) {
+			if (const auto* config = catalog->FindTextureSet(source.textureSetEditorId)) {
+				material = NativePBR::InterpretTextureSet(material, *config);
+				if (resolvedTxst) ++*resolvedTxst;
+			}
+		}
+		if (!(material.pbrFlags & (uint32_t(PBRFlags::TwoLayer) | uint32_t(PBRFlags::HairMarschner)))) {
+			if (source.nifThinSurface)
+				NativePBR::InterpretNifThinSurface(*source.nifThinSurface, material);
+			if (source.nifFuzz)
+				NativePBR::InterpretNifFuzz(*source.nifFuzz, material);
+		}
+		if (catalog && !materialObject.empty()) {
+			if (const auto* config = catalog->FindMaterialObject(materialObject)) {
+				const auto projected = NativePBR::InterpretMaterialObject(std::string(materialObject), *config);
+				material.projectedColor = projected.baseColorScale;
+				material.projectedRoughness = projected.roughness;
+				material.projectedSpecularLevel = projected.specularLevel;
+				material.projectedGlint = projected.glint;
+				if (resolvedMato) ++*resolvedMato;
+			}
+		}
+		// Per-instance identity and geometry revision deliberately avoid cross-placement MATO aliasing.
+		return NativePBR::CompileRecipe({ identity, revision, std::move(material) });
+	}
+
 	std::shared_ptr<const PreparedMaterialFrame> CompilePreparedMaterialFrame(const SceneInputs& inputs)
 	{
 		auto result = std::make_shared<PreparedMaterialFrame>();
@@ -62,7 +109,6 @@ namespace DX12Native
 		const auto missingBinding = NativePBR::PackGpuDrawBinding(0, 0, UINT32_MAX, 0);
 		result->bindings.assign(inputs.geometry.size(), missingBinding);
 		result->candidateIndices.assign(inputs.geometry.size(), UINT32_MAX);
-		constexpr std::array<size_t, 7> slots{ 0, 1, 5, 2, 3, 7, 6 };
 		NativePBR::GpuTextureLocations locations{};
 		for (auto& location : locations)
 			location = { NativePBR::kGpuMissingTexture, 0 };
@@ -80,48 +126,14 @@ namespace DX12Native
 				++result->unknownAuthored;
 				continue;
 			}
-			const auto flags = *source.authoredShaderFlags;
-			if (HasFlag(flags, F::kLODLandscape) || HasFlag(flags, F::kMultiTextureLandscape) ||
-				HasFlag(flags, F::kFace) || HasFlag(flags, F::kHairTint) || HasFlag(flags, F::kTreeAnim) ||
-				HasFlag(flags, F::kRefraction) || HasFlag(flags, F::kTempRefraction) ||
-				HasFlag(flags, F::kVertexAlpha) || HasFlag(flags, F::kGrayscaleToPaletteAlpha) ||
-				!ValidVertexInputs(source) || source.alpha != 1.0f || source.clampMode < 0 || source.clampMode > 3) {
+			if (!ValidVertexInputs(source)) {
 				++result->limited;
 				continue;
 			}
-			NativePBR::MaterialData material;
-			material.materialAlpha = source.alpha;
-			material.clampMode = uint32_t(source.clampMode);
-			material.uvOffsetScale[0] = source.uvTransform;
-			material.uvOffsetScale[1] = source.uvTransform;
-			InterpretAuthoredFlags(flags, material);
-			for (size_t role = 0; role < slots.size(); ++role)
-				material.texturePaths[role] = source.texturePaths[slots[role]];
-			material.texturePathsComplete = true;
-			if (catalog && !source.textureSetEditorId.empty()) {
-				if (const auto* config = catalog->FindTextureSet(source.textureSetEditorId)) {
-					material = NativePBR::InterpretTextureSet(material, *config);
-					++result->resolvedTxst;
-				}
-			}
-			if (!(material.pbrFlags & (uint32_t(PBRFlags::TwoLayer) | uint32_t(PBRFlags::HairMarschner)))) {
-				if (source.nifThinSurface)
-					NativePBR::InterpretNifThinSurface(*source.nifThinSurface, material);
-				if (source.nifFuzz)
-					NativePBR::InterpretNifFuzz(*source.nifFuzz, material);
-			}
-			if (catalog && !shape->materialObjectEditorId.empty()) {
-				if (const auto* config = catalog->FindMaterialObject(shape->materialObjectEditorId)) {
-					const auto projected = NativePBR::InterpretMaterialObject(shape->materialObjectEditorId, *config);
-					material.projectedColor = projected.baseColorScale;
-					material.projectedRoughness = projected.roughness;
-					material.projectedSpecularLevel = projected.specularLevel;
-					material.projectedGlint = projected.glint;
-					++result->resolvedMato;
-				}
-			}
-			// Per-instance identity and geometry revision deliberately avoid cross-placement MATO aliasing.
-			auto recipe = NativePBR::CompileRecipe({ shape->identity, inputs.geometryRevision, std::move(material) });
+			auto compiled = CompilePreparedMeshRecipe(source, shape->identity, inputs.geometryRevision, catalog.get(),
+				shape->materialObjectEditorId, &result->resolvedTxst, &result->resolvedMato);
+			if (!compiled) { ++result->limited; continue; }
+			auto recipe = std::move(*compiled);
 			const auto capability = NativePBR::ClassifyScreenSurface(recipe, HasFlag(source.observedShaderFlags, F::kProjectedUV));
 			if (capability.issues || recipe.issues & (NativePBR::InvalidSnapshot | NativePBR::InvalidTexturePath | NativePBR::MissingRequiredTextures))
 				++result->limited;

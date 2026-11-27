@@ -64,6 +64,7 @@ namespace DX12
 		std::array<float, 4> uvTransform{};
 		std::array<std::string, 8> texturePaths;
 		std::vector<uint8_t> vertexBytes;
+		bool operator==(const PreparedMaterialSource&) const = default;
 		uint64_t ByteSize() const
 		{
 			uint64_t bytes = sizeof(PreparedMaterialSource) + vertexBytes.size() + textureSetEditorId.size();

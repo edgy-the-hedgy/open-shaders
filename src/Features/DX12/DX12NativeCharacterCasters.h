@@ -5,6 +5,7 @@
 #include "Globals.h"
 #include "RE/B/BSLightingShaderProperty.h"
 #include "DX12NativeMaterialEvaluation.h"
+#include "DX12CharacterMaterialWorker.h"
 #include "VideoMemoryBudget.h"
 #include "Utils/ActorUtils.h"
 #include "Utils/FileSystem.h"
@@ -14,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <memory>
 #include <map>
@@ -36,6 +38,7 @@ namespace DX12Native
         // The index resource holds triangles followed by one part ordinal per primitive.
         uint32_t PrimitivePartOffset() const { return triangles * 3u * sizeof(uint32_t); }
         std::shared_ptr<const CharacterCasterFrame> actorSource;
+        std::shared_ptr<const CharacterMaterialPublication> materials;
         std::vector<winrt::com_ptr<ID3D12Resource>> rigidResources;
         winrt::com_ptr<ID3D12Fence> readyFence;
         winrt::com_ptr<ID3D12Resource> acceleration, bottom, positions, scratch, bind, palette, indices, instance;
@@ -76,6 +79,7 @@ namespace DX12Native
             std::vector<Vertex> vertices;
             std::vector<Bone> bones;
             std::vector<uint32_t> indices, primitiveParts;
+            std::vector<DX12::PreparedMaterialSource> materialSources;
             uint32_t parts = 0, rejected = 0;
         };
 
@@ -115,6 +119,14 @@ namespace DX12Native
 
         // Match the existing native static vertex decoder. A missing or invalid
         // shading layout does not disqualify an otherwise valid shadow caster.
+        static bool HasColor(RE::BSGraphics::VertexDesc desc)
+        {
+            using V = RE::BSGraphics::Vertex;
+            if (!desc.HasFlag(V::VF_COLORS) || desc.GetSize() < 20) return false;
+            const auto offset = desc.GetAttributeOffset(V::VA_COLOR);
+            return offset >= 16 && offset <= desc.GetSize() - 4;
+        }
+
         static void CaptureAttributes(RE::BSGraphics::VertexDesc desc, const uint8_t* data, Vertex& vertex)
         {
             using V = RE::BSGraphics::Vertex;
@@ -197,6 +209,7 @@ namespace DX12Native
             out.bones.push_back(transform);
             out.indices.insert(out.indices.end(), indices.begin(), indices.end());
             out.primitiveParts.insert(out.primitiveParts.end(), indices.size() / 3, out.parts);
+            out.materialSources.push_back(CaptureCharacterMaterial(geometry, HasColor(desc)));
             ++out.parts;
             return true;
         }
@@ -311,6 +324,10 @@ namespace DX12Native
             out.bones.insert(out.bones.end(), bones.begin(), bones.end());
             out.indices.insert(out.indices.end(), indices.begin(), indices.end());
             out.primitiveParts.insert(out.primitiveParts.end(), indices.size() / 3, out.parts);
+            bool hasColor = true;
+            for (uint32_t i = 0; i < partitions->numPartitions; ++i)
+                hasColor = hasColor && HasColor(partitions->partitions[i].vertexDesc);
+            out.materialSources.push_back(CaptureCharacterMaterial(*geometry, hasColor));
             ++out.parts;
             return true;
         }
@@ -425,7 +442,7 @@ namespace DX12Native
 
         void Reset()
         {
-            combined.reset(); current.reset();
+            combined.reset(); current.reset(); materialWorker.Reset();
             attemptedFrame = UINT32_MAX; attemptedScope = 0;
             moverFrame = UINT32_MAX; moverScope = 0; movers.clear(); seenMovers.clear(); moverMeshes.clear();
         }
@@ -544,6 +561,8 @@ namespace DX12Native
                 auto next = reuse ? *selected : std::make_shared<CharacterCasterFrame>();
                 next->frame = frame; next->scope = scope; next->allowedAge = interval == 2u ? 1u : 0u; next->parts = snapshot.parts;
                 next->vertices = uint32_t(snapshot.vertices.size()); next->triangles = triangleCount;
+                if (snapshot.materialSources.size() != snapshot.parts) throw std::runtime_error("Character material part mapping mismatch");
+                next->materials = materialWorker.Update(backend, frame, scope, std::move(snapshot.materialSources));
                 if (!reuse) next->allocationBytes = required;
                 next->root = root; next->pipeline = pipeline;
                 next->readyFence = completion;
@@ -773,6 +792,7 @@ namespace DX12Native
         std::shared_ptr<CharacterCasterFrame> combined;
         uint32_t moverScope = 0, newMoverMeshes = 0;
         GraphicsBackend owner;
+        CharacterMaterialWorker materialWorker;
         VideoMemoryBudget budget;
         std::array<std::shared_ptr<CharacterCasterFrame>, 3> slots;
         std::shared_ptr<CharacterCasterFrame> current;
