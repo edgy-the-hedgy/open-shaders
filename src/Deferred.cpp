@@ -935,12 +935,36 @@ void Deferred::Hooks::BSCubeMapCamera_RenderCubemap::thunk(RE::NiAVObject* camer
 	auto deferred = globals::deferred;
 	auto state = globals::state;
 
+	const auto reflectionFlag = static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections);
+	if (globals::features::dx12Control.UsesExclusiveMaterials()) {
+		// Keep the auxiliary-view descriptor active through feature cleanup and
+		// restore only the bit owned by this scope, including nested invocations.
+		struct ReflectionDescriptorScope
+		{
+			uint32_t& descriptor;
+			uint32_t flag;
+			uint32_t previous;
+			~ReflectionDescriptorScope()
+			{
+				descriptor = (descriptor & ~flag) | previous;
+			}
+		};
+		auto& descriptor = state->permutationData.ExtraShaderDescriptor;
+		const ReflectionDescriptorScope descriptorScope{ descriptor, reflectionFlag, descriptor & reflectionFlag };
+		descriptor |= reflectionFlag;
+		deferred->ReflectionsPrepasses();
+		Feature::RenderScope reflectionsScope(Feature::GetFeatureList(), "OnReflectionsRenderBegin",
+			[](Feature* feature) { return feature->OnReflectionsRenderBegin(); });
+		func(camera, a2, a3, a4, a5);
+		return;
+	}
+
 	deferred->ReflectionsPrepasses();
 	Feature::RenderScope reflectionsScope(Feature::GetFeatureList(), "OnReflectionsRenderBegin",
 		[](Feature* feature) { return feature->OnReflectionsRenderBegin(); });
-	state->permutationData.ExtraShaderDescriptor |= static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections);
+	state->permutationData.ExtraShaderDescriptor |= reflectionFlag;
 	func(camera, a2, a3, a4, a5);
-	state->permutationData.ExtraShaderDescriptor &= ~static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections);
+	state->permutationData.ExtraShaderDescriptor &= ~reflectionFlag;
 }
 
 void Deferred::Hooks::Main_RenderFirstPersonView::thunk(bool a1, bool a2)
