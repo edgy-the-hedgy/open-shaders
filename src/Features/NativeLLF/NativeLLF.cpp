@@ -1,4 +1,5 @@
 #include "NativeLLF.h"
+#include "CSEditor/EditorWindow.h"
 
 #include "Features/DX12/DX12Control.h"
 #include "Features/DX12/DX12LightMath.h"
@@ -32,7 +33,8 @@ namespace
 		return NativeLLF::Policy::MakeAuthoredLight(light.formID,
 			light.data.flags.any(static_cast<RE::TES_LIGHT_FLAGS>(LLFCommon::TES_LIGHT_FLAGS_EXT::kInverseSquare)),
 			light.data.flags.any(RE::TES_LIGHT_FLAGS::kSpotlight, RE::TES_LIGHT_FLAGS::kSpotShadow),
-			light.data.fallofExponent, light.data.fov);
+			light.data.fallofExponent, light.data.fov,
+			light.data.flags.any(static_cast<RE::TES_LIGHT_FLAGS>(LLFCommon::TES_LIGHT_FLAGS_EXT::kLinear)));
 	}
 
 	std::optional<AuthoredLight> ReadPlacedLight(uint32_t placed)
@@ -105,7 +107,7 @@ void NativeLLF::Producer::OnRuntimeDisabled()
 	metadata.clear();
 	metadataFrame = 0;
 	metadataRejected = 0;
-	preparedInputCount = directInputCount = spotInputCount = particleInputCount = 0;
+	preparedInputCount = directInputCount = spotInputCount = particleInputCount = compatibilityMetadataCount = 0;
 }
 
 json NativeLLF::Producer::GetDiagnostics()
@@ -114,7 +116,8 @@ json NativeLLF::Producer::GetDiagnostics()
 	return { { "authoredLightRecords", metadata.size() }, { "authoredLightRejected", metadataRejected },
 		{ "particleSnapshotFrame", currentPluginFrame }, { "particleEmitters", current.size() },
 		{ "preparedInputs", preparedInputCount.load(std::memory_order_relaxed) }, { "directInputs", directInputCount.load(std::memory_order_relaxed) },
-		{ "spotInputs", spotInputCount.load(std::memory_order_relaxed) }, { "particleInputs", particleInputCount.load(std::memory_order_relaxed) } };
+		{ "spotInputs", spotInputCount.load(std::memory_order_relaxed) }, { "particleInputs", particleInputCount.load(std::memory_order_relaxed) },
+		{ "compatibilityMetadataInputs", compatibilityMetadataCount.load(std::memory_order_relaxed) } };
 }
 
 void NativeLLF::Producer::PostPostLoad()
@@ -282,12 +285,14 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 	result.geometryRevision = scene.geometryRevision;
 	auto& directLights = result.points;
 	directLights.reserve(std::min(prepared.size(), size_t(DX12::kMaxPreparedLights)));
-	const auto toLinear = [](float value) { return DX12Native::LightMath::ToLinear(value, false); };
+	const auto toLinear = [](float value, bool linear = false) { return DX12Native::LightMath::ToLinear(value, linear); };
+	uint32_t compatibilityInputs = 0;
 	for (const auto& light : prepared) {
 		if (directLights.size() >= DX12::kMaxPreparedLights)
 			break;
+		const bool linear = (light.flags & static_cast<uint32_t>(LLFCommon::TES_LIGHT_FLAGS_EXT::kLinear)) != 0;
 		directLights.push_back({ light.position,
-			{ toLinear(light.color.x) * light.fade, toLinear(light.color.y) * light.fade, toLinear(light.color.z) * light.fade },
+			{ toLinear(light.color.x, linear) * light.fade, toLinear(light.color.y, linear) * light.fade, toLinear(light.color.z, linear) * light.fade },
 			light.radius, light.emitterRadius, 0.0f, false });
 		// A prepared spotlight without a current projection is not an omni light.
 		if (light.flags & (static_cast<uint32_t>(RE::TES_LIGHT_FLAGS::kSpotlight) | static_cast<uint32_t>(RE::TES_LIGHT_FLAGS::kSpotShadow)))
@@ -309,6 +314,9 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 		std::unordered_set<const RE::NiLight*> visited;
 		std::vector<bool> matched(directLights.size(), false);
 		const size_t preparedCount = directLights.size();
+		std::unordered_map<uint32_t, std::vector<size_t>> preparedByReference;
+		for (size_t i = 0; i < preparedCount; ++i)
+			preparedByReference[prepared[i].referenceID].push_back(i);
 		const auto collect = [&](RE::BSLight* light) {
 			if (!light || !light->pointLight || !light->light)
 				return;
@@ -319,16 +327,17 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 			DX12Native::ReadFullLightOwner(ni, owner, placed);
 			const auto& position = ni->world.translate;
 			float3 rest{ position.x, position.y, position.z };
-			DX12Native::ReadFullLightRestPosition(ni, placed, rest);
+			const auto authored = FindMetadata(ni, placed);
+			DX12Native::ReadFullLightRestPosition(ni, placed, rest, authored ? authored->formID : 0);
 			size_t best = preparedCount;
 			float bestDistance = std::numeric_limits<float>::infinity();
 			bool ambiguous = false;
-			for (size_t i = 0; i < preparedCount; ++i) {
+			const auto consider = [&](size_t i) {
 				const auto& candidate = prepared[i];
 				const float dx = rest.x - candidate.position.x, dy = rest.y - candidate.position.y, dz = rest.z - candidate.position.z;
 				const float d2 = dx * dx + dy * dy + dz * dz;
 				if (!DX12Native::LightMath::SameEmitterCandidate(candidate.referenceID, placed, d2, candidate.radius))
-					continue;
+					return;
 				if (d2 < bestDistance) {
 					best = i;
 					bestDistance = d2;
@@ -336,6 +345,14 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 				} else if (d2 == bestDistance) {
 					ambiguous = true;
 				}
+			};
+			if (placed) {
+				// A known reference cannot match a different known reference.
+				for (const auto key : { placed, 0u })
+					if (auto bucket = preparedByReference.find(key); bucket != preparedByReference.end())
+						for (const auto i : bucket->second) consider(i);
+			} else {
+				for (size_t i = 0; i < preparedCount; ++i) consider(i);
 			}
 			// A hidden, disabled, or invalid live source must not leave its prepared
 			// proxy emitting stale radiance. Never erase a previously admitted live match.
@@ -345,24 +362,53 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 			};
 			using F = PointLightFlags::Flags;
 			const auto runtimeFlags = globals::features::lightLimitFix.loaded ? PointLightFlags::GetRuntimeLightFlags(ni) : 0u;
-			const auto authored = FindMetadata(ni, placed);
 			if (ni->GetFlags().any(RE::NiAVObject::Flag::kHidden) || (runtimeFlags & PointLightFlags::ToMask(F::Disabled))) {
 				reject();
 				return;
 			}
 			const auto& rt = ni->GetLightRuntimeData();
-			if (!std::isfinite(rt.radius.x) || rt.radius.x <= 0.0f ||
-				!std::isfinite(rt.fade) || rt.fade <= 0.0f ||
-				!std::isfinite(rt.diffuse.red) || !std::isfinite(rt.diffuse.green) || !std::isfinite(rt.diffuse.blue) ||
+			// Raw engine values and native authored metadata own the evaluation.
+			// The editor operates on a local snapshot, never on engine storage.
+			LLFCommon::RuntimeLightDataExt snapshot{};
+			snapshot.diffuse = rt.diffuse;
+			snapshot.fade = rt.fade;
+			snapshot.radius = rt.radius.x;
+			snapshot.size = authored ? authored->size : 1.0f;
+			snapshot.cutoffOverride = authored ? authored->cutoff : 1.0f;
+			if (authored) {
+				snapshot.lighFormId = authored->formID;
+				if (authored->inverseSquare) snapshot.flags.set(F::InverseSquare);
+				if (authored->linear) snapshot.flags.set(F::Linear);
+				if (authored->spot) snapshot.flags.set(F::Spot);
+			}
+			// Pre-existing attached sources can carry placement-specific metadata
+			// that is not present in the authored LIGH. Retain this explicit input
+			// compatibility path only for sources without a placed reference.
+			if (!placed && (runtimeFlags & PointLightFlags::ToMask(F::Initialised))) {
+				const auto* ext = LLFCommon::RuntimeLightDataExt::Get(ni);
+				snapshot.flags = ext->flags;
+				snapshot.size = ext->size;
+				snapshot.cutoffOverride = ext->cutoffOverride;
+				snapshot.lighFormId = ext->lighFormId;
+				++compatibilityInputs;
+			}
+			const auto& editor = EditorWindow::GetSingleton()->lightEditor;
+			editor.ApplyOverrides(ni, &snapshot);
+			const bool inverseSquare = snapshot.flags.any(F::InverseSquare);
+			const bool linear = snapshot.flags.any(F::Linear);
+			if ((inverseSquare && editor.disableInvSqLights) || (!inverseSquare && editor.disableRegularLights) ||
+				!std::isfinite(snapshot.radius) || snapshot.radius <= 0.0f ||
+				!std::isfinite(snapshot.fade) || snapshot.fade <= 0.0f ||
+				!std::isfinite(snapshot.diffuse.red) || !std::isfinite(snapshot.diffuse.green) || !std::isfinite(snapshot.diffuse.blue) ||
 				!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z)) {
 				reject();
 				return;
 			}
 			DX12Native::DirectPointLight value{ { position.x, position.y, position.z },
-				{ toLinear(rt.diffuse.red) * rt.fade, toLinear(rt.diffuse.green) * rt.fade, toLinear(rt.diffuse.blue) * rt.fade },
-				rt.radius.x, 0.0f, 0.0f, false };
-			const bool spotSource = (authored && authored->spot) ||
-				((runtimeFlags | PointLightFlags::GetPointLightTypeFlags(light)) & PointLightFlags::ToMask(F::Spot));
+				{ toLinear(snapshot.diffuse.red, linear) * snapshot.fade, toLinear(snapshot.diffuse.green, linear) * snapshot.fade, toLinear(snapshot.diffuse.blue, linear) * snapshot.fade },
+				snapshot.radius, 0.0f, 0.0f, false };
+			const bool spotSource = snapshot.flags.any(F::Spot) ||
+				(PointLightFlags::GetPointLightTypeFlags(light) & PointLightFlags::ToMask(F::Spot));
 			if (spotSource) {
 				auto* spot = skyrim_cast<RE::BSShadowLight*>(light);
 				std::array<float, 16> inverse{};
@@ -374,18 +420,12 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 				}
 				value.spot = true;
 			}
-			const bool hasLegacyMetadata = (runtimeFlags & PointLightFlags::ToMask(F::Initialised)) != 0;
-			const bool inverseSquare = hasLegacyMetadata ? (runtimeFlags & PointLightFlags::ToMask(F::InverseSquare)) != 0 :
-				(authored && authored->inverseSquare);
 			if (inverseSquare) {
-				const auto* ext = hasLegacyMetadata ? LLFCommon::RuntimeLightDataExt::Get(ni) : nullptr;
-				const float size = ext ? ext->size : authored->size;
-				const float cutoff = ext ? ext->cutoffOverride : authored->cutoff;
-				if (!std::isfinite(size) || size <= 0.0f || !std::isfinite(cutoff) || cutoff <= 0.0f) {
+				if (!std::isfinite(snapshot.size) || snapshot.size <= 0.0f || !std::isfinite(snapshot.cutoffOverride) || snapshot.cutoffOverride <= 0.0f) {
 					reject();
 					return;
 				}
-				ApplyInverseSquare(value, rt.fade, ShadowCasterManager::IsShadowLightType(light), cutoff, size);
+				ApplyInverseSquare(value, snapshot.fade, ShadowCasterManager::IsShadowLightType(light), snapshot.cutoffOverride, snapshot.size);
 			}
 			if (best != preparedCount) {
 				if (!ambiguous && !matched[best]) {
@@ -447,6 +487,7 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 			directional.radiance = { toLinear(sunColor.x), toLinear(sunColor.y), toLinear(sunColor.z), 0.0f };
 		}
 	}
+	compatibilityMetadataCount.store(compatibilityInputs, std::memory_order_relaxed);
 	directInputCount.store(uint32_t(directLights.size()),std::memory_order_relaxed);
 	particleInputCount.store(uint32_t(directLights.size()-nonParticleCount),std::memory_order_relaxed);
 	spotInputCount.store(uint32_t(std::ranges::count_if(directLights,[](const auto& light){return light.spot;})),std::memory_order_relaxed);

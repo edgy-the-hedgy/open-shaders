@@ -19,6 +19,8 @@ namespace DX12Native
 		using Eval = NativeMaterialEvaluation;
 		constexpr uint32_t kLightingStride = MaterialFrameContract::kLightingStride;
 		constexpr uint64_t kCounterBytes = 8 * sizeof(uint32_t);
+		constexpr size_t kLightRecordVectors = 7;
+		constexpr uint64_t kLightUploadBytes = uint64_t(DX12::kMaxPreparedLights) * kLightRecordVectors * sizeof(std::array<float, 4>);
 		struct Constants
 		{
 			Matrix projectionInverse, viewInverse;
@@ -83,7 +85,6 @@ namespace DX12Native
 			if (slot.use_count() == 1) {
 				slot->material.reset();
 				slot->characters.reset();
-				slot->lights = nullptr;
 			}
 		}
 	}
@@ -197,6 +198,7 @@ namespace DX12Native
 					D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 				replacement->samples->SetName(L"NativeLighting::DiffuseSpecular");
 				replacement->camera = Eval::Buffer(device, 256, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
+				replacement->lights = Eval::Buffer(device, kLightUploadBytes, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
 				replacement->counters = Eval::Buffer(device, kCounterBytes, D3D12_HEAP_TYPE_DEFAULT,
 					D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 				replacement->readback = Eval::Buffer(device, kCounterBytes, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST);
@@ -213,7 +215,6 @@ namespace DX12Native
 			slot->frame = material->frame; slot->material = std::move(material);
 			slot->characters = characters && characters->Submitted(slot->frame, slot->material->scope) ? std::move(characters) : nullptr;
 			const auto& raster = *slot->material->raster;
-			constexpr size_t kLightRecordVectors = 7;
 			std::vector<std::array<float, 4>> records;
 			records.reserve(std::min(lights.size(), size_t(DX12::kMaxPreparedLights)) * kLightRecordVectors);
 			for (const auto& light : lights) {
@@ -234,7 +235,13 @@ namespace DX12Native
 			const uint32_t lightCount = uint32_t(records.size() / kLightRecordVectors);
 			if (!lights.empty() && records.empty()) throw std::runtime_error("No valid direct light records");
 			if (records.empty()) records.resize(kLightRecordVectors);
-			slot->lights = Eval::Table(device, records);
+			void* lightUpload = nullptr;
+			const D3D12_RANGE noRead{};
+			Eval::Check(slot->lights->Map(0, &noRead, &lightUpload));
+			const auto writtenBytes = records.size() * sizeof(records.front());
+			std::memcpy(lightUpload, records.data(), writtenBytes);
+			const D3D12_RANGE written{0, writtenBytes};
+			slot->lights->Unmap(0, &written);
 			const Constants constants{ raster.camera.CameraProjInverse, raster.camera.CameraViewInverse,
 				raster.camera.CameraPosAdjust, width, height, slot->material->rowPitch, lightCount,
 				0.0f, 0u, slot->material->scene->materialEvaluation->instanceCount, slot->material->parallaxShadows ? 1u : 0u, directional.direction, directional.radiance, foliageScatteringEnabled ? 1u : 0u, slot->characters ? 1u : 0u };

@@ -66,6 +66,8 @@ TEST_CASE("Native authored light metadata sanitizes inputs without legacy state"
 	REQUIRE(normal.formID == 42);
 	REQUIRE(normal.inverseSquare);
 	REQUIRE_FALSE(normal.spot);
+	REQUIRE_FALSE(normal.linear);
+	REQUIRE(MakeAuthoredLight(42, false, false, 0.5f, 1.0f, true).linear);
 	REQUIRE(normal.cutoff == 0.05f);
 	REQUIRE(normal.size == 2.0f);
 	const auto spot = MakeAuthoredLight(7, false, true, -1.0f, 90.0f);

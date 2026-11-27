@@ -24,10 +24,10 @@ namespace DX12Native
 		} __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
 		}
 	}
-	void ReadFullLightRestPosition(RE::NiLight* ni, uint32_t placedReference, float3& position) noexcept
+	void ReadFullLightRestPosition(RE::NiLight* ni, uint32_t placedReference, float3& position, uint32_t authoredFormID) noexcept
 	{
 		__try {
-			const auto formID = PointLightFlags::GetRuntimeLightFormID(ni);
+			const auto formID = authoredFormID ? authoredFormID : PointLightFlags::GetRuntimeLightFormID(ni);
 			const auto* light = formID ? RE::TESForm::LookupByID<RE::TESObjectLIGH>(formID) : nullptr;
 			if (!light && placedReference) {
 				auto* reference = RE::TESForm::LookupByID<RE::TESObjectREFR>(placedReference);
