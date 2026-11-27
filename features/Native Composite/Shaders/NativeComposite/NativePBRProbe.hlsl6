@@ -288,6 +288,26 @@ Sample EvaluateMaterial(uint instance, uint primitive, float3 weights, float3 ra
         coat.f0Colored=float4(saturate(material.thinSurface.xy),max(material.thinSurface.z,0.0),-1.0);
         coat.subsurface=float4(scatterColor,thickness);
     }
+    if ((binding.flags & SurfaceFuzzReadyBinding) != 0u) {
+        float3 fuzzColor=SrgbToLinear(max(material.fuzzColor.rgb,0.0));
+        float weight=saturate(material.surface.x);
+        float fuzzRoughness=material.surface.z;
+        if (material.textures[3].x!=0xffffffffu) {
+            float4 feature1=Tex(material.textures[3].x,uv,material.properties.z);
+            fuzzColor*=SrgbToLinear(max(feature1.rgb,0.0));
+            weight*=saturate(feature1.a);
+        }
+        if ((material.controls.y & 4u)!=0u) {
+            if (material.textures[2].x==0xffffffffu) { result.color.a=SurfaceFeatureLimited; return result; }
+            fuzzRoughness=Tex(material.textures[2].x,uv,material.properties.z).g;
+        }
+        if (!all(isfinite(fuzzColor)) || !isfinite(weight) || !isfinite(fuzzRoughness)) {
+            result.color.a=SurfaceFeatureLimited; return result;
+        }
+        coat.normalRoughness=float4(0.0,0.0,0.0,clamp(fuzzRoughness,-1.0,1.0));
+        coat.colorStrength=float4(saturate(fuzzColor),weight);
+        coat.f0Colored.w=NativeFuzzTag;
+    }
     if ((binding.flags & SurfaceCoatReadyBinding) != 0u) {
         // Match the legacy feature0 color/strength and feature1 roughness/normal semantics.
         float3 coatColor = SrgbToLinear(max(material.coatColor.rgb,0.0));

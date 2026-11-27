@@ -13,6 +13,7 @@ namespace DX12Native::MaterialFrameContract
 	inline constexpr uint32_t kSubsurfaceReadyBinding = 1u << 14;
 	inline constexpr uint32_t kThinSurfaceReadyBinding = 1u << 15;
 	inline constexpr uint32_t kParallaxReadyBinding = 1u << 4;
+	inline constexpr uint32_t kFuzzReadyBinding = 1u << 5;
 	inline constexpr uint32_t kLightingStride = 24;
 	// Transmission is independently evaluated by both lighting producers.
 	constexpr bool CompleteTransmission(bool directValid, bool indirectValid) { return directValid && indirectValid; }

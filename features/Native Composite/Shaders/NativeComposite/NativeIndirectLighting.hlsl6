@@ -1,4 +1,5 @@
 #include "NativeSurface.hlsli"
+#include "NativeFuzz.hlsli"
 #include "NativeIndirectBRDF.hlsli"
 #include "NativeEnvironmentColor.hlsli"
 
@@ -182,6 +183,9 @@ void main(uint3 id : SV_DispatchThreadID)
     float roughness = clamp(normal.w, 0.045, 1.0);
     NativeIndirect::LobeWeights lobes = NativeIndirect::EvaluateLobes(base.rgb, f0.rgb, f0.a,
         roughness, emissionAO.a, saturate(dot(n, baseView)));
+    PBR::FuzzLayer fuzz=ResolveNativeFuzz(coat,roughness,n,view,false);
+    lobes.diffuse=lobes.diffuse*(1.0-fuzz.weightedAlbedo)+fuzz.weightedAlbedo*fuzz.color*saturate(emissionAO.a);
+    lobes.specular*=fuzz.specularThroughput;
     float3 transmissionWeight=0.0, backTransmissionWeight=0.0;
     if (HasNativeThinSurface(coat)) {
         float3 reflected,front,back;

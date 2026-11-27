@@ -440,6 +440,19 @@ namespace DX12Native
 					recipe.parameters.kind == NativePBR::MaterialKind::Mesh && recipe.parameters.displacementScale > 0.0f;
 				if (!projectedUv && NativePBR::SupportsOpaqueParallax(recipe) && residentMap(NativePBR::TextureRole::Displacement))
 					binding.flags |= MaterialFrameContract::kParallaxReadyBinding;
+				// Standalone opaque fuzz only. Combined thin, foliage and subsurface
+				// variants have separate transmitted-scattering contracts.
+				const bool fuzzReady = capability.activeFlags == uint32_t(PBRFlags::Fuzz) &&
+					recipe.parameters.kind == NativePBR::MaterialKind::Mesh &&
+					(!authoredMap(NativePBR::TextureRole::Features1) || residentMap(NativePBR::TextureRole::Features1)) &&
+					(!recipe.parameters.fuzzRoughnessTexture || residentMap(NativePBR::TextureRole::Displacement));
+				if (fuzzReady) {
+					binding.flags |= MaterialFrameContract::kFuzzReadyBinding;
+					capability.issues &= ~(NativePBR::ScreenPbrFeatures | NativePBR::ScreenFeatureTextures);
+					// A packed roughness-only map is not active displacement.
+					if (recipe.parameters.fuzzRoughnessTexture && recipe.parameters.displacementScale == 0.0f)
+						capability.issues &= ~NativePBR::ScreenDisplacement;
+				}
 				const bool subsurfaceReady = capability.activeFlags == uint32_t(PBRFlags::Subsurface) &&
 					(!authoredMap(NativePBR::TextureRole::Features0) || residentMap(NativePBR::TextureRole::Features0));
 				if (subsurfaceReady) {

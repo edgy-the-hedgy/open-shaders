@@ -22,6 +22,7 @@ RWByteAddressBuffer Counters : register(u1);
 #define NATIVE_TEXTURE_REGISTER t7
 #include "NativeMaterialAlpha.hlsli"
 #include "NativeSurface.hlsli"
+#include "NativeFuzz.hlsli"
 #include "Common/BRDF.hlsli"
 ByteAddressBuffer MaterialLobes : register(t519);
 
@@ -100,7 +101,7 @@ bool VisibleDirectional(float3 world, float3 normal, float3 direction)
 }
 
 void AccumulateBRDF(float4 base, float4 f0, float3 n, float3 view, float3 l, float ndl, float ndv, float a2,
-    float3 incident, float heightVisibility, NativeCoatSample coat, inout float3 diffuse, inout float3 specular, inout float3 transmission)
+    float3 incident, float heightVisibility, NativeCoatSample coat, PBR::FuzzLayer fuzz, inout float3 diffuse, inout float3 specular, inout float3 transmission)
 {
     bool layered=HasNativeInterlayer(coat);
     if (!layered) incident*=heightVisibility;
@@ -175,6 +176,10 @@ void AccumulateBRDF(float4 base, float4 f0, float3 n, float3 view, float3 l, flo
             baseDiffuse=lerp(baseDiffuse,coat.colorStrength.rgb*incident*cnl*(1.0/3.14159265),strength);
         baseSpecular += cf*(ca2/max(3.14159265*cd*cd,1e-7))*(0.5/max(cgV+cgL,1e-5))*incident*cnl*strength;
     }
+    baseDiffuse*=1.0-fuzz.weightedAlbedo;
+    baseSpecular*=fuzz.specularThroughput;
+    if (fuzz.weightedAlbedo>0.0)
+        baseSpecular+=fuzz.weightedAlbedo*fuzz.color*PBR::FuzzLobe(l,fuzz.ltc)*incident;
     diffuse += baseDiffuse;
     specular += baseSpecular;
 }
@@ -251,6 +256,7 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
     float ndv = max(saturate(dot(n,view)), 1e-4);
     float roughness = clamp(normal.w, 0.045, 1.0);
     float alpha = roughness * roughness, a2 = alpha * alpha;
+    PBR::FuzzLayer fuzz=ResolveNativeFuzz(coat,roughness,n,view,true);
     float3 diffuse = 0, specular = 0, transmission = 0;
     uint inReach = 0, visible = 0;
     if (DirectionalDirection.w != 0.0 && any(DirectionalRadiance.rgb > 0.0)) {
@@ -262,7 +268,7 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
             float3 biasNormal=HasNativeThinSurface(coat) ? coat.normalRoughness.xyz : n;
             if (VisibleDirectional(world,dot(biasNormal,l)<0.0 ? -biasNormal : biasNormal,l)) {
                 ++visible;
-                AccumulateBRDF(base, f0, n, view, l, ndl, ndv, a2, max(DirectionalRadiance.rgb,0.0),NativeHeightVisibility(shadow,NativeBaseDirection(l,coat),viewDistance,shadowNoise), coat, diffuse, specular, transmission);
+                AccumulateBRDF(base, f0, n, view, l, ndl, ndv, a2, max(DirectionalRadiance.rgb,0.0),NativeHeightVisibility(shadow,NativeBaseDirection(l,coat),viewDistance,shadowNoise), coat, fuzz, diffuse, specular, transmission);
             }
         }
     }
@@ -291,7 +297,7 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
         if (traced) ++rays;
         if (!unoccluded) continue;
         ++visible;
-        AccumulateBRDF(base, f0, n, view, l, ndl, ndv, a2, max(color.rgb,0.0)*attenuation,NativeHeightVisibility(shadow,NativeBaseDirection(l,coat),viewDistance,shadowNoise), coat, diffuse, specular, transmission);
+        AccumulateBRDF(base, f0, n, view, l, ndl, ndv, a2, max(color.rgb,0.0)*attenuation,NativeHeightVisibility(shadow,NativeBaseDirection(l,coat),viewDistance,shadowNoise), coat, fuzz, diffuse, specular, transmission);
     }
     if (!all(isfinite(diffuse)) || !all(isfinite(specular))) return 0u;
     // Half precision stores counts up to 2047 plus one for validity.

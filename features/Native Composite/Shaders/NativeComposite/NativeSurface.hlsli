@@ -28,6 +28,7 @@ static const uint SurfaceCoatReadyBinding = 1u << 13;
 static const uint SurfaceSubsurfaceReadyBinding = 1u << 14;
 static const uint SurfaceThinSurfaceReadyBinding = 1u << 15;
 static const uint SurfaceParallaxReadyBinding = 1u << 4;
+static const uint SurfaceFuzzReadyBinding = 1u << 5;
 struct NativeCoatSample { float4 normalRoughness; float4 colorStrength; float4 f0Colored; float4 subsurface; };
 float4 UnpackNativeLobeHalf4(uint2 v) { return f16tof32(uint4(v.x & 65535u, v.x >> 16, v.y & 65535u, v.y >> 16)); }
 NativeCoatSample ReadNativeCoat(ByteAddressBuffer lobes, uint offset)
@@ -43,6 +44,14 @@ bool HasNativeCoat(NativeCoatSample coat)
 {
     return coat.colorStrength.w > 0.0 && all(isfinite(coat.normalRoughness)) && all(isfinite(coat.colorStrength)) &&
         all(isfinite(coat.f0Colored)) && dot(coat.normalRoughness.xyz, coat.normalRoughness.xyz) > 1e-8;
+}
+// Standalone fuzz uses the mutually exclusive coat payload. A zero normal
+// keeps it out of HasNativeCoat; the tag distinguishes it from thin surfaces.
+static const float NativeFuzzTag = -2.0;
+bool HasNativeFuzz(NativeCoatSample material)
+{
+    return material.f0Colored.w==NativeFuzzTag && all(isfinite(material.colorStrength)) &&
+        isfinite(material.normalRoughness.w) && material.colorStrength.w>0.0;
 }
 // Interlayer refraction is mutually exclusive with subsurface scattering.
 // The unused scattering W component of a coat record stores 2 + eta.
