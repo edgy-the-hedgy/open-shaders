@@ -17,16 +17,22 @@ namespace NativeCubemaps
             std::shared_ptr<const DX12Native::FullNativeReconstructionFrame> native);
         void Reset();
         void Poll();
+        void Advance(uint32_t frame);
+        bool Pending() const { return bool(pending); }
+        json GetDiagnostics() const;
         std::shared_ptr<const DX12Native::EnvironmentFrame> Get() const { return current; }
     private:
         struct Generation;
         void Initialize(const GraphicsBackend&);
+        void SubmitStep(const std::shared_ptr<Generation>&, uint32_t frame);
         GraphicsBackend owner;
         winrt::com_ptr<ID3D12RootSignature> root;
         winrt::com_ptr<ID3D12PipelineState> historyPipeline, filterPipeline;
         winrt::com_ptr<ID3D12Fence> fence;
         std::array<std::shared_ptr<Generation>,3> slots;
-        std::shared_ptr<Generation> latest;
+        std::shared_ptr<Generation> latest, pending;
+        uint32_t lastStepFrame = UINT32_MAX;
+        uint64_t deferredSteps = 0;
         std::shared_ptr<const DX12Native::EnvironmentFrame> current;
         DX12Native::VideoMemoryBudget budget;
         uint64_t nextFence = 0;

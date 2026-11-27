@@ -35,3 +35,24 @@ TEST_CASE("Environment publications expire and reject incompatible generations",
     REQUIRE(PublicationFresh(true, UINT32_MAX - 2, 3));
     REQUIRE_FALSE(PublicationFresh(true, 10, 9));
 }
+
+TEST_CASE("Environment scheduler visits every mip before publication", "[dx12][cubemaps]")
+{
+    for (bool reflection : { false, true }) {
+        ProcessingCursor cursor;
+        REQUIRE(cursor.phase == ProcessingPhase::History);
+        cursor.Advance(reflection);
+        uint32_t base = 0, reflected = 0, steps = 0;
+        while (cursor.phase != ProcessingPhase::Complete && steps++ < 2 * kMips) {
+            REQUIRE(cursor.EndMip() > cursor.mip);
+            REQUIRE(cursor.EndMip() - cursor.mip <= kMipsPerStep);
+            auto& count = cursor.phase == ProcessingPhase::Base ? base : reflected;
+            REQUIRE(cursor.mip == count);
+            count = cursor.EndMip();
+            cursor.Advance(reflection);
+        }
+        REQUIRE(cursor.phase == ProcessingPhase::Complete);
+        REQUIRE(base == kMips);
+        REQUIRE(reflected == (reflection ? kMips : 0u));
+    }
+}

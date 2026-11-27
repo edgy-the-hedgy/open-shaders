@@ -38,6 +38,7 @@ DX12Native::EnvironmentStamp NativeCubemaps::Producer::Prepare(uint32_t scope,ui
         (std::isfinite(hours) && std::abs(hours-lastHours)>0.01f));
     if(changed) { InvalidateGeneration(); stamp.epoch=epoch; }
     currentStamp=stamp;
+    if(processing) processing->Poll();
     if(std::isfinite(hours)) lastHours=hours;
     globals::features::nativeIBL.SetCaptureContext(stamp);
     return stamp;
@@ -116,9 +117,12 @@ void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend, ID3D11Sha
         currentStamp.pluginFrame != globals::state->frameCount || !globals::game::renderer) return;
     const auto world=globals::features::dx12NativeScene.GetWorldFrame(frame,currentStamp.pluginFrame);
     if(!world) return;
-    if(processing) processing->Poll();
-    if(!Policy::CaptureDue(lastCaptureFrame,currentStamp.engineFrame)) return;
     try {
+        if(processing) {
+            processing->Advance(frame);
+            if(processing->Pending()) return;
+        }
+        if(!Policy::CaptureDue(lastCaptureFrame,currentStamp.engineFrame)) return;
         // A depth match alone is not sufficient for native radiance acquisition:
         // require a same-frame raster identity candidate and direct-light input.
         // This is environment observation, not final-color ownership.
@@ -187,7 +191,8 @@ json NativeCubemaps::Producer::GetDiagnostics()
         {"lastCaptureFrame",lastCaptureFrame}, {"environmentRevision",publication ? publication->revision : 0},
         {"basePublished",publication && bool(publication->base)}, {"reflectionPublished",publication && bool(publication->reflection)},
         {"skyPublished",publication && bool(publication->sky)}, {"inputAllocationBytes",inputs ? inputs->AllocationBytes() : 0},
-        {"inputFailure",inputs ? inputs->Failure() : ""} };
+        {"inputFailure",inputs ? inputs->Failure() : ""},
+        {"processing",processing ? processing->GetDiagnostics() : json::object()} };
 }
 
 void NativeCubemaps::Producer::InvalidateGeneration()
