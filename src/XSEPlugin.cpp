@@ -7,7 +7,6 @@
 #include "Hooks.h"
 #include "I18n/I18n.h"
 #include "Menu.h"
-#include "Materials/SharedMaterialHooks.h"
 #include "Menu/ThemeManager.h"
 #include "NativeMenu/NativeMenu.h"
 #include "ShaderCache.h"
@@ -106,7 +105,6 @@ void MessageHandler(SKSE::MessagingInterface::Message* message)
 				Hooks::Install();
 				EngineFix::InstallOnPostPostLoadFixes();
 				FrameAnnotations::OnPostPostLoad();
-				SharedMaterialHooks::Install();
 
 				globals::state->flatWorldMapLoaded = GetModuleHandleW(L"FlatMapMarkersSSE.dll") != nullptr;
 				if (globals::state->flatWorldMapLoaded)
@@ -218,7 +216,7 @@ bool Load()
 	auto log = spdlog::default_logger();
 	log->set_level(state->GetLogLevel());
 
-	for (const auto& plugin : Compatibility::incompatiblePlugins) {
+	for (const auto& plugin : Compatibility::GetIncompatiblePlugins()) {
 		if (std::filesystem::exists(plugin.dll)) {
 			auto dllName = stl::utf16_to_utf8(plugin.dll).value_or("<unicode conversion error>"s);
 			auto errorMessage = plugin.reason.empty() ?

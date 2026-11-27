@@ -1,8 +1,10 @@
 #include "ShaderCache.h"
 #include "Globals.h"
+#include "LightingBudget.h"
 #include "ShaderCompileStatus.h"
 #include "ShaderFileWatcher.h"
 #include "Util.h"
+#include "Utils/PerfUtils.h"
 
 #ifdef DEVBENCH_BRIDGE_ENABLED
 #	include <DevBenchAPI.h>
@@ -753,24 +755,22 @@ namespace SIE
 			return nullptr;
 		}
 
-		uint32_t GetTechnique(uint32_t descriptor)
-		{
-			return 0x3F & (descriptor >> 24);
-		}
-
 		static void GetLightingShaderDefines(uint32_t descriptor, std::span<D3D_SHADER_MACRO> defines)
 		{
-			constexpr auto nativeInput = static_cast<uint32_t>(ShaderCache::LightingShaderFlags::NativePbrInput);
-			RE::GetLightingShaderDefines(descriptor & ~nativeInput, reinterpret_cast<REX::W32::D3D_SHADER_MACRO*>(defines.data()));
+			uint32_t variantMask = 0;
+			for (auto* feature : Feature::GetFeatureList()) {
+				if (feature->loaded)
+					variantMask |= feature->GetLightingVariantFlag();
+			}
+
+			RE::GetLightingShaderDefines(descriptor & ~variantMask, reinterpret_cast<REX::W32::D3D_SHADER_MACRO*>(defines.data()));
 
 			size_t lastIndex = std::ranges::find_if(defines, [](const D3D_SHADER_MACRO& macro) { return macro.Name == nullptr; }) - defines.begin();
 
 			if (descriptor & static_cast<uint32_t>(ShaderCache::LightingShaderFlags::Deferred)) {
 				defines[lastIndex++] = { "DEFERRED", nullptr };
 			}
-			if ((descriptor & nativeInput) != 0 && (descriptor & static_cast<uint32_t>(ShaderCache::LightingShaderFlags::Deferred)) != 0) {
-				defines[lastIndex++] = { "NATIVE_PBR_INPUT", nullptr };
-			} else if ((descriptor & static_cast<uint32_t>(ShaderCache::LightingShaderFlags::TruePbr)) != 0) {
+			if ((descriptor & static_cast<uint32_t>(ShaderCache::LightingShaderFlags::TruePbr)) != 0) {
 				defines[lastIndex++] = { "TRUE_PBR", nullptr };
 				if ((descriptor & static_cast<uint32_t>(ShaderCache::LightingShaderFlags::AnisoLighting)) != 0) {
 					defines[lastIndex++] = { "GLINT", nullptr };
@@ -784,6 +784,14 @@ namespace SIE
 				if ((descriptor & static_cast<uint32_t>(ShaderCache::LightingShaderFlags::FurShellsDepth)) != 0) {
 					defines[lastIndex++] = { "FUR_SHELLS_DEPTH", nullptr };
 				}
+			}
+			for (auto* feature : Feature::GetFeatureList()) {
+				if (!feature->loaded)
+					continue;
+				const uint32_t flag = feature->GetLightingVariantFlag();
+				const auto define = feature->GetLightingVariantDefine();
+				if (flag != 0 && !define.empty() && (descriptor & flag) != 0)
+					defines[lastIndex++] = { define.data(), nullptr };
 			}
 
 			for (auto* feature : Feature::GetFeatureList()) {
@@ -2851,9 +2859,17 @@ namespace SIE
 		}
 	}
 
-	winrt::com_ptr<ID3D11GeometryShader> ShaderCache::GetParaboloidClipShader(const RE::BSShader& shader, uint32_t vertexDescriptor)
+	winrt::com_ptr<ID3D11GeometryShader> ShaderCache::GetParaboloidClipShader(const RE::BSShader& shader, uint32_t vertexDescriptor, std::optional<uint64_t> a_taskGeneration)
 	{
+		using enum UtilityShaderFlags;
+		// The paraboloid bit is shared with AdditionalAlphaMask, so only a shadow-map draw outside OpaqueEffect is paraboloid.
+		constexpr auto paraboloidShadow = static_cast<uint32_t>(RenderShadowmap) | static_cast<uint32_t>(RenderShadowmapPb);
+		if (shader.shaderType.get() != RE::BSShader::Type::Utility ||
+			(vertexDescriptor & paraboloidShadow) != paraboloidShadow || (vertexDescriptor & static_cast<uint32_t>(OpaqueEffect)))
+			return nullptr;
 		std::scoped_lock lock(paraboloidClipMutex);
+		if (IsTaskStale(a_taskGeneration, RE::BSShader::Type::Utility))
+			return nullptr;
 		if (const auto it = paraboloidClipShaders.find(vertexDescriptor); it != paraboloidClipShaders.end())
 			return it->second;
 		std::array<D3D_SHADER_MACRO, 64> macros{};
@@ -3042,6 +3058,13 @@ namespace SIE
 
 	ShaderCache::~ShaderCache()
 	{
+		CloseRuntimeTaskAdmission();
+		{
+			// Only terminal destruction drains the admitted runtime CPU job. Do
+			// not purge its closure or destroy the dispatch accounting underneath it.
+			std::unique_lock lock(compilationSet.compilationMutex);
+			compilationSet.conditionVariable.wait(lock, [this] { return !runtimeTaskInFlight; });
+		}
 		Clear();
 		StopFileWatcher();
 		// Signal management thread to stop dispatching; pool workers observe the same
@@ -3438,8 +3461,80 @@ namespace SIE
 		return a_taskGeneration && *a_taskGeneration != compilationSet.LiveGeneration(a_type);
 	}
 
+	std::shared_ptr<Util::RuntimeTaskGate> ShaderCache::GetRuntimeTaskGate()
+	{
+		std::scoped_lock lock(compilationSet.compilationMutex);
+		if (runtimeTaskAdmissionClosed)
+			return {};
+		if (!runtimeTaskGate)
+			runtimeTaskGate = std::make_shared<Util::RuntimeTaskGate>(
+				[this](std::function<void()> work) { return TrySubmitRuntimeTask(std::move(work)); });
+		return runtimeTaskGate;
+	}
+
+	void ShaderCache::CloseRuntimeTaskAdmission()
+	{
+		std::shared_ptr<Util::RuntimeTaskGate> gate;
+		{
+			std::scoped_lock lock(compilationSet.compilationMutex);
+			runtimeTaskAdmissionClosed = true;
+			gate = std::move(runtimeTaskGate);
+		}
+		// Never acquire the gate mutex while holding compilationMutex: submission
+		// takes the gate first and then the existing dispatch mutex.
+		if (gate)
+			gate->Close();
+	}
+
+	bool ShaderCache::TrySubmitRuntimeTask(std::function<void()> a_work)
+	{
+		if (!a_work)
+			return false;
+		std::scoped_lock lock(compilationSet.compilationMutex);
+		const auto limit = backgroundCompilation ? backgroundCompilationThreadCount : compilationThreadCount;
+		if (!Util::CanAdmitRuntimeTask(runtimeTaskAdmissionClosed, runtimeTaskInFlight,
+				!compilationSet.demandedTasks.empty(),
+				compilationSet.dispatchedTasksInFlight.load(std::memory_order_relaxed), limit))
+			return false;
+
+		// Reserve a slot before posting, exactly as the shader dispatcher does. No shader
+		// generation or auxiliary queue ownership is attached to a runtime task.
+		compilationSet.dispatchedTasksInFlight.fetch_add(1, std::memory_order_relaxed);
+		runtimeTaskInFlight = true;
+		const auto queuedQpc = Util::GetQpcTicks();
+		try {
+			compilationPool.detach_task([this, queuedQpc, work = std::move(a_work)]() mutable {
+				const SKSE::stl::scope_exit releaseSlot([this]() noexcept {
+					{
+						std::scoped_lock lock(compilationSet.compilationMutex);
+						runtimeTaskInFlight = false;
+						compilationSet.dispatchedTasksInFlight.fetch_sub(1, std::memory_order_relaxed);
+					}
+					compilationSet.conditionVariable.notify_all();
+				});
+				ZoneScopedN("CS::RuntimePoolTask");
+				TracyPlot("CS::RuntimePoolQueueWaitUs",
+					Util::QpcElapsedUs(queuedQpc, Util::GetQpcTicks(), compilationSet.GetQpcFrequency()));
+				try {
+					work();
+				} catch (const std::exception& error) {
+					logger::error("Runtime task failed: {}", error.what());
+				} catch (...) {
+					logger::error("Runtime task failed with an unknown exception");
+				}
+			});
+		} catch (...) {
+			runtimeTaskInFlight = false;
+			compilationSet.dispatchedTasksInFlight.fetch_sub(1, std::memory_order_relaxed);
+			compilationSet.conditionVariable.notify_all();
+			return false;
+		}
+		return true;
+	}
+
 	void ShaderCache::StopCompilation()
 	{
+		CloseRuntimeTaskAdmission();
 		if (IsCompiling()) {
 			logger::info("Stopping {} remaining shader compilation tasks", compilationSet.totalTasks - compilationSet.completedTasks - compilationSet.failedTasks);
 		}
@@ -4692,6 +4787,7 @@ namespace SIE
 					newShader->shader->Release();
 				}
 			} else {
+				GetParaboloidClipShader(shader, descriptor, a_taskGeneration);
 				std::lock_guard lockGuard(vertexShadersMutex);
 				// Clear() takes this same mutex to wipe vertexShaders, so a mismatch here means
 				// inserting now would resurrect state Clear() already removed.
@@ -5661,7 +5757,7 @@ namespace SIE
 
 		// Known heavy Lighting techniques and flags from straggler analysis
 		if (type == RE::BSShader::Type::Lighting) {
-			const auto technique = static_cast<ShaderCache::LightingShaderTechniques>(0x3F & (descriptor >> 24));
+			const auto technique = ShaderCache::GetLightingTechnique(descriptor);
 
 			// LANDSCAPE techniques (MTLand, MTLandLODBlend) are among the heaviest
 			// due to multi-texture blending codegen â€” regularly 60-130s compile times

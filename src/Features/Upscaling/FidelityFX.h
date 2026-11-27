@@ -240,7 +240,7 @@ private:
 	void ResetRuntimeCommandContexts();
 	bool WaitForRuntimeD3D12Fence(uint64_t a_value);
 	bool EnsureRuntimeUpscalerContexts(uint32_t a_fullRenderWidth, uint32_t a_fullRenderHeight, uint32_t a_fullDisplayWidth, uint32_t a_fullDisplayHeight, uint32_t a_contextCount, uint32_t a_requestedVersion);
-	bool WaitForRuntimeUpscalerIdle();
+	void WaitForRuntimeUpscalerIdle();
 	bool PollRuntimeUpscalerTeardownIdle();
 	bool EnsureRuntimeUpscalerSharedResources(uint32_t a_contextCount, uint32_t a_fullRenderWidth, uint32_t a_fullRenderHeight, uint32_t a_fullDisplayWidth, uint32_t a_fullDisplayHeight,
 		const D3D11_TEXTURE2D_DESC& a_colorDesc,
@@ -253,6 +253,6 @@ private:
 		ID3D11Resource* a_reactiveMask, ID3D11Resource* a_transparencyCompositionMask, ID3D11Resource* a_output,
 		uint32_t a_renderWidth, uint32_t a_renderHeight, uint32_t a_displayWidth, uint32_t a_displayHeight,
 		float a_motionVectorScaleX, float a_motionVectorScaleY, float a_sharpness);
-	bool DestroyRuntimeUpscalerContexts(bool a_waitForIdle = true);
-	bool DestroyRuntimeUpscalerResources(bool a_waitForIdle = true);
+	void DestroyRuntimeUpscalerContexts(bool a_waitForIdle = true);
+	void DestroyRuntimeUpscalerResources(bool a_waitForIdle = true);
 };

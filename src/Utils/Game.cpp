@@ -330,6 +330,11 @@ namespace Util
 
 	bool GetReferenceFocusCoord(RE::TESObjectREFR* a_ref, float2& a_focusCoord)
 	{
+		return GetWorldFocusCoord(GetReferenceFocusPosition(a_ref), a_focusCoord);
+	}
+
+	bool GetWorldFocusCoord(const RE::NiPoint3& position, float2& a_focusCoord)
+	{
 		auto* camera = RE::Main::WorldRootCamera();
 		if (!camera || globals::game::isVR)
 			return false;
@@ -337,7 +342,7 @@ namespace Util
 		float screenX = 0.0f;
 		float screenY = 0.0f;
 		float screenZ = 0.0f;
-		if (!camera->WorldPtToScreenPt3(GetReferenceFocusPosition(a_ref), screenX, screenY, screenZ, kScreenProjectionEpsilon) ||
+		if (!camera->WorldPtToScreenPt3(position, screenX, screenY, screenZ, kScreenProjectionEpsilon) ||
 			!std::isfinite(screenX) || !std::isfinite(screenY) || screenZ <= 0.0f ||
 			screenX < 0.0f || screenX > 1.0f || screenY < 0.0f || screenY > 1.0f) {
 			return false;
@@ -354,6 +359,19 @@ namespace Util
 		if (!globals::game::isVR)
 			return shadowState->GetRuntimeData().posAdjust.getEye();
 		return (shadowState->GetVRRuntimeData().posAdjust.getEye(0) + shadowState->GetVRRuntimeData().posAdjust.getEye(1)) * 0.5f;
+	}
+
+	bool IsFirstPersonPass()
+	{
+		auto* accumulator = *globals::game::currentAccumulator.get();
+		return accumulator && accumulator->GetRuntimeData().renderMode == RE::BSShaderAccumulator::RENDER_MODE::kFirstPersonView;
+	}
+
+	float GetPassDistance(const RE::BSGeometry& a_geometry)
+	{
+		if (IsFirstPersonPass())
+			return 0.0f;
+		return std::max(0.0f, a_geometry.worldBound.center.GetDistance(GetEyePosition(0)) - a_geometry.worldBound.radius);
 	}
 
 	RE::NiPoint3 GetEyePosition(int eyeIndex)
@@ -591,6 +609,22 @@ namespace Util
 		return property ? std::clamp(property->kBlendColor.alpha, 0.0f, 1.0f) : 0.0f;
 	}
 
+	const RE::TESObjectCELL* GetPlayerCell()
+	{
+		const auto* player = globals::game::player;
+		return player ? player->GetParentCell() : nullptr;
+	}
+
+	std::optional<PlayerSpatialLocation> GetPlayerSpatialLocation()
+	{
+		const auto* cell = GetPlayerCell();
+		if (!cell)
+			return std::nullopt;
+		const auto* player = globals::game::player;
+		const auto* worldspace = cell->IsExteriorCell() ? player->GetWorldspace() : nullptr;
+		return PlayerSpatialLocation{ cell, worldspace, player->GetPosition() };
+	}
+
 	bool IsInterior()
 	{
 		auto tes = RE::TES::GetSingleton();
@@ -687,8 +721,7 @@ namespace Util
 	{
 		if (!model || !model->GetModel())
 			return false;
-		auto path = ToLowerAscii(model->GetModel());
-		std::replace(path.begin(), path.end(), '/', '\\');
+		const auto path = ToGameAssetPath(model->GetModel());
 		return path.find("architecture\\") != std::string::npos || path.find("dungeons\\") != std::string::npos;
 	}
 

@@ -1,5 +1,4 @@
 #include "GrassBucketStore.h"
-#include "Materials/SharedMaterialHooks.h"
 
 #include <numbers>
 #include <thread>
@@ -204,7 +203,8 @@ std::optional<PendingCapture> GrassBucketStore::CaptureMetadata(RE::BSMultiStrea
 	drawResources.indexBuffer.copy_from(Util::AsReal(rendererData->indexBuffer));
 
 	drawResources.material.reset(material);
-	draw.pbrMaterial = SharedMaterialHooks::IsLegacyPbrGrass(grassProperty);
+	// TruePBR marks converted grass properties with kMenuScreen.
+	draw.pbrMaterial = grassProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMenuScreen);
 	draw.sphereNormal = grassProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kEffectLighting);
 	drawResources.key.material = GrassMeshLibrary::CaptureMaterial(material, draw.pbrMaterial);
 	draw.uniformScale = grassProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kUniformScale);

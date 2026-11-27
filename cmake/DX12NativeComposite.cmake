@@ -1,136 +1,82 @@
 # Native Composite uses the same DXC compiler and shader delivery as Native Scene.
 if(NATIVE_SHADOW_DXC)
     set(_native_composite_source
-        "${CMAKE_CURRENT_SOURCE_DIR}/features/Native Composite/Shaders/NativeComposite/ShadowLayer.hlsl6"
+        "${NATIVE_SHADER_SOURCE_ROOT}/features/Native Composite/Shaders/NativeComposite/CompositeOffload.hlsl6"
     )
-    set(_native_surface "${CMAKE_CURRENT_SOURCE_DIR}/features/Native Composite/Shaders/NativeComposite/NativeSurface.hlsli")
+    set(_native_composite_flags
+        "${NATIVE_SHADER_SOURCE_ROOT}/package/Shaders/Common/NativeCompositeFlags.hlsli"
+    )
     set(_native_composite_dir "${CMAKE_CURRENT_BINARY_DIR}/NativeComposite")
-    set(_native_composite_dxil "${_native_composite_dir}/ShadowLayer.dxil")
+    set(_native_composite_dxil "${_native_composite_dir}/CompositeOffload.dxil")
+    set(_native_composite_outputs "${_native_composite_dxil}")
+    set(_rt_composite_source
+        "${NATIVE_SHADER_SOURCE_ROOT}/features/Native Composite/Shaders/NativeComposite/CompositeRT.hlsl6"
+    )
+    foreach(_quality IN ITEMS Quality Performance)
+        if(_quality STREQUAL "Quality")
+            set(_quality_id 1)
+        else()
+            set(_quality_id 3)
+        endif()
+        set(_rt_dxil "${_native_composite_dir}/CompositeRT${_quality}.dxil")
+        add_custom_command(
+            OUTPUT "${_rt_dxil}"
+            COMMAND
+                ${CMAKE_COMMAND} -E make_directory "${_native_composite_dir}"
+            COMMAND
+                "${NATIVE_SHADOW_DXC}" -T cs_6_5 -E main -HV 2021 -O3
+                ${NATIVE_SHADER_VALIDATION_FLAGS} -Ges -Gis -D
+                NATIVE_RT_QUALITY=${_quality_id} -I
+                "${NATIVE_SHADER_SOURCE_ROOT}/package/Shaders" -Fo "${_rt_dxil}"
+                "${_rt_composite_source}"
+            DEPENDS
+                "${_rt_composite_source}"
+                ${_shadow_contracts}
+                "${_native_composite_flags}"
+            VERBATIM
+        )
+        list(APPEND _native_composite_outputs "${_rt_dxil}")
+    endforeach()
     add_custom_command(
         OUTPUT "${_native_composite_dxil}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${_native_composite_dir}"
         COMMAND
-            "${NATIVE_SHADOW_DXC}" -T cs_6_5 -E main -HV 2021 -O3 -Ges -Gis -Fo
+            "${NATIVE_SHADOW_DXC}" -T cs_6_5 -E main -HV 2021 -O3
+            ${NATIVE_SHADER_VALIDATION_FLAGS} -Ges -Gis -I
+            "${NATIVE_SHADER_SOURCE_ROOT}/package/Shaders" -Fo
             "${_native_composite_dxil}" "${_native_composite_source}"
-        DEPENDS "${_native_composite_source}" "${_native_surface}"
+        DEPENDS
+            "${_native_composite_source}"
+            "${_shadow_offload_contract}"
+            "${_native_composite_flags}"
         VERBATIM
     )
-    set(_native_pbr_probe_source "${CMAKE_CURRENT_SOURCE_DIR}/features/Native Composite/Shaders/NativeComposite/NativePBRProbe.hlsl6")
-    set(_native_material_alpha "${CMAKE_CURRENT_SOURCE_DIR}/features/Native Composite/Shaders/NativeComposite/NativeMaterialAlpha.hlsli")
-    set(_native_pbr_probe_dxil "${_native_composite_dir}/NativePBRProbe.dxil")
-    add_custom_command(
-        OUTPUT "${_native_pbr_probe_dxil}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${_native_composite_dir}"
-        COMMAND "${NATIVE_SHADOW_DXC}" -T cs_6_5 -E main -HV 2021 -O3 -Ges -Gis -Fo
-            "${_native_pbr_probe_dxil}" "${_native_pbr_probe_source}"
-        DEPENDS "${_native_pbr_probe_source}" "${_native_material_alpha}" "${_native_surface}"
-        VERBATIM
-    )
-    set(_native_pbr_screen_dxil "${_native_composite_dir}/NativePBRScreenProbe.dxil")
-    add_custom_command(
-        OUTPUT "${_native_pbr_screen_dxil}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${_native_composite_dir}"
-        COMMAND "${NATIVE_SHADOW_DXC}" -T cs_6_5 -E screenMain -HV 2021 -O3 -Ges -Gis -Fo
-            "${_native_pbr_screen_dxil}" "${_native_pbr_probe_source}"
-        DEPENDS "${_native_pbr_probe_source}" "${_native_material_alpha}" "${_native_surface}"
-        VERBATIM
-    )
-    set(_native_direct_source "${CMAKE_CURRENT_SOURCE_DIR}/features/Native Composite/Shaders/NativeComposite/DirectLighting.hlsl6")
-    set(_native_direct_dxil "${_native_composite_dir}/DirectLighting.dxil")
-    add_custom_command(
-        OUTPUT "${_native_direct_dxil}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${_native_composite_dir}"
-        COMMAND "${NATIVE_SHADOW_DXC}" -T cs_6_5 -E main -HV 2021 -O3 -Ges -Gis -Fo
-            "${_native_direct_dxil}" "${_native_direct_source}"
-        DEPENDS "${_native_direct_source}" "${_native_material_alpha}" "${_native_surface}"
-        VERBATIM
-    )
-    set(_native_common "${CMAKE_CURRENT_SOURCE_DIR}/package/Shaders")
-    set(_native_indirect_dir "${CMAKE_CURRENT_SOURCE_DIR}/features/Native Composite/Shaders/NativeComposite")
-    set(_native_indirect_deps
-        "${_native_common}/Common/Math.hlsli"
-        "${_native_common}/Common/BRDF.hlsli"
-        "${_native_common}/Common/ColorSpaces.hlsli"
-        "${_native_indirect_dir}/NativeEnvironmentColor.hlsli"
-        "${_native_common}/Common/Shading.hlsli"
-        "${_native_common}/Common/Spherical Harmonics/SphericalHarmonics.hlsli"
-        "${_native_indirect_dir}/NativeIndirectBRDF.hlsli"
-        "${_native_surface}"
-    )
-    set(_native_indirect_outputs)
-    set(_native_indirect_aio_outputs)
-    foreach(_shader NativeDiffuseSH NativeIndirectLighting)
-        set(_source "${_native_indirect_dir}/${_shader}.hlsl6")
-        set(_output "${_native_composite_dir}/${_shader}.dxil")
-        add_custom_command(
-            OUTPUT "${_output}"
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${_native_composite_dir}"
-            COMMAND "${NATIVE_SHADOW_DXC}" -T cs_6_5 -E main -HV 2021 -O3 -Ges -Gis
-                -I "${_native_common}" -Fo "${_output}" "${_source}"
-            DEPENDS "${_source}" ${_native_indirect_deps}
-            VERBATIM
-        )
-        list(APPEND _native_indirect_outputs "${_output}")
-        if(DEFINED AIO_DIR)
-            set(_aio_output "${AIO_DIR}/Shaders/NativeComposite/${_shader}.dxil")
-            add_custom_command(
-                OUTPUT "${_aio_output}"
-                COMMAND ${CMAKE_COMMAND} -E make_directory "${AIO_DIR}/Shaders/NativeComposite"
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_output}" "${_aio_output}"
-                DEPENDS "${_output}"
-                VERBATIM
-            )
-            list(APPEND _native_indirect_aio_outputs "${_aio_output}")
-        endif()
-    endforeach()
     add_custom_target(
         DX12NativeCompositeDXIL
-        DEPENDS "${_native_composite_dxil}" "${_native_pbr_probe_dxil}" "${_native_pbr_screen_dxil}" "${_native_direct_dxil}" ${_native_indirect_outputs}
+        DEPENDS ${_native_composite_outputs}
     )
     add_dependencies(${PROJECT_NAME} DX12NativeCompositeDXIL)
     if(DEFINED AIO_DIR)
-        set(_native_composite_aio_dxil
-            "${AIO_DIR}/Shaders/NativeComposite/ShadowLayer.dxil"
-        )
-        add_custom_command(
-            OUTPUT "${_native_composite_aio_dxil}"
-            COMMAND
-                ${CMAKE_COMMAND} -E make_directory
-                "${AIO_DIR}/Shaders/NativeComposite"
-            COMMAND
-                ${CMAKE_COMMAND} -E copy_if_different
-                "${_native_composite_dxil}" "${_native_composite_aio_dxil}"
-            DEPENDS "${_native_composite_dxil}"
-            COMMENT "Staging DXIL ShadowLayer.dxil into the AIO shader tree"
-            VERBATIM
-        )
-        set(_native_pbr_probe_aio_dxil "${AIO_DIR}/Shaders/NativeComposite/NativePBRProbe.dxil")
-        add_custom_command(
-            OUTPUT "${_native_pbr_probe_aio_dxil}"
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${AIO_DIR}/Shaders/NativeComposite"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_native_pbr_probe_dxil}" "${_native_pbr_probe_aio_dxil}"
-            DEPENDS "${_native_pbr_probe_dxil}"
-            VERBATIM
-        )
-        set(_native_pbr_screen_aio_dxil "${AIO_DIR}/Shaders/NativeComposite/NativePBRScreenProbe.dxil")
-        add_custom_command(
-            OUTPUT "${_native_pbr_screen_aio_dxil}"
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${AIO_DIR}/Shaders/NativeComposite"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_native_pbr_screen_dxil}" "${_native_pbr_screen_aio_dxil}"
-            DEPENDS "${_native_pbr_screen_dxil}"
-            VERBATIM
-        )
-        set(_native_direct_aio_dxil "${AIO_DIR}/Shaders/NativeComposite/DirectLighting.dxil")
-        add_custom_command(
-            OUTPUT "${_native_direct_aio_dxil}"
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${AIO_DIR}/Shaders/NativeComposite"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_native_direct_dxil}" "${_native_direct_aio_dxil}"
-            DEPENDS "${_native_direct_dxil}"
-            VERBATIM
-        )
+        set(_native_composite_aio_outputs)
+        foreach(_dxil IN LISTS _native_composite_outputs)
+            get_filename_component(_name "${_dxil}" NAME)
+            set(_aio_dxil "${AIO_DIR}/Shaders/NativeComposite/${_name}")
+            add_custom_command(
+                OUTPUT "${_aio_dxil}"
+                COMMAND
+                    ${CMAKE_COMMAND} -E make_directory
+                    "${AIO_DIR}/Shaders/NativeComposite"
+                COMMAND
+                    ${CMAKE_COMMAND} -E copy_if_different "${_dxil}"
+                    "${_aio_dxil}"
+                DEPENDS "${_dxil}"
+                VERBATIM
+            )
+            list(APPEND _native_composite_aio_outputs "${_aio_dxil}")
+        endforeach()
         add_custom_target(
             DX12NativeCompositeAIO
-            DEPENDS "${_native_composite_aio_dxil}" "${_native_pbr_probe_aio_dxil}" "${_native_pbr_screen_aio_dxil}" "${_native_direct_aio_dxil}" ${_native_indirect_aio_outputs}
+            DEPENDS ${_native_composite_aio_outputs}
         )
         add_dependencies(DX12NativeCompositeAIO DX12NativeCompositeDXIL)
         if(TARGET prepare_shaders)
@@ -141,7 +87,7 @@ if(NATIVE_SHADOW_DXC)
         endif()
     endif()
     install(
-        FILES "${_native_composite_dxil}" "${_native_pbr_probe_dxil}" "${_native_pbr_screen_dxil}" "${_native_direct_dxil}" ${_native_indirect_outputs}
+        FILES ${_native_composite_outputs}
         DESTINATION "Shaders/NativeComposite"
         COMPONENT Shaders
     )

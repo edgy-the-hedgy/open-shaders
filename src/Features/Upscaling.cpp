@@ -703,7 +703,6 @@ namespace
 
 void Upscaling::Prepass()
 {
-	nativeComposite.PollRetirement();
 	foveatedRender.UpdateGaze();
 }
 
@@ -768,7 +767,7 @@ void Upscaling::RegisterUxActions()
 		CaptureNeuralRendering);
 
 	FEATURE_COMMAND("calibrateNeuralCrop",
-		"Start the Neural Rendering crop cost sweep: centred crops of shrinking area are forced for about half a minute over four passes while NREvaluate GPU time is measured, and the result (per-step best low-percentile times, stability ratio, floor, and the largest crop still within 5% of the floor) appears under neuralCalibration in openshaders.feature diagnostics. Fails if frame generation is active or Neural Rendering is not running. Params: none.",
+		"Start the Neural Rendering crop cost sweep: centred crops of shrinking area are forced for about half a minute over four passes while NREvaluate GPU time is measured, and the result (per-step best low-percentile times, stability ratio, floor, and the largest crop still within 5% of the floor) appears under neuralCalibration in openshaders.feature diagnostics. Fails if frame generation is active, Model Scale is below 1, or Neural Rendering is not running. Params: none.",
 		CalibrateNeuralCrop);
 }
 
@@ -1362,10 +1361,11 @@ void Upscaling::LoadSettings(json& o_json)
 	// Missing schema fields take the current default during deserialization, so legacy settings need an explicit migration version.
 	const bool hadFsr4SchemaVersion = o_json.contains("fsr4RuntimeSelectionSchemaVersion");
 	const uint previousDLSSGPreset = settings.dlssgPreset;
+	const auto previousTuning = settings.neuralRenderingTuning;
 	settings = o_json;
 	settings.neuralRenderingTuning.Sanitize();
 	settings.neuralRenderingContexts.Sanitize();
-	neuralRendering.ResetHistory();
+	neuralRendering.OnTuningReplaced(previousTuning, settings.neuralRenderingTuning);
 	if (!hadFsr4SchemaVersion)
 		settings.fsr4RuntimeSelectionSchemaVersion = 0;
 	if (settings.fsr4RuntimeSelectionSchemaVersion < kFsr4RuntimeSelectionSchemaVersion) {
@@ -1444,9 +1444,10 @@ void Upscaling::LoadSettings(json& o_json)
 void Upscaling::RestoreDefaultSettings()
 {
 	const uint previousDLSSGPreset = settings.dlssgPreset;
+	const auto previousTuning = settings.neuralRenderingTuning;
 	settings = {};
 	SyncDLSSGPresetDriverProfile(previousDLSSGPreset);
-	neuralRendering.ResetHistory();
+	neuralRendering.OnTuningReplaced(previousTuning, settings.neuralRenderingTuning);
 	foveatedRender.RestoreDefaultSettings();
 	ApplyOpenCompositeUpscalingBlocker(true);
 }
@@ -3675,9 +3676,9 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 	// open-RT's late-frame DX11 color capture: Native Composite is the
 	// final color authority, while FSR's other input preparation stays as-is.
 	upscaling.nativeCompositeFrame.reset();
-	upscaling.nativeComposite.PollRetirement();
+	DX12Native::lastCompositeShadowResult.store(DX12Native::CompositeShadowResult::NotCaptured, std::memory_order_relaxed);
 	if (upscaling.loaded && !globals::game::isVR &&
-		globals::features::dx12Control.IsActive() &&
+		globals::features::dx12NativeScene.GetFrameNativeMode() != DX12::SCMNativeMode::Disabled &&
 		globals::game::graphicsState &&
 		upscaling.dx12SwapChain.EnsureSharedDevice()) {
 		auto* renderer = globals::game::renderer;
@@ -3686,25 +3687,18 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 		const auto transfer = globals::state->IsMainOrLoadingMenuOpen()                  ? DX12Native::NativeComposite::Transfer::Unknown :
 		                      globals::features::linearLighting.IsLinearLightingActive() ? DX12Native::NativeComposite::Transfer::Linear :
 		                                                                                   DX12Native::NativeComposite::Transfer::LegacyScene;
-		const auto nativeFrame = globals::game::graphicsState->GetFrameCount();
-		const auto& nativeScene = globals::features::dx12NativeScene;
-		const auto shadow = nativeScene.GetShadowMask(nativeFrame);
-		const bool coverageRequested = globals::features::dx12Control.IsFullNativeMode() && nativeScene.IsCoveragePreviewEnabled();
-		const auto material = (coverageRequested || globals::features::dx12Control.UsesExclusiveMaterials()) ?
-			nativeScene.GetNativeMaterialFrame(nativeFrame) : nullptr;
-		const uint32_t lightingView = globals::features::dx12Control.UsesExclusiveMaterials() && !coverageRequested ? nativeScene.GetLightingView() : 0u;
-		const auto direct = lightingView ? nativeScene.GetNativeLightingFrame(nativeFrame) : nullptr;
+		const auto shadow = globals::features::dx12NativeScene.GetShadowMask(globals::game::graphicsState->GetFrameCount());
 		const bool runtimeFSRReads = upscaleMethod == UpscaleMethod::kFSR && upscaling.fidelityFX.RuntimeUpscalerReadsComposite();
 		// The return also covers a frame DX12 DLSS hands to DX11, so its shadows do not drop for that frame.
 		const bool dx12Reads = runtimeFSRReads || (upscaleMethod == UpscaleMethod::kDLSS && upscaling.nativeDLSS.GetFailure().empty());
-		if (dx12Reads || shadow || lightingView || coverageRequested)
+		if (dx12Reads || shadow)
 			upscaling.nativeCompositeFrame = upscaling.nativeComposite.Capture(
 				upscaling.dx12SwapChain.d3d11Device.get(),
 				upscaling.dx12SwapChain.d3d11Context.get(),
 				upscaling.dx12SwapChain.d3d12Device.get(),
-				upscaling.dx12SwapChain.commandQueue.get(), scene, globals::state->frameCount, nativeFrame,
+				upscaling.dx12SwapChain.commandQueue.get(), scene, globals::state->frameCount,
 				static_cast<uint32_t>(renderSize.x), static_cast<uint32_t>(renderSize.y),
-				transfer, shadow, !runtimeFSRReads, coverageRequested, material, direct, lightingView);
+				transfer, shadow, !runtimeFSRReads);
 	}
 
 	if (upscaleMethod != UpscaleMethod::kNONE && upscaleMethod != UpscaleMethod::kTAA) {

@@ -24,8 +24,6 @@ public:
 	virtual void RestoreDefaultSettings() override;
 	virtual bool SupportsVR() override { return true; }
 	virtual void PostPostLoad() override;
-	/** @brief Adds directional shadow techniques to lighting passes in sun-enabled interiors. */
-	void RewriteLightingRenderPasses(RE::BSShaderProperty::RenderPassArray* passes) const;
 	/** @brief Updates the interior sun state based on the current cell during the early prepass. */
 	virtual void EarlyPrepass() override;
 

@@ -1,46 +1,28 @@
 #pragma once
 
 #include "DX12NativeShadowTrace.h"
-#include "DX12NativeDirectLighting.h"
 #include "GraphicsInterop.h"
+#include "NativeShadowHistory.h"
 #include "VideoMemoryBudget.h"
 
 #include <array>
+#include <atomic>
 #include <memory>
 #include <vector>
 
 namespace DX12Native
 {
-	/** @brief Complete, linear, pre-forward opaque color with per-pixel contribution validity. */
-	struct OpaqueLightingFrame
+	// Submission state, not a guarantee that presentation has consumed the frame.
+	enum class CompositeShadowResult : uint8_t
 	{
-		std::shared_ptr<const NativeScreenProbe::MaterialFrame> material;
-		std::shared_ptr<const void> allocationOwner;
-		winrt::com_ptr<ID3D12Resource> samples;
-		winrt::com_ptr<ID3D12Fence> readyFence;
-		MaterialFrameContract::TemporalIdentity temporal;
-		MaterialFrameContract::LightingCoverage coverage = MaterialFrameContract::LightingCoverage::SelectedPointLights;
-		MaterialFrameContract::SignalEncoding encoding = MaterialFrameContract::SignalEncoding::MaterialModulated;
-		MaterialFrameContract::SamplingLayout sampling = MaterialFrameContract::SamplingLayout::Sparse;
-		uint64_t readyValue = 0;
-		uint32_t available = 0, rowPitch = 0;
-
-		bool IsCoherent(const std::shared_ptr<const NativeScreenProbe::MaterialFrame>& expected) const
-		{
-			using namespace MaterialFrameContract;
-			return expected && material == expected && allocationOwner && samples && readyFence &&
-				ValidProducerSignal(readyValue, readyFence->GetCompletedValue()) &&
-				material->IsCoherent(temporal.nativeFrame, temporal.width, temporal.height) &&
-				temporal.SameFrame(material->raster->temporal) &&
-				coverage == LightingCoverage::CompleteRasterReplacement &&
-				encoding == SignalEncoding::FinalLinearOpaqueColor && sampling == SamplingLayout::FullResolution &&
-				ValidLayout(temporal.width, temporal.height, rowPitch, kOpaqueRadianceStride) &&
-				samples->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
-				samples->GetDesc().Width >= uint64_t(rowPitch) * temporal.height &&
-				ResolveOpaqueOwner(SurfaceStatus::EvaluatedBase, material->correspondence,
-					{ available, available }, true, true, false) == OpaqueOwner::Native;
-		}
+		NotCaptured,
+		NoMask,
+		Rejected,
+		Submitted,
+		Failed
 	};
+	inline std::atomic<CompositeShadowResult> lastCompositeShadowResult{ CompositeShadowResult::NotCaptured };
+	inline std::atomic<bool> compositeShadowDebugView{ false };
 
 	/** @brief Native Composite owns the final pre-upscale DX12 color, as in open-RT. */
 	class NativeComposite
@@ -53,61 +35,62 @@ namespace DX12Native
 			LegacyScene
 		};
 
-		enum class ColorAuthority { Raster, RasterWithShadowMask, Diagnostic, MixedOpaque };
-
 		struct Frame
 		{
 			winrt::com_ptr<ID3D12Resource> color;
+			// Optional RG32F: reconstructed visibility and receiver distance (zero if invalid).
+			winrt::com_ptr<ID3D12Resource> reconstructedShadowMask;
 			winrt::com_ptr<ID3D12Fence> producerFence;
 			uint64_t producerValue = 0;
-			uint32_t frame = 0, nativeFrame = 0, width = 0, height = 0;
-			ColorAuthority colorAuthority = ColorAuthority::Raster;
+			uint32_t frame = 0, width = 0, height = 0;
 			DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 			bool valid = false;
-			bool IsComplete() const
-			{
-				if (!valid || !producerFence || !producerValue)
-					return false;
-				const auto completed = producerFence->GetCompletedValue();
-				return completed != UINT64_MAX && completed >= producerValue;
-			}
 		};
 
 		std::shared_ptr<const Frame> Capture(ID3D11Device5* device11,
 			ID3D11DeviceContext4* context11, ID3D12Device* device12,
 			ID3D12CommandQueue* queue, ID3D11Texture2D* source,
-			uint32_t frame, uint32_t nativeFrame, uint32_t width, uint32_t height, Transfer transfer,
+			uint32_t frame, uint32_t width, uint32_t height, Transfer transfer,
 			const std::shared_ptr<const ShadowMaskFrame>& shadow,
-			bool returnColorToDX11, bool coverageRequested = false,
-			const std::shared_ptr<const NativeScreenProbe::MaterialFrame>& material = {},
-			const std::shared_ptr<const DirectLightingFrame>& direct = {}, uint32_t lightingView = 0,
-			const std::shared_ptr<const OpaqueLightingFrame>& opaque = {});
-		/** @brief Queue-local retirement marker independent of the provider's shared fence. */
-		class ConsumerTicket
-		{
-		public:
-			void MarkSubmitted();
-		private:
-			friend class NativeComposite;
-			bool Retired();
-			winrt::com_ptr<ID3D12CommandQueue> queue;
-			winrt::com_ptr<ID3D12Fence> fence;
-			bool submitted = false, signalled = false;
-		};
-		std::shared_ptr<ConsumerTicket> ReserveConsumer(const std::shared_ptr<const Frame>& frame, ID3D12CommandQueue* queue);
-		void PollRetirement();
+			bool returnColorToDX11, bool publishReconstructedMask = false);
+		bool Retain(const std::shared_ptr<const Frame>& frame, ID3D12Fence* fence, uint64_t value);
 		~NativeComposite();
+		/** @brief Release completed input publications on the render thread. */
+		void RetireCompletedInputs();
+		/** @brief Invalidate temporal visibility on a scene/session transition. */
+		void ResetShadowHistory() { historyEpoch.fetch_add(1, std::memory_order_relaxed); }
+		/** @brief Allow a new initialization attempt after a scene reset. */
+		void ResetFailures()
+		{
+			for (auto& variant : shadowVariants)
+				variant.failedDevice = nullptr;
+			captureFailureLogged = false;
+		}
 
 	private:
+		struct History
+		{
+			winrt::com_ptr<ID3D12Resource> texture;
+			ShadowHistoryStamp stamp;
+			ID3D12Device* device = nullptr;
+			ID3D12CommandQueue* queue = nullptr;
+			uint64_t bytes = 0;
+		};
+		std::atomic<uint64_t> historyEpoch{ 0 };
+		std::shared_ptr<const History> latestHistory;
+		bool historyFailureLogged = false;
+
 		struct Slot
 		{
 			std::shared_ptr<Frame> frame;
 			// Retain producer textures until the composite GPU work completes.
 			std::shared_ptr<const ShadowMaskFrame> shadowInput;
 			std::shared_ptr<const RasterFrame> rasterInput;
-			std::shared_ptr<const NativeScreenProbe::MaterialFrame> materialInput;
-			std::shared_ptr<const DirectLightingFrame> lightingInput;
-			std::shared_ptr<const OpaqueLightingFrame> opaqueInput;
+			std::shared_ptr<const History> historyInput;
+			std::shared_ptr<History> historyOutput;
+			bool rtDescriptors = false;
+			winrt::com_ptr<ID3D12Resource> reconstructedMask;
+			uint32_t maskWidth = 0, maskHeight = 0;
 			std::unique_ptr<WrappedResource> shared;
 			std::unique_ptr<WrappedResource> returned;
 			winrt::com_ptr<ID3D12CommandAllocator> allocator;
@@ -116,23 +99,25 @@ namespace DX12Native
 			winrt::com_ptr<ID3D12RootSignature> shadowRoot;
 			winrt::com_ptr<ID3D12PipelineState> shadowPipeline;
 			SharedFence fence;
-			std::vector<std::shared_ptr<ConsumerTicket>> consumers;
+			std::vector<std::pair<winrt::com_ptr<ID3D12Fence>, uint64_t>> consumers;
 			ID3D12Device* device = nullptr;
 			ID3D11Device* device11 = nullptr;
 			D3D11_TEXTURE2D_DESC sourceDesc{};
-			bool supportsShadow = false, hasReturn = false;
-			enum class Recovery { None, D3D11, D3D12 } recovery = Recovery::None;
-			winrt::com_ptr<ID3D11DeviceContext4> recoveryContext;
-			winrt::com_ptr<ID3D12CommandQueue> recoveryQueue;
+			bool supportsShadow = false, hasReturn = false, untracked = false;
 			uint64_t frameBytes = 0;
 		};
 
 		std::array<std::unique_ptr<Slot>, 4> slots;
-		winrt::com_ptr<ID3D12RootSignature> shadowRoot;
-		winrt::com_ptr<ID3D12PipelineState> shadowPipeline;
-		ID3D12Device* shadowDevice = nullptr;
+		struct ShadowVariantState
+		{
+			winrt::com_ptr<ID3D12RootSignature> root;
+			winrt::com_ptr<ID3D12PipelineState> pipeline;
+			ID3D12Device* device = nullptr;
+			winrt::com_ptr<ID3D12Device> failedDevice;
+		};
+		std::array<ShadowVariantState, kShadowVariantCount> shadowVariants;
 		VideoMemoryBudget videoBudget;
 		bool captureFailureLogged = false;
-		bool InitializeShadow(ID3D12Device* device);
+		bool InitializeShadow(ID3D12Device* device, uint32_t variant);
 	};
 }

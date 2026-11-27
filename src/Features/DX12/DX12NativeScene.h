@@ -1,12 +1,12 @@
 #pragma once
 
+#include "../OverlayFeature.h"
 #include "DX12NativeAcceleration.h"
+#include "DX12NativeLightWorker.h"
 #include "DX12NativeRasterCapture.h"
 #include "DX12NativeRuntimeCapture.h"
-#include "DX12NativeLighting.h"
-#include "DX12NativeComposite.h"
-#include "DX12NativeScreenProbe.h"
-#include "Feature.h"
+#include "DX12NativeShadowTrace.h"
+#include "SCMNativePolicy.h"
 
 #include <atomic>
 #include <memory>
@@ -17,7 +17,7 @@
 #include <vector>
 
 /** @brief Independent early opaque raster capture for native DX12. */
-struct DX12NativeScene final : Feature
+struct DX12NativeScene final : OverlayFeature
 {
 	std::string GetName() override { return "DX12 Native Scene"; }
 	std::string GetShortName() override { return "DX12NativeScene"; }
@@ -29,132 +29,125 @@ struct DX12NativeScene final : Feature
 	bool SupportsVR() override { return false; }
 
 	void DrawSettings() override;
-	/** @brief Draw available Full Native lighting controls. */
-	void DrawLightingSettings(bool developer);
-	/** @brief Draw available Full Native material controls. */
-	void DrawMaterialSettings(bool developer);
-	void DrawDevStats();
-	bool WantsRenderPassHook() const override { return true; }
+	void DrawDevSettings();
+	void RegisterUxActions() override;
+	json GetStatus() const;
+	bool CasterInTlas(RE::BSGeometry& geometry) const;
+	void AuditCasterCoverage(RE::BSGeometry& geometry) const;
+	bool WantsExactShadowOrigins() const { return frameExactShadowLights.load(std::memory_order_relaxed); }
+	void ObserveScheduledShadowOrigin(const RE::NiLight* light, const RE::NiPoint3& origin);
+	std::shared_ptr<const DX12Native::TopLevel> GetPublishedScene() const { return acceleration.GetScene(); }
+	/** @brief The selected mode's exterior preparation and shadow contribution setting. */
+	bool AllowsOutdoorContribution() const;
+	/** @brief Comparison never admits native scene work, even for interiors. */
+	bool AllowsNativeSceneWork() const;
+	bool AllowsScenePreparation(bool exterior) const { return AllowsNativeSceneWork() && (!exterior || AllowsOutdoorContribution()); }
+	void DrawOverlay() override;
+	bool IsOverlayVisible() const override;
+	bool WantsRenderPassHook() const override;
 	std::function<void()> OnRenderPassBegin(const RE::BSRenderPass* pass) override;
-	bool WantsPreShadowMapsHook() const override { return true; }
+	bool WantsPreShadowMapsHook() const override;
 	void PreShadowMaps() override;
+	/** @brief Prepares a loading destination through the same acceleration worker without scene ownership. */
+	void PrepareLoadingScene(std::shared_ptr<const DX12::Grid> grid);
+	/** @brief Retires a whole-cell build when it cannot fit the current DXGI budget. */
+	bool RetireBudgetDeferredWholeCell(uint64_t revision)
+	{
+		if (!acceleration.WholeCellBudgetDeferred(revision))
+			return false;
+		acceleration.Reset();
+		shadowLightScope.store(0, std::memory_order_release);
+		shadowLights.store(nullptr, std::memory_order_release);
+		return true;
+	}
 	void LoadSettings(json& a_input) override;
 	void SaveSettings(json& a_output) override;
 	void RestoreDefaultSettings() override;
-	void OnOpaqueRasterReady(const OpaqueRasterInputs& a_inputs) override;
-	void OnOpaqueRadianceReady(const OpaqueRasterInputs& a_inputs) override;
-	void OnOpaqueCompositeReady(const OpaqueRasterInputs& a_inputs) override;
-	/** @brief Accepts one complete, same-opaque-pass lighting publication before forward drawing. */
-	bool PublishOpaqueLighting(std::shared_ptr<const DX12Native::OpaqueLightingFrame> frame);
-	/** @brief Only the open primary opaque pass can supply capture inputs. */
-	std::shared_ptr<const DX12Native::RasterFrame> GetOpaqueRasterFrame() const { return opaqueRaster; }
-	std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> GetOpaqueMaterialFrame() const
-	{
-		const auto material = opaqueRaster ? screenProbe.GetMaterialFrame(opaqueRaster->frame) : nullptr;
-		return material && material->raster == opaqueRaster ? material : nullptr;
-	}
-	std::shared_ptr<const DX12Native::DirectLightingFrame> GetOpaqueDirectLightingFrame() const
-	{
-		const auto material = GetOpaqueMaterialFrame();
-		const auto direct = material && directLightingEnabled ? lighting.GetDirect(material->frame) : nullptr;
-		return direct && direct->material == material ? direct : nullptr;
-	}
-    /** @brief Same-pass environment-only signals, not sufficient for color ownership. */
-    std::shared_ptr<const DX12Native::IndirectLightingFrame> GetOpaqueIndirectLightingFrame() const
-    {
-        const auto material = GetOpaqueMaterialFrame();
-        const auto indirect = material ? lighting.GetIndirect(material->frame) : nullptr;
-        return indirect && indirect->material == material ? indirect : nullptr;
-    }
+	bool WantsOpaqueRasterReadyHook() const override;
+	void OnOpaqueRasterReady() override;
+	bool WantsDepthPrepassReadyHook() const override;
+	void OnDepthPrepassReady() override;
 	/** @brief Observe CPU-backed opaque rigid geometry from SCM or normal render passes. */
 	void ObserveSCMRigidCaster(RE::BSGeometry& geometry, bool requireStability = false);
 	/** @brief SCM hands native-owned lights' static casters to RayQuery and retains movers. */
 	bool OwnsStaticForLight(RE::BSShadowLight* light, int32_t slot) const;
+	/** @brief Frame-wide policy established before SCM scheduling. */
+	DX12::SCMNativeMode GetFrameNativeMode() const;
 	// Snapshot LLF/SCM point-light parameters without altering the DX11 light.
 	void ObserveRuntimeLight(RE::BSShadowLight* light, uint32_t referenceID, bool flickers,
 		const RE::NiPoint3& restOrigin);
-	/** @brief Accepts the current LLF publication for Full Native lighting only. */
-	void PublishRuntimeDirectLights(uint32_t frame, std::vector<DX12Native::DirectPointLight> lights)
-	{
-		lighting.PublishRuntimeDirectLights(frame, std::move(lights));
-	}
+	void OnLoadingMenuEvent(bool opening) override;
 	void OnSceneTransitionReset(bool a_opening) override;
 	void OnRuntimeDisabled() override;
 
-	/** @brief Raw full-resolution shadow output, independently fenced for Native Composite. */
-	std::shared_ptr<const DX12Native::ShadowMaskFrame> GetShadowMask(uint32_t frame) const
-	{
-		const auto shadow = lighting.GetShadowMask(frame);
-		return shadow && shadow->raster == raster.Get(frame) ? shadow : nullptr;
-	}
-	bool RetainShadowMask(const std::shared_ptr<const DX12Native::ShadowMaskFrame>& frame,
-		ID3D12Fence* fence, uint64_t value) { return lighting.RetainShadowMask(frame, fence, value); }
-
-	/** @brief Gets the early raster frame without waiting for GPU completion. */
-	std::shared_ptr<const DX12Native::RasterFrame> GetRasterFrame(uint32_t a_frame) const { return raster.Get(a_frame); }
-	/** @brief Keeps a borrowed raster frame alive until the consuming GPU work finishes. */
-	bool RetainRasterFrame(const std::shared_ptr<const DX12Native::RasterFrame>& a_frame, ID3D12Fence* a_fence, uint64_t a_value)
-	{
-		return raster.RetainThrough(a_frame, a_fence, a_value);
-	}
-
-	/** @brief Submitted full-resolution native material outputs; immutable and fenced. */
-	std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> GetNativeMaterialFrame(uint32_t frame) const
-	{
-		const auto material = screenProbe.GetMaterialFrame(frame);
-		return material && material->raster == raster.Get(frame) ? material : nullptr;
-	}
-
-	/** @brief Whether the coverage visualization is requested for this frame. */
-	bool IsCoveragePreviewEnabled() const { return materialCoveragePreview; }
-	/** @brief Selects an explicit direct signal preview. */
-	uint32_t GetLightingView() const { return directLightingEnabled ? uint32_t(lightingView) : 0u; }
-	/** @brief Returns an optional same-frame coverage visualization input. */
-	std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> GetMaterialCoverageFrame(uint32_t frame) const
-	{
-		return materialCoveragePreview ? GetNativeMaterialFrame(frame) : nullptr;
-	}
-	/** @brief Returns an optional same-frame direct lighting contribution. */
-	std::shared_ptr<const DX12Native::DirectLightingFrame> GetNativeLightingFrame(uint32_t frame) const
-	{
-		const auto direct = directLightingEnabled ? lighting.GetDirect(frame) : nullptr;
-		return direct && direct->material == GetNativeMaterialFrame(frame) ? direct : nullptr;
-	}
+	/** @brief Raw mode-sized shadow output, independently fenced for Native Composite. */
+	std::shared_ptr<const DX12Native::ShadowMaskFrame> GetShadowMask(uint32_t frame) const { return shadows.Get(frame); }
 
 private:
-	/** @brief Gates only native shadow replacement; never disables DX11 baseline shadows. */
+	/** @brief Gates native scene work; never disables DX11 baseline shadows. */
 	bool CanOffloadShadowsInCurrentCell() const;
+	bool nativeSessionStarted = false;  // Render/main-thread lifecycle.
+	std::atomic<bool> loadingResetPending{ false };
+	void ApplyPendingLoadingReset();
 	std::optional<GraphicsBackend> backend;
 	DX12Native::RasterCapture raster;
-	DX12Native::NativeComposite opaqueComposite;
-	std::shared_ptr<const DX12Native::RasterFrame> opaqueRaster;
-	std::shared_ptr<const DX12Native::OpaqueLightingFrame> opaqueLighting;
-	DX12Native::MaterialFrameContract::TemporalIdentity lastTemporal{};
-	uint64_t historyRevision = 1;
 	DX12Native::RuntimeGeometryCapture geometryCapture;
 	DX12Native::AccelerationWorker acceleration;
-	DX12Native::NativeLighting lighting;
-	DX12Native::NativeScreenProbe screenProbe;
-	bool screenProbeEnabled = false;
-	bool materialCoveragePreview = false;
-	bool directLightingEnabled = false;
-    bool indirectDiffuseEnabled = false, indirectSpecularEnabled = false;
-    DX12Native::EnvironmentStamp environmentStamp{};
-    uint64_t environmentEpoch = 1;
-    float previousEnvironmentHours = 0.0f;
-    void ResetEnvironmentCapture();
-	int lightingView = 0;
-	bool fullResolutionMaterialProbe = false;
-	bool continuousMaterialProbe = false;
-	bool shadowMaskEnabled = true;
-	bool outdoorShadowOffloading = false;  // Off by default; vanilla raster shadows are unaffected.
-	bool offloadStaticShadows = true;
-	bool offloadFlickeringStatic = true;
-	bool freezeNativeFlickering = false;
-	uint32_t densityMode = 7;  // Four-ninths density by default.
-	bool nearLightShadowExclusion = true;
-	uint32_t nearLightExclusionUnits = 16;
-	float shadowReachMultiplier = 1.0f;  // Native only. Vanilla lights stay unchanged.
-	float shadowFadeRange = 0.66f;
-	float shadowFalloffCurve = 1.0f;
+	DX12Native::ShadowMaskTrace shadows;
+	// One immutable, ordered light selection shared by SCM and the RayQuery dispatch.
+	std::atomic<std::shared_ptr<const std::vector<DX12::PreparedLight>>> shadowLights;
+	std::atomic<uint32_t> shadowLightScope{ 0 };
+	std::atomic<DX12::SCMNativeMode> frameNativeMode{ DX12::SCMNativeMode::Disabled };
+	std::atomic<uint32_t> frameNativeModeID{ UINT32_MAX };
+	std::atomic<bool> outdoorShadowOffloading{ false };  // Off by default; vanilla raster shadows are unaffected.
+	std::atomic<bool> outdoorFullRT{ false };
+	std::atomic<bool> debugOffloadLights{ false };
+	std::atomic<bool> debugRTLights{ false };
+	bool WantsLightPreview(DX12::SCMNativeMode mode) const;
+	uint32_t fullRTQuality = DX12Native::kShadowQualityQuality;
+	std::atomic<uint32_t> runtimeUnificationRadius{ DX12Native::kDefaultRuntimeUnificationRadius };
+	std::atomic<uint32_t> preparedExclusionRadius{ DX12Native::kDefaultPreparedExclusionRadius };
+	std::atomic<bool> additivePreparedEmission{ true };
+	std::atomic<uint32_t> lightObservationFrames{ DX12Native::kDefaultLightObservationFrames };
+	std::shared_ptr<const DX12Native::NativeLightPublication> CollectFullRTLights(uint32_t frame);
+	bool ObserveFullRuntimeLights();
+	DX12Native::NativeLightWorker lightWorker;
+	std::shared_ptr<const DX12::Grid> fullRequestedGrid;
+	std::shared_ptr<const std::vector<DX12Native::NativeRuntimeEmitter>> fullRuntimeSnapshot, fullRequestedRuntime;
+	DX12Native::NativeLightSettings fullRequestedSettings;
+	uint32_t fullRuntimeCell = 0, fullLastObservation = 0, fullLastRequestFrame = 0;
+	bool fullObserved = false;
+	void ResetFullLightInventory();
+	struct RuntimeLightSample
+	{
+		const RE::NiLight* source = nullptr;  // Identity of the SCM light actually observed.
+		uint32_t referenceID = 0;             // Corresponding prepared native-scene emitter.
+		DX12::PreparedLight value;
+	};
+	std::atomic<bool> coverageAudit{ false };
+	std::atomic<bool> earlyTraceExperiment{ false };
+	std::atomic<bool> lightVisibilityExperiment{ false };
+	std::atomic<bool> exactShadowLights{ false }, frameExactShadowLights{ false };
+	std::unordered_map<uintptr_t, float3> scheduledOrigins;
+	uint32_t scheduledOriginsFrame = UINT32_MAX;
+	std::vector<DX12::PreparedLight> lightsAtShadowOrigins;
+	std::atomic<uint32_t> movingOriginCount{ 0 };
+	mutable std::atomic<uint64_t> coveredCasterChecks{ 0 }, missingCasterChecks{ 0 };
+	mutable std::atomic<uint64_t> ownershipGranted{ 0 };
+	mutable std::mutex runtimeLightMutex;
+	uint32_t runtimeLightFrame = UINT32_MAX;
+	std::vector<RuntimeLightSample> runtimeLightSamples;
+	// Full-shadow membership is independent of SCM selection. Keep emitter identity alive
+	// only while the source belongs to the active world light lists.
+	struct FullRuntimeLight
+	{
+		RE::NiPointer<RE::NiLight> source;
+		DX12::PreparedLight value;
+		uint32_t placedReference = 0;
+		uint64_t seen = 0;
+		bool supported = false, sampled = false, active = false, shadowLight = false;
+	};
+	std::unordered_map<const RE::NiLight*, FullRuntimeLight> fullRuntimeLights;
+	uint32_t fullRuntimeScope = 0;
+	uint64_t fullLightVisit = 0;
 };
