@@ -29,15 +29,16 @@ void main(uint3 id : SV_DispatchThreadID)
     float4 base = UnpackHalf4(Materials.Load2(surface));
     float4 emissionAO = UnpackHalf4(Materials.Load2(surface + 24u));
     if (base.a != SurfaceEvaluatedBase || !all(isfinite(emissionAO))) return;
-    uint signal = id.y * LightingPitch + id.x * 16u;
+    uint signal = id.y * LightingPitch + id.x * NativeLightingStride;
     float4 diffuse = UnpackHalf4(Reconstructed.Load2(signal));
     float4 specular = UnpackHalf4(Reconstructed.Load2(signal + 8u));
-    if (!all(isfinite(diffuse)) || !all(isfinite(specular))) return;
-    float3 radiance = diffuse.rgb + specular.rgb + max(emissionAO.rgb, 0.0);
+    float4 transmission=UnpackHalf4(Reconstructed.Load2(signal+16u));
+    if (!all(isfinite(diffuse)) || !all(isfinite(specular)) || !all(isfinite(transmission))) return;
+    float3 radiance = diffuse.rgb + specular.rgb + transmission.rgb + max(emissionAO.rgb, 0.0);
     if (!all(isfinite(radiance)) || any(abs(radiance) > 65504.0)) return;
     // Partial radiance is useful for diagnostics but cannot replace raster.
     // The owner bit requires complete contributions including independently
-    // admitted material emission and zero transmission for opaque base receivers.
+    // admitted material emission and independently reconstructed transmission.
     // Remaining opaque lighting still needs its own complete producer.
     FinalColor[id.xy] = float4(radiance, ApplicationEligible != 0u && HasNativeOpaqueOwnership(ownership) ? 1.0 : 0.0);
 }

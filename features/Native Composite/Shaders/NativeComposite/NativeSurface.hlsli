@@ -1,6 +1,7 @@
 #ifndef NATIVE_SURFACE_HLSLI
 #define NATIVE_SURFACE_HLSLI
 static const uint NativeSurfaceStride = 32u;
+static const uint NativeLightingStride = 24u;
 static const uint NativeMaterialLobeStride = 32u;
 static const uint SurfaceCoatReadyBinding = 1u << 13;
 static const uint SurfaceSubsurfaceReadyBinding = 1u << 14;

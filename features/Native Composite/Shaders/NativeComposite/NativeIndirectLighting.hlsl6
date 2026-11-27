@@ -165,8 +165,9 @@ void main(uint3 id : SV_DispatchThreadID)
 {
     if (any(id.xy >= Size)) return;
     uint offset = id.y * MaterialPitch + id.x * NativeSurfaceStride;
-    uint outputOffset = id.y * LightingPitch + id.x * 16u;
+    uint outputOffset = id.y * LightingPitch + id.x * NativeLightingStride;
     Lighting.Store4(outputOffset, uint4(0, 0, 0, 0));
+    Lighting.Store2(outputOffset+16u,uint2(0,0));
     float4 base = UnpackHalf4(Materials.Load2(offset));
     float4 normal = UnpackHalf4(Materials.Load2(offset + 8u));
     float4 f0 = UnpackHalf4(Materials.Load2(offset + 16u));
@@ -180,10 +181,11 @@ void main(uint3 id : SV_DispatchThreadID)
     float roughness = clamp(normal.w, 0.045, 1.0);
     NativeIndirect::LobeWeights lobes = NativeIndirect::EvaluateLobes(base.rgb, f0.rgb, f0.a,
         roughness, emissionAO.a, saturate(dot(n, view)));
+    float3 transmissionWeight=0.0;
     if (HasNativeSubsurface(coat)) {
         float2 env=BRDF::EnvBRDF(roughness,saturate(dot(n,view)));
         float3 reflected=saturate(f0.rgb*env.x+env.y);
-        lobes.diffuse+=coat.subsurface.rgb*(1.0-saturate(coat.subsurface.w))*BRDF::Diffuse_Lambert()*(1.0-reflected);
+        transmissionWeight=coat.subsurface.rgb*(1.0-saturate(coat.subsurface.w))*BRDF::Diffuse_Lambert()*(1.0-reflected);
     }
     bool hasCoat = HasNativeCoat(coat);
     float3 cn = hasCoat ? normalize(coat.normalRoughness.xyz) : n;
@@ -212,6 +214,8 @@ void main(uint3 id : SV_DispatchThreadID)
         }
         float3 diffuseRadiance = radiance * (lobes.diffuse + coatDiffuseWeight);
         Lighting.Store2(outputOffset, PackOpaqueRadiance(diffuseRadiance, ContributionIndirectDiffuse));
+        if ((active & ContributionTransmission) != 0u)
+            Lighting.Store2(outputOffset+16u,PackOpaqueRadiance(radiance*transmissionWeight,base.a==SurfaceEvaluatedBase ? ContributionTransmission : 0u));
     }
     if ((active & ContributionIndirectSpecular) != 0u && EnvironmentMipCount != 0u &&
         (Interior != 0u || ReflectionMipCount != 0u))

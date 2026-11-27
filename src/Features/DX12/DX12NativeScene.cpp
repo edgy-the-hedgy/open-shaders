@@ -904,7 +904,7 @@ void DX12NativeScene::DispatchFullNativeIndirect()
 		cubes.loaded && !stamp.interior ? cubes.GetNativeEnvironment(true) : EnvironmentSource{},
 		ibl.loaded && !stamp.interior ? ibl.GetNativeSkyRadiance() : EnvironmentSource{});
 	fullNativeIndirect->Dispatch(*backend, material, fullNativeEnvironment->Get(),
-		uint32_t(IndirectDiffuse) | uint32_t(IndirectSpecular), settings.EnvIBLScale, settings.SkyIBLScale, ambient);
+		uint32_t(IndirectDiffuse) | uint32_t(IndirectSpecular) | uint32_t(Transmission), settings.EnvIBLScale, settings.SkyIBLScale, ambient);
 	const auto& draws = fullNativeRasterDraws;
 	const bool matchingDraws = draws.finalized && draws.scene == material->scene && draws.stamp.frame == frame;
 	auto* tokenSource = matchingDraws && globals::game::renderer ?

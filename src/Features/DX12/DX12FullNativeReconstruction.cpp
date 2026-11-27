@@ -88,7 +88,7 @@ namespace DX12Native
 		parameters[2].InitAsShaderResourceView(2);
 		parameters[3].InitAsDescriptorTable(3, depthRanges);
 		parameters[4].InitAsUnorderedAccessView(0);
-		parameters[5].InitAsConstants(13, 0);
+		parameters[5].InitAsConstants(15, 0);
 		parameters[6].InitAsShaderResourceView(4);
 		parameters[7].InitAsShaderResourceView(5);
 		parameters[8].InitAsShaderResourceView(7);
@@ -134,7 +134,7 @@ namespace DX12Native
 		if (!matches(direct)) direct.reset();
 		if (!matches(indirect)) indirect.reset();
 		const uint32_t available = (direct ? DirectLightingFrame::available : 0u) | (indirect ? indirect->available : 0u) |
-			kBaseMaterialContributions;
+			uint32_t(Emission);
 		const uint64_t bytes = uint64_t(material->width) * material->height * kLightingStride;
 		if (!available || !bytes || bytes > UINT32_MAX)
 			return;
@@ -266,8 +266,9 @@ namespace DX12Native
 				slot->direct ? slot->direct->rowPitch : 0u, slot->indirect ? slot->indirect->rowPitch : 0u, available,
 				previous ? previous->material->rowPitch : 0u, previous ? 1u : 0u,
 				slot->material->rayIdentityRowPitch, previous ? previous->material->rayIdentityRowPitch : 0u, evidence ? evidence->tokenCount : 0u,
-				slot->rasterWinnerCertified ? 1u : 0u, slot->completeLightingCoverage ? 1u : 0u };
-			cmd->SetComputeRoot32BitConstants(5, 13, constants, 0);
+				slot->rasterWinnerCertified ? 1u : 0u, slot->completeLightingCoverage ? 1u : 0u,
+				slot->direct ? DirectLightingFrame::available : 0u, slot->indirect ? slot->indirect->available : 0u };
+			cmd->SetComputeRoot32BitConstants(5, 15, constants, 0);
 			const D3D12_RESOURCE_BARRIER begin[]{
 				CD3DX12_RESOURCE_BARRIER::Transition(depth, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
 				CD3DX12_RESOURCE_BARRIER::Transition(slot->samples.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),

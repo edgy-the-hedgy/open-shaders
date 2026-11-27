@@ -10,7 +10,9 @@ namespace DX12Native::MaterialFrameContract
 	inline constexpr uint32_t kMaterialLobeStride = 32;
 	inline constexpr uint32_t kCoatReadyBinding = 1u << 13;
 	inline constexpr uint32_t kSubsurfaceReadyBinding = 1u << 14;
-	inline constexpr uint32_t kLightingStride = 16;
+	inline constexpr uint32_t kLightingStride = 24;
+	// Transmission is independently evaluated by both lighting producers.
+	constexpr bool CompleteTransmission(bool directValid, bool indirectValid) { return directValid && indirectValid; }
 	inline constexpr uint32_t kBaseOnlyBinding = 1u << 11;
 	inline constexpr uint32_t kMissingBaseTexturesBinding = 1u << 12;
 

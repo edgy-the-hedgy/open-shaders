@@ -196,6 +196,7 @@ namespace DX12Native
         uint32_t available = 0;
         if ((enabled & IndirectDiffuse) && (!ambient.iblEnabled || environment->stamp.interior || environment->sky)) available |= IndirectDiffuse;
         if ((enabled & IndirectSpecular) && (environment->stamp.interior || environment->reflection)) available |= IndirectSpecular;
+        if ((enabled & Transmission) && (available & IndirectDiffuse)) available |= Transmission;
         if (!available) { failure = "Waiting for completed environment inputs"; return; }
         const uint32_t width = material->width, height = material->height;
         const uint64_t bytes = uint64_t(width) * height * kLightingStride;

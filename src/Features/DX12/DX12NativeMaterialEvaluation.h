@@ -419,8 +419,10 @@ namespace DX12Native
 				};
 				const bool subsurfaceReady = capability.activeFlags == uint32_t(PBRFlags::Subsurface) &&
 					(!authoredMap(NativePBR::TextureRole::Features0) || residentMap(NativePBR::TextureRole::Features0));
-				// Retain feature-limited status until independent transmission validity is integrated.
-				if (subsurfaceReady) binding.flags |= MaterialFrameContract::kSubsurfaceReadyBinding;
+				if (subsurfaceReady) {
+					binding.flags |= MaterialFrameContract::kSubsurfaceReadyBinding;
+					capability.issues &= ~(NativePBR::ScreenPbrFeatures | NativePBR::ScreenFeatureTextures);
+				}
 				const bool coatReady = (capability.activeFlags & coat) && !(capability.activeFlags & ~supportedCoat) &&
 					(!authoredMap(NativePBR::TextureRole::Features0) || residentMap(NativePBR::TextureRole::Features0)) &&
 					(!authoredMap(NativePBR::TextureRole::Features1) || residentMap(NativePBR::TextureRole::Features1)) &&

@@ -100,10 +100,10 @@ bool VisibleDirectional(float3 world, float3 normal, float3 direction)
 }
 
 void AccumulateBRDF(float4 base, float4 f0, float3 n, float3 view, float3 l, float ndl, float ndv, float a2,
-    float3 incident, NativeCoatSample coat, inout float3 diffuse, inout float3 specular)
+    float3 incident, NativeCoatSample coat, inout float3 diffuse, inout float3 specular, inout float3 transmission)
 {
     // Non-thin scattering follows Common/PBR.hlsli, with native DXR visibility.
-    // Diagnostic diffuse until a separate transmission output is reconstructed.
+    // Keep scattering separate from reflected diffuse.
     if (HasNativeSubsurface(coat)) {
         float thickness=saturate(coat.subsurface.w);
         float forwardScatter=exp2(saturate(-dot(view,l))*12.234-12.234);
@@ -111,7 +111,7 @@ void AccumulateBRDF(float4 base, float4 f0, float3 n, float3 view, float3 l, flo
         float scatter=lerp(backScatter,1.0,forwardScatter)*(1.0-thickness);
         float2 env=BRDF::EnvBRDF(sqrt(sqrt(a2)),saturate(abs(dot(n,view))));
         float3 kd=1.0-saturate(f0.rgb*env.x+env.y);
-        diffuse+=coat.subsurface.rgb*scatter*incident*BRDF::Diffuse_Lambert()*kd;
+        transmission+=coat.subsurface.rgb*scatter*incident*BRDF::Diffuse_Lambert()*kd;
     }
     float3 halfDelta = view + l;
     if (dot(halfDelta,halfDelta) < 1e-8) return;
@@ -176,8 +176,9 @@ bool Reconstruct(uint2 pixel, out float3 world, out float3 cameraWorld)
 uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
 {
     rays = 0u;
-    const uint outputOffset = (pixel.y * Size.x + pixel.x) * 16u;
+    const uint outputOffset = (pixel.y * Size.x + pixel.x) * NativeLightingStride;
     Lighting.Store4(outputOffset, uint4(0,0,0,0));
+    Lighting.Store2(outputOffset+16u,uint2(0,0));
     const uint offset = pixel.y * MaterialPitch + pixel.x * NativeSurfaceStride;
     float4 base = UnpackHalf4(Materials.Load2(offset));
     float4 normal = UnpackHalf4(Materials.Load2(offset + 8u));
@@ -191,7 +192,7 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
     float ndv = max(saturate(dot(n,view)), 1e-4);
     float roughness = clamp(normal.w, 0.045, 1.0);
     float alpha = roughness * roughness, a2 = alpha * alpha;
-    float3 diffuse = 0, specular = 0;
+    float3 diffuse = 0, specular = 0, transmission = 0;
     uint inReach = 0, visible = 0;
     if (DirectionalDirection.w != 0.0 && any(DirectionalRadiance.rgb > 0.0)) {
         float3 l = DirectionalDirection.xyz;
@@ -199,9 +200,9 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
         if (ndl > 0.0 || HasNativeSubsurface(coat) || (HasNativeCoat(coat) && dot(coat.normalRoughness.xyz,l)>0.0)) {
             ++inReach;
             ++rays;
-            if (VisibleDirectional(world,n,l)) {
+            if (VisibleDirectional(world,dot(n,l)<0.0 ? -n : n,l)) {
                 ++visible;
-                AccumulateBRDF(base, f0, n, view, l, ndl, ndv, a2, max(DirectionalRadiance.rgb,0.0), coat, diffuse, specular);
+                AccumulateBRDF(base, f0, n, view, l, ndl, ndv, a2, max(DirectionalRadiance.rgb,0.0), coat, diffuse, specular, transmission);
             }
         }
     }
@@ -225,15 +226,16 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
         if (attenuation <= 0.0 || !isfinite(attenuation) || !any(color.rgb > 0.0)) continue;
         ++inReach;
         bool traced;
-        bool unoccluded = Visible(world,n,l,distance,traced);
+        bool unoccluded = Visible(world,dot(n,l)<0.0 ? -n : n,l,distance,traced);
         if (traced) ++rays;
         if (!unoccluded) continue;
         ++visible;
-        AccumulateBRDF(base, f0, n, view, l, ndl, ndv, a2, max(color.rgb,0.0)*attenuation, coat, diffuse, specular);
+        AccumulateBRDF(base, f0, n, view, l, ndl, ndv, a2, max(color.rgb,0.0)*attenuation, coat, diffuse, specular, transmission);
     }
     if (!all(isfinite(diffuse)) || !all(isfinite(specular))) return 0u;
     // Half precision stores counts up to 2047 plus one for validity.
     Lighting.Store4(outputOffset,uint4(PackHalf4(float4(diffuse,float(min(inReach,2047u))+1.0)),PackHalf4(float4(specular,float(min(visible,2047u))+1.0))));
+    Lighting.Store2(outputOffset+16u,PackOpaqueRadiance(transmission,base.a==SurfaceEvaluatedBase ? ContributionTransmission : 0u));
     return visible > 0u ? 3u : (inReach > 0u ? 2u : 1u);
 }
 
@@ -272,7 +274,11 @@ void main(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
         uint category = 0u;
         uint rays = 0u;
         if (receiver) category = Shade(id.xy,world,cameraWorld,rays);
-        else Lighting.Store4((id.y*Size.x+id.x)*16u,uint4(0,0,0,0));
+        else {
+            uint outputOffset=(id.y*Size.x+id.x)*NativeLightingStride;
+            Lighting.Store4(outputOffset,uint4(0,0,0,0));
+            Lighting.Store2(outputOffset+16u,uint2(0,0));
+        }
         InterlockedAdd(TileStats[category],1u);
         InterlockedAdd(TileRays,rays);
     }

@@ -299,3 +299,13 @@ TEST_CASE("Base material contributions never imply complete opaque radiance", "[
 	constexpr uint32_t partial = DirectDiffuse | DirectSpecular | IndirectDiffuse | IndirectSpecular | kBaseMaterialContributions;
 	REQUIRE_FALSE(CompleteOpaque({ partial, partial }));
 }
+
+TEST_CASE("Native transmission requires both producer signals", "[dx12][materialframe]")
+{
+	using namespace DX12Native::MaterialFrameContract;
+	STATIC_REQUIRE(kLightingStride == 24);
+	STATIC_REQUIRE(CompleteTransmission(true,true));
+	STATIC_REQUIRE_FALSE(CompleteTransmission(true,false));
+	STATIC_REQUIRE_FALSE(CompleteTransmission(false,true));
+	STATIC_REQUIRE_FALSE(CompleteTransmission(false,false));
+}
