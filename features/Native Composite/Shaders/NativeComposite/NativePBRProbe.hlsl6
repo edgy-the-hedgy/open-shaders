@@ -6,6 +6,7 @@
 #define NATIVE_TEXTURE_REGISTER t3
 #include "NativeMaterialAlpha.hlsli"
 #include "NativeSurface.hlsli"
+#include "NativeRawRasterInput.hlsli"
 struct Sample { float4 color; float4 normal; float4 f0; float4 emission; };
 RWStructuredBuffer<Sample> Output : register(u0);
 cbuffer Constants : register(b0) { uint InstanceCount; };
@@ -105,8 +106,20 @@ float2 NativeParallaxUV(uint textureIndex, uint mode, float2 coords, float3 view
     float2 result=coords+travel*(saturate(contact)-0.5);
     return all(isfinite(result)) ? result : coords;
 }
-Sample EvaluateMaterial(uint instance, uint primitive, float3 weights, float3 rayObject, float3 rayOffsetX, float3 rayOffsetY, float rayScale, float viewDistance, float3x3 worldToObject, float3x3 objectToWorld, bool parallaxEnabled, bool warpFixEnabled, bool shadowEnabled, float mipBias, uint projectionRow, float3 worldPosition, float projectionNoise, out NativeCoatSample coat, out NativeParallaxShadowSample shadow)
+float4 NativeSurfaceTex(uint index, float2 uv, uint mode, RawRasterSurface raw, float mipBias)
 {
+    if (!raw.valid) return Tex(index,uv,mode);
+    float bias=exp2(clamp(mipBias,-8.0,8.0));
+    float2 dx=raw.dx*bias,dy=raw.dy*bias;
+    uint slot=NonUniformResourceIndex(index);
+    if (mode==0u) return Textures[slot].SampleGrad(ClampClamp,float3(uv,0),dx,dy);
+    if (mode==1u) return Textures[slot].SampleGrad(ClampWrap,float3(uv,0),dx,dy);
+    if (mode==2u) return Textures[slot].SampleGrad(WrapClamp,float3(uv,0),dx,dy);
+    return Textures[slot].SampleGrad(WrapWrap,float3(uv,0),dx,dy);
+}
+Sample EvaluateMaterial(uint instance, uint primitive, float3 weights, float3 rayObject, float3 rayOffsetX, float3 rayOffsetY, float rayScale, float viewDistance, float3x3 worldToObject, float3x3 objectToWorld, bool parallaxEnabled, bool warpFixEnabled, bool shadowEnabled, float mipBias, uint projectionRow, float3 worldPosition, float projectionNoise, RawRasterSurface raw, out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow)
+{
+    rawUsed = false;
     coat = (NativeCoatSample)0;
     shadow = (NativeParallaxShadowSample)0;
     Sample result = (Sample)0;
@@ -138,11 +151,21 @@ Sample EvaluateMaterial(uint instance, uint primitive, float3 weights, float3 ra
         }
     }
     uv = uv*material.uv[0].zw+material.uv[0].xy;
+    // Native material UV transforms remain authoritative. Do not admit a raster
+    // input with incompatible coordinates or an object-space normal layout.
+    raw.valid = raw.valid && (binding.flags & 512u)==0u &&
+        all(abs(raw.uv-uv)<=max(0.001,abs(uv)*0.002));
+    if (raw.valid) {
+        float3 rn=mul(raw.normal,objectToWorld),rt=mul(worldToObject,raw.tangent),rb=mul(worldToObject,raw.bitangent);
+        raw.valid=all(isfinite(rn)) && all(isfinite(rt)) && all(isfinite(rb)) &&
+            dot(rn,rn)>1e-8 && dot(rt,rt)>1e-8 && dot(rb,rb)>1e-8;
+        if (raw.valid) { uv=raw.uv; color=raw.color.rgb; vertexAlpha=raw.color.a; n=rn; t=rt; b=rb; rawUsed=true; }
+    }
     if (dot(n,n) < 1e-8) return result;
     n = normalize(n);
     // Legacy 36-byte RSGA and rigid meshes without stored tangents can
     // derive a local basis from the actual triangle and its UV gradients.
-    if (offsets.w == 36u || dot(t,t) < 1e-8 || dot(b,b) < 1e-8) {
+    if (!raw.valid && (offsets.w == 36u || dot(t,t) < 1e-8 || dot(b,b) < 1e-8)) {
         if (counts.z < 12u) return result;
         float3 p0=asfloat(Geometry.Load3(offsets.x+ix.x*counts.z));
         float3 e1=asfloat(Geometry.Load3(offsets.x+ix.y*counts.z))-p0;
@@ -174,12 +197,12 @@ Sample EvaluateMaterial(uint instance, uint primitive, float3 weights, float3 ra
         if (interlayer) {
             float strength=saturate(material.coat.x);
             if (material.textures[2].z!=0xffffffffu)
-                strength*=saturate(Tex(material.textures[2].z,originalUV,material.properties.z).a);
+                strength*=saturate(NativeSurfaceTex(material.textures[2].z,originalUV,material.properties.z,raw,mipBias).a);
             float3 mapped;
             if ((material.properties.x & 16u)!=0u && material.textures[3].x!=0xffffffffu)
-                mapped=Tex(material.textures[3].x,originalUV,material.properties.z).xyz*2.0-1.0;
+                mapped=NativeSurfaceTex(material.textures[3].x,originalUV,material.properties.z,raw,mipBias).xyz*2.0-1.0;
             else {
-                mapped=Tex(material.textures[0].z,originalUV,material.properties.z).xyz*2.0-1.0;
+                mapped=NativeSurfaceTex(material.textures[0].z,originalUV,material.properties.z,raw,mipBias).xyz*2.0-1.0;
                 if ((binding.flags & 256u)!=0u) mapped.z=sqrt(saturate(1.0-dot(mapped.xy,mapped.xy)));
             }
             float3 candidate=t*mapped.x+b*mapped.y+n*mapped.z;
@@ -204,7 +227,8 @@ Sample EvaluateMaterial(uint instance, uint primitive, float3 weights, float3 ra
         float2 dx=baryX.x*uv1+baryX.y*uv2;
         float2 dy=baryY.x*uv1+baryY.y*uv2;
         float shadowMip;
-        float mip=NativeParallaxMarchMip(material.textures[2].x,dx,dy,viewDistance,validX && validY,mipBias,shadowMip);
+        if (raw.valid) { dx=raw.dx; dy=raw.dy; }
+        float mip=NativeParallaxMarchMip(material.textures[2].x,dx,dy,viewDistance,raw.valid || (validX && validY),mipBias,shadowMip);
         float flattenAmount=0.0;
         if (warpFixEnabled && validX && validY) {
             float3 normal1=triangleNormal[1]-triangleNormal[0];
@@ -237,9 +261,9 @@ Sample EvaluateMaterial(uint instance, uint primitive, float3 weights, float3 ra
             }
         }
     }
-    float4 baseTexel = Tex(material.textures[0].x,uv,material.properties.z);
-    float4 normalTexel = Tex(material.textures[0].z,uv,material.properties.z);
-    float4 packed = Tex(material.textures[1].x,uv,material.properties.z);
+    float4 baseTexel = NativeSurfaceTex(material.textures[0].x,uv,material.properties.z,raw,mipBias);
+    float4 normalTexel = NativeSurfaceTex(material.textures[0].z,uv,material.properties.z,raw,mipBias);
+    float4 packed = NativeSurfaceTex(material.textures[1].x,uv,material.properties.z,raw,mipBias);
     float3 sampled = normalTexel.xyz*2.0-1.0;
     if ((binding.flags & 256u) != 0u) sampled.z = sqrt(saturate(1.0-dot(sampled.xy,sampled.xy)));
     if (dot(sampled,sampled)<1e-8) return result;
@@ -266,7 +290,7 @@ Sample EvaluateMaterial(uint instance, uint primitive, float3 weights, float3 ra
     float roughness = clamp(packed.r,0.045,1.0);
     float3 f0 = lerp(saturate(packed.a).xxx,base,metallic);
     float3 emission = 0;
-    if (material.textures[1].z != 0xffffffffu) emission = Tex(material.textures[1].z,uv,material.properties.z).rgb;
+    if (material.textures[1].z != 0xffffffffu) emission = NativeSurfaceTex(material.textures[1].z,uv,material.properties.z,raw,mipBias).rgb;
     if (!all(isfinite(base)) || !all(isfinite(normal)) || !all(isfinite(f0)) || !all(isfinite(emission))) return result;
     result.color = float4(base,projectionRow!=0xffffffffu ? SurfaceFeatureLimited : SurfaceEvaluatedBase);
     result.normal = float4(normal,roughness);
@@ -276,7 +300,7 @@ Sample EvaluateMaterial(uint instance, uint primitive, float3 weights, float3 ra
         float3 scatterColor = SrgbToLinear(max(material.subsurfaceColor.rgb,0.0));
         float thickness = saturate(material.coat.w);
         if (material.textures[2].z != 0xffffffffu) {
-            float4 feature0 = Tex(material.textures[2].z,uv,material.properties.z);
+            float4 feature0 = NativeSurfaceTex(material.textures[2].z,uv,material.properties.z,raw,mipBias);
             scatterColor *= SrgbToLinear(max(feature0.rgb,0.0));
             thickness *= saturate(feature0.a);
         }
@@ -290,7 +314,7 @@ Sample EvaluateMaterial(uint instance, uint primitive, float3 weights, float3 ra
             scatterColor=SrgbToLinear(max(material.subsurfaceColor.rgb,0.0));
             thickness=saturate(material.coat.w);
             if (material.textures[2].z!=0xffffffffu) {
-                float4 feature0=Tex(material.textures[2].z,uv,material.properties.z);
+                float4 feature0=NativeSurfaceTex(material.textures[2].z,uv,material.properties.z,raw,mipBias);
                 scatterColor*=SrgbToLinear(max(feature0.rgb,0.0));
                 thickness*=saturate(feature0.a);
             } else scatterColor*=base*(1.0-metallic);
@@ -313,13 +337,13 @@ Sample EvaluateMaterial(uint instance, uint primitive, float3 weights, float3 ra
         float weight=saturate(material.surface.x);
         float fuzzRoughness=material.surface.z;
         if (material.textures[3].x!=0xffffffffu) {
-            float4 feature1=Tex(material.textures[3].x,uv,material.properties.z);
+            float4 feature1=NativeSurfaceTex(material.textures[3].x,uv,material.properties.z,raw,mipBias);
             fuzzColor*=SrgbToLinear(max(feature1.rgb,0.0));
             weight*=saturate(feature1.a);
         }
         if ((material.controls.y & 4u)!=0u) {
             if (material.textures[2].x==0xffffffffu) { result.color.a=SurfaceFeatureLimited; return result; }
-            fuzzRoughness=Tex(material.textures[2].x,uv,material.properties.z).g;
+            fuzzRoughness=NativeSurfaceTex(material.textures[2].x,uv,material.properties.z,raw,mipBias).g;
         }
         if (!all(isfinite(fuzzColor)) || !isfinite(weight) || !isfinite(fuzzRoughness)) {
             result.color.a=SurfaceFeatureLimited; return result;
@@ -340,12 +364,12 @@ Sample EvaluateMaterial(uint instance, uint primitive, float3 weights, float3 ra
         float2 coatUV=interlayer ? originalUV : uv;
         float3 coatNormal = interlayerActive ? entryNormal : normal;
         if (material.textures[2].z != 0xffffffffu) {
-            float4 feature0 = Tex(material.textures[2].z, coatUV, material.properties.z);
+            float4 feature0 = NativeSurfaceTex(material.textures[2].z,coatUV,material.properties.z,raw,mipBias);
             coatColor *= SrgbToLinear(feature0.rgb);
             strength *= saturate(feature0.a);
         }
         if (material.textures[3].x != 0xffffffffu) {
-            float4 feature1 = Tex(material.textures[3].x, coatUV, material.properties.z);
+            float4 feature1 = NativeSurfaceTex(material.textures[3].x,coatUV,material.properties.z,raw,mipBias);
             coatRoughness *= feature1.a;
             if ((material.properties.x & 16u) != 0u) {
                 float3 mapped = feature1.xyz * 2.0 - 1.0;
@@ -376,7 +400,8 @@ void main(uint3 id : SV_DispatchThreadID)
     NativeCoatSample coat;
     const float3x3 identity=float3x3(1,0,0,0,1,0,0,0,1);
     NativeParallaxShadowSample shadow;
-    Output[id.x] = EvaluateMaterial(id.x, 0u, float3(1.0/3.0,1.0/3.0,1.0/3.0), float3(0,0,-1), float3(0,0,0), float3(0,0,0), 1.0, 0.0, identity, identity, false, false, false, 0.0, 0xffffffffu, 0.0, 0.0, coat, shadow);
+    bool rawUsed;
+    Output[id.x] = EvaluateMaterial(id.x, 0u, float3(1.0/3.0,1.0/3.0,1.0/3.0), float3(0,0,-1), float3(0,0,0), float3(0,0,0), 1.0, 0.0, identity, identity, false, false, false, 0.0, 0xffffffffu, 0.0, 0.0, (RawRasterSurface)0, rawUsed, coat, shadow);
 }
 
 Texture2D<float> ProbeDepth : register(t515);
@@ -395,6 +420,7 @@ cbuffer ProbeCamera : register(b1)
     float MaterialMipBias;
     uint ProjectionRowCount;
     uint ProjectionFrame;
+    uint RawTokenCount;
 };
 RWByteAddressBuffer ProbeCounts : register(u1);
 RWByteAddressBuffer ScreenOutput : register(u2);
@@ -406,7 +432,7 @@ uint2 PackHalf4(float4 value)
     uint4 bits=f32tof16(clamp(value,-65504.0,65504.0));
     return uint2(bits.x | (bits.y<<16),bits.z | (bits.w<<16));
 }
-groupshared uint GroupCounts[8];
+groupshared uint GroupCounts[9];
 
 // Non-opaque instances are marked in the TLAS; do not commit a candidate
 // without a resident alpha texture and an authoritative comparison function.
@@ -419,8 +445,9 @@ float3 ProbeRayOffset(float2 clip, float z, float3 centerWorld)
     if (!all(isfinite(w)) || abs(w.w)<1e-8) return 0.0;
     return w.xyz/w.w-centerWorld;
 }
-Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out NativeCoatSample coat, out NativeParallaxShadowSample shadow)
+Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow)
 {
+    rawUsed=false;
     coat=(NativeCoatSample)0;
     shadow=(NativeParallaxShadowSample)0;
     hitIdentity = uint2(0xffffffffu, 0xffffffffu);
@@ -477,9 +504,10 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out NativeCoatSam
         rayOffsetX=mul(worldToObject,ProbeRayOffset(clip+float2(clipStep.x,0.0),z,centerWorld));
         rayOffsetY=mul(worldToObject,ProbeRayOffset(clip-float2(0.0,clipStep.y),z,centerWorld));
     }
+    RawRasterSurface raw=ReadRawRaster(pixel,z,instance,query.CommittedPrimitiveIndex(),RawTokenCount);
     result=EvaluateMaterial(instance,query.CommittedPrimitiveIndex(),float3(1.0-bary.x-bary.y,bary),
         mul(worldToObject,delta),rayOffsetX,rayOffsetY,query.CommittedRayT()/distance,query.CommittedRayT(),
-        worldToObject,(float3x3)query.CommittedObjectToWorld3x4(),ParallaxEnabled!=0u,ParallaxWarpFixEnabled!=0u,ParallaxShadowEnabled!=0u,MaterialMipBias,projectionRow,origin+ray.Direction*query.CommittedRayT(),Random::InterleavedGradientNoise(float2(pixel),ProjectionFrame),coat,shadow);
+        worldToObject,(float3x3)query.CommittedObjectToWorld3x4(),ParallaxEnabled!=0u,ParallaxWarpFixEnabled!=0u,ParallaxShadowEnabled!=0u,MaterialMipBias,projectionRow,origin+ray.Direction*query.CommittedRayT(),Random::InterleavedGradientNoise(float2(pixel),ProjectionFrame),raw,rawUsed,coat,shadow);
     if(result.color.a==SurfaceInvalidReceiver) result.color.a=SurfaceEvaluationFailed;
     // The native output is consumed in world space, including rotated instances.
     if (HasEvaluatedNativeBase(result.color.a)) {
@@ -518,14 +546,15 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out NativeCoatSam
 void screenMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
 {
     if (CollectStats != 0u) {
-        if (lane < 8) GroupCounts[lane]=0;
+        if (lane < 9) GroupCounts[lane]=0;
         GroupMemoryBarrierWithGroupSync();
     }
     if (all(id.xy < GridSize)) {
         uint2 hitIdentity;
         NativeCoatSample coat;
         NativeParallaxShadowSample shadow;
-        Sample result=EvaluateScreen(id.xy, hitIdentity, coat, shadow);
+        bool rawUsed;
+        Sample result=EvaluateScreen(id.xy, hitIdentity, rawUsed, coat, shadow);
         uint ordinal = id.y*((GridSize.x+7u)&~7u)+id.x;
         uint offset=ordinal*NativeSurfaceStride;
         RayIdentity.Store2(ordinal*8u,hitIdentity);
@@ -544,11 +573,14 @@ void screenMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
             result.color.a==SurfaceDepthMismatch ? 2 : result.color.a==SurfaceEvaluationFailed ? 3 :
             result.color.a==SurfaceFeatureLimited ? 5 : result.color.a==SurfaceUnsupportedMaterial ? 6 :
             result.color.a==SurfaceMissingTextures ? 7 : 4;
-        if (CollectStats != 0u) InterlockedAdd(GroupCounts[category],1u);
+        if (CollectStats != 0u) {
+            InterlockedAdd(GroupCounts[category],1u);
+            if (rawUsed && HasEvaluatedNativeBase(result.color.a)) InterlockedAdd(GroupCounts[8],1u);
+        }
     }
     if (CollectStats != 0u) {
         GroupMemoryBarrierWithGroupSync();
-        if (lane < 8) {
+        if (lane < 9) {
             uint ignored;
             ProbeCounts.InterlockedAdd(lane*4,GroupCounts[lane],ignored);
         }

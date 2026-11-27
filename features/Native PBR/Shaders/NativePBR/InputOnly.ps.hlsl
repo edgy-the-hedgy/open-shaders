@@ -2,12 +2,16 @@
 // shadow sampling, environment evaluation, or output to the main G-buffer.
 struct RasterInput
 {
+    float4 position : SV_POSITION0;
     float2 uv : TEXCOORD0;
     float3 tbn0 : TEXCOORD1;
     float3 tbn1 : TEXCOORD2;
     float3 tbn2 : TEXCOORD3;
+    float4 worldPosition : POSITION1;
+    float4 previousWorldPosition : POSITION2;
     float4 color : COLOR0;
-    float4 position : SV_Position;
+    float4 fogParam : COLOR1;
+    float3 modelPosition : TEXCOORD12;
 };
 cbuffer DrawIdentity : register(b0)
 {
@@ -32,7 +36,7 @@ uint PackOct(float3 n)
     n /= max(abs(n.x) + abs(n.y) + abs(n.z), 1e-8);
     float2 p = n.xy;
     if (n.z < 0)
-        p = (1.0 - abs(p.yx)) * (p >= 0 ? 1.0 : -1.0);
+        p = (1.0 - abs(p.yx)) * float2(p.x >= 0 ? 1.0 : -1.0, p.y >= 0 ? 1.0 : -1.0);
     uint2 q = uint2(round(saturate(p * 0.5 + 0.5) * 65535.0));
     return q.x | (q.y << 16);
 }

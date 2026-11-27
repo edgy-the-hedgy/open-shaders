@@ -138,5 +138,25 @@ class ArchitectureLintTests(unittest.TestCase):
         self.assertIn('"Shaders/NativeCubemaps/CaptureRaw.cs.hlsl"', verification)
 
 
+    def test_input_only_fxc_is_a_distinct_raw_shader_and_fenced_native_consumer(self):
+        raw = (ROOT / "features/Native PBR/Shaders/NativePBR/InputOnly.ps.hlsl").read_text(encoding="utf-8")
+        capture = (ROOT / "src/Features/NativePBR/NativeRawInputCapture.cpp").read_text(encoding="utf-8")
+        probe = (ROOT / "src/Features/DX12/DX12NativeScreenProbe.h").read_text(encoding="utf-8")
+        consumer = (ROOT / "features/Native Composite/Shaders/NativeComposite/NativeRawRasterInput.hlsli").read_text(encoding="utf-8")
+        self.assertIn("uint primitive : SV_PrimitiveID, bool front : SV_IsFrontFace", raw)
+        self.assertIn("ddx(input.uv)", raw)
+        self.assertIn("ddy(input.uv)", raw)
+        self.assertNotIn("Texture2D", raw)
+        self.assertNotIn("SamplerState", raw)
+        self.assertIn("StandaloneShaderClass::Pixel", capture)
+        self.assertIn("D3D11_DEPTH_WRITE_MASK_ZERO", capture)
+        self.assertIn("OMSetRenderTargets(kMRTs, targets.data(), dsv.get())", capture)
+        self.assertIn("slot->rawInputs->readyFence", probe)
+        self.assertIn("slot->rawInputs->evidence->readyFence", probe)
+        self.assertIn("RawRasterTokenTable.Load2", consumer)
+        self.assertIn("abs(rawDepth-depth)", consumer)
+        self.assertIn("a.x-1u != instance", consumer)
+        self.assertIn("finalToken", consumer)
+
 if __name__ == "__main__":
     unittest.main()

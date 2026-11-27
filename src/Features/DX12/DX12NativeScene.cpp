@@ -641,15 +641,15 @@ void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 		if (!backend)
 			return;
 	}
+	// Evaluate after the opaque boundary so the raw FXC publication and final
+	// depth belong to the same frame. The early hook only establishes readiness.
+	if (!opaqueReady) return;
 	const auto viewport = Util::ConvertToDynamic(globals::state->screenSize);
 	if (!std::isfinite(viewport.x) || !std::isfinite(viewport.y) || viewport.x < 1.0f || viewport.y < 1.0f)
 		return;
 	if (globals::features::nativePBR.WantsFrame(frame)) {
 		if (!raster.Get(frame))
 			raster.Capture(*backend, Util::GetCurrentSceneDepthSRV(false), &globals::game::frameBufferCached.nonVR, frame);
-		const auto& tally = scene->materialEvaluation->surfaceCapabilities;
-		if ((tally.projectedUv || tally.unresolvedProjection) && !opaqueReady)
-			return;
 		globals::features::nativePBR.Dispatch(*backend, raster.Get(frame), scene, frame, uint32_t(viewport.x), uint32_t(viewport.y), opaqueReady);
 	}
 	const auto material = globals::features::nativePBR.Get(frame);

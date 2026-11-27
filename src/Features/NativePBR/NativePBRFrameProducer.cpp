@@ -39,8 +39,7 @@ void NativePBR::FrameProducer::Dispatch(const GraphicsBackend& backend, std::sha
 		return;
 	if (!probe)
 		probe = std::make_unique<DX12Native::NativeScreenProbe>();
-	const auto& tally = scene->materialEvaluation->surfaceCapabilities;
-	if ((tally.projectedUv || tally.unresolvedProjection) && !opaqueReady)
+	if (!opaqueReady)
 		return;
 	const DX12Native::MaterialFrameContract::RasterIdentityStamp stamp{ frame, scene->scope, scene->geometryRevision, scene->materialEvaluation->revision };
 	auto projected = opaqueReady && projection ? projection->GetSubmitted(stamp) : nullptr;
@@ -50,7 +49,7 @@ void NativePBR::FrameProducer::Dispatch(const GraphicsBackend& backend, std::sha
 		extended.loaded && extended.settings.EnableParallax != 0,
 		extended.loaded && extended.settings.EnableParallaxWarpingFix != 0,
 		extended.loaded && extended.settings.EnableShadows != 0,
-		globals::state->GetMaterialMipBias(Util::GetTemporal()), std::move(projected));
+		globals::state->GetMaterialMipBias(Util::GetTemporal()), std::move(projected), GetRawInput(stamp));
 }
 
 void NativePBR::FrameProducer::PublishProjection(const GraphicsBackend& backend, DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,
@@ -87,6 +86,8 @@ json NativePBR::FrameProducer::GetDiagnostics()
 		{ "width", publication ? publication->width : 0u }, { "height", publication ? publication->height : 0u },
 		{ "producerValue", publication ? publication->producerValue : 0 },
 		{ "rawInputFailure", rawInputs ? rawInputs->Failure() : "" },
+		{ "rawInputDraws", publication ? publication->rawInputDraws : 0u },
+		{ "rawInputEvaluatedPixels", probe ? probe->stats.rawInputPixels : 0u },
 		{ "submittedFrames", probe ? probe->submittedFrames : 0u }, { "reusedAllocations", probe ? probe->reusedAllocations : 0u },
 		{ "coverageMeasured", probe && probe->stats.sampled != 0 },
 		{ "coverageFrame", probe ? probe->stats.frame : 0u },

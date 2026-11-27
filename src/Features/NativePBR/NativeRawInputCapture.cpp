@@ -100,6 +100,12 @@ namespace NativePBR
 			owner = backend;
 			producer.Create(owner.d3d12Device.get(), owner.d3d11Device.get(), "NativePBR::InputOnly");
 			D3D11_BLEND_DESC blendDesc{};
+			blendDesc.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
+			blendDesc.RenderTarget[0].DestBlend = D3D11_BLEND_ZERO;
+			blendDesc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+			blendDesc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+			blendDesc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ZERO;
+			blendDesc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
 			blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
 			DX::ThrowIfFailed(owner.d3d11Device->CreateBlendState(&blendDesc, blend.put()));
 			D3D11_DEPTH_STENCIL_DESC depthDesc{};
@@ -257,13 +263,16 @@ namespace NativePBR
 			context->OMSetDepthStencilState(depth.get(), 0);
 			context->PSSetShader(shader.get(), nullptr, 0);
 			context->PSSetConstantBuffers(0, 1, &cb);
-			draw();
-			auto* restoreCB = oldCB.get();
-			context->PSSetConstantBuffers(0, 1, &restoreCB);
-			context->PSSetShader(ps.get(), nullptr, 0);
-			context->OMSetDepthStencilState(oldDepth.get(), stencilRef);
-			context->OMSetBlendState(oldBlend.get(), blendFactor, sampleMask);
-			context->OMSetRenderTargets(kMRTs, targets.data(), dsv.get());
+			const auto restore = [&] {
+				auto* restoreCB = oldCB.get();
+				context->PSSetConstantBuffers(0, 1, &restoreCB);
+				context->PSSetShader(ps.get(), nullptr, 0);
+				context->OMSetDepthStencilState(oldDepth.get(), stencilRef);
+				context->OMSetBlendState(oldBlend.get(), blendFactor, sampleMask);
+				context->OMSetRenderTargets(kMRTs, targets.data(), dsv.get());
+			};
+			try { draw(); } catch (...) { restore(); throw; }
+			restore();
 			++active->draws;
 			return true;
 		} catch (...) {

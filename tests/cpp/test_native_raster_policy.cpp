@@ -1,4 +1,5 @@
 #include "Materials/NativeRasterPolicy.h"
+#include "Features/NativePBR/NativeInputOnlyPolicy.h"
 #include "Features/NativeLLF/NativeLightMetadataPolicy.h"
 #include "Features/DX12/DX12ControlMode.h"
 
@@ -77,4 +78,19 @@ TEST_CASE("Native authored light metadata sanitizes inputs without legacy state"
 	REQUIRE_FALSE(Expired(130, 10));
 	REQUIRE(Expired(131, 10));
 	REQUIRE_FALSE(Expired(1, UINT32_MAX));
+}
+
+TEST_CASE("Input-only raster capture rejects partial draws and invalid token ranges", "[dx12][native-pbr]")
+{
+	using namespace NativePBR::InputOnly;
+	REQUIRE(WholeTriangleList(3,1));
+	REQUIRE(WholeTriangleList(196605,65535));
+	REQUIRE_FALSE(WholeTriangleList(3,2));
+	REQUIRE_FALSE(WholeTriangleList(0,0));
+	REQUIRE_FALSE(WholeTriangleList(196608,65536));
+	REQUIRE(ValidToken(1,65535));
+	REQUIRE(ValidToken(65535,1));
+	REQUIRE_FALSE(ValidToken(65535,2));
+	REQUIRE_FALSE(ValidToken(0,1));
+	REQUIRE_FALSE(ValidToken(1,0));
 }

@@ -5,6 +5,7 @@
 #include "DX12ProjectedInputs.h"
 #include "DX12GpuRetirement.h"
 #include "DX12MaterialFrameContract.h"
+#include "Features/NativePBR/NativeRawInputCapture.h"
 #include "Utils/FileSystem.h"
 
 namespace DX12Native
@@ -15,7 +16,8 @@ namespace DX12Native
 	{
 		using Eval = NativeMaterialEvaluation;
 		static constexpr uint32_t kWidth = 64, kHeight = 36;
-		static constexpr uint64_t kCounterBytes = 8 * sizeof(uint32_t);
+		static constexpr uint32_t kCounterCount = 9;
+		static constexpr uint64_t kCounterBytes = kCounterCount * sizeof(uint32_t);
 		static constexpr uint32_t kSampleStride = MaterialFrameContract::kMaterialStride; // 16 IEEE binary16 values, same component ordering as Eval::Sample.
 		struct Camera
 		{
@@ -23,7 +25,7 @@ namespace DX12Native
 			float4 positionAdjust;
 			uint32_t width, height, gridWidth, gridHeight, collectStats, parallaxEnabled, parallaxWarpFixEnabled, parallaxShadowEnabled;
 			float mipBias;
-			uint32_t projectionRows, projectionFrame;
+			uint32_t projectionRows, projectionFrame, rawTokenCount;
 		};
 		static_assert(sizeof(Camera) <= 256);
 		struct OutputAllocation
@@ -37,6 +39,7 @@ namespace DX12Native
 			std::shared_ptr<const RasterFrame> raster;
 			std::shared_ptr<const TopLevel> scene;
 			std::shared_ptr<const ProjectedInputFrame> projection;
+			std::shared_ptr<const NativePBR::RawInputFrame> rawInputs;
 			winrt::com_ptr<ID3D12Resource> projectionLookup;
 			std::shared_ptr<OutputAllocation> output;
 			winrt::com_ptr<ID3D12Resource> readback, camera, counters, counterInit;
@@ -75,7 +78,9 @@ namespace DX12Native
 			range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NativePBR::kGpuTextureDescriptorCapacity + 1, 3);
 			CD3DX12_DESCRIPTOR_RANGE projectionRange;
 			projectionRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1 + kProjectedTextureCapacity, 518);
-			CD3DX12_ROOT_PARAMETER parameters[13];
+			CD3DX12_DESCRIPTOR_RANGE rawRange;
+			rawRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 1031);
+			CD3DX12_ROOT_PARAMETER parameters[15];
 			parameters[0].InitAsShaderResourceView(0);
 			parameters[1].InitAsShaderResourceView(1);
 			parameters[2].InitAsShaderResourceView(2);
@@ -89,6 +94,8 @@ namespace DX12Native
 			parameters[10].InitAsUnorderedAccessView(4);
 			parameters[11].InitAsShaderResourceView(517);
 			parameters[12].InitAsDescriptorTable(1, &projectionRange);
+			parameters[13].InitAsDescriptorTable(1, &rawRange);
+			parameters[14].InitAsShaderResourceView(1033);
 			std::array<CD3DX12_STATIC_SAMPLER_DESC, 4> samplers;
 			for (uint32_t mode = 0; mode < 4; ++mode)
 				samplers[mode] = CD3DX12_STATIC_SAMPLER_DESC(mode, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
@@ -112,7 +119,7 @@ namespace DX12Native
 		struct Stats
 		{
 			uint32_t frame=0, sampled=0, evaluated=0, noHit=0, depthMismatch=0, missingMaterial=0, invalid=0, baseOnly=0;
-			uint32_t width=0, height=0, unsupportedMaterial=0, missingTextures=0;
+			uint32_t width=0, height=0, unsupportedMaterial=0, missingTextures=0, rawInputPixels=0;
 			uint64_t outputBytes=0;
 			uint32_t reusedAllocations=0, submittedFrames=0;
 		};
@@ -126,6 +133,7 @@ namespace DX12Native
 			winrt::com_ptr<ID3D12Resource> samples, rayIdentity, materialLobes;
 			uint32_t rayIdentityRowPitch = 0, materialLobeRowPitch = 0;
 			bool parallaxShadows = false;
+			uint32_t rawInputDraws = 0;
 			uint32_t abiVersion=MaterialFrameContract::kMaterialAbiVersion, sampleStride=kSampleStride, rowPitch=0;
 			static constexpr D3D12_RESOURCE_STATES publishedState = D3D12_RESOURCE_STATE_COMMON;
 			MaterialFrameContract::SurfaceCorrespondence correspondence = MaterialFrameContract::SurfaceCorrespondence::DepthOnly;
@@ -230,6 +238,7 @@ namespace DX12Native
 					result.evaluated=counts[0]; result.noHit=counts[1]; result.depthMismatch=counts[2];
 					result.missingMaterial=counts[3]; result.invalid=counts[4]; result.baseOnly=counts[5];
 					result.unsupportedMaterial=counts[6]; result.missingTextures=counts[7];
+					result.rawInputPixels=counts[8];
 					const D3D12_RANGE noWrite{};
 					pending->readback->Unmap(0,&noWrite);
 					if (uint64_t(result.evaluated)+result.noHit+result.depthMismatch+result.missingMaterial+result.invalid+result.baseOnly+result.unsupportedMaterial+result.missingTextures==result.sampled) {
@@ -250,7 +259,8 @@ namespace DX12Native
 			return free && (lastFrame==UINT32_MAX || frame-lastFrame>=(continuous?1u:30u));
 		}
 		void Dispatch(const GraphicsBackend& backend,std::shared_ptr<const RasterFrame> raster,
-			std::shared_ptr<const TopLevel> scene,uint32_t frame,uint32_t width,uint32_t height,bool fullResolution,bool continuous=false,bool collectStats=false,bool parallaxEnabled=false,bool parallaxWarpFixEnabled=false,bool parallaxShadowEnabled=false,float mipBias=0.0f,std::shared_ptr<const ProjectedInputFrame> projection=nullptr)
+			std::shared_ptr<const TopLevel> scene,uint32_t frame,uint32_t width,uint32_t height,bool fullResolution,bool continuous=false,bool collectStats=false,bool parallaxEnabled=false,bool parallaxWarpFixEnabled=false,bool parallaxShadowEnabled=false,float mipBias=0.0f,std::shared_ptr<const ProjectedInputFrame> projection=nullptr,
+			std::shared_ptr<const NativePBR::RawInputFrame> rawInputs=nullptr)
 		{
 			if (!WantsFrame(frame,continuous)) return;
 			published.reset();
@@ -319,6 +329,8 @@ namespace DX12Native
 				if (projection && projection->stamp == MaterialFrameContract::RasterIdentityStamp{frame,slot->scene->scope,
 						slot->scene->geometryRevision,evaluation.revision} && projection->rowCount==projection->instances.size())
 					slot->projection=std::move(projection);
+				if (fullResolution && rawInputs && rawInputs->Matches({frame,slot->scene->scope,slot->scene->geometryRevision,evaluation.revision},width,height))
+					slot->rawInputs=std::move(rawInputs);
 				// Root SRVs have no hardware range; keep even the disabled lookup in bounds.
 				std::vector<uint32_t> projectionLookup(evaluation.instanceCount,UINT32_MAX);
 				if (slot->projection)
@@ -345,16 +357,16 @@ namespace DX12Native
 					D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 				if (collectStats) {
 					slot->readback=Eval::Buffer(device,kCounterBytes,D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_STATE_COPY_DEST);
-					slot->counterInit=Eval::Table(device,std::vector<uint32_t>(8,0));
+					slot->counterInit=Eval::Table(device,std::vector<uint32_t>(kCounterCount,0));
 				}
 				slot->camera=Eval::Buffer(device,256,D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ);
 				const Camera constants{slot->raster->camera.CameraProjInverse,slot->raster->camera.CameraViewInverse,
-					slot->raster->camera.CameraPosAdjust,width,height,gridWidth,gridHeight,collectStats ? 1u : 0u,parallaxEnabled ? 1u : 0u,parallaxWarpFixEnabled ? 1u : 0u,shadowPlane ? 1u : 0u,std::isfinite(mipBias) ? mipBias : 0.0f,slot->projection ? slot->projection->rowCount : 0u,frame};
+					slot->raster->camera.CameraPosAdjust,width,height,gridWidth,gridHeight,collectStats ? 1u : 0u,parallaxEnabled ? 1u : 0u,parallaxWarpFixEnabled ? 1u : 0u,shadowPlane ? 1u : 0u,std::isfinite(mipBias) ? mipBias : 0.0f,slot->projection ? slot->projection->rowCount : 0u,frame,slot->rawInputs ? slot->rawInputs->evidence->tokenCount : 0u};
 				void* mapped=nullptr; const D3D12_RANGE noRead{};
 				Eval::Check(slot->camera->Map(0,&noRead,&mapped));
 				std::memcpy(mapped,&constants,sizeof(constants)); slot->camera->Unmap(0,nullptr);
 				const D3D12_DESCRIPTOR_HEAP_DESC heap{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-					NativePBR::kGpuTextureDescriptorCapacity+2+kProjectedTextureCapacity,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
+					NativePBR::kGpuTextureDescriptorCapacity+4+kProjectedTextureCapacity,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
 				Eval::Check(device->CreateDescriptorHeap(&heap,IID_PPV_ARGS(slot->descriptors.put())));
 				const auto cpu=slot->descriptors->GetCPUDescriptorHandleForHeapStart();
 				const auto step=device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -382,6 +394,19 @@ namespace DX12Native
 					}
 					device->CreateShaderResourceView(resource,&view,{cpu.ptr+SIZE_T(projectionDescriptor+1+index)*step});
 				}
+				const auto rawDescriptor=projectionDescriptor+1+kProjectedTextureCapacity;
+				D3D12_SHADER_RESOURCE_VIEW_DESC rawView{};
+				rawView.Format=DXGI_FORMAT_R32G32B32A32_UINT;
+				rawView.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+				rawView.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+				rawView.Texture2DArray.MipLevels=1;
+				rawView.Texture2DArray.ArraySize=NativePBR::InputOnly::kPlaneCount;
+				device->CreateShaderResourceView(slot->rawInputs ? slot->rawInputs->planes->resource.get() : nullptr,
+					&rawView,{cpu.ptr+SIZE_T(rawDescriptor)*step});
+				auto tokenView=depth;
+				tokenView.Format=DXGI_FORMAT_R16G16B16A16_UNORM;
+				device->CreateShaderResourceView(slot->rawInputs ? slot->rawInputs->evidence->texture->resource.get() : nullptr,
+					&tokenView,{cpu.ptr+SIZE_T(rawDescriptor+1)*step});
 				Eval::Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,IID_PPV_ARGS(slot->allocator.put())));
 				Eval::Check(device->CreateCommandList(0,D3D12_COMMAND_LIST_TYPE_DIRECT,slot->allocator.get(),pipeline.get(),IID_PPV_ARGS(slot->commands.put())));
 				auto* command=slot->commands.get();
@@ -402,6 +427,10 @@ namespace DX12Native
 				auto projectedGpu=slot->descriptors->GetGPUDescriptorHandleForHeapStart();
 				projectedGpu.ptr+=UINT64(projectionDescriptor)*step;
 				command->SetComputeRootDescriptorTable(12,projectedGpu);
+				auto rawGpu=slot->descriptors->GetGPUDescriptorHandleForHeapStart();
+				rawGpu.ptr+=UINT64(rawDescriptor)*step;
+				command->SetComputeRootDescriptorTable(13,rawGpu);
+				command->SetComputeRootShaderResourceView(14,(slot->rawInputs ? slot->rawInputs->evidence->tokenTable.get() : slot->projectionLookup.get())->GetGPUVirtualAddress());
 				if (collectStats) {
 					command->CopyBufferRegion(slot->counters.get(),0,slot->counterInit.get(),0,kCounterBytes);
 					const auto counterBarrier=CD3DX12_RESOURCE_BARRIER::Transition(slot->counters.get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -419,6 +448,14 @@ namespace DX12Native
 							D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
 					command->ResourceBarrier(UINT(projectionBarriers.size()),projectionBarriers.data());
 				}
+				std::array<D3D12_RESOURCE_BARRIER,2> rawBarriers{};
+				if (slot->rawInputs) {
+					rawBarriers={CD3DX12_RESOURCE_BARRIER::Transition(slot->rawInputs->planes->resource.get(),
+						D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+						CD3DX12_RESOURCE_BARRIER::Transition(slot->rawInputs->evidence->texture->resource.get(),
+						D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)};
+					command->ResourceBarrier(UINT(rawBarriers.size()),rawBarriers.data());
+				}
 				if (slot->output->shaderReadable) {
 					const std::array outputBarriers{
 						CD3DX12_RESOURCE_BARRIER::Transition(slot->output->resource.get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
@@ -427,6 +464,10 @@ namespace DX12Native
 					command->ResourceBarrier(UINT(outputBarriers.size()),outputBarriers.data());
 				}
 				command->Dispatch((gridWidth+7)/8,(gridHeight+7)/8,1);
+				if (slot->rawInputs) {
+					for (auto& barrier:rawBarriers) std::swap(barrier.Transition.StateBefore,barrier.Transition.StateAfter);
+					command->ResourceBarrier(UINT(rawBarriers.size()),rawBarriers.data());
+				}
 				if (!projectionBarriers.empty()) {
 					for (auto& barrier:projectionBarriers) std::swap(barrier.Transition.StateBefore,barrier.Transition.StateAfter);
 					command->ResourceBarrier(UINT(projectionBarriers.size()),projectionBarriers.data());
@@ -446,6 +487,10 @@ namespace DX12Native
 				Eval::Check(backend.commandQueue->Wait(slot->raster->readyFence.get(),slot->raster->readyValue));
 				Eval::Check(backend.commandQueue->Wait(slot->scene->producerFence.get(),slot->scene->producerValue));
 				if (slot->projection) Eval::Check(backend.commandQueue->Wait(slot->projection->readyFence.get(),slot->projection->readyValue));
+				if (slot->rawInputs) {
+					Eval::Check(backend.commandQueue->Wait(slot->rawInputs->readyFence.get(),slot->rawInputs->readyValue));
+					Eval::Check(backend.commandQueue->Wait(slot->rawInputs->evidence->readyFence.get(),slot->rawInputs->evidence->readyValue));
+				}
 				pending=std::move(slot);
 				ID3D12CommandList* lists[]{command}; backend.commandQueue->ExecuteCommandLists(1,lists);
 				submitted=true;
@@ -464,6 +509,7 @@ namespace DX12Native
 					materialFrame->materialLobes=pending->output->materialLobes;
 					materialFrame->materialLobeRowPitch=pitchPixels*MaterialFrameContract::kMaterialLobeStride;
 					materialFrame->parallaxShadows=shadowPlane;
+					materialFrame->rawInputDraws=pending->rawInputs ? pending->rawInputs->draws : 0u;
 					materialFrame->raster=pending->raster; materialFrame->scene=pending->scene;
 					materialFrame->descriptors=pending->descriptors;
 					materialFrame->producerValue=value; materialFrame->geometryRevision=pending->scene->geometryRevision;
