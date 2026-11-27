@@ -101,12 +101,25 @@ namespace DX12Native
 		}
 	}
 
+	/** @brief Source ordinals for re-evaluating a spatial grouping with live radiance. */
+	struct FullShadowGrouping
+	{
+		std::vector<std::vector<size_t>> preparedRuntime;
+		std::vector<std::vector<size_t>> runtimeGroups;
+	};
+
 	/** @brief Preserve prepared authority; merge remaining same-owner runtime emitters around deterministic anchors. */
 	template <class Light>
 	std::vector<Light> ConsolidateFullShadowLights(std::span<const Light> prepared,
-		std::span<const Light> runtime, uint32_t unifyRadius, uint32_t excludeRadius, bool additivePreparedEmission = false)
+		std::span<const Light> runtime, uint32_t unifyRadius, uint32_t excludeRadius, bool additivePreparedEmission = false, FullShadowGrouping* grouping = nullptr)
 	{
 		using namespace FullShadowDetail;
+		if (grouping) {
+			grouping->preparedRuntime.assign(prepared.size(), {});
+			grouping->runtimeGroups.clear();
+		}
+		std::vector<size_t> sourceOrdinals;
+		if (grouping) sourceOrdinals.reserve(runtime.size());
 		std::vector<Light> result(prepared.begin(), prepared.end());
 		result.reserve(prepared.size() + runtime.size());
 		SpatialIndex<Light> preparedIndex(excludeRadius);
@@ -139,7 +152,9 @@ namespace DX12Native
 				});
 			if (nearest == prepared.size()) {
 				candidates.push_back(light);
+				if (grouping) sourceOrdinals.push_back(size_t(source - runtime.data()));
 			} else if (additivePreparedEmission) {
+				if (grouping) grouping->preparedRuntime[nearest].push_back(size_t(source - runtime.data()));
 				const double fade = std::max(0.0f, light.fade);
 				contributions[nearest][0] += std::max(0.0f, light.color.x) * fade;
 				contributions[nearest][1] += std::max(0.0f, light.color.y) * fade;
@@ -162,6 +177,8 @@ namespace DX12Native
 			light.fade = 1.0f;
 		}
 		if (!unifyRadius) {
+			if (grouping)
+				for (auto ordinal : sourceOrdinals) grouping->runtimeGroups.push_back({ ordinal });
 			result.insert(result.end(), candidates.begin(), candidates.end());
 			return result;
 		}
@@ -227,6 +244,11 @@ namespace DX12Native
 				merged.position.y = float(weightSum > 0 ? y / weightSum : plainY / count);
 				merged.position.z = float(weightSum > 0 ? z / weightSum : plainZ / count);
 				merged.unifiedCount = uint32_t(members.size());
+			}
+			if (grouping) {
+				auto& group = grouping->runtimeGroups.emplace_back();
+				group.reserve(members.size());
+				for (auto member : members) group.push_back(sourceOrdinals[member]);
 			}
 			result.push_back(merged);
 		}

@@ -4,6 +4,9 @@
 #include "Features/DX12/FullNativeFeature.h"
 #include "Features/LightLimitFix/ParticleInput.h"
 #include "NativeLightMetadataPolicy.h"
+#include "NativeLightSpatialPolicy.h"
+#include <atomic>
+#include <memory>
 #include <unordered_map>
 
 #include <unordered_set>
@@ -13,7 +16,7 @@
 
 namespace NativeLLF
 {
-	/** @brief Synchronous CPU light-input snapshot; GPU upload remains owned by DirectLightingTrace. */
+	/** @brief Frame-local direct inputs, using an asynchronously computed spatial grouping. */
 	struct DirectInputFrame
 	{
 		uint32_t frame = 0, scope = 0;
@@ -34,11 +37,22 @@ namespace NativeLLF
 		void OnRuntimeDisabled() override;
 		void ObserveLightCreation(RE::NiLight* light, const RE::TESObjectLIGH& authored);
 		json GetDiagnostics() override;
-		void OnSceneTransitionReset(bool opening) override { if (opening) ResetParticleInput(); }
+		void OnSceneTransitionReset(bool opening) override { if (opening) { ResetParticleInput(); ResetSpatialInput(); } }
 		std::optional<ParticleInput::Observation> ObserveParticlePass(RE::BSRenderPass* pass);
 		std::optional<DirectInputFrame> CollectDirectInputs(const DX12Native::TopLevel& scene, uint32_t frame, bool opaqueReady);
 
 	private:
+		struct SpatialWorkerState
+		{
+			std::atomic<std::shared_ptr<const SpatialPolicy::Publication>> latest;
+			std::atomic<bool> busy{false};
+			std::atomic<uint64_t> tasks{0}, publications{0}, deferred{0};
+		};
+		std::atomic<std::shared_ptr<SpatialWorkerState>> spatialWorker;
+		std::atomic<uint32_t> spatialInputCount{0}, spatialOutputCount{0};
+		std::atomic<bool> spatialPlanApplied{false};
+		void ResetSpatialInput();
+		std::shared_ptr<const SpatialPolicy::Publication> UpdateSpatialInput(SpatialPolicy::Signature signature);
 		struct MetadataEntry
 		{
 			// Retain identity until bounded retirement; a recycled address cannot alias a live entry.

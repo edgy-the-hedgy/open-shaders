@@ -40,6 +40,12 @@ struct DX12NativeScene final : OverlayFeature
 	bool CasterInTlas(RE::BSGeometry& geometry) const;
 	void AuditCasterCoverage(RE::BSGeometry& geometry) const;
 	bool WantsExactShadowOrigins() const { return frameExactShadowLights.load(std::memory_order_relaxed); }
+	DX12Native::NativeLightSettings GetFullNativeLightSettings() const
+	{
+		return { runtimeUnificationRadius.load(std::memory_order_relaxed),
+			preparedExclusionRadius.load(std::memory_order_relaxed),
+			additivePreparedEmission.load(std::memory_order_relaxed), false };
+	}
 	void ObserveScheduledShadowOrigin(const RE::NiLight* light, const RE::NiPoint3& origin);
 	std::shared_ptr<const DX12Native::TopLevel> GetPublishedScene() const { return acceleration.GetScene(); }
 	/** @brief The selected mode's exterior preparation and shadow contribution setting. */
