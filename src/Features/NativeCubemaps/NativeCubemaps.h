@@ -31,7 +31,7 @@ namespace NativeCubemaps
         void SubmitStep(const std::shared_ptr<Generation>&, uint32_t frame);
         GraphicsBackend owner;
         winrt::com_ptr<ID3D12RootSignature> root;
-        winrt::com_ptr<ID3D12PipelineState> historyPipeline, filterPipeline;
+        winrt::com_ptr<ID3D12PipelineState> historyPipeline, filterPipeline, detectPipeline;
         winrt::com_ptr<ID3D12Fence> fence;
         std::array<std::shared_ptr<Generation>,3> slots;
         std::shared_ptr<Generation> latest, pending;

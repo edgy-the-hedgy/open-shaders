@@ -14,6 +14,7 @@ TextureCube<float4> PreviousPosition : register(t7);
 Texture2D<float> NativeDepth : register(t8);
 RWTexture2DArray<float4> Destination : register(u0);
 RWTexture2DArray<float4> PositionHistory : register(u1);
+RWByteAddressBuffer LightingDecision : register(u2);
 SamplerState PointClamp : register(s0);
 SamplerState LinearClamp : register(s1);
 cbuffer Environment : register(b0)
@@ -87,22 +88,70 @@ bool StableLighting(float3 a,float3 b)
     float la=HistoryLuminance(a),lb=HistoryLuminance(b);
     return max(la,lb)<0.001 || abs(log2(max(la,0.0001)/max(lb,0.0001)))<1.0;
 }
+float ReadObservation(float3 d,out float3 radiance,out float3 position)
+{
+    if(ReadNativeRadiance(d,radiance,position))return 1;
+    float4 raw=Source.SampleLevel(PointClamp,d,0);
+    if(all(isfinite(raw))&&raw.a!=0){
+        radiance=SceneRadiance(raw.rgb);
+        position=raw.a>0?-d*(raw.a*1024.0):0.0;
+        return raw.a<0?-1.0:2.0;
+    }
+    return 0;
+}
+groupshared uint3 RegionCounts[24];
+groupshared uint VisibleCount;
+// A single workgroup tests sparse, geometry-matched observations before history
+// accumulation. A coherent lighting step invalidates even unobserved directions.
+[numthreads(16,16,1)]
+void detectMain(uint3 id : SV_GroupThreadID,uint index : SV_GroupIndex)
+{
+    if(index<24)RegionCounts[index]=0;
+    if(index==0)VisibleCount=0;
+    GroupMemoryBarrierWithGroupSync();
+    if(HasHistory!=0){
+        [loop]for(uint face=0;face<6;++face){
+            uint2 pixel=min(uint2((float2(id.xy)+0.5)*float(Size)/16.0),Size-1);
+            float3 d=NativeCubeDirection(uint3(pixel,face),Size);
+            float3 radiance,position;
+            float kind=ReadObservation(d,radiance,position);
+            if(kind<=0)continue;
+            InterlockedAdd(VisibleCount,1);
+            float4 old=Previous.SampleLevel(PointClamp,d,0);
+            float4 p=PreviousPosition.SampleLevel(PointClamp,d,0);
+            if(p.w!=kind||old.a<=0||!all(isfinite(old))||!all(isfinite(p))||
+               length(position-p.xyz-PreviousCameraDelta.xyz)>max(32.0,length(position)*0.03))continue;
+            float a=HistoryLuminance(radiance),b=HistoryLuminance(old.rgb);
+            if(max(a,b)<0.001)continue;
+            uint region=face*4+(id.x>=8?1u:0u)+(id.y>=8?2u:0u);
+            InterlockedAdd(RegionCounts[region].x,1);
+            if(a>=2*b && a>=0.001)InterlockedAdd(RegionCounts[region].y,1);
+            else if(b>=2*a && b>=0.001)InterlockedAdd(RegionCounts[region].z,1);
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if(index==0){
+        uint3 counts=0;
+        uint brighter=0,darker=0;
+        [unroll]for(uint i=0;i<24;++i){
+            uint3 c=RegionCounts[i];counts+=c;
+            if(c.x>=8 && c.y*4>=c.x*3)++brighter;
+            if(c.x>=8 && c.z*4>=c.x*3)++darker;
+        }
+        bool reset=HasHistory==0 || (counts.x>=48 && counts.x*2>=VisibleCount &&
+            ((brighter>=2 && counts.y*4>=counts.x*3)||(darker>=2 && counts.z*4>=counts.x*3)));
+        LightingDecision.Store(0,reset?1u:0u);
+    }
+}
 [numthreads(8,8,1)]
 void historyMain(uint3 id : SV_DispatchThreadID)
 {
     if (any(id.xy >= Size) || id.z >= 6) return;
     float3 d=NativeCubeDirection(id,Size);
-    float4 raw=Source.SampleLevel(PointClamp,d,0);
     float3 radiance,position;
-    float sourceKind=0;
-    if(ReadNativeRadiance(d,radiance,position))sourceKind=1;
-    else if(all(isfinite(raw))&&raw.a!=0){
-        radiance=SceneRadiance(raw.rgb);
-        sourceKind=raw.a<0?-1.0:2.0;
-        position=raw.a>0?-d*(raw.a*1024.0):0.0;
-    }
+    float sourceKind=ReadObservation(d,radiance,position);
     float4 old=0,oldPosition=0;
-    if(HasHistory!=0){
+    if(HasHistory!=0 && LightingDecision.Load(0)==0){
         old=Previous.SampleLevel(PointClamp,d,0);
         oldPosition=PreviousPosition.SampleLevel(PointClamp,d,0);
         if(oldPosition.w>0)oldPosition.xyz+=PreviousCameraDelta.xyz;
