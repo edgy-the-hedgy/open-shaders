@@ -82,11 +82,12 @@ bool ValidSignal(float4 value, uint contribution)
     return value.a <= 255.0 && value.a == floor(value.a) && (uint(value.a) & contribution) != 0u;
 }
 
-float3 FilterSignal(uint2 pixel, uint contribution, float4 centerBase, float4 centerNormal, float centerDepth, out bool valid)
+float3 FilterSignal(uint2 pixel, uint contribution, float4 centerBase, float4 centerNormal, float centerDepth, out bool valid, out float3 low, out float3 high)
 {
     const bool sampled = NativeIsSampled(pixel, Size, QualityMode, FrameIndex);
     float4 center = ReadSignal(pixel, contribution);
     valid = ValidSignal(center, contribution);
+    low = high = valid ? center.rgb : 0.0;
     // A traced but invalid receiver is not an intentionally missing sample.
     if (sampled && !valid) return 0.0;
     uint2 centerIdentity = ReadRayIdentity(pixel);
@@ -119,6 +120,8 @@ float3 FilterSignal(uint2 pixel, uint contribution, float4 centerBase, float4 ce
             if (!ValidSignal(sample, contribution)) continue;
             float2 delta = (float2(q) - float2(pixel)) / float(scale);
             float weight = rcp(1.0 + dot(delta, delta));
+            low = weightSum > 0.0 ? min(low, sample.rgb) : sample.rgb;
+            high = weightSum > 0.0 ? max(high, sample.rgb) : sample.rgb;
             sum += weight * sample.rgb;
             weightSum += weight;
         }
@@ -145,14 +148,14 @@ bool HistorySurfaceMatches(uint2 p, float4 base, float4 normal, float depth)
         all(abs(base.rgb - oldBase.rgb) <= 0.02);
 }
 
-float3 AccumulateStationary(float3 current, uint valid, uint offset)
+float3 AccumulateStationary(float3 current, uint valid, uint offset, float3 low, float3 high)
 {
     if (valid == 0u) return current;
     float4 previous = Unpack(History.Load2(offset));
     if (!all(isfinite(previous)) || previous.a != float(valid)) return current;
     // Limit reuse on lighting changes rather than carrying stale highlights.
     float3 bound = max(abs(current) * 0.25, 0.002);
-    if (ShadowClampHistory(QualityMode)) previous.rgb = clamp(previous.rgb, current - bound, current + bound);
+    if (ShadowClampHistory(QualityMode)) previous.rgb = clamp(previous.rgb, low, high);
     else if (any(abs(previous.rgb - current) > bound)) return current;
     return lerp(previous.rgb, current, rcp(float(ShadowTemporalFrames(QualityMode))));
 }
@@ -185,12 +188,13 @@ void main(uint3 id : SV_DispatchThreadID)
     if (!HasEvaluatedNativeBase(base.a) || !all(isfinite(base)) || !all(isfinite(normal)) ||
         !isfinite(depth) || depth <= 0.0 || depth >= 1.0 || dot(normal.xyz, normal.xyz) < 1e-8) return;
     bool dd, ds, idiff, ispec, dt, it;
-    float3 directDiffuse = FilterSignal(id.xy, ContributionDirectDiffuse, base, normal, depth, dd);
-    float3 directSpecular = FilterSignal(id.xy, ContributionDirectSpecular, base, normal, depth, ds);
-    float3 indirectDiffuse = FilterSignal(id.xy, ContributionIndirectDiffuse, base, normal, depth, idiff);
-    float3 indirectSpecular = FilterSignal(id.xy, ContributionIndirectSpecular, base, normal, depth, ispec);
-    float3 directTransmission=FilterSignal(id.xy,DirectTransmissionSignal,base,normal,depth,dt);
-    float3 indirectTransmission=FilterSignal(id.xy,IndirectTransmissionSignal,base,normal,depth,it);
+    float3 ddLow, ddHigh, dsLow, dsHigh, idLow, idHigh, isLow, isHigh, dtLow, dtHigh, itLow, itHigh;
+    float3 directDiffuse = FilterSignal(id.xy, ContributionDirectDiffuse, base, normal, depth, dd, ddLow, ddHigh);
+    float3 directSpecular = FilterSignal(id.xy, ContributionDirectSpecular, base, normal, depth, ds, dsLow, dsHigh);
+    float3 indirectDiffuse = FilterSignal(id.xy, ContributionIndirectDiffuse, base, normal, depth, idiff, idLow, idHigh);
+    float3 indirectSpecular = FilterSignal(id.xy, ContributionIndirectSpecular, base, normal, depth, ispec, isLow, isHigh);
+    float3 directTransmission = FilterSignal(id.xy, DirectTransmissionSignal, base, normal, depth, dt, dtLow, dtHigh);
+    float3 indirectTransmission = FilterSignal(id.xy, IndirectTransmissionSignal, base, normal, depth, it, itLow, itHigh);
     float3 transmission=directTransmission+indirectTransmission;
     const uint transmissionValid=dt && it ? ContributionTransmission : 0u;
     // Only intentional sparse holes with compatible evidence are reconstructed.
@@ -199,9 +203,9 @@ void main(uint3 id : SV_DispatchThreadID)
     float3 diffuse = directDiffuse + indirectDiffuse;
     float3 specular = directSpecular + indirectSpecular;
     if (HistorySurfaceMatches(id.xy, base, normal, depth)) {
-        diffuse = AccumulateStationary(diffuse, diffuseValid, offset);
-        specular = AccumulateStationary(specular, specularValid, offset + 8u);
-        transmission=AccumulateStationary(transmission,transmissionValid,offset+16u);
+        diffuse = AccumulateStationary(diffuse, diffuseValid, offset, ddLow + idLow, ddHigh + idHigh);
+        specular = AccumulateStationary(specular, specularValid, offset + 8u, dsLow + isLow, dsHigh + isHigh);
+        transmission=AccumulateStationary(transmission, transmissionValid, offset+16u, dtLow + itLow, dtHigh + itHigh);
     }
     const uint2 packedDiffuse = PackOpaqueRadiance(diffuse, diffuseValid);
     const uint2 packedSpecular = PackOpaqueRadiance(specular, specularValid);

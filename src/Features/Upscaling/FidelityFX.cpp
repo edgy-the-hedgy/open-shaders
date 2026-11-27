@@ -1,5 +1,6 @@
 #include "FidelityFX.h"
 #include "Features/ReverseZ.h"
+#include "Features/DX12/DX12Control.h"
 #include "Utils/Game.h"
 
 #include <directx/d3dx12.h>
@@ -193,6 +194,12 @@ void FidelityFX::Present(bool a_useFrameGeneration, bool a_isHDR)
 	auto& upscaling = globals::features::upscaling;
 	auto& swapChain = globals::features::upscaling.dx12SwapChain;
 
+	const auto prepared = upscaling.nativePreparedFrame;
+	const bool fullNative = globals::features::dx12Control.UsesExclusiveMaterials();
+	const bool currentNative = fullNative && prepared && globals::state && prepared->frame == globals::state->frameCount;
+	if (fullNative && (!currentNative || !prepared->generationDepth || !prepared->generationMotion)) a_useFrameGeneration = false;
+	const bool nativeReset = currentNative && prepared->resetHistory;
+
 	// Cache peak nits first since we need HDR feature access
 	auto* hdr = globals::features::hdrDisplay.loaded ? &globals::features::hdrDisplay : nullptr;
 	float peakNits = hdr ? static_cast<float>(hdr->settings.hdrPeakNits) : 1000.0f;
@@ -213,7 +220,7 @@ void FidelityFX::Present(bool a_useFrameGeneration, bool a_isHDR)
 	// Use seq_cst for both to ensure the callback sees both values consistently
 	hdrPeakNits.store(peakNits, std::memory_order_seq_cst);
 	isHDRActive.store(a_isHDR, std::memory_order_seq_cst);
-	needsReset.store(hdrParamsChanged, std::memory_order_seq_cst);
+	needsReset.store(hdrParamsChanged || nativeReset, std::memory_order_seq_cst);
 
 	ffx::ConfigureDescFrameGeneration configParameters{};
 
@@ -259,7 +266,7 @@ void FidelityFX::Present(bool a_useFrameGeneration, bool a_isHDR)
 	// If HDR parameters changed, skip a frame ID to force FidelityFX to reset its history
 	// This prevents interpolation artifacts when frames were encoded with different parameters
 	// Per FidelityFX docs: "Any non-exactly-one difference will reset the frame generation logic"
-	if (hdrParamsChanged && a_useFrameGeneration) {
+	if ((hdrParamsChanged || nativeReset) && a_useFrameGeneration) {
 		frameID += 2;  // Skip one ID to trigger reset
 	}
 
@@ -272,6 +279,7 @@ void FidelityFX::Present(bool a_useFrameGeneration, bool a_isHDR)
 	auto state = globals::state;
 
 	auto renderSize = state->screenSize * upscaling.resolutionScale;
+	if (currentNative) renderSize = float2(float(prepared->width), float(prepared->height));
 
 	configParameters.generationRect.left = (swapChain.swapChainDesc.Width - swapChain.swapChainDesc.Width) / 2;
 	configParameters.generationRect.top = (swapChain.swapChainDesc.Height - swapChain.swapChainDesc.Height) / 2;
@@ -310,21 +318,21 @@ void FidelityFX::Present(bool a_useFrameGeneration, bool a_isHDR)
 		dispatchParameters.renderSize.width = static_cast<uint32_t>(renderSize.x);
 		dispatchParameters.renderSize.height = static_cast<uint32_t>(renderSize.y);
 
-		dispatchParameters.jitterOffset.x = -upscaling.jitter.x;
-		dispatchParameters.jitterOffset.y = -upscaling.jitter.y;
+		dispatchParameters.jitterOffset.x = currentNative ? prepared->jitterX : -upscaling.jitter.x;
+		dispatchParameters.jitterOffset.y = currentNative ? prepared->jitterY : -upscaling.jitter.y;
 
-		dispatchParameters.frameTimeDelta = RE::GetSecondsSinceLastFrame() * 1000.f;
+		dispatchParameters.frameTimeDelta = currentNative ? prepared->generationFrameTimeMs : RE::GetSecondsSinceLastFrame() * 1000.f;
 
-		dispatchParameters.cameraFar = *globals::game::cameraFar;
-		dispatchParameters.cameraNear = *globals::game::cameraNear;
+		dispatchParameters.cameraFar = currentNative ? prepared->cameraFar : *globals::game::cameraFar;
+		dispatchParameters.cameraNear = currentNative ? prepared->cameraNear : *globals::game::cameraNear;
 
-		dispatchParameters.cameraFovAngleVertical = Util::GetVerticalFOVRad();
+		dispatchParameters.cameraFovAngleVertical = currentNative ? prepared->cameraFov : Util::GetVerticalFOVRad();
 		dispatchParameters.viewSpaceToMetersFactor = 0.01428222656f;
 
 		dispatchParameters.frameID = frameID;
 
-		dispatchParameters.depth = ffxApiGetResourceDX12(swapChain.depthBufferShared12->resource.get());
-		dispatchParameters.motionVectors = ffxApiGetResourceDX12(swapChain.motionVectorBufferShared12->resource.get());
+		dispatchParameters.depth = ffxApiGetResourceDX12(currentNative ? prepared->generationDepth.get() : swapChain.depthBufferShared12->resource.get());
+		dispatchParameters.motionVectors = ffxApiGetResourceDX12(currentNative ? prepared->generationMotion.get() : swapChain.motionVectorBufferShared12->resource.get());
 
 		ffx::DispatchDescFrameGenerationPrepareCameraInfo cameraConfig{};
 

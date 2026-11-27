@@ -3114,10 +3114,40 @@ void Upscaling::FillMenuCameraMotionVectors()
 	menuCameraMVsValid = true;
 }
 
+void Upscaling::PublishNativeFrameParameters(uint32_t width, uint32_t height)
+{
+	using namespace DX12Native;
+	if (!globals::features::dx12Control.UsesExclusiveMaterials() || globals::game::isVR || !globals::state || !width || !height)
+		return;
+	auto publication = std::make_shared<NativeUpscalerFrame>();
+	publication->frame = globals::state->frameCount;
+	publication->width = width; publication->height = height;
+	publication->displayWidth = uint32_t(globals::state->screenSize.x);
+	publication->displayHeight = uint32_t(globals::state->screenSize.y);
+	publication->color = nativeCompositeFrame;
+	publication->jitterX = -jitter.x; publication->jitterY = -jitter.y;
+	publication->cameraNear = *globals::game::cameraNear; publication->cameraFar = *globals::game::cameraFar;
+	publication->cameraFov = Util::GetVerticalFOVRad(); publication->frameTimeMs = *globals::game::deltaTime * 1000.f;
+	publication->generationFrameTimeMs = RE::GetSecondsSinceLastFrame() * 1000.f;
+	publication->lightingQuality = globals::features::dx12NativeScene.GetFullNativeQuality(
+		globals::game::graphicsState ? globals::game::graphicsState->GetFrameCount() : UINT32_MAX);
+	const bool changed = lastNativeLightingQuality != publication->lightingQuality;
+	const bool sameFrameReset = nativePreparedFrame && nativePreparedFrame->frame == publication->frame && nativePreparedFrame->resetHistory;
+	lastNativeLightingQuality = publication->lightingQuality;
+	publication->resetHistory = changed || sameFrameReset || globals::state->ShouldResetHistory() ||
+		(globals::state->IsMainOrLoadingMenuOpen() && !menuCameraMVsValid);
+	if (frameGenerationPrepared && nativeFrameGenerationFrame == publication->frame &&
+		dx12SwapChain.depthBufferShared12 && dx12SwapChain.motionVectorBufferShared12) {
+		publication->generationDepth = dx12SwapChain.depthBufferShared12->resource;
+		publication->generationMotion = dx12SwapChain.motionVectorBufferShared12->resource;
+	}
+	nativePreparedFrame = std::move(publication);
+}
+
 void Upscaling::PublishNativeUpscalerInputs(UpscaleMethod method, uint32_t width, uint32_t height, ID3D11Resource* engineMotion)
 {
 	using namespace DX12Native;
-	nativePreparedFrame.reset();
+	PublishNativeFrameParameters(width, height);
 	if (!globals::features::dx12Control.UsesExclusiveMaterials() || globals::game::isVR || !globals::state ||
 		!typedDepthTexture || !motionVectorCopyTexture || !reactiveMaskTexture || !transparencyCompositionMaskTexture ||
 		!dx12SwapChain.EnsureSharedDevice() || !width || !height)
@@ -3156,30 +3186,20 @@ void Upscaling::PublishNativeUpscalerInputs(UpscaleMethod method, uint32_t width
 		const auto desc = resource->GetDesc();
 		if (desc.Width < width || desc.Height < height) return;
 	}
-	auto publication = std::make_shared<NativeUpscalerFrame>();
-	publication->frame = globals::state->frameCount;
-	publication->width = width; publication->height = height;
-	publication->displayWidth = uint32_t(globals::state->screenSize.x);
-	publication->displayHeight = uint32_t(globals::state->screenSize.y);
-	publication->color = nativeCompositeFrame;
+	if (!nativePreparedFrame) return;
+	auto publication = std::make_shared<NativeUpscalerFrame>(*nativePreparedFrame);
 	publication->guides = nativeGuideCache;
 	publication->sourceIdentities = outputs;
 	// FSR consumes undilated motion; the non-DLSS encoder copies the engine
 	// motion unchanged. Keep the provider's original DX11 source identity.
 	if (method == UpscaleMethod::kFSR)
 		publication->sourceIdentities[UpscalerGuideSet::Motion] = engineMotion;
-	publication->jitterX = -jitter.x; publication->jitterY = -jitter.y;
-	publication->cameraNear = *globals::game::cameraNear; publication->cameraFar = *globals::game::cameraFar;
-	publication->cameraFov = Util::GetVerticalFOVRad(); publication->frameTimeMs = *globals::game::deltaTime * 1000.f;
-	publication->resetHistory = globals::state->ShouldResetHistory() ||
-		(globals::state->IsMainOrLoadingMenuOpen() && !menuCameraMVsValid);
 	nativePreparedFrame = std::move(publication);
 }
 
 void Upscaling::Upscale()
 {
 	ZoneScoped;
-	nativePreparedFrame.reset();
 	auto upscaleMethod = GetUpscaleMethod();
 
 	auto context = globals::d3d::context;
@@ -3790,6 +3810,8 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 				transfer, shadow, !runtimeFSRReads);
 	}
 
+	if (globals::features::dx12Control.UsesExclusiveMaterials())
+		upscaling.PublishNativeFrameParameters(uint32_t(nrRenderSize.x), uint32_t(nrRenderSize.y));
 	if (upscaleMethod != UpscaleMethod::kNONE && upscaleMethod != UpscaleMethod::kTAA) {
 		upscaling.PerformUpscaling();
 	} else if (globals::game::isVR) {

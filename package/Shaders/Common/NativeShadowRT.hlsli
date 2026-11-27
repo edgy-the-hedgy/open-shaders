@@ -65,6 +65,15 @@ namespace DX12Native
 		const uint pixel = logical * scale + scale / 2u;
 		return pixel < extent ? pixel : extent - 1u;
 	}
+	RT_FUNC bool ShadowIsSampled(uint x, uint y, uint width, uint height, uint quality, uint frame)
+	{
+		if (x >= width || y >= height || quality == kShadowQualityOffloading) return false;
+		const uint scale = ShadowScale(quality);
+		const uint lx = x / scale, ly = y / scale;
+		return ((lx ^ ly ^ frame) & 1u) == 0u &&
+			ShadowRenderCoordinate(lx, width, quality) == x &&
+			ShadowRenderCoordinate(ly, height, quality) == y;
+	}
 	RT_FUNC uint ShadowTemporalFrames(uint quality)
 	{
 		return quality == kShadowQualityPerformance ? 4u : (quality == kShadowQualityQuality ? 2u : 1u);

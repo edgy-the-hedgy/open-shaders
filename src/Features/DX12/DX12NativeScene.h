@@ -41,6 +41,7 @@ struct DX12NativeScene final : OverlayFeature
 	bool CasterInTlas(RE::BSGeometry& geometry) const;
 	void AuditCasterCoverage(RE::BSGeometry& geometry) const;
 	bool WantsExactShadowOrigins() const { return frameExactShadowLights.load(std::memory_order_relaxed); }
+	uint32_t GetFullNativeQuality(uint32_t frame) const { return fullNativeQualityFrame == frame ? fullNativeFrameQuality : DX12Native::SanitizeRTQuality(fullRTQuality); }
 	uint32_t GetLightObservationFrames() const { return lightObservationFrames.load(std::memory_order_relaxed); }
 	DX12Native::NativeLightSettings GetFullNativeLightSettings() const
 	{

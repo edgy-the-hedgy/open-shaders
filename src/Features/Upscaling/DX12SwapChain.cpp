@@ -1,4 +1,5 @@
 #include "DX12SwapChain.h"
+#include "../DX12/DX12Control.h"
 
 #include <FidelityFX/api/include/dx12/ffx_api_dx12.hpp>
 #include <algorithm>
@@ -511,7 +512,8 @@ HRESULT DX12SwapChain::PresentImpl(UINT SyncInterval, UINT Flags)
 		streamlineDX12.EmitPCLMarker(sl::PCLMarker::eRenderSubmitStart);
 		// Skip tagging/interpolation without valid per-frame constants -- otherwise
 		// DLSS-G interpolates against stale or default camera data.
-		if (streamlineDX12.CheckFrameConstants(streamlineDX12.viewport)) {
+		if ((!globals::features::dx12Control.UsesExclusiveMaterials() || upscaling.ShouldUseFrameGenerationThisFrame()) &&
+			streamlineDX12.CheckFrameConstants(streamlineDX12.viewport)) {
 			if (const auto inputs = CopyDLSSGInputs(commandLists[frameIndex].get())) {
 				streamlineDX12.TagDX12Resources(commandLists[frameIndex].get(),
 					(*inputs)[kDLSSGDepth], (*inputs)[kDLSSGMotionVectors], (*inputs)[kDLSSGHUDLessColor], (*inputs)[kDLSSGUIColorAndAlpha],
@@ -779,14 +781,23 @@ std::optional<std::array<ID3D12Resource*, DX12SwapChain::kDLSSGInputCount>> DX12
 		L"DX12SwapChain::DLSSGHUDLessColorCopy",
 		L"DX12SwapChain::DLSSGUIColorAndAlphaCopy",
 	};
-	const WrappedResource* sources[kDLSSGInputCount] = { depthBufferShared12, motionVectorBufferShared12, swapChainBufferWrapped, uiBufferWrapped };
+	const auto prepared = globals::features::upscaling.nativePreparedFrame;
+	const bool fullNative = globals::features::dx12Control.UsesExclusiveMaterials();
+	if (fullNative && (!prepared || !globals::state || prepared->frame != globals::state->frameCount ||
+		!prepared->generationDepth || !prepared->generationMotion)) return std::nullopt;
+	ID3D12Resource* sources[kDLSSGInputCount] = {
+		fullNative ? prepared->generationDepth.get() : (depthBufferShared12 ? depthBufferShared12->resource.get() : nullptr),
+		fullNative ? prepared->generationMotion.get() : (motionVectorBufferShared12 ? motionVectorBufferShared12->resource.get() : nullptr),
+		swapChainBufferWrapped ? swapChainBufferWrapped->resource.get() : nullptr,
+		uiBufferWrapped ? uiBufferWrapped->resource.get() : nullptr
+	};
 
 	std::array<ID3D12Resource*, kDLSSGInputCount> copies{};
 	std::array<D3D12_RESOURCE_BARRIER, kDLSSGInputCount * 2> toCopy{};
 	std::array<D3D12_RESOURCE_BARRIER, kDLSSGInputCount * 2> toCommon{};
 	uint32_t barrierCount = 0;
 	for (uint32_t i = 0; i < kDLSSGInputCount; ++i) {
-		auto* source = sources[i] ? sources[i]->resource.get() : nullptr;
+		auto* source = sources[i];
 		if (!source)
 			continue;
 		auto sourceDesc = source->GetDesc();
@@ -821,7 +832,7 @@ std::optional<std::array<ID3D12Resource*, DX12SwapChain::kDLSSGInputCount>> DX12
 	a_commandList->ResourceBarrier(barrierCount, toCopy.data());
 	for (uint32_t i = 0; i < kDLSSGInputCount; ++i) {
 		if (copies[i])
-			a_commandList->CopyResource(copies[i], sources[i]->resource.get());
+			a_commandList->CopyResource(copies[i], sources[i]);
 	}
 	a_commandList->ResourceBarrier(barrierCount, toCommon.data());
 	return copies;

@@ -13,8 +13,7 @@ uint2 NativeSamplePixel(uint2 packed, uint2 size, uint quality, uint frame)
 }
 bool NativeIsSampled(uint2 pixel, uint2 size, uint quality, uint frame)
 {
-    uint2 logical = pixel / ShadowScale(quality);
-    return all(NativeSamplePixel(uint2(logical.x / 2u, logical.y), size, quality, frame) == pixel);
+    return ShadowIsSampled(pixel.x, pixel.y, size.x, size.y, quality, frame);
 }
 uint NativeEmitterHash(uint value)
 {

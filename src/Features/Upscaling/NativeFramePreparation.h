@@ -27,11 +27,15 @@ namespace DX12Native
 		std::shared_ptr<const UpscalerGuideSet> guides;
 		std::array<ID3D11Resource*, UpscalerGuideSet::Count> sourceIdentities{};
 		float jitterX = 0, jitterY = 0, cameraNear = 0, cameraFar = 0, cameraFov = 0, frameTimeMs = 0, preExposure = 1;
+		float generationFrameTimeMs = 0;
+		uint32_t lightingQuality = kShadowQualityQuality;
+		winrt::com_ptr<ID3D12Resource> generationDepth, generationMotion;
 		bool resetHistory = false;
+		bool MatchesFrame(uint32_t currentFrame, uint32_t w, uint32_t h) const { return frame == currentFrame && width == w && height == h; }
 		bool Matches(uint32_t currentFrame, uint32_t w, uint32_t h, ID3D12Device* device,
 			const std::array<ID3D11Resource*, UpscalerGuideSet::Count>& sources) const
 		{
-			return frame == currentFrame && width == w && height == h && guides && guides->complete &&
+			return MatchesFrame(currentFrame, w, h) && guides && guides->complete &&
 				guides->device.get() == device && sourceIdentities == sources;
 		}
 	};

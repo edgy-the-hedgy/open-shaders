@@ -27,7 +27,7 @@
 #include "Utils/Logging.h"
 
 /** @brief Manages FidelityFX upscaling and frame generation with host FSR3 fallback and runtime provider discovery. */
-namespace DX12Native { struct NativeUpscalerFrame; }
+namespace DX12Native { struct UpscalerGuideSet; }
 
 class FidelityFX
 {
@@ -183,7 +183,7 @@ private:
 		winrt::com_ptr<ID3D12CommandAllocator> commandAllocator;
 		winrt::com_ptr<ID3D12GraphicsCommandList4> commandList;
 		uint64_t fenceValue = 0;
-		std::shared_ptr<const DX12Native::NativeUpscalerFrame> prepared;
+		std::shared_ptr<const DX12Native::UpscalerGuideSet> prepared;
 	};
 	std::array<RuntimeCommandContext, kRuntimeCommandContextCount> runtimeCommandContexts;
 	uint32_t runtimeCommandContextCursor = 0;

@@ -58,6 +58,7 @@ bool NativeDLSS::Upscale(ID3D11Resource* a_colorOut, ID3D11Resource* a_motionVec
 				if (submitted && commandContext)
 					commandContext->fenceValue = rescue;
 				lastSubmitted = rescue;
+				if (submitted) DX::ThrowIfFailed(context11->Wait(fence.fence11.get(), rescue));
 			} catch (...) {
 				lastSubmitted = DX12Native::kUntrackedFenceValue;
 				if (submitted && commandContext)
@@ -91,7 +92,7 @@ bool NativeDLSS::Upscale(ID3D11Resource* a_colorOut, ID3D11Resource* a_motionVec
 			swapChain.d3d12Device.get(), { sources[kDepth], sources[kMotionVectors], sources[kReactiveMask], sources[kTransparencyMask] });
 		const D3D11_BOX inputBox{ 0, 0, 0, a_extentIn.width, a_extentIn.height, 1 };
 		if (directGuides)
-			commandContext->prepared = prepared;
+			commandContext->prepared = prepared->guides;
 		else
 			for (uint32_t i = 0; i < kOutput; ++i)
 				context11->CopySubresourceRegion(shared[i]->resource11, 0, 0, 0, 0, sources[i], 0, &inputBox);
@@ -129,7 +130,7 @@ bool NativeDLSS::Upscale(ID3D11Resource* a_colorOut, ID3D11Resource* a_motionVec
 			commandList->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
 		};
 		transition(true);
-		streamline.pendingHistoryReset |= resumed || (directGuides && prepared->resetHistory);
+		streamline.pendingHistoryReset |= resumed || (prepared && prepared->frame == state->frameCount && prepared->resetHistory);
 		const bool evaluated = streamline.EvaluateDLSSDX12(commandList, inputs[0], output, inputs[1], inputs[2], inputs[3], inputs[4], a_extentIn, a_extentOut);
 		transition(false);
 		DX::ThrowIfFailed(commandList->Close());
@@ -199,6 +200,7 @@ void NativeDLSS::ServiceReset()
 		Latch("the DX12 device was removed during DLSS retirement");
 	for (auto& resource : shared)
 		resource.reset();
+	for (auto& context : commandContexts) context.prepared.reset();
 	sharedDescs = {};
 	sharedBytes = 0;
 	featureKey.reset();

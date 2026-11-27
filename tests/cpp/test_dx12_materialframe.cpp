@@ -1,4 +1,5 @@
 #include "Features/DX12/DX12MaterialFrameContract.h"
+#include "../../package/Shaders/Common/NativeShadowRT.hlsli"
 #include "Features/NativePBR/GpuMaterialAbi.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -348,4 +349,37 @@ TEST_CASE("Projection constant extents reject invalid buffer ranges", "[dx12][ma
 	STATIC_REQUIRE_FALSE(ValidProjectionConstantExtent(95, 16, 112));
 	STATIC_REQUIRE_FALSE(ValidProjectionConstantExtent(96, 12, 112));
 	STATIC_REQUIRE_FALSE(ValidProjectionConstantExtent(UINT32_MAX, 16, 112));
+}
+
+TEST_CASE("Full Native sparse lighting matches RT Shadows dispatch parity at odd edges", "[dx12][lighting]")
+{
+	using namespace DX12Native;
+	for (const auto quality : { kShadowQualityQuality, kShadowQualityPerformance }) {
+		for (uint32_t width : { 1u, 2u, 3u, 17u, 32u }) {
+			for (uint32_t height : { 1u, 2u, 5u, 16u }) {
+				const auto lw = ShadowLogicalExtent(width, quality), lh = ShadowLogicalExtent(height, quality);
+				for (uint32_t phase : { 0u, 1u }) {
+					uint32_t expected = 0, actual = 0;
+					for (uint32_t y = 0; y < lh; ++y)
+						for (uint32_t x = 0; x < ShadowPhysicalWidth(lw, quality); ++x) {
+							const auto lx = ShadowLogicalX(x, y, phase);
+							if (lx >= lw) continue;
+							++expected;
+							REQUIRE(ShadowIsSampled(ShadowRenderCoordinate(lx, width, quality), ShadowRenderCoordinate(y, height, quality), width, height, quality, phase));
+						}
+					for (uint32_t y = 0; y < height; ++y)
+						for (uint32_t x = 0; x < width; ++x) {
+							const bool sampled = ShadowIsSampled(x, y, width, height, quality, phase);
+							actual += sampled;
+							REQUIRE_FALSE(sampled && ShadowIsSampled(x, y, width, height, quality, phase ^ 1u));
+						}
+					REQUIRE(actual == expected);
+				}
+			}
+		}
+	}
+	REQUIRE(ShadowTemporalFrames(kShadowQualityQuality) == 2u);
+	REQUIRE(ShadowTemporalFrames(kShadowQualityPerformance) == 4u);
+	REQUIRE(ShadowReconstructionRadius(kShadowQualityQuality) == 1u);
+	REQUIRE(ShadowReconstructionRadius(kShadowQualityPerformance) == 2u);
 }

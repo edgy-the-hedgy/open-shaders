@@ -452,6 +452,8 @@ public:
 	std::shared_ptr<const DX12Native::NativeUpscalerFrame> nativePreparedFrame;
 	std::shared_ptr<const DX12Native::UpscalerGuideSet> nativeGuideCache;
 	uint32_t nativeFrameGenerationFrame = UINT32_MAX;
+	uint32_t lastNativeLightingQuality = UINT32_MAX;
+	void PublishNativeFrameParameters(uint32_t width, uint32_t height);
 	void PublishNativeUpscalerInputs(UpscaleMethod method, uint32_t width, uint32_t height, ID3D11Resource* engineMotion);
 	NativeDLSS nativeDLSS;
 	static inline RCAS rcas;                      ///< Standalone RCAS sharpening for DLSS

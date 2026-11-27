@@ -14,7 +14,7 @@
 #include <winrt/base.h>
 
 /** @brief DLSS Super Resolution on the DX12 Streamline instance, reading Native Composite's final color once. */
-namespace DX12Native { struct NativeUpscalerFrame; }
+namespace DX12Native { struct UpscalerGuideSet; }
 
 class NativeDLSS
 {
@@ -63,7 +63,7 @@ private:
 		winrt::com_ptr<ID3D12CommandAllocator> allocator;
 		winrt::com_ptr<ID3D12GraphicsCommandList> commandList;
 		uint64_t fenceValue = 0;
-		std::shared_ptr<const DX12Native::NativeUpscalerFrame> prepared;
+		std::shared_ptr<const DX12Native::UpscalerGuideSet> prepared;
 	};
 
 	/** @brief Keys the DLSS feature the way Streamline does; a change recreates it. */

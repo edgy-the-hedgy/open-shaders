@@ -18,6 +18,7 @@
 #include "../../../GpuPass.h"
 #include "../../../State.h"
 #include "../../DX12/DX12Control.h"
+#include "../../DX12/DX12GpuRetirement.h"
 #include "../../ReverseZ.h"
 #include "../../Upscaling.h"
 #include "../DX12SwapChain.h"
@@ -682,6 +683,12 @@ FidelityFX::RuntimeCommandContext* FidelityFX::AcquireRuntimeCommandContext()
 void FidelityFX::ResetRuntimeCommandContexts()
 {
 	for (auto& commandContext : runtimeCommandContexts) {
+		if (commandContext.prepared && !DX12Native::GpuFenceRetired(runtimeFence.fence12.get(), commandContext.fenceValue)) {
+			auto device = commandContext.prepared->device;
+			DX12Native::RetireAfterFences(std::move(commandContext.prepared), std::move(device),
+				{ DX12Native::FencePoint(runtimeFence.fence12.get(), commandContext.fenceValue) });
+		}
+		commandContext.prepared.reset();
 		commandContext.commandList = nullptr;
 		commandContext.commandAllocator = nullptr;
 		commandContext.fenceValue = 0;
@@ -1195,7 +1202,8 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 	const auto prepared = upscaling.nativePreparedFrame;
 	const bool directGuides = prepared && prepared->Matches(state->frameCount, a_renderWidth, a_renderHeight,
 		swapChain.d3d12Device.get(), { a_depth, a_motionVectors, a_reactiveMask, a_transparencyCompositionMask });
-	if (directGuides) commandContext->prepared = prepared;
+	if (directGuides) commandContext->prepared = prepared->guides;
+	const bool frameParameters = prepared && prepared->MatchesFrame(state->frameCount, a_renderWidth, a_renderHeight);
 	const auto guide = [&](size_t index, WrappedResource* fallback) {
 		return directGuides ? prepared->guides->resources[index].get() : fallback->resource.get();
 	};
@@ -1266,24 +1274,24 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 			dispatchParameters.reactive = ffxApiGetResourceDX12(reactive12, FFX_API_RESOURCE_STATE_COMPUTE_READ);
 			dispatchParameters.transparencyAndComposition = ffxApiGetResourceDX12(transparency12, FFX_API_RESOURCE_STATE_COMPUTE_READ);
 			dispatchParameters.output = ffxApiGetResourceDX12(runtimeOutputShared[a_contextIndex]->resource.get(), FFX_API_RESOURCE_STATE_UNORDERED_ACCESS, FFX_API_RESOURCE_USAGE_UAV);
-			dispatchParameters.jitterOffset = directGuides ? decltype(dispatchParameters.jitterOffset){ prepared->jitterX, prepared->jitterY } : decltype(dispatchParameters.jitterOffset){ -upscaling.jitter.x, -upscaling.jitter.y };
+			dispatchParameters.jitterOffset = frameParameters ? decltype(dispatchParameters.jitterOffset){ prepared->jitterX, prepared->jitterY } : decltype(dispatchParameters.jitterOffset){ -upscaling.jitter.x, -upscaling.jitter.y };
 			dispatchParameters.motionVectorScale = { a_motionVectorScaleX, a_motionVectorScaleY };
 			dispatchParameters.renderSize = { a_renderWidth, a_renderHeight };
 			dispatchParameters.upscaleSize = { a_displayWidth, a_displayHeight };
 			dispatchParameters.enableSharpening = true;
 			dispatchParameters.sharpness = a_sharpness;
-			dispatchParameters.frameTimeDelta = directGuides ? prepared->frameTimeMs : *globals::game::deltaTime * 1000.f;
-			dispatchParameters.preExposure = directGuides ? prepared->preExposure : 1.0f;
+			dispatchParameters.frameTimeDelta = frameParameters ? prepared->frameTimeMs : *globals::game::deltaTime * 1000.f;
+			dispatchParameters.preExposure = frameParameters ? prepared->preExposure : 1.0f;
 			// Preserve the baseline menu-camera reset and independent provider
 			// fallback reset below; no diagnostic preview history exists.
 			dispatchParameters.reset = state->IsMainOrLoadingMenuOpen() && !upscaling.menuCameraMVsValid;
-			dispatchParameters.cameraNear = directGuides ? prepared->cameraNear : *globals::game::cameraNear;
-			dispatchParameters.cameraFar = directGuides ? prepared->cameraFar : *globals::game::cameraFar;
-			dispatchParameters.cameraFovAngleVertical = directGuides ? prepared->cameraFov : Util::GetVerticalFOVRad();
+			dispatchParameters.cameraNear = frameParameters ? prepared->cameraNear : *globals::game::cameraNear;
+			dispatchParameters.cameraFar = frameParameters ? prepared->cameraFar : *globals::game::cameraFar;
+			dispatchParameters.cameraFovAngleVertical = frameParameters ? prepared->cameraFov : Util::GetVerticalFOVRad();
 			dispatchParameters.viewSpaceToMetersFactor = 0.01428222656f;
 			dispatchParameters.flags = 0;
 			const bool runtimeFallbackReset = runtimeFallbackResetDispatchesRemaining > 0;
-			dispatchParameters.reset = dispatchParameters.reset || runtimeFallbackReset || runtimeNativeHistoryDiscontinuous || (directGuides && prepared->resetHistory);
+			dispatchParameters.reset = dispatchParameters.reset || runtimeFallbackReset || runtimeNativeHistoryDiscontinuous || (frameParameters && prepared->resetHistory);
 
 			DWORD faultCode = 0;
 			const bool dispatchCompleted = Util::SehGuarded(
@@ -1362,6 +1370,7 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 				const uint64_t rescueFence = runtimeFence.Next();
 				DX::ThrowIfFailed(swapChain.commandQueue->Signal(runtimeFence.fence12.get(), rescueFence));
 				commandContext->fenceValue = rescueFence;
+				DX::ThrowIfFailed(swapChain.d3d11Context->Wait(runtimeFence.fence11.get(), rescueFence));
 			} catch (...) {
 				commandContext->fenceValue = UINT64_MAX;
 			}
@@ -1376,6 +1385,7 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 				const uint64_t rescueFence = runtimeFence.Next();
 				DX::ThrowIfFailed(swapChain.commandQueue->Signal(runtimeFence.fence12.get(), rescueFence));
 				commandContext->fenceValue = rescueFence;
+				DX::ThrowIfFailed(swapChain.d3d11Context->Wait(runtimeFence.fence11.get(), rescueFence));
 			} catch (...) {
 				commandContext->fenceValue = UINT64_MAX;
 			}
