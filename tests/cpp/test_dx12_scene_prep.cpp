@@ -241,3 +241,17 @@ TEST_CASE("Only Full Native admits material preparation and requires restart on 
 			CHECK(RequiresModeRestart(from, to) == ((from == ControlMode::FullNative) != (to == ControlMode::FullNative)));
 	}
 }
+
+TEST_CASE("Full Native authority is exclusive to an enabled non-VR Full Native session", "[dx12][backend]")
+{
+	using DX12::ControlMode;
+	using DX12::FeatureBackend;
+	using DX12::SelectFeatureBackend;
+
+	for (const auto mode : { ControlMode::ShadowOffload, ControlMode::RasterComparison, ControlMode::FullRT, ControlMode::FullNative }) {
+		CHECK(SelectFeatureBackend(false, mode, false) == FeatureBackend::Baseline);
+		CHECK(SelectFeatureBackend(true, mode, true) == FeatureBackend::Baseline);
+		CHECK(SelectFeatureBackend(true, mode, false) ==
+		      (mode == ControlMode::FullNative ? FeatureBackend::FullNative : FeatureBackend::Baseline));
+	}
+}

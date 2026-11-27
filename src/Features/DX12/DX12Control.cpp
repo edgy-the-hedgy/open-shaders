@@ -32,17 +32,23 @@ void DX12Control::RequestMode(DX12::ControlMode mode)
 }
 
 	
-void DX12Control::InitializeMaterialAuthority()
+void DX12Control::InitializeFeatureBackend()
 {
 	if (authorityCaptured)
 		return;
 	authorityCaptured = true;
-	if (!WantsMaterialPreparation() || globals::game::isVR)
-		return;
-	NativePBR::InstallExclusiveMetadataHooks();
-	exclusiveMaterials.store(true, std::memory_order_release);
-	globals::features::truePBR.loaded = false;
-	logger::info("[DX12] Full Native owns material discovery and evaluation; TruePBR is disabled for this session. Vanilla raster lighting remains the fallback.");
+	const auto backend = DX12::SelectFeatureBackend(IsActive(), GetMode(), globals::game::isVR);
+	featureBackend.store(backend, std::memory_order_release);
+	if (backend == DX12::FeatureBackend::FullNative) {
+		globals::features::truePBR.loaded = false;
+		logger::info("[DX12] Full Native selected; TruePBR is disabled for this session. Vanilla raster lighting remains the fallback.");
+	}
+}
+
+void DX12Control::InstallMaterialBackendHooks()
+{
+	if (UsesExclusiveMaterials())
+		NativePBR::InstallExclusiveMetadataHooks();
 }
 
 void DX12Control::DrawSimpleSettings(bool developerMode)

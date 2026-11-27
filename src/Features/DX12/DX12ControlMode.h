@@ -19,6 +19,18 @@ namespace DX12
 			static_cast<int>(ControlMode::ShadowOffload), static_cast<int>(ControlMode::FullRT)));
 		return selected == ControlMode::RasterComparison && !developerMode ? ControlMode::ShadowOffload : selected;
 	}
+	// Authority is session-wide; availability of native GPU work is a separate concern.
+	enum class FeatureBackend
+	{
+		Baseline,
+		FullNative
+	};
+
+	constexpr FeatureBackend SelectFeatureBackend(bool active, ControlMode mode, bool isVR)
+	{
+		return active && mode == ControlMode::FullNative && !isVR ? FeatureBackend::FullNative : FeatureBackend::Baseline;
+	}
+
 	constexpr bool RequiresMaterialPreparation(ControlMode mode) { return mode == ControlMode::FullNative; }
 
 	constexpr bool RequiresModeRestart(ControlMode active, ControlMode requested)

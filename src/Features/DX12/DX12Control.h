@@ -29,9 +29,11 @@ struct DX12Control final : Feature
 	bool IsFullNativeMode() const { return GetMode() == DX12::ControlMode::FullNative; }
 	/** @brief Material capture is admitted only for an active Full Native session. */
 	bool WantsMaterialPreparation() const { return IsActive() && DX12::RequiresMaterialPreparation(GetMode()); }
-	/** @brief Boot-latched NativePBR authority; disabling DX12 at runtime cannot reinstall legacy hooks. */
-	bool UsesExclusiveMaterials() const { return exclusiveMaterials.load(std::memory_order_acquire); }
-	void InitializeMaterialAuthority();
+	/** @brief Session authority is independent of runtime DX12 availability. */
+	DX12::FeatureBackend GetFeatureBackend() const { return featureBackend.load(std::memory_order_acquire); }
+	bool UsesExclusiveMaterials() const { return GetFeatureBackend() == DX12::FeatureBackend::FullNative; }
+	void InitializeFeatureBackend();
+	void InstallMaterialBackendHooks();
 	std::string_view GetShaderDefineName() override { return "NATIVE_RASTER_IDENTITY"; }
 	bool HasShaderDefine(RE::BSShader::Type type) override { return UsesExclusiveMaterials() && type == RE::BSShader::Type::Lighting; }
 	void DrawSettings() override;
@@ -43,7 +45,7 @@ struct DX12Control final : Feature
 
 private:
 	std::atomic<bool> bootActive{ false };
-	std::atomic<bool> exclusiveMaterials{ false };
+	std::atomic<DX12::FeatureBackend> featureBackend{ DX12::FeatureBackend::Baseline };
 	bool authorityCaptured = false;
 	bool bootCaptured = false;
 	DX12::ControlMode GetMode() const;
