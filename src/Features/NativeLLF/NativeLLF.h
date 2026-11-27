@@ -2,6 +2,9 @@
 
 #include "Features/DX12/DX12NativeDirectLighting.h"
 #include "Features/DX12/FullNativeFeature.h"
+#include "Features/LightLimitFix/ParticleInput.h"
+
+#include <unordered_set>
 
 #include <optional>
 #include <vector>
@@ -23,10 +26,27 @@ namespace NativeLLF
 	public:
 		std::string GetName() override { return "Native LLF"; }
 		std::string GetShortName() override { return "NativeLLF"; }
+		void PostPostLoad() override;
+		void Reset() override;
 		void ResetParticleInput();
 		void OnRuntimeDisabled() override { ResetParticleInput(); }
-
-		// Transitional particle capture bridge until raw engine capture is independently routed.
+		void OnSceneTransitionReset(bool opening) override { if (opening) ResetParticleInput(); }
+		void ObserveParticlePass(RE::BSRenderPass* pass);
 		std::optional<DirectInputFrame> CollectDirectInputs(const DX12Native::TopLevel& scene, uint32_t frame, bool opaqueReady);
+
+	private:
+		struct ParticleEmitter
+		{
+			float3 position{}, color{};
+			float radius = 0.0f;
+		};
+		ParticleLights configs;
+		LightLimitFix::Settings particleSettings;
+		ParticleInput::ReferenceCache references;
+		std::mutex referenceMutex;
+		std::unordered_set<const RE::BSGeometry*> observed;
+		std::vector<ParticleEmitter> pending, current;
+		uint32_t currentPluginFrame = UINT32_MAX;
+		void CaptureEmitter(const LightLimitFix::ParticleLightInfo& emitter);
 	};
 }

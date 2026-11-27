@@ -1,6 +1,4 @@
 #include "LightLimitFix.h"
-#include "DX12/DX12Control.h"
-#include "Features/NativeLLF/NativeLLFParticleBridge.h"
 #include "CSEditor/EditorWindow.h"
 #include "Features/LightLimitFix/Common.h"
 #include "Features/LightLimitFix/LightAttach.h"
@@ -730,8 +728,6 @@ void LightLimitFix::SetupResources()
 
 void LightLimitFix::Reset()
 {
-	if (globals::features::dx12Control.UsesExclusiveMaterials())
-		NativeLLF::ResetLegacyParticleBridge();
 	effectLightValidationCache.clear();
 	bufferedParticleLightCount.store(0, std::memory_order_relaxed);
 
@@ -1313,9 +1309,6 @@ void LightLimitFix::CompileComputeShaders()
 void LightLimitFix::UpdateLights()
 {
 	ZoneScopedN("LLF::UpdateLights");
-	const bool publishNative = globals::features::dx12Control.WantsMaterialPreparation();
-	if (publishNative)
-		NativeLLF::ResetLegacyParticleBridge();
 
 	auto context = globals::d3d::context;
 	if (!context || !lights || !lights->resource) {
@@ -1532,9 +1525,6 @@ void LightLimitFix::UpdateLights()
 		CS_PROFILE_CPU_SCOPE(globals::profiler, "LightLimitFix::ParticleLightsCPU");
 		const auto particleBufferStart = lightsData.size();
 		ProcessQueuedParticleLights(lightsData);
-		if (publishNative && globals::game::graphicsState && globals::state)
-			NativeLLF::PublishLegacyParticleBridge(std::span<const LightData>(lightsData.data(), lightsData.size()).subspan(particleBufferStart),
-				eyePositionCached[0], globals::game::graphicsState->GetFrameCount(), globals::state->frameCount);
 		bufferedParticleLightCount.store(static_cast<uint32_t>(lightsData.size() - particleBufferStart), std::memory_order_relaxed);
 	}
 

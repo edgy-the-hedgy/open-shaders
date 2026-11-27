@@ -1,5 +1,4 @@
 #include "NativeLLF.h"
-#include "NativeLLFParticleBridge.h"
 
 #include "Features/DX12/DX12Control.h"
 #include "Features/DX12/DX12LightMath.h"
@@ -12,6 +11,8 @@
 #include "Globals.h"
 #include "RE/T/TESObjectLIGH.h"
 #include "State.h"
+#include "ShaderCache.h"
+#include "Util.h"
 #include "Utils/PointLightFlags.h"
 
 #include <Windows.h>
@@ -22,66 +23,147 @@
 #include <ranges>
 #include <unordered_set>
 
-namespace
+void NativeLLF::Producer::PostPostLoad()
 {
-	struct ParticleEmitter
-	{
-		float3 position, color;
-		float radius, fade;
-	};
-
-	// Render-thread CPU publication, identical lifetime to the old LLF snapshot.
-	struct ParticleSnapshot
-	{
-		std::vector<ParticleEmitter> emitters;
-		uint32_t frame = UINT32_MAX, pluginFrame = UINT32_MAX;
-	};
-
-	ParticleSnapshot& LegacyParticleSnapshot()
-	{
-		static ParticleSnapshot snapshot;
-		return snapshot;
-	}
+	// Inherit authored particle settings at boot; native acquisition owns its
+	// own INI catalog, observation cache, cluster records and lifetime.
+	particleSettings = globals::features::lightLimitFix.settings;
+	configs.GetConfigs();
 }
 
-void NativeLLF::ResetLegacyParticleBridge()
+void NativeLLF::Producer::Reset()
 {
-	auto& snapshot = LegacyParticleSnapshot();
-	snapshot.emitters.clear();
-	snapshot.frame = snapshot.pluginFrame = UINT32_MAX;
-}
-
-void NativeLLF::PublishLegacyParticleBridge(std::span<const LightLimitFix::LightData> lights,
-	const RE::NiPoint3& eyePosition, uint32_t frame, uint32_t pluginFrame)
-{
-	auto& snapshot = LegacyParticleSnapshot();
-	snapshot.emitters.clear();
-	snapshot.emitters.reserve(lights.size());
-	for (const auto& light : lights) {
-		const auto& p = light.positionWS[0].data;
-		snapshot.emitters.push_back({ { p.x + eyePosition.x, p.y + eyePosition.y, p.z + eyePosition.z },
-			light.color, light.radius, light.fade });
+	// The hook observes effects throughout the frame, including after opaque
+	// lighting. Publish copied values at the next frame boundary, never pointers.
+	current.swap(pending);
+	pending.clear();
+	observed.clear();
+	{
+		std::scoped_lock lock(referenceMutex);
+		references.clear();
 	}
-	snapshot.frame = frame;
-	snapshot.pluginFrame = pluginFrame;
+	currentPluginFrame = globals::state ? globals::state->frameCount : UINT32_MAX;
 }
 
 void NativeLLF::Producer::ResetParticleInput()
 {
-	ResetLegacyParticleBridge();
+	pending.clear();
+	current.clear();
+	observed.clear();
+	{
+		std::scoped_lock lock(referenceMutex);
+		references.clear();
+	}
+	currentPluginFrame = UINT32_MAX;
+}
+
+void NativeLLF::Producer::ObserveParticlePass(RE::BSRenderPass* pass)
+{
+	if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation() ||
+		!particleSettings.EnableParticleLights || !pass || !pass->geometry || !pass->shaderProperty ||
+		!globals::shaderCache || !globals::shaderCache->IsEnabled() || pending.size() >= DX12::kMaxPreparedLights)
+		return;
+	if (pass->shaderProperty->GetRTTI() != globals::rtti::BSEffectShaderPropertyRTTI.get())
+		return;
+	if (!observed.insert(pass->geometry).second)
+		return;
+	const auto reference = ParticleInput::Recognize(pass, true, configs, references, referenceMutex);
+	if (!reference.valid)
+		return;
+	if (const auto emitter = ParticleInput::ReadEmitter(pass, reference))
+		CaptureEmitter(*emitter);
+}
+
+void NativeLLF::Producer::CaptureEmitter(const LightLimitFix::ParticleLightInfo& emitter)
+{
+	if (!emitter.node)
+		return;
+	const auto finite = [](float3 v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); };
+	const auto append = [&](float3 position, float3 color, float radius) {
+		if (pending.size() >= DX12::kMaxPreparedLights || !finite(position) || !finite(color) ||
+			!std::isfinite(radius) || radius <= 1e-4f || color.x + color.y + color.z <= 1e-4f)
+			return;
+		pending.push_back({ position, color, radius });
+	};
+	const auto tint = [&](float3 color) {
+		color = LightLimitFix::Saturation(color, particleSettings.ParticleLightsSaturation);
+		Feature::ApplyPointLightColorOverrides(color);
+		return color;
+	};
+	const float3 base{ emitter.color.red, emitter.color.green, emitter.color.blue };
+	if (emitter.billboard) {
+		const auto& p = emitter.node->world.translate;
+		append({ p.x, p.y, p.z }, tint(base) * emitter.color.alpha * particleSettings.BillboardBrightness,
+			emitter.node->worldBound.radius * emitter.radiusMult * particleSettings.BillboardRadius * 0.5f);
+		return;
+	}
+
+	auto* system = static_cast<RE::NiParticleSystem*>(emitter.node);
+	const auto data = system->GetParticlesRuntimeData().particleData;
+	if (!data)
+		return;
+	const auto& runtime = data->GetParticlesRuntimeData();
+	if (!runtime.radii || !runtime.sizes || !runtime.positions || !runtime.maxNumVertices)
+		return;
+	auto count = std::min(uint32_t(data->GetActiveVertexCount()), uint32_t(runtime.maxNumVertices));
+	if (runtime.numVertices)
+		count = std::min(count, uint32_t(runtime.numVertices));
+	count = std::min(count, uint32_t(std::max(1, particleSettings.MaxParticlesPerEmitter)));
+
+	// Spatially coherent clusters per emitter: never merge unrelated emitters.
+	// Keep sums for radiance and means for position/radius, as in legacy LLF.
+	ParticleEmitter cluster{};
+	uint32_t members = 0;
+	const auto flush = [&] {
+		if (members) {
+			append(cluster.position / float(members), cluster.color, cluster.radius / float(members));
+			cluster = {};
+			members = 0;
+		}
+	};
+	for (uint32_t index = 0; index < count && pending.size() < DX12::kMaxPreparedLights; ++index) {
+		auto p = runtime.positions[index];
+		if (!system->GetParticleSystemRuntimeData().isWorldspace) {
+			const auto& origin = emitter.node->GetModelData().modelBound.radius * emitter.node->world.scale != emitter.node->worldBound.radius ?
+				emitter.node->worldBound.center : emitter.node->world.translate;
+			p = { p.x + origin.x, p.y + origin.y, p.z + origin.z };
+		}
+		const float3 position{ p.x, p.y, p.z };
+		const float radius = runtime.radii[index] * runtime.sizes[index] * emitter.radiusMult * particleSettings.ParticleRadius;
+		float alpha = emitter.color.alpha;
+		auto color = base;
+		if (runtime.color) {
+			alpha *= runtime.color[index].alpha;
+			color.x *= runtime.color[index].red;
+			color.y *= runtime.color[index].green;
+			color.z *= runtime.color[index].blue;
+		}
+		color = tint(color) * alpha * particleSettings.ParticleBrightness;
+		if (!finite(position) || !finite(color) || !std::isfinite(radius) || radius <= 0.0f)
+			continue;
+		if (members) {
+			const auto delta = position - cluster.position / float(members);
+			const float distance = std::sqrt(delta.Dot(delta));
+			if (!particleSettings.EnableParticleLightsOptimization ||
+				distance + std::abs(radius - cluster.radius / float(members)) > particleSettings.ParticleClusterThreshold)
+				flush();
+		}
+		cluster.position += position;
+		cluster.color += color;
+		cluster.radius += radius;
+		++members;
+	}
+	flush();
 }
 
 std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInputs(const DX12Native::TopLevel& scene, uint32_t frame, bool opaqueReady)
 {
 	if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation() || !globals::state || !scene.inputs || !scene.inputs->residency)
 		return std::nullopt;
-	const auto& llf = globals::features::lightLimitFix;
-	const auto& particles = LegacyParticleSnapshot();
-	const bool particleSnapshotReady = llf.loaded && particles.frame == frame &&
-		particles.pluginFrame == globals::state->frameCount;
-	// Prefer early material dispatch where possible, but defer direct lighting to opaque-ready if
-	// the current LLF emitter publication has not arrived yet.
-	if (llf.loaded && !particleSnapshotReady && !opaqueReady)
+	// Native particles are published by the frame reset, independently of
+	// raster LLF prepass timing. Opaque-ready remains part of the caller contract.
+	const bool particleSnapshotReady = currentPluginFrame == globals::state->frameCount;
+	if (particleSettings.EnableParticleLights && !particleSnapshotReady && !opaqueReady)
 		return std::nullopt;
 	const auto prepared = DX12Resources::CollectPreparedLights(*scene.inputs->residency);
 	DirectInputFrame result;
@@ -198,16 +280,26 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 	// after matching so prepared ordinals remain stable during the merge.
 	std::erase_if(directLights, [](const auto& light) { return light.radius <= 0.0f; });
 	if (particleSnapshotReady) {
-		for (const auto& particle : particles.emitters) {
+		const auto eye = Util::GetEyePosition(0);
+		const float fadeStart = RE::Sky::GetLightLODStartFadeSquared();
+		const float fadeEnd = RE::Sky::GetLightLODEndFadeSquared();
+		for (const auto& particle : current) {
 			if (directLights.size() >= DX12::kMaxPreparedLights)
 				break;
-			if (!std::isfinite(particle.radius) || particle.radius <= 0.0f || !std::isfinite(particle.fade) || particle.fade <= 0.0f ||
-				!std::isfinite(particle.position.x) || !std::isfinite(particle.position.y) || !std::isfinite(particle.position.z) ||
-				!std::isfinite(particle.color.x) || !std::isfinite(particle.color.y) || !std::isfinite(particle.color.z))
+			const float3 offset{ particle.position.x - eye.x, particle.position.y - eye.y, particle.position.z - eye.z };
+			const float distanceSq = offset.Dot(offset);
+			const float maxDistance = particleSettings.MaxParticleDistance;
+			if (maxDistance > 0.0f && distanceSq > maxDistance * maxDistance)
+				continue;
+			const float distance = distanceSq - particle.radius * particle.radius;
+			float fade = 1.0f;
+			if (fadeEnd > fadeStart && fadeEnd != 0.0f && distance >= fadeStart)
+				fade = std::clamp(1.0f - (distance - fadeStart) / (fadeEnd - fadeStart), 0.0f, 1.0f);
+			if (!std::isfinite(fade) || fade <= 0.0f)
 				continue;
 			directLights.push_back({ particle.position,
-				{ toLinear(particle.color.x) * particle.fade, toLinear(particle.color.y) * particle.fade,
-					toLinear(particle.color.z) * particle.fade }, particle.radius, 0.0f, 0.0f, false });
+				{ toLinear(particle.color.x) * fade, toLinear(particle.color.y) * fade,
+					toLinear(particle.color.z) * fade }, particle.radius, 0.0f, 0.0f, false });
 		}
 	}
 	auto& directional = result.directional;
