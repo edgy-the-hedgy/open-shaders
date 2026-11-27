@@ -54,14 +54,13 @@ namespace DX12Native
             const CharacterCasterFrame* actor = nullptr;
             const NativeMaterialEvaluation* evaluation = nullptr;
             ID3D12Resource* movers = nullptr;
-            uint32_t moverCount = 0, actorInstance = 0;
+            uint32_t moverCount = 0;
         };
 
         ReflectionView Reflections() const
         {
             ReflectionView view;
             const auto* actor = actorSource ? actorSource.get() : (rigidInstances ? nullptr : this);
-            view.actorInstance = actor ? 1u : 0u;
             const bool actorGeometry = actor && actor->scope == scope && actor->positions && actor->indices &&
                 MaterialFrameContract::ValidCharacterPrimitiveLayout(actor->vertices, actor->triangles, actor->parts,
                     actor->positions->GetDesc().Width, actor->indices->GetDesc().Width);
@@ -452,9 +451,14 @@ namespace DX12Native
                 return;
             auto desc = runtime.vertexDesc;
             const auto counts = tri->GetTrishapeRuntimeData();
+            using V = RE::BSGraphics::Vertex;
             const MeshKey key{ reinterpret_cast<uintptr_t>(runtime.rendererData->rawVertexData),
                 reinterpret_cast<uintptr_t>(runtime.rendererData->rawIndexData),
-                uintptr_t(counts.vertexCount), uintptr_t(counts.triangleCount), uintptr_t(desc.GetSize()) };
+                uintptr_t(counts.vertexCount), uintptr_t(counts.triangleCount), uintptr_t(desc.GetSize()),
+                desc.HasFlag(V::VF_UV) ? uintptr_t(desc.GetAttributeOffset(V::VA_TEXCOORD0)) : UINTPTR_MAX,
+                desc.HasFlag(V::VF_NORMAL) ? uintptr_t(desc.GetAttributeOffset(V::VA_NORMAL)) : UINTPTR_MAX,
+                desc.HasFlag(V::VF_TANGENT) ? uintptr_t(desc.GetAttributeOffset(V::VA_BINORMAL)) : UINTPTR_MAX,
+                desc.HasFlag(V::VF_COLORS) ? uintptr_t(desc.GetAttributeOffset(V::VA_COLOR)) : UINTPTR_MAX };
             const auto transform = Rows(geometry.world);
             if (!Finite(transform)) return;
             auto found = moverMeshes.find(key);
@@ -471,8 +475,8 @@ namespace DX12Native
                 // Retain bounded immutable local shading data, independently of the
                 // BLAS staging arrays. No per-frame CPU skinning of rigid movers.
                 uint64_t retained = 0;
-                for (const auto& [key, cached] : moverMeshes)
-                    retained += cached->shading.size() * sizeof(float) + cached->shadingIndices.size() * sizeof(uint32_t);
+                for (const auto& entry : moverMeshes)
+                    retained += entry.second->shading.size() * sizeof(float) + entry.second->shadingIndices.size() * sizeof(uint32_t);
                 const uint64_t bytes = uint64_t(snapshot.vertices.size()) * CharacterCasterFrame::kPosedVertexStride +
                     uint64_t(snapshot.indices.size()) * sizeof(uint32_t);
                 if (bytes <= kMoverShadingBudget && retained <= kMoverShadingBudget - bytes) {
@@ -852,7 +856,7 @@ namespace DX12Native
         }
 
         static constexpr uint32_t kMaxMovers = 512, kMaxNewMovers = 8, kMaxCachedMeshes = 512, kMoverRetentionFrames = 300;
-        using MeshKey = std::array<uintptr_t, 5>;
+        using MeshKey = std::array<uintptr_t, 9>;
         struct RigidMesh
         {
             RE::NiPointer<RE::BSGeometry> geometry;
@@ -869,7 +873,8 @@ namespace DX12Native
         winrt::com_ptr<ID3D12Resource> PrepareMoverShading(ID3D12Device* device,
             const std::vector<std::shared_ptr<RigidMesh>>& order)
         {
-            if (moverShadingCache && moverShadingOrder == order) return moverShadingCache;
+            if (moverShadingCache && std::ranges::equal(moverShadingOrder, order,
+                [](const auto& previous, const auto& current) { return previous.lock() == current; })) return moverShadingCache;
             if (order.empty() || order.size() > kMaxMovers) return {};
             const size_t tableWords = order.size() * 4u;
             std::vector<uint32_t> words(tableWords);
@@ -899,11 +904,13 @@ namespace DX12Native
             const uint64_t allocation = device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
             if (!allocation || allocation == UINT64_MAX || allocation > budget.Query(device, 0).effectiveBytes) return {};
             auto resource = Eval::Table(device, words);
-            moverShadingCache = resource; moverShadingOrder = order;
+            moverShadingOrder.clear(); moverShadingOrder.reserve(order.size());
+            for (const auto& mesh : order) moverShadingOrder.emplace_back(mesh);
+            moverShadingCache = resource;
             return resource;
         }
         winrt::com_ptr<ID3D12Resource> moverShadingCache;
-        std::vector<std::shared_ptr<RigidMesh>> moverShadingOrder;
+        std::vector<std::weak_ptr<RigidMesh>> moverShadingOrder;
         std::map<MeshKey, std::shared_ptr<RigidMesh>> moverMeshes;
         std::vector<RigidInstance> movers;
         std::array<std::shared_ptr<CharacterCasterFrame>, 4> moverSlots;
