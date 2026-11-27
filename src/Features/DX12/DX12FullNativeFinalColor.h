@@ -24,6 +24,7 @@ namespace DX12Native
 	{
 	public:
 		~FullNativeFinalColor();
+		void Poll(uint32_t frame);
 		void Compose(const GraphicsBackend& backend, std::shared_ptr<const FullNativeReconstructionFrame> input);
 		std::shared_ptr<const FullNativeFinalColorFrame> Get(uint32_t frame) const;
 		bool Apply(uint32_t frame, ID3D11UnorderedAccessView* target);

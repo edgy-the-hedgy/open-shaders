@@ -1346,6 +1346,15 @@ json DX12NativeScene::GetStatus() const
 			{ "ambiguousDraws", draws.ambiguous }, { "rejectedDraws", draws.rejected }, { "finalized", draws.finalized },
 			{ "primitiveTokens", draws.tokens.size() }, { "tokenBudgetRejected", draws.tokenBudgetRejected },
 			{ "exactPixelIdentity", false }, { "rasterReplacement", false } };
+		const auto frame = globals::game::graphicsState ? globals::game::graphicsState->GetFrameCount() : UINT32_MAX;
+		const auto reconstructed = globals::features::upscaling.nativeComposite.GetFullNativeReconstruction(frame);
+		const auto finalColor = globals::features::upscaling.nativeComposite.GetFullNativeFinalColor(frame);
+		status["fullNativeComposite"] = { { "reconstructed", reconstructed != nullptr },
+			{ "availableContributions", reconstructed ? reconstructed->available : 0u },
+			{ "winnerCertified", reconstructed && reconstructed->rasterWinnerCertified },
+			{ "completeLightingCoverage", reconstructed && reconstructed->completeLightingCoverage },
+			{ "finalColorPublished", finalColor != nullptr }, { "applicationEligible", finalColor && finalColor->applicationEligible },
+			{ "applicationSubmitted", finalColor && finalColor->applied } };
 	}
 	status["ownership"] = { { "granted", ownershipGranted.load(std::memory_order_relaxed) },
 		{ "coveredCasterChecks", coveredCasterChecks.load(std::memory_order_relaxed) },

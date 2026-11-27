@@ -162,7 +162,7 @@ void main(uint3 id : SV_DispatchThreadID)
     float3 directSpecular = FilterSignal(id.xy, ContributionDirectSpecular, base, normal, depth, ds);
     float3 indirectDiffuse = FilterSignal(id.xy, ContributionIndirectDiffuse, base, normal, depth, idiff);
     float3 indirectSpecular = FilterSignal(id.xy, ContributionIndirectSpecular, base, normal, depth, ispec);
-    // Never fill invalid center pixels or claim emission, transmission or remaining opaque ownership.
+    // Never fill invalid center pixels or claim remaining opaque ownership.
     const uint diffuseValid = (dd ? ContributionDirectDiffuse : 0u) | (idiff ? ContributionIndirectDiffuse : 0u);
     const uint specularValid = (ds ? ContributionDirectSpecular : 0u) | (ispec ? ContributionIndirectSpecular : 0u);
     float3 diffuse = directDiffuse + indirectDiffuse;
@@ -176,7 +176,17 @@ void main(uint3 id : SV_DispatchThreadID)
     Reconstructed.Store4(offset, uint4(packedDiffuse, packedSpecular));
     // Check the actual encoded output, not the pre-pack validity flags. Half
     // overflow can invalidate the signal. Zero radiance still needs valid bits.
-    const uint valid = uint(Unpack(packedDiffuse).a) | uint(Unpack(packedSpecular).a);
+    uint valid = uint(Unpack(packedDiffuse).a) | uint(Unpack(packedSpecular).a);
+    // Base evaluation excludes active thin-surface, foliage and other unsupported
+    // transmission features. Only that restricted surface may declare zero transmission.
+    // Emissive radiance is read and applied separately by CompositeFullNative.
+    if (base.a == SurfaceEvaluatedBase && ValidRayIdentity(ReadRayIdentity(id.xy))) {
+        const float4 emissionAO = ReadMaterial(id.xy, 24u);
+        if ((Available & ContributionEmission) != 0u && all(isfinite(emissionAO.rgb)))
+            valid |= ContributionEmission;
+        if ((Available & ContributionTransmission) != 0u)
+            valid |= ContributionTransmission;
+    }
     const bool complete = CompleteLightingCoverage != 0u && (Available & ~255u) == 0u &&
         (valid & ~Available) == 0u && (valid & NativeOpaqueRequired) == NativeOpaqueRequired;
     if (complete) ownership |= CompleteOpaqueRadiance;

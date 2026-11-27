@@ -70,6 +70,34 @@ namespace DX12Native
 		pipeline = std::move(newPipeline);
 	}
 
+	void FullNativeFinalColor::Poll(uint32_t frame)
+	{
+		if (current && current->frame != frame)
+			current.reset();
+		for (auto& slot : slots) {
+			if (!slot)
+				continue;
+			if (slot->readyValue == UINT64_MAX && producer.fence12 && owner.commandQueue &&
+				producer.fence12->GetCompletedValue() != UINT64_MAX) {
+				const auto rescue = producer.Next();
+				if (SUCCEEDED(owner.commandQueue->Signal(producer.fence12.get(), rescue)))
+					slot->readyValue = rescue;
+			}
+			if (slot->consumedValue == UINT64_MAX && consumer.fence12 && owner.d3d11Context &&
+				consumer.fence12->GetCompletedValue() != UINT64_MAX) {
+				const auto rescue = consumer.Next();
+				if (SUCCEEDED(owner.d3d11Context->Signal(consumer.fence11.get(), rescue))) {
+					owner.d3d11Context->Flush();
+					slot->consumedValue = rescue;
+				}
+			}
+			// Release the reconstruction chain before the next upstream
+			// material/reconstruction dispatch chooses a slot.
+			if (GpuFenceRetired(slot->readyFence.get(), slot->readyValue))
+				slot->input.reset();
+		}
+	}
+
 	std::shared_ptr<const FullNativeFinalColorFrame> FullNativeFinalColor::Get(uint32_t frame) const
 	{
 		return current && current->frame == frame && current->readyFence &&
@@ -82,6 +110,7 @@ namespace DX12Native
 			!ValidProducerSignal(input->readyValue, input->readyFence->GetCompletedValue()) ||
 			!input->material->IsCoherent(input->frame, input->width, input->height))
 			return;
+		Poll(input->frame);
 		if (Get(input->frame))
 			return;
 		current.reset();
@@ -90,20 +119,6 @@ namespace DX12Native
 		try {
 			Initialize(backend);
 			for (auto& slot : slots) {
-				if (slot && slot->readyValue == UINT64_MAX && producer.fence12->GetCompletedValue() != UINT64_MAX) {
-					const auto rescue = producer.Next();
-					if (SUCCEEDED(owner.commandQueue->Signal(producer.fence12.get(), rescue)))
-						slot->readyValue = rescue;
-				}
-				if (slot && slot->consumedValue == UINT64_MAX && consumer.fence12->GetCompletedValue() != UINT64_MAX) {
-					const auto rescue = consumer.Next();
-					if (SUCCEEDED(owner.d3d11Context->Signal(consumer.fence11.get(), rescue))) {
-						owner.d3d11Context->Flush();
-						slot->consumedValue = rescue;
-					}
-				}
-				if (slot && GpuFenceRetired(slot->readyFence.get(), slot->readyValue))
-					slot->input.reset();
 				if (!slot || (slot.use_count() == 1 && GpuFenceRetired(slot->readyFence.get(), slot->readyValue) &&
 						GpuFenceRetired(slot->consumedFence.get(), slot->consumedValue))) {
 					if (!selected || (slot && slot->width == input->width && slot->height == input->height))

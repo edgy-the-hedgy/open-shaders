@@ -105,10 +105,21 @@ namespace DX12Native::MaterialFrameContract
 		Transmission = 1u << 4, Emission = 1u << 5,
 		RemainingOpaque = 1u << 6, IndependentVisibility = 1u << 7
 	};
+	// Fully evaluated opaque base materials have no active transmission lobe;
+	// their evaluated emission is a separate source, not a fabricated lighting lobe.
+	inline constexpr uint32_t kBaseMaterialContributions = Emission | Transmission;
 	inline constexpr uint32_t kOpaqueRequired = DirectDiffuse | DirectSpecular | IndirectDiffuse |
 		IndirectSpecular | Transmission | Emission | RemainingOpaque;
 	inline constexpr uint32_t kKnownContributions = kOpaqueRequired | IndependentVisibility;
 	inline constexpr uint32_t kOpaqueRadianceStride = 8;
+
+	constexpr uint32_t BaseMaterialValidContributions(SurfaceStatus status, bool emissionFinite, bool opaqueNonTransmitting)
+	{
+		if (status != SurfaceStatus::EvaluatedBase)
+			return 0u;
+		return (emissionFinite ? uint32_t(Emission) : 0u) |
+			(opaqueNonTransmitting ? uint32_t(Transmission) : 0u);
+	}
 
 	struct ContributionAdmission
 	{

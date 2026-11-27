@@ -289,3 +289,13 @@ TEST_CASE("Full Native final color rejects stale ownership or incompatible encod
 	REQUIRE_FALSE(CanApplyFinalOpaque(owned, true, false, true));
 	REQUIRE_FALSE(CanApplyFinalOpaque(owned, true, true, false));
 }
+
+TEST_CASE("Base material contributions never imply complete opaque radiance", "[dx12][materials]")
+{
+	REQUIRE(BaseMaterialValidContributions(SurfaceStatus::EvaluatedBase, true, true) == kBaseMaterialContributions);
+	REQUIRE(BaseMaterialValidContributions(SurfaceStatus::FeatureLimited, true, true) == 0u);
+	REQUIRE(BaseMaterialValidContributions(SurfaceStatus::EvaluatedBase, false, true) == Transmission);
+	REQUIRE(BaseMaterialValidContributions(SurfaceStatus::EvaluatedBase, true, false) == Emission);
+	constexpr uint32_t partial = DirectDiffuse | DirectSpecular | IndirectDiffuse | IndirectSpecular | kBaseMaterialContributions;
+	REQUIRE_FALSE(CompleteOpaque({ partial, partial }));
+}

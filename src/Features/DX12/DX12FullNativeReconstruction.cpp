@@ -133,7 +133,8 @@ namespace DX12Native
 		};
 		if (!matches(direct)) direct.reset();
 		if (!matches(indirect)) indirect.reset();
-		const uint32_t available = (direct ? DirectLightingFrame::available : 0u) | (indirect ? indirect->available : 0u);
+		const uint32_t available = (direct ? DirectLightingFrame::available : 0u) | (indirect ? indirect->available : 0u) |
+			kBaseMaterialContributions;
 		const uint64_t bytes = uint64_t(material->width) * material->height * kLightingStride;
 		if (!available || !bytes || bytes > UINT32_MAX)
 			return;

@@ -36,7 +36,8 @@ void main(uint3 id : SV_DispatchThreadID)
     float3 radiance = diffuse.rgb + specular.rgb + max(emissionAO.rgb, 0.0);
     if (!all(isfinite(radiance)) || any(abs(radiance) > 65504.0)) return;
     // Partial radiance is useful for diagnostics but cannot replace raster.
-    // The owner bit requires complete contributions including transmission,
-    // emission and remaining opaque lighting; do not manufacture those bits.
+    // The owner bit requires complete contributions including independently
+    // admitted material emission and zero transmission for opaque base receivers.
+    // Remaining opaque lighting still needs its own complete producer.
     FinalColor[id.xy] = float4(radiance, ApplicationEligible != 0u && HasNativeOpaqueOwnership(ownership) ? 1.0 : 0.0);
 }

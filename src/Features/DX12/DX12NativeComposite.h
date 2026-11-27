@@ -63,7 +63,11 @@ namespace DX12Native
 			MaterialFrameContract::RasterIdentityStamp rasterStamp,
 			std::span<const MaterialFrameContract::RasterPixelIdentity> tokens);
 		std::shared_ptr<const FullNativeReconstructionFrame> GetFullNativeReconstruction(uint32_t frame) const;
-		void PollFullNative(uint32_t frame) { if (fullNativeReconstruction) fullNativeReconstruction->Poll(frame); }
+		void PollFullNative(uint32_t frame)
+		{
+			if (fullNativeFinalColor) fullNativeFinalColor->Poll(frame);
+			if (fullNativeReconstruction) fullNativeReconstruction->Poll(frame);
+		}
 		void ResetFullNative() { fullNativeFinalColor.reset(); fullNativeReconstruction.reset(); }
 		bool ApplyFullNativeOpaque(uint32_t frame, ID3D11UnorderedAccessView* target);
 		std::shared_ptr<const FullNativeFinalColorFrame> GetFullNativeFinalColor(uint32_t frame) const;
