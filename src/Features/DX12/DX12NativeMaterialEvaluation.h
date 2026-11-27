@@ -417,6 +417,10 @@ namespace DX12Native
 				const auto residentMap = [&](NativePBR::TextureRole role) {
 					return (recordTable[it->second].controls[0] & NativePBR::TextureRoleBit(role)) != 0;
 				};
+				// Single-surface height evaluation is usable for diagnostics, but its
+				// shadow and warp contracts remain independently feature-limited.
+				if (!projectedUv && NativePBR::SupportsOpaqueParallax(recipe) && residentMap(NativePBR::TextureRole::Displacement))
+					binding.flags |= MaterialFrameContract::kParallaxReadyBinding;
 				const bool subsurfaceReady = capability.activeFlags == uint32_t(PBRFlags::Subsurface) &&
 					(!authoredMap(NativePBR::TextureRole::Features0) || residentMap(NativePBR::TextureRole::Features0));
 				if (subsurfaceReady) {

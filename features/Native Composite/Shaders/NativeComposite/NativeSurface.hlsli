@@ -6,6 +6,7 @@ static const uint NativeMaterialLobeStride = 32u;
 static const uint SurfaceCoatReadyBinding = 1u << 13;
 static const uint SurfaceSubsurfaceReadyBinding = 1u << 14;
 static const uint SurfaceThinSurfaceReadyBinding = 1u << 15;
+static const uint SurfaceParallaxReadyBinding = 1u << 4;
 struct NativeCoatSample { float4 normalRoughness; float4 colorStrength; float4 f0Colored; float4 subsurface; };
 float4 UnpackNativeLobeHalf4(uint2 v) { return f16tof32(uint4(v.x & 65535u, v.x >> 16, v.y & 65535u, v.y >> 16)); }
 NativeCoatSample ReadNativeCoat(ByteAddressBuffer lobes, uint offset)

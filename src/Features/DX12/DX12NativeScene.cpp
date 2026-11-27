@@ -3,6 +3,7 @@
 #include "Features/DynamicCubemaps.h"
 #include "Features/IBL.h"
 #include "Features/Skylighting.h"
+#include "Features/ExtendedMaterials.h"
 #include "Features/LinearLighting.h"
 #include "Features/CSUtility.h"
 
@@ -668,7 +669,8 @@ void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 		return;
 	if (fullNativeMaterial->WantsFrame(frame, true)) {
 		raster.Capture(*backend, Util::GetCurrentSceneDepthSRV(false), &globals::game::frameBufferCached.nonVR, frame);
-		fullNativeMaterial->Dispatch(*backend, raster.Get(frame), scene, frame, uint32_t(viewport.x), uint32_t(viewport.y), true, true, false);
+		fullNativeMaterial->Dispatch(*backend, raster.Get(frame), scene, frame, uint32_t(viewport.x), uint32_t(viewport.y), true, true, false,
+			globals::features::extendedMaterials.loaded && globals::features::extendedMaterials.settings.EnableParallax != 0);
 	}
 	const auto material = fullNativeMaterial->GetMaterialFrame(frame);
 	if (!material || material->scene != scene || !scene->inputs || !scene->inputs->residency)
