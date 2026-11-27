@@ -16,6 +16,7 @@ RaytracingAccelerationStructure Scene : register(t6);
 #define NATIVE_TEXTURE_REGISTER t10
 #include "NativeMaterialAlpha.hlsli"
 ByteAddressBuffer MaterialLobes : register(t522);
+RaytracingAccelerationStructure CharacterScene : register(t523);
 RWByteAddressBuffer Lighting : register(u0);
 
 cbuffer IndirectInputs : register(b0)
@@ -51,7 +52,8 @@ cbuffer IndirectInputs : register(b0)
     uint TraceSkyVisibility;
     float4 PositionAdjust;
     uint InstanceCount;
-    uint3 Padding2;
+    uint CharacterCastersEnabled;
+    uint2 Padding2;
 };
 
 float Luminance(float3 c) { return dot(c, float3(0.2125, 0.7154, 0.0721)); }
@@ -121,6 +123,15 @@ bool ViewDirection(uint2 pixel, out float3 view, out float3 world)
 
 // Sky visibility only: trace the configured upper sky cap, not a generic
 // ambient-occlusion radius or a GI bounce. The resident TLAS bounds coverage.
+bool CharacterVisible(RayDesc ray)
+{
+    if (CharacterCastersEnabled == 0u) return true;
+    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
+    query.TraceRayInline(CharacterScene, RAY_FLAG_NONE, 0xff, ray);
+    while (query.Proceed()) {}
+    return query.CommittedStatus() == COMMITTED_NOTHING;
+}
+
 bool SkyVisible(float3 world, float3 n, float3 d)
 {
     const float bias = 0.5;
@@ -136,7 +147,7 @@ bool SkyVisible(float3 world, float3 n, float3 d)
             AcceptAlpha(query.CandidateInstanceID(), query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(), InstanceCount))
             query.CommitNonOpaqueTriangleHit();
     }
-    return query.CommittedStatus() == COMMITTED_NOTHING;
+    return query.CommittedStatus() == COMMITTED_NOTHING && CharacterVisible(ray);
 }
 
 float SkyCapVisibility(float3 world, float3 n, float3 lobeDirection, float exponent, float floorVisibility)

@@ -427,7 +427,15 @@ void DX12NativeScene::PreShadowMaps()
 		return;
 	}
 	if (globals::features::dx12Control.IsFullNativeMode()) {
-		// Preparation-only staging: do not publish SCM ownership or dispatch either shadow shader.
+		// The static scene remains independent of moving character casters.
+		if (!backend) {
+			std::string reason;
+			backend = GraphicsBackend::Create(globals::d3d::device, globals::d3d::context, reason);
+		}
+		if (backend) {
+			if (!characterCasters) characterCasters = std::make_unique<DX12Native::NativeCharacterCasters>();
+			characterCasters->Publish(*backend, frame, grid->requested.front().scope);
+		}
 		if (acceleration.Start(globals::d3d::device, globals::d3d::context))
 			acceleration.Request(std::move(grid));
 		return;
@@ -843,7 +851,8 @@ void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 	// limited to the resident TLAS; spots require a valid live engine projection.
 	fullNativeDirect->Dispatch(*backend, material, directLights, runtimeAvailable || !prepared.empty() || directional.direction.w != 0.0f,
 		directional, uint32_t(viewport.x), uint32_t(viewport.y),
-		globals::features::foliageLighting.loaded && globals::features::foliageLighting.GetCommonBufferData().EnableFoliageScattering != 0);
+		globals::features::foliageLighting.loaded && globals::features::foliageLighting.GetCommonBufferData().EnableFoliageScattering != 0,
+		characterCasters ? characterCasters->Get(frame, material->scope) : nullptr);
 }
 
 void DX12NativeScene::ResetFullNativeEnvironment()
@@ -923,7 +932,8 @@ void DX12NativeScene::DispatchFullNativeIndirect()
 		cubes.loaded && !stamp.interior ? cubes.GetNativeEnvironment(true) : EnvironmentSource{},
 		ibl.loaded && !stamp.interior ? ibl.GetNativeSkyRadiance() : EnvironmentSource{});
 	fullNativeIndirect->Dispatch(*backend, material, fullNativeEnvironment->Get(),
-		uint32_t(IndirectDiffuse) | uint32_t(IndirectSpecular) | uint32_t(Transmission), settings.EnvIBLScale, settings.SkyIBLScale, ambient);
+		uint32_t(IndirectDiffuse) | uint32_t(IndirectSpecular) | uint32_t(Transmission), settings.EnvIBLScale, settings.SkyIBLScale, ambient,
+		characterCasters ? characterCasters->Get(frame, material->scope) : nullptr);
 	const auto& draws = fullNativeRasterDraws;
 	const bool matchingDraws = draws.finalized && draws.scene == material->scene && draws.stamp.frame == frame;
 	auto* tokenSource = matchingDraws && globals::game::renderer ?
@@ -1489,6 +1499,7 @@ void DX12NativeScene::ApplyPendingLoadingReset()
 		globals::features::upscaling.nativeComposite.ResetShadowHistory();
 		fullNativeRasterDraws = {};
 		if (projectedInputs) projectedInputs->Reset();
+		if (characterCasters) characterCasters->Reset();
 		ResetFullNativeEnvironment();
 		if (fullNativeDirect)
 			fullNativeDirect->Reset();
@@ -1506,6 +1517,7 @@ void DX12NativeScene::OnRuntimeDisabled()
 	projectedConstantPool = {};
 	projectedConstantDevice = nullptr;
 	projectedInputs.reset();
+	characterCasters.reset();
 	loadingResetPending.store(false, std::memory_order_release);
 	frameNativeModeID.store(UINT32_MAX, std::memory_order_release);
 	frameNativeMode.store(DX12::SCMNativeMode::Disabled, std::memory_order_release);
@@ -1649,6 +1661,12 @@ json DX12NativeScene::GetStatus() const
 			{ "primitiveTokens", draws.tokens.size() }, { "tokenBudgetRejected", draws.tokenBudgetRejected },
 			{ "exactPixelIdentity", false }, { "rasterReplacement", false } };
 		const auto frame = globals::game::graphicsState ? globals::game::graphicsState->GetFrameCount() : UINT32_MAX;
+		const auto characters = characterCasters ? characterCasters->Get(frame, draws.stamp.scope) : nullptr;
+		status["fullNativeCharacterCasters"] = { { "submitted", characters != nullptr },
+			{ "parts", characters ? characters->parts : 0u }, { "vertices", characters ? characters->vertices : 0u },
+			{ "triangles", characters ? characters->triangles : 0u },
+			{ "rejectedParts", characterCasters ? characterCasters->RejectedParts() : 0u },
+			{ "failure", characterCasters ? characterCasters->Failure() : "" } };
 		const auto reconstructed = globals::features::upscaling.nativeComposite.GetFullNativeReconstruction(frame);
 		const auto finalColor = globals::features::upscaling.nativeComposite.GetFullNativeFinalColor(frame);
 		status["fullNativeComposite"] = { { "reconstructed", reconstructed != nullptr },

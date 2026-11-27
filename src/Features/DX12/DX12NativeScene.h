@@ -5,6 +5,7 @@
 #include "DX12NativeLightWorker.h"
 #include "DX12NativeRasterCapture.h"
 #include "DX12ProjectedInputs.h"
+#include "DX12NativeCharacterCasters.h"
 #include "DX12NativeScreenProbe.h"
 #include "DX12NativeDirectLighting.h"
 #include "DX12NativeIndirectLighting.h"
@@ -125,6 +126,7 @@ private:
 	};
 	static constexpr uint32_t kMaxProjectedConstantSnapshots = DX12Native::kMaxProjectedDraws;
 	std::unique_ptr<DX12Native::ProjectedInputCapture> projectedInputs;
+	std::unique_ptr<DX12Native::NativeCharacterCasters> characterCasters;
 	std::array<ProjectedConstantSlot, kMaxProjectedConstantSnapshots> projectedConstantPool;
 	winrt::com_ptr<ID3D11Device> projectedConstantDevice;
 	struct ProjectedTextureObservation

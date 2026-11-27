@@ -27,7 +27,7 @@ namespace DX12Native
             uint32_t interior, colorEncoding;
             NativeAmbientParameters ambient;
             float4 positionAdjust;
-            uint32_t instanceCount, pad0 = 0, pad1 = 0, pad2 = 0;
+            uint32_t instanceCount, characterCastersEnabled = 0, pad1 = 0, pad2 = 0;
         };
         static_assert(sizeof(Constants) == 320);
         constexpr uint64_t kSHBytes = 48;
@@ -117,7 +117,7 @@ namespace DX12Native
             }
             if (slot.use_count() == 1 && GpuFenceRetired(slot->readyFence.get(), slot->readyValue)) {
                 if (release) { slot.reset(); continue; }
-                slot->material.reset(); slot->environment.reset();
+                slot->material.reset(); slot->environment.reset(); slot->characters.reset();
                 slot->baseSH.reset(); slot->skySH.reset();
             }
         }
@@ -153,7 +153,7 @@ namespace DX12Native
         ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1, 0, 0);
         ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 4, 0, 1);
         ranges[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NativePBR::kGpuTextureDescriptorCapacity, 10, 0, 4);
-        CD3DX12_ROOT_PARAMETER parameters[11];
+        CD3DX12_ROOT_PARAMETER parameters[12];
         parameters[0].InitAsShaderResourceView(0);
         parameters[1].InitAsDescriptorTable(3, ranges);
         parameters[2].InitAsShaderResourceView(2);
@@ -165,11 +165,12 @@ namespace DX12Native
         parameters[8].InitAsShaderResourceView(8);
         parameters[9].InitAsShaderResourceView(9);
         parameters[10].InitAsShaderResourceView(522);
+        parameters[11].InitAsShaderResourceView(523);
         winrt::com_ptr<ID3D12RootSignature> pr, ir;
         winrt::com_ptr<ID3D12PipelineState> pp, ip;
         winrt::com_ptr<ID3D12Fence> fence;
         BuildPipeline(device, Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativeDiffuseSH.dxil", 3, projectionParameters, pr, pp);
-        BuildPipeline(device, Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativeIndirectLighting.dxil", 11, parameters, ir, ip);
+        BuildPipeline(device, Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativeIndirectLighting.dxil", 12, parameters, ir, ip);
         Eval::Check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(fence.put())));
         owner = backend;
         projectionRoot = std::move(pr); projectionPipeline = std::move(pp);
@@ -178,7 +179,7 @@ namespace DX12Native
 
     void NativeIndirectLighting::Dispatch(const GraphicsBackend& backend,
         std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
-        std::shared_ptr<const EnvironmentFrame> environment, uint32_t enabled, float environmentScale, float skyScale, const NativeAmbientParameters& ambient)
+        std::shared_ptr<const EnvironmentFrame> environment, uint32_t enabled, float environmentScale, float skyScale, const NativeAmbientParameters& ambient, std::shared_ptr<const CharacterCasterFrame> characters)
     {
         CS_GPU_PASS("NativeLighting::Indirect");
         if (!material || !environment || !enabled) return;
@@ -257,6 +258,7 @@ namespace DX12Native
             }
             slot->material = std::move(material); slot->environment = std::move(environment);
             slot->frame = slot->material->frame; slot->available = available;
+            slot->characters = characters && characters->Submitted(slot->frame, slot->material->scope) ? std::move(characters) : nullptr;
             slot->skyVisibilityTraced = ambient.traceSkyVisibility != 0 && !slot->environment->stamp.interior;
             slot->root = root; slot->pipeline = pipeline;
             slot->projectionRoot = projectionRoot; slot->projectionPipeline = projectionPipeline;
@@ -300,7 +302,7 @@ namespace DX12Native
                 width, height, slot->material->rowPitch, slot->rowPitch, enabled, available, env.base->mipCount,
                 env.reflection ? env.reflection->mipCount : 0u, environmentScale, skyScale,
                 env.stamp.interior ? 1u : 0u, uint32_t(env.stamp.encoding), ambient,
-                raster.camera.CameraPosAdjust, slot->material->scene->materialEvaluation->instanceCount };
+                raster.camera.CameraPosAdjust, slot->material->scene->materialEvaluation->instanceCount, slot->characters ? 1u : 0u };
             void* mapped = nullptr; const D3D12_RANGE noRead{};
             Eval::Check(slot->constants->Map(0, &noRead, &mapped));
             std::memcpy(mapped, &constants, sizeof(constants)); slot->constants->Unmap(0, nullptr);
@@ -324,6 +326,7 @@ namespace DX12Native
             cmd->SetComputeRootShaderResourceView(8, scene.materialEvaluation->records->GetGPUVirtualAddress());
             cmd->SetComputeRootShaderResourceView(9, scene.materialEvaluation->bindings->GetGPUVirtualAddress());
             cmd->SetComputeRootShaderResourceView(10, slot->material->materialLobes->GetGPUVirtualAddress());
+            cmd->SetComputeRootShaderResourceView(11, slot->characters ? slot->characters->acceleration->GetGPUVirtualAddress() : scene.acceleration->GetGPUVirtualAddress());
             cmd->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
             Transition(cmd, slot->samples.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
             Transition(cmd, depth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
@@ -331,6 +334,7 @@ namespace DX12Native
             if (reflection != base) Transition(cmd, reflection, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
             Eval::Check(cmd->Close());
             Eval::Check(backend.commandQueue->Wait(slot->material->producerFence.get(), slot->material->producerValue));
+            if (slot->characters) Eval::Check(backend.commandQueue->Wait(slot->characters->readyFence.get(), slot->characters->readyValue));
             Eval::Check(backend.commandQueue->Wait(env.producerFence.get(), env.producerValue));
             ID3D12CommandList* lists[]{ cmd };
             backend.commandQueue->ExecuteCommandLists(1, lists); submitted = true;

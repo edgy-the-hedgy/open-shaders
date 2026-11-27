@@ -1,6 +1,7 @@
 #pragma once
 #include "DX12NativeEnvironment.h"
 #include "DX12NativeScreenProbe.h"
+#include "DX12NativeCharacterCasters.h"
 #include <array>
 #include <memory>
 #include <string>
@@ -34,6 +35,7 @@ namespace DX12Native
         static constexpr auto sampling = MaterialFrameContract::SamplingLayout::FullResolution;
         static constexpr auto reconstruction = MaterialFrameContract::ReconstructionState::Raw;
         std::shared_ptr<const NativeScreenProbe::MaterialFrame> material;
+        std::shared_ptr<const CharacterCasterFrame> characters;
         std::shared_ptr<const EnvironmentFrame> environment;
         std::shared_ptr<const EnvironmentIrradiance> baseSH, skySH;
         winrt::com_ptr<ID3D12Resource> samples, constants;
@@ -56,7 +58,8 @@ namespace DX12Native
         void Poll(uint32_t frame, bool release = false);
         void Reset();
         void Dispatch(const GraphicsBackend&, std::shared_ptr<const NativeScreenProbe::MaterialFrame>,
-            std::shared_ptr<const EnvironmentFrame>, uint32_t enabled, float environmentScale, float skyScale, const NativeAmbientParameters& ambient);
+            std::shared_ptr<const EnvironmentFrame>, uint32_t enabled, float environmentScale, float skyScale, const NativeAmbientParameters& ambient,
+            std::shared_ptr<const CharacterCasterFrame> characters = nullptr);
         std::shared_ptr<const IndirectLightingFrame> Get(uint32_t frame) const;
         const std::string& Failure() const { return failure; }
         uint64_t AllocationBytes() const;

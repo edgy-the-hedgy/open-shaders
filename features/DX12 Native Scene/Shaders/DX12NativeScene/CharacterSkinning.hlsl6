@@ -1,0 +1,25 @@
+// Skinning is performed on the native queue into world-space BLAS positions.
+ByteAddressBuffer BindVertices : register(t0);
+ByteAddressBuffer SkinPalette : register(t1);
+RWByteAddressBuffer Positions : register(u0);
+cbuffer Inputs : register(b0) { uint VertexCount; };
+
+[numthreads(64,1,1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= VertexCount) return;
+    uint base = id.x * 44;
+    float4 p = float4(asfloat(BindVertices.Load3(base)), 1.0);
+    uint4 bones = BindVertices.Load4(base + 12);
+    float4 weights = asfloat(BindVertices.Load4(base + 28));
+    float3 result = 0.0;
+    [unroll] for (uint i = 0; i < 4; ++i) {
+        if (weights[i] <= 0.0) continue;
+        uint offset = bones[i] * 48;
+        float4 x = asfloat(SkinPalette.Load4(offset));
+        float4 y = asfloat(SkinPalette.Load4(offset + 16));
+        float4 z = asfloat(SkinPalette.Load4(offset + 32));
+        result += weights[i] * float3(dot(x,p), dot(y,p), dot(z,p));
+    }
+    Positions.Store3(id.x * 12, asuint(result));
+}

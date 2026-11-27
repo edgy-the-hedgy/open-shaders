@@ -27,7 +27,7 @@ namespace DX12Native
 			float nearLightRadius;
 			uint32_t nearLightExclusion, instanceCount, parallaxShadows = 0;
 			float4 directionalDirection, directionalRadiance;
-			uint32_t foliageScatteringEnabled;
+			uint32_t foliageScatteringEnabled, characterCastersEnabled;
 		};
 		static_assert(sizeof(Constants) <= 256);
 
@@ -82,6 +82,7 @@ namespace DX12Native
 			}
 			if (slot.use_count() == 1) {
 				slot->material.reset();
+				slot->characters.reset();
 				slot->lights = nullptr;
 			}
 		}
@@ -105,7 +106,7 @@ namespace DX12Native
 		CD3DX12_DESCRIPTOR_RANGE ranges[2];
 		ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NativePBR::kGpuTextureDescriptorCapacity, 7, 0, 0);
 		ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 3, 0, NativePBR::kGpuTextureDescriptorCapacity);
-		CD3DX12_ROOT_PARAMETER parameters[11];
+		CD3DX12_ROOT_PARAMETER parameters[12];
 		parameters[0].InitAsShaderResourceView(0);
 		parameters[1].InitAsShaderResourceView(1);
 		parameters[2].InitAsShaderResourceView(2);
@@ -117,13 +118,14 @@ namespace DX12Native
 		parameters[8].InitAsShaderResourceView(6);
 		parameters[9].InitAsUnorderedAccessView(1);
 		parameters[10].InitAsShaderResourceView(519);
+		parameters[11].InitAsShaderResourceView(520);
 		std::array<CD3DX12_STATIC_SAMPLER_DESC, 4> samplers;
 		for (uint32_t mode = 0; mode < 4; ++mode)
 			samplers[mode] = CD3DX12_STATIC_SAMPLER_DESC(mode, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
 				(mode & 2) ? D3D12_TEXTURE_ADDRESS_MODE_WRAP : D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
 				(mode & 1) ? D3D12_TEXTURE_ADDRESS_MODE_WRAP : D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
 				D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
-		const CD3DX12_ROOT_SIGNATURE_DESC signature(11, parameters, UINT(samplers.size()), samplers.data());
+		const CD3DX12_ROOT_SIGNATURE_DESC signature(12, parameters, UINT(samplers.size()), samplers.data());
 		winrt::com_ptr<ID3DBlob> blob, errors;
 		winrt::com_ptr<ID3D12RootSignature> newRoot;
 		winrt::com_ptr<ID3D12PipelineState> newPipeline;
@@ -144,7 +146,7 @@ namespace DX12Native
 	void DirectLightingTrace::Dispatch(const GraphicsBackend& backend,
 		std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
 		std::span<const DirectPointLight> lights, bool inputsAvailable, const DirectDirectionalLight& directional,
-		uint32_t viewportWidth, uint32_t viewportHeight, bool foliageScatteringEnabled)
+		uint32_t viewportWidth, uint32_t viewportHeight, bool foliageScatteringEnabled, std::shared_ptr<const CharacterCasterFrame> characters)
 	{
 		CS_GPU_PASS("NativeLighting::Direct");
 		if (!material || (current && current->material == material)) return;
@@ -209,6 +211,7 @@ namespace DX12Native
 			slot->readyFence = completion; slot->readyValue = UINT64_MAX; slot->statsPending = false;
 			slot->root = root; slot->pipeline = pipeline;
 			slot->frame = material->frame; slot->material = std::move(material);
+			slot->characters = characters && characters->Submitted(slot->frame, slot->material->scope) ? std::move(characters) : nullptr;
 			const auto& raster = *slot->material->raster;
 			constexpr size_t kLightRecordVectors = 7;
 			std::vector<std::array<float, 4>> records;
@@ -234,7 +237,7 @@ namespace DX12Native
 			slot->lights = Eval::Table(device, records);
 			const Constants constants{ raster.camera.CameraProjInverse, raster.camera.CameraViewInverse,
 				raster.camera.CameraPosAdjust, width, height, slot->material->rowPitch, lightCount,
-				0.0f, 0u, slot->material->scene->materialEvaluation->instanceCount, slot->material->parallaxShadows ? 1u : 0u, directional.direction, directional.radiance, foliageScatteringEnabled ? 1u : 0u };
+				0.0f, 0u, slot->material->scene->materialEvaluation->instanceCount, slot->material->parallaxShadows ? 1u : 0u, directional.direction, directional.radiance, foliageScatteringEnabled ? 1u : 0u, slot->characters ? 1u : 0u };
 			slot->directionalIncluded = directional.direction.w != 0.0f;
 			WriteConstants(slot->camera.get(), constants);
 			auto* depthResource = raster.depth->resource.get();
@@ -254,6 +257,7 @@ namespace DX12Native
 			command->SetComputeRootShaderResourceView(8, evaluation.bindings->GetGPUVirtualAddress());
 			command->SetComputeRootUnorderedAccessView(9, slot->counters->GetGPUVirtualAddress());
 			command->SetComputeRootShaderResourceView(10, slot->material->materialLobes->GetGPUVirtualAddress());
+			command->SetComputeRootShaderResourceView(11, slot->characters ? slot->characters->acceleration->GetGPUVirtualAddress() : slot->material->scene->acceleration->GetGPUVirtualAddress());
 			if (!fresh) {
 				const auto counterStart = CD3DX12_RESOURCE_BARRIER::Transition(slot->counters.get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
 				command->ResourceBarrier(1, &counterStart);
@@ -278,6 +282,7 @@ namespace DX12Native
 			command->CopyBufferRegion(slot->readback.get(), 0, slot->counters.get(), 0, kCounterBytes);
 			Eval::Check(command->Close());
 			Eval::Check(backend.commandQueue->Wait(slot->material->producerFence.get(), slot->material->producerValue));
+			if (slot->characters) Eval::Check(backend.commandQueue->Wait(slot->characters->readyFence.get(), slot->characters->readyValue));
 			ID3D12CommandList* lists[]{ command };
 			backend.commandQueue->ExecuteCommandLists(1, lists);
 			submitted = true;
