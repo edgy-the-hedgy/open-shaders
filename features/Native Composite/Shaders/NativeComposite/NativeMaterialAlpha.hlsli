@@ -15,13 +15,17 @@ SamplerState ClampClamp : register(s0);
 SamplerState ClampWrap : register(s1);
 SamplerState WrapClamp : register(s2);
 SamplerState WrapWrap : register(s3);
-float4 Tex(uint index, float2 uv, uint mode)
+float4 TexLevel(uint index, float2 uv, uint mode, float mip)
 {
     uint slot = NonUniformResourceIndex(index);
-    if (mode == 0u) return Textures[slot].SampleLevel(ClampClamp, float3(uv,0), 0);
-    if (mode == 1u) return Textures[slot].SampleLevel(ClampWrap, float3(uv,0), 0);
-    if (mode == 2u) return Textures[slot].SampleLevel(WrapClamp, float3(uv,0), 0);
-    return Textures[slot].SampleLevel(WrapWrap, float3(uv,0), 0);
+    if (mode == 0u) return Textures[slot].SampleLevel(ClampClamp, float3(uv,0), mip);
+    if (mode == 1u) return Textures[slot].SampleLevel(ClampWrap, float3(uv,0), mip);
+    if (mode == 2u) return Textures[slot].SampleLevel(WrapClamp, float3(uv,0), mip);
+    return Textures[slot].SampleLevel(WrapWrap, float3(uv,0), mip);
+}
+float4 Tex(uint index, float2 uv, uint mode)
+{
+    return TexLevel(index, uv, mode, 0.0);
 }
 bool AcceptAlpha(uint instance,uint primitive,float2 bary, uint instanceCount)
 {
