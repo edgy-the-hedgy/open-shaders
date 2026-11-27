@@ -1,7 +1,7 @@
 #pragma once
 
 #include "DX12NativeSceneInputs.h"
-#include "DX12NativeMaterialEvaluation.h"
+#include "Features/NativePBR/MaterialResidency.h"
 #include "GraphicsBackend.h"
 #include "VideoMemoryBudget.h"
 
@@ -109,7 +109,7 @@ namespace DX12Native
 		std::unordered_map<uint64_t, std::shared_ptr<const BottomLevel>> bottoms;
 		std::shared_ptr<const SceneInputs> target;
 		std::shared_ptr<const TopLevel> published;
-		NativeMaterialEvaluation::TextureCache materialTextures;
+		NativePBR::MaterialResidency materialResidency;
 		uint64_t generation = 0, nextFence = 0;
 		uint64_t targetRevision = 0;
 		uint32_t targetScope = 0;

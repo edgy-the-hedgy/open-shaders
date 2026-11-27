@@ -699,10 +699,13 @@ void DX12NativeScene::DispatchFullNativeIndirect()
 			globals::features::upscaling.nativeComposite.ResetFullNative();
 		globals::features::nativeIBL.InvalidateGeneration();
 	}
-	const auto material = GetFullNativeMaterial(frame);
-	if (!backend || !material || material->scope != stamp.scope)
+	if (!backend)
 		return;
+	// Environment acquisition is independent of material evaluation readiness.
 	globals::features::nativeCubemaps.Capture(*backend);
+	const auto material = GetFullNativeMaterial(frame);
+	if (!material || material->scope != stamp.scope)
+		return;
 	globals::features::nativeIBL.Dispatch(*backend, material, globals::features::nativeCubemaps.Get(), stamp,
 		characterCasters ? characterCasters->Get(frame, material->scope) : nullptr);
 	const auto& draws = fullNativeRasterDraws;

@@ -364,7 +364,7 @@ namespace DX12Native
 				top->shadingFailure = error.what();
 			}
 			try {
-				top->materialEvaluation = NativeMaterialEvaluation::Prepare(device.get(), *target->materials, *target, materialTextures, a_build.materialUploads);
+				top->materialEvaluation = materialResidency.Prepare(device.get(), *target->materials, *target, a_build.materialUploads);
 				if (!top->materialEvaluation)
 					top->materialFailure = "Material allocation deferred or unavailable";
 			} catch (const std::exception& error) {
@@ -418,10 +418,7 @@ namespace DX12Native
 				if (build.bottom)
 					bottoms[build.bottom->shape->identity] = build.bottom;
 				if (build.top) {
-					if (build.top->materialEvaluation)
-						materialTextures = build.top->materialEvaluation->textures;
-					else
-						materialTextures.clear();
+					materialResidency.PublishCompleted(build.top->materialEvaluation);
 					published = build.top;
 				}
 			}
@@ -434,7 +431,7 @@ namespace DX12Native
 		++generation;
 		target.reset();
 		bottoms.clear();
-		materialTextures.clear();
+		materialResidency.Reset();
 		published.reset();
 		targetRevision = 0;
 		targetScope = 0;
