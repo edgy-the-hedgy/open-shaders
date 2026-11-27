@@ -5,6 +5,7 @@ static const uint NativeLightingStride = 24u;
 static const uint NativeMaterialLobeStride = 32u;
 static const uint SurfaceCoatReadyBinding = 1u << 13;
 static const uint SurfaceSubsurfaceReadyBinding = 1u << 14;
+static const uint SurfaceThinSurfaceReadyBinding = 1u << 15;
 struct NativeCoatSample { float4 normalRoughness; float4 colorStrength; float4 f0Colored; float4 subsurface; };
 float4 UnpackNativeLobeHalf4(uint2 v) { return f16tof32(uint4(v.x & 65535u, v.x >> 16, v.y & 65535u, v.y >> 16)); }
 NativeCoatSample ReadNativeCoat(ByteAddressBuffer lobes, uint offset)
@@ -20,6 +21,23 @@ bool HasNativeCoat(NativeCoatSample coat)
 {
     return coat.colorStrength.w > 0.0 && all(isfinite(coat.normalRoughness)) && all(isfinite(coat.colorStrength)) &&
         all(isfinite(coat.f0Colored)) && dot(coat.normalRoughness.xyz, coat.normalRoughness.xyz) > 1e-8;
+}
+// Coat and thin-surface modes are mutually exclusive in the authored material guide.
+// The thin variant reuses the coat fields for face normal, balance and specular controls.
+bool HasNativeThinSurface(NativeCoatSample material)
+{
+    return material.f0Colored.w == -1.0 && all(isfinite(material.normalRoughness)) &&
+        all(isfinite(material.f0Colored)) && all(isfinite(material.subsurface)) &&
+        dot(material.normalRoughness.xyz,material.normalRoughness.xyz)>1e-8;
+}
+void NativeThinAlbedos(float3 base, NativeCoatSample material, out float3 reflection, out float3 front, out float3 back)
+{
+    float opacity=saturate(material.subsurface.w);
+    float share=1.0-opacity;
+    float balance=saturate(material.normalRoughness.w);
+    reflection=saturate(base)*opacity;
+    front=saturate(material.subsurface.rgb*share*(1.0-balance));
+    back=saturate(material.subsurface.rgb*share*balance);
 }
 bool HasNativeSubsurface(NativeCoatSample material)
 {

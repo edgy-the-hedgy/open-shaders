@@ -423,6 +423,14 @@ namespace DX12Native
 					binding.flags |= MaterialFrameContract::kSubsurfaceReadyBinding;
 					capability.issues &= ~(NativePBR::ScreenPbrFeatures | NativePBR::ScreenFeatureTextures);
 				}
+				constexpr uint32_t thin = uint32_t(PBRFlags::ThinSurface);
+				constexpr uint32_t supportedThin = thin | uint32_t(PBRFlags::Subsurface);
+				const bool thinReady = (capability.activeFlags & thin) && !(capability.activeFlags & ~supportedThin) &&
+					(!authoredMap(NativePBR::TextureRole::Features0) || residentMap(NativePBR::TextureRole::Features0));
+				if (thinReady) {
+					binding.flags |= MaterialFrameContract::kThinSurfaceReadyBinding;
+					capability.issues &= ~(NativePBR::ScreenPbrFeatures | NativePBR::ScreenFeatureTextures);
+				}
 				const bool coatReady = (capability.activeFlags & coat) && !(capability.activeFlags & ~supportedCoat) &&
 					(!authoredMap(NativePBR::TextureRole::Features0) || residentMap(NativePBR::TextureRole::Features0)) &&
 					(!authoredMap(NativePBR::TextureRole::Features1) || residentMap(NativePBR::TextureRole::Features1)) &&

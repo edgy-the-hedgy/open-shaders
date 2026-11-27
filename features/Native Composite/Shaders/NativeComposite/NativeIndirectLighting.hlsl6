@@ -181,8 +181,21 @@ void main(uint3 id : SV_DispatchThreadID)
     float roughness = clamp(normal.w, 0.045, 1.0);
     NativeIndirect::LobeWeights lobes = NativeIndirect::EvaluateLobes(base.rgb, f0.rgb, f0.a,
         roughness, emissionAO.a, saturate(dot(n, view)));
-    float3 transmissionWeight=0.0;
-    if (HasNativeSubsurface(coat)) {
+    float3 transmissionWeight=0.0, backTransmissionWeight=0.0;
+    if (HasNativeThinSurface(coat)) {
+        float3 reflected,front,back;
+        float3 albedo=max(base.rgb,0.0)*(1.0-saturate(f0.a));
+        NativeThinAlbedos(albedo,coat,reflected,front,back);
+        float2 env=BRDF::EnvBRDF(roughness,saturate(abs(dot(n,view))));
+        float weight=saturate(coat.f0Colored.x);
+        float3 fresnel=saturate(f0.rgb*env.x+env.y)*weight;
+        float3 throughput=saturate(MultiBounceAO(saturate(albedo),saturate(emissionAO.a)))*(1.0-fresnel);
+        lobes.diffuse=reflected*throughput;
+        lobes.specular*=weight;
+        transmissionWeight=front*throughput;
+        backTransmissionWeight=back*throughput;
+    }
+    if (!HasNativeThinSurface(coat) && HasNativeSubsurface(coat)) {
         float2 env=BRDF::EnvBRDF(roughness,saturate(dot(n,view)));
         float3 reflected=saturate(f0.rgb*env.x+env.y);
         transmissionWeight=coat.subsurface.rgb*(1.0-saturate(coat.subsurface.w))*BRDF::Diffuse_Lambert()*(1.0-reflected);
@@ -214,8 +227,18 @@ void main(uint3 id : SV_DispatchThreadID)
         }
         float3 diffuseRadiance = radiance * (lobes.diffuse + coatDiffuseWeight);
         Lighting.Store2(outputOffset, PackOpaqueRadiance(diffuseRadiance, ContributionIndirectDiffuse));
-        if ((active & ContributionTransmission) != 0u)
-            Lighting.Store2(outputOffset+16u,PackOpaqueRadiance(radiance*transmissionWeight,base.a==SurfaceEvaluatedBase ? ContributionTransmission : 0u));
+        if ((active & ContributionTransmission) != 0u) {
+            float3 backRadiance=0.0;
+            if (HasNativeThinSurface(coat) && any(backTransmissionWeight>0.0)) {
+                backRadiance=EnvironmentIrradiance(-n);
+                float backVisibility=SkyCapVisibility(world,-n,-n,1.0,MinDiffuseSkyVisibility);
+                if (IBLEnabled!=0u && Interior==0u) {
+                    if (DALCMode==3u) backRadiance*=backVisibility;
+                    backRadiance+=SaturateColor(NativeIndirect::EvaluateIrradiance(asfloat(SkySH.Load4(0u)),asfloat(SkySH.Load4(16u)),asfloat(SkySH.Load4(32u)),-n),SkySaturation)*SkyScale*backVisibility;
+                } else if (Interior==0u) backRadiance*=backVisibility;
+            }
+            Lighting.Store2(outputOffset+16u,PackOpaqueRadiance(radiance*transmissionWeight+backRadiance*backTransmissionWeight,base.a==SurfaceEvaluatedBase ? ContributionTransmission : 0u));
+        }
     }
     if ((active & ContributionIndirectSpecular) != 0u && EnvironmentMipCount != 0u &&
         (Interior != 0u || ReflectionMipCount != 0u))

@@ -104,6 +104,25 @@ void AccumulateBRDF(float4 base, float4 f0, float3 n, float3 view, float3 l, flo
 {
     // Non-thin scattering follows Common/PBR.hlsli, with native DXR visibility.
     // Keep scattering separate from reflected diffuse.
+    if (HasNativeThinSurface(coat)) {
+        float3 albedo=max(base.rgb,0.0)*(1.0-saturate(f0.a));
+        float3 reflected,front,back;
+        NativeThinAlbedos(albedo,coat,reflected,front,back);
+        float weight=saturate(coat.f0Colored.x);
+        float2 env=BRDF::EnvBRDF(sqrt(sqrt(a2)),saturate(abs(dot(n,view))));
+        float3 kd=1.0-saturate(f0.rgb*env.x+env.y)*weight;
+        float signedCos=dot(n,l);
+        float backVisibility=1.0-saturate(4.0*dot(coat.normalRoughness.xyz,l));
+        diffuse+=reflected*saturate(signedCos)*incident*BRDF::Diffuse_Lambert()*kd;
+        transmission+=(front*saturate(signedCos)+saturate(albedo*(1.0-saturate(coat.subsurface.w))+back)*saturate(-signedCos)*backVisibility)*incident*BRDF::Diffuse_Lambert()*kd;
+        float3 halfDelta=view+l;
+        if (dot(halfDelta,halfDelta)>1e-8 && ndl>0.0) {
+            float3 h=normalize(halfDelta);
+            float roughness=sqrt(sqrt(a2));
+            specular+=weight*BRDF::D_GGX(roughness,saturate(dot(n,h)))*BRDF::Vis_SmithJoint(roughness,ndv,max(ndl,1e-4))*BRDF::F_Schlick(f0.rgb,saturate(dot(view,h)))*incident*ndl;
+        }
+        return;
+    }
     if (HasNativeSubsurface(coat)) {
         float thickness=saturate(coat.subsurface.w);
         float forwardScatter=exp2(saturate(-dot(view,l))*12.234-12.234);
@@ -197,10 +216,11 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
     if (DirectionalDirection.w != 0.0 && any(DirectionalRadiance.rgb > 0.0)) {
         float3 l = DirectionalDirection.xyz;
         float ndl = saturate(dot(n,l));
-        if (ndl > 0.0 || HasNativeSubsurface(coat) || (HasNativeCoat(coat) && dot(coat.normalRoughness.xyz,l)>0.0)) {
+        if (ndl > 0.0 || HasNativeThinSurface(coat) || HasNativeSubsurface(coat) || (HasNativeCoat(coat) && dot(coat.normalRoughness.xyz,l)>0.0)) {
             ++inReach;
             ++rays;
-            if (VisibleDirectional(world,dot(n,l)<0.0 ? -n : n,l)) {
+            float3 biasNormal=HasNativeThinSurface(coat) ? coat.normalRoughness.xyz : n;
+            if (VisibleDirectional(world,dot(biasNormal,l)<0.0 ? -biasNormal : biasNormal,l)) {
                 ++visible;
                 AccumulateBRDF(base, f0, n, view, l, ndl, ndv, a2, max(DirectionalRadiance.rgb,0.0), coat, diffuse, specular, transmission);
             }
@@ -216,7 +236,7 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
         float distance = sqrt(d2);
         float3 l = delta/distance;
         float ndl = saturate(dot(n,l));
-        if (ndl <= 0 && !HasNativeSubsurface(coat) && !(HasNativeCoat(coat) && dot(coat.normalRoughness.xyz,l)>0.0)) continue;
+        if (ndl <= 0 && !HasNativeThinSurface(coat) && !HasNativeSubsurface(coat) && !(HasNativeCoat(coat) && dot(coat.normalRoughness.xyz,l)>0.0)) continue;
         float relativeDistance = distance / light.w;
         float fade = saturate((light.w-distance)*max(params.y,0.0));
         float attenuation = params.z != 0.0 ?
@@ -226,7 +246,8 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
         if (attenuation <= 0.0 || !isfinite(attenuation) || !any(color.rgb > 0.0)) continue;
         ++inReach;
         bool traced;
-        bool unoccluded = Visible(world,dot(n,l)<0.0 ? -n : n,l,distance,traced);
+        float3 biasNormal=HasNativeThinSurface(coat) ? coat.normalRoughness.xyz : n;
+        bool unoccluded = Visible(world,dot(biasNormal,l)<0.0 ? -biasNormal : biasNormal,l,distance,traced);
         if (traced) ++rays;
         if (!unoccluded) continue;
         ++visible;

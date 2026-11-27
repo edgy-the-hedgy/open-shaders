@@ -94,6 +94,31 @@ Sample EvaluateMaterial(uint instance, uint primitive, float3 weights, out Nativ
             thickness *= saturate(feature0.a);
         }
         if (all(isfinite(scatterColor)) && isfinite(thickness)) coat.subsurface=float4(scatterColor,thickness);
+        else result.color.a=SurfaceFeatureLimited;
+    }
+    if ((binding.flags & SurfaceThinSurfaceReadyBinding) != 0u) {
+        float3 scatterColor=0.0;
+        float thickness=1.0;
+        if ((material.properties.x & 1u)!=0u) {
+            scatterColor=SrgbToLinear(max(material.subsurfaceColor.rgb,0.0));
+            thickness=saturate(material.coat.w);
+            if (material.textures[2].z!=0xffffffffu) {
+                float4 feature0=Tex(material.textures[2].z,uv,material.properties.z);
+                scatterColor*=SrgbToLinear(max(feature0.rgb,0.0));
+                thickness*=saturate(feature0.a);
+            } else scatterColor*=base*(1.0-metallic);
+        }
+        float3 p0=asfloat(Geometry.Load3(offsets.x+ix.x*counts.z));
+        float3 p1=asfloat(Geometry.Load3(offsets.x+ix.y*counts.z));
+        float3 p2=asfloat(Geometry.Load3(offsets.x+ix.z*counts.z));
+        float3 face=cross(p1-p0,p2-p0);
+        if (!all(isfinite(face)) || dot(face,face)<1e-8 || !all(isfinite(scatterColor)) ||
+            !isfinite(thickness) || !isfinite(material.surface.y) || !all(isfinite(material.thinSurface.xyz))) {
+            result.color.a=SurfaceFeatureLimited; return result;
+        }
+        coat.normalRoughness=float4(normalize(face),saturate(material.surface.y));
+        coat.f0Colored=float4(saturate(material.thinSurface.xy),max(material.thinSurface.z,0.0),-1.0);
+        coat.subsurface=float4(scatterColor,thickness);
     }
     if ((binding.flags & SurfaceCoatReadyBinding) != 0u) {
         // Match the legacy feature0 color/strength and feature1 roughness/normal semantics.
@@ -213,6 +238,18 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out NativeCoatSam
         float3 worldNormal = mul(result.normal.xyz, (float3x3)query.CommittedWorldToObject3x4());
         if (all(isfinite(worldNormal)) && dot(worldNormal,worldNormal)>1e-8) {
             result.normal.xyz = normalize(worldNormal);
+            if (HasNativeThinSurface(coat)) {
+                float3 face=mul(coat.normalRoughness.xyz,(float3x3)query.CommittedWorldToObject3x4());
+                if (!all(isfinite(face)) || dot(face,face)<1e-8) { coat=(NativeCoatSample)0; result.color.a=SurfaceFeatureLimited; }
+                else {
+                    face=normalize(face);
+                    coat.normalRoughness.xyz=dot(face,delta)>0.0 ? -face : face;
+                    bool front=query.CommittedTriangleFrontFace();
+                    coat.f0Colored.x=front ? coat.f0Colored.x : coat.f0Colored.y;
+                    result.normal.w=clamp(result.normal.w*(front ? 1.0 : coat.f0Colored.z),0.045,1.0);
+                    if (dot(result.normal.xyz,delta)>0.0) result.normal.xyz=-result.normal.xyz;
+                }
+            }
             if (HasNativeCoat(coat)) {
                 float3 worldCoat = mul(coat.normalRoughness.xyz,(float3x3)query.CommittedWorldToObject3x4());
                 if (all(isfinite(worldCoat)) && dot(worldCoat,worldCoat)>1e-8) coat.normalRoughness.xyz=normalize(worldCoat);
