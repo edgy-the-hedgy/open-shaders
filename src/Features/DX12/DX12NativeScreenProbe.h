@@ -452,15 +452,8 @@ namespace DX12Native
 				const auto begin=CD3DX12_RESOURCE_BARRIER::Transition(slot->raster->depth->resource.get(),
 					D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 				command->ResourceBarrier(1,&begin);
-				std::vector<D3D12_RESOURCE_BARRIER> projectionBarriers;
-				if (slot->projection) {
-					projectionBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(slot->projection->records->resource.get(),
-						D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
-					for (const auto& texture:slot->projection->textures)
-						projectionBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(texture.shared->resource.get(),
-							D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
-					command->ResourceBarrier(UINT(projectionBarriers.size()),projectionBarriers.data());
-				}
+				TransitionProjectionViews(command, slot->projection.get(),
+					D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 				std::array<D3D12_RESOURCE_BARRIER,2> rawBarriers{};
 				if (slot->rawInputs) {
 					rawBarriers={CD3DX12_RESOURCE_BARRIER::Transition(slot->rawInputs->planes->resource.get(),
@@ -481,10 +474,8 @@ namespace DX12Native
 					for (auto& barrier:rawBarriers) std::swap(barrier.Transition.StateBefore,barrier.Transition.StateAfter);
 					command->ResourceBarrier(UINT(rawBarriers.size()),rawBarriers.data());
 				}
-				if (!projectionBarriers.empty()) {
-					for (auto& barrier:projectionBarriers) std::swap(barrier.Transition.StateBefore,barrier.Transition.StateAfter);
-					command->ResourceBarrier(UINT(projectionBarriers.size()),projectionBarriers.data());
-				}
+				TransitionProjectionViews(command, slot->projection.get(),
+					D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
 				const std::array end{
 					CD3DX12_RESOURCE_BARRIER::Transition(slot->output->resource.get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COMMON),
 					CD3DX12_RESOURCE_BARRIER::Transition(slot->output->rayIdentity.get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COMMON),
