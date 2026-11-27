@@ -45,6 +45,8 @@ namespace DX12Native
 		uint64_t revision = 0, textureBytes = 0;
 		uint32_t instanceCount = 0, residentRecipes = 0, failedTextures = 0, reusedTextures = 0, archiveTextures = 0;
 		uint32_t baseOnlyBindings = 0;
+		// CPU admission mirror, immutable with the uploaded draw-binding table.
+		std::vector<uint8_t> exactBaseCandidates;
 		NativePBR::ScreenSurfaceTally surfaceCapabilities;
 		uint32_t specializedRequested = 0, specializedResident = 0, sharedTextureReferences = 0;
 		uint32_t specializedBlockedByBase = 0;
@@ -416,6 +418,12 @@ namespace DX12Native
 				if (const auto normal = result->textures.find(normalPath); normal != result->textures.end() &&
 					normal->second->format == DXGI_FORMAT_BC5_UNORM) binding.flags |= 1u << 8;
 				if (flags & (uint64_t(1) << 12)) binding.flags |= 1u << 9;
+			}
+			result->exactBaseCandidates.resize(bindingTable.size());
+			for (size_t i = 0; i < bindingTable.size(); ++i) {
+				const auto& binding = bindingTable[i];
+				result->exactBaseCandidates[i] = binding.materialIndex != UINT32_MAX &&
+					!(binding.flags & (MaterialFrameContract::kBaseOnlyBinding | MaterialFrameContract::kMissingBaseTexturesBinding));
 			}
 			result->records = Table(device, recordTable);
 			result->bindings = Table(device, bindingTable);

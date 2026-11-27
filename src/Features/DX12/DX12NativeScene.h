@@ -110,6 +110,18 @@ private:
 	DX12Native::RasterCapture raster;
 	std::unique_ptr<DX12Native::NativeScreenProbe> fullNativeMaterial;  // Allocated only in Full Native.
 	void DispatchFullNativeMaterial();
+	void ObserveFullNativeRasterDraw(RE::BSGeometry& geometry);
+	void FinishFullNativeRasterDraws();
+	// Render-thread-only observations, deliberately separate from SCM ownership.
+	struct FullNativeRasterDrawState
+	{
+		std::shared_ptr<const DX12Native::TopLevel> scene;
+		DX12Native::MaterialFrameContract::RasterIdentityStamp stamp{};
+		std::vector<uint8_t> seen;
+		uint32_t draws = 0, candidates = 0, uniqueInstances = 0, ambiguous = 0, rejected = 0;
+		bool finalized = false;
+	};
+	FullNativeRasterDrawState fullNativeRasterDraws;
 	std::unique_ptr<DX12Native::DirectLightingTrace> fullNativeDirect;
 	std::unique_ptr<DX12Native::NativeEnvironment> fullNativeEnvironment;
 	std::unique_ptr<DX12Native::NativeIndirectLighting> fullNativeIndirect;

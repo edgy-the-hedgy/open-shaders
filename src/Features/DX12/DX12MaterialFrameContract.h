@@ -28,6 +28,48 @@ namespace DX12Native::MaterialFrameContract
 		return status == SurfaceStatus::EvaluatedBase || status == SurfaceStatus::FeatureLimited;
 	}
 
+	/** @brief Raster and ray-hit identities must refer to the same immutable generation.
+	 * A draw observation is not a per-pixel stamp. Zero/invalid ordinals never confer ownership.
+	 */
+	struct RasterIdentityStamp
+	{
+		uint32_t frame = 0, scope = 0;
+		uint64_t geometryRevision = 0, materialRevision = 0;
+		constexpr bool operator==(const RasterIdentityStamp&) const = default;
+	};
+
+	struct RasterPixelIdentity
+	{
+		uint32_t instance = UINT32_MAX, primitive = UINT32_MAX;
+	};
+
+	constexpr bool MatchesRasterPixel(const RasterIdentityStamp& raster, const RasterIdentityStamp& ray,
+		RasterPixelIdentity pixel, RasterPixelIdentity hit, uint32_t instanceCount, uint32_t primitiveCount)
+	{
+		return raster.scope && raster.geometryRevision && raster.materialRevision && raster == ray &&
+			pixel.instance < instanceCount && pixel.primitive < primitiveCount &&
+			pixel.instance == hit.instance && pixel.primitive == hit.primitive;
+	}
+
+	/** @brief A unique attached draw match; duplicate matches are ambiguous even if their geometry is equivalent. */
+	struct UniqueRasterCandidate
+	{
+		uint32_t ordinal = UINT32_MAX;
+		bool ambiguous = false;
+		constexpr void Observe(uint32_t value)
+		{
+			if (value == UINT32_MAX || ambiguous)
+				return;
+			if (ordinal == UINT32_MAX)
+				ordinal = value;
+			else if (ordinal != value) {
+				ordinal = UINT32_MAX;
+				ambiguous = true;
+			}
+		}
+		constexpr bool Valid() const { return !ambiguous && ordinal != UINT32_MAX; }
+	};
+
 	enum class SurfaceCorrespondence { DepthOnly, ExactRasterIdentity };
 	enum class LightingCoverage { SelectedPointLights, CompleteRasterReplacement, EnvironmentOnly, SelectedDirectLights };
 

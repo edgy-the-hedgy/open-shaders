@@ -186,3 +186,38 @@ TEST_CASE("Full Native stationary history requires uninterrupted coherent public
 	now.materialRevision++;
 	REQUIRE_FALSE(now.CanReuse(previous));
 }
+
+TEST_CASE("Raster identity requires exact frame, generation, instance and primitive", "[dx12][materials]")
+{
+	RasterIdentityStamp stamp{ 42, 7, 11, 13 };
+	const RasterPixelIdentity pixel{ 2, 5 };
+	REQUIRE(MatchesRasterPixel(stamp, stamp, pixel, pixel, 3, 6));
+	REQUIRE_FALSE(MatchesRasterPixel(stamp, stamp, {}, pixel, 3, 6));
+	REQUIRE_FALSE(MatchesRasterPixel(stamp, stamp, pixel, { 1, 5 }, 3, 6));
+	REQUIRE_FALSE(MatchesRasterPixel(stamp, stamp, pixel, { 2, 4 }, 3, 6));
+	REQUIRE_FALSE(MatchesRasterPixel(stamp, stamp, pixel, pixel, 2, 6));
+	REQUIRE_FALSE(MatchesRasterPixel(stamp, stamp, pixel, pixel, 3, 5));
+	auto other = stamp;
+	++other.frame;
+	REQUIRE_FALSE(MatchesRasterPixel(stamp, other, pixel, pixel, 3, 6));
+	other = stamp;
+	++other.materialRevision;
+	REQUIRE_FALSE(MatchesRasterPixel(stamp, other, pixel, pixel, 3, 6));
+	other = stamp;
+	other.scope = 0;
+	REQUIRE_FALSE(MatchesRasterPixel(other, other, pixel, pixel, 3, 6));
+}
+
+TEST_CASE("Duplicate native draw candidates cannot claim a unique instance ordinal", "[dx12][materials]")
+{
+	UniqueRasterCandidate match;
+	REQUIRE_FALSE(match.Valid());
+	match.Observe(3);
+	REQUIRE(match.Valid());
+	match.Observe(3);
+	REQUIRE(match.Valid());
+	match.Observe(4);
+	REQUIRE_FALSE(match.Valid());
+	match.Observe(3);
+	REQUIRE_FALSE(match.Valid());
+}

@@ -12,6 +12,7 @@
 #include "DX12Control.h"
 #include "DX12Resources.h"
 #include "Globals.h"
+#include "Deferred.h"
 #include "GpuPass.h"
 #include "RE/M/MainMenu.h"
 #include "RE/T/TESObjectCELL.h"
@@ -869,6 +870,7 @@ void DX12NativeScene::DispatchFullNativeIndirect()
 void DX12NativeScene::OnOpaqueRasterReady()
 {
 	if (globals::features::dx12Control.WantsMaterialPreparation()) {
+		FinishFullNativeRasterDraws();
 		DispatchFullNativeMaterial();
 		DispatchFullNativeIndirect();
 		return;
@@ -989,8 +991,98 @@ void DX12NativeScene::OnOpaqueRasterReady()
 	shadows.Dispatch(*backend, raster.Get(frame), built, submittedLights, frame, controls);
 }
 
+void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
+{
+	using namespace DX12Native::MaterialFrameContract;
+	if (!globals::deferred || !globals::deferred->deferredPass || !globals::game::graphicsState ||
+		!globals::state || globals::state->isMapMenuOpen || globals::features::dx12Resources.IsLoading() ||
+		(globals::state->permutationData.ExtraShaderDescriptor &
+			static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
+		return;
+	const auto frame = globals::game::graphicsState->GetFrameCount();
+	const auto scene = acceleration.GetScene();
+	const auto grid = globals::features::dx12Resources.GetGrid();
+	if (!scene || !scene->inputs || !scene->materialEvaluation || !scene->shadingGeometry ||
+		!grid || grid->requested.empty() || scene->scope != grid->requested.front().scope ||
+		scene->geometryRevision != grid->geometryRevision)
+		return;
+	auto& draws = fullNativeRasterDraws;
+	const RasterIdentityStamp stamp{ frame, scene->scope, scene->geometryRevision, scene->materialEvaluation->revision };
+	if (draws.stamp.frame != frame || !draws.scene) {
+		draws = {};
+		draws.scene = scene;
+		draws.stamp = stamp;
+		draws.seen.resize(scene->inputs->geometry.size());
+	}
+	// Never merge observations across scene generations in the same frame.
+	if (draws.finalized || draws.scene != scene || draws.stamp != stamp)
+		return;
+	++draws.draws;
+	const auto* tri = geometry.AsTriShape();
+	const auto& rt = geometry.GetGeometryRuntimeData();
+	if (!tri || !rt.rendererData || rt.skinInstance || rt.alphaProperty || geometry.AsDynamicTriShape() ||
+		!rt.shaderProperty || rt.shaderProperty->GetRTTI() != globals::rtti::BSLightingShaderPropertyRTTI.get()) {
+		++draws.rejected;
+		return;
+	}
+	const auto counts = tri->GetTrishapeRuntimeData();
+	const DX12::CasterSource live{ reinterpret_cast<uintptr_t>(&geometry),
+		reinterpret_cast<uintptr_t>(rt.rendererData->rawVertexData), reinterpret_cast<uintptr_t>(rt.rendererData->rawIndexData),
+		counts.vertexCount, uint32_t(counts.triangleCount) * 3u, rt.vertexDesc.GetSize(), 0 };
+	std::array<float, 12> transform{};
+	for (uint32_t row = 0; row < 3; ++row)
+		for (uint32_t col = 0; col < 3; ++col)
+			transform[4 * row + col] = geometry.world.rotate.entry[row][col] * geometry.world.scale;
+	transform[3] = geometry.world.translate.x;
+	transform[7] = geometry.world.translate.y;
+	transform[11] = geometry.world.translate.z;
+	UniqueRasterCandidate match;
+	const auto [first, last] = scene->inputs->casterSources.equal_range(live.geometry);
+	for (auto it = first; it != last; ++it) {
+		const auto ordinal = it->second;
+		if (ordinal >= scene->inputs->geometry.size() || ordinal >= UINT32_MAX)
+			continue;
+		const auto& shape = scene->inputs->geometry[ordinal];
+		if (shape && DX12::SameCasterSource(shape->casterSource, live, shape->transform, transform))
+			match.Observe(uint32_t(ordinal));
+	}
+	const auto& eligible = scene->materialEvaluation->exactBaseCandidates;
+	if (!match.Valid() || match.ordinal >= eligible.size() || !eligible[match.ordinal]) {
+		if (match.ambiguous)
+			++draws.ambiguous;
+		else
+			++draws.rejected;
+		return;
+	}
+	++draws.candidates;
+	if (!draws.seen[match.ordinal]) {
+		draws.seen[match.ordinal] = 1;
+		++draws.uniqueInstances;
+	}
+	// This is draw admission only. The raster winner/primitive still needs a
+	// dedicated per-pixel producer before any replacement can be allowed.
+}
+
+void DX12NativeScene::FinishFullNativeRasterDraws()
+{
+	if (!globals::game::graphicsState)
+		return;
+	auto& draws = fullNativeRasterDraws;
+	if (draws.stamp.frame != globals::game::graphicsState->GetFrameCount() ||
+		draws.scene != acceleration.GetScene()) {
+		draws = {};
+		return;
+	}
+	draws.finalized = true;
+}
+
 std::function<void()> DX12NativeScene::OnRenderPassBegin(const RE::BSRenderPass* pass)
 {
+	if (loaded && !globals::game::isVR && globals::features::dx12Control.WantsMaterialPreparation()) {
+		if (pass && pass->geometry)
+			ObserveFullNativeRasterDraw(*pass->geometry);
+		return nullptr;
+	}
 	// Observe visible static geometry already drawn by the existing opaque
 	// render path. This does not change render-pass state or DX11 draw behavior.
 	if (!loaded || !globals::features::dx12Control.IsActive() || globals::game::isVR ||
@@ -1099,6 +1191,7 @@ void DX12NativeScene::ApplyPendingLoadingReset()
 			ResetFullLightInventory();
 		}
 		globals::features::upscaling.nativeComposite.ResetShadowHistory();
+		fullNativeRasterDraws = {};
 		ResetFullNativeEnvironment();
 		if (fullNativeDirect)
 			fullNativeDirect->Reset();
@@ -1130,6 +1223,7 @@ void DX12NativeScene::OnRuntimeDisabled()
 		ResetFullLightInventory();
 	}
 	globals::features::upscaling.nativeComposite.ResetShadowHistory();
+	fullNativeRasterDraws = {};
 	ResetFullNativeEnvironment();
 	fullNativeIndirect.reset();
 	fullNativeEnvironment.reset();
@@ -1214,6 +1308,14 @@ json DX12NativeScene::GetStatus() const
 			{ "triangles", scene->inputs->triangles } };
 	} else {
 		status["tlas"] = { { "published", false } };
+	}
+	if (globals::features::dx12Control.WantsMaterialPreparation()) {
+		const auto& draws = fullNativeRasterDraws;
+		status["fullNativeRasterAdmission"] = { { "frame", draws.stamp.frame }, { "scope", draws.stamp.scope },
+			{ "geometryRevision", draws.stamp.geometryRevision }, { "materialRevision", draws.stamp.materialRevision },
+			{ "draws", draws.draws }, { "candidateDraws", draws.candidates }, { "uniqueInstances", draws.uniqueInstances },
+			{ "ambiguousDraws", draws.ambiguous }, { "rejectedDraws", draws.rejected }, { "finalized", draws.finalized },
+			{ "exactPixelIdentity", false }, { "rasterReplacement", false } };
 	}
 	status["ownership"] = { { "granted", ownershipGranted.load(std::memory_order_relaxed) },
 		{ "coveredCasterChecks", coveredCasterChecks.load(std::memory_order_relaxed) },
