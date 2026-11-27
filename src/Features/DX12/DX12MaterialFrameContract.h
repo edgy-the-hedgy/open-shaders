@@ -268,6 +268,13 @@ namespace DX12Native::MaterialFrameContract
 		return { x * float(width) * 0.5f, -y * float(height) * 0.5f, width != 0 && height != 0 };
 	}
 
+	// Engine motion excludes jitter; history lookup must add the previous
+	// raster sample offset minus the current raster sample offset.
+	constexpr PixelJitter HistoryJitterDelta(PixelJitter current, PixelJitter previous)
+	{
+		return { previous.x - current.x, previous.y - current.y, current.valid && previous.valid };
+	}
+
 	struct TemporalIdentity
 	{
 		uint32_t nativeFrame = 0, pluginFrame = 0, width = 0, height = 0, scope = 0;

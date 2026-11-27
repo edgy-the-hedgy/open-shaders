@@ -383,3 +383,16 @@ TEST_CASE("Full Native sparse lighting matches RT Shadows dispatch parity at odd
 	REQUIRE(ShadowReconstructionRadius(kShadowQualityQuality) == 1u);
 	REQUIRE(ShadowReconstructionRadius(kShadowQualityPerformance) == 2u);
 }
+
+TEST_CASE("Native temporal lookup adds raster jitter delta once", "[dx12][materials]")
+{
+	const auto current = JitterFromClipOffset(0.5f / 960.0f, -0.5f / 540.0f, 1920, 1080);
+	const auto previous = JitterFromClipOffset(-0.25f / 960.0f, 0.25f / 540.0f, 1920, 1080);
+	const auto delta = HistoryJitterDelta(current, previous);
+	REQUIRE(delta.valid);
+	REQUIRE(delta.x > -0.751f);
+	REQUIRE(delta.x < -0.749f);
+	REQUIRE(delta.y > -0.751f);
+	REQUIRE(delta.y < -0.749f);
+	REQUIRE_FALSE(HistoryJitterDelta({}, previous).valid);
+}

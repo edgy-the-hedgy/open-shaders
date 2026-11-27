@@ -2431,6 +2431,16 @@ void Upscaling::ConfigureUpscaling(RE::BSGraphics::State* a_viewport)
 
 	dynamicResolutionWidthRatio = resolutionScale.x;
 	dynamicResolutionHeightRatio = resolutionScale.y;
+	// Snapshot the actual raster projection offset before PostDisplay restores
+	// the engine's original projection for UI. Use pixel-space +right/+down.
+	if (globals::features::dx12Control.UsesExclusiveMaterials() && !globals::game::isVR) {
+		nativeRasterJitterFrame = state->frameCount;
+		nativeRasterJitterWidth = uint32_t(screenWidth * resolutionScale.x + 0.5f);
+		nativeRasterJitterHeight = uint32_t(screenHeight * resolutionScale.y + 0.5f);
+		nativeRasterJitter = DX12Native::MaterialFrameContract::JitterFromClipOffset(
+			a_viewport->projectionPosScaleX, a_viewport->projectionPosScaleY, nativeRasterJitterWidth, nativeRasterJitterHeight);
+		nativeRasterJitter.valid = nativeRasterJitter.valid && std::isfinite(nativeRasterJitter.x) && std::isfinite(nativeRasterJitter.y);
+	}
 
 	// Disable dynamic resolution unless the game explicitly enables it
 	if (!globals::game::isVR)
@@ -3125,7 +3135,9 @@ void Upscaling::PublishNativeFrameParameters(uint32_t width, uint32_t height)
 	publication->displayWidth = uint32_t(globals::state->screenSize.x);
 	publication->displayHeight = uint32_t(globals::state->screenSize.y);
 	publication->color = nativeCompositeFrame;
-	publication->jitterX = -jitter.x; publication->jitterY = -jitter.y;
+	const auto rasterJitter = GetNativeRasterJitter(publication->frame, width, height);
+	publication->jitterX = rasterJitter.valid ? rasterJitter.x : -jitter.x;
+	publication->jitterY = rasterJitter.valid ? rasterJitter.y : -jitter.y;
 	publication->cameraNear = *globals::game::cameraNear; publication->cameraFar = *globals::game::cameraFar;
 	publication->cameraFov = Util::GetVerticalFOVRad(); publication->frameTimeMs = *globals::game::deltaTime * 1000.f;
 	publication->generationFrameTimeMs = RE::GetSecondsSinceLastFrame() * 1000.f;

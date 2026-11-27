@@ -23,7 +23,8 @@ namespace DX12Native
 		}
 	}
 
-	void RasterCapture::Capture(const GraphicsBackend& a_backend, ID3D11ShaderResourceView* a_depth, const globals::FrameBuffer* a_camera, uint32_t a_frame)
+	void RasterCapture::Capture(const GraphicsBackend& a_backend, ID3D11ShaderResourceView* a_depth, const globals::FrameBuffer* a_camera, uint32_t a_frame,
+		ID3D11Texture2D* motion, MaterialFrameContract::PixelJitter jitter)
 	{
 		CS_GPU_PASS("DX12NativeScene::CaptureOpaqueRaster");
 		current.reset();
@@ -92,6 +93,8 @@ namespace DX12Native
 					if (tracked > UINT64_MAX - retained->allocationBytes)
 						throw std::runtime_error("Raster depth tracked size overflow");
 					tracked += retained->allocationBytes;
+					if (tracked > UINT64_MAX - retained->motionBytes) throw std::runtime_error("Raster motion tracked size overflow");
+					tracked += retained->motionBytes;
 				}
 				const uint64_t allowance = videoBudget.Query(backend.d3d12Device.get(), tracked).effectiveBytes;
 				if (allocation.SizeInBytes > allowance || tracked > allowance - allocation.SizeInBytes)
@@ -125,6 +128,37 @@ namespace DX12Native
 			auto* read = priorRead.get();
 			context->CSSetShaderResources(0, 1, &read);
 			context->CSSetShader(priorShader.get(), nullptr, 0);
+			// Optional opaque motion guide shares the same submission/fence as depth.
+			// Its format is preserved, and no staging readback is introduced.
+			slot->jitter = jitter;
+			slot->motionValid = false;
+			if (motion) {
+				try {
+					D3D11_TEXTURE2D_DESC desc{};
+					motion->GetDesc(&desc);
+					const bool supported = desc.Format == DXGI_FORMAT_R16G16_FLOAT || desc.Format == DXGI_FORMAT_R32G32_FLOAT ||
+						desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT || desc.Format == DXGI_FORMAT_R32G32B32A32_FLOAT;
+					if (supported && desc.Width == width && desc.Height == height && desc.MipLevels == 1 &&
+						desc.ArraySize == 1 && desc.SampleDesc.Count == 1) {
+						const auto existing = slot->motion ? slot->motion->resource->GetDesc() : D3D12_RESOURCE_DESC{};
+						if (!slot->motion || existing.Format != desc.Format || existing.Width != width || existing.Height != height) {
+							const auto allocationDesc = CD3DX12_RESOURCE_DESC::Tex2D(desc.Format, width, height);
+							const auto bytes = backend.d3d12Device->GetResourceAllocationInfo(0, 1, &allocationDesc).SizeInBytes;
+							uint64_t tracked = 0;
+							for (const auto& retained : slots)
+								if (retained) tracked += retained->allocationBytes + retained->motionBytes;
+							if (!bytes || bytes == UINT64_MAX || bytes > videoBudget.Query(backend.d3d12Device.get(), tracked).effectiveBytes)
+								throw std::runtime_error("Raster motion allocation deferred");
+							desc.Usage = D3D11_USAGE_DEFAULT; desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+							desc.CPUAccessFlags = desc.MiscFlags = 0;
+							slot->motion = std::make_unique<WrappedResource>(desc, backend.d3d11Device.get(), backend.d3d12Device.get(), "DX12NativeScene::RasterMotion");
+							slot->motionBytes = bytes;
+						}
+						context->CopyResource(slot->motion->resource11, motion);
+						slot->motionValid = true;
+					}
+				} catch (...) { slot->motionValid = false; }
+			}
 			const auto ready = producer.Next();
 			DX::ThrowIfFailed(backend.d3d11Context->Signal(producer.fence11.get(), ready));
 			// A failed DX12 queue Wait must not strand a successfully signaled frame.

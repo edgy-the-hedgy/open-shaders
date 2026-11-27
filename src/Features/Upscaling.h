@@ -56,6 +56,13 @@ public:
 	};
 
 	float2 jitter = { 0, 0 };
+	DX12Native::MaterialFrameContract::PixelJitter nativeRasterJitter{};
+	uint32_t nativeRasterJitterFrame = UINT32_MAX, nativeRasterJitterWidth = 0, nativeRasterJitterHeight = 0;
+	DX12Native::MaterialFrameContract::PixelJitter GetNativeRasterJitter(uint32_t pluginFrame, uint32_t width, uint32_t height) const
+	{
+		return nativeRasterJitterFrame == pluginFrame && nativeRasterJitterWidth == width && nativeRasterJitterHeight == height ?
+			nativeRasterJitter : DX12Native::MaterialFrameContract::PixelJitter{};
+	}
 
 	enum class FrameGenMethod
 	{

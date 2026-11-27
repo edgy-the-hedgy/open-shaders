@@ -4,6 +4,7 @@
 #include "GraphicsBackend.h"
 #include "GraphicsInterop.h"
 #include "VideoMemoryBudget.h"
+#include "DX12MaterialFrameContract.h"
 #include <array>
 #include <memory>
 #include <vector>
@@ -13,7 +14,10 @@ namespace DX12Native
 	/** @brief Retains captured DX11 depth and camera until the GPU consumers finish. */
 	struct RasterFrame
 	{
-		std::unique_ptr<WrappedResource> depth;
+		std::unique_ptr<WrappedResource> depth, motion;
+		MaterialFrameContract::PixelJitter jitter{};
+		bool motionValid = false;
+		uint64_t motionBytes = 0;
 		globals::FrameBuffer camera{};
 		bool cameraValid = false;
 		winrt::com_ptr<ID3D12Fence> readyFence;
@@ -27,7 +31,8 @@ namespace DX12Native
 	public:
 		~RasterCapture();
 		/** @brief Captures one coherent frame; callers retain returned frames until GPU consumption completes. */
-		void Capture(const GraphicsBackend& a_backend, ID3D11ShaderResourceView* a_depth, const globals::FrameBuffer* a_camera, uint32_t a_frame);
+		void Capture(const GraphicsBackend& a_backend, ID3D11ShaderResourceView* a_depth, const globals::FrameBuffer* a_camera, uint32_t a_frame,
+			ID3D11Texture2D* motion = nullptr, MaterialFrameContract::PixelJitter jitter = {});
 		/** @brief Borrows a matching snapshot, whose ready fence must be waited on by the consumer queue. */
 		std::shared_ptr<const RasterFrame> Get(uint32_t a_frame) const;
 		/** @brief Invalidates publication while retaining slots for GPU retirement. */

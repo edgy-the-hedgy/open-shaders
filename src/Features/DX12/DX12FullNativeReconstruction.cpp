@@ -1,4 +1,5 @@
 #include "DX12FullNativeReconstruction.h"
+#include <bit>
 #include "DX12GpuRetirement.h"
 #include "Utils/FileSystem.h"
 
@@ -71,17 +72,18 @@ namespace DX12Native
 		}
 		auto* device = backend.d3d12Device.get();
 		const auto shader = Util::FileHelpers::ReadBoundedBinary(Util::PathHelpers::GetShadersPath() / "NativeComposite" / "FullNativeReconstruction.dxil", 16 * VideoMemoryBudget::kMiB);
-		CD3DX12_DESCRIPTOR_RANGE depthRanges[3];
+		CD3DX12_DESCRIPTOR_RANGE depthRanges[4];
 		depthRanges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 3, 0, 0);
 		depthRanges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 6, 0, 1);
 		depthRanges[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 9, 0, 2);
+		depthRanges[3].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 11, 0, 3);
 		CD3DX12_ROOT_PARAMETER parameters[12];
 		parameters[0].InitAsShaderResourceView(0);
 		parameters[1].InitAsShaderResourceView(1);
 		parameters[2].InitAsShaderResourceView(2);
-		parameters[3].InitAsDescriptorTable(3, depthRanges);
+		parameters[3].InitAsDescriptorTable(4, depthRanges);
 		parameters[4].InitAsUnorderedAccessView(0);
-		parameters[5].InitAsConstants(17, 0);
+		parameters[5].InitAsConstants(20, 0);
 		parameters[6].InitAsShaderResourceView(4);
 		parameters[7].InitAsShaderResourceView(5);
 		parameters[8].InitAsShaderResourceView(7);
@@ -138,7 +140,7 @@ namespace DX12Native
 			material->scope, available, material->geometryRevision, material->materialRevision,
 			indirect && indirect->environment ? indirect->environment->revision : 0u, resetHistory };
 		const auto sameCamera = [](const auto& a, const auto& b) {
-			return std::memcmp(&a.CameraProjInverse, &b.CameraProjInverse, sizeof(a.CameraProjInverse)) == 0 &&
+			return std::memcmp(&a.CameraProjUnjitteredInverse, &b.CameraProjUnjitteredInverse, sizeof(a.CameraProjUnjitteredInverse)) == 0 &&
 				std::memcmp(&a.CameraViewInverse, &b.CameraViewInverse, sizeof(a.CameraViewInverse)) == 0 &&
 				std::memcmp(&a.CameraPosAdjust, &b.CameraPosAdjust, sizeof(a.CameraPosAdjust)) == 0;
 		};
@@ -146,7 +148,8 @@ namespace DX12Native
 			!ValidProducerSignal(history->readyValue, history->readyFence->GetCompletedValue()) ||
 			!history->material->IsCoherent(history->frame, history->width, history->height) ||
 			history->material->scene != material->scene ||
-			!sameCamera(history->material->raster->camera, material->raster->camera))
+			!material->raster->jitter.valid || !history->material->raster->jitter.valid ||
+			(!material->raster->motionValid && !sameCamera(history->material->raster->camera, material->raster->camera)))
 			history.reset();
 
 		std::shared_ptr<FullNativeReconstructionFrame>* selected = nullptr;
@@ -189,7 +192,7 @@ namespace DX12Native
 				replacement->samples = Eval::Buffer(device, bytes, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 				replacement->ownershipMask = Eval::Buffer(device, bytes / 4, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 				replacement->allocationBytes = sampleAllocation + maskAllocation;
-				const D3D12_DESCRIPTOR_HEAP_DESC heap{ D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 3,
+				const D3D12_DESCRIPTOR_HEAP_DESC heap{ D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 4,
 					D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
 				DX::ThrowIfFailed(device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(replacement->depthDescriptors.put())));
 				DX::ThrowIfFailed(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(replacement->allocator.put())));
@@ -252,6 +255,11 @@ namespace DX12Native
 			auto tokenView = depthView;
 			tokenView.Format = DXGI_FORMAT_R16G16B16A16_UNORM;
 			device->CreateShaderResourceView(evidenceTexture, &tokenView, { cpu.ptr + SIZE_T(2) * increment });
+			auto* motion = slot->material->raster->motionValid ? slot->material->raster->motion->resource.get() : nullptr;
+			auto motionView = depthView;
+			motionView.Format = motion ? motion->GetDesc().Format : DXGI_FORMAT_R16G16_FLOAT;
+			device->CreateShaderResourceView(motion, &motionView, { cpu.ptr + SIZE_T(3) * increment });
+			const auto jitterDelta = previous ? HistoryJitterDelta(slot->material->raster->jitter, previous->material->raster->jitter) : PixelJitter{};
 			ID3D12DescriptorHeap* heaps[]{ slot->depthDescriptors.get() };
 			cmd->SetDescriptorHeaps(1, heaps);
 			cmd->SetComputeRootSignature(root.get());
@@ -271,14 +279,19 @@ namespace DX12Native
 				previous ? previous->material->rowPitch : 0u, previous ? 1u : 0u,
 				slot->material->rayIdentityRowPitch, previous ? previous->material->rayIdentityRowPitch : 0u, evidence ? evidence->tokenCount : 0u,
 				slot->rasterWinnerCertified ? 1u : 0u, slot->completeLightingCoverage ? 1u : 0u,
-				slot->direct ? DirectLightingFrame::available : 0u, slot->indirect ? slot->indirect->available : 0u, quality, slot->frame };
-			cmd->SetComputeRoot32BitConstants(5, 17, constants, 0);
+				slot->direct ? DirectLightingFrame::available : 0u, slot->indirect ? slot->indirect->available : 0u, quality, slot->frame,
+				motion ? 1u : 0u, std::bit_cast<uint32_t>(jitterDelta.x), std::bit_cast<uint32_t>(jitterDelta.y) };
+			cmd->SetComputeRoot32BitConstants(5, 20, constants, 0);
 			const D3D12_RESOURCE_BARRIER begin[]{
 				CD3DX12_RESOURCE_BARRIER::Transition(depth, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
 				CD3DX12_RESOURCE_BARRIER::Transition(slot->samples.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
 				CD3DX12_RESOURCE_BARRIER::Transition(slot->ownershipMask.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
 			};
 			cmd->ResourceBarrier(3, begin);
+			if (motion) {
+				const auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(motion, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+				cmd->ResourceBarrier(1, &barrier);
+			}
 			if (evidenceTexture) {
 				const auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(evidenceTexture, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 				cmd->ResourceBarrier(1, &barrier);
@@ -294,6 +307,10 @@ namespace DX12Native
 				CD3DX12_RESOURCE_BARRIER::Transition(slot->ownershipMask.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON)
 			};
 			cmd->ResourceBarrier(3, end);
+			if (motion) {
+				const auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(motion, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+				cmd->ResourceBarrier(1, &barrier);
+			}
 			if (evidenceTexture) {
 				const auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(evidenceTexture, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
 				cmd->ResourceBarrier(1, &barrier);
