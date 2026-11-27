@@ -100,6 +100,10 @@ add_executable(
     test_generationclaim.cpp
     test_dx12_runtime_tasks.cpp
     test_dx12_scene_prep.cpp
+    test_dx12_lightmath.cpp
+    test_dx12_materialframe.cpp
+    test_native_raster_policy.cpp
+    test_native_surface_capability.cpp
     test_framelatch.cpp
     test_render_extent.cpp
     test_dlssg_input_fence.cpp
