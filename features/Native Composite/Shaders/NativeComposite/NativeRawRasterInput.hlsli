@@ -1,13 +1,7 @@
 #ifndef NATIVE_RAW_RASTER_INPUT_HLSLI
 #define NATIVE_RAW_RASTER_INPUT_HLSLI
 // ABI shared with the standalone ps_5_0 input capture. No raster radiance.
-struct RawRasterSurface
-{
-    float2 uv, dx, dy;
-    float4 color;
-    float3 tangent, bitangent, normal;
-    bool front, valid;
-};
+#include "NativeRawRasterSurface.hlsli"
 Texture2DArray<uint4> RawRasterPlanes : register(t1031);
 Texture2D<float4> RawRasterFinalTokens : register(t1032);
 ByteAddressBuffer RawRasterTokenTable : register(t1033);
