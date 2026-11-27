@@ -3,6 +3,27 @@
 static const uint NativeSurfaceStride = 32u;
 static const uint NativeLightingStride = 24u;
 static const uint NativeMaterialLobeStride = 32u;
+// Optional tail plane after the fixed lobe plane. Base and lobe ABIs are unchanged.
+static const uint NativeParallaxShadowStride = 32u;
+struct NativeParallaxShadowSample {
+    float2 uv;
+    uint textureAndMode;
+    float height;
+    float4 tangentScale;
+    float4 bitangentMip;
+};
+NativeParallaxShadowSample ReadNativeParallaxShadow(ByteAddressBuffer lobes, uint offset)
+{
+    NativeParallaxShadowSample sample;
+    uint4 header=lobes.Load4(offset);
+    sample.uv=asfloat(header.xy);
+    sample.textureAndMode=header.z;
+    sample.height=asfloat(header.w);
+    uint4 basis=lobes.Load4(offset+16u);
+    sample.tangentScale=f16tof32(uint4(basis.x&65535u,basis.x>>16,basis.y&65535u,basis.y>>16));
+    sample.bitangentMip=f16tof32(uint4(basis.z&65535u,basis.z>>16,basis.w&65535u,basis.w>>16));
+    return sample;
+}
 static const uint SurfaceCoatReadyBinding = 1u << 13;
 static const uint SurfaceSubsurfaceReadyBinding = 1u << 14;
 static const uint SurfaceThinSurfaceReadyBinding = 1u << 15;

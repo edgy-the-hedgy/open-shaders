@@ -8,6 +8,7 @@ namespace DX12Native::MaterialFrameContract
 	inline constexpr uint32_t kMaterialStride = 32;
 	inline constexpr uint32_t kRayIdentityStride = 8;
 	inline constexpr uint32_t kMaterialLobeStride = 32;
+	inline constexpr uint32_t kParallaxShadowStride = 32;
 	inline constexpr uint32_t kCoatReadyBinding = 1u << 13;
 	inline constexpr uint32_t kSubsurfaceReadyBinding = 1u << 14;
 	inline constexpr uint32_t kThinSurfaceReadyBinding = 1u << 15;

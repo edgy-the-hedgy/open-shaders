@@ -25,7 +25,7 @@ namespace DX12Native
 			float4 positionAdjust;
 			uint32_t width, height, materialPitch, lightCount;
 			float nearLightRadius;
-			uint32_t nearLightExclusion, instanceCount, padding = 0;
+			uint32_t nearLightExclusion, instanceCount, parallaxShadows = 0;
 			float4 directionalDirection, directionalRadiance;
 		};
 		static_assert(sizeof(Constants) <= 256);
@@ -233,7 +233,7 @@ namespace DX12Native
 			slot->lights = Eval::Table(device, records);
 			const Constants constants{ raster.camera.CameraProjInverse, raster.camera.CameraViewInverse,
 				raster.camera.CameraPosAdjust, width, height, slot->material->rowPitch, lightCount,
-				0.0f, 0u, slot->material->scene->materialEvaluation->instanceCount, 0u, directional.direction, directional.radiance };
+				0.0f, 0u, slot->material->scene->materialEvaluation->instanceCount, slot->material->parallaxShadows ? 1u : 0u, directional.direction, directional.radiance };
 			slot->directionalIncluded = directional.direction.w != 0.0f;
 			WriteConstants(slot->camera.get(), constants);
 			auto* depthResource = raster.depth->resource.get();

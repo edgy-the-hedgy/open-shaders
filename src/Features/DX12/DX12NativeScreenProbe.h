@@ -21,7 +21,7 @@ namespace DX12Native
 		{
 			Matrix projectionInverse, viewInverse;
 			float4 positionAdjust;
-			uint32_t width, height, gridWidth, gridHeight, collectStats, parallaxEnabled, parallaxWarpFixEnabled;
+			uint32_t width, height, gridWidth, gridHeight, collectStats, parallaxEnabled, parallaxWarpFixEnabled, parallaxShadowEnabled;
 		};
 		static_assert(sizeof(Camera) <= 256);
 		struct OutputAllocation
@@ -123,6 +123,7 @@ namespace DX12Native
 			winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
 			winrt::com_ptr<ID3D12Resource> samples, rayIdentity, materialLobes;
 			uint32_t rayIdentityRowPitch = 0, materialLobeRowPitch = 0;
+			bool parallaxShadows = false;
 			uint32_t abiVersion=MaterialFrameContract::kMaterialAbiVersion, sampleStride=kSampleStride, rowPitch=0;
 			static constexpr D3D12_RESOURCE_STATES publishedState = D3D12_RESOURCE_STATE_COMMON;
 			MaterialFrameContract::SurfaceCorrespondence correspondence = MaterialFrameContract::SurfaceCorrespondence::DepthOnly;
@@ -141,7 +142,8 @@ namespace DX12Native
 					allocation->identityBytes < uint64_t(rayIdentityRowPitch) * height ||
 					!materialLobes || allocation->materialLobes.get() != materialLobes.get() ||
 					!MaterialFrameContract::ValidLayout(width, height, materialLobeRowPitch, MaterialFrameContract::kMaterialLobeStride) ||
-					allocation->lobeBytes < uint64_t(materialLobeRowPitch) * height ||
+					allocation->lobeBytes < uint64_t(materialLobeRowPitch) * height +
+						(parallaxShadows ? uint64_t(rowPitch / kSampleStride) * height * MaterialFrameContract::kParallaxShadowStride : 0u) ||
 					!allocation->shaderReadable || !descriptors ||
 					!producerFence || !MaterialFrameContract::ValidProducerSignal(producerValue, producerFence->GetCompletedValue()) ||
 					!raster || raster->frame != frame || !raster->cameraValid || !raster->depth || !raster->depth->resource ||
@@ -157,7 +159,7 @@ namespace DX12Native
 				const auto desc = samples->GetDesc();
 				const auto identityDesc = rayIdentity->GetDesc();
 				const auto lobeDesc = materialLobes->GetDesc();
-				if (lobeDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER || lobeDesc.Width < uint64_t(materialLobeRowPitch) * height) return false;
+				if (lobeDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER || lobeDesc.Width < allocation->lobeBytes) return false;
 				return identityDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
 					identityDesc.Width >= uint64_t(rayIdentityRowPitch) * height && desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
 					desc.Width >= uint64_t(rowPitch) * height && allocation->bytes >= uint64_t(rowPitch) * height;
@@ -246,7 +248,7 @@ namespace DX12Native
 			return free && (lastFrame==UINT32_MAX || frame-lastFrame>=(continuous?1u:30u));
 		}
 		void Dispatch(const GraphicsBackend& backend,std::shared_ptr<const RasterFrame> raster,
-			std::shared_ptr<const TopLevel> scene,uint32_t frame,uint32_t width,uint32_t height,bool fullResolution,bool continuous=false,bool collectStats=false,bool parallaxEnabled=false,bool parallaxWarpFixEnabled=false)
+			std::shared_ptr<const TopLevel> scene,uint32_t frame,uint32_t width,uint32_t height,bool fullResolution,bool continuous=false,bool collectStats=false,bool parallaxEnabled=false,bool parallaxWarpFixEnabled=false,bool parallaxShadowEnabled=false)
 		{
 			if (!WantsFrame(frame,continuous)) return;
 			published.reset();
@@ -277,7 +279,9 @@ namespace DX12Native
 				const uint32_t pitchPixels=(gridWidth+7u)&~7u;
 				const uint64_t bytes=uint64_t(pitchPixels)*gridHeight*kSampleStride;
 				const uint64_t identityBytes=uint64_t(pitchPixels)*gridHeight*MaterialFrameContract::kRayIdentityStride;
-				const uint64_t lobeBytes=uint64_t(pitchPixels)*gridHeight*MaterialFrameContract::kMaterialLobeStride;
+				const bool shadowPlane=parallaxEnabled && parallaxShadowEnabled;
+				const uint64_t lobeBytes=uint64_t(pitchPixels)*gridHeight*(MaterialFrameContract::kMaterialLobeStride +
+					(shadowPlane ? MaterialFrameContract::kParallaxShadowStride : 0u));
 				// ByteAddressBuffer uses 32-bit byte offsets.
 				if (bytes>UINT32_MAX || lobeBytes>UINT32_MAX) { failure="Screen material byte address range exceeded"; return; }
 				std::shared_ptr<OutputAllocation>* selected = nullptr;
@@ -285,12 +289,12 @@ namespace DX12Native
 				for (auto& entry : outputPool) {
 					if (entry) tracked += entry->allocationBytes;
 					if (!entry || entry.use_count() == 1) {
-						if (!selected || (entry && entry->bytes == bytes)) selected = &entry;
+						if (!selected || (entry && entry->bytes == bytes && entry->lobeBytes == lobeBytes)) selected = &entry;
 					}
 				}
 				if (!selected) { failure="Material frame pool busy"; return; }
 				auto& reusableOutput = *selected;
-				const bool reuse = reusableOutput && reusableOutput->bytes == bytes;
+				const bool reuse = reusableOutput && reusableOutput->bytes == bytes && reusableOutput->lobeBytes == lobeBytes;
 				for (const auto& inFlight : submissions)
 					if (inFlight) tracked += 6ull*65536;
 				const auto available = videoBudget.Query(device, tracked);
@@ -332,7 +336,7 @@ namespace DX12Native
 				}
 				slot->camera=Eval::Buffer(device,256,D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ);
 				const Camera constants{slot->raster->camera.CameraProjInverse,slot->raster->camera.CameraViewInverse,
-					slot->raster->camera.CameraPosAdjust,width,height,gridWidth,gridHeight,collectStats ? 1u : 0u,parallaxEnabled ? 1u : 0u,parallaxWarpFixEnabled ? 1u : 0u};
+					slot->raster->camera.CameraPosAdjust,width,height,gridWidth,gridHeight,collectStats ? 1u : 0u,parallaxEnabled ? 1u : 0u,parallaxWarpFixEnabled ? 1u : 0u,shadowPlane ? 1u : 0u};
 				void* mapped=nullptr; const D3D12_RANGE noRead{};
 				Eval::Check(slot->camera->Map(0,&noRead,&mapped));
 				std::memcpy(mapped,&constants,sizeof(constants)); slot->camera->Unmap(0,nullptr);
@@ -410,6 +414,7 @@ namespace DX12Native
 					materialFrame->rayIdentityRowPitch=pitchPixels*MaterialFrameContract::kRayIdentityStride;
 					materialFrame->materialLobes=pending->output->materialLobes;
 					materialFrame->materialLobeRowPitch=pitchPixels*MaterialFrameContract::kMaterialLobeStride;
+					materialFrame->parallaxShadows=shadowPlane;
 					materialFrame->raster=pending->raster; materialFrame->scene=pending->scene;
 					materialFrame->descriptors=pending->descriptors;
 					materialFrame->producerValue=value; materialFrame->geometryRevision=pending->scene->geometryRevision;

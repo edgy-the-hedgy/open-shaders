@@ -36,7 +36,7 @@ cbuffer DirectInputs : register(b0)
     float NearLightRadius;
     uint NearLightExclusion;
     uint InstanceCount;
-    uint Padding;
+    uint ParallaxShadows;
     float4 DirectionalDirection;
     float4 DirectionalRadiance;
 };
@@ -192,6 +192,28 @@ bool Reconstruct(uint2 pixel, out float3 world, out float3 cameraWorld)
     return all(isfinite(world)) && all(isfinite(cameraWorld));
 }
 
+// Extended Materials soft height shadows: 4 near / 2 far taps. DXR still
+// decides geometric visibility first; this only modulates the material response.
+float NativeHeightVisibility(NativeParallaxShadowSample sample, float3 light, float viewDistance, float noise)
+{
+    uint encoded=sample.textureAndMode&65535u;
+    if (encoded==0u || encoded>512u || !all(isfinite(sample.uv)) ||
+        !all(isfinite(sample.tangentScale)) || !all(isfinite(sample.bitangentMip)) ||
+        !isfinite(sample.height) || sample.tangentScale.w<=0.0) return 1.0;
+    uint textureIndex=encoded-1u;
+    uint mode=(sample.textureAndMode>>16u)&3u;
+    float2 lightTS=float2(dot(normalize(sample.tangentScale.xyz),light),dot(normalize(sample.bitangentMip.xyz),light));
+    float2 direction=lightTS*(0.1*sample.tangentScale.w);
+    uint taps=viewDistance<1024.0 ? 4u : 2u;
+    float accumulated=0.0;
+    [loop] for (uint tap=0u;tap<taps;++tap) {
+        float height=TexLevel(textureIndex,sample.uv+direction/(float(tap+1u)+noise),mode,sample.bitangentMip.w).r;
+        if (!isfinite(height)) return 1.0;
+        accumulated+=max(0.0,saturate(height)-sample.height);
+    }
+    return 1.0-saturate(accumulated*(8.0/float(taps)));
+}
+
 uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
 {
     rays = 0u;
@@ -208,6 +230,11 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
     float3 deltaView = cameraWorld - world;
     if (dot(deltaView,deltaView) < 1e-8) return 0u;
     float3 n = normalize(normal.xyz), view = normalize(deltaView);
+    NativeParallaxShadowSample shadow=(NativeParallaxShadowSample)0;
+    if (ParallaxShadows!=0u) shadow=ReadNativeParallaxShadow(MaterialLobes,MaterialPitch*Size.y+offset);
+    float viewDistance=length(deltaView);
+    // Stable interleaved gradient noise avoids temporal shimmer.
+    float shadowNoise=frac(52.9829189*frac(dot(float2(pixel),float2(0.06711056,0.00583715))));
     float ndv = max(saturate(dot(n,view)), 1e-4);
     float roughness = clamp(normal.w, 0.045, 1.0);
     float alpha = roughness * roughness, a2 = alpha * alpha;
@@ -222,7 +249,7 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
             float3 biasNormal=HasNativeThinSurface(coat) ? coat.normalRoughness.xyz : n;
             if (VisibleDirectional(world,dot(biasNormal,l)<0.0 ? -biasNormal : biasNormal,l)) {
                 ++visible;
-                AccumulateBRDF(base, f0, n, view, l, ndl, ndv, a2, max(DirectionalRadiance.rgb,0.0), coat, diffuse, specular, transmission);
+                AccumulateBRDF(base, f0, n, view, l, ndl, ndv, a2, max(DirectionalRadiance.rgb,0.0)*NativeHeightVisibility(shadow,l,viewDistance,shadowNoise), coat, diffuse, specular, transmission);
             }
         }
     }
@@ -251,7 +278,7 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
         if (traced) ++rays;
         if (!unoccluded) continue;
         ++visible;
-        AccumulateBRDF(base, f0, n, view, l, ndl, ndv, a2, max(color.rgb,0.0)*attenuation, coat, diffuse, specular, transmission);
+        AccumulateBRDF(base, f0, n, view, l, ndl, ndv, a2, max(color.rgb,0.0)*attenuation*NativeHeightVisibility(shadow,l,viewDistance,shadowNoise), coat, diffuse, specular, transmission);
     }
     if (!all(isfinite(diffuse)) || !all(isfinite(specular))) return 0u;
     // Half precision stores counts up to 2047 plus one for validity.

@@ -671,7 +671,8 @@ void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 		raster.Capture(*backend, Util::GetCurrentSceneDepthSRV(false), &globals::game::frameBufferCached.nonVR, frame);
 		fullNativeMaterial->Dispatch(*backend, raster.Get(frame), scene, frame, uint32_t(viewport.x), uint32_t(viewport.y), true, true, false,
 			globals::features::extendedMaterials.loaded && globals::features::extendedMaterials.settings.EnableParallax != 0,
-			globals::features::extendedMaterials.loaded && globals::features::extendedMaterials.settings.EnableParallaxWarpingFix != 0);
+			globals::features::extendedMaterials.loaded && globals::features::extendedMaterials.settings.EnableParallaxWarpingFix != 0,
+			globals::features::extendedMaterials.loaded && globals::features::extendedMaterials.settings.EnableShadows != 0);
 	}
 	const auto material = fullNativeMaterial->GetMaterialFrame(frame);
 	if (!material || material->scene != scene || !scene->inputs || !scene->inputs->residency)
