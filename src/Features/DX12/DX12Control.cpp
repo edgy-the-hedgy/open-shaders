@@ -39,7 +39,9 @@ void DX12Control::DrawSimpleSettings(bool developerMode)
 		T("menu.dx12.mode.raster_comparison", "Raster comparison")
 	};
 	constexpr ControlMode modeIDs[]{ ControlMode::ShadowOffload, ControlMode::FullRT, ControlMode::FullNative, ControlMode::RasterComparison };
-	const auto selected = DX12::SanitizeControlMode(settings.Mode, developerMode);
+	const auto active = GetMode();
+	const auto requested = DX12::SanitizeControlMode(settings.Mode, developerMode);
+	const auto selected = DX12::RequiresModeRestart(active, requested) ? requested : active;
 	int index = static_cast<int>(std::find(std::begin(modeIDs), std::end(modeIDs), selected) - std::begin(modeIDs));
 	settings.Mode = static_cast<int>(selected);
 	if (ImGui::Combo(T("menu.dx12.mode.label", "Mode"), &index, modes, developerMode ? int(std::size(modes)) : int(std::size(modes)) - 1)) {
@@ -100,8 +102,10 @@ void DX12Control::LoadSettings(json& input)
 
 void DX12Control::SaveSettings(json& output)
 {
+	const auto active = GetMode();
 	const auto requested = DX12::SanitizeControlMode(settings.Mode, globals::state && globals::state->IsDeveloperMode());
-	output = { { "Enabled", settings.Enabled }, { "Mode", static_cast<int>(requested) } };
+	const auto saved = DX12::RequiresModeRestart(active, requested) ? requested : active;
+	output = { { "Enabled", settings.Enabled }, { "Mode", static_cast<int>(saved) } };
 }
 
 void DX12Control::RestoreDefaultSettings()

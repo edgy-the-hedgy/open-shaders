@@ -1,3 +1,4 @@
+#include "Features/DX12/DX12ControlMode.h"
 #include "Features/DX12/NativeCasterSource.h"
 #include "Features/DX12/ScenePrepMath.h"
 
@@ -213,4 +214,30 @@ TEST_CASE("Native caster source requires matching mesh and transform", "[dx12][s
 	moved[3] = 0.25f;
 	CHECK_FALSE(DX12::SameCasterSource(source, source, transform, moved));
 	CHECK_FALSE(DX12::SameCasterSource({}, source, transform, transform));
+}
+
+TEST_CASE("DX12 mode IDs and legacy sanitization remain stable", "[dx12][mode]")
+{
+	using namespace DX12;
+	CHECK(static_cast<int>(ControlMode::ShadowOffload) == 0);
+	CHECK(static_cast<int>(ControlMode::RasterComparison) == 1);
+	CHECK(static_cast<int>(ControlMode::FullRT) == 2);
+	CHECK(static_cast<int>(ControlMode::FullNative) == 3);
+	CHECK(SanitizeControlMode(-1, true) == ControlMode::ShadowOffload);
+	CHECK(SanitizeControlMode(1, false) == ControlMode::ShadowOffload);
+	CHECK(SanitizeControlMode(1, true) == ControlMode::RasterComparison);
+	CHECK(SanitizeControlMode(2, false) == ControlMode::FullRT);
+	CHECK(SanitizeControlMode(3, false) == ControlMode::FullNative);
+	CHECK(SanitizeControlMode(4, true) == ControlMode::FullRT);
+}
+
+TEST_CASE("Only Full Native admits material preparation and requires restart on transitions", "[dx12][mode]")
+{
+	using namespace DX12;
+	constexpr std::array modes{ ControlMode::ShadowOffload, ControlMode::RasterComparison, ControlMode::FullRT, ControlMode::FullNative };
+	for (const auto from : modes) {
+		CHECK(RequiresMaterialPreparation(from) == (from == ControlMode::FullNative));
+		for (const auto to : modes)
+			CHECK(RequiresModeRestart(from, to) == ((from == ControlMode::FullNative) != (to == ControlMode::FullNative)));
+	}
 }
