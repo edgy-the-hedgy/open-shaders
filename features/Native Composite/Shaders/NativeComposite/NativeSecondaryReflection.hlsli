@@ -8,6 +8,7 @@
 #include "NativeMaterialSurface.hlsli"
 #undef NATIVE_SECONDARY_SURFACE
 #include "NativeDirectBRDF.hlsli"
+#include "NativeHeightVisibility.hlsli"
 
 static const uint SecondaryLightRecordBytes=7u*16u;
 static const uint SecondaryMaxLightCount=2048u;
@@ -82,7 +83,7 @@ SecondaryLight ReadSecondaryLight(uint index,float3 world,float3 n,NativeCoatSam
 
 bool ShadeNativeSecondary(uint instance,uint primitive,float2 bary,float3x3 worldToObject,float3x3 objectToWorld,
     bool front,float3 world,float3 rayDirection,float distance,float footprint,uint2 pixel,uint lobe,uint frame,uint quality,
-    uint instanceCount,uint characters,uint lightCount,float4 sunDirection,float4 sunRadiance,uint foliage,out float3 radiance)
+    uint instanceCount,uint characters,uint lightCount,float4 sunDirection,float4 sunRadiance,uint foliage,uint materialControls,out float3 radiance)
 {
     radiance=0;
     if(instance>=instanceCount||lightCount>SecondaryMaxLightCount)return false;
@@ -96,7 +97,7 @@ bool ShadeNativeSecondary(uint instance,uint primitive,float2 bary,float3x3 worl
     bool rawUsed;NativeCoatSample coat;NativeParallaxShadowSample height;
     Sample s=EvaluateMaterial(instanceCount,instance,primitive,float3(1.0-bary.x-bary.y,bary),
         mul(worldToObject,rayDirection),0.0,0.0,1.0,distance,worldToObject,objectToWorld,
-        (binding.flags&SurfaceParallaxReadyBinding)!=0u,false,false,lod,0xffffffffu,world,0.0,(RawRasterSurface)0,rawUsed,coat,height);
+        (materialControls&1u)!=0u && (binding.flags&SurfaceParallaxReadyBinding)!=0u,false,(materialControls&2u)!=0u,lod,0xffffffffu,world,0.0,(RawRasterSurface)0,rawUsed,coat,height);
     if(s.color.a!=SurfaceEvaluatedBase||!all(isfinite(s.color))||!all(isfinite(s.normal))||
        !all(isfinite(s.f0))||!all(isfinite(s.emission)))return false;
     float3 n=mul(s.normal.xyz,worldToObject);
@@ -121,6 +122,7 @@ bool ShadeNativeSecondary(uint instance,uint primitive,float2 bary,float3x3 worl
     float ndv=max(saturate(dot(n,view)),1e-4);
     PBR::FuzzLayer fuzz=ResolveNativeFuzz(coat,roughness,n,view,true);
     float3 diffuse=0,specular=0,transmission=0;
+    const float heightNoise=frac(52.9829189*frac(dot(float2(pixel),float2(0.06711056,0.00583715))));
     float3 biasNormal=HasNativeThinSurface(coat)?coat.normalRoughness.xyz:n;
     if(sunDirection.w!=0.0&&all(isfinite(sunDirection.xyz))&&dot(sunDirection.xyz,sunDirection.xyz)>1e-8&&
        all(isfinite(sunRadiance.rgb))&&any(sunRadiance.rgb>0.0)){
@@ -128,7 +130,7 @@ bool ShadeNativeSecondary(uint instance,uint primitive,float2 bary,float3x3 worl
         if((dot(n,l)>0.0||HasNativeThinSurface(coat)||HasNativeSubsurface(coat)||
             (HasNativeCoat(coat)&&dot(coat.normalRoughness.xyz,l)>0.0))&&
             SecondaryVisible(world,biasNormal,l,3.402823e38,instanceCount,characters))
-            AccumulateBRDF(s.color,s.f0,n,view,l,saturate(dot(n,l)),ndv,a2,max(sunRadiance.rgb,0.0),1.0,coat,fuzz,foliage,diffuse,specular,transmission);
+            AccumulateBRDF(s.color,s.f0,n,view,l,saturate(dot(n,l)),ndv,a2,max(sunRadiance.rgb,0.0),NativeHeightVisibility(height,NativeBaseDirection(l,coat),distance,heightNoise),coat,fuzz,foliage,diffuse,specular,transmission);
     }
 
     // Independent weighted reservoirs bound shadow queries to two in Quality
@@ -157,7 +159,7 @@ bool ShadeNativeSecondary(uint instance,uint primitive,float2 bary,float3x3 worl
         float sampledDistance=length(sampledDelta);
         if(sampledDistance<=1e-5||!SecondaryVisible(world,biasNormal,sampledDelta/sampledDistance,sampledDistance,instanceCount,characters))continue;
         float3 incident=light.incident*(total/(light.weight*float(sampleCount)));
-        AccumulateBRDF(s.color,s.f0,n,view,l,saturate(dot(n,l)),ndv,a2,incident,1.0,coat,fuzz,foliage,diffuse,specular,transmission);
+        AccumulateBRDF(s.color,s.f0,n,view,l,saturate(dot(n,l)),ndv,a2,incident,NativeHeightVisibility(height,NativeBaseDirection(l,coat),distance,heightNoise),coat,fuzz,foliage,diffuse,specular,transmission);
     }
     radiance=max(diffuse+specular+transmission+s.emission.rgb,0.0);
     return all(isfinite(radiance))&&all(radiance<=65504.0);

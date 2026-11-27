@@ -29,7 +29,7 @@ namespace
         Matrix previousViewProjection;
         float4 previousPositionAdjust;
         float4 secondarySunDirection,secondarySunRadiance;
-        uint32_t secondaryLightCount,secondaryFoliage,paddingSecondary[2]{};
+        uint32_t secondaryLightCount,secondaryFoliage,secondaryMaterialControls,secondaryPadding=0;
     };
     static_assert(sizeof(Constants)==464);
     constexpr UINT kTextureOffset=7;
@@ -301,7 +301,8 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
             evaluation.instanceCount,uint32_t(bool(characters)),material.rayIdentityRowPitch,evidence?evidence->tokenCount:0u,
             emitterRadius,uint32_t(bool(previous)),{},previous?previous->viewProjection:Matrix{},previous?previous->positionAdjust:float4{},
             direct->directional.direction,direct->directional.radiance,
-            direct->lightCount,uint32_t(direct->foliageScattering)};
+            direct->lightCount,uint32_t(direct->foliageScattering),
+            uint32_t(material.parallaxEnabled)|(uint32_t(material.parallaxShadows)<<1u)};
         void* mapped=nullptr;const D3D12_RANGE noRead{};
         DX::ThrowIfFailed(slot->constants->Map(0,&noRead,&mapped));
         std::memcpy(mapped,&constants,sizeof(constants));slot->constants->Unmap(0,nullptr);

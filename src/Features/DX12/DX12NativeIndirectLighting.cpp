@@ -31,7 +31,7 @@ namespace DX12Native
             Matrix projection, view;
             uint32_t ssrEnabled, directPitch, rayPitch, tokenCount;
             float4 secondarySunDirection, secondarySunRadiance;
-            uint32_t secondaryLightCount, secondaryFoliage, skyAvailable, secondaryPadding=0;
+            uint32_t secondaryLightCount, secondaryFoliage, skyAvailable, secondaryMaterialControls;
         };
         static_assert(sizeof(Constants) == 512);
         constexpr uint64_t kSHBytes = 48;
@@ -211,11 +211,11 @@ namespace DX12Native
             !ssrDirect->lights || ssrDirect->lightCount > DX12::kMaxPreparedLights ||
             !ssrDirect->samples || !ValidLayout(width,height,ssrDirect->rowPitch,kLightingStride) ||
             ssrDirect->samples->GetDesc().Width < uint64_t(ssrDirect->rowPitch)*height ||
-            !ssrDirect->readyFence || !ValidProducerSignal(ssrDirect->readyValue,ssrDirect->readyFence->GetCompletedValue()) ||
-            !evidence || evidence->stamp != stamp || !evidence->tokenCount || !evidence->texture || !evidence->texture->resource ||
-            !evidence->tokenTable || evidence->width < width || evidence->height < height ||
-            !evidence->readyFence || !ValidProducerSignal(evidence->readyValue,evidence->readyFence->GetCompletedValue()))
+            !ssrDirect->readyFence || !ValidProducerSignal(ssrDirect->readyValue,ssrDirect->readyFence->GetCompletedValue()))
             ssrDirect.reset();
+        const bool validEvidence=evidence && evidence->stamp == stamp && evidence->tokenCount && evidence->texture && evidence->texture->resource &&
+            evidence->tokenTable && evidence->width >= width && evidence->height >= height &&
+            evidence->readyFence && ValidProducerSignal(evidence->readyValue,evidence->readyFence->GetCompletedValue());
         const uint64_t bytes = uint64_t(width) * height * kLightingStride;
         if (!bytes || bytes > UINT32_MAX || width > UINT32_MAX / kLightingStride) return;
         std::shared_ptr<IndirectLightingFrame>* selected = nullptr;
@@ -297,7 +297,7 @@ namespace DX12Native
             CubeView(device, env.reflection ? *env.reflection : *env.base, cpu(2));
             CubeView(device, env.sky ? *env.sky : *env.base, cpu(3));
             slot->material->scene->materialEvaluation->WriteTextureViews(device, cpu(4));
-            const auto ssrEvidence = slot->screenSpaceReflections ? slot->material->rawRasterEvidence : nullptr;
+            const auto ssrEvidence = slot->screenSpaceReflections && validEvidence ? evidence : nullptr;
             auto tokenView = depthView;
             tokenView.Format = DXGI_FORMAT_R16G16B16A16_UNORM;
             auto* tokens = ssrEvidence ? ssrEvidence->texture->resource.get() : nullptr;
@@ -334,7 +334,8 @@ namespace DX12Native
                 slot->ssrDirect ? slot->ssrDirect->directional.radiance : float4{},
                 slot->ssrDirect ? slot->ssrDirect->lightCount : 0u,
                 slot->ssrDirect && slot->ssrDirect->foliageScattering ? 1u : 0u,
-                slot->skySH ? 1u : 0u };
+                slot->skySH ? 1u : 0u,
+                uint32_t(slot->material->parallaxEnabled) | (uint32_t(slot->material->parallaxShadows)<<1u) };
             void* mapped = nullptr; const D3D12_RANGE noRead{};
             Eval::Check(slot->constants->Map(0, &noRead, &mapped));
             std::memcpy(mapped, &constants, sizeof(constants)); slot->constants->Unmap(0, nullptr);
@@ -377,6 +378,8 @@ namespace DX12Native
             Eval::Check(backend.commandQueue->Wait(env.producerFence.get(), env.producerValue));
             if (ssrEvidence) {
                 Eval::Check(backend.commandQueue->Wait(ssrEvidence->readyFence.get(), ssrEvidence->readyValue));
+                }
+            if (slot->screenSpaceReflections) {
                 Eval::Check(backend.commandQueue->Wait(slot->ssrDirect->readyFence.get(), slot->ssrDirect->readyValue));
             }
             ID3D12CommandList* lists[]{ cmd };

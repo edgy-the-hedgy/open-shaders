@@ -138,7 +138,7 @@ namespace DX12Native
 			winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
 			winrt::com_ptr<ID3D12Resource> samples, rayIdentity, materialLobes;
 			uint32_t rayIdentityRowPitch = 0, materialLobeRowPitch = 0;
-			bool parallaxShadows = false;
+			bool parallaxEnabled = false, parallaxShadows = false;
 			uint32_t rawInputDraws = 0;
 			std::shared_ptr<const FullNativeRasterEvidence> rawRasterEvidence;
 			uint32_t abiVersion=MaterialFrameContract::kMaterialAbiVersion, sampleStride=kSampleStride, rowPitch=0;
@@ -535,6 +535,7 @@ namespace DX12Native
 					materialFrame->rayIdentityRowPitch=pitchPixels*MaterialFrameContract::kRayIdentityStride;
 					materialFrame->materialLobes=pending->output->materialLobes;
 					materialFrame->materialLobeRowPitch=pitchPixels*MaterialFrameContract::kMaterialLobeStride;
+					materialFrame->parallaxEnabled=parallaxEnabled;
 					materialFrame->parallaxShadows=shadowPlane;
 					materialFrame->rawInputDraws=pending->rawInputs ? pending->rawInputs->draws : 0u;
 					materialFrame->rawRasterEvidence=pending->rawInputs ? pending->rawInputs->evidence : nullptr;

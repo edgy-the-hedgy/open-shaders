@@ -46,7 +46,7 @@ cbuffer Constants : register(b0)
     float4 PreviousPositionAdjust;
     float4 SecondarySunDirection,SecondarySunRadiance;
     uint SecondaryLightCount,SecondaryFoliage;
-    uint2 SecondaryPadding;
+    uint SecondaryMaterialControls,SecondaryPadding;
 };
 #include "NativeSecondaryReflection.hlsli"
 cbuffer DispatchPhase : register(b1) { uint Phase; };
@@ -110,7 +110,7 @@ float4 Trace(uint2 receiver,float3 world,float3 incident)
     if(ShadeNativeSecondary(query.CommittedInstanceID(),query.CommittedPrimitiveIndex(),query.CommittedTriangleBarycentrics(),
         (float3x3)query.CommittedWorldToObject3x4(),(float3x3)query.CommittedObjectToWorld3x4(),query.CommittedTriangleFrontFace(),
         point,direction,distance,EmitterRadius,receiver,0u,Frame,Quality,InstanceCount,CharacterEnabled,
-        SecondaryLightCount,SecondarySunDirection,SecondarySunRadiance,SecondaryFoliage,secondary))
+        SecondaryLightCount,SecondarySunDirection,SecondarySunRadiance,SecondaryFoliage,SecondaryMaterialControls,secondary))
         return float4(clamp(EncodeRadiance(secondary),0,65504),1);
     if(TokenCount==0u)return Fallback(direction);
     float4 clip=mul(Projection,mul(View,float4(point-PositionAdjust.xyz,1)));
