@@ -47,6 +47,7 @@ RawRasterSurface ReadRawVisibility(uint2 pixel, float depth, uint drawCount, out
     uint4 material = RawRasterMaterialTechnique.Load(int3(pixel,0));
     result.auxiliaryKind=(c.w >> 19u)&15u;
     result.borrowedLandscape=(c.w & (1u<<23u))!=0u;
+    result.packedSnow=result.auxiliaryKind==1u ? float(c.w>>24u)/255.0 : 0.0;
     result.auxiliary=material;
     uint4 drawRange=RawRasterDrawTable.Load4(address+16u);
     uint4 descriptors=RawRasterDrawTable.Load4(address+48u);
