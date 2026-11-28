@@ -2113,7 +2113,7 @@ namespace SIE
 			std::wstring suffix(suffixNarrow.begin(), suffixNarrow.end());
 			// The same boot-latched predicate selects input defines and disk identity.
 			if (HasFullNativeInput(shader.shaderType.get()))
-				suffix += L"_full_native_input_v6_coverage4";
+				suffix += L"_full_native_input_v6_coverage5";
 
 			const std::wstring wname(name.begin(), name.end());
 			switch (shaderClass) {
