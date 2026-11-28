@@ -102,6 +102,7 @@ add_executable(
     test_dx12_scene_prep.cpp
     test_dx12_lightmath.cpp
     test_dx12_materialframe.cpp
+    test_dx12_specialized_material_v2_candidate.cpp
     test_native_cubemap_policy.cpp
     test_native_ibl_policy.cpp
     test_native_raster_policy.cpp
