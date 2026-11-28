@@ -1034,6 +1034,10 @@ void DX12NativeScene::BeginFullNativeRasterInputs()
 	if (location && location->cell && location->cell->IsAttached() &&
 		(!location->cell->IsExteriorCell() || location->worldspace))
 		draws.stamp.scope = location->worldspace ? location->worldspace->GetFormID() : location->cell->GetFormID();
+	if (terrainSnapshotScope!=draws.stamp.scope) {
+		terrainSnapshotScope=draws.stamp.scope;
+		terrainSnapshotStart=0;
+	}
 	if (draws.stamp.scope && grid && !grid->requested.empty() &&
 		grid->requested.front().scope == draws.stamp.scope)
 		draws.stamp.geometryRevision = grid->geometryRevision;
@@ -1592,7 +1596,7 @@ void DX12NativeScene::CaptureRasterPbrGrass(uint32_t rasterDraw)
 		projectedConstantPool={};
 		projectedConstantDevice.copy_from(globals::d3d::device);
 	}
-	const uint32_t index=kMaxProjectedConstantSnapshots-1u-draws.grassConstantSnapshots;
+	const uint32_t index=kOtherSnapshotCapacity-1u-draws.grassConstantSnapshots;
 	auto& slot=projectedConstantPool[index];
 	if (!slot.buffers[1] || !slot.views[1] || slot.byteWidths[1]!=desc.ByteWidth) {
 		D3D11_BUFFER_DESC copy{};
@@ -1621,8 +1625,10 @@ void DX12NativeScene::CaptureRasterTerrainDraw(uint32_t rasterDraw,uint32_t desc
 	const auto technique=Cache::GetLightingTechnique(descriptor);
 	const bool lod=technique==Cache::LightingShaderTechniques::MTLandLODBlend;
 	const bool snow=(descriptor & uint32_t(Cache::LightingShaderFlags::Snow))!=0u;
-	if ((!lod && !snow) || !rasterDraw || draws.terrainConstantSnapshots>=32u ||
-		!ConstantSnapshotFits(draws.constantSnapshots,draws.grassConstantSnapshots,kMaxProjectedConstantSnapshots) ||
+	if ((!lod && !snow) || !rasterDraw) return;
+	const uint32_t candidate=draws.terrainCandidates++;
+	if (!SnapshotPageContains(candidate,terrainSnapshotStart,kTerrainSnapshotCapacity) ||
+		draws.terrainConstantSnapshots>=kTerrainSnapshotCapacity ||
 		!globals::game::shadowState || !globals::d3d::device || !globals::d3d::context) return;
 	const auto& state=globals::game::shadowState->GetRuntimeData();
 	if (!state.currentVertexShader || !state.currentPixelShader) return;
@@ -1673,7 +1679,8 @@ void DX12NativeScene::CaptureRasterTerrainDraw(uint32_t rasterDraw,uint32_t desc
 		projectedConstantPool={};
 		projectedConstantDevice.copy_from(globals::d3d::device);
 	}
-	auto& slot=projectedConstantPool[draws.constantSnapshots];
+	const uint32_t index=kOtherSnapshotCapacity+draws.terrainConstantSnapshots;
+	auto& slot=projectedConstantPool[index];
 	for (size_t i=0;i<2;++i) {
 		if (!slot.buffers[i] || !slot.views[i] || slot.byteWidths[i]!=descriptions[i].ByteWidth) {
 			D3D11_BUFFER_DESC desc{};
@@ -1696,7 +1703,7 @@ void DX12NativeScene::CaptureRasterTerrainDraw(uint32_t rasterDraw,uint32_t desc
 		}
 	}
 	for (size_t i=0;i<2;++i) globals::d3d::context->CopyResource(slot.buffers[i].get(),sources[i]);
-	observation.constantSlot=draws.constantSnapshots++;
+	observation.constantSlot=index;
 	observation.observed=true;
 	++draws.terrainConstantSnapshots;
 	draws.rasterProjectionTextures.push_back({rasterDraw,UINT32_MAX,std::move(observation)});
@@ -1907,7 +1914,11 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 		for (const auto& raster:draws.rasterProjectionTextures) {
 			const auto& observation=raster.texture;
 			if (!raster.rasterDraw || raster.rasterDraw>draws.drawRecords.size() ||
-				observation.conflicted || observation.constantSlot>=draws.constantSnapshots) continue;
+				observation.conflicted) continue;
+			const bool terrain=observation.rowKind==kRasterTerrainRow;
+			if (terrain ? (observation.constantSlot<kOtherSnapshotCapacity ||
+				observation.constantSlot-kOtherSnapshotCapacity>=draws.terrainConstantSnapshots) :
+				observation.constantSlot>=draws.constantSnapshots) continue;
 			const auto& slot=projectedConstantPool[observation.constantSlot];
 			if ((observation.constantOffsets[0]!=UINT32_MAX && !slot.views[0]) || !slot.views[1]) continue;
 			uint32_t instance=observation.rowKind;
@@ -2039,17 +2050,25 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 		std::vector<ProjectedInputDraw> admitted;
 		admitted.reserve(kMaxProjectedDraws);
 		uint32_t cursor=nativeMaterialTransferSequence%MaterialFrameContract::kTransferClassCount;
+		// Reserve rows for every captured terrain candidate. Interleave import
+		// ordering, but do not let unrelated classes exhaust its row quota.
+		const uint32_t otherRowLimit=kMaxProjectedDraws-remaining[6];
+		uint32_t otherRows=0;
 		while (admitted.size()<kMaxProjectedDraws) {
-			const uint32_t lane=MaterialFrameContract::NextTransferClass(remaining,cursor);
+			const uint32_t lane=otherRows>=otherRowLimit ? (remaining[6]?6u:UINT32_MAX) : MaterialFrameContract::NextTransferClass(remaining,cursor);
 			if (lane==UINT32_MAX) break;
+			if (lane!=6u) ++otherRows;
 			const auto& candidates=classes[lane];
 			const size_t row=(uint64_t(nativeMaterialTransferSequence/MaterialFrameContract::kTransferClassCount)+used[lane]++)%candidates.size();
 			admitted.push_back(std::move(inputs[candidates[row]]));
 			--remaining[lane];
 			cursor=(lane+1u)%MaterialFrameContract::kTransferClassCount;
 		}
-		if (!admitted.empty() && globals::features::nativePBR.PublishProjection(*backend,draws.stamp,admitted))
-			++nativeMaterialTransferSequence;
+		const bool published=!admitted.empty() && globals::features::nativePBR.PublishProjection(*backend,draws.stamp,admitted);
+		if (published) ++nativeMaterialTransferSequence;
+		// A page with no capturable rows must not permanently stall the cursor.
+		if (published || !draws.terrainConstantSnapshots)
+			terrainSnapshotStart=MaterialFrameContract::NextSnapshotPage(terrainSnapshotStart,draws.terrainCandidates,kTerrainSnapshotCapacity);
 	}
 }
 
