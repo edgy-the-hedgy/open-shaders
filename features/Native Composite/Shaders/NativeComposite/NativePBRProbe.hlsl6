@@ -337,6 +337,37 @@ Sample EvaluateRasterLocal(RawRasterSurface raw, uint2 mapped, float3 viewRay, f
         coat=(NativeCoatSample)0; shadow=(NativeParallaxShadowSample)0; return result;
     }
     if (HasEvaluatedNativeBase(result.color.a)) {
+        // Legacy model-space materials use a separate live gloss texture.
+        // Do not overwrite authored PBR or complex-environment reflectance.
+        if (raw.auxiliaryKind==9u && (material.controls.y&(1u<<9u))!=0u &&
+            (material.controls.y&(1u<<8u))==0u) {
+            float2 specRG=RawHalf2(raw.auxiliary.x), specBShine=RawHalf2(raw.auxiliary.y);
+            float2 scales=RawHalf2(raw.auxiliary.z), minima=RawHalf2(raw.auxiliary.w);
+            bool specular=(raw.pixelDescriptor&(1u<<9u))!=0u;
+            float gloss=0.0;
+            bool glossReady=!specular;
+            if (specular && ProjectionRowCount>0u && raw.drawIdentity.x!=0u &&
+                raw.drawIdentity.x<=(HasRawInput&0x7fffffffu)) {
+                uint row=RasterProjectionLookup.Load((raw.drawIdentity.x-1u)*4u);
+                if (row<ProjectionRowCount) {
+                    uint4 metadata=ProjectionRecords.Load(int3(0,row,0));
+                    uint4 textures=ProjectionRecords.Load(int3(7,row,0));
+                    if (metadata.x==0xfffffffbu && metadata.z==row && textures.x<NativeProjectionTextureCapacity) {
+                        float bias=exp2(clamp(MaterialMipBias,-8.0,8.0));
+                        gloss=NativeProjectionGrad(textures.x,metadata.w&3u,raw.uv,raw.dx*bias,raw.dy*bias).r;
+                        glossReady=isfinite(gloss);
+                    }
+                }
+            }
+            if (glossReady && all(isfinite(float4(specRG,specBShine))) && all(isfinite(float4(scales,minima)))) {
+                gloss=saturate(gloss);
+                float shineRough=pow(2.0/(max(specBShine.y,0.0)+2.0),0.25);
+                float mapRough=(1.0-gloss)*(1.0-gloss);
+                result.normal.w=specular ? clamp(lerp(shineRough,mapRough,saturate(scales.x)*(1.0-gloss))*max(minima.y,0.0),0.045,1.0) : 1.0;
+                result.f0.rgb=saturate(max(minima.x,saturate(gloss*float3(specRG,specBShine.x)/3.14159265)*max(scales.y,0.0)));
+            }
+            result.color.a=SurfaceFeatureLimited;
+        }
         if ((binding.flags&SurfaceBaseOnlyBinding)!=0u) result.color.a=SurfaceFeatureLimited;
         if (HasNativeThinSurface(coat)) {
             coat.normalRoughness.xyz=dot(coat.normalRoughness.xyz,viewRay)>0.0 ? -coat.normalRoughness.xyz : coat.normalRoughness.xyz;
