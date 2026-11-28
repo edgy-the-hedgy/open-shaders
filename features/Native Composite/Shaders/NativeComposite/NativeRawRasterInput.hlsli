@@ -41,8 +41,8 @@ RawRasterSurface ReadRawRaster(uint2 pixel, float depth, uint instance, uint pri
     result.color=float4(b.x&255u,(b.x>>8)&255u,(b.x>>16)&255u,b.x>>24)/255.0;
     result.tangent=RawOct(c.x); result.bitangent=RawOct(c.y); result.normal=RawOct(c.z);
     uint4 material = RawRasterMaterialTechnique.Load(int3(pixel,0));
-    result.materialIndex=material.x; result.vertexDescriptor=material.y;
-    result.pixelDescriptor=material.z; result.extraDescriptor=material.w;
+    result.materialIndex=material.x; result.pixelDescriptor=material.y;
+    result.extraDescriptor=material.z; result.extraFeatureDescriptor=material.w;
     result.alpha=float(c.w >> 19u) / 8191.0;
     result.covered=true;
     result.front=(c.w&65536u)!=0u;

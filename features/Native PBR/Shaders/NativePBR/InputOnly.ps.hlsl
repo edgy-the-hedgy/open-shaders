@@ -1,11 +1,12 @@
 // Full Native original opaque raster draw: raw inputs plus engine compatibility.
-// No material textures, BRDF, lighting, shadow or environment evaluation.
+// Only cutout visibility may sample texture alpha; no BRDF, lighting, shadow or environment evaluation.
 #include "Common/FrameBuffer.hlsli"
 #include "Common/GBuffer.hlsli"
 #include "Common/MotionBlur.hlsli"
 #include "Common/Permutation.hlsli"
 #if defined(NATIVE_INPUT_ALPHA_TEST)
 #include "Common/SharedData.hlsli"
+#include "Common/NativeInputCoverage.hlsli"
 Texture2D<float4> CoverageTexture : register(t0);
 SamplerState CoverageSampler : register(s0);
 cbuffer CoverageGeometry : register(b2) { float4 CoverageMaterial : packoffset(c3); };
@@ -71,14 +72,9 @@ RawOutput main(RasterInput input, uint primitive : SV_PrimitiveID, bool front : 
     float3x3 basis = transpose(float3x3(input.tbn0, input.tbn1, input.tbn2));
     float alpha = 1.0;
 #if defined(NATIVE_INPUT_ALPHA_TEST)
-    alpha = CoverageTexture.SampleBias(CoverageSampler, input.uv, SharedData::MipBias).a;
-    if ((PixelDescriptor & Permutation::LightingFlags::AdditionalAlphaMask) != 0u) {
-        const float maskValues[16] = {0.003922,0.533333,0.133333,0.666667,0.800000,0.266667,0.933333,0.400000,
-            0.200000,0.733333,0.066667,0.600000,0.996078,0.466667,0.866667,0.333333};
-        uint2 p = uint2(input.position.xy);
-        clip(CoverageMaterial.z - maskValues[((p.x << 2) & 12u) | (p.y & 3u)]);
-    } else alpha *= CoverageMaterial.z;
-    alpha *= input.color.a;
+    alpha = NativeInputCoverage::Alpha(CoverageTexture.SampleBias(CoverageSampler, input.uv, SharedData::MipBias).a,
+        CoverageMaterial.z, input.color.a, input.position.xy,
+        (PixelDescriptor & Permutation::LightingFlags::AdditionalAlphaMask) != 0u);
     clip(alpha - CoverageThreshold);
 #endif
     result.diffuse.a = 1.0;
@@ -102,6 +98,6 @@ RawOutput main(RasterInput input, uint primitive : SV_PrimitiveID, bool front : 
     result.basisFlags = uint4(PackOct(basis[0]), PackOct(basis[1]), PackOct(basis[2]),
         (TokenBase + primitive) | (front ? 65536u : 0u) | 131072u | 262144u |
         (uint(round(saturate(alpha) * 8191.0)) << 19u));
-    result.materialTechnique = uint4(MaterialIndex, VertexDescriptor, PixelDescriptor, ExtraDescriptor);
+    result.materialTechnique = uint4(MaterialIndex, PixelDescriptor, ExtraDescriptor, ExtraFeatureDescriptor);
     return result;
 }

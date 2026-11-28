@@ -111,7 +111,7 @@ class ArchitectureLintTests(unittest.TestCase):
     def test_full_native_shader_inputs_share_one_boot_latched_cache_identity(self):
         cache = (ROOT / "src/ShaderCache.cpp").read_text(encoding="utf-8")
         self.assertIn('"FULL_NATIVE_INPUT"', cache)
-        self.assertIn('L"_full_native_input_v3"', cache)
+        self.assertIn('L"_full_native_input_v4"', cache)
         self.assertNotIn('L"_native_pbr_input_v1"', cache)
         for name in ("Lighting", "Effect", "Sky", "DistantTree"):
             source = (ROOT / f"package/Shaders/{name}.hlsl").read_text(encoding="utf-8")
@@ -149,6 +149,16 @@ class ArchitectureLintTests(unittest.TestCase):
         self.assertIn("#if defined(NATIVE_INPUT_ALPHA_TEST)", raw)
         self.assertIn("CoverageTexture.SampleBias", raw)
         self.assertIn("clip(alpha - CoverageThreshold)", raw)
+        self.assertIn("NativeInputCoverage::Alpha", raw)
+        lighting = (ROOT / "package/Shaders/Lighting.hlsl").read_text(encoding="utf-8")
+        begin = lighting.index("// Full Native deferred Lighting is strictly input-only")
+        end = lighting.index("#\telse\nFUR_EARLY_DEPTH_STENCIL", begin)
+        visibility = lighting[begin:end]
+        self.assertIn("MotionBlur::GetSSMotionVector", visibility)
+        self.assertIn("NativeInputCoverage::Alpha", visibility)
+        for forbidden in ("EvaluateBRDF", "NativeForwardEnvironment::Sample", "GetDynamicCubemap", "ParallaxUV", "ShadowSampling::"):
+            self.assertNotIn(forbidden, visibility)
+        self.assertNotIn("psout.Diffuse.xyz", visibility)
         self.assertIn("uint4 materialTechnique : SV_Target6", raw)
         self.assertIn("RawRasterMaterialTechnique", consumer)
         self.assertIn("raw.materialIndex != Bindings[instance].materialIndex", (ROOT / "features/Native Composite/Shaders/NativeComposite/NativePBRProbe.hlsl6").read_text(encoding="utf-8"))

@@ -1302,10 +1302,69 @@ bool UseSkylightingShadowVisibility()
 #		define FUR_EARLY_DEPTH_STENCIL
 #	endif
 
-FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input,
 #	if defined(NATIVE_PBR_INPUT) && defined(DEFERRED)
-	uint nativePrimitiveID : SV_PrimitiveID,
-#	endif
+#		include "Common/NativeInputCoverage.hlsli"
+
+// Full Native deferred Lighting is strictly input-only, including draws not
+// admitted to the integer MRT capture. Unmatched draws preserve visibility,
+// motion and compatibility normals but cannot certify a native material owner.
+PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
+{
+	PS_OUTPUT psout = (PS_OUTPUT)0;
+	const uint eyeIndex = Stereo::GetEyeIndexPS(input.Position, VPOSOffset);
+	const float2 uv = input.TexCoord0.xy;
+	float alpha = 1.0;
+#		if defined(LANDSCAPE) && !defined(LOD_LAND_BLEND)
+	alpha = 1.0;
+#		else
+	float vertexAlpha = 1.0;
+#			if !(defined(TREE_ANIM) || defined(LODOBJECTSHD) || defined(LODOBJECTS))
+	vertexAlpha = input.Color.w;
+#			endif
+	float sampledAlpha = TexColorSampler.SampleBias(SampColorSampler, uv, SharedData::MipBias).a;
+#			if defined(DO_ALPHA_TEST)
+	alpha = NativeInputCoverage::Alpha(sampledAlpha, MaterialData.z, vertexAlpha, input.Position.xy,
+		(Permutation::PixelShaderDescriptor & Permutation::LightingFlags::AdditionalAlphaMask) != 0);
+#				if defined(DEPTH_WRITE_DECALS)
+	clip(alpha - 0.0156862754);
+	alpha = saturate(1.05 * alpha);
+#				endif
+	clip(alpha - AlphaTestRefRS);
+#			else
+	alpha = sampledAlpha * MaterialData.z * vertexAlpha;
+#			endif
+#		endif
+#		if defined(FUR_SHELLS)
+	const float furMipScale = exp2(SharedData::MipBias);
+	float4 furSample = FurShells::TexShell.SampleGrad(SampColorSampler,
+		FurShells::GetClumpedUv(uv, input.FurShell, GetFurWet()), ddx(uv)*furMipScale, ddy(uv)*furMipScale);
+	bool furRootCovered = FurShells::IsRootCovered(input.FurRoot, fwidth(input.FurRoot.w), eyeIndex);
+	float screenNoise = Random::InterleavedGradientNoise(Stereo::EyeStableNoiseCoord(input.Position.xy, SharedData::BufferDim.xy), SharedData::FrameCount);
+	float furCoverage = FurShells::GetCoverage(furSample.w,
+		lerp(FurShells::RootThreshold, FurShells::TipThreshold, input.FurShell), uv)*FurShells::GetLayerWeight(input.FurShell);
+	if (input.FurShell > 0.0 && (furRootCovered || furCoverage < screenNoise)) discard;
+#		endif
+	float3 geometricNormal;
+#		if defined(SKINNED) || !defined(MODELSPACENORMALS)
+	geometricNormal = float3(input.TBN0.z, input.TBN1.z, input.TBN2.z);
+#		else
+	geometricNormal = cross(ddx(input.WorldPosition.xyz), ddy(input.WorldPosition.xyz));
+#		endif
+	if (dot(geometricNormal, geometricNormal) < 1e-8) geometricNormal = float3(0,0,1);
+	const float3 normalVS = normalize(FrameBuffer::WorldToView(normalize(geometricNormal) * (frontFace ? 1.0 : -1.0), false, eyeIndex));
+	const float2 motion = MotionBlur::GetSSMotionVector(input.WorldPosition, input.PreviousWorldPosition, eyeIndex);
+	psout.Diffuse.a = saturate(alpha);
+	psout.MotionVectors = float4(motion, 0, saturate(alpha));
+	psout.NormalGlossiness = float4(GBuffer::EncodeNormal(normalVS), 0, saturate(alpha));
+	psout.Masks2 = float4(0, 0, 0, saturate(alpha));
+	// No diffuse, specular, reflection or evaluated material color is written.
+#		if defined(FUR_SHELLS_DEPTH)
+	psout = (PS_OUTPUT)0;
+#		endif
+	return psout;
+}
+#	else
+FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input,
 	bool frontFace : SV_IsFrontFace)
 {
 	PS_OUTPUT psout;
@@ -4490,17 +4549,12 @@ FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input,
 	psout.ReflectionRadiance = captureRadiance ? float4(radianceColor, psout.Diffuse.w) : psout.Diffuse;
 #	endif
 
-#	if defined(NATIVE_PBR_INPUT) && defined(DEFERRED)
-	// Only the input-only original draw may publish a native winner token.
-	// A nonparticipating writer must not certify stale raw attributes.
-	psout.Masks2.z = 0.0;
-#	endif
-
 #	if defined(FUR_SHELLS_DEPTH)
 	psout = (PS_OUTPUT)0;
 #	endif
 
 	return psout;
 }
+#	endif // Native deferred input-only / legacy and forward lighting
 
 #endif  // PSHADER

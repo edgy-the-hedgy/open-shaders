@@ -236,7 +236,7 @@ namespace NativePBR
 			if (!frameCB || !oldDepth) return false;
 			D3D11_DEPTH_STENCIL_DESC originalDepth{};
 			oldDepth->GetDesc(&originalDepth);
-			if (!originalDepth.DepthEnable || originalDepth.StencilEnable || sampleMask == 0) return false;
+			if (!originalDepth.DepthEnable || sampleMask == 0) return false;
 			if (oldBlend) {
 				D3D11_BLEND_DESC originalBlend{};
 				oldBlend->GetDesc(&originalBlend);

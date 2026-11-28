@@ -166,8 +166,7 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
     uv = uv*material.uv[0].zw+material.uv[0].xy;
     // Native material UV transforms remain authoritative. Do not admit a raster
     // input with incompatible coordinates or an object-space normal layout.
-    raw.valid = raw.valid && (binding.flags & 512u)==0u &&
-        all(abs(raw.uv-uv)<=max(0.001,abs(uv)*0.002));
+    raw.valid = raw.valid && all(abs(raw.uv-uv)<=max(0.001,abs(uv)*0.002));
     if (raw.valid) {
         float3 rn=mul(raw.normal,objectToWorld),rt=mul(worldToObject,raw.tangent),rb=mul(worldToObject,raw.bitangent);
         raw.valid=all(isfinite(rn)) && all(isfinite(rt)) && all(isfinite(rb)) &&
