@@ -3,6 +3,7 @@
 #include "Features/DX12/DX12NativeComposite.h"
 #include "Features/DX12/DX12NativeWorldFrame.h"
 #include <array>
+#include <cmath>
 #include <memory>
 #include <d3d11_4.h>
 #include <d3d12.h>
@@ -36,10 +37,18 @@ namespace DX12Native
 		winrt::com_ptr<ID3D12Resource> generationDepth, generationMotion;
 		bool resetHistory = false;
 		bool MatchesFrame(uint32_t currentFrame, uint32_t w, uint32_t h) const { return frame == currentFrame && width == w && height == h; }
+		bool HasParameters() const
+		{
+			return width && height && displayWidth && displayHeight && width <= displayWidth && height <= displayHeight &&
+				std::isfinite(jitterX) && std::isfinite(jitterY) && std::isfinite(cameraNear) &&
+				std::isfinite(cameraFar) && cameraNear > 0 && cameraFar > cameraNear &&
+				std::isfinite(cameraFov) && cameraFov > 0 && std::isfinite(frameTimeMs) && frameTimeMs >= 0 &&
+				std::isfinite(preExposure) && preExposure > 0;
+		}
 		bool MatchesInputs(uint32_t currentFrame, uint32_t w, uint32_t h,
 			const std::array<ID3D11Resource*, UpscalerGuideSet::Count>& sources) const
 		{
-			if (!encoderProduced || !MatchesFrame(currentFrame,w,h) || sourceIdentities != sources) return false;
+			if (!encoderProduced || !HasParameters() || !MatchesFrame(currentFrame,w,h) || sourceIdentities != sources) return false;
 			for (size_t i=0;i<sources.size();++i) if (!sources[i] || sourceLeases[i].get()!=sources[i]) return false;
 			return true;
 		}
