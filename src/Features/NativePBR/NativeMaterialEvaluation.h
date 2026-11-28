@@ -580,11 +580,14 @@ namespace DX12Native
 		{
 			PreparedMaterialFrame prepared;
 			prepared.geometryRevision = revision; // allocator generation for this independent table
-			prepared.bindings.resize(materials.size(), NativePBR::PackGpuDrawBinding(0, 0, UINT32_MAX, 0));
-			std::vector<BindingSource> sources(materials.size());
+			// Keep invalid backing storage for an empty source table; no source
+			// ordinal can address it and the published source count remains zero.
+			const auto backingRows = std::max<size_t>(materials.size(), 1u);
+			prepared.bindings.resize(backingRows, NativePBR::PackGpuDrawBinding(0, 0, UINT32_MAX, 0));
+			std::vector<BindingSource> sources(backingRows);
 			// Eight layer binding indices, base layer count, three reserved words.
 			// Ordinary rows have count zero. This private table is not raster ABI v6.
-			std::vector<std::array<uint32_t, 12>> landscapeRows(materials.size());
+			std::vector<std::array<uint32_t, 12>> landscapeRows(backingRows);
 			for (auto& row : landscapeRows) {
 				row.fill(UINT32_MAX);
 				row[8] = row[9] = row[10] = row[11] = 0u;
