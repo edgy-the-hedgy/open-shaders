@@ -31,6 +31,8 @@ namespace NativePBR
 		std::vector<RasterDrawRecord> drawRecords;
 		// One-based materialOrdinal indexes this CPU metadata snapshot (row ordinal-1).
 		std::vector<DX12::PreparedMaterialSource> materialSources;
+		// Private producer reuse stamps; consumers retain the same value-row contract.
+		std::vector<std::shared_ptr<const DX12::PreparedMaterialSource>> materialSourceSnapshots;
 		// Draw ordinal - 1 indexes this optional immutable binding snapshot.
 		std::vector<std::shared_ptr<const RasterSourceViews>> drawSourceViews;
 		winrt::com_ptr<ID3D12Resource> drawTable;
@@ -51,7 +53,7 @@ namespace NativePBR
 		void Publish(const GraphicsBackend& backend, ID3D11Texture2D* mask,
 			const std::array<ID3D11Texture2D*, InputOnly::kPlaneCount>& sources,
 			DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,
-			std::span<const RasterDrawRecord> drawRecords, std::span<const DX12::PreparedMaterialSource> materials, std::span<const std::shared_ptr<const RasterSourceViews>> sourceViews, uint32_t draws, uint32_t renderWidth, uint32_t renderHeight, bool allWritersKnown);
+			std::span<const RasterDrawRecord> drawRecords, std::span<const std::shared_ptr<const DX12::PreparedMaterialSource>> materials, std::span<const std::shared_ptr<const RasterSourceViews>> sourceViews, uint32_t draws, uint32_t renderWidth, uint32_t renderHeight, bool allWritersKnown);
 		std::shared_ptr<const RawInputFrame> GetForFrame(uint32_t frame) const;
 		std::shared_ptr<const RawInputFrame> Get(DX12Native::MaterialFrameContract::RasterIdentityStamp stamp) const;
 		void Reset();

@@ -946,9 +946,9 @@ namespace DX12Native
                     instances.push_back(instance);
                 }
                 std::vector<std::shared_ptr<RigidMesh>> shadingOrder;
-                std::vector<DX12::PreparedMaterialSource> materialSources;
-                if (next->actorSource && next->actorSource->materialSources)
-                    materialSources = *next->actorSource->materialSources;
+                CharacterMaterialWorker::Sources materialSources;
+                if (next->actorSource)
+                    CharacterMaterialWorker::AppendRows(materialSources, next->actorSource->materialSources);
                 std::vector<std::shared_ptr<RigidMesh>> built;
                 for (const auto& mover : movers) {
                     auto& mesh = *mover.mesh;
@@ -971,7 +971,7 @@ namespace DX12Native
                     instance.AccelerationStructure = blas->GetGPUVirtualAddress();
                     instances.push_back(instance); ++next->rigidInstances;
                     shadingOrder.push_back(mover.mesh);
-                    materialSources.push_back(mover.material ? *mover.material : DX12::PreparedMaterialSource{});
+                    materialSources.push_back(mover.material);
                 }
                 if (!next->rigidInstances) { Eval::Check(cmd->Close()); return; }
                 if (materialSources.size() == next->parts + next->rigidInstances) {
@@ -982,7 +982,7 @@ namespace DX12Native
                         if (next->rigidShading) {
                             next->rigidShadingCount = next->rigidInstances;
                             next->materials = moverMaterialWorker.Update(backend, frame, scope,
-                                std::make_shared<const std::vector<DX12::PreparedMaterialSource>>(std::move(materialSources)));
+                                std::make_shared<const CharacterMaterialWorker::Sources>(std::move(materialSources)));
                         }
                     } catch (const std::exception&) {
                         next->rigidShading = nullptr; next->rigidShadingCount = 0;

@@ -136,7 +136,7 @@ namespace NativePBR
 
 	void RawInputCapture::Publish(const GraphicsBackend& backend, ID3D11Texture2D* mask,
 		const std::array<ID3D11Texture2D*, InputOnly::kPlaneCount>& sources,
-		RasterIdentityStamp stamp, std::span<const RasterDrawRecord> drawRecords, std::span<const DX12::PreparedMaterialSource> materials, std::span<const std::shared_ptr<const RasterSourceViews>> sourceViews, uint32_t draws, uint32_t renderWidth, uint32_t renderHeight, bool allWritersKnown)
+		RasterIdentityStamp stamp, std::span<const RasterDrawRecord> drawRecords, std::span<const std::shared_ptr<const DX12::PreparedMaterialSource>> materials, std::span<const std::shared_ptr<const RasterSourceViews>> sourceViews, uint32_t draws, uint32_t renderWidth, uint32_t renderHeight, bool allWritersKnown)
 	{
 		published.reset();
 		if (!mask || !draws || drawRecords.empty() || sourceViews.size() != drawRecords.size() || drawRecords.size() > UINT32_MAX / sizeof(RasterDrawRecord) ||
@@ -159,8 +159,12 @@ namespace NativePBR
 			active->draws = draws;
 			active->drawRecords.assign(drawRecords.begin(), drawRecords.end());
 			active->materialSources.resize(materials.size());
-			for (size_t i=0;i<materials.size();++i)
-				if (active->materialSources[i] != materials[i]) active->materialSources[i]=materials[i];
+			active->materialSourceSnapshots.resize(materials.size());
+			for (size_t i = 0; i < materials.size(); ++i) {
+				if (active->materialSourceSnapshots[i] == materials[i]) continue;
+				active->materialSources[i] = materials[i] ? *materials[i] : DX12::PreparedMaterialSource{};
+				active->materialSourceSnapshots[i] = materials[i];
+			}
 			active->drawSourceViews.assign(sourceViews.begin(), sourceViews.end());
 			const uint64_t tableBytes = drawRecords.size_bytes();
 			if (!active->drawTable || active->drawTableCapacity < tableBytes) {

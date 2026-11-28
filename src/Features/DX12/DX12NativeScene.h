@@ -207,9 +207,6 @@ private:
 	D3D11_PRIMITIVE_TOPOLOGY nativeInputTopology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
 	UINT nativeInputIndexOffset = UINT_MAX, nativeInputIndexElementBytes = 0;
 	FullNativeRasterDrawState fullNativeRasterDraws;
-	// CPU-only packing scratch; RawInputCapture retains its existing ABI v6
-	// value rows and copies them into its own immutable frame slot.
-	std::vector<DX12::PreparedMaterialSource> rasterMaterialRows;
 	struct RasterMaterialCacheEntry
 	{
 		uintptr_t property = 0, material = 0;

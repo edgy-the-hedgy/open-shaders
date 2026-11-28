@@ -1620,13 +1620,9 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 			Util::AsReal(targets[ALBEDO].texture), Util::AsReal(targets[SPECULAR].texture),
 			Util::AsReal(targets[REFLECTANCE].texture), Util::AsReal(targets[MASKS].texture) };
 		const auto world = globals::state ? GetWorldFrame(draws.stamp.frame, globals::state->frameCount) : nullptr;
-		// Material ordinals and the RawInputFrame value-row contract are unchanged.
-		// Reuse row storage; unchanged metadata needs no new path allocations.
-		rasterMaterialRows.resize(draws.materialSources.size());
-		for (size_t i = 0; i < draws.materialSources.size(); ++i)
-			if (rasterMaterialRows[i] != *draws.materialSources[i])
-				rasterMaterialRows[i] = *draws.materialSources[i];
-		rawInputCapture.Publish(*backend, Util::AsReal(targets[MASKS2].texture), inputs, draws.stamp, draws.drawRecords, rasterMaterialRows, draws.drawSourceViews, draws.draws,
+		// Worker 05 still receives the same value rows; the retired frame
+		// slot reuses each unchanged immutable source without copying strings.
+		rawInputCapture.Publish(*backend, Util::AsReal(targets[MASKS2].texture), inputs, draws.stamp, draws.drawRecords, draws.materialSources, draws.drawSourceViews, draws.draws,
 			world ? world->width : 0u, world ? world->height : 0u,
 			draws.allWritersKnown && draws.knownWriters != 0 && world != nullptr);
 	}
@@ -1790,7 +1786,6 @@ void DX12NativeScene::ApplyPendingLoadingReset()
 		globals::features::upscaling.nativeComposite.ResetShadowHistory();
 		fullNativeRasterDraws = {};
 		rasterMaterialCache = {};
-		rasterMaterialRows = {};
 		rawInputCapture.Reset();
 		if (characterCasters) characterCasters->Reset();
 		ResetFullNativeEnvironment();
@@ -1841,7 +1836,6 @@ void DX12NativeScene::OnRuntimeDisabled()
 	globals::features::upscaling.nativeComposite.ResetShadowHistory();
 	fullNativeRasterDraws = {};
 		rasterMaterialCache = {};
-		rasterMaterialRows = {};
 	ResetFullNativeEnvironment();
 	fullNativeDirect.reset();
 	if (globals::features::dx12Control.UsesExclusiveMaterials()) {

@@ -94,7 +94,16 @@ namespace DX12Native
     class CharacterMaterialWorker
     {
         using Eval = NativeMaterialEvaluation;
-        using Sources = std::vector<DX12::PreparedMaterialSource>;
+        using Source = DX12::PreparedMaterialSource;
+    public:
+        using Sources = std::vector<std::shared_ptr<const Source>>;
+    private:
+        static bool SameSources(const Sources& a, const Sources& b)
+        {
+            return std::ranges::equal(a, b, [](const auto& lhs, const auto& rhs) {
+                return lhs == rhs || (lhs && rhs && *lhs == *rhs);
+            });
+        }
         struct State
         {
             std::mutex mutex;
@@ -136,7 +145,8 @@ namespace DX12Native
                 prepared.bindings.resize(sources->size());
                 std::vector<Eval::BindingSource> bindings(sources->size());
                 for (size_t i = 0; i < sources->size(); ++i) {
-                    const auto& source = (*sources)[i];
+                    if (!(*sources)[i]) continue;
+                    const auto& source = *(*sources)[i];
                     // Ordinal identities are local to this independent material generation.
                     auto recipe = CompilePreparedMeshRecipe(source, i + 1u, generation, catalog.get());
                     if (!recipe) continue;
@@ -208,6 +218,21 @@ namespace DX12Native
             state->sources.reset(); state->last.reset(); state->catalog.reset();
             state->scope = 0; state->retryFrame = 0; ++state->generation;
         }
+        // Alias the original immutable value rows without copying path strings.
+        static void AppendRows(Sources& dest, const std::shared_ptr<const std::vector<Source>>& source)
+        {
+            if (!source) return;
+            dest.reserve(dest.size() + source->size());
+            for (const auto& row : *source) dest.emplace_back(source, &row);
+        }
+        std::shared_ptr<const CharacterMaterialPublication> Update(const GraphicsBackend& backend,
+            uint32_t frame, uint32_t scope, std::shared_ptr<const std::vector<Source>> sources)
+        {
+            if (!sources) return nullptr;
+            auto rows = std::make_shared<Sources>();
+            AppendRows(*rows, sources);
+            return Update(backend, frame, scope, std::shared_ptr<const Sources>(std::move(rows)));
+        }
         std::shared_ptr<const CharacterMaterialPublication> Update(const GraphicsBackend& backend,
             uint32_t frame, uint32_t scope, std::shared_ptr<const Sources> sources)
         {
@@ -220,7 +245,7 @@ namespace DX12Native
                 state->last.reset();
                 state->sources.reset();
             }
-            if (!state->sources || (state->sources != sources && *state->sources != *sources) ||
+            if (!state->sources || (state->sources != sources && !SameSources(*state->sources, *sources)) ||
                 state->catalog != catalog || state->scope != scope) {
                 state->sources = std::move(sources);
                 state->catalog = catalog; state->scope = scope; state->backend = backend;
