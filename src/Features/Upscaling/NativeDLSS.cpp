@@ -1,4 +1,5 @@
 #include "NativeDLSS.h"
+#include "WorldCameraLookup.h"
 
 #include <algorithm>
 #include <cstring>
@@ -43,6 +44,24 @@ bool NativeDLSS::Upscale(ID3D11Resource* a_colorOut, ID3D11Resource* a_motionVec
 				{typedDepth->resource.get(),a_motionVectors,a_reactiveMask,a_transparencyMask}) ||
 			prepared->displayWidth != a_extentOut.width || prepared->displayHeight != a_extentOut.height))
 		return false;
+
+	// Camera absence is a per-frame input failure, not a provider fault.
+	if (globals::features::dx12Control.UsesExclusiveMaterials() && state->worldRenderedThisFrame &&
+		(!prepared || !prepared->world) && !UpscalingCamera::GetWorldCameraFrame())
+		return false;
+
+	const auto covers = [](ID3D11Resource* resource, uint32_t w, uint32_t h) {
+		winrt::com_ptr<ID3D11Texture2D> texture;
+		if (!resource || FAILED(resource->QueryInterface(IID_PPV_ARGS(texture.put())))) return false;
+		D3D11_TEXTURE2D_DESC d{};
+		texture->GetDesc(&d);
+		return w && h && d.Width >= w && d.Height >= h && d.ArraySize == 1 && d.SampleDesc.Count == 1;
+	};
+	if (!covers(typedDepth->resource.get(),a_extentIn.width,a_extentIn.height) ||
+		!covers(a_motionVectors,a_extentIn.width,a_extentIn.height) ||
+		!covers(a_reactiveMask,a_extentIn.width,a_extentIn.height) ||
+		!covers(a_transparencyMask,a_extentIn.width,a_extentIn.height) ||
+		!covers(a_colorOut,a_extentOut.width,a_extentOut.height)) return false;
 
 	if (!EnsureStreamline() || !EnsureCommandContexts())
 		return false;
