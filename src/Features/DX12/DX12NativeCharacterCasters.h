@@ -211,194 +211,224 @@ namespace DX12Native
             }
         }
 
-        static bool CaptureRigid(RE::BSGeometry& geometry, Snapshot& out)
+        // Raw engine buffers are copied once while their owner is accessible.
+        // No engine pointers cross the task boundary.
+        struct ActorPartitionSource
         {
-            auto* tri = geometry.AsTriShape();
-            const auto& runtime = geometry.GetGeometryRuntimeData();
-            if (!tri || !runtime.rendererData || !runtime.rendererData->rawVertexData ||
-                !runtime.rendererData->rawIndexData || out.bones.size() >= kMaxBones)
-                return false;
-            auto desc = runtime.vertexDesc;
-            const auto stride = desc.GetSize();
-            const auto counts = tri->GetTrishapeRuntimeData();
-            const size_t count = counts.vertexCount, indexCount = size_t(counts.triangleCount) * 3;
-            if (!desc.HasFlag(RE::BSGraphics::Vertex::VF_VERTEX) || stride < 16 || stride > 256 ||
-                !count || !indexCount || count > 65535 || out.vertices.size() + count > kMaxVertices ||
-                out.indices.size() + indexCount > kMaxIndices) return false;
-            const auto transform = Rows(geometry.world);
-            if (!Finite(transform)) return false;
-            std::vector<Vertex> vertices;
-            vertices.reserve(count);
-            const uint32_t bone = uint32_t(out.bones.size()), base = uint32_t(out.vertices.size());
-            for (size_t i = 0; i < count; ++i) {
-                Vertex v{ {}, { bone, bone, bone, bone }, { 1, 0, 0, 0 } };
-                std::memcpy(v.position.data(), runtime.rendererData->rawVertexData + i * stride, sizeof(v.position));
-                if (!Finite(v.position)) return false;
-                CaptureAttributes(desc, runtime.rendererData->rawVertexData + i * stride, v);
-                vertices.push_back(v);
-            }
-            const size_t step = std::max<size_t>(1, count / 32);
-            for (size_t i = 0; i < count; i += step) {
-                const auto& v = vertices[i].position;
-                std::array<float, 3> p{};
-                for (uint32_t row = 0; row < 3; ++row)
-                    p[row] = transform[row*4]*v[0] + transform[row*4+1]*v[1] + transform[row*4+2]*v[2] + transform[row*4+3];
-                if (!InsideBound(geometry.worldBound, p)) return false;
-            }
-            std::vector<uint32_t> indices;
-            indices.reserve(indexCount);
-            for (size_t i = 0; i < indexCount; ++i) {
-                const auto index = runtime.rendererData->rawIndexData[i];
-                if (index >= count) return false;
-                indices.push_back(base + index);
-            }
-            out.vertices.insert(out.vertices.end(), vertices.begin(), vertices.end());
-            out.bones.push_back(transform);
-            out.indices.insert(out.indices.end(), indices.begin(), indices.end());
-            out.primitiveParts.insert(out.primitiveParts.end(), indices.size() / 3, out.parts);
-            out.materialSources.push_back(CaptureCharacterMaterial(geometry, HasColor(desc)));
-            ++out.parts;
-            return true;
-        }
+            RE::BSGraphics::VertexDesc desc{};
+            std::vector<uint8_t> vertices;
+            std::vector<uint16_t> indices, boneMap;
+        };
+        struct ActorPartSource
+        {
+            std::vector<ActorPartitionSource> partitions;
+            std::vector<Bone> bones;
+            RE::NiBound bound{};
+            DX12::PreparedMaterialSource material;
+            bool skinned = false;
+        };
+        struct ActorSourceSnapshot
+        {
+            std::vector<ActorPartSource> parts;
+            uint64_t bytes = 0;
+            size_t vertices = 0, indices = 0, bones = 0;
+            uint32_t rejected = 0;
+        };
+        static constexpr uint64_t kActorSnapshotBudget = 96ull * VideoMemoryBudget::kMiB;
 
-        static bool CapturePart(RE::BSGeometry* geometry, Snapshot& out)
+        static bool CapturePart(RE::BSGeometry* geometry, ActorSourceSnapshot& out)
         {
-            if (!geometry || geometry->GetAppCulled() || geometry->AsDynamicTriShape())
-                return false;
+            if (!geometry || geometry->GetAppCulled() || geometry->AsDynamicTriShape()) return false;
             const auto& runtime = geometry->GetGeometryRuntimeData();
             const auto* property = runtime.shaderProperty.get();
             if (runtime.alphaProperty || !property ||
                 property->GetRTTI() != globals::rtti::BSLightingShaderPropertyRTTI.get()) return false;
             using Flag = RE::BSShaderProperty::EShaderPropertyFlag;
+            using V = RE::BSGraphics::Vertex;
             if (!property->flags.any(Flag::kCastShadows) || property->flags.any(Flag::kVertexAlpha) ||
                 property->flags.any(Flag::kScreendoorAlphaFade) || property->flags.any(Flag::kRefraction) ||
                 property->flags.any(Flag::kTreeAnim) || property->flags.any(Flag::kDecal) ||
                 property->flags.any(Flag::kDynamicDecal)) return false;
-            if (!runtime.skinInstance) return CaptureRigid(*geometry, out);
-            const auto* skin = runtime.skinInstance.get();
-            const auto* partitions = skin->skinPartition.get();
-            if (!partitions || !skin->skinData || !skin->bones || !skin->numMatrices ||
-                skin->numMatrices > 256 || skin->numMatrices > skin->skinData->GetBoneCount() ||
-                !skin->skinData->GetBoneDataAddress(0) || !partitions->numPartitions ||
-                partitions->numPartitions > kMaxPartitions || partitions->partitions.size() < partitions->numPartitions ||
-                out.bones.size() + skin->numMatrices > kMaxBones)
-                return false;
-
-            size_t count = 0, indexCount = 0;
-            for (uint32_t i = 0; i < partitions->numPartitions; ++i) {
-                const auto& part = partitions->partitions[i];
-                auto desc = part.vertexDesc;
+            ActorPartSource part;
+            part.bound = geometry->worldBound;
+            size_t count = 0, indexCount = 0, boneCount = 0;
+            uint64_t bytes = 0, working = 0;
+            bool hasColor = true;
+            const auto add = [&](size_t vertices, size_t indices, size_t stride, size_t maps) {
+                count += vertices; indexCount += indices;
+                bytes += uint64_t(vertices) * stride + uint64_t(indices + maps) * sizeof(uint16_t);
+            };
+            const auto fits = [&] {
+                working = bytes + uint64_t(count) * sizeof(Vertex) * 2u +
+                    uint64_t(indexCount) * sizeof(uint32_t) * 3u + uint64_t(boneCount) * sizeof(Bone) * 2u;
+                return count && indexCount && out.vertices + count <= kMaxVertices &&
+                    out.indices + indexCount <= kMaxIndices && out.bones + boneCount <= kMaxBones &&
+                    working <= kActorSnapshotBudget && out.bytes <= kActorSnapshotBudget - working &&
+                    DX12::HasAvailableSystemMemory(working);
+            };
+            const auto copy = [&](ActorPartitionSource& dest, RE::BSGraphics::VertexDesc desc,
+                const uint8_t* vertices, const uint16_t* indices, size_t n, size_t ni) {
+                dest.desc = desc;
+                dest.vertices.resize(n * desc.GetSize());
+                std::memcpy(dest.vertices.data(), vertices, dest.vertices.size());
+                dest.indices.assign(indices, indices + ni);
+                hasColor = hasColor && HasColor(desc);
+            };
+            if (!runtime.skinInstance) {
+                const auto* tri = geometry->AsTriShape();
+                if (!tri || !runtime.rendererData || !runtime.rendererData->rawVertexData ||
+                    !runtime.rendererData->rawIndexData) return false;
+                auto desc = runtime.vertexDesc;
                 const auto stride = desc.GetSize();
-                const auto offset = desc.GetAttributeOffset(RE::BSGraphics::Vertex::VA_SKINNING);
-                if (!part.vertices || !part.triangles || part.strips || !part.numBones || !part.bones ||
-                    !part.buffData || !part.buffData->rawVertexData || !part.buffData->rawIndexData ||
-                    !desc.HasFlag(RE::BSGraphics::Vertex::VF_VERTEX) ||
-                    !desc.HasFlag(RE::BSGraphics::Vertex::VF_SKINNED) || stride < 28 || stride > 256 ||
-                    offset < 16 || offset > stride - 12)
-                    return false;
-                count += part.vertices; indexCount += size_t(part.triangles) * 3;
-            }
-            if (out.vertices.size() + count > kMaxVertices || out.indices.size() + indexCount > kMaxIndices)
-                return false;
-
-            std::vector<Util::SkinnedVertex> source;
-            if (!Util::ReadSkinnedVertices(geometry, source) || source.size() != count)
-                return false;
-
-            std::vector<Bone> bones(skin->numMatrices);
-            for (uint32_t i = 0; i < skin->numMatrices; ++i) {
-                if (!skin->bones[i]) return false;
-                const auto transform = skin->bones[i]->world * skin->skinData->GetBoneDataSkinToBone(i);
-                bones[i] = Rows(transform);
-                if (!Finite(bones[i])) return false;
-            }
-            const uint32_t boneBase = uint32_t(out.bones.size()), vertexBase = uint32_t(out.vertices.size());
-            std::vector<Vertex> vertices;
-            vertices.reserve(count);
-            for (const auto& v : source) {
-                Vertex vertex{ { v.position.x, v.position.y, v.position.z }, {}, v.weight };
-                if (!Finite(vertex.position) || !Finite(vertex.weights)) return false;
-                float total = 0;
-                for (uint32_t i = 0; i < 4; ++i) {
-                    if (vertex.weights[i] < 0) return false;
-                    if (vertex.weights[i] > 0 && v.bone[i] >= bones.size()) return false;
-                    vertex.bones[i] = boneBase + (vertex.weights[i] > 0 ? v.bone[i] : 0);
-                    total += vertex.weights[i];
+                const auto counts = tri->GetTrishapeRuntimeData();
+                if (!desc.HasFlag(V::VF_VERTEX) || stride < 16 || stride > 256 || counts.vertexCount > 65535) return false;
+                boneCount = 1;
+                add(counts.vertexCount, size_t(counts.triangleCount) * 3u, stride, 0);
+                if (!fits()) return false;
+                auto transform = Rows(geometry->world);
+                if (!Finite(transform)) return false;
+                part.bones.push_back(transform);
+                part.partitions.resize(1);
+                copy(part.partitions.front(), desc, runtime.rendererData->rawVertexData,
+                    runtime.rendererData->rawIndexData, count, indexCount);
+            } else {
+                part.skinned = true;
+                const auto* skin = runtime.skinInstance.get();
+                const auto* partitions = skin->skinPartition.get();
+                if (!partitions || !skin->skinData || !skin->bones || !skin->numMatrices ||
+                    skin->numMatrices > 256 || skin->numMatrices > skin->skinData->GetBoneCount() ||
+                    !skin->skinData->GetBoneDataAddress(0) || !partitions->numPartitions ||
+                    partitions->numPartitions > kMaxPartitions || partitions->partitions.size() < partitions->numPartitions) return false;
+                boneCount = skin->numMatrices;
+                for (uint32_t i = 0; i < partitions->numPartitions; ++i) {
+                    const auto& src = partitions->partitions[i];
+                    auto desc = src.vertexDesc;
+                    const auto stride = desc.GetSize();
+                    const auto offset = desc.GetAttributeOffset(V::VA_SKINNING);
+                    if (!src.vertices || !src.triangles || src.strips || !src.numBones || !src.bones ||
+                        !src.buffData || !src.buffData->rawVertexData || !src.buffData->rawIndexData ||
+                        !desc.HasFlag(V::VF_VERTEX) || !desc.HasFlag(V::VF_SKINNED) ||
+                        stride < 28 || stride > 256 || offset < 16 || offset > stride - 12) return false;
+                    add(src.vertices, size_t(src.triangles) * 3u, stride, src.numBones);
                 }
-                if (!std::isfinite(total) || std::abs(total - 1.0f) > 0.02f) return false;
-                for (auto& weight : vertex.weights) weight /= total;
-                vertices.push_back(vertex);
+                if (!fits()) return false;
+                part.bones.resize(boneCount);
+                for (size_t i = 0; i < boneCount; ++i) {
+                    if (!skin->bones[i]) return false;
+                    part.bones[i] = Rows(skin->bones[i]->world * skin->skinData->GetBoneDataSkinToBone(uint32_t(i)));
+                    if (!Finite(part.bones[i])) return false;
+                }
+                part.partitions.resize(partitions->numPartitions);
+                for (uint32_t i = 0; i < partitions->numPartitions; ++i) {
+                    const auto& src = partitions->partitions[i];
+                    auto& dest = part.partitions[i];
+                    copy(dest, src.vertexDesc, src.buffData->rawVertexData, src.buffData->rawIndexData,
+                        src.vertices, size_t(src.triangles) * 3u);
+                    dest.boneMap.assign(src.bones, src.bones + src.numBones);
+                }
             }
+            part.material = CaptureCharacterMaterial(*geometry, hasColor);
+            out.bytes += working; out.vertices += count; out.indices += indexCount; out.bones += boneCount;
+            out.parts.push_back(std::move(part));
+            return true;
+        }
 
-            // Reject a mismatched skin-space transform instead of allowing an
-            // incorrect pose to cast shadows elsewhere in the world.
-            // The skinned reader emits vertices in exactly this partition order.
-            size_t attributeVertex = 0;
-            for (uint32_t i = 0; i < partitions->numPartitions; ++i) {
-                const auto& part = partitions->partitions[i];
-                auto desc = part.vertexDesc;
-                for (uint32_t j = 0; j < part.vertices; ++j)
-                    CaptureAttributes(desc, part.buffData->rawVertexData + size_t(j) * desc.GetSize(), vertices[attributeVertex++]);
+        static void Capture(ActorSourceSnapshot& result)
+        {
+            ZoneScopedN("DX12::Characters::Capture");
+            uint32_t actors = 0;
+            Util::ForEachLoadedActor([&](RE::Actor* actor) {
+                if (!actor || !actor->Is3DLoaded() || actors >= kMaxActors || result.parts.size() >= kMaxParts) return;
+                RE::NiPointer<RE::NiAVObject> root{ actor->Get3D(false) };
+                if (!root) return;
+                ++actors;
+                Util::ForEachGeometry(root.get(), [&](RE::BSGeometry* geometry) {
+                    if (result.parts.size() < kMaxParts && result.vertices < kMaxVertices &&
+                        !CapturePart(geometry, result)) ++result.rejected;
+                });
+            });
+        }
+
+        static bool DecodePart(const ActorPartSource& part, Snapshot& out)
+        {
+            std::vector<Vertex> vertices;
+            std::vector<uint32_t> indices;
+            const auto boneBase = uint32_t(out.bones.size()), vertexBase = uint32_t(out.vertices.size());
+            for (const auto& partition : part.partitions) {
+                auto desc = partition.desc;
+                const auto stride = desc.GetSize();
+                const auto count = partition.vertices.size() / stride;
+                const auto base = vertexBase + uint32_t(vertices.size());
+                const auto skinOffset = part.skinned ? desc.GetAttributeOffset(RE::BSGraphics::Vertex::VA_SKINNING) : 0u;
+                vertices.reserve(vertices.size() + count);
+                for (size_t i = 0; i < count; ++i) {
+                    const auto* data = partition.vertices.data() + i * stride;
+                    Vertex v{};
+                    std::memcpy(v.position.data(), data, sizeof(v.position));
+                    if (!Finite(v.position)) return false;
+                    if (part.skinned) {
+                        uint16_t weights[4]{};
+                        std::memcpy(weights, data + skinOffset, sizeof(weights));
+                        const auto* local = data + skinOffset + sizeof(weights);
+                        float total = 0;
+                        for (size_t slot = 0; slot < 4; ++slot) {
+                            v.bones[slot] = boneBase;
+                            if (local[slot] >= partition.boneMap.size()) continue;
+                            const auto bone = partition.boneMap[local[slot]];
+                            if (bone >= part.bones.size()) continue;
+                            const float weight = DirectX::PackedVector::XMConvertHalfToFloat(weights[slot]);
+                            if (!std::isfinite(weight) || weight < 0) return false;
+                            v.weights[slot] = weight;
+                            v.bones[slot] = boneBase + (weight > 0 ? bone : 0);
+                            total += weight;
+                        }
+                        if (!std::isfinite(total) || std::abs(total - 1.0f) > 0.02f) return false;
+                        for (auto& weight : v.weights) weight /= total;
+                    } else {
+                        v.bones = { boneBase, boneBase, boneBase, boneBase };
+                        v.weights = { 1, 0, 0, 0 };
+                    }
+                    CaptureAttributes(desc, data, v);
+                    vertices.push_back(v);
+                }
+                for (const auto index : partition.indices) {
+                    if (index >= count) return false;
+                    indices.push_back(base + index);
+                }
             }
-            const auto& bound = geometry->worldBound;
-            const size_t step = std::max<size_t>(1, vertices.size() / 32);
+            const auto step = std::max<size_t>(1, vertices.size() / 32);
             for (size_t i = 0; i < vertices.size(); i += step) {
                 const auto& v = vertices[i];
                 std::array<float, 3> p{};
                 for (uint32_t b = 0; b < 4; ++b) {
                     if (v.weights[b] == 0) continue;
-                    const auto& m = bones[v.bones[b] - boneBase];
+                    const auto& m = part.bones[v.bones[b] - boneBase];
                     for (uint32_t row = 0; row < 3; ++row)
-                        p[row] += v.weights[b] * (m[row * 4] * v.position[0] +
-                            m[row * 4 + 1] * v.position[1] + m[row * 4 + 2] * v.position[2] + m[row * 4 + 3]);
+                        p[row] += v.weights[b] * (m[row*4]*v.position[0] + m[row*4+1]*v.position[1] +
+                            m[row*4+2]*v.position[2] + m[row*4+3]);
                 }
-                if (!InsideBound(bound, p)) return false;
-            }
-
-            std::vector<uint32_t> indices;
-            indices.reserve(indexCount);
-            uint32_t base = vertexBase;
-            for (uint32_t i = 0; i < partitions->numPartitions; ++i) {
-                const auto& part = partitions->partitions[i];
-                for (uint32_t j = 0; j < uint32_t(part.triangles) * 3; ++j) {
-                    const auto index = part.buffData->rawIndexData[j];
-                    if (index >= part.vertices) return false;
-                    indices.push_back(base + index);
-                }
-                base += part.vertices;
+                if (!InsideBound(part.bound, p)) return false;
             }
             out.vertices.insert(out.vertices.end(), vertices.begin(), vertices.end());
-            out.bones.insert(out.bones.end(), bones.begin(), bones.end());
+            out.bones.insert(out.bones.end(), part.bones.begin(), part.bones.end());
             out.indices.insert(out.indices.end(), indices.begin(), indices.end());
-            out.primitiveParts.insert(out.primitiveParts.end(), indices.size() / 3, out.parts);
-            bool hasColor = true;
-            for (uint32_t i = 0; i < partitions->numPartitions; ++i)
-                hasColor = hasColor && HasColor(partitions->partitions[i].vertexDesc);
-            out.materialSources.push_back(CaptureCharacterMaterial(*geometry, hasColor));
+            out.primitiveParts.insert(out.primitiveParts.end(), indices.size() / 3u, out.parts);
+            out.materialSources.push_back(part.material);
             ++out.parts;
             return true;
         }
 
-        static void Capture(Snapshot& result)
+        static Snapshot DecodeActor(const ActorSourceSnapshot& source)
         {
-            ZoneScopedN("DX12::Characters::Capture");
-            result.vertices.clear();
-            result.bones.clear();
-            result.indices.clear();
-            result.primitiveParts.clear();
-            result.materialSources.clear();
-            result.parts = result.rejected = 0;
-            uint32_t actors = 0;
-            Util::ForEachLoadedActor([&](RE::Actor* actor) {
-                if (!actor || !actor->Is3DLoaded() || actors >= kMaxActors || result.parts >= kMaxParts) return;
-                RE::NiPointer<RE::NiAVObject> root{ actor->Get3D(false) };
-                if (!root) return;
-                ++actors;
-                Util::ForEachGeometry(root.get(), [&](RE::BSGeometry* geometry) {
-                    if (result.parts < kMaxParts && result.vertices.size() < kMaxVertices &&
-                        !CapturePart(geometry, result)) ++result.rejected;
-                });
-            });
+            ZoneScopedN("DX12::Characters::DecodeSnapshot");
+            Snapshot result;
+            result.rejected = source.rejected;
+            result.vertices.reserve(source.vertices); result.indices.reserve(source.indices);
+            result.bones.reserve(source.bones); result.primitiveParts.reserve(source.indices / 3u);
+            result.materialSources.reserve(source.parts.size());
+            for (const auto& part : source.parts)
+                if (!DecodePart(part, result)) ++result.rejected;
+            return result;
         }
 
         void Initialize(const GraphicsBackend& backend)
@@ -610,6 +640,7 @@ namespace DX12Native
             std::string failure;
             uint32_t frame = 0, scope = 0, interval = 1, slot = 0, rejected = 0;
             uint64_t snapshotBytes = 0;
+            std::unique_ptr<ActorSourceSnapshot> snapshot;
         };
 
         // Only owned CPU arrays, a retired slot and D3D12 COM objects enter
@@ -620,7 +651,6 @@ namespace DX12Native
             const winrt::com_ptr<ID3D12RootSignature>& root,
             const winrt::com_ptr<ID3D12PipelineState>& pipeline,
             const winrt::com_ptr<ID3D12Fence>& completion,
-            std::shared_ptr<const std::vector<DX12::PreparedMaterialSource>> materialSources,
             uint32_t frame, uint32_t scope, uint32_t interval)
         {
             ZoneScopedN("DX12::Characters::RecordAcceleration");
@@ -688,8 +718,8 @@ namespace DX12Native
                 auto next = reuse ? std::move(selected) : std::make_shared<CharacterCasterFrame>();
                 next->frame = frame; next->scope = scope; next->allowedAge = interval == 2u ? 1u : 0u; next->parts = snapshot.parts;
                 next->vertices = uint32_t(snapshot.vertices.size()); next->triangles = triangleCount;
-                if (!materialSources || materialSources->size() != snapshot.parts) throw std::runtime_error("Character material part mapping mismatch");
-                next->materialSources = std::move(materialSources);
+                if (snapshot.materialSources.size() != snapshot.parts) throw std::runtime_error("Character material part mapping mismatch");
+                next->materialSources = std::make_shared<const std::vector<DX12::PreparedMaterialSource>>(std::move(snapshot.materialSources));
                 next->materials.reset();
                 if (!reuse) next->allocationBytes = required;
                 next->root = root; next->pipeline = pipeline;
@@ -821,30 +851,34 @@ namespace DX12Native
                         index = i;
                 }
                 if (index == slots.size()) { ++deferredActorRecords; return; }
-                auto snapshot = std::make_shared<Snapshot>();
+                auto snapshot = std::make_unique<ActorSourceSnapshot>();
                 Capture(*snapshot);
-                if (snapshot->vertices.empty() || snapshot->indices.empty()) {
+                if (snapshot->parts.empty()) {
                     rejectedParts = snapshot->rejected; failure = "No admitted character parts"; return;
                 }
-                auto materials = std::make_shared<const std::vector<DX12::PreparedMaterialSource>>(std::move(snapshot->materialSources));
                 auto job = std::make_shared<ActorRecordJob>();
                 job->frame = frame; job->scope = scope; job->interval = interval;
                 job->slot = uint32_t(index); job->rejected = snapshot->rejected;
-                job->snapshotBytes = uint64_t(snapshot->vertices.size()) * sizeof(Vertex) +
-                    uint64_t(snapshot->bones.size()) * sizeof(Bone) +
-                    uint64_t(snapshot->indices.size() + snapshot->primitiveParts.size()) * sizeof(uint32_t);
+                job->snapshotBytes = snapshot->bytes;
+                job->snapshot = std::move(snapshot);
                 // Transfer only a retired, exclusively owned slot. On rejection
                 // it can be restored because no task was admitted.
                 auto selected = std::move(slots[index]);
                 std::weak_ptr<ActorRecordJob> weakJob = job;
-                if (!gate->TrySubmit([weakJob, snapshot, selected, tracked, materials,
+                if (!gate->TrySubmit([weakJob, selected, tracked,
                     device = backend.d3d12Device, root = root, pipeline = pipeline, completion = completion,
                     frame, scope, interval]() mutable {
                     const auto retained = weakJob.lock();
                     if (!retained) return;
                     try {
-                        retained->result = RecordActor(*snapshot, std::move(selected), tracked, device,
-                            root, pipeline, completion, materials, frame, scope, interval);
+                        auto source = std::move(retained->snapshot);
+                        auto snapshot = DecodeActor(*source);
+                        source.reset();
+                        retained->rejected = snapshot.rejected;
+                        if (snapshot.vertices.empty() || snapshot.indices.empty())
+                            throw std::runtime_error("No admitted character parts");
+                        retained->result = RecordActor(snapshot, std::move(selected), tracked, device,
+                            root, pipeline, completion, frame, scope, interval);
                     } catch (const std::exception& error) { retained->failure = error.what(); }
                     catch (...) { retained->failure = "Character recording failed"; }
                     retained->finished.store(true, std::memory_order_release);
