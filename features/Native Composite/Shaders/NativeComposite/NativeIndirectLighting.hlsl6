@@ -350,7 +350,7 @@ void main(uint3 id : SV_DispatchThreadID)
             if (HasNativeThinSurface(coat) && any(backTransmissionWeight>0.0)) {
                 backRadiance = EnvironmentIrradiance(-n) + SkyIrradiance(-n);
             }
-            Lighting.Store2(outputOffset+16u,PackOpaqueRadiance(radiance*transmissionWeight+backRadiance*backTransmissionWeight,base.a==SurfaceEvaluatedBase ? ContributionTransmission : 0u));
+            Lighting.Store2(outputOffset+16u,PackOpaqueRadiance(radiance*transmissionWeight+backRadiance*backTransmissionWeight,HasNativeTransmissionModel(base.a,coat) ? ContributionTransmission : 0u));
         }
     }
     if ((active & ContributionIndirectSpecular) != 0u)
