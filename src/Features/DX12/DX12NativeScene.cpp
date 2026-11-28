@@ -1343,17 +1343,18 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 	++draws.draws;
 	const auto& runtime = geometry.GetGeometryRuntimeData();
 	const auto geometryKey = static_cast<const void*>(&geometry);
-	auto materialKey = static_cast<const void*>(runtime.shaderProperty.get());
-	if (runtime.shaderProperty && runtime.shaderProperty->GetRTTI()==globals::rtti::BSLightingShaderPropertyRTTI.get() &&
-		static_cast<const RE::BSLightingShaderProperty*>(runtime.shaderProperty.get())->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kProjectedUV, RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape))
-		materialKey=geometryKey; // same shader property may have different placement overrides
 	draws.activeGeometry = draws.geometryOrdinals.try_emplace(geometryKey, uint32_t(draws.geometryOrdinals.size()+1)).first->second;
 	draws.activeMaterial = 0;
-	if (materialKey) {
-		const auto [entry, inserted] = draws.materialOrdinals.try_emplace(materialKey, uint32_t(draws.materialOrdinals.size()+1));
-		draws.activeMaterial = entry->second;
-		if (inserted) {
-			draws.materialSources.push_back(ObserveRasterMaterial(geometry));
+	if (runtime.shaderProperty) {
+		// A shared property pointer does not prove identical material inputs:
+		// vertex color participation, placement overrides and live material
+		// revisions can differ. Intern the immutable observed source instead.
+		const auto source = ObserveRasterMaterial(geometry);
+		if (source) {
+			const auto [entry, inserted] = draws.materialOrdinals.try_emplace(source.get(), uint32_t(draws.materialSources.size()+1));
+			draws.activeMaterial = entry->second;
+			if (inserted)
+				draws.materialSources.push_back(source);
 		}
 	}
 	// A raster-only draw identity is assigned even without a scene/material generation.
