@@ -96,6 +96,8 @@ struct SnowDeformation : Feature
 
 	/** @brief Binds the hull and domain stages and patch topology for a routed landscape draw, after the engine has flushed its state. */
 	void ApplyDrawState();
+	/** True only for the bound, verified Full Native snow Lighting stages. */
+	bool HasNativeLightingPatch() const;
 
 	/** @brief Binds the hull and domain stages for a displaced landscape draw through the shared draw hook. */
 	bool WantsDrawHook() const override { return true; }
