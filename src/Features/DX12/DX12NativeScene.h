@@ -10,6 +10,7 @@
 #include "DX12NativeRasterCapture.h"
 #include "DX12NativeRuntimeCapture.h"
 #include "DX12NativeShadowTrace.h"
+#include "LightSlicePriority.h"
 #include "SCMNativePolicy.h"
 
 #include <atomic>
@@ -186,6 +187,8 @@ private:
 	std::unordered_map<uintptr_t, float3> scheduledOrigins;
 	uint32_t scheduledOriginsFrame = UINT32_MAX;
 	std::vector<DX12::PreparedLight> lightsAtShadowOrigins;
+	DX12Native::LightSliceOrder<DX12::PreparedLight> sliceOrder;
+	std::span<const DX12::PreparedLight> OrderForSlices(std::span<const DX12::PreparedLight> a_lights, uint32_t a_frame);
 	std::vector<const RE::NiLight*> movingOriginLights;  // Traced this frame away from their rest point.
 	uint32_t PreviousSlice(const RE::NiLight* a_light) const;
 	std::atomic<uint32_t> movingOriginCount{ 0 };

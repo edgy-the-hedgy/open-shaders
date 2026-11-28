@@ -1,6 +1,7 @@
 #include "../../package/Shaders/Common/NativeLightShadowSlot.hlsli"
 #include "../../package/Shaders/Common/NativeShadowRT.hlsli"
 #include "Features/DX12/DX12FenceRetirementPolicy.h"
+#include "Features/DX12/LightSlicePriority.h"
 #include "Features/DX12/NativeLightPublication.h"
 #include "Features/DX12/NativeShadowHistory.h"
 #include "Features/DX12/SpatialGrid.h"
@@ -202,6 +203,51 @@ namespace
 		uint64_t runtimeIdentity = 0;
 		uint32_t unifiedCount = 1;
 	};
+}
+
+TEST_CASE("Light slices go to shadow slots, then to the strongest lights in view", "[dx12][shadow]")
+{
+	using namespace DX12Native;
+	using Light = ConsolidationLight;
+	// referenceID doubles as the tier so each case reads from the light list alone.
+	const auto tier = [](const Light& light) { return static_cast<SliceTier>(light.referenceID); };
+	const auto make = [](SliceTier t, float distance, uint64_t identity) {
+		return Light{ .referenceID = static_cast<uint32_t>(t), .position = { distance, 0, 0 }, .runtimeIdentity = identity };
+	};
+	const Light::Vector viewer{ 0, 0, 0 };
+	LightSliceOrder<Light> order;
+	std::vector<Light> lights{ make(SliceTier::OutOfView, 0, 1), make(SliceTier::InView, 500, 2),
+		make(SliceTier::InView, 100, 3), make(SliceTier::ShadowSlot, 4000, 4) };
+	auto result = order.Order(std::span<const Light>(lights), 2, viewer, tier);
+	REQUIRE(result.size() == 4);
+	CHECK(result[0].runtimeIdentity == 4);
+	CHECK(result[1].runtimeIdentity == 3);
+	// Lights without a slice keep their submitted order.
+	CHECK(result[2].runtimeIdentity == 1);
+	CHECK(result[3].runtimeIdentity == 2);
+
+	// A holder survives a slightly stronger rival and yields to a clearly stronger one.
+	lights = { make(SliceTier::InView, 100, 3), make(SliceTier::InView, 95, 5) };
+	result = order.Order(std::span<const Light>(lights), 1, viewer, tier);
+	CHECK(result[0].runtimeIdentity == 3);
+	lights[1].fade = 2;
+	result = order.Order(std::span<const Light>(lights), 1, viewer, tier);
+	CHECK(result[0].runtimeIdentity == 5);
+
+	// More slices than lights serves all of them.
+	CHECK(order.Order(std::span<const Light>(lights), 64, viewer, tier).size() == 2);
+}
+
+TEST_CASE("Slice keys separate prepared lights and reject unusable scores", "[dx12][shadow]")
+{
+	using namespace DX12Native;
+	using Light = ConsolidationLight;
+	const Light a{ .referenceID = 7, .position = { 0, 0, 0 } };
+	const Light b{ .referenceID = 7, .position = { 64, 0, 0 } };
+	CHECK(SliceKey(a) != SliceKey(b));
+	CHECK(SliceKey(Light{ .runtimeIdentity = 9 }) == 9);
+	CHECK(SliceScore(Light{ .radius = 0 }, Light::Vector{ 0, 0, 0 }) == 0.0f);
+	CHECK(SliceScore(Light{ .fade = -1 }, Light::Vector{ 10, 0, 0 }) == 0.0f);
 }
 
 TEST_CASE("Full-shadow consolidation preserves prepared authority", "[dx12][shadow]")

@@ -330,10 +330,8 @@ namespace DX12Native
 				slot->lightRecordsUploaded = true;
 			}
 			slot->debugLights.clear();
-			slot->debugPreparedCount = 0;
 			if (controls.captureDebugLights) {
 				slot->debugLights.assign(lights.begin(), lights.begin() + lightCount);
-				slot->debugPreparedCount = std::min(controls.debugPreparedCount, lightCount);
 			}
 
 			const UINT step = requested.d3d12Device->GetDescriptorHandleIncrementSize(

@@ -7,6 +7,7 @@
 #include "DX12Resources.h"
 #include "Globals.h"
 #include "GpuPass.h"
+#include "RE/M/Main.h"
 #include "RE/M/MainMenu.h"
 #include "RE/T/TESObjectCELL.h"
 #include "RE/T/TESObjectLIGH.h"
@@ -148,7 +149,7 @@ void DX12NativeScene::DrawOverlay()
 			continue;
 		const ImVec2 point{ viewport->Pos.x + uv.x * viewport->Size.x, viewport->Pos.y + uv.y * viewport->Size.y };
 		const char* source = mask->quality == DX12Native::kShadowQualityOffloading ? "M" :
-		                                                                             (i < mask->debugPreparedCount ? "P" : "R");
+		                                                                             (light.runtimeIdentity ? "R" : "P");
 		const auto label = light.unifiedCount > 1 ?
 		                       std::format("DXR U x{} {:08X} #{}", light.unifiedCount, light.referenceID, i) :
 		                       std::format("DXR {} {:08X} #{}", source, light.referenceID, i);
@@ -781,6 +782,25 @@ std::shared_ptr<const DX12Native::NativeLightPublication> DX12NativeScene::Colle
 	return ready;
 }
 
+// SCM shadow-slot lights first, then lights in view, so the capped per-light slices go where they show.
+std::span<const DX12::PreparedLight> DX12NativeScene::OrderForSlices(std::span<const DX12::PreparedLight> a_lights, uint32_t a_frame)
+{
+	using DX12Native::SliceTier;
+	const auto* camera = RE::Main::WorldRootCamera();
+	if (!camera)
+		return a_lights;
+	RE::NiFrustumPlanes frustum{};
+	Util::ComputeFrustumPlanes(frustum, camera->GetRuntimeData2().viewFrustum, camera->world);
+	std::scoped_lock lock(runtimeLightMutex);
+	const bool scheduled = scheduledOriginsFrame == a_frame;
+	return sliceOrder.Order(a_lights, DX12Native::kMaxLightVisibilitySlots, camera->world.translate, [&](const DX12::PreparedLight& light) {
+		if (scheduled && scheduledOrigins.contains(light.runtimeIdentity))
+			return SliceTier::ShadowSlot;
+		const RE::NiPoint3 centre{ light.position.x, light.position.y, light.position.z };
+		return Util::IsSphereInFrustum(frustum, centre, light.radius) ? SliceTier::InView : SliceTier::OutOfView;
+	});
+}
+
 // Only opaque identities and frame-local origin values are submitted to native tracing.
 void DX12NativeScene::ObserveScheduledShadowOrigin(const RE::NiLight* light, const RE::NiPoint3& origin)
 {
@@ -900,6 +920,9 @@ void DX12NativeScene::OnOpaqueRasterReady()
 		if (!movingOriginLights.empty())
 			submittedLights = lightsAtShadowOrigins;
 	}
+	const bool reordered = fullRT && submittedLights.size() > DX12Native::kMaxLightVisibilitySlots;
+	if (reordered)
+		submittedLights = OrderForSlices(submittedLights, frame);
 	const auto moving = uint32_t(movingOriginLights.size());
 	const auto previousMoving = movingOriginCount.exchange(moving, std::memory_order_relaxed);
 	// The combined layer has no per-light history, so moving origins restart it while it reaches the frame.
@@ -927,9 +950,8 @@ void DX12NativeScene::OnOpaqueRasterReady()
 		.viewportHeight = viewportHeight,
 		.quality = fullRT ? fullRTQuality : DX12Native::kShadowQualityOffloading,
 		.captureDebugLights = WantsLightPreview(mode),
-		.debugPreparedCount = fullRT ? fullInventory->preparedCount : 0u,
 		.nativeLights = fullInventory,
-		.uploadLights = moving != 0,
+		.uploadLights = moving != 0 || reordered,
 		.captureLightVisibility = true,
 		.movers = &movers
 	};

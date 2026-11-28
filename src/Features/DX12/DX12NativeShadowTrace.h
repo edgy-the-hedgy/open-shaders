@@ -26,7 +26,6 @@ namespace DX12Native
 		uint32_t viewportWidth = 0, viewportHeight = 0;
 		uint32_t quality = kShadowQualityOffloading;
 		bool captureDebugLights = false;
-		uint32_t debugPreparedCount = 0;
 		std::shared_ptr<const NativeLightPublication> nativeLights;
 		bool uploadLights = false;  // Trace the passed lights, which override nativeLights' GPU copy.
 		bool captureLightVisibility = false;
@@ -49,7 +48,6 @@ namespace DX12Native
 		uint32_t maskWidth = 0, maskHeight = 0;
 		uint32_t quality = kShadowQualityOffloading;
 		std::vector<DX12::PreparedLight> debugLights;
-		uint32_t debugPreparedCount = 0;
 		std::vector<std::array<float, 4>> lightRecords;
 		bool lightRecordsUploaded = false;
 		bool uploadedLights = false;

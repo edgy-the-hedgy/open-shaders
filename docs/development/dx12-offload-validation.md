@@ -58,9 +58,11 @@ verify off-screen casters manually before treating timing as a valid win.
 
 ## Per-light visibility
 
-Both ray-traced modes also write one R8 slice per submitted light, in
-submitted order and capped at 64, at logical resolution with each
-checkerboard partner filled. A cleared value of one is not evidence of a
+Both ray-traced modes also write one R8 slice per submitted light, capped
+at 64, at logical resolution with each checkerboard partner filled. When
+Full RT submits more lights than that, it orders SCM shadow-slot lights
+first, then lights in view by brightness and screen weight; a light keeps its
+slice until a rival is clearly stronger. A cleared value of one is not evidence of a
 valid receiver; the combined mask's receiver distance validates samples.
 DX11 waits on the trace fence before binding the array at pixel register
 t57. A failed slice allocation or dispatch falls back to the combined
