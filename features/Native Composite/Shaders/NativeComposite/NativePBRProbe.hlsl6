@@ -166,7 +166,8 @@ Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float dista
         }
     }
     if (weightedScale>1e-6) {
-        float3 viewTS=float3(dot(viewRay,raw.tangent),dot(viewRay,raw.bitangent),dot(viewRay,raw.normal));
+        float3 view=normalize(-viewRay);
+        float3 viewTS=float3(dot(view,raw.tangent),dot(view,raw.bitangent),dot(view,raw.normal));
         if (all(isfinite(viewTS)) && viewTS.z>0.0) {
             float2 travel=viewTS.xy/max(viewTS.z*0.7+0.3,0.001)*0.1*weightedScale;
             float previous=1.0, previousHeight=1.0;
@@ -290,9 +291,9 @@ Sample EvaluatePbrGrass(RawRasterSurface raw,float3 viewRay,out bool rawUsed,out
         float opacity=saturate(p2.a);
         if (detail && (flags&(1u<<2u))!=0u) {
             if (tex.w>=NativeProjectionTextureCapacity) return result;
-            float4 sample=NativeProjectionGrad(tex.w,(meta.w>>6u)&3u,uv,dx,dy);
-            scatter*=((meta.w&2048u)!=0u ? NativeProjectionEncode(sample.rgb) : sample.rgb);
-            opacity*=saturate(sample.a);
+            float4 featureTexel=NativeProjectionGrad(tex.w,(meta.w>>6u)&3u,uv,dx,dy);
+            scatter*=featureTexel.rgb;
+            opacity*=saturate(featureTexel.a);
         } else scatter*=base*(1.0-metallic);
         float3 face=normalize(raw.normal);
         if (dot(face,viewRay)>0.0) face=-face;
@@ -304,9 +305,9 @@ Sample EvaluatePbrGrass(RawRasterSurface raw,float3 viewRay,out bool rawUsed,out
         float3 fuzz=max(p3.rgb,0.0); float weight=saturate(p3.a);
         if ((flags&(1u<<3u))!=0u) {
             if (extra.x>=NativeProjectionTextureCapacity) { coat=(NativeCoatSample)0; return result; }
-            float4 sample=NativeProjectionGrad(extra.x,extra.z&3u,uv,dx,dy);
-            fuzz*=((extra.z&256u)!=0u ? NativeProjectionEncode(sample.rgb) : sample.rgb);
-            weight*=saturate(sample.a);
+            float4 featureTexel=NativeProjectionGrad(extra.x,extra.z&3u,uv,dx,dy);
+            fuzz*=featureTexel.rgb;
+            weight*=saturate(featureTexel.a);
         }
         if (HasNativeThinSurface(coat)) coat.f0Colored.w=EncodeNativeThinFuzz(fuzzRoughness,true);
         else { coat.normalRoughness.w=clamp(fuzzRoughness,-1.0,1.0); coat.f0Colored.w=NativeFuzzTag; }
