@@ -14,6 +14,20 @@ void main(uint3 id : SV_DispatchThreadID)
 {
     const uint row = Metadata.z;
     ProjectionRecords[uint2(0,row)] = Metadata;
+    // Terrain keeps its original world transform and LOD projection inputs.
+    // Offsets.z/w are optional material constants; UINT_MAX denotes absence.
+    if (Metadata.x==0xfffffff9u) {
+        ProjectionRecords[uint2(1,row)]=VertexConstants.Load4(Offsets.y);
+        [unroll] for (uint i=0u;i<3u;++i)
+            ProjectionRecords[uint2(2u+i,row)]=VertexConstants.Load4(Offsets.x+16u*i);
+        uint4 lod=0u;
+        if (Offsets.z!=0xffffffffu) lod=PixelConstants.Load4(Offsets.z);
+        lod.xy=uint2(Metadata.y,ExtraTextureIndices.z);
+        ProjectionRecords[uint2(5,row)]=lod;
+        ProjectionRecords[uint2(6,row)]=Offsets.w==0xffffffffu ? uint4(0u,0u,0u,0x7fc00000u) : PixelConstants.Load4(Offsets.w);
+        ProjectionRecords[uint2(7,row)]=TextureIndices;
+        return;
+    }
     // PBR grass preserves the actual original b1 material constants.
     if (Metadata.x==0xfffffffau) {
         [unroll] for (uint column=1u;column<=5u;++column)
