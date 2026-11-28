@@ -1211,7 +1211,7 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 	auto& draws = fullNativeRasterDraws;
 	// Only known dynamic non-actor owners are admitted here. Actor attachments
 	// are already captured by the actor path; static geometry must not be duplicated.
-	if (characterCasters) {
+	if (characterCasters && backend) {
 		const auto& rt = geometry.GetGeometryRuntimeData();
 		// Reject ineligible rigid movers before walking the live ancestry chain.
 		if (const auto* tri = geometry.AsTriShape(); tri && !geometry.AsDynamicTriShape() && !rt.skinInstance && !rt.alphaProperty &&
@@ -1249,7 +1249,7 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 			if (ancestryRead && reference && reference->IsDynamicForm() && !reference->IsActor()) {
 				const auto moverGrid = globals::features::dx12Resources.GetGrid();
 				if (moverGrid && !moverGrid->requested.empty())
-					characterCasters->ObserveRigidMover(geometry, frame, moverGrid->requested.front().scope);
+					characterCasters->ObserveRigidMover(*backend, geometry, frame, moverGrid->requested.front().scope);
 			}
 			}
 		}
