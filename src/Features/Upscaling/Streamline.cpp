@@ -526,14 +526,10 @@ bool Streamline::CheckFrameConstants(sl::ViewportHandle p_viewport, uint32_t eye
 	const bool fullNativeWorld = globals::features::dx12Control.UsesExclusiveMaterials() && state->worldRenderedThisFrame && !globals::game::isVR;
 	std::optional<UpscalingCamera::CameraFrame> camera;
 	std::shared_ptr<const DX12Native::NativeWorldFrame> world;
-	if (fullNativeWorld) {
-		if (!globals::game::graphicsState) return false;
+	if (fullNativeWorld && globals::game::graphicsState)
 		world = globals::features::dx12NativeScene.GetWorldFrame(
 			globals::game::graphicsState->GetFrameCount(), state->frameCount);
-		if (!world) {
-			pendingHistoryReset = true;
-			return false;
-		}
+	if (world) {
 		slConstants.cameraAspectRatio = float(world->displayWidth) / float(world->displayHeight);
 		slConstants.cameraFOV = world->cameraFov;
 		slConstants.cameraNear = world->cameraNear;
@@ -544,6 +540,11 @@ bool Streamline::CheckFrameConstants(sl::ViewportHandle p_viewport, uint32_t eye
 			float3(world->camera.CameraPreviousPosAdjust.x, world->camera.CameraPreviousPosAdjust.y, world->camera.CameraPreviousPosAdjust.z));
 	} else {
 		camera = UpscalingCamera::GetWorldCameraFrame();
+	}
+	if (!camera && fullNativeWorld) {
+		// Never substitute an auxiliary or first-person camera for a missing world camera.
+		pendingHistoryReset = true;
+		return false;
 	}
 	if (!camera) {
 		const auto& frameBuffer = globals::game::frameBufferCached;
