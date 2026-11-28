@@ -41,6 +41,16 @@ namespace DX12Native::MaterialFrameContract
 	{
 		return projectorCount<capacity && grassCount<capacity-projectorCount;
 	}
+	// Stable draw-order paging. A failed capture still consumes its candidate
+	// ordinal; a shorter or changed draw stream wraps on the next publication.
+	constexpr bool SnapshotPageContains(uint32_t ordinal,uint32_t start,uint32_t capacity)
+	{
+		return capacity && ordinal>=start && ordinal-start<capacity;
+	}
+	constexpr uint32_t NextSnapshotPage(uint32_t start,uint32_t observed,uint32_t capacity)
+	{
+		return capacity && start<observed && observed-start>capacity ? start+capacity : 0u;
+	}
 	inline constexpr uint32_t kTypedTransferRowPresent=0x80000000u;
 	constexpr uint32_t TypedEffectRequiredRoles(uint32_t pixelDescriptor)
 	{
