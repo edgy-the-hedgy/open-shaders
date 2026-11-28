@@ -27,6 +27,7 @@ namespace DX12Native
 	inline constexpr uint32_t kRasterGrassRow = UINT32_MAX - 1u;
 	inline constexpr uint32_t kRasterDistantTreeRow = UINT32_MAX - 2u;
 	inline constexpr uint32_t kRasterEffectRow = UINT32_MAX - 3u;
+	inline constexpr uint32_t kRasterModelSpecularRow = UINT32_MAX - 4u;
 	struct ProjectedInputDraw
 	{
 		uint32_t instance = UINT32_MAX, descriptor = 0, samplerModes = 0;
