@@ -96,7 +96,10 @@ json NativePBR::FrameProducer::GetDiagnostics()
 					const auto technique=Cache::GetLightingTechnique(draw.pixelDescriptor);
 					const bool lod=technique==Cache::LightingShaderTechniques::MTLandLODBlend;
 					const bool snow=(draw.pixelDescriptor & uint32_t(Cache::LightingShaderFlags::Snow))!=0u;
-					if (lod || (technique==Cache::LightingShaderTechniques::MTLand && snow)) {
+					const bool variation=draw.materialOrdinal && draw.materialOrdinal<=evidence.materialSourceSnapshots.size() &&
+						evidence.materialSourceSnapshots[draw.materialOrdinal-1u] &&
+						(evidence.materialSourceSnapshots[draw.materialOrdinal-1u]->rasterLandscapeVariationFlags&1u)!=0u;
+					if (lod || (technique==Cache::LightingShaderTechniques::MTLand && (snow||variation))) {
 						++terrainInputsRequested;
 						const uint32_t required=kTypedTransferRowPresent|(lod?3u:0u);
 						if (HasTypedTransferRoles(typedMasks[i],required)) ++terrainInputsReady;
