@@ -439,6 +439,7 @@ HRESULT DX12SwapChain::ResizeBuffers(UINT bufferCount, UINT width, UINT height, 
 template <bool WithAntiLag2>
 HRESULT DX12SwapChain::PresentImpl(UINT SyncInterval, UINT Flags)
 {
+	if (!GraphicsBackend::CheckNativeDeviceHealth(d3d12Device.get(), d3d11Device.get())) return DXGI_ERROR_DEVICE_REMOVED;
 	auto& upscaling = globals::features::upscaling;
 
 	// Scale UI brightness BEFORE fence sync so the D3D11 UIBrightnessCS dispatch
@@ -547,7 +548,9 @@ HRESULT DX12SwapChain::PresentImpl(UINT SyncInterval, UINT Flags)
 	}
 
 	// Present the frame
-	DX::ThrowIfFailed(swapChain->Present(SyncInterval, Flags));
+	const auto presentResult = swapChain->Present(SyncInterval, Flags);
+	if (FAILED(presentResult) && !GraphicsBackend::CheckNativeDeviceHealth(d3d12Device.get(), d3d11Device.get())) return presentResult;
+	DX::ThrowIfFailed(presentResult);
 
 	if (useDLSSG) {
 		upscaling.streamlineDX12.EmitPCLMarker(sl::PCLMarker::ePresentEnd);

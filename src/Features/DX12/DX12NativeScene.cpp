@@ -404,6 +404,7 @@ void DX12NativeScene::PrepareLoadingScene(std::shared_ptr<const DX12::Grid> grid
 
 void DX12NativeScene::PreShadowMaps()
 {
+	if (backend && !GraphicsBackend::CheckNativeDeviceHealth(backend->d3d12Device.get(), backend->d3d11Device.get())) return;
 	if (!loaded || globals::game::isVR || !globals::features::dx12Control.IsActive()) {
 		OnRuntimeDisabled();
 		return;
@@ -749,6 +750,7 @@ void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 			auto* motion = renderer ? Util::AsReal(renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR].texture) : nullptr;
 			raster.Capture(*backend, Util::GetCurrentSceneDepthSRV(false), &world->camera, frame, motion, world->jitter);
 		}
+		if (!GraphicsBackend::CheckNativeDeviceHealth(backend->d3d12Device.get(), backend->d3d11Device.get())) return;
 		globals::features::nativePBR.Dispatch(*backend, raster.Get(frame), scene, frame, uint32_t(viewport.x), uint32_t(viewport.y), opaqueReady, FullNativeFrameQuality(frame));
 	}
 	const auto material = globals::features::nativePBR.Get(frame);
@@ -782,6 +784,7 @@ void DX12NativeScene::ResetFullNativeEnvironment()
 
 void DX12NativeScene::DispatchFullNativeIndirect()
 {
+	if (backend && !GraphicsBackend::CheckNativeDeviceHealth(backend->d3d12Device.get(), backend->d3d11Device.get())) return;
 	using namespace DX12Native;
 	using namespace DX12Native::MaterialFrameContract;
 	if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation() ||
@@ -819,6 +822,7 @@ void DX12NativeScene::DispatchFullNativeIndirect()
 
 void DX12NativeScene::CaptureFullNativeEnvironment(ID3D11ShaderResourceView* sceneColor, uint32_t frame)
 {
+	if (backend && !GraphicsBackend::CheckNativeDeviceHealth(backend->d3d12Device.get(), backend->d3d11Device.get())) return;
 	if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation() || !nativeSessionStarted ||
 		!globals::state || globals::state->isMapMenuOpen || globals::features::dx12Resources.IsLoading() || globals::state->nativeFirstPersonDepth ||
 		(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
@@ -835,11 +839,13 @@ void DX12NativeScene::CaptureFullNativeEnvironment(ID3D11ShaderResourceView* sce
 
 void DX12NativeScene::OnOpaqueRasterReady()
 {
+	if (backend && !GraphicsBackend::CheckNativeDeviceHealth(backend->d3d12Device.get(), backend->d3d11Device.get())) return;
 	if (globals::features::dx12Control.WantsMaterialPreparation()) {
 		if (!globals::state || globals::state->nativeFirstPersonDepth ||
 			(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
 			return;
 		FinishFullNativeRasterDraws();
+		if (backend && !GraphicsBackend::CheckNativeDeviceHealth(backend->d3d12Device.get(), backend->d3d11Device.get())) return;
 		const auto grid = globals::features::dx12Resources.GetGrid();
 		if (characterCasters && backend && globals::game::graphicsState && globals::state &&
 			!globals::state->isMapMenuOpen && !globals::features::dx12Resources.IsLoading() &&

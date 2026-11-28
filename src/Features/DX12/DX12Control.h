@@ -2,6 +2,7 @@
 
 #include "DX12ControlMode.h"
 #include "Feature.h"
+#include "GraphicsBackend.h"
 
 #include <array>
 #include <atomic>
@@ -27,7 +28,7 @@ struct DX12Control final : Feature
 	bool IsAlwaysEnabled() const override { return true; }
 	bool SupportsVR() override { return false; }
 	/** @brief Whether native work may be submitted this frame. */
-	bool IsActive() const { return loaded && bootActive.load(std::memory_order_acquire); }
+	bool IsActive() const { return loaded && bootActive.load(std::memory_order_acquire) && !GraphicsBackend::NativeDeviceLost(); }
 	bool IsShadowOffloadMode() const { return GetMode() == DX12::ControlMode::ShadowOffload; }
 	bool IsFullRTMode() const { return GetMode() == DX12::ControlMode::FullRT; }
 	bool IsFullNativeMode() const { return GetMode() == DX12::ControlMode::FullNative; }

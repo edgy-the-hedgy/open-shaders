@@ -28,6 +28,7 @@ namespace DX12Native
 	{
 		CS_GPU_PASS("DX12NativeScene::CaptureOpaqueRaster");
 		current.reset();
+		if (!GraphicsBackend::CheckNativeDeviceHealth(a_backend.d3d12Device.get(), a_backend.d3d11Device.get())) return;
 		std::shared_ptr<RasterFrame> captureSlot;
 		bool gpuCopyStarted = false;
 		try {
@@ -40,8 +41,10 @@ namespace DX12Native
 			if (backend.d3d11Device.get() != a_backend.d3d11Device.get() || backend.d3d12Device.get() != a_backend.d3d12Device.get() || backend.commandQueue.get() != a_backend.commandQueue.get())
 				throw std::runtime_error("Raster backend changed; restart required");
 			const auto done = producer.fence12->GetCompletedValue();
-			if (done == UINT64_MAX)
+			if (done == UINT64_MAX) {
+				GraphicsBackend::CheckNativeDeviceHealth(backend.d3d12Device.get(), backend.d3d11Device.get());
 				throw std::runtime_error("Raster device removed");
+			}
 			auto available = std::find_if(slots.begin(), slots.end(), [&](const auto& slot) {
 				const auto completed = producer.fence12->GetCompletedValue();
 				if (!slot)
@@ -174,6 +177,7 @@ namespace DX12Native
 			current = slot;
 			failureLogged = false;
 		} catch (...) {
+			if (!GraphicsBackend::CheckNativeDeviceHealth(a_backend.d3d12Device.get(), a_backend.d3d11Device.get())) return;
 			// A DX11 dispatch may still be queued if a later step fails.
 			// Attach a producer fence rather than quarantining the slot forever.
 			if (captureSlot && captureSlot->readyValue == UINT64_MAX) {

@@ -2604,6 +2604,7 @@ void Upscaling::OnDraw()
 
 bool Upscaling::CopySharedD3D12Resources()
 {
+	if (!GraphicsBackend::CheckNativeDeviceHealth(dx12SwapChain.d3d12Device.get(), dx12SwapChain.d3d11Device.get())) return false;
 	CS_GPU_PASS("Upscaling::CopySharedD3D12Resources");
 
 	auto* vs = GetUpscaleVS();
@@ -3139,7 +3140,7 @@ void Upscaling::FillMenuCameraMotionVectors()
 void Upscaling::PublishNativeFrameParameters(uint32_t width, uint32_t height)
 {
 	using namespace DX12Native;
-	if (!globals::features::dx12Control.UsesExclusiveMaterials() || globals::game::isVR || !globals::state || !width || !height)
+	if (!globals::features::dx12Control.WantsMaterialPreparation() || globals::game::isVR || !globals::state || !width || !height)
 		return;
 	auto publication = std::make_shared<NativeUpscalerFrame>();
 	publication->frame = globals::state->frameCount;
@@ -3427,6 +3428,7 @@ void Upscaling::Upscale()
 
 void Upscaling::PerformUpscaling()
 {
+	if (!GraphicsBackend::CheckNativeDeviceHealth(dx12SwapChain.d3d12Device.get(), dx12SwapChain.d3d11Device.get())) return;
 	CS_GPU_PASS("Upscaling::PerformUpscaling");
 	Upscale();
 	UpscaleDepth();
@@ -3841,7 +3843,8 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 
 	// open-RT's late-frame DX11 color capture: Native Composite is the
 	// final color authority. Native upscaler guides are published after encoding.
-	const bool nativeActive = globals::features::dx12Control.IsActive();
+	const bool nativeActive = GraphicsBackend::CheckNativeDeviceHealth(upscaling.dx12SwapChain.d3d12Device.get(), upscaling.dx12SwapChain.d3d11Device.get()) &&
+		globals::features::dx12Control.IsActive();
 	if (nativeActive || upscaling.nativeCompositeFrame) {
 		upscaling.nativeCompositeFrame.reset();
 		DX12Native::lastCompositeShadowResult.store(DX12Native::CompositeShadowResult::NotCaptured, std::memory_order_relaxed);

@@ -2,11 +2,103 @@
 
 #include <dxgi1_2.h>
 #include <mutex>
+#include <atomic>
+#include <algorithm>
+
+namespace
+{
+	std::atomic<bool> diagnoseNativeDevice{ false };
+	std::atomic<bool> nativeDeviceLost{ false };
+	constexpr uint32_t kMaxBreadcrumbs = 64;
+	constexpr uint32_t kMaxAllocations = 16;
+
+	void ReportDred(ID3D12Device* device)
+	{
+		if (!device)
+			return;
+		winrt::com_ptr<ID3D12DeviceRemovedExtendedData> dred;
+		if (FAILED(device->QueryInterface(IID_PPV_ARGS(dred.put())))) {
+			logger::warn("[DX12 DRED] Device does not expose removed-device data");
+			return;
+		}
+		D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT breadcrumbs{};
+		if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput(&breadcrumbs))) {
+			uint32_t count = 0;
+			for (auto* node = breadcrumbs.pHeadAutoBreadcrumbNode; node && count < kMaxBreadcrumbs; node = node->pNext) {
+				const uint32_t completed = node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0u;
+				if (completed >= node->BreadcrumbCount)
+					continue;
+				const auto next = node->pCommandHistory ? uint32_t(node->pCommandHistory[completed]) : UINT32_MAX;
+				const auto last = completed && node->pCommandHistory ? uint32_t(node->pCommandHistory[completed - 1]) : UINT32_MAX;
+				logger::error("[DX12 DRED] Queue '{}' list '{}' completed {}/{} last op {} next op {}",
+					node->pCommandQueueDebugNameA ? node->pCommandQueueDebugNameA : "(unnamed)",
+					node->pCommandListDebugNameA ? node->pCommandListDebugNameA : "(unnamed)",
+					completed, node->BreadcrumbCount, last, next);
+				++count;
+			}
+			logger::info("[DX12 DRED] Incomplete breadcrumb lists reported: {}", count);
+		} else {
+			logger::warn("[DX12 DRED] Breadcrumb output unavailable");
+		}
+		D3D12_DRED_PAGE_FAULT_OUTPUT fault{};
+		if (SUCCEEDED(dred->GetPageFaultAllocationOutput(&fault))) {
+			logger::error("[DX12 DRED] Page fault VA 0x{:016X}", fault.PageFaultVA);
+			const auto report = [](const D3D12_DRED_ALLOCATION_NODE* node, const char* status) {
+				for (uint32_t count = 0; node && count < kMaxAllocations; ++count, node = node->pNext)
+					logger::error("[DX12 DRED] {} allocation '{}' type {}", status,
+						node->ObjectNameA ? node->ObjectNameA : "(unnamed)", uint32_t(node->AllocationType));
+			};
+			report(fault.pHeadExistingAllocationNode, "existing");
+			report(fault.pHeadRecentFreedAllocationNode, "recently freed");
+		} else {
+			logger::warn("[DX12 DRED] Page fault output unavailable");
+		}
+	}
+}
+
+void GraphicsBackend::EnableNativeDeviceDiagnostics()
+{
+	if (diagnoseNativeDevice.exchange(true, std::memory_order_acq_rel))
+		return;
+	winrt::com_ptr<ID3D12DeviceRemovedExtendedDataSettings> settings;
+	if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(settings.put())))) {
+		settings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+		settings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+		logger::info("[DX12 DRED] Full Native breadcrumbs and page fault reporting requested");
+	} else {
+		logger::warn("[DX12 DRED] Settings interface unavailable");
+	}
+}
+
+bool GraphicsBackend::NativeDeviceLost()
+{
+	return nativeDeviceLost.load(std::memory_order_acquire);
+}
+
+bool GraphicsBackend::CheckNativeDeviceHealth(ID3D12Device* device12, ID3D11Device* device11)
+{
+	if (!diagnoseNativeDevice.load(std::memory_order_acquire))
+		return true;
+	if (NativeDeviceLost())
+		return false;
+	const auto reason12 = device12 ? device12->GetDeviceRemovedReason() : S_OK;
+	const auto reason11 = device11 ? device11->GetDeviceRemovedReason() : S_OK;
+	if (SUCCEEDED(reason12) && SUCCEEDED(reason11))
+		return true;
+	if (!nativeDeviceLost.exchange(true, std::memory_order_acq_rel)) {
+		logger::critical("[DX12] Device loss confirmed: DX12 0x{:08X}, DX11 0x{:08X}. Full Native submissions stopped; restart required.",
+			uint32_t(reason12), uint32_t(reason11));
+		if (FAILED(reason12))
+			ReportDred(device12);
+	}
+	return false;
+}
 
 HRESULT GraphicsBackend::GetSharedDevice(IDXGIAdapter* a_adapter, ID3D12Device** a_device)
 {
 	if (!a_adapter || !a_device)
 		return E_INVALIDARG;
+	if (NativeDeviceLost()) return DXGI_ERROR_DEVICE_REMOVED;
 	static std::mutex mutex;
 	static winrt::com_ptr<ID3D12Device> shared;
 	std::scoped_lock lock(mutex);
@@ -16,6 +108,7 @@ HRESULT GraphicsBackend::GetSharedDevice(IDXGIAdapter* a_adapter, ID3D12Device**
 		return result;
 	if (shared) {
 		const auto removed = shared->GetDeviceRemovedReason();
+		if (!CheckNativeDeviceHealth(shared.get())) return removed;
 		if (FAILED(removed)) {
 			// Drop our process-wide owner so a later Create can retry with a new device.
 			// Other consumers release their own references independently.

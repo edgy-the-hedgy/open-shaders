@@ -19,4 +19,9 @@ struct GraphicsBackend
 	static std::optional<GraphicsBackend> Create(ID3D11Device* a_device, ID3D11DeviceContext* a_context, std::string& a_failure);
 	/** @brief Returns the shared DX12 device for the renderer adapter. */
 	static HRESULT GetSharedDevice(IDXGIAdapter* a_adapter, ID3D12Device** a_device);
+	/** @brief Enable device-loss diagnostics before creating the Full Native device. */
+	static void EnableNativeDeviceDiagnostics();
+	/** @brief Latches a confirmed device removal; no in-session device recreation. */
+	static bool CheckNativeDeviceHealth(ID3D12Device* device12, ID3D11Device* device11 = nullptr);
+	static bool NativeDeviceLost();
 };

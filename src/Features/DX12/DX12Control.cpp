@@ -97,7 +97,7 @@ json DX12Control::GetDiagnostics()
 	for (Feature* feature : std::array<Feature*, 4>{ &globals::features::lightLimitFix,
 		&globals::features::dynamicCubemaps, &globals::features::ibl, &globals::features::truePBR })
 		roles[feature->GetShortName()] = { { "role", name(GetExecutionRole(feature)) }, { "loaded", feature->loaded } };
-	return { { "fullNativeSession", UsesExclusiveMaterials() }, { "active", IsActive() },
+	return { { "fullNativeSession", UsesExclusiveMaterials() }, { "active", IsActive() }, { "deviceLost", GraphicsBackend::NativeDeviceLost() },
 		{ "featureRoles", std::move(roles) } };
 }
 
@@ -130,6 +130,7 @@ void DX12Control::InitializeFeatureBackend()
 
 	// Boot settings were read by State::Load, but no feature execution hooks
 	// have been installed yet. Apply the session role to every registered counterpart.
+	GraphicsBackend::EnableNativeDeviceDiagnostics();
 	featureBackend.store(backend, std::memory_order_release);
 	for (auto* feature : Feature::GetFeatureList()) {
 		if (GetExecutionRole(feature) == DX12::ExecutionRole::Dormant) {

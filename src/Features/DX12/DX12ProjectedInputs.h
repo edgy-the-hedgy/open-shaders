@@ -408,6 +408,7 @@ namespace DX12Native
 		void Publish(const GraphicsBackend& backend, MaterialFrameContract::RasterIdentityStamp stamp, std::span<const ProjectedInputDraw> draws)
 		{
 			current.reset();
+			if (!GraphicsBackend::CheckNativeDeviceHealth(backend.d3d12Device.get(), backend.d3d11Device.get())) return;
 			if (draws.empty() || draws.size() > kMaxProjectedDraws || !stamp.scope || !stamp.geometryRevision || !stamp.materialRevision)
 				return;
 			std::shared_ptr<ProjectedInputFrame> pending;
@@ -563,6 +564,7 @@ namespace DX12Native
 				pending->immutableCacheBytes = cacheBytes;
 				failureLogged = false;
 			} catch (...) {
+				if (!GraphicsBackend::CheckNativeDeviceHealth(backend.d3d12Device.get(), backend.d3d11Device.get())) return;
 				if (pending && !transferSubmitted && pending->transferCommands)
 					pending->transferCommands->Close();
 				if (pending && !pending->transferCommands) pending->transferAllocator = nullptr;
