@@ -75,7 +75,7 @@ json NativePBR::FrameProducer::GetDiagnostics()
 				if (!draw || draw>typedMasks.size() || row>=transfer->instances.size() ||
 					row>=transfer->residentRoleMasks.size()) return;
 				const auto kind=transfer->instances[row];
-				if (kind>=DX12Native::kRasterEffectRow && kind<=DX12Native::kRasterGrassRow)
+				if ((kind>=DX12Native::kRasterEffectRow && kind<=DX12Native::kRasterGrassRow) || kind==DX12Native::kRasterPbrGrassRow)
 					typedMasks[draw-1u]=transfer->residentRoleMasks[row]|DX12Native::MaterialFrameContract::kTypedTransferRowPresent;
 			};
 			for (uint32_t row=0; row<transfer->rasterDraws.size(); ++row)
@@ -92,6 +92,10 @@ json NativePBR::FrameProducer::GetDiagnostics()
 					++typedDraws;
 					using namespace DX12Native::MaterialFrameContract;
 					const uint32_t required=kind==Type::Effect ? TypedEffectRequiredRoles(draw.pixelDescriptor) : kTypedTransferRowPresent|1u;
+					// Typed transfer readiness does not imply the authored Grass recipe is available.
+					if (kind==Type::Grass && (draw.extraDescriptor&(1u<<13u))!=0u &&
+						(!draw.materialOrdinal || draw.materialOrdinal>evidence.materialSourceSnapshots.size() ||
+						!evidence.materialSourceSnapshots[draw.materialOrdinal-1u])) ++missingMaterialDraws;
 					if (HasTypedTransferRoles(typedMasks[i],required)) ++typedTransferReady;
 					else ++typedTransferMissing;
 					continue;
