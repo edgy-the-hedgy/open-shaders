@@ -227,8 +227,45 @@ namespace DX12Native
             std::shared_ptr<const DX12::PreparedMaterialSource> material;
             bool skinned = false;
         };
+        // The reservation survives cancellation while a worker still owns
+        // the packet. Queued, running and completed-but-unadopted CPU work
+        // share the same bounded allocation policy across scene resets.
+        struct PreparationLease
+        {
+            std::atomic<uint64_t>* counter = nullptr;
+            uint64_t bytes = 0;
+            explicit PreparationLease(std::atomic<uint64_t>& value) : counter(&value) {}
+            PreparationLease(const PreparationLease&) = delete;
+            PreparationLease& operator=(const PreparationLease&) = delete;
+            ~PreparationLease() { Release(bytes); }
+            bool TryGrow(uint64_t count, uint64_t limit)
+            {
+                if (count > limit || !DX12::HasAvailableSystemMemory(count)) return false;
+                auto current = counter->load(std::memory_order_relaxed);
+                do {
+                    if (current > limit - count) return false;
+                } while (!counter->compare_exchange_weak(current, current + count,
+                    std::memory_order_acq_rel, std::memory_order_relaxed));
+                bytes += count;
+                return true;
+            }
+            void Release(uint64_t count)
+            {
+                if (count) counter->fetch_sub(count, std::memory_order_acq_rel);
+                bytes -= count;
+            }
+            void TransferTo(PreparationLease& destination)
+            {
+                // Both leases use the same global reservation counter.
+                destination.bytes += bytes;
+                bytes = 0;
+            }
+        };
+        inline static std::atomic<uint64_t> actorPreparationBytes{ 0 }, rigidPreparationBytes{ 0 };
+
         struct ActorSourceSnapshot
         {
+            PreparationLease lease{ actorPreparationBytes };
             std::vector<ActorPartSource> parts;
             uint64_t bytes = 0;
             size_t vertices = 0, indices = 0, bones = 0;
@@ -253,7 +290,10 @@ namespace DX12Native
             part.bound = geometry->worldBound;
             size_t count = 0, indexCount = 0, boneCount = 0;
             uint64_t bytes = 0, working = 0;
-            bool hasColor = true;
+            bool hasColor = true, reserved = false, admitted = false;
+            const SKSE::stl::scope_exit rollback([&] {
+                if (reserved && !admitted) out.lease.Release(working);
+            });
             const auto add = [&](size_t vertices, size_t indices, size_t stride, size_t maps) {
                 count += vertices; indexCount += indices;
                 bytes += uint64_t(vertices) * stride + uint64_t(indices + maps) * sizeof(uint16_t);
@@ -264,7 +304,7 @@ namespace DX12Native
                 return count && indexCount && out.vertices + count <= kMaxVertices &&
                     out.indices + indexCount <= kMaxIndices && out.bones + boneCount <= kMaxBones &&
                     working <= kActorSnapshotBudget && out.bytes <= kActorSnapshotBudget - working &&
-                    DX12::HasAvailableSystemMemory(working);
+                    (reserved = out.lease.TryGrow(working, kActorSnapshotBudget));
             };
             const auto copy = [&](ActorPartitionSource& dest, RE::BSGraphics::VertexDesc desc,
                 const uint8_t* vertices, const uint16_t* indices, size_t n, size_t ni) {
@@ -330,6 +370,7 @@ namespace DX12Native
             part.material = CaptureCharacterMaterial(*geometry, hasColor);
             out.bytes += working; out.vertices += count; out.indices += indexCount; out.bones += boneCount;
             out.parts.push_back(std::move(part));
+            admitted = true;
             return true;
         }
 
@@ -540,10 +581,13 @@ namespace DX12Native
                 const bool withShading = bytes <= kMoverShadingBudget && retained <= kMoverShadingBudget - bytes;
                 const uint64_t workingBytes = sourceBytes + count * sizeof(std::array<float, 3>) +
                     indexCount * sizeof(uint32_t) + (withShading ? bytes : 0);
-                if (workingBytes > kMoverPendingBudget || pendingBytes > kMoverPendingBudget - workingBytes ||
-                    !DX12::HasAvailableSystemMemory(workingBytes)) { ++deferredRigidPacks; return; }
+                if (workingBytes > kMoverPendingBudget || pendingBytes > kMoverPendingBudget - workingBytes) {
+                    ++deferredRigidPacks; return;
+                }
                 const auto gate = globals::shaderCache ? globals::shaderCache->GetRuntimeTaskGate() : nullptr;
                 if (!gate || !backend.d3d12Device) { ++deferredRigidPacks; return; }
+                auto job = std::make_shared<RigidPackJob>();
+                if (!job->lease.TryGrow(workingBytes, kMoverPendingBudget)) { ++deferredRigidPacks; return; }
                 auto packet = std::make_unique<RigidSourcePacket>();
                 packet->desc = desc; packet->transform = transform; packet->bound = geometry.worldBound;
                 packet->vertices.resize(size_t(count * stride));
@@ -552,10 +596,9 @@ namespace DX12Native
                 auto mesh = std::make_shared<RigidMesh>();
                 mesh->geometry = RE::NiPointer<RE::BSGeometry>(&geometry);
                 mesh->reservedShadingBytes = withShading ? bytes : 0;
-                mesh->pending = std::make_shared<RigidPackJob>();
-                mesh->pending->snapshotBytes = workingBytes;
-                mesh->pending->packet = std::move(packet);
-                const auto job = mesh->pending;
+                mesh->pending = job;
+                job->snapshotBytes = workingBytes;
+                job->packet = std::move(packet);
                 std::weak_ptr<RigidPackJob> weakJob = job;
                 if (gate->TrySubmit(Util::RuntimePreparationLane::Rigid, [weakJob, device = backend.d3d12Device, withShading] {
                     if (const auto retainedJob = weakJob.lock())
@@ -607,6 +650,21 @@ namespace DX12Native
         uint64_t StaleActorRecords() const { return staleActorRecords; }
         uint64_t PublishedActorRecords() const { return publishedActorRecords; }
         uint64_t ActorSnapshotBytes() const { return actorJob ? actorJob->snapshotBytes : 0; }
+        static uint64_t PendingActorBytes() { return actorPreparationBytes.load(std::memory_order_relaxed); }
+        static uint64_t PendingRigidBytes() { return rigidPreparationBytes.load(std::memory_order_relaxed); }
+        uint64_t ResidentActorBytes() const
+        {
+            uint64_t bytes = 0;
+            for (const auto& slot : slots) if (slot) bytes += slot->allocationBytes;
+            return bytes;
+        }
+        uint64_t ResidentRigidShadingBytes() const
+        {
+            uint64_t bytes = 0;
+            for (const auto& [key, mesh] : moverMeshes)
+                bytes += mesh->shading.size() * sizeof(float) + mesh->shadingIndices.size() * sizeof(uint32_t);
+            return bytes;
+        }
 
         void Publish(const GraphicsBackend& backend, uint32_t frame, uint32_t scope, uint32_t interval)
         {
@@ -640,6 +698,7 @@ namespace DX12Native
             std::string failure;
             uint32_t frame = 0, scope = 0, interval = 1, slot = 0, rejected = 0;
             uint64_t snapshotBytes = 0;
+            PreparationLease lease{ actorPreparationBytes };
             std::unique_ptr<ActorSourceSnapshot> snapshot;
         };
 
@@ -860,6 +919,7 @@ namespace DX12Native
                 job->frame = frame; job->scope = scope; job->interval = interval;
                 job->slot = uint32_t(index); job->rejected = snapshot->rejected;
                 job->snapshotBytes = snapshot->bytes;
+                snapshot->lease.TransferTo(job->lease);
                 job->snapshot = std::move(snapshot);
                 // Transfer only a retired, exclusively owned slot. On rejection
                 // it can be restored because no task was admitted.
@@ -1054,6 +1114,7 @@ namespace DX12Native
         {
             std::atomic<bool> finished{ false };
             uint64_t snapshotBytes = 0;
+            PreparationLease lease{ rigidPreparationBytes };
             std::unique_ptr<RigidSourcePacket> packet;
             // Written only by the worker, read only after acquire of finished.
             std::unique_ptr<PackedRigidMesh> result;

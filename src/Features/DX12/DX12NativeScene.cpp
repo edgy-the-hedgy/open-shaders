@@ -2011,6 +2011,10 @@ json DX12NativeScene::GetStatus() const
 			{ "staleActorRecords", characterCasters ? characterCasters->StaleActorRecords() : 0ull },
 			{ "publishedActorRecords", characterCasters ? characterCasters->PublishedActorRecords() : 0ull },
 			{ "actorSnapshotBytes", characterCasters ? characterCasters->ActorSnapshotBytes() : 0ull },
+			{ "pendingActorCpuBytes", DX12Native::NativeCharacterCasters::PendingActorBytes() },
+			{ "pendingRigidCpuBytes", DX12Native::NativeCharacterCasters::PendingRigidBytes() },
+			{ "residentActorGpuBytes", characterCasters ? characterCasters->ResidentActorBytes() : 0ull },
+			{ "residentRigidShadingCpuBytes", characterCasters ? characterCasters->ResidentRigidShadingBytes() : 0ull },
 			{ "failure", characterCasters ? characterCasters->Failure() : "" } };
 		const auto reconstructed = globals::features::upscaling.nativeComposite.GetFullNativeReconstruction(frame);
 		const auto finalColor = globals::features::upscaling.nativeComposite.GetFullNativeFinalColor(frame);
