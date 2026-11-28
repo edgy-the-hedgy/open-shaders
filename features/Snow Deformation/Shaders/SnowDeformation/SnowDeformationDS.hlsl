@@ -22,6 +22,9 @@
 #endif
 
 #if !defined(DEPTH_ONLY)
+#	if defined(FULL_NATIVE_INPUT) && !defined(VR)
+	output.NativeInstance = patch[0].NativeInstance;
+#	endif
 	SD_INTERPOLATE(TexCoord0);
 	SD_INTERPOLATE(TBN0);
 	SD_INTERPOLATE(TBN1);
