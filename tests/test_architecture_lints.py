@@ -224,6 +224,26 @@ class ArchitectureLintTests(unittest.TestCase):
         self.assertIn("sampled.xzy", surface)
         self.assertIn("(!alphaHeight || complexHeight)", surface)
 
+    def test_native_terrain_and_patch_inputs_remain_raster_local(self):
+        scene = (ROOT / "src/Features/DX12/DX12NativeScene.cpp").read_text(encoding="utf-8")
+        lighting = (ROOT / "package/Shaders/Lighting.hlsl").read_text(encoding="utf-8")
+        effect = (ROOT / "package/Shaders/Effect.hlsl").read_text(encoding="utf-8")
+        material = (ROOT / "features/Native Composite/Shaders/NativeComposite/NativePBRProbe.hlsl6").read_text(encoding="utf-8")
+        raw = (ROOT / "features/Native Composite/Shaders/NativeComposite/NativeRawRasterInput.hlsli").read_text(encoding="utf-8")
+        identity = (ROOT / "features/Native Composite/Shaders/NativeComposite/NativeRasterDrawIdentity.hlsli").read_text(encoding="utf-8")
+        self.assertIn("CaptureRasterTerrainDraw(encoded,descriptor)", scene)
+        self.assertIn("observation.rowKind==kRasterTerrainRow ? 6u : 0u", scene)
+        self.assertIn("globals::features::snowDeformation.HasNativeLightingPatch()", scene)
+        self.assertIn("(patch ? 8u : 0u)", scene)
+        self.assertIn("const bool exact = !gpuCounted && list", scene)
+        self.assertIn("instances.w == 0u", identity)
+        self.assertIn("input.LandBlendWeights2.z)*255.0", lighting)
+        self.assertIn("float(c.w>>24u)/255.0", raw)
+        self.assertIn("terrainMetadata.x==0xfffffff9u", material)
+        self.assertIn("raw.packedSnow", material)
+        self.assertIn("NativeWorldNormal=worldNormal", effect)
+        self.assertIn("input.NativeWorldNormal", effect)
+
     def test_native_input_is_published_by_original_pass(self):
         raw = (ROOT / "package/Shaders/Common/NativeInputMRT.hlsli").read_text(encoding="utf-8")
         capture = (ROOT / "src/Features/NativePBR/NativeRawInputCapture.cpp").read_text(encoding="utf-8")
