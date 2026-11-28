@@ -67,6 +67,7 @@ json NativePBR::FrameProducer::GetDiagnostics()
 	const auto frame = globals::game::graphicsState ? globals::game::graphicsState->GetFrameCount() : UINT32_MAX;
 	const auto publication = Get(frame);
 	uint32_t missingMaterialDraws=0, typedDraws=0, typedTransferReady=0, typedTransferMissing=0;
+	uint32_t terrainInputsRequested=0, terrainInputsReady=0, terrainInputsMissing=0, rasterPatchDraws=0;
 	if (publication && publication->rawRasterEvidence) {
 		const auto& evidence=*publication->rawRasterEvidence;
 		std::vector<uint32_t> typedMasks(evidence.drawRecords.size(),0u);
@@ -75,7 +76,7 @@ json NativePBR::FrameProducer::GetDiagnostics()
 				if (!draw || draw>typedMasks.size() || row>=transfer->instances.size() ||
 					row>=transfer->residentRoleMasks.size()) return;
 				const auto kind=transfer->instances[row];
-				if ((kind>=DX12Native::kRasterEffectRow && kind<=DX12Native::kRasterGrassRow) || kind==DX12Native::kRasterPbrGrassRow)
+				if ((kind>=DX12Native::kRasterEffectRow && kind<=DX12Native::kRasterGrassRow) || kind==DX12Native::kRasterPbrGrassRow || kind==DX12Native::kRasterTerrainRow)
 					typedMasks[draw-1u]=transfer->residentRoleMasks[row]|DX12Native::MaterialFrameContract::kTypedTransferRowPresent;
 			};
 			for (uint32_t row=0; row<transfer->rasterDraws.size(); ++row)
@@ -85,9 +86,23 @@ json NativePBR::FrameProducer::GetDiagnostics()
 		using Type=RE::BSShader::Type;
 		for (size_t i=0; i<evidence.drawRecords.size(); ++i) {
 			const auto& draw=evidence.drawRecords[i];
+			if ((draw.reserved&8u)!=0u) ++rasterPatchDraws;
 			const auto* source=i<evidence.drawSourceViews.size() ? evidence.drawSourceViews[i].get() : nullptr;
 			if (source) {
 				const auto kind=static_cast<Type>(source->shaderClass);
+				if (kind==Type::Lighting) {
+					using Cache=SIE::ShaderCache;
+					using namespace DX12Native::MaterialFrameContract;
+					const auto technique=Cache::GetLightingTechnique(draw.pixelDescriptor);
+					const bool lod=technique==Cache::LightingShaderTechniques::MTLandLODBlend;
+					const bool snow=(draw.pixelDescriptor & uint32_t(Cache::LightingShaderFlags::Snow))!=0u;
+					if (lod || (technique==Cache::LightingShaderTechniques::MTLand && snow)) {
+						++terrainInputsRequested;
+						const uint32_t required=kTypedTransferRowPresent|(lod?3u:0u);
+						if (HasTypedTransferRoles(typedMasks[i],required)) ++terrainInputsReady;
+						else ++terrainInputsMissing;
+					}
+				}
 				if (kind==Type::Grass || kind==Type::DistantTree || kind==Type::Effect) {
 					++typedDraws;
 					using namespace DX12Native::MaterialFrameContract;
@@ -112,6 +127,10 @@ json NativePBR::FrameProducer::GetDiagnostics()
 		{ "typedRasterDraws", typedDraws },
 		{ "typedRasterTransferReadyDraws", typedTransferReady },
 		{ "typedRasterTransferMissingDraws", typedTransferMissing },
+		{ "terrainInputsRequestedDraws", terrainInputsRequested },
+		{ "terrainInputsReadyDraws", terrainInputsReady },
+		{ "terrainInputsMissingDraws", terrainInputsMissing },
+		{ "rasterPatchDraws", rasterPatchDraws },
 		{ "secondaryGeometryAvailable", publication && publication->HasSecondaryGeometry() }, { "materialRevision", publication ? publication->materialRevision : 0 },
 		{ "geometryRevision", publication ? publication->geometryRevision : 0 },
 		{ "rasterMaterialRevision", publication ? publication->rasterMaterialRevision : 0 },
