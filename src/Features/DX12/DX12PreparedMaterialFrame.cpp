@@ -121,6 +121,8 @@ namespace DX12Native
 				if (resolvedMato) ++*resolvedMato;
 			}
 		}
+		if (source.rasterPbrGrass && pbr && (material.pbrFlags&uint32_t(PBRFlags::Subsurface)))
+			material.pbrFlags|=uint32_t(PBRFlags::Foliage)|uint32_t(PBRFlags::ThinSurface);
 		// Per-instance identity and geometry revision deliberately avoid cross-placement MATO aliasing.
 		return NativePBR::CompileRecipe({ identity, revision, std::move(material) });
 	}
