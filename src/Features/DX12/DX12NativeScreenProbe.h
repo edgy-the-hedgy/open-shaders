@@ -146,7 +146,8 @@ namespace DX12Native
 			// ordinary frame-order changes, subject to the same bounded budget.
 			if (rasterCacheScope==scope && rasterCatalog==job->catalog)
 				for (const auto& source:rasterSources) append(source);
-			if (job->sources.empty()) return;
+			// Even a frame with no acquired material metadata needs an explicit
+			// invalid-material publication, not a failed raster submission.
 			std::weak_ptr<RasterPreparation> weak=job;
 			if (!gate->TrySubmit(Util::RuntimePreparationLane::Material,[weak,device=backend.d3d12Device] {
 				const auto retained=weak.lock();
@@ -414,7 +415,7 @@ namespace DX12Native
 				failure="Waiting for current raster depth"; return;
 			}
 			if (fullResolution && (!rawInputs || !rawInputs->Matches({frame, rawInputs->stamp.scope, 0, 0}, width, height) ||
-				!rawInputs->evidence->winnerCertified || rawInputs->materialSources.empty())) {
+				!rawInputs->evidence->winnerCertified)) {
 				failure="Waiting for certified raster material inputs"; return;
 			}
 			// A stale or unprepared scene is optional. Never reject a primary
@@ -456,7 +457,11 @@ namespace DX12Native
 						rasterRemap=MapRasterSources(sources,rasterSources);
 					}
 					if (!selectedRaster || !CompatibleTextureNamespace(selectedRaster.get(),desiredSeed.get()) ||
-						std::find(rasterRemap.begin(),rasterRemap.end(),UINT32_MAX)!=rasterRemap.end())
+						[&] {
+								for (size_t i=0; i<sources.size(); ++i)
+									if (sources[i] && rasterRemap[i]==UINT32_MAX) return true;
+								return false;
+							}())
 						QueueRasterPreparation(backend,taskGate,scope,frame,sources,desiredSeed,catalog);
 					if (!selectedRaster) { failure="Waiting for asynchronous raster material residency"; return; }
 					// A newer scene may need a different descriptor prefix.
