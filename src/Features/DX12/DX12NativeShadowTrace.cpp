@@ -375,7 +375,7 @@ namespace DX12Native
 				slot->raster->camera.CameraProjInverse,
 				slot->raster->camera.CameraViewInverse,
 				slot->raster->camera.CameraPosAdjust,
-				width, height, lightCount, frame, maskWidth, maskHeight,
+				width, height, ShadowTracedCount(lightCount, lightSlotCount, controls.showsCombinedMask), frame, maskWidth, maskHeight,
 				lightSlotCount, moverScene ? 1u : 0u
 			};
 			WriteUpload(slot->cameraUpload.get(), &camera, sizeof(camera));

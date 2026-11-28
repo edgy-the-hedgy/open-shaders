@@ -38,6 +38,11 @@ namespace DX12Native
 	{
 		return !captureSlices ? 0u : (lightCount < kMaxLightVisibilitySlots ? lightCount : kMaxLightVisibilitySlots);
 	}
+	/** Lighting reads only the slices, so lights without one need no ray unless the combined mask is on screen. */
+	RT_FUNC uint ShadowTracedCount(uint lightCount, uint sliceCount, bool combinedMaskShown)
+	{
+		return sliceCount == 0u || combinedMaskShown ? lightCount : sliceCount;
+	}
 	RT_FUNC uint ShadowVisibilityCapacity(uint count)
 	{
 		if (count == 0u)

@@ -182,6 +182,10 @@ TEST_CASE("Per-light visibility pairs every trace variant and bounds array capac
 	CHECK(ShadowVisibilityCount(0u, true) == 0u);
 	CHECK(ShadowVisibilityCount(1u, true) == 1u);
 	CHECK(ShadowVisibilityCount(4096u, true) == kMaxLightVisibilitySlots);
+	CHECK(ShadowTracedCount(187u, 64u, false) == 64u);
+	CHECK(ShadowTracedCount(187u, 64u, true) == 187u);
+	// A frame without slices shades from the combined mask, which needs every light.
+	CHECK(ShadowTracedCount(187u, 0u, false) == 187u);
 	CHECK(ShadowVisibilityCapacity(0u) == 0u);
 	CHECK(ShadowVisibilityCapacity(1u) == 2u);
 	CHECK(ShadowVisibilityCapacity(3u) == 4u);

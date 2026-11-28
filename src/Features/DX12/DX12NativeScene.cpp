@@ -953,6 +953,7 @@ void DX12NativeScene::OnOpaqueRasterReady()
 		.nativeLights = fullInventory,
 		.uploadLights = moving != 0 || reordered,
 		.captureLightVisibility = true,
+		.showsCombinedMask = DX12Native::compositeShadowDebugView.load(std::memory_order_relaxed),
 		.movers = &movers
 	};
 	shadows.Dispatch(*backend, raster.Get(frame), built, submittedLights, frame, controls);

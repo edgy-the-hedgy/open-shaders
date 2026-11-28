@@ -29,7 +29,8 @@ namespace DX12Native
 		std::shared_ptr<const NativeLightPublication> nativeLights;
 		bool uploadLights = false;  // Trace the passed lights, which override nativeLights' GPU copy.
 		bool captureLightVisibility = false;
-		MoverScene* movers = nullptr;  // Rigid movers traced alongside the static scene this frame.
+		bool showsCombinedMask = false;  // The combined layer is on screen, so it needs every light.
+		MoverScene* movers = nullptr;    // Rigid movers traced alongside the static scene this frame.
 	};
 
 	/** @brief Quarter-resolution raw visibility and receiver distance; the composite reconstructs the full view. */
