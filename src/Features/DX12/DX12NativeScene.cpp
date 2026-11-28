@@ -1745,7 +1745,7 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 		// no projector constants. Never reinterpret these as Lighting TXSTs.
 		using Type = RE::BSShader::Type;
 		std::map<std::array<uintptr_t,8>,size_t> materialRows;
- 		const auto drawCount=std::min(draws.drawRecords.size(),draws.drawSourceViews.size());
+		const auto drawCount=std::min(draws.drawRecords.size(),draws.drawSourceViews.size());
 		const size_t start=drawCount ? (uint64_t(nativeMaterialTransferSequence)*kMaxProjectedDraws)%drawCount : 0u;
 		for (size_t offset=0; offset<drawCount; ++offset) {
 			const size_t i=(start+offset)%drawCount;
@@ -1757,6 +1757,22 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 			const DX12::PreparedMaterialSource* effectSource=nullptr;
 			std::array<uint32_t,4> slots{0u,UINT32_MAX,UINT32_MAX,UINT32_MAX};
 			switch (static_cast<Type>(source->shaderClass)) {
+			case Type::Lighting: {
+				using Cache=SIE::ShaderCache;
+				using Flags=Cache::LightingShaderFlags;
+				using Techniques=Cache::LightingShaderTechniques;
+				const auto technique=Cache::GetLightingTechnique(record.pixelDescriptor);
+				// t2 is a separate gloss/specular texture in model-space Lighting.
+				if (!(record.vertexDescriptor&uint32_t(Flags::ModelSpaceNormals)) ||
+					!(record.pixelDescriptor&uint32_t(Flags::Specular)) ||
+					(record.pixelDescriptor&(uint32_t(Flags::ProjectedUV)|uint32_t(Flags::FurShells))) ||
+					(technique!=Techniques::None && technique!=Techniques::Facegen &&
+					 technique!=Techniques::FacegenRGBTint && technique!=Techniques::Hair &&
+					 technique!=Techniques::Glowmap)) continue;
+				input.instance=kRasterModelSpecularRow;
+				slots[0]=2u;
+				break;
+			}
 			case Type::Grass: input.instance=kRasterGrassRow; break;
 			case Type::DistantTree: input.instance=kRasterDistantTreeRow; break;
 			case Type::Effect: {
