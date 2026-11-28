@@ -239,7 +239,7 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
     // in one lobe must not erase another valid signal or become valid clamped radiance.
     bool diffuseValid = all(isfinite(diffuse)) && all(abs(diffuse) <= 65504.0);
     bool specularValid = all(isfinite(specular)) && all(abs(specular) <= 65504.0);
-    bool transmissionValid = base.a == SurfaceEvaluatedBase && all(isfinite(transmission)) && all(abs(transmission) <= 65504.0);
+    bool transmissionValid = HasNativeTransmissionModel(base.a,coat) && all(isfinite(transmission)) && all(abs(transmission) <= 65504.0);
     // Half precision stores counts up to 2047 plus one for validity.
     if (diffuseValid) Lighting.Store2(outputOffset,PackHalf4(float4(diffuse,float(min(inReach,2047u))+1.0)));
     if (specularValid) Lighting.Store2(outputOffset+8u,PackHalf4(float4(specular,float(min(contributing,2047u))+1.0)));
