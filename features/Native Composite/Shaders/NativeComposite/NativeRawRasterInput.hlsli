@@ -52,6 +52,7 @@ RawRasterSurface ReadRawVisibility(uint2 pixel, float depth, uint drawCount, out
     uint4 descriptors=RawRasterDrawTable.Load4(address+48u);
     result.materialIndex=all(sceneIdentity!=0xffffffffu) ? drawRange.z : 0xffffffffu;
     result.pixelDescriptor=descriptors.x;
+    result.vertexDescriptor=descriptors.y;
     result.extraDescriptor=descriptors.z;
     result.extraFeatureDescriptor=descriptors.w;
     result.alpha=float((c.w >> 3u)&65535u) / 65535.0;
