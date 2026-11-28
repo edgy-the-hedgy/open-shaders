@@ -30,6 +30,11 @@ static const uint DirectReceiverValid = 1u, DirectShadowNotRequested = 2u, Direc
 #include "Common/LightingCommon.hlsli"
 #include "Common/BRDF.hlsli"
 ByteAddressBuffer MaterialLobes : register(t519);
+#ifdef NATIVE_SPECIALIZED_V2_RUNTIME
+ByteAddressBuffer SpecializedDirectory : register(t521);
+ByteAddressBuffer SpecializedPool : register(t522);
+cbuffer SpecializedLightingInputs : register(b1) { uint SpecializedCapacity; uint SpecializedEnabled; };
+#endif
 RaytracingAccelerationStructure CharacterScene : register(t520);
 
 cbuffer DirectInputs : register(b0)
@@ -123,7 +128,11 @@ uint DirectionalVisibility(float3 world, float3 normal, float3 direction, inout 
     return TraceResidentVisibility(ray, rays);
 }
 
+#ifdef NATIVE_SPECIALIZED_V2_RUNTIME
+#include "NativeDirectBRDFv2.hlsli"
+#else
 #include "NativeDirectBRDF.hlsli"
+#endif
 
 groupshared float3 TileMin[64];
 groupshared float3 TileMax[64];
@@ -164,37 +173,60 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
     float4 base = UnpackHalf4(Materials.Load2(offset));
     float4 normal = UnpackHalf4(Materials.Load2(offset + 8u));
     float4 f0 = UnpackHalf4(Materials.Load2(offset + 16u));
+#ifndef NATIVE_SPECIALIZED_V2_RUNTIME
     NativeCoatSample coat=ReadNativeCoat(MaterialLobes,offset);
+#endif
     if (!HasEvaluatedNativeBase(base.a) || !all(isfinite(base)) || !all(isfinite(normal)) || !all(isfinite(f0)) ||
         dot(normal.xyz, normal.xyz) < 1e-8) return 0u;
     float3 deltaView = cameraWorld - world;
     if (dot(deltaView,deltaView) < 1e-8) return 0u;
     float3 n = normalize(normal.xyz), view = normalize(deltaView);
+#ifdef NATIVE_SPECIALIZED_V2_RUNTIME
+    NativeSpecializedLighting s=ReadSpecializedLighting(SpecializedDirectory,SpecializedPool,offset/NativeSurfaceStride,SpecializedCapacity,SpecializedEnabled,n);
+    bool thin=NativeLobeAvailable(s,SpecializedThin), scatter=NativeLobeAvailable(s,SpecializedSSS), hasCoat=NativeLobeAvailable(s,SpecializedCoat);
+    float3 biasNormal=thin?s.thinNormal:n;
+    float3 coatNormal=s.coatNormal;
+#else
+    bool thin=HasNativeThinSurface(coat),scatter=HasNativeSubsurface(coat),hasCoat=HasNativeCoat(coat);
+    float3 biasNormal=thin?coat.normalRoughness.xyz:n;
+    float3 coatNormal=coat.normalRoughness.xyz;
+#endif
     NativeParallaxShadowSample shadow=(NativeParallaxShadowSample)0;
+#ifdef NATIVE_SPECIALIZED_V2_RUNTIME
+    if (ParallaxShadows!=0u) shadow=ReadNativeParallaxShadow(MaterialLobes,offset);
+#else
     if (ParallaxShadows!=0u) shadow=ReadNativeParallaxShadow(MaterialLobes,MaterialPitch*Size.y+offset);
+#endif
     float viewDistance=length(deltaView);
     // Stable interleaved gradient noise avoids temporal shimmer.
     float shadowNoise=frac(52.9829189*frac(dot(float2(pixel),float2(0.06711056,0.00583715))));
     float ndv = max(saturate(dot(n,view)), 1e-4);
     float roughness = clamp(normal.w, 0.045, 1.0);
     float alpha = roughness * roughness, a2 = alpha * alpha;
+#ifdef NATIVE_SPECIALIZED_V2_RUNTIME
+    PBR::FuzzLayer fuzz=ResolveSpecializedFuzz(s,roughness,n,view,true);
+#else
     PBR::FuzzLayer fuzz=ResolveNativeFuzz(coat,roughness,n,view,true);
+#endif
     float3 diffuse = 0, specular = 0, transmission = 0;
     uint inReach = 0, contributing = 0;
     uint evidence = DirectReceiverValid;
     if (DirectionalDirection.w != 0.0 && any(DirectionalRadiance.rgb > 0.0)) {
         float3 l = DirectionalDirection.xyz;
         float ndl = saturate(dot(n,l));
-        if (ndl > 0.0 || HasNativeThinSurface(coat) || HasNativeSubsurface(coat) || (HasNativeCoat(coat) && dot(coat.normalRoughness.xyz,l)>0.0)) {
+        if (ndl > 0.0 || thin || scatter || (hasCoat && dot(coatNormal,l)>0.0)) {
             ++inReach;
-            float3 biasNormal=HasNativeThinSurface(coat) ? coat.normalRoughness.xyz : n;
             uint visibility = DirectShadowNotRequested;
             if (DirectionalRadiance.w == 0.0)
                 visibility = DirectionalVisibility(world,dot(biasNormal,l)<0.0 ? -biasNormal : biasNormal,l,rays);
             evidence |= visibility;
             if ((visibility & DirectOccluded) == 0u) {
                 ++contributing;
+#ifdef NATIVE_SPECIALIZED_V2_RUNTIME
+                AccumulateSpecializedBRDF(base,f0,n,view,l,roughness,max(DirectionalRadiance.rgb,0.0),NativeHeightVisibility(shadow,NativeSpecializedBaseDirection(l,s),viewDistance,shadowNoise),s,fuzz,FoliageScatteringEnabled,diffuse,specular,transmission);
+#else
                 AccumulateBRDF(base, f0, n, view, l, ndl, ndv, a2, max(DirectionalRadiance.rgb,0.0),NativeHeightVisibility(shadow,NativeBaseDirection(l,coat),viewDistance,shadowNoise), coat, fuzz, FoliageScatteringEnabled, diffuse, specular, transmission);
+#endif
             }
         }
     }
@@ -208,7 +240,7 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
         float distance = sqrt(d2);
         float3 l = delta/distance;
         float ndl = saturate(dot(n,l));
-        if (ndl <= 0 && !HasNativeThinSurface(coat) && !HasNativeSubsurface(coat) && !(HasNativeCoat(coat) && dot(coat.normalRoughness.xyz,l)>0.0)) continue;
+        if (ndl <= 0 && !thin && !scatter && !(hasCoat && dot(coatNormal,l)>0.0)) continue;
         float relativeDistance = distance / light.w;
         float fade = saturate((light.w-distance)*max(params.y,0.0));
         float attenuation = params.z != 0.0 ?
@@ -220,7 +252,6 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
         // color.w is the shared light-record opt-out for known non-shadow emitters.
         // Their contribution never depends on missing or incomplete caster coverage.
         if (color.w == 0.0) {
-            float3 biasNormal=HasNativeThinSurface(coat) ? coat.normalRoughness.xyz : n;
             float emitterRadius = min(max(params.x, 0.0) * ShadowEmitterMultiplier(QualityMode), distance * 0.5);
             float3 sampledDelta = delta + NativeEmitterOffset(l, emitterRadius, pixel, i, FrameIndex);
             float sampledDistance = length(sampledDelta);
@@ -232,14 +263,22 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
             evidence |= DirectShadowNotRequested;
         }
         ++contributing;
+#ifdef NATIVE_SPECIALIZED_V2_RUNTIME
+        AccumulateSpecializedBRDF(base,f0,n,view,l,roughness,max(color.rgb,0.0)*attenuation,NativeHeightVisibility(shadow,NativeSpecializedBaseDirection(l,s),viewDistance,shadowNoise),s,fuzz,FoliageScatteringEnabled,diffuse,specular,transmission);
+#else
         AccumulateBRDF(base, f0, n, view, l, ndl, ndv, a2, max(color.rgb,0.0)*attenuation,NativeHeightVisibility(shadow,NativeBaseDirection(l,coat),viewDistance,shadowNoise), coat, fuzz, FoliageScatteringEnabled, diffuse, specular, transmission);
+#endif
     }
     VisibilityEvidence.Store(visibilityOffset, evidence);
     // Diffuse, specular and transmission have independent validity. An overflow
     // in one lobe must not erase another valid signal or become valid clamped radiance.
     bool diffuseValid = all(isfinite(diffuse)) && all(abs(diffuse) <= 65504.0);
     bool specularValid = all(isfinite(specular)) && all(abs(specular) <= 65504.0);
+#ifdef NATIVE_SPECIALIZED_V2_RUNTIME
+    bool transmissionValid = NativeSpecializedTransmissionValid(s) && all(isfinite(transmission)) && all(abs(transmission) <= 65504.0);
+#else
     bool transmissionValid = HasNativeTransmissionModel(base.a,coat) && all(isfinite(transmission)) && all(abs(transmission) <= 65504.0);
+#endif
     // Half precision stores counts up to 2047 plus one for validity.
     if (diffuseValid) Lighting.Store2(outputOffset,PackHalf4(float4(diffuse,float(min(inReach,2047u))+1.0)));
     if (specularValid) Lighting.Store2(outputOffset+8u,PackHalf4(float4(specular,float(min(contributing,2047u))+1.0)));

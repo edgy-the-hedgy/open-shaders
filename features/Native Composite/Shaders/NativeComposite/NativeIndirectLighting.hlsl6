@@ -1,6 +1,9 @@
 #include "NativeSurface.hlsli"
 #include "FullNativeSampling.hlsli"
 #include "NativeFuzz.hlsli"
+#ifdef NATIVE_SPECIALIZED_V2_RUNTIME
+#include "NativeSpecializedLighting.hlsli"
+#endif
 #include "NativeIndirectBRDF.hlsli"
 #include "NativeEnvironmentColor.hlsli"
 
@@ -17,7 +20,13 @@ RaytracingAccelerationStructure Scene : register(t6);
 #define NATIVE_TEXTURE_REGISTER t10
 #define NATIVE_CHARACTER_REFLECTION
 #include "NativeMaterialAlpha.hlsli"
+#ifdef NATIVE_SPECIALIZED_V2_RUNTIME
+ByteAddressBuffer SpecializedDirectory : register(t522);
+ByteAddressBuffer SpecializedPool : register(t0,space2);
+cbuffer SpecializedLightingInputs : register(b0,space2) { uint SpecializedCapacity; uint SpecializedEnabled; };
+#else
 ByteAddressBuffer MaterialLobes : register(t522);
+#endif
 RaytracingAccelerationStructure CharacterScene : register(t523);
 ByteAddressBuffer SSRDirect : register(t524);
 ByteAddressBuffer SSRRayIdentity : register(t525);
@@ -292,12 +301,61 @@ void main(uint3 id : SV_DispatchThreadID)
     float4 normal = UnpackHalf4(Materials.Load2(offset + 8u));
     float4 f0 = UnpackHalf4(Materials.Load2(offset + 16u));
     float4 emissionAO = UnpackHalf4(Materials.Load2(offset + 24u));
+#ifndef NATIVE_SPECIALIZED_V2_RUNTIME
     NativeCoatSample coat=ReadNativeCoat(MaterialLobes,pixel.y*MaterialLobePitch+pixel.x*NativeSurfaceStride);
+#endif
     if (!HasEvaluatedNativeBase(base.a) || !all(isfinite(base)) || !all(isfinite(normal)) ||
         !all(isfinite(f0)) || !all(isfinite(emissionAO)) || dot(normal.xyz, normal.xyz) < 1e-8) return;
     float3 view, world;
     if (!ViewDirection(pixel, view, world)) return;
     float3 n = normalize(normal.xyz);
+#ifdef NATIVE_SPECIALIZED_V2_RUNTIME
+    NativeSpecializedLighting s=ReadSpecializedLighting(SpecializedDirectory,SpecializedPool,offset/NativeSurfaceStride,SpecializedCapacity,SpecializedEnabled,n);
+    float3 baseView=NativeSpecializedBaseDirection(view,s);
+    float roughness=clamp(normal.w,0.045,1.0);
+    NativeIndirect::LobeWeights lobes=NativeIndirect::EvaluateLobes(base.rgb,f0.rgb,f0.a,roughness,emissionAO.a,saturate(dot(n,baseView)));
+    PBR::FuzzLayer fuzz=ResolveSpecializedFuzz(s,roughness,n,view,false);
+    bool thin=NativeLobeAvailable(s,SpecializedThin);
+    float3 transmissionWeight=0.0,backTransmissionWeight=0.0;
+    float3 albedo=max(base.rgb,0.0)*(1.0-saturate(f0.a));
+    float2 env=BRDF::EnvBRDF(roughness,saturate(abs(dot(n,view))));
+    float3 fresnel=saturate(f0.rgb*env.x+env.y);
+    if(thin) {
+        float front=NativeLobeAvailable(s,SpecializedFront)?s.frontWeight:0.0;
+        float back=NativeLobeAvailable(s,SpecializedBack)?s.backWeight:0.0;
+        float control=NativeLobeAvailable(s,SpecializedSpecularControls)?s.specularControls.x:1.0;
+        float3 throughput=saturate(MultiBounceAO(saturate(albedo),saturate(emissionAO.a)))*(1.0-fresnel*control);
+        lobes.diffuse=albedo*saturate(1.0-front-back)*throughput;
+        lobes.specular*=control;
+        transmissionWeight=NativeSpecializedScatterColor(s,albedo)*front*throughput;
+        backTransmissionWeight=NativeSpecializedScatterColor(s,albedo)*back*throughput;
+    } else if(NativeLobeAvailable(s,SpecializedSSS)) {
+        lobes.diffuse*=s.opacity;
+        transmissionWeight=s.sssColor*(1.0-s.opacity)*BRDF::Diffuse_Lambert()*(1.0-fresnel);
+    }
+    lobes.diffuse=lobes.diffuse*(1.0-fuzz.weightedAlbedo)+fuzz.weightedAlbedo*fuzz.color*saturate(emissionAO.a);
+    lobes.specular*=fuzz.specularThroughput;
+    transmissionWeight*=1.0-fuzz.weightedAlbedo; backTransmissionWeight*=1.0-fuzz.weightedAlbedo;
+    bool hasCoat=NativeLobeAvailable(s,SpecializedCoat);
+    float3 cn=s.coatNormal;
+    float coatRoughness=s.coatRoughness;
+    float3 coatSpecularWeight=0.0,coatDiffuseWeight=0.0;
+    if(hasCoat) {
+        float2 cb=BRDF::EnvBRDF(coatRoughness,saturate(abs(dot(cn,view))));
+        float reflected=saturate(s.coatF0*cb.x+cb.y);
+        float attenuation=1.0-reflected*s.coatStrength;
+        lobes.diffuse*=attenuation; lobes.specular*=attenuation;
+        transmissionWeight*=attenuation; backTransmissionWeight*=attenuation;
+        coatSpecularWeight=reflected*s.coatStrength;
+        if(NativeLobeAvailable(s,SpecializedColoredCoat)) {
+            lobes.diffuse*=1.0-s.coatStrength; lobes.specular*=1.0-s.coatStrength;
+            transmissionWeight*=1.0-s.coatStrength; backTransmissionWeight*=1.0-s.coatStrength;
+            coatDiffuseWeight=s.coatColor*(1.0-reflected)*s.coatStrength;
+        }
+    }
+    bool transmissionValid=NativeSpecializedTransmissionValid(s);
+    float3 reflectionNormal=NativeSpecializedAnisoNormal(s,s.eyeNormal,view);
+#else
     float3 baseView=NativeBaseDirection(view,coat);
     float roughness = clamp(normal.w, 0.045, 1.0);
     NativeIndirect::LobeWeights lobes = NativeIndirect::EvaluateLobes(base.rgb, f0.rgb, f0.a,
@@ -339,6 +397,12 @@ void main(uint3 id : SV_DispatchThreadID)
         coatSpecularWeight=reflected*strength;
         if (coat.f0Colored.w != 0.0) coatDiffuseWeight=coat.colorStrength.rgb*(1.0-reflected)*strength;
     }
+
+    bool thin=HasNativeThinSurface(coat);
+    bool transmissionValid=HasNativeTransmissionModel(base.a,coat);
+    float3 reflectionNormal=HasNativeEyeEnvironment(coat)?normalize(coat.normalRoughness.xyz):n;
+    float coatRoughness=coat.normalRoughness.w;
+#endif
     uint active = EnabledContributions & AvailableContributions;
     if ((active & ContributionIndirectDiffuse) != 0u)
     {
@@ -347,22 +411,21 @@ void main(uint3 id : SV_DispatchThreadID)
         Lighting.Store2(outputOffset, PackOpaqueRadiance(diffuseRadiance, ContributionIndirectDiffuse));
         if ((active & ContributionTransmission) != 0u) {
             float3 backRadiance=0.0;
-            if (HasNativeThinSurface(coat) && any(backTransmissionWeight>0.0)) {
+            if (thin && any(backTransmissionWeight>0.0)) {
                 backRadiance = EnvironmentIrradiance(-n) + SkyIrradiance(-n);
             }
-            Lighting.Store2(outputOffset+16u,PackOpaqueRadiance(radiance*transmissionWeight+backRadiance*backTransmissionWeight,HasNativeTransmissionModel(base.a,coat) ? ContributionTransmission : 0u));
+            Lighting.Store2(outputOffset+16u,PackOpaqueRadiance(radiance*transmissionWeight+backRadiance*backTransmissionWeight,transmissionValid ? ContributionTransmission : 0u));
         }
     }
     if ((active & ContributionIndirectSpecular) != 0u)
     {
-        float3 reflectionNormal = HasNativeEyeEnvironment(coat) ? normalize(coat.normalRoughness.xyz) : n;
         float3 r = reflect(-baseView, reflectionNormal);
         // Eye environment direction is not a replacement for the direct BRDF normal.
         float3 radiance = ResolveRayReflection(pixel,world,n,r,roughness,0u,CubemapSpecularMiss(r,roughness));
         float3 specularRadiance = radiance * lobes.specular;
         if (hasCoat) {
             float3 cr=reflect(-view,cn);
-            float3 crRadiance=ResolveRayReflection(pixel,world,cn,cr,coat.normalRoughness.w,1u,CubemapSpecularMiss(cr,coat.normalRoughness.w));
+            float3 crRadiance=ResolveRayReflection(pixel,world,cn,cr,coatRoughness,1u,CubemapSpecularMiss(cr,coatRoughness));
             specularRadiance += crRadiance*coatSpecularWeight;
         }
         Lighting.Store2(outputOffset + 8u, PackOpaqueRadiance(specularRadiance, ContributionIndirectSpecular));
