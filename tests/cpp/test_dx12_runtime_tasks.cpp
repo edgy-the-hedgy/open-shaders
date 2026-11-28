@@ -6,6 +6,7 @@
 #include "Features/DX12/SpatialGrid.h"
 #include "Features/DX12/TilePreparationPolicy.h"
 #include "Utils/RuntimeTaskGate.h"
+#include "Features/DX12/CharacterPreparationPolicy.h"
 
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
@@ -543,4 +544,21 @@ TEST_CASE("Full Native feature ownership excludes legacy lighting and upscaler f
 	CHECK(SelectExecutionRole(FeatureBackend::FullNative, CounterpartKind::Shared) == ExecutionRole::Baseline);
 	CHECK(RequiresModeRestart(ControlMode::FullRT, ControlMode::FullNative));
 	CHECK(RequiresModeRestart(ControlMode::FullNative, ControlMode::FullRT));
+}
+
+TEST_CASE("Actor capture cadence and asynchronous pose age are independent", "[dx12][character]")
+{
+    using namespace DX12Native;
+    CHECK(ActorCaptureDue(101, 100, 1, true));
+    CHECK_FALSE(ActorCaptureDue(101, 100, 2, true));
+    CHECK(ActorCaptureDue(102, 100, 2, true));
+    CHECK(ActorPoseAgeAllowed(104, 100, 1));
+    CHECK(ActorPoseAgeAllowed(104, 100, 2));
+    CHECK_FALSE(ActorPoseAgeAllowed(109, 100, 1));
+    CHECK(ActorPoseAgeAllowed(109, 100, 2));
+    CHECK_FALSE(ActorPoseAgeAllowed(110, 100, 2));
+    CHECK(ActorRequestCompatible(1, 2, 1, 2));
+    CHECK_FALSE(ActorRequestCompatible(1, 2, 1, 1));
+    CHECK_FALSE(ActorRequestCompatible(1, 2, 2, 2));
+    CHECK(ActorPoseAgeAllowed(0, UINT32_MAX, 1));
 }
