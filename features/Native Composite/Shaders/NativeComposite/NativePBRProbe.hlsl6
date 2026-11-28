@@ -119,18 +119,17 @@ bool IntersectRasterCandidate(uint2 identity, float3 origin, float3 direction, f
         hitDistance>0.5 && abs(hitDistance-distance)<=tolerance;
 }
 
-// Six authored layer weights and resident source bindings, not a guessed
-// texture-set index. Borrowed seam textures and LOD/snow deformation remain
-// explicitly feature-limited until their distinct inputs are available.
+// Six authored base layers and up to two borrowed seam layers. LOD/snow
+// deformation and advanced terrain lobes remain explicitly feature-limited.
 Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float distance,
     out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow)
 {
     rawUsed=false; coat=(NativeCoatSample)0; shadow=(NativeParallaxShadowSample)0;
     Sample result=(Sample)0; result.color.a=SurfaceUnsupportedMaterial;
-    uint address=(raw.materialOrdinal-1u)*32u;
+    uint address=(raw.materialOrdinal-1u)*48u;
     uint4 row0=RasterLandscapeRows.Load4(address),row1=RasterLandscapeRows.Load4(address+16u);
-    if (row1.z!=6u) return result;
-    float weights[6];
+    if (RasterLandscapeRows.Load(address+32u)!=6u) return result;
+    float weights[8];
     float2 w0=f16tof32(uint2(raw.auxiliary.x&65535u,raw.auxiliary.x>>16u));
     float2 w1=f16tof32(uint2(raw.auxiliary.y&65535u,raw.auxiliary.y>>16u));
     float2 w2=f16tof32(uint2(raw.auxiliary.z&65535u,raw.auxiliary.z>>16u));
@@ -138,7 +137,10 @@ Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float dista
     weights[0]=max(w0.x,0.0); weights[1]=max(w0.y,0.0);
     weights[2]=max(w1.x,0.0); weights[3]=max(w1.y,0.0);
     weights[4]=max(w2.x,0.0); weights[5]=max(w2.y,0.0);
-    float total=dot(max(float4(w0,w1),0.0),1.0)+dot(max(w2,0.0),1.0);
+    float2 w3=raw.borrowedLandscape ? f16tof32(uint2(raw.auxiliary.w&65535u,raw.auxiliary.w>>16u)) : float2(0,0);
+    if (!all(isfinite(w3))) return result;
+    weights[6]=max(w3.x,0.0); weights[7]=max(w3.y,0.0);
+    float total=dot(max(float4(w0,w1),0.0),1.0)+dot(max(float4(w2,w3),0.0),1.0);
     if (total<=1e-6 || !isfinite(total)) return result;
     NativeMaterialTriangle tri=(NativeMaterialTriangle)0;
     tri.rasterLocal=true; tri.hasTangents=true;
@@ -148,7 +150,7 @@ Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float dista
     const float3x3 identity=float3x3(1,0,0,0,1,0,0,0,1);
     Sample blended=(Sample)0;
     float used=0.0;
-    [unroll] for (uint layer=0u; layer<6u; ++layer) {
+    [unroll] for (uint layer=0u; layer<8u; ++layer) {
         float weight=weights[layer]/total;
         if (weight<=0.01) continue;
         uint bindingIndex=layer<4u ? row0[layer] : row1[layer-4u];
@@ -249,7 +251,8 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed,
     float3 origin = camera.xyz/camera.w+PositionAdjust.xyz;
     float3 delta = w.xyz/w.w+PositionAdjust.xyz-origin;
     float distance = length(delta);
-    if (!isfinite(distance) || distance <= 0.5 || distance > 60000.0) return result;
+    if (!isfinite(distance) || distance <= 1e-6) return result;
+    const bool rayRange=distance>0.5 && distance<=60000.0;
     // Only accept the closest native hit when it agrees with raster visibility.
     // Unprepared foreground surfaces must not expose native geometry behind them.
     result.color.a = SurfaceMissingGeometry;
@@ -279,7 +282,7 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed,
             Random::InterleavedGradientNoise(float2(pixel),ProjectionFrame),rawUsed,coat,shadow);
         if (HasEvaluatedNativeBase(result.color.a)) {
             // Optional correspondence never revokes an otherwise valid material.
-            if (HasRasterRayMapping!=0u && rasterMapped.x<InstanceCount && rasterMapped.y<0x80000000u && visible.materialIndex!=0xffffffffu &&
+            if (rayRange && HasRasterRayMapping!=0u && rasterMapped.x<InstanceCount && rasterMapped.y<0x80000000u && visible.materialIndex!=0xffffffffu &&
                 Bindings[rasterMapped.x].materialIndex==visible.materialIndex) {
                 hitIdentity=uint2(rasterMapped.x,rasterMapped.y|0x80000000u);
                 if (traced) {
@@ -300,7 +303,7 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed,
     }
     // Certified opaque raster inputs are the only primary visibility
     // authority. A missing/invalid raw receiver cannot become a ray hit.
-    if (RasterSourceCount!=0u || HasSecondaryScene==0u) return result;
+    if (RasterSourceCount!=0u || HasSecondaryScene==0u || !rayRange) return result;
     uint instance, primitive;
     float2 bary;
     float hitDistance;

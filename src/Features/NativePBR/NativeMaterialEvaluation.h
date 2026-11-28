@@ -582,12 +582,12 @@ namespace DX12Native
 			prepared.geometryRevision = revision; // allocator generation for this independent table
 			prepared.bindings.resize(materials.size(), NativePBR::PackGpuDrawBinding(0, 0, UINT32_MAX, 0));
 			std::vector<BindingSource> sources(materials.size());
-			// First six words are layer binding indices, seventh is the
-			// layer count, eighth reserved. Ordinary rows have count zero.
-			std::vector<std::array<uint32_t, 8>> landscapeRows(materials.size());
+			// Eight layer binding indices, base layer count, three reserved words.
+			// Ordinary rows have count zero. This private table is not raster ABI v6.
+			std::vector<std::array<uint32_t, 12>> landscapeRows(materials.size());
 			for (auto& row : landscapeRows) {
 				row.fill(UINT32_MAX);
-				row[6] = row[7] = 0u;
+				row[8] = row[9] = row[10] = row[11] = 0u;
 			}
 			using F = RE::BSShaderProperty::EShaderPropertyFlag;
 			for (size_t i = 0; i < materials.size(); ++i) {
@@ -595,8 +595,8 @@ namespace DX12Native
 				const auto& source = *materials[i];
 				if (source.rasterLandscapeLayers == 6u && source.clampMode >= 0 && source.clampMode <= 3) {
 					auto& row = landscapeRows[i];
-					row[6] = 6u;
-					for (uint32_t layer = 0; layer < 6u; ++layer) {
+					row[8] = 6u;
+					for (uint32_t layer = 0; layer < 8u; ++layer) {
 						const auto& paths = source.rasterLandscapeTextures[layer];
 						if (paths[0].empty() || paths[1].empty()) continue;
 						NativePBR::MaterialData material;
@@ -606,7 +606,7 @@ namespace DX12Native
 						material.texturePaths[0] = paths[0];
 						material.texturePaths[1] = paths[1];
 						material.texturePathsComplete = true;
-						const auto identity = (uint64_t(3) << 62) | (uint64_t(i) * 6u + layer + 1u);
+						const auto identity = (uint64_t(3) << 62) | (uint64_t(i) * 8u + layer + 1u);
 						auto recipe = NativePBR::CompileRecipe({identity, revision, std::move(material)});
 						row[layer] = uint32_t(prepared.bindings.size());
 						prepared.bindings.push_back(NativePBR::PackGpuDrawBinding(identity, revision, UINT32_MAX, 0));

@@ -122,6 +122,23 @@ bool LandscapeSeamsFix::IsBlended(RE::BSGeometry* a_geometry)
 	return quadIt != quads.end() && quadIt->second.resources;
 }
 
+std::array<std::array<std::string, 2>, LandscapeSeamsFix::MaxExtraLayers> LandscapeSeamsFix::BorrowedTexturePaths(RE::BSGeometry* a_geometry)
+{
+	std::array<std::array<std::string, 2>, MaxExtraLayers> result{};
+	std::shared_lock lock(mutex);
+	const auto loaded = loadedQuads.find(a_geometry);
+	if (loaded == loadedQuads.end()) return result;
+	const auto quad = quads.find(loaded->second);
+	if (quad == quads.end() || !quad->second.resources || quad->second.pbr) return result;
+	for (uint32_t i = 0; i < MaxExtraLayers; ++i)
+		for (uint32_t j = 0; j < 2; ++j) {
+			const auto& source = quad->second.resources->extras[i][j];
+			if (source && source->name.c_str() && std::string_view(source->name.c_str()).size() <= 260u)
+				result[i][j] = source->name.c_str();
+		}
+	return result;
+}
+
 void LandscapeSeamsFix::Bind(RE::BSGeometry* a_geometry)
 {
 	std::shared_ptr<Resources> resources;

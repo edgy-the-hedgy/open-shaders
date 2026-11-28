@@ -1,4 +1,5 @@
 #include "DX12NativeScene.h"
+#include "EngineFixes/LandscapeSeamsFix.h"
 #include "RE/B/BGSMaterialObject.h"
 #include "RE/T/TESObjectSTAT.h"
 #include "DX12LightSourceIdentity.h"
@@ -1220,6 +1221,9 @@ std::shared_ptr<const DX12::PreparedMaterialSource> DX12NativeScene::ObserveRast
 					for (uint32_t layer = 1u; layer < 6u; ++layer)
 						scalars.rasterLandscapeTextures[layer] = { path(landscape->landscapeDiffuseTexture[layer-1u].get()),
 							path(landscape->landscapeNormalTexture[layer-1u].get()) };
+					const auto borrowed = LandscapeSeamsFix::GetInstance().BorrowedTexturePaths(&geometry);
+					for (uint32_t layer = 0; layer < borrowed.size(); ++layer)
+						scalars.rasterLandscapeTextures[6u + layer] = borrowed[layer];
 					for (uint32_t layer = 0u; layer < 6u; ++layer) {
 						scalars.rasterLandscapeSnow[layer] = landscape->textureIsSnow[layer];
 						scalars.rasterLandscapeSpecular[layer] = landscape->textureIsSpecPower[layer];
@@ -1234,7 +1238,7 @@ std::shared_ptr<const DX12::PreparedMaterialSource> DX12NativeScene::ObserveRast
 	}
 	scalars.colorOffset = runtime.vertexDesc.HasFlag(RE::BSGraphics::Vertex::VF_COLOR) ? 0u : UINT32_MAX;
 	if (rasterMaterialCache.empty()) rasterMaterialCache.resize(4096);
-	const auto identity = scalars.observedShaderFlags & static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kProjectedUV) ?
+	const auto identity = (scalars.rasterLandscapeLayers || (scalars.observedShaderFlags & static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kProjectedUV))) ?
 		reinterpret_cast<uintptr_t>(&geometry) : reinterpret_cast<uintptr_t>(base);
 	auto& entry = rasterMaterialCache[(identity >> 4u) % rasterMaterialCache.size()];
 	if (entry.snapshot && entry.property == identity && entry.material == materialIdentity &&
@@ -1313,7 +1317,7 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 	const auto geometryKey = static_cast<const void*>(&geometry);
 	auto materialKey = static_cast<const void*>(runtime.shaderProperty.get());
 	if (runtime.shaderProperty && runtime.shaderProperty->GetRTTI()==globals::rtti::BSLightingShaderPropertyRTTI.get() &&
-		static_cast<const RE::BSLightingShaderProperty*>(runtime.shaderProperty.get())->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kProjectedUV))
+		static_cast<const RE::BSLightingShaderProperty*>(runtime.shaderProperty.get())->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kProjectedUV, RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape))
 		materialKey=geometryKey; // same shader property may have different placement overrides
 	draws.activeGeometry = draws.geometryOrdinals.try_emplace(geometryKey, uint32_t(draws.geometryOrdinals.size()+1)).first->second;
 	draws.activeMaterial = 0;

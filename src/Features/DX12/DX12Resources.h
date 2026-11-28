@@ -66,7 +66,7 @@ namespace DX12
 		std::array<std::string, 8> texturePaths;
 		// Raster-only vanilla terrain inputs; never retain engine texture pointers.
 		uint32_t rasterLandscapeLayers = 0;
-		std::array<std::array<std::string, 2>, 6> rasterLandscapeTextures{};
+		std::array<std::array<std::string, 2>, 8> rasterLandscapeTextures{};
 		std::array<float, 6> rasterLandscapeSnow{}, rasterLandscapeSpecular{};
 		std::vector<uint8_t> vertexBytes;
 		bool operator==(const PreparedMaterialSource&) const = default;

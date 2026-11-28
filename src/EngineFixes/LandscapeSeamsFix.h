@@ -5,6 +5,7 @@
 #include <array>
 #include <memory>
 #include <shared_mutex>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -101,6 +102,8 @@ struct LandscapeSeamsFix : EngineFix
 	bool IsBlended(RE::BSGeometry* a_geometry);
 	/** @brief Binds the quad's weights, quad data and borrowed textures to t105-t112. Render thread only, before the draw. */
 	void Bind(RE::BSGeometry* a_geometry);
+	// Copy the actual borrowed texture identities for native raster material preparation.
+	std::array<std::array<std::string, 2>, MaxExtraLayers> BorrowedTexturePaths(RE::BSGeometry* a_geometry);
 	/** @brief Reads a newly set up land record's quads and rebuilds them and their neighbours. */
 	void TESObjectLAND_SetupMaterial(RE::TESObjectLAND* a_land);
 
