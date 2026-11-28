@@ -42,7 +42,8 @@ namespace DX12Native
 
 		TextureCache textures;
 		std::vector<std::shared_ptr<const Texture>> poolTextures;
-		winrt::com_ptr<ID3D12Resource> records, bindings;
+		winrt::com_ptr<ID3D12Resource> records, bindings, rasterLandscapeRows;
+		uint32_t rasterSourceCount = 0;
 		winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
 		uint64_t revision = 0, textureBytes = 0;
 		uint32_t recordCount = 0;
@@ -578,9 +579,40 @@ namespace DX12Native
 			prepared.geometryRevision = revision; // allocator generation for this independent table
 			prepared.bindings.resize(materials.size(), NativePBR::PackGpuDrawBinding(0, 0, UINT32_MAX, 0));
 			std::vector<BindingSource> sources(materials.size());
+			// First six words are layer binding indices, seventh is the
+			// layer count, eighth reserved. Ordinary rows have count zero.
+			std::vector<std::array<uint32_t, 8>> landscapeRows(materials.size());
+			for (auto& row : landscapeRows) {
+				row.fill(UINT32_MAX);
+				row[6] = row[7] = 0u;
+			}
 			using F = RE::BSShaderProperty::EShaderPropertyFlag;
 			for (size_t i = 0; i < materials.size(); ++i) {
 				const auto& source = materials[i];
+				if (source.rasterLandscapeLayers == 6u && source.clampMode >= 0 && source.clampMode <= 3) {
+					auto& row = landscapeRows[i];
+					row[6] = 6u;
+					for (uint32_t layer = 0; layer < 6u; ++layer) {
+						const auto& paths = source.rasterLandscapeTextures[layer];
+						if (paths[0].empty() || paths[1].empty()) continue;
+						NativePBR::MaterialData material;
+						material.legacyMaterial = true;
+						material.clampMode = uint32_t(source.clampMode);
+						material.uvOffsetScale[0] = material.uvOffsetScale[1] = source.uvTransform;
+						material.texturePaths[0] = paths[0];
+						material.texturePaths[1] = paths[1];
+						material.texturePathsComplete = true;
+						const auto identity = (uint64_t(3) << 62) | (uint64_t(i) * 6u + layer + 1u);
+						auto recipe = NativePBR::CompileRecipe({identity, revision, std::move(material)});
+						row[layer] = uint32_t(prepared.bindings.size());
+						prepared.bindings.push_back(NativePBR::PackGpuDrawBinding(identity, revision, UINT32_MAX, 0));
+						// Terrain uses the raw world-space tangent basis. Do
+						// not interpret vanilla snow/specular markers as PBR lobes.
+						sources.push_back({ 0u, 0u, true, false, false, true });
+						prepared.recipes.push_back(std::move(recipe));
+					}
+					continue;
+				}
 				if (!source.authoredShaderFlags &&
 					(source.observedShaderFlags & static_cast<uint64_t>(F::kMenuScreen))) continue;
 				const auto flags = source.authoredShaderFlags.value_or(source.observedShaderFlags);
@@ -594,7 +626,12 @@ namespace DX12Native
 				prepared.bindings[i] = NativePBR::PackGpuDrawBinding(identity, revision, UINT32_MAX, 0);
 				prepared.recipes.push_back(std::move(*recipe));
 			}
-			return PrepareForBindings(device, prepared, sources, previous, uploads, &seed);
+			auto result = PrepareForBindings(device, prepared, sources, previous, uploads, &seed);
+			if (result) {
+				result->rasterSourceCount = uint32_t(materials.size());
+				result->rasterLandscapeRows = Table(device, landscapeRows);
+			}
+			return result;
 		}
 
 		static void RecordUploads(ID3D12GraphicsCommandList* commands, const std::vector<Upload>& uploads)

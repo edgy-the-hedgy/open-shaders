@@ -63,6 +63,10 @@ namespace DX12
 		int32_t clampMode = -1;
 		std::array<float, 4> uvTransform{};
 		std::array<std::string, 8> texturePaths;
+		// Raster-only vanilla terrain inputs; never retain engine texture pointers.
+		uint32_t rasterLandscapeLayers = 0;
+		std::array<std::array<std::string, 2>, 6> rasterLandscapeTextures{};
+		std::array<float, 6> rasterLandscapeSnow{}, rasterLandscapeSpecular{};
 		std::vector<uint8_t> vertexBytes;
 		bool operator==(const PreparedMaterialSource&) const = default;
 		uint64_t ByteSize() const
@@ -70,6 +74,8 @@ namespace DX12
 			uint64_t bytes = sizeof(PreparedMaterialSource) + vertexBytes.size() + textureSetEditorId.size();
 			for (const auto& path : texturePaths)
 				bytes += path.size();
+			for (const auto& layer : rasterLandscapeTextures)
+				for (const auto& path : layer) bytes += path.size();
 			return bytes;
 		}
 	};

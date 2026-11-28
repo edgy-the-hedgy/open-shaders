@@ -26,7 +26,7 @@ namespace DX12Native
 			float4 positionAdjust;
 			uint32_t width, height, gridWidth, gridHeight, collectStats, parallaxEnabled, parallaxWarpFixEnabled, parallaxShadowEnabled;
 			float mipBias;
-			uint32_t projectionRows, projectionFrame, hasRawInput, quality, transformCount, rasterBindingCount, rasterRecordCount, sceneRecordCount;
+			uint32_t projectionRows, projectionFrame, hasRawInput, quality, transformCount, rasterBindingCount, rasterRecordCount, sceneRecordCount, rasterSourceCount;
 		};
 		static_assert(sizeof(Camera) <= 256);
 		struct OutputAllocation
@@ -90,7 +90,7 @@ namespace DX12Native
 			projectionRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1 + kProjectedTextureCapacity, 518);
 			CD3DX12_DESCRIPTOR_RANGE rawRange;
 			rawRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NativePBR::InputOnly::kPlaneCount + 1, 1031);
-			CD3DX12_ROOT_PARAMETER parameters[18];
+			CD3DX12_ROOT_PARAMETER parameters[19];
 			parameters[0].InitAsShaderResourceView(0);
 			parameters[1].InitAsShaderResourceView(1);
 			parameters[2].InitAsShaderResourceView(2);
@@ -109,6 +109,7 @@ namespace DX12Native
 			parameters[15].InitAsShaderResourceView(1037);
 			parameters[16].InitAsShaderResourceView(1038);
 			parameters[17].InitAsShaderResourceView(1039);
+			parameters[18].InitAsShaderResourceView(1040);
 			std::array<CD3DX12_STATIC_SAMPLER_DESC, 4> samplers;
 			for (uint32_t mode = 0; mode < 4; ++mode)
 				samplers[mode] = CD3DX12_STATIC_SAMPLER_DESC(mode, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
@@ -188,7 +189,9 @@ namespace DX12Native
 				if (rasterMaterialEvaluation) {
 					if (!rasterMaterialRevision || rasterMaterialEvaluation->revision != rasterMaterialRevision ||
 						!rawRasterEvidence || !rasterMaterialEvaluation->records || !rasterMaterialEvaluation->bindings ||
-						rasterMaterialEvaluation->instanceCount != rawRasterEvidence->materialSources.size())
+						!rasterMaterialEvaluation->rasterLandscapeRows ||
+						rasterMaterialEvaluation->rasterSourceCount != rawRasterEvidence->materialSources.size() ||
+						rasterMaterialEvaluation->instanceCount < rasterMaterialEvaluation->rasterSourceCount)
 						return false;
 				} else if (rasterMaterialRevision) return false;
 				const auto desc = samples->GetDesc();
@@ -419,7 +422,8 @@ namespace DX12Native
 				const Camera constants{slot->raster->camera.CameraProjInverse,slot->raster->camera.CameraViewInverse,
 					slot->raster->camera.CameraPosAdjust,width,height,gridWidth,gridHeight,collectStats ? 1u : 0u,parallaxEnabled ? 1u : 0u,parallaxWarpFixEnabled ? 1u : 0u,shadowPlane ? 1u : 0u,std::isfinite(mipBias) ? mipBias : 0.0f,slot->projection ? slot->projection->rowCount : 0u,frame,slot->rawInputs && slot->rawInputs->evidence->winnerCertified ? uint32_t(slot->rawInputs->drawRecords.size()) : 0u, SanitizeRTQuality(quality), transformCount,
 					slot->rasterEvaluation ? slot->rasterEvaluation->instanceCount : 0u,
-					slot->rasterEvaluation ? slot->rasterEvaluation->recordCount : 0u, evaluation.recordCount};
+					slot->rasterEvaluation ? slot->rasterEvaluation->recordCount : 0u, evaluation.recordCount,
+					slot->rasterEvaluation ? slot->rasterEvaluation->rasterSourceCount : 0u};
 				void* mapped=nullptr; const D3D12_RANGE noRead{};
 				Eval::Check(slot->camera->Map(0,&noRead,&mapped));
 				std::memcpy(mapped,&constants,sizeof(constants)); slot->camera->Unmap(0,nullptr);
@@ -476,6 +480,7 @@ namespace DX12Native
 				command->SetComputeRootShaderResourceView(15,slot->transforms->GetGPUVirtualAddress());
 				command->SetComputeRootShaderResourceView(16,(slot->rasterEvaluation ? slot->rasterEvaluation->records : evaluation.records)->GetGPUVirtualAddress());
 				command->SetComputeRootShaderResourceView(17,(slot->rasterEvaluation ? slot->rasterEvaluation->bindings : evaluation.bindings)->GetGPUVirtualAddress());
+				command->SetComputeRootShaderResourceView(18,(slot->rasterEvaluation ? slot->rasterEvaluation->rasterLandscapeRows : slot->projectionLookup)->GetGPUVirtualAddress());
 				Eval::RecordUploads(command, slot->rasterUploads);
 				if (collectStats) {
 					command->CopyBufferRegion(slot->counters.get(),0,slot->counterInit.get(),0,kCounterBytes);

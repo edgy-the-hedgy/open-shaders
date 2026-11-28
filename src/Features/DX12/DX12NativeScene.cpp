@@ -6,6 +6,8 @@
 #include "Features/NativePBR/NativePBRFrameProducer.h"
 #include "Features/NativePBR/NativeMaterialMetadata.h"
 #include "RE/B/BSTextureSet.h"
+#include "RE/B/BSLightingShaderMaterialLandscape.h"
+#include "RE/N/NiSourceTexture.h"
 #include "Features/FoliageLighting.h"
 
 #include "../LightLimitFix/ShadowCasterMath.h"
@@ -1150,6 +1152,28 @@ std::shared_ptr<const DX12::PreparedMaterialSource> DX12NativeScene::ObserveRast
 			scalars.clampMode = material->textureClampMode;
 			scalars.uvTransform = { material->texCoordOffset[0].x, material->texCoordOffset[0].y,
 				material->texCoordScale[0].x, material->texCoordScale[0].y };
+			// The vanilla landscape material has a base diffuse/normal pair
+			// followed by five additional pairs. The per-pixel weights are
+			// already published in ABI v6; acquire their real texture names.
+			if (material->GetFeature() == RE::BSShaderMaterial::Feature::kMultiTexLandLODBlend) {
+				const auto* landscape = static_cast<const RE::BSLightingShaderMaterialLandscape*>(material);
+				if (landscape->numLandscapeTextures <= 6u) {
+					scalars.rasterLandscapeLayers = 6u;
+					const auto path = [](const RE::NiSourceTexture* texture) -> std::string {
+						if (!texture) return {};
+						const char* name = texture->name.c_str();
+						return name && std::string_view(name).size() <= 260u ? std::string(name) : std::string{};
+					};
+					scalars.rasterLandscapeTextures[0] = { path(material->diffuseTexture.get()), path(material->normalTexture.get()) };
+					for (uint32_t layer = 1u; layer < 6u; ++layer)
+						scalars.rasterLandscapeTextures[layer] = { path(landscape->landscapeDiffuseTexture[layer-1u].get()),
+							path(landscape->landscapeNormalTexture[layer-1u].get()) };
+					for (uint32_t layer = 0u; layer < 6u; ++layer) {
+						scalars.rasterLandscapeSnow[layer] = landscape->textureIsSnow[layer];
+						scalars.rasterLandscapeSpecular[layer] = landscape->textureIsSpecPower[layer];
+					}
+				}
+			}
 			auto* set = material->textureSet.get();
 			const auto* expected = REL::Relocation<const RE::NiRTTI*>{ RE::BSTextureSet::Ni_RTTI }.get();
 			if (set && expected && set->GetRTTI() && set->GetRTTI()->IsKindOf(expected))
