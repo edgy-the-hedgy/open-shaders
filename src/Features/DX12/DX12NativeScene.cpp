@@ -1494,7 +1494,7 @@ bool DX12NativeScene::CaptureProjectedConstants(ProjectedTextureObservation& obs
 {
 	using namespace DX12Native::MaterialFrameContract;
 	auto& draws = fullNativeRasterDraws;
-	if (draws.constantSnapshots >= kMaxProjectedConstantSnapshots/2u || !globals::d3d::device || !globals::d3d::context)
+	if (draws.constantSnapshots + draws.grassConstantSnapshots >= kMaxProjectedConstantSnapshots || !globals::d3d::device || !globals::d3d::context)
 		return false;
 	const auto& state = globals::game::shadowState->GetRuntimeData();
 	if (!state.currentVertexShader || !state.currentPixelShader)
@@ -1503,8 +1503,9 @@ bool DX12NativeScene::CaptureProjectedConstants(ProjectedTextureObservation& obs
 	const auto& vs = *state.currentVertexShader;
 	const auto& ps = *state.currentPixelShader;
 	const auto& constants = ShaderConstants::LightingPS::Get();
+	const bool rasterDirectionOnly = (observation.descriptor & uint32_t(SIE::ShaderCache::LightingShaderFlags::Skinned)) != 0;
 	const std::array<uint32_t, 4> offsets{
-		uint32_t(vs.constantTable[ShaderConstants::LightingTextureProj]) * uint32_t(sizeof(float)),
+		rasterDirectionOnly ? UINT32_MAX : uint32_t(vs.constantTable[ShaderConstants::LightingTextureProj]) * uint32_t(sizeof(float)),
 		uint32_t(ps.constantTable[constants.ProjectedUVParams]) * uint32_t(sizeof(float)),
 		uint32_t(ps.constantTable[constants.ProjectedUVParams2]) * uint32_t(sizeof(float)),
 		uint32_t(ps.constantTable[constants.ProjectedUVParams3]) * uint32_t(sizeof(float))
@@ -1521,17 +1522,17 @@ bool DX12NativeScene::CaptureProjectedConstants(ProjectedTextureObservation& obs
 	winrt::com_ptr<ID3D11Buffer> boundVS, boundPS;
 	globals::d3d::context->VSGetConstantBuffers(uint32_t(group), 1, boundVS.put());
 	globals::d3d::context->PSGetConstantBuffers(uint32_t(group), 1, boundPS.put());
-	if (boundVS.get() != sources[0] || boundPS.get() != sources[1])
+	if ((!rasterDirectionOnly && boundVS.get() != sources[0]) || boundPS.get() != sources[1])
 		return false;
 	std::array<D3D11_BUFFER_DESC, 2> descriptions{};
-	for (size_t i = 0; i < sources.size(); ++i) {
+	for (size_t i = rasterDirectionOnly ? 1u : 0u; i < sources.size(); ++i) {
 		if (!sources[i]) return false;
 		sources[i]->GetDesc(&descriptions[i]);
 		if (!(descriptions[i].BindFlags & D3D11_BIND_CONSTANT_BUFFER) ||
 			descriptions[i].ByteWidth > D3D11_REQ_CONSTANT_BUFFER_ELEMENT_COUNT * 16u)
 			return false;
 	}
-	for (size_t i = 0; i < offsets.size(); ++i)
+	for (size_t i = rasterDirectionOnly ? 1u : 0u; i < offsets.size(); ++i)
 		if (!ValidProjectionConstantExtent(offsets[i], i == 0 ? 48u : 16u, descriptions[i == 0 ? 0 : 1].ByteWidth))
 			return false;
 	if (projectedConstantDevice.get() != globals::d3d::device) {
@@ -1539,7 +1540,7 @@ bool DX12NativeScene::CaptureProjectedConstants(ProjectedTextureObservation& obs
 		projectedConstantDevice.copy_from(globals::d3d::device);
 	}
 	auto& slot = projectedConstantPool[draws.constantSnapshots];
-	for (size_t i = 0; i < sources.size(); ++i) {
+	for (size_t i = rasterDirectionOnly ? 1u : 0u; i < sources.size(); ++i) {
 		if (!slot.buffers[i] || !slot.views[i] || slot.byteWidths[i] != descriptions[i].ByteWidth) {
 			D3D11_BUFFER_DESC desc{};
 			desc.ByteWidth = descriptions[i].ByteWidth;
@@ -1565,7 +1566,7 @@ bool DX12NativeScene::CaptureProjectedConstants(ProjectedTextureObservation& obs
 	// CopyResource preserves the submitted GPU buffer version and does not
 	// access the engine's invalidated mapped pointer. Both copies are queued
 	// before the next draw can replace the engine geometry constants.
-	for (size_t i = 0; i < sources.size(); ++i)
+	for (size_t i = rasterDirectionOnly ? 1u : 0u; i < sources.size(); ++i)
 		globals::d3d::context->CopyResource(slot.buffers[i].get(), sources[i]);
 	observation.constantSlot = draws.constantSnapshots++;
 	observation.constantOffsets = offsets;
@@ -1575,7 +1576,7 @@ bool DX12NativeScene::CaptureProjectedConstants(ProjectedTextureObservation& obs
 void DX12NativeScene::CaptureRasterPbrGrass(uint32_t rasterDraw)
 {
 	auto& draws=fullNativeRasterDraws;
-	if (!rasterDraw || draws.grassConstantSnapshots>=kMaxProjectedConstantSnapshots/2u ||
+	if (!rasterDraw || draws.constantSnapshots+draws.grassConstantSnapshots>=kMaxProjectedConstantSnapshots ||
 		!globals::d3d::device || !globals::d3d::context) return;
 	winrt::com_ptr<ID3D11Buffer> source;
 	globals::d3d::context->PSGetConstantBuffers(1,1,source.put());
@@ -1627,7 +1628,7 @@ void DX12NativeScene::CaptureRasterProjectedDraw(uint32_t rasterDraw, uint32_t s
 		const auto existing=draws.projectionTextures.find(sceneInstance);
 		if (existing!=draws.projectionTextures.end()) existing->second.repeatedConstants=true;
 	}
-	if (draws.constantSnapshots>=kMaxProjectedConstantSnapshots/2u) return;
+	if (draws.constantSnapshots+draws.grassConstantSnapshots>=kMaxProjectedConstantSnapshots) return;
 	ProjectedTextureObservation observation;
 	observation.descriptor=descriptor;
 	constexpr std::array<uint32_t,4> slots{3,8,10,11};
@@ -1807,7 +1808,7 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 			if (!raster.rasterDraw || raster.rasterDraw>draws.drawRecords.size() ||
 				observation.conflicted || observation.constantSlot>=draws.constantSnapshots) continue;
 			const auto& slot=projectedConstantPool[observation.constantSlot];
-			if (!slot.views[0] || !slot.views[1]) continue;
+			if ((observation.constantOffsets[0]!=UINT32_MAX && !slot.views[0]) || !slot.views[1]) continue;
 			uint32_t instance=UINT32_MAX;
 			if (secondaryScene && raster.sceneInstance!=UINT32_MAX) {
 				const auto property=draws.projection.find(raster.sceneInstance);
@@ -1819,7 +1820,7 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 			if (inputs.size() == kMaxProjectedDraws) break;
 			classes[0].push_back(inputs.size());
 			inputs.push_back({instance,observation.descriptor,observation.samplerModes,
-				{slot.views[0].get(),slot.views[1].get()},observation.constantOffsets,observation.views,raster.rasterDraw});
+				{observation.constantOffsets[0]==UINT32_MAX ? nullptr : slot.views[0].get(),slot.views[1].get()},observation.constantOffsets,observation.views,raster.rasterDraw});
 		}
 		// Non-Lighting shader classes use their actual bound PS SRVs. Import
 		// through the same typed mip transfer, but use reserved row kinds and
