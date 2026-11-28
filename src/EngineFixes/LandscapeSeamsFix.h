@@ -9,6 +9,8 @@
 #include <unordered_map>
 #include <vector>
 
+namespace NativePBR { struct TextureSetSnapshot; }
+
 /** @brief Blends landscape textures across quad borders and lifts the six textures per quad limit. */
 struct LandscapeSeamsFix : EngineFix
 {
@@ -67,11 +69,17 @@ struct LandscapeSeamsFix : EngineFix
 	};
 	static_assert(sizeof(QuadData) == 96);
 
+	struct NativeLayerSource
+	{
+		std::shared_ptr<const NativePBR::TextureSetSnapshot> textures;
+		float snow=0.0f, specular=0.0f;
+	};
 	struct Resources
 	{
 		winrt::com_ptr<ID3D11ShaderResourceView> weights;
 		winrt::com_ptr<ID3D11ShaderResourceView> data;
 		std::array<std::array<RE::NiSourceTexturePtr, TexturesPerExtra>, MaxExtraLayers> extras;
+		std::array<NativeLayerSource,MaxExtraLayers> nativeBorrowed;
 	};
 
 	struct Quad
@@ -104,6 +112,7 @@ struct LandscapeSeamsFix : EngineFix
 	void Bind(RE::BSGeometry* a_geometry);
 	// Copy the actual borrowed texture identities for native raster material preparation.
 	std::array<std::array<std::string, 2>, MaxExtraLayers> BorrowedTexturePaths(RE::BSGeometry* a_geometry);
+	std::array<NativeLayerSource,MaxLayers> NativeLayerSources(RE::BSGeometry* a_geometry);
 	/** @brief Reads a newly set up land record's quads and rebuilds them and their neighbours. */
 	void TESObjectLAND_SetupMaterial(RE::TESObjectLAND* a_land);
 
