@@ -1168,14 +1168,18 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 	if (!state)
 		return false;
 
-	const auto composite = upscaling.nativeCompositeFrame;
 	const auto prepared = upscaling.nativePreparedFrame;
 	const bool fullNative = globals::features::dx12Control.UsesExclusiveMaterials();
-	const bool nativeColor = !globals::game::isVR && composite && composite->valid &&
+	const auto composite = fullNative && prepared ? prepared->color : upscaling.nativeCompositeFrame;
+	if (fullNative && (!prepared || !prepared->HasCompositeInputs(state->frameCount, a_renderWidth, a_renderHeight, swapChain.d3d12Device.get()))) {
+		logger::error("[FidelityFX] Full Native composite inputs unavailable; no DX11 fallback");
+		return false;
+	}
+	const bool nativeColor = fullNative || (!globals::game::isVR && composite && composite->valid &&
 	                         composite->color && composite->producerFence &&
 	                         composite->producerValue && composite->frame == state->frameCount &&
 	                         composite->width == a_renderWidth && composite->height == a_renderHeight &&
-	                         composite->format == colorDesc.Format && (!fullNative || (prepared && prepared->MatchesColor(composite)));
+	                         composite->format == colorDesc.Format);
 
 	auto isValidShared = [](WrappedResource* a_resource) {
 		return a_resource && a_resource->resource11 && a_resource->resource.get();
@@ -1201,8 +1205,8 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 	CS_GPU_PASS_INDEXED(globals::game::isVR ? 1 + a_contextIndex : 0,
 		"Upscaling::RuntimeUpscalerDispatch", "Upscaling::RuntimeUpscalerDispatch Eye 0", "Upscaling::RuntimeUpscalerDispatch Eye 1");
 
-	const bool directGuides = prepared && prepared->Matches(state->frameCount, a_renderWidth, a_renderHeight,
-		swapChain.d3d12Device.get(), { a_depth, a_motionVectors, a_reactiveMask, a_transparencyCompositionMask });
+	const bool directGuides = fullNative || (prepared && prepared->Matches(state->frameCount, a_renderWidth, a_renderHeight,
+		swapChain.d3d12Device.get(), { a_depth, a_motionVectors, a_reactiveMask, a_transparencyCompositionMask }));
 	if (directGuides) commandContext->prepared = prepared->guides;
 	const bool frameParameters = prepared && prepared->MatchesFrame(state->frameCount, a_renderWidth, a_renderHeight);
 	const auto guide = [&](size_t index, WrappedResource* fallback) {
@@ -1416,11 +1420,7 @@ bool FidelityFX::UpscaleRegion(uint32_t a_contextIndex, ID3D11Resource* a_color,
 		preparedFrame->MatchesInputs(currentState->frameCount,a_renderWidth,a_renderHeight,
 			{a_depth,a_motionVectors,a_reactiveMask,a_transparencyCompositionMask}) &&
 		preparedFrame->displayWidth == a_displayWidth && preparedFrame->displayHeight == a_displayHeight;
-	if (fullNativeWorld && !coherentWorld) {
-		runtimeNativeHistoryDiscontinuous = true;
-		runtimeFallbackResetDispatchesRemaining = std::max(runtimeFallbackResetDispatchesRemaining, 1u);
-		return false;
-	}
+	const bool fullNative = globals::features::dx12Control.UsesExclusiveMaterials();
 
 	// Snapshot before this eye's own dispatch -- and before the quarantine teardown below,
 	// which clears the frame-path tracking this reads -- so it reflects only a sibling eye.
@@ -1432,8 +1432,8 @@ bool FidelityFX::UpscaleRegion(uint32_t a_contextIndex, ID3D11Resource* a_color,
 	if (runtimeUpscalerQuarantined && HasRuntimeUpscalerResources())
 		ResetRuntimeUpscalerResources(false);
 
-	const bool runtimeUpgradeRequested = !a_forceHostPath && ShouldRequestRuntimeUpgrade();
-	const bool runtimeRequested = !a_forceHostPath && (runtimeUpgradeRequested || ShouldUseRuntimeUpscalerForFSR());
+	const bool runtimeUpgradeRequested = (fullNative || !a_forceHostPath) && ShouldRequestRuntimeUpgrade();
+	const bool runtimeRequested = fullNative || (!a_forceHostPath && (runtimeUpgradeRequested || ShouldUseRuntimeUpscalerForFSR()));
 	const uint32_t requestedRuntimeVersion = runtimeUpgradeRequested ? kRuntimePreferredVersion : Fsr3Version;
 	const bool splitPerEyeContexts = UseSplitPerEyeFSRContexts();
 	const uint32_t runtimeContextCount = splitPerEyeContexts ? 2u : 1u;
@@ -1484,6 +1484,10 @@ bool FidelityFX::UpscaleRegion(uint32_t a_contextIndex, ID3D11Resource* a_color,
 
 		if (tryRuntimeUpscaler(requestedRuntimeVersion, fullRenderWidth, fullRenderHeight))
 			return true;
+		if (fullNative) {
+			runtimeNativeHistoryDiscontinuous = true;
+			return false;
+		}
 
 		if (runtimeCommandContextBusy) {
 			// A busy pool is not a provider fault. Keep the provider armed and reset
@@ -1518,6 +1522,11 @@ bool FidelityFX::UpscaleRegion(uint32_t a_contextIndex, ID3D11Resource* a_color,
 		// instead -- the caller skips finalizing the frame when any eye fails.
 		if (runtimeAlreadyUsedThisFrame)
 			return false;
+	}
+
+	if (fullNative) {
+		logger::error("[FidelityFX] Full Native requires an operational DX12 runtime provider");
+		return false;
 	}
 
 	// Defense in depth: CanUseRuntimeUpscalerPath() latching mid-frame (e.g. this eye's own

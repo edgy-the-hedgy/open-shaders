@@ -43,6 +43,22 @@ namespace DX12Native
 			for (size_t i=0;i<sources.size();++i) if (!sources[i] || sourceLeases[i].get()!=sources[i]) return false;
 			return true;
 		}
+		// Exclusive consumers require only essential resource availability, not
+		// optional native world/geometry evidence or duplicate DX11 identities.
+		bool HasCompositeInputs(uint32_t currentFrame, uint32_t w, uint32_t h, ID3D12Device* device) const
+		{
+			if (!MatchesFrame(currentFrame,w,h) || !encoderProduced || !color || !color->color ||
+				!color->producerFence || !color->producerValue || color->producerValue == UINT64_MAX ||
+				color->frame != frame || color->width != w || color->height != h ||
+				!guides || !guides->complete || guides->device.get()!=device)
+				return false;
+			for (const auto& guide : guides->resources) {
+				if (!guide) return false;
+				const auto desc=guide->GetDesc();
+				if (desc.Width < w || desc.Height < h) return false;
+			}
+			return true;
+		}
 		bool MatchesColor(const std::shared_ptr<const NativeComposite::Frame>& candidate) const
 		{
 			return candidate && candidate == color && candidate->valid && candidate->color && candidate->producerFence &&

@@ -28,7 +28,9 @@ bool NativeDLSS::Upscale(ID3D11Resource* a_colorOut, ID3D11Resource* a_motionVec
 
 	auto& upscaling = globals::features::upscaling;
 	auto* state = globals::state;
-	const auto composite = upscaling.nativeCompositeFrame;
+	const auto prepared = upscaling.nativePreparedFrame;
+	const bool fullNative = globals::features::dx12Control.UsesExclusiveMaterials();
+	const auto composite = fullNative && prepared ? prepared->color : upscaling.nativeCompositeFrame;
 	auto* typedDepth = upscaling.typedDepthTexture;
 	if (!failure.empty() || globals::game::isVR || !state || !typedDepth || !a_colorOut || !a_motionVectors ||
 		!a_reactiveMask || !a_transparencyMask || !composite || !composite->valid || !composite->color ||
@@ -36,13 +38,11 @@ bool NativeDLSS::Upscale(ID3D11Resource* a_colorOut, ID3D11Resource* a_motionVec
 		composite->width != a_extentIn.width || composite->height != a_extentIn.height)
 		return false;
 
-	const auto prepared = upscaling.nativePreparedFrame;
-	if (globals::features::dx12Control.UsesExclusiveMaterials() && state->worldRenderedThisFrame &&
-		(!prepared || !prepared->world || !prepared->MatchesColor(composite) ||
-			!prepared->MatchesInputs(state->frameCount,a_extentIn.width,a_extentIn.height,
-				{typedDepth->resource.get(),a_motionVectors,a_reactiveMask,a_transparencyMask}) ||
-			prepared->displayWidth != a_extentOut.width || prepared->displayHeight != a_extentOut.height))
+	if (fullNative && (!prepared || !prepared->HasCompositeInputs(state->frameCount,a_extentIn.width,a_extentIn.height,
+		upscaling.dx12SwapChain.d3d12Device.get()))) {
+		logger::error("[NativeDLSS] Full Native composite inputs unavailable; no DX11 fallback");
 		return false;
+	}
 
 	if (!EnsureStreamline() || !EnsureCommandContexts())
 		return false;
@@ -95,8 +95,8 @@ bool NativeDLSS::Upscale(ID3D11Resource* a_colorOut, ID3D11Resource* a_motionVec
 		}
 		featureKey = key;
 
-		const bool directGuides = prepared && prepared->Matches(state->frameCount, a_extentIn.width, a_extentIn.height,
-			swapChain.d3d12Device.get(), { sources[kDepth], sources[kMotionVectors], sources[kReactiveMask], sources[kTransparencyMask] });
+		const bool directGuides = fullNative || (prepared && prepared->Matches(state->frameCount, a_extentIn.width, a_extentIn.height,
+			swapChain.d3d12Device.get(), { sources[kDepth], sources[kMotionVectors], sources[kReactiveMask], sources[kTransparencyMask] }));
 		const D3D11_BOX inputBox{ 0, 0, 0, a_extentIn.width, a_extentIn.height, 1 };
 		if (directGuides)
 			commandContext->prepared = prepared->guides;

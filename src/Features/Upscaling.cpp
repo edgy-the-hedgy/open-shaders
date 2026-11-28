@@ -1751,8 +1751,8 @@ void Upscaling::CreateUpscalingTextureResources(UpscaleMethod a_upscalemethod)
 		if (fullNative) {
 			auto shareable = desc;
 			shareable.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
-			try { return new Texture2D(shareable, name); }
-			catch (...) { logger::warn("[Upscaling] {} cannot be shared directly; retaining the copy path", name); }
+			// Full Native has no alternate DX11 input-copy route.
+			return new Texture2D(shareable, name);
 		}
 		return new Texture2D(desc, name);
 	};
@@ -1775,7 +1775,7 @@ void Upscaling::CreateUpscalingTextureResources(UpscaleMethod a_upscalemethod)
 		}
 
 		// Cross-API runtime sharing does not support the game's R24G8 depth allocation.
-		const bool sharesDepthWithD3D12 = a_upscalemethod == UpscaleMethod::kFSR ? fidelityFX.ShouldUseRuntimeUpscalerForFSR() : globals::features::dx12Control.IsActive();
+		const bool sharesDepthWithD3D12 = fullNative || (a_upscalemethod == UpscaleMethod::kFSR ? fidelityFX.ShouldUseRuntimeUpscalerForFSR() : globals::features::dx12Control.IsActive());
 		if (!globals::game::isVR && sharesDepthWithD3D12 && !typedDepthTexture) {
 			D3D11_TEXTURE2D_DESC depthDesc{};
 			depthDesc.Width = texDesc.Width;
@@ -1813,6 +1813,14 @@ void Upscaling::CreateUpscalingTextureResources(UpscaleMethod a_upscalemethod)
 			D3D11_TEXTURE2D_DESC motionTexDesc{};
 			motionVector.texture->GetDesc(Util::AsW32(&motionTexDesc));
 
+			if (fullNative) {
+				motionTexDesc.MipLevels = motionTexDesc.ArraySize = 1;
+				motionTexDesc.SampleDesc = { 1, 0 };
+				motionTexDesc.Usage = D3D11_USAGE_DEFAULT;
+				motionTexDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+				motionTexDesc.CPUAccessFlags = motionTexDesc.MiscFlags = 0;
+				motionTexDesc.Format = DXGI_FORMAT_R16G16_FLOAT;
+			}
 			texDesc.Format = motionTexDesc.Format;
 			srvDesc.Format = texDesc.Format;
 			uavDesc.Format = texDesc.Format;
@@ -2989,7 +2997,7 @@ json Upscaling::GetDiagnostics()
 		diagnostics["dlssgFramesPresentedLastQuery"] = streamlineDX12.lastDLSSGFramesPresented;
 	}
 	if (GetUpscaleMethod() == UpscaleMethod::kDLSS) {
-		diagnostics["dlssBackend"] = nativeDLSS.IsActive() ? "DX12" : "DX11";
+		diagnostics["dlssBackend"] = nativeDLSS.IsActive() ? "DX12" : globals::features::dx12Control.UsesExclusiveMaterials() ? "DX12 required" : "DX11";
 		diagnostics["dlssDX12Available"] = streamlineDX12.featureDLSS;
 		if (!nativeDLSS.GetFailure().empty())
 			diagnostics["dlssDX12Failure"] = nativeDLSS.GetFailure();
@@ -3149,13 +3157,12 @@ void Upscaling::PublishNativeFrameParameters(uint32_t width, uint32_t height)
 	publication->displayHeight = uint32_t(globals::state->screenSize.y);
 	publication->color = nativeCompositeFrame;
 	if (globals::state->worldRenderedThisFrame) {
-		if (!globals::game::graphicsState) { nativePreparedFrame.reset(); return; }
-		publication->world = globals::features::dx12NativeScene.GetWorldFrame(
+		if (globals::game::graphicsState) publication->world = globals::features::dx12NativeScene.GetWorldFrame(
 			globals::game::graphicsState->GetFrameCount(), publication->frame);
-		if (!publication->world || publication->world->width != width || publication->world->height != height) {
-			nativePreparedFrame.reset();
-			return;
-		}
+		// World metadata is optional to upscaling. The raster encoder owns the
+		// actual dimensions and jitter independently of native scene coverage.
+		if (publication->world && (publication->world->width != width || publication->world->height != height))
+			publication->world.reset();
 	}
 	const auto rasterJitter = GetNativeRasterJitter(publication->frame, width, height);
 	publication->jitterX = rasterJitter.valid ? rasterJitter.x : -jitter.x;
@@ -3197,7 +3204,7 @@ void Upscaling::PublishNativeUpscalerInputs(UpscaleMethod method, uint32_t width
 		reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get() };
 	auto provenance = std::make_shared<NativeUpscalerFrame>(*nativePreparedFrame);
 	provenance->sourceIdentities = outputs;
-	if (method == UpscaleMethod::kFSR) provenance->sourceIdentities[UpscalerGuideSet::Motion] = engineMotion;
+	// The FSR and DLSS providers both consume the encoded motion resource.
 	for (size_t i=0;i<outputs.size();++i) {
 		if (!outputs[i] || !provenance->sourceIdentities[i]) return;
 		provenance->sourceLeases[i].copy_from(provenance->sourceIdentities[i]);
@@ -3226,7 +3233,7 @@ void Upscaling::PublishNativeUpscalerInputs(UpscaleMethod method, uint32_t width
 			cache->complete = true;
 		} catch (...) {
 			cache->resources = {};
-			logger::warn("[Upscaling] Native guide import unavailable; using provider copies");
+			logger::error("[Upscaling] Full Native guide import failed; no DX11 fallback permitted");
 		}
 		nativeGuideCache = std::move(cache);
 	}
@@ -3329,16 +3336,9 @@ void Upscaling::Upscale()
 				};
 				context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
 				if (globals::features::dx12Control.UsesExclusiveMaterials() && !globals::game::isVR) {
-					ID3D11ShaderResourceView* actualInputs[4]{};
-					ID3D11UnorderedAccessView* actualOutputs[4]{};
-					context->CSGetShaderResources(0,4,actualInputs);
-					context->CSGetUnorderedAccessViews(0,4,actualOutputs);
-					nativeEncoded = eyeRenderWidth && eyeRenderHeight;
-					for (size_t j=0;j<4;++j) {
-						nativeEncoded = nativeEncoded && actualInputs[j] && actualInputs[j]==views[j] && actualOutputs[j] && actualOutputs[j]==uavs[j];
-						if (actualInputs[j]) actualInputs[j]->Release();
-						if (actualOutputs[j]) actualOutputs[j]->Release();
-					}
+					nativeEncoded = eyeRenderWidth && eyeRenderHeight &&
+						std::ranges::all_of(views, [](const auto* view) { return view != nullptr; }) &&
+						std::ranges::all_of(uavs, [](const auto* view) { return view != nullptr; });
 				}
 
 				context->Dispatch((eyeRenderWidth + 7) / 8, (eyeRenderHeight + 7) / 8, 1);
@@ -3420,7 +3420,8 @@ void Upscaling::Upscale()
 			const bool routeHandled = tryFoveatedRoute(fsrDepth, "FSR");
 			FoveatedRenderImpl::Bridge::routeHandledThisFrame = routeHandled;
 			if (!routeHandled) {
-				fidelityFX.Upscale(Util::AsReal(main.texture), fsrDepth, reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(), Util::AsReal(motionVector.texture), settings.sharpnessFSR, fsrColorOut);
+				fidelityFX.Upscale(Util::AsReal(main.texture), fsrDepth, reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(),
+					globals::features::dx12Control.UsesExclusiveMaterials() && motionVectorCopyTexture ? motionVectorCopyTexture->resource.get() : Util::AsReal(motionVector.texture), settings.sharpnessFSR, fsrColorOut);
 			}
 		}
 	}
@@ -3861,9 +3862,10 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 		                      globals::features::linearLighting.IsLinearLightingActive() ? DX12Native::NativeComposite::Transfer::Linear :
 		                                                                                   DX12Native::NativeComposite::Transfer::LegacyScene;
 		const auto shadow = globals::features::dx12NativeScene.GetShadowMask(globals::game::graphicsState->GetFrameCount());
-		const bool runtimeFSRReads = upscaleMethod == UpscaleMethod::kFSR && upscaling.fidelityFX.RuntimeUpscalerReadsComposite();
+		const bool exclusive = globals::features::dx12Control.UsesExclusiveMaterials();
+		const bool runtimeFSRReads = upscaleMethod == UpscaleMethod::kFSR && (exclusive || upscaling.fidelityFX.RuntimeUpscalerReadsComposite());
 		// The return also covers a frame DX12 DLSS hands to DX11, so its shadows do not drop for that frame.
-		const bool dx12Reads = runtimeFSRReads || (upscaleMethod == UpscaleMethod::kDLSS && upscaling.nativeDLSS.GetFailure().empty());
+		const bool dx12Reads = runtimeFSRReads || (upscaleMethod == UpscaleMethod::kDLSS && (exclusive || upscaling.nativeDLSS.GetFailure().empty()));
 		if (dx12Reads || shadow)
 			upscaling.nativeCompositeFrame = upscaling.nativeComposite.Capture(
 				upscaling.dx12SwapChain.d3d11Device.get(),
@@ -3871,7 +3873,7 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 				upscaling.dx12SwapChain.d3d12Device.get(),
 				upscaling.dx12SwapChain.commandQueue.get(), scene, globals::state->frameCount,
 				static_cast<uint32_t>(renderSize.x), static_cast<uint32_t>(renderSize.y),
-				transfer, shadow, !runtimeFSRReads);
+				transfer, shadow, !exclusive && !runtimeFSRReads);
 	}
 
 	if (globals::features::dx12Control.UsesExclusiveMaterials())
