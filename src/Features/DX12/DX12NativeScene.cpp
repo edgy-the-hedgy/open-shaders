@@ -1715,7 +1715,10 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 	if (backend) {
 		using namespace DX12Native;
 		std::vector<ProjectedInputDraw> inputs;
-		inputs.reserve(kMaxProjectedDraws);
+		// Stage at most one publication worth of candidates per class; the
+		// GPU row, descriptor and upload limits remain unchanged.
+		inputs.reserve(kMaxProjectedDraws * MaterialFrameContract::kTransferClassCount);
+		std::array<std::vector<size_t>,MaterialFrameContract::kTransferClassCount> classes;
 		const bool secondaryScene=draws.scene && draws.scene==acceleration.GetScene() &&
 			draws.stamp.geometryRevision && draws.stamp.materialRevision;
 		for (const auto& raster:draws.rasterProjectionTextures) {
@@ -1733,6 +1736,7 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 					instance=raster.sceneInstance;
 			}
 			if (inputs.size() == kMaxProjectedDraws) break;
+			classes[0].push_back(inputs.size());
 			inputs.push_back({instance,observation.descriptor,observation.samplerModes,
 				{slot.views[0].get(),slot.views[1].get()},observation.constantOffsets,observation.views,raster.rasterDraw});
 		}
@@ -1741,7 +1745,10 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 		// no projector constants. Never reinterpret these as Lighting TXSTs.
 		using Type = RE::BSShader::Type;
 		std::map<std::array<uintptr_t,8>,size_t> materialRows;
-		for (size_t i=0; i<draws.drawRecords.size() && i<draws.drawSourceViews.size(); ++i) {
+ 		const auto drawCount=std::min(draws.drawRecords.size(),draws.drawSourceViews.size());
+		const size_t start=drawCount ? (uint64_t(draws.stamp.frame)*kMaxProjectedDraws)%drawCount : 0u;
+		for (size_t offset=0; offset<drawCount; ++offset) {
+			const size_t i=(start+offset)%drawCount;
 			const auto& record=draws.drawRecords[i];
 			const auto& source=draws.drawSourceViews[i];
 			if (!source || !record.encodedIdentity) continue;
@@ -1790,11 +1797,30 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 				inputs[found->second].rasterAliases.push_back(input.rasterDraw);
 				continue;
 			}
-			if (inputs.size()>=kMaxProjectedDraws) continue;
+			const uint32_t lane=UINT32_MAX-input.instance;
+			if (lane>=classes.size() || classes[lane].size()>=kMaxProjectedDraws) continue;
 			materialRows.emplace(key,inputs.size());
+			classes[lane].push_back(inputs.size());
 			inputs.push_back(std::move(input));
 		}
-		if (!inputs.empty()) globals::features::nativePBR.PublishProjection(*backend,draws.stamp,inputs);
+		// Interleave classes before both row admission and texture allocation.
+		// Rotate the lead class and the candidate within each class across
+		// publications, including when the byte budget allows only one import.
+		std::array<uint32_t,MaterialFrameContract::kTransferClassCount> remaining{}, used{};
+		for (size_t lane=0; lane<classes.size(); ++lane) remaining[lane]=uint32_t(classes[lane].size());
+		std::vector<ProjectedInputDraw> admitted;
+		admitted.reserve(kMaxProjectedDraws);
+		uint32_t cursor=draws.stamp.frame%MaterialFrameContract::kTransferClassCount;
+		while (admitted.size()<kMaxProjectedDraws) {
+			const uint32_t lane=MaterialFrameContract::NextTransferClass(remaining,cursor);
+			if (lane==UINT32_MAX) break;
+			const auto& candidates=classes[lane];
+			const size_t row=(uint64_t(draws.stamp.frame/MaterialFrameContract::kTransferClassCount)+used[lane]++)%candidates.size();
+			admitted.push_back(std::move(inputs[candidates[row]]));
+			--remaining[lane];
+			cursor=(lane+1u)%MaterialFrameContract::kTransferClassCount;
+		}
+		if (!admitted.empty()) globals::features::nativePBR.PublishProjection(*backend,draws.stamp,admitted);
 	}
 }
 
