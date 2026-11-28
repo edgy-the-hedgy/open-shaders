@@ -120,9 +120,49 @@ bool IntersectRasterCandidate(uint2 identity, float3 origin, float3 direction, f
         hitDistance>0.5 && abs(hitDistance-distance)<=tolerance;
 }
 
+// Native per-pixel form of the original Terrain Variation triangular lattice.
+// The same offsets apply to every material role and height march. Unlike the
+// FXC quad variant this uses explicit gradients, so no derivative discontinuity.
+float2 NativeTerrainHash(float2 cell)
+{
+    cell=frac(cell*float2(1271.5151,3337.8237));
+    cell+=dot(cell,cell.yx+19.19);
+    return frac((cell.xx+cell.yy)*cell.yx);
+}
+void NativeTerrainSwap(inout float2 a,inout float wa,inout float2 b,inout float wb)
+{
+    if (wb>wa) { float2 p=a; a=b; b=p; float w=wa; wa=wb; wb=w; }
+}
+void NativeTerrainLattice(float2 landscapeUV,inout RawRasterSurface raw)
+{
+    if (!all(isfinite(landscapeUV))) return;
+    float2 skew=mul(float2x2(1.0,0.0,-0.57735027,1.15470054),landscapeUV*332.54);
+    float2 cell=floor(skew),f=frac(skew);
+    float z=1.0-f.x-f.y;
+    float2 a,b,c; float wa,wb,wc;
+    if (z>0.0) {
+        a=cell; wa=z; b=cell+float2(0,1); wb=f.y; c=cell+float2(1,0); wc=f.x;
+    } else {
+        a=cell+1.0; wa=-z; b=cell+float2(1,0); wb=1.0-f.y; c=cell+float2(0,1); wc=1.0-f.x;
+    }
+    NativeTerrainSwap(a,wa,b,wb);
+    NativeTerrainSwap(a,wa,c,wc);
+    NativeTerrainSwap(b,wb,c,wc);
+    float fade=lerp(1.0,smoothstep(0.0,0.1,wb-wc),smoothstep(0.0,0.02,wa-wb));
+    float w1=wa*wa,w2=wb*wb*fade;
+    raw.terrainOffset1=NativeTerrainHash(a);
+    raw.terrainOffset2=NativeTerrainHash(b);
+    raw.terrainTapWeight=w1/max(w1+w2,1e-8);
+    raw.terrainVariation=true;
+}
+float2 NativeTerrainLodHash(float2 p)
+{
+    p=frac(p*0.318);
+    return frac(float2(dot(p,float2(1,17)),dot(p,float2(1,23))));
+}
 // Six authored base layers and up to two borrowed seam layers. Original LOD,
 // snow and displacement inputs are consumed; advanced terrain lobes remain limited.
-Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float distance,float3 worldPosition,
+Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float distance,float3 worldPosition,float noise,
     out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow)
 {
     rawUsed=false; coat=(NativeCoatSample)0; shadow=(NativeParallaxShadowSample)0;
@@ -146,6 +186,7 @@ Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float dista
     const float2 originalUV=raw.uv;
     const uint snowMask=RasterLandscapeRows.Load(address+36u);
     const bool disableVertexColors=RasterLandscapeRows.Load(address+40u)!=0u;
+    const uint variation=RasterLandscapeRows.Load(address+44u);
     const float3 terrainTint=disableVertexColors ? 1.0.xxx : SrgbToLinear(raw.color.rgb);
     uint terrainRow=0xffffffffu;
     uint4 terrainMetadata=0u,terrainTextures=0xffffffffu;
@@ -158,6 +199,10 @@ Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float dista
                 terrainTextures=ProjectionRecords.Load(int3(7,candidate,0));
             }
         }
+    }
+    if (terrainRow!=0xffffffffu && (variation&1u)!=0u) {
+        float2 grid=asfloat(ProjectionRecords.Load(int3(1,terrainRow,0))).xy;
+        NativeTerrainLattice((originalUV*0.010416667+grid)*float2(1,-1)+float2(0,1),raw);
     }
     // March a single weighted height field, not eight independently shifted UVs.
     // Only resident authored displacement contributes; flat layers retain weight.
@@ -193,7 +238,7 @@ Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float dista
                 float height=0.0;
                 [unroll] for (uint j=0u;j<8u;++j) {
                     if (heightIndex[j]!=0xffffffffu)
-                        height+=saturate(TexLevel(heightIndex[j],candidate,heightMode[j],heightMip[j]).r)*heightScale[j]/weightedScale;
+                        height+=saturate(NativeTerrainHeight(heightIndex[j],candidate,heightMode[j],heightMip[j],0u,raw))*heightScale[j]/weightedScale;
                 }
                 if (height>=bound) {
                     float d0=previous-previousHeight,d1=bound-height;
@@ -251,7 +296,7 @@ Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float dista
             if (first.materialIndex<RasterRecordCount) {
                 MaterialRecord mat=RasterMaterialRecords[first.materialIndex];
                 if (mat.textures[0].z<NativeTextureIndexLimit) {
-                    RawRasterSurface tiled=raw; tiled.dx*=snow.w; tiled.dy*=snow.w;
+                    RawRasterSurface tiled=raw; tiled.terrainVariation=false; tiled.dx*=snow.w; tiled.dy*=snow.w;
                     float3 sn=(NativeSurfaceTex(mat.textures[0].z,raw.uv*snow.w,mat.properties.z,tiled,MaterialMipBias).xyz*2.0-1.0)*float3(-1,-1,1);
                     float3 n=blended.normal.xyz;
                     float3 land=float3(dot(n,raw.tangent),dot(n,raw.bitangent),dot(n,raw.normal));
@@ -280,8 +325,20 @@ Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float dista
                 float2 uv=(originalUV*0.010416667+grid.xy)*float2(1,-1)+float2(0,1);
                 float bias=exp2(clamp(MaterialMipBias,-8.0,8.0));
                 float2 dx=raw.dx*scale*bias,dy=raw.dy*scale*bias;
-                float3 c=NativeProjectionGrad(terrainTextures.x,terrainMetadata.w&3u,uv,dx,dy).rgb;
-                if ((terrainMetadata.w&256u)==0u) c=SrgbToLinear(c);
+                float3 c;
+                if ((variation&2u)!=0u) {
+                    float2 cell=floor(uv*255437.0);
+                    float2 jitter=float2(noise-0.5,frac(noise*1.618)-0.5);
+                    float2 j1=(NativeTerrainLodHash(cell)*0.08+jitter)*0.01;
+                    float2 j2=(NativeTerrainLodHash(cell+127.0)*0.08+float2(jitter.y,-jitter.x))*0.01;
+                    float3 a=NativeProjectionGrad(terrainTextures.x,terrainMetadata.w&3u,uv+j1,dx,dy).rgb;
+                    float3 b=NativeProjectionGrad(terrainTextures.x,terrainMetadata.w&3u,uv+j2,dx,dy).rgb;
+                    if ((terrainMetadata.w&256u)==0u) { a=SrgbToLinear(a); b=SrgbToLinear(b); }
+                    c=lerp(b,a,0.65);
+                } else {
+                    c=NativeProjectionGrad(terrainTextures.x,terrainMetadata.w&3u,uv,dx,dy).rgb;
+                    if ((terrainMetadata.w&256u)==0u) c=SrgbToLinear(c);
+                }
                 c=pow(max(c,0.0),max(lod.x,1e-4))*max(lod.y,0.0);
                 float mask=NativeProjectionGrad(terrainTextures.y,(terrainMetadata.w>>2u)&3u,uv*3.0,dx*3.0,dy*3.0).x;
                 float parameter=saturate(1.6666666*(dot(c,0.55.xxx)-0.4));
@@ -708,7 +765,7 @@ Sample EvaluateRasterLocal(RawRasterSurface raw, uint2 mapped, float3 viewRay, f
     if (preparedRow>=RasterPreparedSourceCount) { result.color.a=SurfaceMissingTextures; return result; }
     raw.materialOrdinal=preparedRow+1u;
     if (raw.auxiliaryKind==1u)
-        return EvaluateRasterLandscape(raw,viewRay,distance,worldPosition,rawUsed,coat,shadow);
+        return EvaluateRasterLandscape(raw,viewRay,distance,worldPosition,noise,rawUsed,coat,shadow);
     Binding binding=RasterMaterialBindings[raw.materialOrdinal-1u];
     if (binding.materialIndex==0xffffffffu) {
         if ((binding.flags&SurfaceMissingBaseTexturesBinding)!=0u) result.color.a=SurfaceMissingTextures;
