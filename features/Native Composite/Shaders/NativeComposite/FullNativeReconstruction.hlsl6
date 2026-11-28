@@ -109,14 +109,20 @@ NativeSpecializedDirectory ReadHistorySpecialized(ByteAddressBuffer directory,ui
 }
 // Compare actual independent evidence and payload words, never the frame-local ordinal.
 // Conservatively reject all specialized lighting history on changes to the shared payload.
-bool SpecializedMatches(uint2 p,uint2 q,bool history)
+bool SpecializedMatches(uint2 p,uint2 q,bool history,uint contribution=0u)
 {
     NativeSpecializedDirectory a=ReadHistorySpecialized(CurrentSpecializedDirectory,p,MaterialPitch,CurrentSpecializedCapacity,CurrentSpecializedEnabled);
     NativeSpecializedDirectory b;
     if(history) b=ReadHistorySpecialized(HistorySpecializedDirectory,q,HistoryMaterialPitch,HistorySpecializedCapacity,HistorySpecializedEnabled);
     else b=ReadHistorySpecialized(CurrentSpecializedDirectory,q,MaterialPitch,CurrentSpecializedCapacity,CurrentSpecializedEnabled);
-    if(a.present!=b.present||a.valid!=b.valid) return false;
-    if((a.present&a.valid)==0u) return true;
+    // Shared energy terms can affect every signal. Directional specular-only
+    // terms need not invalidate diffuse or transmission.
+    const bool spec=contribution==ContributionDirectSpecular||contribution==ContributionIndirectSpecular;
+    const bool eye=contribution==ContributionIndirectSpecular;
+    const uint specBits=SpecializedAnisotropy|SpecializedTangent|SpecializedGlint;
+    const uint mask=NativeSpecializedKnownBits & ~(spec?0u:specBits) & ~(eye?0u:SpecializedEyeNormal);
+    if(((a.present^b.present)&mask)!=0u||((a.valid^b.valid)&mask)!=0u) return false;
+    if((a.present&a.valid&mask)==0u) return true;
     if(a.ordinal==NativeSpecializedNoRecord||b.ordinal==NativeSpecializedNoRecord) return false;
     uint ao=a.ordinal*NativeSpecializedPayloadStride,bo=b.ordinal*NativeSpecializedPayloadStride;
     [unroll] for(uint i=0u;i<96u;i+=16u) {
@@ -124,6 +130,11 @@ bool SpecializedMatches(uint2 p,uint2 q,bool history)
         uint4 w;
         if(history) w=HistorySpecializedPool.Load4(bo+i);
         else w=CurrentSpecializedPool.Load4(bo+i);
+        if(i==64u&&!spec) { v.x&=65535u; w.x&=65535u; v.yzw=0u; w.yzw=0u; }
+        if(i==80u) {
+            if(!spec) { v.xy=0u; w.xy=0u; v.w&=~SpecializedNegativeHandednessFlag; w.w&=~SpecializedNegativeHandednessFlag; }
+            if(!eye) { v.z=0u; w.z=0u; }
+        }
         if(any(v!=w)) return false;
     }
     return true;
@@ -193,7 +204,7 @@ float3 FilterSignal(uint2 pixel, uint contribution, float4 centerBase, float4 ce
                 dot(normal.xyz, centerNormal.xyz) < 0.95 || abs(normal.w - centerNormal.w) > 0.1 ||
                 any(abs(base.rgb - centerBase.rgb) > 0.15)) continue;
 #ifdef NATIVE_SPECIALIZED_V2_RUNTIME
-            if(!SpecializedMatches(pixel,q,false)) continue;
+            if(!SpecializedMatches(pixel,q,false,contribution)) continue;
 #endif
             float4 sample = ReadSignal(q, contribution);
             if (!ValidSignal(sample, contribution)) continue;
@@ -227,9 +238,6 @@ bool HistorySurfaceMatches(uint2 p, float4 base, float4 normal, float depth, out
     if (!ValidRayIdentity(currentIdentity) || !ValidRayIdentity(previousIdentity) ||
         ((currentIdentity.y | previousIdentity.y) & 0x80000000u) != 0u ||
         any(currentIdentity != previousIdentity)) return false;
-#ifdef NATIVE_SPECIALIZED_V2_RUNTIME
-    if(!SpecializedMatches(p,oldPixel,true)) return false;
-#endif
     uint offset = oldPixel.y * HistoryMaterialPitch + oldPixel.x * NativeSurfaceStride;
     float4 oldBase = Unpack(HistoryMaterials.Load2(offset));
     float4 oldNormal = Unpack(HistoryMaterials.Load2(offset + 8u));
@@ -293,16 +301,34 @@ void main(uint3 id : SV_DispatchThreadID)
     uint2 oldPixel;
     if (HistorySurfaceMatches(id.xy, base, normal, depth, oldPixel)) {
         const uint oldOffset = (oldPixel.y * Size.x + oldPixel.x) * NativeHistoryStride;
+        #ifdef NATIVE_SPECIALIZED_V2_RUNTIME
+        if(SpecializedMatches(id.xy,oldPixel,true,ContributionDirectDiffuse))
+#endif
         directDiffuse = AccumulateStationary(directDiffuse, dd ? ContributionDirectDiffuse : 0u, oldOffset, ddLow, ddHigh);
+        #ifdef NATIVE_SPECIALIZED_V2_RUNTIME
+        if(SpecializedMatches(id.xy,oldPixel,true,ContributionDirectSpecular))
+#endif
         directSpecular = AccumulateStationary(directSpecular, ds ? ContributionDirectSpecular : 0u, oldOffset + 8u, dsLow, dsHigh);
+        #ifdef NATIVE_SPECIALIZED_V2_RUNTIME
+        if(SpecializedMatches(id.xy,oldPixel,true,ContributionTransmission))
+#endif
         directTransmission = AccumulateStationary(directTransmission, dt ? ContributionTransmission : 0u, oldOffset + 16u, dtLow, dtHigh);
         // A new source generation can change all three signals (including
         // disappearance of the independently acquired sky). Reject old
         // indirect samples; direct history remains independently eligible.
         if (HasIndirectHistory != 0u && SameEnvironmentRevision != 0u) {
-            indirectDiffuse = AccumulateStationary(indirectDiffuse, idiff ? ContributionIndirectDiffuse : 0u, oldOffset + 24u, idLow, idHigh);
-            indirectSpecular = AccumulateStationary(indirectSpecular, ispec ? ContributionIndirectSpecular : 0u, oldOffset + 32u, isLow, isHigh);
-            indirectTransmission = AccumulateStationary(indirectTransmission, it ? ContributionTransmission : 0u, oldOffset + 40u, itLow, itHigh);
+            #ifdef NATIVE_SPECIALIZED_V2_RUNTIME
+        if(SpecializedMatches(id.xy,oldPixel,true,ContributionIndirectDiffuse))
+#endif
+        indirectDiffuse = AccumulateStationary(indirectDiffuse, idiff ? ContributionIndirectDiffuse : 0u, oldOffset + 24u, idLow, idHigh);
+            #ifdef NATIVE_SPECIALIZED_V2_RUNTIME
+        if(SpecializedMatches(id.xy,oldPixel,true,ContributionIndirectSpecular))
+#endif
+        indirectSpecular = AccumulateStationary(indirectSpecular, ispec ? ContributionIndirectSpecular : 0u, oldOffset + 32u, isLow, isHigh);
+            #ifdef NATIVE_SPECIALIZED_V2_RUNTIME
+        if(SpecializedMatches(id.xy,oldPixel,true,ContributionTransmission))
+#endif
+        indirectTransmission = AccumulateStationary(indirectTransmission, it ? ContributionTransmission : 0u, oldOffset + 40u, itLow, itHigh);
         }
     }
     HistorySignals.Store2(historyOffset, PackOpaqueRadiance(directDiffuse, dd ? ContributionDirectDiffuse : 0u));

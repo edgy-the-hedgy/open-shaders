@@ -11,7 +11,7 @@ on:
             - "cmake/native-shaders/**"
             - ".github/workflows/ci-native-shaders.yaml"
     push:
-        branches: [feat/dx12, dev]
+        branches: [feat/dx12, feat/dx12-vol2, dev]
         paths:
             - "**.hlsl6"
             - "**.hlsli"
