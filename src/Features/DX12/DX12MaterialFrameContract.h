@@ -29,6 +29,21 @@ namespace DX12Native::MaterialFrameContract
 		}
 		return UINT32_MAX;
 	}
+	constexpr bool TransferWorkFits(uint32_t count, uint32_t maxCount, uint64_t bytes, uint64_t requestBytes, uint64_t maxBytes)
+	{
+		return count<maxCount && bytes<=maxBytes && requestBytes>0u && requestBytes<=maxBytes-bytes;
+	}
+	inline constexpr uint32_t kTypedTransferRowPresent=0x80000000u;
+	constexpr uint32_t TypedEffectRequiredRoles(uint32_t pixelDescriptor)
+	{
+		return kTypedTransferRowPresent |
+			((pixelDescriptor&((1u<<6u)|(1u<<19u)|(1u<<20u))) ? 1u : 0u) |
+			((pixelDescriptor&(1u<<19u)) ? 2u : 0u);
+	}
+	constexpr bool HasTypedTransferRoles(uint32_t available, uint32_t required)
+	{
+		return (available&required)==required;
+	}
 	inline constexpr uint32_t kMaterialAbiVersion = 1;
 	inline constexpr uint32_t kMaterialStride = 32;
 	inline constexpr uint32_t kRayIdentityStride = 8;
