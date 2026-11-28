@@ -41,6 +41,8 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <bit>
+#include <map>
 #include <cmath>
 #include <cstdint>
 #include <format>
@@ -1710,9 +1712,10 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 	}
 	// Primary projector rows are keyed by the original draw ordinal. A
 	// secondary instance lookup is published only for unambiguous matches.
-	if (backend && draws.constantSnapshots) {
-		std::vector<DX12Native::ProjectedInputDraw> inputs;
-		inputs.reserve(draws.rasterProjectionTextures.size());
+	if (backend) {
+		using namespace DX12Native;
+		std::vector<ProjectedInputDraw> inputs;
+		inputs.reserve(kMaxProjectedDraws);
 		const bool secondaryScene=draws.scene && draws.scene==acceleration.GetScene() &&
 			draws.stamp.geometryRevision && draws.stamp.materialRevision;
 		for (const auto& raster:draws.rasterProjectionTextures) {
@@ -1729,8 +1732,67 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 					match!=draws.projectionTextures.end() && !match->second.conflicted && !match->second.repeatedConstants)
 					instance=raster.sceneInstance;
 			}
+			if (inputs.size() == kMaxProjectedDraws) break;
 			inputs.push_back({instance,observation.descriptor,observation.samplerModes,
 				{slot.views[0].get(),slot.views[1].get()},observation.constantOffsets,observation.views,raster.rasterDraw});
+		}
+		// Non-Lighting shader classes use their actual bound PS SRVs. Import
+		// through the same typed mip transfer, but use reserved row kinds and
+		// no projector constants. Never reinterpret these as Lighting TXSTs.
+		using Type = RE::BSShader::Type;
+		std::map<std::array<uintptr_t,8>,size_t> materialRows;
+		for (size_t i=0; i<draws.drawRecords.size() && i<draws.drawSourceViews.size(); ++i) {
+			const auto& record=draws.drawRecords[i];
+			const auto& source=draws.drawSourceViews[i];
+			if (!source || !record.encodedIdentity) continue;
+			ProjectedInputDraw input;
+			input.rasterDraw=record.encodedIdentity;
+			const DX12::PreparedMaterialSource* effectSource=nullptr;
+			std::array<uint32_t,4> slots{0u,UINT32_MAX,UINT32_MAX,UINT32_MAX};
+			switch (static_cast<Type>(source->shaderClass)) {
+			case Type::Grass: input.instance=kRasterGrassRow; break;
+			case Type::DistantTree: input.instance=kRasterDistantTreeRow; break;
+			case Type::Effect: {
+				if (!record.materialOrdinal || record.materialOrdinal>draws.materialSources.size()) continue;
+				const auto& material=draws.materialSources[record.materialOrdinal-1u];
+				if (!material || !material->rasterEffect) continue;
+				effectSource=material.get();
+				const auto& effect=*material->rasterEffect;
+				if (!std::ranges::all_of(effect.baseColor, [](float v) { return std::isfinite(v); }) ||
+					!std::isfinite(effect.baseColorScale)) continue;
+				input.instance=kRasterEffectRow;
+				input.offsets=std::bit_cast<std::array<uint32_t,4>>(effect.baseColor);
+				input.descriptor=std::bit_cast<uint32_t>(effect.baseColorScale);
+				// Only import the grayscale slot if this draw actually uses it.
+				if (record.pixelDescriptor & ((1u<<19u)|(1u<<20u))) slots[1]=4u;
+				break;
+			}
+			default: continue;
+			}
+			bool supported=true;
+			for (size_t role=0; role<slots.size(); ++role) {
+				const auto slot=slots[role];
+				if (slot==UINT32_MAX) continue;
+				if (source->addressModes[slot]>3u) { supported=false; break; }
+				input.samplerModes|=uint32_t(source->addressModes[slot])<<(2u*role);
+				input.views[role]=source->views[slot];
+				if (!input.views[role]) continue;
+				D3D11_SHADER_RESOURCE_VIEW_DESC view{};
+				input.views[role]->GetDesc(&view);
+				if (DirectX::IsSRGB(view.Format)) input.samplerModes|=1u<<(8u+role);
+			}
+			if (!supported || !input.views[0]) continue;
+			const std::array<uintptr_t,8> key{input.instance,input.samplerModes,
+				reinterpret_cast<uintptr_t>(input.views[0].get()),reinterpret_cast<uintptr_t>(input.views[1].get()),
+				reinterpret_cast<uintptr_t>(input.views[2].get()),reinterpret_cast<uintptr_t>(input.views[3].get()),
+				reinterpret_cast<uintptr_t>(effectSource),input.descriptor};
+			if (const auto found=materialRows.find(key); found!=materialRows.end()) {
+				inputs[found->second].rasterAliases.push_back(input.rasterDraw);
+				continue;
+			}
+			if (inputs.size()>=kMaxProjectedDraws) continue;
+			materialRows.emplace(key,inputs.size());
+			inputs.push_back(std::move(input));
 		}
 		if (!inputs.empty()) globals::features::nativePBR.PublishProjection(*backend,draws.stamp,inputs);
 	}
