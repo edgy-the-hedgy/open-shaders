@@ -136,6 +136,7 @@ struct NativeMaterialTriangle
     float3 bitangents[3];
     bool hasPositions;
     bool hasTangents;
+    bool rasterLocal;
 };
 
 Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, NativeMaterialTriangle triData, uint instance, float3 weights, float3 rayObject, float3 rayOffsetX, float3 rayOffsetY, float rayScale, float viewDistance, float3x3 worldToObject, float3x3 objectToWorld, bool parallaxEnabled, bool warpFixEnabled, bool shadowEnabled, float mipBias, uint projectionRow, float3 worldPosition, float projectionNoise, RawRasterSurface raw, out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow)
@@ -178,7 +179,7 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
     // ABI v6 auxiliary data is not yet interpreted by this evaluator. Preserve the
     // base result, but do not certify an unimplemented technique as complete.
     const bool unsupportedRasterTechnique = raw.valid && raw.auxiliaryKind != 0u;
-    raw.valid = raw.valid && all(abs(raw.uv-uv)<=max(0.001,abs(uv)*0.002));
+    raw.valid = raw.valid && (triData.rasterLocal || all(abs(raw.uv-uv)<=max(0.001,abs(uv)*0.002)));
     if (raw.valid) {
         float3 rn=mul(raw.normal,objectToWorld),rt=mul(worldToObject,raw.tangent),rb=mul(worldToObject,raw.bitangent);
         raw.valid=all(isfinite(rn)) && all(isfinite(rt)) && all(isfinite(rb)) &&
@@ -227,7 +228,7 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
     float eta=1.0;
     bool interlayerActive=false;
     if (parallaxEnabled && (binding.flags & SurfaceParallaxReadyBinding)!=0u && material.textures[2].x!=0xffffffffu &&
-        (binding.flags & 512u)==0u && dot(rayObject,rayObject)>1e-8 && triData.hasPositions &&
+        (binding.flags & 512u)==0u && dot(rayObject,rayObject)>1e-8 && (triData.hasPositions || triData.rasterLocal) &&
         (!alphaHeight || complexMask)) {
         float3 view=normalize(-rayObject);
         if (interlayer) {
@@ -358,7 +359,15 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
     result.normal = float4(normal,roughness);
     result.f0 = float4(f0,metallic);
     result.emission = float4(emission,saturate(packed.b));
-    if (unsupportedRasterTechnique) result.color.a = SurfaceFeatureLimited;
+    if (unsupportedRasterTechnique || (triData.rasterLocal && (binding.flags & 512u)!=0u)) result.color.a = SurfaceFeatureLimited;
+    // Model-space normals need the original object transform.
+    if (triData.rasterLocal && (binding.flags & 512u)!=0u) result.normal.xyz = normalize(raw.normal);
+    // The world-space eye center normal is available, but the corneal
+    // material remains feature-limited until its full inputs are supplied.
+    if (triData.rasterLocal && raw.auxiliaryKind == 4u) {
+        float3 eye = asfloat(raw.auxiliary.xyz);
+        if (all(isfinite(eye)) && dot(eye,eye)>1e-8) result.normal.xyz=normalize(eye);
+    }
     if ((binding.flags & SurfaceSubsurfaceReadyBinding) != 0u) {
         float3 scatterColor = SrgbToLinear(max(material.subsurfaceColor.rgb,0.0));
         float thickness = saturate(material.coat.w);
@@ -371,7 +380,7 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
         else result.color.a=SurfaceFeatureLimited;
     }
     if ((binding.flags & SurfaceThinSurfaceReadyBinding) != 0u) {
-        if (!triData.hasPositions) { result.color.a=SurfaceFeatureLimited; return result; }
+        if (!triData.hasPositions && !triData.rasterLocal) { result.color.a=SurfaceFeatureLimited; return result; }
         float3 scatterColor=0.0;
         float thickness=1.0;
         if ((material.properties.x & 1u)!=0u) {
@@ -386,7 +395,8 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
         float3 p0=triData.positions[0];
         float3 p1=triData.positions[1];
         float3 p2=triData.positions[2];
-        float3 face=cross(p1-p0,p2-p0);
+        float3 face=triData.rasterLocal ? raw.normal : cross(p1-p0,p2-p0);
+        if (triData.rasterLocal) result.color.a=SurfaceFeatureLimited;
         if (!all(isfinite(face)) || dot(face,face)<1e-8 || !all(isfinite(scatterColor)) ||
             !isfinite(thickness) || !isfinite(material.surface.y) || !all(isfinite(material.thinSurface.xyz))) {
             result.color.a=SurfaceFeatureLimited; return result;
@@ -468,9 +478,6 @@ Sample EvaluateMaterial(uint instanceCount, uint instance, uint primitive, float
     uint4 counts = Geometry.Load4(instance*32+16);
     if (binding.materialIndex == 0xffffffffu || offsets.z == 0xffffffffu ||
         (offsets.w != 60u && offsets.w != 36u) || counts.y < 3u || primitive >= counts.y / 3u) return (Sample)0;
-    uint materialCount, materialStride;
-    MaterialRecords.GetDimensions(materialCount,materialStride);
-    if (binding.materialIndex >= materialCount) return (Sample)0;
     MaterialRecord material = MaterialRecords[binding.materialIndex];
     if (any(material.identity.xy != binding.identity) || any(material.identity.zw != binding.revision)) return (Sample)0;
     uint3 ix = Geometry.Load3(offsets.y + primitive*12u);

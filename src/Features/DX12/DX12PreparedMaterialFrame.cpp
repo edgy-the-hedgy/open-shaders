@@ -56,20 +56,20 @@ namespace DX12Native
 
 	std::optional<NativePBR::Recipe> CompilePreparedMeshRecipe(const DX12::PreparedMaterialSource& source,
 		uint64_t identity, uint64_t revision, const NativePBR::MaterialCatalogSnapshot* catalog,
-		std::string_view materialObject, size_t* resolvedTxst, size_t* resolvedMato)
+		std::string_view materialObject, size_t* resolvedTxst, size_t* resolvedMato, bool rasterLocal)
 	{
 		if (!source.authoredShaderFlags) return {};
 		const auto flags = *source.authoredShaderFlags;
 		const bool pbr = HasFlag(flags, F::kMenuScreen);
 		const bool legacyEnvironment = !pbr && (flags & kEnvironmentMapping) != 0;
 		const bool legacyParallax = !pbr && (flags & kParallax) != 0;
-		if (!pbr && !legacyEnvironment && !legacyParallax) return {};
+		if (!rasterLocal && !pbr && !legacyEnvironment && !legacyParallax) return {};
 		if (!pbr && HasFlag(flags, F::kMultiLayerParallax)) return {};
 		if (HasFlag(flags, F::kLODLandscape) || HasFlag(flags, F::kMultiTextureLandscape) ||
-			HasFlag(flags, F::kFace) || HasFlag(flags, F::kHairTint) || HasFlag(flags, F::kTreeAnim) ||
 			HasFlag(flags, F::kRefraction) || HasFlag(flags, F::kTempRefraction) ||
-			HasFlag(flags, F::kVertexAlpha) || HasFlag(flags, F::kGrayscaleToPaletteAlpha) ||
-			source.alpha != 1.0f || source.clampMode < 0 || source.clampMode > 3) return {};
+			HasFlag(flags, F::kGrayscaleToPaletteAlpha) || source.clampMode < 0 || source.clampMode > 3 ||
+			(!rasterLocal && (HasFlag(flags, F::kFace) || HasFlag(flags, F::kHairTint) || HasFlag(flags, F::kTreeAnim) ||
+				HasFlag(flags, F::kVertexAlpha) || source.alpha != 1.0f))) return {};
 		constexpr std::array<size_t, 7> slots{ 0, 1, 5, 2, 3, 7, 6 };
 		NativePBR::MaterialData material;
 		material.materialAlpha = source.alpha;

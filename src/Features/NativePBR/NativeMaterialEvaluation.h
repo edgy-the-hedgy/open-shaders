@@ -4,6 +4,7 @@
 
 #include "Features/DX12/DX12PreparedMaterialFrame.h"
 #include "Features/DX12/DX12NativeSceneInputs.h"
+#include "Features/NativePBR/MaterialCatalog.h"
 #include "RE/B/BSShaderProperty.h"
 #include "VideoMemoryBudget.h"
 #include <DirectXTex.h>
@@ -44,6 +45,7 @@ namespace DX12Native
 		winrt::com_ptr<ID3D12Resource> records, bindings;
 		winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
 		uint64_t revision = 0, textureBytes = 0;
+		uint32_t recordCount = 0;
 		uint32_t instanceCount = 0, residentRecipes = 0, failedTextures = 0, reusedTextures = 0, archiveTextures = 0;
 		uint32_t baseOnlyBindings = 0;
 		// CPU admission mirror, immutable with the uploaded draw-binding table.
@@ -236,7 +238,7 @@ namespace DX12Native
 		struct BindingSource
 		{
 			uint64_t authoredFlags = 0, observedFlags = 0;
-			bool valid = false, hasVertexColor = false, hasMaterialObject = false;
+			bool valid = false, hasVertexColor = false, hasMaterialObject = false, rasterTechniqueLimited = false;
 		};
 
 		static std::shared_ptr<NativeMaterialEvaluation> Prepare(ID3D12Device* device,
@@ -257,7 +259,7 @@ namespace DX12Native
 
 		static std::shared_ptr<NativeMaterialEvaluation> PrepareForBindings(ID3D12Device* device,
 			const PreparedMaterialFrame& prepared, std::span<const BindingSource> sources, const TextureCache& previous,
-			std::vector<Upload>& uploads)
+			std::vector<Upload>& uploads, const NativeMaterialEvaluation* seed = nullptr)
 		{
 			if (prepared.recipes.empty() || prepared.bindings.empty() ||
 				prepared.bindings.size() != sources.size() || prepared.bindings.size() > 65535u * 64u) return {};
@@ -283,6 +285,24 @@ namespace DX12Native
 			};
 			for (uint32_t i = 0; i < NativePBR::kGpuTextureDescriptorCapacity; ++i) write(i, nullptr, false);
 			std::unordered_map<std::string, uint32_t> indices;
+			// Extend the scene descriptor namespace, retaining the same physical pages
+			// and indices for secondary hits.
+			if (seed) {
+				result->textures = seed->textures;
+				result->poolTextures = seed->poolTextures;
+				result->textureBytes = seed->textureBytes;
+				for (uint32_t i = 0; i < result->poolTextures.size(); ++i) {
+					const auto* texture = result->poolTextures[i].get();
+					write(i, texture, false);
+					write(i + NativePBR::kGpuTexturePoolCapacity, texture, true);
+				}
+				for (const auto& [path, texture] : result->textures) {
+					const auto it = std::find(result->poolTextures.begin(), result->poolTextures.end(), texture);
+					if (it == result->poolTextures.end()) return {};
+					indices.emplace(path, uint32_t(it - result->poolTextures.begin()));
+				}
+				if (indices.size() != result->poolTextures.size()) return {};
+			}
 			std::unordered_set<std::string> failed, invalidSrgb, invalidBc4;
 			std::unordered_map<uint64_t, uint32_t> ready;
 			std::unordered_set<uint64_t> missingBaseTextures;
@@ -454,6 +474,7 @@ namespace DX12Native
 				const bool projectedUv = authoredProjectedUv || (source.observedFlags & static_cast<uint64_t>(F::kProjectedUV)) != 0;
 				const bool projectionKnown = projectedUv || !source.hasMaterialObject;
 				auto capability = NativePBR::ClassifyScreenSurface(recipe, projectedUv, true, projectionKnown);
+				if (source.rasterTechniqueLimited) capability.issues |= NativePBR::ScreenUnknownMetadata;
 				constexpr uint32_t coat = uint32_t(PBRFlags::TwoLayer);
 				constexpr uint32_t interlayer = uint32_t(PBRFlags::InterlayerParallax);
 				constexpr uint32_t supportedCoat = coat | uint32_t(PBRFlags::ColoredCoat) | uint32_t(PBRFlags::CoatNormal) | interlayer;
@@ -541,9 +562,37 @@ namespace DX12Native
 				result->exactBaseCandidates[i] = binding.materialIndex != UINT32_MAX &&
 					!(binding.flags & (MaterialFrameContract::kBaseOnlyBinding | MaterialFrameContract::kMissingBaseTexturesBinding));
 			}
+			result->recordCount = uint32_t(recordTable.size());
 			result->records = Table(device, recordTable);
 			result->bindings = Table(device, bindingTable);
 			return result;
+		}
+
+		// One binding per raster material ordinal, independent of TLAS indexing.
+		static std::shared_ptr<NativeMaterialEvaluation> PrepareRasterBindings(ID3D12Device* device,
+			std::span<const DX12::PreparedMaterialSource> materials, uint64_t revision,
+			const NativePBR::MaterialCatalogSnapshot* catalog, const NativeMaterialEvaluation& seed,
+			const TextureCache& previous, std::vector<Upload>& uploads)
+		{
+			PreparedMaterialFrame prepared;
+			prepared.geometryRevision = revision; // allocator generation for this independent table
+			prepared.bindings.resize(materials.size(), NativePBR::PackGpuDrawBinding(0, 0, UINT32_MAX, 0));
+			std::vector<BindingSource> sources(materials.size());
+			using F = RE::BSShaderProperty::EShaderPropertyFlag;
+			for (size_t i = 0; i < materials.size(); ++i) {
+				const auto& source = materials[i];
+				if (!source.authoredShaderFlags) continue;
+				const auto flags = *source.authoredShaderFlags;
+				const auto has = [flags](F flag) { return (flags & static_cast<uint64_t>(flag)) != 0; };
+				const auto identity = (uint64_t(1) << 63) | (uint64_t(i) + 1u);
+				auto recipe = CompilePreparedMeshRecipe(source, identity, revision, catalog, {}, nullptr, nullptr, true);
+				if (!recipe) continue;
+				sources[i] = { flags, source.observedShaderFlags, true, source.colorOffset != UINT32_MAX, false,
+					has(F::kFace) || has(F::kHairTint) || has(F::kTreeAnim) || has(F::kVertexAlpha) };
+				prepared.bindings[i] = NativePBR::PackGpuDrawBinding(identity, revision, UINT32_MAX, 0);
+				prepared.recipes.push_back(std::move(*recipe));
+			}
+			return PrepareForBindings(device, prepared, sources, previous, uploads, &seed);
 		}
 
 		static void RecordUploads(ID3D12GraphicsCommandList* commands, const std::vector<Upload>& uploads)

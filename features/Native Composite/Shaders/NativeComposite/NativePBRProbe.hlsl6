@@ -28,6 +28,8 @@ void main(uint3 id : SV_DispatchThreadID)
 Texture2D<float> ProbeDepth : register(t515);
 RaytracingAccelerationStructure ProbeScene : register(t516);
 ByteAddressBuffer ProbeInstanceTransforms : register(t1037);
+StructuredBuffer<MaterialRecord> RasterMaterialRecords : register(t1038);
+StructuredBuffer<Binding> RasterMaterialBindings : register(t1039);
 cbuffer ProbeCamera : register(b1)
 {
     row_major float4x4 InverseProjection;
@@ -45,6 +47,8 @@ cbuffer ProbeCamera : register(b1)
     uint HasRawInput;
     uint QualityMode;
     uint TransformCount;
+    uint RasterBindingCount;
+    uint RasterRecordCount;
 };
 RWByteAddressBuffer ProbeCounts : register(u1);
 RWByteAddressBuffer ScreenOutput : register(u2);
@@ -107,6 +111,45 @@ bool IntersectRasterCandidate(uint2 identity, float3 origin, float3 direction, f
         hitDistance>0.5 && abs(hitDistance-distance)<=tolerance;
 }
 
+// Direct evaluation of certified raster interpolants, independent of TLAS mapping.
+Sample EvaluateRasterLocal(RawRasterSurface raw, float3 viewRay, float distance,
+    out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow)
+{
+    rawUsed=false; coat=(NativeCoatSample)0; shadow=(NativeParallaxShadowSample)0;
+    Sample result=(Sample)0; result.color.a=SurfaceUnsupportedMaterial;
+    if (raw.materialOrdinal==0u || raw.materialOrdinal>RasterBindingCount) return result;
+    Binding binding=RasterMaterialBindings[raw.materialOrdinal-1u];
+    if (binding.materialIndex==0xffffffffu) {
+        if ((binding.flags&SurfaceMissingBaseTexturesBinding)!=0u) result.color.a=SurfaceMissingTextures;
+        return result;
+    }
+    if (binding.materialIndex>=RasterRecordCount) return result;
+    MaterialRecord material=RasterMaterialRecords[binding.materialIndex];
+    NativeMaterialTriangle tri=(NativeMaterialTriangle)0;
+    tri.rasterLocal=true;
+    tri.hasTangents=true;
+    tri.normals[0]=raw.normal; tri.tangents[0]=raw.tangent; tri.bitangents[0]=raw.bitangent;
+    tri.colors[0]=raw.color; tri.uv[0]=raw.uv;
+    const float3x3 identity=float3x3(1,0,0,0,1,0,0,0,1);
+    result=EvaluateMaterialTriangle(binding,material,tri,0u,float3(1,0,0),viewRay,0,0,1.0,distance,
+        identity,identity,ParallaxEnabled!=0u,false,ParallaxShadowEnabled!=0u,MaterialMipBias,
+        0xffffffffu,0.0,0.0,raw,rawUsed,coat,shadow);
+    if (!rawUsed || result.color.a==SurfaceInvalidReceiver) {
+        result=(Sample)0; result.color.a=SurfaceEvaluationFailed;
+        coat=(NativeCoatSample)0; shadow=(NativeParallaxShadowSample)0; return result;
+    }
+    if (HasEvaluatedNativeBase(result.color.a)) {
+        if ((binding.flags&SurfaceBaseOnlyBinding)!=0u) result.color.a=SurfaceFeatureLimited;
+        if (HasNativeThinSurface(coat)) {
+            coat.normalRoughness.xyz=dot(coat.normalRoughness.xyz,viewRay)>0.0 ? -coat.normalRoughness.xyz : coat.normalRoughness.xyz;
+            coat.f0Colored.x=raw.front ? coat.f0Colored.x : coat.f0Colored.y;
+            result.normal.w=clamp(result.normal.w*(raw.front ? 1.0 : coat.f0Colored.z),0.045,1.0);
+            if (dot(result.normal.xyz,viewRay)>0.0) result.normal.xyz=-result.normal.xyz;
+        }
+    }
+    return result;
+}
+
 Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow, out bool rayIssued, out bool unresolvedUntraced)
 {
     rawUsed=false; rayIssued=false; unresolvedUntraced=false;
@@ -138,6 +181,31 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed,
     // Non-sampled receivers retain full-resolution material evaluation only
     // when the raster sidecar corroborates a concrete triangle and depth.
     const bool traced = NativeIsSampled(pixel, ViewSize, QualityMode, ProjectionFrame);
+    uint2 rasterMapped;
+    RawRasterSurface visible=ReadRawVisibility(pixel,z,HasRawInput,rasterMapped);
+    if (visible.valid && RasterBindingCount!=0u) {
+        result=EvaluateRasterLocal(visible,delta,distance,rawUsed,coat,shadow);
+        if (HasEvaluatedNativeBase(result.color.a)) {
+            // Optional correspondence never revokes an otherwise valid material.
+            if (rasterMapped.x<InstanceCount && rasterMapped.y<0x80000000u && visible.materialIndex!=0xffffffffu &&
+                Bindings[rasterMapped.x].materialIndex==visible.materialIndex) {
+                hitIdentity=uint2(rasterMapped.x,rasterMapped.y|0x80000000u);
+                if (traced) {
+                    rayIssued=true;
+                    RayQuery<RAY_FLAG_NONE> correspondence;
+                    correspondence.TraceRayInline(ProbeScene,RAY_FLAG_NONE,0xff,ray);
+                    while (correspondence.Proceed()) {
+                        if (correspondence.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE && AcceptAlpha(correspondence.CandidateInstanceID(),correspondence.CandidatePrimitiveIndex(),correspondence.CandidateTriangleBarycentrics(),InstanceCount))
+                            correspondence.CommitNonOpaqueTriangleHit();
+                    }
+                    if (correspondence.CommittedStatus()==COMMITTED_TRIANGLE_HIT &&
+                        correspondence.CommittedInstanceID()==rasterMapped.x && correspondence.CommittedPrimitiveIndex()==rasterMapped.y &&
+                        abs(correspondence.CommittedRayT()-distance)<=tolerance) hitIdentity=rasterMapped;
+                }
+            }
+        }
+        return result;
+    }
     uint instance, primitive;
     float2 bary;
     float hitDistance;
