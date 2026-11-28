@@ -1772,6 +1772,7 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 				input.descriptor=std::bit_cast<uint32_t>(effect.baseColorScale);
 				// Only import the grayscale slot if this draw actually uses it.
 				if (record.pixelDescriptor & ((1u<<19u)|(1u<<20u))) slots[1]=4u;
+				if (!(record.pixelDescriptor & ((1u<<6u)|(1u<<19u)|(1u<<20u)))) slots[0]=UINT32_MAX;
 				break;
 			}
 			default: continue;
@@ -1788,7 +1789,7 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 				input.views[role]->GetDesc(&view);
 				if (DirectX::IsSRGB(view.Format)) input.samplerModes|=1u<<(8u+role);
 			}
-			if (!supported || !input.views[0]) continue;
+			if (!supported || (slots[0]!=UINT32_MAX && !input.views[0])) continue;
 			const std::array<uintptr_t,8> key{input.instance,input.samplerModes,
 				reinterpret_cast<uintptr_t>(input.views[0].get()),reinterpret_cast<uintptr_t>(input.views[1].get()),
 				reinterpret_cast<uintptr_t>(input.views[2].get()),reinterpret_cast<uintptr_t>(input.views[3].get()),
