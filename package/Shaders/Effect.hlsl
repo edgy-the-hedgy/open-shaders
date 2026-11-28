@@ -1110,10 +1110,22 @@ PS_OUTPUT ShadeEffect(PS_INPUT input, bool sampleDistantShadow)
 		// influence; advanced blend/membrane/projection techniques remain
 		// explicitly unsupported rather than borrowing a Lighting recipe.
 		uint supported=0u;
-#		if defined(TEXTURE) && !defined(MEMBRANE) && !defined(BLOOD) && !defined(PROJECTED_UV) && !defined(MULTBLEND) && !defined(MULTBLEND_DECAL) && !defined(ADDBLEND)
+#		if !defined(MEMBRANE) && !defined(BLOOD) && !defined(PROJECTED_UV) && !defined(MULTBLEND) && !defined(MULTBLEND_DECAL) && !defined(ADDBLEND) && !defined(IS_VOLUMETRIC_FOG)
 		supported=1u;
 #		endif
-		psout.MaterialTechnique=uint4(asuint(lightingInfluence),supported,0u,0u);
+		// The live original shader multiplier includes VC only when authored.
+		// Do not infer it from quantized raster vertex color or a static recipe.
+		uint sampledBase=0u;
+#		if defined(TEXTURE)
+		sampledBase=2u;
+#		else
+		if (Permutation::PixelShaderDescriptor & (Permutation::EffectFlags::GrayscaleToColor | Permutation::EffectFlags::GrayscaleToAlpha)) sampledBase=2u;
+#		endif
+		float conversionSaturation=ENABLE_LL ? SharedData::linearLightingSettings.conversionSaturation : 1.0;
+		psout.MaterialTechnique=uint4(asuint(lightingInfluence),
+			supported|sampledBase|(f32tof16(saturate(conversionSaturation))<<16u),
+			NativeInputMRT::PackHalf2(baseColorMul.rg),
+			NativeInputMRT::PackHalf2(float2(baseColorMul.b,baseColorScale)));
 	}
 	return psout;
 # else
