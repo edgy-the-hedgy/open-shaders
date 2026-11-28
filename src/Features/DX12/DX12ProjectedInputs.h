@@ -23,6 +23,10 @@ namespace DX12Native
 	inline constexpr uint32_t kProjectedTextureRoles = 4;
 	inline constexpr uint32_t kProjectedTextureCapacity = kMaxProjectedDraws * kProjectedTextureRoles;
 	inline constexpr uint32_t kProjectedRecordColumns = 8;
+	// Reserved non-scene row IDs in the existing private transfer record.
+	inline constexpr uint32_t kRasterGrassRow = UINT32_MAX - 1u;
+	inline constexpr uint32_t kRasterDistantTreeRow = UINT32_MAX - 2u;
+	inline constexpr uint32_t kRasterEffectRow = UINT32_MAX - 3u;
 	struct ProjectedInputDraw
 	{
 		uint32_t instance = UINT32_MAX, descriptor = 0, samplerModes = 0;
@@ -30,6 +34,7 @@ namespace DX12Native
 		std::array<uint32_t, 4> offsets{};
 		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, kProjectedTextureRoles> views;
 		uint32_t rasterDraw = 0;
+		std::vector<uint32_t> rasterAliases;
 	};
 	struct ProjectedInputFrame
 	{
@@ -47,6 +52,7 @@ namespace DX12Native
 		std::unique_ptr<WrappedResource> records;
 		std::vector<Texture> textures;
 		std::vector<uint32_t> instances, rasterDraws;
+		std::vector<std::pair<uint32_t, uint32_t>> rasterAliases; // draw ordinal, transfer row
 		uint32_t rowCount = 0, missingTextures = 0;
 		uint32_t transferredTextures = 0, newTextures = 0, cacheHits = 0, suppressedTextures = 0, deferredTextures = 0;
 		uint64_t immutableCacheBytes = 0;
@@ -492,6 +498,7 @@ namespace DX12Native
 				pending->instances.reserve(draws.size());
 			pending->rasterDraws.clear();
 			pending->rasterDraws.reserve(draws.size());
+				pending->rasterAliases.clear();
 				pending->stamp = stamp; pending->rowCount = 0; pending->missingTextures = 0;
 				pending->cacheHits = pending->suppressedTextures = pending->deferredTextures = 0;
 				pending->transferredTextures = pending->newTextures = 0;
@@ -507,6 +514,8 @@ namespace DX12Native
 					pending->instances.push_back(draw.instance);
 				pending->rasterDraws.push_back(draw.rasterDraw);
 					constants.metadata = { draw.instance, draw.descriptor, static_cast<uint32_t>(records.size()), draw.samplerModes };
+					for (const auto alias : draw.rasterAliases)
+						pending->rasterAliases.emplace_back(alias, constants.metadata[2]);
 					for (size_t i = 0; i < draw.views.size(); ++i) {
 						submitted = true;
 						constants.textures[i] = ImportTexture(*pending, reusable, draw.views[i].get());
