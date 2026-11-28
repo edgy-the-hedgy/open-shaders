@@ -622,9 +622,9 @@ namespace DX12Native
 				const auto flags = source.authoredShaderFlags.value_or(source.observedShaderFlags);
 				const auto has = [flags](F flag) { return (flags & static_cast<uint64_t>(flag)) != 0; };
 				const auto identity = (uint64_t(1) << 63) | (uint64_t(i) + 1u);
-				auto recipe = CompilePreparedMeshRecipe(source, identity, revision, catalog, {}, nullptr, nullptr, true);
+				auto recipe = CompilePreparedMeshRecipe(source, identity, revision, catalog, source.rasterMaterialObjectEditorId, nullptr, nullptr, true);
 				if (!recipe) continue;
-				sources[i] = { flags, source.observedShaderFlags, true, source.colorOffset != UINT32_MAX, false,
+				sources[i] = { flags, source.observedShaderFlags, true, source.colorOffset != UINT32_MAX, !source.rasterMaterialObjectEditorId.empty(),
 					has(F::kFace) || has(F::kHairTint) || has(F::kTreeAnim) || has(F::kVertexAlpha) ||
 					(!source.authoredShaderFlags && has(F::kGlowMap)) };
 				prepared.bindings[i] = NativePBR::PackGpuDrawBinding(identity, revision, UINT32_MAX, 0);

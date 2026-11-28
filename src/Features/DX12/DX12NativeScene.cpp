@@ -1,4 +1,6 @@
 #include "DX12NativeScene.h"
+#include "RE/B/BGSMaterialObject.h"
+#include "RE/T/TESObjectSTAT.h"
 #include "DX12LightSourceIdentity.h"
 #include "Features/NativeLLF/NativeLLF.h"
 #include "Features/NativeCubemaps/NativeCubemaps.h"
@@ -1179,6 +1181,20 @@ std::shared_ptr<const DX12::PreparedMaterialSource> DX12NativeScene::ObserveRast
 		scalars.authoredShaderFlags = NativePBR::ReadAuthoredFlags(*property);
 		scalars.observedShaderFlags = static_cast<uint64_t>(property->flags.underlying());
 		NativePBR::ReadNifParameters(*property, scalars.nifThinSurface, scalars.nifFuzz);
+		using Flag = RE::BSShaderProperty::EShaderPropertyFlag;
+		if (property->flags.any(Flag::kProjectedUV) && property->flags.any(Flag::kVertexLighting)) {
+			bool ancestryRead=false;
+			const auto* reference=Util::FindSceneOwner(&geometry,false,&ancestryRead);
+			if (ancestryRead && reference && reference->data.objectReference &&
+				reference->data.objectReference->formType==RE::FormType::Static) {
+				const auto* stat=static_cast<const RE::TESObjectSTAT*>(reference->data.objectReference);
+				const auto* mato=stat->data.materialObj;
+				if (mato && mato->directionalData.singlePass) {
+					const auto* id=mato->GetFormEditorID();
+					if (id && std::string_view(id).size()<=260u) scalars.rasterMaterialObjectEditorId=id;
+				}
+			}
+		}
 		if (property->material && property->material->GetType() == RE::BSShaderMaterial::Type::kLighting) {
 			const auto* material = static_cast<const RE::BSLightingShaderMaterialBase*>(property->material);
 			materialIdentity = reinterpret_cast<uintptr_t>(material);
@@ -1216,7 +1232,8 @@ std::shared_ptr<const DX12::PreparedMaterialSource> DX12NativeScene::ObserveRast
 	}
 	scalars.colorOffset = runtime.vertexDesc.HasFlag(RE::BSGraphics::Vertex::VF_COLOR) ? 0u : UINT32_MAX;
 	if (rasterMaterialCache.empty()) rasterMaterialCache.resize(4096);
-	const auto identity = reinterpret_cast<uintptr_t>(base);
+	const auto identity = scalars.observedShaderFlags & static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kProjectedUV) ?
+		reinterpret_cast<uintptr_t>(&geometry) : reinterpret_cast<uintptr_t>(base);
 	auto& entry = rasterMaterialCache[(identity >> 4u) % rasterMaterialCache.size()];
 	if (entry.snapshot && entry.property == identity && entry.material == materialIdentity &&
 		entry.textures == textures && entry.scalars == scalars) {
@@ -1292,7 +1309,10 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 	++draws.draws;
 	const auto& runtime = geometry.GetGeometryRuntimeData();
 	const auto geometryKey = static_cast<const void*>(&geometry);
-	const auto materialKey = static_cast<const void*>(runtime.shaderProperty.get());
+	auto materialKey = static_cast<const void*>(runtime.shaderProperty.get());
+	if (runtime.shaderProperty && runtime.shaderProperty->GetRTTI()==globals::rtti::BSLightingShaderPropertyRTTI.get() &&
+		static_cast<const RE::BSLightingShaderProperty*>(runtime.shaderProperty.get())->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kProjectedUV))
+		materialKey=geometryKey; // same shader property may have different placement overrides
 	draws.activeGeometry = draws.geometryOrdinals.try_emplace(geometryKey, uint32_t(draws.geometryOrdinals.size()+1)).first->second;
 	draws.activeMaterial = 0;
 	if (materialKey) {

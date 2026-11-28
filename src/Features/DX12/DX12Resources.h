@@ -57,6 +57,7 @@ namespace DX12
 		std::optional<std::array<float, 4>> nifThinSurface;
 		std::optional<std::array<float, 2>> nifFuzz;
 		std::string textureSetEditorId;
+		std::string rasterMaterialObjectEditorId; // reference-local override
 		uint32_t vertexStride = 0, vertexCount = 0;
 		uint32_t uvOffset = UINT32_MAX, normalOffset = UINT32_MAX, tangentOffset = UINT32_MAX, colorOffset = UINT32_MAX;
 		float alpha = 1.0f;
@@ -71,7 +72,7 @@ namespace DX12
 		bool operator==(const PreparedMaterialSource&) const = default;
 		uint64_t ByteSize() const
 		{
-			uint64_t bytes = sizeof(PreparedMaterialSource) + vertexBytes.size() + textureSetEditorId.size();
+			uint64_t bytes = sizeof(PreparedMaterialSource) + vertexBytes.size() + textureSetEditorId.size() + rasterMaterialObjectEditorId.size();
 			for (const auto& path : texturePaths)
 				bytes += path.size();
 			for (const auto& layer : rasterLandscapeTextures)
