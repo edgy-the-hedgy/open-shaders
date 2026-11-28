@@ -732,6 +732,23 @@ void ApplyCharacterRasterMaterial(RawRasterSurface raw,float3 viewRay,inout Samp
         }
         surface.color.a=SurfaceFeatureLimited;
     }
+    if (raw.auxiliaryKind==13u && technique==6u) {
+        float2 rg=RawHalf2(raw.auxiliary.x),bs=RawHalf2(raw.auxiliary.y);
+        float2 colorGloss=RawHalf2(raw.auxiliary.z),modeTransmission=RawHalf2(raw.auxiliary.w);
+        if (all(isfinite(float4(rg,bs))) && all(isfinite(float4(colorGloss,modeTransmission)))) {
+            float3 base=surface.color.rgb*lerp(1.0,SrgbToLinear(float3(rg,bs.x)),saturate(raw.color.y));
+            base=saturate(lerp(dot(base,float3(0.2126,0.7152,0.0722)).xxx,base,bs.y))*max(colorGloss.x,0.0);
+            const bool marschner=modeTransmission.x==1.0;
+            if (marschner) base*=base;
+            ReplaceNativeRasterBase(surface,base);
+            surface.normal.w=marschner ? 1.0 : clamp(pow(2.0/(max(colorGloss.y*0.75,0.0)+2.0),0.25),0.045,1.0);
+            const float hairF0=(1.0-1.55)/(1.0+1.55);
+            surface.f0.rgb=(hairF0*hairF0).xxx;
+        }
+        // Tangent orientation, separate R/TT/TRT lobes and directional
+        // transmission need the coordinated specialized publication.
+        surface.color.a=SurfaceFeatureLimited;
+    }
     if (raw.auxiliaryKind==8u) {
         float2 shellRoot=RawHalf2(raw.auxiliary.z),wetColor=RawHalf2(raw.auxiliary.w);
         float2 shellUV=asfloat(raw.auxiliary.xy);
@@ -788,7 +805,7 @@ Sample EvaluateRasterLocal(RawRasterSurface raw, uint2 mapped, float3 viewRay, f
     tri.colors[0]=raw.color; tri.uv[0]=raw.uv;
     const float3x3 identity=float3x3(1,0,0,0,1,0,0,0,1);
     // Hair's vertex Y is the tint interpolation, not a generic RGB multiplier.
-    if (raw.auxiliaryKind==12u && ((raw.pixelDescriptor>>24u)&63u)==6u) binding.flags&=~1u;
+    if ((raw.auxiliaryKind==12u || raw.auxiliaryKind==13u) && ((raw.pixelDescriptor>>24u)&63u)==6u) binding.flags&=~1u;
     result=EvaluateMaterialTriangle(binding,material,tri,mapped.x,float3(1,0,0),viewRay,worldDx,worldDy,1.0,distance,
         identity,identity,ParallaxEnabled!=0u,false,ParallaxShadowEnabled!=0u,MaterialMipBias,
         projectionRow,worldPosition,noise,raw,rawUsed,coat,shadow);
