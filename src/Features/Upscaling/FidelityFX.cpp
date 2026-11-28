@@ -378,6 +378,10 @@ void FidelityFX::CreateFSRResources()
 	DestroyRuntimeUpscalerResources(false);
 	ResetRuntimeUpscalerTracking(true);
 
+	// Full Native uses only the runtime DX12 provider; do not allocate host contexts.
+	if (globals::features::dx12Control.RequiresNativeUpscaler())
+		return;
+
 	// Prevent multiple allocations
 	if (fsrScratchBuffer) {
 		logger::warn("[FidelityFX] FSR resources already created, skipping allocation");

@@ -86,9 +86,7 @@ void Feature::Load(json& o_json)
 {
 	// Session authority also applies to configuration reloads. Native producers
 	// are admitted separately during the boot-time backend validation.
-	if (DX12Control::IsSuspendedEnvironmentProducer(this) ||
-		(!DX12Control::IsNativeCounterpart(this) &&
-		globals::features::dx12Control.GetExecutionRole(this) == DX12::ExecutionRole::Dormant)) {
+	if (globals::features::dx12Control.GetExecutionRole(this) == DX12::ExecutionRole::Dormant) {
 		loaded = false;
 		return;
 	}
@@ -412,7 +410,7 @@ namespace
 	{
 		std::vector<Feature*> v;
 		for (auto* feature : Feature::GetFeatureList()) {
-			if (a_wants(feature))
+			if (globals::features::dx12Control.GetExecutionRole(feature) != DX12::ExecutionRole::Dormant && a_wants(feature))
 				v.push_back(feature);
 		}
 		return v;

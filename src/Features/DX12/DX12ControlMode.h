@@ -31,9 +31,8 @@ namespace DX12
 		return active && mode == ControlMode::FullNative && !isVR ? FeatureBackend::FullNative : FeatureBackend::Baseline;
 	}
 
-	// Full Native owns all four counterpart contributions exclusively.
-	// Vanilla raster fallback does not activate legacy feature producers.
-	enum class CounterpartKind { Shared, NativeProducer, LegacyMaterial, LegacyLighting };
+	// Full Native owns rendering contributions exclusively. Raster input capture is shared.
+	enum class CounterpartKind { Shared, NativeProducer, LegacyMaterial, LegacyLighting, DeferredComposite, NativeComposite, RuntimeUpscaler };
 	enum class ExecutionRole { Baseline, NativeAuthority, RasterFallback, Dormant };
 	constexpr ExecutionRole SelectExecutionRole(FeatureBackend backend, CounterpartKind kind)
 	{
@@ -42,7 +41,10 @@ namespace DX12
 		switch (kind) {
 		case CounterpartKind::NativeProducer: return ExecutionRole::NativeAuthority;
 		case CounterpartKind::LegacyMaterial: return ExecutionRole::Dormant;
-		case CounterpartKind::LegacyLighting: return ExecutionRole::Dormant;
+		case CounterpartKind::LegacyLighting:
+		case CounterpartKind::DeferredComposite: return ExecutionRole::Dormant;
+		case CounterpartKind::NativeComposite:
+		case CounterpartKind::RuntimeUpscaler: return ExecutionRole::NativeAuthority;
 		default: return ExecutionRole::Baseline;
 		}
 	}

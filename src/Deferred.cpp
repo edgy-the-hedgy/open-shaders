@@ -422,6 +422,17 @@ void Deferred::DeferredPasses()
 	if (hasOpaqueRasterHooks)
 		Feature::ApplyOpaqueRasterReadyHooks();
 
+	// The geometry/input capture above is shared; the legacy lighting composite is not.
+	if (!globals::features::dx12Control.RunsDeferredComposite()) {
+		ID3D11Buffer* nullBuffer = nullptr;
+		context->CSSetConstantBuffers(12, 1, &nullBuffer);
+		if (globals::features::dx12Control.WantsMaterialPreparation() && globals::game::graphicsState) {
+			const auto frame = globals::game::graphicsState->GetFrameCount();
+			globals::features::upscaling.nativeComposite.ApplyFullNativeOpaque(frame, Util::AsReal(main.UAV));
+		}
+		return;
+	}
+
 	bool interior = Util::IsInterior();
 
 	auto& skylighting = globals::features::skylighting;
@@ -526,13 +537,6 @@ void Deferred::DeferredPasses()
 		context->CSSetConstantBuffers(12, 1, buffers);
 
 		context->CSSetShader(nullptr, nullptr, 0);
-	}
-
-	// Native Composite is the only Full Native color application owner. Apply
-	// before forward geometry and effects, after raster fallback is complete.
-	if (globals::features::dx12Control.WantsMaterialPreparation() && globals::game::graphicsState) {
-		const auto frame = globals::game::graphicsState->GetFrameCount();
-		globals::features::upscaling.nativeComposite.ApplyFullNativeOpaque(frame, Util::AsReal(main.UAV));
 	}
 
 	if (dynamicCubemaps.loaded)

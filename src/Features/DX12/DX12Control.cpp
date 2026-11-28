@@ -10,6 +10,9 @@
 #include "Features/LightLimitFix.h"
 #include "Features/DynamicCubemaps.h"
 #include "Features/IBL.h"
+#include "Features/ScreenSpaceGI.h"
+#include "Features/ScreenSpaceShadows.h"
+#include "Features/SubsurfaceScattering.h"
 #include "Globals.h"
 #include "State.h"
 #include "Utils/DevBenchUx.h"
@@ -52,12 +55,6 @@ bool DX12Control::IsNativeCounterpart(const Feature* feature)
 	return std::ranges::find(counterparts, feature) != counterparts.end();
 }
 
-bool DX12Control::IsSuspendedEnvironmentProducer(const Feature* feature)
-{
-	return kTemporaryLegacyEnvironment &&
-		(feature == &globals::features::nativeCubemaps || feature == &globals::features::nativeIBL);
-}
-
 DX12::CounterpartKind DX12Control::ClassifyCounterpart(const Feature* feature)
 {
 	using Kind = DX12::CounterpartKind;
@@ -66,18 +63,14 @@ DX12::CounterpartKind DX12Control::ClassifyCounterpart(const Feature* feature)
 	if (feature == &globals::features::truePBR)
 		return Kind::LegacyMaterial;
 	if (feature == &globals::features::lightLimitFix || feature == &globals::features::dynamicCubemaps ||
-		feature == &globals::features::ibl)
+		feature == &globals::features::ibl || feature == &globals::features::screenSpaceGI ||
+		feature == &globals::features::screenSpaceShadows || feature == &globals::features::subsurfaceScattering)
 		return Kind::LegacyLighting;
 	return Kind::Shared;
 }
 
 DX12::ExecutionRole DX12Control::GetExecutionRole(const Feature* feature) const
 {
-	if (IsSuspendedEnvironmentProducer(feature))
-		return DX12::ExecutionRole::Dormant;
-	if (kTemporaryLegacyEnvironment && UsesExclusiveMaterials() &&
-		(feature == &globals::features::dynamicCubemaps || feature == &globals::features::ibl))
-		return DX12::ExecutionRole::Baseline;
 	return DX12::SelectExecutionRole(GetFeatureBackend(), ClassifyCounterpart(feature));
 }
 
@@ -105,11 +98,15 @@ json DX12Control::GetDiagnostics()
 		if (feature->loaded && UsesExclusiveMaterials()) entry["producer"] = feature->GetDiagnostics();
 		roles[feature->GetShortName()] = std::move(entry);
 	}
-	for (Feature* feature : std::array<Feature*, 4>{ &globals::features::lightLimitFix,
-		&globals::features::dynamicCubemaps, &globals::features::ibl, &globals::features::truePBR })
+	for (Feature* feature : std::array<Feature*, 7>{ &globals::features::lightLimitFix,
+		&globals::features::dynamicCubemaps, &globals::features::ibl, &globals::features::truePBR,
+		&globals::features::screenSpaceGI, &globals::features::screenSpaceShadows, &globals::features::subsurfaceScattering })
 		roles[feature->GetShortName()] = { { "role", name(GetExecutionRole(feature)) }, { "loaded", feature->loaded } };
+	for (const auto& [key, kind] : std::array{ std::pair{ "DeferredComposite", DX12::CounterpartKind::DeferredComposite },
+		std::pair{ "NativeComposite", DX12::CounterpartKind::NativeComposite }, std::pair{ "RuntimeUpscaler", DX12::CounterpartKind::RuntimeUpscaler } })
+		roles[key] = { { "role", name(DX12::SelectExecutionRole(GetFeatureBackend(), kind)) } };
 	return { { "fullNativeSession", UsesExclusiveMaterials() }, { "active", IsActive() }, { "deviceLost", GraphicsBackend::NativeDeviceLost() },
-		{ "temporaryLegacyEnvironment", kTemporaryLegacyEnvironment && UsesExclusiveMaterials() }, { "featureRoles", std::move(roles) } };
+		{ "backendInitializationFailed", backendInitializationFailed.load(std::memory_order_acquire) }, { "featureRoles", std::move(roles) } };
 }
 
 void DX12Control::InitializeFeatureBackend()
@@ -121,43 +118,40 @@ void DX12Control::InitializeFeatureBackend()
 	if (backend != DX12::FeatureBackend::FullNative)
 		return;
 
-	// Validate all native core registrations before excluding legacy counterparts.
+	// Latch authority before producer registration. A failed producer must never
+	// reactivate legacy rendering or silently change the requested mode.
+	featureBackend.store(backend, std::memory_order_release);
 	// These features have no independent settings; their GPU resources remain lazy.
 	const auto counterparts = NativeCounterparts();
 	json unused = json::object();
 	bool ready = true;
 	for (auto* feature : counterparts) {
-		if (IsSuspendedEnvironmentProducer(feature)) {
+		try {
+			feature->Load(unused);
+		} catch (...) {
 			feature->loaded = false;
-			continue;
+			logger::error("[DX12] Full Native producer registration threw: {}", feature->GetShortName());
 		}
-		feature->Load(unused);
 		feature->installed = feature->loaded;
 		ready = ready && feature->loaded;
 	}
 	if (!ready) {
 		for (auto* feature : counterparts)
 			feature->loaded = false;
-		selectedMode.store(static_cast<int>(DX12::ControlMode::FullRT), std::memory_order_relaxed);
-		logger::error("[DX12] Full Native core registration failed; retaining baseline authority and FullRT for this session.");
-		return;
+		backendInitializationFailed.store(true, std::memory_order_release);
+		logger::error("[DX12] Full Native core registration failed; native submission disabled, Full Native ownership retained. Restart required.");
 	}
 
 	// Boot settings were read by State::Load, but no feature execution hooks
 	// have been installed yet. Apply the session role to every registered counterpart.
 	GraphicsBackend::EnableNativeDeviceDiagnostics();
-	featureBackend.store(backend, std::memory_order_release);
 	for (auto* feature : Feature::GetFeatureList()) {
 		if (GetExecutionRole(feature) == DX12::ExecutionRole::Dormant) {
 			feature->loaded = false;
 			logger::info("[DX12] {} dormant for Full Native session", feature->GetShortName());
 		}
 	}
-	if constexpr (kTemporaryLegacyEnvironment)
-		logger::info("[DX12] Full Native test: legacy DynamicCubemaps and IBL enabled by normal feature loading (loaded: {}, {}); native environment producers suspended.",
-			globals::features::dynamicCubemaps.loaded, globals::features::ibl.loaded);
-	else
-		logger::info("[DX12] Full Native selected; all legacy counterparts are dormant. Vanilla raster lighting remains the fallback.");
+	logger::info("[DX12] Full Native session ownership latched; legacy lighting producers dormant (native registration ready: {}).", ready);
 }
 
 void DX12Control::InstallMaterialBackendHooks()
@@ -186,8 +180,8 @@ void DX12Control::DrawSimpleSettings(bool developerMode)
 	}
 	if (DX12::RequiresModeRestart(GetMode(), static_cast<ControlMode>(settings.Mode)))
 		ImGui::TextDisabled(T("menu.dx12.mode.restart_full_native", "Entering or leaving Full Native requires a restart."));
-	if (IsFullNativeMode())
-		ImGui::TextDisabled(T("menu.dx12.mode.full_native_preview", "NativePBR material authority; vanilla raster remains the final-color fallback."));
+	if (IsFullNativeMode() && backendInitializationFailed.load(std::memory_order_acquire))
+		ImGui::TextDisabled("Full Native initialization failed. Check OpenShaders.log and restart.");
 	ImGui::Checkbox(T("menu.dx12.master.enable", "Enable native DX12 features (restart required)"), &settings.Enabled);
 	if (settings.Enabled != bootActive.load(std::memory_order_acquire))
 		ImGui::TextDisabled(T("menu.dx12.master.restart_boot_state", "A game restart is required; DX12 Resources retains its boot state until then."));

@@ -1010,6 +1010,9 @@ void Streamline::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_r
 			// A later DX11 fallback then builds a fresh feature instead of reusing history from before the native frames.
 			if (!nativeWasActive)
 				DestroyDLSSResources();
+		} else if (globals::features::dx12Control.RequiresNativeUpscaler()) {
+			if (ShouldLogDLSSProblem(DLSSLogKind::kStereoFallback, 0, state->frameCount))
+				logger::error("[Streamline {}] Full Native DX12 DLSS unavailable; DX11 fallback prohibited.", instanceTag);
 		} else {
 			EvaluateDLSS(viewport, 0,
 				a_upscalingTexture, colorOut,

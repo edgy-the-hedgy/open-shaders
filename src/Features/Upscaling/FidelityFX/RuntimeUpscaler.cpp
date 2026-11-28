@@ -1432,8 +1432,9 @@ bool FidelityFX::UpscaleRegion(uint32_t a_contextIndex, ID3D11Resource* a_color,
 	if (runtimeUpscalerQuarantined && HasRuntimeUpscalerResources())
 		ResetRuntimeUpscalerResources(false);
 
-	const bool runtimeUpgradeRequested = !a_forceHostPath && ShouldRequestRuntimeUpgrade();
-	const bool runtimeRequested = !a_forceHostPath && (runtimeUpgradeRequested || ShouldUseRuntimeUpscalerForFSR());
+	const bool nativeOnly = globals::features::dx12Control.RequiresNativeUpscaler();
+	const bool runtimeUpgradeRequested = (!a_forceHostPath || nativeOnly) && ShouldRequestRuntimeUpgrade();
+	const bool runtimeRequested = (!a_forceHostPath || nativeOnly) && (runtimeUpgradeRequested || ShouldUseRuntimeUpscalerForFSR());
 	const uint32_t requestedRuntimeVersion = runtimeUpgradeRequested ? kRuntimePreferredVersion : Fsr3Version;
 	const bool splitPerEyeContexts = UseSplitPerEyeFSRContexts();
 	const uint32_t runtimeContextCount = splitPerEyeContexts ? 2u : 1u;
@@ -1525,6 +1526,12 @@ bool FidelityFX::UpscaleRegion(uint32_t a_contextIndex, ID3D11Resource* a_color,
 	// with a sibling eye that already succeeded through it this same frame.
 	if (!runtimeSelected && runtimeAlreadyUsedThisFrame)
 		return false;
+
+	if (nativeOnly) {
+		static std::once_flag nativeOnlyFailure;
+		std::call_once(nativeOnlyFailure, [] { logger::error("[FidelityFX] Full Native DX12 runtime upscaler unavailable; host DX11 fallback prohibited."); });
+		return false;
+	}
 
 	if (!runtimeRequested)
 		runtimeFallbackResetDispatchesRemaining = 0;

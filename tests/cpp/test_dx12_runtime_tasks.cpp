@@ -1,3 +1,4 @@
+#include "Features/DX12/DX12ControlMode.h"
 #include "../../package/Shaders/Common/NativeShadowRT.hlsli"
 #include "Features/DX12/DX12FenceRetirementPolicy.h"
 #include "Features/DX12/NativeLightPublication.h"
@@ -497,4 +498,20 @@ TEST_CASE("Scene preparation worker recovery is bounded", "[dx12][scene-prep]")
 	CHECK(DX12::CanRestartPreparationWorker(DX12::kMaxPreparationWorkerRestarts - 1));
 	CHECK_FALSE(DX12::CanRestartPreparationWorker(DX12::kMaxPreparationWorkerRestarts));
 	CHECK_FALSE(DX12::CanRestartPreparationWorker(UINT32_MAX));
+}
+
+TEST_CASE("Full Native feature ownership excludes legacy lighting and upscaler fallback", "[dx12][ownership]")
+{
+	using namespace DX12;
+	for (const auto kind : { CounterpartKind::LegacyMaterial, CounterpartKind::LegacyLighting, CounterpartKind::DeferredComposite }) {
+		CHECK(SelectExecutionRole(FeatureBackend::Baseline, kind) == ExecutionRole::Baseline);
+		CHECK(SelectExecutionRole(FeatureBackend::FullNative, kind) == ExecutionRole::Dormant);
+	}
+	CHECK(SelectExecutionRole(FeatureBackend::Baseline, CounterpartKind::NativeProducer) == ExecutionRole::Dormant);
+	for (const auto kind : { CounterpartKind::NativeProducer, CounterpartKind::NativeComposite, CounterpartKind::RuntimeUpscaler })
+		CHECK(SelectExecutionRole(FeatureBackend::FullNative, kind) == ExecutionRole::NativeAuthority);
+	CHECK(SelectExecutionRole(FeatureBackend::Baseline, CounterpartKind::RuntimeUpscaler) == ExecutionRole::Baseline);
+	CHECK(SelectExecutionRole(FeatureBackend::FullNative, CounterpartKind::Shared) == ExecutionRole::Baseline);
+	CHECK(RequiresModeRestart(ControlMode::FullRT, ControlMode::FullNative));
+	CHECK(RequiresModeRestart(ControlMode::FullNative, ControlMode::FullRT));
 }

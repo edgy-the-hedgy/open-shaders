@@ -28,7 +28,7 @@ struct DX12Control final : Feature
 	bool IsAlwaysEnabled() const override { return true; }
 	bool SupportsVR() override { return false; }
 	/** @brief Whether native work may be submitted this frame. */
-	bool IsActive() const { return loaded && bootActive.load(std::memory_order_acquire) && !GraphicsBackend::NativeDeviceLost(); }
+	bool IsActive() const { return loaded && bootActive.load(std::memory_order_acquire) && !backendInitializationFailed.load(std::memory_order_acquire) && !GraphicsBackend::NativeDeviceLost(); }
 	bool IsShadowOffloadMode() const { return GetMode() == DX12::ControlMode::ShadowOffload; }
 	bool IsFullRTMode() const { return GetMode() == DX12::ControlMode::FullRT; }
 	bool IsFullNativeMode() const { return GetMode() == DX12::ControlMode::FullNative; }
@@ -37,15 +37,14 @@ struct DX12Control final : Feature
 	/** @brief Session authority is independent of runtime DX12 availability. */
 	DX12::FeatureBackend GetFeatureBackend() const { return featureBackend.load(std::memory_order_acquire); }
 	bool UsesExclusiveMaterials() const { return GetFeatureBackend() == DX12::FeatureBackend::FullNative; }
-	// Temporary Vol2 A/B: keep NativePBR/NativeLLF, restore the established environment producers.
-	static constexpr bool kTemporaryLegacyEnvironment = true;
-	static bool IsSuspendedEnvironmentProducer(const Feature* feature);
 	static std::array<Feature*, 4> NativeCounterparts();
 	static bool IsNativeCounterpart(const Feature* feature);
 	static DX12::CounterpartKind ClassifyCounterpart(const Feature* feature);
 	DX12::ExecutionRole GetExecutionRole(const Feature* feature) const;
 	// Selects the single radiance acquisition owner, not the fallback renderer.
-	bool UsesLegacyReflectionCapture() const { return kTemporaryLegacyEnvironment || GetFeatureBackend() == DX12::FeatureBackend::Baseline; }
+	bool UsesLegacyReflectionCapture() const { return GetFeatureBackend() == DX12::FeatureBackend::Baseline; }
+	bool RunsDeferredComposite() const { return DX12::SelectExecutionRole(GetFeatureBackend(), DX12::CounterpartKind::DeferredComposite) != DX12::ExecutionRole::Dormant; }
+	bool RequiresNativeUpscaler() const { return DX12::SelectExecutionRole(GetFeatureBackend(), DX12::CounterpartKind::RuntimeUpscaler) == DX12::ExecutionRole::NativeAuthority; }
 	ID3D11ShaderResourceView* GetFallbackSkyRadiance(ID3D11ShaderResourceView* legacyView) const;
 	json GetDiagnostics() override;
 	void InitializeFeatureBackend();
@@ -64,6 +63,7 @@ struct DX12Control final : Feature
 private:
 	std::atomic<bool> bootActive{ false };
 	std::atomic<DX12::FeatureBackend> featureBackend{ DX12::FeatureBackend::Baseline };
+	std::atomic<bool> backendInitializationFailed{ false };
 	bool authorityCaptured = false;
 	bool bootCaptured = false;
 	DX12::ControlMode GetMode() const;
