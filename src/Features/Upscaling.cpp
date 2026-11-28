@@ -26,6 +26,7 @@
 #include "Upscaling/NeuralRendering/PeripheralCompression.h"
 #include "Upscaling/PerfMode.h"
 #include "Upscaling/Streamline.h"
+#include "Upscaling/WorldCameraLookup.h"
 #include "Utils/DevBenchUx.h"
 #include "Utils/Game.h"
 #include "Utils/UI.h"
@@ -3180,13 +3181,55 @@ void Upscaling::PublishNativeFrameParameters(uint32_t width, uint32_t height)
 	lastNativeLightingQuality = publication->lightingQuality;
 	const std::array<uint32_t, 4> extent{width, height, publication->displayWidth, publication->displayHeight};
 	const bool worldRendered = globals::state->worldRenderedThisFrame;
-	const bool discontinuity = lastNativeUpscaleFrame != publication->frame &&
-		(lastNativeUpscaleFrame == UINT32_MAX || lastNativeUpscaleFrame + 1u != publication->frame ||
-		lastNativeUpscaleExtent != extent || lastNativeUpscaleWorld != worldRendered);
-	lastNativeUpscaleFrame = publication->frame;
-	lastNativeUpscaleExtent = extent;
-	lastNativeUpscaleWorld = worldRendered;
-	publication->resetHistory = discontinuity || changed || sameFrameReset || (publication->world && publication->world->resetHistory) || globals::state->ShouldResetHistory() ||
+	const bool loading = globals::state->isLoadingMenuOpen;
+	bool discontinuity = false;
+	if (lastNativeUpscaleFrame != publication->frame) {
+		const auto* player = RE::PlayerCharacter::GetSingleton();
+		const uintptr_t cell = worldRendered && player ? reinterpret_cast<uintptr_t>(player->GetParentCell()) : 0;
+		const uintptr_t cameraIdentity = worldRendered ? reinterpret_cast<uintptr_t>(RE::Main::WorldRootCamera()) : 0;
+		const std::array<float, 3> projection{publication->cameraNear, publication->cameraFar, publication->cameraFov};
+		std::array<float, 6> pose{};
+		bool poseValid = false;
+		if (worldRendered) {
+			if (const auto camera = UpscalingCamera::GetWorldCameraFrame()) {
+				const auto& view = camera->viewInverse;
+				pose = {camera->origin.x + view._41, camera->origin.y + view._42, camera->origin.z + view._43,
+					view._31, view._32, view._33};
+				poseValid = std::all_of(pose.begin(), pose.end(), [](float v) { return std::isfinite(v); });
+			}
+		}
+		// A large discontinuous translation or turn is a conservative camera-cut
+		// heuristic independent of material/geometry coverage and normal motion.
+		bool cameraCut = false;
+		if (poseValid && lastNativeUpscalePoseValid) {
+			float distanceSq = 0.f, dot = 0.f, lengthA = 0.f, lengthB = 0.f;
+			for (size_t i = 0; i < 3; ++i) {
+				const float delta = pose[i] - lastNativeUpscalePose[i];
+				distanceSq += delta * delta;
+				dot += pose[i + 3] * lastNativeUpscalePose[i + 3];
+				lengthA += pose[i + 3] * pose[i + 3];
+				lengthB += lastNativeUpscalePose[i + 3] * lastNativeUpscalePose[i + 3];
+			}
+			cameraCut = distanceSq > 2048.f * 2048.f ||
+				(lengthA > 0.f && lengthB > 0.f && dot < 0.5f * std::sqrt(lengthA * lengthB));
+		}
+		discontinuity = lastNativeUpscaleFrame == UINT32_MAX || lastNativeUpscaleFrame + 1u != publication->frame ||
+			lastNativeUpscaleExtent != extent || lastNativeUpscaleWorld != worldRendered ||
+			lastNativeUpscaleLoading != loading || lastNativeUpscaleCell != cell || lastNativeUpscaleCamera != cameraIdentity ||
+			lastNativeUpscalePoseValid != poseValid || cameraCut ||
+			lastNativeUpscaleProjection[0] != projection[0] || lastNativeUpscaleProjection[1] != projection[1] ||
+			std::abs(lastNativeUpscaleProjection[2] - projection[2]) > 0.001f;
+		lastNativeUpscaleFrame = publication->frame;
+		lastNativeUpscaleExtent = extent;
+		lastNativeUpscaleWorld = worldRendered;
+		lastNativeUpscaleLoading = loading;
+		lastNativeUpscaleCell = cell;
+		lastNativeUpscaleCamera = cameraIdentity;
+		lastNativeUpscalePose = pose;
+		lastNativeUpscalePoseValid = poseValid;
+		lastNativeUpscaleProjection = projection;
+	}
+	publication->resetHistory = loading || discontinuity || changed || sameFrameReset || (publication->world && publication->world->resetHistory) || globals::state->ShouldResetHistory() ||
 		(globals::state->IsMainOrLoadingMenuOpen() && !menuCameraMVsValid);
 	if (frameGenerationPrepared && nativeFrameGenerationFrame == publication->frame &&
 		dx12SwapChain.depthBufferShared12 && dx12SwapChain.motionVectorBufferShared12) {
