@@ -5,7 +5,7 @@ struct RawRasterSurface
     float2 uv, dx, dy;
     float4 color;
     float3 tangent, bitangent, normal;
-    uint materialIndex, pixelDescriptor, extraDescriptor, extraFeatureDescriptor;
+    uint materialIndex, pixelDescriptor, vertexDescriptor, extraDescriptor, extraFeatureDescriptor;
     float alpha;
     uint2 drawIdentity;
     uint geometryOrdinal, materialOrdinal;
