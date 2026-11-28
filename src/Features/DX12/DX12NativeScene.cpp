@@ -1746,7 +1746,7 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 		using Type = RE::BSShader::Type;
 		std::map<std::array<uintptr_t,8>,size_t> materialRows;
  		const auto drawCount=std::min(draws.drawRecords.size(),draws.drawSourceViews.size());
-		const size_t start=drawCount ? (uint64_t(draws.stamp.frame)*kMaxProjectedDraws)%drawCount : 0u;
+		const size_t start=drawCount ? (uint64_t(nativeMaterialTransferSequence)*kMaxProjectedDraws)%drawCount : 0u;
 		for (size_t offset=0; offset<drawCount; ++offset) {
 			const size_t i=(start+offset)%drawCount;
 			const auto& record=draws.drawRecords[i];
@@ -1810,17 +1810,18 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 		for (size_t lane=0; lane<classes.size(); ++lane) remaining[lane]=uint32_t(classes[lane].size());
 		std::vector<ProjectedInputDraw> admitted;
 		admitted.reserve(kMaxProjectedDraws);
-		uint32_t cursor=draws.stamp.frame%MaterialFrameContract::kTransferClassCount;
+		uint32_t cursor=nativeMaterialTransferSequence%MaterialFrameContract::kTransferClassCount;
 		while (admitted.size()<kMaxProjectedDraws) {
 			const uint32_t lane=MaterialFrameContract::NextTransferClass(remaining,cursor);
 			if (lane==UINT32_MAX) break;
 			const auto& candidates=classes[lane];
-			const size_t row=(uint64_t(draws.stamp.frame/MaterialFrameContract::kTransferClassCount)+used[lane]++)%candidates.size();
+			const size_t row=(uint64_t(nativeMaterialTransferSequence/MaterialFrameContract::kTransferClassCount)+used[lane]++)%candidates.size();
 			admitted.push_back(std::move(inputs[candidates[row]]));
 			--remaining[lane];
 			cursor=(lane+1u)%MaterialFrameContract::kTransferClassCount;
 		}
-		if (!admitted.empty()) globals::features::nativePBR.PublishProjection(*backend,draws.stamp,admitted);
+		if (!admitted.empty() && globals::features::nativePBR.PublishProjection(*backend,draws.stamp,admitted))
+			++nativeMaterialTransferSequence;
 	}
 }
 
