@@ -141,7 +141,7 @@ namespace DX12Native
 		const RasterIdentityStamp rayStamp{ material->frame, material->scope, material->geometryRevision, material->materialRevision };
 		const StationaryHistoryIdentity stamp{ material->frame, pluginFrame, material->width, material->height,
 			material->scope, available, material->geometryRevision, material->materialRevision,
-			indirect && indirect->environment ? indirect->environment->revision : 0u, resetHistory,
+			indirect ? indirect->environmentContentRevision : 0u, resetHistory,
 			indirect && indirect->environment ? indirect->environment->stamp.epoch : 0u, indirect && indirect->screenSpaceReflections };
 		const auto sameCamera = [](const auto& a, const auto& b) {
 			return std::memcmp(&a.CameraProjUnjitteredInverse, &b.CameraProjUnjitteredInverse, sizeof(a.CameraProjUnjitteredInverse)) == 0 &&

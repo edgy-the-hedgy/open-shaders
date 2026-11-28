@@ -18,7 +18,7 @@ namespace NativeIBL
 		void OnRuntimeDisabled() override { InvalidateGeneration(); Release(); }
 		void ClearShaderCache() override { InvalidateGeneration(); Release(); }
 		void Poll(uint32_t frame) { if (lighting) lighting->Poll(frame); }
-		void InvalidateGeneration() { if (lighting) lighting->Reset(); }
+		void InvalidateGeneration() { waitingForEnvironment = true; if (lighting) lighting->Reset(); }
 		void Release() { lighting.reset(); }
 		void Dispatch(const GraphicsBackend& backend,
 			std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> material,
@@ -33,6 +33,7 @@ namespace NativeIBL
 
 	private:
 		IBL::Settings settings;
+		bool waitingForEnvironment = true;
 		std::unique_ptr<DX12Native::NativeIndirectLighting> lighting;
 	};
 }

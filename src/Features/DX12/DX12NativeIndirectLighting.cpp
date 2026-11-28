@@ -33,7 +33,7 @@ namespace DX12Native
             float4 secondarySunDirection, secondarySunRadiance;
             uint32_t secondaryLightCount, secondaryFoliage, skyAvailable, secondaryMaterialControls;
             uint32_t secondaryProjectionRows, characterVertices, characterTriangles, characterParts;
-            uint32_t characterMovers, characterPadding[3]{};
+            uint32_t characterMovers, materialLobePitch, characterPadding[2]{};
         };
         static_assert(sizeof(Constants) == 544);
         constexpr uint64_t kSHBytes = 48;
@@ -126,7 +126,11 @@ namespace DX12Native
 
     void NativeIndirectLighting::Reset()
     {
-        Poll(UINT32_MAX, true);
+        // Drop history and SH leases, but keep retired frame allocations reusable.
+        Poll(UINT32_MAX);
+        current.reset();
+        baseCache.reset();
+        skyCache.reset();
         failure.clear();
     }
 
@@ -202,12 +206,19 @@ namespace DX12Native
             !std::isfinite(environmentScale) || !std::isfinite(skyScale)) {
             failure = "Incoherent indirect inputs"; return;
         }
-        if ((!ambient.iblEnabled || ambient.dalcMode >= 2 || ambient.dalcAmount != 0) && !ambient.dalcValid) {
-            failure = "Waiting for same-frame engine DALC"; return;
+        const auto& envStamp = environment->stamp;
+        if (!environment->base || !environment->base->IsReadyFor(envStamp) ||
+            !environment->producerFence || !environment->producerValue ||
+            environment->producerFence->GetCompletedValue() == UINT64_MAX ||
+            environment->producerFence->GetCompletedValue() < environment->producerValue ||
+            (environment->reflection && !environment->reflection->IsReadyFor(envStamp)) ||
+            (environment->sky && !environment->sky->IsReadyFor(envStamp))) {
+            failure = "Waiting for completed native environment"; return;
         }
-        uint32_t available = 0;
-        if ((enabled & IndirectDiffuse) && (!ambient.iblEnabled || environment->stamp.interior || environment->stamp.skyHidden || environment->base)) available |= IndirectDiffuse;
-        if (enabled & IndirectSpecular) available |= IndirectSpecular;
+        if (!ambient.iblEnabled || ((ambient.dalcMode >= 2 || ambient.dalcAmount != 0) && !ambient.dalcValid)) {
+            failure = "Incoherent native irradiance policy"; return;
+        }
+        uint32_t available = enabled & (uint32_t(IndirectDiffuse) | uint32_t(IndirectSpecular));
         if ((enabled & Transmission) && (available & IndirectDiffuse)) available |= Transmission;
         if (!available) { failure = "Waiting for completed environment inputs"; return; }
         const uint32_t width = material->width, height = material->height;
@@ -241,11 +252,11 @@ namespace DX12Native
                 const auto desc = CD3DX12_RESOURCE_DESC::Buffer(size, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
                 return device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
             };
-            const bool needsBaseSH = ambient.iblEnabled && ambient.dalcMode < 2 && bool(environment->base);
+            const bool needsBaseSH = (available & (IndirectDiffuse | IndirectSpecular)) != 0;
             const bool needsSkySH = ambient.iblEnabled && (available & IndirectDiffuse) && !environment->stamp.interior &&
                 !environment->stamp.skyHidden && bool(environment->sky);
-            if (!needsBaseSH) baseCache.reset();
-            if (!needsSkySH) skyCache.reset();
+            // A temporarily absent sky is not consumed. Retain its cached lease until
+            // a different source arrives or an environment epoch is invalidated.
             const bool projectBase = needsBaseSH && (!baseCache || baseCache->cube != environment->base);
             const bool projectSky = needsSkySH &&
                 (!skyCache || skyCache->cube != environment->sky);
@@ -283,11 +294,19 @@ namespace DX12Native
             slot->screenSpaceReflections = bool(slot->ssrDirect) && (available & IndirectSpecular);
             slot->frame = slot->material->frame; slot->quality = SanitizeRTQuality(quality); slot->available = available;
             slot->characters = characters && characters->Submitted(slot->frame, slot->material->scope) ? std::move(characters) : nullptr;
-            slot->skyVisibilityTraced = ambient.traceSkyVisibility != 0 && !slot->environment->stamp.interior;
+            slot->skyVisibilityTraced = false;
             slot->root = root; slot->pipeline = pipeline;
             slot->projectionRoot = projectionRoot; slot->projectionPipeline = projectionPipeline;
             slot->readyFence = completion; slot->readyValue = UINT64_MAX;
             const auto& env = *slot->environment;
+            // Stable content key for Worker 09: optional sources can disappear
+            // without changing the producer\'s base-generation revision.
+            uint64_t content = 14695981039346656037ull;
+            const auto mix = [&](uint64_t value) { content ^= value; content *= 1099511628211ull; };
+            mix(env.stamp.epoch); mix(env.revision); mix(uint32_t(env.stamp.encoding));
+            mix(env.base->revision); mix(env.reflection ? env.reflection->revision : 0u);
+            mix(env.sky ? env.sky->revision : 0u);
+            slot->environmentContentRevision = content ? content : 1u;
             const auto& raster = *slot->material->raster;
             auto* cmd = slot->commands.get();
             const UINT increment = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -346,7 +365,7 @@ namespace DX12Native
                 slot->ssrDirect && slot->ssrDirect->foliageScattering ? 1u : 0u,
                 slot->skySH ? 1u : 0u,
                 uint32_t(slot->material->parallaxEnabled) | (uint32_t(slot->material->parallaxShadows)<<1u),
-                projection?projection->rowCount:0u, actor?actor->vertices:0u, actor?actor->triangles:0u, actor?actor->parts:0u, characterView.moverCount };
+                projection?projection->rowCount:0u, actor?actor->vertices:0u, actor?actor->triangles:0u, actor?actor->parts:0u, characterView.moverCount, slot->material->materialLobeRowPitch };
             void* mapped = nullptr; const D3D12_RANGE noRead{};
             Eval::Check(slot->constants->Map(0, &noRead, &mapped));
             std::memcpy(mapped, &constants, sizeof(constants)); slot->constants->Unmap(0, nullptr);
@@ -392,7 +411,9 @@ namespace DX12Native
             Eval::Check(cmd->Close());
             Eval::Check(backend.commandQueue->Wait(slot->material->producerFence.get(), slot->material->producerValue));
             if (slot->characters) Eval::Check(backend.commandQueue->Wait(slot->characters->readyFence.get(), slot->characters->readyValue));
-            if (env.producerFence && env.producerValue) Eval::Check(backend.commandQueue->Wait(env.producerFence.get(), env.producerValue));
+            Eval::Check(backend.commandQueue->Wait(env.producerFence.get(), env.producerValue));
+            // Sky has a separate acquisition fence; base/reflection use the completed generation.
+            if (env.sky) Eval::Check(backend.commandQueue->Wait(env.sky->readyFence.get(), env.sky->readyValue));
             if (projection) Eval::Check(backend.commandQueue->Wait(projection->readyFence.get(),projection->readyValue));
             if (slot->screenSpaceReflections) {
                 Eval::Check(backend.commandQueue->Wait(slot->ssrDirect->readyFence.get(), slot->ssrDirect->readyValue));

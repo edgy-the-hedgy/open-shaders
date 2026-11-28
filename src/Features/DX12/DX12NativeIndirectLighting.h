@@ -50,6 +50,8 @@ namespace DX12Native
         winrt::com_ptr<ID3D12PipelineState> pipeline, projectionPipeline;
         winrt::com_ptr<ID3D12Fence> readyFence;
         uint64_t readyValue = 0, allocationBytes = 0;
+        // Includes optional cube source changes, not merely the base generation.
+        uint64_t environmentContentRevision = 0;
         uint32_t frame = 0, width = 0, height = 0, rowPitch = 0, available = 0;
         bool skyVisibilityTraced = false;
         bool screenSpaceReflections = false;

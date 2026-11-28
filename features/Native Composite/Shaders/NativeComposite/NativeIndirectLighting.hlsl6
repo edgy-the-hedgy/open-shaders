@@ -74,7 +74,8 @@ cbuffer IndirectInputs : register(b0)
     uint SecondaryProjectionRows;
     uint CharacterVertexCount, CharacterTriangleCount, CharacterPartCount;
     uint CharacterMoverCount;
-    uint3 CharacterPadding;
+    uint MaterialLobePitch;
+    uint2 CharacterPadding;
 };
 #include "NativeSecondaryReflection.hlsli"
 
@@ -97,39 +98,60 @@ float3 EngineAmbient(float3 direction, float amount)
     return ColorEncoding == 0u ? pow(max(c, 0.0), 1.6) : c;
 }
 
-// A completed native cube is the miss contribution; ray queries may
-// replace only their valid hit fraction. Engine DALC is startup fallback.
-float3 CubemapSpecularMiss(float3 direction, float roughness)
-{
-    if (EnvironmentMipCount == 0u) return EngineAmbient(direction,1.0);
-    const float level = saturate(roughness) * float(EnvironmentMipCount - 1u);
-    float3 radiance = DecodeEnvironmentRadiance(Environment.SampleLevel(ClampClamp,direction,level).rgb,ColorEncoding);
-    if (Interior == 0u && ReflectionMipCount != 0u)
-        radiance = DecodeEnvironmentRadiance(Reflections.SampleLevel(ClampClamp,direction,
-            saturate(roughness)*float(ReflectionMipCount-1u)).rgb,ColorEncoding);
-    return all(isfinite(radiance)) ? max(0.0,radiance) : EngineAmbient(direction,1.0);
-}
-
+// The cube producer uses incoming directions (ReadNativeRadiance projects
+// -direction); NativePBR normals and reflection vectors point outward.
 float3 BaseIrradiance(float3 direction)
 {
     return NativeIndirect::EvaluateIrradiance(asfloat(EnvironmentSH.Load4(0u)),
         asfloat(EnvironmentSH.Load4(16u)), asfloat(EnvironmentSH.Load4(32u)), direction);
 }
 
+float3 BaseMean()
+{
+    // The L0 coefficient is the spherical mean divided by Y00.
+    return max(0.0, float3(asfloat(EnvironmentSH.Load(0u)),
+        asfloat(EnvironmentSH.Load(16u)), asfloat(EnvironmentSH.Load(32u))) * 0.2820947918);
+}
+
+float3 EnvironmentRatio()
+{
+    if (DALCValid == 0u || DALCAmount == 0.0 || DALCMode >= 2u) return 1.0;
+    float3 reference = SaturateColor(BaseMean(), EnvironmentSaturation);
+    float3 target = EngineAmbient(0.0, 1.0);
+    float lum = Luminance(reference);
+    float3 ratio = DALCMode == 0u ? (lum > 0.001 ? Luminance(target) / lum : 1.0).xxx :
+        target / max(0.001, reference);
+    return lerp(1.0, ratio, saturate(DALCAmount));
+}
+
 float3 EnvironmentIrradiance(float3 direction)
 {
-    if (IBLEnabled == 0u) return EngineAmbient(direction, 1.0);
     if (DALCMode >= 2u) return EngineAmbient(direction, DALCAmount);
-    float3 result = SaturateColor(BaseIrradiance(direction), EnvironmentSaturation);
-    if (DALCAmount != 0.0)
-    {
-        float3 reference = SaturateColor(BaseIrradiance(0.0), EnvironmentSaturation);
-        float3 target = EngineAmbient(0.0, 1.0);
-        float3 ratio = DALCMode == 0u ? (Luminance(target) / max(0.001, Luminance(reference))).xxx :
-            target / max(0.001, reference);
-        result *= lerp(1.0, ratio, saturate(DALCAmount));
+    return SaturateColor(BaseIrradiance(direction), EnvironmentSaturation) * EnvironmentRatio() * EnvironmentScale;
+}
+
+float3 SkyIrradiance(float3 direction)
+{
+    if (Interior != 0u || SkyAvailable == 0u) return 0.0;
+    return SaturateColor(NativeIndirect::EvaluateIrradiance(asfloat(SkySH.Load4(0u)),
+        asfloat(SkySH.Load4(16u)), asfloat(SkySH.Load4(32u)), direction), SkySaturation) * SkyScale;
+}
+
+float3 CubemapSpecularMiss(float3 direction, float roughness)
+{
+    const float level = saturate(roughness) * float(EnvironmentMipCount - 1u);
+    float3 base = max(0.0, DecodeEnvironmentRadiance(Environment.SampleLevel(ClampClamp,-direction,level).rgb,ColorEncoding));
+    float3 radiance = SaturateColor(base, EnvironmentSaturation) * EnvironmentRatio() * EnvironmentScale;
+    if (DALCMode >= 2u)
+        radiance = base / max(0.001, Luminance(BaseMean())) * EngineAmbient(direction, DALCAmount);
+    // The full exterior reflection cube includes environment + sky. Add only
+    // the residual to avoid adding the base environment a second time.
+    if (Interior == 0u && ReflectionMipCount != 0u) {
+        float3 full = max(0.0, DecodeEnvironmentRadiance(Reflections.SampleLevel(ClampClamp,-direction,
+            saturate(roughness)*float(ReflectionMipCount-1u)).rgb,ColorEncoding));
+        radiance += SaturateColor(max(0.0, full-base), SkySaturation) * SkyScale;
     }
-    return result * EnvironmentScale;
+    return all(isfinite(radiance)) ? max(0.0,radiance) : 0.0;
 }
 
 float4 UnpackHalf4(uint2 value)
@@ -250,58 +272,6 @@ float3 ResolveRayReflection(uint2 receiver,float3 world,float3 normal,float3 dir
     return lerp(fallback,radiance,edge*saturate(1.0-roughness));
 }
 
-// Sky visibility only: trace the configured upper sky cap, not a generic
-// ambient-occlusion radius or a GI bounce. The resident TLAS bounds coverage.
-bool CharacterVisible(RayDesc ray)
-{
-    if (CharacterCastersEnabled == 0u) return true;
-    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
-    query.TraceRayInline(CharacterScene, RAY_FLAG_NONE, 0xff, ray);
-    while (query.Proceed()) {}
-    return query.CommittedStatus() == COMMITTED_NOTHING;
-}
-
-bool SkyVisible(float3 world, float3 n, float3 d)
-{
-    const float bias = 0.5;
-    RayDesc ray;
-    ray.Origin = world + n * bias + d * bias;
-    ray.Direction = d;
-    ray.TMin = bias;
-    ray.TMax = 3.402823e38;
-    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
-    query.TraceRayInline(Scene, RAY_FLAG_NONE, 0xff, ray);
-    while (query.Proceed()) {
-        if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
-            AcceptAlpha(query.CandidateInstanceID(), query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(), InstanceCount))
-            query.CommitNonOpaqueTriangleHit();
-    }
-    return query.CommittedStatus() == COMMITTED_NOTHING && CharacterVisible(ray);
-}
-
-float SkyCapVisibility(float3 world, float3 n, float3 lobeDirection, float exponent, float floorVisibility)
-{
-    if (TraceSkyVisibility == 0u || Interior != 0u) return 1.0;
-    // Fixed low-discrepancy cap samples: deterministic until motion-aware
-    // reconstruction is available. Weight by the requested lighting lobe.
-    // Match the shared profile for every sky lobe, not just direct shadows.
-    const uint sampleCount = QualityMode == kShadowQualityPerformance ? 4u : 8u;
-    float total = 0.0, visible = 0.0;
-    [loop] for (uint i = 0u; i < sampleCount; ++i) {
-        float z = lerp(saturate(SkyMinZ), 1.0, (float(i) + 0.5) / float(sampleCount));
-        float phi = float(i) * 2.39996323;
-        float r = sqrt(max(0.0, 1.0 - z*z));
-        float3 d = float3(r*cos(phi), r*sin(phi), z);
-        float weight = pow(saturate(dot(lobeDirection,d)), exponent);
-        if (weight > 1e-6 && dot(n,d) > 0.0) {
-            total += weight;
-            visible += SkyVisible(world,n,d) ? weight : 0.0;
-        }
-    }
-    // A lobe with no sampled support is not evidence of occlusion.
-    return lerp(saturate(floorVisibility), 1.0, total > 1e-6 ? saturate(visible / total) : 1.0);
-}
-
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID)
 {
@@ -315,7 +285,7 @@ void main(uint3 id : SV_DispatchThreadID)
     float4 normal = UnpackHalf4(Materials.Load2(offset + 8u));
     float4 f0 = UnpackHalf4(Materials.Load2(offset + 16u));
     float4 emissionAO = UnpackHalf4(Materials.Load2(offset + 24u));
-    NativeCoatSample coat=ReadNativeCoat(MaterialLobes,offset);
+    NativeCoatSample coat=ReadNativeCoat(MaterialLobes,pixel.y*MaterialLobePitch+pixel.x*NativeSurfaceStride);
     if (!HasEvaluatedNativeBase(base.a) || !all(isfinite(base)) || !all(isfinite(normal)) ||
         !all(isfinite(f0)) || !all(isfinite(emissionAO)) || dot(normal.xyz, normal.xyz) < 1e-8) return;
     float3 view, world;
@@ -365,27 +335,13 @@ void main(uint3 id : SV_DispatchThreadID)
     uint active = EnabledContributions & AvailableContributions;
     if ((active & ContributionIndirectDiffuse) != 0u)
     {
-        float3 radiance = EnvironmentIrradiance(n);
-        float skyVisibility = SkyCapVisibility(world,n,n,1.0,MinDiffuseSkyVisibility);
-        if (IBLEnabled != 0u && Interior == 0u) {
-            if (DALCMode == 3u) radiance *= skyVisibility;
-            if(SkyAvailable!=0u)
-                radiance += SaturateColor(NativeIndirect::EvaluateIrradiance(asfloat(SkySH.Load4(0u)),
-                    asfloat(SkySH.Load4(16u)), asfloat(SkySH.Load4(32u)), n), SkySaturation) * SkyScale * skyVisibility;
-        } else if (IBLEnabled == 0u && Interior == 0u) {
-            radiance *= skyVisibility;
-        }
+        float3 radiance = EnvironmentIrradiance(n) + SkyIrradiance(n);
         float3 diffuseRadiance = radiance * (lobes.diffuse + coatDiffuseWeight);
         Lighting.Store2(outputOffset, PackOpaqueRadiance(diffuseRadiance, ContributionIndirectDiffuse));
         if ((active & ContributionTransmission) != 0u) {
             float3 backRadiance=0.0;
             if (HasNativeThinSurface(coat) && any(backTransmissionWeight>0.0)) {
-                backRadiance=EnvironmentIrradiance(-n);
-                float backVisibility=SkyCapVisibility(world,-n,-n,1.0,MinDiffuseSkyVisibility);
-                if (IBLEnabled!=0u && Interior==0u) {
-                    if (DALCMode==3u) backRadiance*=backVisibility;
-                    if(SkyAvailable!=0u) backRadiance+=SaturateColor(NativeIndirect::EvaluateIrradiance(asfloat(SkySH.Load4(0u)),asfloat(SkySH.Load4(16u)),asfloat(SkySH.Load4(32u)),-n),SkySaturation)*SkyScale*backVisibility;
-                } else if (Interior==0u) backRadiance*=backVisibility;
+                backRadiance = EnvironmentIrradiance(-n) + SkyIrradiance(-n);
             }
             Lighting.Store2(outputOffset+16u,PackOpaqueRadiance(radiance*transmissionWeight+backRadiance*backTransmissionWeight,base.a==SurfaceEvaluatedBase ? ContributionTransmission : 0u));
         }
@@ -393,7 +349,7 @@ void main(uint3 id : SV_DispatchThreadID)
     if ((active & ContributionIndirectSpecular) != 0u)
     {
         float3 r = reflect(-baseView, n);
-        // Preserve the RT hit logic and roughness policy from the suspension commit.
+        // Native secondary radiance replaces only the supported ray-hit fraction.
         float3 radiance = ResolveRayReflection(pixel,world,n,r,roughness,0u,CubemapSpecularMiss(r,roughness));
         float3 specularRadiance = radiance * lobes.specular;
         if (hasCoat) {

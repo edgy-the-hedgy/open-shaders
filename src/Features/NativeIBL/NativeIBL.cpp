@@ -16,9 +16,11 @@
 
 void NativeIBL::Producer::PostPostLoad()
 {
-	// Boot settings are inherited, but native evaluation does not depend on
-	// legacy IBL dispatch, resource validity or loaded state.
+	// Inherit artistic scalar settings, not the legacy feature activation policy.
+	// Full Native owns indirect illumination in interiors as well as exteriors.
 	settings = globals::features::ibl.settings;
+	settings.EnableIBL = 1;
+	settings.DisableInInteriors = false;
 }
 
 void NativeIBL::Producer::Dispatch(const GraphicsBackend& backend,
@@ -33,18 +35,17 @@ void NativeIBL::Producer::Dispatch(const GraphicsBackend& backend,
 	if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation() ||
 		!material || material->scope != stamp.scope || material->frame != stamp.engineFrame)
 		return;
-	// Worker 07 bridge: keep the completed cubemap generation for specular
-	// misses. Worker 08 owns diffuse SH/sky visibility and IBL policy.
+	// Consume Worker 07\'s immutable, completed prior-frame generation only.
 	const bool usable = environment && environment->base && environment->base->IsReadyFor(stamp) &&
 		NativeCubemaps::Policy::CompletedGenerationFresh(environment->stamp.SameEnvironment(stamp),
 			environment->stamp.engineFrame,stamp.engineFrame) && environment->producerFence &&
 		environment->producerValue && environment->producerFence->GetCompletedValue()!=UINT64_MAX &&
 		environment->producerFence->GetCompletedValue()>=environment->producerValue;
-	if(!usable) {
-		auto ambientEnvironment = std::make_shared<EnvironmentFrame>();
-		ambientEnvironment->stamp = stamp;
-		ambientEnvironment->revision = stamp.epoch;
-		environment = std::move(ambientEnvironment);
+	waitingForEnvironment = !usable;
+	if (!usable) {
+		// No fabricated publication: the direct/material producers remain independent.
+		if (lighting) lighting->Poll(stamp.engineFrame);
+		return;
 	}
 	if (!lighting)
 		lighting = std::make_unique<NativeIndirectLighting>();
@@ -57,13 +58,18 @@ void NativeIBL::Producer::Dispatch(const GraphicsBackend& backend,
 	ambient.skySaturation = resolved.SkyIBLSaturation;
 	ambient.dalcMode = resolved.DALCMode;
 	ambient.dalcAmount = resolved.DALCAmount;
-	ambient.iblEnabled = false; // Worker 08 owns diffuse irradiance integration.
+	ambient.iblEnabled = true;
+	// Missing engine ambient cannot prevent valid native cube evaluation.
+	if (!ambient.dalcValid) {
+		ambient.dalcMode = 0;
+		ambient.dalcAmount = 0.0f;
+	}
 	ambient.ambientMultiplier = utility.ambientLightMult * (color.enableLinearLighting ? color.ambientMult : 1.0f);
 	ambient.conversionSaturation = color.conversionSaturation;
 	ambient.utilitySaturation = utility.ambientLightColor.saturation;
 	ambient.utilityGammaOffset = utility.ambientLightColor.gammaOffset;
 	const auto& skylighting = globals::features::skylighting;
-	ambient.traceSkyVisibility = false; // RTAO/sky visibility is deferred with cubemap capture.
+	ambient.traceSkyVisibility = false; // Sky occlusion is outside Worker 08 scope.
 	ambient.minDiffuseSkyVisibility = std::clamp(skylighting.settings.MinDiffuseVisibility, 0.0f, 1.0f);
 	ambient.minSpecularSkyVisibility = std::clamp(skylighting.settings.MinSpecularVisibility, 0.0f, 1.0f);
 	ambient.skyMinZ = std::max(0.0f, std::cos(std::clamp(skylighting.settings.MaxZenith, 0.0f, 1.57079632679f)));
@@ -77,11 +83,18 @@ json NativeIBL::Producer::GetDiagnostics()
 	const auto frame = globals::game::graphicsState ? globals::game::graphicsState->GetFrameCount() : UINT32_MAX;
 	const auto publication = Get(frame);
 	return { { "indirectPublished", bool(publication) },
+		{ "waitingForEnvironment", waitingForEnvironment },
+		{ "basePublished", publication && publication->environment && bool(publication->environment->base) },
+		{ "reflectionPublished", publication && publication->environment && bool(publication->environment->reflection) },
+		{ "baseSH", publication && bool(publication->baseSH) },
+		{ "skySH", publication && bool(publication->skySH) },
+		{ "environmentContentRevision", publication ? publication->environmentContentRevision : 0u },
         { "skyPublished", publication && bool(publication->environment->sky) },
 		{ "availableContributions", publication ? publication->available : 0u },
 		{ "environmentRevision", publication && publication->environment ? publication->environment->revision : 0u },
 		{ "skyVisibilityTraced", publication && publication->skyVisibilityTraced },
-		{ "nativeSSRAdmitted", publication && publication->screenSpaceReflections },
+		{ "nativeRayReflectionAdmitted", publication && publication->screenSpaceReflections },
+		{ "nativeSSRAdmitted", false }, // Legacy token correspondence is retired.
 		{ "allocationBytes", lighting ? lighting->AllocationBytes() : 0 },
 		{ "submissions", lighting ? lighting->Submissions() : 0 },
 		{ "shProjections", lighting ? lighting->Projections() : 0 },
