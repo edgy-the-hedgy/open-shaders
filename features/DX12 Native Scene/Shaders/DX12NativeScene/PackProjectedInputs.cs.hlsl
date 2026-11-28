@@ -13,9 +13,9 @@ void main(uint3 id : SV_DispatchThreadID)
 {
     const uint row = Metadata.z;
     ProjectionRecords[uint2(0,row)] = Metadata;
-    // Reserved non-scene row kinds: grass, distant tree and effect.
+    // Reserved non-scene row kinds: grass, distant tree, effect and model-space gloss.
     // Offsets carries authored Effect tint rather than constant-buffer offsets.
-    if (Metadata.x >= 0xfffffffcu && Metadata.x <= 0xfffffffeu) {
+    if (Metadata.x >= 0xfffffffbu && Metadata.x <= 0xfffffffeu) {
         ProjectionRecords[uint2(1,row)] = Offsets;
         [unroll] for (uint column=2u; column<7u; ++column)
             ProjectionRecords[uint2(column,row)] = 0u;
