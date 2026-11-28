@@ -153,7 +153,8 @@ Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float dista
     float used=0.0;
     [unroll] for (uint layer=0u; layer<8u; ++layer) {
         float weight=weights[layer]/total;
-        if (weight<=0.01) continue;
+        // Do not drop small authored or borrowed terrain weights.
+        if (weight<=1e-6) continue;
         uint bindingIndex=layer<4u ? row0[layer] : row1[layer-4u];
         if (bindingIndex>=RasterBindingCount) { result.color.a=SurfaceMissingTextures; return result; }
         Binding binding=RasterMaterialBindings[bindingIndex];
