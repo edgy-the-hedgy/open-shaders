@@ -65,7 +65,20 @@ json NativePBR::FrameProducer::GetDiagnostics()
 {
 	const auto frame = globals::game::graphicsState ? globals::game::graphicsState->GetFrameCount() : UINT32_MAX;
 	const auto publication = Get(frame);
-	return { { "materialPublished", bool(publication) }, { "materialRevision", publication ? publication->materialRevision : 0 },
+	uint32_t missingMaterialDraws = 0;
+	if (publication && publication->rawRasterEvidence) {
+		const auto& evidence = *publication->rawRasterEvidence;
+		for (const auto& draw : evidence.drawRecords) {
+			if (!draw.materialOrdinal || draw.materialOrdinal > evidence.materialSourceSnapshots.size() ||
+				!evidence.materialSourceSnapshots[draw.materialOrdinal - 1u])
+				++missingMaterialDraws;
+		}
+	}
+	return { { "materialPublished", bool(publication) },
+		{ "rasterMaterialSourceCount", publication ? publication->rasterMaterialSourceCount : 0u },
+		{ "rasterUnpreparedSources", publication ? publication->rasterUnpreparedSources : 0u },
+		{ "rasterMissingMaterialDraws", missingMaterialDraws },
+		{ "secondaryGeometryAvailable", publication && publication->HasSecondaryGeometry() }, { "materialRevision", publication ? publication->materialRevision : 0 },
 		{ "geometryRevision", publication ? publication->geometryRevision : 0 },
 		{ "rasterMaterialRevision", publication ? publication->rasterMaterialRevision : 0 },
 		{ "rasterMaterialBindings", publication && publication->rasterMaterialEvaluation ? publication->rasterMaterialEvaluation->instanceCount : 0u },
