@@ -11,6 +11,7 @@ struct RawRasterSurface
     uint geometryOrdinal, materialOrdinal;
     uint auxiliaryKind;
     bool borrowedLandscape;
+    float packedSnow;
     uint4 auxiliary;
     bool covered, front, valid;
 };
