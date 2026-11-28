@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DX12GpuRetirement.h"
+#include "DX12TextureRevision.h"
 #include "DX12MaterialFrameContract.h"
 #include "GraphicsBackend.h"
 #include "GraphicsInterop.h"
@@ -50,6 +51,7 @@ namespace DX12Native
 			D3D11_SHADER_RESOURCE_VIEW_DESC view{};
 			uint64_t bytes = 0, nativeBytes = 0;
 			bool immutable = false;
+			TextureRevision::Stamp contentRevision{};
 			bool uploaded = false;
 		};
 		MaterialFrameContract::RasterIdentityStamp stamp{};
@@ -225,7 +227,7 @@ namespace DX12Native
 		void CacheSubmitted(const ProjectedInputFrame& frame)
 		{
 			for (const auto& texture : frame.textures) {
-				if (!texture.immutable || !texture.uploaded ||
+				if ((!texture.immutable && !texture.contentRevision) || !texture.uploaded ||
 					immutableCache.size() >= kMaxCachedTextures || texture.nativeBytes > kCacheBudget - cacheBytes)
 					continue;
 				if (std::ranges::any_of(immutableCache, [&](const auto& item) {
@@ -278,8 +280,18 @@ namespace DX12Native
 			if (levels == UINT32_MAX) levels = desc.MipLevels - firstMip;
 			if (!levels || levels > desc.MipLevels - firstMip) return UINT32_MAX;
 			const bool immutable = desc.Usage == D3D11_USAGE_IMMUTABLE;
-			if (immutable) {
-				const auto cached = std::ranges::find_if(immutableCache, [view](const auto& item) { return item.texture.source.get() == view; });
+			const auto contentRevision=immutable ? TextureRevision::Stamp{} : TextureRevision::Read(source.get(),desc);
+			// Stale revision entries never mutate a resource retained by an in-flight frame.
+			std::erase_if(immutableCache,[&](const CachedTexture& item) {
+				if (item.texture.source.get()!=view || item.texture.immutable ||
+					(contentRevision && item.texture.contentRevision==contentRevision)) return false;
+				cacheBytes-=item.texture.nativeBytes;
+				return true;
+			});
+			if (immutable || contentRevision) {
+				const auto cached = std::ranges::find_if(immutableCache, [view,immutable,contentRevision](const auto& item) {
+					return item.texture.source.get()==view && (immutable ? item.texture.immutable : item.texture.contentRevision==contentRevision);
+				});
 				if (cached != immutableCache.end()) {
 					cached->lastFrame = frame.stamp.frame;
 					++frame.cacheHits;
@@ -329,18 +341,20 @@ namespace DX12Native
 			if (atlasWidth > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION || atlasHeight > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION)
 				return UINT32_MAX;
 			ProjectedInputFrame::Texture entry;
-			const auto old = std::ranges::find_if(reusable, [view](const auto& item) {
-				return item.source.get() == view && item.resource && (item.immutable || item.bridge);
+			const auto old = std::ranges::find_if(reusable, [view,contentRevision](const auto& item) {
+				return item.source.get()==view && item.resource && (item.immutable || item.bridge ||
+					(contentRevision && item.contentRevision==contentRevision));
 			});
 			// Immutable resident hits bypass transfer limits; mutable resources
 			// require a fresh copy even when their allocation is reusable.
-			const bool residentOld=old!=reusable.end() && old->immutable && !old->bridge;
+			const bool residentOld=old!=reusable.end() && !old->bridge &&
+				(old->immutable || (contentRevision && old->contentRevision==contentRevision));
 			if (!residentOld && transferred>=kMaxNewTextures) { ++frame.deferredTextures; return UINT32_MAX; }
 			if (old != reusable.end()) {
 				if (!residentOld && !MaterialFrameContract::TransferWorkFits(transferred,kMaxNewTextures,transferredBytes,old->bytes,kNewBytesPerPublication)) { ++frame.deferredTextures; return UINT32_MAX; }
 				entry = std::move(*old);
 				old->bytes = 0;
-				if (entry.immutable && !entry.bridge) { entry.uploaded = false; return publish(std::move(entry)); }
+				if (residentOld) { entry.uploaded = false; return publish(std::move(entry)); }
 			} else {
 				if (allocated >= kMaxNewTextures) { ++frame.deferredTextures; return UINT32_MAX; }
 				const auto nativeDesc = CD3DX12_RESOURCE_DESC::Tex2D(bridgeFormat, baseWidth, baseHeight, 1, static_cast<UINT16>(levels));
@@ -379,6 +393,7 @@ namespace DX12Native
 				newBytes += entry.bytes;
 			}
 			// Retain resources in the slot before recording either API's work.
+			entry.contentRevision=contentRevision;
 			entry.uploaded = true;
 			const auto index = publish(std::move(entry));
 			const auto& output = frame.textures[index];
