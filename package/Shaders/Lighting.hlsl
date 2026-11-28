@@ -1336,7 +1336,34 @@ PS_OUTPUT main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool frontFace :
 #				if defined(SPARKLE) && defined(PROJECTED_UV) && !defined(EYE)
 	alphaUV=ProjectedUVParams2.yy*input.TexCoord0.zw;
 #				endif
-	float sampledAlpha = TexColorSampler.SampleBias(SampColorSampler, alphaUV, SharedData::MipBias).a;
+	float sampledAlpha;
+#				if defined(LANDSCAPE) && defined(LOD_LAND_BLEND) && !defined(TRUE_PBR)
+	// Reproduce the legacy terrain transition's coverage alpha, not its shading.
+	float4 lodCoverage;
+#					if defined(TERRAIN_VARIATION)
+	float coverageNoise = Random::InterleavedGradientNoise(Stereo::EyeStableNoiseCoord(input.Position.xy, SharedData::BufferDim.xy), SharedData::FrameCount);
+	[branch] if (SharedData::terrainVariationSettings.enableLODTerrainTilingFix)
+		lodCoverage = StochasticSampleLOD(coverageNoise, TexLandLodBlend1Sampler, SampLandLodBlend1Sampler, input.TexCoord0.zw);
+	else
+		lodCoverage = Color::DiffuseToWorking(TexLandLodBlend1Sampler.SampleBias(SampLandLodBlend1Sampler, input.TexCoord0.zw, SharedData::MipBias));
+#					else
+	lodCoverage = Color::DiffuseToWorking(TexLandLodBlend1Sampler.Sample(SampLandLodBlend1Sampler, input.TexCoord0.zw));
+#					endif
+	lodCoverage.rgb = Color::EnbColorPow(lodCoverage.rgb);
+#					if defined(LOD_BLENDING)
+	lodCoverage.rgb = pow(abs(lodCoverage.rgb), SharedData::lodBlendingSettings.LODTerrainGamma) * SharedData::lodBlendingSettings.LODTerrainBrightness;
+#					endif
+	float lodMask = TexLandLodBlend2Sampler.Sample(SampLandLodBlend2Sampler, 3.0.xx * input.TexCoord0.zw).x;
+	sampledAlpha = lodCoverage.a * GetLodLandBlendMultiplier(GetLodLandBlendParameter(lodCoverage.rgb), lodMask) * LODTexParams.z * input.LandBlendWeights2.w;
+#				else
+	sampledAlpha = TexColorSampler.SampleBias(SampColorSampler, alphaUV, SharedData::MipBias).a;
+#					if defined(TERRAIN_VARIATION_MESH) && !defined(LANDSCAPE) && !(defined(EMAT) && defined(PARALLAX))
+	[branch] if ((Permutation::ExtraFeatureDescriptor & Permutation::ExtraFeatureFlags::TVMeshVariation) != 0) {
+		StochasticOffsets coverageOffset = ComputeStochasticOffsetsMesh(uv, input.Position.xy);
+		sampledAlpha = StochasticEffectBias(TexColorSampler, SampColorSampler, alphaUV, coverageOffset, SharedData::MipBias, false, false).a;
+	}
+#					endif
+#				endif
 	alpha = NativeInputCoverage::Alpha(sampledAlpha, MaterialData.z, vertexAlpha, input.Position.xy,
 		(Permutation::PixelShaderDescriptor & Permutation::LightingFlags::AdditionalAlphaMask) != 0);
 #				if defined(DEPTH_WRITE_DECALS)

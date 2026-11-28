@@ -49,6 +49,16 @@ namespace DX12
 		int32_t blockIndex = -1;  // -1: entire NIF/model unresolved.
 	};
 
+	// Effect uses distinct texture and parameter semantics from Lighting TXSTs.
+	struct RasterEffectSource
+	{
+		std::array<std::string, 2> texturePaths;
+		std::array<float, 4> baseColor{}, uvTransform{}, falloff{};
+		float baseColorScale = 1.0f, softFalloffDepth = 0.0f;
+		int32_t clampMode = -1;
+		bool operator==(const RasterEffectSource&) const = default;
+	};
+
 	/** @brief Optional Full Native source metadata, not a GPU material or ownership claim. */
 	struct PreparedMaterialSource
 	{
@@ -64,6 +74,7 @@ namespace DX12
 		int32_t clampMode = -1;
 		std::array<float, 4> uvTransform{};
 		std::array<std::string, 8> texturePaths;
+		std::optional<RasterEffectSource> rasterEffect;
 		// Raster-only vanilla terrain inputs; never retain engine texture pointers.
 		uint32_t rasterLandscapeLayers = 0;
 		std::array<std::array<std::string, 2>, 8> rasterLandscapeTextures{};
@@ -75,6 +86,8 @@ namespace DX12
 			uint64_t bytes = sizeof(PreparedMaterialSource) + vertexBytes.size() + textureSetEditorId.size() + rasterMaterialObjectEditorId.size();
 			for (const auto& path : texturePaths)
 				bytes += path.size();
+			if (rasterEffect)
+				for (const auto& path : rasterEffect->texturePaths) bytes += path.size();
 			for (const auto& layer : rasterLandscapeTextures)
 				for (const auto& path : layer) bytes += path.size();
 			return bytes;

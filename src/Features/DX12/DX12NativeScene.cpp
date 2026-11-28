@@ -10,6 +10,7 @@
 #include "Features/NativePBR/NativeMaterialMetadata.h"
 #include "RE/B/BSTextureSet.h"
 #include "RE/B/BSLightingShaderMaterialLandscape.h"
+#include "RE/B/BSEffectShaderMaterial.h"
 #include "RE/N/NiSourceTexture.h"
 #include "Features/FoliageLighting.h"
 
@@ -1235,6 +1236,26 @@ std::shared_ptr<const DX12::PreparedMaterialSource> DX12NativeScene::ObserveRast
 			if (set && expected && set->GetRTTI() && set->GetRTTI()->IsKindOf(expected))
 				textures = NativePBR::CaptureTextureSetSnapshot(set);
 		}
+	} else if (base && base->material && base->material->GetType() == RE::BSShaderMaterial::Type::kEffect) {
+		const auto* effect = static_cast<const RE::BSEffectShaderMaterial*>(base->material);
+		materialIdentity = reinterpret_cast<uintptr_t>(effect);
+		scalars.observedShaderFlags = static_cast<uint64_t>(base->flags.underlying());
+		auto& source = scalars.rasterEffect.emplace();
+		const auto path = [](const RE::NiSourceTexture* texture, const char* authored) -> std::string {
+			const auto* name = texture ? texture->name.c_str() : nullptr;
+			if (!name || !*name) name = authored;
+			return name && std::string_view(name).size() <= 260u ? std::string(name) : std::string{};
+		};
+		source.texturePaths = { path(effect->sourceTexture.get(), effect->sourceTexturePath.c_str()),
+			path(effect->greyscaleTexture.get(), effect->greyscaleTexturePath.c_str()) };
+		source.baseColor = { effect->baseColor.red, effect->baseColor.green, effect->baseColor.blue, effect->baseColor.alpha };
+		source.uvTransform = { effect->texCoordOffset[0].x, effect->texCoordOffset[0].y,
+			effect->texCoordScale[0].x, effect->texCoordScale[0].y };
+		source.falloff = { effect->falloffStartAngle, effect->falloffStopAngle,
+			effect->falloffStartOpacity, effect->falloffStopOpacity };
+		source.baseColorScale = effect->baseColorScale;
+		source.softFalloffDepth = effect->softFalloffDepth;
+		source.clampMode = static_cast<int32_t>(effect->effectClampMode.get());
 	}
 	scalars.colorOffset = runtime.vertexDesc.HasFlag(RE::BSGraphics::Vertex::VF_COLOR) ? 0u : UINT32_MAX;
 	if (rasterMaterialCache.empty()) rasterMaterialCache.resize(4096);
@@ -1615,9 +1636,18 @@ void DX12NativeScene::StampFullNativeIndexedDraw(uint32_t count, uint32_t start,
 		if (sceneInstance < indices.size()) data.nativeRasterMaterialIndex = indices[sceneInstance];
 	}
 	const uint32_t shaderClass=uint32_t(state->currentShader->shaderType.get());
-	if (nativeSourceViewsDirty || !nativeSourceSnapshot || nativeSourceSnapshot->shaderClass != shaderClass) {
+	std::array<uint8_t, 16> addressModes{};
+	addressModes.fill(UINT8_MAX);
+	if (globals::game::shadowState) {
+		const auto& shadow = globals::game::shadowState->GetRuntimeData();
+		for (uint32_t i = 0; i < addressModes.size(); ++i)
+			addressModes[i] = static_cast<uint8_t>(shadow.PSTextureAddressMode[i].get());
+	}
+	if (nativeSourceViewsDirty || !nativeSourceSnapshot || nativeSourceSnapshot->shaderClass != shaderClass ||
+		nativeSourceSnapshot->addressModes != addressModes) {
 		auto sources=std::make_shared<NativePBR::RasterSourceViews>();
 		sources->shaderClass=shaderClass;
+		sources->addressModes=addressModes;
 		sources->views=nativeSourceViews;
 		nativeSourceSnapshot=std::move(sources);
 		nativeSourceViewsDirty=false;

@@ -22,6 +22,8 @@ namespace NativePBR
 	struct RasterSourceViews
 	{
 		uint32_t shaderClass = 0;
+		// Requested engine sampler address modes for the original low slots.
+		std::array<uint8_t, 16> addressModes{};
 		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 113> views;
 	};
 	struct RawInputFrame

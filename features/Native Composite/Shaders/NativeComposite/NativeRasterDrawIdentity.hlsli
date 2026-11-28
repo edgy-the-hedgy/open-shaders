@@ -17,7 +17,8 @@ bool DecodeRasterDraw(ByteAddressBuffer table, uint drawCount, uint2 encoded, ou
     uint4 instances = table.Load4(address + 64u);
     if (identity.x != encoded.x || range.x == 0u || instances.x == 0u ||
         encoded.y / range.x >= instances.x) return false;
-    if (sceneMatches && identity.w != 0xffffffffu && instances.x == 1u && range.y <= 0x7fffffffu &&
+    if (sceneMatches && identity.w != 0xffffffffu && instances.x == 1u && instances.y == 0u &&
+        instances.z == 1u && instances.w == 0u && range.y <= 0x7fffffffu &&
         encoded.y <= 0x7fffffffu - range.y)
         sceneIdentity = uint2(identity.w, range.y + encoded.y);
     return true;
