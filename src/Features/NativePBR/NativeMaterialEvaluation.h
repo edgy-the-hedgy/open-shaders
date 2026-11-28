@@ -602,7 +602,9 @@ namespace DX12Native
 				if (source.rasterLandscapeLayers == 6u && source.clampMode >= 0 && source.clampMode <= 3) {
 					auto& row = landscapeRows[i];
 					row[8] = 6u;
+					row[10] = source.rasterLandscapeDisableVertexColors ? 1u : 0u;
 					for (uint32_t layer = 0; layer < 8u; ++layer) {
+						if (std::isfinite(source.rasterLandscapeSnow[layer]) && source.rasterLandscapeSnow[layer] > 0.0f) row[9] |= 1u << layer;
 						const auto& paths = source.rasterLandscapeTextures[layer];
 						if (paths[0].empty() || paths[1].empty()) continue;
 						NativePBR::MaterialData material;
