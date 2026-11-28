@@ -1104,6 +1104,17 @@ PS_OUTPUT ShadeEffect(PS_INPUT input, bool sampleDistantShadow)
 	psout.NormalGlossiness=float4(GBuffer::EncodeNormal(compatibilityNormal),0,visibleAlpha);
 	psout.Masks2=float4(0,NeuralRenderingCategory::Encode(NeuralRenderingCategory::None),0,1);
 	NativeInputMRT::Write(psout,input.Position,input.TexCoord0.xy,vertexColor,basis,primitive,front,coverage,visibleAlpha,input.NativeInstance);
+	if (psout.IdentityUV.x!=0u) {
+		psout.BasisFlags.w |= 7u<<19u;
+		// Coverage is already resolved above. Publish the original lighting
+		// influence; advanced blend/membrane/projection techniques remain
+		// explicitly unsupported rather than borrowing a Lighting recipe.
+		uint supported=0u;
+#		if defined(TEXTURE) && !defined(MEMBRANE) && !defined(BLOOD) && !defined(PROJECTED_UV) && !defined(MULTBLEND) && !defined(MULTBLEND_DECAL) && !defined(ADDBLEND)
+		supported=1u;
+#		endif
+		psout.MaterialTechnique=uint4(asuint(lightingInfluence),supported,0u,0u);
+	}
 	return psout;
 # else
 #	if defined(LIGHTING)
