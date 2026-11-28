@@ -99,7 +99,7 @@ namespace DX12Native
 			parameters[11].InitAsShaderResourceView(517);
 			parameters[12].InitAsDescriptorTable(1, &projectionRange);
 			parameters[13].InitAsDescriptorTable(1, &rawRange);
-			parameters[14].InitAsShaderResourceView(1036); // Reserved root slot; no primitive token table.
+			parameters[14].InitAsShaderResourceView(1036); // One record per original draw.
 			parameters[15].InitAsShaderResourceView(1037);
 			std::array<CD3DX12_STATIC_SAMPLER_DESC, 4> samplers;
 			for (uint32_t mode = 0; mode < 4; ++mode)
@@ -389,7 +389,7 @@ namespace DX12Native
 				}
 				slot->camera=Eval::Buffer(device,256,D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ);
 				const Camera constants{slot->raster->camera.CameraProjInverse,slot->raster->camera.CameraViewInverse,
-					slot->raster->camera.CameraPosAdjust,width,height,gridWidth,gridHeight,collectStats ? 1u : 0u,parallaxEnabled ? 1u : 0u,parallaxWarpFixEnabled ? 1u : 0u,shadowPlane ? 1u : 0u,std::isfinite(mipBias) ? mipBias : 0.0f,slot->projection ? slot->projection->rowCount : 0u,frame,slot->rawInputs ? 1u : 0u, SanitizeRTQuality(quality), transformCount};
+					slot->raster->camera.CameraPosAdjust,width,height,gridWidth,gridHeight,collectStats ? 1u : 0u,parallaxEnabled ? 1u : 0u,parallaxWarpFixEnabled ? 1u : 0u,shadowPlane ? 1u : 0u,std::isfinite(mipBias) ? mipBias : 0.0f,slot->projection ? slot->projection->rowCount : 0u,frame,slot->rawInputs && slot->rawInputs->evidence->winnerCertified ? uint32_t(slot->rawInputs->drawRecords.size()) : 0u, SanitizeRTQuality(quality), transformCount};
 				void* mapped=nullptr; const D3D12_RANGE noRead{};
 				Eval::Check(slot->camera->Map(0,&noRead,&mapped));
 				std::memcpy(mapped,&constants,sizeof(constants)); slot->camera->Unmap(0,nullptr);
@@ -442,7 +442,7 @@ namespace DX12Native
 				auto rawGpu=slot->descriptors->GetGPUDescriptorHandleForHeapStart();
 				rawGpu.ptr+=UINT64(rawDescriptor)*step;
 				command->SetComputeRootDescriptorTable(13,rawGpu);
-				command->SetComputeRootShaderResourceView(14,slot->projectionLookup->GetGPUVirtualAddress());
+				command->SetComputeRootShaderResourceView(14,(slot->rawInputs ? slot->rawInputs->drawTable.get() : slot->projectionLookup.get())->GetGPUVirtualAddress());
 				command->SetComputeRootShaderResourceView(15,slot->transforms->GetGPUVirtualAddress());
 				if (collectStats) {
 					command->CopyBufferRegion(slot->counters.get(),0,slot->counterInit.get(),0,kCounterBytes);

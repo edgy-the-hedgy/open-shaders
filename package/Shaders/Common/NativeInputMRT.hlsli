@@ -67,9 +67,9 @@ namespace NativeInputMRT
             (front?1u:0u)|2u|4u|(uint(round(saturate(alpha)*65535.0))<<3u));
         output.MaterialTechnique=uint4(Permutation::NativeRasterMaterialIndex,Permutation::PixelShaderDescriptor,
             Permutation::ExtraShaderDescriptor,Permutation::ExtraFeatureDescriptor);
-        // Only a matched scene ordinal can corroborate a DXR hit. Raster-only
-        // draw identities retain their attributes but are not TLAS ordinals.
-        output.Masks2.z=(instance&0x80000000u)==0u ? 1.0 : 0.0;
+        // Binary witness only. The integer draw identity and range table
+        // determine visibility and optional scene correspondence.
+        output.Masks2.z=1.0;
     }
 }
 #endif

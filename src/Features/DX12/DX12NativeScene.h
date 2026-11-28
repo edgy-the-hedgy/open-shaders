@@ -84,7 +84,15 @@ struct DX12NativeScene final : OverlayFeature
 	const GraphicsBackend* GetNativeBackend() const { return backend ? &*backend : nullptr; }
 	std::shared_ptr<const DX12Native::NativeWorldFrame> GetWorldFrame(uint32_t engineFrame, uint32_t pluginFrame) const;
 	void BeginFullNativeRasterInputs();
-	void StampFullNativeIndexedDraw(uint32_t indexCount, uint32_t startIndex, int32_t baseVertex);
+	void StampFullNativeIndexedDraw(uint32_t count, uint32_t start, int32_t base, bool indexed = true, uint32_t instances = 1, uint32_t firstInstance = 0);
+	void ObserveNativeInputTargets(UINT count, ID3D11RenderTargetView* const* views, ID3D11DepthStencilView* depth);
+	void ObserveNativeInputPS(ID3D11PixelShader* ps) { nativeInputPS = ps; }
+	void ObserveNativeInputBlend(ID3D11BlendState* state, UINT sampleMask);
+	void ObserveNativeInputDepth(ID3D11DepthStencilState* state);
+	void ObserveNativeInputTopology(D3D11_PRIMITIVE_TOPOLOGY topology) { nativeInputTopology = topology; }
+	void ObserveNativeInputIndexOffset(DXGI_FORMAT format, UINT offset) { nativeInputIndexOffset = offset; nativeInputIndexElementBytes = format == DXGI_FORMAT_R16_UINT ? 2u : format == DXGI_FORMAT_R32_UINT ? 4u : 0u; }
+	void InvalidateNativeInputVisibility();
+	void ObserveNativeInputClear();
 	std::shared_ptr<const NativePBR::RawInputFrame> GetRawInputs(uint32_t frame) const { return rawInputCapture.GetForFrame(frame); }
 	// Capture the completed fallback radiance before native final-color application.
 	void CaptureFullNativeEnvironment(ID3D11ShaderResourceView* sceneColor, uint32_t frame);
@@ -169,8 +177,13 @@ private:
 		uint32_t constantSnapshots = 0, constantSnapshotFailures = 0;
 		uint32_t projectedDraws = 0, unmatchedProjectedDraws = 0;
 		uint32_t draws = 0, candidates = 0, uniqueInstances = 0, ambiguous = 0, rejected = 0;
-		bool finalized = false;
+		bool finalized = false, active = false, allWritersKnown = true;
+		uint32_t knownWriters = 0, unknownWriters = 0;
+		bool targetsBound = false, replacement = false, depthTest = false;
 	};
+	ID3D11PixelShader* nativeInputPS = nullptr;
+	D3D11_PRIMITIVE_TOPOLOGY nativeInputTopology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
+	UINT nativeInputIndexOffset = UINT_MAX, nativeInputIndexElementBytes = 0;
 	FullNativeRasterDrawState fullNativeRasterDraws;
 	NativePBR::RawInputCapture rawInputCapture;
 	std::unique_ptr<DX12Native::DirectLightingTrace> fullNativeDirect;

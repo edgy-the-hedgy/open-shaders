@@ -1323,8 +1323,8 @@ PS_OUTPUT main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool frontFace :
 #			if !(defined(TREE_ANIM) || defined(LODOBJECTSHD) || defined(LODOBJECTS))
 	vertexAlpha = input.Color.w;
 #			endif
-	float sampledAlpha = TexColorSampler.SampleBias(SampColorSampler, uv, SharedData::MipBias).a;
 #			if defined(DO_ALPHA_TEST)
+	float sampledAlpha = TexColorSampler.SampleBias(SampColorSampler, uv, SharedData::MipBias).a;
 	alpha = NativeInputCoverage::Alpha(sampledAlpha, MaterialData.z, vertexAlpha, input.Position.xy,
 		(Permutation::PixelShaderDescriptor & Permutation::LightingFlags::AdditionalAlphaMask) != 0);
 #				if defined(DEPTH_WRITE_DECALS)
@@ -1333,7 +1333,7 @@ PS_OUTPUT main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool frontFace :
 #				endif
 	clip(alpha - AlphaTestRefRS);
 #			else
-	alpha = sampledAlpha * MaterialData.z * vertexAlpha;
+	alpha = MaterialData.z * vertexAlpha;
 #			endif
 #		endif
 #		if defined(FUR_SHELLS)
@@ -1363,6 +1363,7 @@ PS_OUTPUT main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool frontFace :
 	NativeInputMRT::Write(psout, input.Position, uv, input.Color, basis, primitive, frontFace, coverage, alpha);
 	// The auxiliary plane is technique-tagged. Live shader/material metadata
 	// remains available in the frame-local draw record for these permutations.
+	if (psout.IdentityUV.x != 0u) {
 #		if defined(LANDSCAPE)
 	psout.BasisFlags.w |= NativeInputMRT::AuxLandscape;
 	psout.MaterialTechnique = uint4(NativeInputMRT::PackHalf2(input.LandBlendWeights1.xy),
@@ -1379,6 +1380,7 @@ PS_OUTPUT main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool frontFace :
 	psout.MaterialTechnique = uint4(asuint(input.FurShell), NativeInputMRT::PackHalf2(input.FurRoot.xy),
 		NativeInputMRT::PackHalf2(input.FurRoot.zw), Permutation::NativeRasterMaterialIndex);
 #		endif
+	}
 	// No diffuse, specular, reflection or evaluated material color is written.
 #		if defined(FUR_SHELLS_DEPTH)
 	psout = (PS_OUTPUT)0;

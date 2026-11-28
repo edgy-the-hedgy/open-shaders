@@ -1,0 +1,42 @@
+# Full Native raster input ABI v6 (Worker 03)
+
+This is the source-level producer contract. It is not a claim that all game shader permutations or the Windows build have been validated. Lighting and final-color ownership are explicitly out of scope.
+
+## Pass and ownership
+
+The original opaque pass binds the four integer attachments using its existing MRT slots. The original raster operation performs depth/stencil and cutout visibility. No replay, additional indexed draw, per-draw shader substitution or per-primitive CPU token generation is permitted. The draw detours stamp metadata and call the original operation once. The scene owns raw publication independently of NativePBR, NativeLLF and NativeIBL.
+
+## Resource ABI
+
+| Slot | Resource | Format / contents |
+| --- | --- | --- |
+| 0 | MAIN | Engine format; alpha compatibility, no evaluated Lighting radiance |
+| 1 | MOTION_VECTOR | Engine format; current/previous position motion |
+| 2 | NORMALROUGHNESS | R10G10B10A2_UNORM; encoded geometric normal |
+| 3 | IdentityUV | R32G32B32A32_UINT; draw row + 1, draw-local primitive, asuint(U), asuint(V) |
+| 4 | ColorGradDepth | R32G32B32A32_UINT; RGBA8, half2 ddx(UV), half2 ddy(UV), asuint(SV_Position.z) |
+| 5 | BasisFlags | R32G32B32A32_UINT; oct16 tangent, bitangent, normal, coverage/auxiliary flags |
+| 6 | MaterialTechnique | R32G32B32A32_UINT; regular material/descriptor payload or technique-tagged auxiliary |
+| 7 | MASKS2 | R16G16B16A16_UNORM; engine compatibility channels and binary participation witness in z |
+
+Slot 5 flags: bit 0 front-face; bit 1 valid; bit 2 covered; bits 3–18 alpha UNORM16; bits 19–22 auxiliary kind flags (landscape, projection, eye, fur). Slot 6 landscape payload is eight half weights; projection is the original three-component projection vector and packed secondary UV; eye is the interpolated eye normal; fur is shell/root attributes. Regular material metadata is also in the draw table for every row, including auxiliary variants.
+
+## Identity and draw records
+
+Zero in slot 3.x is invalid. A nonzero identity is a one-based row in the immutable 80-byte RasterDrawRecord buffer. Slot 3.y is SV_PrimitiveID local to the draw, not a global geometry index. The draw record contains geometry and material ordinals, optional TLAS instance, primitive count and base, optional native material index, actual index count/start/index-buffer byte offset/index width/base vertex, shader descriptors, instance count/first instance and indexed flag. Geometry/material ordinals are frame-local, not persistent object IDs. A partial range is distinct from a full range; its local primitive never aliases another draw. The current TLAS mapping is restricted to whole matching, unshifted single-instance triangle lists. A subrange or skin partition remains raster-local unless a verified mapping is supplied; do not infer a TLAS primitive from a raw start index alone.
+
+The GPU table is one row per original draw (80 bytes), not per primitive. DX12 probe binds it at t1036 and reconstruction at t10. Both consumers bounds-check the row and primitive/instance range before reading it.
+
+## Visibility certificate
+
+The producer seeds actual OM/PS/IA state at opaque-pass entry and tracks subsequent binding changes. A certified draw requires a recognized custom integer-output permutation, the expected eight MRTs and main depth resource, replacement writes with full channel mask, and enabled depth test. Known writers without usable attributes write the zero sentinel. Unexpected draws, indirect/auto draws, untracked command lists, clears after known writers, and unsupported state invalidate the pass certificate. Uncertified raw data is diagnostic only. A certified pass still requires per-pixel nonzero bounded identity, valid/covered flags, the participation witness and matching final depth. A raster-local identity is independent of DXR; mapping it to a TLAS hit is a separate operation. Reconstruction requires that correspondence before setting its exact-ray ownership bit; final radiance admission is downstream.
+
+## Resolution and fences
+
+The engine attachment extents match the engine depth/MAIN attachments; they may be display-sized. The shared DX12 snapshots are allocated at the internal world render size and copy only that rectangle. Consumer dimensions must equal the snapshot dimensions. The four integer planes consume 64 bytes per internal pixel, excluding evidence, engine targets and alignment. The evidence snapshot has its own shared fence. Consumers must retain the immutable RawInputFrame and wait for both D3D11 producer fence values on the DX12 queue before transitioning COMMON -> NON_PIXEL_SHADER_RESOURCE; return shared textures to COMMON after use. The per-draw table is immutable upload memory retained with the frame. Slots are reused only after producer retirement and release by consumers; no CPU readback is required.
+
+## Coverage / validation boundary
+
+Static Lighting, skinned Lighting (including raster-local skin partitions), landscape, projected and specialized Lighting permutations now use the original interpolants rather than the standalone capture shader. Ordinary cutout alpha testing and the additional dither mask are retained, with raw UV rather than shaded/parallax UV. Landscape seams, skinned projection, displacement-dependent cutouts and special alpha/LOD combinations need targeted parity tests; texture/projector residency and native material evaluation remain downstream. Distant tree direct triangle draws can publish raw inputs. Grass and deferred Effect currently invalidate identity rather than publishing complete raw material inputs; indirect/auto and multi-instance identity are not certified. Forward visibility, arbitrary foreign shaders and VR are not covered by this opaque-pass contract. Unknown writers reject the whole certificate rather than pretending their per-pixel output is known.
+
+Required Windows validation: FXC compile all permutation classes, verify integer RTV and blend compatibility in debug layer, compare raw IDs/depth at overlapping/coplanar/alpha-tested draws, exercise partial indexed ranges and skin partitions, verify actual internal render sizes with FSR, and verify both fence lifetimes. The source contract is versioned separately from a runtime coverage claim.

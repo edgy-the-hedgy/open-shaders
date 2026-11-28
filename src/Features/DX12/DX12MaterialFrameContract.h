@@ -79,13 +79,7 @@ namespace DX12Native::MaterialFrameContract
 		uint32_t instance = UINT32_MAX, primitive = UINT32_MAX;
 	};
 	static_assert(sizeof(RasterPixelIdentity) == kRayIdentityStride);
-	inline constexpr uint32_t kMaxRasterPrimitiveToken = 65535;
 	inline constexpr uint32_t kRasterDerivedPrimitive = 0x80000000u;
-
-	constexpr uint32_t RasterTokenBase(uint32_t used, uint32_t count)
-	{
-		return count && used <= kMaxRasterPrimitiveToken && count <= kMaxRasterPrimitiveToken - used ? used + 1u : 0u;
-	}
 
 	constexpr bool ValidRayIdentity(RasterPixelIdentity identity)
 	{

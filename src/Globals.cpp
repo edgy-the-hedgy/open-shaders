@@ -489,9 +489,178 @@ namespace globals
 		{
 			if (context == globals::d3d::context && globals::state && globals::deferred && globals::deferred->deferredPass) {
 				try { globals::features::dx12NativeScene.StampFullNativeIndexedDraw(count, start, base); }
-				catch (...) { /* Never unwind into the engine. */ }
+				catch (...) { globals::features::dx12NativeScene.InvalidateNativeInputVisibility(); }
 			}
 			func(context, count, start, base);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
+	struct NativeInputPSBind
+	{
+		static void thunk(ID3D11DeviceContext* c, ID3D11PixelShader* ps, ID3D11ClassInstance* const* classes, UINT n)
+		{
+			func(c, ps, classes, n);
+			if (c == globals::d3d::context) globals::features::dx12NativeScene.ObserveNativeInputPS(ps);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+	struct NativeInputOMBind
+	{
+		static void thunk(ID3D11DeviceContext* c, UINT n, ID3D11RenderTargetView* const* views, ID3D11DepthStencilView* depth)
+		{
+			func(c, n, views, depth);
+			if (c == globals::d3d::context) globals::features::dx12NativeScene.ObserveNativeInputTargets(n, views, depth);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+	struct NativeInputOMUAVBind
+	{
+		static void thunk(ID3D11DeviceContext* c, UINT n, ID3D11RenderTargetView* const* views, ID3D11DepthStencilView* depth,
+			UINT start, UINT count, ID3D11UnorderedAccessView* const* uavs, const UINT* initial)
+		{
+			func(c, n, views, depth, start, count, uavs, initial);
+			if (c == globals::d3d::context) {
+				globals::features::dx12NativeScene.ObserveNativeInputTargets(n, views, depth);
+				if (uavs && count != D3D11_KEEP_UNORDERED_ACCESS_VIEWS)
+					for (UINT i=0;i<count;++i) if (uavs[i]) { globals::features::dx12NativeScene.InvalidateNativeInputVisibility(); break; }
+			}
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+	struct NativeInputBlendBind
+	{
+		static void thunk(ID3D11DeviceContext* c, ID3D11BlendState* state, const FLOAT factors[4], UINT mask)
+		{
+			func(c, state, factors, mask);
+			if (c == globals::d3d::context) globals::features::dx12NativeScene.ObserveNativeInputBlend(state, mask);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+	struct NativeInputDepthBind
+	{
+		static void thunk(ID3D11DeviceContext* c, ID3D11DepthStencilState* state, UINT stencil)
+		{
+			func(c, state, stencil);
+			if (c == globals::d3d::context) globals::features::dx12NativeScene.ObserveNativeInputDepth(state);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+	struct NativeInputTopologyBind
+	{
+		static void thunk(ID3D11DeviceContext* c, D3D11_PRIMITIVE_TOPOLOGY topology)
+		{
+			func(c, topology);
+			if (c == globals::d3d::context) globals::features::dx12NativeScene.ObserveNativeInputTopology(topology);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+	struct NativeInputIndexBind
+	{
+		static void thunk(ID3D11DeviceContext* c, ID3D11Buffer* buffer, DXGI_FORMAT format, UINT offset)
+		{
+			func(c, buffer, format, offset);
+			if (c == globals::d3d::context) globals::features::dx12NativeScene.ObserveNativeInputIndexOffset(format, offset);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+	struct NativeInputDraw
+	{
+		static void thunk(ID3D11DeviceContext* c, UINT count, UINT start)
+		{
+			if (c == globals::d3d::context) {
+				try { globals::features::dx12NativeScene.StampFullNativeIndexedDraw(count, start, 0, false); }
+				catch (...) { globals::features::dx12NativeScene.InvalidateNativeInputVisibility(); }
+			}
+			func(c,count,start);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+	struct NativeInputDrawIndexedInstanced
+	{
+		static void thunk(ID3D11DeviceContext* c, UINT count, UINT instances, UINT start, INT base, UINT first)
+		{
+			if (c == globals::d3d::context) {
+				try { globals::features::dx12NativeScene.StampFullNativeIndexedDraw(count,start,base,true,instances,first); }
+				catch (...) { globals::features::dx12NativeScene.InvalidateNativeInputVisibility(); }
+			}
+			func(c,count,instances,start,base,first);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+	struct NativeInputDrawInstanced
+	{
+		static void thunk(ID3D11DeviceContext* c, UINT count, UINT instances, UINT start, UINT first)
+		{
+			if (c == globals::d3d::context) {
+				try { globals::features::dx12NativeScene.StampFullNativeIndexedDraw(count,start,0,false,instances,first); }
+				catch (...) { globals::features::dx12NativeScene.InvalidateNativeInputVisibility(); }
+			}
+			func(c,count,instances,start,first);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+	struct NativeInputDrawAuto
+	{
+		static void thunk(ID3D11DeviceContext* c)
+		{
+			if (c == globals::d3d::context) globals::features::dx12NativeScene.InvalidateNativeInputVisibility();
+			func(c);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+	struct NativeInputDrawIndexedIndirect
+	{
+		static void thunk(ID3D11DeviceContext* c, ID3D11Buffer* buffer, UINT offset)
+		{
+			if (c == globals::d3d::context) globals::features::dx12NativeScene.InvalidateNativeInputVisibility();
+			func(c,buffer,offset);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+	struct NativeInputDrawIndirect
+	{
+		static void thunk(ID3D11DeviceContext* c, ID3D11Buffer* buffer, UINT offset)
+		{
+			if (c == globals::d3d::context) globals::features::dx12NativeScene.InvalidateNativeInputVisibility();
+			func(c,buffer,offset);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+	struct NativeInputExecuteList
+	{
+		static void thunk(ID3D11DeviceContext* c, ID3D11CommandList* list, BOOL restore)
+		{
+			if (c == globals::d3d::context) globals::features::dx12NativeScene.InvalidateNativeInputVisibility();
+			func(c,list,restore);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
+	struct NativeInputClearRT
+	{
+		static void thunk(ID3D11DeviceContext* c, ID3D11RenderTargetView* view, const FLOAT color[4])
+		{
+			if (c == globals::d3d::context) globals::features::dx12NativeScene.ObserveNativeInputClear();
+			func(c,view,color);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+	struct NativeInputClearDepth
+	{
+		static void thunk(ID3D11DeviceContext* c, ID3D11DepthStencilView* view, UINT flags, FLOAT depth, UINT8 stencil)
+		{
+			if (c == globals::d3d::context && (flags & D3D11_CLEAR_DEPTH)) globals::features::dx12NativeScene.ObserveNativeInputClear();
+			func(c,view,flags,depth,stencil);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+	struct NativeInputClearState
+	{
+		static void thunk(ID3D11DeviceContext* c)
+		{
+			if (c == globals::d3d::context) globals::features::dx12NativeScene.InvalidateNativeInputVisibility();
+			func(c);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -500,8 +669,26 @@ namespace globals
 	{
 		stl::detour_vfunc<14, ID3D11DeviceContext_Map>(a_context);
 		stl::detour_vfunc<15, ID3D11DeviceContext_Unmap>(a_context);
-		if (globals::features::dx12Control.UsesExclusiveMaterials())
+		if (globals::features::dx12Control.UsesExclusiveMaterials()) {
+			stl::detour_vfunc<9, NativeInputPSBind>(a_context);
 			stl::detour_vfunc<12, ID3D11DeviceContext_DrawIndexedNativeInput>(a_context);
+			stl::detour_vfunc<13, NativeInputDraw>(a_context);
+			stl::detour_vfunc<19, NativeInputIndexBind>(a_context);
+			stl::detour_vfunc<20, NativeInputDrawIndexedInstanced>(a_context);
+			stl::detour_vfunc<21, NativeInputDrawInstanced>(a_context);
+			stl::detour_vfunc<24, NativeInputTopologyBind>(a_context);
+			stl::detour_vfunc<33, NativeInputOMBind>(a_context);
+			stl::detour_vfunc<34, NativeInputOMUAVBind>(a_context);
+			stl::detour_vfunc<35, NativeInputBlendBind>(a_context);
+			stl::detour_vfunc<36, NativeInputDepthBind>(a_context);
+			stl::detour_vfunc<38, NativeInputDrawAuto>(a_context);
+			stl::detour_vfunc<39, NativeInputDrawIndexedIndirect>(a_context);
+			stl::detour_vfunc<40, NativeInputDrawIndirect>(a_context);
+			stl::detour_vfunc<50, NativeInputClearRT>(a_context);
+			stl::detour_vfunc<53, NativeInputClearDepth>(a_context);
+			stl::detour_vfunc<58, NativeInputExecuteList>(a_context);
+			stl::detour_vfunc<110, NativeInputClearState>(a_context);
+		}
 
 		// VR stereo optimization hooks: installed only when stereo reprojection is enabled at startup.
 		// Changing stereoMode at runtime requires a restart; the UI communicates this to the user.

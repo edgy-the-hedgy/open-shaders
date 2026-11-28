@@ -11,6 +11,8 @@ Texture2D<float> HistoryDepth : register(t6);
 ByteAddressBuffer RayIdentity : register(t7);
 ByteAddressBuffer HistoryRayIdentity : register(t8);
 Texture2D<uint4> RasterIdentity : register(t9);
+ByteAddressBuffer RasterDrawTable : register(t10);
+#include "NativeRasterDrawIdentity.hlsli"
 Texture2D<float2> Motion : register(t11);
 Texture2D<uint4> RasterRawDepth : register(t12);
 Texture2D<float4> RasterParticipation : register(t13);
@@ -199,9 +201,11 @@ void main(uint3 id : SV_DispatchThreadID)
         uint2 encoded = RasterIdentity.Load(int3(id.xy, 0)).xy;
         float rawDepth = asfloat(RasterRawDepth.Load(int3(id.xy,0)).w);
         float finalDepth = Depth.Load(int3(id.xy,0));
-        if (encoded.x != 0u && RasterParticipation.Load(int3(id.xy,0)).z == 1.0 &&
-            isfinite(rawDepth) && abs(rawDepth-finalDepth) <= 1e-6) {
-            uint2 raster = uint2(encoded.x-1u, encoded.y);
+        uint drawAddress;
+        uint2 raster;
+        if (RasterWinnerCertified != 0u && DecodeRasterDraw(RasterDrawTable,HasRasterInput,encoded,drawAddress,raster) &&
+            all(raster!=0xffffffffu) && RasterParticipation.Load(int3(id.xy,0)).z == 1.0 &&
+            isfinite(rawDepth) && isfinite(finalDepth) && abs(rawDepth-finalDepth) <= 1e-6) {
             uint2 hit = ReadRayIdentity(id.xy);
             if (ValidRayIdentity(hit) && all(raster == SurfaceIdentity(hit))) {
                 ownership |= RasterIdentityCandidate;

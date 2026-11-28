@@ -98,6 +98,7 @@ TEST_CASE("Native authored light metadata sanitizes inputs without legacy state"
 TEST_CASE("Input-only raster capture rejects partial draws and invalid integer identities", "[dx12][native-pbr]")
 {
 	using namespace NativePBR::InputOnly;
+	REQUIRE(kAbiVersion == 6);
 	REQUIRE(WholeTriangleList(3,1));
 	REQUIRE(WholeTriangleList(196605,65535));
 	REQUIRE_FALSE(WholeTriangleList(3,2));

@@ -1,10 +1,12 @@
 #include "NativeRawInputCapture.h"
 
 #include "Features/DX12/DX12GpuRetirement.h"
+#include "Features/NativePBR/NativeMaterialEvaluation.h"
 #include "Globals.h"
 #include "Utils/D3D.h"
 
 #include <algorithm>
+#include <cstring>
 #include <directx/d3dx12.h>
 
 namespace NativePBR
@@ -20,7 +22,8 @@ namespace NativePBR
 	{
 		return stamp.frame == requested.frame && stamp.scope == requested.scope &&
 			stamp.geometryRevision == requested.geometryRevision &&
-			(!stamp.materialRevision || stamp.materialRevision == requested.materialRevision) && width >= viewWidth && height >= viewHeight && draws &&
+			(!stamp.materialRevision || stamp.materialRevision == requested.materialRevision) && width == viewWidth && height == viewHeight && draws &&
+			drawTable && !drawRecords.empty() &&
 			std::ranges::all_of(planes, [](const auto& plane) { return plane && plane->resource; }) &&
 			readyFence && ValidProducerSignal(readyValue, readyFence->GetCompletedValue()) &&
 			evidence && evidence->stamp == stamp && evidence->width == width && evidence->height == height &&
@@ -124,7 +127,7 @@ namespace NativePBR
 			}
 			slot = std::move(replacement);
 		}
-		slot->stamp = stamp; slot->draws = 0; slot->drawRecords.clear(); slot->evidence.reset();
+		slot->stamp = stamp; slot->draws = 0; slot->drawRecords.clear(); slot->drawTable = nullptr; slot->evidence.reset();
 		slot->readyFence = producer.fence12; slot->readyValue = UINT64_MAX;
 		active = slot;
 		failure.clear();
@@ -133,13 +136,15 @@ namespace NativePBR
 
 	void RawInputCapture::Publish(const GraphicsBackend& backend, ID3D11Texture2D* mask,
 		const std::array<ID3D11Texture2D*, InputOnly::kPlaneCount>& sources,
-		RasterIdentityStamp stamp, std::span<const RasterDrawRecord> drawRecords, uint32_t draws)
+		RasterIdentityStamp stamp, std::span<const RasterDrawRecord> drawRecords, uint32_t draws, uint32_t renderWidth, uint32_t renderHeight, bool allWritersKnown)
 	{
 		published.reset();
-		if (!mask || !draws || !backend.d3d11Context) return;
+		if (!mask || !draws || drawRecords.empty() || drawRecords.size() > UINT32_MAX / sizeof(RasterDrawRecord) ||
+			!renderWidth || !renderHeight || !backend.d3d11Context) return;
 		try {
 			D3D11_TEXTURE2D_DESC expected{};
 			mask->GetDesc(&expected);
+			if (renderWidth > expected.Width || renderHeight > expected.Height) { failure = "Native render extent exceeds MRT"; return; }
 			for (auto* source : sources) {
 				if (!source) return;
 				D3D11_TEXTURE2D_DESC desc{};
@@ -150,18 +155,28 @@ namespace NativePBR
 					return;
 				}
 			}
-			if (!Prepare(backend, stamp, expected.Width, expected.Height)) return;
+			if (!Prepare(backend, stamp, renderWidth, renderHeight)) return;
 			active->draws = draws;
 			active->drawRecords.assign(drawRecords.begin(), drawRecords.end());
+			const auto tableBytes = drawRecords.size_bytes();
+			active->drawTable = DX12Native::NativeMaterialEvaluation::Buffer(owner.d3d12Device.get(), tableBytes,
+				D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
+			const D3D12_RANGE noRead{};
+			void* mapped = nullptr;
+			DX::ThrowIfFailed(active->drawTable->Map(0, &noRead, &mapped));
+			std::memcpy(mapped, drawRecords.data(), tableBytes);
+			const D3D12_RANGE written{0, tableBytes};
+			active->drawTable->Unmap(0, &written);
+			const D3D11_BOX rect{0,0,0,renderWidth,renderHeight,1};
 			for (uint32_t i = 0; i < InputOnly::kPlaneCount; ++i)
-				owner.d3d11Context->CopyResource(active->planes[i]->resource11, sources[i]);
+				owner.d3d11Context->CopySubresourceRegion(active->planes[i]->resource11,0,0,0,0,sources[i],0,&rect);
 			if (Seal()) {
-				active->evidence = evidenceCapture.Capture(owner, mask, stamp);
+				active->evidence = evidenceCapture.Capture(owner, mask, stamp, renderWidth, renderHeight, allWritersKnown);
 				if (active->Matches(stamp, active->width, active->height)) published = active;
 			}
 			active.reset();
 		} catch (...) {
-			failure = Util::DescribeCurrentD3DException();
+			failure = "Native raw input publication failed";
 			Reset();
 		}
 	}

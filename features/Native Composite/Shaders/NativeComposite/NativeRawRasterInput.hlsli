@@ -1,12 +1,14 @@
 #ifndef NATIVE_RAW_RASTER_INPUT_HLSLI
 #define NATIVE_RAW_RASTER_INPUT_HLSLI
-// ABI shared with the standalone ps_5_0 input capture. No raster radiance.
+// ABI v6 shared with the original opaque-pass FXC shaders. No raster radiance.
 #include "NativeRawRasterSurface.hlsli"
+#include "NativeRasterDrawIdentity.hlsli"
 Texture2D<uint4> RawRasterIdentityUV : register(t1031);
 Texture2D<uint4> RawRasterColorGradDepth : register(t1032);
 Texture2D<uint4> RawRasterBasisFlags : register(t1033);
 Texture2D<uint4> RawRasterMaterialTechnique : register(t1034);
 Texture2D<float4> RawRasterParticipation : register(t1035);
+ByteAddressBuffer RawRasterDrawTable : register(t1036);
 float2 RawHalf2(uint v) { return f16tof32(uint2(v & 65535u, v >> 16)); }
 float3 RawOct(uint v)
 {
@@ -18,16 +20,22 @@ float3 RawOct(uint v)
     }
     return normalize(n);
 }
-RawRasterSurface ReadRawRaster(uint2 pixel, float depth, uint instance, uint primitive, uint hasRawInput)
+RawRasterSurface ReadRawVisibility(uint2 pixel, float depth, uint drawCount, out uint2 sceneIdentity)
 {
     RawRasterSurface result = (RawRasterSurface)0;
-    if (!hasRawInput) return result;
+    sceneIdentity = uint2(0xffffffffu, 0xffffffffu);
+    if (!drawCount) return result;
     uint4 a = RawRasterIdentityUV.Load(int3(pixel,0));
-    if (!a.x || a.x-1u != instance || a.y != primitive) return result;
+    uint address;
+    if (!DecodeRasterDraw(RawRasterDrawTable, drawCount, a.xy, address, sceneIdentity)) return result;
+    result.drawIdentity=a.xy;
+    uint4 drawIdentity=RawRasterDrawTable.Load4(address);
+    result.geometryOrdinal=drawIdentity.y;
+    result.materialOrdinal=drawIdentity.z;
     uint4 c = RawRasterBasisFlags.Load(int3(pixel,0));
     if ((c.w & 6u) != 6u) return result;
-    // Participation is not identity. A later nonparticipating writer can
-    // invalidate the witness; exact correspondence still requires the ray hit.
+    // The pass certificate is supplied as a nonzero draw count. The witness
+    // and final depth must agree with the integer visibility write.
     if (RawRasterParticipation.Load(int3(pixel,0)).z != 1.0) return result;
     uint4 b = RawRasterColorGradDepth.Load(int3(pixel,0));
     float rawDepth = asfloat(b.w);
@@ -39,10 +47,12 @@ RawRasterSurface ReadRawRaster(uint2 pixel, float depth, uint instance, uint pri
     uint4 material = RawRasterMaterialTechnique.Load(int3(pixel,0));
     result.auxiliaryKind=(c.w >> 19u)&15u;
     result.auxiliary=material;
-    result.materialIndex=result.auxiliaryKind==0u ? material.x : 0xffffffffu;
-    result.pixelDescriptor=result.auxiliaryKind==0u ? material.y : 0u;
-    result.extraDescriptor=result.auxiliaryKind==0u ? material.z : 0u;
-    result.extraFeatureDescriptor=result.auxiliaryKind==0u ? material.w : 0u;
+    uint4 drawRange=RawRasterDrawTable.Load4(address+16u);
+    uint4 descriptors=RawRasterDrawTable.Load4(address+48u);
+    result.materialIndex=drawRange.z;
+    result.pixelDescriptor=descriptors.x;
+    result.extraDescriptor=descriptors.z;
+    result.extraFeatureDescriptor=descriptors.w;
     result.alpha=float((c.w >> 3u)&65535u) / 65535.0;
     result.covered=true;
     result.front=(c.w&1u)!=0u;
@@ -50,15 +60,16 @@ RawRasterSurface ReadRawRaster(uint2 pixel, float depth, uint instance, uint pri
         all(isfinite(result.tangent)) && all(isfinite(result.bitangent)) && all(isfinite(result.normal));
     return result;
 }
-bool ReadRawRasterCandidate(uint2 pixel, float depth, uint hasRawInput, out uint2 identity, out RawRasterSurface raw)
+RawRasterSurface ReadRawRaster(uint2 pixel, float depth, uint instance, uint primitive, uint drawCount)
 {
-    identity = uint2(0xffffffffu, 0xffffffffu);
-    raw = (RawRasterSurface)0;
-    if (!hasRawInput) return false;
-    uint4 a = RawRasterIdentityUV.Load(int3(pixel,0));
-    if (!a.x || (a.x & 0x80000000u) != 0u || (a.y & 0x80000000u) != 0u) return false;
-    identity = uint2(a.x - 1u, a.y);
-    raw = ReadRawRaster(pixel, depth, identity.x, identity.y, hasRawInput);
-    return raw.valid;
+    uint2 mapped;
+    RawRasterSurface raw=ReadRawVisibility(pixel,depth,drawCount,mapped);
+    if (any(mapped!=uint2(instance,primitive))) raw.valid=false;
+    return raw;
+}
+bool ReadRawRasterCandidate(uint2 pixel, float depth, uint drawCount, out uint2 identity, out RawRasterSurface raw)
+{
+    raw=ReadRawVisibility(pixel,depth,drawCount,identity);
+    return raw.valid && all(identity!=0xffffffffu);
 }
 #endif

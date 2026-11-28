@@ -20,10 +20,10 @@ namespace DX12Native
 	}
 
 	std::shared_ptr<const FullNativeRasterEvidence> FullNativeRasterEvidenceCapture::Capture(
-		const GraphicsBackend& backend, ID3D11Texture2D* source, RasterIdentityStamp stamp)
+		const GraphicsBackend& backend, ID3D11Texture2D* source, RasterIdentityStamp stamp, uint32_t width, uint32_t height, bool allWritersKnown)
 	{
 		CS_GPU_PASS("NativeComposite::CaptureFullNativeRasterEvidence");
-		if (!source ||
+		if (!source || !width || !height ||
 			!backend.d3d11Device || !backend.d3d11Context || !backend.d3d12Device || !backend.commandQueue)
 			return {};
 		std::shared_ptr<FullNativeRasterEvidence>* selected = nullptr;
@@ -34,8 +34,10 @@ namespace DX12Native
 			D3D11_TEXTURE2D_DESC desc{};
 			source->GetDesc(&desc);
 			if (sourceDevice.get() != backend.d3d11Device.get() || desc.Format != DXGI_FORMAT_R16G16B16A16_UNORM ||
-				!desc.Width || !desc.Height || desc.ArraySize != 1 || desc.MipLevels != 1 || desc.SampleDesc.Count != 1)
+				width > desc.Width || height > desc.Height || desc.ArraySize != 1 || desc.MipLevels != 1 || desc.SampleDesc.Count != 1)
 				return {};
+			desc.Width = width;
+			desc.Height = height;
 			if (!producer.fence12) {
 				owner = backend;
 				producer.Create(owner.d3d12Device.get(), owner.d3d11Device.get(), "NativeComposite::FullNativeRasterEvidence");
@@ -80,9 +82,11 @@ namespace DX12Native
 				slot = std::move(replacement);
 			}
 			slot->stamp = stamp;
+			slot->winnerCertified = allWritersKnown;
 			slot->readyFence = producer.fence12;
 			slot->readyValue = UINT64_MAX;
-			owner.d3d11Context->CopyResource(slot->texture->resource11, source);
+			const D3D11_BOX rect{0,0,0,width,height,1};
+			owner.d3d11Context->CopySubresourceRegion(slot->texture->resource11,0,0,0,0,source,0,&rect);
 			copied = true;
 			const auto ready = producer.Next();
 			DX::ThrowIfFailed(owner.d3d11Context->Signal(producer.fence11.get(), ready));

@@ -285,14 +285,14 @@ namespace DX12Native
 			cmd->SetComputeRootShaderResourceView(8, slot->material->rayIdentity->GetGPUVirtualAddress());
 			cmd->SetComputeRootShaderResourceView(9, previous ? previous->material->rayIdentity->GetGPUVirtualAddress() : slot->material->rayIdentity->GetGPUVirtualAddress());
 			cmd->SetComputeRootUnorderedAccessView(4, slot->samples->GetGPUVirtualAddress());
-			cmd->SetComputeRootShaderResourceView(10, slot->material->rayIdentity->GetGPUVirtualAddress());
+			cmd->SetComputeRootShaderResourceView(10, evidence ? evidence->drawTable->GetGPUVirtualAddress() : slot->material->rayIdentity->GetGPUVirtualAddress());
 			cmd->SetComputeRootUnorderedAccessView(11, slot->ownershipMask->GetGPUVirtualAddress());
 			cmd->SetComputeRootUnorderedAccessView(12, slot->environmentRadiance->GetGPUVirtualAddress());
 			cmd->SetComputeRootUnorderedAccessView(13, slot->historySignals->GetGPUVirtualAddress());
 			const uint32_t constants[]{ slot->width, slot->height, slot->material->rowPitch,
 				slot->direct ? slot->direct->rowPitch : 0u, slot->indirect ? slot->indirect->rowPitch : 0u, available,
 				previous ? previous->material->rowPitch : 0u, previous ? 1u : 0u,
-				slot->material->rayIdentityRowPitch, previous ? previous->material->rayIdentityRowPitch : 0u, evidence ? 1u : 0u,
+				slot->material->rayIdentityRowPitch, previous ? previous->material->rayIdentityRowPitch : 0u, evidence ? uint32_t(evidence->drawRecords.size()) : 0u,
 				slot->rasterWinnerCertified ? 1u : 0u, slot->completeLightingCoverage ? 1u : 0u,
 				slot->direct ? DirectLightingFrame::available : 0u, slot->indirect ? slot->indirect->available : 0u, quality, slot->frame,
 				motion ? 1u : 0u, std::bit_cast<uint32_t>(jitterDelta.x), std::bit_cast<uint32_t>(jitterDelta.y),

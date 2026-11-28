@@ -258,17 +258,18 @@ TEST_CASE("Full Native reconstruction rejects cross-instance history and invalid
 	REQUIRE_FALSE(SameNativeReceiver({ 4, UINT32_MAX }, a, true));
 }
 
-TEST_CASE("Full Native raster primitive tokens never alias on exhaustion", "[dx12][materials]")
+TEST_CASE("Full Native integer identities are not limited to a 16-bit token range", "[dx12][materials]")
 {
-	REQUIRE(RasterTokenBase(0, 1) == 1);
-	REQUIRE(RasterTokenBase(65534, 1) == 65535);
-	REQUIRE(RasterTokenBase(65534, 2) == 0);
-	REQUIRE(RasterTokenBase(65535, 1) == 0);
-	REQUIRE(RasterTokenBase(0, 0) == 0);
-	REQUIRE(RasterTokenBase(UINT32_MAX, 1) == 0);
+	constexpr RasterPixelIdentity a{ 100000u, 1000000u };
+	constexpr RasterPixelIdentity b{ 100000u, 1000001u };
+	REQUIRE(ValidRayIdentity(a));
+	REQUIRE(ValidRayIdentity(b));
+	REQUIRE_FALSE(SameNativeReceiver(a, b, true));
+	REQUIRE(SameNativeReceiver(a, b, false));
+	REQUIRE_FALSE(ValidRayIdentity({ UINT32_MAX, 0 }));
 }
 
-TEST_CASE("A matching raster token cannot independently grant opaque ownership", "[dx12][materials]")
+TEST_CASE("A matching raster identity cannot independently grant opaque ownership", "[dx12][materials]")
 {
 	constexpr ContributionAdmission complete{ kOpaqueRequired, kOpaqueRequired };
 	REQUIRE(ResolveOpaqueOwner(SurfaceStatus::EvaluatedBase, CertifyRasterCorrespondence(true, false), complete, true, true, false) == OpaqueOwner::Raster);

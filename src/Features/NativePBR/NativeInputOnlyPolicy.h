@@ -4,6 +4,7 @@
 
 namespace NativePBR::InputOnly
 {
+	inline constexpr uint32_t kAbiVersion = 6;
 	inline constexpr uint32_t kPlaneCount = 4;
 	inline constexpr uint32_t kFrontFace = 1u;
 	inline constexpr uint32_t kValid = 1u << 1;
