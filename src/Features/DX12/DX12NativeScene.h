@@ -158,12 +158,14 @@ private:
 		bool observed = false, conflicted = false;
 		uint32_t descriptor = 0, samplerModes = 0;
 		uint32_t constantSlot = UINT32_MAX;
+		uint32_t rowKind=UINT32_MAX, extraData=0;
 		std::array<uint32_t, 4> constantOffsets{};
 		bool repeatedConstants = false;
 	};
 	bool CaptureProjectedConstants(ProjectedTextureObservation& observation);
 	void CaptureRasterProjectedDraw(uint32_t rasterDraw, uint32_t sceneInstance);
 	void CaptureRasterPbrGrass(uint32_t rasterDraw);
+	void CaptureRasterTerrainDraw(uint32_t rasterDraw,uint32_t descriptor);
 	struct RasterProjectionObservation
 	{
 		uint32_t rasterDraw = 0, sceneInstance = UINT32_MAX;
@@ -201,7 +203,7 @@ private:
 		std::vector<RasterProjectionObservation> rasterProjectionTextures;
 		uint32_t activeProjectedInstance = UINT32_MAX;
 		uint32_t constantSnapshots = 0, constantSnapshotFailures = 0;
-		uint32_t grassConstantSnapshots=0;
+		uint32_t grassConstantSnapshots=0, terrainConstantSnapshots=0;
 		std::vector<std::pair<uint32_t,uint32_t>> grassConstants;
 		uint32_t projectedDraws = 0, unmatchedProjectedDraws = 0;
 		uint32_t draws = 0, candidates = 0, uniqueInstances = 0, ambiguous = 0, rejected = 0;
