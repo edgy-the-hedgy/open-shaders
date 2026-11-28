@@ -623,6 +623,17 @@ float GetLODBrightness(float tier)
 #	endif
 
 #	if defined(FULL_NATIVE_INPUT) && !defined(RENDER_DEPTH)
+#		if defined(GRASS_LIGHTING) && defined(TRUE_PBR)
+cbuffer PerMaterial : register(b1)
+{
+	uint PBRFlags : packoffset(c0.x);
+	float3 PBRParams1 : packoffset(c0.y);
+	float4 PBRParams2 : packoffset(c1);
+	float4 PBRParams3 : packoffset(c2);
+	float4 PBRParams4 : packoffset(c3);
+	float4 PBRParams5 : packoffset(c4);
+};
+#		endif
 PS_OUTPUT main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool front : SV_IsFrontFace, uint coverage : SV_Coverage)
 {
 	PS_OUTPUT psout = (PS_OUTPUT)0;
@@ -672,9 +683,30 @@ PS_OUTPUT main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool front : SV_
 		balance=SharedData::grassLightingSettings.SubsurfaceBalance;
 #		endif
 		psout.BasisFlags.w |= 5u<<19u;
+#		if defined(GRASS_LIGHTING) && defined(TRUE_PBR)
+		bool detail=true;
+#			if defined(GRASS_OPTIMIZATIONS)
+		detail=input.IsFar<=0.5;
+#			endif
+		const bool sphere=(Permutation::ExtraShaderDescriptor&Permutation::ExtraFlags::GrassSphereNormal)!=0u;
+		if (!sphere && !front) vertexNormal=-vertexNormal;
+		float lodBrightness=1.0;
+#			if defined(GRASS_OPTIMIZATIONS)
+		lodBrightness=GetLODBrightness(input.LodTier);
+#			endif
+		if (SharedData::grassLightingSettings.OverrideComplexGrassSettings)
+			lodBrightness*=SharedData::grassLightingSettings.BasicGrassBrightness;
+		psout.BasisFlags.w=(psout.BasisFlags.w&~(15u<<19u))|(10u<<19u);
+		psout.MaterialTechnique=uint4(PBRFlags|(detail?1u<<16u:0u)|
+			(SharedData::grassLightingSettings.EnableNewLightingModel?1u<<17u:0u)|(sphere?1u<<18u:0u)|
+			(SharedData::lodBlendingSettings.DisableTerrainVertexColors?1u<<19u:0u),
+			NativeInputMRT::PackOct(vertexNormal),NativeInputMRT::PackOct(normalize(input.ClumpNormal.xyz)),
+			NativeInputMRT::PackHalf2(float2(lodBrightness,SharedData::grassLightingSettings.ClumpShading)));
+#		else
 		psout.MaterialTechnique=uint4((complex?1u:0u)|(complexDetail?2u:0u)|(f32tof16(saturate(balance))<<16u),
 			NativeInputMRT::PackOct(vertexNormal),NativeInputMRT::PackHalf2(float2(roughness,brightness)),
 			NativeInputMRT::PackHalf2(float2(specularStrength,scattering)));
+#		endif
 	}
 	return psout;
 }
