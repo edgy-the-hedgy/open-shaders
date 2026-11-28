@@ -134,6 +134,7 @@ void NativeCubemaps::CubeProcessing::Poll()
     if(input->sky && input->sky->IsReadyFor(input->stamp) &&
         Policy::PublicationFresh(input->sky->stamp.SameEnvironment(input->stamp),input->sky->stamp.engineFrame,input->stamp.engineFrame))
         publication->sky=input->sky;
+    publication->defaultCube=input->defaultCube;
     publication->producerFence=fence; publication->producerValue=value;
     latest=slot; current=std::move(publication);
     slot->inputs.reset();
@@ -232,7 +233,11 @@ bool NativeCubemaps::CubeProcessing::Dispatch(const GraphicsBackend& backend,
             !direct->readyFence || !ValidProducerSignal(direct->readyValue,direct->readyFence->GetCompletedValue()))
             native.reset();
     }
-    if(!rasterReady && !native) return false;
+    // A real filtered generation can be bootstrapped from engine DALC and
+    // the optional default/engine-reflection cubes even without observations.
+    // History receives no invented observations in this case.
+    for(const auto& channel:dalc)
+        if(!std::isfinite(channel.x)||!std::isfinite(channel.y)||!std::isfinite(channel.z)||!std::isfinite(channel.w)) return false;
     if(latest && latest->base.stamp.SameEnvironment(input->stamp) && latest->base.stamp.engineFrame==input->stamp.engineFrame) return true;
     Initialize(backend);
     Poll();

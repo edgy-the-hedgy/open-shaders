@@ -119,6 +119,12 @@ namespace NativeCubemaps::Policy
         return sameEnvironment && requested - observed <= kMaxPublicationAge;
     }
 
+    // Consumers only see completed generations acquired before the consuming frame.
+    constexpr bool CompletedGenerationFresh(bool sameEnvironment, uint32_t observed, uint32_t requested)
+    {
+        return observed!=requested && PublicationFresh(sameEnvironment,observed,requested);
+    }
+
     inline bool CanReuseHistory(bool sameEnvironment, uint32_t elapsed, float distanceSquared)
     {
         return sameEnvironment && elapsed && elapsed <= kMaxHistoryGap &&

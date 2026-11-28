@@ -123,3 +123,14 @@ TEST_CASE("Water SSR requires current-frame main-view water evidence", "[dx12][c
     evidence={};
     REQUIRE_FALSE(evidence.Matches(1,2,3));
 }
+
+TEST_CASE("Environment generations cannot feed their acquisition frame", "[dx12][cubemaps]")
+{
+    REQUIRE_FALSE(CompletedGenerationFresh(true, 20, 20));
+    REQUIRE(CompletedGenerationFresh(true, 20, 21));
+    REQUIRE(CompletedGenerationFresh(true, 20, 140));
+    REQUIRE_FALSE(CompletedGenerationFresh(true, 20, 141));
+    REQUIRE_FALSE(CompletedGenerationFresh(false, 20, 21));
+    REQUIRE_FALSE(CompletedGenerationFresh(true, 21, 20));
+    REQUIRE(CompletedGenerationFresh(true, UINT32_MAX, 0));
+}

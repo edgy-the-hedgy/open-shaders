@@ -33,11 +33,19 @@ void NativeIBL::Producer::Dispatch(const GraphicsBackend& backend,
 	if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation() ||
 		!material || material->scope != stamp.scope || material->frame != stamp.engineFrame)
 		return;
-	// Metadata-only environment: ambient comes from engine SH, specular from RT.
-	auto rayEnvironment = std::make_shared<EnvironmentFrame>();
-	rayEnvironment->stamp = stamp;
-	rayEnvironment->revision = stamp.epoch;
-	environment = std::move(rayEnvironment);
+	// Worker 07 bridge: keep the completed cubemap generation for specular
+	// misses. Worker 08 owns diffuse SH/sky visibility and IBL policy.
+	const bool usable = environment && environment->base && environment->base->IsReadyFor(stamp) &&
+		NativeCubemaps::Policy::CompletedGenerationFresh(environment->stamp.SameEnvironment(stamp),
+			environment->stamp.engineFrame,stamp.engineFrame) && environment->producerFence &&
+		environment->producerValue && environment->producerFence->GetCompletedValue()!=UINT64_MAX &&
+		environment->producerFence->GetCompletedValue()>=environment->producerValue;
+	if(!usable) {
+		auto ambientEnvironment = std::make_shared<EnvironmentFrame>();
+		ambientEnvironment->stamp = stamp;
+		ambientEnvironment->revision = stamp.epoch;
+		environment = std::move(ambientEnvironment);
+	}
 	if (!lighting)
 		lighting = std::make_unique<NativeIndirectLighting>();
 	const auto color = globals::features::linearLighting.GetCommonBufferData();
@@ -49,7 +57,7 @@ void NativeIBL::Producer::Dispatch(const GraphicsBackend& backend,
 	ambient.skySaturation = resolved.SkyIBLSaturation;
 	ambient.dalcMode = resolved.DALCMode;
 	ambient.dalcAmount = resolved.DALCAmount;
-	ambient.iblEnabled = false; // Cubemap irradiance is suspended; engine ambient remains independent.
+	ambient.iblEnabled = false; // Worker 08 owns diffuse irradiance integration.
 	ambient.ambientMultiplier = utility.ambientLightMult * (color.enableLinearLighting ? color.ambientMult : 1.0f);
 	ambient.conversionSaturation = color.conversionSaturation;
 	ambient.utilitySaturation = utility.ambientLightColor.saturation;

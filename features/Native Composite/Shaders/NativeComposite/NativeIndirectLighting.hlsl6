@@ -97,6 +97,19 @@ float3 EngineAmbient(float3 direction, float amount)
     return ColorEncoding == 0u ? pow(max(c, 0.0), 1.6) : c;
 }
 
+// A completed native cube is the miss contribution; ray queries may
+// replace only their valid hit fraction. Engine DALC is startup fallback.
+float3 CubemapSpecularMiss(float3 direction, float roughness)
+{
+    if (EnvironmentMipCount == 0u) return EngineAmbient(direction,1.0);
+    const float level = saturate(roughness) * float(EnvironmentMipCount - 1u);
+    float3 radiance = DecodeEnvironmentRadiance(Environment.SampleLevel(ClampClamp,direction,level).rgb,ColorEncoding);
+    if (Interior == 0u && ReflectionMipCount != 0u)
+        radiance = DecodeEnvironmentRadiance(Reflections.SampleLevel(ClampClamp,direction,
+            saturate(roughness)*float(ReflectionMipCount-1u)).rgb,ColorEncoding);
+    return all(isfinite(radiance)) ? max(0.0,radiance) : EngineAmbient(direction,1.0);
+}
+
 float3 BaseIrradiance(float3 direction)
 {
     return NativeIndirect::EvaluateIrradiance(asfloat(EnvironmentSH.Load4(0u)),
@@ -380,12 +393,12 @@ void main(uint3 id : SV_DispatchThreadID)
     if ((active & ContributionIndirectSpecular) != 0u)
     {
         float3 r = reflect(-baseView, n);
-        // No captured cubemap: directional ambient is the provisional miss radiance.
-        float3 radiance = ResolveRayReflection(pixel,world,n,r,roughness,0u,EngineAmbient(r,1.0));
+        // Preserve the RT hit logic and roughness policy from the suspension commit.
+        float3 radiance = ResolveRayReflection(pixel,world,n,r,roughness,0u,CubemapSpecularMiss(r,roughness));
         float3 specularRadiance = radiance * lobes.specular;
         if (hasCoat) {
             float3 cr=reflect(-view,cn);
-            float3 crRadiance=ResolveRayReflection(pixel,world,cn,cr,coat.normalRoughness.w,1u,EngineAmbient(cr,1.0));
+            float3 crRadiance=ResolveRayReflection(pixel,world,cn,cr,coat.normalRoughness.w,1u,CubemapSpecularMiss(cr,coat.normalRoughness.w));
             specularRadiance += crRadiance*coatSpecularWeight;
         }
         Lighting.Store2(outputOffset + 8u, PackOpaqueRadiance(specularRadiance, ContributionIndirectSpecular));

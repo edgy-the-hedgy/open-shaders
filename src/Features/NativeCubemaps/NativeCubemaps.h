@@ -49,8 +49,10 @@ namespace NativeCubemaps
         std::string GetShortName() override { return "NativeCubemaps"; }
         bool WantsDrawHook() const override { return true; }
         void OnDraw() override;
-        bool WantsRenderPassHook() const override { return false; }
-        std::function<void()> OnRenderPassBegin(const RE::BSRenderPass*) override { return nullptr; }
+        bool WantsRenderPassHook() const override { return true; }
+        std::function<void()> OnRenderPassBegin(const RE::BSRenderPass*) override { return skyCapture.OnRenderPassBegin(); }
+        bool WantsOpaqueRasterReadyHook() const override { return true; }
+        void OnOpaqueRasterReady() override;
         std::function<void()> OnReflectionsRenderBegin() override;
         void SetupResources() override;
         void OnSceneTransitionReset(bool opening) override { if(opening) InvalidateGeneration(); }
@@ -70,7 +72,6 @@ namespace NativeCubemaps
         void Release();
         std::shared_ptr<const DX12Native::EnvironmentFrame> Get() const;
     private:
-        bool CaptureRaw(const GraphicsBackend&, ID3D11ShaderResourceView* sceneColor);
         DX12Native::EnvironmentSource GetDefaultSource(const GraphicsBackend&);
         std::unique_ptr<DX12Native::NativeEnvironment> inputs;
         std::unique_ptr<CubeProcessing> processing;
@@ -81,16 +82,13 @@ namespace NativeCubemaps
         Policy::WaterDrawEvidence waterDraw;
         uint64_t dryCellSkips=0, noWaterDrawSkips=0;
         bool waterFrameEligible=false;
-        winrt::com_ptr<ID3D11Texture2D> raw, defaultCube;
+        winrt::com_ptr<ID3D11Texture2D> defaultCube;
         bool defaultAttempted=false;
-        winrt::com_ptr<ID3D11UnorderedAccessView> rawUAV;
-        winrt::com_ptr<ID3D11ComputeShader> inputShader;
-        winrt::com_ptr<ID3D11Buffer> inputConstants;
         IBLInput::ReflectionRadianceCapture skyCapture;
         DX12Native::EnvironmentStamp currentStamp{}, skyStamp{};
         Policy::CubeFaceHistory skyFaces;
         uint64_t skyRevision=0;
-        uint64_t epoch = 1, rawRevision = 0;
+        uint64_t epoch = 1;
         uint32_t lastCaptureFrame = UINT32_MAX;
         float lastHours = 0;
         bool failureLogged = false;

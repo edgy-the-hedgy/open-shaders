@@ -2,6 +2,7 @@
 #include "NativeCubemapPolicy.h"
 #include "Features/DX12/DX12FullNativeReconstruction.h"
 #include "Features/DX12/DX12NativeScene.h"
+#include "Features/DX12/DX12Resources.h"
 
 #include "Features/NativeIBL/NativeIBL.h"
 #include "Features/DX12/DX12Control.h"
@@ -14,22 +15,10 @@
 #include "Utils/D3D.h"
 #include "Utils/FileSystem.h"
 #include "Utils/Game.h"
-#include "GpuPass.h"
 #include <cmath>
 #include <DirectXTex.h>
 #include <stdexcept>
 
-namespace
-{
-    using NativeCubemaps::Policy::kSize;
-    struct RawConstants {
-        Matrix view, projection, inverseViewProjection;
-        float4 dynamicResolution;
-        float farDepth;
-        uint32_t size,padding[2]{};
-    };
-    static_assert(sizeof(RawConstants)%16==0);
-}
 DX12Native::EnvironmentStamp NativeCubemaps::Producer::Prepare(uint32_t scope,uint32_t frame,bool& changed)
 {
     using namespace DX12Native;
@@ -44,76 +33,10 @@ DX12Native::EnvironmentStamp NativeCubemaps::Producer::Prepare(uint32_t scope,ui
         Policy::ClockDiscontinuity(lastHours,hours));
     if(changed) { InvalidateGeneration(); stamp.epoch=epoch; }
     currentStamp=stamp;
+    if(processing) processing->Poll();
     if(waterSSR) waterSSR->Poll();
     if(std::isfinite(hours)) lastHours=hours;
     return stamp;
-}
-bool NativeCubemaps::Producer::CaptureRaw(const GraphicsBackend& backend, ID3D11ShaderResourceView* sceneColor)
-{
-    CS_GPU_PASS("NativeCubemaps::RawInput");
-    auto* renderer=globals::game::renderer;
-    if(!renderer || !backend.d3d11Device || !backend.d3d11Context) return false;
-    auto* device=backend.d3d11Device.get();
-    auto* context=backend.d3d11Context.get();
-    if(!raw || !inputShader || !rawUAV || !inputConstants) {
-        D3D11_TEXTURE2D_DESC desc{};
-        desc.Width=kSize; desc.Height=kSize; desc.MipLevels=1; desc.ArraySize=6;
-        desc.Format=DXGI_FORMAT_R16G16B16A16_FLOAT; desc.SampleDesc.Count=1;
-        desc.Usage=D3D11_USAGE_DEFAULT; desc.BindFlags=D3D11_BIND_SHADER_RESOURCE|D3D11_BIND_UNORDERED_ACCESS;
-        desc.MiscFlags=D3D11_RESOURCE_MISC_TEXTURECUBE;
-        winrt::com_ptr<ID3D11Texture2D> texture;
-        winrt::com_ptr<ID3D11UnorderedAccessView> uav;
-        winrt::com_ptr<ID3D11Buffer> constants;
-        DX::ThrowIfFailed(device->CreateTexture2D(&desc,nullptr,texture.put()));
-        D3D11_UNORDERED_ACCESS_VIEW_DESC view{};
-        view.Format=desc.Format; view.ViewDimension=D3D11_UAV_DIMENSION_TEXTURE2DARRAY; view.Texture2DArray.ArraySize=6;
-        DX::ThrowIfFailed(device->CreateUnorderedAccessView(texture.get(),&view,uav.put()));
-        D3D11_BUFFER_DESC cb{};
-        cb.ByteWidth=sizeof(RawConstants); cb.Usage=D3D11_USAGE_DEFAULT; cb.BindFlags=D3D11_BIND_CONSTANT_BUFFER;
-        DX::ThrowIfFailed(device->CreateBuffer(&cb,nullptr,constants.put()));
-        const auto path=Util::PathHelpers::GetShadersPath()/"NativeCubemaps"/"CaptureRaw.cs.hlsl";
-        winrt::com_ptr<ID3D11ComputeShader> shader;
-        shader.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(path.c_str(),{},"cs_5_0")));
-        if(!shader) return false;
-        raw=std::move(texture); rawUAV=std::move(uav); inputConstants=std::move(constants); inputShader=std::move(shader);
-    }
-    auto& depth=renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
-    ID3D11ShaderResourceView* reads[]{sceneColor,Util::AsReal(depth.depthSRV)};
-    if(!reads[0] || !reads[1]) return false;
-    const auto world=globals::features::dx12NativeScene.GetWorldFrame(currentStamp.engineFrame,currentStamp.pluginFrame);
-    if(!world) return false;
-    const auto& camera=world->camera;
-    const RawConstants data{camera.CameraView,camera.CameraProj,camera.CameraViewProjInverse,
-        camera.DynamicResolutionParams1,globals::features::reverseZ.GetFarDepth(),kSize};
-    context->UpdateSubresource(inputConstants.get(),0,nullptr,&data,0,0);
-    winrt::com_ptr<ID3D11ComputeShader> oldShader;
-    winrt::com_ptr<ID3D11Buffer> oldCB;
-    winrt::com_ptr<ID3D11UnorderedAccessView> oldUAV;
-    ID3D11ShaderResourceView* oldReads[2]{};
-    context->CSGetShader(oldShader.put(),nullptr,nullptr);
-    UINT oldFirst=0,oldCount=0;
-    context->CSGetConstantBuffers1(0,1,oldCB.put(),&oldFirst,&oldCount);
-    context->CSGetUnorderedAccessViews(0,1,oldUAV.put());
-    context->CSGetShaderResources(0,2,oldReads);
-    context->CSSetShaderResources(0,2,reads);
-    ID3D11ShaderResourceView* bound[2]{};
-    context->CSGetShaderResources(0,2,bound);
-    const bool valid=bound[0]==reads[0] && bound[1]==reads[1];
-    for(auto* view:bound) if(view) view->Release();
-    if(valid) {
-        auto* uav=rawUAV.get(); auto* cb=inputConstants.get();
-        context->CSSetUnorderedAccessViews(0,1,&uav,nullptr);
-        context->CSSetConstantBuffers(0,1,&cb);
-        context->CSSetShader(inputShader.get(),nullptr,0);
-        context->Dispatch(kSize/8,kSize/8,6);
-    }
-    auto* uav=oldUAV.get(); auto* cb=oldCB.get();
-    context->CSSetUnorderedAccessViews(0,1,&uav,nullptr);
-    context->CSSetConstantBuffers1(0,1,&cb,&oldFirst,&oldCount);
-    context->CSSetShader(oldShader.get(),nullptr,0);
-    context->CSSetShaderResources(0,2,oldReads);
-    for(auto* view:oldReads) if(view) view->Release();
-    return valid;
 }
 DX12Native::EnvironmentSource NativeCubemaps::Producer::GetDefaultSource(const GraphicsBackend& backend)
 {
@@ -159,39 +82,174 @@ DX12Native::EnvironmentSource NativeCubemaps::Producer::GetDefaultSource(const G
     return defaultCube?DX12Native::EnvironmentSource{defaultCube.get(),1,currentStamp}:DX12Native::EnvironmentSource{};
 }
 
-void NativeCubemaps::Producer::Capture(const GraphicsBackend&, ID3D11ShaderResourceView*, uint32_t,
-    std::shared_ptr<const DX12Native::FullNativeReconstructionFrame>)
+void NativeCubemaps::Producer::OnOpaqueRasterReady()
 {
-    // Cube acquisition intentionally suspended; RT reflections use the scene directly.
+    // Native Scene's existing opaque hook runs first. No legacy scene-color
+    // capture, raster ABI change, or dependency on final-color application.
+    if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation() ||
+        globals::features::dx12Control.UsesLegacyReflectionCapture() || !globals::state ||
+        !globals::state->inWorld || globals::state->nativeFirstPersonDepth ||
+        globals::state->isMapMenuOpen || globals::features::dx12Resources.IsLoading() ||
+        !globals::game::graphicsState ||
+        (globals::state->permutationData.ExtraShaderDescriptor & uint32_t(State::ExtraShaderDescriptors::IsReflections))) return;
+    const auto* backend=globals::features::dx12NativeScene.GetNativeBackend();
+    const auto grid=globals::features::dx12Resources.GetGrid();
+    const uint32_t frame=globals::game::graphicsState->GetFrameCount();
+    if(!backend || !grid || grid->requested.empty() ||
+        !GraphicsBackend::CheckNativeDeviceHealth(backend->d3d12Device.get(),backend->d3d11Device.get())) return;
+    bool changed=false;
+    Prepare(grid->requested.front().scope,frame,changed);
+    if(changed) globals::features::nativeIBL.InvalidateGeneration();
+    Capture(*backend,nullptr,frame,globals::features::upscaling.nativeComposite.GetFullNativeReconstruction(frame));
+    BeginForward();
+}
+
+void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend, ID3D11ShaderResourceView*, uint32_t frame,
+    std::shared_ptr<const DX12Native::FullNativeReconstructionFrame> native)
+{
+    using namespace DX12Native;
+    if(!loaded || !globals::features::dx12Control.WantsMaterialPreparation() ||
+        globals::features::dx12Control.UsesLegacyReflectionCapture() ||
+        !currentStamp.scope || currentStamp.engineFrame != frame || !globals::state ||
+        currentStamp.pluginFrame != globals::state->frameCount || !globals::game::renderer ||
+        !GraphicsBackend::CheckNativeDeviceHealth(backend.d3d12Device.get(),backend.d3d11Device.get())) return;
+    const auto world=globals::features::dx12NativeScene.GetWorldFrame(frame,currentStamp.pluginFrame);
+    if(!world) return;
+    try {
+        if(processing) {
+            processing->Advance(frame);
+            if(processing->Pending()) return;
+        }
+        if(!Policy::CaptureDue(lastCaptureFrame,frame,globals::features::dx12Control.NativeCubemapCaptureInterval())) return;
+        // Only direct diffuse/emission/transmission observations enter cube
+        // history. Indirect or final composited color would create feedback.
+        if(!native || native->frame!=frame || !native->material ||
+            native->material->scope!=currentStamp.scope || !native->direct ||
+            native->direct->material!=native->material || !native->rasterEvidence ||
+            !native->rasterEvidence->tokenCount || !native->ownershipMask || !native->environmentRadiance)
+            native.reset();
+        std::array<float4,3> dalc{};
+        if(!globals::state->GetAmbientSH(frame,currentStamp.pluginFrame,dalc)) return;
+        if(!inputs) inputs=std::make_unique<NativeEnvironment>();
+        const auto sky=GetSkySource(currentStamp);
+        EnvironmentSource reflection{};
+        if(sky.IsValidFor(currentStamp)) {
+            const auto& target=globals::game::renderer->GetRendererData().cubemapRenderTargets[RE::RENDER_TARGETS_CUBEMAP::kREFLECTIONS];
+            reflection={Util::AsReal(target.texture),sky.revision,sky.stamp};
+        }
+        // DX11 supplies engine acquisition textures and the static DDS only.
+        // Bootstrap from DALC/default/engine reflection before native samples
+        // are available; never dispatch CaptureRaw's DX11 compute path.
+        inputs->Capture(backend,currentStamp,{},reflection,sky,true,GetDefaultSource(backend));
+        auto captured=inputs->Get();
+        if(!captured) return;
+        if(!processing) processing=std::make_unique<CubeProcessing>();
+        if(processing->Dispatch(backend,captured,dalc,world->camera.CameraPosAdjust,native)) {
+            lastCaptureFrame=frame;
+            failureLogged=false;
+        }
+    } catch(const std::exception& e) {
+        if(!failureLogged) logger::warn("[NativeCubemaps] {}",e.what());
+        failureLogged=true;
+    } catch(...) {
+        if(!failureLogged) logger::warn("[NativeCubemaps] Environment input or processing failed");
+        failureLogged=true;
+    }
 }
 std::shared_ptr<const DX12Native::EnvironmentFrame> NativeCubemaps::Producer::Get() const
 {
-    return nullptr;
+    const auto frame=processing ? processing->Get() : nullptr;
+    if(!frame || !frame->base || !frame->base->IsReadyFor(currentStamp) ||
+        !Policy::CompletedGenerationFresh(frame->stamp.SameEnvironment(currentStamp),
+            frame->stamp.engineFrame,currentStamp.engineFrame) ||
+        !frame->producerFence || !frame->producerValue) return nullptr;
+    const auto completed=frame->producerFence->GetCompletedValue();
+    if(completed==UINT64_MAX || completed<frame->producerValue) return nullptr;
+    const auto fresh=[&](const auto& cube) {
+        return !cube || (cube->IsReadyFor(currentStamp) &&
+            Policy::PublicationFresh(true,cube->stamp.engineFrame,currentStamp.engineFrame));
+    };
+    if(!fresh(frame->reflection) || !fresh(frame->sky)) {
+        auto partial=std::make_shared<DX12Native::EnvironmentFrame>(*frame);
+        if(!fresh(partial->reflection)) partial->reflection.reset();
+        if(!fresh(partial->sky)) partial->sky.reset();
+        return partial;
+    }
+    return frame;
 }
 
 void NativeCubemaps::Producer::SetupResources()
 {
-    // No cubemap resources in RT-only Full Native mode.
+    if(loaded && globals::features::dx12Control.WantsMaterialPreparation() && globals::game::renderer) skyCapture.Setup();
 }
 
 std::function<void()> NativeCubemaps::Producer::OnReflectionsRenderBegin()
 {
-    return nullptr;
+    using namespace DX12Native;
+    if(!loaded || !globals::features::dx12Control.WantsMaterialPreparation() ||
+        globals::features::dx12Control.UsesLegacyReflectionCapture()) return nullptr;
+    auto stamp=currentStamp;
+    const auto color=globals::features::linearLighting.GetCommonBufferData();
+    const auto encoding=color.enableLinearLighting ?
+        (color.enableACEScg?EnvironmentEncoding::LinearAP1:EnvironmentEncoding::LinearRec709):EnvironmentEncoding::LegacyScene;
+    const bool visibleSky=!Util::IsInterior() && globals::game::sky &&
+        !globals::game::sky->flags.any(RE::Sky::Flags::kHideSky);
+    const bool enabled=visibleSky && globals::shaderCache && globals::shaderCache->IsEnabled() &&
+        globals::game::graphicsState && globals::state && stamp.scope && stamp.encoding==encoding && !stamp.interior && !stamp.skyHidden;
+    if(enabled&&!skyCapture.Allocated()) skyCapture.Setup();
+    auto cleanup=skyCapture.Begin(enabled);
+    if(!cleanup){skyStamp={};skyFaces={};return nullptr;}
+    if(enabled){
+        stamp.engineFrame=globals::game::graphicsState->GetFrameCount();
+        stamp.pluginFrame=globals::state->frameCount;
+    }else stamp={};
+    return [this,stamp,cleanup=std::move(cleanup)]{
+        cleanup();
+        if(skyCapture.IsCapturing())return;
+        if(!stamp.SameEnvironment(currentStamp)||skyCapture.Failed()){
+            skyStamp={};skyFaces={};return;
+        }
+        const uint32_t updated=skyCapture.ClearedFaces();
+        skyFaces.Observe(updated,stamp.engineFrame);
+        if(!skyCapture.Ready()||!skyFaces.Fresh(stamp.engineFrame)) {skyStamp={};return;}
+        if(updated){skyStamp=stamp;++skyRevision;}
+    };
 }
 
-DX12Native::EnvironmentSource NativeCubemaps::Producer::GetSkySource(const DX12Native::EnvironmentStamp&) const
+DX12Native::EnvironmentSource NativeCubemaps::Producer::GetSkySource(const DX12Native::EnvironmentStamp& requested) const
 {
-    return {};
+    if(requested.interior||requested.skyHidden||!skyFaces.Fresh(requested.engineFrame))return {};
+    DX12Native::EnvironmentSource source{skyCapture.Ready()?skyCapture.Texture():nullptr,skyRevision,skyStamp};
+    return source.IsValidFor(requested)&&Policy::PublicationFresh(true,skyStamp.engineFrame,requested.engineFrame)?
+        source:DX12Native::EnvironmentSource{};
 }
 
 ID3D11ShaderResourceView* NativeCubemaps::Producer::GetRasterSkyView() const
 {
-    return nullptr;
+    if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation() ||
+        !globals::game::graphicsState || !globals::state || skyCapture.IsCapturing() ||
+        Util::IsInterior() || !globals::game::sky || globals::game::sky->flags.any(RE::Sky::Flags::kHideSky))
+        return nullptr;
+    auto requested = currentStamp;
+    requested.engineFrame = globals::game::graphicsState->GetFrameCount();
+    requested.pluginFrame = globals::state->frameCount;
+    return GetSkySource(requested).texture ? skyCapture.View() : nullptr;
 }
 
 void NativeCubemaps::Producer::BeginForward()
 {
     EndForward();
+    if(!loaded || !globals::features::dx12Control.WantsMaterialPreparation() ||
+        !globals::state || !globals::state->inWorld || globals::state->nativeFirstPersonDepth ||
+        (globals::state->permutationData.ExtraShaderDescriptor & uint32_t(State::ExtraShaderDescriptors::IsReflections))) return;
+    const auto* backend=globals::features::dx12NativeScene.GetNativeBackend();
+    if(!backend || !globals::game::graphicsState) return;
+    const uint32_t frame=globals::game::graphicsState->GetFrameCount();
+    if(currentStamp.engineFrame!=frame || currentStamp.pluginFrame!=globals::state->frameCount) return;
+    if(!forward) forward=std::make_unique<ForwardEnvironment>();
+    forward->Update(*backend,Get(),currentStamp);
+    if(forward->Bind(*backend,currentStamp))
+        globals::state->permutationData.ExtraShaderDescriptor |= uint32_t(State::ExtraShaderDescriptors::NativeForwardEnvironment);
 }
 void NativeCubemaps::Producer::EndForward()
 {
@@ -217,6 +275,8 @@ void NativeCubemaps::Producer::EndWaterSSR()
 }
 void NativeCubemaps::Producer::OnDraw()
 {
+    // Sky acquisition is independent of the water SSR toggle and admission.
+    skyCapture.OnDraw();
     if (!globals::features::dx12Control.WantsMaterialPreparation() ||
         !globals::features::dx12Control.NativeSSREnabled() || !globals::state ||
         !globals::game::graphicsState || !globals::state->currentShader ||
@@ -277,7 +337,7 @@ void NativeCubemaps::Producer::OnDraw()
 json NativeCubemaps::Producer::GetDiagnostics()
 {
     const auto publication=Get();
-    return { {"cubeCaptureSuspended",true}, {"nativeRadianceInputAdmitted",publication && publication->nativeRadianceInput},
+    return { {"cubeCaptureSuspended",false}, {"fallbackOnly",publication && !publication->nativeRadianceInput && !publication->rasterCompatibilityInput}, {"nativeRadianceInputAdmitted",publication && publication->nativeRadianceInput},
         {"transitionalRasterInputAdmitted",publication && publication->rasterCompatibilityInput},
         {"lastCaptureFrame",lastCaptureFrame}, {"captureInterval",globals::features::dx12Control.NativeCubemapCaptureInterval()}, {"environmentRevision",publication ? publication->revision : 0},
         {"basePublished",publication && bool(publication->base)}, {"reflectionPublished",publication && bool(publication->reflection)},
@@ -311,7 +371,6 @@ void NativeCubemaps::Producer::Release()
     skyCapture.Release(); skyFaces={}; skyStamp={};
     forward.reset(); waterSSR.reset();
     processing.reset(); inputs.reset();
-    raw=nullptr; rawUAV=nullptr; inputShader=nullptr; inputConstants=nullptr;
     defaultCube=nullptr; defaultAttempted=false;
     lastCaptureFrame=UINT32_MAX;
 }
