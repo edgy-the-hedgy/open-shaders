@@ -639,10 +639,13 @@ PS_OUTPUT main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool front : SV_
 	PS_OUTPUT psout = (PS_OUTPUT)0;
 	float2 uv=input.TexCoord.xy;
 	bool complex = false;
+	const bool nativeAuthoredPbr=(Permutation::ExtraShaderDescriptor&Permutation::ExtraFlags::GrassPBR)!=0u;
 #		if defined(GRASS_LIGHTING) && !defined(TRUE_PBR)
 #			if defined(GRASS_OPTIMIZATIONS)
-	complex = input.IsComplex > 0.5;
-	if (input.IsComplex < 0.0)
+	complex = !nativeAuthoredPbr && input.IsComplex > 0.5;
+	if (!nativeAuthoredPbr && input.IsComplex < 0.0)
+#			else
+	if (!nativeAuthoredPbr)
 #			endif
 	{
 		float w,h;
@@ -703,6 +706,27 @@ PS_OUTPUT main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool front : SV_
 			NativeInputMRT::PackOct(vertexNormal),NativeInputMRT::PackOct(normalize(input.ClumpNormal.xyz)),
 			NativeInputMRT::PackHalf2(float2(lodBrightness,SharedData::grassLightingSettings.ClumpShading)));
 #		else
+#			if defined(GRASS_LIGHTING)
+		if (nativeAuthoredPbr) {
+			const bool sphere=(Permutation::ExtraShaderDescriptor&Permutation::ExtraFlags::GrassSphereNormal)!=0u;
+			if (!sphere && !front) vertexNormal=-vertexNormal;
+			bool detail=true;
+			float lodBrightness=1.0;
+#				if defined(GRASS_OPTIMIZATIONS)
+			detail=input.IsFar<=0.5;
+			lodBrightness=GetLODBrightness(input.LodTier);
+#				endif
+			if (SharedData::grassLightingSettings.OverrideComplexGrassSettings)
+				lodBrightness*=SharedData::grassLightingSettings.BasicGrassBrightness;
+			psout.BasisFlags.w=(psout.BasisFlags.w&~(15u<<19u))|(11u<<19u);
+			psout.MaterialTechnique=uint4((detail?1u<<16u:0u)|
+				(SharedData::grassLightingSettings.EnableNewLightingModel?1u<<17u:0u)|(sphere?1u<<18u:0u)|
+				(SharedData::lodBlendingSettings.DisableTerrainVertexColors?1u<<19u:0u),
+				NativeInputMRT::PackOct(vertexNormal),NativeInputMRT::PackOct(normalize(input.ClumpNormal.xyz)),
+				NativeInputMRT::PackHalf2(float2(lodBrightness,SharedData::grassLightingSettings.ClumpShading)));
+			return psout;
+		}
+#			endif
 		psout.MaterialTechnique=uint4((complex?1u:0u)|(complexDetail?2u:0u)|(f32tof16(saturate(balance))<<16u),
 			NativeInputMRT::PackOct(vertexNormal),NativeInputMRT::PackHalf2(float2(roughness,brightness)),
 			NativeInputMRT::PackHalf2(float2(specularStrength,scattering)));
