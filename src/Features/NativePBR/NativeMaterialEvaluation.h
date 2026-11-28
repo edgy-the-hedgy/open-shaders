@@ -630,7 +630,7 @@ namespace DX12Native
 				auto recipe = CompilePreparedMeshRecipe(source, identity, revision, catalog, source.rasterMaterialObjectEditorId, nullptr, nullptr, true);
 				if (!recipe) continue;
 				sources[i] = { flags, source.observedShaderFlags, true, source.colorOffset != UINT32_MAX, !source.rasterMaterialObjectEditorId.empty(),
-					has(F::kFace) || has(F::kHairTint) || has(F::kTreeAnim) || has(F::kVertexAlpha) ||
+					source.rasterPbrGrass || has(F::kFace) || has(F::kHairTint) || has(F::kTreeAnim) || has(F::kVertexAlpha) ||
 					(!source.authoredShaderFlags && has(F::kGlowMap)) };
 				prepared.bindings[i] = NativePBR::PackGpuDrawBinding(identity, revision, UINT32_MAX, 0);
 				prepared.recipes.push_back(std::move(*recipe));
