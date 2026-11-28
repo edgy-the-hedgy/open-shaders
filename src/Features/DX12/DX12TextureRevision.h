@@ -1,5 +1,6 @@
 #pragma once
 #include <d3d11.h>
+#include "DX12MaterialFrameContract.h"
 #include <atomic>
 #include <cstdint>
 
@@ -12,7 +13,7 @@ namespace DX12Native::TextureRevision
 	inline std::atomic<uint64_t> epoch{1}, serial{1};
 	struct Stamp {
 		uint64_t epoch=0, revision=0;
-		constexpr bool operator==(const Stamp&) const = default;
+		constexpr bool operator==(const Stamp& other) const { return MaterialFrameContract::ContentRevisionMatches(epoch,revision,other.epoch,other.revision); }
 		constexpr explicit operator bool() const { return epoch!=0; }
 	};
 	inline bool Eligible(const D3D11_TEXTURE2D_DESC& d)
