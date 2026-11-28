@@ -508,6 +508,31 @@ TEST_CASE("Grass and projector snapshots share one bounded pool", "[dx12][materi
 	STATIC_REQUIRE_FALSE(ConstantSnapshotFits(1,UINT32_MAX,128));
 }
 
+TEST_CASE("Terrain snapshot paging visits every stable candidate without exceeding the reserved capacity", "[dx12][materials]")
+{
+	using namespace DX12Native::MaterialFrameContract;
+	constexpr uint32_t capacity=32u;
+	for (uint32_t count=1u;count<=513u;++count) {
+		std::vector<uint32_t> visits(count,0u);
+		uint32_t start=0;
+		do {
+			uint32_t selected=0;
+			for (uint32_t ordinal=0;ordinal<count;++ordinal)
+				if (SnapshotPageContains(ordinal,start,capacity)) {
+					++selected;
+					++visits[ordinal];
+				}
+			REQUIRE(selected<=capacity);
+			start=NextSnapshotPage(start,count,capacity);
+		} while (start!=0u);
+		for (const auto visit:visits) REQUIRE(visit==1u);
+	}
+	STATIC_REQUIRE(NextSnapshotPage(64u,17u,32u)==0u);
+	STATIC_REQUIRE(NextSnapshotPage(0u,0u,32u)==0u);
+	STATIC_REQUIRE_FALSE(SnapshotPageContains(0u,UINT32_MAX,32u));
+	STATIC_REQUIRE_FALSE(SnapshotPageContains(32u,0u,32u));
+}
+
 TEST_CASE("Typed Effect readiness distinguishes untextured rows from missing transfers", "[dx12][materials]")
 {
 	using namespace DX12Native::MaterialFrameContract;
