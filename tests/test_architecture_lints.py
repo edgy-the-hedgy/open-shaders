@@ -111,7 +111,7 @@ class ArchitectureLintTests(unittest.TestCase):
     def test_full_native_shader_inputs_share_one_boot_latched_cache_identity(self):
         cache = (ROOT / "src/ShaderCache.cpp").read_text(encoding="utf-8")
         self.assertIn('"FULL_NATIVE_INPUT"', cache)
-        self.assertIn('L"_full_native_input_v6_coverage7"', cache)
+        self.assertIn('L"_full_native_input_v6_coverage8"', cache)
         self.assertNotIn('L"_native_pbr_input_v1"', cache)
         for name in ("Lighting", "Effect", "Sky", "DistantTree"):
             source = (ROOT / f"package/Shaders/{name}.hlsl").read_text(encoding="utf-8")
