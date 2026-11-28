@@ -596,6 +596,8 @@ namespace DX12Native
 			for (size_t i = 0; i < materials.size(); ++i) {
 				if (!materials[i]) continue;
 				const auto& source = *materials[i];
+				// Effect uses its draw-local typed transfer evaluator, not a Lighting recipe.
+				if (source.rasterEffect) continue;
 				if (source.rasterLandscapeLayers == 6u && source.clampMode >= 0 && source.clampMode <= 3) {
 					auto& row = landscapeRows[i];
 					row[8] = 6u;
