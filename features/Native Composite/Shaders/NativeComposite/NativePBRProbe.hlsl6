@@ -70,7 +70,7 @@ RWByteAddressBuffer MaterialLobes : register(u4);
 RWByteAddressBuffer SpecializedDirectoryOut : register(u5);
 RWByteAddressBuffer SpecializedPoolOut : register(u6);
 RWByteAddressBuffer SpecializedCounters : register(u7);
-cbuffer SpecializedInputs : register(b2) { uint SpecializedCapacity; };
+cbuffer SpecializedInputs : register(b2) { uint SpecializedCapacity; uint SpecializedEnabled; };
 #endif
 uint2 PackHalf4(float4 value)
 {
@@ -1147,8 +1147,9 @@ void screenMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
 #ifdef NATIVE_SPECIALIZED_V2_PRODUCER
         if(!HasEvaluatedNativeBase(result.color.a)) specialized=(NativeSpecializedEvaluation)0;
         else if((specialized.present&~specialized.valid)!=0u) result.color.a=SurfaceFeatureLimited;
-        NativeSpecializedPublish(SpecializedDirectoryOut,SpecializedPoolOut,SpecializedCounters,ordinal,
-            SpecializedCapacity,specialized.present,specialized.valid,specialized.payload);
+        if(SpecializedEnabled!=0u)
+            NativeSpecializedPublish(SpecializedDirectoryOut,SpecializedPoolOut,SpecializedCounters,ordinal,
+                SpecializedCapacity,specialized.present,specialized.valid,specialized.payload);
 #else
         uint lobeOffset=ordinal*NativeMaterialLobeStride;
         MaterialLobes.Store4(lobeOffset,uint4(PackHalf4(coat.normalRoughness),PackHalf4(coat.colorStrength)));
@@ -1179,7 +1180,7 @@ void screenMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
         }
     }
 #ifdef NATIVE_SPECIALIZED_V2_PRODUCER
-    else if(id.y<GridSize.y && id.x<((GridSize.x+7u)&~7u)) {
+    else if(SpecializedEnabled!=0u && id.y<GridSize.y && id.x<((GridSize.x+7u)&~7u)) {
         uint ordinal=id.y*((GridSize.x+7u)&~7u)+id.x;
         SpecializedDirectoryOut.Store3(ordinal*NativeSpecializedDirectoryStride,uint3(NativeSpecializedNoRecord,0u,0u));
     }

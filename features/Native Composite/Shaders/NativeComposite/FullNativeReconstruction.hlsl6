@@ -1,5 +1,16 @@
 #include "NativeSurface.hlsli"
 #include "FullNativeSampling.hlsli"
+#ifdef NATIVE_SPECIALIZED_V2_RUNTIME
+#include "NativeSpecializedMaterial.hlsli"
+ByteAddressBuffer CurrentSpecializedDirectory : register(t14);
+ByteAddressBuffer CurrentSpecializedPool : register(t15);
+ByteAddressBuffer HistorySpecializedDirectory : register(t16);
+ByteAddressBuffer HistorySpecializedPool : register(t17);
+cbuffer SpecializedHistoryInputs : register(b1) {
+    uint CurrentSpecializedCapacity, HistorySpecializedCapacity;
+    uint CurrentSpecializedEnabled, HistorySpecializedEnabled;
+};
+#endif
 
 ByteAddressBuffer Materials : register(t0);
 ByteAddressBuffer Direct : register(t1);
@@ -90,6 +101,34 @@ float4 ReadMaterial(uint2 p, uint offset)
 
 static const uint DirectTransmissionSignal = 256u;
 static const uint IndirectTransmissionSignal = 512u;
+#ifdef NATIVE_SPECIALIZED_V2_RUNTIME
+NativeSpecializedDirectory ReadHistorySpecialized(ByteAddressBuffer directory,uint2 p,uint pitch,uint capacity,uint enabled)
+{
+    if(enabled!=0u) return NativeSpecializedReadDirectory(directory,p.y*(pitch/NativeSurfaceStride)+p.x,capacity);
+    return NativeSpecializedSanitize(NativeSpecializedNoRecord,0u,0u,0u);
+}
+// Compare actual independent evidence and payload words, never the frame-local ordinal.
+// Conservatively reject all specialized lighting history on changes to the shared payload.
+bool SpecializedMatches(uint2 p,uint2 q,bool history)
+{
+    NativeSpecializedDirectory a=ReadHistorySpecialized(CurrentSpecializedDirectory,p,MaterialPitch,CurrentSpecializedCapacity,CurrentSpecializedEnabled);
+    NativeSpecializedDirectory b;
+    if(history) b=ReadHistorySpecialized(HistorySpecializedDirectory,q,HistoryMaterialPitch,HistorySpecializedCapacity,HistorySpecializedEnabled);
+    else b=ReadHistorySpecialized(CurrentSpecializedDirectory,q,MaterialPitch,CurrentSpecializedCapacity,CurrentSpecializedEnabled);
+    if(a.present!=b.present||a.valid!=b.valid) return false;
+    if((a.present&a.valid)==0u) return true;
+    if(a.ordinal==NativeSpecializedNoRecord||b.ordinal==NativeSpecializedNoRecord) return false;
+    uint ao=a.ordinal*NativeSpecializedPayloadStride,bo=b.ordinal*NativeSpecializedPayloadStride;
+    [unroll] for(uint i=0u;i<96u;i+=16u) {
+        uint4 v=CurrentSpecializedPool.Load4(ao+i);
+        uint4 w;
+        if(history) w=HistorySpecializedPool.Load4(bo+i);
+        else w=CurrentSpecializedPool.Load4(bo+i);
+        if(any(v!=w)) return false;
+    }
+    return true;
+}
+#endif
 float4 ReadSignal(uint2 p, uint contribution)
 {
     // Unwritten sparse pixels can contain an older slot's bytes. Never load them.
@@ -153,6 +192,9 @@ float3 FilterSignal(uint2 pixel, uint contribution, float4 centerBase, float4 ce
                 !isfinite(depth) || abs(depth - centerDepth) > 0.001 ||
                 dot(normal.xyz, centerNormal.xyz) < 0.95 || abs(normal.w - centerNormal.w) > 0.1 ||
                 any(abs(base.rgb - centerBase.rgb) > 0.15)) continue;
+#ifdef NATIVE_SPECIALIZED_V2_RUNTIME
+            if(!SpecializedMatches(pixel,q,false)) continue;
+#endif
             float4 sample = ReadSignal(q, contribution);
             if (!ValidSignal(sample, contribution)) continue;
             float2 delta = (float2(q) - float2(pixel)) / float(scale);
@@ -185,6 +227,9 @@ bool HistorySurfaceMatches(uint2 p, float4 base, float4 normal, float depth, out
     if (!ValidRayIdentity(currentIdentity) || !ValidRayIdentity(previousIdentity) ||
         ((currentIdentity.y | previousIdentity.y) & 0x80000000u) != 0u ||
         any(currentIdentity != previousIdentity)) return false;
+#ifdef NATIVE_SPECIALIZED_V2_RUNTIME
+    if(!SpecializedMatches(p,oldPixel,true)) return false;
+#endif
     uint offset = oldPixel.y * HistoryMaterialPitch + oldPixel.x * NativeSurfaceStride;
     float4 oldBase = Unpack(HistoryMaterials.Load2(offset));
     float4 oldNormal = Unpack(HistoryMaterials.Load2(offset + 8u));
