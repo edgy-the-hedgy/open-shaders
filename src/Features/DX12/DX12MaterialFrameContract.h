@@ -20,7 +20,7 @@ namespace DX12Native::MaterialFrameContract
 	}
 	// Round-robin admission of bounded transfer candidates. The initial
 	// cursor rotates per publication; empty classes never waste a slot.
-	inline constexpr uint32_t kTransferClassCount=5u;
+	inline constexpr uint32_t kTransferClassCount=6u;
 	constexpr uint32_t NextTransferClass(const std::array<uint32_t,kTransferClassCount>& remaining, uint32_t cursor)
 	{
 		for (uint32_t offset=0; offset<kTransferClassCount; ++offset) {
