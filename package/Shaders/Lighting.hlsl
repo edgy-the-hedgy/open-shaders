@@ -1494,6 +1494,21 @@ PS_OUTPUT main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool frontFace :
 	psout.BasisFlags.w |= NativeInputMRT::AuxFur;
 	psout.MaterialTechnique = uint4(asuint(input.FurShell), NativeInputMRT::PackHalf2(input.FurRoot.xy),
 		NativeInputMRT::PackHalf2(input.FurRoot.zw), Permutation::NativeRasterMaterialIndex);
+#		elif defined(MODELSPACENORMALS) && !defined(LODLANDNOISE) && !defined(LODLANDSCAPE)
+	// Carry authored specular scalars, not sampled material appearance.
+	float roughnessBlend=1.0, f0Multiplier=1.0, minF0=0.0, roughnessMultiplier=1.0;
+#			if defined(VANILLA_FRESNEL)
+	if (SharedData::vanillaFresnelSettings.Enable) {
+		roughnessBlend=SharedData::vanillaFresnelSettings.SpecularRoughnessBlend;
+		f0Multiplier=SharedData::vanillaFresnelSettings.BaseF0Multiplier;
+		minF0=SharedData::vanillaFresnelSettings.MinF0;
+		roughnessMultiplier=SharedData::vanillaFresnelSettings.RoughnessMultiplier;
+	}
+#			endif
+	psout.BasisFlags.w |= 9u<<19u;
+	psout.MaterialTechnique=uint4(NativeInputMRT::PackHalf2(SpecularColor.xy),
+		NativeInputMRT::PackHalf2(SpecularColor.zw),NativeInputMRT::PackHalf2(float2(roughnessBlend,f0Multiplier)),
+		NativeInputMRT::PackHalf2(float2(minF0,roughnessMultiplier)));
 #		endif
 	}
 	// No diffuse, specular, reflection or evaluated material color is written.
