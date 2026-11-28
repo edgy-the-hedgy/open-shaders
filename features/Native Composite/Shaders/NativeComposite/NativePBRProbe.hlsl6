@@ -180,6 +180,96 @@ Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float dista
     return blended;
 }
 
+// Shader-class-specific base evaluation using typed draw-local SRV transfers.
+// Row tags cannot be mistaken for a scene instance or a Lighting recipe.
+// No ray correspondence or TXST material ordinal is required.
+Sample EvaluateNonLightingRaster(RawRasterSurface raw, float3 viewRay, out bool rawUsed)
+{
+    Sample result=(Sample)0;
+    rawUsed=false;
+    result.color.a=SurfaceUnsupportedMaterial;
+    const uint kind=raw.auxiliaryKind;
+    const uint expected=kind==5u ? 0xfffffffeu : kind==6u ? 0xfffffffdu : 0xfffffffcu;
+    // Complex Effect techniques do not yet have a complete material evaluator.
+    if (kind==7u && raw.auxiliary.y==0u) return result;
+    result.color.a=SurfaceMissingTextures;
+    if (ProjectionRowCount==0u || raw.drawIdentity.x==0u ||
+        raw.drawIdentity.x>(HasRawInput & 0x7fffffffu)) return result;
+    uint row=RasterProjectionLookup.Load((raw.drawIdentity.x-1u)*4u);
+    if (row>=ProjectionRowCount) return result;
+    uint4 metadata=ProjectionRecords.Load(int3(0,row,0));
+    if (metadata.x!=expected || metadata.z!=row) return result;
+    uint4 textures=ProjectionRecords.Load(int3(7,row,0));
+    if (textures.x>=NativeProjectionTextureCapacity) return result;
+    float gradientScale=exp2(clamp(MaterialMipBias,-16.0,16.0));
+    float2 uv=raw.uv, dx=raw.dx*gradientScale, dy=raw.dy*gradientScale;
+    bool complexGrass=kind==5u && (raw.auxiliary.x&1u)!=0u;
+    if (complexGrass) { uv.y*=0.5; dx.y*=0.5; dy.y*=0.5; }
+    float4 texel=NativeProjectionGrad(textures.x,metadata.w&3u,uv,dx,dy);
+    float3 encoded=(metadata.w&256u)!=0u ? NativeProjectionEncode(texel.rgb) : texel.rgb;
+    float3 base=SrgbToLinear(encoded);
+    float3 normal=normalize(raw.normal);
+    float roughness=1.0;
+    float3 f0=0.0;
+    float ao=1.0;
+    float3 emission=0.0;
+    if (kind==5u) {
+        float2 settings=RawHalf2(raw.auxiliary.z);
+        float2 spec=RawHalf2(raw.auxiliary.w);
+        normal=RawOct(raw.auxiliary.y);
+        if (dot(normal,viewRay)>0.0) normal=-normal;
+        roughness=clamp(settings.x,0.045,1.0);
+        base*=SrgbToLinear(raw.color.rgb)*max(settings.y,0.0);
+        ao=saturate(max(raw.color.r,max(raw.color.g,raw.color.b)));
+        if (complexGrass && (raw.auxiliary.x&2u)!=0u) {
+            // The lower half of a legacy complex grass atlas contains normal
+            // and specular data, not a second diffuse texture.
+            float4 detail=NativeProjectionGrad(textures.x,metadata.w&3u,uv+float2(0.0,0.5),dx,dy);
+            float3 packed=(metadata.w&256u)!=0u ? NativeProjectionEncode(detail.rgb) : detail.rgb;
+            float3 mapped=packed*2.0-1.0;
+            float3 tangent=raw.tangent-normal*dot(raw.tangent,normal);
+            if (dot(tangent,tangent)>1e-8 && dot(mapped,mapped)>1e-8) {
+                tangent=normalize(tangent);
+                float3 bitangent=normalize(cross(normal,tangent));
+                if (dot(bitangent,raw.bitangent)<0.0) bitangent=-bitangent;
+                normal=normalize(tangent*mapped.x+bitangent*mapped.y+normal*mapped.z);
+            }
+            f0=saturate(detail.a*max(spec.x,0.0)).xxx;
+        }
+    } else if (kind==7u) {
+        float4 tint=asfloat(ProjectionRecords.Load(int3(1,row,0)));
+        float scale=asfloat(metadata.y);
+        if (!all(isfinite(tint)) || !isfinite(scale)) return result;
+        float3 tintRgb=tint.rgb*raw.color.rgb;
+        if ((raw.pixelDescriptor&(1u<<19u))!=0u) {
+            if (textures.y>=NativeProjectionTextureCapacity) return result;
+            // Palette addressing follows the original Effect shader.
+            float2 paletteUV=float2(encoded.g,tintRgb.r);
+            float4 palette=NativeProjectionGrad(textures.y,(metadata.w>>2u)&3u,paletteUV,0.0,0.0);
+            float3 paletteEncoded=(metadata.w&512u)!=0u ? NativeProjectionEncode(palette.rgb) : palette.rgb;
+            base=SrgbToLinear(max(paletteEncoded*scale,0.0));
+        } else {
+            base=SrgbToLinear(max(encoded*tintRgb,0.0));
+        }
+        float influence=saturate(asfloat(raw.auxiliary.x));
+        if (!isfinite(influence)) return result;
+        emission=base*(1.0-influence);
+        base*=influence;
+    }
+    if (!all(isfinite(base)) || !all(isfinite(normal)) || dot(normal,normal)<1e-8 ||
+        !all(isfinite(f0)) || !all(isfinite(emission)) || !isfinite(roughness) || !isfinite(ao)) {
+        result.color.a=SurfaceEvaluationFailed; return result;
+    }
+    // Base properties are genuinely evaluated; unsupported lobe, snow,
+    // lighting-model and special Effect behavior remains feature-limited.
+    result.color=float4(base,SurfaceFeatureLimited);
+    result.normal=float4(normalize(normal),roughness);
+    result.f0=float4(f0,0.0);
+    result.emission=float4(emission,ao);
+    rawUsed=true;
+    return result;
+}
+
 // Direct evaluation of certified raster interpolants, independent of TLAS mapping.
 Sample EvaluateRasterLocal(RawRasterSurface raw, uint2 mapped, float3 viewRay, float distance,
     float3 worldPosition, float3 worldDx, float3 worldDy, float noise,
@@ -187,6 +277,8 @@ Sample EvaluateRasterLocal(RawRasterSurface raw, uint2 mapped, float3 viewRay, f
 {
     rawUsed=false; coat=(NativeCoatSample)0; shadow=(NativeParallaxShadowSample)0;
     Sample result=(Sample)0; result.color.a=SurfaceUnsupportedMaterial;
+    if (raw.auxiliaryKind>=5u && raw.auxiliaryKind<=7u)
+        return EvaluateNonLightingRaster(raw,viewRay,rawUsed);
     if (raw.materialOrdinal==0u || raw.materialOrdinal>RasterSourceCount) return result;
     uint preparedRow=RasterMaterialLookup.Load((raw.materialOrdinal-1u)*4u);
     if (preparedRow>=RasterPreparedSourceCount) { result.color.a=SurfaceMissingTextures; return result; }
