@@ -28,6 +28,7 @@ namespace DX12Native
 	inline constexpr uint32_t kRasterDistantTreeRow = UINT32_MAX - 2u;
 	inline constexpr uint32_t kRasterEffectRow = UINT32_MAX - 3u;
 	inline constexpr uint32_t kRasterModelSpecularRow = UINT32_MAX - 4u;
+	inline constexpr uint32_t kRasterPbrGrassRow = UINT32_MAX - 5u;
 	struct ProjectedInputDraw
 	{
 		uint32_t instance = UINT32_MAX, descriptor = 0, samplerModes = 0;
@@ -36,6 +37,8 @@ namespace DX12Native
 		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, kProjectedTextureRoles> views;
 		uint32_t rasterDraw = 0;
 		std::vector<uint32_t> rasterAliases;
+		std::array<winrt::com_ptr<ID3D11ShaderResourceView>,2> extraViews;
+		uint32_t extraSamplerModes=0;
 	};
 	struct ProjectedInputFrame
 	{
@@ -107,6 +110,7 @@ namespace DX12Native
 			std::array<uint32_t, 4> offsets;
 			std::array<uint32_t, 4> metadata;
 			std::array<uint32_t, 4> textures;
+			std::array<uint32_t,4> extras;
 		};
 		std::array<std::shared_ptr<ProjectedInputFrame>, 3> slots;
 		std::shared_ptr<const ProjectedInputFrame> current;
@@ -532,9 +536,18 @@ namespace DX12Native
 						constants.textures[i] = ImportTexture(*pending, reusable, draw.views[i].get());
 						if (draw.views[i] && constants.textures[i] == UINT32_MAX) ++pending->missingTextures;
 					}
+					constants.extras={UINT32_MAX,UINT32_MAX,draw.extraSamplerModes,0u};
+					for (size_t i=0; i<draw.extraViews.size(); ++i) {
+						if (!draw.extraViews[i]) continue;
+						submitted=true;
+						constants.extras[i]=ImportTexture(*pending,reusable,draw.extraViews[i].get());
+						if (constants.extras[i]==UINT32_MAX) ++pending->missingTextures;
+					}
 					uint32_t residentMask=0;
 					for (uint32_t role=0; role<constants.textures.size(); ++role)
 						if (constants.textures[role]!=UINT32_MAX) residentMask|=1u<<role;
+					for (uint32_t role=0;role<draw.extraViews.size();++role)
+						if (constants.extras[role]!=UINT32_MAX) residentMask|=1u<<(role+4u);
 					pending->residentRoleMasks.push_back(residentMask);
 					records.push_back(constants);
 				}
