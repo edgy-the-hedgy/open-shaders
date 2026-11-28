@@ -111,7 +111,7 @@ class ArchitectureLintTests(unittest.TestCase):
     def test_full_native_shader_inputs_share_one_boot_latched_cache_identity(self):
         cache = (ROOT / "src/ShaderCache.cpp").read_text(encoding="utf-8")
         self.assertIn('"FULL_NATIVE_INPUT"', cache)
-        self.assertIn('L"_full_native_input_v6"', cache)
+        self.assertIn('L"_full_native_input_v6_coverage1"', cache)
         self.assertNotIn('L"_native_pbr_input_v1"', cache)
         for name in ("Lighting", "Effect", "Sky", "DistantTree"):
             source = (ROOT / f"package/Shaders/{name}.hlsl").read_text(encoding="utf-8")
@@ -161,6 +161,13 @@ class ArchitectureLintTests(unittest.TestCase):
         self.assertIn("ddy(uv)", raw)
         self.assertIn("CopySubresourceRegion(active->planes[i]->resource11", capture)
         self.assertIn("drawRecords.size_bytes()", capture)
+        self.assertIn("drawTableCapacity < tableBytes", capture)
+        self.assertIn("materialSources.assign", capture)
+        self.assertIn("instanceOrdinal*stride+primitive", raw)
+        for shader in ("RunGrass", "DistantTree", "Effect"):
+            source = (ROOT / f"package/Shaders/{shader}.hlsl").read_text(encoding="utf-8")
+            self.assertIn("NativeInstance", source)
+            self.assertIn("NativeInputMRT::Write", source)
         self.assertIn("renderWidth, renderHeight", capture)
         for obsolete in ("OMGetRenderTargets", "OMSetRenderTargets", "PSGetShader", "PSSetShader", "StandaloneShaderClass"):
             self.assertNotIn(obsolete, capture)

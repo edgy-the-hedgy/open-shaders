@@ -49,11 +49,12 @@ namespace NativeInputMRT
         return float3x3(normalize(t),normalize(b),normalize(n));
     }
     void Write(inout NativeInputOutput output, float4 position, float2 uv, float4 color,
-        float3x3 basis, uint primitive, bool front, uint coverage, float alpha)
+        float3x3 basis, uint primitive, bool front, uint coverage, float alpha, uint instanceOrdinal = 0u)
     {
         const float2 dx=ddx(uv), dy=ddy(uv);
         const uint instance=Permutation::NativeRasterInstance;
-        if (!instance || primitive >= Permutation::NativeRasterPrimitiveCount || (coverage&1u)==0u ||
+        const uint stride=Permutation::NativeRasterPrimitiveCount;
+        if (!instance || !stride || primitive >= stride || instanceOrdinal > (0xffffffffu-primitive)/stride || (coverage&1u)==0u ||
             !all(isfinite(uv)) || !all(isfinite(dx)) || !all(isfinite(dy)) || !all(isfinite(color)) ||
             !all(isfinite(position)) || !isfinite(alpha) ||
             !all(isfinite(basis[0])) || !all(isfinite(basis[1])) || !all(isfinite(basis[2])) ||
@@ -61,7 +62,7 @@ namespace NativeInputMRT
             (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::AdditiveLighting) != 0u)
             return;
         uint4 c=uint4(round(saturate(color)*255.0));
-        output.IdentityUV=uint4(instance,primitive,asuint(uv));
+        output.IdentityUV=uint4(instance,instanceOrdinal*stride+primitive,asuint(uv));
         output.ColorGradDepth=uint4(c.x|(c.y<<8u)|(c.z<<16u)|(c.w<<24u),PackHalf2(dx),PackHalf2(dy),asuint(position.z));
         output.BasisFlags=uint4(PackOct(basis[0]),PackOct(basis[1]),PackOct(basis[2]),
             (front?1u:0u)|2u|4u|(uint(round(saturate(alpha)*65535.0))<<3u));

@@ -127,7 +127,7 @@ namespace NativePBR
 			}
 			slot = std::move(replacement);
 		}
-		slot->stamp = stamp; slot->draws = 0; slot->drawRecords.clear(); slot->drawTable = nullptr; slot->evidence.reset();
+		slot->stamp = stamp; slot->draws = 0; slot->drawRecords.clear(); slot->materialSources.clear(); slot->evidence.reset();
 		slot->readyFence = producer.fence12; slot->readyValue = UINT64_MAX;
 		active = slot;
 		failure.clear();
@@ -136,7 +136,7 @@ namespace NativePBR
 
 	void RawInputCapture::Publish(const GraphicsBackend& backend, ID3D11Texture2D* mask,
 		const std::array<ID3D11Texture2D*, InputOnly::kPlaneCount>& sources,
-		RasterIdentityStamp stamp, std::span<const RasterDrawRecord> drawRecords, uint32_t draws, uint32_t renderWidth, uint32_t renderHeight, bool allWritersKnown)
+		RasterIdentityStamp stamp, std::span<const RasterDrawRecord> drawRecords, std::span<const DX12::PreparedMaterialSource> materials, uint32_t draws, uint32_t renderWidth, uint32_t renderHeight, bool allWritersKnown)
 	{
 		published.reset();
 		if (!mask || !draws || drawRecords.empty() || drawRecords.size() > UINT32_MAX / sizeof(RasterDrawRecord) ||
@@ -158,9 +158,14 @@ namespace NativePBR
 			if (!Prepare(backend, stamp, renderWidth, renderHeight)) return;
 			active->draws = draws;
 			active->drawRecords.assign(drawRecords.begin(), drawRecords.end());
-			const auto tableBytes = drawRecords.size_bytes();
-			active->drawTable = DX12Native::NativeMaterialEvaluation::Buffer(owner.d3d12Device.get(), tableBytes,
-				D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
+			active->materialSources.assign(materials.begin(), materials.end());
+			const uint64_t tableBytes = drawRecords.size_bytes();
+			if (!active->drawTable || active->drawTableCapacity < tableBytes) {
+				const uint64_t capacity = std::max<uint64_t>(65536u, (tableBytes + 65535u) & ~uint64_t(65535u));
+				active->drawTable = DX12Native::NativeMaterialEvaluation::Buffer(owner.d3d12Device.get(), capacity,
+					D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
+				active->drawTableCapacity = capacity;
+			}
 			const D3D12_RANGE noRead{};
 			void* mapped = nullptr;
 			DX::ThrowIfFailed(active->drawTable->Map(0, &noRead, &mapped));

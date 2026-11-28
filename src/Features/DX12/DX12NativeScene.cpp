@@ -4,6 +4,8 @@
 #include "Features/NativeCubemaps/NativeCubemaps.h"
 #include "Features/NativeIBL/NativeIBL.h"
 #include "Features/NativePBR/NativePBRFrameProducer.h"
+#include "Features/NativePBR/NativeMaterialMetadata.h"
+#include "RE/B/BSTextureSet.h"
 #include "Features/FoliageLighting.h"
 
 #include "../LightLimitFix/ShadowCasterMath.h"
@@ -990,11 +992,13 @@ void DX12NativeScene::BeginFullNativeRasterInputs()
 	next.geometryOrdinals = std::move(draws.geometryOrdinals);
 	next.materialOrdinals = std::move(draws.materialOrdinals);
 	next.drawRecords = std::move(draws.drawRecords);
+	next.materialSources = std::move(draws.materialSources);
 	next.projection = std::move(draws.projection);
 	next.projectionTextures = std::move(draws.projectionTextures);
 	next.geometryOrdinals.clear();
 	next.materialOrdinals.clear();
 	next.drawRecords.clear();
+	next.materialSources.clear();
 	next.projection.clear();
 	next.projectionTextures.clear();
 	draws = std::move(next);
@@ -1050,15 +1054,21 @@ void DX12NativeScene::ObserveNativeInputTargets(UINT count, ID3D11RenderTargetVi
 	auto& draws = fullNativeRasterDraws;
 	if (!draws.active || draws.finalized || count == D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL) return;
 	draws.targetsBound = false;
-	if (!views || count != 8 || !depth || !globals::game::renderer) return;
+	draws.touchesVisibility = true;
+	if (!globals::game::renderer) return;
 	auto& targets = globals::game::renderer->GetRuntimeData().renderTargets;
+	winrt::com_ptr<ID3D11Resource> boundDepth;
+	if (depth) depth->GetResource(boundDepth.put());
+	const auto mainDepth = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN].texture;
+	draws.touchesVisibility = boundDepth && boundDepth.get() == Util::AsReal(mainDepth);
+	if (views) for (UINT i=0;i<count;++i)
+		for (auto target : { ALBEDO, SPECULAR, REFLECTANCE, MASKS, MASKS2 })
+			draws.touchesVisibility |= views[i] && views[i] == Util::AsReal(targets[target].RTV);
+	if (!views || count != 8 || !depth) return;
 	const RE::RENDER_TARGET expected[]{ RE::RENDER_TARGET::kMAIN, RE::RENDER_TARGET::kMOTION_VECTOR,
 		NORMALROUGHNESS, ALBEDO, SPECULAR, REFLECTANCE, MASKS, MASKS2 };
 	for (UINT i = 0; i < 8; ++i)
 		if (!views[i] || views[i] != Util::AsReal(targets[expected[i]].RTV)) return;
-	winrt::com_ptr<ID3D11Resource> boundDepth;
-	depth->GetResource(boundDepth.put());
-	const auto mainDepth = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN].texture;
 	if (boundDepth.get() != Util::AsReal(mainDepth)) return;
 	draws.targetsBound = true;
 }
@@ -1067,12 +1077,14 @@ void DX12NativeScene::ObserveNativeInputBlend(ID3D11BlendState* state, UINT samp
 {
 	auto& draws = fullNativeRasterDraws;
 	if (!draws.active || draws.finalized) return;
-	draws.replacement = (sampleMask & 1u) != 0;
+	draws.replacement = draws.opaqueReplacement = (sampleMask & 1u) != 0;
 	if (!state) return;
 	D3D11_BLEND_DESC desc{};
 	state->GetDesc(&desc);
 	draws.replacement &= !desc.AlphaToCoverageEnable;
-	for (UINT i = 0; i < 8; ++i) {
+	const auto& color = desc.RenderTarget[0];
+	draws.opaqueReplacement = draws.replacement && !desc.AlphaToCoverageEnable && !color.BlendEnable && color.RenderTargetWriteMask == D3D11_COLOR_WRITE_ENABLE_ALL;
+	for (UINT i = 3; i < 8; ++i) {
 		const auto& rt = desc.RenderTarget[desc.IndependentBlendEnable ? i : 0];
 		draws.replacement &= !rt.BlendEnable && rt.RenderTargetWriteMask == D3D11_COLOR_WRITE_ENABLE_ALL;
 	}
@@ -1087,9 +1099,16 @@ void DX12NativeScene::ObserveNativeInputDepth(ID3D11DepthStencilState* state)
 	draws.depthTest = !state || desc.DepthEnable;
 }
 
-void DX12NativeScene::ObserveNativeInputClear()
+void DX12NativeScene::ObserveNativeInputClear(ID3D11View* view)
 {
-	if (fullNativeRasterDraws.knownWriters != 0) InvalidateNativeInputVisibility();
+	if (!view || !fullNativeRasterDraws.active || !fullNativeRasterDraws.knownWriters || !globals::game::renderer) return;
+	winrt::com_ptr<ID3D11Resource> resource;
+	view->GetResource(resource.put());
+	auto& targets=globals::game::renderer->GetRuntimeData().renderTargets;
+	for (auto target : { ALBEDO, SPECULAR, REFLECTANCE, MASKS, MASKS2 })
+		if (resource.get()==Util::AsReal(targets[target].texture)) { InvalidateNativeInputVisibility(); return; }
+	const auto mainDepth=globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN].texture;
+	if (resource.get()==Util::AsReal(mainDepth)) InvalidateNativeInputVisibility();
 }
 
 void DX12NativeScene::InvalidateNativeInputVisibility()
@@ -1134,7 +1153,39 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 	const auto geometryKey = static_cast<const void*>(&geometry);
 	const auto materialKey = static_cast<const void*>(runtime.shaderProperty.get());
 	draws.activeGeometry = draws.geometryOrdinals.try_emplace(geometryKey, uint32_t(draws.geometryOrdinals.size()+1)).first->second;
-	draws.activeMaterial = materialKey ? draws.materialOrdinals.try_emplace(materialKey, uint32_t(draws.materialOrdinals.size()+1)).first->second : 0;
+	draws.activeMaterial = 0;
+	if (materialKey) {
+		const auto [entry, inserted] = draws.materialOrdinals.try_emplace(materialKey, uint32_t(draws.materialOrdinals.size()+1));
+		draws.activeMaterial = entry->second;
+		if (inserted) {
+			DX12::PreparedMaterialSource source;
+			const auto* base = runtime.shaderProperty.get();
+			if (base && base->GetRTTI() == globals::rtti::BSLightingShaderPropertyRTTI.get()) {
+				const auto* property = static_cast<const RE::BSLightingShaderProperty*>(base);
+				source.authoredShaderFlags = NativePBR::ReadAuthoredFlags(*property);
+				source.observedShaderFlags = static_cast<uint64_t>(property->flags.underlying());
+				NativePBR::ReadNifParameters(*property, source.nifThinSurface, source.nifFuzz);
+				if (property->material && property->material->GetType() == RE::BSShaderMaterial::Type::kLighting) {
+					const auto* material = static_cast<const RE::BSLightingShaderMaterialBase*>(property->material);
+					auto* textures = material->textureSet.get();
+					source.alpha = material->materialAlpha;
+					source.clampMode = material->textureClampMode;
+					source.uvTransform = { material->texCoordOffset[0].x, material->texCoordOffset[0].y,
+						material->texCoordScale[0].x, material->texCoordScale[0].y };
+					const auto* expected = REL::Relocation<const RE::NiRTTI*>{ RE::BSTextureSet::Ni_RTTI }.get();
+					if (textures && expected && textures->GetRTTI() && textures->GetRTTI()->IsKindOf(expected)) {
+						source.textureSetEditorId = NativePBR::ResolveTextureSet(textures);
+						for (uint32_t i=0;i<source.texturePaths.size();++i) {
+							const char* path = textures->GetTexturePath(static_cast<RE::BSTextureSet::Texture>(i));
+							if (path && std::string_view(path).size() <= 260) source.texturePaths[i] = path;
+						}
+					}
+				}
+			}
+			source.colorOffset = runtime.vertexDesc.HasFlag(RE::BSGraphics::Vertex::VF_COLOR) ? 0u : UINT32_MAX;
+			draws.materialSources.push_back(std::move(source));
+		}
+	}
 	// A raster-only draw identity is assigned even without a scene/material generation.
 	const auto scene = draws.scene;
 	if (!scene || !scene->inputs || scene != acceleration.GetScene()) return;
@@ -1374,7 +1425,7 @@ void DX12NativeScene::ObserveProjectedDrawBindings(const RE::BSRenderPass* pass)
 		++draws.constantSnapshotFailures;
 }
 
-void DX12NativeScene::StampFullNativeIndexedDraw(uint32_t count, uint32_t start, int32_t base, bool indexed, uint32_t instances, uint32_t firstInstance)
+void DX12NativeScene::StampFullNativeIndexedDraw(uint32_t count, uint32_t start, int32_t base, bool indexed, uint32_t instances, uint32_t firstInstance, bool gpuCounted)
 {
 	auto* state = globals::state;
 	auto& draws = fullNativeRasterDraws;
@@ -1387,7 +1438,8 @@ void DX12NativeScene::StampFullNativeIndexedDraw(uint32_t count, uint32_t start,
 	using Cache = SIE::ShaderCache;
 	const auto descriptor = state->modifiedPixelDescriptor;
 	bool writer = false;
-	bool attributes = false;
+	bool attributes = false, instanceVarying = false;
+	if (!draws.touchesVisibility) { state->UpdatePermutationBuffer(); return; }
 	if (state->currentShader && state->customPixelShader &&
 		nativeInputPS == Util::AsReal(state->customPixelShader->shader)) {
 		switch (state->currentShader->shaderType.get()) {
@@ -1396,14 +1448,17 @@ void DX12NativeScene::StampFullNativeIndexedDraw(uint32_t count, uint32_t start,
 			break;
 		case Type::DistantTree:
 			writer = attributes = (descriptor & uint32_t(Cache::DistantTreeShaderFlags::Deferred)) != 0 && !(descriptor & 1u);
+			instanceVarying = writer;
 			break;
 		case Type::Effect:
-			writer = (descriptor & uint32_t(Cache::EffectShaderFlags::Deferred)) != 0;
+			writer = attributes = (descriptor & uint32_t(Cache::EffectShaderFlags::Deferred)) != 0;
+			instanceVarying = writer;
 			break;
 		case Type::Grass: {
 			const auto technique = descriptor & 15u;
-			writer = technique != uint32_t(Cache::GrassShaderTechniques::RenderDepth);
-			break; // Grass currently explicitly invalidates its identity.
+			writer = attributes = technique != uint32_t(Cache::GrassShaderTechniques::RenderDepth);
+			instanceVarying = writer;
+			break;
 		}
 		default: break; // Unverified permutations must not certify visibility.
 		}
@@ -1411,34 +1466,42 @@ void DX12NativeScene::StampFullNativeIndexedDraw(uint32_t count, uint32_t start,
 	const bool coherent = writer && draws.targetsBound && draws.replacement && draws.depthTest;
 	if (coherent) ++draws.knownWriters;
 	else InvalidateNativeInputVisibility();
-	if (!coherent || !attributes || !draws.activeGeometry || !count ||
-		nativeInputTopology != D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST || !instances || count % 3u) {
+	// A recognized blended or unsupported writer still emits the zero
+	// identity in the original raster operation, invalidating only its pixels.
+	if (!coherent || !attributes || !draws.opaqueReplacement || !draws.activeGeometry ||
+		nativeInputTopology != D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST ||
+		(!gpuCounted && (!count || !instances || count % 3u))) {
 		state->UpdatePermutationBuffer();
 		return;
 	}
 	// Partial ranges keep their own raster identity. Only an entire matched
 	// triangle list with an unshifted index binding maps to a TLAS ordinal.
-	const bool exact = indexed && instances == 1 && firstInstance == 0 &&
+	const bool exact = !gpuCounted && indexed && instances == 1 && firstInstance == 0 &&
 		draws.activeSceneInstance && start == 0 && base == 0 && nativeInputIndexOffset == 0 && nativeInputIndexElementBytes != 0 &&
 		NativePBR::InputOnly::WholeTriangleList(count, draws.activePrimitiveCount);
-	if (instances != 1 || draws.nextRasterDraw >= 0x7ffffffeu) {
-		// No instance-interpolant contract yet: explicitly invalidate.
+	// GPU-generated arguments are not read back. Reserve a bounded
+	// instance/primitive address space for permutations with a flat instance ID.
+	const uint32_t primitiveStride = gpuCounted ? (instanceVarying ? 65536u : UINT32_MAX) : count/3u;
+	const uint32_t instanceLimit = gpuCounted ? (instanceVarying ? 65536u : 1u) : instances;
+	if ((!instanceVarying && (instances != 1 || (gpuCounted && indexed))) ||
+		uint64_t(primitiveStride)*instanceLimit > uint64_t(UINT32_MAX)+1u ||
+		draws.nextRasterDraw >= UINT32_MAX/80u-1u) {
 		state->UpdatePermutationBuffer();
 		return;
 	}
 	const uint32_t encoded = uint32_t(draws.drawRecords.size()+1u);
 	++draws.nextRasterDraw;
 	data.nativeRasterInstance = encoded;
-	data.nativeRasterPrimitiveCount = count / 3u;
+	data.nativeRasterPrimitiveCount = primitiveStride;
 	const uint32_t sceneInstance = exact ? draws.activeSceneInstance-1u : UINT32_MAX;
 	if (exact && draws.scene && draws.scene->materialEvaluation) {
 		const auto& indices = draws.scene->materialEvaluation->rasterMaterialIndices;
 		if (sceneInstance < indices.size()) data.nativeRasterMaterialIndex = indices[sceneInstance];
 	}
 	draws.drawRecords.push_back({ encoded, draws.activeGeometry, draws.activeMaterial, sceneInstance,
-		count/3u, 0u, data.nativeRasterMaterialIndex, count, start, nativeInputIndexOffset, nativeInputIndexElementBytes,
+		primitiveStride, 0u, data.nativeRasterMaterialIndex, count, start, nativeInputIndexOffset, nativeInputIndexElementBytes,
 		base, descriptor, state->modifiedVertexDescriptor, data.ExtraShaderDescriptor, data.ExtraFeatureDescriptor,
-		instances, firstInstance, indexed ? 1u : 0u, 0u });
+		instanceLimit, firstInstance, indexed ? 1u : 0u, gpuCounted ? 1u : 0u });
 	state->UpdatePermutationBuffer();
 }
 
@@ -1462,7 +1525,7 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 			Util::AsReal(targets[ALBEDO].texture), Util::AsReal(targets[SPECULAR].texture),
 			Util::AsReal(targets[REFLECTANCE].texture), Util::AsReal(targets[MASKS].texture) };
 		const auto world = globals::state ? GetWorldFrame(draws.stamp.frame, globals::state->frameCount) : nullptr;
-		rawInputCapture.Publish(*backend, Util::AsReal(targets[MASKS2].texture), inputs, draws.stamp, draws.drawRecords, draws.draws,
+		rawInputCapture.Publish(*backend, Util::AsReal(targets[MASKS2].texture), inputs, draws.stamp, draws.drawRecords, draws.materialSources, draws.draws,
 			world ? world->width : 0u, world ? world->height : 0u,
 			draws.allWritersKnown && draws.knownWriters != 0 && world != nullptr);
 	}

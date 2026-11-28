@@ -604,7 +604,10 @@ namespace globals
 	{
 		static void thunk(ID3D11DeviceContext* c)
 		{
-			if (c == globals::d3d::context) globals::features::dx12NativeScene.InvalidateNativeInputVisibility();
+			if (c == globals::d3d::context) {
+				try { globals::features::dx12NativeScene.StampFullNativeIndexedDraw(0,0,0,false,1,0,true); }
+				catch (...) { globals::features::dx12NativeScene.InvalidateNativeInputVisibility(); }
+			}
 			func(c);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
@@ -613,7 +616,10 @@ namespace globals
 	{
 		static void thunk(ID3D11DeviceContext* c, ID3D11Buffer* buffer, UINT offset)
 		{
-			if (c == globals::d3d::context) globals::features::dx12NativeScene.InvalidateNativeInputVisibility();
+			if (c == globals::d3d::context) {
+				try { globals::features::dx12NativeScene.StampFullNativeIndexedDraw(0,0,0,true,1,0,true); }
+				catch (...) { globals::features::dx12NativeScene.InvalidateNativeInputVisibility(); }
+			}
 			func(c,buffer,offset);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
@@ -622,7 +628,10 @@ namespace globals
 	{
 		static void thunk(ID3D11DeviceContext* c, ID3D11Buffer* buffer, UINT offset)
 		{
-			if (c == globals::d3d::context) globals::features::dx12NativeScene.InvalidateNativeInputVisibility();
+			if (c == globals::d3d::context) {
+				try { globals::features::dx12NativeScene.StampFullNativeIndexedDraw(0,0,0,false,2,0,true); }
+				catch (...) { globals::features::dx12NativeScene.InvalidateNativeInputVisibility(); }
+			}
 			func(c,buffer,offset);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
@@ -641,7 +650,7 @@ namespace globals
 	{
 		static void thunk(ID3D11DeviceContext* c, ID3D11RenderTargetView* view, const FLOAT color[4])
 		{
-			if (c == globals::d3d::context) globals::features::dx12NativeScene.ObserveNativeInputClear();
+			if (c == globals::d3d::context) globals::features::dx12NativeScene.ObserveNativeInputClear(view);
 			func(c,view,color);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
@@ -650,7 +659,7 @@ namespace globals
 	{
 		static void thunk(ID3D11DeviceContext* c, ID3D11DepthStencilView* view, UINT flags, FLOAT depth, UINT8 stencil)
 		{
-			if (c == globals::d3d::context && (flags & D3D11_CLEAR_DEPTH)) globals::features::dx12NativeScene.ObserveNativeInputClear();
+			if (c == globals::d3d::context && (flags & D3D11_CLEAR_DEPTH)) globals::features::dx12NativeScene.ObserveNativeInputClear(view);
 			func(c,view,flags,depth,stencil);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;

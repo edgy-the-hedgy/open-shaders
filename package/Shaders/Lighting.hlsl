@@ -107,7 +107,7 @@ struct VS_INPUT
 struct VS_OUTPUT
 {
 	float4 Position: SV_POSITION0;
-#if (defined(PROJECTED_UV) && !defined(SKINNED)) || defined(LANDSCAPE)
+#if (defined(PROJECTED_UV) && (!defined(SKINNED) || defined(FULL_NATIVE_INPUT))) || defined(LANDSCAPE)
 	float4
 #else
 	float2
@@ -128,7 +128,7 @@ struct VS_OUTPUT
 #elif defined(LANDSCAPE)
 	float4 LandBlendWeights1: TEXCOORD6;
 	float4 LandBlendWeights2: TEXCOORD7;
-#elif defined(PROJECTED_UV) && !defined(SKINNED)
+#elif defined(PROJECTED_UV) && (!defined(SKINNED) || defined(FULL_NATIVE_INPUT))
 	float3 TexProj: TEXCOORD7;
 #endif  // EYE
 
@@ -432,7 +432,7 @@ VS_OUTPUT main(VS_INPUT input)
 	float2 uv = input.TexCoord0.xy * TexcoordOffset.zw + TexcoordOffset.xy;
 #	if defined(LANDSCAPE)
 	vsout.TexCoord0.zw = (uv * 0.010416667.xx + LandBlendParams.xy) * float2(1, -1) + float2(0, 1);
-#	elif defined(PROJECTED_UV) && !defined(SKINNED)
+#	elif defined(PROJECTED_UV) && (!defined(SKINNED) || defined(FULL_NATIVE_INPUT))
 	vsout.TexCoord0.z = mul(TextureProj[eyeIndex][0], inputPosition);
 	vsout.TexCoord0.w = mul(TextureProj[eyeIndex][1], inputPosition);
 #	endif
@@ -505,8 +505,10 @@ VS_OUTPUT main(VS_INPUT input)
 	// The domain shader writes the packed-snow amount here; zero keeps landscape it does not displace untinted.
 	vsout.LandBlendWeights2.z = 0;
 #		endif
-#	elif defined(PROJECTED_UV) && !defined(SKINNED)
-#		if defined(ENVMAP)
+#	elif defined(PROJECTED_UV) && (!defined(SKINNED) || defined(FULL_NATIVE_INPUT))
+#		if defined(SKINNED)
+	vsout.TexProj = mul(float3x3(worldMatrix[0].xyz,worldMatrix[1].xyz,worldMatrix[2].xyz), TextureProj[eyeIndex][2].xyz);
+#		elif defined(ENVMAP)
 	vsout.TexProj = TextureProj[eyeIndex][2].xyz;
 #		else
 	float3x3 texProjWorld3x3 = float3x3(World[eyeIndex][0].xyz, World[eyeIndex][1].xyz, World[eyeIndex][2].xyz);
@@ -1365,11 +1367,14 @@ PS_OUTPUT main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool frontFace :
 	// remains available in the frame-local draw record for these permutations.
 	if (psout.IdentityUV.x != 0u) {
 #		if defined(LANDSCAPE)
+#			if defined(LANDSCAPE_SEAMS)
+	LandscapeSeams::Load(input.WorldPosition.xy + FrameBuffer::CameraPosAdjust[eyeIndex].xy, input.LandBlendWeights1, input.LandBlendWeights2);
+#			endif
 	psout.BasisFlags.w |= NativeInputMRT::AuxLandscape;
 	psout.MaterialTechnique = uint4(NativeInputMRT::PackHalf2(input.LandBlendWeights1.xy),
 		NativeInputMRT::PackHalf2(input.LandBlendWeights1.zw), NativeInputMRT::PackHalf2(input.LandBlendWeights2.xy),
 		NativeInputMRT::PackHalf2(input.LandBlendWeights2.zw));
-#		elif defined(PROJECTED_UV) && !defined(SKINNED)
+#		elif defined(PROJECTED_UV)
 	psout.BasisFlags.w |= NativeInputMRT::AuxProjection;
 	psout.MaterialTechnique = uint4(asuint(input.TexProj), NativeInputMRT::PackHalf2(input.TexCoord0.zw));
 #		elif defined(EYE)

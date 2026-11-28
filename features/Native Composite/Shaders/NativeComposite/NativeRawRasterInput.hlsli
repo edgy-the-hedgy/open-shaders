@@ -39,7 +39,7 @@ RawRasterSurface ReadRawVisibility(uint2 pixel, float depth, uint drawCount, out
     if (RawRasterParticipation.Load(int3(pixel,0)).z != 1.0) return result;
     uint4 b = RawRasterColorGradDepth.Load(int3(pixel,0));
     float rawDepth = asfloat(b.w);
-    if (!isfinite(rawDepth) || abs(rawDepth-depth)>1e-6) return result;
+    if (!isfinite(rawDepth) || !isfinite(depth) || abs(rawDepth-depth)>1e-6) return result;
     result.uv=asfloat(a.zw);
     result.dx=RawHalf2(b.y); result.dy=RawHalf2(b.z);
     result.color=float4(b.x&255u,(b.x>>8)&255u,(b.x>>16)&255u,b.x>>24)/255.0;

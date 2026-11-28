@@ -35,6 +35,9 @@ struct VS_INPUT
 struct VS_OUTPUT
 {
 	float4 Position: SV_POSITION0;
+#if defined(FULL_NATIVE_INPUT) && !defined(RENDER_DEPTH)
+	nointerpolation uint NativeInstance: TEXCOORD8;
+#endif
 	float3 TexCoord: TEXCOORD0;
 
 #if defined(RENDER_DEPTH)
@@ -83,9 +86,16 @@ cbuffer PerGeometry : register(b2)
 #		define TREE_WIND_PRECISE
 #	endif
 
-VS_OUTPUT main(VS_INPUT input)
+VS_OUTPUT main(VS_INPUT input
+# if defined(FULL_NATIVE_INPUT) && !defined(RENDER_DEPTH)
+	, uint instanceID : SV_InstanceID
+# endif
+)
 {
 	VS_OUTPUT vsout = (VS_OUTPUT)0;
+# if defined(FULL_NATIVE_INPUT) && !defined(RENDER_DEPTH)
+	vsout.NativeInstance=instanceID;
+# endif
 	uint eyeIndex = Stereo::GetEyeIndexVS(
 #	if defined(VR)
 		input.InstanceID
@@ -385,7 +395,7 @@ NativeInputOutput main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool fro
 	output.MotionVectors=float4(MotionBlur::GetSSMotionVector(input.WorldPosition,input.PreviousWorldPosition),0,1);
 	output.NormalGlossiness=float4(GBuffer::EncodeNormal(normalize(FrameBuffer::WorldToView(basis[2],false))),0,1);
 	output.Masks2.a=1;
-	NativeInputMRT::Write(output,input.Position,input.TexCoord.xy,float4(1,1,1,1),basis,primitive,front,coverage,alpha);
+	NativeInputMRT::Write(output,input.Position,input.TexCoord.xy,float4(1,1,1,1),basis,primitive,front,coverage,alpha,input.NativeInstance);
 	return output;
 }
 #	else

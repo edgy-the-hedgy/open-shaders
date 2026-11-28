@@ -62,6 +62,9 @@ struct VS_INPUT
 struct VS_OUTPUT
 {
 	float4 Position: SV_POSITION0;
+#if defined(FULL_NATIVE_INPUT)
+	nointerpolation uint NativeInstance: TEXCOORD11;
+#endif
 	float4 TexCoord0: TEXCOORD0;
 	float4 WorldPosition: POSITION1;
 #if defined(VC)
@@ -213,9 +216,16 @@ float GetProjectedV(float3 worldPosition, uint a_eyeIndex = 0)
 }
 #	endif
 
-VS_OUTPUT main(VS_INPUT input)
+VS_OUTPUT main(VS_INPUT input
+# if defined(FULL_NATIVE_INPUT)
+	, uint instanceID : SV_InstanceID
+# endif
+)
 {
 	VS_OUTPUT vsout;
+# if defined(FULL_NATIVE_INPUT)
+	vsout.NativeInstance=instanceID;
+# endif
 	uint eyeIndex = Stereo::GetEyeIndexVS(
 #	if defined(VR)
 		input.InstanceID
@@ -868,9 +878,16 @@ float3 GetLightingShadow(float3 color, float3 materialColor, float3 worldPositio
 }
 #	endif
 
+# if defined(FULL_NATIVE_INPUT) && defined(DEFERRED)
+#  include "Common/NativeInputMRT.hlsli"
+NativeInputOutput ShadeEffectInputs(PS_INPUT input, uint primitive, bool front, uint coverage)
+{
+	NativeInputOutput psout=(NativeInputOutput)0;
+# else
 PS_OUTPUT ShadeEffect(PS_INPUT input, bool sampleDistantShadow)
 {
 	PS_OUTPUT psout = (PS_OUTPUT)0;
+# endif
 
 #	if !defined(VR)
 	uint eyeIndex = 0;
@@ -1064,6 +1081,31 @@ PS_OUTPUT ShadeEffect(PS_INPUT input, bool sampleDistantShadow)
 	}
 #	endif
 
+# if defined(FULL_NATIVE_INPUT) && defined(DEFERRED)
+	// All visibility-dependent alpha/discard operations above are shared with
+	// the engine route. Do not enter the radiance/fog/shadow evaluation below.
+	float4 vertexColor=float4(1,1,1,1);
+#  if defined(VC)
+	vertexColor=input.Color;
+#  endif
+	float3x3 basis=NativeInputMRT::DerivativeBasis(input.WorldPosition.xyz,input.TexCoord0.xy);
+	float visibleAlpha=saturate(alpha*fogMul.w);
+	psout.Diffuse.a=visibleAlpha;
+#  if defined(MOTIONVECTORS_NORMALS)
+	psout.MotionVectors=float4(MotionBlur::GetSSMotionVector(input.WorldPosition,input.PreviousWorldPosition,eyeIndex),0,visibleAlpha);
+#   if defined(MEMBRANE) && defined(SKINNED) && defined(NORMALS)
+	float3 compatibilityNormal=normalize(input.TBN0);
+#   else
+	float3 compatibilityNormal=normalize(input.ScreenSpaceNormal);
+#   endif
+#  else
+	float3 compatibilityNormal=normalize(FrameBuffer::WorldToView(basis[2],false,eyeIndex));
+#  endif
+	psout.NormalGlossiness=float4(GBuffer::EncodeNormal(compatibilityNormal),0,visibleAlpha);
+	psout.Masks2=float4(0,NeuralRenderingCategory::Encode(NeuralRenderingCategory::None),0,1);
+	NativeInputMRT::Write(psout,input.Position,input.TexCoord0.xy,vertexColor,basis,primitive,front,coverage,visibleAlpha,input.NativeInstance);
+	return psout;
+# else
 #	if defined(LIGHTING)
 	propertyColor = GetLightingColor(
 		input.MSPosition.xyz,
@@ -1391,23 +1433,12 @@ PS_OUTPUT ShadeEffect(PS_INPUT input, bool sampleDistantShadow)
 #	endif
 
 	return psout;
+# endif // input-only or legacy effect radiance
 }
 #	if defined(FULL_NATIVE_INPUT) && defined(DEFERRED)
-#		include "Common/NativeInputMRT.hlsli"
-NativeInputOutput main(PS_INPUT input)
+NativeInputOutput main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool front : SV_IsFrontFace, uint coverage : SV_Coverage)
 {
-	PS_OUTPUT effect=ShadeEffect(input,false);
-	NativeInputOutput output=(NativeInputOutput)0;
-	output.Diffuse=effect.Diffuse;
-#		if defined(MOTIONVECTORS_NORMALS)
-	output.MotionVectors=effect.MotionVectors;
-	output.NormalGlossiness=effect.NormalGlossiness;
-#		elif defined(NORMALS)
-	output.NormalGlossiness=effect.NormalGlossiness;
-#		endif
-	output.Masks2=effect.Masks2;
-	output.Masks2.z=0;
-	return output;
+	return ShadeEffectInputs(input,primitive,front,coverage);
 }
 #	else
 PS_OUTPUT main(PS_INPUT input)

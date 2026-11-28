@@ -759,7 +759,7 @@ void Deferred::OverrideBlendStates()
 							if (globals::features::dx12Control.UsesExclusiveMaterials()) {
 								// Integer MRTs cannot blend. Blended writers invalidate raw identity
 								// in their shader instead of mixing integer attributes.
-								for (int i = 3; i < 7; ++i) {
+								for (int i = 3; i < 8; ++i) {
 									blendDesc.RenderTarget[i].BlendEnable = false;
 									blendDesc.RenderTarget[i].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
 								}

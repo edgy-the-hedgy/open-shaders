@@ -84,7 +84,7 @@ struct DX12NativeScene final : OverlayFeature
 	const GraphicsBackend* GetNativeBackend() const { return backend ? &*backend : nullptr; }
 	std::shared_ptr<const DX12Native::NativeWorldFrame> GetWorldFrame(uint32_t engineFrame, uint32_t pluginFrame) const;
 	void BeginFullNativeRasterInputs();
-	void StampFullNativeIndexedDraw(uint32_t count, uint32_t start, int32_t base, bool indexed = true, uint32_t instances = 1, uint32_t firstInstance = 0);
+	void StampFullNativeIndexedDraw(uint32_t count, uint32_t start, int32_t base, bool indexed = true, uint32_t instances = 1, uint32_t firstInstance = 0, bool gpuCounted = false);
 	void ObserveNativeInputTargets(UINT count, ID3D11RenderTargetView* const* views, ID3D11DepthStencilView* depth);
 	void ObserveNativeInputPS(ID3D11PixelShader* ps) { nativeInputPS = ps; }
 	void ObserveNativeInputBlend(ID3D11BlendState* state, UINT sampleMask);
@@ -92,7 +92,7 @@ struct DX12NativeScene final : OverlayFeature
 	void ObserveNativeInputTopology(D3D11_PRIMITIVE_TOPOLOGY topology) { nativeInputTopology = topology; }
 	void ObserveNativeInputIndexOffset(DXGI_FORMAT format, UINT offset) { nativeInputIndexOffset = offset; nativeInputIndexElementBytes = format == DXGI_FORMAT_R16_UINT ? 2u : format == DXGI_FORMAT_R32_UINT ? 4u : 0u; }
 	void InvalidateNativeInputVisibility();
-	void ObserveNativeInputClear();
+	void ObserveNativeInputClear(ID3D11View* view);
 	std::shared_ptr<const NativePBR::RawInputFrame> GetRawInputs(uint32_t frame) const { return rawInputCapture.GetForFrame(frame); }
 	// Capture the completed fallback radiance before native final-color application.
 	void CaptureFullNativeEnvironment(ID3D11ShaderResourceView* sceneColor, uint32_t frame);
@@ -180,6 +180,7 @@ private:
 		uint32_t matchHits = 0, matchMisses = 0;
 		std::unordered_map<const void*, uint32_t> geometryOrdinals, materialOrdinals;
 		std::vector<NativePBR::RasterDrawRecord> drawRecords;
+		std::vector<DX12::PreparedMaterialSource> materialSources;
 		uint32_t activeGeometry = 0, activeMaterial = 0, nextRasterDraw = 0;
 		uint32_t activeSceneInstance = 0, activePrimitiveCount = 0;
 		// Sparse, frame-local observations indexed by the matched TLAS instance.
@@ -191,7 +192,7 @@ private:
 		uint32_t draws = 0, candidates = 0, uniqueInstances = 0, ambiguous = 0, rejected = 0;
 		bool finalized = false, active = false, allWritersKnown = true;
 		uint32_t knownWriters = 0, unknownWriters = 0;
-		bool targetsBound = false, replacement = false, depthTest = false;
+		bool targetsBound = false, touchesVisibility = true, replacement = false, opaqueReplacement = false, depthTest = false;
 	};
 	ID3D11PixelShader* nativeInputPS = nullptr;
 	D3D11_PRIMITIVE_TOPOLOGY nativeInputTopology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;

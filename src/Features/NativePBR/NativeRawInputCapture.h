@@ -2,6 +2,7 @@
 
 #include "Features/DX12/DX12FullNativeRasterEvidence.h"
 #include "NativeInputOnlyPolicy.h"
+#include "Features/DX12/DX12Resources.h"
 #include <vector>
 
 namespace NativePBR
@@ -21,10 +22,12 @@ namespace NativePBR
 		DX12Native::MaterialFrameContract::RasterIdentityStamp stamp{};
 		std::array<std::unique_ptr<WrappedResource>, InputOnly::kPlaneCount> planes;
 		std::vector<RasterDrawRecord> drawRecords;
+		// One-based materialOrdinal indexes this CPU metadata snapshot (row ordinal-1).
+		std::vector<DX12::PreparedMaterialSource> materialSources;
 		winrt::com_ptr<ID3D12Resource> drawTable;
 		std::shared_ptr<const DX12Native::FullNativeRasterEvidence> evidence;
 		winrt::com_ptr<ID3D12Fence> readyFence;
-		uint64_t readyValue = 0, allocationBytes = 0;
+		uint64_t readyValue = 0, allocationBytes = 0, drawTableCapacity = 0;
 		uint32_t width = 0, height = 0, draws = 0;
 		bool Matches(DX12Native::MaterialFrameContract::RasterIdentityStamp requested,
 			uint32_t viewWidth, uint32_t viewHeight) const;
@@ -39,7 +42,7 @@ namespace NativePBR
 		void Publish(const GraphicsBackend& backend, ID3D11Texture2D* mask,
 			const std::array<ID3D11Texture2D*, InputOnly::kPlaneCount>& sources,
 			DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,
-			std::span<const RasterDrawRecord> drawRecords, uint32_t draws, uint32_t renderWidth, uint32_t renderHeight, bool allWritersKnown);
+			std::span<const RasterDrawRecord> drawRecords, std::span<const DX12::PreparedMaterialSource> materials, uint32_t draws, uint32_t renderWidth, uint32_t renderHeight, bool allWritersKnown);
 		std::shared_ptr<const RawInputFrame> GetForFrame(uint32_t frame) const;
 		std::shared_ptr<const RawInputFrame> Get(DX12Native::MaterialFrameContract::RasterIdentityStamp stamp) const;
 		void Reset();

@@ -46,6 +46,9 @@ struct VS_INPUT
 struct VS_OUTPUT
 {
 	float4 HPosition: SV_POSITION0;
+#if defined(FULL_NATIVE_INPUT) && !defined(RENDER_DEPTH)
+	nointerpolation uint NativeInstance: TEXCOORD11;
+#endif
 	float2 TexCoord: TEXCOORD0;
 #if defined(RENDER_DEPTH)
 	float Fade: TEXCOORD2;
@@ -343,10 +346,19 @@ VS_OUTPUT VanillaVertex(VS_INPUT input)
 // Decode packed transforms into the engine's per-instance vertex inputs.
 VS_OUTPUT main(VS_INPUT input, uint instanceID : SV_InstanceID)
 {
-	[branch] if (GrassBucketGroupCount == GrassInstance::VanillaDrawMarker) return VanillaVertex(input);
+	[branch] if (GrassBucketGroupCount == GrassInstance::VanillaDrawMarker) {
+		VS_OUTPUT vanilla=VanillaVertex(input);
+#		if defined(FULL_NATIVE_INPUT) && !defined(RENDER_DEPTH)
+		vanilla.NativeInstance=instanceID;
+#		endif
+		return vanilla;
+	}
 
 	VS_OUTPUT vsout = (VS_OUTPUT)0;
 
+	#	if defined(FULL_NATIVE_INPUT) && !defined(RENDER_DEPTH)
+	vsout.NativeInstance=instanceID;
+#	endif
 	const GrassInstance::CullRecord record = InstanceRecords[GrassOutputOffset + EyeSlotBase + instanceID];
 	GrassInstance::Decode(GrassInstances.Load4(record.SourceIndex * GrassInstance::Stride), input.InstanceData1, input.InstanceData2, input.InstanceData3, input.InstanceData4);
 	uint groupIndex, flags;
@@ -441,9 +453,17 @@ VS_OUTPUT main(VS_INPUT input, uint instanceID : SV_InstanceID)
 }
 #	else  // GRASS_OPTIMIZATIONS
 
-VS_OUTPUT main(VS_INPUT input)
+VS_OUTPUT main(VS_INPUT input
+#	if defined(FULL_NATIVE_INPUT) && !defined(RENDER_DEPTH)
+	, uint instanceID : SV_InstanceID
+#	endif
+)
 {
-	return VanillaVertex(input);
+	VS_OUTPUT result=VanillaVertex(input);
+#	if defined(FULL_NATIVE_INPUT) && !defined(RENDER_DEPTH)
+	result.NativeInstance=instanceID;
+#	endif
+	return result;
 }
 
 #	endif  // GRASS_OPTIMIZATIONS
@@ -631,8 +651,7 @@ PS_OUTPUT main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool front : SV_
 	psout.MotionVectors=float4(MotionBlur::GetSSMotionVector(float4(input.WorldPosition,1),float4(input.PreviousWorldPosition,1),eye),0,1);
 	psout.NormalGlossiness=float4(GBuffer::EncodeNormal(normalize(FrameBuffer::WorldToView(basis[2],false,eye))),0,1);
 	psout.Masks2=float4(0,NeuralRenderingCategory::Encode(NeuralRenderingCategory::Foliage),0,1);
-	// Grass instancing is not a TLAS mapping. Write invalid raw identity until
-	// the draw/instance contract is published, while retaining visibility.
+	NativeInputMRT::Write(psout,input.HPosition,uv,input.Color,basis,primitive,front,coverage,alpha,input.NativeInstance);
 	return psout;
 }
 #	elif defined(GRASS_LIGHTING)
