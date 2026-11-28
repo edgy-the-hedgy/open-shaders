@@ -11,6 +11,7 @@
 #include "Utils/RuntimeTaskGate.h"
 #include <atomic>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace DX12Native
 {

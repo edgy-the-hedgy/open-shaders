@@ -202,7 +202,7 @@ Sample EvaluateRasterLocal(RawRasterSurface raw, uint2 mapped, float3 viewRay, f
     uint projectionRow=0xffffffffu;
     // The primary projector and MATO are acquired by the original draw.
     if (raw.auxiliaryKind==2u && ProjectionRowCount>0u &&
-        raw.drawIdentity.x!=0u && raw.drawIdentity.x<=HasRawInput) {
+        raw.drawIdentity.x!=0u && raw.drawIdentity.x<=(HasRawInput & 0x7fffffffu)) {
         uint row=RasterProjectionLookup.Load((raw.drawIdentity.x-1u)*4u);
         if (row<ProjectionRowCount) projectionRow=row;
     }
@@ -282,8 +282,9 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed,
             Random::InterleavedGradientNoise(float2(pixel),ProjectionFrame),rawUsed,coat,shadow);
         if (HasEvaluatedNativeBase(result.color.a)) {
             // Optional correspondence never revokes an otherwise valid material.
-            if (rayRange && HasRasterRayMapping!=0u && rasterMapped.x<InstanceCount && rasterMapped.y<0x80000000u && visible.materialIndex!=0xffffffffu &&
-                Bindings[rasterMapped.x].materialIndex==visible.materialIndex) {
+            if (rayRange && HasRasterRayMapping!=0u && rasterMapped.x<InstanceCount && rasterMapped.y<0x80000000u && visible.materialIndex!=0xffffffffu) {
+                // Do not index the optional scene binding table before range validation.
+                if (Bindings[rasterMapped.x].materialIndex!=visible.materialIndex) return result;
                 hitIdentity=uint2(rasterMapped.x,rasterMapped.y|0x80000000u);
                 if (traced) {
                     rayIssued=true;

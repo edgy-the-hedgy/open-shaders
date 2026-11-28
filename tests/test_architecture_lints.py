@@ -138,6 +138,20 @@ class ArchitectureLintTests(unittest.TestCase):
         self.assertIn('"Shaders/NativeCubemaps/CaptureRaw.cs.hlsl"', verification)
 
 
+    def test_native_primary_material_uses_independent_raster_authority(self):
+        probe = (ROOT / "src/Features/DX12/DX12NativeScreenProbe.h").read_text(encoding="utf-8")
+        raw = (ROOT / "src/Features/NativePBR/NativeRawInputCapture.cpp").read_text(encoding="utf-8")
+        shader = (ROOT / "features/Native Composite/Shaders/NativeComposite/NativePBRProbe.hlsl6").read_text(encoding="utf-8")
+        coherent = probe.split("bool IsCoherent(", 1)[1].split("GetMaterialFrame(", 1)[0]
+        self.assertIn("rasterMaterialEvaluation", coherent)
+        self.assertNotIn("!scene ||", coherent)
+        self.assertNotIn("scene->", coherent)
+        self.assertIn("MatchesRasterPublication(stamp, requested)", raw)
+        self.assertIn("RasterMaterialLookup.Load", shader)
+        self.assertIn("RasterProjectionLookup.Load", shader)
+        self.assertIn("HasRasterRayMapping!=0u", shader)
+        self.assertIn("raw.borrowedLandscape", shader)
+
     def test_native_input_is_published_by_original_pass(self):
         raw = (ROOT / "package/Shaders/Common/NativeInputMRT.hlsli").read_text(encoding="utf-8")
         capture = (ROOT / "src/Features/NativePBR/NativeRawInputCapture.cpp").read_text(encoding="utf-8")
