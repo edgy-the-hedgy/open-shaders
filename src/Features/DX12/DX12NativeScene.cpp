@@ -13,6 +13,7 @@
 #include "RE/B/BSEffectShaderMaterial.h"
 #include "RE/N/NiSourceTexture.h"
 #include "Features/FoliageLighting.h"
+#include "Features/SnowDeformation.h"
 
 #include "../LightLimitFix/ShadowCasterMath.h"
 #include "../LightLimitFix/Common.h"
@@ -1697,6 +1698,11 @@ void DX12NativeScene::StampFullNativeIndexedDraw(uint32_t count, uint32_t start,
 	// identity in the original raster operation, invalidating only its pixels.
 	const bool strip=nativeInputTopology==D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
 	const bool list=nativeInputTopology==D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+	// A tessellated pixel's SV_PrimitiveID identifies the original patch,
+	// not a triangle in a secondary BLAS. Admit only our verified 3-point stages.
+	const bool patch=nativeInputTopology==D3D11_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST &&
+		state->currentShader && state->currentShader->shaderType.get()==Type::Lighting &&
+		globals::features::snowDeformation.HasNativeLightingPatch();
 	const uint32_t directBound=NativePBR::InputOnly::RasterTriangleBound(count,strip);
 	// Recognized foliage can issue original bounded direct or GPU-driven draws
 	// without a geometry callback. The original draw and bound source SRVs
@@ -1704,7 +1710,7 @@ void DX12NativeScene::StampFullNativeIndexedDraw(uint32_t count, uint32_t start,
 	const bool drawLocalFoliage = !draws.activeGeometry && state->currentShader &&
 		(state->currentShader->shaderType.get() == Type::Grass || state->currentShader->shaderType.get() == Type::DistantTree);
 	if (!coherent || !attributes || !draws.opaqueReplacement || (!draws.activeGeometry && !drawLocalFoliage) ||
-		(!strip && !list) || (!gpuCounted && (!directBound || !instances))) {
+		(!strip && !list && !patch) || (!gpuCounted && (!directBound || !instances))) {
 		state->UpdatePermutationBuffer();
 		return;
 	}
@@ -1754,7 +1760,7 @@ void DX12NativeScene::StampFullNativeIndexedDraw(uint32_t count, uint32_t start,
 	draws.drawRecords.push_back({ encoded, draws.activeGeometry, drawLocalFoliage ? 0u : draws.activeMaterial, sceneInstance,
 		primitiveStride, 0u, data.nativeRasterMaterialIndex, count, start, nativeInputIndexOffset, nativeInputIndexElementBytes,
 		base, descriptor, state->modifiedVertexDescriptor, data.ExtraShaderDescriptor, data.ExtraFeatureDescriptor,
-		instanceLimit, firstInstance, indexed ? 1u : 0u, (gpuCounted ? 1u : 0u) | (strip ? 2u : 0u) | (automatic ? 4u : 0u) });
+		instanceLimit, firstInstance, indexed ? 1u : 0u, (gpuCounted ? 1u : 0u) | (strip ? 2u : 0u) | (automatic ? 4u : 0u) | (patch ? 8u : 0u) });
 	if (state->currentShader->shaderType.get()==Type::Lighting &&
 		(descriptor & uint32_t(Cache::LightingShaderFlags::ProjectedUV)))
 		CaptureRasterProjectedDraw(encoded,sceneInstance);
