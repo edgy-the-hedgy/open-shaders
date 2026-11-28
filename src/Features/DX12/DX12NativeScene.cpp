@@ -1063,7 +1063,7 @@ void DX12NativeScene::BeginFullNativeRasterInputs()
 		ctx->PSGetShader(ps.put(), nullptr, nullptr);
 		ctx->OMGetBlendState(blend.put(), factors, &mask);
 		ctx->OMGetDepthStencilState(depth.put(), &stencil);
-		std::array<ID3D11ShaderResourceView*, 113> sourceViews{};
+		std::array<ID3D11ShaderResourceView*, NativePBR::RasterSourceViews::kTrackedSlots> sourceViews{};
 		ctx->PSGetShaderResources(0, UINT(sourceViews.size()), sourceViews.data());
 		ObserveNativeInputSourceViews(0, UINT(sourceViews.size()), sourceViews.data());
 		for (auto* view : sourceViews) if (view) view->Release();
@@ -1139,7 +1139,7 @@ void DX12NativeScene::ObserveNativeInputSourceViews(UINT start, UINT count, ID3D
 		const UINT slot=start+i;
 		// Material slots, terrain displacement and seam slots. Exclude frame-global
 		// depth/shadow/lighting SRVs, which must not become material inputs.
-		if (slot >= 16 && !(slot >= 80 && slot <= 97) && !(slot >= 107 && slot <= 112)) continue;
+		if (slot >= 16 && !(slot >= 80 && slot <= 97) && !(slot >= 107 && slot <= 112) && slot!=124u) continue;
 		auto* view=views ? views[i] : nullptr;
 		if (nativeSourceViews[slot].get()!=view) {
 			if (view) nativeSourceViews[slot].copy_from(view);
@@ -1844,15 +1844,18 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 				using Flags=Cache::LightingShaderFlags;
 				using Techniques=Cache::LightingShaderTechniques;
 				const auto technique=Cache::GetLightingTechnique(record.pixelDescriptor);
-				// t2 is a separate gloss/specular texture in model-space Lighting.
-				if (!(record.vertexDescriptor&uint32_t(Flags::ModelSpaceNormals)) ||
-					!(record.pixelDescriptor&uint32_t(Flags::Specular)) ||
-					(record.pixelDescriptor&(uint32_t(Flags::ProjectedUV)|uint32_t(Flags::FurShells))) ||
-					(technique!=Techniques::None && technique!=Techniques::Facegen &&
-					 technique!=Techniques::FacegenRGBTint && technique!=Techniques::Hair &&
-					 technique!=Techniques::Glowmap)) continue;
+				// Keep actual gloss, FaceGen and fur texture semantics separate.
+				// Projectors already own a distinct draw row; combinations stay limited.
+				if (record.pixelDescriptor&uint32_t(Flags::ProjectedUV)) continue;
+				const bool fur=(record.pixelDescriptor&uint32_t(Flags::FurShells))!=0u;
+				const bool face=technique==Techniques::Facegen;
+				const bool gloss=(record.vertexDescriptor&uint32_t(Flags::ModelSpaceNormals)) &&
+					(record.pixelDescriptor&uint32_t(Flags::Specular)) &&
+					(technique==Techniques::None || face || technique==Techniques::FacegenRGBTint ||
+					 technique==Techniques::Hair || technique==Techniques::Glowmap);
+				if (!fur && !face && !gloss) continue;
 				input.instance=kRasterModelSpecularRow;
-				slots[0]=2u;
+				slots={gloss ? 2u : UINT32_MAX,face ? 3u : UINT32_MAX,face ? 4u : UINT32_MAX,fur ? 124u : UINT32_MAX};
 				break;
 			}
 			case Type::Grass: {
@@ -1900,15 +1903,17 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 			for (size_t role=0; role<slots.size(); ++role) {
 				const auto slot=slots[role];
 				if (slot==UINT32_MAX) continue;
-				if (source->addressModes[slot]>3u) { supported=false; break; }
-				input.samplerModes|=uint32_t(source->addressModes[slot])<<(2u*role);
+				// Fur t124 explicitly samples the original color sampler s0.
+				const uint32_t sampler=slot==124u ? 0u : slot;
+				if (sampler>=source->addressModes.size() || source->addressModes[sampler]>3u) { supported=false; break; }
+				input.samplerModes|=uint32_t(source->addressModes[sampler])<<(2u*role);
 				input.views[role]=source->views[slot];
 				if (!input.views[role]) continue;
 				D3D11_SHADER_RESOURCE_VIEW_DESC view{};
 				input.views[role]->GetDesc(&view);
 				if (DirectX::IsSRGB(view.Format)) input.samplerModes|=1u<<(8u+role);
 			}
-			if (!supported || (slots[0]!=UINT32_MAX && !input.views[0])) continue;
+			if (!supported || (slots[0]!=UINT32_MAX && !input.views[0] && input.instance!=kRasterModelSpecularRow)) continue;
 			const std::array<uintptr_t,8> key{input.instance,input.samplerModes,
 				reinterpret_cast<uintptr_t>(input.views[0].get()),reinterpret_cast<uintptr_t>(input.views[1].get()),
 				reinterpret_cast<uintptr_t>(input.views[2].get()),reinterpret_cast<uintptr_t>(input.views[3].get()),
