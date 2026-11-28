@@ -569,7 +569,8 @@ namespace DX12Native
 		std::shared_ptr<const DirectLightingFrame> direct, std::shared_ptr<const IndirectLightingFrame> indirect,
 		uint32_t pluginFrame, bool resetHistory)
 	{
-		if (!material || (!direct && !indirect))
+		// Material/emission publication must not depend on either lighting producer.
+		if (!globals::features::dx12Control.WantsMaterialPreparation() || !material)
 			return;
 		if (!fullNativeReconstruction)
 			fullNativeReconstruction = std::make_unique<FullNativeReconstruction>();

@@ -21,12 +21,22 @@ namespace DX12Native
 		// Direct diffuse + direct transmission + emission, with explicit validity.
 		// The environment producer must never consume combined indirect radiance.
 		winrt::com_ptr<ID3D12Resource> environmentRadiance;
-		// Six independently valid half4 signals: direct/indirect diffuse,
-		// specular and transmission. The combined display output is not history.
+		// Authoritative current output, also used as history: six half4 records
+		// in order DD, DS, DT, ID, IS, IT. Alpha is the contribution bit;
+		// zero alpha means unavailable; positive alpha with zero RGB is valid black.
+		// Combined display output is not history.
 		winrt::com_ptr<ID3D12Resource> historySignals;
 		static constexpr uint32_t historySignalStride = 6 * MaterialFrameContract::kOpaqueRadianceStride;
 		static constexpr uint32_t environmentRadianceStride = 8;
-		// The GPU writes explicit evidence and owner bits. A candidate alone is not authority.
+		// Session authority is independent of visibility, material and lighting coverage.
+		bool nativeSessionAuthority = false;
+		// GPU mask ABI v2: bit 0 valid raster visibility, bit 1 optional exact ray
+		// match, bit 2 complete lighting (diagnostic), bit 3 native opaque owner,
+		// bit 4 evaluated raster material, bit 5 finite evaluated emission.
+		// Consumers must not require the diagnostic bits to apply native color.
+		static constexpr uint32_t ownershipAbiVersion = 2;
+		static constexpr uint32_t evaluatedRasterMaterialBit = 1u << 4;
+		static constexpr uint32_t validRasterEmissionBit = 1u << 5;
 		bool rasterWinnerCertified = false, completeLightingCoverage = false;
 		std::shared_ptr<const NativePBR::RawInputFrame> rasterEvidence;
 		winrt::com_ptr<ID3D12CommandAllocator> allocator;

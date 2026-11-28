@@ -1,4 +1,6 @@
 #include "DX12FullNativeReconstruction.h"
+#include "DX12Control.h"
+#include "Globals.h"
 #include <bit>
 #include "DX12GpuRetirement.h"
 #include "Utils/FileSystem.h"
@@ -117,7 +119,8 @@ namespace DX12Native
 		std::shared_ptr<const DirectLightingFrame> direct, std::shared_ptr<const IndirectLightingFrame> indirect,
 		uint32_t pluginFrame, bool resetHistory)
 	{
-		if (!material || !material->IsCoherent(material->frame, material->width, material->height))
+		if (!globals::features::dx12Control.WantsMaterialPreparation() || !material ||
+			!material->IsCoherent(material->frame, material->width, material->height))
 			return;
 		Poll(material->frame);
 		if (current && current->frame == material->frame)
@@ -226,6 +229,8 @@ namespace DX12Native
 			slot->height = slot->material->height;
 			slot->rowPitch = slot->width * kLightingStride;
 			slot->available = available;
+			slot->nativeSessionAuthority = true; // Session-latched policy admitted dispatch.
+			// Coverage is diagnostic, independent of session authority and pixel validity.
 			// Selected lights and environment-only indirect are not complete raster coverage.
 			slot->completeLightingCoverage = slot->direct && slot->indirect &&
 				slot->direct->coverage == LightingCoverage::CompleteRasterReplacement &&

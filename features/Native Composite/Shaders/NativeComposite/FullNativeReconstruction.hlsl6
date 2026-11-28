@@ -21,6 +21,8 @@ RWByteAddressBuffer Reconstructed : register(u0);
 RWByteAddressBuffer EnvironmentRadiance : register(u2);
 RWByteAddressBuffer HistorySignals : register(u3);
 static const uint NativeHistoryStride = 6u * NativeOpaqueRadianceStride;
+static const uint EvaluatedRasterMaterial = 1u << 4;
+static const uint ValidRasterEmission = 1u << 5;
 cbuffer ReconstructionConstants : register(b0)
 {
     uint2 Size;
@@ -58,6 +60,22 @@ uint2 ReadRayIdentity(uint2 p)
 uint2 SurfaceIdentity(uint2 identity)
 {
     return ValidRayIdentity(identity) ? uint2(identity.x, identity.y & 0x7fffffffu) : identity;
+}
+
+// Draw ordinals are CURRENT-frame identities only; a scene mapping is optional.
+bool ReadVisibleRaster(uint2 p, out uint2 encoded, out uint2 sceneIdentity)
+{
+    encoded = uint2(0u,0u);
+    sceneIdentity = uint2(0xffffffffu,0xffffffffu);
+    if (HasRasterInput == 0u || RasterWinnerCertified == 0u) return false;
+    encoded = RasterIdentity.Load(int3(p,0)).xy;
+    uint drawAddress;
+    if (!DecodeRasterDraw(RasterDrawTable,HasRasterInput,encoded,drawAddress,sceneIdentity)) return false;
+    const float rawDepth = asfloat(RasterRawDepth.Load(int3(p,0)).w);
+    const float finalDepth = Depth.Load(int3(p,0));
+    return RasterParticipation.Load(int3(p,0)).z == 1.0 &&
+        isfinite(rawDepth) && isfinite(finalDepth) && finalDepth > 0.0 && finalDepth < 1.0 &&
+        abs(rawDepth-finalDepth) <= 1e-6;
 }
 
 float4 Unpack(uint2 v)
@@ -106,8 +124,8 @@ float3 FilterSignal(uint2 pixel, uint contribution, float4 centerBase, float4 ce
     low = high = valid ? center.rgb : 0.0;
     // A traced but invalid receiver is not an intentionally missing sample.
     if (sampled && !valid) return 0.0;
-    uint2 centerIdentity = ReadRayIdentity(pixel);
-    if (!ValidRayIdentity(centerIdentity)) return valid ? center.rgb : 0.0;
+    uint2 centerDraw, centerScene;
+    if (!ReadVisibleRaster(pixel,centerDraw,centerScene)) { valid = false; return 0.0; }
     if (valid && !ShadowFilterDirectSamples(QualityMode)) return center.rgb;
     float3 sum = valid ? center.rgb : 0.0;
     float weightSum = valid ? 1.0 : 0.0;
@@ -123,8 +141,11 @@ float3 FilterSignal(uint2 pixel, uint contribution, float4 centerBase, float4 ce
             uint2 q = uint2(ShadowRenderCoordinate(uint(logical.x), Size.x, QualityMode),
                 ShadowRenderCoordinate(uint(logical.y), Size.y, QualityMode));
             if (all(q == pixel)) continue;
-            uint2 neighborIdentity = ReadRayIdentity(q);
-            if (!ValidRayIdentity(neighborIdentity) || neighborIdentity.x != centerIdentity.x) continue;
+            uint2 neighborDraw, neighborScene;
+            if (!ReadVisibleRaster(q,neighborDraw,neighborScene) || neighborDraw.x != centerDraw.x) continue;
+            // Separate instances of the same original draw.
+            uint primitiveCount = RasterDrawTable.Load((centerDraw.x-1u)*NativeRasterDrawStride+16u);
+            if (primitiveCount == 0u || neighborDraw.y/primitiveCount != centerDraw.y/primitiveCount) continue;
             float4 base = ReadMaterial(q, 0u);
             float4 normal = ReadMaterial(q, 8u);
             float depth = Depth.Load(int3(q, 0));
@@ -159,7 +180,11 @@ bool HistorySurfaceMatches(uint2 p, float4 base, float4 normal, float depth, out
     oldPixel = uint2(oldPosition);
     uint2 currentIdentity = ReadRayIdentity(p);
     uint2 previousIdentity = HistoryRayIdentity.Load2(oldPixel.y * HistoryRayIdentityPitch + oldPixel.x * 8u);
-    if (!ValidRayIdentity(currentIdentity) || !ValidRayIdentity(previousIdentity) || any(SurfaceIdentity(currentIdentity) != SurfaceIdentity(previousIdentity))) return false;
+    // The CPU retains the same scene and revisions. Compare exact scene
+    // identities, never frame-local draw ordinals. Unmapped surfaces use spatial reconstruction.
+    if (!ValidRayIdentity(currentIdentity) || !ValidRayIdentity(previousIdentity) ||
+        ((currentIdentity.y | previousIdentity.y) & 0x80000000u) != 0u ||
+        any(currentIdentity != previousIdentity)) return false;
     uint offset = oldPixel.y * HistoryMaterialPitch + oldPixel.x * NativeSurfaceStride;
     float4 oldBase = Unpack(HistoryMaterials.Load2(offset));
     float4 oldNormal = Unpack(HistoryMaterials.Load2(offset + 8u));
@@ -197,28 +222,21 @@ void main(uint3 id : SV_DispatchThreadID)
     const uint historyOffset = (id.y * Size.x + id.x) * NativeHistoryStride;
     [unroll] for (uint signal = 0u; signal < 6u; ++signal)
         HistorySignals.Store2(historyOffset + signal * NativeOpaqueRadianceStride, uint2(0,0));
-    if (HasRasterInput != 0u) {
-        uint2 encoded = RasterIdentity.Load(int3(id.xy, 0)).xy;
-        float rawDepth = asfloat(RasterRawDepth.Load(int3(id.xy,0)).w);
-        float finalDepth = Depth.Load(int3(id.xy,0));
-        uint drawAddress;
-        uint2 raster;
-        if (RasterWinnerCertified != 0u && DecodeRasterDraw(RasterDrawTable,HasRasterInput,encoded,drawAddress,raster) &&
-            all(raster!=0xffffffffu) && RasterParticipation.Load(int3(id.xy,0)).z == 1.0 &&
-            isfinite(rawDepth) && isfinite(finalDepth) && abs(rawDepth-finalDepth) <= 1e-6) {
-            uint2 hit = ReadRayIdentity(id.xy);
-            if (ValidRayIdentity(hit) && all(raster == SurfaceIdentity(hit))) {
-                ownership |= RasterIdentityCandidate;
-                if (RasterWinnerCertified != 0u && (hit.y & 0x80000000u) == 0u) ownership |= ExactRasterWinner;
-            }
-        }
-    }
+    uint2 rasterDraw, rasterScene;
+    if (!ReadVisibleRaster(id.xy,rasterDraw,rasterScene)) return;
+    ownership |= RasterIdentityCandidate;
+    const uint2 hit = ReadRayIdentity(id.xy);
+    // Optional ray correspondence is diagnostic only.
+    if (ValidRayIdentity(hit) && ValidRayIdentity(rasterScene) &&
+        all(rasterScene == SurfaceIdentity(hit)) && (hit.y & 0x80000000u) == 0u)
+        ownership |= ExactRasterWinner;
     OwnershipMask.Store(ownershipOffset, ownership);
     const float4 base = ReadMaterial(id.xy, 0u);
     const float4 normal = ReadMaterial(id.xy, 8u);
     const float depth = Depth.Load(int3(id.xy, 0));
     if (!HasEvaluatedNativeBase(base.a) || !all(isfinite(base)) || !all(isfinite(normal)) ||
         !isfinite(depth) || depth <= 0.0 || depth >= 1.0 || dot(normal.xyz, normal.xyz) < 1e-8) return;
+    ownership |= EvaluatedRasterMaterial;
     bool dd, ds, idiff, ispec, dt, it;
     float3 ddLow, ddHigh, dsLow, dsHigh, idLow, idHigh, isLow, isHigh, dtLow, dtHigh, itLow, itHigh;
     float3 directDiffuse = FilterSignal(id.xy, ContributionDirectDiffuse, base, normal, depth, dd, ddLow, ddHigh);
@@ -248,19 +266,22 @@ void main(uint3 id : SV_DispatchThreadID)
     HistorySignals.Store2(historyOffset + 24u, PackOpaqueRadiance(indirectDiffuse, idiff ? ContributionIndirectDiffuse : 0u));
     HistorySignals.Store2(historyOffset + 32u, PackOpaqueRadiance(indirectSpecular, ispec ? ContributionIndirectSpecular : 0u));
     HistorySignals.Store2(historyOffset + 40u, PackOpaqueRadiance(indirectTransmission, it ? ContributionTransmission : 0u));
-    // The environment input contains only direct reconstructed light and emission.
-    if (dd && dt && base.a == SurfaceEvaluatedBase && (ownership & RasterIdentityCandidate) != 0u) {
-        float3 emission = ReadMaterial(id.xy, 24u).rgb;
-        float3 radiance = max(directDiffuse + directTransmission + max(emission, 0.0), 0.0);
-        if (all(isfinite(emission)) && all(isfinite(radiance)) && all(radiance <= 65504.0))
-            EnvironmentRadiance.Store2(radianceOffset, PackOpaqueRadiance(radiance, ContributionDirectDiffuse));
+    // Material emission does not require a ray match or a lighting producer.
+    const float3 emission = ReadMaterial(id.xy, 24u).rgb;
+    const bool emissionValid = (Available & ContributionEmission) != 0u && all(isfinite(emission));
+    if (emissionValid) ownership |= ValidRasterEmission;
+    // Feedback contains only direct diffuse/transmission and emission, never indirect.
+    if (dd || dt || emissionValid) {
+        const float3 radiance = max((dd ? directDiffuse : 0.0) +
+            (dt ? directTransmission : 0.0) + (emissionValid ? max(emission,0.0) : 0.0),0.0);
+        EnvironmentRadiance.Store2(radianceOffset,PackOpaqueRadiance(radiance,ContributionDirectDiffuse));
     }
-    const float3 transmission = directTransmission + indirectTransmission;
-    const uint transmissionValid = dt && it ? ContributionTransmission : 0u;
+    const float3 transmission = (dt ? directTransmission : 0.0) + (it ? indirectTransmission : 0.0);
+    const uint transmissionValid = dt || it ? ContributionTransmission : 0u;
     const uint diffuseValid = (dd ? ContributionDirectDiffuse : 0u) | (idiff ? ContributionIndirectDiffuse : 0u);
     const uint specularValid = (ds ? ContributionDirectSpecular : 0u) | (ispec ? ContributionIndirectSpecular : 0u);
-    const float3 diffuse = directDiffuse + indirectDiffuse;
-    const float3 specular = directSpecular + indirectSpecular;
+    const float3 diffuse = (dd ? directDiffuse : 0.0) + (idiff ? indirectDiffuse : 0.0);
+    const float3 specular = (ds ? directSpecular : 0.0) + (ispec ? indirectSpecular : 0.0);
     const uint2 packedDiffuse = PackOpaqueRadiance(diffuse, diffuseValid);
     const uint2 packedSpecular = PackOpaqueRadiance(specular, specularValid);
     const uint2 packedTransmission=PackOpaqueRadiance(transmission,transmissionValid);
@@ -269,17 +290,13 @@ void main(uint3 id : SV_DispatchThreadID)
     // Check the actual encoded output, not the pre-pack validity flags. Half
     // overflow can invalidate the signal. Zero radiance still needs valid bits.
     uint valid = uint(Unpack(packedDiffuse).a) | uint(Unpack(packedSpecular).a) | uint(Unpack(packedTransmission).a);
-    // Transmission requires independently valid direct AND indirect signals.
-    // Emissive radiance is read and applied separately by CompositeFullNative.
-    if (base.a == SurfaceEvaluatedBase && ValidRayIdentity(ReadRayIdentity(id.xy))) {
-        const float4 emissionAO = ReadMaterial(id.xy, 24u);
-        if ((Available & ContributionEmission) != 0u && all(isfinite(emissionAO.rgb)))
-            valid |= ContributionEmission;
-    }
+    if (emissionValid) valid |= ContributionEmission;
+    // Complete coverage is diagnostic. Missing signals are not valid black.
     const bool complete = CompleteLightingCoverage != 0u && (Available & ~255u) == 0u &&
         (valid & ~Available) == 0u && (valid & NativeOpaqueRequired) == NativeOpaqueRequired;
     if (complete) ownership |= CompleteOpaqueRadiance;
-    if (complete && base.a == SurfaceEvaluatedBase && (ownership & ExactRasterWinner) != 0u)
-        ownership |= NativeOwnsOpaque;
+    // Dispatch is exclusive to the session-latched Full Native policy.
+    // Valid raster visibility and evaluated material authorize the pixel.
+    ownership |= NativeOwnsOpaque;
     OwnershipMask.Store(ownershipOffset, ownership);
 }
