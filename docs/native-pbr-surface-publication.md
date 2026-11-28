@@ -1,4 +1,4 @@
-# NativePBR evaluated surface publication (Worker 05 checkpoint)
+# NativePBR evaluated surface publication (Worker 05 raster-local implementation)
 
 This is the existing evaluated-surface ABI v1 consumed by Full Native, not a new
 raster ABI or a claim that all material techniques have been completed. Worker 03's
@@ -31,7 +31,9 @@ buffer. The shadow header uses zero as invalid; mode is bits 16-17,
 interlayer bit 18, alpha-height bit 19. The lobe ABI is a tagged union, not four
 independent lobes: nonnegative f0Colored.w describes coat; -1 thin surface;
 -2 standalone fuzz; [-4,-3] explicit thin+fuzz roughness, -5 legacy thin+fuzz;
--6 foliage; [-8,-7] foliage+fuzz roughness, -9 legacy foliage+fuzz. Use
+-6 foliage; [-8,-7] foliage+fuzz roughness, -9 legacy foliage+fuzz;
+-10 eye environment direction in normalRoughness.xyz (only when no other
+lobe is present). Use
 NativeSurface.hlsli accessors, including HasNativeCoat, HasNativeFuzz,
 HasNativeThinSurface, HasNativeSubsurface and HasNativeInterlayer.
 Do not reinterpret negative tags as a coat parameter.
@@ -42,8 +44,9 @@ raw evidence and producer fence/value. Check IsCoherent before binding. Retain
 the entire shared_ptr until consumer fence retirement; wait for producer
 completion on the consumer queue and transition buffers from COMMON for
 consumption, restoring COMMON according to the existing producer/consumer
-contract. The current implementation ties material revision to geometry
-revision, which is a limitation, not an independently versioned residency ABI.
+contract. The raster material table now has a separate rasterMaterialRevision; history
+rejects changes to this revision. Scene material revisions remain tied to
+geometry revisions. Complete global residency separation is not established.
 
 ## Independent validity
 
@@ -59,18 +62,24 @@ contracts. Do not synthesize valid material from black output, promote status
 
 The existing ray identity plane is not Worker 03's raster-local draw identity.
 Its candidate marker is not an actual traversal hit. The raster input v6 draw
-row and local primitive may be valid without any TLAS correspondence. Current
-screen evaluation still requires a matching scene instance and geometry; such
-raster-local-only surfaces are not yet supported by this publication. A
-standalone raster material binding with revision and technique metadata is
-needed to eliminate that dependency; do not infer a TLAS mapping.
+row and local primitive may be valid without any TLAS correspondence. Certified raw inputs now evaluate via raster-local material bindings even
+without a matching scene instance or geometry. Ray correspondence is optional
+per pixel; a missing match leaves rayIdentity invalid, not material status.
+The producer still requires an available scene generation, and downstream
+final-color ownership still requires its existing correspondence checks.
+Do not infer a TLAS mapping.
+
+Raster material recipes extend the existing scene descriptor indices; shared
+resident textures are reused. GPU inputs t1038/t1039 are the raster material
+records/bindings; t1040 is the 32-byte landscape lookup row (six layer binding
+indices, layer count, reserved). These are internal evaluator inputs, not a
+change to Worker 03 ABI v6 or the published base sample stride.
 
 ## Coverage audit (source only)
 
 - Base color, normal, metallic, roughness, AO, emission, F0: shared native
-  evaluation exists for resident, admitted materials. This checkpoint adds
-  descriptor bounds checks, finite channel validation, and explicit incomplete
-  status for unconsumed raw auxiliary techniques.
+  evaluation exists for resident, admitted materials. Raster-local and secondary paths share the material evaluator; admitted
+  ordinary Lighting materials can be evaluated without a per-pixel ray hit.
 - Coat, fuzz, thin transmission, subsurface, interlayer: implemented paths for
   supported authored combinations. Not a universal lobe combination contract;
   independent sheen, hair Marschner, glint and other specialized techniques
@@ -79,12 +88,17 @@ needed to eliminate that dependency; do not infer a TLAS mapping.
   payload exist; not displaced geometry, universal alpha/displacement parity,
   or evidence of correct execution in every material permutation.
 - Projection/snow: projector input and evaluation exist for admitted rows;
-  primary projection is intentionally feature-limited. ABI v6 auxiliary
-  landscape weights, projection, eye and fur payloads are not yet interpreted
-  by this shared material evaluator. Layered landscape, snow and complex
-  technique parity remain incomplete.
-- Characters: secondary posed-triangle/mover evaluator exists; it is not
-  complete primary skin partition, armor, hair, eye or alpha-tested coverage.
+  primary projection is intentionally feature-limited. ABI v6 projection direction is consumed with a matching resident projector
+  row; standalone projector metadata and snow parity remain incomplete.
+  Six authored vanilla landscape layer pairs are acquired from the engine
+  and blended using the first six raster weights. Missing contributing
+  textures reject evaluation. Terrain PBR, seam borrowing, LOD, snow and
+  terrain parallax are not complete. Eye direction is consumed for indirect
+  reflections via the optional eye lobe tag; full eye shading is not complete.
+  Fur shell asset and pass-specific material evaluation remain unimplemented.
+- Characters: secondary posed-triangle/mover evaluator exists; primary raster-local base evaluation now admits supported skin/armor
+  materials, independent of per-pixel scene matching. Specialized skin,
+  hair, eye and secondary alpha-tested parity are not complete.
   Current separate character material bindings/descriptors require a residency
   audit before claiming one physical texture authority across all paths.
 - Alpha-tested geometry: existing native alpha candidate acceptance is limited
@@ -101,8 +115,8 @@ needed to eliminate that dependency; do not infer a TLAS mapping.
 
 No new raster lighting, TruePBR route, sidecar replay, or separate texture
 pool is introduced by this checkpoint. This document does not certify that
-other existing routes have been retired. Required next work is the raster-local
-binding path and auxiliary technique evaluation, complete residency and
-material revision separation, followed by Windows DXC SM6.5 compilation,
+other existing routes have been retired. Required next work includes remaining specialized technique evaluation,
+complete residency and material revision separation, followed by Windows
+DXC SM6.5 compilation,
 debug-layer/fence tests and representative in-game materials. Do not mark
 Worker 05 complete before those gates are met.
