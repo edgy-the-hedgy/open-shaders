@@ -52,7 +52,8 @@ struct Light
 	uint4 roomFlags;
 	uint lightFlags;
 	uint shadowMapIndex;
-	float2 pad0;
+	uint nativeShadow;  // Common/NativeLightShadowSlot.hlsli packing.
+	float pad0;
 };
 
 // ---------------------------------------------------------------------------

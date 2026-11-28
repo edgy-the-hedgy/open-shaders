@@ -4,9 +4,9 @@
 #include "RE/B/BGSMovableStatic.h"
 #include "RE/B/BSGeometry.h"
 #include "RE/B/BSMeshLODTriShape.h"
-#include "RE/B/BSModelDB.h"
 #include "RE/B/BSShaderProperty.h"
 #include "RE/B/BSTriShape.h"
+#include "RE/E/ExtraEnableStateParent.h"
 #include "RE/G/GridCellArray.h"
 #include "RE/N/NiNode.h"
 #include "RE/N/NiTimeController.h"
@@ -19,7 +19,10 @@
 #include "RE/T/TESObjectREFR.h"
 #include "RE/T/TESObjectSTAT.h"
 #include "RE/T/TESWorldSpace.h"
+#include "RE/V/VirtualMachine.h"
+#include "ScenePrepEligibility.h"
 #include "ScenePrepEngineBridge.h"
+#include "SystemMemoryBudget.h"
 #include "TilePreparationPolicy.h"
 #include "Utils/PerfUtils.h"
 #include "Utils/TracyZones.h"
@@ -41,17 +44,16 @@ namespace DX12
 	namespace
 	{
 		constexpr size_t kMaxCandidateRefs = 150'000;
-		constexpr size_t kMaxTileShapes = 384;
+		constexpr size_t kMemoryAdmissionInterval = 256;
 		constexpr size_t kMaxNifSources = 4096;
 		constexpr size_t kMaxMissingShapes = 4096;
 		constexpr size_t kMaxRejectionReasons = 12;
-		constexpr uint64_t kMaxTileGeometryBytes = 48ull * 1024 * 1024;
 		constexpr uint64_t kMaxDecodedCacheBytes = 48ull * 1024 * 1024;
-		constexpr uint64_t kMaxCapturedMeshBytes = 96ull * 1024 * 1024;
-		constexpr size_t kMaxCapturedShapes = 8192;
 		constexpr uint32_t kInteriorReuseLifetimeMs = 2000;
 		constexpr uint32_t kMaxSceneGraphDepth = 32;
 		constexpr uint32_t kTerrainOrdinalBase = 0x10000u;
+		constexpr double kExteriorCellUnits = 4096.0;
+		constexpr uint32_t kPreparationBudgetMs = 20'000;
 
 		void RecordRejection(
 			std::vector<std::pair<std::string, uint32_t>>& a_reasons, uint32_t& a_failedCount,
@@ -83,13 +85,16 @@ namespace DX12
 
 		void AddMissingShapeEntry(
 			std::vector<MissingNifShapeDescriptor>& a_missing,
+			std::vector<std::pair<std::string, uint32_t>>& a_reasons, uint32_t& a_failedCount,
 			std::string_view a_plugin, uint32_t a_localID,
 			std::string_view a_nifPath, int32_t a_blockIndex, std::string_view a_reason)
 		{
 			if (a_nifPath.empty() || a_nifPath.size() > 260)
 				return;
-			if (a_missing.size() >= kMaxMissingShapes)
+			if (a_missing.size() >= kMaxMissingShapes) {
+				RecordRejection(a_reasons, a_failedCount, "missing shape manifest capacity");
 				return;
+			}
 			MissingNifShapeDescriptor entry;
 			entry.referencePlugin = std::string(a_plugin.substr(0, 128));
 			entry.referenceLocal = a_localID;
@@ -104,7 +109,7 @@ namespace DX12
 			std::string_view a_nifPath, int32_t a_blockIndex, std::string_view a_reason)
 		{
 			AddMissingShapeEntry(
-				a_request.missingShapes,
+				a_request.missingShapes, a_request.rejectionReasons, a_request.failedShapes,
 				a_plugin, a_localID, a_nifPath, a_blockIndex, a_reason);
 		}
 
@@ -114,8 +119,10 @@ namespace DX12
 		{
 			if (a_nifPath.empty() || a_nifPath.size() > 260 || a_plugin.empty())
 				return;
-			if (a_request.nifSources.size() >= kMaxNifSources)
+			if (a_request.nifSources.size() >= kMaxNifSources) {
+				RecordRejection(a_request.rejectionReasons, a_request.failedShapes, "NIF source manifest capacity");
 				return;
+			}
 			NifSourceDescriptor entry;
 			entry.referencePlugin = std::string(a_plugin.substr(0, 128));
 			entry.referenceLocal = a_localID;
@@ -128,8 +135,6 @@ namespace DX12
 			switch (a_type) {
 			case RE::BSGeometry::Type::kTriShape:
 			case RE::BSGeometry::Type::kMeshLODTriShape:
-			case RE::BSGeometry::Type::kLODMultiIndexTriShape:
-			case RE::BSGeometry::Type::kMultiIndexTriShape:
 			case RE::BSGeometry::Type::kSubIndexTriShape:
 			case RE::BSGeometry::Type::kSubIndexLandTriShape:
 				return true;
@@ -174,7 +179,11 @@ namespace DX12
 				return GeometryInspectResult::Rejected;
 			}
 			const auto* property = runtime.shaderProperty.get();
-			if (!property || property->GetRTTI() != globals::rtti::BSLightingShaderPropertyRTTI.get() ||
+			if (!property) {
+				a_outReason = "missing shader property";
+				return GeometryInspectResult::Rejected;
+			}
+			if (property->GetRTTI() != globals::rtti::BSLightingShaderPropertyRTTI.get() ||
 				property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kRefraction,
 					RE::BSShaderProperty::EShaderPropertyFlag::kTempRefraction)) {
 				return GeometryInspectResult::SkippedNonShadow;
@@ -220,6 +229,16 @@ namespace DX12
 			return GeometryInspectResult::Accepted;
 		}
 
+		/** @brief Index of the only rendered child of a switch node; nullopt for other nodes, an out-of-range value when none is active. */
+		std::optional<uint16_t> ActiveSwitchChild(RE::NiNode& a_node)
+		{
+			auto* switchNode = a_node.AsSwitchNode();
+			if (!switchNode)
+				return std::nullopt;
+			const int32_t index = switchNode->index;
+			return index < 0 || index >= std::numeric_limits<uint16_t>::max() ? std::numeric_limits<uint16_t>::max() : uint16_t(index);
+		}
+
 		struct CaptureCache
 		{
 			using Key = std::tuple<uintptr_t, uint32_t, uint32_t, uint32_t, uint32_t>;
@@ -231,15 +250,26 @@ namespace DX12
 			RE::NiAVObject* a_obj, uint32_t a_ownerFormID, std::string_view a_plugin, uint32_t a_localID,
 			std::string_view a_nifPath, uint32_t& a_shapeOrdinal, uint32_t a_depth, ScenePrepRequest& a_request, CaptureCache& a_cache)
 		{
-			if (!a_obj || a_depth > kMaxSceneGraphDepth || a_obj->GetAppCulled())
+			if (!a_obj || a_obj->GetAppCulled())
 				return;
+			if (IsSceneGraphDepthExceeded(a_depth, kMaxSceneGraphDepth)) {
+				RecordRejection(a_request.rejectionReasons, a_request.failedShapes, "scene graph depth limit exceeded");
+				AddMissingShape(a_request, a_plugin, a_localID, a_nifPath, -1, "scene graph depth limit exceeded");
+				return;
+			}
 			if (a_obj->GetControllers() != nullptr) {
 				RecordRejection(a_request.rejectionReasons, a_request.failedShapes, "controlled scene subtree");
 				AddMissingShape(a_request, a_plugin, a_localID, a_nifPath, -1, "controlled scene subtree");
 				return;
 			}
 			if (auto* node = a_obj->AsNode()) {
-				for (const auto& child : node->GetChildren())
+				const auto& children = node->GetChildren();
+				if (const auto active = ActiveSwitchChild(*node)) {
+					if (*active < children.size())
+						CaptureAttachedSubtree(children[*active].get(), a_ownerFormID, a_plugin, a_localID, a_nifPath, a_shapeOrdinal, a_depth + 1, a_request, a_cache);
+					return;
+				}
+				for (const auto& child : children)
 					CaptureAttachedSubtree(child.get(), a_ownerFormID, a_plugin, a_localID, a_nifPath, a_shapeOrdinal, a_depth + 1, a_request, a_cache);
 				return;
 			}
@@ -264,8 +294,7 @@ namespace DX12
 				AddMissingShape(a_request, a_plugin, a_localID, a_nifPath, int32_t(ordinal), "invalid NIF transform");
 				return;
 			}
-			if (a_request.attachedShapes.size() >= kMaxCapturedShapes ||
-				extracted.vertexCount > 65535u || extracted.indexCount > 65535u * 3u) {
+			if (extracted.vertexCount > 65535u || extracted.indexCount > 65535u * 3u) {
 				a_request.captureBudgetExceeded = true;
 				RecordRejection(a_request.rejectionReasons, a_request.failedShapes, "capture shape limit");
 				AddMissingShape(a_request, a_plugin, a_localID, a_nifPath, int32_t(ordinal), "capture shape limit");
@@ -279,10 +308,10 @@ namespace DX12
 			} else {
 				const auto vertexBytes = uint64_t(extracted.vertexCount) * extracted.stride;
 				const auto bytes = vertexBytes + uint64_t(extracted.indexCount) * sizeof(uint16_t);
-				if (bytes > kMaxCapturedMeshBytes - a_cache.bytes) {
+				if (bytes > UINT64_MAX - a_cache.bytes || !HasAvailableSystemMemory(a_cache.bytes + bytes)) {
 					a_request.captureBudgetExceeded = true;
-					RecordRejection(a_request.rejectionReasons, a_request.failedShapes, "capture byte budget");
-					AddMissingShape(a_request, a_plugin, a_localID, a_nifPath, int32_t(ordinal), "capture byte budget");
+					RecordRejection(a_request.rejectionReasons, a_request.failedShapes, "system memory admission");
+					AddMissingShape(a_request, a_plugin, a_localID, a_nifPath, int32_t(ordinal), "system memory admission");
 					return;
 				}
 				auto owned = std::make_shared<CapturedMeshSlice>();
@@ -308,77 +337,28 @@ namespace DX12
 			std::vector<uint32_t> indices;
 			uint64_t bytes = 0;
 		};
+	}
 
-		struct ExtractedModelShape
-		{
-			uint32_t ordinal = 0;
-			std::shared_ptr<const CachedDecodedMesh> mesh;
-			AffineTransform toModel{};
-		};
+	bool HasAttachedScripts(const RE::TESObjectREFR& a_ref)
+	{
+		// TESForm::HasVMAD only proves a VM handle can exist, which holds for every reference.
+		auto* vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+		auto* policy = vm ? vm->GetObjectHandlePolicy() : nullptr;
+		if (!policy)
+			return false;
+		const auto handle = policy->GetHandleForObject(a_ref.GetFormType(), &a_ref);
+		if (handle == policy->EmptyHandle())
+			return false;
+		RE::BSSpinLockGuard lock(vm->attachedScriptsLock);
+		return vm->attachedScripts.contains(handle);
+	}
 
-		struct CachedModelExtraction
-		{
-			std::vector<ExtractedModelShape> shapes;
-			std::vector<std::tuple<int32_t, std::string>> missing;
-			std::vector<std::pair<std::string, uint32_t>> rejections;
-			uint64_t bytes = 0;
-		};
-
-		void WalkDemandModelSubtree(
-			RE::NiAVObject* a_obj, const AffineTransform& a_parentTransform, uint32_t& a_shapeOrdinal,
-			uint32_t a_depth, CachedModelExtraction& a_out)
-		{
-			if (!a_obj || a_depth > kMaxSceneGraphDepth || a_obj->GetAppCulled())
-				return;
-			if (a_obj->GetControllers() != nullptr) {
-				uint32_t ignored = 0;
-				RecordRejection(a_out.rejections, ignored, "controlled scene subtree");
-				a_out.missing.emplace_back(-1, "controlled scene subtree");
-				return;
-			}
-			const auto currentTransform = ComposeAffine(a_parentTransform, FromNiTransform(a_obj->local));
-			if (auto* node = a_obj->AsNode()) {
-				for (const auto& child : node->GetChildren())
-					WalkDemandModelSubtree(child.get(), currentTransform, a_shapeOrdinal, a_depth + 1, a_out);
-				return;
-			}
-			auto* geom = a_obj->AsGeometry();
-			if (!geom)
-				return;
-
-			const uint32_t ordinal = a_shapeOrdinal++;
-			ExtractedShapeDesc extracted{};
-			std::string_view rejectReason;
-			const auto status = InspectGeometry(*geom, extracted, rejectReason);
-			if (status == GeometryInspectResult::SkippedNonShadow)
-				return;
-			if (status == GeometryInspectResult::Rejected) {
-				uint32_t ignored = 0;
-				RecordRejection(a_out.rejections, ignored, rejectReason);
-				a_out.missing.emplace_back(int32_t(ordinal), std::string(rejectReason));
-				return;
-			}
-			const auto rows = TransformToRows3x4(currentTransform);
-			if (!IsInvertibleTransform3x4(rows)) {
-				uint32_t ignored = 0;
-				RecordRejection(a_out.rejections, ignored, "invalid NIF transform");
-				a_out.missing.emplace_back(int32_t(ordinal), "invalid NIF transform");
-				return;
-			}
-			auto mesh = std::make_shared<CachedDecodedMesh>();
-			if (!DecodeRawMeshBuffers(extracted.rawVertices, extracted.vertexCount, extracted.stride,
-					extracted.rawIndices, extracted.firstIndex, extracted.indexCount,
-					mesh->positions, mesh->indices)) {
-				uint32_t ignored = 0;
-				RecordRejection(a_out.rejections, ignored, "invalid decoded mesh data");
-				a_out.missing.emplace_back(int32_t(ordinal), "invalid decoded mesh data");
-				return;
-			}
-			mesh->bytes = uint64_t(mesh->positions.size()) * sizeof(float3) +
-			              uint64_t(mesh->indices.size()) * sizeof(uint32_t);
-			a_out.bytes += 128ull + mesh->bytes;
-			a_out.shapes.push_back({ ordinal, std::move(mesh), currentTransform });
-		}
+	bool IsCellFullyLoaded(const RE::TESObjectCELL* a_cell)
+	{
+		if (!a_cell || !a_cell->IsAttached())
+			return false;
+		const auto* loaded = a_cell->GetRuntimeData().loadedData;
+		return loaded && loaded->refsFullyLoaded;
 	}
 
 	std::optional<ScenePrepRequest> CaptureScenePrepRequest(
@@ -511,47 +491,44 @@ namespace DX12
 			if (!nifView.empty())
 				AddNifSource(request, plugin, localID, nifView);
 
+			if (root && !request.consolidate && knownBounds && !bounds.MayOverlap(a_key.x, a_key.y, a_size))
+				return RE::BSContainer::ForEachResult::kContinue;
+
+			if (IsRuntimeDependentPlacement(
+					base->Is(RE::FormType::MovableStatic), HasAttachedScripts(*a_ref),
+					a_ref->extraList.GetByType<RE::ExtraEnableStateParent>() != nullptr,
+					a_ref->IsInitiallyDisabled())) {
+				RecordRejection(request.rejectionReasons, request.failedShapes, "runtime-dependent placement");
+				AddMissingShape(request, plugin, localID, nifView, -1, "runtime-dependent placement");
+				return RE::BSContainer::ForEachResult::kContinue;
+			}
+
 			if (root) {
-				if (!request.consolidate && knownBounds && !bounds.MayOverlap(a_key.x, a_key.y, a_size))
-					return RE::BSContainer::ForEachResult::kContinue;
 				uint32_t ordinal = 0;
 				CaptureAttachedSubtree(root, refID, plugin, localID, nifView, ordinal, 0, request, captureCache);
 				return RE::BSContainer::ForEachResult::kContinue;
 			}
 
-			if (base->Is(RE::FormType::MovableStatic) || a_ref->HasVMAD()) {
-				RecordRejection(request.rejectionReasons, request.failedShapes, "runtime-dependent placement");
-				AddMissingShape(request, plugin, localID, nifView, -1, "runtime-dependent placement");
-				return RE::BSContainer::ForEachResult::kContinue;
-			}
 			if (!nifPath) {
 				RecordRejection(request.rejectionReasons, request.failedShapes, "missing mesh path");
 				return RE::BSContainer::ForEachResult::kContinue;
 			}
-			const auto placement = PlacementFromEulerXYZ(
-				float3{ pos.x, pos.y, pos.z },
-				float3{ a_ref->GetAngleX(), a_ref->GetAngleY(), a_ref->GetAngleZ() },
-				a_ref->GetScale());
-			if (!placement) {
-				RecordRejection(request.rejectionReasons, request.failedShapes, "invalid placement");
-				AddMissingShape(request, plugin, localID, nifView, -1, "invalid placement");
-				return RE::BSContainer::ForEachResult::kContinue;
-			}
-			request.unattachedPlacements.push_back({ refID,
-				localID,
-				std::string(plugin),
-				*nifPath,
-				*placement });
+			// BSModelDB::Demand off an engine thread crashes in Havok's per-thread allocator, so unloaded meshes stay raster.
+			RecordRejection(request.rejectionReasons, request.failedShapes, "mesh not loaded");
+			AddMissingShape(request, plugin, localID, nifView, -1, "mesh not loaded");
 			return RE::BSContainer::ForEachResult::kContinue;
 		};
 
 		if (!request.worldspace) {
-			request.enumerationComplete = a_cell->IsAttached();
+			request.enumerationComplete = IsCellFullyLoaded(a_cell);
+			request.hasUnattachedCells = !request.enumerationComplete;
 			a_cell->ForEachReference(visitRef);
 		} else {
 			request.enumerationComplete = false;
 			const auto coreWindow = SubcellExteriorCellWindow(a_key.x, a_key.y, a_size, 0);
-			const auto haloWindow = SubcellExteriorCellWindow(a_key.x, a_key.y, a_size, 1);
+			// Walk every attached cell the +/-2 subcell origin halo can reach, not just the adjacent ring.
+			const auto haloCells = int32_t(std::ceil(2.0 * double(a_size) / kExteriorCellUnits));
+			const auto haloWindow = SubcellExteriorCellWindow(a_key.x, a_key.y, a_size, haloCells);
 
 			const int64_t coreWidth = int64_t(coreWindow.maxCellX) - coreWindow.minCellX + 1;
 			const int64_t coreHeight = int64_t(coreWindow.maxCellY) - coreWindow.minCellY + 1;
@@ -643,7 +620,6 @@ namespace DX12
 		wake.notify_all();
 		if (worker.joinable())
 			worker.join();
-		DrainRetiredObjects();
 	}
 
 	bool ScenePrepWorker::Idle() const
@@ -680,26 +656,6 @@ namespace DX12
 		wake.notify_all();
 	}
 
-	void ScenePrepWorker::DrainRetiredObjects()
-	{
-		std::vector<RE::NiPointer<RE::NiObject>> toRelease;
-		{
-			std::scoped_lock lock(mutex);
-			toRelease.swap(retiredObjects);
-		}
-	}
-
-	void ScenePrepWorker::RetireObjectsLocked(std::vector<RE::NiPointer<RE::NiObject>>& a_objects)
-	{
-		if (a_objects.empty())
-			return;
-		retiredObjects.insert(
-			retiredObjects.end(),
-			std::make_move_iterator(a_objects.begin()),
-			std::make_move_iterator(a_objects.end()));
-		a_objects.clear();
-	}
-
 	void ScenePrepWorker::Run(std::stop_token a_stop)
 	{
 		uint64_t observedGeneration = generation.load(std::memory_order_acquire);
@@ -731,10 +687,9 @@ namespace DX12
 			const bool predictive = task->predictive;
 			const bool corner = task->corner;
 			const double captureMs = task->captureMs;
-			std::vector<RE::NiPointer<RE::NiObject>> localRetired;
 			ScenePrepResult result;
 			try {
-				result = Prepare(std::move(*task), epoch, a_stop, localRetired);
+				result = Prepare(std::move(*task), epoch, a_stop);
 			} catch (const std::exception& error) {
 				result.publication.key = task ? task->key : SubcellKey{};
 				result.failure = std::format("Scene preparation error: {}", std::string_view(error.what()).substr(0, 240));
@@ -751,7 +706,6 @@ namespace DX12
 			SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
 			{
 				std::scoped_lock lock(mutex);
-				RetireObjectsLocked(localRetired);
 				running = false;
 				if (!a_stop.stop_requested() && epoch == generation.load(std::memory_order_acquire))
 					completed = std::move(result);
@@ -760,8 +714,7 @@ namespace DX12
 	}
 
 	ScenePrepResult ScenePrepWorker::Prepare(
-		ScenePrepRequest a_request, uint64_t a_epoch, std::stop_token a_stop,
-		std::vector<RE::NiPointer<RE::NiObject>>& a_outRetired)
+		ScenePrepRequest a_request, uint64_t a_epoch, std::stop_token a_stop)
 	{
 		ScenePrepResult result;
 		result.predictive = a_request.predictive;
@@ -777,17 +730,20 @@ namespace DX12
 		pub.rejectedLights = a_request.rejectedLights;
 		pub.hasUnattachedCells = a_request.hasUnattachedCells;
 
-		const auto canceled = [&] {
-			return a_stop.stop_requested() || generation.load(std::memory_order_acquire) != a_epoch;
+		const auto deadline = Util::QpcDeadlineAfterMs(Util::GetQpcTicks(), Util::GetQpcFrequency(), kPreparationBudgetMs);
+		const auto stopReason = [&]() -> const char* {
+			if (a_stop.stop_requested() || generation.load(std::memory_order_acquire) != a_epoch)
+				return "Preparation canceled by scene change";
+			return Util::GetQpcTicks() > deadline ? "Preparation exceeded its time budget" : nullptr;
 		};
 
 		if (a_request.interiorBatch) {
 			const auto& batch = *a_request.interiorBatch;
 			if (batch.center.scope != a_request.key.scope || batch.size != a_request.size || batch.loading != a_request.loading ||
-				a_request.worldspace || canceled())
+				a_request.worldspace || stopReason())
 				return result;
 			for (const auto& item : batch.shapes) {
-				if (canceled())
+				if (stopReason())
 					return result;
 				if (!item.bounds.MayOverlap(pub.key.x, pub.key.y, a_request.size))
 					continue;
@@ -835,7 +791,7 @@ namespace DX12
 			if (!overlaps) {
 				RecordRejection(pub.rejectionReasons, pub.failedShapes, "invalid placed bounds");
 				AddMissingShapeEntry(
-					pub.missingShapes,
+					pub.missingShapes, pub.rejectionReasons, pub.failedShapes,
 					a_plugin, a_localID, a_nifPath, a_blockIndex, "invalid placed bounds");
 				return;
 			}
@@ -853,9 +809,10 @@ namespace DX12
 			++pub.eligibleShapes;
 			const uint64_t bytes = uint64_t(a_positions.size()) * sizeof(float3) +
 			                       uint64_t(a_indices.size()) * sizeof(uint32_t);
-			if (pub.shapes.size() >= kMaxTileShapes || bytes > kMaxTileGeometryBytes - pub.geometryBytes) {
+			if (bytes > UINT64_MAX - pub.geometryBytes ||
+				(pub.shapes.size() % kMemoryAdmissionInterval == 0 && !HasAvailableSystemMemory(pub.geometryBytes + bytes))) {
 				budgetExceeded = true;
-				RecordRejection(pub.rejectionReasons, pub.failedShapes, "tile shape or byte budget exceeded");
+				RecordRejection(pub.rejectionReasons, pub.failedShapes, "system memory admission");
 				return;
 			}
 			if (!a_identity || !emittedIdentities.insert(a_identity).second) {
@@ -879,8 +836,8 @@ namespace DX12
 		uint64_t rawCacheBytes = 0;
 
 		for (const auto& attached : a_request.attachedShapes) {
-			if (canceled()) {
-				result.failure = "Preparation canceled by scene change";
+			if (const auto reason = stopReason()) {
+				result.failure = reason;
 				return result;
 			}
 			if (!attached.mesh) {
@@ -911,82 +868,6 @@ namespace DX12
 			emitShape(attached.identity, decoded->positions, decoded->indices, attached.transform, {}, 0, {}, -1, attached.casterSource);
 		}
 		rawCache.clear();
-
-		std::unordered_map<std::string, std::shared_ptr<const CachedModelExtraction>> modelCache;
-		uint64_t modelCacheBytes = 0;
-
-		for (const auto& placement : a_request.unattachedPlacements) {
-			if (canceled()) {
-				result.failure = "Preparation canceled by scene change";
-				return result;
-			}
-			std::shared_ptr<const CachedModelExtraction> extraction;
-			if (const auto it = modelCache.find(placement.nifPath); it != modelCache.end()) {
-				extraction = it->second;
-			} else {
-				auto fresh = std::make_shared<CachedModelExtraction>();
-				RE::BSModelDB::DBTraits::ArgsType args{};
-				args.LODmult = 0;
-				args.texLoadLevel = 0;
-				args.unk8 = false;
-				args.unk9 = false;
-				args.unkA = false;
-				args.postProcess = false;
-				RE::NiPointer<RE::NiNode> modelRoot;
-				ZoneScopedN("DX12::Preparation::DemandModel");
-				const auto err = RE::BSModelDB::Demand(placement.nifPath.c_str(), modelRoot, args);
-				if (modelRoot)
-					a_outRetired.emplace_back(modelRoot.get());
-				if (err != RE::BSResource::ErrorCode::kNone || !modelRoot) {
-					uint32_t ignored = 0;
-					RecordRejection(fresh->rejections, ignored, "NIF unavailable or unsupported");
-					fresh->missing.emplace_back(-1, "NIF unavailable or unsupported");
-				} else {
-					uint32_t ordinal = 0;
-					WalkDemandModelSubtree(modelRoot.get(), AffineTransform{}, ordinal, 0, *fresh);
-					if (fresh->shapes.empty() && fresh->missing.empty()) {
-						uint32_t ignored = 0;
-						RecordRejection(fresh->rejections, ignored, "no supported opaque rigid triangles");
-						fresh->missing.emplace_back(-1, "no supported opaque rigid triangles");
-					}
-				}
-				extraction = fresh;
-				fresh->bytes += 256ull + placement.nifPath.size() + fresh->missing.size() * 96ull;
-				if (fresh->bytes <= kMaxDecodedCacheBytes - modelCacheBytes) {
-					modelCacheBytes += fresh->bytes;
-					modelCache.emplace(placement.nifPath, extraction);
-				}
-			}
-
-			for (const auto& [reason, count] : extraction->rejections) {
-				RecordRejection(pub.rejectionReasons, pub.failedShapes, reason, count);
-				pub.unlocalizedRejections += count;
-			}
-			for (const auto& [blockIdx, reason] : extraction->missing) {
-				if (pub.missingShapes.size() >= kMaxMissingShapes)
-					break;
-				MissingNifShapeDescriptor entry;
-				entry.referencePlugin = placement.refPlugin.substr(0, 128);
-				entry.referenceLocal = placement.refLocal;
-				entry.nifPath = placement.nifPath;
-				entry.blockIndex = blockIdx;
-				entry.reason = reason.substr(0, 80);
-				pub.missingShapes.push_back(std::move(entry));
-			}
-
-			for (const auto& modelShape : extraction->shapes) {
-				const auto worldAffine = ComposeAffine(placement.transform, modelShape.toModel);
-				const auto rows = TransformToRows3x4(worldAffine);
-				if (!IsInvertibleTransform3x4(rows)) {
-					RecordRejection(pub.rejectionReasons, pub.failedShapes, "invalid placed bounds");
-					continue;
-				}
-				emitShape(
-					MakeShapeIdentity(placement.refFormID, modelShape.ordinal),
-					modelShape.mesh->positions, modelShape.mesh->indices, rows,
-					placement.refPlugin, placement.refLocal, placement.nifPath, int32_t(modelShape.ordinal));
-			}
-		}
 
 		pub.validated = true;
 		pub.enumerationComplete = a_request.enumerationComplete && !a_request.lightCapacityExceeded && !a_request.candidateOverflow;

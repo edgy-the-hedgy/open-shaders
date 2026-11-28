@@ -45,32 +45,35 @@ The `ab` phase takes about five minutes (three 62 s replays); `baseline` about t
 - Frame time is reported against the 16.7 ms frame budget. A `perf:` claim needs `offload` at or
   below `baseline` across repeated runs, not one sample.
 
-## Combined-mask baseline adaptation
+## Coverage limits
 
 On feat/dx12, enable developer mode before running the tool. It uses the
 explicit DX12 setValidationMode command, leaving the boot master unchanged.
-The initial port still applies the combined mask in Native Composite.
-Per-light coverage counters are deliberately absent; such checks report
-REVIEW, not PASS. A scene can be populated by runtime observation without
+When `perLightVisibility` is false the frame used the combined mask in
+Native Composite, and the per-light coverage checks report REVIEW, not
+PASS. A scene can be populated by runtime observation without
 prepared shapes. A TLAS and visible mask are necessary, not sufficient,
 evidence of correct caster coverage. Inspect the fixed-pose images and
 verify off-screen casters manually before treating timing as a valid win.
 
-## Experimental per-light producer
+## Per-light visibility
 
-Full RT's developer-only `Experimental per-light visibility (producer only)`
-control enables separate SM6.5 shader variants. The ordinary shaders and
-combined mask remain the default, and the experimental dispatch still writes
-the combined mask. Slices use the packed checkerboard coordinates of the raw
-mask; a cleared value of one is not evidence of a valid receiver. The raw
-mask's receiver distance remains necessary for sample validation. The slice
-order is the exact submitted light order, capped at 64, including the actual
-trace origin. `trace.producedVisibilitySlices` reports producer count only,
-not shaded lights or authoritative coverage. Resource creation, format, DXGI
-budget or submission failures fall back to combined tracing where possible.
-Do not bind the slices in DX11 lighting before implementing consumer-fence
-retirement and explicit per-light raster fallback. No raster suppression
-policy is changed by this control.
+Both ray-traced modes also write one R8 slice per submitted light, in
+submitted order and capped at 64, at logical resolution with each
+checkerboard partner filled. A cleared value of one is not evidence of a
+valid receiver; the combined mask's receiver distance validates samples.
+DX11 waits on the trace fence before binding the array at pixel register
+t57. A failed slice allocation or dispatch falls back to the combined
+mask. `trace.producedVisibilitySlices` counts written slices and
+`trace.shadedLights` the lights lighting matched to one.
+
+Pixel register t58 holds the previous frame's array, and lighting averages
+the two samples. A light that lost its slice after SCM handed over its
+static casters is shaded from the previous one
+(`trace.previousSliceOnly`). Full RT follows SCM's flicker mode: lights
+traced away from their rest point (`trace.movingOrigins`) skip the blend.
+Each light's slices are packed into one word of its light data
+(`Common/NativeLightShadowSlot.hlsli`).
 
 Replay validation rejects explicit recording failures, cancellation, timeouts,
 and missing frame statistics. The compare phase refuses failed or invalid

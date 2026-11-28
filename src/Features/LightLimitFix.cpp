@@ -1,5 +1,6 @@
 #include "LightLimitFix.h"
 #include "CSEditor/EditorWindow.h"
+#include "Features/DX12/DX12NativeScene.h"
 #include "Features/LightLimitFix/Common.h"
 #include "Features/LightLimitFix/LightAttach.h"
 #include "Features/LightLimitFix/LightReadSafety.h"
@@ -92,6 +93,18 @@ namespace
 	void SetPointLightTypeFlags(LightLimitFix::LightData& a_light, RE::BSLight* a_bsLight)
 	{
 		PointLightFlags::SetPointLightTypeFlags(a_light.lightFlags, a_bsLight);
+	}
+
+	void ApplyNativeShadow(LightLimitFix::LightData& a_light, const RE::NiLight* a_niLight)
+	{
+		auto& scene = globals::features::dx12NativeScene;
+		a_light.nativeShadow = DX12Native::kNoLightShadow;
+		if (const auto slot = scene.NativeShadowSlot(a_niLight, a_light.lightFlags.any(LightLimitFix::LightFlags::Shadow))) {
+			const auto slice = [](uint32_t a_slot) { return std::min(a_slot, DX12Native::kNoLightShadowSlice); };
+			// Offload traces a light only while SCM schedules it, so its traced term fades with the slot; Full RT keeps tracing it.
+			const uint32_t flags = scene.GetFrameNativeMode() == DX12::SCMNativeMode::ShadowOffload ? DX12Native::kLightShadowFadesWithSlot : 0u;
+			a_light.nativeShadow = DX12Native::PackLightShadow(slice(*slot), slice(scene.PreviousShadowSlot(a_niLight)), flags);
+		}
 	}
 
 	// Tints a hovered/highlighted debug-table row's light magenta in-world so
@@ -973,6 +986,7 @@ void LightLimitFix::BSLightingShader_SetupGeometry_GeometrySetupConstantPointLig
 					light.lightFlags.set(LightFlags::Shadow);
 				}
 			}
+			ApplyNativeShadow(light, niLight);
 
 			strictLightDataTemp.StrictLights[outIndex++] = light;
 		}
@@ -1411,6 +1425,7 @@ void LightLimitFix::UpdateLights()
 						ApplyJsonPlacedLightIntensityScale(light, bsLight, niLight, isPortalStrict, isInterior);
 
 						SetLightPosition(light, niLight->world.translate);
+						ApplyNativeShadow(light, niLight);
 
 						ApplyLightDebugOverrides(light, bsLight);
 
@@ -1453,6 +1468,7 @@ void LightLimitFix::UpdateLights()
 						light.shadowMapIndex = shadowSlot;
 						light.lightFlags.set(LightFlags::Shadow);
 					}
+					ApplyNativeShadow(light, niLight);
 
 					SetLightPosition(light, niLight->world.translate);
 

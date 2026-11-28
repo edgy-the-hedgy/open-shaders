@@ -1,10 +1,11 @@
 RaytracingAccelerationStructure Scene : register(t0);
 Texture2D<float> RasterDepth : register(t1);
 StructuredBuffer<float4> Lights : register(t2);
+// Rigid casters that moved, rebuilt every frame; bound to the static scene when MoverCount is 0.
+RaytracingAccelerationStructure Movers : register(t3);
 RWTexture2D<float2> RawMask : register(u0);
 #ifdef NATIVE_LIGHT_SLICES
-// Same packed checkerboard coordinates as RawMask. Receiver distance in RawMask
-// distinguishes invalid samples; do not invent visibility for the unsampled partner.
+// Per-light visibility at logical resolution, slice = submitted light index; cleared to lit.
 RWTexture2DArray<unorm float> LightMask : register(u1);
 #endif
 cbuffer ShadowInputs : register(b0)
@@ -16,9 +17,8 @@ cbuffer ShadowInputs : register(b0)
 	uint LightCount;
 	uint FrameIndex;
 	uint2 PhysicalSize;
-#ifdef NATIVE_LIGHT_SLICES
 	uint LightSlotCount;
-#endif
+	uint MoverCount;
 };
 static const float MinDistance = 0.5f;
 static const float MaxDistance = 60000.0f;
@@ -37,15 +37,16 @@ groupshared uint TileMinimumOrdered[3];
 groupshared uint TileMaximumOrdered[3];
 groupshared uint TileLightMask[kTileLightWordCount];
 
-bool ReadReceiver(uint2 packed, out uint2 p, out float3 world, out float receiverDistance)
+bool ReadReceiver(uint2 packed, out uint2 p, out uint2 logical, out float3 world, out float receiverDistance)
 {
 	p = 0;
+	logical = 0;
 	world = 0;
 	receiverDistance = 0;
 	if (any(packed >= PhysicalSize))
 		return false;
-	const uint2 logical = uint2(QualityMode == kShadowQualityOffloading ? packed.x :
-																		  ShadowLogicalX(packed.x, packed.y, FrameIndex & 1u),
+	logical = uint2(QualityMode == kShadowQualityOffloading ? packed.x :
+															  ShadowLogicalX(packed.x, packed.y, FrameIndex & 1u),
 		packed.y);
 	const uint2 logicalSize = uint2(ShadowLogicalExtent(Size.x, QualityMode), ShadowLogicalExtent(Size.y, QualityMode));
 	if (any(logical >= logicalSize))
@@ -147,10 +148,10 @@ void BuildTileLightMask(uint lane, bool valid, float3 world)
 }
 [numthreads(8, 8, 1)] void main(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex) {
 	const uint2 packed = id.xy;
-	uint2 p;
+	uint2 p, logical;
 	float3 world;
 	float receiverDistance;
-	const bool valid = ReadReceiver(packed, p, world, receiverDistance);
+	const bool valid = ReadReceiver(packed, p, logical, world, receiverDistance);
 	// All lanes participate before rejecting invalid receivers; large inventories
 	// fall back to the complete ordered light loop rather than dropping lights.
 	const bool tiled = LightCount >= kTileCullThreshold && LightCount <= kTileLightWordCount * 32u;
@@ -212,6 +213,7 @@ void BuildTileLightMask(uint lane, bool valid, float3 world)
 		if (discriminant >= 0.0f)
 			tMax = min(tMax, dot(delta, rayDirection) - sqrt(discriminant) - MinDistance);
 		float visibility = 1.0f;
+		bool occluded = false;
 		if (tMax > MinDistance) {
 			RayDesc ray;
 			ray.Origin = world + rayDirection * MinDistance;
@@ -221,13 +223,25 @@ void BuildTileLightMask(uint lane, bool valid, float3 world)
 			RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
 			query.TraceRayInline(Scene, RAY_FLAG_NONE, 0xFF, ray);
 			while (query.Proceed()) {}
+			occluded = query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
+			if (!occluded && MoverCount != 0u) {
+				RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> moverQuery;
+				moverQuery.TraceRayInline(Movers, RAY_FLAG_NONE, 0xFF, ray);
+				while (moverQuery.Proceed()) {}
+				occluded = moverQuery.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
+			}
 			// Fade the occlusion itself, not just its light weight.
-			if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
+			if (occluded)
 				visibility = 1.0f - gradualFalloff;
 		}
 #ifdef NATIVE_LIGHT_SLICES
-		if (lightIndex < LightSlotCount && visibility < 1.0f)
-			LightMask[uint3(packed, lightIndex)] = visibility;
+		// A slice replaces a full-strength shadow map term; the light's own attenuation already fades it with distance.
+		if (lightIndex < LightSlotCount && occluded) {
+			LightMask[uint3(logical, lightIndex)] = 0.0f;
+			// Checkerboard modes trace one texel of each pair per frame; fill its partner too.
+			if (QualityMode != kShadowQualityOffloading && (logical.x ^ 1u) < ShadowLogicalExtent(Size.x, QualityMode))
+				LightMask[uint3(logical.x ^ 1u, logical.y, lightIndex)] = 0.0f;
+		}
 #endif
 		total += weight;
 		visible += weight * visibility;

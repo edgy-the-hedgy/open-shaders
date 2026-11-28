@@ -15,6 +15,7 @@
 #include "Utils/Game.h"
 #include "Utils/PerfUtils.h"
 #include "Utils/TracyZones.h"
+#include "Utils/UI.h"
 
 #include <algorithm>
 #include <array>
@@ -791,7 +792,6 @@ void DX12Resources::CancelPreparationWork()
 	workerUnavailable = false;
 	if (worker) {
 		worker->Cancel();
-		worker->DrainRetiredObjects();
 	}
 	grid.CancelPending();
 	if (loadingGrid)
@@ -826,6 +826,7 @@ void DX12Resources::ResetPreparation()
 	preparationActive = false;
 	lastVisitedCell = previousVisitedCell = distinctTransitions = 0;
 	lastExteriorGridX = lastExteriorGridY = std::numeric_limits<int32_t>::min();
+	interiorRefsLoaded = false;
 	latestPublication.store(nullptr, std::memory_order_release);
 	generationStats.store(std::make_shared<const DX12::PreparationStats>(), std::memory_order_release);
 }
@@ -860,9 +861,15 @@ void DX12Resources::DrawSettings()
 			ResetPreparation();
 		}
 	}
+	Util::AddTooltip(T("menu.dx12.resources.subcell_size_tooltip",
+		"Size of each square of the world prepared for ray tracing around the player. Larger squares "
+		"reach farther but take longer to prepare and use more memory. Changing this rebuilds the scene."));
 
 	if (ImGui::Checkbox(T("menu.dx12.resources.consolidate_interior", "Consolidate small interior cells"), &settings.ConsolidateInterior))
 		ResetPreparation();
+	Util::AddTooltip(T("menu.dx12.resources.consolidate_interior_tooltip",
+		"Prepares an interior that fits the loaded area once as a whole, so moving inside it does not "
+		"prepare it again. Changing this rebuilds the scene."));
 }
 
 void DX12Resources::DrawDevResourceStatus()
@@ -1066,7 +1073,6 @@ void DX12Resources::PumpPreparation(DX12::ResourceGrid& target, const RE::TESObj
 			return;
 		}
 	}
-	worker->DrainRetiredObjects();
 	if (worker->Failed()) {
 		if (inFlight) {
 			const auto key = *inFlight;
@@ -1313,8 +1319,16 @@ void DX12Resources::PreShadowMaps()
 			grid.RefreshUnattachedTiles();
 		lastExteriorGridX = gx;
 		lastExteriorGridY = gy;
+		interiorRefsLoaded = false;
 	} else {
 		lastExteriorGridX = lastExteriorGridY = std::numeric_limits<int32_t>::min();
+		const bool refsLoaded = DX12::IsCellFullyLoaded(cell);
+		if (refsLoaded && !interiorRefsLoaded) {
+			// Tiles captured while references were still loading are incomplete.
+			grid.RefreshUnattachedTiles();
+			consolidationAttemptScope = 0;
+		}
+		interiorRefsLoaded = refsLoaded;
 	}
 	runtimePublicationEnabled.store(true, std::memory_order_release);
 	PumpPreparation(grid, cell, world, consolidationAttemptScope, false);

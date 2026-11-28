@@ -1,3 +1,4 @@
+#include "../../package/Shaders/Common/NativeLightShadowSlot.hlsli"
 #include "../../package/Shaders/Common/NativeShadowRT.hlsli"
 #include "Features/DX12/DX12FenceRetirementPolicy.h"
 #include "Features/DX12/NativeLightPublication.h"
@@ -166,14 +167,15 @@ TEST_CASE("DX12 full RT keeps the two accepted checkerboard layouts", "[dx12][sh
 	CHECK(ShadowVariant(kShadowQualityPerformance) == 2);
 }
 
-TEST_CASE("Per-light visibility preserves ordinary trace variants and bounds array capacity", "[dx12][shadow]")
+TEST_CASE("Per-light visibility pairs every trace variant and bounds array capacity", "[dx12][shadow]")
 {
 	using namespace DX12Native;
-	CHECK(ShadowTraceVariant(kShadowQualityOffloading, true) == 0u);
+	CHECK(ShadowTraceVariant(kShadowQualityOffloading, false) == 0u);
+	CHECK(ShadowTraceVariant(kShadowQualityOffloading, true) == 3u);
 	CHECK(ShadowTraceVariant(kShadowQualityQuality, false) == 1u);
 	CHECK(ShadowTraceVariant(kShadowQualityPerformance, false) == 2u);
-	CHECK(ShadowTraceVariant(kShadowQualityQuality, true) == 3u);
-	CHECK(ShadowTraceVariant(kShadowQualityPerformance, true) == 4u);
+	CHECK(ShadowTraceVariant(kShadowQualityQuality, true) == 4u);
+	CHECK(ShadowTraceVariant(kShadowQualityPerformance, true) == 5u);
 	CHECK(ShadowTraceVariant(kShadowQualityPerformance, true) < kShadowTracePipelineCount);
 	CHECK(ShadowVisibilityCount(4096u, false) == 0u);
 	CHECK(ShadowVisibilityCount(0u, true) == 0u);
@@ -181,6 +183,8 @@ TEST_CASE("Per-light visibility preserves ordinary trace variants and bounds arr
 	CHECK(ShadowVisibilityCount(4096u, true) == kMaxLightVisibilitySlots);
 	CHECK(ShadowVisibilityCapacity(0u) == 0u);
 	CHECK(ShadowVisibilityCapacity(1u) == 2u);
+	CHECK(ShadowVisibilityCapacity(3u) == 4u);
+	CHECK(ShadowVisibilityCapacity(33u) == 64u);
 	CHECK(ShadowVisibilityCapacity(kMaxLightVisibilitySlots) == kMaxLightVisibilitySlots);
 }
 
@@ -458,10 +462,6 @@ TEST_CASE("Exact shadow-light identity replaces its prepared placeholder", "[dx1
 	std::array<Light, 1> prepared{ placed };
 	std::array<Emitter, 1> emitters{ Emitter{ runtime, 11, true } };
 	DX12Native::NativeLightSettings settings;
-	auto legacy = DX12Native::BuildNativeLightInventory<Light, Emitter>(prepared, emitters, settings, 16);
-	REQUIRE(legacy.first.size() == 1);
-	CHECK(legacy.first.front().runtimeIdentity == 0);
-	settings.preserveShadowLights = true;
 	auto exact = DX12Native::BuildNativeLightInventory<Light, Emitter>(prepared, emitters, settings, 16);
 	REQUIRE(exact.first.size() == 1);
 	CHECK(exact.first.front().runtimeIdentity == 42);
@@ -497,4 +497,22 @@ TEST_CASE("Scene preparation worker recovery is bounded", "[dx12][scene-prep]")
 	CHECK(DX12::CanRestartPreparationWorker(DX12::kMaxPreparationWorkerRestarts - 1));
 	CHECK_FALSE(DX12::CanRestartPreparationWorker(DX12::kMaxPreparationWorkerRestarts));
 	CHECK_FALSE(DX12::CanRestartPreparationWorker(UINT32_MAX));
+}
+
+TEST_CASE("A light's shadow slices pack into one word", "[dx12][shadow]")
+{
+	using namespace DX12Native;
+	CHECK_FALSE(HasLightShadow(kNoLightShadow));
+	CHECK_FALSE(HasLightShadow(kNoLightShadow | kLightShadowFadesWithSlot));
+	const uint packed = PackLightShadow(5u, 63u, kLightShadowFadesWithSlot);
+	CHECK(HasLightShadow(packed));
+	CHECK(LightShadowCurrent(packed) == 5u);
+	CHECK(LightShadowPrevious(packed) == 63u);
+	CHECK((packed & kLightShadowFadesWithSlot) != 0u);
+	const uint previousOnly = PackLightShadow(kNoLightShadowSlice, 7u, 0u);
+	CHECK(HasLightShadow(previousOnly));
+	CHECK(LightShadowCurrent(previousOnly) == kNoLightShadowSlice);
+	CHECK(LightShadowPrevious(previousOnly) == 7u);
+	CHECK(PackLightShadow(kNoLightShadowSlice, kNoLightShadowSlice, 0u) == kNoLightShadow);
+	CHECK(LightShadowCurrent(PackLightShadow(1u, 2u, 0xFFu)) == 1u);
 }

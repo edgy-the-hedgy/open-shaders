@@ -1,5 +1,9 @@
 #pragma once
 
+#include <array>
+
+#include <array>
+
 #include "../OverlayFeature.h"
 #include "DX12NativeAcceleration.h"
 #include "DX12NativeLightWorker.h"
@@ -12,6 +16,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -33,8 +38,8 @@ struct DX12NativeScene final : OverlayFeature
 	void RegisterUxActions() override;
 	json GetStatus() const;
 	bool CasterInTlas(RE::BSGeometry& geometry) const;
-	void AuditCasterCoverage(RE::BSGeometry& geometry) const;
-	bool WantsExactShadowOrigins() const { return frameExactShadowLights.load(std::memory_order_relaxed); }
+	/** @brief CasterInTlas for a static caster raster is about to drop, counted for status. */
+	bool ClaimCasterForTrace(RE::BSGeometry& geometry) const;
 	void ObserveScheduledShadowOrigin(const RE::NiLight* light, const RE::NiPoint3& origin);
 	std::shared_ptr<const DX12Native::TopLevel> GetPublishedScene() const { return acceleration.GetScene(); }
 	/** @brief The selected mode's exterior preparation and shadow contribution setting. */
@@ -73,10 +78,26 @@ struct DX12NativeScene final : OverlayFeature
 	bool OwnsStaticForLight(RE::BSShadowLight* light, int32_t slot) const;
 	/** @brief Frame-wide policy established before SCM scheduling. */
 	DX12::SCMNativeMode GetFrameNativeMode() const;
+	/** @brief Records a rigid mover from an owned light's caster walk; true when this frame's trace covers it. */
+	bool ObserveMover(RE::BSGeometry& a_geometry);
 	// Snapshot LLF/SCM point-light parameters without altering the DX11 light.
 	void ObserveRuntimeLight(RE::BSShadowLight* light, uint32_t referenceID, bool flickers,
 		const RE::NiPoint3& restOrigin);
 	void OnLoadingMenuEvent(bool opening) override;
+	/** @brief Binds this frame's per-light visibility for forward lighting once the trace has finished. */
+	void Prepass() override;
+	/**
+	 * @brief Visibility slice traced this frame for a light, which the lighting shader uses instead of static shadow-map casters.
+	 * UINT32_MAX means no slice this frame but one last frame, for a light SCM already dropped static casters for.
+	 * @param a_shadowLight True for an SCM shadow light, counted in the status when it finds no slice.
+	 */
+	std::optional<uint32_t> NativeShadowSlot(const RE::NiLight* a_light, bool a_shadowLight);
+	/** @brief The light's slice in the previous traced frame, or UINT32_MAX; lighting averages both frames' samples. */
+	uint32_t PreviousShadowSlot(const RE::NiLight* a_light) const;
+	/** @brief True when lighting read a visibility slice for this light in the last published frame; render thread only. */
+	bool ShadedFromSlice(const RE::NiLight* a_light) const;
+	/** @brief True when lighting consumed per-light visibility this frame, so the final-image layer must not apply it again. */
+	bool ShadesLightsDirectly(uint32_t a_frame) const;
 	void OnSceneTransitionReset(bool a_opening) override;
 	void OnRuntimeDisabled() override;
 
@@ -94,6 +115,7 @@ private:
 	DX12Native::RuntimeGeometryCapture geometryCapture;
 	DX12Native::AccelerationWorker acceleration;
 	DX12Native::ShadowMaskTrace shadows;
+	DX12Native::MoverScene movers;
 	// One immutable, ordered light selection shared by SCM and the RayQuery dispatch.
 	std::atomic<std::shared_ptr<const std::vector<DX12::PreparedLight>>> shadowLights;
 	std::atomic<uint32_t> shadowLightScope{ 0 };
@@ -124,16 +146,51 @@ private:
 		uint32_t referenceID = 0;             // Corresponding prepared native-scene emitter.
 		DX12::PreparedLight value;
 	};
-	std::atomic<bool> coverageAudit{ false };
-	std::atomic<bool> earlyTraceExperiment{ false };
-	std::atomic<bool> lightVisibilityExperiment{ false };
-	std::atomic<bool> exactShadowLights{ false }, frameExactShadowLights{ false };
+	// Pixel shader register of the per-light visibility array; Lighting.hlsl declares the same.
+	static constexpr UINT kLightShadowRegister = 57;
+	static constexpr UINT kPreviousLightShadowRegister = 58;
+	void PublishLightShadowSlots(uint32_t frame, std::span<const DX12::PreparedLight> submitted,
+		std::span<const RE::NiLight* const> sources);
+	std::unordered_map<const RE::NiLight*, uint32_t> slotsBySource;
+	std::unordered_multimap<uint32_t, uint32_t> slotsByReference;  // One reference may own several traced emitters.
+	std::vector<std::pair<float3, uint32_t>> slotPositions;        // Full RT only: merged emitters resolve by proximity.
+	enum class SlotMatch : uint8_t
+	{
+		Source,
+		Reference,
+		Proximity,
+		UnslottedShadowLight,
+		GrantedWithoutSlice,
+		PreviousOnly,
+		kCount
+	};
+	std::array<uint32_t, size_t(SlotMatch::kCount)> slotMatchesThisFrame{};
+	std::vector<std::pair<const RE::NiLight*, uint32_t>> slicedLightsThisFrame, slicedLights;  // Light and its slice.
+	bool previousSlicesValid = false;                                                          // lightSlotFrame's previous frame shares its slice layout.
+	uint32_t slicedLightsFrame = UINT32_MAX;
+	mutable std::vector<const RE::NiLight*> grantedLights;  // Lights SCM handed to the trace in grantedLightsFrame.
+	mutable uint32_t grantedLightsFrame = UINT32_MAX;
+	std::atomic<uint64_t> grantedWithoutSliceTotal{ 0 };  // Light-frames that lost static shadows outright; must stay 0.
+	struct ShadowLightSlot
+	{
+		const RE::NiLight* light = nullptr;
+		SlotMatch match = SlotMatch::UnslottedShadowLight;
+		float offset = 0.0f, lightRadius = 0.0f, tracedRadius = 0.0f;
+	};
+	std::vector<std::pair<float3, float>> slotSpheres;  // Traced position and radius per slot.
+	std::vector<ShadowLightSlot> shadowLightSlotsThisFrame;
+	mutable std::mutex shadowLightSlotsMutex;
+	std::vector<ShadowLightSlot> shadowLightSlots;                               // SCM shadow lights' slice lookups in the previous frame.
+	std::array<std::atomic<uint32_t>, size_t(SlotMatch::kCount)> slotMatches{};  // Previous frame's lookups by outcome.
+	uint32_t lightSlotFrame = UINT32_MAX, lightsShadedFrame = UINT32_MAX;
 	std::unordered_map<uintptr_t, float3> scheduledOrigins;
 	uint32_t scheduledOriginsFrame = UINT32_MAX;
 	std::vector<DX12::PreparedLight> lightsAtShadowOrigins;
+	std::vector<const RE::NiLight*> movingOriginLights;  // Traced this frame away from their rest point.
+	uint32_t PreviousSlice(const RE::NiLight* a_light) const;
 	std::atomic<uint32_t> movingOriginCount{ 0 };
-	mutable std::atomic<uint64_t> coveredCasterChecks{ 0 }, missingCasterChecks{ 0 };
-	mutable std::atomic<uint64_t> ownershipGranted{ 0 };
+	mutable std::atomic<uint64_t> ownershipGranted{ 0 }, castersTraced{ 0 }, castersKeptRaster{ 0 };
+	mutable std::vector<const RE::NiLight*> ownedLights;  // Lights granted static ownership in runtimeLightFrame.
 	mutable std::mutex runtimeLightMutex;
 	uint32_t runtimeLightFrame = UINT32_MAX;
 	std::vector<RuntimeLightSample> runtimeLightSamples;
