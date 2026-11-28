@@ -29,6 +29,7 @@ namespace DX12Native
 			uint32_t nearLightExclusion, instanceCount, parallaxShadows = 0;
 			float4 directionalDirection, directionalRadiance;
 			uint32_t foliageScatteringEnabled, characterCastersEnabled, quality, frame;
+			uint32_t staticVisibilityEnabled;
 		};
 		static_assert(sizeof(Constants) <= 256);
 
@@ -97,11 +98,13 @@ namespace DX12Native
 		}
 		auto* device = backend.d3d12Device.get();
 		const auto shader = Util::FileHelpers::ReadBoundedBinary(Util::PathHelpers::GetShadersPath() / "NativeComposite" / "DirectLighting.dxil", 16 * VideoMemoryBudget::kMiB);
-		CD3DX12_DESCRIPTOR_RANGE ranges[2];
+		CD3DX12_DESCRIPTOR_RANGE ranges[4];
 		ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NativePBR::kGpuTextureDescriptorCapacity, 7, 0, 0);
 		ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 3, 0, NativePBR::kGpuTextureDescriptorCapacity);
-		CD3DX12_ROOT_PARAMETER parameters[12];
-		parameters[0].InitAsShaderResourceView(0);
+		ranges[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+		ranges[3].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 520);
+		CD3DX12_ROOT_PARAMETER parameters[13];
+		parameters[0].InitAsDescriptorTable(1, &ranges[2]);
 		parameters[1].InitAsShaderResourceView(1);
 		parameters[2].InitAsShaderResourceView(2);
 		parameters[3].InitAsDescriptorTable(2, ranges);
@@ -112,14 +115,15 @@ namespace DX12Native
 		parameters[8].InitAsShaderResourceView(6);
 		parameters[9].InitAsUnorderedAccessView(1);
 		parameters[10].InitAsShaderResourceView(519);
-		parameters[11].InitAsShaderResourceView(520);
+		parameters[11].InitAsDescriptorTable(1, &ranges[3]);
+		parameters[12].InitAsUnorderedAccessView(2);
 		std::array<CD3DX12_STATIC_SAMPLER_DESC, 4> samplers;
 		for (uint32_t mode = 0; mode < 4; ++mode)
 			samplers[mode] = CD3DX12_STATIC_SAMPLER_DESC(mode, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
 				(mode & 2) ? D3D12_TEXTURE_ADDRESS_MODE_WRAP : D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
 				(mode & 1) ? D3D12_TEXTURE_ADDRESS_MODE_WRAP : D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
 				D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
-		const CD3DX12_ROOT_SIGNATURE_DESC signature(12, parameters, UINT(samplers.size()), samplers.data());
+		const CD3DX12_ROOT_SIGNATURE_DESC signature(13, parameters, UINT(samplers.size()), samplers.data());
 		winrt::com_ptr<ID3DBlob> blob, errors;
 		winrt::com_ptr<ID3D12RootSignature> newRoot;
 		winrt::com_ptr<ID3D12PipelineState> newPipeline;
@@ -148,13 +152,14 @@ namespace DX12Native
 		dispatchedLights = 0;
 		if (!inputsAvailable) { failure = "Waiting for native light inputs"; return; }
 		if (!material->IsCoherent(material->frame, viewportWidth, viewportHeight) ||
-			!material->HasSecondaryGeometry() || !material->descriptors ||
+			!material->descriptors ||
 			!material->raster->depth || !material->raster->depth->resource || !material->raster->cameraValid) {
 			failure = "Incompatible native material frame";
 			return;
 		}
 		const uint32_t width = material->width, height = material->height;
 		const uint64_t bytes = uint64_t(width) * height * kLightingStride;
+		const uint64_t visibilityBytes = uint64_t(width) * height * sizeof(uint32_t);
 		if (!bytes || bytes > UINT32_MAX) return;
 
 		std::shared_ptr<DirectLightingFrame>* selected = nullptr;
@@ -176,9 +181,11 @@ namespace DX12Native
 			if (fresh) {
 				const auto desc = CD3DX12_RESOURCE_DESC::Buffer(bytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 				const uint64_t allocation = device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
-				if (allocation == UINT64_MAX || allocation > UINT64_MAX - 1024 * 1024)
+				const auto visibilityDesc = CD3DX12_RESOURCE_DESC::Buffer(visibilityBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+				const uint64_t visibilityAllocation = device->GetResourceAllocationInfo(0, 1, &visibilityDesc).SizeInBytes;
+				if (allocation == UINT64_MAX || visibilityAllocation == UINT64_MAX || visibilityAllocation > UINT64_MAX - 1024 * 1024 || allocation > UINT64_MAX - visibilityAllocation - 1024 * 1024)
 					throw std::runtime_error("Direct lighting allocation unsupported");
-				const uint64_t required = allocation + 1024 * 1024;
+				const uint64_t required = allocation + visibilityAllocation + 1024 * 1024;
 				uint64_t tracked = 0;
 				for (const auto& held : slots) if (held) tracked += held->allocationBytes;
 				const auto budget = videoBudget.Query(device, tracked);
@@ -190,6 +197,15 @@ namespace DX12Native
 				replacement->samples = Eval::Buffer(device, bytes, D3D12_HEAP_TYPE_DEFAULT,
 					D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 				replacement->samples->SetName(L"NativeLighting::DiffuseSpecular");
+				replacement->visibilityRowPitch = width * sizeof(uint32_t);
+				replacement->visibility = Eval::Buffer(device, visibilityBytes, D3D12_HEAP_TYPE_DEFAULT,
+					D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+				replacement->visibility->SetName(L"NativeLighting::VisibilityEvidence");
+				D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
+				heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+				heapDesc.NumDescriptors = NativePBR::kGpuTextureDescriptorCapacity + 3;
+				heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+				Eval::Check(device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(replacement->descriptors.put())));
 				replacement->camera = Eval::Buffer(device, 256, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
 				replacement->lights = Eval::Buffer(device, kLightUploadBytes, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
 				replacement->counters = Eval::Buffer(device, kCounterBytes, D3D12_HEAP_TYPE_DEFAULT,
@@ -207,6 +223,8 @@ namespace DX12Native
 			slot->root = root; slot->pipeline = pipeline;
 			slot->frame = material->frame; slot->quality = SanitizeRTQuality(quality); slot->material = std::move(material);
 			slot->characters = characters && characters->Submitted(slot->frame, slot->material->scope) ? std::move(characters) : nullptr;
+			slot->staticVisibilityAvailable = slot->material->HasSecondaryGeometry();
+			slot->dynamicVisibilityAvailable = bool(slot->characters);
 			const auto& raster = *slot->material->raster;
 			auto& records = slot->lightScratch;
 			records.clear();
@@ -248,30 +266,45 @@ namespace DX12Native
 			slot->rejectedLightCount = rejectedCount;
 			const Constants constants{ raster.camera.CameraProjInverse, raster.camera.CameraViewInverse,
 				raster.camera.CameraPosAdjust, width, height, slot->material->rowPitch, lightCount,
-				0.0f, 0u, slot->material->scene->materialEvaluation->instanceCount, slot->material->parallaxShadows ? 1u : 0u, directional.direction, directional.radiance, foliageScatteringEnabled ? 1u : 0u, slot->characters ? 1u : 0u, slot->quality, slot->frame };
+				0.0f, 0u, slot->staticVisibilityAvailable ? slot->material->scene->materialEvaluation->instanceCount : 0u, slot->material->parallaxShadows ? 1u : 0u, directional.direction, directional.radiance, foliageScatteringEnabled ? 1u : 0u, slot->characters ? 1u : 0u, slot->quality, slot->frame, slot->staticVisibilityAvailable ? 1u : 0u };
 			slot->directionalIncluded = directional.direction.w != 0.0f;
 			slot->directional = directional;
 			slot->lightCount = lightCount;
 			slot->foliageScattering = foliageScatteringEnabled;
 			WriteConstants(slot->camera.get(), constants);
 			auto* depthResource = raster.depth->resource.get();
-			const auto& evaluation = *slot->material->scene->materialEvaluation;
+			const auto* scene = slot->staticVisibilityAvailable ? slot->material->scene.get() : nullptr;
+			const auto cpu = slot->descriptors->GetCPUDescriptorHandleForHeapStart();
+			const auto gpu = slot->descriptors->GetGPUDescriptorHandleForHeapStart();
+			const auto step = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+			const auto cap = NativePBR::kGpuTextureDescriptorCapacity;
+			// Copy immutable material texture/depth descriptors; no duplicate texture residency.
+			device->CopyDescriptorsSimple(cap + 1, cpu, slot->material->descriptors->GetCPUDescriptorHandleForHeapStart(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+			D3D12_SHADER_RESOURCE_VIEW_DESC as{};
+			as.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+			as.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			as.RaytracingAccelerationStructure.Location = scene ? scene->acceleration->GetGPUVirtualAddress() : 0;
+			device->CreateShaderResourceView(nullptr, &as, {cpu.ptr + SIZE_T(cap + 1) * step});
+			as.RaytracingAccelerationStructure.Location = slot->characters ? slot->characters->acceleration->GetGPUVirtualAddress() : 0;
+			device->CreateShaderResourceView(nullptr, &as, {cpu.ptr + SIZE_T(cap + 2) * step});
 			auto* command = slot->commands.get();
-			ID3D12DescriptorHeap* heaps[]{ slot->material->descriptors.get() };
+			ID3D12DescriptorHeap* heaps[]{ slot->descriptors.get() };
 			command->SetDescriptorHeaps(1, heaps);
 			command->SetComputeRootSignature(root.get());
-			command->SetComputeRootShaderResourceView(0, slot->material->scene->acceleration->GetGPUVirtualAddress());
+			command->SetComputeRootDescriptorTable(0, {gpu.ptr + UINT64(cap + 1) * step});
 			command->SetComputeRootShaderResourceView(1, slot->material->samples->GetGPUVirtualAddress());
 			command->SetComputeRootShaderResourceView(2, slot->lights->GetGPUVirtualAddress());
-			command->SetComputeRootDescriptorTable(3, slot->material->descriptors->GetGPUDescriptorHandleForHeapStart());
+			command->SetComputeRootDescriptorTable(3, gpu);
 			command->SetComputeRootUnorderedAccessView(4, slot->samples->GetGPUVirtualAddress());
 			command->SetComputeRootConstantBufferView(5, slot->camera->GetGPUVirtualAddress());
-			command->SetComputeRootShaderResourceView(6, slot->material->scene->shadingGeometry->buffer->GetGPUVirtualAddress());
-			command->SetComputeRootShaderResourceView(7, evaluation.records->GetGPUVirtualAddress());
-			command->SetComputeRootShaderResourceView(8, evaluation.bindings->GetGPUVirtualAddress());
+			const auto unusedAddress = slot->material->samples->GetGPUVirtualAddress();
+			command->SetComputeRootShaderResourceView(6, scene ? scene->shadingGeometry->buffer->GetGPUVirtualAddress() : unusedAddress);
+			command->SetComputeRootShaderResourceView(7, scene ? scene->materialEvaluation->records->GetGPUVirtualAddress() : unusedAddress);
+			command->SetComputeRootShaderResourceView(8, scene ? scene->materialEvaluation->bindings->GetGPUVirtualAddress() : unusedAddress);
 			command->SetComputeRootUnorderedAccessView(9, slot->counters->GetGPUVirtualAddress());
 			command->SetComputeRootShaderResourceView(10, slot->material->materialLobes->GetGPUVirtualAddress());
-			command->SetComputeRootShaderResourceView(11, slot->characters ? slot->characters->acceleration->GetGPUVirtualAddress() : slot->material->scene->acceleration->GetGPUVirtualAddress());
+			command->SetComputeRootDescriptorTable(11, {gpu.ptr + UINT64(cap + 2) * step});
+			command->SetComputeRootUnorderedAccessView(12, slot->visibility->GetGPUVirtualAddress());
 			if (!fresh) {
 				const auto counterStart = CD3DX12_RESOURCE_BARRIER::Transition(slot->counters.get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
 				command->ResourceBarrier(1, &counterStart);
@@ -284,11 +317,14 @@ namespace DX12Native
 			if (!fresh) {
 				const auto outputStart = CD3DX12_RESOURCE_BARRIER::Transition(slot->samples.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 				command->ResourceBarrier(1, &outputStart);
+				const auto visibilityStart = CD3DX12_RESOURCE_BARRIER::Transition(slot->visibility.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+				command->ResourceBarrier(1, &visibilityStart);
 			}
 			command->Dispatch((ShadowPhysicalWidth(ShadowLogicalExtent(width, slot->quality), slot->quality) + 7) / 8,
 				(ShadowLogicalExtent(height, slot->quality) + 7) / 8, 1);
 			const std::array end{
 				CD3DX12_RESOURCE_BARRIER::Transition(slot->samples.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON),
+				CD3DX12_RESOURCE_BARRIER::Transition(slot->visibility.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON),
 				CD3DX12_RESOURCE_BARRIER::Transition(depthResource, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON)
 			};
 			command->ResourceBarrier(UINT(end.size()), end.data());

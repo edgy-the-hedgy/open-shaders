@@ -27,10 +27,16 @@ namespace DX12Native
 	/** @brief Optional same-frame directional input. No claim of distant caster coverage. */
 	struct DirectDirectionalLight
 	{
-		float4 direction{}, radiance{};  // w on direction indicates valid input.
+		float4 direction{}, radiance{};  // direction.w: valid input; radiance.w: shadows not requested.
 	};
 
-	/** @brief Fenced packed diffuse/specular radiance with explicit pixel ownership. */
+	// Per-pixel OR mask over admitted emitters. A resident miss is not a world-coverage certificate.
+	enum DirectVisibilityEvidence : uint32_t {
+		DirectReceiverValid = 1u, DirectShadowNotRequested = 2u, DirectOccluded = 4u,
+		DirectResidentMiss = 8u, DirectVisibilityUnavailable = 16u
+	};
+
+	/** @brief Fenced packed diffuse/specular radiance with independent visibility evidence. */
 	struct DirectLightingFrame
 	{
 		static constexpr auto coverage = MaterialFrameContract::LightingCoverage::SelectedDirectLights;
@@ -41,7 +47,8 @@ namespace DX12Native
 		static constexpr uint32_t available = MaterialFrameContract::DirectDiffuse | MaterialFrameContract::DirectSpecular | MaterialFrameContract::Transmission;
 		std::shared_ptr<const NativeScreenProbe::MaterialFrame> material;
 		std::shared_ptr<const CharacterCasterFrame> characters;
-		winrt::com_ptr<ID3D12Resource> samples, lights, camera, counters, readback, counterInit;
+		winrt::com_ptr<ID3D12Resource> samples, visibility, lights, camera, counters, readback, counterInit;
+		winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
 		winrt::com_ptr<ID3D12CommandAllocator> allocator;
 		winrt::com_ptr<ID3D12GraphicsCommandList> commands;
 		winrt::com_ptr<ID3D12RootSignature> root;
@@ -51,6 +58,8 @@ namespace DX12Native
 		uint32_t frame = 0, width = 0, height = 0, rowPitch = 0;
 		bool statsPending = false;
 		bool directionalIncluded = false;
+		uint32_t visibilityRowPitch = 0;
+		bool staticVisibilityAvailable = false, dynamicVisibilityAvailable = false;
 		// Immutable secondary-ray light inputs, owned by this fenced frame.
 		uint32_t lightCount = 0, shadowLightCount = 0, rejectedLightCount = 0;
 		// Visibility is evaluated against resident geometry only; a miss is not certified scene-wide visibility.

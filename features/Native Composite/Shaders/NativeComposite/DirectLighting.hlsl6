@@ -16,6 +16,9 @@ float NativeSpotFalloff(uint record, float3 world)
 Texture2D<float> RasterDepth : register(t3);
 RWByteAddressBuffer Lighting : register(u0);
 RWByteAddressBuffer Counters : register(u1);
+RWByteAddressBuffer VisibilityEvidence : register(u2);
+static const uint DirectReceiverValid = 1u, DirectShadowNotRequested = 2u, DirectOccluded = 4u,
+    DirectResidentMiss = 8u, DirectVisibilityUnavailable = 16u;
 #define NATIVE_GEOMETRY_REGISTER t4
 #define NATIVE_RECORD_REGISTER t5
 #define NATIVE_BINDING_REGISTER t6
@@ -47,6 +50,7 @@ cbuffer DirectInputs : register(b0)
     uint CharacterCastersEnabled;
     uint QualityMode;
     uint FrameIndex;
+    uint StaticVisibilityEnabled;
 };
 
 float4 UnpackHalf4(uint2 value)
@@ -60,18 +64,38 @@ uint2 PackHalf4(float4 value)
     return uint2(bits.x | (bits.y << 16), bits.z | (bits.w << 16));
 }
 
-bool CharacterVisible(RayDesc ray)
+// A miss only describes resident casters. Missing caster domains remain explicit.
+uint TraceResidentVisibility(RayDesc ray, inout uint rays)
 {
-    if (CharacterCastersEnabled == 0u) return true;
-    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
-    query.TraceRayInline(CharacterScene, RAY_FLAG_NONE, 0xff, ray);
-    while (query.Proceed()) {}
-    return query.CommittedStatus() == COMMITTED_NOTHING;
+    bool tested = false;
+    if (StaticVisibilityEnabled != 0u) {
+        tested = true;
+        ++rays;
+        RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
+        query.TraceRayInline(Scene, RAY_FLAG_NONE, 0xff, ray);
+        while (query.Proceed()) {
+            if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
+                AcceptAlpha(query.CandidateInstanceID(), query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(), InstanceCount))
+                query.CommitNonOpaqueTriangleHit();
+        }
+        if (query.CommittedStatus() != COMMITTED_NOTHING) return DirectOccluded;
+    }
+    if (CharacterCastersEnabled != 0u) {
+        tested = true;
+        ++rays;
+        RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
+        query.TraceRayInline(CharacterScene, RAY_FLAG_NONE, 0xff, ray);
+        while (query.Proceed()) {}
+        if (query.CommittedStatus() != COMMITTED_NOTHING) return DirectOccluded;
+    }
+    uint evidence = tested ? DirectResidentMiss : 0u;
+    if (StaticVisibilityEnabled == 0u || CharacterCastersEnabled == 0u)
+        evidence |= DirectVisibilityUnavailable;
+    return evidence;
 }
 
-bool Visible(float3 world, float3 normal, float3 direction, float distance, out bool traced)
+uint PointVisibility(float3 world, float3 normal, float3 direction, float distance, inout uint rays)
 {
-    traced = false;
     const float bias = 0.5;
     const float3 origin = world + normal * bias + direction * bias;
     const float3 delta = world + direction * distance - origin;
@@ -79,41 +103,24 @@ bool Visible(float3 world, float3 normal, float3 direction, float distance, out 
     float limit = lengthToLight - bias;
     if (NearLightExclusion != 0u)
         limit = min(limit, lengthToLight - NearLightRadius - bias);
-    if (limit <= bias || lengthToLight <= bias) return true;
+    if (limit <= bias || lengthToLight <= bias) return DirectVisibilityUnavailable;
     RayDesc ray;
     ray.Origin = origin;
     ray.Direction = delta / lengthToLight;
     ray.TMin = bias;
     ray.TMax = limit;
-    traced = true;
-    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
-    query.TraceRayInline(Scene, RAY_FLAG_NONE, 0xff, ray);
-    while (query.Proceed()) {
-        if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
-            AcceptAlpha(query.CandidateInstanceID(), query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(), InstanceCount))
-            query.CommitNonOpaqueTriangleHit();
-    }
-    return query.CommittedStatus() == COMMITTED_NOTHING && CharacterVisible(ray);
+    return TraceResidentVisibility(ray, rays);
 }
 
-bool VisibleDirectional(float3 world, float3 normal, float3 direction)
+uint DirectionalVisibility(float3 world, float3 normal, float3 direction, inout uint rays)
 {
     const float bias = 0.5;
     RayDesc ray;
     ray.Origin = world + normal * bias + direction * bias;
     ray.Direction = direction;
     ray.TMin = bias;
-    // No claim beyond the available acceleration structure. Directional
-    // rays have no finite emitter position or point-light fade radius.
     ray.TMax = 3.402823e38;
-    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
-    query.TraceRayInline(Scene, RAY_FLAG_NONE, 0xff, ray);
-    while (query.Proceed()) {
-        if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
-            AcceptAlpha(query.CandidateInstanceID(), query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(), InstanceCount))
-            query.CommitNonOpaqueTriangleHit();
-    }
-    return query.CommittedStatus() == COMMITTED_NOTHING && CharacterVisible(ray);
+    return TraceResidentVisibility(ray, rays);
 }
 
 #include "NativeDirectBRDF.hlsli"
@@ -151,6 +158,8 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
     const uint outputOffset = (pixel.y * Size.x + pixel.x) * NativeLightingStride;
     Lighting.Store4(outputOffset, uint4(0,0,0,0));
     Lighting.Store2(outputOffset+16u,uint2(0,0));
+    const uint visibilityOffset = (pixel.y * Size.x + pixel.x) * 4u;
+    VisibilityEvidence.Store(visibilityOffset, 0u);
     const uint offset = pixel.y * MaterialPitch + pixel.x * NativeSurfaceStride;
     float4 base = UnpackHalf4(Materials.Load2(offset));
     float4 normal = UnpackHalf4(Materials.Load2(offset + 8u));
@@ -171,16 +180,20 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
     float alpha = roughness * roughness, a2 = alpha * alpha;
     PBR::FuzzLayer fuzz=ResolveNativeFuzz(coat,roughness,n,view,true);
     float3 diffuse = 0, specular = 0, transmission = 0;
-    uint inReach = 0, visible = 0;
+    uint inReach = 0, contributing = 0;
+    uint evidence = DirectReceiverValid;
     if (DirectionalDirection.w != 0.0 && any(DirectionalRadiance.rgb > 0.0)) {
         float3 l = DirectionalDirection.xyz;
         float ndl = saturate(dot(n,l));
         if (ndl > 0.0 || HasNativeThinSurface(coat) || HasNativeSubsurface(coat) || (HasNativeCoat(coat) && dot(coat.normalRoughness.xyz,l)>0.0)) {
             ++inReach;
-            ++rays;
             float3 biasNormal=HasNativeThinSurface(coat) ? coat.normalRoughness.xyz : n;
-            if (VisibleDirectional(world,dot(biasNormal,l)<0.0 ? -biasNormal : biasNormal,l)) {
-                ++visible;
+            uint visibility = DirectShadowNotRequested;
+            if (DirectionalRadiance.w == 0.0)
+                visibility = DirectionalVisibility(world,dot(biasNormal,l)<0.0 ? -biasNormal : biasNormal,l,rays);
+            evidence |= visibility;
+            if ((visibility & DirectOccluded) == 0u) {
+                ++contributing;
                 AccumulateBRDF(base, f0, n, view, l, ndl, ndv, a2, max(DirectionalRadiance.rgb,0.0),NativeHeightVisibility(shadow,NativeBaseDirection(l,coat),viewDistance,shadowNoise), coat, fuzz, FoliageScatteringEnabled, diffuse, specular, transmission);
             }
         }
@@ -207,19 +220,21 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
         // color.w is the shared light-record opt-out for known non-shadow emitters.
         // Their contribution never depends on missing or incomplete caster coverage.
         if (color.w == 0.0) {
-            bool traced;
             float3 biasNormal=HasNativeThinSurface(coat) ? coat.normalRoughness.xyz : n;
             float emitterRadius = min(max(params.x, 0.0) * ShadowEmitterMultiplier(QualityMode), distance * 0.5);
             float3 sampledDelta = delta + NativeEmitterOffset(l, emitterRadius, pixel, i, FrameIndex);
             float sampledDistance = length(sampledDelta);
             float3 sampledDirection = sampledDelta / max(sampledDistance, 1e-5);
-            bool unoccluded = Visible(world,dot(biasNormal,sampledDirection)<0.0 ? -biasNormal : biasNormal,sampledDirection,sampledDistance,traced);
-            if (traced) ++rays;
-            if (!unoccluded) continue;
+            uint visibility = PointVisibility(world,dot(biasNormal,sampledDirection)<0.0 ? -biasNormal : biasNormal,sampledDirection,sampledDistance,rays);
+            evidence |= visibility;
+            if ((visibility & DirectOccluded) != 0u) continue;
+        } else {
+            evidence |= DirectShadowNotRequested;
         }
-        ++visible;
+        ++contributing;
         AccumulateBRDF(base, f0, n, view, l, ndl, ndv, a2, max(color.rgb,0.0)*attenuation,NativeHeightVisibility(shadow,NativeBaseDirection(l,coat),viewDistance,shadowNoise), coat, fuzz, FoliageScatteringEnabled, diffuse, specular, transmission);
     }
+    VisibilityEvidence.Store(visibilityOffset, evidence);
     // Diffuse, specular and transmission have independent validity. An overflow
     // in one lobe must not erase another valid signal or become valid clamped radiance.
     bool diffuseValid = all(isfinite(diffuse)) && all(abs(diffuse) <= 65504.0);
@@ -227,10 +242,10 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
     bool transmissionValid = base.a == SurfaceEvaluatedBase && all(isfinite(transmission)) && all(abs(transmission) <= 65504.0);
     // Half precision stores counts up to 2047 plus one for validity.
     if (diffuseValid) Lighting.Store2(outputOffset,PackHalf4(float4(diffuse,float(min(inReach,2047u))+1.0)));
-    if (specularValid) Lighting.Store2(outputOffset+8u,PackHalf4(float4(specular,float(min(visible,2047u))+1.0)));
+    if (specularValid) Lighting.Store2(outputOffset+8u,PackHalf4(float4(specular,float(min(contributing,2047u))+1.0)));
     if (transmissionValid) Lighting.Store2(outputOffset+16u,PackOpaqueRadiance(transmission,ContributionTransmission));
     if (!diffuseValid && !specularValid && !transmissionValid) return 0u;
-    return visible > 0u ? 3u : (inReach > 0u ? 2u : 1u);
+    return contributing > 0u ? 3u : (inReach > 0u ? 2u : 1u);
 }
 
 
@@ -273,6 +288,7 @@ void main(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
             uint outputOffset=(pixel.y*Size.x+pixel.x)*NativeLightingStride;
             Lighting.Store4(outputOffset,uint4(0,0,0,0));
             Lighting.Store2(outputOffset+16u,uint2(0,0));
+            VisibilityEvidence.Store((pixel.y*Size.x+pixel.x)*4u,0u);
         }
         InterlockedAdd(TileStats[category],1u);
         InterlockedAdd(TileRays,rays);
