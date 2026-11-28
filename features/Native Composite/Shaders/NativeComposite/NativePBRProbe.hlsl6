@@ -184,10 +184,11 @@ Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float dista
 // Shader-class-specific base evaluation using typed draw-local SRV transfers.
 // Row tags cannot be mistaken for a scene instance or a Lighting recipe.
 // No ray correspondence or TXST material ordinal is required.
-Sample EvaluateNonLightingRaster(RawRasterSurface raw, float3 viewRay, out bool rawUsed)
+Sample EvaluateNonLightingRaster(RawRasterSurface raw, float3 viewRay, out bool rawUsed, out NativeCoatSample coat)
 {
     Sample result=(Sample)0;
     rawUsed=false;
+    coat=(NativeCoatSample)0;
     result.color.a=SurfaceUnsupportedMaterial;
     const uint kind=raw.auxiliaryKind;
     const uint expected=kind==5u ? 0xfffffffeu : kind==6u ? 0xfffffffdu : 0xfffffffcu;
@@ -237,6 +238,16 @@ Sample EvaluateNonLightingRaster(RawRasterSurface raw, float3 viewRay, out bool 
             }
             f0=saturate(detail.a*max(spec.x,0.0)).xxx;
         }
+        // Publish the legacy grass thin-sheet model independently of its
+        // still feature-limited base. The geometric face is the bias normal.
+        float balance=f16tof32(raw.auxiliary.x>>16u);
+        if (isfinite(spec.y) && spec.y>0.0 && isfinite(balance) && all(isfinite(base))) {
+            float3 face=normalize(raw.normal);
+            if (dot(face,viewRay)>0.0) face=-face;
+            coat.normalRoughness=float4(face,saturate(balance));
+            coat.f0Colored=float4(1.0,1.0,1.0,NativeFoliageTag);
+            coat.subsurface=float4(max(base,0.0),1.0-0.5*saturate(spec.y));
+        }
     } else if (kind==7u) {
         float4 tint=asfloat(ProjectionRecords.Load(int3(1,row,0)));
         float scale=asfloat(metadata.y);
@@ -259,6 +270,7 @@ Sample EvaluateNonLightingRaster(RawRasterSurface raw, float3 viewRay, out bool 
     }
     if (!all(isfinite(base)) || !all(isfinite(normal)) || dot(normal,normal)<1e-8 ||
         !all(isfinite(f0)) || !all(isfinite(emission)) || !isfinite(roughness) || !isfinite(ao)) {
+        coat=(NativeCoatSample)0;
         result.color.a=SurfaceEvaluationFailed; return result;
     }
     // Base properties are genuinely evaluated; unsupported lobe, snow,
@@ -279,7 +291,7 @@ Sample EvaluateRasterLocal(RawRasterSurface raw, uint2 mapped, float3 viewRay, f
     rawUsed=false; coat=(NativeCoatSample)0; shadow=(NativeParallaxShadowSample)0;
     Sample result=(Sample)0; result.color.a=SurfaceUnsupportedMaterial;
     if (raw.auxiliaryKind>=5u && raw.auxiliaryKind<=7u)
-        return EvaluateNonLightingRaster(raw,viewRay,rawUsed);
+        return EvaluateNonLightingRaster(raw,viewRay,rawUsed,coat);
     if (raw.materialOrdinal==0u || raw.materialOrdinal>RasterSourceCount) return result;
     uint preparedRow=RasterMaterialLookup.Load((raw.materialOrdinal-1u)*4u);
     if (preparedRow>=RasterPreparedSourceCount) { result.color.a=SurfaceMissingTextures; return result; }
