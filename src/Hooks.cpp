@@ -24,6 +24,7 @@
 
 #include "Features/CSUtility.h"
 #include "Features/DX12/DX12NativeScene.h"
+#include "Features/NativePBR/NativeMaterialMetadata.h"
 #include "Features/Effects11.h"
 #include "Features/HDRDisplay.h"
 #include "Features/InteriorSun.h"
@@ -361,7 +362,9 @@ namespace GrassExtensions
 			auto* lightingProperty = *reinterpret_cast<RE::BSLightingShaderProperty**>(lightingPropertyAddress);
 
 			RE::BSLightingShaderProperty* grassProperty = func(property);
-			globals::features::truePBR.SetupGrassMaterial(lightingProperty, grassProperty);
+			if (globals::features::dx12Control.UsesExclusiveMaterials())
+				NativePBR::PreserveGrassMaterialSource(lightingProperty,grassProperty);
+			else globals::features::truePBR.SetupGrassMaterial(lightingProperty,grassProperty);
 
 			if (lightingProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kEffectLighting)) {
 				grassProperty->SetFlags(RE::BSShaderProperty::EShaderPropertyFlag8::kEffectLighting, true);
@@ -384,7 +387,8 @@ namespace GrassExtensions
 			const auto* shaderProperty = static_cast<RE::BSShaderProperty*>(pass->geometry->GetGeometryRuntimeData().shaderProperty.get());
 			// TruePBR marks converted grass properties with kMenuScreen.
 			state->SetGrassFlags(shaderProperty && shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kEffectLighting),
-				shaderProperty && shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMenuScreen));
+				shaderProperty && (globals::features::dx12Control.UsesExclusiveMaterials() ?
+					NativePBR::HasGrassMaterialSource(*shaderProperty) : shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMenuScreen)));
 
 			// Grass meshes are rooted at the model origin, so the model bound's center sits about halfway up the mesh.
 			const auto& bound = pass->geometry->GetModelData().modelBound;
