@@ -1127,7 +1127,7 @@ float GetSnowParameterY(float texProjTmp, float alpha)
 
 #	if defined(DYNAMIC_CUBEMAPS)
 #		include "DynamicCubemaps/DynamicCubemaps.hlsli"
-#	elif defined(FULL_NATIVE_INPUT) && !defined(DEFERRED)
+#	elif defined(FULL_NATIVE_INPUT) && !defined(FULL_NATIVE_LEGACY_ENVIRONMENT) && !defined(DEFERRED)
 #		include "Common/NativeForwardEnvironment.hlsli"
 #	endif
 
@@ -3881,7 +3881,7 @@ FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input,
 #		if defined(DYNAMIC_CUBEMAPS)
 	if (waterRoughnessSpecular < 1.0)
 		wetnessReflectance = GetWetnessIndirectLobeWeights(indirectLobeWeights, wetnessNormal, waterRoughnessSpecular, indirectContext);
-#		elif defined(FULL_NATIVE_INPUT) && !defined(DEFERRED)
+#		elif defined(FULL_NATIVE_INPUT) && !defined(FULL_NATIVE_LEGACY_ENVIRONMENT) && !defined(DEFERRED)
 	if (NativeForwardEnvironment::Available() && waterRoughnessSpecular < 1.0)
 		wetnessReflectance = GetWetnessIndirectLobeWeights(indirectLobeWeights, wetnessNormal, waterRoughnessSpecular, indirectContext);
 #		endif
@@ -4102,7 +4102,7 @@ FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input,
 		color.xyz += wetnessReflectance * DynamicCubemaps::GetDynamicCubemapSpecularIrradiance(wetnessNormal, viewDirection, waterRoughnessSpecular);
 #				endif
 #			endif
-#		elif defined(FULL_NATIVE_INPUT)
+#		elif defined(FULL_NATIVE_INPUT) && !defined(FULL_NATIVE_LEGACY_ENVIRONMENT)
 		color.xyz += indirectLobeWeights.specular * (NativeForwardEnvironment::Available() ?
 			NativeForwardEnvironment::Sample(SampColorSampler,reflect(-viewDirection,specularNormal),material.Roughness,1.0) : directionalAmbientColor);
 #			if defined(WETNESS_EFFECTS)
@@ -4122,7 +4122,7 @@ FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input,
 #				else
 		color.xyz += characterSpotReflectance * DynamicCubemaps::GetDynamicCubemapSpecularIrradiance(characterSpotSurfaceNormal, viewDirection, characterSpotRoughness);
 #				endif
-#			elif defined(FULL_NATIVE_INPUT)
+#			elif defined(FULL_NATIVE_INPUT) && !defined(FULL_NATIVE_LEGACY_ENVIRONMENT)
 		color.xyz += characterSpotReflectance * (NativeForwardEnvironment::Available() ?
 			NativeForwardEnvironment::Sample(SampColorSampler,reflect(-viewDirection,characterSpotSurfaceNormal),characterSpotRoughness,1.0) : characterRainAmbientColor);
 #			else

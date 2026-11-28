@@ -634,7 +634,7 @@ std::shared_ptr<const DX12Native::NativeScreenProbe::MaterialFrame> DX12NativeSc
 
 std::shared_ptr<const DX12Native::IndirectLightingFrame> DX12NativeScene::GetFullNativeIndirect(uint32_t frame) const
 {
-	return globals::features::nativeIBL.Get(frame);
+	return globals::features::nativeIBL.loaded ? globals::features::nativeIBL.Get(frame) : nullptr;
 }
 
 std::shared_ptr<const DX12Native::NativeWorldFrame> DX12NativeScene::GetWorldFrame(uint32_t engineFrame, uint32_t pluginFrame) const
@@ -796,21 +796,24 @@ void DX12NativeScene::DispatchFullNativeIndirect()
 	if (!grid || grid->requested.empty() || !grid->requested.front().scope)
 		return;
 	const auto frame = globals::game::graphicsState->GetFrameCount();
-	bool environmentChanged = false;
-	const auto stamp = globals::features::nativeCubemaps.Prepare(grid->requested.front().scope, frame, environmentChanged);
-	if (environmentChanged) {
-		// Environment epochs invalidate indirect history, not unrelated direct signals.
-		globals::features::nativeIBL.InvalidateGeneration();
-	}
 	if (!backend)
 		return;
 	const auto world = GetWorldFrame(frame, globals::state->frameCount);
 	const auto material = GetFullNativeMaterial(frame);
-	if (!world || !material || material->scope != stamp.scope)
+	if (!world || !material || material->scope != grid->requested.front().scope)
 		return;
-	globals::features::nativeIBL.Dispatch(*backend, material, globals::features::nativeCubemaps.Get(), stamp,
-		characterCasters ? characterCasters->Get(frame, material->scope) : nullptr, FullNativeFrameQuality(frame),
-		globals::features::dx12Control.NativeSSREnabled() ? GetFullNativeDirect(frame) : nullptr);
+	if (!globals::features::dx12Control.UsesLegacyReflectionCapture() &&
+		globals::features::nativeCubemaps.loaded && globals::features::nativeIBL.loaded) {
+		bool environmentChanged = false;
+		const auto stamp = globals::features::nativeCubemaps.Prepare(grid->requested.front().scope, frame, environmentChanged);
+		if (environmentChanged)
+			globals::features::nativeIBL.InvalidateGeneration();
+		globals::features::nativeIBL.Dispatch(*backend, material, globals::features::nativeCubemaps.Get(), stamp,
+			characterCasters ? characterCasters->Get(frame, material->scope) : nullptr, FullNativeFrameQuality(frame),
+			globals::features::dx12Control.NativeSSREnabled() ? GetFullNativeDirect(frame) : nullptr);
+	}
+	// Keep direct/material publications available; incomplete native lighting
+	// must not overwrite the legacy environment contributions.
 	const auto& draws = fullNativeRasterDraws;
 	const bool matchingDraws = draws.finalized && draws.scene == material->scene && draws.stamp.frame == frame;
 	auto* tokenSource = matchingDraws && globals::game::renderer ?
@@ -822,6 +825,7 @@ void DX12NativeScene::DispatchFullNativeIndirect()
 
 void DX12NativeScene::CaptureFullNativeEnvironment(ID3D11ShaderResourceView* sceneColor, uint32_t frame)
 {
+	if (globals::features::dx12Control.UsesLegacyReflectionCapture() || !globals::features::nativeCubemaps.loaded) return;
 	if (backend && !GraphicsBackend::CheckNativeDeviceHealth(backend->d3d12Device.get(), backend->d3d11Device.get())) return;
 	if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation() || !nativeSessionStarted ||
 		!globals::state || globals::state->isMapMenuOpen || globals::features::dx12Resources.IsLoading() || globals::state->nativeFirstPersonDepth ||

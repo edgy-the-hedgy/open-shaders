@@ -52,6 +52,12 @@ bool DX12Control::IsNativeCounterpart(const Feature* feature)
 	return std::ranges::find(counterparts, feature) != counterparts.end();
 }
 
+bool DX12Control::IsSuspendedEnvironmentProducer(const Feature* feature)
+{
+	return kTemporaryLegacyEnvironment &&
+		(feature == &globals::features::nativeCubemaps || feature == &globals::features::nativeIBL);
+}
+
 DX12::CounterpartKind DX12Control::ClassifyCounterpart(const Feature* feature)
 {
 	using Kind = DX12::CounterpartKind;
@@ -67,6 +73,11 @@ DX12::CounterpartKind DX12Control::ClassifyCounterpart(const Feature* feature)
 
 DX12::ExecutionRole DX12Control::GetExecutionRole(const Feature* feature) const
 {
+	if (IsSuspendedEnvironmentProducer(feature))
+		return DX12::ExecutionRole::Dormant;
+	if (kTemporaryLegacyEnvironment && UsesExclusiveMaterials() &&
+		(feature == &globals::features::dynamicCubemaps || feature == &globals::features::ibl))
+		return DX12::ExecutionRole::Baseline;
 	return DX12::SelectExecutionRole(GetFeatureBackend(), ClassifyCounterpart(feature));
 }
 
@@ -98,7 +109,7 @@ json DX12Control::GetDiagnostics()
 		&globals::features::dynamicCubemaps, &globals::features::ibl, &globals::features::truePBR })
 		roles[feature->GetShortName()] = { { "role", name(GetExecutionRole(feature)) }, { "loaded", feature->loaded } };
 	return { { "fullNativeSession", UsesExclusiveMaterials() }, { "active", IsActive() }, { "deviceLost", GraphicsBackend::NativeDeviceLost() },
-		{ "featureRoles", std::move(roles) } };
+		{ "temporaryLegacyEnvironment", kTemporaryLegacyEnvironment && UsesExclusiveMaterials() }, { "featureRoles", std::move(roles) } };
 }
 
 void DX12Control::InitializeFeatureBackend()
@@ -116,6 +127,10 @@ void DX12Control::InitializeFeatureBackend()
 	json unused = json::object();
 	bool ready = true;
 	for (auto* feature : counterparts) {
+		if (IsSuspendedEnvironmentProducer(feature)) {
+			feature->loaded = false;
+			continue;
+		}
 		feature->Load(unused);
 		feature->installed = feature->loaded;
 		ready = ready && feature->loaded;
@@ -138,7 +153,11 @@ void DX12Control::InitializeFeatureBackend()
 			logger::info("[DX12] {} dormant for Full Native session", feature->GetShortName());
 		}
 	}
-	logger::info("[DX12] Full Native selected; all legacy counterparts are dormant. Vanilla raster lighting remains the fallback.");
+	if constexpr (kTemporaryLegacyEnvironment)
+		logger::info("[DX12] Full Native test: legacy DynamicCubemaps and IBL enabled by normal feature loading (loaded: {}, {}); native environment producers suspended.",
+			globals::features::dynamicCubemaps.loaded, globals::features::ibl.loaded);
+	else
+		logger::info("[DX12] Full Native selected; all legacy counterparts are dormant. Vanilla raster lighting remains the fallback.");
 }
 
 void DX12Control::InstallMaterialBackendHooks()

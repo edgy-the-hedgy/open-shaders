@@ -28,9 +28,7 @@ bool NativeDLSS::Upscale(ID3D11Resource* a_colorOut, ID3D11Resource* a_motionVec
 
 	auto& upscaling = globals::features::upscaling;
 	auto* state = globals::state;
-	const auto prepared = upscaling.nativePreparedFrame;
-	const bool fullNative = globals::features::dx12Control.UsesExclusiveMaterials();
-	const auto composite = fullNative && prepared ? prepared->color : upscaling.nativeCompositeFrame;
+	const auto composite = upscaling.nativeCompositeFrame;
 	auto* typedDepth = upscaling.typedDepthTexture;
 	if (!failure.empty() || globals::game::isVR || !state || !typedDepth || !a_colorOut || !a_motionVectors ||
 		!a_reactiveMask || !a_transparencyMask || !composite || !composite->valid || !composite->color ||
@@ -38,11 +36,13 @@ bool NativeDLSS::Upscale(ID3D11Resource* a_colorOut, ID3D11Resource* a_motionVec
 		composite->width != a_extentIn.width || composite->height != a_extentIn.height)
 		return false;
 
-	if (fullNative && (!prepared || !prepared->HasCompositeInputs(state->frameCount,a_extentIn.width,a_extentIn.height,
-		upscaling.dx12SwapChain.d3d12Device.get()))) {
-		logger::error("[NativeDLSS] Full Native composite inputs unavailable; no DX11 fallback");
+	const auto prepared = upscaling.nativePreparedFrame;
+	if (globals::features::dx12Control.UsesExclusiveMaterials() && state->worldRenderedThisFrame &&
+		(!prepared || !prepared->world || !prepared->MatchesColor(composite) ||
+			!prepared->MatchesInputs(state->frameCount,a_extentIn.width,a_extentIn.height,
+				{typedDepth->resource.get(),a_motionVectors,a_reactiveMask,a_transparencyMask}) ||
+			prepared->displayWidth != a_extentOut.width || prepared->displayHeight != a_extentOut.height))
 		return false;
-	}
 
 	if (!EnsureStreamline() || !EnsureCommandContexts())
 		return false;
@@ -95,8 +95,8 @@ bool NativeDLSS::Upscale(ID3D11Resource* a_colorOut, ID3D11Resource* a_motionVec
 		}
 		featureKey = key;
 
-		const bool directGuides = fullNative || (prepared && prepared->Matches(state->frameCount, a_extentIn.width, a_extentIn.height,
-			swapChain.d3d12Device.get(), { sources[kDepth], sources[kMotionVectors], sources[kReactiveMask], sources[kTransparencyMask] }));
+		const bool directGuides = prepared && prepared->Matches(state->frameCount, a_extentIn.width, a_extentIn.height,
+			swapChain.d3d12Device.get(), { sources[kDepth], sources[kMotionVectors], sources[kReactiveMask], sources[kTransparencyMask] });
 		const D3D11_BOX inputBox{ 0, 0, 0, a_extentIn.width, a_extentIn.height, 1 };
 		if (directGuides)
 			commandContext->prepared = prepared->guides;
@@ -272,9 +272,8 @@ bool NativeDLSS::EnsureCommandContexts()
 
 bool NativeDLSS::EnsureSharedResources(const std::array<ID3D11Resource*, kSharedCount>& a_sources)
 {
-	const uint32_t first = globals::features::dx12Control.UsesExclusiveMaterials() ? kOutput : 0u;
 	std::array<D3D11_TEXTURE2D_DESC, kSharedCount> descs{};
-	for (uint32_t i = first; i < kSharedCount; ++i) {
+	for (uint32_t i = 0; i < kSharedCount; ++i) {
 		winrt::com_ptr<ID3D11Texture2D> texture;
 		if (FAILED(a_sources[i]->QueryInterface(IID_PPV_ARGS(texture.put()))))
 			return false;
@@ -289,7 +288,7 @@ bool NativeDLSS::EnsureSharedResources(const std::array<ID3D11Resource*, kShared
 		desc.MiscFlags = 0;
 	}
 
-	if (std::all_of(shared.begin() + first, shared.end(), [](const auto& a_resource) { return a_resource != nullptr; }) &&
+	if (std::ranges::all_of(shared, [](const auto& a_resource) { return a_resource != nullptr; }) &&
 		std::memcmp(descs.data(), sharedDescs.data(), sizeof(descs)) == 0)
 		return true;
 
@@ -298,8 +297,7 @@ bool NativeDLSS::EnsureSharedResources(const std::array<ID3D11Resource*, kShared
 	auto& swapChain = globals::features::upscaling.dx12SwapChain;
 	auto* device12 = swapChain.d3d12Device.get();
 	uint64_t bytes = 0;
-	for (uint32_t i = first; i < kSharedCount; ++i) {
-		const auto& desc = descs[i];
+	for (const auto& desc : descs) {
 		const auto allocation = CD3DX12_RESOURCE_DESC::Tex2D(desc.Format, desc.Width, desc.Height, 1, 1, 1, 0,
 			desc.BindFlags & D3D11_BIND_UNORDERED_ACCESS ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE);
 		const uint64_t size = device12->GetResourceAllocationInfo(0, 1, &allocation).SizeInBytes;
@@ -317,9 +315,7 @@ bool NativeDLSS::EnsureSharedResources(const std::array<ID3D11Resource*, kShared
 	}
 	static constexpr std::array<const char*, kSharedCount> kNames{ "NativeDLSS::Depth", "NativeDLSS::MotionVectors",
 		"NativeDLSS::ReactiveMask", "NativeDLSS::TransparencyMask", "NativeDLSS::Output" };
-	for (uint32_t i = 0; i < first; ++i)
-		shared[i].reset();
-	for (uint32_t i = first; i < kSharedCount; ++i)
+	for (uint32_t i = 0; i < kSharedCount; ++i)
 		shared[i] = std::make_unique<WrappedResource>(descs[i], swapChain.d3d11Device.get(), device12, kNames[i]);
 	sharedDescs = descs;
 	sharedBytes = bytes;

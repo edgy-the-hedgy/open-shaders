@@ -1032,27 +1032,39 @@ bool FidelityFX::EnsureRuntimeUpscalerSharedResources(uint32_t a_contextCount, u
 	const D3D11_TEXTURE2D_DESC desiredTransparencyDesc = MakeSharedTextureDesc(a_transparencyDesc, a_fullRenderWidth, a_fullRenderHeight, 0);
 	const D3D11_TEXTURE2D_DESC desiredOutputDesc = MakeSharedTextureDesc(a_outputDesc, a_fullDisplayWidth, a_fullDisplayHeight, D3D11_BIND_UNORDERED_ACCESS);
 
-	const bool exclusiveInputs = globals::features::dx12Control.UsesExclusiveMaterials();
-	const auto valid = [](WrappedResource* resource) {
-		return resource && resource->resource11 && resource->resource.get();
-	};
 	bool missingRequiredResource = false;
 	for (uint32_t i = 0; i < a_contextCount; ++i) {
-		if (!valid(runtimeOutputShared[i]) ||
-			(!exclusiveInputs && (!valid(runtimeColorShared[i]) || !valid(runtimeDepthShared[i]) ||
-				!valid(runtimeMotionShared[i]) || !valid(runtimeReactiveShared[i]) || !valid(runtimeTransparencyShared[i])))) {
+		if (!runtimeColorShared[i] ||
+			!runtimeDepthShared[i] ||
+			!runtimeMotionShared[i] ||
+			!runtimeReactiveShared[i] ||
+			!runtimeTransparencyShared[i] ||
+			!runtimeOutputShared[i] ||
+			!runtimeColorShared[i]->resource11 ||
+			!runtimeDepthShared[i]->resource11 ||
+			!runtimeMotionShared[i]->resource11 ||
+			!runtimeReactiveShared[i]->resource11 ||
+			!runtimeTransparencyShared[i]->resource11 ||
+			!runtimeOutputShared[i]->resource11 ||
+			!runtimeColorShared[i]->resource.get() ||
+			!runtimeDepthShared[i]->resource.get() ||
+			!runtimeMotionShared[i]->resource.get() ||
+			!runtimeReactiveShared[i]->resource.get() ||
+			!runtimeTransparencyShared[i]->resource.get() ||
+			!runtimeOutputShared[i]->resource.get()) {
 			missingRequiredResource = true;
 			break;
 		}
 	}
-	const bool needsRecreate = missingRequiredResource ||
-		!SameTextureDesc(runtimeOutputSharedDesc, desiredOutputDesc) ||
-		(!exclusiveInputs && (
-			!SameTextureDesc(runtimeColorSharedDesc, desiredColorDesc) ||
-			!SameTextureDesc(runtimeDepthSharedDesc, desiredDepthDesc) ||
-			!SameTextureDesc(runtimeMotionSharedDesc, desiredMotionDesc) ||
-			!SameTextureDesc(runtimeReactiveSharedDesc, desiredReactiveDesc) ||
-			!SameTextureDesc(runtimeTransparencySharedDesc, desiredTransparencyDesc)));
+
+	const bool needsRecreate =
+		missingRequiredResource ||
+		!SameTextureDesc(runtimeColorSharedDesc, desiredColorDesc) ||
+		!SameTextureDesc(runtimeDepthSharedDesc, desiredDepthDesc) ||
+		!SameTextureDesc(runtimeMotionSharedDesc, desiredMotionDesc) ||
+		!SameTextureDesc(runtimeReactiveSharedDesc, desiredReactiveDesc) ||
+		!SameTextureDesc(runtimeTransparencySharedDesc, desiredTransparencyDesc) ||
+		!SameTextureDesc(runtimeOutputSharedDesc, desiredOutputDesc);
 
 	if (!needsRecreate) {
 		for (uint32_t i = a_contextCount; i < std::size(runtimeColorShared); ++i) {
@@ -1078,13 +1090,11 @@ bool FidelityFX::EnsureRuntimeUpscalerSharedResources(uint32_t a_contextCount, u
 
 	try {
 		for (uint32_t i = 0; i < a_contextCount; ++i) {
-			if (!exclusiveInputs) {
-				runtimeColorShared[i] = new WrappedResource(desiredColorDesc, swapChain.d3d11Device.get(), swapChain.d3d12Device.get(), std::format("RuntimeUpscaler::ColorShared{}", i));
-				runtimeDepthShared[i] = new WrappedResource(desiredDepthDesc, swapChain.d3d11Device.get(), swapChain.d3d12Device.get(), std::format("RuntimeUpscaler::DepthShared{}", i));
-				runtimeMotionShared[i] = new WrappedResource(desiredMotionDesc, swapChain.d3d11Device.get(), swapChain.d3d12Device.get(), std::format("RuntimeUpscaler::MotionShared{}", i));
-				runtimeReactiveShared[i] = new WrappedResource(desiredReactiveDesc, swapChain.d3d11Device.get(), swapChain.d3d12Device.get(), std::format("RuntimeUpscaler::ReactiveShared{}", i));
-				runtimeTransparencyShared[i] = new WrappedResource(desiredTransparencyDesc, swapChain.d3d11Device.get(), swapChain.d3d12Device.get(), std::format("RuntimeUpscaler::TransparencyShared{}", i));
-			}
+			runtimeColorShared[i] = new WrappedResource(desiredColorDesc, swapChain.d3d11Device.get(), swapChain.d3d12Device.get(), std::format("RuntimeUpscaler::ColorShared{}", i));
+			runtimeDepthShared[i] = new WrappedResource(desiredDepthDesc, swapChain.d3d11Device.get(), swapChain.d3d12Device.get(), std::format("RuntimeUpscaler::DepthShared{}", i));
+			runtimeMotionShared[i] = new WrappedResource(desiredMotionDesc, swapChain.d3d11Device.get(), swapChain.d3d12Device.get(), std::format("RuntimeUpscaler::MotionShared{}", i));
+			runtimeReactiveShared[i] = new WrappedResource(desiredReactiveDesc, swapChain.d3d11Device.get(), swapChain.d3d12Device.get(), std::format("RuntimeUpscaler::ReactiveShared{}", i));
+			runtimeTransparencyShared[i] = new WrappedResource(desiredTransparencyDesc, swapChain.d3d11Device.get(), swapChain.d3d12Device.get(), std::format("RuntimeUpscaler::TransparencyShared{}", i));
 			runtimeOutputShared[i] = new WrappedResource(desiredOutputDesc, swapChain.d3d11Device.get(), swapChain.d3d12Device.get(), std::format("RuntimeUpscaler::OutputShared{}", i));
 		}
 	} catch (const std::exception& e) {
@@ -1158,28 +1168,24 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 	if (!state)
 		return false;
 
+	const auto composite = upscaling.nativeCompositeFrame;
 	const auto prepared = upscaling.nativePreparedFrame;
 	const bool fullNative = globals::features::dx12Control.UsesExclusiveMaterials();
-	const auto composite = fullNative && prepared ? prepared->color : upscaling.nativeCompositeFrame;
-	if (fullNative && (!prepared || !prepared->HasCompositeInputs(state->frameCount, a_renderWidth, a_renderHeight, swapChain.d3d12Device.get()))) {
-		logger::error("[FidelityFX] Full Native composite inputs unavailable; no DX11 fallback");
-		return false;
-	}
-	const bool nativeColor = fullNative || (!globals::game::isVR && composite && composite->valid &&
+	const bool nativeColor = !globals::game::isVR && composite && composite->valid &&
 	                         composite->color && composite->producerFence &&
 	                         composite->producerValue && composite->frame == state->frameCount &&
 	                         composite->width == a_renderWidth && composite->height == a_renderHeight &&
-	                         composite->format == colorDesc.Format);
+	                         composite->format == colorDesc.Format && (!fullNative || (prepared && prepared->MatchesColor(composite)));
 
 	auto isValidShared = [](WrappedResource* a_resource) {
 		return a_resource && a_resource->resource11 && a_resource->resource.get();
 	};
-	if (!isValidShared(runtimeOutputShared[a_contextIndex]) ||
-		(!fullNative && (!isValidShared(runtimeColorShared[a_contextIndex]) ||
-			!isValidShared(runtimeDepthShared[a_contextIndex]) ||
-			!isValidShared(runtimeMotionShared[a_contextIndex]) ||
-			!isValidShared(runtimeReactiveShared[a_contextIndex]) ||
-			!isValidShared(runtimeTransparencyShared[a_contextIndex])))) {
+	if (!isValidShared(runtimeColorShared[a_contextIndex]) ||
+		!isValidShared(runtimeDepthShared[a_contextIndex]) ||
+		!isValidShared(runtimeMotionShared[a_contextIndex]) ||
+		!isValidShared(runtimeReactiveShared[a_contextIndex]) ||
+		!isValidShared(runtimeTransparencyShared[a_contextIndex]) ||
+		!isValidShared(runtimeOutputShared[a_contextIndex])) {
 		return false;
 	}
 
@@ -1195,8 +1201,8 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 	CS_GPU_PASS_INDEXED(globals::game::isVR ? 1 + a_contextIndex : 0,
 		"Upscaling::RuntimeUpscalerDispatch", "Upscaling::RuntimeUpscalerDispatch Eye 0", "Upscaling::RuntimeUpscalerDispatch Eye 1");
 
-	const bool directGuides = fullNative || (prepared && prepared->Matches(state->frameCount, a_renderWidth, a_renderHeight,
-		swapChain.d3d12Device.get(), { a_depth, a_motionVectors, a_reactiveMask, a_transparencyCompositionMask }));
+	const bool directGuides = prepared && prepared->Matches(state->frameCount, a_renderWidth, a_renderHeight,
+		swapChain.d3d12Device.get(), { a_depth, a_motionVectors, a_reactiveMask, a_transparencyCompositionMask });
 	if (directGuides) commandContext->prepared = prepared->guides;
 	const bool frameParameters = prepared && prepared->MatchesFrame(state->frameCount, a_renderWidth, a_renderHeight);
 	const auto guide = [&](size_t index, WrappedResource* fallback) {
@@ -1410,7 +1416,11 @@ bool FidelityFX::UpscaleRegion(uint32_t a_contextIndex, ID3D11Resource* a_color,
 		preparedFrame->MatchesInputs(currentState->frameCount,a_renderWidth,a_renderHeight,
 			{a_depth,a_motionVectors,a_reactiveMask,a_transparencyCompositionMask}) &&
 		preparedFrame->displayWidth == a_displayWidth && preparedFrame->displayHeight == a_displayHeight;
-	const bool fullNative = globals::features::dx12Control.UsesExclusiveMaterials();
+	if (fullNativeWorld && !coherentWorld) {
+		runtimeNativeHistoryDiscontinuous = true;
+		runtimeFallbackResetDispatchesRemaining = std::max(runtimeFallbackResetDispatchesRemaining, 1u);
+		return false;
+	}
 
 	// Snapshot before this eye's own dispatch -- and before the quarantine teardown below,
 	// which clears the frame-path tracking this reads -- so it reflects only a sibling eye.
@@ -1422,8 +1432,8 @@ bool FidelityFX::UpscaleRegion(uint32_t a_contextIndex, ID3D11Resource* a_color,
 	if (runtimeUpscalerQuarantined && HasRuntimeUpscalerResources())
 		ResetRuntimeUpscalerResources(false);
 
-	const bool runtimeUpgradeRequested = (fullNative || !a_forceHostPath) && ShouldRequestRuntimeUpgrade();
-	const bool runtimeRequested = fullNative || (!a_forceHostPath && (runtimeUpgradeRequested || ShouldUseRuntimeUpscalerForFSR()));
+	const bool runtimeUpgradeRequested = !a_forceHostPath && ShouldRequestRuntimeUpgrade();
+	const bool runtimeRequested = !a_forceHostPath && (runtimeUpgradeRequested || ShouldUseRuntimeUpscalerForFSR());
 	const uint32_t requestedRuntimeVersion = runtimeUpgradeRequested ? kRuntimePreferredVersion : Fsr3Version;
 	const bool splitPerEyeContexts = UseSplitPerEyeFSRContexts();
 	const uint32_t runtimeContextCount = splitPerEyeContexts ? 2u : 1u;
@@ -1474,10 +1484,6 @@ bool FidelityFX::UpscaleRegion(uint32_t a_contextIndex, ID3D11Resource* a_color,
 
 		if (tryRuntimeUpscaler(requestedRuntimeVersion, fullRenderWidth, fullRenderHeight))
 			return true;
-		if (fullNative) {
-			runtimeNativeHistoryDiscontinuous = true;
-			return false;
-		}
 
 		if (runtimeCommandContextBusy) {
 			// A busy pool is not a provider fault. Keep the provider armed and reset
@@ -1512,11 +1518,6 @@ bool FidelityFX::UpscaleRegion(uint32_t a_contextIndex, ID3D11Resource* a_color,
 		// instead -- the caller skips finalizing the frame when any eye fails.
 		if (runtimeAlreadyUsedThisFrame)
 			return false;
-	}
-
-	if (fullNative) {
-		logger::error("[FidelityFX] Full Native requires an operational DX12 runtime provider");
-		return false;
 	}
 
 	// Defense in depth: CanUseRuntimeUpscalerPath() latching mid-frame (e.g. this eye's own

@@ -201,7 +201,7 @@ void NativeCubemaps::Producer::EndForward()
 
 void NativeCubemaps::Producer::BeginWaterSSR()
 {
-    if (!globals::features::dx12Control.WantsMaterialPreparation()) return;
+    if (!loaded || globals::features::dx12Control.UsesLegacyReflectionCapture() || !globals::features::dx12Control.WantsMaterialPreparation()) return;
     if (waterScopeDepth++) {
         waterScopeInvalid = true;
         if (waterSSR) waterSSR->End();

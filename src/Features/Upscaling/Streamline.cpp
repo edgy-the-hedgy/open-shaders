@@ -1010,7 +1010,7 @@ void Streamline::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_r
 			// A later DX11 fallback then builds a fresh feature instead of reusing history from before the native frames.
 			if (!nativeWasActive)
 				DestroyDLSSResources();
-		} else if (!globals::features::dx12Control.UsesExclusiveMaterials()) {
+		} else {
 			EvaluateDLSS(viewport, 0,
 				a_upscalingTexture, colorOut,
 				Util::AsReal(depthTexture.texture), a_motionVectors, a_reactiveMask, a_transparencyCompositionMask,

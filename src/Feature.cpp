@@ -86,8 +86,9 @@ void Feature::Load(json& o_json)
 {
 	// Session authority also applies to configuration reloads. Native producers
 	// are admitted separately during the boot-time backend validation.
-	if (!DX12Control::IsNativeCounterpart(this) &&
-		globals::features::dx12Control.GetExecutionRole(this) == DX12::ExecutionRole::Dormant) {
+	if (DX12Control::IsSuspendedEnvironmentProducer(this) ||
+		(!DX12Control::IsNativeCounterpart(this) &&
+		globals::features::dx12Control.GetExecutionRole(this) == DX12::ExecutionRole::Dormant)) {
 		loaded = false;
 		return;
 	}

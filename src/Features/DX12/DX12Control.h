@@ -37,19 +37,22 @@ struct DX12Control final : Feature
 	/** @brief Session authority is independent of runtime DX12 availability. */
 	DX12::FeatureBackend GetFeatureBackend() const { return featureBackend.load(std::memory_order_acquire); }
 	bool UsesExclusiveMaterials() const { return GetFeatureBackend() == DX12::FeatureBackend::FullNative; }
+	// Temporary Vol2 A/B: keep NativePBR/NativeLLF, restore the established environment producers.
+	static constexpr bool kTemporaryLegacyEnvironment = true;
+	static bool IsSuspendedEnvironmentProducer(const Feature* feature);
 	static std::array<Feature*, 4> NativeCounterparts();
 	static bool IsNativeCounterpart(const Feature* feature);
 	static DX12::CounterpartKind ClassifyCounterpart(const Feature* feature);
 	DX12::ExecutionRole GetExecutionRole(const Feature* feature) const;
 	// Selects the single radiance acquisition owner, not the fallback renderer.
-	bool UsesLegacyReflectionCapture() const { return GetFeatureBackend() == DX12::FeatureBackend::Baseline; }
+	bool UsesLegacyReflectionCapture() const { return kTemporaryLegacyEnvironment || GetFeatureBackend() == DX12::FeatureBackend::Baseline; }
 	ID3D11ShaderResourceView* GetFallbackSkyRadiance(ID3D11ShaderResourceView* legacyView) const;
 	json GetDiagnostics() override;
 	void InitializeFeatureBackend();
 	void InstallMaterialBackendHooks();
 	void DrawSettings() override;
 	void RegisterUxActions() override;
-	bool NativeSSREnabled() const { return WantsMaterialPreparation() && nativeSSR.load(std::memory_order_relaxed); }
+	bool NativeSSREnabled() const { return WantsMaterialPreparation() && !UsesLegacyReflectionCapture() && nativeSSR.load(std::memory_order_relaxed); }
 	float NativeWaterReflectionRadius() const { return waterReflectionRadius.load(std::memory_order_relaxed); }
 	uint32_t NativeCubemapCaptureInterval() const { return captureInterval.load(std::memory_order_relaxed); }
 	void MigrateLegacySettings(json& root) const override;
