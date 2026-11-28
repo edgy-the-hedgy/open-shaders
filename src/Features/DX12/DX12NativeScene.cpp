@@ -456,7 +456,11 @@ void DX12NativeScene::PreShadowMaps()
 		}
 		if (backend) {
 			if (!characterCasters) characterCasters = std::make_unique<DX12Native::NativeCharacterCasters>();
-			// Publish at the opaque boundary after rigid mover observations.
+			// Acquire the owned pose early, then admit the recorded work at
+			// the opaque boundary after rigid mover observations.
+			if (!globals::state->isMapMenuOpen && !globals::state->nativeFirstPersonDepth &&
+				!(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
+				characterCasters->PrepareActor(*backend, frame, grid->requested.front().scope, characterUpdateInterval);
 		}
 		if (acceleration.Start(globals::d3d::device, globals::d3d::context))
 			acceleration.Request(std::move(grid));
@@ -1983,6 +1987,12 @@ json DX12NativeScene::GetStatus() const
 			{ "rejectedParts", characterCasters ? characterCasters->RejectedParts() : 0u },
 			{ "asyncRigidPacks", characterCasters ? characterCasters->AsyncRigidPacks() : 0ull },
 			{ "inlineRigidPacks", characterCasters ? characterCasters->InlineRigidPacks() : 0ull },
+			{ "deferredRigidPacks", characterCasters ? characterCasters->DeferredRigidPacks() : 0ull },
+			{ "asyncActorRecords", characterCasters ? characterCasters->AsyncActorRecords() : 0ull },
+			{ "deferredActorRecords", characterCasters ? characterCasters->DeferredActorRecords() : 0ull },
+			{ "staleActorRecords", characterCasters ? characterCasters->StaleActorRecords() : 0ull },
+			{ "publishedActorRecords", characterCasters ? characterCasters->PublishedActorRecords() : 0ull },
+			{ "actorSnapshotBytes", characterCasters ? characterCasters->ActorSnapshotBytes() : 0ull },
 			{ "failure", characterCasters ? characterCasters->Failure() : "" } };
 		const auto reconstructed = globals::features::upscaling.nativeComposite.GetFullNativeReconstruction(frame);
 		const auto finalColor = globals::features::upscaling.nativeComposite.GetFullNativeFinalColor(frame);

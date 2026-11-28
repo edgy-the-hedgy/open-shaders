@@ -529,7 +529,8 @@ namespace DX12Native
             moverShadingOrder.clear(); moverShadingCache = nullptr;
             attemptedFrame = UINT32_MAX; attemptedScope = 0;
             moverFrame = UINT32_MAX; moverScope = 0; movers.clear(); seenMovers.clear(); moverMeshes.clear();
-            actorScratch = {};
+            actorJob.reset();
+            captureFrame = UINT32_MAX; captureScope = 0;
         }
         std::shared_ptr<const CharacterCasterFrame> Get(uint32_t frame, uint32_t scope) const
         {
@@ -541,6 +542,11 @@ namespace DX12Native
         uint64_t AsyncRigidPacks() const { return asyncRigidPacks; }
         uint64_t InlineRigidPacks() const { return inlineRigidPacks; }
         uint64_t DeferredRigidPacks() const { return deferredRigidPacks; }
+        uint64_t AsyncActorRecords() const { return asyncActorRecords; }
+        uint64_t DeferredActorRecords() const { return deferredActorRecords; }
+        uint64_t StaleActorRecords() const { return staleActorRecords; }
+        uint64_t PublishedActorRecords() const { return publishedActorRecords; }
+        uint64_t ActorSnapshotBytes() const { return actorJob ? actorJob->snapshotBytes : 0; }
 
         void Publish(const GraphicsBackend& backend, uint32_t frame, uint32_t scope, uint32_t interval)
         {
@@ -557,37 +563,37 @@ namespace DX12Native
                     slot->actorSource.reset(); slot->rigidResources.clear(); slot->materials.reset(); slot->rigidShading = nullptr;
                 }
             }
-            const bool reuseActor = interval == 2u && current && current->allowedAge == 1u &&
-                frame - current->frame == 1u && current->Submitted(frame, scope);
-            if (!reuseActor) PublishActor(backend, frame, scope, interval);
+            // A missing early callback may still submit a snapshot here;
+            // never wait for it or promote a stale recording.
+            PrepareActor(backend, frame, scope, interval);
+            CollectActor(backend, frame, scope, interval);
             PublishMovers(backend, frame, scope);
             std::erase_if(moverMeshes, [&](const auto& entry) { return frame - entry.second->lastFrame > kMoverRetentionFrames; });
         }
 
     private:
-        void PublishActor(const GraphicsBackend& backend, uint32_t frame, uint32_t scope, uint32_t interval)
+        struct ActorRecordJob
         {
-            current.reset();
-            std::shared_ptr<CharacterCasterFrame>* selected = nullptr;
-            bool reusedUnsubmitted = false;
-            try {
-                Initialize(backend);
-                if (completion->GetCompletedValue() == UINT64_MAX) return;
-                for (auto& slot : slots) {
-                    if (slot && slot->readyValue == UINT64_MAX) {
-                        const auto rescue = ++nextFence;
-                        if (SUCCEEDED(backend.commandQueue->Signal(completion.get(), rescue))) slot->readyValue = rescue;
-                    }
-                    if (!selected && (!slot || (slot.use_count() == 1 && GpuFenceRetired(slot->readyFence.get(), slot->readyValue))))
-                        selected = &slot;
-                }
-                if (!selected) { failure = "Character caster frame pool busy"; return; }
-                // Reuse engine-thread staging; upload tables copy before reuse.
-                auto& snapshot = actorScratch;
-                Capture(snapshot);
-                rejectedParts = snapshot.rejected;
-                if (snapshot.vertices.empty() || snapshot.indices.empty()) { failure = "No admitted character parts"; return; }
-                auto device = backend.d3d12Device.try_as<ID3D12Device5>();
+            std::atomic<bool> finished{ false };
+            std::shared_ptr<CharacterCasterFrame> result;
+            std::string failure;
+            uint32_t frame = 0, scope = 0, interval = 1, slot = 0, rejected = 0;
+            uint64_t snapshotBytes = 0;
+        };
+
+        // Only owned CPU arrays, a retired slot and D3D12 COM objects enter
+        // this function. It records but never executes a command list.
+        static std::shared_ptr<CharacterCasterFrame> RecordActor(Snapshot& snapshot,
+            std::shared_ptr<CharacterCasterFrame> selected, uint64_t tracked,
+            const winrt::com_ptr<ID3D12Device>& device12,
+            const winrt::com_ptr<ID3D12RootSignature>& root,
+            const winrt::com_ptr<ID3D12PipelineState>& pipeline,
+            const winrt::com_ptr<ID3D12Fence>& completion,
+            std::shared_ptr<const std::vector<DX12::PreparedMaterialSource>> materialSources,
+            uint32_t frame, uint32_t scope, uint32_t interval)
+        {
+            ZoneScopedN("DX12::Characters::RecordAcceleration");
+                auto device = device12.try_as<ID3D12Device5>();
                 if (!device) throw std::runtime_error("DXR device unavailable");
                 D3D12_RAYTRACING_GEOMETRY_DESC geometry{};
                 geometry.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
@@ -637,24 +643,23 @@ namespace DX12Native
                 const auto fits = [](const auto& resource, uint64_t bytes) {
                     return resource && resource->GetDesc().Width >= bytes;
                 };
-                const bool reuse = *selected && (*selected)->allocator && (*selected)->commands &&
-                    fits((*selected)->bottom, bottomInfo.ResultDataMaxSizeInBytes) && fits((*selected)->acceleration, topInfo.ResultDataMaxSizeInBytes) &&
-                    fits((*selected)->scratch, scratchBytes) && fits((*selected)->positions, positionBytes) &&
-                    fits((*selected)->bind, snapshot.vertices.size() * sizeof(Vertex)) && fits((*selected)->palette, snapshot.bones.size() * sizeof(Bone)) &&
-                    fits((*selected)->indices, snapshot.indices.size() * sizeof(uint32_t)) && fits((*selected)->instance, sizeof(D3D12_RAYTRACING_INSTANCE_DESC));
-                uint64_t tracked = 0;
-                for (const auto& slot : slots) if (slot) tracked += slot->allocationBytes;
+                const bool reuse = selected && selected->allocator && selected->commands &&
+                    fits(selected->bottom, bottomInfo.ResultDataMaxSizeInBytes) && fits(selected->acceleration, topInfo.ResultDataMaxSizeInBytes) &&
+                    fits(selected->scratch, scratchBytes) && fits(selected->positions, positionBytes) &&
+                    fits(selected->bind, snapshot.vertices.size() * sizeof(Vertex)) && fits(selected->palette, snapshot.bones.size() * sizeof(Bone)) &&
+                    fits(selected->indices, snapshot.indices.size() * sizeof(uint32_t)) && fits(selected->instance, sizeof(D3D12_RAYTRACING_INSTANCE_DESC));
+                VideoMemoryBudget budget;
                 const auto allowance = budget.Query(device.get(), tracked);
                 if (!reuse && (!allowance.localBudget || required > allowance.effectiveBytes ||
-                    tracked > allowance.effectiveBytes - required)) { failure = "Character caster DXGI budget deferred"; return; }
+                    tracked > allowance.effectiveBytes - required))
+                    throw std::runtime_error("Character caster DXGI budget deferred");
 
-                reusedUnsubmitted = reuse;
-                auto next = reuse ? *selected : std::make_shared<CharacterCasterFrame>();
+                auto next = reuse ? std::move(selected) : std::make_shared<CharacterCasterFrame>();
                 next->frame = frame; next->scope = scope; next->allowedAge = interval == 2u ? 1u : 0u; next->parts = snapshot.parts;
                 next->vertices = uint32_t(snapshot.vertices.size()); next->triangles = triangleCount;
-                if (snapshot.materialSources.size() != snapshot.parts) throw std::runtime_error("Character material part mapping mismatch");
-                next->materialSources = std::make_shared<const std::vector<DX12::PreparedMaterialSource>>(std::move(snapshot.materialSources));
-                next->materials = materialWorker.Update(backend, frame, scope, next->materialSources);
+                if (!materialSources || materialSources->size() != snapshot.parts) throw std::runtime_error("Character material part mapping mismatch");
+                next->materialSources = std::move(materialSources);
+                next->materials.reset();
                 if (!reuse) next->allocationBytes = required;
                 next->root = root; next->pipeline = pipeline;
                 next->readyFence = completion;
@@ -715,20 +720,114 @@ namespace DX12Native
                 const auto ready = CD3DX12_RESOURCE_BARRIER::UAV(next->acceleration.get());
                 cmd->ResourceBarrier(1, &ready);
                 Eval::Check(cmd->Close());
-                next->readyValue = UINT64_MAX; *selected = next;
-                reusedUnsubmitted = false;
-                ID3D12CommandList* lists[]{cmd};
+            return next;
+        }
+
+        void CollectActor(const GraphicsBackend& backend, uint32_t frame, uint32_t scope, uint32_t interval)
+        {
+            if (current && (!current->Submitted(frame, scope) || (interval != 2u && current->frame != frame)))
+                current.reset();
+            if (!actorJob) return;
+            if (actorJob->scope != scope || actorJob->interval != interval ||
+                frame - actorJob->frame > (interval == 2u ? 1u : 0u)) {
+                // A stale recording has never been executed. Dropping our
+                // reference is safe even if a worker still owns the job.
+                actorJob.reset();
+                ++staleActorRecords;
+                return;
+            }
+            if (!actorJob->finished.load(std::memory_order_acquire)) return;
+            auto job = std::move(actorJob);
+            rejectedParts = job->rejected;
+            if (!job->result) { failure = job->failure; return; }
+            auto next = std::move(job->result);
+            if (GraphicsBackend::NativeDeviceLost() || owner.d3d12Device.get() != backend.d3d12Device.get()) return;
+            try {
+                next->materials = materialWorker.Update(backend, frame, scope, next->materialSources);
+                // Worker 15 retains execution consolidation ownership. This
+                // boundary still executes the closed list in queue order.
+                next->readyValue = UINT64_MAX;
+                slots[job->slot] = next;
+                ID3D12CommandList* lists[]{ next->commands.get() };
                 backend.commandQueue->ExecuteCommandLists(1, lists);
                 const auto value = ++nextFence;
                 Eval::Check(backend.commandQueue->Signal(completion.get(), value));
-                next->readyValue = value; current = std::move(next); failure.clear();
+                next->readyValue = value;
+                current = std::move(next);
+                failure.clear();
+                ++publishedActorRecords;
             } catch (const std::exception& e) {
-                // A failed recording may leave the reused command list open. The
-                // old GPU work has retired; discard that slot rather than reset it again.
-                if (reusedUnsubmitted && selected) selected->reset();
                 failure = e.what();
             }
         }
+
+    public:
+        // Called before shadow rendering to overlap owned-pose preparation
+        // with rasterization. Final admission still occurs at opaque ready.
+        void PrepareActor(const GraphicsBackend& backend, uint32_t frame, uint32_t scope, uint32_t interval)
+        {
+            ZoneScopedN("DX12::Characters::SnapshotAcquisition");
+            if (!scope || (captureFrame == frame && captureScope == scope)) return;
+            captureFrame = frame; captureScope = scope;
+            CollectActor(backend, frame, scope, interval);
+            if (actorJob || (current && current->Submitted(frame, scope) &&
+                (current->frame == frame || interval == 2u))) return;
+            const auto gate = globals::shaderCache ? globals::shaderCache->GetRuntimeTaskGate() : nullptr;
+            if (!gate) { ++deferredActorRecords; return; }
+            try {
+                Initialize(backend);
+                if (completion->GetCompletedValue() == UINT64_MAX) return;
+                size_t index = slots.size();
+                uint64_t tracked = 0;
+                for (size_t i = 0; i < slots.size(); ++i) {
+                    auto& slot = slots[i];
+                    if (slot) tracked += slot->allocationBytes;
+                    if (slot && slot->readyValue == UINT64_MAX) {
+                        const auto rescue = ++nextFence;
+                        if (SUCCEEDED(backend.commandQueue->Signal(completion.get(), rescue))) slot->readyValue = rescue;
+                    }
+                    if (index == slots.size() && (!slot || (slot.use_count() == 1 && GpuFenceRetired(slot->readyFence.get(), slot->readyValue))))
+                        index = i;
+                }
+                if (index == slots.size()) { ++deferredActorRecords; return; }
+                auto snapshot = std::make_shared<Snapshot>();
+                Capture(*snapshot);
+                if (snapshot->vertices.empty() || snapshot->indices.empty()) {
+                    rejectedParts = snapshot->rejected; failure = "No admitted character parts"; return;
+                }
+                auto materials = std::make_shared<const std::vector<DX12::PreparedMaterialSource>>(std::move(snapshot->materialSources));
+                auto job = std::make_shared<ActorRecordJob>();
+                job->frame = frame; job->scope = scope; job->interval = interval;
+                job->slot = uint32_t(index); job->rejected = snapshot->rejected;
+                job->snapshotBytes = uint64_t(snapshot->vertices.size()) * sizeof(Vertex) +
+                    uint64_t(snapshot->bones.size()) * sizeof(Bone) +
+                    uint64_t(snapshot->indices.size() + snapshot->primitiveParts.size()) * sizeof(uint32_t);
+                // Transfer only a retired, exclusively owned slot. On rejection
+                // it can be restored because no task was admitted.
+                auto selected = std::move(slots[index]);
+                std::weak_ptr<ActorRecordJob> weakJob = job;
+                if (!gate->TrySubmit([weakJob, snapshot, selected, tracked, materials,
+                    device = backend.d3d12Device, root = root, pipeline = pipeline, completion = completion,
+                    frame, scope, interval]() mutable {
+                    const auto retained = weakJob.lock();
+                    if (!retained) return;
+                    try {
+                        retained->result = RecordActor(*snapshot, std::move(selected), tracked, device,
+                            root, pipeline, completion, materials, frame, scope, interval);
+                    } catch (const std::exception& error) { retained->failure = error.what(); }
+                    catch (...) { retained->failure = "Character recording failed"; }
+                    retained->finished.store(true, std::memory_order_release);
+                })) {
+                    slots[index] = std::move(selected);
+                    ++deferredActorRecords;
+                    return;
+                }
+                actorJob = std::move(job);
+                ++asyncActorRecords;
+            } catch (const std::exception& error) { failure = error.what(); }
+        }
+
+    private:
 
         void PublishMovers(const GraphicsBackend& backend, uint32_t frame, uint32_t scope)
         {
@@ -990,7 +1089,9 @@ namespace DX12Native
         uint32_t moverScope = 0, newMoverMeshes = 0;
         uint64_t asyncRigidPacks = 0, inlineRigidPacks = 0, deferredRigidPacks = 0;
         GraphicsBackend owner;
-        Snapshot actorScratch;
+        std::shared_ptr<ActorRecordJob> actorJob;
+        uint32_t captureFrame = UINT32_MAX, captureScope = 0;
+        uint64_t asyncActorRecords = 0, deferredActorRecords = 0, staleActorRecords = 0, publishedActorRecords = 0;
         CharacterMaterialWorker materialWorker, moverMaterialWorker;
         VideoMemoryBudget budget;
         std::array<std::shared_ptr<CharacterCasterFrame>, 3> slots;
