@@ -108,7 +108,7 @@ namespace DX12Native
             uint32_t scope = 0;
             {
                 std::scoped_lock lock(state->mutex);
-                if (state->closing || !state->sources) { state->scheduled = false; return; }
+                if (GraphicsBackend::NativeDeviceLost() || state->closing || !state->sources) { state->scheduled = false; return; }
                 sources = state->sources; catalog = state->catalog; previous = state->last;
                 backend = state->backend; generation = state->generation; scope = state->scope;
             }
@@ -150,6 +150,8 @@ namespace DX12Native
                             Eval::RecordUploads(batch->commands.get(), batch->uploads);
                             Eval::Check(batch->commands->Close());
                             batch->publication = result;
+                            if (!GraphicsBackend::CheckNativeDeviceHealth(device, backend.d3d11Device.get()))
+                                throw std::runtime_error("Native device lost");
                             ID3D12CommandList* lists[]{ batch->commands.get() };
                             backend.commandQueue->ExecuteCommandLists(1, lists);
                             const auto signal = backend.commandQueue->Signal(result->readyFence.get(), 1u);
@@ -193,6 +195,7 @@ namespace DX12Native
         std::shared_ptr<const CharacterMaterialPublication> Update(const GraphicsBackend& backend,
             uint32_t frame, uint32_t scope, Sources sources)
         {
+            if (GraphicsBackend::NativeDeviceLost()) return nullptr;
             if (!state) state = std::make_shared<State>();
             const auto catalog = NativePBR::MaterialCatalog::Shared().GetSnapshot();
             std::scoped_lock lock(state->mutex);

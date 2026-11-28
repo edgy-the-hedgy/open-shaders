@@ -3,7 +3,7 @@
 #include <dxgi1_2.h>
 #include <mutex>
 #include <atomic>
-#include <algorithm>
+#include <string_view>
 
 namespace
 {
@@ -11,6 +11,12 @@ namespace
 	std::atomic<bool> nativeDeviceLost{ false };
 	constexpr uint32_t kMaxBreadcrumbs = 64;
 	constexpr uint32_t kMaxAllocations = 16;
+
+	std::string DredName(const char* narrow, const wchar_t* wide)
+	{
+		if (wide && *wide) return winrt::to_string(std::wstring_view(wide));
+		return narrow && *narrow ? narrow : "(unnamed)";
+	}
 
 	void ReportDred(ID3D12Device* device)
 	{
@@ -31,8 +37,8 @@ namespace
 				const auto next = node->pCommandHistory ? uint32_t(node->pCommandHistory[completed]) : UINT32_MAX;
 				const auto last = completed && node->pCommandHistory ? uint32_t(node->pCommandHistory[completed - 1]) : UINT32_MAX;
 				logger::error("[DX12 DRED] Queue '{}' list '{}' completed {}/{} last op {} next op {}",
-					node->pCommandQueueDebugNameA ? node->pCommandQueueDebugNameA : "(unnamed)",
-					node->pCommandListDebugNameA ? node->pCommandListDebugNameA : "(unnamed)",
+					DredName(node->pCommandQueueDebugNameA, node->pCommandQueueDebugNameW),
+					DredName(node->pCommandListDebugNameA, node->pCommandListDebugNameW),
 					completed, node->BreadcrumbCount, last, next);
 				++count;
 			}
@@ -46,7 +52,7 @@ namespace
 			const auto report = [](const D3D12_DRED_ALLOCATION_NODE* node, const char* status) {
 				for (uint32_t count = 0; node && count < kMaxAllocations; ++count, node = node->pNext)
 					logger::error("[DX12 DRED] {} allocation '{}' type {}", status,
-						node->ObjectNameA ? node->ObjectNameA : "(unnamed)", uint32_t(node->AllocationType));
+						DredName(node->ObjectNameA, node->ObjectNameW), uint32_t(node->AllocationType));
 			};
 			report(fault.pHeadExistingAllocationNode, "existing");
 			report(fault.pHeadRecentFreedAllocationNode, "recently freed");
@@ -108,7 +114,7 @@ HRESULT GraphicsBackend::GetSharedDevice(IDXGIAdapter* a_adapter, ID3D12Device**
 		return result;
 	if (shared) {
 		const auto removed = shared->GetDeviceRemovedReason();
-		if (!CheckNativeDeviceHealth(shared.get())) return removed;
+		if (!CheckNativeDeviceHealth(shared.get())) return FAILED(removed) ? removed : DXGI_ERROR_DEVICE_REMOVED;
 		if (FAILED(removed)) {
 			// Drop our process-wide owner so a later Create can retry with a new device.
 			// Other consumers release their own references independently.

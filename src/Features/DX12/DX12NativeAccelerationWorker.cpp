@@ -155,7 +155,7 @@ namespace DX12Native
 	void AccelerationWorker::TrySchedule(const std::shared_ptr<State>& a_state)
 	{
 		std::scoped_lock lock(a_state->mutex);
-		if (a_state->closing || a_state->scheduled || !a_state->failure.empty() || !a_state->taskGate)
+		if (GraphicsBackend::NativeDeviceLost() || a_state->closing || a_state->scheduled || !a_state->failure.empty() || !a_state->taskGate)
 			return;
 
 		// A fence callback marks readiness and attempts admission. Active frames

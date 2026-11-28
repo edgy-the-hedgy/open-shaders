@@ -124,6 +124,8 @@ namespace DX12Native
 	void AccelerationScene::Submit(Build& a_build)
 	{
 		ZoneScopedN("DX12::Acceleration::Submit");
+		if (!GraphicsBackend::CheckNativeDeviceHealth(device.get(), backend.d3d11Device.get()))
+			DX::ThrowIfFailed(DXGI_ERROR_DEVICE_REMOVED);
 		DX::ThrowIfFailed(a_build.commands->Close());
 		ID3D12CommandList* commands[] = { a_build.commands.get() };
 		backend.commandQueue->ExecuteCommandLists(1, commands);

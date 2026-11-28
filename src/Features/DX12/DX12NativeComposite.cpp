@@ -98,7 +98,8 @@ namespace DX12Native
 		const std::shared_ptr<const ShadowMaskFrame>& shadow,
 		bool returnColorToDX11, bool publishReconstructedMask)
 	{
-		if (!device11 || !context11 || !device12 || !queue || !source || !width || !height)
+		if (!device11 || !context11 || !device12 || !queue || !source || !width || !height ||
+			!GraphicsBackend::CheckNativeDeviceHealth(device12, device11))
 			return {};
 		winrt::com_ptr<ID3D11Device> sourceDevice;
 		source->GetDevice(sourceDevice.put());

@@ -155,6 +155,7 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
     std::shared_ptr<const DirectLightingFrame> direct,std::shared_ptr<const FullNativeReconstructionFrame> native,EnvironmentEncoding encoding,bool skyVisible,uint32_t quality,float emitterRadius,ID3D11PixelShader* expected)
 {
     using namespace MaterialFrameContract;
+    if (!GraphicsBackend::CheckNativeDeviceHealth(backend.d3d12Device.get(), backend.d3d11Device.get())) return;
     if (active || !expected || world.width<2 || !world.height || !globals::d3d::context) return;
     if(!direct || direct->frame!=world.engineFrame || direct->width!=world.width || direct->height!=world.height ||
         direct->quality!=SanitizeRTQuality(quality) || !direct->material || !direct->lights || direct->lightCount>DX12::kMaxPreparedLights ||
