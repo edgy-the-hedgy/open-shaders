@@ -574,7 +574,7 @@ namespace DX12Native
 
 		// One binding per raster material ordinal, independent of TLAS indexing.
 		static std::shared_ptr<NativeMaterialEvaluation> PrepareRasterBindings(ID3D12Device* device,
-			std::span<const DX12::PreparedMaterialSource> materials, uint64_t revision,
+			std::span<const std::shared_ptr<const DX12::PreparedMaterialSource>> materials, uint64_t revision,
 			const NativePBR::MaterialCatalogSnapshot* catalog, const NativeMaterialEvaluation* seed,
 			const TextureCache& previous, std::vector<Upload>& uploads)
 		{
@@ -591,7 +591,8 @@ namespace DX12Native
 			}
 			using F = RE::BSShaderProperty::EShaderPropertyFlag;
 			for (size_t i = 0; i < materials.size(); ++i) {
-				const auto& source = materials[i];
+				if (!materials[i]) continue;
+				const auto& source = *materials[i];
 				if (source.rasterLandscapeLayers == 6u && source.clampMode >= 0 && source.clampMode <= 3) {
 					auto& row = landscapeRows[i];
 					row[6] = 6u;

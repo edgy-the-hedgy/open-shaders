@@ -8,6 +8,9 @@
 #include "Features/NativePBR/NativeRawInputCapture.h"
 #include "../../../package/Shaders/Common/NativeShadowRT.hlsli"
 #include "Utils/FileSystem.h"
+#include "Utils/RuntimeTaskGate.h"
+#include <atomic>
+#include <unordered_map>
 
 namespace DX12Native
 {
@@ -26,7 +29,7 @@ namespace DX12Native
 			float4 positionAdjust;
 			uint32_t width, height, gridWidth, gridHeight, collectStats, parallaxEnabled, parallaxWarpFixEnabled, parallaxShadowEnabled;
 			float mipBias;
-			uint32_t projectionRows, projectionFrame, hasRawInput, quality, transformCount, rasterBindingCount, rasterRecordCount, sceneRecordCount, rasterSourceCount, hasSecondaryScene, hasRasterRayMapping;
+			uint32_t projectionRows, projectionFrame, hasRawInput, quality, transformCount, rasterBindingCount, rasterRecordCount, sceneRecordCount, rasterSourceCount, hasSecondaryScene, hasRasterRayMapping, rasterPreparedSourceCount;
 		};
 		static_assert(sizeof(Camera) <= 256);
 		struct OutputAllocation
@@ -43,7 +46,7 @@ namespace DX12Native
 			std::shared_ptr<const NativePBR::RawInputFrame> rawInputs;
 			std::shared_ptr<const Eval> rasterEvaluation;
 			std::vector<Eval::Upload> rasterUploads;
-			winrt::com_ptr<ID3D12Resource> projectionLookup, transforms, emptyTable;
+			winrt::com_ptr<ID3D12Resource> projectionLookup, transforms, emptyTable, rasterMaterialLookup;
 			std::shared_ptr<OutputAllocation> output;
 			winrt::com_ptr<ID3D12Resource> readback, camera, counters, counterInit;
 			winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
@@ -70,10 +73,96 @@ namespace DX12Native
 		std::weak_ptr<const TopLevel> transformScene;
 		winrt::com_ptr<ID3D12Resource> transformTable;
 		uint32_t transformCount = 0;
-		std::shared_ptr<const Eval> rasterCache, rasterSeed;
+		using Source = std::shared_ptr<const DX12::PreparedMaterialSource>;
+		struct RasterPreparation
+		{
+			uint32_t scope = 0;
+			uint64_t revision = 0;
+			std::vector<Source> sources;
+			std::shared_ptr<const Eval> seed, previous;
+			std::shared_ptr<const NativePBR::MaterialCatalogSnapshot> catalog;
+			std::shared_ptr<const Eval> result;
+			std::vector<Eval::Upload> uploads;
+			std::string failure;
+			std::atomic<bool> finished{false};
+		};
+		std::shared_ptr<RasterPreparation> rasterJob;
+		std::shared_ptr<const Eval> rasterCache;
 		std::shared_ptr<const NativePBR::MaterialCatalogSnapshot> rasterCatalog;
-		std::vector<DX12::PreparedMaterialSource> rasterSources;
+		std::vector<Source> rasterSources;
 		uint64_t nextRasterRevision = 0;
+		uint32_t rasterCacheScope = 0, lastRasterFailure = UINT32_MAX;
+		static constexpr size_t kMaxRasterPreparationSources = 32768;
+		static constexpr uint64_t kMaxRasterSnapshotBytes = 32ull * VideoMemoryBudget::kMiB;
+
+		// Source identities are immutable snapshots, not frame-local ordinals.
+		// A value-equal replacement may reuse a cached row even after the
+		// engine-side snapshot cache has evicted its original pointer.
+		static std::vector<uint32_t> MapRasterSources(std::span<const Source> current, std::span<const Source> prepared)
+		{
+			std::vector<uint32_t> result(current.size(),UINT32_MAX);
+			std::unordered_map<const DX12::PreparedMaterialSource*,uint32_t> exact;
+			std::unordered_multimap<std::string_view,uint32_t> byTexture;
+			exact.reserve(prepared.size()); byTexture.reserve(prepared.size());
+			for (uint32_t i=0; i<prepared.size(); ++i) if (prepared[i]) {
+				exact.emplace(prepared[i].get(),i);
+				byTexture.emplace(prepared[i]->texturePaths[0],i);
+			}
+			for (uint32_t i=0; i<current.size(); ++i) {
+				if (!current[i]) continue;
+				if (const auto it=exact.find(current[i].get()); it!=exact.end()) { result[i]=it->second; continue; }
+				const auto range=byTexture.equal_range(current[i]->texturePaths[0]);
+				for (auto it=range.first; it!=range.second; ++it)
+					if (*current[i]==*prepared[it->second]) { result[i]=it->second; break; }
+			}
+			return result;
+		}
+
+		static bool CompatibleTextureNamespace(const Eval* prepared, const Eval* scene)
+		{
+			return !scene || (prepared && prepared->poolTextures.size()>=scene->poolTextures.size() &&
+				std::equal(scene->poolTextures.begin(),scene->poolTextures.end(),prepared->poolTextures.begin()));
+		}
+
+		void QueueRasterPreparation(const GraphicsBackend& backend, const std::shared_ptr<Util::RuntimeTaskGate>& gate,
+			uint32_t scope, uint32_t frame, std::span<const Source> sources,
+			std::shared_ptr<const Eval> seed, std::shared_ptr<const NativePBR::MaterialCatalogSnapshot> catalog)
+		{
+			if (!gate || rasterJob || (lastRasterFailure!=UINT32_MAX && frame-lastRasterFailure<30u)) return;
+			auto job=std::make_shared<RasterPreparation>();
+			job->scope=scope; job->revision=++nextRasterRevision; job->catalog=std::move(catalog);
+			job->seed=std::move(seed); job->previous=rasterCache;
+			uint64_t bytes=0;
+			std::unordered_set<const DX12::PreparedMaterialSource*> unique;
+			const auto append=[&](const Source& source) {
+				if (!source || unique.contains(source.get()) || job->sources.size()>=kMaxRasterPreparationSources) return;
+				const auto size=source->ByteSize();
+				if (size>kMaxRasterSnapshotBytes-bytes) return;
+				bytes+=size; unique.insert(source.get()); job->sources.push_back(source);
+			};
+			for (const auto& source:sources) append(source);
+			// Preserve already prepared visible material candidates across
+			// ordinary frame-order changes, subject to the same bounded budget.
+			if (rasterCacheScope==scope && rasterCatalog==job->catalog)
+				for (const auto& source:rasterSources) append(source);
+			if (job->sources.empty()) return;
+			std::weak_ptr<RasterPreparation> weak=job;
+			if (!gate->TrySubmit(Util::RuntimePreparationLane::Material,[weak,device=backend.d3d12Device] {
+				const auto retained=weak.lock();
+				if (!retained) return;
+				try {
+					const Eval::TextureCache empty;
+					const auto& previous=retained->previous ? retained->previous->textures :
+						(retained->seed ? retained->seed->textures : empty);
+					retained->result=Eval::PrepareRasterBindings(device.get(),retained->sources,retained->revision,
+						retained->catalog.get(),retained->seed.get(),previous,retained->uploads);
+					if (!retained->result) retained->failure="Raster residency budget or recipe preparation unavailable";
+				} catch (const std::exception& e) { retained->failure=e.what(); }
+				catch (...) { retained->failure="Raster material preparation failed"; }
+				retained->finished.store(true,std::memory_order_release);
+			})) return;
+			rasterJob=std::move(job);
+		}
 
 		void Initialize(const GraphicsBackend& backend)
 		{
@@ -91,7 +180,7 @@ namespace DX12Native
 			projectionRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1 + kProjectedTextureCapacity, 518);
 			CD3DX12_DESCRIPTOR_RANGE rawRange;
 			rawRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NativePBR::InputOnly::kPlaneCount + 1, 1031);
-			CD3DX12_ROOT_PARAMETER parameters[19];
+			CD3DX12_ROOT_PARAMETER parameters[20];
 			parameters[0].InitAsShaderResourceView(0);
 			parameters[1].InitAsShaderResourceView(1);
 			parameters[2].InitAsShaderResourceView(2);
@@ -115,6 +204,7 @@ namespace DX12Native
 			parameters[16].InitAsShaderResourceView(1038);
 			parameters[17].InitAsShaderResourceView(1039);
 			parameters[18].InitAsShaderResourceView(1040);
+			parameters[19].InitAsShaderResourceView(1041);
 			std::array<CD3DX12_STATIC_SAMPLER_DESC, 4> samplers;
 			for (uint32_t mode = 0; mode < 4; ++mode)
 				samplers[mode] = CD3DX12_STATIC_SAMPLER_DESC(mode, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
@@ -157,6 +247,8 @@ namespace DX12Native
 			std::shared_ptr<const NativePBR::RawInputFrame> rawRasterEvidence;
 			std::shared_ptr<const Eval> rasterMaterialEvaluation;
 			uint64_t rasterMaterialRevision = 0;
+			winrt::com_ptr<ID3D12Resource> rasterMaterialLookup;
+			uint32_t rasterMaterialSourceCount = 0, rasterUnpreparedSources = 0;
 			std::shared_ptr<const ProjectedInputFrame> projection;
 			winrt::com_ptr<ID3D12Resource> projectionLookup;
 			uint32_t abiVersion=MaterialFrameContract::kMaterialAbiVersion, sampleStride=kSampleStride, rowPitch=0;
@@ -203,7 +295,8 @@ namespace DX12Native
 					if (!rasterMaterialRevision || rasterMaterialEvaluation->revision != rasterMaterialRevision ||
 						!rawRasterEvidence || !rasterMaterialEvaluation->records || !rasterMaterialEvaluation->bindings ||
 						!rasterMaterialEvaluation->rasterLandscapeRows ||
-						rasterMaterialEvaluation->rasterSourceCount != rawRasterEvidence->materialSources.size() ||
+						!rasterMaterialLookup || rasterMaterialSourceCount != rawRasterEvidence->materialSources.size() ||
+						rasterMaterialLookup->GetDesc().Width < uint64_t(rasterMaterialSourceCount)*sizeof(uint32_t) ||
 						rasterMaterialEvaluation->instanceCount < rasterMaterialEvaluation->rasterSourceCount)
 						return false;
 				} else if (rasterMaterialRevision) return false;
@@ -240,7 +333,8 @@ namespace DX12Native
 		{
 			stats={}; failure.clear(); lastFrame=UINT32_MAX; published.reset();
 			transformScene.reset(); transformTable = nullptr; transformCount = 0;
-			rasterCache.reset(); rasterSeed.reset(); rasterCatalog.reset(); rasterSources.clear();
+			rasterJob.reset(); rasterCache.reset(); rasterCatalog.reset(); rasterSources.clear();
+			rasterCacheScope=0; lastRasterFailure=UINT32_MAX;
 			reusedAllocations=0; submittedFrames=0;
 			for (auto& pending : submissions) if (pending) pending->discard=true;
 		}
@@ -304,7 +398,8 @@ namespace DX12Native
 		}
 		void Dispatch(const GraphicsBackend& backend,std::shared_ptr<const RasterFrame> raster,
 			std::shared_ptr<const TopLevel> scene,uint32_t frame,uint32_t width,uint32_t height,bool fullResolution,bool continuous=false,bool collectStats=false,bool parallaxEnabled=false,bool parallaxWarpFixEnabled=false,bool parallaxShadowEnabled=false,float mipBias=0.0f,std::shared_ptr<const ProjectedInputFrame> projection=nullptr,
-			std::shared_ptr<const NativePBR::RawInputFrame> rawInputs=nullptr, uint32_t quality = kShadowQualityQuality)
+			std::shared_ptr<const NativePBR::RawInputFrame> rawInputs=nullptr, uint32_t quality = kShadowQualityQuality,
+			std::shared_ptr<Util::RuntimeTaskGate> taskGate=nullptr)
 		{
 			if (!WantsFrame(frame,continuous)) return;
 			published.reset();
@@ -330,15 +425,48 @@ namespace DX12Native
 				(rawInputs && (scene->scope != rawInputs->stamp.scope || scene->geometryRevision != rawInputs->stamp.geometryRevision))))
 				scene.reset();
 			if (!fullResolution && !scene) { failure="No secondary scene for diagnostic probe"; return; }
-			const auto seed = scene ? scene->materialEvaluation : nullptr;
-			const Eval emptyEvaluation{};
-			const auto& evaluation=seed ? *seed : emptyEvaluation;
-			const bool mappedScene = scene && rawInputs && rawInputs->MatchesRayGeneration(
-				{frame, scene->scope, scene->geometryRevision, evaluation.revision});
 			bool submitted=false;
+			std::shared_ptr<RasterPreparation> preparedJob;
 			try {
 				Initialize(backend);
 				auto* device=backend.d3d12Device.get();
+				const auto catalog=NativePBR::MaterialCatalog::Shared().GetSnapshot();
+				const auto desiredSeed=scene ? scene->materialEvaluation : nullptr;
+				std::shared_ptr<const Eval> selectedRaster;
+				std::vector<uint32_t> rasterRemap;
+				if (fullResolution) {
+					const auto& sources=rawInputs->materialSourceSnapshots;
+					if (sources.size()!=rawInputs->materialSources.size()) {
+						failure="Incoherent raster material source rows"; return;
+					}
+					const auto scope=rawInputs->stamp.scope;
+					if (rasterJob && rasterJob->finished.load(std::memory_order_acquire)) {
+						if (rasterJob->scope!=scope || rasterJob->catalog!=catalog) rasterJob.reset();
+						else if (!rasterJob->result) {
+							failure=rasterJob->failure; rasterJob.reset(); lastRasterFailure=frame;
+						} else preparedJob=rasterJob;
+					}
+					if (preparedJob) {
+						selectedRaster=preparedJob->result;
+						rasterRemap=MapRasterSources(sources,preparedJob->sources);
+					} else if (rasterCache && rasterCacheScope==scope && rasterCatalog==catalog) {
+						selectedRaster=rasterCache;
+						rasterRemap=MapRasterSources(sources,rasterSources);
+					}
+					if (!selectedRaster || !CompatibleTextureNamespace(selectedRaster.get(),desiredSeed.get()) ||
+						std::find(rasterRemap.begin(),rasterRemap.end(),UINT32_MAX)!=rasterRemap.end())
+						QueueRasterPreparation(backend,taskGate,scope,frame,sources,desiredSeed,catalog);
+					if (!selectedRaster) { failure="Waiting for asynchronous raster material residency"; return; }
+					// A newer scene may need a different descriptor prefix.
+					// Retain primary material authority with its old compatible
+					// texture namespace; enable new secondary inputs once prepared.
+					if (!CompatibleTextureNamespace(selectedRaster.get(),desiredSeed.get())) scene.reset();
+				}
+				const auto seed=scene ? scene->materialEvaluation : nullptr;
+				const Eval emptyEvaluation{};
+				const auto& evaluation=seed ? *seed : emptyEvaluation;
+				const bool mappedScene=scene && rawInputs && rawInputs->MatchesRayGeneration(
+					{frame,scene->scope,scene->geometryRevision,evaluation.revision});
 				const uint32_t gridWidth=fullResolution?width:kWidth, gridHeight=fullResolution?height:kHeight;
 				const uint64_t count=uint64_t(gridWidth)*gridHeight;
 				if (count>UINT32_MAX || gridWidth>16384 || gridHeight>16384) { failure="Screen material dimensions unsupported"; return; }
@@ -386,18 +514,10 @@ namespace DX12Native
 					projection->rowCount==projection->instances.size())
 					slot->projection=std::move(projection);
 				if (fullResolution) slot->rawInputs=std::move(rawInputs);
-				const auto catalog = NativePBR::MaterialCatalog::Shared().GetSnapshot();
-				if (slot->rawInputs && slot->rawInputs->evidence->winnerCertified && !slot->rawInputs->materialSources.empty()) {
-					if (rasterCache && rasterSeed == seed && rasterCatalog == catalog &&
-						rasterSources == slot->rawInputs->materialSources) {
-						slot->rasterEvaluation = rasterCache;
-					} else {
-						const auto& previous = rasterCache ? rasterCache->textures : evaluation.textures;
-						slot->rasterEvaluation = Eval::PrepareRasterBindings(device, slot->rawInputs->materialSources,
-							++nextRasterRevision, catalog.get(), seed.get(), previous, slot->rasterUploads);
-					}
-				}
-				if (fullResolution && !slot->rasterEvaluation) { failure="Raster material residency unavailable"; return; }
+				slot->rasterEvaluation=selectedRaster;
+				if (preparedJob) slot->rasterUploads=preparedJob->uploads;
+				if (rasterRemap.empty()) rasterRemap.push_back(UINT32_MAX);
+				slot->rasterMaterialLookup=Eval::Table(device,rasterRemap);
 				// Valid backing for disabled buffer root SRVs; all corresponding
 				// shader counts are zero. Acceleration SRVs use a null descriptor.
 				slot->emptyTable = Eval::Table(device, std::vector<uint32_t>(128u, 0u));
@@ -450,8 +570,9 @@ namespace DX12Native
 					slot->raster->camera.CameraPosAdjust,width,height,gridWidth,gridHeight,collectStats ? 1u : 0u,parallaxEnabled ? 1u : 0u,parallaxWarpFixEnabled ? 1u : 0u,shadowPlane ? 1u : 0u,std::isfinite(mipBias) ? mipBias : 0.0f,slot->projection ? slot->projection->rowCount : 0u,frame,slot->rawInputs && slot->rawInputs->evidence->winnerCertified ? uint32_t(slot->rawInputs->drawRecords.size()) : 0u, SanitizeRTQuality(quality), transformCount,
 					slot->rasterEvaluation ? slot->rasterEvaluation->instanceCount : 0u,
 					slot->rasterEvaluation ? slot->rasterEvaluation->recordCount : 0u, evaluation.recordCount,
-					slot->rasterEvaluation ? slot->rasterEvaluation->rasterSourceCount : 0u,
-					slot->scene ? 1u : 0u, mappedScene ? 1u : 0u};
+					slot->rawInputs ? uint32_t(slot->rawInputs->materialSources.size()) : 0u,
+					slot->scene ? 1u : 0u, mappedScene ? 1u : 0u,
+					slot->rasterEvaluation ? slot->rasterEvaluation->rasterSourceCount : 0u};
 				void* mapped=nullptr; const D3D12_RANGE noRead{};
 				Eval::Check(slot->camera->Map(0,&noRead,&mapped));
 				std::memcpy(mapped,&constants,sizeof(constants)); slot->camera->Unmap(0,nullptr);
@@ -518,6 +639,7 @@ namespace DX12Native
 				command->SetComputeRootShaderResourceView(16,(slot->rasterEvaluation ? slot->rasterEvaluation->records : evaluation.records)->GetGPUVirtualAddress());
 				command->SetComputeRootShaderResourceView(17,(slot->rasterEvaluation ? slot->rasterEvaluation->bindings : evaluation.bindings)->GetGPUVirtualAddress());
 				command->SetComputeRootShaderResourceView(18,(slot->rasterEvaluation ? slot->rasterEvaluation->rasterLandscapeRows : slot->projectionLookup)->GetGPUVirtualAddress());
+				command->SetComputeRootShaderResourceView(19,slot->rasterMaterialLookup->GetGPUVirtualAddress());
 				Eval::RecordUploads(command, slot->rasterUploads);
 				if (collectStats) {
 					command->CopyBufferRegion(slot->counters.get(),0,slot->counterInit.get(),0,kCounterBytes);
@@ -581,11 +703,13 @@ namespace DX12Native
 				const auto value=nextValue+1;
 				Eval::Check(backend.commandQueue->Signal(fence.get(),value));
 				nextValue=value; pending->value=value;
-				if (pending->rasterEvaluation && pending->rasterEvaluation != rasterCache) {
-					rasterCache = pending->rasterEvaluation;
-					rasterSeed = seed;
-					rasterCatalog = catalog;
-					rasterSources = pending->rawInputs->materialSources;
+				if (preparedJob) {
+					rasterCache=pending->rasterEvaluation;
+					rasterCatalog=preparedJob->catalog;
+					rasterCacheScope=preparedJob->scope;
+					rasterSources=std::move(preparedJob->sources);
+					rasterJob.reset();
+					lastRasterFailure=UINT32_MAX;
 				}
 				if (pending->fullResolution) {
 					auto materialFrame=std::make_shared<MaterialFrame>();
@@ -600,6 +724,9 @@ namespace DX12Native
 					materialFrame->rawRasterEvidence=pending->rawInputs;
 					materialFrame->rasterMaterialEvaluation=pending->rasterEvaluation;
 					materialFrame->rasterMaterialRevision=pending->rasterEvaluation ? pending->rasterEvaluation->revision : 0;
+					materialFrame->rasterMaterialLookup=pending->rasterMaterialLookup;
+					materialFrame->rasterMaterialSourceCount=pending->rawInputs ? uint32_t(pending->rawInputs->materialSources.size()) : 0u;
+					materialFrame->rasterUnpreparedSources=uint32_t(std::count(rasterRemap.begin(),rasterRemap.end(),UINT32_MAX));
 					materialFrame->projection=pending->projection;
 					materialFrame->projectionLookup=pending->projectionLookup;
 					materialFrame->raster=pending->raster; materialFrame->scene=pending->scene;
@@ -615,6 +742,8 @@ namespace DX12Native
 				failure=error.what();
 				published.reset();
 				if (submitted && pending) {
+					// Do not record upload commands twice after submission.
+					if (preparedJob && rasterJob==preparedJob) rasterJob.reset();
 					pending->discard=true;
 					const auto rescue=nextValue+1;
 					if (SUCCEEDED(backend.commandQueue->Signal(fence.get(),rescue))) {

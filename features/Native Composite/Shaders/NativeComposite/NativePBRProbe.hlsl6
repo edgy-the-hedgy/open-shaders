@@ -31,6 +31,7 @@ ByteAddressBuffer ProbeInstanceTransforms : register(t1037);
 StructuredBuffer<MaterialRecord> RasterMaterialRecords : register(t1038);
 StructuredBuffer<Binding> RasterMaterialBindings : register(t1039);
 ByteAddressBuffer RasterLandscapeRows : register(t1040);
+ByteAddressBuffer RasterMaterialLookup : register(t1041);
 cbuffer ProbeCamera : register(b1)
 {
     row_major float4x4 InverseProjection;
@@ -54,6 +55,7 @@ cbuffer ProbeCamera : register(b1)
     uint RasterSourceCount;
     uint HasSecondaryScene;
     uint HasRasterRayMapping;
+    uint RasterPreparedSourceCount;
 };
 RWByteAddressBuffer ProbeCounts : register(u1);
 RWByteAddressBuffer ScreenOutput : register(u2);
@@ -182,6 +184,9 @@ Sample EvaluateRasterLocal(RawRasterSurface raw, uint2 mapped, float3 viewRay, f
     rawUsed=false; coat=(NativeCoatSample)0; shadow=(NativeParallaxShadowSample)0;
     Sample result=(Sample)0; result.color.a=SurfaceUnsupportedMaterial;
     if (raw.materialOrdinal==0u || raw.materialOrdinal>RasterSourceCount) return result;
+    uint preparedRow=RasterMaterialLookup.Load((raw.materialOrdinal-1u)*4u);
+    if (preparedRow>=RasterPreparedSourceCount) { result.color.a=SurfaceMissingTextures; return result; }
+    raw.materialOrdinal=preparedRow+1u;
     if (raw.auxiliaryKind==1u)
         return EvaluateRasterLandscape(raw,viewRay,distance,rawUsed,coat,shadow);
     Binding binding=RasterMaterialBindings[raw.materialOrdinal-1u];

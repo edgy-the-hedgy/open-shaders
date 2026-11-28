@@ -2,6 +2,7 @@
 
 #include "Features/ExtendedMaterials.h"
 #include "Globals.h"
+#include "ShaderCache.h"
 #include "State.h"
 #include "Utils/D3D.h"
 #include "Utils/Game.h"
@@ -36,7 +37,8 @@ void NativePBR::FrameProducer::Dispatch(const GraphicsBackend& backend, std::sha
 		extended.loaded && extended.settings.EnableParallax != 0,
 		extended.loaded && extended.settings.EnableParallaxWarpingFix != 0,
 		extended.loaded && extended.settings.EnableShadows != 0,
-		globals::state->GetMaterialMipBias(Util::GetTemporal()), std::move(projected), std::move(rawInputs), quality);
+		globals::state->GetMaterialMipBias(Util::GetTemporal()), std::move(projected), std::move(rawInputs), quality,
+		globals::shaderCache ? globals::shaderCache->GetRuntimeTaskGate() : nullptr);
 }
 
 void NativePBR::FrameProducer::PublishProjection(const GraphicsBackend& backend, DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,
