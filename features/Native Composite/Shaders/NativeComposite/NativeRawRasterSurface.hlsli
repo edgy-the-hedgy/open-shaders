@@ -12,6 +12,10 @@ struct RawRasterSurface
     uint auxiliaryKind;
     bool borrowedLandscape;
     float packedSnow;
+    // Local evaluator state only; never part of the four ABI v6 attachments.
+    bool terrainVariation;
+    float2 terrainOffset1,terrainOffset2;
+    float terrainTapWeight;
     uint4 auxiliary;
     bool covered, front, valid;
 };
