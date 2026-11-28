@@ -111,7 +111,7 @@ class ArchitectureLintTests(unittest.TestCase):
     def test_full_native_shader_inputs_share_one_boot_latched_cache_identity(self):
         cache = (ROOT / "src/ShaderCache.cpp").read_text(encoding="utf-8")
         self.assertIn('"FULL_NATIVE_INPUT"', cache)
-        self.assertIn('L"_full_native_input_v6_coverage3"', cache)
+        self.assertIn('L"_full_native_input_v6_coverage4"', cache)
         self.assertNotIn('L"_native_pbr_input_v1"', cache)
         for name in ("Lighting", "Effect", "Sky", "DistantTree"):
             source = (ROOT / f"package/Shaders/{name}.hlsl").read_text(encoding="utf-8")
@@ -151,6 +151,7 @@ class ArchitectureLintTests(unittest.TestCase):
         self.assertIn("RasterProjectionLookup.Load", shader)
         self.assertIn("HasRasterRayMapping!=0u", shader)
         self.assertIn("raw.borrowedLandscape", shader)
+        self.assertIn("if (weight<=1e-6) continue;", shader)
 
     def test_primary_material_never_falls_through_to_diagnostic_rays(self):
         probe = (ROOT / "src/Features/DX12/DX12NativeScreenProbe.h").read_text(encoding="utf-8")
@@ -208,6 +209,20 @@ class ArchitectureLintTests(unittest.TestCase):
         for name, tag in (("RunGrass", 5), ("DistantTree", 6), ("Effect", 7)):
             source = (ROOT / f"package/Shaders/{name}.hlsl").read_text(encoding="utf-8")
             self.assertIn(f"{tag}u<<19u", source)
+
+    def test_complex_displacement_coverage_preserves_primary_uv_and_model_normal_inputs(self):
+        lighting = (ROOT / "package/Shaders/Lighting.hlsl").read_text(encoding="utf-8")
+        decoder = (ROOT / "features/Native Composite/Shaders/NativeComposite/NativeRawRasterInput.hlsli").read_text(encoding="utf-8")
+        surface = (ROOT / "features/Native Composite/Shaders/NativeComposite/NativeMaterialSurface.hlsli").read_text(encoding="utf-8")
+        coverage = lighting.split("float2 NativeComplexCoverageUV(", 1)[1].split("// Full Native deferred Lighting is strictly input-only", 1)[0]
+        self.assertIn("ExtendedMaterials::GetParallaxCoords", coverage)
+        self.assertIn("h>epsilon && h<1.0-epsilon", coverage)
+        self.assertIn("alphaUV=NativeComplexCoverageUV(input,eyeIndex,frontFace)", lighting)
+        self.assertIn("NativeInputMRT::Write(psout, input.Position, uv,", lighting)
+        self.assertIn("result.vertexDescriptor=descriptors.y", decoder)
+        self.assertIn("raw.vertexDescriptor&2u", surface)
+        self.assertIn("sampled.xzy", surface)
+        self.assertIn("(!alphaHeight || complexHeight)", surface)
 
     def test_native_input_is_published_by_original_pass(self):
         raw = (ROOT / "package/Shaders/Common/NativeInputMRT.hlsli").read_text(encoding="utf-8")
