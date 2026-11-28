@@ -146,6 +146,15 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
     Sample result = (Sample)0;
     if (binding.materialIndex == 0xffffffffu ||
         any(material.identity.xy != binding.identity) || any(material.identity.zw != binding.revision)) return result;
+    // Validate all seven role descriptors before any height, coat or base texture
+    // sampling. Optional roles may be absent, but never out of range.
+    if (material.textures[0].x >= NativeTextureIndexLimit || material.textures[0].z >= NativeTextureIndexLimit)
+        return result;
+    [unroll] for (uint role=2u; role<7u; ++role) {
+        uint descriptor=material.textures[role/2u][(role%2u)*2u];
+        if (descriptor!=0xffffffffu && descriptor>=NativeTextureIndexLimit) return result;
+    }
+    if (!all(isfinite(material.base)) || !all(isfinite(material.uv[0]))) return result;
     float3 n = 0, t = 0, b = 0, color = 0;
     float vertexAlpha=0.0;
     float2 uv = 0;
@@ -289,12 +298,10 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
             }
         }
     }
-    // A malformed resident record must not index a descriptor outside the heap.
-    if (material.textures[0].x >= NativeTextureIndexLimit || material.textures[0].z >= NativeTextureIndexLimit)
-        return result;
     float4 baseTexel = NativeSurfaceTex(material.textures[0].x,uv,material.properties.z,raw,mipBias);
     float4 normalTexel = NativeSurfaceTex(material.textures[0].z,uv,material.properties.z,raw,mipBias);
     float4 packed = material.textures[1].x!=0xffffffffu ? NativeSurfaceTex(material.textures[1].x,uv,material.properties.z,raw,mipBias) : float4(1.0,0.0,1.0,0.04);
+    if (!all(isfinite(baseTexel)) || !all(isfinite(normalTexel)) || !all(isfinite(packed))) return result;
     float4 legacyPacked=packed;
     if (legacyMaterial) packed=float4(1.0-saturate(normalTexel.a),0.0,1.0,1.0);
     float3 sampled = normalTexel.xyz*2.0-1.0;
@@ -322,6 +329,7 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
     }
 #endif
     if ((binding.flags & 1u) != 0u) base *= SrgbToLinear(color);
+    if (!all(isfinite(packed))) return result;
     float metallic = saturate(packed.g);
     float roughness = clamp(packed.r,0.045,1.0);
     float3 f0 = lerp(saturate(packed.a).xxx,base,metallic);
