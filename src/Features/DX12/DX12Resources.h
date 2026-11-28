@@ -79,6 +79,7 @@ namespace DX12
 		// Raster-only vanilla terrain inputs; never retain engine texture pointers.
 		uint32_t rasterLandscapeLayers = 0;
 		bool rasterLandscapeDisableVertexColors=false;
+		uint32_t rasterLandscapeVariationFlags=0;
 		std::array<std::array<std::string, 2>, 8> rasterLandscapeTextures{};
 		std::array<float, 8> rasterLandscapeSnow{}, rasterLandscapeSpecular{};
 		std::array<std::string,8> rasterLandscapeEditorIds{};
