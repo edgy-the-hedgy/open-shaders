@@ -120,8 +120,8 @@ bool IntersectRasterCandidate(uint2 identity, float3 origin, float3 direction, f
         hitDistance>0.5 && abs(hitDistance-distance)<=tolerance;
 }
 
-// Six authored base layers and up to two borrowed seam layers. LOD/snow
-// deformation and advanced terrain lobes remain explicitly feature-limited.
+// Six authored base layers and up to two borrowed seam layers. Original LOD,
+// snow and displacement inputs are consumed; advanced terrain lobes remain limited.
 Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float distance,float3 worldPosition,
     out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow)
 {
@@ -250,9 +250,9 @@ Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float dista
             Binding first=RasterMaterialBindings[row0.x];
             if (first.materialIndex<RasterRecordCount) {
                 MaterialRecord mat=RasterMaterialRecords[first.materialIndex];
-                if (mat.textures[0].y<NativeTextureIndexLimit) {
+                if (mat.textures[0].z<NativeTextureIndexLimit) {
                     RawRasterSurface tiled=raw; tiled.dx*=snow.w; tiled.dy*=snow.w;
-                    float3 sn=(NativeSurfaceTex(mat.textures[0].y,raw.uv*snow.w,mat.properties.z,tiled,MaterialMipBias).xyz*2.0-1.0)*float3(-1,-1,1);
+                    float3 sn=(NativeSurfaceTex(mat.textures[0].z,raw.uv*snow.w,mat.properties.z,tiled,MaterialMipBias).xyz*2.0-1.0)*float3(-1,-1,1);
                     float3 n=blended.normal.xyz;
                     float3 land=float3(dot(n,raw.tangent),dot(n,raw.bitangent),dot(n,raw.normal));
                     land.z+=1.0;
