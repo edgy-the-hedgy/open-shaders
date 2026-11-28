@@ -361,13 +361,16 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 		directLights.push_back({ light.position,
 			{ toLinear(light.color.x, linear) * light.fade, toLinear(light.color.y, linear) * light.fade, toLinear(light.color.z, linear) * light.fade },
 			light.radius, light.emitterRadius, 0.0f, false });
+		constexpr uint32_t shadowTypes = static_cast<uint32_t>(RE::TES_LIGHT_FLAGS::kSpotShadow) |
+			static_cast<uint32_t>(RE::TES_LIGHT_FLAGS::kHemiShadow) | static_cast<uint32_t>(RE::TES_LIGHT_FLAGS::kOmniShadow);
+		directLights.back().castsShadow = (light.flags & shadowTypes) != 0;
 		// A prepared spotlight without a current projection is not an omni light.
 		if (light.flags & (static_cast<uint32_t>(RE::TES_LIGHT_FLAGS::kSpotlight) | static_cast<uint32_t>(RE::TES_LIGHT_FLAGS::kSpotShadow)))
 			directLights.back().radius = 0.0f;
 		else if (light.flags & static_cast<uint32_t>(LLFCommon::TES_LIGHT_FLAGS_EXT::kInverseSquare)) {
 			const auto authored = ReadPlacedLight(light.referenceID);
 			if (authored && authored->inverseSquare)
-				ApplyInverseSquare(directLights.back(), light.fade, false, authored->cutoff, authored->size);
+				ApplyInverseSquare(directLights.back(), light.fade, directLights.back().castsShadow, authored->cutoff, authored->size);
 			else
 				directLights.back().radius = 0.0f; // Never silently reinterpret an unresolved ISL source.
 		}
@@ -475,6 +478,7 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 			DX12Native::DirectPointLight value{ { position.x, position.y, position.z },
 				{ toLinear(snapshot.diffuse.red, linear) * snapshot.fade, toLinear(snapshot.diffuse.green, linear) * snapshot.fade, toLinear(snapshot.diffuse.blue, linear) * snapshot.fade },
 				snapshot.radius, 0.0f, 0.0f, false };
+			value.castsShadow = ShadowCasterManager::IsShadowLightType(light);
 			const bool spotSource = snapshot.flags.any(F::Spot) ||
 				(PointLightFlags::GetPointLightTypeFlags(light) & PointLightFlags::ToMask(F::Spot));
 			if (spotSource) {
@@ -493,8 +497,11 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 					reject();
 					return;
 				}
-				ApplyInverseSquare(value, snapshot.fade, ShadowCasterManager::IsShadowLightType(light), snapshot.cutoffOverride, snapshot.size);
+				ApplyInverseSquare(value, snapshot.fade, value.castsShadow, snapshot.cutoffOverride, snapshot.size);
 			}
+			// The engine LOD dimmer changes emitted radiance, not the authored radius.
+			if (!std::isfinite(light->lodDimmer)) { reject(); return; }
+			value.radiance *= std::max(0.0f, light->lodDimmer);
 			if (best != preparedCount) {
 				if (!ambiguous && !matched[best]) {
 					directLights[best] = value;
@@ -529,7 +536,7 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 	for (size_t i = 0; i < preparedSlots; ++i) {
 		const auto& light = directLights[i];
 		if (light.radius <= 0.0f) continue;
-		if (light.spot || light.inverseSquare) preparedExact.push_back(light);
+		if (light.spot || light.inverseSquare || light.castsShadow) preparedExact.push_back(light);
 		else {
 			signature.prepared.push_back(key(prepared[i].position, prepared[i].referenceID, i));
 			spatialPrepared.push_back(light);
@@ -541,7 +548,7 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 	for (auto i : ordered) {
 		const auto& light = directLights[preparedSlots + i];
 		if (light.radius <= 0.0f) continue;
-		if (light.spot || light.inverseSquare) runtimeExact.push_back(light);
+		if (light.spot || light.inverseSquare || light.castsShadow) runtimeExact.push_back(light);
 		else {
 			const auto& source = supplemental[i];
 			// Non-finite rest positions cannot establish a safe spatial grouping.
@@ -598,6 +605,7 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 				directLights.push_back({ particle.position,
 					{ toLinear(particle.color.x) * fade, toLinear(particle.color.y) * fade,
 						toLinear(particle.color.z) * fade }, particle.radius, 0.0f, 0.0f, false });
+				directLights.back().castsShadow = false; // Baseline particle emitters have no authored shadow type.
 			}
 		}
 	}

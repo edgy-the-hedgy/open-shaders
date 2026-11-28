@@ -48,6 +48,7 @@ struct SecondaryLight
     float radius;
     float weight;
     uint index;
+    bool castsShadow;
 };
 
 SecondaryLight ReadSecondaryLight(uint index,float3 world,float3 n,NativeCoatSample coat)
@@ -76,7 +77,7 @@ SecondaryLight ReadSecondaryLight(uint index,float3 world,float3 n,NativeCoatSam
     }
     result.incident=max(color.rgb,0.0)*attenuation;
     if(!all(isfinite(result.incident))||!any(result.incident>0.0))return (SecondaryLight)0;
-    result.delta=delta;result.radius=max(params.x,0.0);result.index=index;
+    result.delta=delta;result.radius=max(params.x,0.0);result.index=index;result.castsShadow=color.w==0.0;
     // Positive importance weight for every admitted light; no omitted
     // contribution from choosing a fixed first-N list.
     result.weight=max(dot(result.incident,float3(0.2125,0.7154,0.0721)),1e-6);
@@ -152,7 +153,9 @@ bool ShadeNativeSecondarySurface(Sample s,NativeCoatSample coat,NativeParallaxSh
         float spread=min(light.radius*ShadowEmitterMultiplier(quality),distanceToLight*0.5);
         float3 sampledDelta=light.delta+NativeEmitterOffset(l,spread,pixel,light.index^(lobe<<16u)^j,frame);
         float sampledDistance=length(sampledDelta);
-        if(sampledDistance<=1e-5||!SecondaryVisible(world,biasNormal,sampledDelta/sampledDistance,sampledDistance,instanceCount,characters))continue;
+        if(light.castsShadow){
+            if(sampledDistance<=1e-5||!SecondaryVisible(world,biasNormal,sampledDelta/sampledDistance,sampledDistance,instanceCount,characters))continue;
+        }
         float3 incident=light.incident*(total/(light.weight*float(sampleCount)));
         AccumulateBRDF(s.color,s.f0,n,view,l,saturate(dot(n,l)),ndv,a2,incident,NativeHeightVisibility(height,NativeBaseDirection(l,coat),distance,heightNoise),coat,fuzz,foliage,diffuse,specular,transmission);
     }

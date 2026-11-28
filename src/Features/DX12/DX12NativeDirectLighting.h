@@ -10,6 +10,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace DX12Native
 {
@@ -21,6 +22,7 @@ namespace DX12Native
 		bool inverseSquare = false;
 		bool spot = false;
 		std::array<float, 16> worldToSpot{};  // Row-major, row-vector engine projection.
+		bool castsShadow = true;  // Authored/runtime shadow type, not a raster slot assignment.
 	};
 	/** @brief Optional same-frame directional input. No claim of distant caster coverage. */
 	struct DirectDirectionalLight
@@ -50,7 +52,12 @@ namespace DX12Native
 		bool statsPending = false;
 		bool directionalIncluded = false;
 		// Immutable secondary-ray light inputs, owned by this fenced frame.
-		uint32_t lightCount = 0;
+		uint32_t lightCount = 0, shadowLightCount = 0, rejectedLightCount = 0;
+		// Visibility is evaluated against resident geometry only; a miss is not certified scene-wide visibility.
+		static constexpr bool shadowVisibilityResidentOnly = true;
+		bool lightUploadUpdated = false;
+		// Reuse both CPU packing storage and the slot's existing GPU upload on unchanged input.
+		std::vector<std::array<float, 4>> packedLights, lightScratch;
 		DirectDirectionalLight directional{};
 		bool foliageScattering = false;
 	};

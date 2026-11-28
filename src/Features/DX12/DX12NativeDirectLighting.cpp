@@ -208,17 +208,21 @@ namespace DX12Native
 			slot->frame = material->frame; slot->quality = SanitizeRTQuality(quality); slot->material = std::move(material);
 			slot->characters = characters && characters->Submitted(slot->frame, slot->material->scope) ? std::move(characters) : nullptr;
 			const auto& raster = *slot->material->raster;
-			std::vector<std::array<float, 4>> records;
+			auto& records = slot->lightScratch;
+			records.clear();
+			uint32_t shadowCount = 0, rejectedCount = 0;
 			records.reserve(std::min(lights.size(), size_t(DX12::kMaxPreparedLights)) * kLightRecordVectors);
 			for (const auto& light : lights) {
-				if (records.size() / kLightRecordVectors >= DX12::kMaxPreparedLights) break;
+				if (records.size() / kLightRecordVectors >= DX12::kMaxPreparedLights) { ++rejectedCount; continue; }
 				if (!std::isfinite(light.radius) || light.radius <= 0 ||
 					!std::isfinite(light.position.x) || !std::isfinite(light.position.y) || !std::isfinite(light.position.z) ||
 					!std::isfinite(light.radiance.x) || !std::isfinite(light.radiance.y) || !std::isfinite(light.radiance.z) ||
 					!std::isfinite(light.sourceRadius) || !std::isfinite(light.fadeZone) ||
-					(light.spot && !std::ranges::all_of(light.worldToSpot, [](float v) { return std::isfinite(v); }))) continue;
+					(light.spot && !std::ranges::all_of(light.worldToSpot, [](float v) { return std::isfinite(v); }))) { ++rejectedCount; continue; }
+				shadowCount += light.castsShadow ? 1u : 0u;
 				records.push_back({ light.position.x, light.position.y, light.position.z, light.radius });
-				records.push_back({ light.radiance.x, light.radiance.y, light.radiance.z, 0 });
+				// Preserve the seven-vector ABI: color.w == 1 explicitly opts out of shadows.
+				records.push_back({ light.radiance.x, light.radiance.y, light.radiance.z, light.castsShadow ? 0.0f : 1.0f });
 				records.push_back({ light.sourceRadius, light.fadeZone, light.inverseSquare ? 1.0f : 0.0f, light.spot ? 1.0f : 0.0f });
 				for (size_t row = 0; row < 4; ++row) {
 					const size_t offset = row * 4;
@@ -226,15 +230,22 @@ namespace DX12Native
 				}
 			}
 			const uint32_t lightCount = uint32_t(records.size() / kLightRecordVectors);
-			if (!lights.empty() && records.empty()) throw std::runtime_error("No valid direct light records");
+			// Invalid individual emitters do not invalidate otherwise usable receiver tiles.
+			// SelectedDirectLights remains diagnostic; a zero-light result is not full coverage.
 			if (records.empty()) records.resize(kLightRecordVectors);
-			void* lightUpload = nullptr;
-			const D3D12_RANGE noRead{};
-			Eval::Check(slot->lights->Map(0, &noRead, &lightUpload));
-			const auto writtenBytes = records.size() * sizeof(records.front());
-			std::memcpy(lightUpload, records.data(), writtenBytes);
-			const D3D12_RANGE written{0, writtenBytes};
-			slot->lights->Unmap(0, &written);
+			slot->lightUploadUpdated = records != slot->packedLights;
+			if (slot->lightUploadUpdated) {
+				void* lightUpload = nullptr;
+				const D3D12_RANGE noRead{};
+				Eval::Check(slot->lights->Map(0, &noRead, &lightUpload));
+				const auto writtenBytes = records.size() * sizeof(records.front());
+				std::memcpy(lightUpload, records.data(), writtenBytes);
+				const D3D12_RANGE written{0, writtenBytes};
+				slot->lights->Unmap(0, &written);
+				slot->packedLights.swap(records);
+			}
+			slot->shadowLightCount = shadowCount;
+			slot->rejectedLightCount = rejectedCount;
 			const Constants constants{ raster.camera.CameraProjInverse, raster.camera.CameraViewInverse,
 				raster.camera.CameraPosAdjust, width, height, slot->material->rowPitch, lightCount,
 				0.0f, 0u, slot->material->scene->materialEvaluation->instanceCount, slot->material->parallaxShadows ? 1u : 0u, directional.direction, directional.radiance, foliageScatteringEnabled ? 1u : 0u, slot->characters ? 1u : 0u, slot->quality, slot->frame };

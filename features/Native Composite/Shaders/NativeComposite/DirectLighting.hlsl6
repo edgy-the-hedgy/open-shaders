@@ -204,23 +204,32 @@ uint Shade(uint2 pixel, float3 world, float3 cameraWorld, out uint rays)
         if (params.w != 0.0) attenuation *= NativeSpotFalloff(record, world);
         if (attenuation <= 0.0 || !isfinite(attenuation) || !any(color.rgb > 0.0)) continue;
         ++inReach;
-        bool traced;
-        float3 biasNormal=HasNativeThinSurface(coat) ? coat.normalRoughness.xyz : n;
-        // Jitter only the visibility ray, never the light's BRDF or emitted intensity.
-        float emitterRadius = min(max(params.x, 0.0) * ShadowEmitterMultiplier(QualityMode), distance * 0.5);
-        float3 sampledDelta = delta + NativeEmitterOffset(l, emitterRadius, pixel, i, FrameIndex);
-        float sampledDistance = length(sampledDelta);
-        float3 sampledDirection = sampledDelta / max(sampledDistance, 1e-5);
-        bool unoccluded = Visible(world,dot(biasNormal,sampledDirection)<0.0 ? -biasNormal : biasNormal,sampledDirection,sampledDistance,traced);
-        if (traced) ++rays;
-        if (!unoccluded) continue;
+        // color.w is the shared light-record opt-out for known non-shadow emitters.
+        // Their contribution never depends on missing or incomplete caster coverage.
+        if (color.w == 0.0) {
+            bool traced;
+            float3 biasNormal=HasNativeThinSurface(coat) ? coat.normalRoughness.xyz : n;
+            float emitterRadius = min(max(params.x, 0.0) * ShadowEmitterMultiplier(QualityMode), distance * 0.5);
+            float3 sampledDelta = delta + NativeEmitterOffset(l, emitterRadius, pixel, i, FrameIndex);
+            float sampledDistance = length(sampledDelta);
+            float3 sampledDirection = sampledDelta / max(sampledDistance, 1e-5);
+            bool unoccluded = Visible(world,dot(biasNormal,sampledDirection)<0.0 ? -biasNormal : biasNormal,sampledDirection,sampledDistance,traced);
+            if (traced) ++rays;
+            if (!unoccluded) continue;
+        }
         ++visible;
         AccumulateBRDF(base, f0, n, view, l, ndl, ndv, a2, max(color.rgb,0.0)*attenuation,NativeHeightVisibility(shadow,NativeBaseDirection(l,coat),viewDistance,shadowNoise), coat, fuzz, FoliageScatteringEnabled, diffuse, specular, transmission);
     }
-    if (!all(isfinite(diffuse)) || !all(isfinite(specular))) return 0u;
+    // Diffuse, specular and transmission have independent validity. An overflow
+    // in one lobe must not erase another valid signal or become valid clamped radiance.
+    bool diffuseValid = all(isfinite(diffuse)) && all(abs(diffuse) <= 65504.0);
+    bool specularValid = all(isfinite(specular)) && all(abs(specular) <= 65504.0);
+    bool transmissionValid = base.a == SurfaceEvaluatedBase && all(isfinite(transmission)) && all(abs(transmission) <= 65504.0);
     // Half precision stores counts up to 2047 plus one for validity.
-    Lighting.Store4(outputOffset,uint4(PackHalf4(float4(diffuse,float(min(inReach,2047u))+1.0)),PackHalf4(float4(specular,float(min(visible,2047u))+1.0))));
-    Lighting.Store2(outputOffset+16u,PackOpaqueRadiance(transmission,base.a==SurfaceEvaluatedBase ? ContributionTransmission : 0u));
+    if (diffuseValid) Lighting.Store2(outputOffset,PackHalf4(float4(diffuse,float(min(inReach,2047u))+1.0)));
+    if (specularValid) Lighting.Store2(outputOffset+8u,PackHalf4(float4(specular,float(min(visible,2047u))+1.0)));
+    if (transmissionValid) Lighting.Store2(outputOffset+16u,PackOpaqueRadiance(transmission,ContributionTransmission));
+    if (!diffuseValid && !specularValid && !transmissionValid) return 0u;
     return visible > 0u ? 3u : (inReach > 0u ? 2u : 1u);
 }
 
