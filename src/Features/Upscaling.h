@@ -470,6 +470,11 @@ public:
 	uint32_t lastNativeUpscaleFrame = UINT32_MAX;
 	std::array<uint32_t, 4> lastNativeUpscaleExtent{};
 	bool lastNativeUpscaleWorld = false;
+	bool lastNativeUpscaleLoading = false;
+	uintptr_t lastNativeUpscaleCell = 0, lastNativeUpscaleCamera = 0;
+	std::array<float, 6> lastNativeUpscalePose{};
+	bool lastNativeUpscalePoseValid = false;
+	std::array<float, 3> lastNativeUpscaleProjection{};
 	void PublishNativeFrameParameters(uint32_t width, uint32_t height);
 	void PublishNativeUpscalerInputs(UpscaleMethod method, uint32_t width, uint32_t height, ID3D11Resource* engineMotion);
 	NativeDLSS nativeDLSS;
