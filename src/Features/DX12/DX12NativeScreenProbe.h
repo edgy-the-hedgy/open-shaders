@@ -539,6 +539,10 @@ namespace DX12Native
 						if (slot->rawInputs && draw && draw<=slot->rawInputs->drawRecords.size())
 							rasterProjectionLookup[draw-1u]=row;
 					}
+				if (slot->projection && slot->rawInputs)
+					for (const auto& [draw,row] : slot->projection->rasterAliases)
+						if (draw && draw<=slot->rawInputs->drawRecords.size() && row<slot->projection->rowCount)
+							rasterProjectionLookup[draw-1u]=row;
 				slot->projectionLookup=Eval::Table(device,projectionLookup);
 				slot->rasterProjectionLookup=Eval::Table(device,rasterProjectionLookup);
 				// TLAS instance ordinals are the order of SceneInputs::geometry.
