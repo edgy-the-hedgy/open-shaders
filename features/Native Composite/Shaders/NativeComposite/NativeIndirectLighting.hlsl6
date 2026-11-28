@@ -167,11 +167,10 @@ bool SSREvidence(uint2 p, out uint2 identity)
 }
 float3 ResolveRayReflection(uint2 receiver,float3 world,float3 normal,float3 direction,float roughness,uint lobe,float3 fallback)
 {
-    uint2 receiverIdentity;
-    if (SSREnabled==0 || roughness>=0.45) return fallback;
+    if (SSREnabled==0 || roughness>=0.99) return fallback;
     // A raster token corroborates receiver identity when present. Material
     // correspondence and final opaque ownership are validated separately.
-    if (SSRTokenCount!=0u && !SSREvidence(receiver,receiverIdentity)) return fallback;
+    // Receiver screen evidence is optional; only screen hit reuse needs it.
     const float spread=roughness*roughness*ShadowEmitterMultiplier(QualityMode);
     float3 d=normalize(direction+NativeEmitterOffset(direction,spread,receiver,lobe,FrameIndex));
     if (!all(isfinite(d)) || dot(normal,d)<=0.0) return fallback;
@@ -203,7 +202,7 @@ float3 ResolveRayReflection(uint2 receiver,float3 world,float3 normal,float3 dir
                 ray.Origin+d*hitDistance,d,hitDistance,roughness,receiver,lobe,FrameIndex,QualityMode,
                 InstanceCount,CharacterCastersEnabled,SecondaryLightCount,SecondarySunDirection,SecondarySunRadiance,
                 SecondaryFoliage,SecondaryMaterialControls,CharacterVertexCount,CharacterTriangleCount,CharacterPartCount,CharacterMoverCount,characterRadiance))
-                return lerp(fallback,characterRadiance,saturate(1.0-roughness/0.45));
+                return lerp(fallback,characterRadiance,saturate(1.0-roughness));
             return fallback;
         }
     }
@@ -214,7 +213,7 @@ float3 ResolveRayReflection(uint2 receiver,float3 world,float3 normal,float3 dir
         (float3x3)query.CommittedWorldToObject3x4(),(float3x3)query.CommittedObjectToWorld3x4(),query.CommittedTriangleFrontFace(),
         ray.Origin+d*distance,d,distance,roughness,receiver,lobe,FrameIndex,QualityMode,InstanceCount,CharacterCastersEnabled,
         SecondaryLightCount,SecondarySunDirection,SecondarySunRadiance,SecondaryFoliage,SecondaryMaterialControls,SecondaryProjectionRows,secondary))
-        return lerp(fallback,secondary,saturate(1.0-roughness/0.45));
+        return lerp(fallback,secondary,saturate(1.0-roughness));
     if (SSRTokenCount==0u) return fallback;
     uint2 hit,hitIdentity; float2 uv; float projectedDepth;
     if (!SSRProject(ray.Origin+d*distance,hit,uv,projectedDepth) ||
@@ -235,7 +234,7 @@ float3 ResolveRayReflection(uint2 receiver,float3 world,float3 normal,float3 dir
     float3 radiance=max(diffuse.rgb+transmission.rgb+e.rgb,0.0);
     if (!all(isfinite(radiance)) || any(radiance>65504.0)) return fallback;
     float edge=saturate(min(min(uv.x,uv.y),min(1-uv.x,1-uv.y))*12.0);
-    return lerp(fallback,radiance,edge*saturate(1.0-roughness/0.45));
+    return lerp(fallback,radiance,edge*saturate(1.0-roughness));
 }
 
 // Sky visibility only: trace the configured upper sky cap, not a generic
@@ -378,50 +377,15 @@ void main(uint3 id : SV_DispatchThreadID)
             Lighting.Store2(outputOffset+16u,PackOpaqueRadiance(radiance*transmissionWeight+backRadiance*backTransmissionWeight,base.a==SurfaceEvaluatedBase ? ContributionTransmission : 0u));
         }
     }
-    if ((active & ContributionIndirectSpecular) != 0u && EnvironmentMipCount != 0u &&
-        (Interior != 0u || ReflectionMipCount != 0u))
+    if ((active & ContributionIndirectSpecular) != 0u)
     {
         float3 r = reflect(-baseView, n);
-        float level = roughness * float(EnvironmentMipCount - 1u);
-        float3 env = DecodeEnvironmentRadiance(Environment.SampleLevel(ClampClamp, r, level).rgb, ColorEncoding);
-        float target = Luminance(EnvironmentIrradiance(-r));
-        float normalization = Luminance(DecodeEnvironmentRadiance(Environment.SampleLevel(ClampClamp, r, float(EnvironmentMipCount - 1u)).rgb, ColorEncoding));
-        float3 radiance = env * target / max(0.001, normalization);
-        if (Interior == 0u)
-        {
-            float3 full = DecodeEnvironmentRadiance(Reflections.SampleLevel(ClampClamp, r, roughness * float(ReflectionMipCount - 1u)).rgb, ColorEncoding);
-            if (IBLEnabled != 0u) {
-                float skyVisibility = SkyCapVisibility(world,n,r,clamp(2.0/(roughness*roughness)-2.0,1.0,128.0),MinSpecularSkyVisibility);
-                if (DALCMode == 3u) radiance *= SkyCapVisibility(world,n,float3(0,0,1),1.0,MinSpecularSkyVisibility);
-                radiance += max(0.0, full - env) * SkyScale * skyVisibility;
-            }
-            else
-            {
-                float reference = Luminance(DecodeEnvironmentRadiance(Reflections.SampleLevel(ClampClamp, r, float(ReflectionMipCount - 1u)).rgb, ColorEncoding));
-                radiance = full * target / max(0.001, reference);
-            }
-        }
-        radiance=ResolveRayReflection(pixel,world,n,r,roughness,0u,radiance);
+        // No captured cubemap: directional ambient is the provisional miss radiance.
+        float3 radiance = ResolveRayReflection(pixel,world,n,r,roughness,0u,EngineAmbient(r,1.0));
         float3 specularRadiance = radiance * lobes.specular;
         if (hasCoat) {
-            float3 cr = reflect(-view,cn);
-            float crLevel = coat.normalRoughness.w * float(EnvironmentMipCount-1u);
-            float3 crEnv=DecodeEnvironmentRadiance(Environment.SampleLevel(ClampClamp,cr,crLevel).rgb,ColorEncoding);
-            float crTarget=Luminance(EnvironmentIrradiance(-cr));
-            float crNorm=Luminance(DecodeEnvironmentRadiance(Environment.SampleLevel(ClampClamp,cr,float(EnvironmentMipCount-1u)).rgb,ColorEncoding));
-            float3 crRadiance=crEnv*crTarget/max(0.001,crNorm);
-            if (Interior==0u) {
-                float3 crFull=DecodeEnvironmentRadiance(Reflections.SampleLevel(ClampClamp,cr,coat.normalRoughness.w*float(ReflectionMipCount-1u)).rgb,ColorEncoding);
-                if (IBLEnabled!=0u) {
-                    float visibility=SkyCapVisibility(world,cn,cr,clamp(2.0/(coat.normalRoughness.w*coat.normalRoughness.w)-2.0,1.0,128.0),MinSpecularSkyVisibility);
-                    if (DALCMode==3u) crRadiance*=SkyCapVisibility(world,cn,float3(0,0,1),1.0,MinSpecularSkyVisibility);
-                    crRadiance+=max(0.0,crFull-crEnv)*SkyScale*visibility;
-                } else {
-                    float crRef=Luminance(DecodeEnvironmentRadiance(Reflections.SampleLevel(ClampClamp,cr,float(ReflectionMipCount-1u)).rgb,ColorEncoding));
-                    crRadiance=crFull*crTarget/max(0.001,crRef);
-                }
-            }
-            crRadiance=ResolveRayReflection(pixel,world,cn,cr,coat.normalRoughness.w,1u,crRadiance);
+            float3 cr=reflect(-view,cn);
+            float3 crRadiance=ResolveRayReflection(pixel,world,cn,cr,coat.normalRoughness.w,1u,EngineAmbient(cr,1.0));
             specularRadiance += crRadiance*coatSpecularWeight;
         }
         Lighting.Store2(outputOffset + 8u, PackOpaqueRadiance(specularRadiance, ContributionIndirectSpecular));

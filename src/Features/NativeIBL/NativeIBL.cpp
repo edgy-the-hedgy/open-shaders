@@ -31,22 +31,13 @@ void NativeIBL::Producer::Dispatch(const GraphicsBackend& backend,
 	using namespace DX12Native;
 	using namespace DX12Native::MaterialFrameContract;
 	if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation() ||
-		!material || material->scope != stamp.scope || material->frame != stamp.engineFrame ||
-		!environment || !environment->base || !NativeCubemaps::Policy::PublicationFresh(
-			environment->stamp.SameEnvironment(stamp), environment->base->stamp.engineFrame, stamp.engineFrame))
+		!material || material->scope != stamp.scope || material->frame != stamp.engineFrame)
 		return;
-	// An optional sky revision may be older than the newly filtered base.
-	// Drop only that expired input; never admit it as current irradiance.
-	const auto fresh = [&](const auto& cube) {
-		return !cube || (cube->IsReadyFor(stamp) && NativeCubemaps::Policy::PublicationFresh(
-			cube->stamp.SameEnvironment(stamp), cube->stamp.engineFrame, stamp.engineFrame));
-	};
-	if (!fresh(environment->reflection) || !fresh(environment->sky)) {
-		auto partial = std::make_shared<EnvironmentFrame>(*environment);
-		if (!fresh(partial->reflection)) partial->reflection.reset();
-		if (!fresh(partial->sky)) partial->sky.reset();
-		environment = std::move(partial);
-	}
+	// Metadata-only environment: ambient comes from engine SH, specular from RT.
+	auto rayEnvironment = std::make_shared<EnvironmentFrame>();
+	rayEnvironment->stamp = stamp;
+	rayEnvironment->revision = stamp.epoch;
+	environment = std::move(rayEnvironment);
 	if (!lighting)
 		lighting = std::make_unique<NativeIndirectLighting>();
 	const auto color = globals::features::linearLighting.GetCommonBufferData();
@@ -58,13 +49,13 @@ void NativeIBL::Producer::Dispatch(const GraphicsBackend& backend,
 	ambient.skySaturation = resolved.SkyIBLSaturation;
 	ambient.dalcMode = resolved.DALCMode;
 	ambient.dalcAmount = resolved.DALCAmount;
-	ambient.iblEnabled = resolved.EnableIBL;
+	ambient.iblEnabled = false; // Cubemap irradiance is suspended; engine ambient remains independent.
 	ambient.ambientMultiplier = utility.ambientLightMult * (color.enableLinearLighting ? color.ambientMult : 1.0f);
 	ambient.conversionSaturation = color.conversionSaturation;
 	ambient.utilitySaturation = utility.ambientLightColor.saturation;
 	ambient.utilityGammaOffset = utility.ambientLightColor.gammaOffset;
 	const auto& skylighting = globals::features::skylighting;
-	ambient.traceSkyVisibility = skylighting.loaded && skylighting.settings.EnableSkylighting && !stamp.interior && !stamp.skyHidden;
+	ambient.traceSkyVisibility = false; // RTAO/sky visibility is deferred with cubemap capture.
 	ambient.minDiffuseSkyVisibility = std::clamp(skylighting.settings.MinDiffuseVisibility, 0.0f, 1.0f);
 	ambient.minSpecularSkyVisibility = std::clamp(skylighting.settings.MinSpecularVisibility, 0.0f, 1.0f);
 	ambient.skyMinZ = std::max(0.0f, std::cos(std::clamp(skylighting.settings.MaxZenith, 0.0f, 1.57079632679f)));

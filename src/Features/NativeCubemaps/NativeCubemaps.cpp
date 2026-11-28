@@ -44,7 +44,6 @@ DX12Native::EnvironmentStamp NativeCubemaps::Producer::Prepare(uint32_t scope,ui
         Policy::ClockDiscontinuity(lastHours,hours));
     if(changed) { InvalidateGeneration(); stamp.epoch=epoch; }
     currentStamp=stamp;
-    if(processing) processing->Poll();
     if(waterSSR) waterSSR->Poll();
     if(std::isfinite(hours)) lastHours=hours;
     return stamp;
@@ -163,148 +162,36 @@ DX12Native::EnvironmentSource NativeCubemaps::Producer::GetDefaultSource(const G
 void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend, ID3D11ShaderResourceView* sceneColor, uint32_t frame,
     std::shared_ptr<const DX12Native::FullNativeReconstructionFrame> native)
 {
-    using namespace DX12Native;
-    if(!loaded || !currentStamp.scope || currentStamp.engineFrame != frame || !globals::state ||
-        currentStamp.pluginFrame != globals::state->frameCount || !globals::game::renderer) return;
-    const auto world=globals::features::dx12NativeScene.GetWorldFrame(frame,currentStamp.pluginFrame);
-    if(!world) return;
-    try {
-        if(processing) {
-            processing->Advance(frame);
-            if(processing->Pending()) return;
-        }
-        if(!Policy::CaptureDue(lastCaptureFrame,currentStamp.engineFrame,globals::features::dx12Control.NativeCubemapCaptureInterval())) return;
-        // A depth match alone is not sufficient for native radiance acquisition:
-        // require a same-frame raster identity candidate and direct-light input.
-        // This is environment observation, not final-color ownership.
-        if (!native || native->frame != frame || !native->material ||
-            native->material->scope != currentStamp.scope || !native->direct ||
-            native->direct->material != native->material || !native->rasterEvidence ||
-            !native->rasterEvidence->tokenCount || !native->ownershipMask || !native->environmentRadiance)
-            native.reset();
-        std::array<float4,3> dalc{};
-        if(!globals::state->GetAmbientSH(currentStamp.engineFrame,currentStamp.pluginFrame,dalc)) return;
-        EnvironmentSource source{};
-        if(sceneColor) {
-            try {
-                if(CaptureRaw(backend,sceneColor)) source={raw.get(),++rawRevision,currentStamp};
-            } catch(const std::exception& e) {
-                if(!failureLogged) logger::warn("[NativeCubemaps] Raster compatibility capture unavailable: {}",e.what());
-                failureLogged=true;
-            }
-        }
-        if(!source.texture && !native) return;
-        if(!inputs) inputs=std::make_unique<NativeEnvironment>();
-        const auto sky=GetSkySource(currentStamp);
-        EnvironmentSource reflection{};
-        // The native reflection hook certifies complete face coverage for the
-        // matching scene. Borrow the engine's unfiltered reflection target.
-        if(sky.IsValidFor(currentStamp)) {
-            const auto& target=globals::game::renderer->GetRendererData().cubemapRenderTargets[RE::RENDER_TARGETS_CUBEMAP::kREFLECTIONS];
-            reflection={Util::AsReal(target.texture),sky.revision,sky.stamp};
-        }
-        inputs->Capture(backend,currentStamp,source,reflection,sky,bool(native),GetDefaultSource(backend));
-        auto captured=inputs->Get();
-        if(!captured) return;
-        if(captured->base && captured->base->revision!=source.revision) {
-            auto fresh=std::make_shared<EnvironmentFrame>(*captured);
-            fresh->base.reset();
-            captured=std::move(fresh);
-        }
-        if(!captured->base && !native) return;
-        if(!processing) processing=std::make_unique<CubeProcessing>();
-        if(processing->Dispatch(backend,captured,dalc,world->camera.CameraPosAdjust,native)) {
-            lastCaptureFrame=currentStamp.engineFrame;
-            failureLogged=false;
-        }
-    } catch(const std::exception& e) {
-        if(!failureLogged) logger::warn("[NativeCubemaps] {}",e.what());
-        failureLogged=true;
-    } catch(...) {
-        if(!failureLogged) logger::warn("[NativeCubemaps] Environment input or processing failed");
-        failureLogged=true;
-    }
+    // Cube acquisition intentionally suspended; RT reflections use the scene directly.
 }
 std::shared_ptr<const DX12Native::EnvironmentFrame> NativeCubemaps::Producer::Get() const
 {
-    const auto frame = processing ? processing->Get() : nullptr;
-    if (!frame || !frame->base || !Policy::PublicationFresh(frame->stamp.SameEnvironment(currentStamp),
-        frame->base->stamp.engineFrame, currentStamp.engineFrame))
-        return nullptr;
-    return frame;
+    return nullptr;
 }
 
 void NativeCubemaps::Producer::SetupResources()
 {
-    if(loaded && globals::game::renderer) skyCapture.Setup();
+    // No cubemap resources in RT-only Full Native mode.
 }
 
 std::function<void()> NativeCubemaps::Producer::OnReflectionsRenderBegin()
 {
-    using namespace DX12Native;
-    if(!loaded || !globals::features::dx12Control.WantsMaterialPreparation()) return nullptr;
-    auto stamp=currentStamp;
-    const auto color=globals::features::linearLighting.GetCommonBufferData();
-    const auto encoding=color.enableLinearLighting ?
-        (color.enableACEScg?EnvironmentEncoding::LinearAP1:EnvironmentEncoding::LinearRec709):EnvironmentEncoding::LegacyScene;
-    const bool visibleSky=!Util::IsInterior() && globals::game::sky &&
-        !globals::game::sky->flags.any(RE::Sky::Flags::kHideSky);
-    const bool enabled=visibleSky && globals::shaderCache && globals::shaderCache->IsEnabled() &&
-        globals::game::graphicsState && globals::state && stamp.scope && stamp.encoding==encoding && !stamp.interior && !stamp.skyHidden;
-    if(enabled&&!skyCapture.Allocated()) skyCapture.Setup();
-    auto cleanup=skyCapture.Begin(enabled);
-    if(!cleanup){skyStamp={};skyFaces={};return nullptr;}
-    if(enabled){
-        stamp.engineFrame=globals::game::graphicsState->GetFrameCount();
-        stamp.pluginFrame=globals::state->frameCount;
-    }else stamp={};
-    return [this,stamp,cleanup=std::move(cleanup)]{
-        cleanup();
-        if(skyCapture.IsCapturing())return;
-        if(!stamp.SameEnvironment(currentStamp)||skyCapture.Failed()){
-            skyStamp={};skyFaces={};return;
-        }
-        const uint32_t updated=skyCapture.ClearedFaces();
-        skyFaces.Observe(updated,stamp.engineFrame);
-        if(!skyCapture.Ready()||!skyFaces.Fresh(stamp.engineFrame)) {skyStamp={};return;}
-        if(updated){skyStamp=stamp;++skyRevision;}
-    };
+    return nullptr;
 }
 
 DX12Native::EnvironmentSource NativeCubemaps::Producer::GetSkySource(const DX12Native::EnvironmentStamp& requested) const
 {
-    if(requested.interior||requested.skyHidden||!skyFaces.Fresh(requested.engineFrame))return {};
-    DX12Native::EnvironmentSource source{skyCapture.Ready()?skyCapture.Texture():nullptr,skyRevision,skyStamp};
-    return source.IsValidFor(requested)&&Policy::PublicationFresh(true,skyStamp.engineFrame,requested.engineFrame)?
-        source:DX12Native::EnvironmentSource{};
+    return {};
 }
 
 ID3D11ShaderResourceView* NativeCubemaps::Producer::GetRasterSkyView() const
 {
-    if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation() ||
-        !globals::game::graphicsState || !globals::state || skyCapture.IsCapturing() ||
-        Util::IsInterior() || !globals::game::sky || globals::game::sky->flags.any(RE::Sky::Flags::kHideSky))
-        return nullptr;
-    auto requested = currentStamp;
-    requested.engineFrame = globals::game::graphicsState->GetFrameCount();
-    requested.pluginFrame = globals::state->frameCount;
-    return GetSkySource(requested).texture ? skyCapture.View() : nullptr;
+    return nullptr;
 }
 
 void NativeCubemaps::Producer::BeginForward()
 {
     EndForward();
-    if(!loaded || !globals::features::dx12Control.WantsMaterialPreparation() ||
-        !globals::state || !globals::state->inWorld || globals::state->nativeFirstPersonDepth ||
-        (globals::state->permutationData.ExtraShaderDescriptor & uint32_t(State::ExtraShaderDescriptors::IsReflections))) return;
-    const auto* backend=globals::features::dx12NativeScene.GetNativeBackend();
-    if(!backend || !globals::game::graphicsState) return;
-    const uint32_t frame=globals::game::graphicsState->GetFrameCount();
-    if(currentStamp.engineFrame!=frame || currentStamp.pluginFrame!=globals::state->frameCount) return;
-    if(!forward) forward=std::make_unique<ForwardEnvironment>();
-    forward->Update(*backend,Get(),currentStamp);
-    if(forward->Bind(*backend,currentStamp))
-        globals::state->permutationData.ExtraShaderDescriptor |= uint32_t(State::ExtraShaderDescriptors::NativeForwardEnvironment);
 }
 void NativeCubemaps::Producer::EndForward()
 {
@@ -330,7 +217,6 @@ void NativeCubemaps::Producer::EndWaterSSR()
 }
 void NativeCubemaps::Producer::OnDraw()
 {
-    skyCapture.OnDraw();
     if (waterScopeDepth != 1 || waterScopeInvalid ||
         !globals::features::dx12Control.NativeSSREnabled() || !globals::state ||
         !globals::game::graphicsState || !globals::state->currentShader ||
@@ -358,7 +244,7 @@ void NativeCubemaps::Producer::OnDraw()
 json NativeCubemaps::Producer::GetDiagnostics()
 {
     const auto publication=Get();
-    return { {"nativeRadianceInputAdmitted",publication && publication->nativeRadianceInput},
+    return { {"cubeCaptureSuspended",true}, {"nativeRadianceInputAdmitted",publication && publication->nativeRadianceInput},
         {"transitionalRasterInputAdmitted",publication && publication->rasterCompatibilityInput},
         {"lastCaptureFrame",lastCaptureFrame}, {"captureInterval",globals::features::dx12Control.NativeCubemapCaptureInterval()}, {"environmentRevision",publication ? publication->revision : 0},
         {"basePublished",publication && bool(publication->base)}, {"reflectionPublished",publication && bool(publication->reflection)},

@@ -49,8 +49,8 @@ namespace NativeCubemaps
         std::string GetShortName() override { return "NativeCubemaps"; }
         bool WantsDrawHook() const override { return true; }
         void OnDraw() override;
-        bool WantsRenderPassHook() const override { return true; }
-        std::function<void()> OnRenderPassBegin(const RE::BSRenderPass*) override { return skyCapture.OnRenderPassBegin(); }
+        bool WantsRenderPassHook() const override { return false; }
+        std::function<void()> OnRenderPassBegin(const RE::BSRenderPass*) override { return nullptr; }
         std::function<void()> OnReflectionsRenderBegin() override;
         void SetupResources() override;
         void OnSceneTransitionReset(bool opening) override { if(opening) InvalidateGeneration(); }

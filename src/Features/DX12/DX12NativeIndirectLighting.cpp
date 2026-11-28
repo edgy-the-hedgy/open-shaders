@@ -66,14 +66,14 @@ namespace DX12Native
             cmd->ResourceBarrier(1, &barrier);
         }
 
-        void CubeView(ID3D12Device* device, const EnvironmentCube& cube, D3D12_CPU_DESCRIPTOR_HANDLE handle)
+        void CubeView(ID3D12Device* device, const EnvironmentCube* cube, D3D12_CPU_DESCRIPTOR_HANDLE handle)
         {
             D3D12_SHADER_RESOURCE_VIEW_DESC view{};
-            view.Format = cube.format;
+            view.Format = cube ? cube->format : DXGI_FORMAT_R16G16B16A16_FLOAT;
             view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
             view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            view.TextureCube.MipLevels = cube.mipCount;
-            device->CreateShaderResourceView(cube.resource.get(), &view, handle);
+            view.TextureCube.MipLevels = cube ? cube->mipCount : 1u;
+            device->CreateShaderResourceView(cube ? cube->resource.get() : nullptr, &view, handle);
         }
     }
 
@@ -198,8 +198,7 @@ namespace DX12Native
         if (current && current->material == material) return;
         Poll(material->frame);
         if (!material->IsCoherent(material->frame, material->width, material->height) ||
-            material->scope != environment->stamp.scope || !environment->base ||
-            !environment->producerFence || !ValidProducerSignal(environment->producerValue, environment->producerFence->GetCompletedValue()) ||
+            material->scope != environment->stamp.scope ||
             !std::isfinite(environmentScale) || !std::isfinite(skyScale)) {
             failure = "Incoherent indirect inputs"; return;
         }
@@ -208,7 +207,7 @@ namespace DX12Native
         }
         uint32_t available = 0;
         if ((enabled & IndirectDiffuse) && (!ambient.iblEnabled || environment->stamp.interior || environment->stamp.skyHidden || environment->base)) available |= IndirectDiffuse;
-        if ((enabled & IndirectSpecular) && (environment->stamp.interior || environment->reflection)) available |= IndirectSpecular;
+        if (enabled & IndirectSpecular) available |= IndirectSpecular;
         if ((enabled & Transmission) && (available & IndirectDiffuse)) available |= Transmission;
         if (!available) { failure = "Waiting for completed environment inputs"; return; }
         const uint32_t width = material->width, height = material->height;
@@ -244,7 +243,7 @@ namespace DX12Native
                 const auto desc = CD3DX12_RESOURCE_DESC::Buffer(size, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
                 return device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
             };
-            const bool needsBaseSH = ambient.iblEnabled && ambient.dalcMode < 2;
+            const bool needsBaseSH = ambient.iblEnabled && ambient.dalcMode < 2 && bool(environment->base);
             const bool needsSkySH = ambient.iblEnabled && (available & IndirectDiffuse) && !environment->stamp.interior &&
                 !environment->stamp.skyHidden && bool(environment->sky);
             if (!needsBaseSH) baseCache.reset();
@@ -301,9 +300,9 @@ namespace DX12Native
             depthView.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; depthView.Texture2D.MipLevels = 1;
             auto* depth = raster.depth->resource.get();
             device->CreateShaderResourceView(depth, &depthView, cpu(0));
-            CubeView(device, *env.base, cpu(1));
-            CubeView(device, env.reflection ? *env.reflection : *env.base, cpu(2));
-            CubeView(device, env.sky ? *env.sky : *env.base, cpu(3));
+            CubeView(device, env.base.get(), cpu(1));
+            CubeView(device, env.reflection ? env.reflection.get() : env.base.get(), cpu(2));
+            CubeView(device, env.sky ? env.sky.get() : env.base.get(), cpu(3));
             slot->material->scene->materialEvaluation->WriteTextureViews(device, cpu(4));
             const auto characterView = slot->characters ? slot->characters->Reflections() : CharacterCasterFrame::ReflectionView{};
             const auto* actor = characterView.actor;
@@ -338,7 +337,7 @@ namespace DX12Native
             slot->baseSH = needsBaseSH ? (projectBase ? project(env.base, 1) : baseCache) : nullptr;
             slot->skySH = needsSkySH ? (projectSky ? project(env.sky, 3) : skyCache) : nullptr;
             const Constants constants{ raster.camera.CameraProjInverse, raster.camera.CameraViewInverse,
-                width, height, slot->material->rowPitch, slot->rowPitch, enabled, available, env.base->mipCount,
+                width, height, slot->material->rowPitch, slot->rowPitch, enabled, available, env.base ? env.base->mipCount : 0u,
                 env.reflection ? env.reflection->mipCount : 0u, environmentScale, skyScale,
                 env.stamp.interior ? 1u : 0u, uint32_t(env.stamp.encoding), ambient,
                 raster.camera.CameraPosAdjust, slot->material->scene->materialEvaluation->instanceCount, slot->characters ? 1u : 0u, slot->quality, slot->frame,
@@ -355,10 +354,10 @@ namespace DX12Native
             void* mapped = nullptr; const D3D12_RANGE noRead{};
             Eval::Check(slot->constants->Map(0, &noRead, &mapped));
             std::memcpy(mapped, &constants, sizeof(constants)); slot->constants->Unmap(0, nullptr);
-            auto* base = env.base->resource.get();
+            auto* base = env.base ? env.base->resource.get() : nullptr;
             auto* reflection = env.reflection ? env.reflection->resource.get() : base;
             Transition(cmd, depth, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            Transition(cmd, base, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            if (base) Transition(cmd, base, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             if (reflection != base) Transition(cmd, reflection, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             Transition(cmd, slot->samples.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             cmd->SetPipelineState(pipeline.get()); cmd->SetComputeRootSignature(root.get());
@@ -394,12 +393,12 @@ namespace DX12Native
             Transition(cmd, slot->samples.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
             if (tokens) Transition(cmd, tokens, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
             Transition(cmd, depth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
-            Transition(cmd, base, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+            if (base) Transition(cmd, base, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
             if (reflection != base) Transition(cmd, reflection, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
             Eval::Check(cmd->Close());
             Eval::Check(backend.commandQueue->Wait(slot->material->producerFence.get(), slot->material->producerValue));
             if (slot->characters) Eval::Check(backend.commandQueue->Wait(slot->characters->readyFence.get(), slot->characters->readyValue));
-            Eval::Check(backend.commandQueue->Wait(env.producerFence.get(), env.producerValue));
+            if (env.producerFence && env.producerValue) Eval::Check(backend.commandQueue->Wait(env.producerFence.get(), env.producerValue));
             if (projection) Eval::Check(backend.commandQueue->Wait(projection->readyFence.get(),projection->readyValue));
             if (ssrEvidence) Eval::Check(backend.commandQueue->Wait(ssrEvidence->readyFence.get(), ssrEvidence->readyValue));
             if (slot->screenSpaceReflections) {

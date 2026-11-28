@@ -532,9 +532,7 @@ void Deferred::DeferredPasses()
 	// before forward geometry and effects, after raster fallback is complete.
 	if (globals::features::dx12Control.WantsMaterialPreparation() && globals::game::graphicsState) {
 		const auto frame = globals::game::graphicsState->GetFrameCount();
-		globals::features::dx12NativeScene.CaptureFullNativeEnvironment(rasterRadianceReady ? Util::AsReal(main.SRV) : nullptr, frame);
 		globals::features::upscaling.nativeComposite.ApplyFullNativeOpaque(frame, Util::AsReal(main.UAV));
-		globals::features::nativeCubemaps.BeginForward();
 	}
 
 	if (dynamicCubemaps.loaded)
