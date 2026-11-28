@@ -210,7 +210,7 @@ private:
 		bool targetsBound = false, identityTargetsBound = false, touchesVisibility = true, replacement = false, opaqueReplacement = false, depthTest = false;
 	};
 	ID3D11PixelShader* nativeInputPS = nullptr;
-	std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 113> nativeSourceViews;
+	std::array<winrt::com_ptr<ID3D11ShaderResourceView>, NativePBR::RasterSourceViews::kTrackedSlots> nativeSourceViews;
 	std::shared_ptr<const NativePBR::RasterSourceViews> nativeSourceSnapshot;
 	bool nativeSourceViewsDirty = true;
 	uint32_t nativeMaterialTransferSequence = 0;
