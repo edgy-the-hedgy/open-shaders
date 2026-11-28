@@ -70,7 +70,10 @@ RWByteAddressBuffer MaterialLobes : register(u4);
 RWByteAddressBuffer SpecializedDirectoryOut : register(u5);
 RWByteAddressBuffer SpecializedPoolOut : register(u6);
 RWByteAddressBuffer SpecializedCounters : register(u7);
-cbuffer SpecializedInputs : register(b2) { uint SpecializedCapacity; uint SpecializedEnabled; };
+cbuffer SpecializedInputs : register(b2) { uint SpecializedCapacity; uint SpecializedEnabled; uint SpecializedTileMode; };
+// A deterministic allocation range per 8x8 tile, used only after measured
+// saturation. Two bitsets provide a stable rank independent of wave size.
+groupshared uint SpecializedTileMask[2];
 #endif
 uint2 PackHalf4(float4 value)
 {
@@ -1128,16 +1131,20 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed,
 }
 
 [numthreads(8,8,1)]
-void screenMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
+void screenMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, uint3 group : SV_GroupID)
 {
     if (CollectStats != 0u) {
         if (lane < 12) GroupCounts[lane]=0;
         GroupMemoryBarrierWithGroupSync();
     }
-    if (all(id.xy < GridSize)) {
+    const bool inBounds=all(id.xy<GridSize);
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+    NATIVE_SPECIALIZED_LOCAL
+    specialized=(NativeSpecializedEvaluation)0;
+#endif
+    if (inBounds) {
         uint2 hitIdentity;
         NativeCoatSample coat;
-        NATIVE_SPECIALIZED_LOCAL
         NativeParallaxShadowSample shadow;
         bool rawUsed, rayIssued, unresolvedUntraced;
         Sample result=EvaluateScreen(id.xy, hitIdentity, rawUsed, coat, shadow, rayIssued, unresolvedUntraced NATIVE_SPECIALIZED_ARG);
@@ -1147,9 +1154,7 @@ void screenMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
 #ifdef NATIVE_SPECIALIZED_V2_PRODUCER
         if(!HasEvaluatedNativeBase(result.color.a)) specialized=(NativeSpecializedEvaluation)0;
         else if((specialized.present&~specialized.valid)!=0u) result.color.a=SurfaceFeatureLimited;
-        if(SpecializedEnabled!=0u)
-            NativeSpecializedPublish(SpecializedDirectoryOut,SpecializedPoolOut,SpecializedCounters,ordinal,
-                SpecializedCapacity,specialized.present,specialized.valid,specialized.payload);
+
 #else
         uint lobeOffset=ordinal*NativeMaterialLobeStride;
         MaterialLobes.Store4(lobeOffset,uint4(PackHalf4(coat.normalRoughness),PackHalf4(coat.colorStrength)));
@@ -1180,7 +1185,32 @@ void screenMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
         }
     }
 #ifdef NATIVE_SPECIALIZED_V2_PRODUCER
-    else if(SpecializedEnabled!=0u && id.y<GridSize.y && id.x<((GridSize.x+7u)&~7u)) {
+    if(SpecializedEnabled!=0u && SpecializedTileMode!=0u) {
+        // Hold a deterministic lane ordering for eight frames, then rotate
+        // by a coprime offset so a permanently dense tile cannot starve a lane.
+        uint priority=(lane+((ProjectionFrame/8u)*13u))&63u;
+        uint needed=specialized.present&specialized.valid&NativeSpecializedKnownBits;
+        if(lane==0u) { SpecializedTileMask[0]=0u; SpecializedTileMask[1]=0u; }
+        GroupMemoryBarrierWithGroupSync();
+        if(inBounds&&needed!=0u) InterlockedOr(SpecializedTileMask[priority/32u],1u<<(priority&31u));
+        GroupMemoryBarrierWithGroupSync();
+        uint rank=countbits(SpecializedTileMask[priority/32u]&((1u<<(priority&31u))-1u));
+        if(priority>=32u) rank+=countbits(SpecializedTileMask[0]);
+        uint2 tileExtent=(GridSize+7u)/8u;
+        uint tileCount=tileExtent.x*tileExtent.y,tile=group.y*tileExtent.x+group.x;
+        uint q=SpecializedCapacity/tileCount,r=SpecializedCapacity%tileCount;
+        uint first=tile*q+min(tile,r),quota=q+(tile<r?1u:0u);
+        uint candidate=rank<quota?first+rank:NativeSpecializedNoRecord;
+        if(inBounds) NativeSpecializedPublishAt(SpecializedDirectoryOut,SpecializedPoolOut,SpecializedCounters,
+            id.y*((GridSize.x+7u)&~7u)+id.x,SpecializedCapacity,specialized.present,specialized.valid,specialized.payload,candidate);
+    } else if(SpecializedEnabled!=0u) {
+        if(inBounds) NativeSpecializedPublish(SpecializedDirectoryOut,SpecializedPoolOut,SpecializedCounters,
+            id.y*((GridSize.x+7u)&~7u)+id.x,SpecializedCapacity,specialized.present,specialized.valid,specialized.payload);
+    } else {
+        uint needed=specialized.present&specialized.valid&NativeSpecializedKnownBits;
+        NativeSpecializedRecordOverflow(SpecializedCounters,needed,inBounds&&needed!=0u);
+    }
+    if(!inBounds&&SpecializedEnabled!=0u&&id.y<GridSize.y&&id.x<((GridSize.x+7u)&~7u)) {
         uint ordinal=id.y*((GridSize.x+7u)&~7u)+id.x;
         SpecializedDirectoryOut.Store3(ordinal*NativeSpecializedDirectoryStride,uint3(NativeSpecializedNoRecord,0u,0u));
     }

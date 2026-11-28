@@ -76,3 +76,37 @@ TEST_CASE("Specialized v2 validates publication independently of base", "[dx12][
     REQUIRE(Property(invalid, Coat) == State::Unavailable);
     REQUIRE(Property(invalid, Fuzz) == State::Absent);
 }
+
+TEST_CASE("Specialized v2 tile reservations are disjoint and bounded", "[dx12][materials][specialized-v2]")
+{
+    for(uint32_t tiles : {1u,2u,3u,33u,32400u,129600u}) {
+        for(uint32_t capacity : {0u,1u,13u,64u,414720u,1658880u}) {
+            uint32_t next=0;
+            for(uint32_t tile=0;tile<tiles;++tile) {
+                const auto range=TileAllocation(capacity,tiles,tile);
+                REQUIRE(range.first==next);
+                REQUIRE(range.count<=capacity-next);
+                next+=range.count;
+            }
+            REQUIRE(next==capacity);
+        }
+    }
+}
+TEST_CASE("Specialized v2 saturation allocation is stable within an epoch and rotates", "[dx12][materials][specialized-v2]")
+{
+    for(uint32_t lane=0;lane<64;++lane) {
+        uint64_t visited=0;
+        for(uint32_t epoch=0;epoch<64;++epoch) {
+            const auto priority=TilePriority(lane,epoch*8u);
+            REQUIRE(priority==TilePriority(lane,epoch*8u+7u));
+            visited|=uint64_t(1)<<priority;
+        }
+        REQUIRE(visited==UINT64_MAX);
+    }
+    REQUIRE_FALSE(UseTileMode(false,1,125,100,100));
+    REQUIRE(UseTileMode(false,2,125,100,100));
+    REQUIRE(UseTileMode(true,0,100,75,100));
+    REQUIRE_FALSE(UseTileMode(true,0,100,74,100));
+    REQUIRE_FALSE(UseTileMode(true,0,99,99,100));
+    REQUIRE_FALSE(UseTileMode(true,2,100,100,0));
+}

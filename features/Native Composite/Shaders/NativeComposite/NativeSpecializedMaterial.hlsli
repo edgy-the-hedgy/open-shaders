@@ -238,6 +238,30 @@ void NativeSpecializedStorePayload(RWByteAddressBuffer pool,uint offset,NativeSp
     pool.Store4(offset+64u,uint4(p.fuzzRoughnessAnisotropyTangent,asuint(p.glint.xy)));
     pool.Store4(offset+80u,uint4(asuint(p.glint.zw),p.eyeNormal,p.flags&3u));
 }
+void NativeSpecializedRecordOverflow(RWByteAddressBuffer counters,uint needed,bool overflow)
+{
+    uint dropped=WaveActiveCountBits(overflow);
+    if(WaveIsFirstLane()&&dropped!=0u) counters.InterlockedAdd(4u,dropped);
+    if(WaveActiveAnyTrue(overflow)) {
+        [unroll] for(uint bit=0u;bit<15u;++bit) {
+            uint lost=WaveActiveCountBits(overflow && (needed&(1u<<bit))!=0u);
+            if(WaveIsFirstLane()&&lost!=0u) counters.InterlockedAdd(8u+bit*4u,lost);
+        }
+    }
+}
+void NativeSpecializedPublishAt(RWByteAddressBuffer directory,RWByteAddressBuffer pool,
+    RWByteAddressBuffer counters,uint pixelOrdinal,uint capacity,uint present,uint valid,
+    NativeSpecializedPayload payload,uint candidateOrdinal)
+{
+    uint needed=(present&valid)&NativeSpecializedKnownBits;
+    bool admitted=needed!=0u&&candidateOrdinal<capacity;
+    NativeSpecializedDirectory d=NativeSpecializedSanitize(admitted?candidateOrdinal:NativeSpecializedNoRecord,present,valid,capacity);
+    if(admitted) NativeSpecializedStorePayload(pool,candidateOrdinal*NativeSpecializedPayloadStride,payload);
+    directory.Store3(pixelOrdinal*NativeSpecializedDirectoryStride,uint3(d.ordinal,d.present,d.valid));
+    uint count=WaveActiveCountBits(admitted);
+    if(WaveIsFirstLane()&&count!=0u) counters.InterlockedAdd(0u,count);
+    NativeSpecializedRecordOverflow(counters,needed,needed!=0u&&!admitted);
+}
 // Call for every in-bounds pixel, even invalid receivers (zero masks).
 // Directory/pool/counters are distinct UAVs, reset counters before dispatch;
 // transition/barrier all publications and fence before any reader uses them.
@@ -255,16 +279,9 @@ void NativeSpecializedPublish(RWByteAddressBuffer directory,RWByteAddressBuffer 
     NativeSpecializedDirectory d=NativeSpecializedSanitize(ordinal,present,valid,capacity);
     if(admitted) NativeSpecializedStorePayload(pool,ordinal*NativeSpecializedPayloadStride,payload);
     directory.Store3(pixelOrdinal*NativeSpecializedDirectoryStride,uint3(d.ordinal,d.present,d.valid));
-    bool overflow=wants&&!admitted;
-    uint dropped=WaveActiveCountBits(overflow);
-    if(WaveIsFirstLane()&&dropped!=0u) counters.InterlockedAdd(4u,dropped);
-    if(WaveActiveAnyTrue(overflow)) {
-        [unroll] for(uint bit=0u;bit<15u;++bit) {
-            uint lost=WaveActiveCountBits(overflow && (needed&(1u<<bit))!=0u);
-            if(WaveIsFirstLane()&&lost!=0u) counters.InterlockedAdd(8u+bit*4u,lost);
-        }
-    }
+    NativeSpecializedRecordOverflow(counters,needed,wants&&!admitted);
 }
+
 NativeSpecializedDirectory NativeSpecializedReadDirectory(ByteAddressBuffer directory,uint pixelOrdinal,uint capacity)
 {
     uint3 packed=directory.Load3(pixelOrdinal*NativeSpecializedDirectoryStride);

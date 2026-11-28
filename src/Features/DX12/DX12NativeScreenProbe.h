@@ -67,7 +67,7 @@ namespace DX12Native
 			uint64_t value = UINT64_MAX;
 			uint32_t frame = 0, width = 0, height = 0, scope = 0;
 			uint64_t geometryRevision = 0;
-			bool fullResolution = false, collectStats = false;
+			bool fullResolution = false, collectStats = false, specializedTileMode = false;
 			bool discard = false;
 		};
 		std::array<std::shared_ptr<Submission>, 3> submissions;
@@ -242,7 +242,7 @@ namespace DX12Native
 			parameters[21].InitAsUnorderedAccessView(5);
 			parameters[22].InitAsUnorderedAccessView(6);
 			parameters[23].InitAsUnorderedAccessView(7);
-			parameters[24].InitAsConstants(2,2);
+			parameters[24].InitAsConstants(3,2);
 			std::array<CD3DX12_STATIC_SAMPLER_DESC, 4> samplers;
 			for (uint32_t mode = 0; mode < 4; ++mode)
 				samplers[mode] = CD3DX12_STATIC_SAMPLER_DESC(mode, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
@@ -270,6 +270,7 @@ namespace DX12Native
 			uint32_t primaryRayQueries=0, rasterDerivedPixels=0, unresolvedUntracedPixels=0;
 			uint64_t outputBytes=0, specializedAllocationBytes=0, retainedOutputBytes=0;
 			uint32_t specializedRequested=0, specializedAllocated=0, specializedOverflow=0;
+			bool specializedTileMode=false;
 			std::array<uint32_t,15> specializedPropertyOverflow{};
 			uint32_t reusedAllocations=0, submittedFrames=0;
 		};
@@ -364,6 +365,8 @@ namespace DX12Native
 	public:
 		Stats stats{};
 		uint32_t reusedAllocations=0, submittedFrames=0;
+		uint32_t specializedSaturationSamples=0, specializedWidth=0, specializedHeight=0;
+		bool specializedTileMode=false;
 		std::string failure;
 
 		~NativeScreenProbe()
@@ -383,6 +386,7 @@ namespace DX12Native
 			unavailableRaster.reset(); unavailableSeed.reset();
 			rasterCacheScope=0; lastRasterFailure=UINT32_MAX;
 			reusedAllocations=0; submittedFrames=0;
+			specializedSaturationSamples=0; specializedTileMode=false; specializedWidth=0; specializedHeight=0;
 			for (auto& pending : submissions) if (pending) pending->discard=true;
 		}
 		void Poll(uint32_t frame)
@@ -415,6 +419,7 @@ namespace DX12Native
 				result.sampled=result.width*result.height;
 				result.outputBytes=pending->output->bytes;
 				result.specializedAllocationBytes=pending->output->specializedAllocationBytes;
+				result.specializedTileMode=pending->specializedTileMode;
 				for(const auto& entry:outputPool) if(entry) result.retainedOutputBytes+=entry->allocationBytes;
 				result.reusedAllocations=reusedAllocations; result.submittedFrames=submittedFrames;
 				const D3D12_RANGE read{0,SIZE_T(kCounterBytes)};
@@ -433,6 +438,14 @@ namespace DX12Native
 					pending->readback->Unmap(0,&noWrite);
 					if (uint64_t(result.evaluated)+result.noHit+result.depthMismatch+result.missingMaterial+result.invalid+result.baseOnly+result.unsupportedMaterial+result.missingTextures==result.sampled) {
 						stats=result;
+						if(pending->fullResolution && pending->width==specializedWidth && pending->height==specializedHeight) {
+							const auto capacity=pending->output->specializedCapacity;
+							const bool saturated=capacity && result.specializedAllocated==capacity &&
+								uint64_t(result.specializedRequested)*4u>=uint64_t(capacity)*5u;
+							specializedSaturationSamples=saturated?std::min(2u,specializedSaturationSamples+1u):0u;
+							specializedTileMode=NativePBR::SpecializedMaterial::UseTileMode(pending->specializedTileMode,
+								specializedSaturationSamples,result.specializedRequested,result.specializedAllocated,capacity);
+						}
 					} else failure="Screen material counter mismatch";
 				} else failure="Screen material counter readback failed";
 			}
@@ -454,6 +467,11 @@ namespace DX12Native
 			std::shared_ptr<Util::RuntimeTaskGate> taskGate=nullptr)
 		{
 			if (!WantsFrame(frame,continuous)) return;
+			// Sparse occupancy is sampled at bounded cadence even outside Dev mode.
+			collectStats=collectStats || (fullResolution && frame%120u==0u);
+			if(fullResolution && (specializedWidth!=width || specializedHeight!=height)) {
+				specializedWidth=width; specializedHeight=height; specializedSaturationSamples=0; specializedTileMode=false;
+			}
 			published.reset();
 			auto availableSlot = std::find_if(submissions.begin(), submissions.end(), [](const auto& entry) { return !entry; });
 			if (availableSlot==submissions.end()) return;
@@ -747,8 +765,9 @@ namespace DX12Native
 				command->SetComputeRootUnorderedAccessView(21,slot->output->specializedDirectory->GetGPUVirtualAddress());
 				command->SetComputeRootUnorderedAccessView(22,slot->output->specializedPool->GetGPUVirtualAddress());
 				command->SetComputeRootUnorderedAccessView(23,slot->counters->GetGPUVirtualAddress()+kSpecializedCounterOffset);
-				const uint32_t specializedConstants[]{slot->output->specializedCapacity,slot->output->specializedEnabled?1u:0u};
-				command->SetComputeRoot32BitConstants(24,2,specializedConstants,0);
+				slot->specializedTileMode=fullResolution && specializedTileMode && slot->output->specializedCapacity!=0u;
+				const uint32_t specializedConstants[]{slot->output->specializedCapacity,slot->output->specializedEnabled?1u:0u,slot->specializedTileMode?1u:0u};
+				command->SetComputeRoot32BitConstants(24,3,specializedConstants,0);
 				Eval::RecordUploads(command, slot->rasterUploads);
 				{
 					command->CopyBufferRegion(slot->counters.get(),0,slot->counterInit.get(),0,kCounterBytes);

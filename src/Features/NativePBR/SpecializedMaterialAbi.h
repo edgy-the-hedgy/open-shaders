@@ -123,6 +123,25 @@ namespace NativePBR::SpecializedMaterial
             capacity <= layout.capacity && directoryBytes >= layout.directoryBytes &&
             payloadBytes >= capacity * PayloadStride;
     }
+    struct TileRange { uint32_t first=0, count=0; };
+    constexpr TileRange TileAllocation(uint32_t capacity,uint32_t tiles,uint32_t tile)
+    {
+        if(!tiles || tile>=tiles) return {};
+        const auto q=capacity/tiles,r=capacity%tiles;
+        return {tile*q+(tile<r?tile:r),q+(tile<r?1u:0u)};
+    }
+    constexpr uint32_t TilePriority(uint32_t lane,uint32_t frame)
+    {
+        return (lane+(frame/8u)*13u)&63u;
+    }
+    // Switch only after two observed heavily saturated samples; switch back
+    // if fixed tile ranges waste a quarter of the pool or demand subsides.
+    constexpr bool UseTileMode(bool prior,uint32_t sustained,uint32_t requested,uint32_t allocated,uint32_t capacity)
+    {
+        if(!capacity) return false;
+        if(prior) return requested>=capacity && uint64_t(allocated)*4u>=uint64_t(capacity)*3u;
+        return sustained>=2 && allocated==capacity && uint64_t(requested)*4u>=uint64_t(capacity)*5u;
+    }
     constexpr Directory Sanitize(Directory d, uint32_t capacity)
     {
         return Publish(d.present, d.valid, d.ordinal, capacity);
