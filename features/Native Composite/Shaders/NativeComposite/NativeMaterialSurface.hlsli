@@ -166,6 +166,9 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
     uv = uv*material.uv[0].zw+material.uv[0].xy;
     // Native material UV transforms remain authoritative. Do not admit a raster
     // input with incompatible coordinates or an object-space normal layout.
+    // ABI v6 auxiliary data is not yet interpreted by this evaluator. Preserve the
+    // base result, but do not certify an unimplemented technique as complete.
+    const bool unsupportedRasterTechnique = raw.valid && raw.auxiliaryKind != 0u;
     raw.valid = raw.valid && all(abs(raw.uv-uv)<=max(0.001,abs(uv)*0.002));
     if (raw.valid) {
         float3 rn=mul(raw.normal,objectToWorld),rt=mul(worldToObject,raw.tangent),rb=mul(worldToObject,raw.bitangent);
@@ -286,6 +289,9 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
             }
         }
     }
+    // A malformed resident record must not index a descriptor outside the heap.
+    if (material.textures[0].x >= NativeTextureIndexLimit || material.textures[0].z >= NativeTextureIndexLimit)
+        return result;
     float4 baseTexel = NativeSurfaceTex(material.textures[0].x,uv,material.properties.z,raw,mipBias);
     float4 normalTexel = NativeSurfaceTex(material.textures[0].z,uv,material.properties.z,raw,mipBias);
     float4 packed = material.textures[1].x!=0xffffffffu ? NativeSurfaceTex(material.textures[1].x,uv,material.properties.z,raw,mipBias) : float4(1.0,0.0,1.0,0.04);
@@ -331,7 +337,10 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
     }
     float3 emission = 0;
     if (material.textures[1].z != 0xffffffffu) emission = NativeSurfaceTex(material.textures[1].z,uv,material.properties.z,raw,mipBias).rgb;
-    if (!all(isfinite(base)) || !all(isfinite(normal)) || !all(isfinite(f0)) || !all(isfinite(emission))) return result;
+    // The packed surface contract includes roughness, metallic and AO, not only RGB.
+    // Reject non-finite scalar channels before they can become a valid half record.
+    if (!all(isfinite(base)) || !all(isfinite(normal)) || !all(isfinite(f0)) || !all(isfinite(emission)) ||
+        !isfinite(roughness) || !isfinite(metallic) || !isfinite(packed.b)) return result;
     #if defined(NATIVE_SECONDARY_SURFACE)
     result.color = float4(base,projectionRow!=0xffffffffu && !projectionApplied ? SurfaceFeatureLimited : SurfaceEvaluatedBase);
 #else
@@ -341,6 +350,7 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
     result.normal = float4(normal,roughness);
     result.f0 = float4(f0,metallic);
     result.emission = float4(emission,saturate(packed.b));
+    if (unsupportedRasterTechnique) result.color.a = SurfaceFeatureLimited;
     if ((binding.flags & SurfaceSubsurfaceReadyBinding) != 0u) {
         float3 scatterColor = SrgbToLinear(max(material.subsurfaceColor.rgb,0.0));
         float thickness = saturate(material.coat.w);
@@ -450,6 +460,9 @@ Sample EvaluateMaterial(uint instanceCount, uint instance, uint primitive, float
     uint4 counts = Geometry.Load4(instance*32+16);
     if (binding.materialIndex == 0xffffffffu || offsets.z == 0xffffffffu ||
         (offsets.w != 60u && offsets.w != 36u) || counts.y < 3u || primitive >= counts.y / 3u) return (Sample)0;
+    uint materialCount, materialStride;
+    MaterialRecords.GetDimensions(materialCount,materialStride);
+    if (binding.materialIndex >= materialCount) return (Sample)0;
     MaterialRecord material = MaterialRecords[binding.materialIndex];
     if (any(material.identity.xy != binding.identity) || any(material.identity.zw != binding.revision)) return (Sample)0;
     uint3 ix = Geometry.Load3(offsets.y + primitive*12u);
