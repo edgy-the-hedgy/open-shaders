@@ -111,7 +111,7 @@ class ArchitectureLintTests(unittest.TestCase):
     def test_full_native_shader_inputs_share_one_boot_latched_cache_identity(self):
         cache = (ROOT / "src/ShaderCache.cpp").read_text(encoding="utf-8")
         self.assertIn('"FULL_NATIVE_INPUT"', cache)
-        self.assertIn('L"_full_native_input_v6_coverage1"', cache)
+        self.assertIn('L"_full_native_input_v6_coverage2"', cache)
         self.assertNotIn('L"_native_pbr_input_v1"', cache)
         for name in ("Lighting", "Effect", "Sky", "DistantTree"):
             source = (ROOT / f"package/Shaders/{name}.hlsl").read_text(encoding="utf-8")
@@ -162,7 +162,11 @@ class ArchitectureLintTests(unittest.TestCase):
         self.assertIn("CopySubresourceRegion(active->planes[i]->resource11", capture)
         self.assertIn("drawRecords.size_bytes()", capture)
         self.assertIn("drawTableCapacity < tableBytes", capture)
-        self.assertIn("materialSources.assign", capture)
+        self.assertIn("materialSources.resize", capture)
+        self.assertIn("drawSourceViews.assign", capture)
+        self.assertIn("NativeInstance=input.InstanceID", lighting)
+        self.assertIn("AuxBorrowedLandscape", raw)
+        self.assertIn("ObserveNativeInputSourceViews", (ROOT / "src/Globals.cpp").read_text(encoding="utf-8"))
         self.assertIn("instanceOrdinal*stride+primitive", raw)
         for shader in ("RunGrass", "DistantTree", "Effect"):
             source = (ROOT / f"package/Shaders/{shader}.hlsl").read_text(encoding="utf-8")

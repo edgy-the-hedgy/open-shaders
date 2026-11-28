@@ -496,6 +496,15 @@ namespace globals
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
+	struct NativeInputPSResources
+	{
+		static void thunk(ID3D11DeviceContext* c, UINT start, UINT count, ID3D11ShaderResourceView* const* views)
+		{
+			func(c,start,count,views);
+			if (c==globals::d3d::context) globals::features::dx12NativeScene.ObserveNativeInputSourceViews(start,count,views);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
 	struct NativeInputPSBind
 	{
 		static void thunk(ID3D11DeviceContext* c, ID3D11PixelShader* ps, ID3D11ClassInstance* const* classes, UINT n)
@@ -640,7 +649,7 @@ namespace globals
 	{
 		static void thunk(ID3D11DeviceContext* c, ID3D11CommandList* list, BOOL restore)
 		{
-			if (c == globals::d3d::context) globals::features::dx12NativeScene.InvalidateNativeInputVisibility();
+			if (c == globals::d3d::context) globals::features::dx12NativeScene.ResetNativeInputBindingState();
 			func(c,list,restore);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
@@ -668,7 +677,7 @@ namespace globals
 	{
 		static void thunk(ID3D11DeviceContext* c)
 		{
-			if (c == globals::d3d::context) globals::features::dx12NativeScene.InvalidateNativeInputVisibility();
+			if (c == globals::d3d::context) globals::features::dx12NativeScene.ResetNativeInputBindingState();
 			func(c);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
@@ -679,6 +688,7 @@ namespace globals
 		stl::detour_vfunc<14, ID3D11DeviceContext_Map>(a_context);
 		stl::detour_vfunc<15, ID3D11DeviceContext_Unmap>(a_context);
 		if (globals::features::dx12Control.UsesExclusiveMaterials()) {
+			stl::detour_vfunc<8, NativeInputPSResources>(a_context);
 			stl::detour_vfunc<9, NativeInputPSBind>(a_context);
 			stl::detour_vfunc<12, ID3D11DeviceContext_DrawIndexedNativeInput>(a_context);
 			stl::detour_vfunc<13, NativeInputDraw>(a_context);

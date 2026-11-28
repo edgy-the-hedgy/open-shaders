@@ -20,6 +20,7 @@ namespace NativeInputMRT
     static const uint AuxProjection = 1u << 20u;
     static const uint AuxEye = 1u << 21u;
     static const uint AuxFur = 1u << 22u;
+    static const uint AuxBorrowedLandscape = 1u << 23u;
     uint PackHalf2(float2 value)
     {
         uint2 bits = f32tof16(clamp(value, -65504.0, 65504.0));

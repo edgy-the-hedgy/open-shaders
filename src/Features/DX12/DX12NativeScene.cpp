@@ -992,12 +992,14 @@ void DX12NativeScene::BeginFullNativeRasterInputs()
 	next.geometryOrdinals = std::move(draws.geometryOrdinals);
 	next.materialOrdinals = std::move(draws.materialOrdinals);
 	next.drawRecords = std::move(draws.drawRecords);
+	next.drawSourceViews = std::move(draws.drawSourceViews);
 	next.materialSources = std::move(draws.materialSources);
 	next.projection = std::move(draws.projection);
 	next.projectionTextures = std::move(draws.projectionTextures);
 	next.geometryOrdinals.clear();
 	next.materialOrdinals.clear();
 	next.drawRecords.clear();
+	next.drawSourceViews.clear();
 	next.materialSources.clear();
 	next.projection.clear();
 	next.projectionTextures.clear();
@@ -1038,6 +1040,10 @@ void DX12NativeScene::BeginFullNativeRasterInputs()
 		ctx->PSGetShader(ps.put(), nullptr, nullptr);
 		ctx->OMGetBlendState(blend.put(), factors, &mask);
 		ctx->OMGetDepthStencilState(depth.put(), &stencil);
+		std::array<ID3D11ShaderResourceView*, 113> sourceViews{};
+		ctx->PSGetShaderResources(0, UINT(sourceViews.size()), sourceViews.data());
+		ObserveNativeInputSourceViews(0, UINT(sourceViews.size()), sourceViews.data());
+		for (auto* view : sourceViews) if (view) view->Release();
 		ctx->IAGetPrimitiveTopology(&nativeInputTopology);
 		ctx->IAGetIndexBuffer(index.put(), &format, &nativeInputIndexOffset);
 		ObserveNativeInputIndexOffset(format, nativeInputIndexOffset);
@@ -1493,6 +1499,7 @@ void DX12NativeScene::StampFullNativeIndexedDraw(uint32_t count, uint32_t start,
 		switch (state->currentShader->shaderType.get()) {
 		case Type::Lighting:
 			writer = attributes = (descriptor & uint32_t(Cache::LightingShaderFlags::Deferred)) != 0;
+			instanceVarying = writer;
 			break;
 		case Type::DistantTree:
 			writer = attributes = (descriptor & uint32_t(Cache::DistantTreeShaderFlags::Deferred)) != 0 && !(descriptor & 1u);
@@ -1546,6 +1553,15 @@ void DX12NativeScene::StampFullNativeIndexedDraw(uint32_t count, uint32_t start,
 		const auto& indices = draws.scene->materialEvaluation->rasterMaterialIndices;
 		if (sceneInstance < indices.size()) data.nativeRasterMaterialIndex = indices[sceneInstance];
 	}
+	const uint32_t shaderClass=uint32_t(state->currentShader->shaderType.get());
+	if (nativeSourceViewsDirty || !nativeSourceSnapshot || nativeSourceSnapshot->shaderClass != shaderClass) {
+		auto sources=std::make_shared<NativePBR::RasterSourceViews>();
+		sources->shaderClass=shaderClass;
+		sources->views=nativeSourceViews;
+		nativeSourceSnapshot=std::move(sources);
+		nativeSourceViewsDirty=false;
+	}
+	draws.drawSourceViews.push_back(nativeSourceSnapshot);
 	draws.drawRecords.push_back({ encoded, draws.activeGeometry, draws.activeMaterial, sceneInstance,
 		primitiveStride, 0u, data.nativeRasterMaterialIndex, count, start, nativeInputIndexOffset, nativeInputIndexElementBytes,
 		base, descriptor, state->modifiedVertexDescriptor, data.ExtraShaderDescriptor, data.ExtraFeatureDescriptor,
@@ -1563,6 +1579,9 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 	if (draws.stamp.frame != globals::game::graphicsState->GetFrameCount()) return;
 	draws.finalized = true;
 	draws.active = false;
+	nativeSourceSnapshot.reset();
+	nativeSourceViews={};
+	nativeSourceViewsDirty=true;
 	if (!backend) {
 		std::string reason;
 		backend = GraphicsBackend::Create(globals::d3d::device, globals::d3d::context, reason);
@@ -1579,7 +1598,7 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 		for (size_t i = 0; i < draws.materialSources.size(); ++i)
 			if (rasterMaterialRows[i] != *draws.materialSources[i])
 				rasterMaterialRows[i] = *draws.materialSources[i];
-		rawInputCapture.Publish(*backend, Util::AsReal(targets[MASKS2].texture), inputs, draws.stamp, draws.drawRecords, rasterMaterialRows, draws.draws,
+		rawInputCapture.Publish(*backend, Util::AsReal(targets[MASKS2].texture), inputs, draws.stamp, draws.drawRecords, rasterMaterialRows, draws.drawSourceViews, draws.draws,
 			world ? world->width : 0u, world ? world->height : 0u,
 			draws.allWritersKnown && draws.knownWriters != 0 && world != nullptr);
 	}

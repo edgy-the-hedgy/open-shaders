@@ -46,6 +46,7 @@ RawRasterSurface ReadRawVisibility(uint2 pixel, float depth, uint drawCount, out
     result.tangent=RawOct(c.x); result.bitangent=RawOct(c.y); result.normal=RawOct(c.z);
     uint4 material = RawRasterMaterialTechnique.Load(int3(pixel,0));
     result.auxiliaryKind=(c.w >> 19u)&15u;
+    result.borrowedLandscape=(c.w & (1u<<23u))!=0u;
     result.auxiliary=material;
     uint4 drawRange=RawRasterDrawTable.Load4(address+16u);
     uint4 descriptors=RawRasterDrawTable.Load4(address+48u);

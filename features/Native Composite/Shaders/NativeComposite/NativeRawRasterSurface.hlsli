@@ -10,6 +10,7 @@ struct RawRasterSurface
     uint2 drawIdentity;
     uint geometryOrdinal, materialOrdinal;
     uint auxiliaryKind;
+    bool borrowedLandscape;
     uint4 auxiliary;
     bool covered, front, valid;
 };

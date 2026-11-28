@@ -17,6 +17,13 @@ namespace NativePBR
 		uint32_t instanceCount = 1, firstInstance = 0, indexed = 1, reserved = 0;
 	};
 	static_assert(sizeof(RasterDrawRecord) == 80);
+	// Source-view identity only, not a copied texture or a residency claim.
+	// Slot indices preserve the shader's original resource semantics.
+	struct RasterSourceViews
+	{
+		uint32_t shaderClass = 0;
+		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 113> views;
+	};
 	struct RawInputFrame
 	{
 		DX12Native::MaterialFrameContract::RasterIdentityStamp stamp{};
@@ -24,6 +31,8 @@ namespace NativePBR
 		std::vector<RasterDrawRecord> drawRecords;
 		// One-based materialOrdinal indexes this CPU metadata snapshot (row ordinal-1).
 		std::vector<DX12::PreparedMaterialSource> materialSources;
+		// Draw ordinal - 1 indexes this optional immutable binding snapshot.
+		std::vector<std::shared_ptr<const RasterSourceViews>> drawSourceViews;
 		winrt::com_ptr<ID3D12Resource> drawTable;
 		std::shared_ptr<const DX12Native::FullNativeRasterEvidence> evidence;
 		winrt::com_ptr<ID3D12Fence> readyFence;
@@ -42,7 +51,7 @@ namespace NativePBR
 		void Publish(const GraphicsBackend& backend, ID3D11Texture2D* mask,
 			const std::array<ID3D11Texture2D*, InputOnly::kPlaneCount>& sources,
 			DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,
-			std::span<const RasterDrawRecord> drawRecords, std::span<const DX12::PreparedMaterialSource> materials, uint32_t draws, uint32_t renderWidth, uint32_t renderHeight, bool allWritersKnown);
+			std::span<const RasterDrawRecord> drawRecords, std::span<const DX12::PreparedMaterialSource> materials, std::span<const std::shared_ptr<const RasterSourceViews>> sourceViews, uint32_t draws, uint32_t renderWidth, uint32_t renderHeight, bool allWritersKnown);
 		std::shared_ptr<const RawInputFrame> GetForFrame(uint32_t frame) const;
 		std::shared_ptr<const RawInputFrame> Get(DX12Native::MaterialFrameContract::RasterIdentityStamp stamp) const;
 		void Reset();

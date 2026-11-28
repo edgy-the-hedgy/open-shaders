@@ -98,7 +98,7 @@ struct VS_INPUT
 #	if defined(EYE)
 	float EyeParameter: TEXCOORD2;
 #	endif  // EYE
-#	if defined(VR) || defined(FUR_SHELLS)
+#	if defined(VR) || defined(FUR_SHELLS) || defined(FULL_NATIVE_INPUT)
 	uint InstanceID: SV_INSTANCEID;
 #	endif  // VR || FUR_SHELLS
 };
@@ -107,6 +107,9 @@ struct VS_INPUT
 struct VS_OUTPUT
 {
 	float4 Position: SV_POSITION0;
+#if defined(FULL_NATIVE_INPUT)
+	nointerpolation uint NativeInstance: TEXCOORD11;
+#endif
 #if (defined(PROJECTED_UV) && (!defined(SKINNED) || defined(FULL_NATIVE_INPUT))) || defined(LANDSCAPE)
 	float4
 #else
@@ -248,6 +251,9 @@ VS_OUTPUT main(VS_INPUT input)
 #	endif
 {
 	VS_OUTPUT vsout;
+#	if defined(FULL_NATIVE_INPUT)
+	vsout.NativeInstance=input.InstanceID;
+#	endif
 
 	precise float4 inputPosition = float4(input.Position.xyz, 1.0);
 
@@ -1326,7 +1332,11 @@ PS_OUTPUT main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool frontFace :
 	vertexAlpha = input.Color.w;
 #			endif
 #			if defined(DO_ALPHA_TEST)
-	float sampledAlpha = TexColorSampler.SampleBias(SampColorSampler, uv, SharedData::MipBias).a;
+	float2 alphaUV=uv;
+#				if defined(SPARKLE) && defined(PROJECTED_UV) && !defined(EYE)
+	alphaUV=ProjectedUVParams2.yy*input.TexCoord0.zw;
+#				endif
+	float sampledAlpha = TexColorSampler.SampleBias(SampColorSampler, alphaUV, SharedData::MipBias).a;
 	alpha = NativeInputCoverage::Alpha(sampledAlpha, MaterialData.z, vertexAlpha, input.Position.xy,
 		(Permutation::PixelShaderDescriptor & Permutation::LightingFlags::AdditionalAlphaMask) != 0);
 #				if defined(DEPTH_WRITE_DECALS)
@@ -1362,19 +1372,24 @@ PS_OUTPUT main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool frontFace :
 	psout.MotionVectors = float4(motion, 0, saturate(alpha));
 	psout.NormalGlossiness = float4(GBuffer::EncodeNormal(normalVS), 0, saturate(alpha));
 	psout.Masks2 = float4(0, 0, 0, 1);
-	NativeInputMRT::Write(psout, input.Position, uv, input.Color, basis, primitive, frontFace, coverage, alpha);
+	NativeInputMRT::Write(psout, input.Position, uv, input.Color, basis, primitive, frontFace, coverage, alpha,input.NativeInstance);
 	// The auxiliary plane is technique-tagged. Live shader/material metadata
 	// remains available in the frame-local draw record for these permutations.
 	if (psout.IdentityUV.x != 0u) {
 #		if defined(LANDSCAPE)
 #			if defined(LANDSCAPE_SEAMS)
 	LandscapeSeams::Load(input.WorldPosition.xy + FrameBuffer::CameraPosAdjust[eyeIndex].xy, input.LandBlendWeights1, input.LandBlendWeights2);
+	if ((LandscapeSeams::Data.Flags & LandscapeSeams::FlagValid)!=0u && any(LandscapeSeams::ExtraWeights>0.0)) {
+		// Preserve six base + two borrowed weights in the existing eight half lanes.
+		input.LandBlendWeights2.zw=LandscapeSeams::ExtraWeights;
+		psout.BasisFlags.w |= NativeInputMRT::AuxBorrowedLandscape;
+	}
 #			endif
 	psout.BasisFlags.w |= NativeInputMRT::AuxLandscape;
 	psout.MaterialTechnique = uint4(NativeInputMRT::PackHalf2(input.LandBlendWeights1.xy),
 		NativeInputMRT::PackHalf2(input.LandBlendWeights1.zw), NativeInputMRT::PackHalf2(input.LandBlendWeights2.xy),
 		NativeInputMRT::PackHalf2(input.LandBlendWeights2.zw));
-#		elif defined(PROJECTED_UV)
+#		elif defined(PROJECTED_UV) && !defined(EYE)
 	psout.BasisFlags.w |= NativeInputMRT::AuxProjection;
 	psout.MaterialTechnique = uint4(asuint(input.TexProj), NativeInputMRT::PackHalf2(input.TexCoord0.zw));
 #		elif defined(EYE)

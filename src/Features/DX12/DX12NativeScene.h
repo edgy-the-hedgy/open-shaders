@@ -94,6 +94,8 @@ struct DX12NativeScene final : OverlayFeature
 	void ObserveNativeInputIndexOffset(DXGI_FORMAT format, UINT offset) { nativeInputIndexOffset = offset; nativeInputIndexElementBytes = format == DXGI_FORMAT_R16_UINT ? 2u : format == DXGI_FORMAT_R32_UINT ? 4u : 0u; }
 	void InvalidateNativeInputVisibility();
 	void ObserveNativeInputClear(ID3D11View* view);
+	void ObserveNativeInputSourceViews(UINT start, UINT count, ID3D11ShaderResourceView* const* views);
+	void ResetNativeInputBindingState();
 	std::shared_ptr<const NativePBR::RawInputFrame> GetRawInputs(uint32_t frame) const { return rawInputCapture.GetForFrame(frame); }
 	// Capture the completed fallback radiance before native final-color application.
 	void CaptureFullNativeEnvironment(ID3D11ShaderResourceView* sceneColor, uint32_t frame);
@@ -181,6 +183,7 @@ private:
 		uint32_t matchHits = 0, matchMisses = 0;
 		std::unordered_map<const void*, uint32_t> geometryOrdinals, materialOrdinals;
 		std::vector<NativePBR::RasterDrawRecord> drawRecords;
+		std::vector<std::shared_ptr<const NativePBR::RasterSourceViews>> drawSourceViews;
 		std::vector<std::shared_ptr<const DX12::PreparedMaterialSource>> materialSources;
 		uint32_t materialSnapshotHits = 0, materialSnapshotMisses = 0;
 		uint32_t staticOwnerBypasses = 0;
@@ -198,6 +201,9 @@ private:
 		bool targetsBound = false, touchesVisibility = true, replacement = false, opaqueReplacement = false, depthTest = false;
 	};
 	ID3D11PixelShader* nativeInputPS = nullptr;
+	std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 113> nativeSourceViews;
+	std::shared_ptr<const NativePBR::RasterSourceViews> nativeSourceSnapshot;
+	bool nativeSourceViewsDirty = true;
 	D3D11_PRIMITIVE_TOPOLOGY nativeInputTopology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
 	UINT nativeInputIndexOffset = UINT_MAX, nativeInputIndexElementBytes = 0;
 	FullNativeRasterDrawState fullNativeRasterDraws;
