@@ -603,6 +603,7 @@ namespace DX12Native
 					auto& row = landscapeRows[i];
 					row[8] = 6u;
 					row[10] = source.rasterLandscapeDisableVertexColors ? 1u : 0u;
+					row[11] = source.rasterLandscapeVariationFlags;
 					for (uint32_t layer = 0; layer < 8u; ++layer) {
 						if (std::isfinite(source.rasterLandscapeSnow[layer]) && source.rasterLandscapeSnow[layer] > 0.0f) row[9] |= 1u << layer;
 						const auto& paths = source.rasterLandscapeTextures[layer];
