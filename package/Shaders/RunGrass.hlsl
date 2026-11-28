@@ -627,8 +627,8 @@ PS_OUTPUT main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool front : SV_
 {
 	PS_OUTPUT psout = (PS_OUTPUT)0;
 	float2 uv=input.TexCoord.xy;
-#		if defined(GRASS_LIGHTING) && !defined(TRUE_PBR)
 	bool complex = false;
+#		if defined(GRASS_LIGHTING) && !defined(TRUE_PBR)
 #			if defined(GRASS_OPTIMIZATIONS)
 	complex = input.IsComplex > 0.5;
 	if (input.IsComplex < 0.0)
@@ -646,12 +646,35 @@ PS_OUTPUT main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool front : SV_
 	clip(alpha-AlphaTestRefRS);
 #		endif
 	uint eye=Stereo::GetEyeIndexPS(input.HPosition,VPOSOffset);
-	float3x3 basis=NativeInputMRT::DerivativeBasis(input.WorldPosition,uv);
+	float3x3 basis=NativeInputMRT::DerivativeBasis(input.WorldPosition,input.TexCoord.xy);
 	psout.Diffuse.a=1;
 	psout.MotionVectors=float4(MotionBlur::GetSSMotionVector(float4(input.WorldPosition,1),float4(input.PreviousWorldPosition,1),eye),0,1);
 	psout.NormalGlossiness=float4(GBuffer::EncodeNormal(normalize(FrameBuffer::WorldToView(basis[2],false,eye))),0,1);
 	psout.Masks2=float4(0,NeuralRenderingCategory::Encode(NeuralRenderingCategory::Foliage),0,1);
-	NativeInputMRT::Write(psout,input.HPosition,uv,input.Color,basis,primitive,front,coverage,alpha,input.NativeInstance);
+	// Retain original UV derivatives for native evaluation; only coverage uses
+	// the atlas's diffuse-half UV above.
+	NativeInputMRT::Write(psout,input.HPosition,input.TexCoord.xy,input.Color,basis,primitive,front,coverage,alpha,input.NativeInstance);
+	if (psout.IdentityUV.x!=0u) {
+		bool complexDetail=complex;
+#		if defined(GRASS_OPTIMIZATIONS)
+		complexDetail=complex && input.IsFar<=0.5;
+#		endif
+		float3 vertexNormal=basis[2];
+		float roughness=1.0, brightness=1.0, specularStrength=0.0, scattering=0.0;
+#		if defined(GRASS_LIGHTING)
+		if (all(isfinite(input.VertexNormal.xyz)) && dot(input.VertexNormal.xyz,input.VertexNormal.xyz)>1e-8)
+			vertexNormal=normalize(input.VertexNormal.xyz);
+		roughness=saturate(1.0-SharedData::grassLightingSettings.Glossiness*0.01);
+		brightness=(!complex || SharedData::grassLightingSettings.OverrideComplexGrassSettings) ?
+			SharedData::grassLightingSettings.BasicGrassBrightness : 1.0;
+		specularStrength=SharedData::grassLightingSettings.SpecularStrength;
+		scattering=SharedData::grassLightingSettings.SubsurfaceScatteringAmount;
+#		endif
+		psout.BasisFlags.w |= 5u<<19u;
+		psout.MaterialTechnique=uint4((complex?1u:0u)|(complexDetail?2u:0u),
+			NativeInputMRT::PackOct(vertexNormal),NativeInputMRT::PackHalf2(float2(roughness,brightness)),
+			NativeInputMRT::PackHalf2(float2(specularStrength,scattering)));
+	}
 	return psout;
 }
 #	elif defined(GRASS_LIGHTING)
