@@ -107,7 +107,7 @@ float2 NativeParallaxUV(uint textureIndex, uint mode, float2 coords, float3 view
     float2 result=coords+travel*(saturate(contact)-0.5);
     return all(isfinite(result)) ? result : coords;
 }
-float4 NativeSurfaceTex(uint index, float2 uv, uint mode, RawRasterSurface raw, float mipBias)
+float4 NativeSurfaceGradTex(uint index, float2 uv, uint mode, RawRasterSurface raw, float mipBias)
 {
     if (!raw.valid) {
 #if defined(NATIVE_SECONDARY_SURFACE)
@@ -123,6 +123,29 @@ float4 NativeSurfaceTex(uint index, float2 uv, uint mode, RawRasterSurface raw, 
     if (mode==1u) return Textures[slot].SampleGrad(ClampWrap,float3(uv,0),dx,dy);
     if (mode==2u) return Textures[slot].SampleGrad(WrapClamp,float3(uv,0),dx,dy);
     return Textures[slot].SampleGrad(WrapWrap,float3(uv,0),dx,dy);
+}
+// The terrain evaluator selects one lattice for all layer/material roles.
+// Keep explicit original gradients; hash discontinuities must not affect mip selection.
+float4 NativeTerrainBlend(float4 a,float4 b,float weight,float h0,float h1)
+{
+    float wa=weight*(1.0+0.3*h0),wb=(1.0-weight)*(1.0+0.3*h1);
+    return lerp(b,a,wa/max(wa+wb,1e-8));
+}
+float4 NativeSurfaceTex(uint index, float2 uv, uint mode, RawRasterSurface raw, float mipBias)
+{
+    if (!raw.terrainVariation) return NativeSurfaceGradTex(index,uv,mode,raw,mipBias);
+    float4 a=NativeSurfaceGradTex(index,uv+raw.terrainOffset1,mode,raw,mipBias);
+    float4 b=NativeSurfaceGradTex(index,uv+raw.terrainOffset2,mode,raw,mipBias);
+    float ha=lerp(dot(a.rgb,float3(0.2126,0.7152,0.0722)),a.a,step(0.001,a.a));
+    float hb=lerp(dot(b.rgb,float3(0.2126,0.7152,0.0722)),b.a,step(0.001,b.a));
+    return NativeTerrainBlend(a,b,raw.terrainTapWeight,ha,hb);
+}
+float NativeTerrainHeight(uint index,float2 uv,uint mode,float mip,uint channel,RawRasterSurface raw)
+{
+    if (!raw.terrainVariation) return TexLevel(index,uv,mode,mip)[channel];
+    float4 a=TexLevel(index,uv+raw.terrainOffset1,mode,mip);
+    float4 b=TexLevel(index,uv+raw.terrainOffset2,mode,mip);
+    return NativeTerrainBlend(a,b,raw.terrainTapWeight,a[channel],b[channel])[channel];
 }
 // Local-space for static instances; posed world-space for character geometry.
 // The caller must supply the triangle and material from the same publication.
