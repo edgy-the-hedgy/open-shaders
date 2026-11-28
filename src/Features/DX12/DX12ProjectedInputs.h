@@ -135,7 +135,7 @@ namespace DX12Native
 		std::vector<CachedTexture> immutableCache;
 		std::map<ID3D11ShaderResourceView*, uint32_t> frameImports;
 		uint32_t transferred = 0, allocated = 0;
-		uint64_t cacheBytes = 0, newBytes = 0;
+		uint64_t cacheBytes = 0, newBytes = 0, transferredBytes = 0;
 		struct MipTransfer {
 			uint32_t width, height, y;
 		};
@@ -327,7 +327,13 @@ namespace DX12Native
 			const auto old = std::ranges::find_if(reusable, [view](const auto& item) {
 				return item.source.get() == view && item.resource && (item.immutable || item.bridge);
 			});
+			// Immutable resident hits bypass transfer limits; mutable resources
+			// require a fresh copy even when their allocation is reusable.
+			const bool residentOld=old!=reusable.end() && old->immutable && !old->bridge;
+			if (!residentOld && transferred>=kMaxNewTextures) { ++frame.deferredTextures; return UINT32_MAX; }
 			if (old != reusable.end()) {
+				if (!residentOld && (transferredBytes>=kNewBytesPerPublication ||
+					old->bytes>kNewBytesPerPublication-transferredBytes)) { ++frame.deferredTextures; return UINT32_MAX; }
 				entry = std::move(*old);
 				old->bytes = 0;
 				if (entry.immutable && !entry.bridge) { entry.uploaded = false; return publish(std::move(entry)); }
@@ -338,7 +344,8 @@ namespace DX12Native
 				const uint64_t nativeBytes = Allocation(nativeDesc), bridgeBytes = Allocation(bridgeDesc);
 				const auto allowance = budget.Query(owner.d3d12Device.get(), 0).effectiveBytes;
 				if (!nativeBytes || !bridgeBytes || nativeBytes > allowance || bridgeBytes > allowance - nativeBytes ||
-					(allocated && (newBytes >= kNewBytesPerPublication || nativeBytes + bridgeBytes > kNewBytesPerPublication - newBytes))) {
+					(newBytes >= kNewBytesPerPublication || nativeBytes + bridgeBytes > kNewBytesPerPublication - newBytes) ||
+					(transferredBytes >= kNewBytesPerPublication || nativeBytes + bridgeBytes > kNewBytesPerPublication - transferredBytes)) {
 					++frame.deferredTextures;
 					return UINT32_MAX;
 				}
@@ -391,6 +398,7 @@ namespace DX12Native
 			};
 			cmd->ResourceBarrier(UINT(std::size(finish)), finish);
 			++transferred;
+			transferredBytes+=output.bytes;
 			return index;
 		}
 
@@ -481,7 +489,7 @@ namespace DX12Native
 				std::erase_if(failedDescriptors, [&](const auto& entry) {
 					return MaterialFrameContract::ProjectionRetryDue(stamp.frame, entry.second, kFailureCooldown);
 				});
-				frameImports.clear(); transferred = allocated = 0; newBytes = 0;
+				frameImports.clear(); transferred = allocated = 0; newBytes = transferredBytes = 0;
 				// Slot selection already checks both GPU completion and borrowers.
 				if (!pending->transferAllocator) {
 					DX::ThrowIfFailed(owner.d3d12Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(pending->transferAllocator.put())));
