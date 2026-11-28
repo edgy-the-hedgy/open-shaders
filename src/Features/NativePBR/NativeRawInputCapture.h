@@ -24,7 +24,9 @@ namespace NativePBR
 		uint32_t shaderClass = 0;
 		// Requested engine sampler address modes for the original low slots.
 		std::array<uint8_t, 16> addressModes{};
-		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 113> views;
+		// Fur shell color is a material input at t124, not the adjacent depth SRV.
+		static constexpr uint32_t kTrackedSlots = 125;
+		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, kTrackedSlots> views;
 	};
 	struct RawInputFrame
 	{
