@@ -772,9 +772,6 @@ namespace SIE
 
 		static bool HasFullNativeInput(RE::BSShader::Type type)
 		{
-			// Water uses the original environment shader contract during this A/B.
-			if (DX12Control::kTemporaryLegacyEnvironment && type == RE::BSShader::Type::Water)
-				return false;
 			return DX12::HasFullNativeInput(globals::features::dx12Control.GetFeatureBackend(), GetNativeInputKind(type));
 		}
 
@@ -1477,14 +1474,9 @@ namespace SIE
 			if (HasFullNativeInput(shader.shaderType.get())) {
 				const auto end = std::ranges::find_if(defines, [](const auto& macro) { return macro.Name == nullptr; });
 				const auto remaining = std::distance(end, defines.end());
-				if (remaining >= (DX12Control::kTemporaryLegacyEnvironment ? 3 : 2)) {
+				if (remaining >= 2) {
 					*end = { "FULL_NATIVE_INPUT", nullptr };
-					if constexpr (DX12Control::kTemporaryLegacyEnvironment) {
-						*(end + 1) = { "FULL_NATIVE_LEGACY_ENVIRONMENT", nullptr };
-						*(end + 2) = { nullptr, nullptr };
-					} else {
-						*(end + 1) = { nullptr, nullptr };
-					}
+					*(end + 1) = { nullptr, nullptr };
 				} else {
 					logger::error("Full Native shader define capacity exhausted");
 					throw std::runtime_error("Full Native shader define capacity exhausted");
@@ -2120,7 +2112,7 @@ namespace SIE
 			std::wstring suffix(suffixNarrow.begin(), suffixNarrow.end());
 			// The same boot-latched predicate selects input defines and disk identity.
 			if (HasFullNativeInput(shader.shaderType.get()))
-				suffix += DX12Control::kTemporaryLegacyEnvironment ? L"_full_native_input_v3_legacy_environment" : L"_full_native_input_v3";
+				suffix += L"_full_native_input_v3";
 
 			const std::wstring wname(name.begin(), name.end());
 			switch (shaderClass) {

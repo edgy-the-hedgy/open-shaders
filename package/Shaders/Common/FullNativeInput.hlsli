@@ -7,9 +7,7 @@
 #   if defined(FULL_NATIVE_LIGHTING_SHADER)
 #       define NATIVE_PBR_INPUT
 #   endif
-#   if !defined(FULL_NATIVE_LEGACY_ENVIRONMENT)
-#       define NATIVE_IBL_INPUT
-#   endif
+#   define NATIVE_IBL_INPUT
 #endif
 
 #endif
