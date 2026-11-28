@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -7,6 +8,20 @@
 
 namespace Util
 {
+	enum class RuntimePreparationLane : uint8_t { General, Geometry, Character, Rigid, Material, Light, Count };
+	inline constexpr size_t kRuntimePreparationLaneCount = static_cast<size_t>(RuntimePreparationLane::Count);
+	// Separate admission quotas prevent a burst of new rigid meshes from
+	// using the slots needed by the other preparation producers.
+	inline constexpr std::array<uint32_t, kRuntimePreparationLaneCount> kRuntimePreparationLaneLimits{ 3, 2, 2, 4, 3, 2 };
+	constexpr bool ValidRuntimePreparationLane(RuntimePreparationLane lane)
+	{
+		return static_cast<size_t>(lane) < kRuntimePreparationLaneCount;
+	}
+	constexpr bool RuntimePreparationLaneHasCapacity(RuntimePreparationLane lane, uint32_t queued)
+	{
+		return ValidRuntimePreparationLane(lane) && queued < kRuntimePreparationLaneLimits[static_cast<size_t>(lane)];
+	}
+
 	/** @brief Lifetime-safe access to the existing runtime task dispatcher.
 	 * Fence callbacks may outlive the feature, but cannot call a closed dispatcher. */
 	class RuntimeTaskGate
@@ -14,13 +29,17 @@ namespace Util
 	public:
 		using Task = std::function<void()>;
 		using Submitter = std::function<bool(Task)>;
+		using TaggedSubmitter = std::function<bool(RuntimePreparationLane, Task)>;
 
-		explicit RuntimeTaskGate(Submitter submit) : submitter(std::move(submit)) {}
+		explicit RuntimeTaskGate(Submitter submit) :
+			submitter([submit = std::move(submit)](RuntimePreparationLane, Task task) { return submit && submit(std::move(task)); }) {}
+		explicit RuntimeTaskGate(TaggedSubmitter submit) : submitter(std::move(submit)) {}
 
-		bool TrySubmit(Task task)
+		bool TrySubmit(Task task) { return TrySubmit(RuntimePreparationLane::General, std::move(task)); }
+		bool TrySubmit(RuntimePreparationLane lane, Task task)
 		{
 			std::scoped_lock lock(mutex);
-			return submitter && task && submitter(std::move(task));
+			return submitter && task && ValidRuntimePreparationLane(lane) && submitter(lane, std::move(task));
 		}
 
 		void Close()
@@ -31,7 +50,7 @@ namespace Util
 
 	private:
 		std::mutex mutex;
-		Submitter submitter;
+		TaggedSubmitter submitter;
 	};
 
 	// Legacy immediate admission predicate, retained for policy tests and clients.

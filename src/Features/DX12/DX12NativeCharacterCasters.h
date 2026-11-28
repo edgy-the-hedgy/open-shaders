@@ -557,7 +557,7 @@ namespace DX12Native
                 mesh->pending->packet = std::move(packet);
                 const auto job = mesh->pending;
                 std::weak_ptr<RigidPackJob> weakJob = job;
-                if (gate->TrySubmit([weakJob, device = backend.d3d12Device, withShading] {
+                if (gate->TrySubmit(Util::RuntimePreparationLane::Rigid, [weakJob, device = backend.d3d12Device, withShading] {
                     if (const auto retainedJob = weakJob.lock())
                         PackRigidMesh(retainedJob, device, withShading);
                 })) ++asyncRigidPacks;
@@ -865,7 +865,7 @@ namespace DX12Native
                 // it can be restored because no task was admitted.
                 auto selected = std::move(slots[index]);
                 std::weak_ptr<ActorRecordJob> weakJob = job;
-                if (!gate->TrySubmit([weakJob, selected, tracked,
+                if (!gate->TrySubmit(Util::RuntimePreparationLane::Character, [weakJob, selected, tracked,
                     device = backend.d3d12Device, root = root, pipeline = pipeline, completion = completion,
                     frame, scope, interval]() mutable {
                     const auto retained = weakJob.lock();

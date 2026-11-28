@@ -35,6 +35,13 @@ TEST_CASE("Native preparation FIFO reserves shader capacity and bounds concurren
 	CHECK(CanQueueRuntimePreparation(false, 15));
 	CHECK_FALSE(CanQueueRuntimePreparation(false, 16));
 	CHECK_FALSE(CanQueueRuntimePreparation(true, 0));
+	using Util::RuntimePreparationLane;
+	using Util::RuntimePreparationLaneHasCapacity;
+	CHECK(RuntimePreparationLaneHasCapacity(RuntimePreparationLane::Rigid, 3));
+	CHECK_FALSE(RuntimePreparationLaneHasCapacity(RuntimePreparationLane::Rigid, 4));
+	CHECK(RuntimePreparationLaneHasCapacity(RuntimePreparationLane::Character, 0));
+	CHECK(RuntimePreparationLaneHasCapacity(RuntimePreparationLane::Light, 0));
+	CHECK_FALSE(RuntimePreparationLaneHasCapacity(RuntimePreparationLane::Count, 0));
 	CHECK(CanDispatchRuntimePreparation(0, 0, 1, false, false));
 	CHECK_FALSE(CanDispatchRuntimePreparation(0, 0, 1, false, true));
 	CHECK(CanDispatchRuntimePreparation(1, 2, 4, false, true));

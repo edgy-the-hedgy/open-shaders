@@ -113,7 +113,7 @@ namespace DX12Native
 		if (latest && latest->fence && !GpuFenceRetired(latest->fence.get(), latest->fenceValue))
 			return false;
 		current->busy.store(true, std::memory_order_release);
-		const bool accepted = gate->TrySubmit([current, grid = std::move(grid), runtime = std::move(runtime),
+		const bool accepted = gate->TrySubmit(Util::RuntimePreparationLane::Light, [current, grid = std::move(grid), runtime = std::move(runtime),
 												  settings, cell, device = backend.d3d12Device, queue = backend.commandQueue] {
 			ZoneScopedN("DX12::Lights::Task");
 			current->tasks.fetch_add(1, std::memory_order_relaxed);

@@ -168,7 +168,7 @@ namespace DX12Native
 			return;
 
 		a_state->scheduled = true;
-		if (!a_state->taskGate->TrySubmit([retained = a_state] { RunStep(retained); }))
+		if (!a_state->taskGate->TrySubmit(Util::RuntimePreparationLane::Geometry, [retained = a_state] { RunStep(retained); }))
 			a_state->scheduled = false;
 	}
 

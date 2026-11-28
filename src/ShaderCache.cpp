@@ -3510,7 +3510,7 @@ namespace SIE
 			return {};
 		if (!runtimeTaskGate)
 			runtimeTaskGate = std::make_shared<Util::RuntimeTaskGate>(
-				[this](std::function<void()> work) { return TrySubmitRuntimeTask(std::move(work)); });
+				[this](Util::RuntimePreparationLane lane, std::function<void()> work) { return TrySubmitRuntimeTask(lane, std::move(work)); });
 		return runtimeTaskGate;
 	}
 
@@ -3523,6 +3523,7 @@ namespace SIE
 			runtimeTaskAdmissionClosed = true;
 			gate = std::move(runtimeTaskGate);
 			abandoned.swap(compilationSet.pendingRuntimePreparation);
+			compilationSet.runtimePreparationQueuedByLane = {};
 		}
 		// Release queued closures outside the dispatch lock.
 		compilationSet.conditionVariable.notify_all();
@@ -3532,18 +3533,21 @@ namespace SIE
 			gate->Close();
 	}
 
-	bool ShaderCache::TrySubmitRuntimeTask(std::function<void()> a_work)
+	bool ShaderCache::TrySubmitRuntimeTask(Util::RuntimePreparationLane lane, std::function<void()> a_work)
 	{
-		if (!a_work) return false;
+		if (!a_work || !Util::ValidRuntimePreparationLane(lane)) return false;
+		const auto index = static_cast<size_t>(lane);
 		{
 			std::scoped_lock lock(compilationSet.compilationMutex);
 			if (!Util::CanQueueRuntimePreparation(runtimeTaskAdmissionClosed,
-					static_cast<uint32_t>(compilationSet.pendingRuntimePreparation.size()))) {
+					static_cast<uint32_t>(compilationSet.pendingRuntimePreparation.size())) ||
+				!Util::RuntimePreparationLaneHasCapacity(lane, compilationSet.runtimePreparationQueuedByLane[index])) {
 				TracyPlot("CS::RuntimePreparationRejected", int64_t(++compilationSet.runtimePreparationRejected));
 				return false;
 			}
 			try {
-				compilationSet.pendingRuntimePreparation.push_back({ std::move(a_work), Util::GetQpcTicks() });
+				compilationSet.pendingRuntimePreparation.push_back({ std::move(a_work), Util::GetQpcTicks(), lane });
+				++compilationSet.runtimePreparationQueuedByLane[index];
 			} catch (...) {
 				TracyPlot("CS::RuntimePreparationRejected", int64_t(++compilationSet.runtimePreparationRejected));
 				return false;
@@ -5819,8 +5823,13 @@ namespace SIE
 	{
 		std::unique_lock lock(compilationMutex);
 		auto shaderCache = globals::shaderCache;
+		const auto nextRuntime = [&] {
+			return std::ranges::find_if(pendingRuntimePreparation, [&](const auto& task) {
+				return runtimePreparationRunningByLane[static_cast<size_t>(task.lane)] == 0;
+			});
+		};
 		const auto canDispatchRuntime = [&] {
-			return !pendingRuntimePreparation.empty() && Util::CanDispatchRuntimePreparation(
+			return nextRuntime() != pendingRuntimePreparation.end() && Util::CanDispatchRuntimePreparation(
 				runtimePreparationRunning, dispatchedTasksInFlight.load(std::memory_order_relaxed),
 				shaderCache->backgroundCompilation ? shaderCache->backgroundCompilationThreadCount : shaderCache->compilationThreadCount,
 				!demandedTasks.empty(), !availableTasks.empty() || !pendingAuxTasks.empty());
@@ -5847,18 +5856,23 @@ namespace SIE
 		// FIFO native work shares existing pool slots and cannot bypass demanded
 		// shaders. During background compilation at least one slot remains for shaders.
 		if (canDispatchRuntime()) {
-			auto pending = std::move(pendingRuntimePreparation.front());
-			pendingRuntimePreparation.pop_front();
+			const auto it = nextRuntime();
+			auto pending = std::move(*it);
+			pendingRuntimePreparation.erase(it);
+			const auto lane = static_cast<size_t>(pending.lane);
+			--runtimePreparationQueuedByLane[lane];
+			++runtimePreparationRunningByLane[lane];
 			++runtimePreparationRunning;
 			dispatchedTasksInFlight.fetch_add(1, std::memory_order_relaxed);
 			TracyPlot("CS::RuntimePreparationQueued", int64_t(pendingRuntimePreparation.size()));
 			TracyPlot("CS::RuntimePreparationRunning", int64_t(runtimePreparationRunning));
 			return std::variant<ShaderCompilationTask, std::function<void()>>(std::in_place_index<1>,
-				[this, pending = std::move(pending)]() mutable {
-					const SKSE::stl::scope_exit releaseRuntime([this]() noexcept {
+				[this, lane, pending = std::move(pending)]() mutable {
+					const SKSE::stl::scope_exit releaseRuntime([this, lane]() noexcept {
 						{
 							std::scoped_lock lock(compilationMutex);
 							--runtimePreparationRunning;
+							--runtimePreparationRunningByLane[lane];
 							TracyPlot("CS::RuntimePreparationRunning", int64_t(runtimePreparationRunning));
 						}
 						conditionVariable.notify_all();

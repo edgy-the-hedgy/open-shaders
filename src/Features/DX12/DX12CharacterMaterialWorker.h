@@ -212,7 +212,7 @@ namespace DX12Native
             if (!state->scheduled && !uploadPending && (state->attempted != state->generation || retry) && globals::shaderCache) {
                 if (const auto gate = globals::shaderCache->GetRuntimeTaskGate()) {
                     state->scheduled = true;
-                    if (!gate->TrySubmit([retained = state, frame] { Run(retained, frame); }))
+                    if (!gate->TrySubmit(Util::RuntimePreparationLane::Material, [retained = state, frame] { Run(retained, frame); }))
                         state->scheduled = false;
                 }
             }
