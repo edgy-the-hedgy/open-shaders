@@ -54,8 +54,12 @@ namespace DX12Native
 		}
 		bool MatchesColor(const std::shared_ptr<const NativeComposite::Frame>& candidate) const
 		{
-			return candidate && candidate == color && candidate->valid && candidate->color && candidate->producerFence &&
-				candidate->producerValue && candidate->frame==frame && candidate->width==width && candidate->height==height;
+			if (!candidate || candidate != color || !candidate->valid || !candidate->color || !candidate->producerFence ||
+				!candidate->producerValue || candidate->frame!=frame || candidate->width!=width || candidate->height!=height)
+				return false;
+			const auto d = candidate->color->GetDesc();
+			return d.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && d.Width >= width && d.Height >= height &&
+				d.DepthOrArraySize == 1 && d.SampleDesc.Count == 1 && d.Format == candidate->format;
 		}
 		bool HasGenerationInputs() const
 		{
