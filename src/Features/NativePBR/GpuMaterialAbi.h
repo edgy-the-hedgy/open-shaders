@@ -51,6 +51,10 @@ namespace NativePBR
 	inline constexpr uint32_t kGpuLegacyComplexMask = 1u << 8;
 	inline constexpr uint32_t kGpuLegacyMaterial = 1u << 9;
 	inline constexpr uint32_t kGpuLegacyHeightAlpha = 1u << 10;
+	// Previously reserved controls.y bits; the 304-byte record layout is unchanged.
+	inline constexpr uint32_t kGpuAuthoredRoleShift = 16u;
+	inline constexpr uint32_t kGpuAuthoredRoleMask = 0x7fu << kGpuAuthoredRoleShift;
+	inline constexpr uint32_t kGpuResolvedParameters = 1u << 23u;
 	inline constexpr uint32_t kRayMaterialOptionParallax = 1u << 0;
 	inline constexpr uint32_t kRayMaterialOptionComplex = 1u << 1;
 	inline constexpr uint32_t kRayMaterialOptionSnowParallaxUV = 1u << 2;
@@ -102,6 +106,39 @@ namespace NativePBR
 		request(TextureRole::Features0, (active & (uint32_t(PBRFlags::Subsurface) | uint32_t(PBRFlags::TwoLayer))) != 0);
 		request(TextureRole::Features1, (active & (uint32_t(PBRFlags::Fuzz) | uint32_t(PBRFlags::TwoLayer))) != 0);
 		return result;
+	}
+
+	/** @brief Independent authored role evidence, distinct from descriptor residency. */
+	inline uint32_t GpuAuthoredTextureRoles(const Recipe& recipe)
+	{
+		uint32_t roles = 0;
+		for (size_t i = 0; i < recipe.textures.size(); ++i)
+			if (!recipe.textures[i].canonicalPath.empty()) roles |= 1u << i;
+		return roles;
+	}
+
+	/** @brief V2 feature-map demand does not select a single legacy lobe permutation.
+	 * Keep the existing base-first admission and descriptor budget.
+	 */
+	inline uint32_t GpuIndependentSpecializedTextureRoles(const Recipe& recipe)
+	{
+		const auto authored = recipe.parameters.pbrFlags;
+		uint32_t result = GpuSpecializedTextureRoles(recipe);
+		const auto roles = GpuAuthoredTextureRoles(recipe);
+		if (authored & (uint32_t(PBRFlags::Subsurface) | uint32_t(PBRFlags::TwoLayer) |
+			uint32_t(PBRFlags::ThinSurface) | uint32_t(PBRFlags::Foliage)))
+			result |= roles & TextureRoleBit(TextureRole::Features0);
+		if (authored & (uint32_t(PBRFlags::TwoLayer) | uint32_t(PBRFlags::Fuzz) | uint32_t(PBRFlags::CoatNormal)))
+			result |= roles & TextureRoleBit(TextureRole::Features1);
+		if ((authored & uint32_t(PBRFlags::InterlayerParallax)) ||
+			((authored & uint32_t(PBRFlags::Fuzz)) && recipe.parameters.fuzzRoughnessTexture))
+			result |= roles & TextureRoleBit(TextureRole::Displacement);
+		return result;
+	}
+	inline bool GpuIndependentAcceptsRedOnlyTexture(const Recipe& recipe, TextureRole role)
+	{
+		return GpuAcceptsRedOnlyTexture(recipe, role) &&
+			!((recipe.parameters.pbrFlags & uint32_t(PBRFlags::Fuzz)) && recipe.parameters.fuzzRoughnessTexture);
 	}
 
 	/** @brief Requires only the texture roles sampled by the current opaque SM6.5 evaluator. */
@@ -209,7 +246,9 @@ namespace NativePBR
 			(source.fuzzRoughnessTexture ? 4u : 0u) |
 			(source.legacyComplexMask && ActiveOpaquePbrFlags(a_recipe) == 0u ? kGpuLegacyComplexMask : 0u) |
 			(source.legacyMaterial ? kGpuLegacyMaterial : 0u) |
-			(source.legacyHeightAlpha ? kGpuLegacyHeightAlpha : 0u),
+			(source.legacyHeightAlpha ? kGpuLegacyHeightAlpha : 0u) |
+			((GpuAuthoredTextureRoles(a_recipe) << kGpuAuthoredRoleShift) & kGpuAuthoredRoleMask) |
+			(source.textureSetParametersResolved ? kGpuResolvedParameters : 0u),
 			uint32_t(source.kind), ActiveOpaquePbrFlags(a_recipe) };
 		return result;
 	}

@@ -560,3 +560,27 @@ TEST_CASE("Raster publication survives scene generation changes without stale co
 	REQUIRE(RasterDrawCountForConsumer(17,false,false)==0u);
 	REQUIRE(RasterDrawCountForConsumer(kRasterLocalOnly,true,true)==0u);
 }
+
+TEST_CASE("Independent specialized role evidence survives unavailable textures", "[dx12][materials][specialized-v2]")
+{
+    using namespace NativePBR;
+    Recipe recipe{};
+    recipe.parameters.pbrFlags = uint32_t(PBRFlags::TwoLayer) | uint32_t(PBRFlags::Fuzz) |
+        uint32_t(PBRFlags::Subsurface) | uint32_t(PBRFlags::ThinSurface);
+    recipe.parameters.textureSetParametersResolved = true;
+    recipe.parameters.fuzzRoughnessTexture = true;
+    for (auto role : { TextureRole::Features0, TextureRole::Features1, TextureRole::Displacement })
+        recipe.textures[static_cast<size_t>(role)].canonicalPath = "textures/test.dds";
+    const auto authored = TextureRoleBit(TextureRole::Features0) |
+        TextureRoleBit(TextureRole::Features1) | TextureRoleBit(TextureRole::Displacement);
+    REQUIRE(GpuIndependentSpecializedTextureRoles(recipe) == authored);
+    REQUIRE(GpuAuthoredTextureRoles(recipe) == authored);
+    REQUIRE_FALSE(GpuIndependentAcceptsRedOnlyTexture(recipe, TextureRole::Displacement));
+    GpuTextureLocations locations{};
+    for (auto& location : locations) location = { kGpuMissingTexture, 0 };
+    const auto record = PackGpuMaterialRecord(recipe, locations);
+    REQUIRE(record.controls[0] == 0u);
+    REQUIRE(((record.controls[1] & kGpuAuthoredRoleMask) >> kGpuAuthoredRoleShift) == authored);
+    REQUIRE((record.controls[1] & kGpuResolvedParameters) != 0u);
+    REQUIRE(GpuBaseRequestedTextureRoles(recipe) == kGpuRequiredTextureRoles);
+}

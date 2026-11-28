@@ -595,7 +595,8 @@ Sample EvaluateRecipeGrass(RawRasterSurface raw, Binding binding, MaterialRecord
         else { coat.normalRoughness.w=clamp(fuzzRoughness,-1.0,1.0); coat.f0Colored.w=NativeFuzzTag; }
         coat.colorStrength=float4(saturate(fuzz),weight);
 #ifdef NATIVE_SPECIALIZED_V2_PRODUCER
-        if((material.controls.y&4u)==0u || material.textures[2].x<NativeTextureIndexLimit)
+        if(((material.controls.y&4u)==0u || material.textures[2].x<NativeTextureIndexLimit) &&
+            all(isfinite(fuzz)) && isfinite(weight) && isfinite(fuzzRoughness))
             NativeSpecializedSetFuzz(specialized,saturate(fuzz),weight,clamp(fuzzRoughness,-1.0,1.0));
 #endif
     }
@@ -918,12 +919,20 @@ Sample EvaluateRasterLocal(RawRasterSurface raw, uint2 mapped, float3 viewRay, f
         }
         ApplyCharacterRasterMaterial(raw,viewRay,result);
         if ((binding.flags&SurfaceBaseOnlyBinding)!=0u) result.color.a=SurfaceFeatureLimited;
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+        if((specialized.valid&specialized.present&SpecializedThin)!=0u) {
+            if(!raw.front && (specialized.valid&SpecializedBack)!=0u)
+                result.normal.w=clamp(result.normal.w*NativeSpecializedUnpackHalf2(specialized.payload.thinSurface.z).y,0.045,1.0);
+            if(dot(result.normal.xyz,viewRay)>0.0) result.normal.xyz=-result.normal.xyz;
+        }
+#else
         if (HasNativeThinSurface(coat)) {
             coat.normalRoughness.xyz=dot(coat.normalRoughness.xyz,viewRay)>0.0 ? -coat.normalRoughness.xyz : coat.normalRoughness.xyz;
             coat.f0Colored.x=raw.front ? coat.f0Colored.x : coat.f0Colored.y;
             result.normal.w=clamp(result.normal.w*(raw.front ? 1.0 : coat.f0Colored.z),0.045,1.0);
             if (dot(result.normal.xyz,viewRay)>0.0) result.normal.xyz=-result.normal.xyz;
         }
+#endif
     }
     return result;
 }

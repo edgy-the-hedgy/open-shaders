@@ -320,7 +320,7 @@ namespace DX12Native
 					auto& locations = recipeLocations[recipeIndex];
 					const auto base = NativePBR::GpuBaseRequestedTextureRoles(recipe);
 					if (recipe.issues & (NativePBR::InvalidSnapshot | NativePBR::InvalidTexturePath | NativePBR::MissingRequiredTextures)) continue;
-					const auto requested = specialized ? NativePBR::GpuSpecializedTextureRoles(recipe) : base;
+					const auto requested = specialized ? NativePBR::GpuIndependentSpecializedTextureRoles(recipe) : base;
 					if (specialized) {
 						bool baseReady = true;
 						for (size_t i = 0; i < locations.size(); ++i)
@@ -339,7 +339,7 @@ namespace DX12Native
 						}
 						const auto& request = recipe.textures[role];
 						const auto& path = request.canonicalPath;
-						const bool allowBc4 = NativePBR::GpuAcceptsRedOnlyTexture(recipe, static_cast<NativePBR::TextureRole>(role)) &&
+						const bool allowBc4 = NativePBR::GpuIndependentAcceptsRedOnlyTexture(recipe, static_cast<NativePBR::TextureRole>(role)) &&
 							request.interpretation == NativePBR::TextureInterpretation::DataLinear;
 						if (path.empty() || failed.contains(path) || (!allowBc4 && invalidBc4.contains(path))) continue;
 						const auto rejectBc4 = [&] {

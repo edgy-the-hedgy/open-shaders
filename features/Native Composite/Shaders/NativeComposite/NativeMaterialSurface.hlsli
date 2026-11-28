@@ -437,6 +437,17 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
 #ifdef NATIVE_SPECIALIZED_V2_PRODUCER
     // Authored presence is independent of the legacy capability mask.
     uint authored=material.properties.x;
+    // controls.y[22:16] is authored texture-role evidence, controls.x
+    // is actual residency, bit 23 certifies resolved parameter acquisition.
+    uint authoredRoles=(material.controls.y>>16u)&127u;
+    bool resolved=(material.controls.y&(1u<<23u))!=0u;
+    bool feature0Ready=(authoredRoles&(1u<<5u))==0u || (material.controls.x&(1u<<5u))!=0u;
+    bool feature1Ready=(authoredRoles&(1u<<6u))==0u || (material.controls.x&(1u<<6u))!=0u;
+    bool fuzzHeightReady=(material.controls.y&4u)==0u || (material.controls.x&(1u<<4u))!=0u;
+    bool independentSSS=resolved&&(authored&1u)!=0u&&feature0Ready;
+    bool independentThin=resolved&&(authored&384u)!=0u&&((authored&1u)==0u||feature0Ready);
+    bool independentFuzz=resolved&&(authored&32u)!=0u&&feature1Ready&&fuzzHeightReady;
+    bool independentCoat=resolved&&(authored&2u)!=0u&&feature0Ready&&feature1Ready;
     if((authored&1u)!=0u) NativeSpecializedMarkPresent(specialized,SpecializedSSS);
     if((authored&2u)!=0u) NativeSpecializedMarkPresent(specialized,SpecializedCoat|SpecializedCoatNormal);
     if((authored&4u)!=0u) NativeSpecializedMarkPresent(specialized,SpecializedColoredCoat);
@@ -448,7 +459,11 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
         if(projectionRow==0xffffffffu) NativeSpecializedSetGlint(specialized,material.glint);
     }
 #endif
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+    if (independentSSS || (binding.flags & SurfaceSubsurfaceReadyBinding) != 0u) {
+#else
     if ((binding.flags & SurfaceSubsurfaceReadyBinding) != 0u) {
+#endif
         float3 scatterColor = SrgbToLinear(max(material.subsurfaceColor.rgb,0.0));
         float thickness = saturate(material.coat.w);
         if (material.textures[2].z != 0xffffffffu) {
@@ -462,7 +477,11 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
         if (all(isfinite(scatterColor)) && isfinite(thickness)) coat.subsurface=float4(scatterColor,thickness);
         else result.color.a=SurfaceFeatureLimited;
     }
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+    if (independentThin || (binding.flags & SurfaceThinSurfaceReadyBinding) != 0u) {
+#else
     if ((binding.flags & SurfaceThinSurfaceReadyBinding) != 0u) {
+#endif
         if (!triData.hasPositions && !triData.rasterLocal) {
             result.color.a=SurfaceFeatureLimited;
         } else {
@@ -493,7 +512,7 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
 #ifdef NATIVE_SPECIALIZED_V2_PRODUCER
                 float3 orientedFace=dot(face,rayObject)>0.0 ? -face : face;
                 float3 worldFace=triData.rasterLocal ? orientedFace : mul(orientedFace,worldToObject);
-                NativeSpecializedSetThin(specialized,worldFace,saturate(material.surface.y),(binding.flags&SurfaceFoliageReadyBinding)!=0u);
+                NativeSpecializedSetThin(specialized,worldFace,saturate(material.surface.y),(authored&128u)!=0u||(binding.flags&SurfaceFoliageReadyBinding)!=0u);
                 // These authored XY values are specular controls, not transmission weights.
                 NativeSpecializedSetSpecularControls(specialized,saturate(material.thinSurface.xy));
                 NativeSpecializedSetFront(specialized,(1.0-thickness)*(1.0-saturate(material.surface.y)));
@@ -504,7 +523,11 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
             }
         }
     }
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+    if (independentFuzz || (binding.flags & SurfaceFuzzReadyBinding) != 0u) {
+#else
     if ((binding.flags & SurfaceFuzzReadyBinding) != 0u) {
+#endif
         float3 fuzzColor=SrgbToLinear(max(material.fuzzColor.rgb,0.0));
         float weight=saturate(material.surface.x);
         float fuzzRoughness=material.surface.z;
@@ -534,7 +557,11 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
 #endif
         }
     }
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+    if (independentCoat || (binding.flags & SurfaceCoatReadyBinding) != 0u) {
+#else
     if ((binding.flags & SurfaceCoatReadyBinding) != 0u) {
+#endif
         // Match the legacy feature0 color/strength and feature1 roughness/normal semantics.
         float3 coatColor = SrgbToLinear(max(material.coatColor.rgb,0.0));
         float strength = saturate(material.coat.x);
@@ -557,6 +584,14 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
                 if (coatValid) coatNormal = normalize(candidate);
             }
         }
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+        // A bad normal cannot invalidate otherwise evaluated coat parameters.
+        if(isfinite(strength)&&isfinite(coatRoughness)&&isfinite(material.coat.z))
+            NativeSpecializedSetCoat(specialized,strength,clamp(coatRoughness,0.045,1.0),saturate(material.coat.z));
+        if((authored&4u)!=0u) NativeSpecializedSetColoredCoat(specialized,coatColor);
+        if(coatValid && ((authored&16u)==0u || material.textures[3].x<NativeTextureIndexLimit))
+            NativeSpecializedSetCoatNormal(specialized,triData.rasterLocal?coatNormal:mul(coatNormal,worldToObject));
+#endif
         if (!coatValid || !all(isfinite(coatColor)) || !isfinite(strength) ||
             !isfinite(coatRoughness) || !isfinite(material.coat.z)) {
             result.color.a=SurfaceFeatureLimited;
@@ -565,12 +600,7 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
             coat.colorStrength=float4(coatColor,strength);
             coat.f0Colored=float4(saturate(material.coat.z).xxx,(material.properties.x & 4u) != 0u ? 1.0 : 0.0);
             if (interlayerActive) coat.subsurface.w=2.0+eta;
-#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
-            NativeSpecializedSetCoat(specialized,strength,clamp(coatRoughness,0.045,1.0),saturate(material.coat.z));
-            NativeSpecializedSetCoatNormal(specialized,triData.rasterLocal?coatNormal:mul(coatNormal,worldToObject));
-            if((authored&4u)!=0u) NativeSpecializedSetColoredCoat(specialized,coatColor);
-            // The prior eta tag does not supply complete depth/optical thickness.
-#endif
+            // V2 interlayer remains unavailable until depth and optical thickness are sourced.
         }
     }
 #ifdef NATIVE_SPECIALIZED_V2_PRODUCER
