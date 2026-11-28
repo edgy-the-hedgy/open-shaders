@@ -1,6 +1,7 @@
 #include "LandscapeSeamsFix.h"
 
 #include "Globals.h"
+#include "Features/NativePBR/NativeMaterialMetadata.h"
 #include "ShaderCache.h"
 #include "State.h"
 #include "TruePBR.h"
@@ -136,6 +137,30 @@ std::array<std::array<std::string, 2>, LandscapeSeamsFix::MaxExtraLayers> Landsc
 			if (source && source->name.c_str() && std::string_view(source->name.c_str()).size() <= 260u)
 				result[i][j] = source->name.c_str();
 		}
+	return result;
+}
+
+std::array<LandscapeSeamsFix::NativeLayerSource,LandscapeSeamsFix::MaxLayers> LandscapeSeamsFix::NativeLayerSources(RE::BSGeometry* a_geometry)
+{
+	std::array<NativeLayerSource,MaxLayers> result{};
+	std::array<RE::TESLandTexture*,EngineLayers> slots{};
+	{
+		const std::shared_lock lock(mutex);
+		const auto loaded=loadedQuads.find(a_geometry);
+		if (loaded==loadedQuads.end()) return result;
+		const auto quad=quads.find(loaded->second);
+		if (quad==quads.end()) return result;
+		slots=quad->second.slots;
+		if (quad->second.resources)
+			for (uint32_t i=0;i<MaxExtraLayers;++i) result[EngineLayers+i]=quad->second.resources->nativeBorrowed[i];
+	}
+	for (uint32_t i=0;i<EngineLayers;++i) {
+		auto* land=slots[i];
+		if (!land || !land->textureSet) continue;
+		result[i].textures=NativePBR::CaptureTextureSetSnapshot(Util::GetSeasonalSwap(land->textureSet));
+		result[i].snow=land->shaderTextureIndex!=0 ? 1.0f : 0.0f;
+		result[i].specular=float(static_cast<uint8_t>(land->specularExponent));
+	}
 	return result;
 }
 
@@ -333,7 +358,7 @@ void LandscapeSeamsFix::Heal(const QuadKey& a_key, const Quad& a_quad, Healed& a
 			layerOf[i] = entry.slot;
 		} else if (fieldMax[i] >= MinLayerWeight && entry.texture->textureSet != nullptr) {
 			// The vanilla terrain shader would read a PBR base color as an sRGB diffuse.
-			if (!a_out.pbr && globals::features::truePBR.IsPBRTextureSet(Util::GetSeasonalSwap(entry.texture->textureSet)))
+			if (!globals::features::dx12Control.UsesExclusiveMaterials() && !a_out.pbr && globals::features::truePBR.IsPBRTextureSet(Util::GetSeasonalSwap(entry.texture->textureSet)))
 				continue;
 			candidates[candidateCount++] = static_cast<int>(i);
 		}
@@ -389,6 +414,12 @@ std::shared_ptr<LandscapeSeamsFix::Resources> LandscapeSeamsFix::CreateResources
 		if (textureSet == nullptr)
 			continue;
 
+		if (globals::features::dx12Control.UsesExclusiveMaterials()) {
+			auto& native=resources->nativeBorrowed[extra];
+			native.textures=NativePBR::CaptureTextureSetSnapshot(textureSet);
+			native.snow=landTexture->shaderTextureIndex!=0 ? 1.0f : 0.0f;
+			native.specular=float(static_cast<uint8_t>(landTexture->specularExponent));
+		}
 		auto& layer = resources->extras[extra];
 		textureSet->SetTexture(DiffuseTexture, layer[0]);
 		textureSet->SetTexture(NormalTexture, layer[1]);
