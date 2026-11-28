@@ -26,7 +26,7 @@ namespace DX12Native
 			float4 positionAdjust;
 			uint32_t width, height, gridWidth, gridHeight, collectStats, parallaxEnabled, parallaxWarpFixEnabled, parallaxShadowEnabled;
 			float mipBias;
-			uint32_t projectionRows, projectionFrame, hasRawInput, quality, transformCount, rasterBindingCount, rasterRecordCount, sceneRecordCount, rasterSourceCount;
+			uint32_t projectionRows, projectionFrame, hasRawInput, quality, transformCount, rasterBindingCount, rasterRecordCount, sceneRecordCount, rasterSourceCount, hasSecondaryScene, hasRasterRayMapping;
 		};
 		static_assert(sizeof(Camera) <= 256);
 		struct OutputAllocation
@@ -43,7 +43,7 @@ namespace DX12Native
 			std::shared_ptr<const NativePBR::RawInputFrame> rawInputs;
 			std::shared_ptr<const Eval> rasterEvaluation;
 			std::vector<Eval::Upload> rasterUploads;
-			winrt::com_ptr<ID3D12Resource> projectionLookup, transforms;
+			winrt::com_ptr<ID3D12Resource> projectionLookup, transforms, emptyTable;
 			std::shared_ptr<OutputAllocation> output;
 			winrt::com_ptr<ID3D12Resource> readback, camera, counters, counterInit;
 			winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
@@ -53,7 +53,8 @@ namespace DX12Native
 			winrt::com_ptr<ID3D12GraphicsCommandList> commands;
 			winrt::com_ptr<ID3D12Fence> fence;
 			uint64_t value = UINT64_MAX;
-			uint32_t frame = 0, width = 0, height = 0;
+			uint32_t frame = 0, width = 0, height = 0, scope = 0;
+			uint64_t geometryRevision = 0;
 			bool fullResolution = false, collectStats = false;
 			bool discard = false;
 		};
@@ -97,7 +98,11 @@ namespace DX12Native
 			parameters[3].InitAsDescriptorTable(1, &range);
 			parameters[4].InitAsUnorderedAccessView(2);
 			parameters[5].InitAsConstants(1, 0);
-			parameters[6].InitAsShaderResourceView(516);
+			// A descriptor-table SRV can represent a null acceleration structure;
+			// a root buffer address must not be repurposed as a fake TLAS.
+			CD3DX12_DESCRIPTOR_RANGE sceneRange;
+			sceneRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 516);
+			parameters[6].InitAsDescriptorTable(1, &sceneRange);
 			parameters[7].InitAsConstantBufferView(1);
 			parameters[8].InitAsUnorderedAccessView(1);
 			parameters[9].InitAsUnorderedAccessView(3);
@@ -160,6 +165,16 @@ namespace DX12Native
 			winrt::com_ptr<ID3D12Fence> producerFence;
 			uint64_t producerValue=0, geometryRevision=0, materialRevision=0;
 			uint32_t frame=0, width=0, height=0, scope=0;
+			bool HasSecondaryGeometry() const
+			{
+				return scene && scope && scene->scope == scope && scene->geometryRevision == geometryRevision &&
+					scene->acceleration && scene->producerFence &&
+					MaterialFrameContract::ValidProducerSignal(scene->producerValue, scene->producerFence->GetCompletedValue()) &&
+					scene->shadingGeometry && scene->shadingGeometry->buffer && scene->shadingGeometry->revision == geometryRevision &&
+					scene->materialEvaluation && scene->materialEvaluation->revision == materialRevision &&
+					scene->materialEvaluation->instanceCount == scene->shadingGeometry->instanceCount &&
+					scene->materialEvaluation->records && scene->materialEvaluation->bindings;
+			}
 			/** @brief Validates the immutable full-resolution producer contract. */
 			bool IsCoherent(uint32_t requestedFrame, uint32_t requestedWidth, uint32_t requestedHeight) const
 			{
@@ -178,14 +193,13 @@ namespace DX12Native
 					!producerFence || !MaterialFrameContract::ValidProducerSignal(producerValue, producerFence->GetCompletedValue()) ||
 					!raster || raster->frame != frame || !raster->cameraValid || !raster->depth || !raster->depth->resource ||
 					!raster->readyFence || !MaterialFrameContract::ValidProducerSignal(raster->readyValue, raster->readyFence->GetCompletedValue()) ||
-					raster->width < width || raster->height < height || !scene || !scope ||
-					scene->scope != scope || scene->geometryRevision != geometryRevision ||
-					!scene->acceleration || !scene->producerFence ||
-					!MaterialFrameContract::ValidProducerSignal(scene->producerValue, scene->producerFence->GetCompletedValue()) ||
-					!scene->shadingGeometry || scene->shadingGeometry->revision != geometryRevision ||
-					!scene->materialEvaluation || scene->materialEvaluation->revision != materialRevision ||
-					materialRevision != geometryRevision)
+					raster->width < width || raster->height < height || !scope ||
+					!rawRasterEvidence || !rawRasterEvidence->Matches({frame, scope, 0, 0}, width, height) ||
+					!rawRasterEvidence->evidence->winnerCertified || !rasterMaterialEvaluation)
 					return false;
+				// Secondary geometry can be absent; its validity is not primary
+				// material validity. Consumers must call HasSecondaryGeometry().
+				if (scene && !HasSecondaryGeometry()) return false;
 				if (rasterMaterialEvaluation) {
 					if (!rasterMaterialRevision || rasterMaterialEvaluation->revision != rasterMaterialRevision ||
 						!rawRasterEvidence || !rasterMaterialEvaluation->records || !rasterMaterialEvaluation->bindings ||
@@ -300,18 +314,28 @@ namespace DX12Native
 			auto& pending = *availableSlot;
 			if (!raster || raster->frame != frame || !raster->depth || !raster->depth->resource || !raster->cameraValid || !raster->readyFence ||
 				!MaterialFrameContract::ValidProducerSignal(raster->readyValue, raster->readyFence->GetCompletedValue()) ||
-				!scene || !scene->scope || !scene->acceleration || !scene->producerFence ||
-				!MaterialFrameContract::ValidProducerSignal(scene->producerValue, scene->producerFence->GetCompletedValue()) ||
-				!scene->shadingGeometry || !scene->shadingGeometry->buffer || !scene->materialEvaluation ||
 				!width || !height || width>raster->width || height>raster->height) {
-				failure="Waiting for matching raster and native material generation"; return;
+				failure="Waiting for current raster depth"; return;
 			}
-			const auto& evaluation=*scene->materialEvaluation;
-			if (evaluation.revision!=scene->shadingGeometry->revision || evaluation.revision!=scene->geometryRevision ||
-				evaluation.instanceCount!=scene->shadingGeometry->instanceCount ||
-				!evaluation.records || !evaluation.bindings) {
-				failure="No coherent resident material generation"; return;
+			if (fullResolution && (!rawInputs || !rawInputs->Matches({frame, rawInputs->stamp.scope, 0, 0}, width, height) ||
+				!rawInputs->evidence->winnerCertified || rawInputs->materialSources.empty())) {
+				failure="Waiting for certified raster material inputs"; return;
 			}
+			// A stale or unprepared scene is optional. Never reject a primary
+			// raster frame on the basis of geometry or scene material revisions.
+			if (scene && (!scene->scope || !scene->acceleration || !scene->producerFence ||
+				!MaterialFrameContract::ValidProducerSignal(scene->producerValue, scene->producerFence->GetCompletedValue()) ||
+				!scene->shadingGeometry || !scene->shadingGeometry->buffer || scene->shadingGeometry->revision != scene->geometryRevision ||
+				!scene->materialEvaluation || !scene->materialEvaluation->records || !scene->materialEvaluation->bindings ||
+				scene->materialEvaluation->instanceCount != scene->shadingGeometry->instanceCount ||
+				(rawInputs && (scene->scope != rawInputs->stamp.scope || scene->geometryRevision != rawInputs->stamp.geometryRevision))))
+				scene.reset();
+			if (!fullResolution && !scene) { failure="No secondary scene for diagnostic probe"; return; }
+			const auto seed = scene ? scene->materialEvaluation : nullptr;
+			const Eval emptyEvaluation{};
+			const auto& evaluation=seed ? *seed : emptyEvaluation;
+			const bool mappedScene = scene && rawInputs && rawInputs->MatchesRayGeneration(
+				{frame, scene->scope, scene->geometryRevision, evaluation.revision});
 			bool submitted=false;
 			try {
 				Initialize(backend);
@@ -357,24 +381,28 @@ namespace DX12Native
 				}
 				auto slot=std::make_shared<Submission>();
 				slot->raster=std::move(raster); slot->scene=std::move(scene);
-				if (projection && projection->stamp == MaterialFrameContract::RasterIdentityStamp{frame,slot->scene->scope,
-						slot->scene->geometryRevision,evaluation.revision} && projection->rowCount==projection->instances.size())
+				slot->scope = rawInputs ? rawInputs->stamp.scope : slot->scene->scope;
+				slot->geometryRevision = rawInputs ? rawInputs->stamp.geometryRevision : slot->scene->geometryRevision;
+				if (mappedScene && projection && projection->stamp == rawInputs->stamp &&
+					projection->rowCount==projection->instances.size())
 					slot->projection=std::move(projection);
-				if (fullResolution && rawInputs && rawInputs->Matches({frame,slot->scene->scope,slot->scene->geometryRevision,evaluation.revision},width,height))
-					slot->rawInputs=std::move(rawInputs);
+				if (fullResolution) slot->rawInputs=std::move(rawInputs);
 				const auto catalog = NativePBR::MaterialCatalog::Shared().GetSnapshot();
 				if (slot->rawInputs && slot->rawInputs->evidence->winnerCertified && !slot->rawInputs->materialSources.empty()) {
-					if (rasterCache && rasterSeed == slot->scene->materialEvaluation && rasterCatalog == catalog &&
+					if (rasterCache && rasterSeed == seed && rasterCatalog == catalog &&
 						rasterSources == slot->rawInputs->materialSources) {
 						slot->rasterEvaluation = rasterCache;
 					} else {
 						const auto& previous = rasterCache ? rasterCache->textures : evaluation.textures;
 						slot->rasterEvaluation = Eval::PrepareRasterBindings(device, slot->rawInputs->materialSources,
-							++nextRasterRevision, catalog.get(), evaluation, previous, slot->rasterUploads);
+							++nextRasterRevision, catalog.get(), seed.get(), previous, slot->rasterUploads);
 					}
 				}
-				// Root SRVs have no hardware range; keep even the disabled lookup in bounds.
-				std::vector<uint32_t> projectionLookup(evaluation.instanceCount,UINT32_MAX);
+				if (fullResolution && !slot->rasterEvaluation) { failure="Raster material residency unavailable"; return; }
+				// Valid backing for disabled buffer root SRVs; all corresponding
+				// shader counts are zero. Acceleration SRVs use a null descriptor.
+				slot->emptyTable = Eval::Table(device, std::vector<uint32_t>(128u, 0u));
+				std::vector<uint32_t> projectionLookup(std::max(1u,evaluation.instanceCount),UINT32_MAX);
 				if (slot->projection)
 					for (uint32_t row=0;row<slot->projection->rowCount;++row) {
 						const auto instance=slot->projection->instances[row];
@@ -385,7 +413,7 @@ namespace DX12Native
 				// Cache the local-to-world rows rather than uploading them every frame.
 				if (transformScene.lock() != slot->scene || !transformTable) {
 					std::vector<std::array<float, 12>> rows;
-					if (slot->scene->inputs && slot->scene->inputs->geometry.size() == evaluation.instanceCount) {
+					if (slot->scene && slot->scene->inputs && slot->scene->inputs->geometry.size() == evaluation.instanceCount) {
 						rows.reserve(evaluation.instanceCount);
 						for (const auto& shape : slot->scene->inputs->geometry) {
 							if (!shape) { rows.clear(); break; }
@@ -423,12 +451,13 @@ namespace DX12Native
 					slot->raster->camera.CameraPosAdjust,width,height,gridWidth,gridHeight,collectStats ? 1u : 0u,parallaxEnabled ? 1u : 0u,parallaxWarpFixEnabled ? 1u : 0u,shadowPlane ? 1u : 0u,std::isfinite(mipBias) ? mipBias : 0.0f,slot->projection ? slot->projection->rowCount : 0u,frame,slot->rawInputs && slot->rawInputs->evidence->winnerCertified ? uint32_t(slot->rawInputs->drawRecords.size()) : 0u, SanitizeRTQuality(quality), transformCount,
 					slot->rasterEvaluation ? slot->rasterEvaluation->instanceCount : 0u,
 					slot->rasterEvaluation ? slot->rasterEvaluation->recordCount : 0u, evaluation.recordCount,
-					slot->rasterEvaluation ? slot->rasterEvaluation->rasterSourceCount : 0u};
+					slot->rasterEvaluation ? slot->rasterEvaluation->rasterSourceCount : 0u,
+					slot->scene ? 1u : 0u, mappedScene ? 1u : 0u};
 				void* mapped=nullptr; const D3D12_RANGE noRead{};
 				Eval::Check(slot->camera->Map(0,&noRead,&mapped));
 				std::memcpy(mapped,&constants,sizeof(constants)); slot->camera->Unmap(0,nullptr);
 				const D3D12_DESCRIPTOR_HEAP_DESC heap{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-					NativePBR::kGpuTextureDescriptorCapacity+3+NativePBR::InputOnly::kPlaneCount+kProjectedTextureCapacity,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
+					NativePBR::kGpuTextureDescriptorCapacity+4+NativePBR::InputOnly::kPlaneCount+kProjectedTextureCapacity,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
 				Eval::Check(device->CreateDescriptorHeap(&heap,IID_PPV_ARGS(slot->descriptors.put())));
 				const auto cpu=slot->descriptors->GetCPUDescriptorHandleForHeapStart();
 				const auto step=device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -453,18 +482,27 @@ namespace DX12Native
 				tokenView.Format=DXGI_FORMAT_R16G16B16A16_UNORM;
 				device->CreateShaderResourceView(slot->rawInputs ? slot->rawInputs->evidence->texture->resource.get() : nullptr,
 					&tokenView,{cpu.ptr+SIZE_T(rawDescriptor+NativePBR::InputOnly::kPlaneCount)*step});
+				const auto sceneDescriptor=rawDescriptor+NativePBR::InputOnly::kPlaneCount+1u;
+				D3D12_SHADER_RESOURCE_VIEW_DESC sceneView{};
+				sceneView.ViewDimension=D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+				sceneView.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+				sceneView.RaytracingAccelerationStructure.Location=slot->scene ? slot->scene->acceleration->GetGPUVirtualAddress() : 0u;
+				device->CreateShaderResourceView(nullptr,&sceneView,{cpu.ptr+SIZE_T(sceneDescriptor)*step});
 				Eval::Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,IID_PPV_ARGS(slot->allocator.put())));
 				Eval::Check(device->CreateCommandList(0,D3D12_COMMAND_LIST_TYPE_DIRECT,slot->allocator.get(),pipeline.get(),IID_PPV_ARGS(slot->commands.put())));
 				auto* command=slot->commands.get();
 				ID3D12DescriptorHeap* heaps[]{slot->descriptors.get()};
 				command->SetDescriptorHeaps(1,heaps); command->SetComputeRootSignature(root.get());
-				command->SetComputeRootShaderResourceView(0,slot->scene->shadingGeometry->buffer->GetGPUVirtualAddress());
-				command->SetComputeRootShaderResourceView(1,evaluation.records->GetGPUVirtualAddress());
-				command->SetComputeRootShaderResourceView(2,evaluation.bindings->GetGPUVirtualAddress());
+				const auto emptyAddress=slot->emptyTable->GetGPUVirtualAddress();
+				command->SetComputeRootShaderResourceView(0,slot->scene ? slot->scene->shadingGeometry->buffer->GetGPUVirtualAddress() : emptyAddress);
+				command->SetComputeRootShaderResourceView(1,seed ? evaluation.records->GetGPUVirtualAddress() : emptyAddress);
+				command->SetComputeRootShaderResourceView(2,seed ? evaluation.bindings->GetGPUVirtualAddress() : emptyAddress);
 				command->SetComputeRootDescriptorTable(3,slot->descriptors->GetGPUDescriptorHandleForHeapStart());
 				command->SetComputeRootUnorderedAccessView(4,slot->output->resource->GetGPUVirtualAddress());
 				command->SetComputeRoot32BitConstant(5,evaluation.instanceCount,0);
-				command->SetComputeRootShaderResourceView(6,slot->scene->acceleration->GetGPUVirtualAddress());
+				auto sceneGpu=slot->descriptors->GetGPUDescriptorHandleForHeapStart();
+				sceneGpu.ptr+=UINT64(sceneDescriptor)*step;
+				command->SetComputeRootDescriptorTable(6,sceneGpu);
 				command->SetComputeRootConstantBufferView(7,slot->camera->GetGPUVirtualAddress());
 				command->SetComputeRootUnorderedAccessView(8,slot->counters->GetGPUVirtualAddress());
 				command->SetComputeRootUnorderedAccessView(9,slot->output->rayIdentity->GetGPUVirtualAddress());
@@ -528,7 +566,7 @@ namespace DX12Native
 				}
 				Eval::Check(command->Close());
 				Eval::Check(backend.commandQueue->Wait(slot->raster->readyFence.get(),slot->raster->readyValue));
-				Eval::Check(backend.commandQueue->Wait(slot->scene->producerFence.get(),slot->scene->producerValue));
+				if (slot->scene) Eval::Check(backend.commandQueue->Wait(slot->scene->producerFence.get(),slot->scene->producerValue));
 				if (slot->projection) Eval::Check(backend.commandQueue->Wait(slot->projection->readyFence.get(),slot->projection->readyValue));
 				if (slot->rawInputs) {
 					Eval::Check(backend.commandQueue->Wait(slot->rawInputs->readyFence.get(),slot->rawInputs->readyValue));
@@ -546,7 +584,7 @@ namespace DX12Native
 				nextValue=value; pending->value=value;
 				if (pending->rasterEvaluation && pending->rasterEvaluation != rasterCache) {
 					rasterCache = pending->rasterEvaluation;
-					rasterSeed = pending->scene->materialEvaluation;
+					rasterSeed = seed;
 					rasterCatalog = catalog;
 					rasterSources = pending->rawInputs->materialSources;
 				}
@@ -567,9 +605,9 @@ namespace DX12Native
 					materialFrame->projectionLookup=pending->projectionLookup;
 					materialFrame->raster=pending->raster; materialFrame->scene=pending->scene;
 					materialFrame->descriptors=pending->descriptors;
-					materialFrame->producerValue=value; materialFrame->geometryRevision=pending->scene->geometryRevision;
-					materialFrame->materialRevision=pending->scene->materialEvaluation->revision;
-					materialFrame->frame=frame; materialFrame->scope=pending->scene->scope;
+					materialFrame->producerValue=value; materialFrame->geometryRevision=pending->geometryRevision;
+					materialFrame->materialRevision=seed ? seed->revision : 0;
+					materialFrame->frame=frame; materialFrame->scope=pending->scope;
 					materialFrame->width=gridWidth; materialFrame->height=gridHeight; materialFrame->rowPitch=pitchPixels*kSampleStride;
 					published=std::move(materialFrame);
 				}

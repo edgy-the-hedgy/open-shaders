@@ -260,9 +260,9 @@ namespace DX12Native
 
 		static std::shared_ptr<NativeMaterialEvaluation> PrepareForBindings(ID3D12Device* device,
 			const PreparedMaterialFrame& prepared, std::span<const BindingSource> sources, const TextureCache& previous,
-			std::vector<Upload>& uploads, const NativeMaterialEvaluation* seed = nullptr)
+			std::vector<Upload>& uploads, const NativeMaterialEvaluation* seed = nullptr, bool allowEmptyRecipes = false)
 		{
-			if (prepared.recipes.empty() || prepared.bindings.empty() ||
+			if ((!allowEmptyRecipes && prepared.recipes.empty()) || prepared.bindings.empty() ||
 				prepared.bindings.size() != sources.size() || prepared.bindings.size() > 65535u * 64u) return {};
 			VideoMemoryBudget budget;
 			auto available = budget.Query(device, 0);
@@ -564,6 +564,9 @@ namespace DX12Native
 					!(binding.flags & (MaterialFrameContract::kBaseOnlyBinding | MaterialFrameContract::kMissingBaseTexturesBinding));
 			}
 			result->recordCount = uint32_t(recordTable.size());
+			// A zero-recipe raster frame still publishes its invalid binding rows.
+			// The backing dummy record is never addressable by a valid binding.
+			if (recordTable.empty()) recordTable.emplace_back();
 			result->records = Table(device, recordTable);
 			result->bindings = Table(device, bindingTable);
 			return result;
@@ -572,7 +575,7 @@ namespace DX12Native
 		// One binding per raster material ordinal, independent of TLAS indexing.
 		static std::shared_ptr<NativeMaterialEvaluation> PrepareRasterBindings(ID3D12Device* device,
 			std::span<const DX12::PreparedMaterialSource> materials, uint64_t revision,
-			const NativePBR::MaterialCatalogSnapshot* catalog, const NativeMaterialEvaluation& seed,
+			const NativePBR::MaterialCatalogSnapshot* catalog, const NativeMaterialEvaluation* seed,
 			const TextureCache& previous, std::vector<Upload>& uploads)
 		{
 			PreparedMaterialFrame prepared;
@@ -626,7 +629,7 @@ namespace DX12Native
 				prepared.bindings[i] = NativePBR::PackGpuDrawBinding(identity, revision, UINT32_MAX, 0);
 				prepared.recipes.push_back(std::move(*recipe));
 			}
-			auto result = PrepareForBindings(device, prepared, sources, previous, uploads, &seed);
+			auto result = PrepareForBindings(device, prepared, sources, previous, uploads, seed, true);
 			if (result) {
 				result->rasterSourceCount = uint32_t(materials.size());
 				result->rasterLandscapeRows = Table(device, landscapeRows);

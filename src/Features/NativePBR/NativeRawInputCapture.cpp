@@ -20,9 +20,8 @@ namespace NativePBR
 
 	bool RawInputFrame::Matches(RasterIdentityStamp requested, uint32_t viewWidth, uint32_t viewHeight) const
 	{
-		return stamp.frame == requested.frame && stamp.scope == requested.scope &&
-			stamp.geometryRevision == requested.geometryRevision &&
-			(!stamp.materialRevision || stamp.materialRevision == requested.materialRevision) && width == viewWidth && height == viewHeight && draws &&
+		return stamp.frame == requested.frame && stamp.scope && stamp.scope == requested.scope &&
+			width == viewWidth && height == viewHeight && draws &&
 			drawTable && !drawRecords.empty() &&
 			std::ranges::all_of(planes, [](const auto& plane) { return plane && plane->resource; }) &&
 			readyFence && ValidProducerSignal(readyValue, readyFence->GetCompletedValue()) &&

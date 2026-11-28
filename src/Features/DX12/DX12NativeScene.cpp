@@ -733,11 +733,11 @@ void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 	if (fullNativeDirect)
 		fullNativeDirect->Poll(frame);
 	globals::features::nativePBR.Poll(frame);
-	const auto scene = acceleration.GetScene();
+	auto scene = acceleration.GetScene();
 	const auto grid = globals::features::dx12Resources.GetGrid();
-	if (!scene || !grid || grid->requested.empty() || scene->scope != grid->requested.front().scope ||
-		scene->geometryRevision != grid->geometryRevision || !scene->materialEvaluation || !scene->shadingGeometry)
-		return;
+	if (scene && (!grid || grid->requested.empty() || scene->scope != grid->requested.front().scope ||
+		scene->geometryRevision != grid->geometryRevision || !scene->materialEvaluation || !scene->shadingGeometry))
+		scene.reset();
 	if (!backend) {
 		std::string reason;
 		backend = GraphicsBackend::Create(globals::d3d::device, globals::d3d::context, reason);
@@ -759,10 +759,10 @@ void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 			raster.Capture(*backend, Util::GetCurrentSceneDepthSRV(false), &world->camera, frame, motion, world->jitter);
 		}
 		if (!GraphicsBackend::CheckNativeDeviceHealth(backend->d3d12Device.get(), backend->d3d11Device.get())) return;
-		globals::features::nativePBR.Dispatch(*backend, raster.Get(frame), scene, frame, uint32_t(viewport.x), uint32_t(viewport.y), opaqueReady, FullNativeFrameQuality(frame), rawInputCapture.Get({frame, scene->scope, scene->geometryRevision, scene->materialEvaluation->revision}));
+		globals::features::nativePBR.Dispatch(*backend, raster.Get(frame), scene, frame, uint32_t(viewport.x), uint32_t(viewport.y), opaqueReady, FullNativeFrameQuality(frame), rawInputCapture.GetForFrame(frame));
 	}
 	const auto material = globals::features::nativePBR.Get(frame);
-	if (!material || material->scene != scene || !scene->inputs || !scene->inputs->residency)
+	if (!material || !scene || !material->HasSecondaryGeometry() || material->scene != scene || !scene->inputs || !scene->inputs->residency)
 		return;
 	if (fullNativeDirect && fullNativeDirect->Get(frame))
 		return;

@@ -52,6 +52,8 @@ cbuffer ProbeCamera : register(b1)
     uint RasterRecordCount;
     uint SceneRecordCount;
     uint RasterSourceCount;
+    uint HasSecondaryScene;
+    uint HasRasterRayMapping;
 };
 RWByteAddressBuffer ProbeCounts : register(u1);
 RWByteAddressBuffer ScreenOutput : register(u2);
@@ -192,7 +194,7 @@ Sample EvaluateRasterLocal(RawRasterSurface raw, uint2 mapped, float3 viewRay, f
     uint projectionRow=0xffffffffu;
     // A verified scene binding may supply the reference-local MATO and projector
     // constants. Neither is required to evaluate the base raster material.
-    if (raw.auxiliaryKind==2u && mapped.x<InstanceCount && raw.materialIndex<SceneRecordCount &&
+    if (HasRasterRayMapping!=0u && raw.auxiliaryKind==2u && mapped.x<InstanceCount && raw.materialIndex<SceneRecordCount &&
         ProjectionRowCount>0u) {
         Binding sceneBinding=Bindings[mapped.x];
         if (sceneBinding.materialIndex==raw.materialIndex) {
@@ -283,7 +285,7 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed,
             Random::InterleavedGradientNoise(float2(pixel),ProjectionFrame),rawUsed,coat,shadow);
         if (HasEvaluatedNativeBase(result.color.a)) {
             // Optional correspondence never revokes an otherwise valid material.
-            if (rasterMapped.x<InstanceCount && rasterMapped.y<0x80000000u && visible.materialIndex!=0xffffffffu &&
+            if (HasRasterRayMapping!=0u && rasterMapped.x<InstanceCount && rasterMapped.y<0x80000000u && visible.materialIndex!=0xffffffffu &&
                 Bindings[rasterMapped.x].materialIndex==visible.materialIndex) {
                 hitIdentity=uint2(rasterMapped.x,rasterMapped.y|0x80000000u);
                 if (traced) {
@@ -302,6 +304,9 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed,
         }
         return result;
     }
+    // Certified opaque raster inputs are the only primary visibility
+    // authority. A missing/invalid raw receiver cannot become a ray hit.
+    if (RasterSourceCount!=0u || HasSecondaryScene==0u) return result;
     uint instance, primitive;
     float2 bary;
     float hitDistance;

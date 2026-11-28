@@ -20,14 +20,16 @@ void NativePBR::FrameProducer::Poll(uint32_t frame)
 void NativePBR::FrameProducer::Dispatch(const GraphicsBackend& backend, std::shared_ptr<const DX12Native::RasterFrame> raster,
 	std::shared_ptr<const DX12Native::TopLevel> scene, uint32_t frame, uint32_t width, uint32_t height, bool opaqueReady, uint32_t quality, std::shared_ptr<const RawInputFrame> rawInputs)
 {
-	if (!scene || !scene->materialEvaluation)
+	if (!rawInputs || !rawInputs->Matches({frame, rawInputs->stamp.scope, 0, 0}, width, height))
 		return;
 	if (!probe)
 		probe = std::make_unique<DX12Native::NativeScreenProbe>();
 	if (!opaqueReady)
 		return;
-	const DX12Native::MaterialFrameContract::RasterIdentityStamp stamp{ frame, scene->scope, scene->geometryRevision, scene->materialEvaluation->revision };
-	auto projected = opaqueReady && projection ? projection->GetSubmitted(stamp) : nullptr;
+	const auto stamp = rawInputs->stamp;
+	auto projected = projection && scene && scene->materialEvaluation &&
+		rawInputs->MatchesRayGeneration({frame, scene->scope, scene->geometryRevision, scene->materialEvaluation->revision}) ?
+		projection->GetSubmitted(stamp) : nullptr;
 	const auto& extended = globals::features::extendedMaterials;
 	const bool collectCoverage = globals::state && globals::state->IsDeveloperMode() && frame % kDeveloperCoverageInterval == 0;
 	probe->Dispatch(backend, std::move(raster), std::move(scene), frame, width, height, true, true, collectCoverage,

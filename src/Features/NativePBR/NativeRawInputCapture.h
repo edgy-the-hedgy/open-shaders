@@ -40,8 +40,14 @@ namespace NativePBR
 		winrt::com_ptr<ID3D12Fence> readyFence;
 		uint64_t readyValue = 0, allocationBytes = 0, drawTableCapacity = 0;
 		uint32_t width = 0, height = 0, draws = 0;
+		// Primary raster identity is frame/scope local. Geometry and scene material
+		// revisions certify only the optional sceneInstance/materialIndex fields.
 		bool Matches(DX12Native::MaterialFrameContract::RasterIdentityStamp requested,
 			uint32_t viewWidth, uint32_t viewHeight) const;
+		bool MatchesRayGeneration(DX12Native::MaterialFrameContract::RasterIdentityStamp requested) const
+		{
+			return stamp.scope && stamp.geometryRevision && stamp.materialRevision && stamp == requested;
+		}
 	};
 
 	// Original pass owns the integer MRTs. This producer snapshots them once

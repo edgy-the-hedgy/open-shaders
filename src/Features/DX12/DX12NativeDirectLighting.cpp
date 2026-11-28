@@ -148,7 +148,7 @@ namespace DX12Native
 		dispatchedLights = 0;
 		if (!inputsAvailable) { failure = "Waiting for native light inputs"; return; }
 		if (!material->IsCoherent(material->frame, viewportWidth, viewportHeight) ||
-			!material->scene->acceleration || !material->scene->shadingGeometry || !material->descriptors ||
+			!material->HasSecondaryGeometry() || !material->descriptors ||
 			!material->raster->depth || !material->raster->depth->resource || !material->raster->cameraValid) {
 			failure = "Incompatible native material frame";
 			return;

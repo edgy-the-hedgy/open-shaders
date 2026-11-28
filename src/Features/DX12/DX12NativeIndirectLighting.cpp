@@ -199,7 +199,7 @@ namespace DX12Native
         std::shared_ptr<const DirectLightingFrame> ssrDirect)
     {
         CS_GPU_PASS("NativeLighting::Indirect");
-        if (!material || !environment || !enabled) return;
+        if (!material || !environment || !enabled || !material->HasSecondaryGeometry()) return;
         if (current && current->material == material) return;
         Poll(material->frame);
         if (!material->IsCoherent(material->frame, material->width, material->height) ||
