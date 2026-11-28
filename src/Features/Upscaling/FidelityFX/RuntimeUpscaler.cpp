@@ -1144,6 +1144,13 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 		return false;
 	}
 
+	const auto covers = [](const D3D11_TEXTURE2D_DESC& d, uint32_t w, uint32_t h) {
+		return d.Width >= w && d.Height >= h && d.ArraySize == 1 && d.SampleDesc.Count == 1 && d.MipLevels >= 1;
+	};
+	if (!covers(colorDesc,a_renderWidth,a_renderHeight) || !covers(depthDesc,a_renderWidth,a_renderHeight) ||
+		!covers(motionDesc,a_renderWidth,a_renderHeight) || !covers(reactiveDesc,a_renderWidth,a_renderHeight) ||
+		!covers(transparencyDesc,a_renderWidth,a_renderHeight) || !covers(outputDesc,a_displayWidth,a_displayHeight)) return false;
+
 	if (!EnsureRuntimeUpscalerSharedResources(
 			runtimeUpscalerContextCount,
 			runtimeUpscalerMaxRenderWidth,
@@ -1176,6 +1183,10 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 	                         composite->producerValue && composite->frame == state->frameCount &&
 	                         composite->width == a_renderWidth && composite->height == a_renderHeight &&
 	                         composite->format == colorDesc.Format && (!fullNative || (prepared && prepared->MatchesColor(composite)));
+	if (fullNative && !nativeColor) {
+		runtimeNativeHistoryDiscontinuous = true;
+		return false;
+	}
 
 	auto isValidShared = [](WrappedResource* a_resource) {
 		return a_resource && a_resource->resource11 && a_resource->resource.get();
@@ -1411,8 +1422,9 @@ bool FidelityFX::UpscaleRegion(uint32_t a_contextIndex, ID3D11Resource* a_color,
 	const auto preparedFrame = globals::features::upscaling.nativePreparedFrame;
 	const auto* currentState = globals::state;
 	const bool fullNativeWorld = globals::features::dx12Control.UsesExclusiveMaterials() &&
-		currentState && currentState->worldRenderedThisFrame && !globals::game::isVR;
-	const bool coherentWorld = fullNativeWorld && preparedFrame && preparedFrame->world &&
+		currentState && !globals::game::isVR;
+	const bool coherentWorld = fullNativeWorld && preparedFrame &&
+		preparedFrame->MatchesColor(globals::features::upscaling.nativeCompositeFrame) &&
 		preparedFrame->MatchesInputs(currentState->frameCount,a_renderWidth,a_renderHeight,
 			{a_depth,a_motionVectors,a_reactiveMask,a_transparencyCompositionMask}) &&
 		preparedFrame->displayWidth == a_displayWidth && preparedFrame->displayHeight == a_displayHeight;
