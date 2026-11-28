@@ -84,7 +84,12 @@ namespace NativeLLF
 		{
 			float3 position{}, color{};
 			float radius = 0.0f;
+			size_t emitterGroup = 0;
 		};
+		struct ParticlePreparation {
+			std::atomic<std::shared_ptr<const std::vector<ParticleEmitter>>> completed;
+		};
+		std::shared_ptr<ParticlePreparation> particlePreparation;
 		ParticleLights configs;
 		LightLimitFix::Settings particleSettings;
 		ParticleInput::ReferenceCache references;

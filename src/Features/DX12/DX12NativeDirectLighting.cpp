@@ -278,8 +278,15 @@ namespace DX12Native
 			const auto gpu = slot->descriptors->GetGPUDescriptorHandleForHeapStart();
 			const auto step = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 			const auto cap = NativePBR::kGpuTextureDescriptorCapacity;
-			// Copy immutable material texture/depth descriptors; no duplicate texture residency.
-			device->CopyDescriptorsSimple(cap + 1, cpu, slot->material->descriptors->GetCPUDescriptorHandleForHeapStart(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+			// Shader-visible heaps cannot be descriptor-copy sources. Recreate views
+			// from the immutable material evaluation, retaining the same resources.
+			slot->material->rasterMaterialEvaluation->WriteTextureViews(device, cpu);
+			D3D12_SHADER_RESOURCE_VIEW_DESC depthView{};
+			depthView.Format = DXGI_FORMAT_R32_FLOAT;
+			depthView.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+			depthView.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			depthView.Texture2D.MipLevels = 1;
+			device->CreateShaderResourceView(depthResource, &depthView, {cpu.ptr + SIZE_T(cap) * step});
 			D3D12_SHADER_RESOURCE_VIEW_DESC as{};
 			as.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
 			as.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;

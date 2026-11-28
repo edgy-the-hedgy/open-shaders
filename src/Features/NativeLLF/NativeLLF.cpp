@@ -134,7 +134,7 @@ std::shared_ptr<const NativeLLF::SpatialPolicy::Publication> NativeLLF::Producer
 	if (!gate || worker->busy.exchange(true, std::memory_order_acq_rel))
 		return {};
 	try {
-		const bool accepted = gate->TrySubmit([worker, signature = std::move(signature)]() mutable {
+		const bool accepted = gate->TrySubmit(Util::RuntimePreparationLane::Light, [worker, signature = std::move(signature)]() mutable {
 			worker->tasks.fetch_add(1, std::memory_order_relaxed);
 			try {
 				auto publication = std::make_shared<SpatialPolicy::Publication>();
@@ -224,6 +224,49 @@ void NativeLLF::Producer::Reset()
 	std::scoped_lock observationLock(observationMutex);
 	current.swap(pending);
 	pending.clear();
+	particlePreparation.reset();
+	// Copy engine-owned particle values on the observation thread, then cluster
+	// only immutable numeric values on Worker 04's bounded light lane.
+	if (!current.empty() && particleSettings.EnableParticleLightsOptimization) {
+		const auto gate = globals::shaderCache ? globals::shaderCache->GetRuntimeTaskGate() : nullptr;
+		if (gate) {
+			auto job = std::make_shared<ParticlePreparation>();
+			const float threshold = particleSettings.ParticleClusterThreshold;
+			try {
+				if (gate->TrySubmit(Util::RuntimePreparationLane::Light, [job, input = current, threshold]() {
+					auto output = std::make_shared<std::vector<ParticleEmitter>>();
+					output->reserve(input.size());
+					ParticleEmitter cluster{};
+					uint32_t members = 0;
+					const auto flush = [&] {
+						if (!members) return;
+						cluster.position = cluster.position / float(members);
+						cluster.radius /= float(members);
+						output->push_back(cluster);
+						cluster = {};
+						members = 0;
+					};
+					for (const auto& sample : input) {
+						if (members) {
+							const auto delta = sample.position - cluster.position / float(members);
+							if (sample.emitterGroup != cluster.emitterGroup ||
+								std::sqrt(delta.Dot(delta)) + std::abs(sample.radius - cluster.radius / float(members)) > threshold)
+								flush();
+						}
+						cluster.emitterGroup = sample.emitterGroup;
+						cluster.position += sample.position;
+						cluster.color += sample.color;
+						cluster.radius += sample.radius;
+						++members;
+					}
+					flush();
+					job->completed.store(std::move(output), std::memory_order_release);
+				})) particlePreparation = std::move(job);
+			} catch (...) {
+				// Bounded admission or allocation failure: use current raw samples.
+			}
+		}
+	}
 	observed.clear();
 	{
 		std::scoped_lock lock(referenceMutex);
@@ -239,6 +282,7 @@ void NativeLLF::Producer::ResetParticleInput()
 	std::scoped_lock observationLock(observationMutex);
 	pending.clear();
 	current.clear();
+	particlePreparation.reset();
 	observed.clear();
 	{
 		std::scoped_lock lock(referenceMutex);
@@ -279,7 +323,7 @@ void NativeLLF::Producer::CaptureEmitter(const LightLimitFix::ParticleLightInfo&
 		if (pending.size() >= DX12::kMaxPreparedLights || !finite(position) || !finite(color) ||
 			!std::isfinite(radius) || radius <= 1e-4f || color.x + color.y + color.z <= 1e-4f)
 			return;
-		pending.push_back({ position, color, radius });
+		pending.push_back({ position, color, radius, observed.size() });
 	};
 	const auto tint = [&](float3 color) {
 		color = LightLimitFix::Saturation(color, particleSettings.ParticleLightsSaturation);
@@ -306,17 +350,6 @@ void NativeLLF::Producer::CaptureEmitter(const LightLimitFix::ParticleLightInfo&
 		count = std::min(count, uint32_t(runtime.numVertices));
 	count = std::min(count, uint32_t(std::max(1, particleSettings.MaxParticlesPerEmitter)));
 
-	// Spatially coherent clusters per emitter: never merge unrelated emitters.
-	// Keep sums for radiance and means for position/radius, as in legacy LLF.
-	ParticleEmitter cluster{};
-	uint32_t members = 0;
-	const auto flush = [&] {
-		if (members) {
-			append(cluster.position / float(members), cluster.color, cluster.radius / float(members));
-			cluster = {};
-			members = 0;
-		}
-	};
 	for (uint32_t index = 0; index < count && pending.size() < DX12::kMaxPreparedLights; ++index) {
 		auto p = runtime.positions[index];
 		if (!system->GetParticleSystemRuntimeData().isWorldspace) {
@@ -337,19 +370,8 @@ void NativeLLF::Producer::CaptureEmitter(const LightLimitFix::ParticleLightInfo&
 		color = tint(color) * alpha * particleSettings.ParticleBrightness;
 		if (!finite(position) || !finite(color) || !std::isfinite(radius) || radius <= 0.0f)
 			continue;
-		if (members) {
-			const auto delta = position - cluster.position / float(members);
-			const float distance = std::sqrt(delta.Dot(delta));
-			if (!particleSettings.EnableParticleLightsOptimization ||
-				distance + std::abs(radius - cluster.radius / float(members)) > particleSettings.ParticleClusterThreshold)
-				flush();
-		}
-		cluster.position += position;
-		cluster.color += color;
-		cluster.radius += radius;
-		++members;
+		append(position, color, radius);
 	}
-	flush();
 }
 
 std::shared_ptr<const NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInputs(std::shared_ptr<const DX12::Grid> grid, uint32_t scope, uint64_t geometryRevision, uint32_t frame, bool opaqueReady)
@@ -632,7 +654,9 @@ std::shared_ptr<const NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectD
 			const auto eye = Util::GetEyePosition(0);
 			const float fadeStart = RE::Sky::GetLightLODStartFadeSquared();
 			const float fadeEnd = RE::Sky::GetLightLODEndFadeSquared();
-			for (const auto& particle : current) {
+			const auto clustered = particlePreparation ? particlePreparation->completed.load(std::memory_order_acquire) : nullptr;
+			// Late or rejected jobs never block this frame or reuse stale particles.
+			for (const auto& particle : clustered ? *clustered : current) {
 				if (particleLights.size() >= particleReserve)
 					break;
 				const float3 offset{ particle.position.x - eye.x, particle.position.y - eye.y, particle.position.z - eye.z };
