@@ -526,7 +526,12 @@ bool Streamline::CheckFrameConstants(sl::ViewportHandle p_viewport, uint32_t eye
 	const bool fullNativeWorld = globals::features::dx12Control.UsesExclusiveMaterials() && state->worldRenderedThisFrame && !globals::game::isVR;
 	std::optional<UpscalingCamera::CameraFrame> camera;
 	std::shared_ptr<const DX12Native::NativeWorldFrame> world;
-	if (fullNativeWorld && globals::game::graphicsState)
+	const auto prepared = globals::features::upscaling.nativePreparedFrame;
+	const bool nativePrepared = globals::features::dx12Control.UsesExclusiveMaterials() && prepared &&
+		prepared->frame == state->frameCount && prepared->HasParameters() && eyeIndex == 0u;
+	if (fullNativeWorld && nativePrepared)
+		world = prepared->world;
+	else if (fullNativeWorld && globals::game::graphicsState)
 		world = globals::features::dx12NativeScene.GetWorldFrame(
 			globals::game::graphicsState->GetFrameCount(), state->frameCount);
 	if (world) {
@@ -571,9 +576,8 @@ bool Streamline::CheckFrameConstants(sl::ViewportHandle p_viewport, uint32_t eye
 
 	auto& upscaling = globals::features::upscaling;
 	auto jitter = upscaling.jitter;
-	const auto prepared = upscaling.nativePreparedFrame;
-	const bool nativePrepared = globals::features::dx12Control.UsesExclusiveMaterials() && prepared && prepared->frame == state->frameCount && eyeIndex == 0u;
 	if (nativePrepared && !world) {
+		slConstants.cameraAspectRatio = float(prepared->displayWidth) / float(prepared->displayHeight);
 		slConstants.cameraFOV = prepared->cameraFov;
 		slConstants.cameraNear = prepared->cameraNear;
 		slConstants.cameraFar = prepared->cameraFar;
