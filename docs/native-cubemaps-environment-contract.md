@@ -30,3 +30,7 @@ Forward compatibility copies completed native base/reflection mips into DX11 SRV
 ## Runtime acceptance
 
 Verify interior and exterior basePublished, exterior reflectionPublished, fresh sky acquisition where visible, nonzero mip resources/revision, forwardEnvironment.published, and nativeRadianceInputAdmitted once raster reconstruction is valid. Check dry-cell water SSR skips, generation rollover, scene transitions, encoding changes and device loss. A successful compile alone does not establish visible coverage.
+
+## Concurrent raster ABI transition
+
+The audited HEAD retires the legacy 16-bit token table. Cubemap observations use the existing RawInputFrame::Matches contract and reconstructed per-pixel candidate/radiance masks, without changing Worker 03's ABI. Opaque and water reflection shaders temporarily receive zero legacy token count: inline ray queries and native secondary lighting remain active, but optional screen-hit radiance reuse is not admitted until its integer identity correspondence is ported. Current-frame water stencil/cell admission is unchanged. The existing architecture lint that requires CaptureRaw's DX11 dispatch is obsolete; Worker 03 owns the shared lint file and must update that assertion (and the older NativeDirect.Load2 assertion) without restoring DX11 lighting.

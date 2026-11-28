@@ -163,19 +163,10 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         !ValidProducerSignal(direct->readyValue,direct->readyFence->GetCompletedValue())){++rejected;return;}
     const auto& material=*direct->material;
     const auto stamp=RasterIdentityStamp{world.engineFrame,material.scope,material.geometryRevision,material.materialRevision};
-    // Optional screen hit reuse. Never require opaque reconstruction or the
-    // first completed environment generation to trace a water reflection.
-    if(!native || native->material!=direct->material || native->direct!=direct || native->frame!=world.engineFrame ||
-        native->quality!=direct->quality || native->width!=world.width || native->height!=world.height ||
-        !native->environmentRadiance || native->environmentRadiance->GetDesc().Width<uint64_t(world.width)*world.height*8u ||
-        !native->readyFence || !ValidProducerSignal(native->readyValue,native->readyFence->GetCompletedValue()))
-        native.reset();
-    auto evidence=native?native->rasterEvidence:nullptr;
-    if(!evidence || evidence->stamp!=stamp || !evidence->tokenCount || !evidence->tokenTable ||
-       !evidence->texture || !evidence->texture->resource || evidence->width<world.width || evidence->height<world.height ||
-       !evidence->readyFence || !ValidProducerSignal(evidence->readyValue,evidence->readyFence->GetCompletedValue())){
-        evidence.reset();native.reset();
-    }
+    // The integer raw input planes are not legacy 16-bit token evidence.
+    // Inline secondary shading and cube misses remain active; do not admit
+    // optional screen hit reuse until integer correspondence is ported.
+    native.reset();
     const auto characters=direct->characters;
     const auto& scene=*material.scene;
     const auto& evaluation=*scene.materialEvaluation;
@@ -285,9 +276,8 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         view(previous?previous->mask->resource.get():nullptr,DXGI_FORMAT_R32_FLOAT,kHistoryOffset+1);
         view(previous?previous->result->resource.get():nullptr,DXGI_FORMAT_R16G16B16A16_FLOAT,kHistoryOffset+2);
         auto* opaqueDepth=material.raster->depth->resource.get();
-        auto* tokens=evidence?evidence->texture->resource.get():nullptr;
         view(opaqueDepth,DXGI_FORMAT_R32_FLOAT,3);
-        view(tokens,DXGI_FORMAT_R16G16B16A16_UNORM,4);
+        view(nullptr,DXGI_FORMAT_R16G16B16A16_UNORM,4);
         evaluation.WriteTextureViews(device,{cpu.ptr+SIZE_T(kTextureOffset)*step});
         const auto characterView=characters?characters->Reflections():CharacterCasterFrame::ReflectionView{};
         const auto* actor=characterView.actor;
@@ -307,13 +297,13 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         if(sky)Transition(cmd,sky->resource.get(),common,read);
         Transition(cmd,slot->result->resource.get(),common,write);
         Transition(cmd,slot->sparse->resource.get(),common,write);
-        Transition(cmd,opaqueDepth,common,read);if(tokens)Transition(cmd,tokens,common,read);
+        Transition(cmd,opaqueDepth,common,read);
         if(previous){Transition(cmd,previous->raw->resource.get(),common,read);Transition(cmd,previous->mask->resource.get(),common,read);Transition(cmd,previous->result->resource.get(),common,read);}
         ID3D12DescriptorHeap* heaps[]{slot->descriptors.get()};cmd->SetDescriptorHeaps(1,heaps);cmd->SetComputeRootSignature(root.get());
         cmd->SetComputeRootDescriptorTable(0,slot->descriptors->GetGPUDescriptorHandleForHeapStart());
         const Constants constants{world.camera.CameraProj,world.camera.CameraProjInverse,world.camera.CameraViewInverse,world.camera.CameraView,
             world.camera.CameraPosAdjust,world.width,world.height,ow,oh,uint32_t(bool(sky)),uint32_t(encoding),quality,world.engineFrame,
-            evaluation.instanceCount,uint32_t(bool(characters)),material.rayIdentityRowPitch,evidence?evidence->tokenCount:0u,
+            evaluation.instanceCount,uint32_t(bool(characters)),material.rayIdentityRowPitch,0u,
             emitterRadius,uint32_t(bool(previous)),{},previous?previous->viewProjection:Matrix{},previous?previous->positionAdjust:float4{},
             direct->directional.direction,direct->directional.radiance,
             direct->lightCount,uint32_t(direct->foliageScattering),
@@ -329,7 +319,7 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         cmd->SetComputeRootShaderResourceView(6,evaluation.bindings->GetGPUVirtualAddress());
         cmd->SetComputeRootShaderResourceView(7,characters?characters->acceleration->GetGPUVirtualAddress():scene.acceleration->GetGPUVirtualAddress());
         cmd->SetComputeRootShaderResourceView(8,material.rayIdentity->GetGPUVirtualAddress());
-        cmd->SetComputeRootShaderResourceView(9,evidence?evidence->tokenTable->GetGPUVirtualAddress():material.rayIdentity->GetGPUVirtualAddress());
+        cmd->SetComputeRootShaderResourceView(9,material.rayIdentity->GetGPUVirtualAddress());
         cmd->SetComputeRootShaderResourceView(10,native?native->environmentRadiance->GetGPUVirtualAddress():material.samples->GetGPUVirtualAddress());
         cmd->SetComputeRootShaderResourceView(11,direct->lights->GetGPUVirtualAddress());
         cmd->SetComputeRootShaderResourceView(12,projection?material.projectionLookup->GetGPUVirtualAddress():material.samples->GetGPUVirtualAddress());
@@ -351,7 +341,7 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         if(sky)Transition(cmd,sky->resource.get(),read,common);
         Transition(cmd,slot->result->resource.get(),write,common);
         Transition(cmd,slot->sparse->resource.get(),write,common);
-        Transition(cmd,opaqueDepth,read,common);if(tokens)Transition(cmd,tokens,read,common);
+        Transition(cmd,opaqueDepth,read,common);
         if(previous){Transition(cmd,previous->raw->resource.get(),read,common);Transition(cmd,previous->mask->resource.get(),read,common);Transition(cmd,previous->result->resource.get(),read,common);}
         DX::ThrowIfFailed(cmd->Close());
         // Capture only engine water coverage and native-depth values.
@@ -386,7 +376,6 @@ void NativeCubemaps::WaterSSR::Draw(const GraphicsBackend& backend,const NativeW
         if(sky)DX::ThrowIfFailed(owner.commandQueue->Wait(slot->environment->producerFence.get(),slot->environment->producerValue));
         DX::ThrowIfFailed(owner.commandQueue->Wait(direct->readyFence.get(),direct->readyValue));
         if(native)DX::ThrowIfFailed(owner.commandQueue->Wait(native->readyFence.get(),native->readyValue));
-        if(evidence)DX::ThrowIfFailed(owner.commandQueue->Wait(evidence->readyFence.get(),evidence->readyValue));
         if(projection)DX::ThrowIfFailed(owner.commandQueue->Wait(projection->readyFence.get(),projection->readyValue));
         if(characters)DX::ThrowIfFailed(owner.commandQueue->Wait(characters->readyFence.get(),characters->readyValue));
         slot->ready=UINT64_MAX;

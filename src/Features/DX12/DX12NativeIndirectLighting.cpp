@@ -211,7 +211,6 @@ namespace DX12Native
         if ((enabled & Transmission) && (available & IndirectDiffuse)) available |= Transmission;
         if (!available) { failure = "Waiting for completed environment inputs"; return; }
         const uint32_t width = material->width, height = material->height;
-        const auto& evidence = material->rawRasterEvidence;
         const RasterIdentityStamp stamp{material->frame, material->scope, material->geometryRevision, material->materialRevision};
         if (!ssrDirect || ssrDirect->material != material || ssrDirect->frame != material->frame ||
             ssrDirect->quality != SanitizeRTQuality(quality) || ssrDirect->width != width || ssrDirect->height != height ||
@@ -220,9 +219,8 @@ namespace DX12Native
             ssrDirect->samples->GetDesc().Width < uint64_t(ssrDirect->rowPitch)*height ||
             !ssrDirect->readyFence || !ValidProducerSignal(ssrDirect->readyValue,ssrDirect->readyFence->GetCompletedValue()))
             ssrDirect.reset();
-        const bool validEvidence=evidence && evidence->stamp == stamp && evidence->tokenCount && evidence->texture && evidence->texture->resource &&
-            evidence->tokenTable && evidence->width >= width && evidence->height >= height &&
-            evidence->readyFence && ValidProducerSignal(evidence->readyValue,evidence->readyFence->GetCompletedValue());
+        // Integer raw inputs cannot supply retired 16-bit token evidence.
+        // Inline ray/secondary shading and the environment miss remain active.
         const uint64_t bytes = uint64_t(width) * height * kLightingStride;
         if (!bytes || bytes > UINT32_MAX || width > UINT32_MAX / kLightingStride) return;
         std::shared_ptr<IndirectLightingFrame>* selected = nullptr;
@@ -308,14 +306,12 @@ namespace DX12Native
             const auto* actor = characterView.actor;
             const auto& actorEvaluation = characterView.evaluation ? *characterView.evaluation : *slot->material->scene->materialEvaluation;
             actorEvaluation.WriteTextureViews(device, cpu(kCharacterTextureOffset));
-            const auto ssrEvidence = slot->screenSpaceReflections && validEvidence ? evidence : nullptr;
             const auto projection=slot->screenSpaceReflections && slot->material->projection && slot->material->projectionLookup &&
                 slot->material->projection->Ready(stamp)?slot->material->projection:nullptr;
             WriteProjectionViews(device,projection.get(),cpu(5+NativePBR::kGpuTextureDescriptorCapacity));
             auto tokenView = depthView;
             tokenView.Format = DXGI_FORMAT_R16G16B16A16_UNORM;
-            auto* tokens = ssrEvidence ? ssrEvidence->texture->resource.get() : nullptr;
-            device->CreateShaderResourceView(tokens, &tokenView, cpu(4 + NativePBR::kGpuTextureDescriptorCapacity));
+            device->CreateShaderResourceView(nullptr, &tokenView, cpu(4 + NativePBR::kGpuTextureDescriptorCapacity));
             ID3D12DescriptorHeap* heaps[]{ slot->descriptors.get() };
             cmd->SetDescriptorHeaps(1, heaps);
             const auto project = [&](const std::shared_ptr<const EnvironmentCube>& cube, UINT descriptor) {
@@ -343,7 +339,7 @@ namespace DX12Native
                 raster.camera.CameraPosAdjust, slot->material->scene->materialEvaluation->instanceCount, slot->characters ? 1u : 0u, slot->quality, slot->frame,
                 raster.camera.CameraProj, raster.camera.CameraView, slot->screenSpaceReflections ? 1u : 0u,
                 slot->screenSpaceReflections ? slot->ssrDirect->rowPitch : 0u, slot->material->rayIdentityRowPitch,
-                ssrEvidence ? ssrEvidence->tokenCount : 0u,
+                0u,
                 slot->ssrDirect ? slot->ssrDirect->directional.direction : float4{},
                 slot->ssrDirect ? slot->ssrDirect->directional.radiance : float4{},
                 slot->ssrDirect ? slot->ssrDirect->lightCount : 0u,
@@ -377,7 +373,7 @@ namespace DX12Native
             cmd->SetComputeRootShaderResourceView(11, slot->characters ? slot->characters->acceleration->GetGPUVirtualAddress() : scene.acceleration->GetGPUVirtualAddress());
             cmd->SetComputeRootShaderResourceView(12, slot->screenSpaceReflections ? slot->ssrDirect->samples->GetGPUVirtualAddress() : materialAddress);
             cmd->SetComputeRootShaderResourceView(13, slot->material->rayIdentity->GetGPUVirtualAddress());
-            cmd->SetComputeRootShaderResourceView(14, ssrEvidence ? ssrEvidence->tokenTable->GetGPUVirtualAddress() : materialAddress);
+            cmd->SetComputeRootShaderResourceView(14, materialAddress);
             cmd->SetComputeRootShaderResourceView(15, slot->ssrDirect ? slot->ssrDirect->lights->GetGPUVirtualAddress() : materialAddress);
             cmd->SetComputeRootShaderResourceView(16,projection?slot->material->projectionLookup->GetGPUVirtualAddress():materialAddress);
             cmd->SetComputeRootShaderResourceView(17,actor?actor->positions->GetGPUVirtualAddress():materialAddress);
@@ -386,12 +382,10 @@ namespace DX12Native
             cmd->SetComputeRootShaderResourceView(20,actorEvaluation.bindings->GetGPUVirtualAddress());
             cmd->SetComputeRootShaderResourceView(21,characterView.movers?characterView.movers->GetGPUVirtualAddress():materialAddress);
             TransitionProjectionViews(cmd,projection.get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            if (tokens) Transition(cmd, tokens, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             cmd->Dispatch((ShadowPhysicalWidth(ShadowLogicalExtent(width, slot->quality), slot->quality) + 7) / 8,
                 (ShadowLogicalExtent(height, slot->quality) + 7) / 8, 1);
             TransitionProjectionViews(cmd,projection.get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COMMON);
             Transition(cmd, slot->samples.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
-            if (tokens) Transition(cmd, tokens, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
             Transition(cmd, depth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
             if (base) Transition(cmd, base, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
             if (reflection != base) Transition(cmd, reflection, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
@@ -400,7 +394,6 @@ namespace DX12Native
             if (slot->characters) Eval::Check(backend.commandQueue->Wait(slot->characters->readyFence.get(), slot->characters->readyValue));
             if (env.producerFence && env.producerValue) Eval::Check(backend.commandQueue->Wait(env.producerFence.get(), env.producerValue));
             if (projection) Eval::Check(backend.commandQueue->Wait(projection->readyFence.get(),projection->readyValue));
-            if (ssrEvidence) Eval::Check(backend.commandQueue->Wait(ssrEvidence->readyFence.get(), ssrEvidence->readyValue));
             if (slot->screenSpaceReflections) {
                 Eval::Check(backend.commandQueue->Wait(slot->ssrDirect->readyFence.get(), slot->ssrDirect->readyValue));
             }

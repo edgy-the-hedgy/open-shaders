@@ -126,7 +126,9 @@ void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend, ID3D11Sha
         if(!native || native->frame!=frame || !native->material ||
             native->material->scope!=currentStamp.scope || !native->direct ||
             native->direct->material!=native->material || !native->rasterEvidence ||
-            !native->rasterEvidence->tokenCount || !native->ownershipMask || !native->environmentRadiance)
+            !native->rasterEvidence->Matches({frame,currentStamp.scope,native->material->geometryRevision,
+                native->material->materialRevision},native->width,native->height) ||
+            !native->ownershipMask || !native->environmentRadiance)
             native.reset();
         std::array<float4,3> dalc{};
         if(!globals::state->GetAmbientSH(frame,currentStamp.pluginFrame,dalc)) return;
