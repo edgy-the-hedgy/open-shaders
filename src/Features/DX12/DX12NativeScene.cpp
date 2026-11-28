@@ -37,6 +37,7 @@
 #include "Utils/DevBenchUx.h"
 #include "Utils/Game.h"
 #include "Utils/PointLightFlags.h"
+#include "Utils/StringUtils.h"
 #include "Utils/TracyZones.h"
 #include <Windows.h>
 
@@ -1257,6 +1258,30 @@ std::shared_ptr<const DX12::PreparedMaterialSource> DX12NativeScene::ObserveRast
 					for (uint32_t layer = 0u; layer < 6u; ++layer) {
 						scalars.rasterLandscapeSnow[layer] = landscape->textureIsSnow[layer];
 						scalars.rasterLandscapeSpecular[layer] = landscape->textureIsSpecPower[layer];
+					}
+					const auto sources=LandscapeSeamsFix::GetInstance().NativeLayerSources(&geometry);
+					const auto canonical=[](std::string_view path) {
+						auto value=Util::ToLowerAscii(std::string(path));
+						std::ranges::replace(value,'/','\\');
+						if (value.starts_with("data\\textures\\")) value.erase(0,14);
+						else if (value.starts_with("textures\\")) value.erase(0,9);
+						return value;
+					};
+					for (uint32_t layer=0;layer<sources.size();++layer) {
+						const auto& source=sources[layer];
+						if (!source.textures || source.textures->oversized) continue;
+						const auto& snapshot=*source.textures;
+						const auto& bound=scalars.rasterLandscapeTextures[layer];
+						// Never apply a stale seasonal or neighboring TXST to another layer.
+						if (bound[0].empty() || bound[1].empty() ||
+							canonical(bound[0])!=canonical(snapshot.paths[0]) ||
+							canonical(bound[1])!=canonical(snapshot.paths[1])) continue;
+						scalars.rasterLandscapeEditorIds[layer]=snapshot.editorId;
+						scalars.rasterLandscapePbrPaths[layer]={snapshot.paths[5],snapshot.paths[3]};
+						if (layer>=6u) {
+							scalars.rasterLandscapeSnow[layer]=source.snow;
+							scalars.rasterLandscapeSpecular[layer]=source.specular;
+						}
 					}
 				}
 			}
