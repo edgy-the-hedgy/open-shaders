@@ -1,4 +1,5 @@
 #pragma once
+#include "DX12GpuTimestampPair.h"
 
 #include "DX12NativeAcceleration.h"
 #include "DX12NativeRasterCapture.h"
@@ -26,6 +27,7 @@ namespace DX12Native
 		static constexpr uint32_t kCounterCount = kCoverageCounterCount + NativePBR::SpecializedMaterial::CounterWords;
 		static constexpr uint64_t kSpecializedCounterOffset = kCoverageCounterCount * sizeof(uint32_t);
 		static constexpr uint64_t kCounterBytes = kCounterCount * sizeof(uint32_t);
+		static constexpr uint64_t kTimestampOffset=(kCounterBytes+7u)&~7ull;
 		static constexpr uint32_t kSampleStride = MaterialFrameContract::kMaterialStride; // 16 IEEE binary16 values, same component ordering as Eval::Sample.
 		struct Camera
 		{
@@ -58,6 +60,7 @@ namespace DX12Native
 			winrt::com_ptr<ID3D12Resource> projectionLookup, transforms, emptyTable, rasterMaterialLookup, rasterProjectionLookup;
 			std::shared_ptr<OutputAllocation> output;
 			winrt::com_ptr<ID3D12Resource> readback, camera, counters, counterInit;
+			GpuTimestampPair timing;
 			winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
 			winrt::com_ptr<ID3D12RootSignature> root;
 			winrt::com_ptr<ID3D12PipelineState> pipeline;
@@ -272,6 +275,7 @@ namespace DX12Native
 			uint32_t specializedRequested=0, specializedAllocated=0, specializedOverflow=0;
 			bool specializedTileMode=false;
 			std::array<uint32_t,15> specializedPropertyOverflow{};
+			double gpuMilliseconds=-1.0;
 			uint32_t reusedAllocations=0, submittedFrames=0;
 		};
 		struct MaterialFrame
@@ -288,7 +292,12 @@ namespace DX12Native
 			bool specializedEnabled=false;
 			bool HasSpecialized() const
 			{
-				return specializedEnabled && allocation && specializedDirectory && specializedPool &&
+				return specializedEnabled && allocation && allocation->specializedEnabled && specializedDirectory && specializedPool &&
+					specializedCapacity==allocation->specializedCapacity &&
+					specializedDirectory->GetDesc().Dimension==D3D12_RESOURCE_DIMENSION_BUFFER &&
+					specializedPool->GetDesc().Dimension==D3D12_RESOURCE_DIMENSION_BUFFER &&
+					specializedDirectory->GetDesc().Width>=allocation->directoryBytes &&
+					specializedPool->GetDesc().Width>=allocation->payloadBytes &&
 					allocation->specializedDirectory.get()==specializedDirectory.get() &&
 					allocation->specializedPool.get()==specializedPool.get() &&
 					NativePBR::SpecializedMaterial::ValidPublicationLayout(specializedVersion,width,height,rowPitch/kSampleStride,
@@ -436,6 +445,7 @@ namespace DX12Native
 					for(size_t n=0;n<result.specializedPropertyOverflow.size();++n) result.specializedPropertyOverflow[n]=counts[14+n];
 					const D3D12_RANGE noWrite{};
 					pending->readback->Unmap(0,&noWrite);
+					result.gpuMilliseconds=pending->timing.Read(pending->readback.get(),kTimestampOffset);
 					if (uint64_t(result.evaluated)+result.noHit+result.depthMismatch+result.missingMaterial+result.invalid+result.baseOnly+result.unsupportedMaterial+result.missingTextures==result.sampled) {
 						stats=result;
 						if(pending->fullResolution && pending->width==specializedWidth && pending->height==specializedHeight) {
@@ -683,8 +693,10 @@ namespace DX12Native
 					D3D12_RESOURCE_STATE_COPY_DEST,
 					D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 				slot->counterInit=Eval::Table(device,std::vector<uint32_t>(kCounterCount,0));
-				if (collectStats)
-					slot->readback=Eval::Buffer(device,kCounterBytes,D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_STATE_COPY_DEST);
+				if (collectStats) {
+					slot->readback=Eval::Buffer(device,kTimestampOffset+16,D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_STATE_COPY_DEST);
+					slot->timing.Initialize(device,backend.commandQueue.get());
+				}
 				slot->camera=Eval::Buffer(device,256,D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ);
 				const Camera constants{slot->raster->camera.CameraProjInverse,slot->raster->camera.CameraViewInverse,
 					slot->raster->camera.CameraPosAdjust,width,height,gridWidth,gridHeight,collectStats ? 1u : 0u,parallaxEnabled ? 1u : 0u,parallaxWarpFixEnabled ? 1u : 0u,shadowPlane ? 1u : 0u,std::isfinite(mipBias) ? mipBias : 0.0f,slot->projection ? slot->projection->rowCount : 0u,frame,slot->rawInputs ? slot->rawInputs->ConsumerDrawCount({frame,slot->scope,mappedScene ? slot->scene->geometryRevision : 0u,mappedScene ? evaluation.revision : 0u}) : 0u, SanitizeRTQuality(quality), transformCount,
@@ -797,7 +809,9 @@ namespace DX12Native
 						CD3DX12_RESOURCE_BARRIER::Transition(slot->output->specializedPool.get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_UNORDERED_ACCESS)};
 					command->ResourceBarrier(UINT(outputBarriers.size()),outputBarriers.data());
 				}
+				slot->timing.Begin(command);
 				command->Dispatch((gridWidth+7)/8,(gridHeight+7)/8,1);
+				slot->timing.End(command,slot->readback.get(),kTimestampOffset);
 				const auto publicationBarrier=CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
 				command->ResourceBarrier(1,&publicationBarrier);
 				if (slot->rawInputs) {

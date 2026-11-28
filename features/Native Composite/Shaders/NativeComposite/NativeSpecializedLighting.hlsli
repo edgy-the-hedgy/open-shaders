@@ -73,7 +73,9 @@ bool NativeSpecializedTransmissionValid(NativeSpecializedLighting s)
 {
     // A supported partial transmission signal is independently useful.
     uint mask=SpecializedSSS|SpecializedFront|SpecializedBack|SpecializedTransmission;
-    return (s.present&s.valid&mask)!=0u || NativeLobeAbsent(s,mask);
+    return NativeLobeAvailable(s,SpecializedSSS) ||
+        (NativeLobeAvailable(s,SpecializedThin) && (s.present&s.valid&(SpecializedFront|SpecializedBack))!=0u) ||
+        NativeLobeAbsent(s,mask);
 }
 float3 NativeSpecializedBaseDirection(float3 direction,NativeSpecializedLighting s)
 {

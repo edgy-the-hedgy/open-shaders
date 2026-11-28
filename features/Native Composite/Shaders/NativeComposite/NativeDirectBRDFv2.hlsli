@@ -18,7 +18,8 @@ float3 SpecializedGGX(float3 f0,float3 n,float3 view,float3 l,float roughness,Na
             float a=max(roughness*roughness,0.002);
             float aspect=sqrt(1.0-0.9*abs(s.anisotropy));
             float ax=s.anisotropy>=0.0?a/aspect:a*aspect,ay=s.anisotropy>=0.0?a*aspect:a/aspect;
-            float q=pow(dot(h,t)/ax,2.0)+pow(dot(h,b)/ay,2.0)+ndh*ndh;
+            float tx=dot(h,t)/ax,by=dot(h,b)/ay;
+            float q=tx*tx+by*by+ndh*ndh;
             d=rcp(max(3.14159265*ax*ay*q*q,1e-7));
         }
     }
