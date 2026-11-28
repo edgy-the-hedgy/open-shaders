@@ -1018,11 +1018,18 @@ void DX12NativeScene::BeginFullNativeRasterInputs()
 	const auto grid = globals::features::dx12Resources.GetGrid();
 	draws.stamp.frame = frame;
 	draws.active = true;
-	if (grid && !grid->requested.empty()) {
-		draws.stamp.scope = grid->requested.front().scope;
+	// Primary raster scope is the actual attached engine location, not the
+	// asynchronous streaming grid. A missing or old grid cannot establish
+	// secondary correspondence, but must not suppress original raster inputs.
+	const auto location = Util::GetPlayerSpatialLocation();
+	if (location && location->cell && location->cell->IsAttached() &&
+		(!location->cell->IsExteriorCell() || location->worldspace))
+		draws.stamp.scope = location->worldspace ? location->worldspace->GetFormID() : location->cell->GetFormID();
+	if (draws.stamp.scope && grid && !grid->requested.empty() &&
+		grid->requested.front().scope == draws.stamp.scope)
 		draws.stamp.geometryRevision = grid->geometryRevision;
-	}
-	if (scene && scene->inputs && scene->scope == draws.stamp.scope && scene->geometryRevision == draws.stamp.geometryRevision) {
+	if (scene && scene->inputs && draws.stamp.scope && draws.stamp.geometryRevision &&
+		scene->scope == draws.stamp.scope && scene->geometryRevision == draws.stamp.geometryRevision) {
 		draws.scene = scene;
 		draws.seen.resize(scene->inputs->geometry.size());
 		draws.stamp.materialRevision = scene->materialEvaluation ? scene->materialEvaluation->revision : 0;
