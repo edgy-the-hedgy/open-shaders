@@ -581,14 +581,16 @@ namespace DX12Native
 			using F = RE::BSShaderProperty::EShaderPropertyFlag;
 			for (size_t i = 0; i < materials.size(); ++i) {
 				const auto& source = materials[i];
-				if (!source.authoredShaderFlags) continue;
-				const auto flags = *source.authoredShaderFlags;
+				if (!source.authoredShaderFlags &&
+					(source.observedShaderFlags & static_cast<uint64_t>(F::kMenuScreen))) continue;
+				const auto flags = source.authoredShaderFlags.value_or(source.observedShaderFlags);
 				const auto has = [flags](F flag) { return (flags & static_cast<uint64_t>(flag)) != 0; };
 				const auto identity = (uint64_t(1) << 63) | (uint64_t(i) + 1u);
 				auto recipe = CompilePreparedMeshRecipe(source, identity, revision, catalog, {}, nullptr, nullptr, true);
 				if (!recipe) continue;
 				sources[i] = { flags, source.observedShaderFlags, true, source.colorOffset != UINT32_MAX, false,
-					has(F::kFace) || has(F::kHairTint) || has(F::kTreeAnim) || has(F::kVertexAlpha) };
+					has(F::kFace) || has(F::kHairTint) || has(F::kTreeAnim) || has(F::kVertexAlpha) ||
+					(!source.authoredShaderFlags && has(F::kGlowMap)) };
 				prepared.bindings[i] = NativePBR::PackGpuDrawBinding(identity, revision, UINT32_MAX, 0);
 				prepared.recipes.push_back(std::move(*recipe));
 			}

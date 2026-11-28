@@ -58,8 +58,12 @@ namespace DX12Native
 		uint64_t identity, uint64_t revision, const NativePBR::MaterialCatalogSnapshot* catalog,
 		std::string_view materialObject, size_t* resolvedTxst, size_t* resolvedMato, bool rasterLocal)
 	{
-		if (!source.authoredShaderFlags) return {};
-		const auto flags = *source.authoredShaderFlags;
+		// Ordinary Lighting materials have no PBR NIF marker snapshot. For
+		// certified raster-local visibility their current non-PBR flags are
+		// authoritative. An unclassified MenuScreen marker is not PBR proof.
+		if (!source.authoredShaderFlags &&
+			(!rasterLocal || HasFlag(source.observedShaderFlags, F::kMenuScreen))) return {};
+		const auto flags = source.authoredShaderFlags.value_or(source.observedShaderFlags);
 		const bool pbr = HasFlag(flags, F::kMenuScreen);
 		const bool legacyEnvironment = !pbr && (flags & kEnvironmentMapping) != 0;
 		const bool legacyParallax = !pbr && (flags & kParallax) != 0;
@@ -86,6 +90,8 @@ namespace DX12Native
 			material.texturePaths[0] = source.texturePaths[0];
 			material.texturePaths[1] = source.texturePaths[1];
 			if (legacyEnvironment) material.texturePaths[2] = source.texturePaths[5];
+			if (rasterLocal && HasFlag(flags, F::kGlowMap))
+				material.texturePaths[3] = source.texturePaths[2];
 			if (legacyParallax && !source.texturePaths[3].empty()) material.texturePaths[4] = source.texturePaths[3];
 			else if (legacyEnvironment) {
 				material.texturePaths[4] = material.texturePaths[2];

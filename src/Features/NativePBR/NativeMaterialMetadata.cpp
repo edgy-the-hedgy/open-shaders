@@ -69,11 +69,11 @@ namespace NativePBR
 			stl::write_vfunc<0x33, SetEditorID<Form>>(vtable[0]);
 		}
 
-		bool HasBaseTextures(const RE::BSLightingShaderProperty* property)
+		bool HasBaseTextures(const RE::BSLightingShaderProperty* property, bool requireDefault = true)
 		{
 			if (!property || !property->material ||
 				property->material->GetType() != RE::BSShaderMaterial::Type::kLighting ||
-				property->material->GetFeature() != RE::BSShaderMaterial::Feature::kDefault)
+				(requireDefault && property->material->GetFeature() != RE::BSShaderMaterial::Feature::kDefault))
 				return false;
 			const auto* material = static_cast<const RE::BSLightingShaderMaterialBase*>(property->material);
 			auto* textures = material->textureSet.get();
@@ -95,9 +95,8 @@ namespace NativePBR
 				func(property, stream);
 				using enum RE::BSShaderProperty::EShaderPropertyFlag;
 				if (!property || !property->flags.any(kMenuScreen) ||
-					property->flags.any(kLODLandscape, kMultiTextureLandscape, kFace, kHairTint, kTreeAnim,
-						kRefraction, kTempRefraction, kVertexAlpha, kGrayscaleToPaletteAlpha) ||
-					!HasBaseTextures(property))
+					property->flags.any(kLODLandscape, kMultiTextureLandscape, kRefraction, kTempRefraction, kGrayscaleToPaletteAlpha) ||
+					!HasBaseTextures(property, false))
 					return;
 				auto path = Util::ToLowerAscii(stream.inputFilePath);
 				std::ranges::replace(path, '\\', '/');
@@ -106,6 +105,11 @@ namespace NativePBR
 					return;
 				PreserveAuthoredFlags(*property);
 				if (!ReadAuthoredFlags(*property))
+					return;
+				// Preserve specialized material metadata even when the engine
+				// material is not one of the legacy-safe flag-normalization
+				// candidates. Do not change that engine material's flags.
+				if (property->flags.any(kFace, kHairTint, kTreeAnim, kVertexAlpha) || !HasBaseTextures(property))
 					return;
 				// Preserve the ordinary vanilla raster fallback, but do not let
 				// it interpret authored PBR feature markers as legacy effects.
