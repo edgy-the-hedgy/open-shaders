@@ -52,6 +52,7 @@ namespace DX12Native
 		std::unique_ptr<WrappedResource> records;
 		std::vector<Texture> textures;
 		std::vector<uint32_t> instances, rasterDraws;
+		std::vector<uint32_t> residentRoleMasks; // transfer availability, not pixel evaluation
 		std::vector<std::pair<uint32_t, uint32_t>> rasterAliases; // draw ordinal, transfer row
 		uint32_t rowCount = 0, missingTextures = 0;
 		uint32_t transferredTextures = 0, newTextures = 0, cacheHits = 0, suppressedTextures = 0, deferredTextures = 0;
@@ -499,6 +500,8 @@ namespace DX12Native
 			pending->rasterDraws.clear();
 			pending->rasterDraws.reserve(draws.size());
 				pending->rasterAliases.clear();
+				pending->residentRoleMasks.clear();
+				pending->residentRoleMasks.reserve(draws.size());
 				pending->stamp = stamp; pending->rowCount = 0; pending->missingTextures = 0;
 				pending->cacheHits = pending->suppressedTextures = pending->deferredTextures = 0;
 				pending->transferredTextures = pending->newTextures = 0;
@@ -521,6 +524,10 @@ namespace DX12Native
 						constants.textures[i] = ImportTexture(*pending, reusable, draw.views[i].get());
 						if (draw.views[i] && constants.textures[i] == UINT32_MAX) ++pending->missingTextures;
 					}
+					uint32_t residentMask=0;
+					for (uint32_t role=0; role<constants.textures.size(); ++role)
+						if (constants.textures[role]!=UINT32_MAX) residentMask|=1u<<role;
+					pending->residentRoleMasks.push_back(residentMask);
 					records.push_back(constants);
 				}
 				for (const auto& texture : reusable) pending->allocationBytes -= texture.bytes;
