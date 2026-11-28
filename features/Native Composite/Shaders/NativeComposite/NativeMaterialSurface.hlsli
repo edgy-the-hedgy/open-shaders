@@ -491,7 +491,8 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
                     (binding.flags & SurfaceFoliageReadyBinding)!=0u ? NativeFoliageTag : NativeThinTag);
                 coat.subsurface=float4(scatterColor,thickness);
 #ifdef NATIVE_SPECIALIZED_V2_PRODUCER
-                float3 worldFace=triData.rasterLocal ? face : mul(face,worldToObject);
+                float3 orientedFace=dot(face,rayObject)>0.0 ? -face : face;
+                float3 worldFace=triData.rasterLocal ? orientedFace : mul(orientedFace,worldToObject);
                 NativeSpecializedSetThin(specialized,worldFace,saturate(material.surface.y),(binding.flags&SurfaceFoliageReadyBinding)!=0u);
                 // These authored XY values are specular controls, not transmission weights.
                 NativeSpecializedSetSpecularControls(specialized,saturate(material.thinSurface.xy));

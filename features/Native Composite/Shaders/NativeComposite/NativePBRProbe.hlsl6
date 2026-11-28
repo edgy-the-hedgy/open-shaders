@@ -374,8 +374,9 @@ Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float dista
 
 // PBR grass uses the original draw-local b1 snapshot and six typed SRVs.
 // This route never treats PBR textures as a legacy complex grass atlas.
-Sample EvaluatePbrGrass(RawRasterSurface raw,float3 viewRay,out bool rawUsed,out NativeCoatSample coat)
+Sample EvaluatePbrGrass(RawRasterSurface raw,float3 viewRay,out bool rawUsed,out NativeCoatSample coat NATIVE_SPECIALIZED_OUT)
 {
+    NATIVE_SPECIALIZED_INIT
     Sample result=(Sample)0;
     rawUsed=false; coat=(NativeCoatSample)0;
     result.color.a=SurfaceMissingTextures;
@@ -433,6 +434,10 @@ Sample EvaluatePbrGrass(RawRasterSurface raw,float3 viewRay,out bool rawUsed,out
     float roughness=clamp(rmaos.x*((raw.front || !newModel)?1.0:max(p4.w,0.0)),0.045,1.0);
     // v1 cannot publish independent presence/validity. Keep the base
     // FeatureLimited and publish only lobes whose source data is usable.
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+    if(newModel&&(flags&(1u<<4u))!=0u) NativeSpecializedMarkPresent(specialized,SpecializedSSS|SpecializedThin|SpecializedFront|SpecializedBack|SpecializedSpecularControls|SpecializedTransmission);
+    if(newModel&&detail&&(flags&(1u<<9u))!=0u) NativeSpecializedMarkPresent(specialized,SpecializedFuzz);
+#endif
     bool thinMapped=detail && (flags&(1u<<2u))!=0u;
     if (newModel && (flags&(1u<<4u))!=0u && all(isfinite(p2)) &&
         all(isfinite(p4)) && (!thinMapped || tex.w<NativeProjectionTextureCapacity)) {
@@ -453,6 +458,14 @@ Sample EvaluatePbrGrass(RawRasterSurface raw,float3 viewRay,out bool rawUsed,out
             coat.normalRoughness=float4(face,saturate(p4.x));
             coat.f0Colored=float4(saturate(raw.front?p4.y:p4.z),saturate(p4.z),max(p4.w,0.0),NativeFoliageTag);
             coat.subsurface=float4(scatter,opacity);
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+        NativeSpecializedSetSSS(specialized,scatter,opacity);
+        NativeSpecializedSetThin(specialized,face,saturate(p4.x),true);
+        NativeSpecializedSetFront(specialized,(1.0-opacity)*(1.0-saturate(p4.x)));
+        NativeSpecializedSetBack(specialized,(1.0-opacity)*saturate(p4.x),max(p4.w,0.0));
+        NativeSpecializedSetSpecularControls(specialized,saturate(p4.yz));
+        // Physical thickness is not supplied by this material source.
+#endif
         }
     }
     bool fuzzMapped=(flags&(1u<<3u))!=0u;
@@ -471,6 +484,9 @@ Sample EvaluatePbrGrass(RawRasterSurface raw,float3 viewRay,out bool rawUsed,out
             if (HasNativeThinSurface(coat)) coat.f0Colored.w=EncodeNativeThinFuzz(fuzzRoughness,true);
             else { coat.normalRoughness.w=clamp(fuzzRoughness,-1.0,1.0); coat.f0Colored.w=NativeFuzzTag; }
             coat.colorStrength=float4(saturate(fuzz),weight);
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+            NativeSpecializedSetFuzz(specialized,saturate(fuzz),weight,clamp(fuzzRoughness,-1.0,1.0));
+#endif
         }
     }
     float3 emission=0.0;
@@ -493,8 +509,9 @@ Sample EvaluatePbrGrass(RawRasterSurface raw,float3 viewRay,out bool rawUsed,out
 // Native-only generated PBR grass: original base SRV plus independently
 // resident NIF/TXST maps. No dependency on legacy TruePBR shader hooks.
 Sample EvaluateRecipeGrass(RawRasterSurface raw, Binding binding, MaterialRecord material, float3 viewRay,
-    out bool rawUsed,out NativeCoatSample coat)
+    out bool rawUsed,out NativeCoatSample coat NATIVE_SPECIALIZED_OUT)
 {
+    NATIVE_SPECIALIZED_INIT
     Sample result=(Sample)0;
     rawUsed=false; coat=(NativeCoatSample)0;
     result.color.a=SurfaceMissingTextures;
@@ -539,6 +556,10 @@ Sample EvaluateRecipeGrass(RawRasterSurface raw, Binding binding, MaterialRecord
     float metallic=saturate(packed.y);
     float3 f0=lerp(saturate(packed.w).xxx,base,metallic);
     float roughness=clamp(packed.x*((raw.front || !newModel)?1.0:max(material.thinSurface.z,0.0)),0.045,1.0);
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+    if(newModel&&(material.properties.x&1u)!=0u) NativeSpecializedMarkPresent(specialized,SpecializedSSS|SpecializedThin|SpecializedFront|SpecializedBack|SpecializedSpecularControls|SpecializedTransmission);
+    if(newModel&&detail&&(material.properties.x&32u)!=0u) NativeSpecializedMarkPresent(specialized,SpecializedFuzz);
+#endif
     if (newModel && (material.properties.x&1u)!=0u && (binding.flags&SurfaceThinSurfaceReadyBinding)!=0u) {
         float3 scatter=max(material.subsurfaceColor.rgb,0.0);
         float opacity=saturate(material.coat.w);
@@ -552,6 +573,14 @@ Sample EvaluateRecipeGrass(RawRasterSurface raw, Binding binding, MaterialRecord
         coat.f0Colored=float4(saturate(raw.front?material.thinSurface.x:material.thinSurface.y),
             material.thinSurface.y,material.thinSurface.z,NativeFoliageTag);
         coat.subsurface=float4(scatter,opacity);
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+        NativeSpecializedSetSSS(specialized,scatter,opacity);
+        NativeSpecializedSetThin(specialized,face,saturate(material.surface.y),true);
+        NativeSpecializedSetFront(specialized,(1.0-opacity)*(1.0-saturate(material.surface.y)));
+        NativeSpecializedSetBack(specialized,(1.0-opacity)*saturate(material.surface.y),max(material.thinSurface.z,0.0));
+        NativeSpecializedSetSpecularControls(specialized,saturate(material.thinSurface.xy));
+        // Physical thickness is not supplied by this material source.
+#endif
     }
     if (newModel && detail && (binding.flags&SurfaceFuzzReadyBinding)!=0u) {
         float3 fuzz=max(material.fuzzColor.rgb,0.0); float weight=saturate(material.surface.x);
@@ -565,6 +594,10 @@ Sample EvaluateRecipeGrass(RawRasterSurface raw, Binding binding, MaterialRecord
         if (HasNativeThinSurface(coat)) coat.f0Colored.w=EncodeNativeThinFuzz(fuzzRoughness,true);
         else { coat.normalRoughness.w=clamp(fuzzRoughness,-1.0,1.0); coat.f0Colored.w=NativeFuzzTag; }
         coat.colorStrength=float4(saturate(fuzz),weight);
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+        if((material.controls.y&4u)==0u || material.textures[2].x<NativeTextureIndexLimit)
+            NativeSpecializedSetFuzz(specialized,saturate(fuzz),weight,clamp(fuzzRoughness,-1.0,1.0));
+#endif
     }
     float3 emission=0.0;
     if (newModel && material.textures[1].z!=0xffffffffu)
@@ -584,8 +617,9 @@ Sample EvaluateRecipeGrass(RawRasterSurface raw, Binding binding, MaterialRecord
 // Shader-class-specific base evaluation using typed draw-local SRV transfers.
 // Row tags cannot be mistaken for a scene instance or a Lighting recipe.
 // No ray correspondence or TXST material ordinal is required.
-Sample EvaluateNonLightingRaster(RawRasterSurface raw, float3 viewRay, out bool rawUsed, out NativeCoatSample coat)
+Sample EvaluateNonLightingRaster(RawRasterSurface raw, float3 viewRay, out bool rawUsed, out NativeCoatSample coat NATIVE_SPECIALIZED_OUT)
 {
+    NATIVE_SPECIALIZED_INIT
     Sample result=(Sample)0;
     rawUsed=false;
     coat=(NativeCoatSample)0;
@@ -643,12 +677,23 @@ Sample EvaluateNonLightingRaster(RawRasterSurface raw, float3 viewRay, out bool 
         // Publish the legacy grass thin-sheet model independently of its
         // still feature-limited base. The geometric face is the bias normal.
         float balance=f16tof32(raw.auxiliary.x>>16u);
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+        if(isfinite(spec.y)&&spec.y>0.0) NativeSpecializedMarkPresent(specialized,SpecializedSSS|SpecializedThin|SpecializedFront|SpecializedBack|SpecializedSpecularControls|SpecializedTransmission);
+#endif
         if (isfinite(spec.y) && spec.y>0.0 && isfinite(balance) && all(isfinite(base))) {
             float3 face=normalize(raw.normal);
             if (dot(face,viewRay)>0.0) face=-face;
             coat.normalRoughness=float4(face,saturate(balance));
             coat.f0Colored=float4(1.0,1.0,1.0,NativeFoliageTag);
             coat.subsurface=float4(max(base,0.0),1.0-0.5*saturate(spec.y));
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+            float opacity=1.0-0.5*saturate(spec.y);
+            NativeSpecializedSetSSS(specialized,max(base,0.0),opacity);
+            NativeSpecializedSetThin(specialized,face,saturate(balance),true);
+            NativeSpecializedSetFront(specialized,(1.0-opacity)*(1.0-saturate(balance)));
+            NativeSpecializedSetBack(specialized,(1.0-opacity)*saturate(balance),1.0);
+            NativeSpecializedSetSpecularControls(specialized,float2(1.0,1.0));
+#endif
         }
     } else if (kind==7u) {
         float4 tint=asfloat(ProjectionRecords.Load(int3(1,row,0)));
@@ -800,9 +845,9 @@ Sample EvaluateRasterLocal(RawRasterSurface raw, uint2 mapped, float3 viewRay, f
     NATIVE_SPECIALIZED_INIT
     rawUsed=false; coat=(NativeCoatSample)0; shadow=(NativeParallaxShadowSample)0;
     Sample result=(Sample)0; result.color.a=SurfaceUnsupportedMaterial;
-    if (raw.auxiliaryKind==10u) return EvaluatePbrGrass(raw,viewRay,rawUsed,coat);
+    if (raw.auxiliaryKind==10u) return EvaluatePbrGrass(raw,viewRay,rawUsed,coat NATIVE_SPECIALIZED_ARG);
     if (raw.auxiliaryKind>=5u && raw.auxiliaryKind<=7u)
-        return EvaluateNonLightingRaster(raw,viewRay,rawUsed,coat);
+        return EvaluateNonLightingRaster(raw,viewRay,rawUsed,coat NATIVE_SPECIALIZED_ARG);
     if (raw.materialOrdinal==0u || raw.materialOrdinal>RasterSourceCount) return result;
     uint preparedRow=RasterMaterialLookup.Load((raw.materialOrdinal-1u)*4u);
     if (preparedRow>=RasterPreparedSourceCount) { result.color.a=SurfaceMissingTextures; return result; }
@@ -816,7 +861,7 @@ Sample EvaluateRasterLocal(RawRasterSurface raw, uint2 mapped, float3 viewRay, f
     }
     if (binding.materialIndex>=RasterRecordCount) return result;
     MaterialRecord material=RasterMaterialRecords[binding.materialIndex];
-    if (raw.auxiliaryKind==11u) return EvaluateRecipeGrass(raw,binding,material,viewRay,rawUsed,coat);
+    if (raw.auxiliaryKind==11u) return EvaluateRecipeGrass(raw,binding,material,viewRay,rawUsed,coat NATIVE_SPECIALIZED_ARG);
     uint projectionRow=0xffffffffu;
     // The primary projector and MATO are acquired by the original draw.
     if (raw.auxiliaryKind==2u && ProjectionRowCount>0u &&
@@ -1111,6 +1156,12 @@ void screenMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
             if (unresolvedUntraced) InterlockedAdd(GroupCounts[11],1u);
         }
     }
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+    else if(id.y<GridSize.y && id.x<((GridSize.x+7u)&~7u)) {
+        uint ordinal=id.y*((GridSize.x+7u)&~7u)+id.x;
+        SpecializedDirectoryOut.Store3(ordinal*NativeSpecializedDirectoryStride,uint3(NativeSpecializedNoRecord,0u,0u));
+    }
+#endif
     if (CollectStats != 0u) {
         GroupMemoryBarrierWithGroupSync();
         if (lane < 12) {
