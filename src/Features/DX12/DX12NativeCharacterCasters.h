@@ -489,15 +489,17 @@ namespace DX12Native
                 mesh->pending = std::make_shared<RigidPackJob>();
                 const auto gate = globals::shaderCache ? globals::shaderCache->GetRuntimeTaskGate() : nullptr;
                 const auto job = mesh->pending;
-                // The shared gate admits only one runtime task. Preserve the
-                // existing immediate path when the gate is busy, rather than
-                // starving dynamic geometry while shader compilation is active.
-                if (gate && gate->TrySubmit([job, snapshot, withShading] {
-                    PackRigidMesh(job, *snapshot, withShading);
+                // Backpressure must not turn into render-thread packing.
+                // A reset or eviction drops the owning job; a queued closure
+                // then skips its work without accessing the engine.
+                std::weak_ptr<RigidPackJob> weakJob = job;
+                if (gate && gate->TrySubmit([weakJob, snapshot, withShading] {
+                    if (const auto retainedJob = weakJob.lock())
+                        PackRigidMesh(retainedJob, *snapshot, withShading);
                 })) ++asyncRigidPacks;
                 else {
-                    ++inlineRigidPacks;
-                    PackRigidMesh(job, *snapshot, withShading);
+                    ++deferredRigidPacks;
+                    return;
                 }
                 found = moverMeshes.emplace(key, std::move(mesh)).first;
                 ++newMoverMeshes;
@@ -538,6 +540,7 @@ namespace DX12Native
         uint32_t RejectedParts() const { return rejectedParts; }
         uint64_t AsyncRigidPacks() const { return asyncRigidPacks; }
         uint64_t InlineRigidPacks() const { return inlineRigidPacks; }
+        uint64_t DeferredRigidPacks() const { return deferredRigidPacks; }
 
         void Publish(const GraphicsBackend& backend, uint32_t frame, uint32_t scope, uint32_t interval)
         {
@@ -985,7 +988,7 @@ namespace DX12Native
         std::array<std::shared_ptr<CharacterCasterFrame>, 4> moverSlots;
         std::shared_ptr<CharacterCasterFrame> combined;
         uint32_t moverScope = 0, newMoverMeshes = 0;
-        uint64_t asyncRigidPacks = 0, inlineRigidPacks = 0;
+        uint64_t asyncRigidPacks = 0, inlineRigidPacks = 0, deferredRigidPacks = 0;
         GraphicsBackend owner;
         Snapshot actorScratch;
         CharacterMaterialWorker materialWorker, moverMaterialWorker;

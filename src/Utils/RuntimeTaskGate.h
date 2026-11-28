@@ -34,8 +34,26 @@ namespace Util
 		Submitter submitter;
 	};
 
-	// Render-demanded shaders always win admission. One runtime task may occupy
-	// the shared budget, including across a scene reset or feature re-enable.
+	// Legacy immediate admission predicate, retained for policy tests and clients.
+	// Native preparation uses the bounded FIFO policy below.
+	inline constexpr uint32_t kRuntimePreparationQueueLimit = 16;
+	inline constexpr uint32_t kRuntimePreparationConcurrency = 3;
+
+	// Demand shaders always win. Reserve one slot for compilation when there
+	// is background shader work; never exceed the shared pool's current limit.
+	constexpr bool CanDispatchRuntimePreparation(uint32_t running, uint32_t inFlight,
+		int32_t limit, bool demanded, bool backgroundPending)
+	{
+		if (demanded || limit <= 0 || running >= kRuntimePreparationConcurrency ||
+			inFlight >= static_cast<uint32_t>(limit)) return false;
+		return !backgroundPending || (limit > 1 && running < static_cast<uint32_t>(limit - 1));
+	}
+
+	constexpr bool CanQueueRuntimePreparation(bool closed, uint32_t queued)
+	{
+		return !closed && queued < kRuntimePreparationQueueLimit;
+	}
+
 	constexpr bool CanAdmitRuntimeTask(bool closed, bool runtimeInFlight, bool demandedShaders,
 		uint32_t inFlight, int32_t limit)
 	{

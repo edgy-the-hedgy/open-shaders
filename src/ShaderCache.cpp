@@ -3105,7 +3105,7 @@ namespace SIE
 			// Only terminal destruction drains the admitted runtime CPU job. Do
 			// not purge its closure or destroy the dispatch accounting underneath it.
 			std::unique_lock lock(compilationSet.compilationMutex);
-			compilationSet.conditionVariable.wait(lock, [this] { return !runtimeTaskInFlight; });
+			compilationSet.conditionVariable.wait(lock, [this] { return compilationSet.runtimePreparationRunning == 0; });
 		}
 		Clear();
 		StopFileWatcher();
@@ -3517,11 +3517,15 @@ namespace SIE
 	void ShaderCache::CloseRuntimeTaskAdmission()
 	{
 		std::shared_ptr<Util::RuntimeTaskGate> gate;
+		std::deque<CompilationSet::RuntimePreparationTask> abandoned;
 		{
 			std::scoped_lock lock(compilationSet.compilationMutex);
 			runtimeTaskAdmissionClosed = true;
 			gate = std::move(runtimeTaskGate);
+			abandoned.swap(compilationSet.pendingRuntimePreparation);
 		}
+		// Release queued closures outside the dispatch lock.
+		compilationSet.conditionVariable.notify_all();
 		// Never acquire the gate mutex while holding compilationMutex: submission
 		// takes the gate first and then the existing dispatch mutex.
 		if (gate)
@@ -3530,47 +3534,23 @@ namespace SIE
 
 	bool ShaderCache::TrySubmitRuntimeTask(std::function<void()> a_work)
 	{
-		if (!a_work)
-			return false;
-		std::scoped_lock lock(compilationSet.compilationMutex);
-		const auto limit = backgroundCompilation ? backgroundCompilationThreadCount : compilationThreadCount;
-		if (!Util::CanAdmitRuntimeTask(runtimeTaskAdmissionClosed, runtimeTaskInFlight,
-				!compilationSet.demandedTasks.empty(),
-				compilationSet.dispatchedTasksInFlight.load(std::memory_order_relaxed), limit))
-			return false;
-
-		// Reserve a slot before posting, exactly as the shader dispatcher does. No shader
-		// generation or auxiliary queue ownership is attached to a runtime task.
-		compilationSet.dispatchedTasksInFlight.fetch_add(1, std::memory_order_relaxed);
-		runtimeTaskInFlight = true;
-		const auto queuedQpc = Util::GetQpcTicks();
-		try {
-			compilationPool.detach_task([this, queuedQpc, work = std::move(a_work)]() mutable {
-				const SKSE::stl::scope_exit releaseSlot([this]() noexcept {
-					{
-						std::scoped_lock lock(compilationSet.compilationMutex);
-						runtimeTaskInFlight = false;
-						compilationSet.dispatchedTasksInFlight.fetch_sub(1, std::memory_order_relaxed);
-					}
-					compilationSet.conditionVariable.notify_all();
-				});
-				ZoneScopedN("CS::RuntimePoolTask");
-				TracyPlot("CS::RuntimePoolQueueWaitUs",
-					Util::QpcElapsedUs(queuedQpc, Util::GetQpcTicks(), compilationSet.GetQpcFrequency()));
-				try {
-					work();
-				} catch (const std::exception& error) {
-					logger::error("Runtime task failed: {}", error.what());
-				} catch (...) {
-					logger::error("Runtime task failed with an unknown exception");
-				}
-			});
-		} catch (...) {
-			runtimeTaskInFlight = false;
-			compilationSet.dispatchedTasksInFlight.fetch_sub(1, std::memory_order_relaxed);
-			compilationSet.conditionVariable.notify_all();
-			return false;
+		if (!a_work) return false;
+		{
+			std::scoped_lock lock(compilationSet.compilationMutex);
+			if (!Util::CanQueueRuntimePreparation(runtimeTaskAdmissionClosed,
+					static_cast<uint32_t>(compilationSet.pendingRuntimePreparation.size()))) {
+				TracyPlot("CS::RuntimePreparationRejected", int64_t(++compilationSet.runtimePreparationRejected));
+				return false;
+			}
+			try {
+				compilationSet.pendingRuntimePreparation.push_back({ std::move(a_work), Util::GetQpcTicks() });
+			} catch (...) {
+				TracyPlot("CS::RuntimePreparationRejected", int64_t(++compilationSet.runtimePreparationRejected));
+				return false;
+			}
+			TracyPlot("CS::RuntimePreparationQueued", int64_t(compilationSet.pendingRuntimePreparation.size()));
 		}
+		compilationSet.conditionVariable.notify_all();
 		return true;
 	}
 
@@ -5839,9 +5819,15 @@ namespace SIE
 	{
 		std::unique_lock lock(compilationMutex);
 		auto shaderCache = globals::shaderCache;
+		const auto canDispatchRuntime = [&] {
+			return !pendingRuntimePreparation.empty() && Util::CanDispatchRuntimePreparation(
+				runtimePreparationRunning, dispatchedTasksInFlight.load(std::memory_order_relaxed),
+				shaderCache->backgroundCompilation ? shaderCache->backgroundCompilationThreadCount : shaderCache->compilationThreadCount,
+				!demandedTasks.empty(), !availableTasks.empty() || !pendingAuxTasks.empty());
+		};
 		if (!conditionVariable.wait(
 				lock, stoken,
-				[this, &shaderCache]() { return (!availableTasks.empty() || !demandedTasks.empty() || !pendingAuxTasks.empty()) &&
+				[this, &shaderCache, &canDispatchRuntime]() { return (canDispatchRuntime() || !availableTasks.empty() || !demandedTasks.empty() || !pendingAuxTasks.empty()) &&
 			                                    // Count matrix and auxiliary tasks; ReleaseDispatchSlot()
 			                                    // decrements under this mutex before notifying the waiter.
 			                                    static_cast<int32_t>(dispatchedTasksInFlight.load(std::memory_order_relaxed)) <
@@ -5858,8 +5844,34 @@ namespace SIE
 			lastCalculation = lastReset;
 		}
 
-		// Matrix tasks are checked before aux so queued shader work always wins
-		// admission over standalone compute-shader work when both are ready.
+		// FIFO native work shares existing pool slots and cannot bypass demanded
+		// shaders. During background compilation at least one slot remains for shaders.
+		if (canDispatchRuntime()) {
+			auto pending = std::move(pendingRuntimePreparation.front());
+			pendingRuntimePreparation.pop_front();
+			++runtimePreparationRunning;
+			dispatchedTasksInFlight.fetch_add(1, std::memory_order_relaxed);
+			TracyPlot("CS::RuntimePreparationQueued", int64_t(pendingRuntimePreparation.size()));
+			TracyPlot("CS::RuntimePreparationRunning", int64_t(runtimePreparationRunning));
+			return std::variant<ShaderCompilationTask, std::function<void()>>(std::in_place_index<1>,
+				[this, pending = std::move(pending)]() mutable {
+					const SKSE::stl::scope_exit releaseRuntime([this]() noexcept {
+						{
+							std::scoped_lock lock(compilationMutex);
+							--runtimePreparationRunning;
+							TracyPlot("CS::RuntimePreparationRunning", int64_t(runtimePreparationRunning));
+						}
+						conditionVariable.notify_all();
+					});
+					ZoneScopedN("CS::RuntimePoolTask");
+					TracyPlot("CS::RuntimePoolQueueWaitUs", Util::QpcElapsedUs(pending.queuedQpc, Util::GetQpcTicks(), GetQpcFrequency()));
+					try { pending.work(); }
+					catch (const std::exception& error) { logger::error("Runtime task failed: {}", error.what()); }
+					catch (...) { logger::error("Runtime task failed with an unknown exception"); }
+				});
+		}
+
+		// Matrix tasks are checked before standalone shader aux work.
 		if (!availableTasks.empty() || !demandedTasks.empty()) {
 			// Startup policy: keep dispatching the hardest queued work first.
 			// This preserves the existing priority score while preventing light tasks

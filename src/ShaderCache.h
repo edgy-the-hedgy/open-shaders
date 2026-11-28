@@ -524,6 +524,15 @@ namespace SIE
 		std::set<ShaderCompilationTask, TaskPriorityLess> tasksInProgress;
 		std::set<ShaderCompilationTask, TaskPriorityLess> processedTasks;  // completed or failed
 		std::deque<std::function<void()>> pendingAuxTasks;                 // see EnqueueAux/TryTakeNext
+		struct RuntimePreparationTask
+		{
+			std::function<void()> work;
+			int64_t queuedQpc = 0;
+		};
+		// Independent from shader generations; all fields guarded by compilationMutex.
+		std::deque<RuntimePreparationTask> pendingRuntimePreparation;
+		uint32_t runtimePreparationRunning = 0;
+		uint64_t runtimePreparationRejected = 0;
 		std::condition_variable_any conditionVariable;
 	};
 
@@ -1436,7 +1445,6 @@ namespace SIE
 		CompilationSet compilationSet;
 		// Guarded by compilationSet.compilationMutex; shader cache clears do not cancel runtime jobs.
 		bool runtimeTaskAdmissionClosed = false;
-		bool runtimeTaskInFlight = false;
 		std::shared_ptr<Util::RuntimeTaskGate> runtimeTaskGate;
 		bool TrySubmitRuntimeTask(std::function<void()> a_work);
 		void CloseRuntimeTaskAdmission();

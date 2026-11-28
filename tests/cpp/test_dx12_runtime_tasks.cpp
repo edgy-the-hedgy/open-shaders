@@ -28,6 +28,22 @@ TEST_CASE("Runtime task admission shares the shader concurrency budget", "[dx12]
 	CHECK_FALSE(CanAdmitRuntimeTask(true, false, false, 0, 4));
 }
 
+TEST_CASE("Native preparation FIFO reserves shader capacity and bounds concurrency", "[dx12][runtime-task]")
+{
+	using Util::CanDispatchRuntimePreparation;
+	using Util::CanQueueRuntimePreparation;
+	CHECK(CanQueueRuntimePreparation(false, 15));
+	CHECK_FALSE(CanQueueRuntimePreparation(false, 16));
+	CHECK_FALSE(CanQueueRuntimePreparation(true, 0));
+	CHECK(CanDispatchRuntimePreparation(0, 0, 1, false, false));
+	CHECK_FALSE(CanDispatchRuntimePreparation(0, 0, 1, false, true));
+	CHECK(CanDispatchRuntimePreparation(1, 2, 4, false, true));
+	CHECK_FALSE(CanDispatchRuntimePreparation(3, 3, 8, false, false));
+	CHECK_FALSE(CanDispatchRuntimePreparation(1, 1, 2, false, true));
+	CHECK_FALSE(CanDispatchRuntimePreparation(0, 0, 8, true, false));
+	CHECK_FALSE(CanDispatchRuntimePreparation(0, 4, 4, false, false));
+}
+
 TEST_CASE("A closed runtime gate rejects late fence continuations", "[dx12][runtime-task]")
 {
 	int admitted = 0;
