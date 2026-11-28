@@ -152,6 +152,7 @@ namespace DX12Native
 			!ValidProducerSignal(history->readyValue, history->readyFence->GetCompletedValue()) ||
 			!history->material->IsCoherent(history->frame, history->width, history->height) ||
 			history->material->scene != material->scene ||
+			history->material->rasterMaterialRevision != material->rasterMaterialRevision ||
 			!material->raster->jitter.valid || !history->material->raster->jitter.valid ||
 			(!material->raster->motionValid && !sameCamera(history->material->raster->camera, material->raster->camera)))
 			history.reset();

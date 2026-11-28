@@ -59,6 +59,12 @@ static const float NativeThinFuzzLegacyTag = -5.0;
 static const float NativeFoliageTag = -6.0;
 static const float NativeFoliageFuzzTag = -7.0;
 static const float NativeFoliageFuzzLegacyTag = -9.0;
+static const float NativeEyeEnvironmentTag = -10.0;
+bool HasNativeEyeEnvironment(NativeCoatSample material)
+{
+    return material.f0Colored.w==NativeEyeEnvironmentTag &&
+        all(isfinite(material.normalRoughness.xyz)) && dot(material.normalRoughness.xyz,material.normalRoughness.xyz)>1e-8;
+}
 bool IsNativeFoliageFuzzTag(float tag)
 {
     return (tag>=NativeFoliageFuzzTag-1.0 && tag<=NativeFoliageFuzzTag) || tag==NativeFoliageFuzzLegacyTag;

@@ -45,14 +45,15 @@ float3 NativeProjectionEncode(float3 v)
 }
 bool NativeApplyProjection(uint row,uint instance,float3 worldPosition,float3 worldDx,float3 worldDy,
     float3x3 objectToWorld,float3x3 worldToObject,float3 face,float3 n,float3 t,float3 b,float vertexAlpha,
-    float noise,MaterialRecord material,inout float3 base,inout float3 normal,inout float4 packed,out float projectedWeight)
+    float noise,MaterialRecord material,inout float3 base,inout float3 normal,inout float4 packed,out float projectedWeight,
+    float3 rasterDirection,bool useRasterDirection)
 {
     projectedWeight=0.0;
     uint4 metadata=ProjectionRecords.Load(int3(0,row,0));
     if (metadata.x!=instance || metadata.z!=row) return false;
     uint4 textures=ProjectionRecords.Load(int3(7,row,0));
     if (textures.w>=NativeProjectionTextureCapacity) return false;
-    float3 direction=mul(objectToWorld,asfloat(ProjectionRecords.Load(int3(3,row,0))).xyz);
+    float3 direction=useRasterDirection ? rasterDirection : mul(objectToWorld,asfloat(ProjectionRecords.Load(int3(3,row,0))).xyz);
     float4 params=asfloat(ProjectionRecords.Load(int3(4,row,0)));
     float4 tint=asfloat(ProjectionRecords.Load(int3(5,row,0)));
     float4 scales=asfloat(ProjectionRecords.Load(int3(6,row,0)));

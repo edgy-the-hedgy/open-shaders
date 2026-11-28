@@ -353,8 +353,9 @@ void main(uint3 id : SV_DispatchThreadID)
     }
     if ((active & ContributionIndirectSpecular) != 0u)
     {
-        float3 r = reflect(-baseView, n);
-        // Native secondary radiance replaces only the supported ray-hit fraction.
+        float3 reflectionNormal = HasNativeEyeEnvironment(coat) ? normalize(coat.normalRoughness.xyz) : n;
+        float3 r = reflect(-baseView, reflectionNormal);
+        // Eye environment direction is not a replacement for the direct BRDF normal.
         float3 radiance = ResolveRayReflection(pixel,world,n,r,roughness,0u,CubemapSpecularMiss(r,roughness));
         float3 specularRadiance = radiance * lobes.specular;
         if (hasCoat) {

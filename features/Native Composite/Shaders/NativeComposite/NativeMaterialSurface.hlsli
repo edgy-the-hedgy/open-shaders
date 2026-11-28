@@ -315,7 +315,18 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
     float projectionWeight=0.0;
     bool projectionApplied=false;
 #if defined(NATIVE_MATERIAL_PROJECTION)
-    if (projectionRow!=0xffffffffu && triData.hasPositions && (binding.flags&512u)==0u) {
+    if (projectionRow!=0xffffffffu && (binding.flags&512u)==0u && triData.rasterLocal && raw.auxiliaryKind==2u) {
+        // The direction is the actual interpolated world-space TexProj from ABI v6.
+        // World-space footprints are reconstructed from the visible depth plane.
+        float3 face=-cross(rayOffsetX,rayOffsetY);
+        float3 direction=asfloat(raw.auxiliary.xyz);
+        float2 secondaryUV=f16tof32(uint2(raw.auxiliary.w&65535u,raw.auxiliary.w>>16u));
+        if (all(isfinite(direction)) && dot(direction,direction)>1e-8 &&
+            all(isfinite(secondaryUV)) && dot(face,face)>1e-8)
+            projectionApplied=NativeApplyProjection(projectionRow,instance,worldPosition,rayOffsetX,rayOffsetY,
+                objectToWorld,worldToObject,face,n,t,b,saturate(vertexAlpha),
+                projectionNoise,material,base,normal,packed,projectionWeight,direction,true);
+    } else if (projectionRow!=0xffffffffu && triData.hasPositions && (binding.flags&512u)==0u) {
         float3 p0=triData.positions[0];
         float3 e1=triData.positions[1]-p0;
         float3 e2=triData.positions[2]-p0;
@@ -326,7 +337,7 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
         if (validX && validY)
             projectionApplied=NativeApplyProjection(projectionRow,instance,worldPosition,mul(objectToWorld,dx),mul(objectToWorld,dy),
                 objectToWorld,worldToObject,cross(e1,e2),n,t,b,(binding.flags&1u)!=0u ? saturate(vertexAlpha) : 1.0,
-                projectionNoise,material,base,normal,packed,projectionWeight);
+                projectionNoise,material,base,normal,packed,projectionWeight,0.0,false);
     }
 #endif
     if ((binding.flags & 1u) != 0u) base *= SrgbToLinear(color);
@@ -362,12 +373,8 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
     if (unsupportedRasterTechnique || (triData.rasterLocal && (binding.flags & 512u)!=0u)) result.color.a = SurfaceFeatureLimited;
     // Model-space normals need the original object transform.
     if (triData.rasterLocal && (binding.flags & 512u)!=0u) result.normal.xyz = normalize(raw.normal);
-    // The world-space eye center normal is available, but the corneal
-    // material remains feature-limited until its full inputs are supplied.
-    if (triData.rasterLocal && raw.auxiliaryKind == 4u) {
-        float3 eye = asfloat(raw.auxiliary.xyz);
-        if (all(isfinite(eye)) && dot(eye,eye)>1e-8) result.normal.xyz=normalize(eye);
-    }
+    // Keep the normal-mapped direct-light normal. The eye-center normal is
+    // a separate environment direction, published in the unused lobe payload.
     if ((binding.flags & SurfaceSubsurfaceReadyBinding) != 0u) {
         float3 scatterColor = SrgbToLinear(max(material.subsurfaceColor.rgb,0.0));
         float thickness = saturate(material.coat.w);
@@ -459,6 +466,15 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
         coat.colorStrength=float4(coatColor,strength);
         coat.f0Colored=float4(saturate(material.coat.z).xxx,(material.properties.x & 4u) != 0u ? 1.0 : 0.0);
         if (interlayerActive) coat.subsurface.w=2.0+eta;
+    }
+    if (triData.rasterLocal && raw.auxiliaryKind==4u &&
+        !HasNativeCoat(coat) && !HasNativeFuzz(coat) && !HasNativeThinSurface(coat) && !HasNativeSubsurface(coat)) {
+        float3 eye=asfloat(raw.auxiliary.xyz);
+        if (all(isfinite(eye)) && dot(eye,eye)>1e-8) {
+            coat=(NativeCoatSample)0;
+            coat.normalRoughness.xyz=normalize(eye);
+            coat.f0Colored.w=NativeEyeEnvironmentTag;
+        }
     }
     if (projectionWeight>0.0) {
         coat.colorStrength.w*=1.0-projectionWeight;

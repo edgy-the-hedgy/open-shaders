@@ -49,6 +49,7 @@ cbuffer ProbeCamera : register(b1)
     uint TransformCount;
     uint RasterBindingCount;
     uint RasterRecordCount;
+    uint SceneRecordCount;
 };
 RWByteAddressBuffer ProbeCounts : register(u1);
 RWByteAddressBuffer ScreenOutput : register(u2);
@@ -112,7 +113,8 @@ bool IntersectRasterCandidate(uint2 identity, float3 origin, float3 direction, f
 }
 
 // Direct evaluation of certified raster interpolants, independent of TLAS mapping.
-Sample EvaluateRasterLocal(RawRasterSurface raw, float3 viewRay, float distance,
+Sample EvaluateRasterLocal(RawRasterSurface raw, uint2 mapped, float3 viewRay, float distance,
+    float3 worldPosition, float3 worldDx, float3 worldDy, float noise,
     out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow)
 {
     rawUsed=false; coat=(NativeCoatSample)0; shadow=(NativeParallaxShadowSample)0;
@@ -125,15 +127,34 @@ Sample EvaluateRasterLocal(RawRasterSurface raw, float3 viewRay, float distance,
     }
     if (binding.materialIndex>=RasterRecordCount) return result;
     MaterialRecord material=RasterMaterialRecords[binding.materialIndex];
+    uint projectionRow=0xffffffffu;
+    // A verified scene binding may supply the reference-local MATO and projector
+    // constants. Neither is required to evaluate the base raster material.
+    if (raw.auxiliaryKind==2u && mapped.x<InstanceCount && raw.materialIndex<SceneRecordCount &&
+        ProjectionRowCount>0u) {
+        Binding sceneBinding=Bindings[mapped.x];
+        if (sceneBinding.materialIndex==raw.materialIndex) {
+            MaterialRecord placed=MaterialRecords[sceneBinding.materialIndex];
+            if (all(placed.identity.xy==sceneBinding.identity) && all(placed.identity.zw==sceneBinding.revision)) {
+                uint row=ProjectionLookup.Load(mapped.x*4u);
+                if (row<ProjectionRowCount) {
+                    projectionRow=row;
+                    material.projected=placed.projected;
+                    material.surface.w=placed.surface.w;
+                    material.projectedGlint=placed.projectedGlint;
+                }
+            }
+        }
+    }
     NativeMaterialTriangle tri=(NativeMaterialTriangle)0;
     tri.rasterLocal=true;
     tri.hasTangents=true;
     tri.normals[0]=raw.normal; tri.tangents[0]=raw.tangent; tri.bitangents[0]=raw.bitangent;
     tri.colors[0]=raw.color; tri.uv[0]=raw.uv;
     const float3x3 identity=float3x3(1,0,0,0,1,0,0,0,1);
-    result=EvaluateMaterialTriangle(binding,material,tri,0u,float3(1,0,0),viewRay,0,0,1.0,distance,
+    result=EvaluateMaterialTriangle(binding,material,tri,mapped.x,float3(1,0,0),viewRay,worldDx,worldDy,1.0,distance,
         identity,identity,ParallaxEnabled!=0u,false,ParallaxShadowEnabled!=0u,MaterialMipBias,
-        0xffffffffu,0.0,0.0,raw,rawUsed,coat,shadow);
+        projectionRow,worldPosition,noise,raw,rawUsed,coat,shadow);
     if (!rawUsed || result.color.a==SurfaceInvalidReceiver) {
         result=(Sample)0; result.color.a=SurfaceEvaluationFailed;
         coat=(NativeCoatSample)0; shadow=(NativeParallaxShadowSample)0; return result;
@@ -183,8 +204,21 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed,
     const bool traced = NativeIsSampled(pixel, ViewSize, QualityMode, ProjectionFrame);
     uint2 rasterMapped;
     RawRasterSurface visible=ReadRawVisibility(pixel,z,HasRawInput,rasterMapped);
-    if (visible.valid && RasterBindingCount!=0u) {
-        result=EvaluateRasterLocal(visible,delta,distance,rawUsed,coat,shadow);
+    if (visible.valid) {
+        float3 dx=0.0,dy=0.0;
+        if (visible.auxiliaryKind==2u) {
+            float2 step=2.0/float2(GridSize);
+            float3 center=w.xyz/w.w;
+            dx=ProbeRayOffset(clip+float2(step.x,0),z,center);
+            dy=ProbeRayOffset(clip-float2(0,step.y),z,center);
+            // Intersect the adjacent camera rays with the raster normal plane.
+            float3 nx=delta+dx,ny=delta+dy;
+            float ax=dot(visible.normal,nx),ay=dot(visible.normal,ny);
+            dx=abs(ax)>1e-6 ? dx-nx*(dot(visible.normal,dx)/ax) : 0.0;
+            dy=abs(ay)>1e-6 ? dy-ny*(dot(visible.normal,dy)/ay) : 0.0;
+        }
+        result=EvaluateRasterLocal(visible,rasterMapped,delta,distance,origin+delta,dx,dy,
+            Random::InterleavedGradientNoise(float2(pixel),ProjectionFrame),rawUsed,coat,shadow);
         if (HasEvaluatedNativeBase(result.color.a)) {
             // Optional correspondence never revokes an otherwise valid material.
             if (rasterMapped.x<InstanceCount && rasterMapped.y<0x80000000u && visible.materialIndex!=0xffffffffu &&
@@ -247,7 +281,7 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed,
         raw.valid = false;
     }
     Binding binding = Bindings[instance];
-    if (binding.materialIndex == 0xffffffffu) {
+    if (binding.materialIndex >= SceneRecordCount) {
         result.color.a = (binding.flags & SurfaceMissingBaseTexturesBinding) != 0u ?
             SurfaceMissingTextures : SurfaceUnsupportedMaterial;
         return result;

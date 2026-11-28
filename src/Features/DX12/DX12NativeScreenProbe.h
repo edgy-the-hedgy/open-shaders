@@ -26,7 +26,7 @@ namespace DX12Native
 			float4 positionAdjust;
 			uint32_t width, height, gridWidth, gridHeight, collectStats, parallaxEnabled, parallaxWarpFixEnabled, parallaxShadowEnabled;
 			float mipBias;
-			uint32_t projectionRows, projectionFrame, hasRawInput, quality, transformCount, rasterBindingCount, rasterRecordCount;
+			uint32_t projectionRows, projectionFrame, hasRawInput, quality, transformCount, rasterBindingCount, rasterRecordCount, sceneRecordCount;
 		};
 		static_assert(sizeof(Camera) <= 256);
 		struct OutputAllocation
@@ -185,6 +185,12 @@ namespace DX12Native
 					!scene->materialEvaluation || scene->materialEvaluation->revision != materialRevision ||
 					materialRevision != geometryRevision)
 					return false;
+				if (rasterMaterialEvaluation) {
+					if (!rasterMaterialRevision || rasterMaterialEvaluation->revision != rasterMaterialRevision ||
+						!rawRasterEvidence || !rasterMaterialEvaluation->records || !rasterMaterialEvaluation->bindings ||
+						rasterMaterialEvaluation->instanceCount != rawRasterEvidence->materialSources.size())
+						return false;
+				} else if (rasterMaterialRevision) return false;
 				const auto desc = samples->GetDesc();
 				const auto identityDesc = rayIdentity->GetDesc();
 				const auto lobeDesc = materialLobes->GetDesc();
@@ -413,7 +419,7 @@ namespace DX12Native
 				const Camera constants{slot->raster->camera.CameraProjInverse,slot->raster->camera.CameraViewInverse,
 					slot->raster->camera.CameraPosAdjust,width,height,gridWidth,gridHeight,collectStats ? 1u : 0u,parallaxEnabled ? 1u : 0u,parallaxWarpFixEnabled ? 1u : 0u,shadowPlane ? 1u : 0u,std::isfinite(mipBias) ? mipBias : 0.0f,slot->projection ? slot->projection->rowCount : 0u,frame,slot->rawInputs && slot->rawInputs->evidence->winnerCertified ? uint32_t(slot->rawInputs->drawRecords.size()) : 0u, SanitizeRTQuality(quality), transformCount,
 					slot->rasterEvaluation ? slot->rasterEvaluation->instanceCount : 0u,
-					slot->rasterEvaluation ? slot->rasterEvaluation->recordCount : 0u};
+					slot->rasterEvaluation ? slot->rasterEvaluation->recordCount : 0u, evaluation.recordCount};
 				void* mapped=nullptr; const D3D12_RANGE noRead{};
 				Eval::Check(slot->camera->Map(0,&noRead,&mapped));
 				std::memcpy(mapped,&constants,sizeof(constants)); slot->camera->Unmap(0,nullptr);

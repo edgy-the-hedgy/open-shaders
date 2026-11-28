@@ -65,6 +65,9 @@ json NativePBR::FrameProducer::GetDiagnostics()
 	const auto publication = Get(frame);
 	return { { "materialPublished", bool(publication) }, { "materialRevision", publication ? publication->materialRevision : 0 },
 		{ "geometryRevision", publication ? publication->geometryRevision : 0 },
+		{ "rasterMaterialRevision", publication ? publication->rasterMaterialRevision : 0 },
+		{ "rasterMaterialBindings", publication && publication->rasterMaterialEvaluation ? publication->rasterMaterialEvaluation->instanceCount : 0u },
+		{ "rasterResidentRecipes", publication && publication->rasterMaterialEvaluation ? publication->rasterMaterialEvaluation->residentRecipes : 0u },
 		{ "width", publication ? publication->width : 0u }, { "height", publication ? publication->height : 0u },
 		{ "producerValue", publication ? publication->producerValue : 0 },
 		{ "rawInputDraws", publication ? publication->rawInputDraws : 0u },
