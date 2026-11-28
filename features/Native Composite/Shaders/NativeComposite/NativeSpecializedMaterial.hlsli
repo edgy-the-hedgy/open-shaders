@@ -63,6 +63,80 @@ float3 NativeSpecializedUnpackOct(uint packed)
     v.xy+=float2(v.x>=0.0?-t:t,v.y>=0.0?-t:t);
     return normalize(v);
 }
+// Evaluation-side accumulation. A failed authored property remains present
+// but invalid; it cannot overwrite any neighboring property. Only the
+// evaluator may establish known absence from authoritative material evidence.
+struct NativeSpecializedEvaluation {
+    NativeSpecializedPayload payload;
+    uint present;
+    uint valid;
+};
+void NativeSpecializedKnownMissing(inout NativeSpecializedEvaluation e,uint bit)
+{
+    e.present&=~bit;
+    e.valid|=bit&NativeSpecializedKnownBits;
+}
+void NativeSpecializedMarkPresent(inout NativeSpecializedEvaluation e,uint bit)
+{
+    e.present|=bit&NativeSpecializedKnownBits;
+    e.valid&=~bit;
+}
+void NativeSpecializedSetSSS(inout NativeSpecializedEvaluation e,float3 color,float opacity)
+{
+    NativeSpecializedMarkPresent(e,SpecializedSSS);
+    if(!NativeSpecializedHalfValid(color.xy)||!NativeSpecializedHalfValid(float2(color.z,opacity))) return;
+    e.payload.subsurface=uint2(NativeSpecializedPackHalf2(color.xy),NativeSpecializedPackHalf2(float2(color.z,opacity)));
+    e.valid|=SpecializedSSS;
+}
+void NativeSpecializedSetFuzz(inout NativeSpecializedEvaluation e,float3 color,float strength,float roughness)
+{
+    NativeSpecializedMarkPresent(e,SpecializedFuzz);
+    if(!NativeSpecializedHalfValid(color.xy)||!NativeSpecializedHalfValid(float2(color.z,strength))||
+        !NativeSpecializedHalfValid(float2(roughness,0.0))) return;
+    e.payload.fuzz=uint2(NativeSpecializedPackHalf2(color.xy),NativeSpecializedPackHalf2(float2(color.z,strength)));
+    // Fuzz roughness shares a word, not validity, with signed anisotropy.
+    e.payload.fuzzRoughnessAnisotropyTangent.x=(e.payload.fuzzRoughnessAnisotropyTangent.x&0xffff0000u)|
+        NativeSpecializedPackHalf2(float2(roughness,0.0));
+    e.valid|=SpecializedFuzz;
+}
+void NativeSpecializedSetAnisotropy(inout NativeSpecializedEvaluation e,float anisotropy)
+{
+    NativeSpecializedMarkPresent(e,SpecializedAnisotropy);
+    if(!isfinite(anisotropy)||abs(anisotropy)>1.0) return;
+    e.payload.fuzzRoughnessAnisotropyTangent.x=(e.payload.fuzzRoughnessAnisotropyTangent.x&65535u)|
+        NativeSpecializedPackHalf2(float2(0.0,anisotropy));
+    e.valid|=SpecializedAnisotropy;
+}
+void NativeSpecializedSetTangent(inout NativeSpecializedEvaluation e,float3 tangent,bool negativeHandedness)
+{
+    NativeSpecializedMarkPresent(e,SpecializedTangent);
+    if(!NativeSpecializedDirectionValid(tangent)) return;
+    e.payload.fuzzRoughnessAnisotropyTangent.y=NativeSpecializedPackOct(tangent);
+    e.payload.flags=(e.payload.flags&~SpecializedNegativeHandednessFlag)|
+        (negativeHandedness?SpecializedNegativeHandednessFlag:0u);
+    e.valid|=SpecializedTangent;
+}
+void NativeSpecializedSetCoatNormal(inout NativeSpecializedEvaluation e,float3 normal)
+{
+    NativeSpecializedMarkPresent(e,SpecializedCoatNormal);
+    if(!NativeSpecializedDirectionValid(normal)) return;
+    e.payload.coatNormalRoughnessF0.x=NativeSpecializedPackOct(normal);
+    e.valid|=SpecializedCoatNormal;
+}
+void NativeSpecializedSetEyeNormal(inout NativeSpecializedEvaluation e,float3 normal)
+{
+    NativeSpecializedMarkPresent(e,SpecializedEyeNormal);
+    if(!NativeSpecializedDirectionValid(normal)) return;
+    e.payload.eyeNormal=NativeSpecializedPackOct(normal);
+    e.valid|=SpecializedEyeNormal;
+}
+void NativeSpecializedSetGlint(inout NativeSpecializedEvaluation e,float4 parameters)
+{
+    NativeSpecializedMarkPresent(e,SpecializedGlint);
+    if(!all(isfinite(parameters))) return;
+    e.payload.glint=parameters;
+    e.valid|=SpecializedGlint;
+}
 NativeSpecializedDirectory NativeSpecializedSanitize(uint ordinal,uint present,uint valid,uint capacity)
 {
     NativeSpecializedDirectory d;

@@ -12,20 +12,27 @@ cbuffer Inputs : register(b0) { uint Pixels; uint Capacity; };
 void publishMain(uint3 id:SV_DispatchThreadID)
 {
     if(id.x>=Pixels) return;
-    NativeSpecializedPayload p=(NativeSpecializedPayload)0;
-    p.coatColorStrength=uint2(NativeSpecializedPackHalf2(float2(1.0,0.5)),0u);
-    p.coatNormalRoughnessF0.x=NativeSpecializedPackOct(float3(0,0,1));
-    p.glint=float4(1.0,2.0,3.0,4.0);
-    uint mask=(id.x&1u)!=0u ? SpecializedCoat|SpecializedCoatNormal|SpecializedGlint : 0u;
-    NativeSpecializedPublish(DirectoryOut,PoolOut,Counters,id.x,Capacity,mask,mask|SpecializedFuzz,p);
+    NativeSpecializedEvaluation e=(NativeSpecializedEvaluation)0;
+    if((id.x&1u)!=0u) {
+        NativeSpecializedSetSSS(e,float3(0.5,0.0,0.25),0.8);
+        NativeSpecializedSetAnisotropy(e,-0.25);
+        NativeSpecializedSetFuzz(e,float3(0.1,0.2,0.3),0.0,0.5);
+        NativeSpecializedSetTangent(e,float3(1,0,0),true);
+        NativeSpecializedSetCoatNormal(e,float3(0,0,1));
+        NativeSpecializedSetEyeNormal(e,float3(0,1,0));
+        NativeSpecializedSetGlint(e,float4(1.0,2.0,3.0,4.0));
+        // Present but invalid: neighboring valid fields must survive.
+        NativeSpecializedSetEyeNormal(e,float3(0,0,0));
+    } else NativeSpecializedKnownMissing(e,SpecializedFuzz);
+    NativeSpecializedPublish(DirectoryOut,PoolOut,Counters,id.x,Capacity,e.present,e.valid,e.payload);
 }
 [numthreads(64,1,1)]
 void readMain(uint3 id:SV_DispatchThreadID)
 {
     if(id.x>=Pixels) return;
     NativeSpecializedDirectory d=NativeSpecializedReadDirectory(DirectoryIn,id.x,Capacity);
-    uint2 coat=NativeSpecializedReadPair(PoolIn,d,SpecializedCoat,0u);
+    uint2 fuzz=NativeSpecializedReadPair(PoolIn,d,SpecializedFuzz,56u);
     uint4 glint=NativeSpecializedReadGlint(PoolIn,d);
     Readback.Store4(id.x*32u,uint4(d.ordinal,d.present,d.valid,NativeSpecializedKnownAbsent(d,SpecializedFuzz)?1u:0u));
-    Readback.Store4(id.x*32u+16u,uint4(asuint(NativeSpecializedUnpackHalf2(coat.x)),glint.xy));
+    Readback.Store4(id.x*32u+16u,uint4(asuint(NativeSpecializedUnpackHalf2(fuzz.x)),glint.xy));
 }
