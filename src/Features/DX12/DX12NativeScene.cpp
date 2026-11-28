@@ -1193,7 +1193,23 @@ std::shared_ptr<const DX12::PreparedMaterialSource> DX12NativeScene::ObserveRast
 	DX12::PreparedMaterialSource scalars;
 	uintptr_t materialIdentity = 0;
 	std::shared_ptr<const NativePBR::TextureSetSnapshot> textures;
-	if (base && base->GetRTTI() == globals::rtti::BSLightingShaderPropertyRTTI.get()) {
+	if (base && NativePBR::HasGrassMaterialSource(*base)) {
+		const auto source=NativePBR::ReadGrassMaterialSource(*base);
+		if (source && base->material && base->material->GetType()==RE::BSShaderMaterial::Type::kLighting) {
+			const auto* material=static_cast<const RE::BSLightingShaderMaterialBase*>(base->material);
+			materialIdentity=reinterpret_cast<uintptr_t>(material);
+			scalars.rasterPbrGrass=true;
+			scalars.authoredShaderFlags=source->flags;
+			scalars.observedShaderFlags=static_cast<uint64_t>(base->flags.underlying());
+			scalars.nifThinSurface=source->thin; scalars.nifFuzz=source->fuzz;
+			scalars.alpha=material->materialAlpha; scalars.clampMode=material->textureClampMode;
+			scalars.uvTransform={material->texCoordOffset[0].x,material->texCoordOffset[0].y,material->texCoordScale[0].x,material->texCoordScale[0].y};
+			scalars.textureSetEditorId=source->textures.editorId;
+			scalars.texturePaths=source->textures.paths;
+			if (material->diffuseTexture && material->diffuseTexture->name.c_str() && std::string_view(material->diffuseTexture->name.c_str()).size()<=260u)
+				scalars.texturePaths[0]=material->diffuseTexture->name.c_str();
+		}
+	} else if (base && base->GetRTTI() == globals::rtti::BSLightingShaderPropertyRTTI.get()) {
 		const auto* property = static_cast<const RE::BSLightingShaderProperty*>(base);
 		scalars.authoredShaderFlags = NativePBR::ReadAuthoredFlags(*property);
 		scalars.observedShaderFlags = static_cast<uint64_t>(property->flags.underlying());
