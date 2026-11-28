@@ -489,6 +489,25 @@ TEST_CASE("Native transfer work rejects exhausted budgets and oversized first up
 	STATIC_REQUIRE_FALSE(TransferWorkFits(0,16,0,0,128));
 }
 
+TEST_CASE("Mutable content reuse requires a live matching epoch and write revision", "[dx12][materials]")
+{
+	STATIC_REQUIRE(ContentRevisionMatches(1,0,1,0));
+	STATIC_REQUIRE(ContentRevisionMatches(2,17,2,17));
+	STATIC_REQUIRE_FALSE(ContentRevisionMatches(0,0,0,0));
+	STATIC_REQUIRE_FALSE(ContentRevisionMatches(2,17,2,18));
+	STATIC_REQUIRE_FALSE(ContentRevisionMatches(2,17,3,17));
+	STATIC_REQUIRE_FALSE(ContentRevisionMatches(2,17,0,17));
+}
+
+TEST_CASE("Grass and projector snapshots share one bounded pool", "[dx12][materials]")
+{
+	for (uint32_t p=0;p<=128u;++p)
+		for (uint32_t g=0;g<=128u;++g)
+			REQUIRE(ConstantSnapshotFits(p,g,128u)==(p+g<128u));
+	STATIC_REQUIRE_FALSE(ConstantSnapshotFits(UINT32_MAX,1,128));
+	STATIC_REQUIRE_FALSE(ConstantSnapshotFits(1,UINT32_MAX,128));
+}
+
 TEST_CASE("Typed Effect readiness distinguishes untextured rows from missing transfers", "[dx12][materials]")
 {
 	using namespace DX12Native::MaterialFrameContract;
