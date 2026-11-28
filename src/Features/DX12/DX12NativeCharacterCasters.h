@@ -10,6 +10,7 @@
 #include "Utils/ActorUtils.h"
 #include "Utils/FileSystem.h"
 #include "Utils/SkinnedMesh.h"
+#include "Utils/TracyZones.h"
 
 #include <DirectXPackedVector.h>
 #include <algorithm>
@@ -367,9 +368,15 @@ namespace DX12Native
             return true;
         }
 
-        static Snapshot Capture()
+        static void Capture(Snapshot& result)
         {
-            Snapshot result;
+            ZoneScopedN("DX12::Characters::Capture");
+            result.vertices.clear();
+            result.bones.clear();
+            result.indices.clear();
+            result.primitiveParts.clear();
+            result.materialSources.clear();
+            result.parts = result.rejected = 0;
             uint32_t actors = 0;
             Util::ForEachLoadedActor([&](RE::Actor* actor) {
                 if (!actor || !actor->Is3DLoaded() || actors >= kMaxActors || result.parts >= kMaxParts) return;
@@ -381,7 +388,6 @@ namespace DX12Native
                         !CapturePart(geometry, result)) ++result.rejected;
                 });
             });
-            return result;
         }
 
         void Initialize(const GraphicsBackend& backend)
@@ -435,6 +441,7 @@ namespace DX12Native
         // immediately, so raw engine pointers are never read at submission.
         void ObserveRigidMover(RE::BSGeometry& geometry, uint32_t frame, uint32_t scope)
         {
+            CS_DRAW_ZONE("DX12::RigidMover::Observe");
             if (moverScope != scope) {
                 moverMeshes.clear(); moverShadingOrder.clear(); moverShadingCache = nullptr; moverMaterialWorker.Reset();
                 moverScope = scope; moverFrame = UINT32_MAX;
@@ -504,6 +511,7 @@ namespace DX12Native
             moverShadingOrder.clear(); moverShadingCache = nullptr;
             attemptedFrame = UINT32_MAX; attemptedScope = 0;
             moverFrame = UINT32_MAX; moverScope = 0; movers.clear(); seenMovers.clear(); moverMeshes.clear();
+            actorScratch = {};
         }
         std::shared_ptr<const CharacterCasterFrame> Get(uint32_t frame, uint32_t scope) const
         {
@@ -515,6 +523,7 @@ namespace DX12Native
 
         void Publish(const GraphicsBackend& backend, uint32_t frame, uint32_t scope, uint32_t interval)
         {
+            ZoneScopedN("DX12::Characters::Publish");
             if (!scope || (attemptedFrame == frame && attemptedScope == scope)) return;
             attemptedFrame = frame; attemptedScope = scope;
             combined.reset();
@@ -552,7 +561,9 @@ namespace DX12Native
                         selected = &slot;
                 }
                 if (!selected) { failure = "Character caster frame pool busy"; return; }
-                auto snapshot = Capture();
+                // Reuse engine-thread staging; upload tables copy before reuse.
+                auto& snapshot = actorScratch;
+                Capture(snapshot);
                 rejectedParts = snapshot.rejected;
                 if (snapshot.vertices.empty() || snapshot.indices.empty()) { failure = "No admitted character parts"; return; }
                 auto device = backend.d3d12Device.try_as<ID3D12Device5>();
@@ -622,7 +633,7 @@ namespace DX12Native
                 next->vertices = uint32_t(snapshot.vertices.size()); next->triangles = triangleCount;
                 if (snapshot.materialSources.size() != snapshot.parts) throw std::runtime_error("Character material part mapping mismatch");
                 next->materialSources = std::make_shared<const std::vector<DX12::PreparedMaterialSource>>(std::move(snapshot.materialSources));
-                next->materials = materialWorker.Update(backend, frame, scope, *next->materialSources);
+                next->materials = materialWorker.Update(backend, frame, scope, next->materialSources);
                 if (!reuse) next->allocationBytes = required;
                 next->root = root; next->pipeline = pipeline;
                 next->readyFence = completion;
@@ -700,6 +711,7 @@ namespace DX12Native
 
         void PublishMovers(const GraphicsBackend& backend, uint32_t frame, uint32_t scope)
         {
+            ZoneScopedN("DX12::RigidMover::Publish");
             if (moverFrame != frame || moverScope != scope || movers.empty()) return;
             try {
                 Initialize(backend);
@@ -808,7 +820,8 @@ namespace DX12Native
                         next->rigidShading = PrepareMoverShading(device.get(), shadingOrder);
                         if (next->rigidShading) {
                             next->rigidShadingCount = next->rigidInstances;
-                            next->materials = moverMaterialWorker.Update(backend, frame, scope, std::move(materialSources));
+                            next->materials = moverMaterialWorker.Update(backend, frame, scope,
+                                std::make_shared<const std::vector<DX12::PreparedMaterialSource>>(std::move(materialSources)));
                         }
                     } catch (const std::exception&) {
                         next->rigidShading = nullptr; next->rigidShadingCount = 0;
@@ -917,6 +930,7 @@ namespace DX12Native
         std::shared_ptr<CharacterCasterFrame> combined;
         uint32_t moverScope = 0, newMoverMeshes = 0;
         GraphicsBackend owner;
+        Snapshot actorScratch;
         CharacterMaterialWorker materialWorker, moverMaterialWorker;
         VideoMemoryBudget budget;
         std::array<std::shared_ptr<CharacterCasterFrame>, 3> slots;

@@ -195,9 +195,9 @@ namespace DX12Native
             state->scope = 0; state->retryFrame = 0; ++state->generation;
         }
         std::shared_ptr<const CharacterMaterialPublication> Update(const GraphicsBackend& backend,
-            uint32_t frame, uint32_t scope, Sources sources)
+            uint32_t frame, uint32_t scope, std::shared_ptr<const Sources> sources)
         {
-            if (GraphicsBackend::NativeDeviceLost()) return nullptr;
+            if (GraphicsBackend::NativeDeviceLost() || !sources) return nullptr;
             if (!state) state = std::make_shared<State>();
             const auto catalog = NativePBR::MaterialCatalog::Shared().GetSnapshot();
             std::scoped_lock lock(state->mutex);
@@ -206,8 +206,9 @@ namespace DX12Native
                 state->last.reset();
                 state->sources.reset();
             }
-            if (!state->sources || *state->sources != sources || state->catalog != catalog || state->scope != scope) {
-                state->sources = std::make_shared<const Sources>(std::move(sources));
+            if (!state->sources || (state->sources != sources && *state->sources != *sources) ||
+                state->catalog != catalog || state->scope != scope) {
+                state->sources = std::move(sources);
                 state->catalog = catalog; state->scope = scope; state->backend = backend;
                 ++state->generation; state->retryFrame = 0;
             }

@@ -975,8 +975,29 @@ void DX12NativeScene::OnOpaqueRasterReady()
 void DX12NativeScene::BeginFullNativeRasterInputs()
 {
 	if (!globals::features::dx12Control.UsesExclusiveMaterials() || !globals::game::graphicsState) return;
+	ZoneScopedN("DX12::RasterInputs::Begin");
 	auto& draws = fullNativeRasterDraws;
-	draws = {};
+	const auto oldInputs = draws.scene ? draws.scene->inputs : nullptr;
+	// Preserve capacity while resetting frame-local state and COM references.
+	FullNativeRasterDrawState next;
+	next.seen = std::move(draws.seen);
+	next.seenEpoch = draws.seenEpoch + 1u;
+	if (!next.seenEpoch) {
+		std::ranges::fill(next.seen, 0u);
+		next.seenEpoch = 1u;
+	}
+	next.casterMatches = std::move(draws.casterMatches);
+	next.geometryOrdinals = std::move(draws.geometryOrdinals);
+	next.materialOrdinals = std::move(draws.materialOrdinals);
+	next.drawRecords = std::move(draws.drawRecords);
+	next.projection = std::move(draws.projection);
+	next.projectionTextures = std::move(draws.projectionTextures);
+	next.geometryOrdinals.clear();
+	next.materialOrdinals.clear();
+	next.drawRecords.clear();
+	next.projection.clear();
+	next.projectionTextures.clear();
+	draws = std::move(next);
 	const auto frame = globals::game::graphicsState->GetFrameCount();
 	const auto scene = acceleration.GetScene();
 	const auto grid = globals::features::dx12Resources.GetGrid();
@@ -990,6 +1011,12 @@ void DX12NativeScene::BeginFullNativeRasterInputs()
 		draws.scene = scene;
 		draws.seen.resize(scene->inputs->geometry.size());
 		draws.stamp.materialRevision = scene->materialEvaluation ? scene->materialEvaluation->revision : 0;
+		if (oldInputs != scene->inputs || draws.casterMatches.empty()) {
+			draws.casterMatches.clear();
+			draws.casterMatches.resize(FullNativeRasterDrawState::kCasterMatchSlots);
+		}
+	} else {
+		draws.casterMatches.clear();
 	}
 	// One snapshot at the opaque boundary; subsequent state changes are observed
 	// by binding detours. No per-draw OM/PS/IA queries.
@@ -1086,11 +1113,19 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 	// Only known dynamic non-actor owners are admitted here. Actor attachments
 	// are already captured by the actor path; static geometry must not be duplicated.
 	if (characterCasters) {
-		bool ancestryRead = false;
-		const auto* reference = Util::FindSceneOwner(&geometry, false, &ancestryRead);
-		const auto moverGrid = globals::features::dx12Resources.GetGrid();
-		if (ancestryRead && reference && reference->IsDynamicForm() && !reference->IsActor() && moverGrid && !moverGrid->requested.empty())
-			characterCasters->ObserveRigidMover(geometry, frame, moverGrid->requested.front().scope);
+		const auto& rt = geometry.GetGeometryRuntimeData();
+		// Reject ineligible rigid movers before walking the live ancestry chain.
+		if (geometry.AsTriShape() && !geometry.AsDynamicTriShape() && !rt.skinInstance && !rt.alphaProperty &&
+			rt.rendererData && rt.rendererData->rawVertexData && rt.rendererData->rawIndexData) {
+			CS_DRAW_ZONE("DX12::RigidMover::OwnerLookup");
+			bool ancestryRead = false;
+			const auto* reference = Util::FindSceneOwner(&geometry, false, &ancestryRead);
+			if (ancestryRead && reference && reference->IsDynamicForm() && !reference->IsActor()) {
+				const auto moverGrid = globals::features::dx12Resources.GetGrid();
+				if (moverGrid && !moverGrid->requested.empty())
+					characterCasters->ObserveRigidMover(geometry, frame, moverGrid->requested.front().scope);
+			}
+		}
 	}
 	auto& draws = fullNativeRasterDraws;
 	if (!draws.active || draws.finalized || draws.stamp.frame != frame) return;
@@ -1127,14 +1162,28 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 	transform[7] = geometry.world.translate.y;
 	transform[11] = geometry.world.translate.z;
 	UniqueRasterCandidate match;
-	const auto [first, rangeEnd] = scene->inputs->casterSources.equal_range(live.geometry);
-	for (auto it = first; it != rangeEnd; ++it) {
-		const auto ordinal = it->second;
-		if (ordinal >= scene->inputs->geometry.size() || ordinal >= UINT32_MAX)
-			continue;
-		const auto& shape = scene->inputs->geometry[ordinal];
-		if (shape && DX12::SameCasterSource(shape->casterSource, live, shape->transform, transform))
-			match.Observe(uint32_t(ordinal));
+	{
+		CS_DRAW_ZONE("DX12::RasterInputs::CasterLookup");
+		// Preserve exact source/transform checks and ambiguous-match rejection.
+		// A hash collision only causes a miss; no engine pointer is dereferenced.
+		auto* entry = draws.casterMatches.empty() ? nullptr :
+			&draws.casterMatches[(live.geometry >> 4u) % draws.casterMatches.size()];
+		if (entry && DX12::SameCasterSource(entry->source, live, entry->transform, transform)) {
+			match = entry->match;
+			++draws.matchHits;
+		} else {
+			++draws.matchMisses;
+			const auto [first, rangeEnd] = scene->inputs->casterSources.equal_range(live.geometry);
+			for (auto it = first; it != rangeEnd; ++it) {
+				const auto ordinal = it->second;
+				if (ordinal >= scene->inputs->geometry.size() || ordinal >= UINT32_MAX)
+					continue;
+				const auto& shape = scene->inputs->geometry[ordinal];
+				if (shape && DX12::SameCasterSource(shape->casterSource, live, shape->transform, transform))
+					match.Observe(uint32_t(ordinal));
+			}
+			if (entry) *entry = { live, transform, match };
+		}
 	}
 	// Projection evidence remains independently stamped. A feature-limited
 	// material may still publish raw geometry; shading eligibility is separate.
@@ -1162,8 +1211,8 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 		return;
 	}
 	++draws.candidates;
-	if (!draws.seen[match.ordinal]) {
-		draws.seen[match.ordinal] = 1;
+	if (draws.seen[match.ordinal] != draws.seenEpoch) {
+		draws.seen[match.ordinal] = draws.seenEpoch;
 		++draws.uniqueInstances;
 	}
 	const auto primitiveCount = uint32_t(counts.triangleCount);
@@ -1395,6 +1444,7 @@ void DX12NativeScene::StampFullNativeIndexedDraw(uint32_t count, uint32_t start,
 
 void DX12NativeScene::FinishFullNativeRasterDraws()
 {
+	ZoneScopedN("DX12::RasterInputs::Publish");
 	if (!globals::game::graphicsState)
 		return;
 	auto& draws = fullNativeRasterDraws;
@@ -1764,6 +1814,7 @@ json DX12NativeScene::GetStatus() const
 			{ "geometryRevision", draws.stamp.geometryRevision }, { "materialRevision", draws.stamp.materialRevision },
 			{ "draws", draws.draws }, { "candidateDraws", draws.candidates }, { "uniqueInstances", draws.uniqueInstances },
 			{ "ambiguousDraws", draws.ambiguous }, { "rejectedDraws", draws.rejected }, { "finalized", draws.finalized },
+			{ "casterLookupHits", draws.matchHits }, { "casterLookupMisses", draws.matchMisses },
 			{ "integerIdentity", true }, { "rasterDrawRecords", draws.drawRecords.size() },
 			{ "rawInputPublished", bool(rawInputCapture.GetForFrame(draws.stamp.frame)) },
 			{ "rawInputFailure", rawInputCapture.Failure() },

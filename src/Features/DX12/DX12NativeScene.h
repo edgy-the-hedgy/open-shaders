@@ -165,7 +165,19 @@ private:
 	{
 		std::shared_ptr<const DX12Native::TopLevel> scene;
 		DX12Native::MaterialFrameContract::RasterIdentityStamp stamp{};
-		std::vector<uint8_t> seen;
+		// Epoch-stamped observation rows: no scene-sized clear on normal frames.
+		std::vector<uint32_t> seen;
+		uint32_t seenEpoch = 0;
+		struct CasterMatchEntry
+		{
+			DX12::CasterSource source{};
+			std::array<float, 12> transform{};
+			DX12Native::MaterialFrameContract::UniqueRasterCandidate match{};
+		};
+		// Bounded direct-mapped cache scoped to the immutable SceneInputs publication.
+		static constexpr size_t kCasterMatchSlots = 8192;
+		std::vector<CasterMatchEntry> casterMatches;
+		uint32_t matchHits = 0, matchMisses = 0;
 		std::unordered_map<const void*, uint32_t> geometryOrdinals, materialOrdinals;
 		std::vector<NativePBR::RasterDrawRecord> drawRecords;
 		uint32_t activeGeometry = 0, activeMaterial = 0, nextRasterDraw = 0;
