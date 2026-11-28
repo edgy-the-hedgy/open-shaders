@@ -57,6 +57,7 @@ cbuffer ProbeCamera : register(b1)
     uint HasSecondaryScene;
     uint HasRasterRayMapping;
     uint RasterPreparedSourceCount;
+    uint DiagnosticRayProbe;
 };
 RWByteAddressBuffer ProbeCounts : register(u1);
 RWByteAddressBuffer ScreenOutput : register(u2);
@@ -265,7 +266,7 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed,
     const bool traced = NativeIsSampled(pixel, ViewSize, QualityMode, ProjectionFrame);
     uint2 rasterMapped;
     RawRasterSurface visible=ReadRawVisibility(pixel,z,HasRawInput,rasterMapped);
-    if (visible.valid) {
+    if (DiagnosticRayProbe != 0x44585031u && visible.valid) {
         float3 dx=0.0,dy=0.0;
         if (visible.auxiliaryKind==2u) {
             float2 step=2.0/float2(GridSize);
@@ -304,7 +305,11 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed,
     }
     // Certified opaque raster inputs are the only primary visibility
     // authority. A missing/invalid raw receiver cannot become a ray hit.
-    if (RasterSourceCount!=0u || HasSecondaryScene==0u || !rayRange) return result;
+    if (DiagnosticRayProbe != 0x44585031u) {
+        result.color.a=SurfaceInvalidReceiver;
+        return result;
+    }
+    if (HasSecondaryScene==0u || !rayRange) return result;
     uint instance, primitive;
     float2 bary;
     float hitDistance;
