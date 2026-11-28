@@ -41,6 +41,8 @@ namespace DX12Native
 		std::vector<uint32_t> rasterAliases;
 		std::array<winrt::com_ptr<ID3D11ShaderResourceView>,2> extraViews;
 		uint32_t extraSamplerModes=0;
+		std::array<TextureRevision::ViewStamp,kProjectedTextureRoles> revisions{};
+		std::array<TextureRevision::ViewStamp,2> extraRevisions{};
 	};
 	struct ProjectedInputFrame
 	{
@@ -249,9 +251,12 @@ namespace DX12Native
 				return 0;
 			return allocation.SizeInBytes;
 		}
-		uint32_t ImportTexture(ProjectedInputFrame& frame, std::vector<ProjectedInputFrame::Texture>& reusable, ID3D11ShaderResourceView* view)
+		uint32_t ImportTexture(ProjectedInputFrame& frame, std::vector<ProjectedInputFrame::Texture>& reusable, ID3D11ShaderResourceView* view,TextureRevision::ViewStamp expected)
 		{
 			if (!view) return UINT32_MAX;
+			// Check provenance before the pointer-keyed per-publication cache.
+			// A stale draw must neither reuse nor poison a newer draw's import.
+			if (!expected.Matches(TextureRevision::ReadView(view))) { ++frame.deferredTextures; return UINT32_MAX; }
 			// Cache negative results for the current publication too.
 			auto [known, inserted] = frameImports.try_emplace(view, UINT32_MAX);
 			if (!inserted) return known->second;
@@ -549,14 +554,14 @@ namespace DX12Native
 						pending->rasterAliases.emplace_back(alias, constants.metadata[2]);
 					for (size_t i = 0; i < draw.views.size(); ++i) {
 						submitted = true;
-						constants.textures[i] = ImportTexture(*pending, reusable, draw.views[i].get());
+						constants.textures[i] = ImportTexture(*pending, reusable, draw.views[i].get(),draw.revisions[i]);
 						if (draw.views[i] && constants.textures[i] == UINT32_MAX) ++pending->missingTextures;
 					}
 					constants.extras={UINT32_MAX,UINT32_MAX,draw.extraSamplerModes,0u};
 					for (size_t i=0; i<draw.extraViews.size(); ++i) {
 						if (!draw.extraViews[i]) continue;
 						submitted=true;
-						constants.extras[i]=ImportTexture(*pending,reusable,draw.extraViews[i].get());
+						constants.extras[i]=ImportTexture(*pending,reusable,draw.extraViews[i].get(),draw.extraRevisions[i]);
 						if (constants.extras[i]==UINT32_MAX) ++pending->missingTextures;
 					}
 					uint32_t residentMask=0;
