@@ -75,6 +75,7 @@ namespace DX12
 		std::array<float, 4> uvTransform{};
 		std::array<std::string, 8> texturePaths;
 		std::optional<RasterEffectSource> rasterEffect;
+		bool rasterPbrGrass=false;
 		// Raster-only vanilla terrain inputs; never retain engine texture pointers.
 		uint32_t rasterLandscapeLayers = 0;
 		std::array<std::array<std::string, 2>, 8> rasterLandscapeTextures{};
