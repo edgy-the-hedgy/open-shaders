@@ -4,7 +4,7 @@
 
 namespace DX12Native
 {
-	/** @brief Linear native radiance. Alpha 1 alone authorizes color replacement. */
+	/** @brief Linear Rec.709 native radiance. Alpha: 0 invalid receiver; 1 valid contribution(s); 2 owned receiver with no available contribution. Both 1 and 2 authorize native color application. */
 	struct FullNativeFinalColorFrame
 	{
 		std::shared_ptr<const FullNativeReconstructionFrame> input;
@@ -17,7 +17,7 @@ namespace DX12Native
 		winrt::com_ptr<ID3D12Fence> readyFence, consumedFence;
 		uint64_t readyValue = 0, consumedValue = 0;
 		uint32_t frame = 0, width = 0, height = 0;
-		bool applicationEligible = false, applied = false;
+		bool applied = false;
 	};
 
 	class FullNativeFinalColor

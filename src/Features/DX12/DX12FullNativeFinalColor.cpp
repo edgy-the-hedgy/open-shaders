@@ -1,6 +1,5 @@
 #include "DX12FullNativeFinalColor.h"
 #include "DX12GpuRetirement.h"
-#include "Features/LinearLighting.h"
 #include "Globals.h"
 #include "GpuPass.h"
 #include "State.h"
@@ -45,7 +44,7 @@ namespace DX12Native
 		parameters[1].InitAsShaderResourceView(1);
 		parameters[2].InitAsShaderResourceView(2);
 		parameters[3].InitAsDescriptorTable(1, &range);
-		parameters[4].InitAsConstants(5, 0);
+		parameters[4].InitAsConstants(4, 0);
 		CD3DX12_ROOT_SIGNATURE_DESC signature(5, parameters);
 		winrt::com_ptr<ID3DBlob> blob, errors;
 		winrt::com_ptr<ID3D12RootSignature> newRoot;
@@ -99,9 +98,19 @@ namespace DX12Native
 
 	void FullNativeFinalColor::Compose(const GraphicsBackend& backend, std::shared_ptr<const FullNativeReconstructionFrame> input)
 	{
-		if (!input || !input->material || !input->samples || !input->ownershipMask || !input->readyFence ||
+		if (!input || !input->material || !input->historySignals || !input->ownershipMask || !input->readyFence ||
 			!ValidProducerSignal(input->readyValue, input->readyFence->GetCompletedValue()) ||
 			!input->material->IsCoherent(input->frame, input->width, input->height))
+			return;
+		// Current-frame independent reconstructed signals, not the previous history input.
+		static_assert(FullNativeReconstructionFrame::historySignalStride == 6 * kOpaqueRadianceStride);
+		const uint64_t pixels = uint64_t(input->width) * input->height;
+		const auto signals = input->historySignals->GetDesc();
+		const auto ownership = input->ownershipMask->GetDesc();
+		if (!pixels || pixels > UINT32_MAX / FullNativeReconstructionFrame::historySignalStride ||
+			signals.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
+			signals.Width < pixels * FullNativeReconstructionFrame::historySignalStride ||
+			ownership.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER || ownership.Width < pixels * sizeof(uint32_t))
 			return;
 		Poll(input->frame);
 		if (Get(input->frame))
@@ -154,7 +163,6 @@ namespace DX12Native
 			slot->frame = slot->input->frame;
 			slot->width = slot->input->width;
 			slot->height = slot->input->height;
-			slot->applicationEligible = slot->input->rasterWinnerCertified && slot->input->completeLightingCoverage;
 			slot->applied = false;
 			slot->root = root;
 			slot->pipeline = pipeline;
@@ -168,12 +176,12 @@ namespace DX12Native
 			cmd->SetDescriptorHeaps(1, heaps);
 			cmd->SetComputeRootSignature(root.get());
 			cmd->SetComputeRootShaderResourceView(0, slot->input->material->samples->GetGPUVirtualAddress());
-			cmd->SetComputeRootShaderResourceView(1, slot->input->samples->GetGPUVirtualAddress());
+			cmd->SetComputeRootShaderResourceView(1, slot->input->historySignals->GetGPUVirtualAddress());
 			cmd->SetComputeRootShaderResourceView(2, slot->input->ownershipMask->GetGPUVirtualAddress());
 			cmd->SetComputeRootDescriptorTable(3, slot->descriptors->GetGPUDescriptorHandleForHeapStart());
 			const uint32_t constants[]{ slot->width, slot->height, slot->input->material->rowPitch,
-				slot->input->rowPitch, slot->applicationEligible ? 1u : 0u };
-			cmd->SetComputeRoot32BitConstants(4, 5, constants, 0);
+				slot->input->available };
+			cmd->SetComputeRoot32BitConstants(4, 4, constants, 0);
 			auto transition = CD3DX12_RESOURCE_BARRIER::Transition(texture, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 			cmd->ResourceBarrier(1, &transition);
 			cmd->Dispatch((slot->width + 7) / 8, (slot->height + 7) / 8, 1);
@@ -201,13 +209,8 @@ namespace DX12Native
 
 	bool FullNativeFinalColor::Apply(uint32_t frame, ID3D11UnorderedAccessView* target)
 	{
-		if (!Get(frame) || !target || !current->applicationEligible || current->applied ||
+		if (!Get(frame) || !target || current->applied ||
 			!globals::state || globals::state->isMapMenuOpen)
-			return false;
-		// Current native direct radiance is Rec709. Do not combine it with AP1
-		// until the complete native color-domain contract is implemented.
-		const auto settings = globals::features::linearLighting.GetCommonBufferData();
-		if (settings.enableLinearLighting && settings.enableACEScg)
 			return false;
 		try {
 			if (!applyShader) {

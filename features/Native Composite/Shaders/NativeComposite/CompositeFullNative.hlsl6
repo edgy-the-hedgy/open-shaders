@@ -1,20 +1,32 @@
 #include "NativeSurface.hlsli"
 
 ByteAddressBuffer Materials : register(t0);
-ByteAddressBuffer Reconstructed : register(t1);
+// Current-frame reconstructed signals, in the producer's six-signal order.
+// Despite the C++ historySignals name, this is the current output publication.
+ByteAddressBuffer Signals : register(t1);
 ByteAddressBuffer Ownership : register(t2);
 RWTexture2D<float4> FinalColor : register(u0);
 cbuffer FinalConstants : register(b0)
 {
     uint2 Size;
     uint MaterialPitch;
-    uint LightingPitch;
-    uint ApplicationEligible;
+    uint Available;
 };
 
 float4 UnpackHalf4(uint2 p)
 {
     return f16tof32(uint4(p.x & 65535u, p.x >> 16, p.y & 65535u, p.y >> 16));
+}
+
+void AddSignal(uint offset, uint expected, inout float3 radiance, inout bool anyValid)
+{
+    float4 sample = UnpackHalf4(Signals.Load2(offset));
+    // Zero is a valid contribution when its explicit producer bit is present.
+    // Missing/invalid signals must neither poison nor suppress other lobes.
+    if ((Available & expected) != 0u && all(isfinite(sample)) && sample.a == float(expected)) {
+        radiance += sample.rgb;
+        anyValid = true;
+    }
 }
 
 [numthreads(8, 8, 1)]
@@ -24,21 +36,32 @@ void main(uint3 id : SV_DispatchThreadID)
     FinalColor[id.xy] = 0.0;
     uint pixel = id.y * Size.x + id.x;
     uint ownership = Ownership.Load(pixel * 4u);
+    // Worker 09 publishes raster-local visibility independently of ray identity.
+    // No ExactRasterWinner, CompleteOpaqueRadiance or legacy replacement gate.
     if ((ownership & RasterIdentityCandidate) == 0u) return;
     uint surface = id.y * MaterialPitch + id.x * NativeSurfaceStride;
     float4 base = UnpackHalf4(Materials.Load2(surface));
-    float4 emissionAO = UnpackHalf4(Materials.Load2(surface + 24u));
-    if (base.a != SurfaceEvaluatedBase || !all(isfinite(emissionAO))) return;
-    uint signal = id.y * LightingPitch + id.x * NativeLightingStride;
-    float4 diffuse = UnpackHalf4(Reconstructed.Load2(signal));
-    float4 specular = UnpackHalf4(Reconstructed.Load2(signal + 8u));
-    float4 transmission=UnpackHalf4(Reconstructed.Load2(signal+16u));
-    if (!all(isfinite(diffuse)) || !all(isfinite(specular)) || !all(isfinite(transmission))) return;
-    float3 radiance = diffuse.rgb + specular.rgb + transmission.rgb + max(emissionAO.rgb, 0.0);
-    if (!all(isfinite(radiance)) || any(abs(radiance) > 65504.0)) return;
-    // Partial radiance is useful for diagnostics but cannot replace raster.
-    // The owner bit requires complete contributions including independently
-    // admitted material emission and independently reconstructed transmission.
-    // Remaining opaque lighting still needs its own complete producer.
-    FinalColor[id.xy] = float4(radiance, ApplicationEligible != 0u && HasNativeOpaqueOwnership(ownership) ? 1.0 : 0.0);
+    float4 normal = UnpackHalf4(Materials.Load2(surface + 8u));
+    if (!HasEvaluatedNativeBase(base.a) || !all(isfinite(base)) ||
+        !all(isfinite(normal)) || dot(normal.xyz, normal.xyz) < 1e-8) return;
+
+    float3 radiance = 0.0;
+    bool anyValid = false;
+    uint signal = pixel * (6u * NativeOpaqueRadianceStride);
+    AddSignal(signal,       ContributionDirectDiffuse,   radiance, anyValid);
+    AddSignal(signal + 8u,  ContributionDirectSpecular,  radiance, anyValid);
+    AddSignal(signal + 16u, ContributionTransmission,    radiance, anyValid);
+    AddSignal(signal + 24u, ContributionIndirectDiffuse, radiance, anyValid);
+    AddSignal(signal + 32u, ContributionIndirectSpecular,radiance, anyValid);
+    AddSignal(signal + 40u, ContributionTransmission,    radiance, anyValid);
+    float3 emission = UnpackHalf4(Materials.Load2(surface + 24u)).rgb;
+    if ((Available & ContributionEmission) != 0u && all(isfinite(emission))) {
+        radiance += max(emission, 0.0);
+        anyValid = true;
+    }
+
+    // Sum in float32, in the native linear Rec.709 domain; only saturate at
+    // the storage boundary. Never mistake half overflow for an invalid receiver.
+    // An owned receiver without contributions is native black, not raster fallback.
+    FinalColor[id.xy] = float4(clamp(radiance, -65504.0, 65504.0), anyValid ? 1.0 : 2.0);
 }
