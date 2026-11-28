@@ -29,6 +29,7 @@ namespace DX12Native
 		std::array<ID3D11ShaderResourceView*, 2> constants{};
 		std::array<uint32_t, 4> offsets{};
 		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, kProjectedTextureRoles> views;
+		uint32_t rasterDraw = 0;
 	};
 	struct ProjectedInputFrame
 	{
@@ -45,7 +46,7 @@ namespace DX12Native
 		MaterialFrameContract::RasterIdentityStamp stamp{};
 		std::unique_ptr<WrappedResource> records;
 		std::vector<Texture> textures;
-		std::vector<uint32_t> instances;
+		std::vector<uint32_t> instances, rasterDraws;
 		uint32_t rowCount = 0, missingTextures = 0;
 		uint32_t transferredTextures = 0, newTextures = 0, cacheHits = 0, suppressedTextures = 0, deferredTextures = 0;
 		uint64_t immutableCacheBytes = 0;
@@ -409,7 +410,7 @@ namespace DX12Native
 		{
 			current.reset();
 			if (!GraphicsBackend::CheckNativeDeviceHealth(backend.d3d12Device.get(), backend.d3d11Device.get())) return;
-			if (draws.empty() || draws.size() > kMaxProjectedDraws || !stamp.scope || !stamp.geometryRevision || !stamp.materialRevision)
+			if (draws.empty() || draws.size() > kMaxProjectedDraws || !stamp.scope)
 				return;
 			std::shared_ptr<ProjectedInputFrame> pending;
 			bool submitted = false, transferSubmitted = false;
@@ -489,6 +490,8 @@ namespace DX12Native
 				pending->textures.reserve(kProjectedTextureCapacity);
 				pending->instances.clear();
 				pending->instances.reserve(draws.size());
+			pending->rasterDraws.clear();
+			pending->rasterDraws.reserve(draws.size());
 				pending->stamp = stamp; pending->rowCount = 0; pending->missingTextures = 0;
 				pending->cacheHits = pending->suppressedTextures = pending->deferredTextures = 0;
 				pending->transferredTextures = pending->newTextures = 0;
@@ -502,6 +505,7 @@ namespace DX12Native
 					PackConstants constants{};
 					constants.offsets = draw.offsets;
 					pending->instances.push_back(draw.instance);
+				pending->rasterDraws.push_back(draw.rasterDraw);
 					constants.metadata = { draw.instance, draw.descriptor, static_cast<uint32_t>(records.size()), draw.samplerModes };
 					for (size_t i = 0; i < draw.views.size(); ++i) {
 						submitted = true;

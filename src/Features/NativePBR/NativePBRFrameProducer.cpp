@@ -28,9 +28,7 @@ void NativePBR::FrameProducer::Dispatch(const GraphicsBackend& backend, std::sha
 	if (!opaqueReady)
 		return;
 	const auto stamp = rawInputs->stamp;
-	auto projected = projection && scene && scene->materialEvaluation &&
-		rawInputs->MatchesRayGeneration({frame, scene->scope, scene->geometryRevision, scene->materialEvaluation->revision}) ?
-		projection->GetSubmitted(stamp) : nullptr;
+	auto projected = projection ? projection->GetSubmitted(stamp) : nullptr;
 	const auto& extended = globals::features::extendedMaterials;
 	const bool collectCoverage = globals::state && globals::state->IsDeveloperMode() && frame % kDeveloperCoverageInterval == 0;
 	probe->Dispatch(backend, std::move(raster), std::move(scene), frame, width, height, true, true, collectCoverage,

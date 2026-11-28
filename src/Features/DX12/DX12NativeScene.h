@@ -104,7 +104,6 @@ struct DX12NativeScene final : OverlayFeature
 	/** @brief Observe CPU-backed opaque rigid geometry from SCM or normal render passes. */
 	void ObserveSCMRigidCaster(RE::BSGeometry& geometry, bool requireStability = false);
 	/** @brief Snapshot engine-selected projection views after Lighting SetupGeometry; never read unmapped constants. */
-	void ObserveProjectedDrawBindings(const RE::BSRenderPass* pass);
 	/** @brief SCM hands native-owned lights' static casters to RayQuery and retains movers. */
 	bool OwnsStaticForLight(RE::BSShadowLight* light, int32_t slot) const;
 	/** @brief Frame-wide policy established before SCM scheduling. */
@@ -163,6 +162,12 @@ private:
 		bool repeatedConstants = false;
 	};
 	bool CaptureProjectedConstants(ProjectedTextureObservation& observation);
+	void CaptureRasterProjectedDraw(uint32_t rasterDraw, uint32_t sceneInstance);
+	struct RasterProjectionObservation
+	{
+		uint32_t rasterDraw = 0, sceneInstance = UINT32_MAX;
+		ProjectedTextureObservation texture;
+	};
 	// Render-thread-only observations, deliberately separate from SCM ownership.
 	struct FullNativeRasterDrawState
 	{
@@ -192,6 +197,7 @@ private:
 		// Sparse, frame-local observations indexed by the matched TLAS instance.
 		std::unordered_map<uint32_t, DX12Native::MaterialFrameContract::ProjectedPropertyObservation> projection;
 		std::unordered_map<uint32_t, ProjectedTextureObservation> projectionTextures;
+		std::vector<RasterProjectionObservation> rasterProjectionTextures;
 		uint32_t activeProjectedInstance = UINT32_MAX;
 		uint32_t constantSnapshots = 0, constantSnapshotFailures = 0;
 		uint32_t projectedDraws = 0, unmatchedProjectedDraws = 0;

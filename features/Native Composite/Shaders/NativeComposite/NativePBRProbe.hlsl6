@@ -32,6 +32,7 @@ StructuredBuffer<MaterialRecord> RasterMaterialRecords : register(t1038);
 StructuredBuffer<Binding> RasterMaterialBindings : register(t1039);
 ByteAddressBuffer RasterLandscapeRows : register(t1040);
 ByteAddressBuffer RasterMaterialLookup : register(t1041);
+ByteAddressBuffer RasterProjectionLookup : register(t1042);
 cbuffer ProbeCamera : register(b1)
 {
     row_major float4x4 InverseProjection;
@@ -197,23 +198,11 @@ Sample EvaluateRasterLocal(RawRasterSurface raw, uint2 mapped, float3 viewRay, f
     if (binding.materialIndex>=RasterRecordCount) return result;
     MaterialRecord material=RasterMaterialRecords[binding.materialIndex];
     uint projectionRow=0xffffffffu;
-    // A verified scene binding may supply the reference-local MATO and projector
-    // constants. Neither is required to evaluate the base raster material.
-    if (HasRasterRayMapping!=0u && raw.auxiliaryKind==2u && mapped.x<InstanceCount && raw.materialIndex<SceneRecordCount &&
-        ProjectionRowCount>0u) {
-        Binding sceneBinding=Bindings[mapped.x];
-        if (sceneBinding.materialIndex==raw.materialIndex) {
-            MaterialRecord placed=MaterialRecords[sceneBinding.materialIndex];
-            if (all(placed.identity.xy==sceneBinding.identity) && all(placed.identity.zw==sceneBinding.revision)) {
-                uint row=ProjectionLookup.Load(mapped.x*4u);
-                if (row<ProjectionRowCount) {
-                    projectionRow=row;
-                    material.projected=placed.projected;
-                    material.surface.w=placed.surface.w;
-                    material.projectedGlint=placed.projectedGlint;
-                }
-            }
-        }
+    // The primary projector and MATO are acquired by the original draw.
+    if (raw.auxiliaryKind==2u && ProjectionRowCount>0u &&
+        raw.drawIdentity.x!=0u && raw.drawIdentity.x<=HasRawInput) {
+        uint row=RasterProjectionLookup.Load((raw.drawIdentity.x-1u)*4u);
+        if (row<ProjectionRowCount) projectionRow=row;
     }
     NativeMaterialTriangle tri=(NativeMaterialTriangle)0;
     tri.rasterLocal=true;

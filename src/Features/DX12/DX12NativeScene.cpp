@@ -1001,6 +1001,7 @@ void DX12NativeScene::BeginFullNativeRasterInputs()
 	next.materialSources = std::move(draws.materialSources);
 	next.projection = std::move(draws.projection);
 	next.projectionTextures = std::move(draws.projectionTextures);
+	next.rasterProjectionTextures = std::move(draws.rasterProjectionTextures);
 	next.geometryOrdinals.clear();
 	next.materialOrdinals.clear();
 	next.drawRecords.clear();
@@ -1008,6 +1009,7 @@ void DX12NativeScene::BeginFullNativeRasterInputs()
 	next.materialSources.clear();
 	next.projection.clear();
 	next.projectionTextures.clear();
+	next.rasterProjectionTextures.clear();
 	draws = std::move(next);
 	const auto frame = globals::game::graphicsState->GetFrameCount();
 	const auto scene = acceleration.GetScene();
@@ -1490,75 +1492,45 @@ bool DX12NativeScene::CaptureProjectedConstants(ProjectedTextureObservation& obs
 	return true;
 }
 
-void DX12NativeScene::ObserveProjectedDrawBindings(const RE::BSRenderPass* pass)
+void DX12NativeScene::CaptureRasterProjectedDraw(uint32_t rasterDraw, uint32_t sceneInstance)
 {
-	// The render-pass scope is the sole admission path. No D3D state reads
-	// or retained COM references are needed for unrelated draws.
-	auto& draws = fullNativeRasterDraws;
-	const auto ordinal = draws.activeProjectedInstance;
-	if (ordinal == UINT32_MAX || draws.finalized || !pass || !pass->geometry ||
-		!globals::features::dx12Control.WantsMaterialPreparation() || !globals::game::shadowState ||
-		!globals::game::graphicsState || draws.stamp.frame != globals::game::graphicsState->GetFrameCount() ||
-		!draws.scene || !draws.scene->inputs || ordinal >= draws.scene->inputs->geometry.size())
-		return;
-	const auto& shape = draws.scene->inputs->geometry[ordinal];
-	if (!shape || shape->casterSource.geometry != reinterpret_cast<uintptr_t>(pass->geometry))
-		return;
-	const auto property = draws.projection.find(ordinal);
-	if (property == draws.projection.end() || !property->second.ValidProjection())
-		return;
-	const auto& state = globals::game::shadowState->GetRuntimeData();
-	if (!state.currentPixelShader)
-		return;
-	using Cache = SIE::ShaderCache;
-	using Flags = Cache::LightingShaderFlags;
-	const auto descriptor = state.currentPixelShader->id;
-	// Restrict to the ordinary object permutation. Other techniques alias
-	// the same slots for unrelated resources (parallax, sparkle, LOD).
+	auto& draws=fullNativeRasterDraws;
+	if (!rasterDraw || draws.finalized || !globals::game::shadowState) return;
+	const auto& state=globals::game::shadowState->GetRuntimeData();
+	if (!state.currentPixelShader) return;
+	using Cache=SIE::ShaderCache;
+	using Flags=Cache::LightingShaderFlags;
+	const auto descriptor=state.currentPixelShader->id;
 	if (!(descriptor & static_cast<uint32_t>(Flags::ProjectedUV)) ||
-		(descriptor & static_cast<uint32_t>(Flags::Skinned)) ||
-		Cache::GetLightingTechnique(descriptor) != Cache::LightingShaderTechniques::None)
-		return;
-	constexpr std::array<uint32_t, 4> slots{ 3, 8, 10, 11 };
-	std::array<winrt::com_ptr<ID3D11ShaderResourceView>, slots.size()> views;
-	uint32_t samplerModes = 0;
-	for (size_t i = 0; i < slots.size(); ++i) {
-		samplerModes |= (static_cast<uint32_t>(state.PSTextureAddressMode[slots[i]].get()) & 3u) << (2u * i);
-		auto* view = Util::AsReal(state.PSTexture[slots[i]]);
+		Cache::GetLightingTechnique(descriptor)!=Cache::LightingShaderTechniques::None) return;
+	const auto property=draws.projection.find(sceneInstance);
+	const bool secondary=sceneInstance!=UINT32_MAX && property!=draws.projection.end() &&
+		property->second.ValidProjection() && !(descriptor & static_cast<uint32_t>(Flags::Skinned));
+	// Even a failed second observation invalidates secondary reuse.
+	if (secondary) {
+		const auto existing=draws.projectionTextures.find(sceneInstance);
+		if (existing!=draws.projectionTextures.end()) existing->second.repeatedConstants=true;
+	}
+	if (draws.constantSnapshots>=kMaxProjectedConstantSnapshots) return;
+	ProjectedTextureObservation observation;
+	observation.descriptor=descriptor;
+	constexpr std::array<uint32_t,4> slots{3,8,10,11};
+	for (size_t i=0;i<slots.size();++i) {
+		observation.samplerModes|=(static_cast<uint32_t>(state.PSTextureAddressMode[slots[i]].get())&3u)<<(2u*i);
+		auto* view=nativeSourceViews[slots[i]].get();
 		if (view) {
 			D3D11_SHADER_RESOURCE_VIEW_DESC desc{};
 			view->GetDesc(&desc);
-			if (desc.ViewDimension != D3D11_SRV_DIMENSION_TEXTURE2D || desc.Format == DXGI_FORMAT_UNKNOWN)
-				return;
-			views[i].copy_from(view);
-			if (i == 0 && DirectX::IsSRGB(desc.Format)) samplerModes |= 256u;
+			if (desc.ViewDimension!=D3D11_SRV_DIMENSION_TEXTURE2D || desc.Format==DXGI_FORMAT_UNKNOWN) return;
+			observation.views[i].copy_from(view);
+			if (i==0 && DirectX::IsSRGB(desc.Format)) observation.samplerModes|=256u;
 		}
 	}
-	// Noise is required even for the solid-color projection permutation.
-	if (!views.back())
-		return;
-	auto& observation = draws.projectionTextures[ordinal];
-	if (observation.conflicted)
-		return;
-	if (observation.observed) {
-		// Equal texture identities do not prove equal per-draw constants.
-		// Do not certify a repeated instance until GPU equality is implemented.
-		observation.repeatedConstants = true;
-		bool same = observation.descriptor == descriptor && observation.samplerModes == samplerModes;
-		for (size_t i = 0; i < views.size(); ++i)
-			same = same && observation.views[i].get() == views[i].get();
-		if (!same) {
-			observation.conflicted = true;
-			observation.views = {};
-		}
-		return;
-	}
-	observation.descriptor = descriptor;
-	observation.samplerModes = samplerModes;
-	observation.views = std::move(views);
-	observation.observed = true;
-	if (!CaptureProjectedConstants(observation))
-		++draws.constantSnapshotFailures;
+	if (!observation.views.back()) return;
+	if (!CaptureProjectedConstants(observation)) { ++draws.constantSnapshotFailures; return; }
+	observation.observed=true;
+	if (secondary) draws.projectionTextures.try_emplace(sceneInstance,observation);
+	draws.rasterProjectionTextures.push_back({rasterDraw,secondary?sceneInstance:UINT32_MAX,std::move(observation)});
 }
 
 void DX12NativeScene::StampFullNativeIndexedDraw(uint32_t count, uint32_t start, int32_t base, bool indexed, uint32_t instances, uint32_t firstInstance, bool gpuCounted, bool automatic)
@@ -1651,6 +1623,9 @@ void DX12NativeScene::StampFullNativeIndexedDraw(uint32_t count, uint32_t start,
 		primitiveStride, 0u, data.nativeRasterMaterialIndex, count, start, nativeInputIndexOffset, nativeInputIndexElementBytes,
 		base, descriptor, state->modifiedVertexDescriptor, data.ExtraShaderDescriptor, data.ExtraFeatureDescriptor,
 		instanceLimit, firstInstance, indexed ? 1u : 0u, (gpuCounted ? 1u : 0u) | (strip ? 2u : 0u) | (automatic ? 4u : 0u) });
+	if (state->currentShader->shaderType.get()==Type::Lighting &&
+		(descriptor & uint32_t(Cache::LightingShaderFlags::ProjectedUV)))
+		CaptureRasterProjectedDraw(encoded,sceneInstance);
 	state->UpdatePermutationBuffer();
 }
 
@@ -1683,24 +1658,31 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 			world ? world->width : 0u, world ? world->height : 0u,
 			draws.allWritersKnown && draws.knownWriters != 0 && world != nullptr);
 	}
-	// Projection consumers may use only matching scene generations.
-	if (!draws.scene || draws.scene != acceleration.GetScene()) return;
+	// Primary projector rows are keyed by the original draw ordinal. A
+	// secondary instance lookup is published only for unambiguous matches.
 	if (backend && draws.constantSnapshots) {
 		std::vector<DX12Native::ProjectedInputDraw> inputs;
-		inputs.reserve(draws.constantSnapshots);
-		for (const auto& [ordinal, observation] : draws.projectionTextures) {
-			const auto property = draws.projection.find(ordinal);
-			if (property == draws.projection.end() || !property->second.ValidProjection() ||
-				observation.conflicted || observation.repeatedConstants || observation.constantSlot >= draws.constantSnapshots)
-				continue;
-			const auto& slot = projectedConstantPool[observation.constantSlot];
+		inputs.reserve(draws.rasterProjectionTextures.size());
+		const bool secondaryScene=draws.scene && draws.scene==acceleration.GetScene() &&
+			draws.stamp.geometryRevision && draws.stamp.materialRevision;
+		for (const auto& raster:draws.rasterProjectionTextures) {
+			const auto& observation=raster.texture;
+			if (!raster.rasterDraw || raster.rasterDraw>draws.drawRecords.size() ||
+				observation.conflicted || observation.constantSlot>=draws.constantSnapshots) continue;
+			const auto& slot=projectedConstantPool[observation.constantSlot];
 			if (!slot.views[0] || !slot.views[1]) continue;
-			inputs.push_back({ ordinal, observation.descriptor, observation.samplerModes, { slot.views[0].get(), slot.views[1].get() },
-				observation.constantOffsets, observation.views });
+			uint32_t instance=UINT32_MAX;
+			if (secondaryScene && raster.sceneInstance!=UINT32_MAX) {
+				const auto property=draws.projection.find(raster.sceneInstance);
+				const auto match=draws.projectionTextures.find(raster.sceneInstance);
+				if (property!=draws.projection.end() && property->second.ValidProjection() &&
+					match!=draws.projectionTextures.end() && !match->second.conflicted && !match->second.repeatedConstants)
+					instance=raster.sceneInstance;
+			}
+			inputs.push_back({instance,observation.descriptor,observation.samplerModes,
+				{slot.views[0].get(),slot.views[1].get()},observation.constantOffsets,observation.views,raster.rasterDraw});
 		}
-		if (!inputs.empty()) {
-			globals::features::nativePBR.PublishProjection(*backend, draws.stamp, inputs);
-		}
+		if (!inputs.empty()) globals::features::nativePBR.PublishProjection(*backend,draws.stamp,inputs);
 	}
 }
 

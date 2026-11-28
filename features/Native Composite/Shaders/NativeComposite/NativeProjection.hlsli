@@ -50,7 +50,7 @@ bool NativeApplyProjection(uint row,uint instance,float3 worldPosition,float3 wo
 {
     projectedWeight=0.0;
     uint4 metadata=ProjectionRecords.Load(int3(0,row,0));
-    if (metadata.x!=instance || metadata.z!=row) return false;
+    if (metadata.z!=row || (!useRasterDirection && metadata.x!=instance)) return false;
     uint4 textures=ProjectionRecords.Load(int3(7,row,0));
     if (textures.w>=NativeProjectionTextureCapacity) return false;
     float3 direction=useRasterDirection ? rasterDirection : mul(objectToWorld,asfloat(ProjectionRecords.Load(int3(3,row,0))).xyz);

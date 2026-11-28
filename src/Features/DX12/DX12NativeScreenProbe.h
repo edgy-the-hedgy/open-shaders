@@ -46,7 +46,7 @@ namespace DX12Native
 			std::shared_ptr<const NativePBR::RawInputFrame> rawInputs;
 			std::shared_ptr<const Eval> rasterEvaluation;
 			std::vector<Eval::Upload> rasterUploads;
-			winrt::com_ptr<ID3D12Resource> projectionLookup, transforms, emptyTable, rasterMaterialLookup;
+			winrt::com_ptr<ID3D12Resource> projectionLookup, transforms, emptyTable, rasterMaterialLookup, rasterProjectionLookup;
 			std::shared_ptr<OutputAllocation> output;
 			winrt::com_ptr<ID3D12Resource> readback, camera, counters, counterInit;
 			winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
@@ -180,7 +180,7 @@ namespace DX12Native
 			projectionRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1 + kProjectedTextureCapacity, 518);
 			CD3DX12_DESCRIPTOR_RANGE rawRange;
 			rawRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NativePBR::InputOnly::kPlaneCount + 1, 1031);
-			CD3DX12_ROOT_PARAMETER parameters[20];
+			CD3DX12_ROOT_PARAMETER parameters[21];
 			parameters[0].InitAsShaderResourceView(0);
 			parameters[1].InitAsShaderResourceView(1);
 			parameters[2].InitAsShaderResourceView(2);
@@ -205,6 +205,7 @@ namespace DX12Native
 			parameters[17].InitAsShaderResourceView(1039);
 			parameters[18].InitAsShaderResourceView(1040);
 			parameters[19].InitAsShaderResourceView(1041);
+			parameters[20].InitAsShaderResourceView(1042);
 			std::array<CD3DX12_STATIC_SAMPLER_DESC, 4> samplers;
 			for (uint32_t mode = 0; mode < 4; ++mode)
 				samplers[mode] = CD3DX12_STATIC_SAMPLER_DESC(mode, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
@@ -510,8 +511,8 @@ namespace DX12Native
 				slot->raster=std::move(raster); slot->scene=std::move(scene);
 				slot->scope = rawInputs ? rawInputs->stamp.scope : slot->scene->scope;
 				slot->geometryRevision = rawInputs ? rawInputs->stamp.geometryRevision : slot->scene->geometryRevision;
-				if (mappedScene && projection && projection->stamp == rawInputs->stamp &&
-					projection->rowCount==projection->instances.size())
+				if (rawInputs && projection && projection->stamp == rawInputs->stamp &&
+					projection->rowCount==projection->instances.size() && projection->rowCount==projection->rasterDraws.size())
 					slot->projection=std::move(projection);
 				if (fullResolution) slot->rawInputs=std::move(rawInputs);
 				slot->rasterEvaluation=selectedRaster;
@@ -522,12 +523,17 @@ namespace DX12Native
 				// shader counts are zero. Acceleration SRVs use a null descriptor.
 				slot->emptyTable = Eval::Table(device, std::vector<uint32_t>(128u, 0u));
 				std::vector<uint32_t> projectionLookup(std::max(1u,evaluation.instanceCount),UINT32_MAX);
+				std::vector<uint32_t> rasterProjectionLookup(slot->rawInputs ? std::max<size_t>(1u,slot->rawInputs->drawRecords.size()) : 1u,UINT32_MAX);
 				if (slot->projection)
 					for (uint32_t row=0;row<slot->projection->rowCount;++row) {
 						const auto instance=slot->projection->instances[row];
-						if (instance<projectionLookup.size()) projectionLookup[instance]=row;
+						if (mappedScene && instance<evaluation.instanceCount) projectionLookup[instance]=row;
+						const auto draw=slot->projection->rasterDraws[row];
+						if (slot->rawInputs && draw && draw<=slot->rawInputs->drawRecords.size())
+							rasterProjectionLookup[draw-1u]=row;
 					}
 				slot->projectionLookup=Eval::Table(device,projectionLookup);
+				slot->rasterProjectionLookup=Eval::Table(device,rasterProjectionLookup);
 				// TLAS instance ordinals are the order of SceneInputs::geometry.
 				// Cache the local-to-world rows rather than uploading them every frame.
 				if (transformScene.lock() != slot->scene || !transformTable) {
@@ -640,6 +646,7 @@ namespace DX12Native
 				command->SetComputeRootShaderResourceView(17,(slot->rasterEvaluation ? slot->rasterEvaluation->bindings : evaluation.bindings)->GetGPUVirtualAddress());
 				command->SetComputeRootShaderResourceView(18,(slot->rasterEvaluation ? slot->rasterEvaluation->rasterLandscapeRows : slot->projectionLookup)->GetGPUVirtualAddress());
 				command->SetComputeRootShaderResourceView(19,slot->rasterMaterialLookup->GetGPUVirtualAddress());
+				command->SetComputeRootShaderResourceView(20,slot->rasterProjectionLookup->GetGPUVirtualAddress());
 				Eval::RecordUploads(command, slot->rasterUploads);
 				if (collectStats) {
 					command->CopyBufferRegion(slot->counters.get(),0,slot->counterInit.get(),0,kCounterBytes);

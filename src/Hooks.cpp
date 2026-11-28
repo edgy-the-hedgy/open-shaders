@@ -286,7 +286,6 @@ namespace LightingExtensions
 			globals::state->UpdateLightingShaderPermutation(pass);
 			func(shader, pass, renderFlags);
 			globals::deferred->BindForwardHairMasks();
-			globals::features::dx12NativeScene.ObserveProjectedDrawBindings(pass);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
