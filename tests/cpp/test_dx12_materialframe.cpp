@@ -453,7 +453,8 @@ TEST_CASE("Projection transfer preserves physical BC mip extents", "[dx12][mater
 TEST_CASE("Bounded transfer classes rotate and borrow unused slots", "[dx12][materials]")
 {
 	using namespace DX12Native::MaterialFrameContract;
-	std::array<uint32_t,kTransferClassCount> remaining{128u,128u,128u,128u};
+	std::array<uint32_t,kTransferClassCount> remaining{};
+	remaining.fill(128u);
 	std::array<uint32_t,kTransferClassCount> admitted{};
 	uint32_t cursor=2u;
 	for (uint32_t n=0;n<128u;++n) {
@@ -461,13 +462,16 @@ TEST_CASE("Bounded transfer classes rotate and borrow unused slots", "[dx12][mat
 		REQUIRE(lane==((2u+n)%kTransferClassCount));
 		--remaining[lane]; ++admitted[lane]; cursor=(lane+1u)%kTransferClassCount;
 	}
-	for (auto n:admitted) REQUIRE(n==32u);
+	for (uint32_t lane=0;lane<kTransferClassCount;++lane) {
+		const uint32_t relative=(lane+kTransferClassCount-2u)%kTransferClassCount;
+		REQUIRE(admitted[lane]==128u/kTransferClassCount+(relative<128u%kTransferClassCount ? 1u : 0u));
+	}
 	remaining={0u,0u,2u,0u};
 	REQUIRE(NextTransferClass(remaining,3u)==2u);
 	remaining={};
 	REQUIRE(NextTransferClass(remaining,0u)==UINT32_MAX);
 	for (uint32_t publication=0;publication<kTransferClassCount;++publication) {
-		remaining={1u,1u,1u,1u};
+		remaining.fill(1u);
 		REQUIRE(NextTransferClass(remaining,publication)==publication);
 	}
 }
