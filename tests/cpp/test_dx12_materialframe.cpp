@@ -449,3 +449,18 @@ TEST_CASE("Projection transfer preserves physical BC mip extents", "[dx12][mater
 	STATIC_REQUIRE(ProjectionRetryDue(700u, 100u, 600u));
 	STATIC_REQUIRE(ProjectionRetryDue(0u, UINT32_MAX, 1u));
 }
+
+TEST_CASE("Raster publication survives scene generation changes without stale correspondence", "[dx12][materials]")
+{
+	const RasterIdentityStamp raster{42,7,100,200};
+	REQUIRE(MatchesRasterPublication(raster,{42,7,101,201}));
+	REQUIRE_FALSE(MatchesRasterScene(raster,{42,7,101,201}));
+	REQUIRE(MatchesRasterScene(raster,raster));
+	REQUIRE_FALSE(MatchesRasterScene({42,7,0,0},{42,7,0,0}));
+	REQUIRE_FALSE(MatchesRasterPublication(raster,{43,7,100,200}));
+	REQUIRE_FALSE(MatchesRasterPublication(raster,{42,8,100,200}));
+	REQUIRE(RasterDrawCountForConsumer(17,true,false)==(kRasterLocalOnly|17u));
+	REQUIRE(RasterDrawCountForConsumer(17,true,true)==17u);
+	REQUIRE(RasterDrawCountForConsumer(17,false,false)==0u);
+	REQUIRE(RasterDrawCountForConsumer(kRasterLocalOnly,true,true)==0u);
+}

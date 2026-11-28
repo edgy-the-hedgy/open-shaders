@@ -298,7 +298,7 @@ namespace DX12Native
 			const uint32_t constants[]{ slot->width, slot->height, slot->material->rowPitch,
 				slot->direct ? slot->direct->rowPitch : 0u, slot->indirect ? slot->indirect->rowPitch : 0u, available,
 				previous ? previous->material->rowPitch : 0u, previous ? 1u : 0u,
-				slot->material->rayIdentityRowPitch, previous ? previous->material->rayIdentityRowPitch : 0u, evidence ? uint32_t(evidence->drawRecords.size()) : 0u,
+				slot->material->rayIdentityRowPitch, previous ? previous->material->rayIdentityRowPitch : 0u, evidence ? evidence->ConsumerDrawCount({slot->frame,slot->material->scope,slot->material->scene ? slot->material->scene->geometryRevision : 0u,slot->material->scene ? slot->material->materialRevision : 0u}) : 0u,
 				slot->rasterWinnerCertified ? 1u : 0u, slot->completeLightingCoverage ? 1u : 0u,
 				slot->direct ? DirectLightingFrame::available : 0u, slot->indirect ? slot->indirect->available : 0u, quality, slot->frame,
 				motion ? 1u : 0u, std::bit_cast<uint32_t>(jitterDelta.x), std::bit_cast<uint32_t>(jitterDelta.y),

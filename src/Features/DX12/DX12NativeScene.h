@@ -85,7 +85,7 @@ struct DX12NativeScene final : OverlayFeature
 	const GraphicsBackend* GetNativeBackend() const { return backend ? &*backend : nullptr; }
 	std::shared_ptr<const DX12Native::NativeWorldFrame> GetWorldFrame(uint32_t engineFrame, uint32_t pluginFrame) const;
 	void BeginFullNativeRasterInputs();
-	void StampFullNativeIndexedDraw(uint32_t count, uint32_t start, int32_t base, bool indexed = true, uint32_t instances = 1, uint32_t firstInstance = 0, bool gpuCounted = false);
+	void StampFullNativeIndexedDraw(uint32_t count, uint32_t start, int32_t base, bool indexed = true, uint32_t instances = 1, uint32_t firstInstance = 0, bool gpuCounted = false, bool automatic = false);
 	void ObserveNativeInputTargets(UINT count, ID3D11RenderTargetView* const* views, ID3D11DepthStencilView* depth);
 	void ObserveNativeInputPS(ID3D11PixelShader* ps) { nativeInputPS = ps; }
 	void ObserveNativeInputBlend(ID3D11BlendState* state, UINT sampleMask);
@@ -198,7 +198,7 @@ private:
 		uint32_t draws = 0, candidates = 0, uniqueInstances = 0, ambiguous = 0, rejected = 0;
 		bool finalized = false, active = false, allWritersKnown = true;
 		uint32_t knownWriters = 0, unknownWriters = 0;
-		bool targetsBound = false, touchesVisibility = true, replacement = false, opaqueReplacement = false, depthTest = false;
+		bool targetsBound = false, identityTargetsBound = false, touchesVisibility = true, replacement = false, opaqueReplacement = false, depthTest = false;
 	};
 	ID3D11PixelShader* nativeInputPS = nullptr;
 	std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 113> nativeSourceViews;

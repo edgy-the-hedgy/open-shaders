@@ -567,7 +567,7 @@ namespace DX12Native
 				}
 				slot->camera=Eval::Buffer(device,256,D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ);
 				const Camera constants{slot->raster->camera.CameraProjInverse,slot->raster->camera.CameraViewInverse,
-					slot->raster->camera.CameraPosAdjust,width,height,gridWidth,gridHeight,collectStats ? 1u : 0u,parallaxEnabled ? 1u : 0u,parallaxWarpFixEnabled ? 1u : 0u,shadowPlane ? 1u : 0u,std::isfinite(mipBias) ? mipBias : 0.0f,slot->projection ? slot->projection->rowCount : 0u,frame,slot->rawInputs && slot->rawInputs->evidence->winnerCertified ? uint32_t(slot->rawInputs->drawRecords.size()) : 0u, SanitizeRTQuality(quality), transformCount,
+					slot->raster->camera.CameraPosAdjust,width,height,gridWidth,gridHeight,collectStats ? 1u : 0u,parallaxEnabled ? 1u : 0u,parallaxWarpFixEnabled ? 1u : 0u,shadowPlane ? 1u : 0u,std::isfinite(mipBias) ? mipBias : 0.0f,slot->projection ? slot->projection->rowCount : 0u,frame,slot->rawInputs ? slot->rawInputs->ConsumerDrawCount({frame,slot->scope,mappedScene ? slot->scene->geometryRevision : 0u,mappedScene ? evaluation.revision : 0u}) : 0u, SanitizeRTQuality(quality), transformCount,
 					slot->rasterEvaluation ? slot->rasterEvaluation->instanceCount : 0u,
 					slot->rasterEvaluation ? slot->rasterEvaluation->recordCount : 0u, evaluation.recordCount,
 					slot->rawInputs ? uint32_t(slot->rawInputs->materialSources.size()) : 0u,

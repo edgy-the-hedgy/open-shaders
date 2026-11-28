@@ -614,7 +614,7 @@ namespace globals
 		static void thunk(ID3D11DeviceContext* c)
 		{
 			if (c == globals::d3d::context) {
-				try { globals::features::dx12NativeScene.StampFullNativeIndexedDraw(0,0,0,false,1,0,true); }
+				try { globals::features::dx12NativeScene.StampFullNativeIndexedDraw(0,0,0,false,1,0,true,true); }
 				catch (...) { globals::features::dx12NativeScene.InvalidateNativeInputVisibility(); }
 			}
 			func(c);

@@ -30,6 +30,12 @@ namespace NativePBR::InputOnly
 		return (front ? kFrontFace : 0u) | kValid | kCovered | ((alpha & kAlphaMax) << kAlphaShift);
 	}
 
+	// Upper bound on emitted triangle primitives, including restart strips.
+	constexpr uint32_t RasterTriangleBound(uint32_t count, bool strip)
+	{
+		return strip ? (count >= 3u ? count - 2u : 0u) : count / 3u;
+	}
+
 	constexpr bool WholeTriangleList(uint32_t count, uint32_t primitives)
 	{
 		return primitives && primitives <= kMaxPrimitives && count == primitives * 3u;

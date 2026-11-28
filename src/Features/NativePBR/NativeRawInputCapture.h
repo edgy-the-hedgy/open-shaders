@@ -46,8 +46,9 @@ namespace NativePBR
 			uint32_t viewWidth, uint32_t viewHeight) const;
 		bool MatchesRayGeneration(DX12Native::MaterialFrameContract::RasterIdentityStamp requested) const
 		{
-			return stamp.scope && stamp.geometryRevision && stamp.materialRevision && stamp == requested;
+			return stamp.scope && DX12Native::MaterialFrameContract::MatchesRasterScene(stamp,requested);
 		}
+		uint32_t ConsumerDrawCount(DX12Native::MaterialFrameContract::RasterIdentityStamp requested) const;
 	};
 
 	// Original pass owns the integer MRTs. This producer snapshots them once

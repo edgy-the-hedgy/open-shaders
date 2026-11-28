@@ -20,7 +20,7 @@ namespace NativePBR
 
 	bool RawInputFrame::Matches(RasterIdentityStamp requested, uint32_t viewWidth, uint32_t viewHeight) const
 	{
-		return stamp.frame == requested.frame && stamp.scope && stamp.scope == requested.scope &&
+		return stamp.scope && MatchesRasterPublication(stamp, requested) &&
 			width == viewWidth && height == viewHeight && draws &&
 			drawTable && !drawRecords.empty() &&
 			std::ranges::all_of(planes, [](const auto& plane) { return plane && plane->resource; }) &&
@@ -28,6 +28,13 @@ namespace NativePBR
 			evidence && evidence->stamp == stamp && evidence->width == width && evidence->height == height &&
 			evidence->texture && evidence->texture->resource &&
 			evidence->readyFence && ValidProducerSignal(evidence->readyValue, evidence->readyFence->GetCompletedValue());
+	}
+
+	uint32_t RawInputFrame::ConsumerDrawCount(RasterIdentityStamp requested) const
+	{
+		return RasterDrawCountForConsumer(uint32_t(drawRecords.size()),
+			evidence && evidence->winnerCertified && stamp.scope && MatchesRasterPublication(stamp,requested),
+			MatchesRayGeneration(requested));
 	}
 
 	RawInputCapture::~RawInputCapture()

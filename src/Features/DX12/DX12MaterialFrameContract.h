@@ -74,6 +74,24 @@ namespace DX12Native::MaterialFrameContract
 		constexpr bool operator==(const RasterIdentityStamp&) const = default;
 	};
 
+	// Primary raster visibility does not require a matching scene generation.
+	constexpr bool MatchesRasterPublication(const RasterIdentityStamp& raster, const RasterIdentityStamp& requested)
+	{
+		return raster.frame == requested.frame && raster.scope == requested.scope;
+	}
+	constexpr bool MatchesRasterScene(const RasterIdentityStamp& raster, const RasterIdentityStamp& requested)
+	{
+		return MatchesRasterPublication(raster, requested) && raster.geometryRevision != 0 &&
+			raster.materialRevision != 0 && raster.geometryRevision == requested.geometryRevision &&
+			raster.materialRevision == requested.materialRevision;
+	}
+	inline constexpr uint32_t kRasterLocalOnly = 0x80000000u;
+	constexpr uint32_t RasterDrawCountForConsumer(uint32_t count, bool certified, bool sceneMatches)
+	{
+		return certified && count && count < kRasterLocalOnly ?
+			count | (sceneMatches ? 0u : kRasterLocalOnly) : 0u;
+	}
+
 	struct RasterPixelIdentity
 	{
 		uint32_t instance = UINT32_MAX, primitive = UINT32_MAX;
