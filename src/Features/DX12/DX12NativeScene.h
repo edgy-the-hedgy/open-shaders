@@ -210,6 +210,7 @@ private:
 	std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 113> nativeSourceViews;
 	std::shared_ptr<const NativePBR::RasterSourceViews> nativeSourceSnapshot;
 	bool nativeSourceViewsDirty = true;
+	uint32_t nativeMaterialTransferSequence = 0;
 	D3D11_PRIMITIVE_TOPOLOGY nativeInputTopology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
 	UINT nativeInputIndexOffset = UINT_MAX, nativeInputIndexElementBytes = 0;
 	FullNativeRasterDrawState fullNativeRasterDraws;
