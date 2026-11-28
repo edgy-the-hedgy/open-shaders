@@ -19,7 +19,7 @@ namespace NativeLLF
 	/** @brief Frame-local direct inputs, using an asynchronously computed spatial grouping. */
 	struct DirectInputFrame
 	{
-		uint32_t frame = 0, scope = 0;
+		uint32_t frame = 0, scope = 0, pluginFrame = 0;
 		uint64_t geometryRevision = 0;
 		std::vector<DX12Native::DirectPointLight> points;
 		DX12Native::DirectDirectionalLight directional;
@@ -39,7 +39,7 @@ namespace NativeLLF
 		json GetDiagnostics() override;
 		void OnSceneTransitionReset(bool opening) override { if (opening) { ResetParticleInput(); ResetSpatialInput(); } }
 		std::optional<ParticleInput::Observation> ObserveParticlePass(RE::BSRenderPass* pass);
-		std::optional<DirectInputFrame> CollectDirectInputs(const DX12Native::TopLevel& scene, uint32_t frame, bool opaqueReady);
+		std::shared_ptr<const DirectInputFrame> CollectDirectInputs(const DX12Native::TopLevel& scene, uint32_t frame, bool opaqueReady);
 
 	private:
 		struct SpatialWorkerState
@@ -53,9 +53,13 @@ namespace NativeLLF
 		{
 			std::shared_ptr<const DX12::Grid> grid;
 			std::vector<DX12::PreparedLight> lights;
+			std::vector<std::optional<Policy::AuthoredLight>> authored;
 			std::unordered_map<uint32_t, std::vector<size_t>> byReference;
 		};
 		std::atomic<std::shared_ptr<const PreparedCache>> preparedCache;
+		// Immutable per-frame acquisition; retries must not rewalk engine light arrays.
+		std::atomic<std::shared_ptr<const DirectInputFrame>> directInputPublication;
+		std::atomic<uint64_t> directInputCacheHits{0};
 		std::shared_ptr<const PreparedCache> GetPreparedCache(std::shared_ptr<const DX12::Grid> grid);
 		std::atomic<uint32_t> spatialInputCount{0}, spatialOutputCount{0};
 		std::atomic<bool> spatialPlanApplied{false};
@@ -72,7 +76,7 @@ namespace NativeLLF
 		std::unordered_map<const RE::NiLight*, MetadataEntry> metadata;
 		uint32_t metadataFrame = 0, metadataRejected = 0;
 		std::atomic<uint32_t> preparedInputCount{0}, directInputCount{0}, spotInputCount{0}, particleInputCount{0};
-		std::atomic<uint32_t> compatibilityMetadataCount{0};
+		std::atomic<uint32_t> compatibilityMetadataCount{0}, shadowInputCount{0}, nonShadowInputCount{0};
 		std::optional<Policy::AuthoredLight> FindMetadata(RE::NiLight* light, uint32_t placed);
 		void BeginMetadataFrame();
 		struct ParticleEmitter

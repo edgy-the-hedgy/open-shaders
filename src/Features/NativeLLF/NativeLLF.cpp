@@ -35,7 +35,8 @@ namespace
 			light.data.flags.any(static_cast<RE::TES_LIGHT_FLAGS>(LLFCommon::TES_LIGHT_FLAGS_EXT::kInverseSquare)),
 			light.data.flags.any(RE::TES_LIGHT_FLAGS::kSpotlight, RE::TES_LIGHT_FLAGS::kSpotShadow),
 			light.data.fallofExponent, light.data.fov,
-			light.data.flags.any(static_cast<RE::TES_LIGHT_FLAGS>(LLFCommon::TES_LIGHT_FLAGS_EXT::kLinear)));
+			light.data.flags.any(static_cast<RE::TES_LIGHT_FLAGS>(LLFCommon::TES_LIGHT_FLAGS_EXT::kLinear)),
+			light.data.flags.any(RE::TES_LIGHT_FLAGS::kSpotShadow, RE::TES_LIGHT_FLAGS::kHemiShadow, RE::TES_LIGHT_FLAGS::kOmniShadow));
 	}
 
 	std::optional<AuthoredLight> ReadPlacedLight(uint32_t placed)
@@ -89,22 +90,32 @@ std::optional<NativeLLF::Policy::AuthoredLight> NativeLLF::Producer::FindMetadat
 			return it->second.authored;
 		}
 	}
-	// Placed sources can be resolved even if they predate hook installation.
-	if (auto authored = ReadPlacedLight(placed))
-		return authored;
-	// Compatibility for pre-existing attached lights while LLF is installed.
-	if (globals::features::lightLimitFix.loaded) {
+	// Placed and attached sources can predate the creation hook. Retain the
+	// successful authored snapshot with its live NiLight identity instead of
+	// resolving the same TESForm and flags on every opaque dispatch.
+	auto authored = ReadPlacedLight(placed);
+	if (!authored && globals::features::lightLimitFix.loaded) {
 		const auto id = PointLightFlags::GetRuntimeLightFormID(light);
 		if (const auto* form = id ? RE::TESForm::LookupByID<RE::TESObjectLIGH>(id) : nullptr)
-			return ReadAuthoredLight(*form);
+			authored = ReadAuthoredLight(*form);
 	}
-	return std::nullopt;
+	if (!authored) return std::nullopt;
+	std::scoped_lock lock(metadataMutex);
+	if (auto it = metadata.find(light); it != metadata.end()) {
+		it->second.lastSeen = metadataFrame;
+		return it->second.authored;
+	}
+	if (metadata.size() < Policy::kMetadataCapacityMultiplier * DX12::kMaxPreparedLights)
+		metadata.try_emplace(light, MetadataEntry{RE::NiPointer<RE::NiLight>(light), *authored, metadataFrame});
+	return authored;
 }
 
 void NativeLLF::Producer::ResetSpatialInput()
 {
 	spatialWorker.store(nullptr, std::memory_order_release);
 	preparedCache.store(nullptr, std::memory_order_release);
+	directInputPublication.store(nullptr, std::memory_order_release);
+	directInputCacheHits.store(0, std::memory_order_relaxed);
 	spatialInputCount = spatialOutputCount = 0;
 	spatialPlanApplied = false;
 }
@@ -152,8 +163,13 @@ std::shared_ptr<const NativeLLF::Producer::PreparedCache> NativeLLF::Producer::G
 	auto next = std::make_shared<PreparedCache>();
 	next->grid = std::move(grid);
 	next->lights = DX12Resources::CollectPreparedLights(*next->grid);
-	for (size_t i = 0; i < next->lights.size(); ++i)
-		next->byReference[next->lights[i].referenceID].push_back(i);
+	next->authored.resize(next->lights.size());
+	for (size_t i = 0; i < next->lights.size(); ++i) {
+		const auto& light = next->lights[i];
+		next->byReference[light.referenceID].push_back(i);
+		if (light.flags & static_cast<uint32_t>(LLFCommon::TES_LIGHT_FLAGS_EXT::kInverseSquare))
+			next->authored[i] = ReadPlacedLight(light.referenceID);
+	}
 	preparedCache.store(next, std::memory_order_release);
 	return next;
 }
@@ -167,6 +183,7 @@ void NativeLLF::Producer::OnRuntimeDisabled()
 	metadataFrame = 0;
 	metadataRejected = 0;
 	preparedInputCount = directInputCount = spotInputCount = particleInputCount = compatibilityMetadataCount = 0;
+	shadowInputCount = nonShadowInputCount = 0;
 }
 
 json NativeLLF::Producer::GetDiagnostics()
@@ -183,7 +200,9 @@ json NativeLLF::Producer::GetDiagnostics()
 		{ "particleSnapshotFrame", currentPluginFrame }, { "particleEmitters", current.size() },
 		{ "preparedInputs", preparedInputCount.load(std::memory_order_relaxed) }, { "directInputs", directInputCount.load(std::memory_order_relaxed) },
 		{ "spotInputs", spotInputCount.load(std::memory_order_relaxed) }, { "particleInputs", particleInputCount.load(std::memory_order_relaxed) },
-		{ "compatibilityMetadataInputs", compatibilityMetadataCount.load(std::memory_order_relaxed) } };
+		{ "compatibilityMetadataInputs", compatibilityMetadataCount.load(std::memory_order_relaxed) },
+		{ "shadowInputs", shadowInputCount.load(std::memory_order_relaxed) }, { "nonShadowInputs", nonShadowInputCount.load(std::memory_order_relaxed) },
+		{ "directInputCacheHits", directInputCacheHits.load(std::memory_order_relaxed) } };
 }
 
 void NativeLLF::Producer::PostPostLoad()
@@ -213,6 +232,7 @@ void NativeLLF::Producer::Reset()
 
 void NativeLLF::Producer::ResetParticleInput()
 {
+	directInputPublication.store(nullptr, std::memory_order_release);
 	std::scoped_lock observationLock(observationMutex);
 	pending.clear();
 	current.clear();
@@ -329,10 +349,17 @@ void NativeLLF::Producer::CaptureEmitter(const LightLimitFix::ParticleLightInfo&
 	flush();
 }
 
-std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInputs(const DX12Native::TopLevel& scene, uint32_t frame, bool opaqueReady)
+std::shared_ptr<const NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInputs(const DX12Native::TopLevel& scene, uint32_t frame, bool opaqueReady)
 {
 	if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation() || !globals::state || !scene.inputs || !scene.inputs->residency)
-		return std::nullopt;
+		return {};
+	const auto pluginFrame = globals::state->frameCount;
+	if (const auto cached = directInputPublication.load(std::memory_order_acquire);
+		cached && cached->frame == frame && cached->scope == scene.scope &&
+		cached->pluginFrame == pluginFrame && cached->geometryRevision == scene.geometryRevision) {
+		directInputCacheHits.fetch_add(1, std::memory_order_relaxed);
+		return cached;
+	}
 	// Native particles are published by the frame reset, independently of
 	// raster LLF prepass timing. Opaque-ready remains part of the caller contract.
 	bool particleSnapshotReady = false;
@@ -341,20 +368,22 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 		particleSnapshotReady = currentPluginFrame == globals::state->frameCount;
 	}
 	if (particleSettings.EnableParticleLights && !particleSnapshotReady && !opaqueReady)
-		return std::nullopt;
+		return {};
 	BeginMetadataFrame();
 	const auto cachedPrepared = GetPreparedCache(scene.inputs->residency);
 	const auto& prepared = cachedPrepared->lights;
 	preparedInputCount.store(uint32_t(prepared.size()),std::memory_order_relaxed);
 	DirectInputFrame result;
 	result.frame = frame;
+	result.pluginFrame = pluginFrame;
 	result.scope = scene.scope;
 	result.geometryRevision = scene.geometryRevision;
 	auto& directLights = result.points;
 	directLights.reserve(std::min(prepared.size(), size_t(DX12::kMaxPreparedLights)));
 	const auto toLinear = [](float value, bool linear = false) { return DX12Native::LightMath::ToLinear(value, linear); };
 	uint32_t compatibilityInputs = 0;
-	for (const auto& light : prepared) {
+	for (size_t preparedIndex = 0; preparedIndex < prepared.size(); ++preparedIndex) {
+		const auto& light = prepared[preparedIndex];
 		if (directLights.size() >= DX12::kMaxPreparedLights)
 			break;
 		const bool linear = (light.flags & static_cast<uint32_t>(LLFCommon::TES_LIGHT_FLAGS_EXT::kLinear)) != 0;
@@ -368,7 +397,7 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 		if (light.flags & (static_cast<uint32_t>(RE::TES_LIGHT_FLAGS::kSpotlight) | static_cast<uint32_t>(RE::TES_LIGHT_FLAGS::kSpotShadow)))
 			directLights.back().radius = 0.0f;
 		else if (light.flags & static_cast<uint32_t>(LLFCommon::TES_LIGHT_FLAGS_EXT::kInverseSquare)) {
-			const auto authored = ReadPlacedLight(light.referenceID);
+			const auto& authored = cachedPrepared->authored[preparedIndex];
 			if (authored && authored->inverseSquare)
 				ApplyInverseSquare(directLights.back(), light.fade, directLights.back().castsShadow, authored->cutoff, authored->size);
 			else
@@ -478,7 +507,9 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 			DX12Native::DirectPointLight value{ { position.x, position.y, position.z },
 				{ toLinear(snapshot.diffuse.red, linear) * snapshot.fade, toLinear(snapshot.diffuse.green, linear) * snapshot.fade, toLinear(snapshot.diffuse.blue, linear) * snapshot.fade },
 				snapshot.radius, 0.0f, 0.0f, false };
-			value.castsShadow = ShadowCasterManager::IsShadowLightType(light);
+			// Frustum wrappers also represent authored non-shadow spotlights.
+			// Prefer authored type over the intrinsic wrapper when available.
+			value.castsShadow = authored ? authored->castsShadow : ShadowCasterManager::IsShadowLightType(light);
 			const bool spotSource = snapshot.flags.any(F::Spot) ||
 				(PointLightFlags::GetPointLightTypeFlags(light) & PointLightFlags::ToMask(F::Spot));
 			if (spotSource) {
@@ -497,7 +528,7 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 					reject();
 					return;
 				}
-				ApplyInverseSquare(value, snapshot.fade, value.castsShadow, snapshot.cutoffOverride, snapshot.size);
+				ApplyInverseSquare(value, snapshot.fade, ShadowCasterManager::IsShadowLightType(light), snapshot.cutoffOverride, snapshot.size);
 			}
 			// The engine LOD dimmer changes emitted radiance, not the authored radius.
 			if (!std::isfinite(light->lodDimmer)) { reject(); return; }
@@ -627,6 +658,13 @@ std::optional<NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInp
 	directInputCount.store(uint32_t(directLights.size()),std::memory_order_relaxed);
 	particleInputCount.store(uint32_t(directLights.size()-nonParticleCount),std::memory_order_relaxed);
 	spotInputCount.store(uint32_t(std::ranges::count_if(directLights,[](const auto& light){return light.spot;})),std::memory_order_relaxed);
+	const auto shadows = uint32_t(std::ranges::count_if(directLights, [](const auto& light) { return light.castsShadow; }));
+	shadowInputCount.store(shadows, std::memory_order_relaxed);
+	nonShadowInputCount.store(uint32_t(directLights.size()) - shadows, std::memory_order_relaxed);
 	result.available = runtimeAvailable || !directLights.empty() || directional.direction.w != 0.0f;
-	return result;
+	// Do not retain an unavailable attempt: later hooks may provide light inputs.
+	if (!result.available) return {};
+	auto published = std::make_shared<const DirectInputFrame>(std::move(result));
+	directInputPublication.store(published, std::memory_order_release);
+	return published;
 }

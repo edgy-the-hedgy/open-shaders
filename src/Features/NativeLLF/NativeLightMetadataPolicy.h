@@ -15,13 +15,15 @@ namespace NativeLLF::Policy
 		uint32_t formID = 0;
 		bool inverseSquare = false, spot = false, linear = false;
 		float cutoff = 1.0f, size = 1.0f;
+		bool castsShadow = false;
 	};
 
-	inline AuthoredLight MakeAuthoredLight(uint32_t formID, bool inverseSquare, bool spot, float cutoff, float fov, bool linear = false)
+	inline AuthoredLight MakeAuthoredLight(uint32_t formID, bool inverseSquare, bool spot, float cutoff, float fov, bool linear = false, bool castsShadow = false)
 	{
 		return { formID, inverseSquare, spot, linear,
 			std::isfinite(cutoff) ? std::clamp(cutoff, 0.01f, 1.0f) : 1.0f,
-			std::isfinite(fov) ? std::clamp(fov >= 50.0f ? std::numbers::sqrt2_v<float> : fov, 0.01f, 50.0f) : 1.0f };
+			std::isfinite(fov) ? std::clamp(fov >= 50.0f ? std::numbers::sqrt2_v<float> : fov, 0.01f, 50.0f) : 1.0f,
+			castsShadow };
 	}
 
 	constexpr bool Expired(uint32_t current, uint32_t lastSeen)
