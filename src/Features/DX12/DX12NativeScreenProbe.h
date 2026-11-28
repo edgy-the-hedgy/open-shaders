@@ -739,7 +739,8 @@ namespace DX12Native
 					materialFrame->rasterMaterialRevision=pending->rasterEvaluation ? pending->rasterEvaluation->revision : 0;
 					materialFrame->rasterMaterialLookup=pending->rasterMaterialLookup;
 					materialFrame->rasterMaterialSourceCount=pending->rawInputs ? uint32_t(pending->rawInputs->materialSources.size()) : 0u;
-					materialFrame->rasterUnpreparedSources=uint32_t(std::count(rasterRemap.begin(),rasterRemap.end(),UINT32_MAX));
+					materialFrame->rasterUnpreparedSources=uint32_t(std::count(rasterRemap.begin(),
+						rasterRemap.begin()+materialFrame->rasterMaterialSourceCount,UINT32_MAX));
 					materialFrame->projection=pending->projection;
 					materialFrame->projectionLookup=pending->projectionLookup;
 					materialFrame->raster=pending->raster; materialFrame->scene=pending->scene;
