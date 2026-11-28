@@ -111,7 +111,7 @@ class ArchitectureLintTests(unittest.TestCase):
     def test_full_native_shader_inputs_share_one_boot_latched_cache_identity(self):
         cache = (ROOT / "src/ShaderCache.cpp").read_text(encoding="utf-8")
         self.assertIn('"FULL_NATIVE_INPUT"', cache)
-        self.assertIn('L"_full_native_input_v6_coverage2"', cache)
+        self.assertIn('L"_full_native_input_v6_coverage3"', cache)
         self.assertNotIn('L"_native_pbr_input_v1"', cache)
         for name in ("Lighting", "Effect", "Sky", "DistantTree"):
             source = (ROOT / f"package/Shaders/{name}.hlsl").read_text(encoding="utf-8")
@@ -151,6 +151,63 @@ class ArchitectureLintTests(unittest.TestCase):
         self.assertIn("RasterProjectionLookup.Load", shader)
         self.assertIn("HasRasterRayMapping!=0u", shader)
         self.assertIn("raw.borrowedLandscape", shader)
+
+    def test_primary_material_never_falls_through_to_diagnostic_rays(self):
+        probe = (ROOT / "src/Features/DX12/DX12NativeScreenProbe.h").read_text(encoding="utf-8")
+        shader = (ROOT / "features/Native Composite/Shaders/NativeComposite/NativePBRProbe.hlsl6").read_text(encoding="utf-8")
+        evaluate = shader.split("Sample EvaluateScreen(", 1)[1].split("void screenMain(", 1)[0]
+        gate = "if (DiagnosticRayProbe != 0x44585031u)"
+        self.assertIn("fullResolution ? 0u : 0x44585031u", probe)
+        self.assertIn("if (pending->fullResolution)", probe)
+        self.assertNotIn("if (RasterSourceCount!=0u", evaluate)
+        authoritative, diagnostic = evaluate.split(gate, 1)
+        self.assertIn("EvaluateRasterLocal", authoritative)
+        self.assertIn("HasRasterRayMapping!=0u", authoritative)
+        self.assertNotIn("result=EvaluateMaterial(", authoritative)
+        self.assertIn("result.color.a=SurfaceInvalidReceiver;", diagnostic)
+        self.assertLess(diagnostic.index("return result;"), diagnostic.index("RayQuery<RAY_FLAG_NONE> query"))
+        self.assertIn("result=EvaluateMaterial(", diagnostic)
+
+    def test_pending_material_recipes_do_not_block_typed_raster_receivers(self):
+        probe = (ROOT / "src/Features/DX12/DX12NativeScreenProbe.h").read_text(encoding="utf-8")
+        eval_header = (ROOT / "src/Features/NativePBR/NativeMaterialEvaluation.h").read_text(encoding="utf-8")
+        shader = (ROOT / "features/Native Composite/Shaders/NativeComposite/NativePBRProbe.hlsl6").read_text(encoding="utf-8")
+        self.assertNotIn("rawInputs->materialSources.empty()", probe)
+        self.assertIn("selectedRaster=UnavailableRasterBindings(device,desiredSeed)", probe)
+        self.assertIn("rasterRemap.assign(sources.size(),UINT32_MAX)", probe)
+        self.assertIn("NativePBR::PackGpuDrawBinding(0,0,UINT32_MAX,0)", probe)
+        self.assertIn("const auto backingRows = std::max<size_t>(materials.size(), 1u)", eval_header)
+        self.assertIn("result->rasterSourceCount = uint32_t(materials.size())", eval_header)
+        local = shader.split("Sample EvaluateRasterLocal(", 1)[1].split("Sample EvaluateScreen(", 1)[0]
+        self.assertLess(local.index("EvaluateNonLightingRaster"), local.index("raw.materialOrdinal==0u"))
+        self.assertIn("preparedRow>=RasterPreparedSourceCount", local)
+        self.assertIn("SurfaceMissingTextures", local)
+
+    def test_typed_raster_material_transfer_uses_original_bound_views(self):
+        scene = (ROOT / "src/Features/DX12/DX12NativeScene.cpp").read_text(encoding="utf-8")
+        importer = (ROOT / "src/Features/DX12/DX12ProjectedInputs.h").read_text(encoding="utf-8")
+        probe = (ROOT / "src/Features/DX12/DX12NativeScreenProbe.h").read_text(encoding="utf-8")
+        shader = (ROOT / "features/Native Composite/Shaders/NativeComposite/NativePBRProbe.hlsl6").read_text(encoding="utf-8")
+        pack = (ROOT / "features/DX12 Native Scene/Shaders/DX12NativeScene/PackProjectedInputs.cs.hlsl").read_text(encoding="utf-8")
+        for tag in ("kRasterGrassRow", "kRasterDistantTreeRow", "kRasterEffectRow"):
+            self.assertIn(tag, scene)
+            self.assertIn(tag, importer)
+        self.assertIn("input.views[role]=source->views[slot]", scene)
+        self.assertIn("effect.baseColor", scene)
+        self.assertIn("effect.baseColorScale", scene)
+        self.assertIn("rasterAliases.push_back", scene)
+        self.assertIn("ImportTexture(*pending, reusable, draw.views[i].get())", importer)
+        self.assertIn("DecodeMipChain(view, output, mips)", importer)
+        self.assertIn("sourceView.Texture2D.MostDetailedMip", importer)
+        self.assertIn("slot->projection->readyFence", probe)
+        self.assertIn("slot->projection->rasterAliases", probe)
+        self.assertIn("Metadata.x >= 0xfffffffcu", pack)
+        self.assertIn("metadata.x!=expected", shader)
+        self.assertIn("NativeProjectionGrad(textures.x", shader)
+        self.assertIn("result.color=float4(base,SurfaceFeatureLimited)", shader)
+        for name, tag in (("RunGrass", 5), ("DistantTree", 6), ("Effect", 7)):
+            source = (ROOT / f"package/Shaders/{name}.hlsl").read_text(encoding="utf-8")
+            self.assertIn(f"{tag}u<<19u", source)
 
     def test_native_input_is_published_by_original_pass(self):
         raw = (ROOT / "package/Shaders/Common/NativeInputMRT.hlsli").read_text(encoding="utf-8")
