@@ -106,6 +106,9 @@ namespace DX12Native
 		VideoMemoryBudget budget;
 		winrt::com_ptr<ID3D11ComputeShader> packShader;
 		winrt::com_ptr<ID3D11Buffer> packConstants;
+		winrt::com_ptr<ID3D11ComputeShader> decodeShader;
+		winrt::com_ptr<ID3D11Buffer> decodeConstants;
+		struct alignas(16) DecodeConstants { uint32_t width, height, offsetY, mip; };
 		bool failureLogged = false;
 		winrt::com_ptr<ID3D12Fence> transferFence;
 		uint64_t transferValue = 0;
@@ -113,7 +116,8 @@ namespace DX12Native
 		static constexpr size_t kMaxCachedTextures = 256;
 		static constexpr uint64_t kCacheBudget = 256ull * VideoMemoryBudget::kMiB;
 		static constexpr uint32_t kMaxNewTextures = 16;
-		using FailureKey = std::array<uint32_t, 4>;
+		static constexpr uint64_t kNewBytesPerPublication = 128ull * VideoMemoryBudget::kMiB;
+		using FailureKey = std::array<uint32_t, 5>;
 		static constexpr uint32_t kFailureCooldown = 600;
 		std::map<FailureKey, uint32_t> failedDescriptors;
 		struct CachedTexture {
@@ -123,27 +127,79 @@ namespace DX12Native
 		std::vector<CachedTexture> immutableCache;
 		std::map<ID3D11ShaderResourceView*, uint32_t> frameImports;
 		uint32_t transferred = 0, allocated = 0;
-		uint64_t cacheBytes = 0;
+		uint64_t cacheBytes = 0, newBytes = 0;
 		struct MipTransfer {
 			uint32_t width, height, y;
 		};
-		// A BC block is copied as an integer element, not sampled as color.
-		// The final resource retains the original BC/linear/sRGB typed format.
+		// Decode through the actual typed DX11 SRV. No cross-format copy or
+		// compressed mip-tail reinterpretation is legal in this path.
 		static DXGI_FORMAT BridgeFormat(DXGI_FORMAT format)
 		{
-			switch (DirectX::MakeTypeless(format)) {
-			case DXGI_FORMAT_BC1_TYPELESS:
-			case DXGI_FORMAT_BC4_TYPELESS:
-				return DXGI_FORMAT_R32G32_UINT;
-			case DXGI_FORMAT_BC2_TYPELESS:
-			case DXGI_FORMAT_BC3_TYPELESS:
-			case DXGI_FORMAT_BC5_TYPELESS:
-			case DXGI_FORMAT_BC6H_TYPELESS:
-			case DXGI_FORMAT_BC7_TYPELESS:
-				return DXGI_FORMAT_R32G32B32A32_UINT;
+			switch (format) {
+			case DXGI_FORMAT_BC1_UNORM:
+			case DXGI_FORMAT_BC2_UNORM:
+			case DXGI_FORMAT_BC3_UNORM:
+			case DXGI_FORMAT_BC4_UNORM:
+			case DXGI_FORMAT_BC5_UNORM:
+			case DXGI_FORMAT_BC7_UNORM:
+			case DXGI_FORMAT_R8G8B8A8_UNORM:
+			case DXGI_FORMAT_B8G8R8A8_UNORM:
+			case DXGI_FORMAT_B8G8R8X8_UNORM:
+			case DXGI_FORMAT_R8_UNORM:
+			case DXGI_FORMAT_R8G8_UNORM:
+				return DXGI_FORMAT_R8G8B8A8_UNORM;
 			default:
-				return format;
+				// sRGB is decoded to linear by the source SRV. Signed and
+				// HDR sources must not be clamped to UNORM.
+				return DXGI_FORMAT_R16G16B16A16_FLOAT;
 			}
+		}
+		bool SupportsBridge(DXGI_FORMAT format) const
+		{
+			UINT support = 0;
+			D3D11_FEATURE_DATA_FORMAT_SUPPORT2 extended{ format, 0 };
+			D3D12_FEATURE_DATA_FORMAT_SUPPORT native{ format };
+			return SUCCEEDED(owner.d3d11Device->CheckFormatSupport(format, &support)) &&
+				(support & D3D11_FORMAT_SUPPORT_TEXTURE2D) &&
+				(support & D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW) &&
+				SUCCEEDED(owner.d3d11Device->CheckFeatureSupport(D3D11_FEATURE_FORMAT_SUPPORT2, &extended, sizeof(extended))) &&
+				(extended.OutFormatSupport2 & D3D11_FORMAT_SUPPORT2_SHAREABLE) &&
+				(extended.OutFormatSupport2 & D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE) &&
+				SUCCEEDED(owner.d3d12Device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &native, sizeof(native))) &&
+				(native.Support1 & D3D12_FORMAT_SUPPORT1_TEXTURE2D) &&
+				(native.Support1 & D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE);
+		}
+		void DecodeMipChain(ID3D11ShaderResourceView* view, const ProjectedInputFrame::Texture& output,
+			std::span<const MipTransfer> mips)
+		{
+			auto* ctx = owner.d3d11Context.get();
+			winrt::com_ptr<ID3D11ComputeShader> priorShader;
+			winrt::com_ptr<ID3D11ShaderResourceView> priorRead;
+			winrt::com_ptr<ID3D11UnorderedAccessView> priorWrite;
+			winrt::com_ptr<ID3D11Buffer> priorConstants;
+			ctx->CSGetShader(priorShader.put(), nullptr, nullptr);
+			ctx->CSGetShaderResources(0, 1, priorRead.put());
+			ctx->CSGetUnorderedAccessViews(0, 1, priorWrite.put());
+			ctx->CSGetConstantBuffers(0, 1, priorConstants.put());
+			auto* write = output.bridge->uav;
+			auto* constants = decodeConstants.get();
+			ctx->CSSetShader(decodeShader.get(), nullptr, 0);
+			ctx->CSSetShaderResources(0, 1, &view);
+			ctx->CSSetUnorderedAccessViews(0, 1, &write, nullptr);
+			ctx->CSSetConstantBuffers(0, 1, &constants);
+			for (uint32_t mip = 0; mip < mips.size(); ++mip) {
+				const auto& region = mips[mip];
+				const DecodeConstants data{ region.width, region.height, region.y, mip };
+				ctx->UpdateSubresource(constants, 0, nullptr, &data, 0, 0);
+				ctx->Dispatch((region.width + 7u) / 8u, (region.height + 7u) / 8u, 1);
+			}
+			write = priorWrite.get();
+			ctx->CSSetUnorderedAccessViews(0, 1, &write, nullptr);
+			auto* read = priorRead.get();
+			ctx->CSSetShaderResources(0, 1, &read);
+			constants = priorConstants.get();
+			ctx->CSSetConstantBuffers(0, 1, &constants);
+			ctx->CSSetShader(priorShader.get(), nullptr, 0);
 		}
 		void TrimCache(uint32_t frame)
 		{
@@ -218,7 +274,7 @@ namespace DX12Native
 					return publish(cached->texture);
 				}
 			}
-			const FailureKey key{ uint32_t(sourceView.Format), desc.Width, desc.Height, desc.MipLevels };
+			const FailureKey key{ uint32_t(sourceView.Format), desc.Width, desc.Height, firstMip, levels };
 			if (const auto rejected = failedDescriptors.find(key); rejected != failedDescriptors.end()) {
 				if (!MaterialFrameContract::ProjectionRetryDue(frame.stamp.frame, rejected->second, kFailureCooldown)) {
 					++frame.suppressedTextures;
@@ -232,21 +288,27 @@ namespace DX12Native
 				!(support.Support1 & D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE) ||
 				!(support.Support1 & D3D12_FORMAT_SUPPORT1_TEXTURE2D))
 				return UINT32_MAX;
-			const bool bc = DirectX::IsCompressed(sourceView.Format);
+			UINT sourceSupport = 0;
+			if (FAILED(owner.d3d11Device->CheckFormatSupport(sourceView.Format, &sourceSupport)) ||
+				!(sourceSupport & D3D11_FORMAT_SUPPORT_SHADER_LOAD) || !(sourceSupport & D3D11_FORMAT_SUPPORT_SHADER_SAMPLE))
+				return UINT32_MAX;
 			const DXGI_FORMAT bridgeFormat = BridgeFormat(sourceView.Format);
-			if (bc && bridgeFormat == sourceView.Format) return UINT32_MAX;
-			UINT bridgeSupport = 0;
-			if (FAILED(owner.d3d11Device->CheckFormatSupport(bridgeFormat, &bridgeSupport)) ||
-				!(bridgeSupport & D3D11_FORMAT_SUPPORT_TEXTURE2D) || !(bridgeSupport & D3D11_FORMAT_SUPPORT_SHADER_LOAD)) return UINT32_MAX;
-			// One single-mip uncompressed shared atlas per source texture.
-			// Rows contain the physical block dimensions for every original mip,
-			// including 2x2 and 1x1 BC levels (one physical block each).
+			if (!SupportsBridge(bridgeFormat)) {
+				failedDescriptors.insert_or_assign(key, frame.stamp.frame);
+				++frame.suppressedTextures;
+				logger::warn("[DX12NativeScene] Projection decode bridge format {} is not shareable/typed-store capable", uint32_t(bridgeFormat));
+				return UINT32_MAX;
+			}
+			// Copy only the visible SRV mip range. Native mip zero corresponds
+			// to the original view's MostDetailedMip, including its dimensions.
+			const auto baseWidth = MaterialFrameContract::ProjectionTransferExtent(desc.Width, firstMip, false);
+			const auto baseHeight = MaterialFrameContract::ProjectionTransferExtent(desc.Height, firstMip, false);
 			std::vector<MipTransfer> mips;
-			mips.reserve(desc.MipLevels);
+			mips.reserve(levels);
 			uint32_t atlasWidth = 0, atlasHeight = 0;
-			for (uint32_t mip = 0; mip < desc.MipLevels; ++mip) {
-				const auto width = MaterialFrameContract::ProjectionTransferExtent(desc.Width, mip, bc);
-				const auto height = MaterialFrameContract::ProjectionTransferExtent(desc.Height, mip, bc);
+			for (uint32_t mip = 0; mip < levels; ++mip) {
+				const auto width = MaterialFrameContract::ProjectionTransferExtent(baseWidth, mip, false);
+				const auto height = MaterialFrameContract::ProjectionTransferExtent(baseHeight, mip, false);
 				mips.push_back({ width, height, atlasHeight });
 				atlasWidth = std::max(atlasWidth, width);
 				atlasHeight += height;
@@ -263,11 +325,12 @@ namespace DX12Native
 				if (entry.immutable && !entry.bridge) { entry.uploaded = false; return publish(std::move(entry)); }
 			} else {
 				if (allocated >= kMaxNewTextures) { ++frame.deferredTextures; return UINT32_MAX; }
-				const auto nativeDesc = CD3DX12_RESOURCE_DESC::Tex2D(sourceView.Format, desc.Width, desc.Height, 1, static_cast<UINT16>(desc.MipLevels));
-				const auto bridgeDesc = CD3DX12_RESOURCE_DESC::Tex2D(bridgeFormat, atlasWidth, atlasHeight, 1, 1);
+				const auto nativeDesc = CD3DX12_RESOURCE_DESC::Tex2D(bridgeFormat, baseWidth, baseHeight, 1, static_cast<UINT16>(levels));
+				const auto bridgeDesc = CD3DX12_RESOURCE_DESC::Tex2D(bridgeFormat, atlasWidth, atlasHeight, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 				const uint64_t nativeBytes = Allocation(nativeDesc), bridgeBytes = Allocation(bridgeDesc);
 				const auto allowance = budget.Query(owner.d3d12Device.get(), 0).effectiveBytes;
-				if (!nativeBytes || !bridgeBytes || nativeBytes > allowance || bridgeBytes > allowance - nativeBytes) {
+				if (!nativeBytes || !bridgeBytes || nativeBytes > allowance || bridgeBytes > allowance - nativeBytes ||
+					(allocated && (newBytes >= kNewBytesPerPublication || nativeBytes + bridgeBytes > kNewBytesPerPublication - newBytes))) {
 					++frame.deferredTextures;
 					return UINT32_MAX;
 				}
@@ -279,7 +342,7 @@ namespace DX12Native
 					shared.Width = atlasWidth; shared.Height = atlasHeight;
 					shared.MipLevels = shared.ArraySize = 1; shared.Format = bridgeFormat;
 					shared.SampleDesc = { 1, 0 }; shared.Usage = D3D11_USAGE_DEFAULT;
-					shared.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+					shared.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
 					entry.bridge = std::make_shared<WrappedResource>(shared, owner.d3d11Device.get(), owner.d3d12Device.get(),
 						"DX12NativeScene::ProjectedMipBridge");
 				} catch (...) {
@@ -289,15 +352,18 @@ namespace DX12Native
 					return UINT32_MAX;
 				}
 				entry.source.copy_from(view);
-				entry.view = sourceView; entry.immutable = immutable;
+				entry.view = sourceView; entry.view.Format = bridgeFormat;
+				entry.view.Texture2D.MostDetailedMip = 0; entry.immutable = immutable;
 				entry.nativeBytes = nativeBytes; entry.bytes = nativeBytes + bridgeBytes;
 				frame.allocationBytes += entry.bytes;
 				++allocated;
+				newBytes += entry.bytes;
 			}
 			// Retain resources in the slot before recording either API's work.
 			entry.uploaded = true;
 			const auto index = publish(std::move(entry));
 			const auto& output = frame.textures[index];
+			DecodeMipChain(view, output, mips);
 			auto* cmd = frame.transferCommands.get();
 			const D3D12_RESOURCE_BARRIER begin[]{
 				CD3DX12_RESOURCE_BARRIER::Transition(output.bridge->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE),
@@ -306,7 +372,6 @@ namespace DX12Native
 			cmd->ResourceBarrier(UINT(std::size(begin)), begin);
 			for (uint32_t mip = 0; mip < mips.size(); ++mip) {
 				const auto& region = mips[mip];
-				owner.d3d11Context->CopySubresourceRegion(output.bridge->resource11, 0, 0, region.y, 0, texture.get(), mip, nullptr);
 				const CD3DX12_TEXTURE_COPY_LOCATION src(output.bridge->resource.get(), 0u);
 				const CD3DX12_TEXTURE_COPY_LOCATION dst(output.resource.get(), mip);
 				const D3D12_BOX box{ 0, region.y, 0, region.width, region.y + region.height, 1 };
@@ -364,6 +429,17 @@ namespace DX12Native
 					packShader.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(path.c_str(), {}, "cs_5_0")));
 				}
 				if (!packShader) return;
+				if (!decodeShader) {
+					const auto path = Util::PathHelpers::GetShadersPath() / "DX12NativeScene" / "DecodeProjectedMip.cs.hlsl";
+					decodeShader.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(path.c_str(), {}, "cs_5_0")));
+				}
+				if (!decodeShader) return;
+				if (!decodeConstants) {
+					D3D11_BUFFER_DESC desc{};
+					desc.ByteWidth = sizeof(DecodeConstants); desc.Usage = D3D11_USAGE_DEFAULT;
+					desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+					DX::ThrowIfFailed(owner.d3d11Device->CreateBuffer(&desc, nullptr, decodeConstants.put()));
+				}
 				if (!packConstants) {
 					D3D11_BUFFER_DESC desc{};
 					desc.ByteWidth = sizeof(PackConstants); desc.Usage = D3D11_USAGE_DEFAULT;
@@ -396,12 +472,13 @@ namespace DX12Native
 				std::erase_if(failedDescriptors, [&](const auto& entry) {
 					return MaterialFrameContract::ProjectionRetryDue(stamp.frame, entry.second, kFailureCooldown);
 				});
-				frameImports.clear(); transferred = allocated = 0;
+				frameImports.clear(); transferred = allocated = 0; newBytes = 0;
 				// Slot selection already checks both GPU completion and borrowers.
 				if (!pending->transferAllocator) {
 					DX::ThrowIfFailed(owner.d3d12Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(pending->transferAllocator.put())));
 					DX::ThrowIfFailed(owner.d3d12Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, pending->transferAllocator.get(),
 						nullptr, IID_PPV_ARGS(pending->transferCommands.put())));
+					pending->transferCommands->SetName(L"NativePBR::ProjectedMipTransfer");
 				} else {
 					DX::ThrowIfFailed(pending->transferAllocator->Reset());
 					DX::ThrowIfFailed(pending->transferCommands->Reset(pending->transferAllocator.get(), nullptr));
@@ -416,7 +493,7 @@ namespace DX12Native
 				pending->transferredTextures = pending->newTextures = 0;
 				pending->readyFence = producer.fence12; pending->readyValue = UINT64_MAX;
 				auto* context = owner.d3d11Context.get();
-				// Import all sources before changing compute state. Copy commands are
+				// Decode each source with locally restored compute state. Commands are
 				// ordered before packing and the single publication fence.
 				std::vector<PackConstants> records;
 				records.reserve(draws.size());
