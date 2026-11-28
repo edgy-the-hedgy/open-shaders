@@ -76,7 +76,7 @@ json NativePBR::FrameProducer::GetDiagnostics()
 					row>=transfer->residentRoleMasks.size()) return;
 				const auto kind=transfer->instances[row];
 				if (kind>=DX12Native::kRasterEffectRow && kind<=DX12Native::kRasterGrassRow)
-					typedMasks[draw-1u]=transfer->residentRoleMasks[row];
+					typedMasks[draw-1u]=transfer->residentRoleMasks[row]|0x80000000u;
 			};
 			for (uint32_t row=0; row<transfer->rasterDraws.size(); ++row)
 				record(transfer->rasterDraws[row],row);
@@ -90,7 +90,9 @@ json NativePBR::FrameProducer::GetDiagnostics()
 				const auto kind=static_cast<Type>(source->shaderClass);
 				if (kind==Type::Grass || kind==Type::DistantTree || kind==Type::Effect) {
 					++typedDraws;
-					const uint32_t required=(kind==Type::Effect && (draw.pixelDescriptor&(1u<<19u))) ? 3u : 1u;
+					const uint32_t required=0x80000000u | (kind==Type::Effect ?
+						((draw.pixelDescriptor&((1u<<6u)|(1u<<19u)|(1u<<20u))) ? 1u : 0u) |
+						((draw.pixelDescriptor&(1u<<19u)) ? 2u : 0u) : 1u);
 					if ((typedMasks[i]&required)==required) ++typedTransferReady;
 					else ++typedTransferMissing;
 					continue;
