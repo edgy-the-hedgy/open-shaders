@@ -193,7 +193,7 @@ Sample EvaluateNonLightingRaster(RawRasterSurface raw, float3 viewRay, out bool 
     const uint kind=raw.auxiliaryKind;
     const uint expected=kind==5u ? 0xfffffffeu : kind==6u ? 0xfffffffdu : 0xfffffffcu;
     // Complex Effect techniques do not yet have a complete material evaluator.
-    if (kind==7u && raw.auxiliary.y==0u) return result;
+    if (kind==7u && (raw.auxiliary.y&1u)==0u) return result;
     result.color.a=SurfaceMissingTextures;
     if (ProjectionRowCount==0u || raw.drawIdentity.x==0u ||
         raw.drawIdentity.x>(HasRawInput & 0x7fffffffu)) return result;
@@ -202,12 +202,14 @@ Sample EvaluateNonLightingRaster(RawRasterSurface raw, float3 viewRay, out bool 
     uint4 metadata=ProjectionRecords.Load(int3(0,row,0));
     if (metadata.x!=expected || metadata.z!=row) return result;
     uint4 textures=ProjectionRecords.Load(int3(7,row,0));
-    if (textures.x>=NativeProjectionTextureCapacity) return result;
+    const bool sampledBase=kind!=7u || (raw.auxiliary.y&2u)!=0u;
+    if (sampledBase && textures.x>=NativeProjectionTextureCapacity) return result;
     float gradientScale=exp2(clamp(MaterialMipBias,-16.0,16.0));
     float2 uv=raw.uv, dx=raw.dx*gradientScale, dy=raw.dy*gradientScale;
     bool complexGrass=kind==5u && (raw.auxiliary.x&1u)!=0u;
     if (complexGrass) { uv.y*=0.5; dx.y*=0.5; dy.y*=0.5; }
-    float4 texel=NativeProjectionGrad(textures.x,metadata.w&3u,uv,dx,dy);
+    float4 texel=1.0;
+    if (sampledBase) texel=NativeProjectionGrad(textures.x,metadata.w&3u,uv,dx,dy);
     float3 encoded=(metadata.w&256u)!=0u ? NativeProjectionEncode(texel.rgb) : texel.rgb;
     float3 base=SrgbToLinear(encoded);
     float3 normal=normalize(raw.normal);
@@ -252,19 +254,28 @@ Sample EvaluateNonLightingRaster(RawRasterSurface raw, float3 viewRay, out bool 
         float4 tint=asfloat(ProjectionRecords.Load(int3(1,row,0)));
         float scale=asfloat(metadata.y);
         if (!all(isfinite(tint)) || !isfinite(scale)) return result;
-        float3 tintRgb=tint.rgb*raw.color.rgb;
+        float2 liveRG=RawHalf2(raw.auxiliary.z);
+        float2 liveBScale=RawHalf2(raw.auxiliary.w);
+        float3 tintRgb=float3(liveRG,liveBScale.x);
+        if (!all(isfinite(tintRgb)) || !isfinite(liveBScale.y)) return result;
+        float3 effectGamma=texel.rgb*tintRgb;
         if ((raw.pixelDescriptor&(1u<<19u))!=0u) {
             if (textures.y>=NativeProjectionTextureCapacity) return result;
             // Palette addressing follows the original Effect shader.
-            float2 paletteUV=float2(encoded.g,tintRgb.r);
+            // Original Effect samples the typed view directly, including
+            // hardware sRGB decoding if present. No re-encoding.
+            float2 paletteUV=float2(texel.g,tintRgb.r);
             float4 palette=NativeProjectionGrad(textures.y,(metadata.w>>2u)&3u,paletteUV,0.0,0.0);
-            float3 paletteEncoded=(metadata.w&512u)!=0u ? NativeProjectionEncode(palette.rgb) : palette.rgb;
-            base=SrgbToLinear(max(paletteEncoded*scale,0.0));
-        } else {
-            base=SrgbToLinear(max(encoded*tintRgb,0.0));
+            effectGamma=palette.rgb*liveBScale.y;
         }
-        float influence=saturate(asfloat(raw.auxiliary.x));
-        if (!isfinite(influence)) return result;
+        // Effect uses Skyrim scene gamma (1.6), not authored sRGB.
+        // The native material domain is linear Rec.709, before final gamut conversion.
+        base=sign(effectGamma)*pow(abs(effectGamma),1.6);
+        float saturation=f16tof32(raw.auxiliary.y>>16u);
+        if (!isfinite(saturation)) return result;
+        base=lerp(dot(base,float3(0.2125,0.7154,0.0721)).xxx,base,saturate(saturation));
+        float influence=asfloat(raw.auxiliary.x);
+        if (!isfinite(influence) || influence<0.0 || influence>1.0) return result;
         emission=base*(1.0-influence);
         base*=influence;
     }
