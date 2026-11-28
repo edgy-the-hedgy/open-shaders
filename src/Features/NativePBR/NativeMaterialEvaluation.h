@@ -5,6 +5,7 @@
 #include "Features/DX12/DX12PreparedMaterialFrame.h"
 #include "Features/DX12/DX12NativeSceneInputs.h"
 #include "Features/NativePBR/MaterialCatalog.h"
+#include "Features/NativePBR/MaterialInterpretation.h"
 #include "RE/B/BSShaderProperty.h"
 #include "VideoMemoryBudget.h"
 #include <DirectXTex.h>
@@ -610,6 +611,20 @@ namespace DX12Native
 						material.uvOffsetScale[0] = material.uvOffsetScale[1] = source.uvTransform;
 						material.texturePaths[0] = paths[0];
 						material.texturePaths[1] = paths[1];
+						// Match the exact seasonal TXST, including borrowed seam layers.
+						// A configured PBR layer must never silently become a legacy layer.
+						const auto* config = catalog && !source.rasterLandscapeEditorIds[layer].empty() ?
+							catalog->FindTextureSet(source.rasterLandscapeEditorIds[layer]) : nullptr;
+						if (config) {
+							material.legacyMaterial = false;
+							material.texturePaths[2] = source.rasterLandscapePbrPaths[layer][0];
+							material.texturePaths[4] = source.rasterLandscapePbrPaths[layer][1];
+							material.roughnessScale = config->roughnessScale;
+							material.displacementScale = config->displacementScale;
+							material.specularLevel = config->specularLevel;
+							material.textureSetParametersResolved = true;
+							material.glint = NativePBR::InterpretGlint(config->glintParameters);
+						}
 						material.texturePathsComplete = true;
 						const auto identity = (uint64_t(3) << 62) | (uint64_t(i) * 8u + layer + 1u);
 						auto recipe = NativePBR::CompileRecipe({identity, revision, std::move(material)});
