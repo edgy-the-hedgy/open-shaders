@@ -223,13 +223,19 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
         bool heightOnly=all(coarse.xyz<epsilon)&&coarse.a>epsilon&&coarse.a<1.0-epsilon;
         complexMask=coarse.a<1.0-epsilon&&(!grayscale||heightOnly);
     }
+    bool complexHeight=complexMask;
+    if (alphaHeight && complexMask && material.textures[2].x!=0xffffffffu) {
+        const float epsilon=4.0/255.0;
+        float h=NativeSurfaceTex(material.textures[2].x,uv,material.properties.z,raw,mipBias).a;
+        complexHeight=isfinite(h) && h>epsilon && h<1.0-epsilon;
+    }
     bool interlayer=(binding.flags & SurfaceCoatReadyBinding)!=0u && (material.properties.x & 8u)!=0u;
     float3 entryNormal=n;
     float eta=1.0;
     bool interlayerActive=false;
     if (parallaxEnabled && (binding.flags & SurfaceParallaxReadyBinding)!=0u && material.textures[2].x!=0xffffffffu &&
         (binding.flags & 512u)==0u && dot(rayObject,rayObject)>1e-8 && (triData.hasPositions || triData.rasterLocal) &&
-        (!alphaHeight || complexMask)) {
+        (!alphaHeight || complexHeight)) {
         float3 view=normalize(-rayObject);
         if (interlayer) {
             float strength=saturate(material.coat.x);
@@ -308,7 +314,24 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
     float3 sampled = normalTexel.xyz*2.0-1.0;
     if ((binding.flags & 256u) != 0u) sampled.z = sqrt(saturate(1.0-dot(sampled.xy,sampled.xy)));
     if (dot(sampled,sampled)<1e-8) return result;
-    float3 normal = (binding.flags & 512u) != 0u ? normalize(sampled) : normalize(t*sampled.x+b*sampled.y+n*sampled.z);
+    const bool modelSpace=(binding.flags&512u)!=0u;
+    float3 normal = modelSpace ? normalize(sampled) : normalize(t*sampled.x+b*sampled.y+n*sampled.z);
+    if (triData.rasterLocal && modelSpace) {
+        // The original Lighting VS supplies the posed bone RS basis for
+        // skinned model-space normals. Unskinned Lighting consumes the
+        // decoded world-aligned normal directly. Legacy swizzles XZY.
+        const bool modelPermutation=(raw.vertexDescriptor&4u)!=0u;
+        const bool skinned=(raw.vertexDescriptor&2u)!=0u;
+        if (modelPermutation && (binding.flags&256u)==0u) {
+            float3 modelNormal=legacyMaterial ? sampled.xzy : sampled;
+            normal=skinned ? normalize(t*modelNormal.x+b*modelNormal.y+n*modelNormal.z) : normalize(modelNormal);
+        } else {
+            normal=normalize(raw.normal);
+        }
+        // Legacy model-space normals do not encode gloss in alpha. The
+        // separate specular map is not yet acquired by this recipe.
+        if (legacyMaterial) packed.r=1.0;
+    }
     float3 base = baseTexel.rgb;
     packed.r*=material.base.y;
     packed.a*=material.base.w;
@@ -371,8 +394,8 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
     result.f0 = float4(f0,metallic);
     result.emission = float4(emission,saturate(packed.b));
     if (unsupportedRasterTechnique || (triData.rasterLocal && (binding.flags & 512u)!=0u)) result.color.a = SurfaceFeatureLimited;
-    // Model-space normals need the original object transform.
-    if (triData.rasterLocal && (binding.flags & 512u)!=0u) result.normal.xyz = normalize(raw.normal);
+    // Model-space raster results remain feature-limited: legacy separate
+    // specular maps and unsupported compressed model normals are not certified.
     // Keep the normal-mapped direct-light normal. The eye-center normal is
     // a separate environment direction, published in the unused lobe payload.
     if ((binding.flags & SurfaceSubsurfaceReadyBinding) != 0u) {
