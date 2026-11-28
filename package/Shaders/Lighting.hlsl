@@ -1316,6 +1316,71 @@ bool UseSkylightingShadowVisibility()
 #	if defined(NATIVE_PBR_INPUT) && defined(DEFERRED)
 #		include "Common/NativeInputCoverage.hlsli"
 
+// Legacy complex environment masks can displace the *coverage* lookup.
+// Explicit PARALLAX and TruePBR displacement instead retain original-UV
+// alpha in the baseline. This helper performs only the legacy cutout UV
+// calculation, never material radiance or shading.
+#		if defined(DO_ALPHA_TEST) && defined(EMAT_ENVMAP) && !defined(PARALLAX) && !defined(TRUE_PBR) && !defined(LANDSCAPE) && !defined(SPARKLE) && (defined(SKINNED) || !defined(MODELSPACENORMALS))
+float2 NativeComplexCoverageUV(PS_INPUT input, uint eyeIndex, bool frontFace)
+{
+	float2 uv=input.TexCoord0.xy;
+	if (!SharedData::extendedMaterialSettings.EnableComplexMaterial) return uv;
+	const float epsilon=4.0/255.0;
+	float4 coarse=TexEnvMaskSampler.SampleLevel(SampEnvMaskSampler,uv,15.0);
+	bool grayscale=abs(coarse.x-coarse.y)<epsilon && abs(coarse.y-coarse.z)<epsilon && abs(coarse.x-coarse.z)<epsilon;
+	bool heightOnly=all(coarse.xyz<epsilon) && coarse.w>epsilon && coarse.w<1.0-epsilon;
+	if (!(coarse.w<1.0-epsilon && (!grayscale || heightOnly))) return uv;
+	StochasticOffsets offsets=(StochasticOffsets)0;
+#			if defined(TERRAIN_VARIATION_MESH)
+	const bool applyMeshTV=(Permutation::ExtraFeatureDescriptor & Permutation::ExtraFeatureFlags::TVMeshVariation)!=0;
+	if (applyMeshTV) offsets=ComputeStochasticOffsetsMesh(uv,input.Position.xy);
+	float h=applyMeshTV ? StochasticEffect(TexEnvMaskSampler,SampEnvMaskSampler,uv,offsets).w :
+		TexEnvMaskSampler.Sample(SampEnvMaskSampler,uv).w;
+#			else
+	const bool applyMeshTV=false;
+	float h=TexEnvMaskSampler.Sample(SampEnvMaskSampler,uv).w;
+#			endif
+	if (!(h>epsilon && h<1.0-epsilon)) return uv;
+	float3 viewPosition=mul(FrameBuffer::CameraView[eyeIndex],float4(input.WorldPosition.xyz,1.0)).xyz;
+	float3 viewDirection=-normalize(input.WorldPosition.xyz);
+	float3x3 basis=float3x3(input.TBN0,input.TBN1,input.TBN2);
+#			if !defined(TREE_ANIM) && !defined(LOD)
+#				if defined(FUR_SHELLS)
+	if (!frontFace && input.FurShell<=0.0)
+#				else
+	if (!frontFace)
+#				endif
+		basis=lerp(basis,-basis,smoothstep(4096.0*2.5,0.0,viewPosition.z));
+#			endif
+	basis=transpose(basis);
+	basis[0]=normalize(basis[0]); basis[1]=normalize(basis[1]); basis[2]=normalize(basis[2]);
+	DisplacementParams parameters;
+	parameters.DisplacementScale=1.0;
+	parameters.DisplacementOffset=0.0;
+	parameters.HeightScale=1.0;
+	parameters.FlattenAmount=0.0;
+#			if !defined(MODELSPACENORMALS)
+	if (SharedData::extendedMaterialSettings.EnableParallaxWarpingFix) {
+		float3 normal=basis[2];
+		float3 fdx=ddx(input.WorldPosition.xyz), fdy=ddy(input.WorldPosition.xyz);
+		float fragmentSize=length(max(abs(fdx),abs(fdy)));
+		float3 flat=-cross(fdx,fdy);
+		if (fragmentSize>1e-8 && dot(flat,flat)>1e-12) {
+			float curvature=length(max(abs(ddx(normal)),abs(ddy(normal))))/fragmentSize;
+			float bend=saturate(1.0-dot(normal,normalize(flat))+curvature);
+			float facing=saturate(dot(normal,viewDirection));
+			parameters.FlattenAmount=saturate(saturate(1.0-2.0*facing)*bend/max(facing,0.0625));
+		}
+	}
+#			endif
+	float noise=Random::InterleavedGradientNoise(Stereo::EyeStableNoiseCoord(input.Position.xy,SharedData::BufferDim.xy),SharedData::FrameCount);
+	float mip=ExtendedMaterials::GetMipLevel(uv,TexEnvMaskSampler);
+	float2 height=float2(0.5,0.0);
+	return ExtendedMaterials::GetParallaxCoords(viewPosition.z,uv,mip,viewDirection,basis,noise,
+		TexEnvMaskSampler,SampTerrainParallaxSampler,3,parameters,applyMeshTV,offsets,height);
+}
+#		endif
+
 // Full Native deferred Lighting is strictly input-only. The original
 // raster operation writes the pass-level integer MRTs for all permutations.
 PS_OUTPUT main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool frontFace : SV_IsFrontFace, uint coverage : SV_Coverage)
@@ -1333,6 +1398,9 @@ PS_OUTPUT main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool frontFace :
 #			endif
 #			if defined(DO_ALPHA_TEST)
 	float2 alphaUV=uv;
+#				if defined(EMAT_ENVMAP) && !defined(PARALLAX) && !defined(TRUE_PBR) && !defined(LANDSCAPE) && !defined(SPARKLE) && (defined(SKINNED) || !defined(MODELSPACENORMALS))
+	alphaUV=NativeComplexCoverageUV(input,eyeIndex,frontFace);
+#				endif
 #				if defined(SPARKLE) && defined(PROJECTED_UV) && !defined(EYE)
 	alphaUV=ProjectedUVParams2.yy*input.TexCoord0.zw;
 #				endif
