@@ -83,7 +83,7 @@ namespace DX12Native
 			CD3DX12_DESCRIPTOR_RANGE projectionRange;
 			projectionRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1 + kProjectedTextureCapacity, 518);
 			CD3DX12_DESCRIPTOR_RANGE rawRange;
-			rawRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 1031);
+			rawRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NativePBR::InputOnly::kPlaneCount + 1, 1031);
 			CD3DX12_ROOT_PARAMETER parameters[16];
 			parameters[0].InitAsShaderResourceView(0);
 			parameters[1].InitAsShaderResourceView(1);
@@ -99,8 +99,8 @@ namespace DX12Native
 			parameters[11].InitAsShaderResourceView(517);
 			parameters[12].InitAsDescriptorTable(1, &projectionRange);
 			parameters[13].InitAsDescriptorTable(1, &rawRange);
-			parameters[14].InitAsShaderResourceView(1033);
-			parameters[15].InitAsShaderResourceView(1034);
+			parameters[14].InitAsShaderResourceView(1035);
+			parameters[15].InitAsShaderResourceView(1036);
 			std::array<CD3DX12_STATIC_SAMPLER_DESC, 4> samplers;
 			for (uint32_t mode = 0; mode < 4; ++mode)
 				samplers[mode] = CD3DX12_STATIC_SAMPLER_DESC(mode, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
@@ -394,7 +394,7 @@ namespace DX12Native
 				Eval::Check(slot->camera->Map(0,&noRead,&mapped));
 				std::memcpy(mapped,&constants,sizeof(constants)); slot->camera->Unmap(0,nullptr);
 				const D3D12_DESCRIPTOR_HEAP_DESC heap{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-					NativePBR::kGpuTextureDescriptorCapacity+4+kProjectedTextureCapacity,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
+					NativePBR::kGpuTextureDescriptorCapacity+3+NativePBR::InputOnly::kPlaneCount+kProjectedTextureCapacity,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
 				Eval::Check(device->CreateDescriptorHeap(&heap,IID_PPV_ARGS(slot->descriptors.put())));
 				const auto cpu=slot->descriptors->GetCPUDescriptorHandleForHeapStart();
 				const auto step=device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -409,16 +409,16 @@ namespace DX12Native
 				const auto rawDescriptor=projectionDescriptor+1+kProjectedTextureCapacity;
 				D3D12_SHADER_RESOURCE_VIEW_DESC rawView{};
 				rawView.Format=DXGI_FORMAT_R32G32B32A32_UINT;
-				rawView.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+				rawView.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D;
 				rawView.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-				rawView.Texture2DArray.MipLevels=1;
-				rawView.Texture2DArray.ArraySize=NativePBR::InputOnly::kPlaneCount;
-				device->CreateShaderResourceView(slot->rawInputs ? slot->rawInputs->planes->resource.get() : nullptr,
-					&rawView,{cpu.ptr+SIZE_T(rawDescriptor)*step});
+				rawView.Texture2D.MipLevels=1;
+				for (uint32_t i=0;i<NativePBR::InputOnly::kPlaneCount;++i)
+					device->CreateShaderResourceView(slot->rawInputs ? slot->rawInputs->planes[i]->resource.get() : nullptr,
+						&rawView,{cpu.ptr+SIZE_T(rawDescriptor+i)*step});
 				auto tokenView=depth;
 				tokenView.Format=DXGI_FORMAT_R16G16B16A16_UNORM;
 				device->CreateShaderResourceView(slot->rawInputs ? slot->rawInputs->evidence->texture->resource.get() : nullptr,
-					&tokenView,{cpu.ptr+SIZE_T(rawDescriptor+1)*step});
+					&tokenView,{cpu.ptr+SIZE_T(rawDescriptor+NativePBR::InputOnly::kPlaneCount)*step});
 				Eval::Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,IID_PPV_ARGS(slot->allocator.put())));
 				Eval::Check(device->CreateCommandList(0,D3D12_COMMAND_LIST_TYPE_DIRECT,slot->allocator.get(),pipeline.get(),IID_PPV_ARGS(slot->commands.put())));
 				auto* command=slot->commands.get();
@@ -454,12 +454,13 @@ namespace DX12Native
 				command->ResourceBarrier(1,&begin);
 				TransitionProjectionViews(command, slot->projection.get(),
 					D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-				std::array<D3D12_RESOURCE_BARRIER,2> rawBarriers{};
+				std::array<D3D12_RESOURCE_BARRIER,NativePBR::InputOnly::kPlaneCount+1> rawBarriers{};
 				if (slot->rawInputs) {
-					rawBarriers={CD3DX12_RESOURCE_BARRIER::Transition(slot->rawInputs->planes->resource.get(),
-						D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-						CD3DX12_RESOURCE_BARRIER::Transition(slot->rawInputs->evidence->texture->resource.get(),
-						D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)};
+					for (uint32_t i=0;i<NativePBR::InputOnly::kPlaneCount;++i)
+						rawBarriers[i]=CD3DX12_RESOURCE_BARRIER::Transition(slot->rawInputs->planes[i]->resource.get(),
+							D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+					rawBarriers.back()=CD3DX12_RESOURCE_BARRIER::Transition(slot->rawInputs->evidence->texture->resource.get(),
+						D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 					command->ResourceBarrier(UINT(rawBarriers.size()),rawBarriers.data());
 				}
 				if (slot->output->shaderReadable) {

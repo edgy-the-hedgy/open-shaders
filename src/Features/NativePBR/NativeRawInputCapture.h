@@ -10,7 +10,7 @@ namespace NativePBR
 	struct RawInputFrame
 	{
 		DX12Native::MaterialFrameContract::RasterIdentityStamp stamp{};
-		std::unique_ptr<WrappedResource> planes;
+		std::array<std::unique_ptr<WrappedResource>, InputOnly::kPlaneCount> planes;
 		std::array<winrt::com_ptr<ID3D11RenderTargetView>, InputOnly::kPlaneCount> views;
 		std::shared_ptr<const DX12Native::FullNativeRasterEvidence> evidence;
 		winrt::com_ptr<ID3D12Fence> readyFence;
@@ -20,13 +20,13 @@ namespace NativePBR
 			uint32_t viewWidth, uint32_t viewHeight) const;
 	};
 
-	// Separate input-only pixel replay on the actual indexed draw. Only the
-	// sidecar is written; the engine's fallback render targets remain intact.
+	// Original indexed draw with native MRTs in place of legacy lighting MRTs.
+	// The original depth/stencil and rasterizer state remain authoritative.
 	class RawInputCapture
 	{
 	public:
 		~RawInputCapture();
-		bool Replay(const GraphicsBackend& backend, ID3D11DeviceContext* context, ID3D11Texture2D* mask,
+		bool CaptureDraw(const GraphicsBackend& backend, ID3D11DeviceContext* context, ID3D11Texture2D* mask,
 			ID3D11VertexShader* expectedVS, ID3D11PixelShader* expectedPS,
 			DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,
 			uint32_t instance, uint32_t tokenBase, uint32_t primitiveCount, const std::function<void()>& draw);
@@ -48,8 +48,6 @@ namespace NativePBR
 		bool Seal();
 		std::shared_ptr<ShaderRequest> shaderRequest;
 		winrt::com_ptr<ID3D11PixelShader> shader;
-		winrt::com_ptr<ID3D11BlendState> blend;
-		winrt::com_ptr<ID3D11DepthStencilState> depth;
 		winrt::com_ptr<ID3D11Buffer> identity;
 		GraphicsBackend owner;
 		SharedFence producer;

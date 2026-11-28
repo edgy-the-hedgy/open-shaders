@@ -1247,7 +1247,7 @@ void DX12NativeScene::ObserveProjectedDrawBindings(const RE::BSRenderPass* pass)
 		++draws.constantSnapshotFailures;
 }
 
-void DX12NativeScene::ReplayFullNativeInput(ID3D11DeviceContext* context, uint32_t indexCount, const std::function<void()>& draw)
+void DX12NativeScene::CaptureFullNativeInputDraw(ID3D11DeviceContext* context, uint32_t indexCount, const std::function<void()>& draw)
 {
 	auto* state = globals::state;
 	auto& draws = fullNativeRasterDraws;
@@ -1281,7 +1281,7 @@ void DX12NativeScene::ReplayFullNativeInput(ID3D11DeviceContext* context, uint32
 		draws.tokens[base+count-2].instance != instance || draws.tokens[base+count-2].primitive != count-1)
 		return;
 	auto* mask = Util::AsReal(globals::game::renderer->GetRuntimeData().renderTargets[MASKS2].texture);
-	globals::features::nativePBR.ReplayInput(*backend, context, mask,
+	globals::features::nativePBR.CaptureInputDraw(*backend, context, mask,
 		Util::AsReal(state->customVertexShader->shader), Util::AsReal(state->customPixelShader->shader),
 		draws.stamp, instance, base, count, draw);
 }

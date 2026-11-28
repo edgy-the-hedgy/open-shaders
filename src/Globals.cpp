@@ -487,14 +487,21 @@ namespace globals
 	{
 		static void thunk(ID3D11DeviceContext* context, UINT count, UINT start, INT base)
 		{
-			func(context, count, start, base);
+			// The capture route owns the original draw, not an additional replay.
+			bool issued = false;
+			const auto submit = [&] {
+				issued = true;
+				func(context, count, start, base);
+			};
 			if (context == globals::d3d::context && globals::state && globals::state->permutationData.nativeRasterTokenBase) {
 				try {
-					globals::features::dx12NativeScene.ReplayFullNativeInput(context, count, [=] { func(context, count, start, base); });
+					globals::features::dx12NativeScene.CaptureFullNativeInputDraw(context, count, submit);
 				} catch (...) {
-					// The original raster draw already completed. Never unwind into the engine.
+					// A failed capture must never submit an already-issued draw again.
 				}
 			}
+			if (!issued)
+				submit();
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};

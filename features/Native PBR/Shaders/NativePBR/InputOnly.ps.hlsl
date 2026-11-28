@@ -1,5 +1,8 @@
-// Full Native FXC input-only capture. No material textures, BRDF, lighting,
-// shadow sampling, environment evaluation, or output to the main G-buffer.
+// Full Native original opaque raster draw: raw inputs plus engine compatibility.
+// No material textures, BRDF, lighting, shadow or environment evaluation.
+#include "Common/FrameBuffer.hlsli"
+#include "Common/GBuffer.hlsli"
+#include "Common/MotionBlur.hlsli"
 struct RasterInput
 {
     float4 position : SV_POSITION0;
@@ -22,9 +25,14 @@ cbuffer DrawIdentity : register(b0)
 };
 struct RawOutput
 {
-    uint4 identityUV : SV_Target0;
-    uint4 colorGradDepth : SV_Target1;
-    uint4 basisFlags : SV_Target2;
+    float4 diffuse : SV_Target0;
+    float4 motion : SV_Target1;
+    float4 normal : SV_Target2;
+    uint4 identityUV : SV_Target3;
+    uint4 colorGradDepth : SV_Target4;
+    uint4 basisFlags : SV_Target5;
+    float4 masks : SV_Target6;
+    float4 evidence : SV_Target7;
 };
 uint PackHalf2(float2 value)
 {
@@ -47,6 +55,10 @@ RawOutput main(RasterInput input, uint primitive : SV_PrimitiveID, bool front : 
     float2 dx = ddx(input.uv);
     float2 dy = ddy(input.uv);
     float3x3 basis = transpose(float3x3(input.tbn0, input.tbn1, input.tbn2));
+    result.diffuse.a = 1.0;
+    result.motion = float4(MotionBlur::GetSSMotionVector(input.worldPosition, input.previousWorldPosition), 0.0, 1.0);
+    result.evidence.a = 1.0;
+    result.masks.a = 1.0;
     if (Instance == 0xffffffffu || TokenBase == 0 || primitive >= PrimitiveCount ||
         TokenBase + primitive > 65535u || !all(isfinite(input.uv)) ||
         !all(isfinite(dx)) || !all(isfinite(dy)) || !all(isfinite(input.color)) ||
@@ -54,6 +66,9 @@ RawOutput main(RasterInput input, uint primitive : SV_PrimitiveID, bool front : 
         !all(isfinite(basis[0])) || !all(isfinite(basis[1])) || !all(isfinite(basis[2])) ||
         dot(basis[0],basis[0]) < 1e-8 || dot(basis[1],basis[1]) < 1e-8 || dot(basis[2],basis[2]) < 1e-8)
         return result;
+    const float3 normalVS = normalize(FrameBuffer::WorldToView(normalize(basis[2]) * (front ? 1.0 : -1.0), false));
+    result.normal = float4(GBuffer::EncodeNormal(normalVS), 0.0, 1.0);
+    result.evidence.z = float(TokenBase + primitive) / 65535.0;
     uint4 color = uint4(round(saturate(input.color) * 255.0));
     result.identityUV = uint4(Instance + 1u, primitive, asuint(input.uv));
     result.colorGradDepth = uint4(color.x | (color.y << 8) | (color.z << 16) | (color.w << 24),

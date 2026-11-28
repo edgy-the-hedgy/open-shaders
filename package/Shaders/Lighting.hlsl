@@ -4491,14 +4491,9 @@ FUR_EARLY_DEPTH_STENCIL PS_OUTPUT main(PS_INPUT input,
 #	endif
 
 #	if defined(NATIVE_PBR_INPUT) && defined(DEFERRED)
-	// Native material input evidence; raster shading remains the fallback until ownership is proven.
-	// A blend or a nonparticipating writer can invalidate winner evidence.
-	uint nativeToken = 0;
-	if (Permutation::NativeRasterTokenBase != 0 && nativePrimitiveID < Permutation::NativeRasterPrimitiveCount &&
-		psout.Diffuse.w >= 1.0 && !(Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::AdditiveLighting)) {
-		nativeToken = Permutation::NativeRasterTokenBase + nativePrimitiveID;
-	}
-	psout.Masks2.z = nativeToken <= 65535u ? float(nativeToken) / 65535.0 : 0.0;
+	// Only the input-only original draw may publish a native winner token.
+	// A nonparticipating writer must not certify stale raw attributes.
+	psout.Masks2.z = 0.0;
 #	endif
 
 #	if defined(FUR_SHELLS_DEPTH)

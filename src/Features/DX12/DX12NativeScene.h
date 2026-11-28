@@ -83,7 +83,7 @@ struct DX12NativeScene final : OverlayFeature
 	void ObserveWorldCamera(const globals::FrameBuffer& camera);
 	const GraphicsBackend* GetNativeBackend() const { return backend ? &*backend : nullptr; }
 	std::shared_ptr<const DX12Native::NativeWorldFrame> GetWorldFrame(uint32_t engineFrame, uint32_t pluginFrame) const;
-	void ReplayFullNativeInput(ID3D11DeviceContext* context, uint32_t indexCount, const std::function<void()>& draw);
+	void CaptureFullNativeInputDraw(ID3D11DeviceContext* context, uint32_t indexCount, const std::function<void()>& draw);
 	// Capture the completed fallback radiance before native final-color application.
 	void CaptureFullNativeEnvironment(ID3D11ShaderResourceView* sceneColor, uint32_t frame);
 	bool WantsDepthPrepassReadyHook() const override;

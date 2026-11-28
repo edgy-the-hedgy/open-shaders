@@ -16,7 +16,7 @@ namespace NativePBR
 		void OnRuntimeDisabled() override { InvalidateGeneration(); Release(); }
 		void ClearShaderCache() override { InvalidateGeneration(); Release(); }
 		void Poll(uint32_t frame);
-		void ReplayInput(const GraphicsBackend& backend, ID3D11DeviceContext* context, ID3D11Texture2D* mask,
+		void CaptureInputDraw(const GraphicsBackend& backend, ID3D11DeviceContext* context, ID3D11Texture2D* mask,
 			ID3D11VertexShader* vs, ID3D11PixelShader* ps, DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,
 			uint32_t instance, uint32_t tokenBase, uint32_t primitiveCount, const std::function<void()>& draw);
 		void PublishRawInput(ID3D11Texture2D* mask, DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,

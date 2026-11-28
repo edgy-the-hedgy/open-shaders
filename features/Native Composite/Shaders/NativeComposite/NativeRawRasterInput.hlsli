@@ -2,9 +2,11 @@
 #define NATIVE_RAW_RASTER_INPUT_HLSLI
 // ABI shared with the standalone ps_5_0 input capture. No raster radiance.
 #include "NativeRawRasterSurface.hlsli"
-Texture2DArray<uint4> RawRasterPlanes : register(t1031);
-Texture2D<float4> RawRasterFinalTokens : register(t1032);
-ByteAddressBuffer RawRasterTokenTable : register(t1033);
+Texture2D<uint4> RawRasterIdentityUV : register(t1031);
+Texture2D<uint4> RawRasterColorGradDepth : register(t1032);
+Texture2D<uint4> RawRasterBasisFlags : register(t1033);
+Texture2D<float4> RawRasterFinalTokens : register(t1034);
+ByteAddressBuffer RawRasterTokenTable : register(t1035);
 float2 RawHalf2(uint v) { return f16tof32(uint2(v & 65535u, v >> 16)); }
 float3 RawOct(uint v)
 {
@@ -20,9 +22,9 @@ RawRasterSurface ReadRawRaster(uint2 pixel, float depth, uint instance, uint pri
 {
     RawRasterSurface result = (RawRasterSurface)0;
     if (!tokenCount) return result;
-    uint4 a = RawRasterPlanes.Load(int4(pixel,0,0));
+    uint4 a = RawRasterIdentityUV.Load(int3(pixel,0));
     if (!a.x || a.x-1u != instance || a.y != primitive) return result;
-    uint4 c = RawRasterPlanes.Load(int4(pixel,2,0));
+    uint4 c = RawRasterBasisFlags.Load(int3(pixel,0));
     uint token = c.w & 65535u;
     if ((c.w & 131072u) == 0u || !token || token > tokenCount) return result;
     // The final blended G-buffer token is only a corroborating candidate.
@@ -30,7 +32,7 @@ RawRasterSurface ReadRawRaster(uint2 pixel, float depth, uint instance, uint pri
     float finalToken = RawRasterFinalTokens.Load(int3(pixel,0)).z;
     if (!isfinite(finalToken) || uint(round(saturate(finalToken)*65535.0)) != token ||
         any(RawRasterTokenTable.Load2((token-1u)*8u) != uint2(instance,primitive))) return result;
-    uint4 b = RawRasterPlanes.Load(int4(pixel,1,0));
+    uint4 b = RawRasterColorGradDepth.Load(int3(pixel,0));
     float rawDepth = asfloat(b.w);
     if (!isfinite(rawDepth) || abs(rawDepth-depth)>1e-6) return result;
     result.uv=asfloat(a.zw);
@@ -47,7 +49,7 @@ bool ReadRawRasterCandidate(uint2 pixel, float depth, uint tokenCount, out uint2
     identity = uint2(0xffffffffu, 0xffffffffu);
     raw = (RawRasterSurface)0;
     if (!tokenCount) return false;
-    uint4 a = RawRasterPlanes.Load(int4(pixel,0,0));
+    uint4 a = RawRasterIdentityUV.Load(int3(pixel,0));
     if (!a.x || (a.y & 0x80000000u) != 0u) return false;
     identity = uint2(a.x - 1u, a.y);
     raw = ReadRawRaster(pixel, depth, identity.x, identity.y, tokenCount);

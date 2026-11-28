@@ -27,7 +27,7 @@ void main(uint3 id : SV_DispatchThreadID)
 
 Texture2D<float> ProbeDepth : register(t515);
 RaytracingAccelerationStructure ProbeScene : register(t516);
-ByteAddressBuffer ProbeInstanceTransforms : register(t1034);
+ByteAddressBuffer ProbeInstanceTransforms : register(t1036);
 cbuffer ProbeCamera : register(b1)
 {
     row_major float4x4 InverseProjection;

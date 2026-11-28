@@ -11,13 +11,13 @@ namespace
 	constexpr uint32_t kDeveloperCoverageInterval = 120;
 }
 
-void NativePBR::FrameProducer::ReplayInput(const GraphicsBackend& backend, ID3D11DeviceContext* context, ID3D11Texture2D* mask,
+void NativePBR::FrameProducer::CaptureInputDraw(const GraphicsBackend& backend, ID3D11DeviceContext* context, ID3D11Texture2D* mask,
 	ID3D11VertexShader* vs, ID3D11PixelShader* ps, DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,
 	uint32_t instance, uint32_t tokenBase, uint32_t primitiveCount, const std::function<void()>& draw)
 {
 	if (!loaded) return;
 	if (!rawInputs) rawInputs = std::make_unique<RawInputCapture>();
-	rawInputs->Replay(backend, context, mask, vs, ps, stamp, instance, tokenBase, primitiveCount, draw);
+	rawInputs->CaptureDraw(backend, context, mask, vs, ps, stamp, instance, tokenBase, primitiveCount, draw);
 }
 
 void NativePBR::FrameProducer::PublishRawInput(ID3D11Texture2D* mask, DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,

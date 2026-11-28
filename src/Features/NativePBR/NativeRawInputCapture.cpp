@@ -17,13 +17,16 @@ namespace NativePBR
 	{
 		constexpr auto kFormat = DXGI_FORMAT_R32G32B32A32_UINT;
 		constexpr UINT kMRTs = D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT;
+		constexpr UINT kFirstRawMRT = 3; // Replaces deferred albedo, specular, reflectance.
+		static_assert(kFirstRawMRT + InputOnly::kPlaneCount <= kMRTs - 2);
 		constexpr UINT kUAVs = D3D11_1_UAV_SLOT_COUNT - kMRTs;
 		struct DrawIdentity { uint32_t instance, tokenBase, primitives, reserved = 0; };
 	}
 
 	bool RawInputFrame::Matches(RasterIdentityStamp requested, uint32_t viewWidth, uint32_t viewHeight) const
 	{
-		return stamp == requested && width >= viewWidth && height >= viewHeight && draws && planes && planes->resource &&
+		return stamp == requested && width >= viewWidth && height >= viewHeight && draws &&
+			std::ranges::all_of(planes, [](const auto& plane) { return plane && plane->resource; }) &&
 			readyFence && ValidProducerSignal(readyValue, readyFence->GetCompletedValue()) &&
 			evidence && evidence->stamp == stamp && evidence->width == width && evidence->height == height &&
 			evidence->texture && evidence->texture->resource && evidence->tokenTable && evidence->tokenCount &&
@@ -100,28 +103,13 @@ namespace NativePBR
 		if (!producer.fence12) {
 			owner = backend;
 			producer.Create(owner.d3d12Device.get(), owner.d3d11Device.get(), "NativePBR::InputOnly");
-			D3D11_BLEND_DESC blendDesc{};
-			blendDesc.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
-			blendDesc.RenderTarget[0].DestBlend = D3D11_BLEND_ZERO;
-			blendDesc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
-			blendDesc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
-			blendDesc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ZERO;
-			blendDesc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
-			blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
-			DX::ThrowIfFailed(owner.d3d11Device->CreateBlendState(&blendDesc, blend.put()));
-			D3D11_DEPTH_STENCIL_DESC depthDesc{};
-			depthDesc.DepthEnable = TRUE;
-			depthDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
-			depthDesc.DepthFunc = D3D11_COMPARISON_EQUAL;
-			depthDesc.FrontFace = depthDesc.BackFace = {D3D11_STENCIL_OP_KEEP,D3D11_STENCIL_OP_KEEP,D3D11_STENCIL_OP_KEEP,D3D11_COMPARISON_ALWAYS};
-			DX::ThrowIfFailed(owner.d3d11Device->CreateDepthStencilState(&depthDesc, depth.put()));
 			D3D11_BUFFER_DESC cb{};
 			cb.ByteWidth = sizeof(DrawIdentity);
 			cb.Usage = D3D11_USAGE_DEFAULT;
 			cb.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
 			DX::ThrowIfFailed(owner.d3d11Device->CreateBuffer(&cb, nullptr, identity.put()));
 		}
-		if (!blend || !depth || !identity || owner.d3d11Device.get() != backend.d3d11Device.get() ||
+		if (!identity || owner.d3d11Device.get() != backend.d3d11Device.get() ||
 			owner.d3d12Device.get() != backend.d3d12Device.get() ||
 			owner.commandQueue.get() != backend.commandQueue.get() || producer.fence12->GetCompletedValue() == UINT64_MAX)
 			return false;
@@ -142,9 +130,11 @@ namespace NativePBR
 		if (!selected) { failure = "Raw input frame pool busy"; failedAllocationFrame = stamp.frame; return false; }
 		auto& slot = *selected;
 		if (!slot || slot->width != width || slot->height != height) {
-			const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(kFormat, width, height, InputOnly::kPlaneCount, 1, 1, 0,
+			const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(kFormat, width, height, 1, 1, 1, 0,
 				D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-			const auto bytes = owner.d3d12Device->GetResourceAllocationInfo(0,1,&desc).SizeInBytes;
+			const auto planeBytes = owner.d3d12Device->GetResourceAllocationInfo(0,1,&desc).SizeInBytes;
+			if (planeBytes > UINT64_MAX / InputOnly::kPlaneCount) return false;
+			const auto bytes = planeBytes * InputOnly::kPlaneCount;
 			uint64_t tracked = 0;
 			for (const auto& held : slots) if (held) tracked += held->allocationBytes;
 			const auto limit = budget.Query(owner.d3d12Device.get(), tracked);
@@ -157,17 +147,14 @@ namespace NativePBR
 			replacement->width = width; replacement->height = height;
 			D3D11_TEXTURE2D_DESC texture{};
 			texture.Width = width; texture.Height = height; texture.MipLevels = 1;
-			texture.ArraySize = InputOnly::kPlaneCount; texture.Format = kFormat;
+			texture.ArraySize = 1; texture.Format = kFormat;
 			texture.SampleDesc.Count = 1; texture.Usage = D3D11_USAGE_DEFAULT;
 			texture.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-			replacement->planes = std::make_unique<WrappedResource>(texture, owner.d3d11Device.get(),
-				owner.d3d12Device.get(), "NativePBR::RawRasterInputs");
+			// Separate 2D textures match the engine's non-array RTV/DSV dimensions.
 			for (UINT slice = 0; slice < InputOnly::kPlaneCount; ++slice) {
-				D3D11_RENDER_TARGET_VIEW_DESC view{};
-				view.Format = kFormat; view.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
-				view.Texture2DArray.FirstArraySlice = slice; view.Texture2DArray.ArraySize = 1;
-				DX::ThrowIfFailed(owner.d3d11Device->CreateRenderTargetView(replacement->planes->resource11, &view,
-					replacement->views[slice].put()));
+				replacement->planes[slice] = std::make_unique<WrappedResource>(texture, owner.d3d11Device.get(),
+					owner.d3d12Device.get(), "NativePBR::RawRasterInputs");
+				replacement->views[slice].copy_from(replacement->planes[slice]->rtv);
 			}
 			slot = std::move(replacement);
 		}
@@ -180,7 +167,7 @@ namespace NativePBR
 		return true;
 	}
 
-	bool RawInputCapture::Replay(const GraphicsBackend& backend, ID3D11DeviceContext* context, ID3D11Texture2D* mask,
+	bool RawInputCapture::CaptureDraw(const GraphicsBackend& backend, ID3D11DeviceContext* context, ID3D11Texture2D* mask,
 		ID3D11VertexShader* expectedVS, ID3D11PixelShader* expectedPS, RasterIdentityStamp stamp,
 		uint32_t instance, uint32_t tokenBase, uint32_t primitiveCount, const std::function<void()>& draw)
 	{
@@ -234,35 +221,53 @@ namespace NativePBR
 				return false;
 			winrt::com_ptr<ID3D11DepthStencilState> oldDepth;
 			winrt::com_ptr<ID3D11BlendState> oldBlend;
-			winrt::com_ptr<ID3D11Buffer> oldCB;
+			winrt::com_ptr<ID3D11Buffer> oldCB, frameCB;
 			UINT stencilRef = 0, sampleMask = 0, firstConstant = 0, constantCount = 0;
 			float blendFactor[4]{};
 			context->OMGetDepthStencilState(oldDepth.put(), &stencilRef);
 			context->OMGetBlendState(oldBlend.put(), blendFactor, &sampleMask);
 			backend.d3d11Context->PSGetConstantBuffers1(0, 1, oldCB.put(), &firstConstant, &constantCount);
-			if (!oldDepth) return false;
+			context->PSGetConstantBuffers(12, 1, frameCB.put());
+			if (!frameCB || !oldDepth) return false;
 			D3D11_DEPTH_STENCIL_DESC originalDepth{};
 			oldDepth->GetDesc(&originalDepth);
 			if (!originalDepth.DepthEnable || originalDepth.StencilEnable || sampleMask == 0) return false;
 			if (oldBlend) {
 				D3D11_BLEND_DESC originalBlend{};
 				oldBlend->GetDesc(&originalBlend);
-				if (originalBlend.AlphaToCoverageEnable ||
-					originalBlend.RenderTarget[0].BlendEnable ||
-					originalBlend.RenderTarget[originalBlend.IndependentBlendEnable ? kMRTs-1 : 0].BlendEnable)
+				if (originalBlend.AlphaToCoverageEnable) return false;
+				for (UINT i = 0; i < kMRTs; ++i) {
+					const auto& rt = originalBlend.RenderTarget[originalBlend.IndependentBlendEnable ? i : 0];
+					if (rt.BlendEnable || rt.RenderTargetWriteMask != D3D11_COLOR_WRITE_ENABLE_ALL)
+						return false;
+				}
+			}
+			// All occupied engine outputs must be ordinary single-sample 2D views.
+			for (auto* target : targets) {
+				if (!target) return false;
+				D3D11_RENDER_TARGET_VIEW_DESC view{};
+				target->GetDesc(&view);
+				if (view.ViewDimension != D3D11_RTV_DIMENSION_TEXTURE2D || view.Texture2D.MipSlice != 0)
+					return false;
+				winrt::com_ptr<ID3D11Resource> resource;
+				target->GetResource(resource.put());
+				const auto tex = resource.try_as<ID3D11Texture2D>();
+				if (!tex) return false;
+				D3D11_TEXTURE2D_DESC desc{};
+				tex->GetDesc(&desc);
+				if (desc.ArraySize != 1 || desc.SampleDesc.Count != 1 || desc.Width != md.Width || desc.Height != md.Height)
 					return false;
 			}
 			if (!Prepare(backend, stamp, md.Width, md.Height)) return false;
 			const DrawIdentity constants{instance, tokenBase, primitiveCount};
 			context->UpdateSubresource(identity.get(), 0, nullptr, &constants, 0, 0);
-			std::array<ID3D11RenderTargetView*, InputOnly::kPlaneCount> rawTargets{};
-			for (size_t i = 0; i < rawTargets.size(); ++i) rawTargets[i] = active->views[i].get();
+			auto rawTargets = targets;
+			for (size_t i = 0; i < active->views.size(); ++i)
+				rawTargets[kFirstRawMRT + i] = active->views[i].get();
 			auto* cb = identity.get();
-			// Only the original indexed operation is repeated. No engine setup,
-			// material binding, raster lighting or depth/stencil writes are repeated.
-			context->OMSetRenderTargets(UINT(rawTargets.size()), rawTargets.data(), dsv.get());
-			context->OMSetBlendState(blend.get(), nullptr, sampleMask);
-			context->OMSetDepthStencilState(depth.get(), 0);
+			// Publish raw attributes and compatibility outputs during the original
+			// depth-tested raster draw. No lighting shader or UAV is executed.
+			context->OMSetRenderTargets(kMRTs, rawTargets.data(), dsv.get());
 			context->PSSetShader(shader.get(), nullptr, 0);
 			context->PSSetConstantBuffers(0, 1, &cb);
 			const auto restore = [&] {
@@ -272,8 +277,6 @@ namespace NativePBR
 				else
 					context->PSSetConstantBuffers(0, 1, &restoreCB);
 				context->PSSetShader(ps.get(), nullptr, 0);
-				context->OMSetDepthStencilState(oldDepth.get(), stencilRef);
-				context->OMSetBlendState(oldBlend.get(), blendFactor, sampleMask);
 				context->OMSetRenderTargets(kMRTs, targets.data(), dsv.get());
 			};
 			try { draw(); } catch (...) { restore(); throw; }
