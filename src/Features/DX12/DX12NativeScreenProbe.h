@@ -31,6 +31,7 @@ namespace DX12Native
 			uint32_t width, height, gridWidth, gridHeight, collectStats, parallaxEnabled, parallaxWarpFixEnabled, parallaxShadowEnabled;
 			float mipBias;
 			uint32_t projectionRows, projectionFrame, hasRawInput, quality, transformCount, rasterBindingCount, rasterRecordCount, sceneRecordCount, rasterSourceCount, hasSecondaryScene, hasRasterRayMapping, rasterPreparedSourceCount;
+			uint32_t diagnosticRayProbe;
 		};
 		static_assert(sizeof(Camera) <= 256);
 		struct OutputAllocation
@@ -584,7 +585,8 @@ namespace DX12Native
 					slot->rasterEvaluation ? slot->rasterEvaluation->recordCount : 0u, evaluation.recordCount,
 					slot->rawInputs ? uint32_t(slot->rawInputs->materialSources.size()) : 0u,
 					slot->scene ? 1u : 0u, mappedScene ? 1u : 0u,
-					slot->rasterEvaluation ? slot->rasterEvaluation->rasterSourceCount : 0u};
+					slot->rasterEvaluation ? slot->rasterEvaluation->rasterSourceCount : 0u,
+					fullResolution ? 0u : 0x44585031u};
 				void* mapped=nullptr; const D3D12_RANGE noRead{};
 				Eval::Check(slot->camera->Map(0,&noRead,&mapped));
 				std::memcpy(mapped,&constants,sizeof(constants)); slot->camera->Unmap(0,nullptr);
