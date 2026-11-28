@@ -111,7 +111,7 @@ class ArchitectureLintTests(unittest.TestCase):
     def test_full_native_shader_inputs_share_one_boot_latched_cache_identity(self):
         cache = (ROOT / "src/ShaderCache.cpp").read_text(encoding="utf-8")
         self.assertIn('"FULL_NATIVE_INPUT"', cache)
-        self.assertIn('L"_full_native_input_v2"', cache)
+        self.assertIn('L"_full_native_input_v3"', cache)
         self.assertNotIn('L"_native_pbr_input_v1"', cache)
         for name in ("Lighting", "Effect", "Sky", "DistantTree"):
             source = (ROOT / f"package/Shaders/{name}.hlsl").read_text(encoding="utf-8")
@@ -146,8 +146,12 @@ class ArchitectureLintTests(unittest.TestCase):
         self.assertIn("uint primitive : SV_PrimitiveID, bool front : SV_IsFrontFace", raw)
         self.assertIn("ddx(input.uv)", raw)
         self.assertIn("ddy(input.uv)", raw)
-        self.assertNotIn("Texture2D", raw)
-        self.assertNotIn("SamplerState", raw)
+        self.assertIn("#if defined(NATIVE_INPUT_ALPHA_TEST)", raw)
+        self.assertIn("CoverageTexture.SampleBias", raw)
+        self.assertIn("clip(alpha - CoverageThreshold)", raw)
+        self.assertIn("uint4 materialTechnique : SV_Target6", raw)
+        self.assertIn("RawRasterMaterialTechnique", consumer)
+        self.assertIn("raw.materialIndex != Bindings[instance].materialIndex", (ROOT / "features/Native Composite/Shaders/NativeComposite/NativePBRProbe.hlsl6").read_text(encoding="utf-8"))
         self.assertIn("StandaloneShaderClass::Pixel", capture)
         self.assertNotIn("D3D11_DEPTH_WRITE_MASK_ZERO", capture)
         self.assertNotIn("OMSetDepthStencilState(", capture)

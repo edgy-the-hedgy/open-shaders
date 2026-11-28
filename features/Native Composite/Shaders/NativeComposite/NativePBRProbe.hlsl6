@@ -27,7 +27,7 @@ void main(uint3 id : SV_DispatchThreadID)
 
 Texture2D<float> ProbeDepth : register(t515);
 RaytracingAccelerationStructure ProbeScene : register(t516);
-ByteAddressBuffer ProbeInstanceTransforms : register(t1036);
+ByteAddressBuffer ProbeInstanceTransforms : register(t1037);
 cbuffer ProbeCamera : register(b1)
 {
     row_major float4x4 InverseProjection;
@@ -173,6 +173,8 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed,
             return result;
     }
     if (instance >= InstanceCount) { result.color.a=SurfaceEvaluationFailed; return result; }
+    // The material index is a frame-stamped reference, never a second material authority.
+    if (raw.valid && raw.materialIndex != Bindings[instance].materialIndex) raw.valid = false;
     Binding binding = Bindings[instance];
     if (binding.materialIndex == 0xffffffffu) {
         result.color.a = (binding.flags & SurfaceMissingBaseTexturesBinding) != 0u ?

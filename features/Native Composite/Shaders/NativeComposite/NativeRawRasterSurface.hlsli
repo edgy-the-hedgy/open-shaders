@@ -5,6 +5,8 @@ struct RawRasterSurface
     float2 uv, dx, dy;
     float4 color;
     float3 tangent, bitangent, normal;
-    bool front, valid;
+    uint materialIndex, vertexDescriptor, pixelDescriptor, extraDescriptor;
+    float alpha;
+    bool covered, front, valid;
 };
 #endif

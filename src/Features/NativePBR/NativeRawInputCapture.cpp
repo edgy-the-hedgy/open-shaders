@@ -17,10 +17,9 @@ namespace NativePBR
 	{
 		constexpr auto kFormat = DXGI_FORMAT_R32G32B32A32_UINT;
 		constexpr UINT kMRTs = D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT;
-		constexpr UINT kFirstRawMRT = 3; // Replaces deferred albedo, specular, reflectance.
-		static_assert(kFirstRawMRT + InputOnly::kPlaneCount <= kMRTs - 2);
+		constexpr UINT kFirstRawMRT = 3; // Replaces legacy albedo, specular, reflectance and masks.
+		static_assert(kFirstRawMRT + InputOnly::kPlaneCount == kMRTs - 1);
 		constexpr UINT kUAVs = D3D11_1_UAV_SLOT_COUNT - kMRTs;
-		struct DrawIdentity { uint32_t instance, tokenBase, primitives, reserved = 0; };
 	}
 
 	bool RawInputFrame::Matches(RasterIdentityStamp requested, uint32_t viewWidth, uint32_t viewHeight) const
@@ -68,6 +67,34 @@ namespace NativePBR
 		failedAllocationFrame = UINT32_MAX;
 	}
 
+	ID3D11PixelShader* RawInputCapture::GetShader(bool alphaTest)
+	{
+		const size_t index = alphaTest ? 1 : 0;
+		auto& request = shaderRequests[index];
+		auto& shader = shaders[index];
+		if (!shader && !request) {
+			request = std::make_shared<ShaderRequest>();
+			std::vector<std::pair<const char*, const char*>> defines{ { "NATIVE_RAW_ABI_V4", "1" } };
+			if (alphaTest) defines.emplace_back("NATIVE_INPUT_ALPHA_TEST", "1");
+			globals::shaderCache->EnqueueStandaloneShaderCompile(
+				(Util::PathHelpers::GetShadersPath() / "NativePBR" / "InputOnly.ps.hlsl").wstring(), "main", defines,
+				SIE::ShaderCache::StandaloneShaderClass::Pixel, [request = request](ID3D11DeviceChild* child) {
+					winrt::com_ptr<ID3D11DeviceChild> owned;
+					owned.attach(child);
+					std::scoped_lock lock(request->mutex);
+					if (owned) owned->QueryInterface(IID_PPV_ARGS(request->shader.put()));
+					request->complete = true;
+				});
+		}
+		if (!shader) {
+			std::scoped_lock lock(request->mutex);
+			shader = request->shader;
+			if (!shader)
+				failure = request->complete ? "Input-only FXC variant failed" : "Input-only FXC variant pending";
+		}
+		return shader.get();
+	}
+
 	bool RawInputCapture::Prepare(const GraphicsBackend& backend, RasterIdentityStamp stamp, uint32_t width, uint32_t height)
 	{
 		if (active && active->stamp == stamp)
@@ -78,33 +105,11 @@ namespace NativePBR
 		if (!backend.d3d11Device || !backend.d3d11Context || !backend.d3d12Device ||
 			!width || !height || backend.d3d11Device->GetFeatureLevel() < D3D_FEATURE_LEVEL_11_1)
 			return false;
-		if (!shader && !shaderRequest) {
-			shaderRequest = std::make_shared<ShaderRequest>();
-			auto request = shaderRequest;
-			globals::shaderCache->EnqueueStandaloneShaderCompile(
-				(Util::PathHelpers::GetShadersPath() / "NativePBR" / "InputOnly.ps.hlsl").wstring(), "main", {},
-				SIE::ShaderCache::StandaloneShaderClass::Pixel, [request](ID3D11DeviceChild* child) {
-					winrt::com_ptr<ID3D11DeviceChild> owned;
-					owned.attach(child);
-					std::scoped_lock lock(request->mutex);
-					if (owned) owned->QueryInterface(IID_PPV_ARGS(request->shader.put()));
-					request->complete = true;
-				});
-		}
-		if (!shader) {
-			std::scoped_lock lock(shaderRequest->mutex);
-			shader = shaderRequest->shader;
-			if (!shader) {
-				failure = shaderRequest->complete ? "Input-only FXC compile failed" : "Input-only FXC compile pending";
-				failedAllocationFrame = stamp.frame;
-				return false;
-			}
-		}
 		if (!producer.fence12) {
 			owner = backend;
 			producer.Create(owner.d3d12Device.get(), owner.d3d11Device.get(), "NativePBR::InputOnly");
 			D3D11_BUFFER_DESC cb{};
-			cb.ByteWidth = sizeof(DrawIdentity);
+			cb.ByteWidth = sizeof(InputOnly::DrawMetadata);
 			cb.Usage = D3D11_USAGE_DEFAULT;
 			cb.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
 			DX::ThrowIfFailed(owner.d3d11Device->CreateBuffer(&cb, nullptr, identity.put()));
@@ -169,9 +174,9 @@ namespace NativePBR
 
 	bool RawInputCapture::CaptureDraw(const GraphicsBackend& backend, ID3D11DeviceContext* context, ID3D11Texture2D* mask,
 		ID3D11VertexShader* expectedVS, ID3D11PixelShader* expectedPS, RasterIdentityStamp stamp,
-		uint32_t instance, uint32_t tokenBase, uint32_t primitiveCount, const std::function<void()>& draw)
+		const NativePBR::InputOnly::DrawMetadata& metadata, const std::function<void()>& draw)
 	{
-		if (!context || !mask || !expectedVS || !expectedPS || !draw || !InputOnly::ValidToken(tokenBase, primitiveCount) ||
+		if (!context || !mask || !expectedVS || !expectedPS || !draw || metadata.materialIndex == UINT32_MAX || !InputOnly::ValidToken(metadata.tokenBase, metadata.primitives) ||
 			!stamp.scope || !stamp.geometryRevision || !stamp.materialRevision || !globals::shaderCache ||
 			!backend.d3d11Device || !backend.d3d11Context ||
 			backend.d3d11Device->GetFeatureLevel() < D3D_FEATURE_LEVEL_11_1 || failedAllocationFrame == stamp.frame)
@@ -258,9 +263,20 @@ namespace NativePBR
 				if (desc.ArraySize != 1 || desc.SampleDesc.Count != 1 || desc.Width != md.Width || desc.Height != md.Height)
 					return false;
 			}
-			if (!Prepare(backend, stamp, md.Width, md.Height)) return false;
-			const DrawIdentity constants{instance, tokenBase, primitiveCount};
-			context->UpdateSubresource(identity.get(), 0, nullptr, &constants, 0, 0);
+			if (metadata.AlphaTest()) {
+				winrt::com_ptr<ID3D11Buffer> geometryCB, alphaCB, sharedCB;
+				winrt::com_ptr<ID3D11ShaderResourceView> alphaTexture;
+				winrt::com_ptr<ID3D11SamplerState> alphaSampler;
+				context->PSGetConstantBuffers(2, 1, geometryCB.put());
+				context->PSGetConstantBuffers(11, 1, alphaCB.put());
+				context->PSGetConstantBuffers(5, 1, sharedCB.put());
+				context->PSGetShaderResources(0, 1, alphaTexture.put());
+				context->PSGetSamplers(0, 1, alphaSampler.put());
+				if (!geometryCB || !alphaCB || !sharedCB || !alphaTexture || !alphaSampler) return false;
+			}
+			auto* inputShader = GetShader(metadata.AlphaTest());
+			if (!inputShader || !Prepare(backend, stamp, md.Width, md.Height)) return false;
+			context->UpdateSubresource(identity.get(), 0, nullptr, &metadata, 0, 0);
 			auto rawTargets = targets;
 			for (size_t i = 0; i < active->views.size(); ++i)
 				rawTargets[kFirstRawMRT + i] = active->views[i].get();
@@ -268,7 +284,7 @@ namespace NativePBR
 			// Publish raw attributes and compatibility outputs during the original
 			// depth-tested raster draw. No lighting shader or UAV is executed.
 			context->OMSetRenderTargets(kMRTs, rawTargets.data(), dsv.get());
-			context->PSSetShader(shader.get(), nullptr, 0);
+			context->PSSetShader(inputShader, nullptr, 0);
 			context->PSSetConstantBuffers(0, 1, &cb);
 			const auto restore = [&] {
 				auto* restoreCB = oldCB.get();

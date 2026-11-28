@@ -29,7 +29,7 @@ namespace NativePBR
 		bool CaptureDraw(const GraphicsBackend& backend, ID3D11DeviceContext* context, ID3D11Texture2D* mask,
 			ID3D11VertexShader* expectedVS, ID3D11PixelShader* expectedPS,
 			DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,
-			uint32_t instance, uint32_t tokenBase, uint32_t primitiveCount, const std::function<void()>& draw);
+			const NativePBR::InputOnly::DrawMetadata& metadata, const std::function<void()>& draw);
 		void Publish(ID3D11Texture2D* mask, DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,
 			std::span<const DX12Native::MaterialFrameContract::RasterPixelIdentity> tokens);
 		std::shared_ptr<const RawInputFrame> Get(DX12Native::MaterialFrameContract::RasterIdentityStamp stamp) const;
@@ -43,11 +43,12 @@ namespace NativePBR
 			winrt::com_ptr<ID3D11PixelShader> shader;
 			bool complete = false;
 		};
+		ID3D11PixelShader* GetShader(bool alphaTest);
 		bool Prepare(const GraphicsBackend& backend, DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,
 			uint32_t width, uint32_t height);
 		bool Seal();
-		std::shared_ptr<ShaderRequest> shaderRequest;
-		winrt::com_ptr<ID3D11PixelShader> shader;
+		std::array<std::shared_ptr<ShaderRequest>, 2> shaderRequests;
+		std::array<winrt::com_ptr<ID3D11PixelShader>, 2> shaders;
 		winrt::com_ptr<ID3D11Buffer> identity;
 		GraphicsBackend owner;
 		SharedFence producer;

@@ -99,8 +99,8 @@ namespace DX12Native
 			parameters[11].InitAsShaderResourceView(517);
 			parameters[12].InitAsDescriptorTable(1, &projectionRange);
 			parameters[13].InitAsDescriptorTable(1, &rawRange);
-			parameters[14].InitAsShaderResourceView(1035);
-			parameters[15].InitAsShaderResourceView(1036);
+			parameters[14].InitAsShaderResourceView(1036);
+			parameters[15].InitAsShaderResourceView(1037);
 			std::array<CD3DX12_STATIC_SAMPLER_DESC, 4> samplers;
 			for (uint32_t mode = 0; mode < 4; ++mode)
 				samplers[mode] = CD3DX12_STATIC_SAMPLER_DESC(mode, D3D12_FILTER_MIN_MAG_MIP_LINEAR,

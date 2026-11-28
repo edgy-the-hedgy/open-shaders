@@ -48,6 +48,7 @@ namespace DX12Native
 		uint32_t baseOnlyBindings = 0;
 		// CPU admission mirror, immutable with the uploaded draw-binding table.
 		std::vector<uint8_t> exactBaseCandidates;
+		std::vector<uint32_t> rasterMaterialIndices;
 		NativePBR::ScreenSurfaceTally surfaceCapabilities;
 		uint32_t specializedRequested = 0, specializedResident = 0, sharedTextureReferences = 0;
 		uint32_t specializedBlockedByBase = 0;
@@ -533,8 +534,10 @@ namespace DX12Native
 				if (flags & (uint64_t(1) << 12)) binding.flags |= 1u << 9;
 			}
 			result->exactBaseCandidates.resize(bindingTable.size());
+			result->rasterMaterialIndices.resize(bindingTable.size(), UINT32_MAX);
 			for (size_t i = 0; i < bindingTable.size(); ++i) {
 				const auto& binding = bindingTable[i];
+				result->rasterMaterialIndices[i] = binding.materialIndex;
 				result->exactBaseCandidates[i] = binding.materialIndex != UINT32_MAX &&
 					!(binding.flags & (MaterialFrameContract::kBaseOnlyBinding | MaterialFrameContract::kMissingBaseTexturesBinding));
 			}

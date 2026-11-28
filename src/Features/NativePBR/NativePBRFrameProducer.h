@@ -18,7 +18,7 @@ namespace NativePBR
 		void Poll(uint32_t frame);
 		void CaptureInputDraw(const GraphicsBackend& backend, ID3D11DeviceContext* context, ID3D11Texture2D* mask,
 			ID3D11VertexShader* vs, ID3D11PixelShader* ps, DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,
-			uint32_t instance, uint32_t tokenBase, uint32_t primitiveCount, const std::function<void()>& draw);
+			const NativePBR::InputOnly::DrawMetadata& metadata, const std::function<void()>& draw);
 		void PublishRawInput(ID3D11Texture2D* mask, DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,
 			std::span<const DX12Native::MaterialFrameContract::RasterPixelIdentity> tokens);
 		std::shared_ptr<const RawInputFrame> GetRawInput(DX12Native::MaterialFrameContract::RasterIdentityStamp stamp) const

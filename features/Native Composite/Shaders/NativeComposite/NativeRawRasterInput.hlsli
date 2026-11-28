@@ -5,8 +5,9 @@
 Texture2D<uint4> RawRasterIdentityUV : register(t1031);
 Texture2D<uint4> RawRasterColorGradDepth : register(t1032);
 Texture2D<uint4> RawRasterBasisFlags : register(t1033);
-Texture2D<float4> RawRasterFinalTokens : register(t1034);
-ByteAddressBuffer RawRasterTokenTable : register(t1035);
+Texture2D<uint4> RawRasterMaterialTechnique : register(t1034);
+Texture2D<float4> RawRasterFinalTokens : register(t1035);
+ByteAddressBuffer RawRasterTokenTable : register(t1036);
 float2 RawHalf2(uint v) { return f16tof32(uint2(v & 65535u, v >> 16)); }
 float3 RawOct(uint v)
 {
@@ -26,7 +27,7 @@ RawRasterSurface ReadRawRaster(uint2 pixel, float depth, uint instance, uint pri
     if (!a.x || a.x-1u != instance || a.y != primitive) return result;
     uint4 c = RawRasterBasisFlags.Load(int3(pixel,0));
     uint token = c.w & 65535u;
-    if ((c.w & 131072u) == 0u || !token || token > tokenCount) return result;
+    if ((c.w & (131072u | 262144u)) != (131072u | 262144u) || !token || token > tokenCount) return result;
     // The final blended G-buffer token is only a corroborating candidate.
     // Require its table entry and the independently intersected primitive.
     float finalToken = RawRasterFinalTokens.Load(int3(pixel,0)).z;
@@ -39,8 +40,13 @@ RawRasterSurface ReadRawRaster(uint2 pixel, float depth, uint instance, uint pri
     result.dx=RawHalf2(b.y); result.dy=RawHalf2(b.z);
     result.color=float4(b.x&255u,(b.x>>8)&255u,(b.x>>16)&255u,b.x>>24)/255.0;
     result.tangent=RawOct(c.x); result.bitangent=RawOct(c.y); result.normal=RawOct(c.z);
+    uint4 material = RawRasterMaterialTechnique.Load(int3(pixel,0));
+    result.materialIndex=material.x; result.vertexDescriptor=material.y;
+    result.pixelDescriptor=material.z; result.extraDescriptor=material.w;
+    result.alpha=float(c.w >> 19u) / 8191.0;
+    result.covered=true;
     result.front=(c.w&65536u)!=0u;
-    result.valid=all(isfinite(result.uv)) && all(isfinite(result.dx)) && all(isfinite(result.dy)) &&
+    result.valid=result.materialIndex!=0xffffffffu && all(isfinite(result.uv)) && all(isfinite(result.dx)) && all(isfinite(result.dy)) &&
         all(isfinite(result.tangent)) && all(isfinite(result.bitangent)) && all(isfinite(result.normal));
     return result;
 }

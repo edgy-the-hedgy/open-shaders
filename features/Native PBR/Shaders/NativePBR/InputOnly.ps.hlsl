@@ -3,6 +3,14 @@
 #include "Common/FrameBuffer.hlsli"
 #include "Common/GBuffer.hlsli"
 #include "Common/MotionBlur.hlsli"
+#include "Common/Permutation.hlsli"
+#if defined(NATIVE_INPUT_ALPHA_TEST)
+#include "Common/SharedData.hlsli"
+Texture2D<float4> CoverageTexture : register(t0);
+SamplerState CoverageSampler : register(s0);
+cbuffer CoverageGeometry : register(b2) { float4 CoverageMaterial : packoffset(c3); };
+cbuffer CoverageReference : register(b11) { float CoverageThreshold : packoffset(c0); };
+#endif
 struct RasterInput
 {
     float4 position : SV_POSITION0;
@@ -21,7 +29,11 @@ cbuffer DrawIdentity : register(b0)
     uint Instance;
     uint TokenBase;
     uint PrimitiveCount;
-    uint Reserved;
+    uint MaterialIndex;
+    uint VertexDescriptor;
+    uint PixelDescriptor;
+    uint ExtraDescriptor;
+    uint ExtraFeatureDescriptor;
 };
 struct RawOutput
 {
@@ -31,7 +43,7 @@ struct RawOutput
     uint4 identityUV : SV_Target3;
     uint4 colorGradDepth : SV_Target4;
     uint4 basisFlags : SV_Target5;
-    float4 masks : SV_Target6;
+    uint4 materialTechnique : SV_Target6;
     float4 evidence : SV_Target7;
 };
 uint PackHalf2(float2 value)
@@ -48,18 +60,32 @@ uint PackOct(float3 n)
     uint2 q = uint2(round(saturate(p * 0.5 + 0.5) * 65535.0));
     return q.x | (q.y << 16);
 }
+#if !defined(NATIVE_INPUT_ALPHA_TEST)
 [earlydepthstencil]
-RawOutput main(RasterInput input, uint primitive : SV_PrimitiveID, bool front : SV_IsFrontFace)
+#endif
+RawOutput main(RasterInput input, uint primitive : SV_PrimitiveID, bool front : SV_IsFrontFace, uint coverage : SV_Coverage)
 {
     RawOutput result = (RawOutput)0;
     float2 dx = ddx(input.uv);
     float2 dy = ddy(input.uv);
     float3x3 basis = transpose(float3x3(input.tbn0, input.tbn1, input.tbn2));
+    float alpha = 1.0;
+#if defined(NATIVE_INPUT_ALPHA_TEST)
+    alpha = CoverageTexture.SampleBias(CoverageSampler, input.uv, SharedData::MipBias).a;
+    if ((PixelDescriptor & Permutation::LightingFlags::AdditionalAlphaMask) != 0u) {
+        const float maskValues[16] = {0.003922,0.533333,0.133333,0.666667,0.800000,0.266667,0.933333,0.400000,
+            0.200000,0.733333,0.066667,0.600000,0.996078,0.466667,0.866667,0.333333};
+        uint2 p = uint2(input.position.xy);
+        clip(CoverageMaterial.z - maskValues[((p.x << 2) & 12u) | (p.y & 3u)]);
+    } else alpha *= CoverageMaterial.z;
+    alpha *= input.color.a;
+    clip(alpha - CoverageThreshold);
+#endif
     result.diffuse.a = 1.0;
     result.motion = float4(MotionBlur::GetSSMotionVector(input.worldPosition, input.previousWorldPosition), 0.0, 1.0);
     result.evidence.a = 1.0;
-    result.masks.a = 1.0;
-    if (Instance == 0xffffffffu || TokenBase == 0 || primitive >= PrimitiveCount ||
+
+    if (Instance == 0xffffffffu || MaterialIndex == 0xffffffffu || (coverage & 1u) == 0u || TokenBase == 0 || primitive >= PrimitiveCount ||
         TokenBase + primitive > 65535u || !all(isfinite(input.uv)) ||
         !all(isfinite(dx)) || !all(isfinite(dy)) || !all(isfinite(input.color)) ||
         !all(isfinite(input.position)) ||
@@ -74,6 +100,8 @@ RawOutput main(RasterInput input, uint primitive : SV_PrimitiveID, bool front : 
     result.colorGradDepth = uint4(color.x | (color.y << 8) | (color.z << 16) | (color.w << 24),
         PackHalf2(dx), PackHalf2(dy), asuint(input.position.z));
     result.basisFlags = uint4(PackOct(basis[0]), PackOct(basis[1]), PackOct(basis[2]),
-        (TokenBase + primitive) | (front ? 65536u : 0u) | 131072u);
+        (TokenBase + primitive) | (front ? 65536u : 0u) | 131072u | 262144u |
+        (uint(round(saturate(alpha) * 8191.0)) << 19u));
+    result.materialTechnique = uint4(MaterialIndex, VertexDescriptor, PixelDescriptor, ExtraDescriptor);
     return result;
 }

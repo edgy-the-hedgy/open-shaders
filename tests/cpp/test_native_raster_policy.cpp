@@ -108,4 +108,13 @@ TEST_CASE("Input-only raster capture rejects partial draws and invalid token ran
 	REQUIRE_FALSE(ValidToken(65535,2));
 	REQUIRE_FALSE(ValidToken(0,1));
 	REQUIRE_FALSE(ValidToken(1,0));
+	constexpr auto covered = PackCoverage(65535u, true, kAlphaMax);
+	REQUIRE((covered & kTokenMask) == 65535u);
+	REQUIRE((covered & (kValid | kCovered | kFrontFace)) == (kValid | kCovered | kFrontFace));
+	REQUIRE((covered >> kAlphaShift) == kAlphaMax);
+	constexpr DrawMetadata opaque{};
+	REQUIRE_FALSE(opaque.AlphaTest());
+	DrawMetadata cutout{};
+	cutout.pixelDescriptor = kAlphaTestFlag;
+	REQUIRE(cutout.AlphaTest());
 }

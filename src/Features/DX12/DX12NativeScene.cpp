@@ -1016,7 +1016,7 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 	++draws.draws;
 	const auto* tri = geometry.AsTriShape();
 	const auto& rt = geometry.GetGeometryRuntimeData();
-	if (!tri || !rt.rendererData || rt.skinInstance || rt.alphaProperty || geometry.AsDynamicTriShape() ||
+	if (!tri || !rt.rendererData || rt.skinInstance || geometry.AsDynamicTriShape() ||
 		!rt.shaderProperty || rt.shaderProperty->GetRTTI() != globals::rtti::BSLightingShaderPropertyRTTI.get()) {
 		++draws.rejected;
 		return;
@@ -1047,8 +1047,8 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 		if (shape && DX12::SameCasterSource(shape->casterSource, live, shape->transform, transform))
 			match.Observe(uint32_t(ordinal));
 	}
-	// Observe projection before base admission: projected receivers are
-	// intentionally feature-limited, so they cannot pass exactBaseCandidates.
+	// Projection evidence remains independently stamped. A feature-limited
+	// material may still publish raw geometry; shading eligibility is separate.
 	if (match.Valid()) {
 		auto& observation = draws.projection[match.ordinal];
 		if (projected) {
@@ -1059,14 +1059,14 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 			if (observation.ValidProjection())
 				draws.activeProjectedInstance = match.ordinal;
 		} else observation.Observe(false);
-		// Live projection overrides stale preparation classification for admission.
-		if (observation.RejectRasterCandidate()) {
+		// Conflicting live projection invalidates this instance's draw identity.
+		if (observation.conflicted) {
 			++draws.rejected;
 			return;
 		}
 	} else if (projected) ++draws.unmatchedProjectedDraws;
-	const auto& eligible = scene->materialEvaluation->exactBaseCandidates;
-	if (!match.Valid() || match.ordinal >= eligible.size() || !eligible[match.ordinal]) {
+	const auto& indices = scene->materialEvaluation->rasterMaterialIndices;
+	if (!match.Valid() || match.ordinal >= indices.size() || indices[match.ordinal] == UINT32_MAX) {
 		if (match.ambiguous)
 			++draws.ambiguous;
 		else
@@ -1267,23 +1267,46 @@ void DX12NativeScene::CaptureFullNativeInputDraw(ID3D11DeviceContext* context, u
 	using Cache = SIE::ShaderCache;
 	using Flag = Cache::LightingShaderFlags;
 	constexpr uint32_t unsupported = uint32_t(Flag::Skinned) | uint32_t(Flag::ModelSpaceNormals) |
-		uint32_t(Flag::ProjectedUV) | uint32_t(Flag::WorldMap) | uint32_t(Flag::DoAlphaTest) |
-		uint32_t(Flag::AdditionalAlphaMask) | uint32_t(Flag::Snow) | uint32_t(Flag::BaseObjectIsSnow) |
+		uint32_t(Flag::WorldMap) | uint32_t(Flag::Snow) | uint32_t(Flag::BaseObjectIsSnow) |
 		uint32_t(Flag::FurShells) | uint32_t(Flag::FurShellsDepth);
 	const auto descriptor = state->modifiedPixelDescriptor;
+	using Technique = Cache::LightingShaderTechniques;
+	const auto rawTechnique = [](Technique technique) {
+		switch (technique) {
+		case Technique::None: case Technique::Envmap: case Technique::Glowmap:
+		case Technique::Parallax: case Technique::ParallaxOcc: case Technique::MultilayerParallax:
+			return true;
+		default: return false;
+		}
+	};
 	if (!(descriptor & uint32_t(Flag::Deferred)) ||
 		((descriptor | state->modifiedVertexDescriptor) & unsupported) ||
-		Cache::GetLightingTechnique(descriptor) != Cache::LightingShaderTechniques::None ||
-		Cache::GetLightingTechnique(state->modifiedVertexDescriptor) != Cache::LightingShaderTechniques::None)
+		!rawTechnique(Cache::GetLightingTechnique(descriptor)) ||
+		!rawTechnique(Cache::GetLightingTechnique(state->modifiedVertexDescriptor)))
+		return;
+	// Only ordinary cutout permutations share the exact raw UV alpha contract.
+	if ((descriptor & uint32_t(Flag::DoAlphaTest)) &&
+		((descriptor & uint32_t(Flag::ProjectedUV)) ||
+		 (Cache::GetLightingTechnique(descriptor) != Technique::None &&
+		  Cache::GetLightingTechnique(descriptor) != Technique::Glowmap)))
+		return;
+	if ((descriptor & uint32_t(Flag::AdditionalAlphaMask)) && !(descriptor & uint32_t(Flag::DoAlphaTest)))
 		return;
 	const auto instance = draws.tokens[base-1].instance;
 	if (instance == UINT32_MAX || draws.tokens[base-1].primitive != 0 ||
 		draws.tokens[base+count-2].instance != instance || draws.tokens[base+count-2].primitive != count-1)
 		return;
+	if (!draws.scene || !draws.scene->materialEvaluation ||
+		instance >= draws.scene->materialEvaluation->rasterMaterialIndices.size()) return;
+	const NativePBR::InputOnly::DrawMetadata metadata{ instance, base, count,
+		draws.scene->materialEvaluation->rasterMaterialIndices[instance],
+		state->modifiedVertexDescriptor, descriptor, state->permutationData.ExtraShaderDescriptor,
+		state->permutationData.ExtraFeatureDescriptor };
+	if (metadata.extraDescriptor & uint32_t(State::ExtraShaderDescriptors::IsReflections)) return;
 	auto* mask = Util::AsReal(globals::game::renderer->GetRuntimeData().renderTargets[MASKS2].texture);
 	globals::features::nativePBR.CaptureInputDraw(*backend, context, mask,
 		Util::AsReal(state->customVertexShader->shader), Util::AsReal(state->customPixelShader->shader),
-		draws.stamp, instance, base, count, draw);
+		draws.stamp, metadata, draw);
 }
 
 void DX12NativeScene::FinishFullNativeRasterDraws()
@@ -1301,7 +1324,7 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 	// by an earlier pass for this instance. Preserve token ordinals.
 	for (auto& token : draws.tokens) {
 		const auto observation = draws.projection.find(token.instance);
-		if (observation != draws.projection.end() && observation->second.RejectRasterCandidate())
+		if (observation != draws.projection.end() && observation->second.conflicted)
 			token = {};
 	}
 	draws.finalized = true;
