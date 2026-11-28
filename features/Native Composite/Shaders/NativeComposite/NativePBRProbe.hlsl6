@@ -122,7 +122,7 @@ bool IntersectRasterCandidate(uint2 identity, float3 origin, float3 direction, f
 
 // Six authored base layers and up to two borrowed seam layers. LOD/snow
 // deformation and advanced terrain lobes remain explicitly feature-limited.
-Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float distance,
+Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float distance,float3 worldPosition,
     out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow)
 {
     rawUsed=false; coat=(NativeCoatSample)0; shadow=(NativeParallaxShadowSample)0;
@@ -143,6 +143,22 @@ Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float dista
     weights[6]=max(w3.x,0.0); weights[7]=max(w3.y,0.0);
     float total=dot(max(float4(w0,w1),0.0),1.0)+dot(max(float4(w2,w3),0.0),1.0);
     if (total<=1e-6 || !isfinite(total)) return result;
+    const float2 originalUV=raw.uv;
+    const uint snowMask=RasterLandscapeRows.Load(address+36u);
+    const bool disableVertexColors=RasterLandscapeRows.Load(address+40u)!=0u;
+    const float3 terrainTint=disableVertexColors ? 1.0.xxx : SrgbToLinear(raw.color.rgb);
+    uint terrainRow=0xffffffffu;
+    uint4 terrainMetadata=0u,terrainTextures=0xffffffffu;
+    if (ProjectionRowCount && raw.drawIdentity.x && raw.drawIdentity.x<=(HasRawInput&0x7fffffffu)) {
+        uint candidate=RasterProjectionLookup.Load((raw.drawIdentity.x-1u)*4u);
+        if (candidate<ProjectionRowCount) {
+            terrainMetadata=ProjectionRecords.Load(int3(0,candidate,0));
+            if (terrainMetadata.x==0xfffffff9u && terrainMetadata.z==candidate) {
+                terrainRow=candidate;
+                terrainTextures=ProjectionRecords.Load(int3(7,candidate,0));
+            }
+        }
+    }
     // March a single weighted height field, not eight independently shifted UVs.
     // Only resident authored displacement contributes; flat layers retain weight.
     uint heightIndex[8], heightMode[8];
@@ -193,11 +209,12 @@ Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float dista
     NativeMaterialTriangle tri=(NativeMaterialTriangle)0;
     tri.rasterLocal=true; tri.hasTangents=true;
     tri.normals[0]=raw.normal; tri.tangents[0]=raw.tangent; tri.bitangents[0]=raw.bitangent;
-    tri.colors[0]=raw.color; tri.uv[0]=raw.uv;
+    tri.colors[0]=1.0; tri.uv[0]=raw.uv;
+    raw.color=1.0;
     raw.auxiliaryKind=0u;
     const float3x3 identity=float3x3(1,0,0,0,1,0,0,0,1);
     Sample blended=(Sample)0;
-    float used=0.0;
+    float used=0.0, snowAlpha=0.0;
     [unroll] for (uint layer=0u; layer<8u; ++layer) {
         float weight=weights[layer]/total;
         // Do not drop small authored or borrowed terrain weights.
@@ -213,6 +230,8 @@ Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float dista
         if (!sampled || !HasEvaluatedNativeBase(surface.color.a)) {
             result.color.a=SurfaceEvaluationFailed; return result;
         }
+        if (terrainRow!=0xffffffffu && (snowMask!=0u || (raw.pixelDescriptor&(1u<<21u))!=0u) && material.textures[0].x<NativeTextureIndexLimit)
+            snowAlpha+=saturate(NativeSurfaceTex(material.textures[0].x,raw.uv,material.properties.z,raw,MaterialMipBias).a)*weight;
         blended.color.rgb+=surface.color.rgb*weight;
         blended.normal+=surface.normal*weight;
         blended.f0+=surface.f0*weight;
@@ -223,6 +242,65 @@ Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float dista
     blended.color.rgb/=used;
     blended.normal=float4(normalize(blended.normal.xyz),clamp(blended.normal.w/used,0.045,1.0));
     blended.f0/=used; blended.emission/=used;
+    if (terrainRow!=0xffffffffu) {
+        const float4 snow=asfloat(ProjectionRecords.Load(int3(6,terrainRow,0)));
+        if ((raw.pixelDescriptor&(1u<<21u))!=0u && all(isfinite(snow)) &&
+            snowAlpha/used*snow.z+(1.0-snow.z)>1e-5 && snow.w!=1.0 && snow.w>0.0 &&
+            row0.x<RasterBindingCount) {
+            Binding first=RasterMaterialBindings[row0.x];
+            if (first.materialIndex<RasterRecordCount) {
+                MaterialRecord mat=RasterMaterialRecords[first.materialIndex];
+                if (mat.textures[0].y<NativeTextureIndexLimit) {
+                    RawRasterSurface tiled=raw; tiled.dx*=snow.w; tiled.dy*=snow.w;
+                    float3 sn=(NativeSurfaceTex(mat.textures[0].y,raw.uv*snow.w,mat.properties.z,tiled,MaterialMipBias).xyz*2.0-1.0)*float3(-1,-1,1);
+                    float3 n=blended.normal.xyz;
+                    float3 land=float3(dot(n,raw.tangent),dot(n,raw.bitangent),dot(n,raw.normal));
+                    land.z+=1.0;
+                    float3 combined=land*dot(land,sn)-sn*land.z;
+                    float3 normal=combined.x*raw.tangent+combined.y*raw.bitangent+combined.z*raw.normal;
+                    if (all(isfinite(normal)) && dot(normal,normal)>1e-8) blended.normal.xyz=normalize(normal);
+                }
+            }
+        }
+        // Reconstruct the original terrain transition in local grid coordinates.
+        // For a tilted object the original grid position cannot be recovered
+        // from the displaced terrain height; retain the base and limited status.
+        if (((raw.pixelDescriptor>>24u)&63u)==19u && all(terrainTextures.xy<NativeProjectionTextureCapacity)) {
+            float4 grid=asfloat(ProjectionRecords.Load(int3(1,terrainRow,0)));
+            float4 w0=asfloat(ProjectionRecords.Load(int3(2,terrainRow,0)));
+            float4 w1=asfloat(ProjectionRecords.Load(int3(3,terrainRow,0)));
+            float4 lod=asfloat(ProjectionRecords.Load(int3(5,terrainRow,0)));
+            float determinant=w0.x*w1.y-w0.y*w1.x;
+            if (all(isfinite(grid)) && all(isfinite(w0)) && all(isfinite(w1)) &&
+                all(isfinite(lod.xyz)) && abs(determinant)>1e-8 && abs(w0.z)+abs(w1.z)<1e-5) {
+                float2 p=worldPosition.xy-PositionAdjust.xy-float2(w0.w,w1.w);
+                float2 local=float2(w1.y*p.x-w0.y*p.y,w0.x*p.y-w1.x*p.x)/determinant;
+                float factor=saturate(lod.z*(1.0-saturate(0.000375600968*(9625.59961-length(grid.zw-local)))));
+                float2 scale=float2(0.010416667,-0.010416667);
+                float2 uv=(originalUV*0.010416667+grid.xy)*float2(1,-1)+float2(0,1);
+                float bias=exp2(clamp(MaterialMipBias,-8.0,8.0));
+                float2 dx=raw.dx*scale*bias,dy=raw.dy*scale*bias;
+                float3 c=NativeProjectionGrad(terrainTextures.x,terrainMetadata.w&3u,uv,dx,dy).rgb;
+                if ((terrainMetadata.w&256u)==0u) c=SrgbToLinear(c);
+                c=pow(max(c,0.0),max(lod.x,1e-4))*max(lod.y,0.0);
+                float mask=NativeProjectionGrad(terrainTextures.y,(terrainMetadata.w>>2u)&3u,uv*3.0,dx*3.0,dy*3.0).x;
+                float parameter=saturate(1.6666666*(dot(c,0.55.xxx)-0.4));
+                parameter=parameter*parameter*(3.0-2.0*parameter)*0.8;
+                float fade=0.8333333*(parameter*(0.37-mask)+mask)+0.37;
+                if (all(isfinite(c)) && isfinite(fade) && isfinite(factor)) {
+                    blended.color.rgb=lerp(blended.color.rgb,c*fade,factor);
+                    blended.normal.xyz=normalize(lerp(blended.normal.xyz,raw.normal,factor));
+                    blended.normal.w=lerp(blended.normal.w,1.0,factor);
+                    blended.f0*=1.0-factor;
+                    blended.emission.rgb*=1.0-factor;
+                }
+            }
+        }
+    }
+    float3 prior=blended.color.rgb;
+    blended.color.rgb*=terrainTint*lerp(1.0.xxx,float3(0.86,0.89,0.93),saturate(raw.packedSnow));
+    blended.f0.rgb=max(blended.f0.rgb+(blended.color.rgb-prior)*saturate(blended.f0.a),0.0);
+    blended.normal.w=clamp(blended.normal.w*lerp(1.0,0.8,saturate(raw.packedSnow)),0.045,1.0);
     blended.color.a=SurfaceFeatureLimited;
     rawUsed=true;
     return blended;
@@ -630,7 +708,7 @@ Sample EvaluateRasterLocal(RawRasterSurface raw, uint2 mapped, float3 viewRay, f
     if (preparedRow>=RasterPreparedSourceCount) { result.color.a=SurfaceMissingTextures; return result; }
     raw.materialOrdinal=preparedRow+1u;
     if (raw.auxiliaryKind==1u)
-        return EvaluateRasterLandscape(raw,viewRay,distance,rawUsed,coat,shadow);
+        return EvaluateRasterLandscape(raw,viewRay,distance,worldPosition,rawUsed,coat,shadow);
     Binding binding=RasterMaterialBindings[raw.materialOrdinal-1u];
     if (binding.materialIndex==0xffffffffu) {
         if ((binding.flags&SurfaceMissingBaseTexturesBinding)!=0u) result.color.a=SurfaceMissingTextures;
