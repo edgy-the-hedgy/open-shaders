@@ -36,6 +36,15 @@ namespace DX12Native
 		       a.falloffExponent == b.falloffExponent;
 	}
 
+	/** @brief Faded Rec.709 luminance of a light, with negative colour and fade clamped away. */
+	template <class Light>
+	float NativeLightStrength(const Light& light)
+	{
+		return (std::max(light.color.x, 0.0f) * 0.2126f + std::max(light.color.y, 0.0f) * 0.7152f +
+				   std::max(light.color.z, 0.0f) * 0.0722f) *
+		       std::max(light.fade, 0.0f);
+	}
+
 	namespace FullShadowDetail
 	{
 		using Cell = std::array<int64_t, 3>;
@@ -50,8 +59,8 @@ namespace DX12Native
 			return { axis(p.x), axis(p.y), axis(p.z) };
 		}
 
-		template <class Position>
-		double DistanceSquared(const Position& a, const Position& b)
+		template <class A, class B>
+		double DistanceSquared(const A& a, const B& b)
 		{
 			const double x = double(a.x) - b.x, y = double(a.y) - b.y, z = double(a.z) - b.z;
 			return x * x + y * y + z * z;
@@ -67,7 +76,8 @@ namespace DX12Native
 		class SpatialIndex
 		{
 		public:
-			explicit SpatialIndex(uint32_t a_radius) : radius(a_radius) {}
+			explicit SpatialIndex(uint32_t a_radius) :
+				radius(a_radius) {}
 
 			void Add(const Light& light, size_t index)
 			{
