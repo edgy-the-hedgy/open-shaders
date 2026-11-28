@@ -59,9 +59,7 @@ namespace DX12Native
 		void ReconstructFullNative(const GraphicsBackend& backend,
 			std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
 			std::shared_ptr<const DirectLightingFrame> direct, std::shared_ptr<const IndirectLightingFrame> indirect,
-			uint32_t pluginFrame, bool resetHistory, ID3D11Texture2D* rasterTokens,
-			MaterialFrameContract::RasterIdentityStamp rasterStamp,
-			std::span<const MaterialFrameContract::RasterPixelIdentity> tokens);
+			uint32_t pluginFrame, bool resetHistory);
 		std::shared_ptr<const FullNativeReconstructionFrame> GetFullNativeReconstruction(uint32_t frame) const;
 		void PollFullNative(uint32_t frame)
 		{

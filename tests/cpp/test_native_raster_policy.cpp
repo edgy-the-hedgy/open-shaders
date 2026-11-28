@@ -95,21 +95,20 @@ TEST_CASE("Native authored light metadata sanitizes inputs without legacy state"
 	REQUIRE_FALSE(Expired(1, UINT32_MAX));
 }
 
-TEST_CASE("Input-only raster capture rejects partial draws and invalid token ranges", "[dx12][native-pbr]")
+TEST_CASE("Input-only raster capture rejects partial draws and invalid integer identities", "[dx12][native-pbr]")
 {
 	using namespace NativePBR::InputOnly;
 	REQUIRE(WholeTriangleList(3,1));
 	REQUIRE(WholeTriangleList(196605,65535));
 	REQUIRE_FALSE(WholeTriangleList(3,2));
 	REQUIRE_FALSE(WholeTriangleList(0,0));
-	REQUIRE_FALSE(WholeTriangleList(196608,65536));
-	REQUIRE(ValidToken(1,65535));
-	REQUIRE(ValidToken(65535,1));
-	REQUIRE_FALSE(ValidToken(65535,2));
-	REQUIRE_FALSE(ValidToken(0,1));
-	REQUIRE_FALSE(ValidToken(1,0));
-	constexpr auto covered = PackCoverage(65535u, true, kAlphaMax);
-	REQUIRE((covered & kTokenMask) == 65535u);
+	REQUIRE(WholeTriangleList(196608,65536));
+	REQUIRE(WholeTriangleList(3000000u,1000000u));
+	REQUIRE(ValidIdentity(0,65535));
+	REQUIRE(ValidIdentity(65535,1000000u));
+	REQUIRE_FALSE(ValidIdentity(UINT32_MAX,1));
+	REQUIRE_FALSE(ValidIdentity(1,0));
+	constexpr auto covered = PackCoverage(true, kAlphaMax);
 	REQUIRE((covered & (kValid | kCovered | kFrontFace)) == (kValid | kCovered | kFrontFace));
 	REQUIRE((covered >> kAlphaShift) == kAlphaMax);
 	constexpr DrawMetadata opaque{};

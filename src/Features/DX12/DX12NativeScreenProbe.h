@@ -26,7 +26,7 @@ namespace DX12Native
 			float4 positionAdjust;
 			uint32_t width, height, gridWidth, gridHeight, collectStats, parallaxEnabled, parallaxWarpFixEnabled, parallaxShadowEnabled;
 			float mipBias;
-			uint32_t projectionRows, projectionFrame, rawTokenCount, quality, transformCount;
+			uint32_t projectionRows, projectionFrame, hasRawInput, quality, transformCount;
 		};
 		static_assert(sizeof(Camera) <= 256);
 		struct OutputAllocation
@@ -99,7 +99,7 @@ namespace DX12Native
 			parameters[11].InitAsShaderResourceView(517);
 			parameters[12].InitAsDescriptorTable(1, &projectionRange);
 			parameters[13].InitAsDescriptorTable(1, &rawRange);
-			parameters[14].InitAsShaderResourceView(1036);
+			parameters[14].InitAsShaderResourceView(1036); // Reserved root slot; no primitive token table.
 			parameters[15].InitAsShaderResourceView(1037);
 			std::array<CD3DX12_STATIC_SAMPLER_DESC, 4> samplers;
 			for (uint32_t mode = 0; mode < 4; ++mode)
@@ -140,7 +140,7 @@ namespace DX12Native
 			uint32_t rayIdentityRowPitch = 0, materialLobeRowPitch = 0;
 			bool parallaxEnabled = false, parallaxShadows = false;
 			uint32_t rawInputDraws = 0;
-			std::shared_ptr<const FullNativeRasterEvidence> rawRasterEvidence;
+			std::shared_ptr<const NativePBR::RawInputFrame> rawRasterEvidence;
 			std::shared_ptr<const ProjectedInputFrame> projection;
 			winrt::com_ptr<ID3D12Resource> projectionLookup;
 			uint32_t abiVersion=MaterialFrameContract::kMaterialAbiVersion, sampleStride=kSampleStride, rowPitch=0;
@@ -389,7 +389,7 @@ namespace DX12Native
 				}
 				slot->camera=Eval::Buffer(device,256,D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ);
 				const Camera constants{slot->raster->camera.CameraProjInverse,slot->raster->camera.CameraViewInverse,
-					slot->raster->camera.CameraPosAdjust,width,height,gridWidth,gridHeight,collectStats ? 1u : 0u,parallaxEnabled ? 1u : 0u,parallaxWarpFixEnabled ? 1u : 0u,shadowPlane ? 1u : 0u,std::isfinite(mipBias) ? mipBias : 0.0f,slot->projection ? slot->projection->rowCount : 0u,frame,slot->rawInputs ? slot->rawInputs->evidence->tokenCount : 0u, SanitizeRTQuality(quality), transformCount};
+					slot->raster->camera.CameraPosAdjust,width,height,gridWidth,gridHeight,collectStats ? 1u : 0u,parallaxEnabled ? 1u : 0u,parallaxWarpFixEnabled ? 1u : 0u,shadowPlane ? 1u : 0u,std::isfinite(mipBias) ? mipBias : 0.0f,slot->projection ? slot->projection->rowCount : 0u,frame,slot->rawInputs ? 1u : 0u, SanitizeRTQuality(quality), transformCount};
 				void* mapped=nullptr; const D3D12_RANGE noRead{};
 				Eval::Check(slot->camera->Map(0,&noRead,&mapped));
 				std::memcpy(mapped,&constants,sizeof(constants)); slot->camera->Unmap(0,nullptr);
@@ -442,7 +442,7 @@ namespace DX12Native
 				auto rawGpu=slot->descriptors->GetGPUDescriptorHandleForHeapStart();
 				rawGpu.ptr+=UINT64(rawDescriptor)*step;
 				command->SetComputeRootDescriptorTable(13,rawGpu);
-				command->SetComputeRootShaderResourceView(14,(slot->rawInputs ? slot->rawInputs->evidence->tokenTable.get() : slot->projectionLookup.get())->GetGPUVirtualAddress());
+				command->SetComputeRootShaderResourceView(14,slot->projectionLookup->GetGPUVirtualAddress());
 				command->SetComputeRootShaderResourceView(15,slot->transforms->GetGPUVirtualAddress());
 				if (collectStats) {
 					command->CopyBufferRegion(slot->counters.get(),0,slot->counterInit.get(),0,kCounterBytes);
@@ -516,7 +516,7 @@ namespace DX12Native
 					materialFrame->parallaxEnabled=parallaxEnabled;
 					materialFrame->parallaxShadows=shadowPlane;
 					materialFrame->rawInputDraws=pending->rawInputs ? pending->rawInputs->draws : 0u;
-					materialFrame->rawRasterEvidence=pending->rawInputs ? pending->rawInputs->evidence : nullptr;
+					materialFrame->rawRasterEvidence=pending->rawInputs;
 					materialFrame->projection=pending->projection;
 					materialFrame->projectionLookup=pending->projectionLookup;
 					materialFrame->raster=pending->raster; materialFrame->scene=pending->scene;

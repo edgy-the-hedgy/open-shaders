@@ -10,17 +10,16 @@
 
 namespace DX12Native
 {
-	/** @brief MRT token evidence, not a certified raster winner. */
+	/** @brief Binary participation witness; integer identity is in the raw input planes. */
 	struct FullNativeRasterEvidence
 	{
-		// A blended UNORM MRT token is not an independently certified winner.
+		// A blended UNORM participation witness alone cannot certify the winner.
 		static constexpr bool winnerCertified = false;
 		MaterialFrameContract::RasterIdentityStamp stamp{};
 		std::unique_ptr<WrappedResource> texture;
-		winrt::com_ptr<ID3D12Resource> tokenTable;
 		winrt::com_ptr<ID3D12Fence> readyFence;
 		uint64_t readyValue = 0, allocationBytes = 0;
-		uint32_t width = 0, height = 0, tokenCount = 0;
+		uint32_t width = 0, height = 0;
 	};
 
 	class FullNativeRasterEvidenceCapture
@@ -28,8 +27,7 @@ namespace DX12Native
 	public:
 		~FullNativeRasterEvidenceCapture();
 		std::shared_ptr<const FullNativeRasterEvidence> Capture(const GraphicsBackend& backend,
-			ID3D11Texture2D* source, MaterialFrameContract::RasterIdentityStamp stamp,
-			std::span<const MaterialFrameContract::RasterPixelIdentity> tokens);
+			ID3D11Texture2D* source, MaterialFrameContract::RasterIdentityStamp stamp);
 	private:
 		GraphicsBackend owner;
 		SharedFence producer;

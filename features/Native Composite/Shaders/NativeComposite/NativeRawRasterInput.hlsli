@@ -6,8 +6,7 @@ Texture2D<uint4> RawRasterIdentityUV : register(t1031);
 Texture2D<uint4> RawRasterColorGradDepth : register(t1032);
 Texture2D<uint4> RawRasterBasisFlags : register(t1033);
 Texture2D<uint4> RawRasterMaterialTechnique : register(t1034);
-Texture2D<float4> RawRasterFinalTokens : register(t1035);
-ByteAddressBuffer RawRasterTokenTable : register(t1036);
+Texture2D<float4> RawRasterParticipation : register(t1035);
 float2 RawHalf2(uint v) { return f16tof32(uint2(v & 65535u, v >> 16)); }
 float3 RawOct(uint v)
 {
@@ -19,20 +18,17 @@ float3 RawOct(uint v)
     }
     return normalize(n);
 }
-RawRasterSurface ReadRawRaster(uint2 pixel, float depth, uint instance, uint primitive, uint tokenCount)
+RawRasterSurface ReadRawRaster(uint2 pixel, float depth, uint instance, uint primitive, uint hasRawInput)
 {
     RawRasterSurface result = (RawRasterSurface)0;
-    if (!tokenCount) return result;
+    if (!hasRawInput) return result;
     uint4 a = RawRasterIdentityUV.Load(int3(pixel,0));
     if (!a.x || a.x-1u != instance || a.y != primitive) return result;
     uint4 c = RawRasterBasisFlags.Load(int3(pixel,0));
-    uint token = c.w & 65535u;
-    if ((c.w & (131072u | 262144u)) != (131072u | 262144u) || !token || token > tokenCount) return result;
-    // The final blended G-buffer token is only a corroborating candidate.
-    // Require its table entry and the independently intersected primitive.
-    float finalToken = RawRasterFinalTokens.Load(int3(pixel,0)).z;
-    if (!isfinite(finalToken) || uint(round(saturate(finalToken)*65535.0)) != token ||
-        any(RawRasterTokenTable.Load2((token-1u)*8u) != uint2(instance,primitive))) return result;
+    if ((c.w & 6u) != 6u) return result;
+    // Participation is not identity. A later nonparticipating writer can
+    // invalidate the witness; exact correspondence still requires the ray hit.
+    if (RawRasterParticipation.Load(int3(pixel,0)).z != 1.0) return result;
     uint4 b = RawRasterColorGradDepth.Load(int3(pixel,0));
     float rawDepth = asfloat(b.w);
     if (!isfinite(rawDepth) || abs(rawDepth-depth)>1e-6) return result;
@@ -43,22 +39,22 @@ RawRasterSurface ReadRawRaster(uint2 pixel, float depth, uint instance, uint pri
     uint4 material = RawRasterMaterialTechnique.Load(int3(pixel,0));
     result.materialIndex=material.x; result.pixelDescriptor=material.y;
     result.extraDescriptor=material.z; result.extraFeatureDescriptor=material.w;
-    result.alpha=float(c.w >> 19u) / 8191.0;
+    result.alpha=float(c.w >> 3u) / 65535.0;
     result.covered=true;
-    result.front=(c.w&65536u)!=0u;
-    result.valid=result.materialIndex!=0xffffffffu && all(isfinite(result.uv)) && all(isfinite(result.dx)) && all(isfinite(result.dy)) &&
+    result.front=(c.w&1u)!=0u;
+    result.valid=all(isfinite(result.uv)) && all(isfinite(result.dx)) && all(isfinite(result.dy)) &&
         all(isfinite(result.tangent)) && all(isfinite(result.bitangent)) && all(isfinite(result.normal));
     return result;
 }
-bool ReadRawRasterCandidate(uint2 pixel, float depth, uint tokenCount, out uint2 identity, out RawRasterSurface raw)
+bool ReadRawRasterCandidate(uint2 pixel, float depth, uint hasRawInput, out uint2 identity, out RawRasterSurface raw)
 {
     identity = uint2(0xffffffffu, 0xffffffffu);
     raw = (RawRasterSurface)0;
-    if (!tokenCount) return false;
+    if (!hasRawInput) return false;
     uint4 a = RawRasterIdentityUV.Load(int3(pixel,0));
     if (!a.x || (a.y & 0x80000000u) != 0u) return false;
     identity = uint2(a.x - 1u, a.y);
-    raw = ReadRawRaster(pixel, depth, identity.x, identity.y, tokenCount);
+    raw = ReadRawRaster(pixel, depth, identity.x, identity.y, hasRawInput);
     return raw.valid;
 }
 #endif

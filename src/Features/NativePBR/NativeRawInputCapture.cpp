@@ -28,7 +28,7 @@ namespace NativePBR
 			std::ranges::all_of(planes, [](const auto& plane) { return plane && plane->resource; }) &&
 			readyFence && ValidProducerSignal(readyValue, readyFence->GetCompletedValue()) &&
 			evidence && evidence->stamp == stamp && evidence->width == width && evidence->height == height &&
-			evidence->texture && evidence->texture->resource && evidence->tokenTable && evidence->tokenCount &&
+			evidence->texture && evidence->texture->resource &&
 			evidence->readyFence && ValidProducerSignal(evidence->readyValue, evidence->readyFence->GetCompletedValue());
 	}
 
@@ -74,7 +74,7 @@ namespace NativePBR
 		auto& shader = shaders[index];
 		if (!shader && !request) {
 			request = std::make_shared<ShaderRequest>();
-			std::vector<std::pair<const char*, const char*>> defines{ { "NATIVE_RAW_ABI_V4", "1" } };
+			std::vector<std::pair<const char*, const char*>> defines{ { "NATIVE_RAW_ABI_V5", "1" } };
 			if (alphaTest) defines.emplace_back("NATIVE_INPUT_ALPHA_TEST", "1");
 			globals::shaderCache->EnqueueStandaloneShaderCompile(
 				(Util::PathHelpers::GetShadersPath() / "NativePBR" / "InputOnly.ps.hlsl").wstring(), "main", defines,
@@ -176,7 +176,7 @@ namespace NativePBR
 		ID3D11VertexShader* expectedVS, ID3D11PixelShader* expectedPS, RasterIdentityStamp stamp,
 		const NativePBR::InputOnly::DrawMetadata& metadata, const std::function<void()>& draw)
 	{
-		if (!context || !mask || !expectedVS || !expectedPS || !draw || metadata.materialIndex == UINT32_MAX || !InputOnly::ValidToken(metadata.tokenBase, metadata.primitives) ||
+		if (!context || !mask || !expectedVS || !expectedPS || !draw || !InputOnly::ValidIdentity(metadata.instance, metadata.primitives) ||
 			!stamp.scope || !stamp.geometryRevision || !stamp.materialRevision || !globals::shaderCache ||
 			!backend.d3d11Device || !backend.d3d11Context ||
 			backend.d3d11Device->GetFeatureLevel() < D3D_FEATURE_LEVEL_11_1 || failedAllocationFrame == stamp.frame)
@@ -306,13 +306,13 @@ namespace NativePBR
 		}
 	}
 
-	void RawInputCapture::Publish(ID3D11Texture2D* mask, RasterIdentityStamp stamp, std::span<const RasterPixelIdentity> tokens)
+	void RawInputCapture::Publish(ID3D11Texture2D* mask, RasterIdentityStamp stamp)
 	{
 		published.reset();
 		if (!active) return;
 		const bool same = active->stamp == stamp && active->draws && mask;
 		if (Seal() && same) {
-			active->evidence = evidenceCapture.Capture(owner, mask, stamp, tokens);
+			active->evidence = evidenceCapture.Capture(owner, mask, stamp);
 			if (active->Matches(stamp,active->width,active->height)) published = active;
 		}
 		active.reset();

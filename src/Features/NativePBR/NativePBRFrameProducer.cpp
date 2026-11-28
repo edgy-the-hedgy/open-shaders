@@ -15,15 +15,13 @@ void NativePBR::FrameProducer::CaptureInputDraw(const GraphicsBackend& backend, 
 	ID3D11VertexShader* vs, ID3D11PixelShader* ps, DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,
 	const NativePBR::InputOnly::DrawMetadata& metadata, const std::function<void()>& draw)
 {
-	if (!loaded) return;
 	if (!rawInputs) rawInputs = std::make_unique<RawInputCapture>();
 	rawInputs->CaptureDraw(backend, context, mask, vs, ps, stamp, metadata, draw);
 }
 
-void NativePBR::FrameProducer::PublishRawInput(ID3D11Texture2D* mask, DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,
-	std::span<const DX12Native::MaterialFrameContract::RasterPixelIdentity> tokens)
+void NativePBR::FrameProducer::PublishRawInput(ID3D11Texture2D* mask, DX12Native::MaterialFrameContract::RasterIdentityStamp stamp)
 {
-	if (rawInputs) rawInputs->Publish(mask, stamp, tokens);
+	if (rawInputs) rawInputs->Publish(mask, stamp);
 }
 
 void NativePBR::FrameProducer::Poll(uint32_t frame)

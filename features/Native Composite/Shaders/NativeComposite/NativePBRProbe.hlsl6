@@ -42,7 +42,7 @@ cbuffer ProbeCamera : register(b1)
     float MaterialMipBias;
     uint ProjectionRowCount;
     uint ProjectionFrame;
-    uint RawTokenCount;
+    uint HasRawInput;
     uint QualityMode;
     uint TransformCount;
 };
@@ -161,10 +161,10 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed,
         worldToObject=(float3x3)query.CommittedWorldToObject3x4();
         objectToWorld=(float3x3)query.CommittedObjectToWorld3x4();
         frontFace=query.CommittedTriangleFrontFace();
-        raw=ReadRawRaster(pixel,z,instance,primitive,RawTokenCount);
+        raw=ReadRawRaster(pixel,z,instance,primitive,HasRawInput);
     } else {
         uint2 candidate;
-        if (!ReadRawRasterCandidate(pixel,z,RawTokenCount,candidate,raw) ||
+        if (!ReadRawRasterCandidate(pixel,z,HasRawInput,candidate,raw) ||
             !IntersectRasterCandidate(candidate,origin,ray.Direction,distance,tolerance,bary,hitDistance,worldToObject,objectToWorld)) {
             unresolvedUntraced=true; return result;
         }

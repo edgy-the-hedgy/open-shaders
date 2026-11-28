@@ -154,7 +154,7 @@ namespace Permutation
 		float4 TreeWindProbeBase;
 		float4 TreeWindProbeTop;
 		float GrassCanopyHeight;
-		uint NativeRasterTokenBase;
+		uint NativeRasterInstance;
 		uint NativeRasterPrimitiveCount;
 		float canopyPadding;
 

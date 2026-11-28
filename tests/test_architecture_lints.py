@@ -180,10 +180,14 @@ class ArchitectureLintTests(unittest.TestCase):
         self.assertIn("OMSetRenderTargets(kMRTs, targets.data(), dsv.get())", capture)
         self.assertIn("slot->rawInputs->readyFence", probe)
         self.assertIn("slot->rawInputs->evidence->readyFence", probe)
-        self.assertIn("RawRasterTokenTable.Load2", consumer)
+        self.assertNotIn("RawRasterTokenTable", consumer)
+        self.assertIn("RawRasterParticipation", consumer)
+        scene = (ROOT / "src/Features/DX12/DX12NativeScene.cpp").read_text(encoding="utf-8")
+        self.assertNotIn("draws.tokens.push_back", scene)
+        self.assertNotIn("RasterTokenBase(", scene)
         self.assertIn("abs(rawDepth-depth)", consumer)
         self.assertIn("a.x-1u != instance", consumer)
-        self.assertIn("finalToken", consumer)
+        self.assertIn("RawRasterIdentityUV", consumer)
 
 if __name__ == "__main__":
     unittest.main()

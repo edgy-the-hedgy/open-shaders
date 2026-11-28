@@ -493,7 +493,7 @@ namespace globals
 				issued = true;
 				func(context, count, start, base);
 			};
-			if (context == globals::d3d::context && globals::state && globals::state->permutationData.nativeRasterTokenBase) {
+			if (context == globals::d3d::context && globals::state && globals::state->permutationData.nativeRasterInstance) {
 				try {
 					globals::features::dx12NativeScene.CaptureFullNativeInputDraw(context, count, submit);
 				} catch (...) {

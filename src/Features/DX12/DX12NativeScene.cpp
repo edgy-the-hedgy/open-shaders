@@ -814,13 +814,8 @@ void DX12NativeScene::DispatchFullNativeIndirect()
 	}
 	// Keep direct/material publications available; incomplete native lighting
 	// must not overwrite the legacy environment contributions.
-	const auto& draws = fullNativeRasterDraws;
-	const bool matchingDraws = draws.finalized && draws.scene == material->scene && draws.stamp.frame == frame;
-	auto* tokenSource = matchingDraws && globals::game::renderer ?
-		Util::AsReal(globals::game::renderer->GetRuntimeData().renderTargets[MASKS2].texture) : nullptr;
 	globals::features::upscaling.nativeComposite.ReconstructFullNative(*backend, material, GetFullNativeDirect(frame), GetFullNativeIndirect(frame),
-		globals::state->frameCount, world->resetHistory || globals::state->ShouldResetHistory(), tokenSource, draws.stamp,
-		matchingDraws ? std::span<const RasterPixelIdentity>(draws.tokens) : std::span<const RasterPixelIdentity>{});
+		globals::state->frameCount, world->resetHistory || globals::state->ShouldResetHistory());
 }
 
 void DX12NativeScene::CaptureFullNativeEnvironment(ID3D11ShaderResourceView* sceneColor, uint32_t frame)
@@ -1008,7 +1003,6 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 		draws.scene = scene;
 		draws.stamp = stamp;
 		draws.seen.resize(scene->inputs->geometry.size());
-		draws.tokenBases.resize(scene->inputs->geometry.size());
 	}
 	// Never merge observations across scene generations in the same frame.
 	if (draws.finalized || draws.scene != scene || draws.stamp != stamp)
@@ -1065,8 +1059,7 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 			return;
 		}
 	} else if (projected) ++draws.unmatchedProjectedDraws;
-	const auto& indices = scene->materialEvaluation->rasterMaterialIndices;
-	if (!match.Valid() || match.ordinal >= indices.size() || indices[match.ordinal] == UINT32_MAX) {
+	if (!match.Valid() || match.ordinal >= draws.seen.size()) {
 		if (match.ambiguous)
 			++draws.ambiguous;
 		else
@@ -1079,18 +1072,8 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 		++draws.uniqueInstances;
 	}
 	const auto primitiveCount = uint32_t(counts.triangleCount);
-	auto& base = draws.tokenBases[match.ordinal];
-	if (!base) {
-		const auto next = RasterTokenBase(uint32_t(draws.tokens.size()), primitiveCount);
-		if (!next) {
-			++draws.tokenBudgetRejected;
-			return;
-		}
-		for (uint32_t primitive = 0; primitive < primitiveCount; ++primitive)
-			draws.tokens.push_back({ match.ordinal, primitive });
-		base = next;
-	}
-	globals::state->permutationData.nativeRasterTokenBase = base;
+	if (!NativePBR::InputOnly::ValidIdentity(match.ordinal, primitiveCount)) return;
+	globals::state->permutationData.nativeRasterInstance = match.ordinal + 1u;
 	globals::state->permutationData.nativeRasterPrimitiveCount = primitiveCount;
 }
 
@@ -1259,10 +1242,10 @@ void DX12NativeScene::CaptureFullNativeInputDraw(ID3D11DeviceContext* context, u
 		!globals::game::renderer || !globals::deferred || !globals::deferred->deferredPass ||
 		draws.finalized || draws.stamp.frame != globals::game::graphicsState->GetFrameCount())
 		return;
-	const auto base = state->permutationData.nativeRasterTokenBase;
+	const auto encodedInstance = state->permutationData.nativeRasterInstance;
 	const auto count = state->permutationData.nativeRasterPrimitiveCount;
-	if (!NativePBR::InputOnly::WholeTriangleList(indexCount,count) || !NativePBR::InputOnly::ValidToken(base,count) ||
-		uint64_t(base-1)+count > draws.tokens.size())
+	if (!encodedInstance || !NativePBR::InputOnly::WholeTriangleList(indexCount,count) ||
+		!NativePBR::InputOnly::ValidIdentity(encodedInstance-1u,count))
 		return;
 	using Cache = SIE::ShaderCache;
 	using Flag = Cache::LightingShaderFlags;
@@ -1292,14 +1275,11 @@ void DX12NativeScene::CaptureFullNativeInputDraw(ID3D11DeviceContext* context, u
 		return;
 	if ((descriptor & uint32_t(Flag::AdditionalAlphaMask)) && !(descriptor & uint32_t(Flag::DoAlphaTest)))
 		return;
-	const auto instance = draws.tokens[base-1].instance;
-	if (instance == UINT32_MAX || draws.tokens[base-1].primitive != 0 ||
-		draws.tokens[base+count-2].instance != instance || draws.tokens[base+count-2].primitive != count-1)
-		return;
-	if (!draws.scene || !draws.scene->materialEvaluation ||
-		instance >= draws.scene->materialEvaluation->rasterMaterialIndices.size()) return;
-	const NativePBR::InputOnly::DrawMetadata metadata{ instance, base, count,
-		draws.scene->materialEvaluation->rasterMaterialIndices[instance],
+	const auto instance = encodedInstance - 1u;
+	const auto* evaluation = draws.scene ? draws.scene->materialEvaluation.get() : nullptr;
+	const auto materialIndex = evaluation && instance < evaluation->rasterMaterialIndices.size() ?
+		evaluation->rasterMaterialIndices[instance] : UINT32_MAX;
+	const NativePBR::InputOnly::DrawMetadata metadata{ instance, encodedInstance, count, materialIndex,
 		state->modifiedVertexDescriptor, descriptor, state->permutationData.ExtraShaderDescriptor,
 		state->permutationData.ExtraFeatureDescriptor };
 	if (metadata.extraDescriptor & uint32_t(State::ExtraShaderDescriptors::IsReflections)) return;
@@ -1320,16 +1300,9 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 		draws = {};
 		return;
 	}
-	// A later projected/conflicting pass invalidates tokens already emitted
-	// by an earlier pass for this instance. Preserve token ordinals.
-	for (auto& token : draws.tokens) {
-		const auto observation = draws.projection.find(token.instance);
-		if (observation != draws.projection.end() && observation->second.conflicted)
-			token = {};
-	}
 	draws.finalized = true;
 	if (backend && globals::game::renderer)
-		globals::features::nativePBR.PublishRawInput(Util::AsReal(globals::game::renderer->GetRuntimeData().renderTargets[MASKS2].texture), draws.stamp, draws.tokens);
+		globals::features::nativePBR.PublishRawInput(Util::AsReal(globals::game::renderer->GetRuntimeData().renderTargets[MASKS2].texture), draws.stamp);
 	if (backend && draws.constantSnapshots) {
 		std::vector<DX12Native::ProjectedInputDraw> inputs;
 		inputs.reserve(draws.constantSnapshots);
@@ -1355,19 +1328,19 @@ std::function<void()> DX12NativeScene::OnRenderPassBegin(const RE::BSRenderPass*
 		if (!globals::state)
 			return nullptr;
 		auto& data = globals::state->permutationData;
-		const auto oldBase = data.nativeRasterTokenBase;
+		const auto oldBase = data.nativeRasterInstance;
 		const auto oldCount = data.nativeRasterPrimitiveCount;
 		const auto oldProjection = fullNativeRasterDraws.activeProjectedInstance;
 		const auto oldStamp = fullNativeRasterDraws.stamp;
 		fullNativeRasterDraws.activeProjectedInstance = UINT32_MAX;
-		data.nativeRasterTokenBase = data.nativeRasterPrimitiveCount = 0;
+		data.nativeRasterInstance = data.nativeRasterPrimitiveCount = 0;
 		if (pass && pass->geometry)
 			ObserveFullNativeRasterDraw(*pass->geometry);
 		return [this, oldBase, oldCount, oldProjection, oldStamp] {
 			fullNativeRasterDraws.activeProjectedInstance =
 				fullNativeRasterDraws.stamp == oldStamp && !fullNativeRasterDraws.finalized ? oldProjection : UINT32_MAX;
 			if (globals::state) {
-				globals::state->permutationData.nativeRasterTokenBase = oldBase;
+				globals::state->permutationData.nativeRasterInstance = oldBase;
 				globals::state->permutationData.nativeRasterPrimitiveCount = oldCount;
 			}
 		};
@@ -1662,7 +1635,7 @@ json DX12NativeScene::GetStatus() const
 			{ "geometryRevision", draws.stamp.geometryRevision }, { "materialRevision", draws.stamp.materialRevision },
 			{ "draws", draws.draws }, { "candidateDraws", draws.candidates }, { "uniqueInstances", draws.uniqueInstances },
 			{ "ambiguousDraws", draws.ambiguous }, { "rejectedDraws", draws.rejected }, { "finalized", draws.finalized },
-			{ "primitiveTokens", draws.tokens.size() }, { "tokenBudgetRejected", draws.tokenBudgetRejected },
+			{ "integerIdentity", true },
 			{ "exactPixelIdentity", false }, { "rasterReplacement", false } };
 		const auto frame = globals::game::graphicsState ? globals::game::graphicsState->GetFrameCount() : UINT32_MAX;
 		const auto characters = characterCasters ? characterCasters->Get(frame, draws.stamp.scope) : nullptr;

@@ -30,8 +30,7 @@ namespace NativePBR
 			ID3D11VertexShader* expectedVS, ID3D11PixelShader* expectedPS,
 			DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,
 			const NativePBR::InputOnly::DrawMetadata& metadata, const std::function<void()>& draw);
-		void Publish(ID3D11Texture2D* mask, DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,
-			std::span<const DX12Native::MaterialFrameContract::RasterPixelIdentity> tokens);
+		void Publish(ID3D11Texture2D* mask, DX12Native::MaterialFrameContract::RasterIdentityStamp stamp);
 		std::shared_ptr<const RawInputFrame> Get(DX12Native::MaterialFrameContract::RasterIdentityStamp stamp) const;
 		void Reset();
 		const std::string& Failure() const { return failure; }

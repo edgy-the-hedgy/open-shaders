@@ -10,9 +10,10 @@ ByteAddressBuffer HistoryMaterials : register(t5);
 Texture2D<float> HistoryDepth : register(t6);
 ByteAddressBuffer RayIdentity : register(t7);
 ByteAddressBuffer HistoryRayIdentity : register(t8);
-Texture2D<float4> RasterTokens : register(t9);
-ByteAddressBuffer RasterTokenTable : register(t10);
+Texture2D<uint4> RasterIdentity : register(t9);
 Texture2D<float2> Motion : register(t11);
+Texture2D<uint4> RasterRawDepth : register(t12);
+Texture2D<float4> RasterParticipation : register(t13);
 RWByteAddressBuffer OwnershipMask : register(u1);
 RWByteAddressBuffer Reconstructed : register(u0);
 RWByteAddressBuffer EnvironmentRadiance : register(u2);
@@ -29,7 +30,7 @@ cbuffer ReconstructionConstants : register(b0)
     uint HasHistory;
     uint RayIdentityPitch;
     uint HistoryRayIdentityPitch;
-    uint RasterTokenCount;
+    uint HasRasterInput;
     uint RasterWinnerCertified;
     uint CompleteLightingCoverage;
     uint DirectAvailable;
@@ -194,10 +195,13 @@ void main(uint3 id : SV_DispatchThreadID)
     const uint historyOffset = (id.y * Size.x + id.x) * NativeHistoryStride;
     [unroll] for (uint signal = 0u; signal < 6u; ++signal)
         HistorySignals.Store2(historyOffset + signal * NativeOpaqueRadianceStride, uint2(0,0));
-    if (RasterTokenCount != 0u) {
-        uint token = uint(round(saturate(RasterTokens.Load(int3(id.xy, 0)).b) * 65535.0));
-        if (token > 0u && token <= RasterTokenCount) {
-            uint2 raster = RasterTokenTable.Load2((token - 1u) * 8u);
+    if (HasRasterInput != 0u) {
+        uint2 encoded = RasterIdentity.Load(int3(id.xy, 0)).xy;
+        float rawDepth = asfloat(RasterRawDepth.Load(int3(id.xy,0)).w);
+        float finalDepth = Depth.Load(int3(id.xy,0));
+        if (encoded.x != 0u && RasterParticipation.Load(int3(id.xy,0)).z == 1.0 &&
+            isfinite(rawDepth) && abs(rawDepth-finalDepth) <= 1e-6) {
+            uint2 raster = uint2(encoded.x-1u, encoded.y);
             uint2 hit = ReadRayIdentity(id.xy);
             if (ValidRayIdentity(hit) && all(raster == SurfaceIdentity(hit))) {
                 ownership |= RasterIdentityCandidate;

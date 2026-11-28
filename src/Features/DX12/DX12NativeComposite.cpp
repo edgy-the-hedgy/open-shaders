@@ -567,16 +567,14 @@ namespace DX12Native
 	void NativeComposite::ReconstructFullNative(const GraphicsBackend& backend,
 		std::shared_ptr<const NativeScreenProbe::MaterialFrame> material,
 		std::shared_ptr<const DirectLightingFrame> direct, std::shared_ptr<const IndirectLightingFrame> indirect,
-		uint32_t pluginFrame, bool resetHistory, ID3D11Texture2D* rasterTokens,
-		MaterialFrameContract::RasterIdentityStamp rasterStamp,
-		std::span<const MaterialFrameContract::RasterPixelIdentity> tokens)
+		uint32_t pluginFrame, bool resetHistory)
 	{
 		if (!material || (!direct && !indirect))
 			return;
 		if (!fullNativeReconstruction)
 			fullNativeReconstruction = std::make_unique<FullNativeReconstruction>();
 		const auto frame = material->frame;
-		fullNativeReconstruction->Dispatch(backend, std::move(material), std::move(direct), std::move(indirect), pluginFrame, resetHistory, rasterTokens, rasterStamp, tokens);
+		fullNativeReconstruction->Dispatch(backend, std::move(material), std::move(direct), std::move(indirect), pluginFrame, resetHistory);
 		if (auto reconstructed = fullNativeReconstruction->Get(frame)) {
 			if (!fullNativeFinalColor)
 				fullNativeFinalColor = std::make_unique<FullNativeFinalColor>();

@@ -28,7 +28,7 @@ struct RasterInput
 cbuffer DrawIdentity : register(b0)
 {
     uint Instance;
-    uint TokenBase;
+    uint GeometryIdentity;
     uint PrimitiveCount;
     uint MaterialIndex;
     uint VertexDescriptor;
@@ -81,8 +81,7 @@ RawOutput main(RasterInput input, uint primitive : SV_PrimitiveID, bool front : 
     result.motion = float4(MotionBlur::GetSSMotionVector(input.worldPosition, input.previousWorldPosition), 0.0, 1.0);
     result.evidence.a = 1.0;
 
-    if (Instance == 0xffffffffu || MaterialIndex == 0xffffffffu || (coverage & 1u) == 0u || TokenBase == 0 || primitive >= PrimitiveCount ||
-        TokenBase + primitive > 65535u || !all(isfinite(input.uv)) ||
+    if (Instance == 0xffffffffu || GeometryIdentity == 0u || (coverage & 1u) == 0u || primitive >= PrimitiveCount || !all(isfinite(input.uv)) ||
         !all(isfinite(dx)) || !all(isfinite(dy)) || !all(isfinite(input.color)) ||
         !all(isfinite(input.position)) ||
         !all(isfinite(basis[0])) || !all(isfinite(basis[1])) || !all(isfinite(basis[2])) ||
@@ -90,14 +89,13 @@ RawOutput main(RasterInput input, uint primitive : SV_PrimitiveID, bool front : 
         return result;
     const float3 normalVS = normalize(FrameBuffer::WorldToView(normalize(basis[2]) * (front ? 1.0 : -1.0), false));
     result.normal = float4(GBuffer::EncodeNormal(normalVS), 0.0, 1.0);
-    result.evidence.z = float(TokenBase + primitive) / 65535.0;
+    result.evidence.z = 1.0; // Binary participation only; identity lives in integer MRT 3.
     uint4 color = uint4(round(saturate(input.color) * 255.0));
     result.identityUV = uint4(Instance + 1u, primitive, asuint(input.uv));
     result.colorGradDepth = uint4(color.x | (color.y << 8) | (color.z << 16) | (color.w << 24),
         PackHalf2(dx), PackHalf2(dy), asuint(input.position.z));
     result.basisFlags = uint4(PackOct(basis[0]), PackOct(basis[1]), PackOct(basis[2]),
-        (TokenBase + primitive) | (front ? 65536u : 0u) | 131072u | 262144u |
-        (uint(round(saturate(alpha) * 8191.0)) << 19u));
+        (front ? 1u : 0u) | 2u | 4u | (uint(round(saturate(alpha) * 65535.0)) << 3u));
     result.materialTechnique = uint4(MaterialIndex, PixelDescriptor, ExtraDescriptor, ExtraFeatureDescriptor);
     return result;
 }

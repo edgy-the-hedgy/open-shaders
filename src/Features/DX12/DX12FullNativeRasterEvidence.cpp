@@ -20,11 +20,10 @@ namespace DX12Native
 	}
 
 	std::shared_ptr<const FullNativeRasterEvidence> FullNativeRasterEvidenceCapture::Capture(
-		const GraphicsBackend& backend, ID3D11Texture2D* source, RasterIdentityStamp stamp,
-		std::span<const RasterPixelIdentity> tokens)
+		const GraphicsBackend& backend, ID3D11Texture2D* source, RasterIdentityStamp stamp)
 	{
 		CS_GPU_PASS("NativeComposite::CaptureFullNativeRasterEvidence");
-		if (!source || tokens.empty() || tokens.size() > kMaxRasterPrimitiveToken ||
+		if (!source ||
 			!stamp.scope || !stamp.geometryRevision || !stamp.materialRevision ||
 			!backend.d3d11Device || !backend.d3d11Context || !backend.d3d12Device || !backend.commandQueue)
 			return {};
@@ -65,17 +64,13 @@ namespace DX12Native
 				return {};
 			auto& slot = *selected;
 			auto* device = owner.d3d12Device.get();
-			constexpr uint64_t tableBytes = uint64_t(kMaxRasterPrimitiveToken) * sizeof(RasterPixelIdentity);
 			if (!slot || slot->width != desc.Width || slot->height != desc.Height) {
 				const auto textureDesc = CD3DX12_RESOURCE_DESC::Tex2D(desc.Format, desc.Width, desc.Height, 1, 1);
-				const auto tableDesc = CD3DX12_RESOURCE_DESC::Buffer(tableBytes);
 				const auto textureBytes = device->GetResourceAllocationInfo(0, 1, &textureDesc).SizeInBytes;
-				const auto uploadBytes = device->GetResourceAllocationInfo(0, 1, &tableDesc).SizeInBytes;
-				if (textureBytes == UINT64_MAX || uploadBytes == UINT64_MAX || textureBytes > UINT64_MAX - uploadBytes ||
-					textureBytes + uploadBytes > budget.Query(device, 0).effectiveBytes)
+				if (textureBytes == UINT64_MAX || textureBytes > budget.Query(device, 0).effectiveBytes)
 					return {};
 				auto replacement = std::make_shared<FullNativeRasterEvidence>();
-				replacement->allocationBytes = textureBytes + uploadBytes;
+				replacement->allocationBytes = textureBytes;
 				replacement->width = desc.Width;
 				replacement->height = desc.Height;
 				desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
@@ -83,18 +78,9 @@ namespace DX12Native
 				desc.CPUAccessFlags = desc.MiscFlags = 0;
 				replacement->texture = std::make_unique<WrappedResource>(desc, owner.d3d11Device.get(), device,
 					"NativeComposite::FullNativeRasterEvidence");
-				replacement->tokenTable = NativeMaterialEvaluation::Buffer(device, tableBytes,
-					D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
 				slot = std::move(replacement);
 			}
-			void* mapped = nullptr;
-			const D3D12_RANGE noRead{};
-			DX::ThrowIfFailed(slot->tokenTable->Map(0, &noRead, &mapped));
-			std::memcpy(mapped, tokens.data(), tokens.size_bytes());
-			const D3D12_RANGE written{ 0, tokens.size_bytes() };
-			slot->tokenTable->Unmap(0, &written);
 			slot->stamp = stamp;
-			slot->tokenCount = uint32_t(tokens.size());
 			slot->readyFence = producer.fence12;
 			slot->readyValue = UINT64_MAX;
 			owner.d3d11Context->CopyResource(slot->texture->resource11, source);
