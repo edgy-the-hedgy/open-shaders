@@ -14,6 +14,7 @@
 #include "RE/N/NiSourceTexture.h"
 #include "Features/FoliageLighting.h"
 #include "Features/SnowDeformation.h"
+#include "Features/LODBlending.h"
 
 #include "../LightLimitFix/ShadowCasterMath.h"
 #include "../LightLimitFix/Common.h"
@@ -1244,6 +1245,7 @@ std::shared_ptr<const DX12::PreparedMaterialSource> DX12NativeScene::ObserveRast
 				const auto* landscape = static_cast<const RE::BSLightingShaderMaterialLandscape*>(material);
 				if (landscape->numLandscapeTextures <= 6u) {
 					scalars.rasterLandscapeLayers = 6u;
+					scalars.rasterLandscapeDisableVertexColors = globals::features::lodBlending.loaded && globals::features::lodBlending.settings.DisableTerrainVertexColors;
 					const auto path = [](const RE::NiSourceTexture* texture) -> std::string {
 						if (!texture) return {};
 						const char* name = texture->name.c_str();
@@ -1610,6 +1612,96 @@ void DX12NativeScene::CaptureRasterPbrGrass(uint32_t rasterDraw)
 	++draws.grassConstantSnapshots;
 }
 
+void DX12NativeScene::CaptureRasterTerrainDraw(uint32_t rasterDraw,uint32_t descriptor)
+{
+	using namespace DX12Native;
+	using namespace DX12Native::MaterialFrameContract;
+	using Cache=SIE::ShaderCache;
+	auto& draws=fullNativeRasterDraws;
+	const auto technique=Cache::GetLightingTechnique(descriptor);
+	const bool lod=technique==Cache::LightingShaderTechniques::MTLandLODBlend;
+	const bool snow=(descriptor & uint32_t(Cache::LightingShaderFlags::Snow))!=0u;
+	if ((!lod && !snow) || !rasterDraw || draws.terrainConstantSnapshots>=32u ||
+		!ConstantSnapshotFits(draws.constantSnapshots,draws.grassConstantSnapshots,kMaxProjectedConstantSnapshots) ||
+		!globals::game::shadowState || !globals::d3d::device || !globals::d3d::context) return;
+	const auto& state=globals::game::shadowState->GetRuntimeData();
+	if (!state.currentVertexShader || !state.currentPixelShader) return;
+	const auto& vs=*state.currentVertexShader;
+	const auto& ps=*state.currentPixelShader;
+	const auto& constants=ShaderConstants::LightingPS::Get();
+	ProjectedTextureObservation observation;
+	observation.rowKind=kRasterTerrainRow;
+	const auto& settings=globals::features::lodBlending.settings;
+	observation.descriptor=std::bit_cast<uint32_t>(globals::features::lodBlending.loaded ? settings.LODTerrainGamma : 1.f);
+	observation.extraData=std::bit_cast<uint32_t>(globals::features::lodBlending.loaded ? settings.LODTerrainBrightness : 1.f);
+	observation.constantOffsets={
+		uint32_t(vs.constantTable[0])*4u,uint32_t(vs.constantTable[3])*4u,
+		lod ? uint32_t(ps.constantTable[constants.LODTexParams])*4u : UINT32_MAX,
+		snow ? uint32_t(ps.constantTable[constants.LandscapeTexture5to6IsSnow])*4u : UINT32_MAX};
+	if (!observation.constantOffsets[1] || (snow && !observation.constantOffsets[3])) return;
+	constexpr auto geometryGroup=static_cast<size_t>(RE::BSGraphics::ConstantGroupLevel::PerGeometry);
+	constexpr size_t materialGroup=1u;
+	std::array<ID3D11Buffer*,2> sources{Util::AsReal(vs.constantBuffers[geometryGroup].buffer),Util::AsReal(ps.constantBuffers[materialGroup].buffer)};
+	winrt::com_ptr<ID3D11Buffer> boundVS,boundPS;
+	globals::d3d::context->VSGetConstantBuffers(uint32_t(geometryGroup),1,boundVS.put());
+	globals::d3d::context->PSGetConstantBuffers(uint32_t(materialGroup),1,boundPS.put());
+	if (!sources[0] || !sources[1] || boundVS.get()!=sources[0] || boundPS.get()!=sources[1]) return;
+	std::array<D3D11_BUFFER_DESC,2> descriptions{};
+	for (size_t i=0;i<2;++i) {
+		sources[i]->GetDesc(&descriptions[i]);
+		if (!(descriptions[i].BindFlags&D3D11_BIND_CONSTANT_BUFFER) ||
+			descriptions[i].ByteWidth>D3D11_REQ_CONSTANT_BUFFER_ELEMENT_COUNT*16u) return;
+	}
+	for (size_t i=0;i<4;++i)
+		if (observation.constantOffsets[i]!=UINT32_MAX &&
+			!ValidProjectionConstantExtent(observation.constantOffsets[i],i==0?48u:16u,descriptions[i<2?0:1].ByteWidth)) return;
+	if (lod) {
+		constexpr std::array<uint32_t,2> slots{13u,15u};
+		for (size_t i=0;i<slots.size();++i) {
+			const auto mode=uint32_t(state.PSTextureAddressMode[slots[i]].get());
+			auto* view=nativeSourceViews[slots[i]].get();
+			if (!view || mode>3u) return;
+			D3D11_SHADER_RESOURCE_VIEW_DESC desc{};
+			view->GetDesc(&desc);
+			if (desc.ViewDimension!=D3D11_SRV_DIMENSION_TEXTURE2D || desc.Format==DXGI_FORMAT_UNKNOWN) return;
+			observation.views[i].copy_from(view);
+			observation.samplerModes|=mode<<(2u*i);
+			if (DirectX::IsSRGB(desc.Format)) observation.samplerModes|=1u<<(8u+i);
+		}
+	}
+	if (projectedConstantDevice.get()!=globals::d3d::device) {
+		projectedConstantPool={};
+		projectedConstantDevice.copy_from(globals::d3d::device);
+	}
+	auto& slot=projectedConstantPool[draws.constantSnapshots];
+	for (size_t i=0;i<2;++i) {
+		if (!slot.buffers[i] || !slot.views[i] || slot.byteWidths[i]!=descriptions[i].ByteWidth) {
+			D3D11_BUFFER_DESC desc{};
+			desc.ByteWidth=descriptions[i].ByteWidth;
+			desc.Usage=D3D11_USAGE_DEFAULT;
+			desc.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+			desc.MiscFlags=D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
+			winrt::com_ptr<ID3D11Buffer> buffer;
+			if (FAILED(globals::d3d::device->CreateBuffer(&desc,nullptr,buffer.put()))) return;
+			D3D11_SHADER_RESOURCE_VIEW_DESC view{};
+			view.Format=DXGI_FORMAT_R32_TYPELESS;
+			view.ViewDimension=D3D11_SRV_DIMENSION_BUFFEREX;
+			view.BufferEx.NumElements=desc.ByteWidth/4u;
+			view.BufferEx.Flags=D3D11_BUFFEREX_SRV_FLAG_RAW;
+			winrt::com_ptr<ID3D11ShaderResourceView> srv;
+			if (FAILED(globals::d3d::device->CreateShaderResourceView(buffer.get(),&view,srv.put()))) return;
+			slot.buffers[i]=std::move(buffer);
+			slot.views[i]=std::move(srv);
+			slot.byteWidths[i]=desc.ByteWidth;
+		}
+	}
+	for (size_t i=0;i<2;++i) globals::d3d::context->CopyResource(slot.buffers[i].get(),sources[i]);
+	observation.constantSlot=draws.constantSnapshots++;
+	observation.observed=true;
+	++draws.terrainConstantSnapshots;
+	draws.rasterProjectionTextures.push_back({rasterDraw,UINT32_MAX,std::move(observation)});
+}
+
 void DX12NativeScene::CaptureRasterProjectedDraw(uint32_t rasterDraw, uint32_t sceneInstance)
 {
 	auto& draws=fullNativeRasterDraws;
@@ -1764,6 +1856,9 @@ void DX12NativeScene::StampFullNativeIndexedDraw(uint32_t count, uint32_t start,
 	if (state->currentShader->shaderType.get()==Type::Lighting &&
 		(descriptor & uint32_t(Cache::LightingShaderFlags::ProjectedUV)))
 		CaptureRasterProjectedDraw(encoded,sceneInstance);
+	if (state->currentShader->shaderType.get()==Type::Lighting &&
+		(Cache::GetLightingTechnique(descriptor)==Cache::LightingShaderTechniques::MTLand || Cache::GetLightingTechnique(descriptor)==Cache::LightingShaderTechniques::MTLandLODBlend))
+		CaptureRasterTerrainDraw(encoded,descriptor);
 	if (state->currentShader->shaderType.get()==Type::Grass &&
 		(descriptor&15u)==uint32_t(Cache::GrassShaderTechniques::TruePbr)) CaptureRasterPbrGrass(encoded);
 	state->UpdatePermutationBuffer();
@@ -1815,8 +1910,8 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 				observation.conflicted || observation.constantSlot>=draws.constantSnapshots) continue;
 			const auto& slot=projectedConstantPool[observation.constantSlot];
 			if ((observation.constantOffsets[0]!=UINT32_MAX && !slot.views[0]) || !slot.views[1]) continue;
-			uint32_t instance=UINT32_MAX;
-			if (secondaryScene && raster.sceneInstance!=UINT32_MAX) {
+			uint32_t instance=observation.rowKind;
+			if (instance==UINT32_MAX && secondaryScene && raster.sceneInstance!=UINT32_MAX) {
 				const auto property=draws.projection.find(raster.sceneInstance);
 				const auto match=draws.projectionTextures.find(raster.sceneInstance);
 				if (property!=draws.projection.end() && property->second.ValidProjection() &&
@@ -1824,9 +1919,11 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 					instance=raster.sceneInstance;
 			}
 			if (inputs.size() == kMaxProjectedDraws) break;
-			classes[0].push_back(inputs.size());
+			const uint32_t lane=observation.rowKind==kRasterTerrainRow ? 6u : 0u;
+			classes[lane].push_back(inputs.size());
 			inputs.push_back({instance,observation.descriptor,observation.samplerModes,
 				{observation.constantOffsets[0]==UINT32_MAX ? nullptr : slot.views[0].get(),slot.views[1].get()},observation.constantOffsets,observation.views,raster.rasterDraw});
+			inputs.back().extraSamplerModes=observation.extraData;
 		}
 		// Non-Lighting shader classes use their actual bound PS SRVs. Import
 		// through the same typed mip transfer, but use reserved row kinds and
