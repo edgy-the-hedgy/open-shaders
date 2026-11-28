@@ -450,6 +450,54 @@ TEST_CASE("Projection transfer preserves physical BC mip extents", "[dx12][mater
 	STATIC_REQUIRE(ProjectionRetryDue(0u, UINT32_MAX, 1u));
 }
 
+TEST_CASE("Bounded transfer classes rotate and borrow unused slots", "[dx12][materials]")
+{
+	using namespace DX12Native::MaterialFrameContract;
+	std::array<uint32_t,kTransferClassCount> remaining{128u,128u,128u,128u};
+	std::array<uint32_t,kTransferClassCount> admitted{};
+	uint32_t cursor=2u;
+	for (uint32_t n=0;n<128u;++n) {
+		const auto lane=NextTransferClass(remaining,cursor);
+		REQUIRE(lane==((2u+n)%kTransferClassCount));
+		--remaining[lane]; ++admitted[lane]; cursor=(lane+1u)%kTransferClassCount;
+	}
+	for (auto n:admitted) REQUIRE(n==32u);
+	remaining={0u,0u,2u,0u};
+	REQUIRE(NextTransferClass(remaining,3u)==2u);
+	remaining={};
+	REQUIRE(NextTransferClass(remaining,0u)==UINT32_MAX);
+	for (uint32_t publication=0;publication<kTransferClassCount;++publication) {
+		remaining={1u,1u,1u,1u};
+		REQUIRE(NextTransferClass(remaining,publication)==publication);
+	}
+}
+
+TEST_CASE("Native transfer work rejects exhausted budgets and oversized first uploads", "[dx12][materials]")
+{
+	using namespace DX12Native::MaterialFrameContract;
+	STATIC_REQUIRE(TransferWorkFits(0,16,0,128,128));
+	STATIC_REQUIRE_FALSE(TransferWorkFits(0,16,0,129,128));
+	STATIC_REQUIRE_FALSE(TransferWorkFits(16,16,0,1,128));
+	STATIC_REQUIRE_FALSE(TransferWorkFits(1,16,127,2,128));
+	STATIC_REQUIRE(TransferWorkFits(15,16,127,1,128));
+	STATIC_REQUIRE_FALSE(TransferWorkFits(0,16,UINT64_MAX,1,128));
+	STATIC_REQUIRE_FALSE(TransferWorkFits(0,16,1,UINT64_MAX,UINT64_MAX));
+	STATIC_REQUIRE_FALSE(TransferWorkFits(0,16,0,0,128));
+}
+
+TEST_CASE("Typed Effect readiness distinguishes untextured rows from missing transfers", "[dx12][materials]")
+{
+	using namespace DX12Native::MaterialFrameContract;
+	constexpr auto present=kTypedTransferRowPresent;
+	STATIC_REQUIRE_FALSE(HasTypedTransferRoles(0,TypedEffectRequiredRoles(0)));
+	STATIC_REQUIRE(HasTypedTransferRoles(present,TypedEffectRequiredRoles(0)));
+	STATIC_REQUIRE_FALSE(HasTypedTransferRoles(present,TypedEffectRequiredRoles(1u<<6u)));
+	STATIC_REQUIRE(HasTypedTransferRoles(present|1u,TypedEffectRequiredRoles(1u<<6u)));
+	STATIC_REQUIRE_FALSE(HasTypedTransferRoles(present|1u,TypedEffectRequiredRoles(1u<<19u)));
+	STATIC_REQUIRE(HasTypedTransferRoles(present|3u,TypedEffectRequiredRoles(1u<<19u)));
+	STATIC_REQUIRE(HasTypedTransferRoles(present|1u,TypedEffectRequiredRoles(1u<<20u)));
+}
+
 TEST_CASE("Raster publication survives scene generation changes without stale correspondence", "[dx12][materials]")
 {
 	const RasterIdentityStamp raster{42,7,100,200};
