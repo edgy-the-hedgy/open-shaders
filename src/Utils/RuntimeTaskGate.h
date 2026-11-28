@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cstddef>
 #include <functional>
 #include <mutex>
 #include <utility>
@@ -9,17 +10,17 @@
 namespace Util
 {
 	enum class RuntimePreparationLane : uint8_t { General, Geometry, Character, Rigid, Material, Light, Count };
-	inline constexpr size_t kRuntimePreparationLaneCount = static_cast<size_t>(RuntimePreparationLane::Count);
+	inline constexpr std::size_t kRuntimePreparationLaneCount = static_cast<std::size_t>(RuntimePreparationLane::Count);
 	// Separate admission quotas prevent a burst of new rigid meshes from
 	// using the slots needed by the other preparation producers.
 	inline constexpr std::array<uint32_t, kRuntimePreparationLaneCount> kRuntimePreparationLaneLimits{ 3, 2, 2, 4, 3, 2 };
 	constexpr bool ValidRuntimePreparationLane(RuntimePreparationLane lane)
 	{
-		return static_cast<size_t>(lane) < kRuntimePreparationLaneCount;
+		return static_cast<std::size_t>(lane) < kRuntimePreparationLaneCount;
 	}
 	constexpr bool RuntimePreparationLaneHasCapacity(RuntimePreparationLane lane, uint32_t queued)
 	{
-		return ValidRuntimePreparationLane(lane) && queued < kRuntimePreparationLaneLimits[static_cast<size_t>(lane)];
+		return ValidRuntimePreparationLane(lane) && queued < kRuntimePreparationLaneLimits[static_cast<std::size_t>(lane)];
 	}
 
 	/** @brief Lifetime-safe access to the existing runtime task dispatcher.

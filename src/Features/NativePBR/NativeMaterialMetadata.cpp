@@ -271,7 +271,7 @@ namespace NativePBR
 			oversized |= paths[i].size() > 260;
 		}
 		if (!oversized && entry.identity == identity && entry.revision == revision && entry.snapshot &&
-			std::ranges::equal(paths, entry.snapshot->paths) &&
+			std::ranges::equal(paths, entry.snapshot->paths, [](std::string_view left, const std::string& right) { return left == std::string_view(right); }) &&
 			textureMetadataRevision.load(std::memory_order_acquire) == revision)
 			return entry.snapshot;
 		auto result = std::make_shared<TextureSetSnapshot>();

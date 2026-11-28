@@ -224,7 +224,7 @@ namespace DX12Native
             std::vector<ActorPartitionSource> partitions;
             std::vector<Bone> bones;
             RE::NiBound bound{};
-            DX12::PreparedMaterialSource material;
+            std::shared_ptr<const DX12::PreparedMaterialSource> material;
             bool skinned = false;
         };
         struct ActorSourceSnapshot
@@ -413,7 +413,7 @@ namespace DX12Native
             out.bones.insert(out.bones.end(), part.bones.begin(), part.bones.end());
             out.indices.insert(out.indices.end(), indices.begin(), indices.end());
             out.primitiveParts.insert(out.primitiveParts.end(), indices.size() / 3u, out.parts);
-            out.materialSources.push_back(part.material);
+            out.materialSources.push_back(part.material ? *part.material : DX12::PreparedMaterialSource{});
             ++out.parts;
             return true;
         }
@@ -971,7 +971,7 @@ namespace DX12Native
                     instance.AccelerationStructure = blas->GetGPUVirtualAddress();
                     instances.push_back(instance); ++next->rigidInstances;
                     shadingOrder.push_back(mover.mesh);
-                    materialSources.push_back(mover.material);
+                    materialSources.push_back(mover.material ? *mover.material : DX12::PreparedMaterialSource{});
                 }
                 if (!next->rigidInstances) { Eval::Check(cmd->Close()); return; }
                 if (materialSources.size() == next->parts + next->rigidInstances) {
@@ -1173,7 +1173,7 @@ namespace DX12Native
             winrt::com_ptr<ID3D12Resource> blas;
             uint32_t lastFrame = 0;
         };
-        struct RigidInstance { std::shared_ptr<RigidMesh> mesh; Bone transform; DX12::PreparedMaterialSource material; };
+        struct RigidInstance { std::shared_ptr<RigidMesh> mesh; Bone transform; std::shared_ptr<const DX12::PreparedMaterialSource> material; };
         static constexpr uint64_t kMoverShadingBudget = 32ull * VideoMemoryBudget::kMiB;
         static constexpr uint64_t kMoverPendingBudget = 64ull * VideoMemoryBudget::kMiB;
         // Local geometry rows are indexed by the admitted TLAS instance order,

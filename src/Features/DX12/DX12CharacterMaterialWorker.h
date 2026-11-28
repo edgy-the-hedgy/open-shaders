@@ -5,6 +5,7 @@
 #include "Features/NativePBR/MaterialCatalog.h"
 #include "Features/NativePBR/NativeMaterialMetadata.h"
 #include "GraphicsBackend.h"
+#include "Utils/TracyZones.h"
 #include "Globals.h"
 #include "ShaderCache.h"
 #include "RE/B/BSLightingShaderProperty.h"
@@ -20,16 +21,17 @@ namespace DX12Native
 {
     // Engine-pointer-free material metadata, one row per admitted actor part.
     // The worker never reads a live shader property, texture set or geometry.
-    inline DX12::PreparedMaterialSource CaptureCharacterMaterial(RE::BSGeometry& geometry, bool hasColor)
+    inline std::shared_ptr<const DX12::PreparedMaterialSource> CaptureCharacterMaterial(RE::BSGeometry& geometry, bool hasColor)
     {
+        CS_DRAW_ZONE("DX12::Characters::MaterialSnapshot");
         DX12::PreparedMaterialSource source;
         const auto& runtime = geometry.GetGeometryRuntimeData();
         const auto* baseProperty = runtime.shaderProperty.get();
         if (!baseProperty || baseProperty->GetRTTI() != globals::rtti::BSLightingShaderPropertyRTTI.get() || runtime.alphaProperty)
-            return source;
+            return {};
         const auto* property = static_cast<const RE::BSLightingShaderProperty*>(baseProperty);
         if (!property->material || property->material->GetType() != RE::BSShaderMaterial::Type::kLighting)
-            return source;
+            return {};
         source.authoredShaderFlags = NativePBR::ReadAuthoredFlags(*property);
         constexpr uint64_t kLegacyEnvironmentOrParallax = (1ull<<7u)|(1ull<<11u);
         if (property->material->GetFeature() != RE::BSShaderMaterial::Feature::kDefault &&
@@ -42,7 +44,6 @@ namespace DX12Native
         source.observedShaderFlags = static_cast<uint64_t>(property->flags.underlying());
         const auto textureSnapshot = NativePBR::CaptureTextureSetSnapshot(textures);
         if (!textureSnapshot || textureSnapshot->oversized) return {};
-        source.textureSetEditorId = textureSnapshot->editorId;
         NativePBR::ReadNifParameters(*property, source.nifThinSurface, source.nifFuzz);
         source.alpha = material->materialAlpha;
         source.clampMode = material->textureClampMode;
@@ -51,8 +52,26 @@ namespace DX12Native
         if (!std::ranges::all_of(source.uvTransform, [](float v) { return std::isfinite(v); }) ||
             !std::isfinite(source.alpha)) return {};
         source.colorOffset = hasColor ? 0u : UINT32_MAX;
-        source.texturePaths = textureSnapshot->paths;
-        return source;
+        struct Entry
+        {
+            uintptr_t property = 0, material = 0;
+            DX12::PreparedMaterialSource scalars;
+            std::shared_ptr<const NativePBR::TextureSetSnapshot> texture;
+            std::shared_ptr<const DX12::PreparedMaterialSource> value;
+        };
+        // Owned immutable metadata only; no cached live-object dereferences.
+        static thread_local std::array<Entry, 1024> cache;
+        const auto propertyId = reinterpret_cast<uintptr_t>(property);
+        const auto materialId = reinterpret_cast<uintptr_t>(material);
+        auto& entry = cache[(propertyId >> 4u) % cache.size()];
+        if (entry.value && entry.property == propertyId && entry.material == materialId &&
+            entry.texture == textureSnapshot && entry.scalars == source)
+            return entry.value;
+        auto value = std::make_shared<DX12::PreparedMaterialSource>(source);
+        value->textureSetEditorId = textureSnapshot->editorId;
+        value->texturePaths = textureSnapshot->paths;
+        entry = { propertyId, materialId, std::move(source), textureSnapshot, value };
+        return value;
     }
 
     struct CharacterMaterialPublication
