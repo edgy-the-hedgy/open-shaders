@@ -3,6 +3,7 @@
 #include "Features/DX12/DX12FullNativeRasterEvidence.h"
 #include "NativeInputOnlyPolicy.h"
 #include "Features/DX12/DX12Resources.h"
+#include "Features/DX12/DX12TextureRevision.h"
 #include <vector>
 
 namespace NativePBR
@@ -27,6 +28,12 @@ namespace NativePBR
 		// Fur shell color is a material input at t124, not the adjacent depth SRV.
 		static constexpr uint32_t kTrackedSlots = 125;
 		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, kTrackedSlots> views;
+		// Low material slots plus fur t124. CPU-only; no raster ABI change.
+		std::array<DX12Native::TextureRevision::ViewStamp,17> revisions{};
+		uint64_t revisionEpoch=0,revisionSerial=0;
+		DX12Native::TextureRevision::ViewStamp Revision(uint32_t slot) const {
+			return slot<16u ? revisions[slot] : slot==124u ? revisions[16] : DX12Native::TextureRevision::ViewStamp{};
+		}
 	};
 	struct RawInputFrame
 	{
