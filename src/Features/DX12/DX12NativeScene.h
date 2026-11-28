@@ -7,6 +7,7 @@
 #include "DX12NativeWorldFrame.h"
 #include "DX12ProjectedInputs.h"
 #include "DX12NativeCharacterCasters.h"
+#include "Features/NativePBR/NativeMaterialMetadata.h"
 #include "DX12NativeScreenProbe.h"
 #include "DX12NativeDirectLighting.h"
 #include "DX12NativeIndirectLighting.h"
@@ -180,7 +181,8 @@ private:
 		uint32_t matchHits = 0, matchMisses = 0;
 		std::unordered_map<const void*, uint32_t> geometryOrdinals, materialOrdinals;
 		std::vector<NativePBR::RasterDrawRecord> drawRecords;
-		std::vector<DX12::PreparedMaterialSource> materialSources;
+		std::vector<std::shared_ptr<const DX12::PreparedMaterialSource>> materialSources;
+		uint32_t materialSnapshotHits = 0, materialSnapshotMisses = 0;
 		uint32_t activeGeometry = 0, activeMaterial = 0, nextRasterDraw = 0;
 		uint32_t activeSceneInstance = 0, activePrimitiveCount = 0;
 		// Sparse, frame-local observations indexed by the matched TLAS instance.
@@ -198,6 +200,18 @@ private:
 	D3D11_PRIMITIVE_TOPOLOGY nativeInputTopology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
 	UINT nativeInputIndexOffset = UINT_MAX, nativeInputIndexElementBytes = 0;
 	FullNativeRasterDrawState fullNativeRasterDraws;
+	// CPU-only packing scratch; RawInputCapture retains its existing ABI v6
+	// value rows and copies them into its own immutable frame slot.
+	std::vector<DX12::PreparedMaterialSource> rasterMaterialRows;
+	struct RasterMaterialCacheEntry
+	{
+		uintptr_t property = 0, material = 0;
+		DX12::PreparedMaterialSource scalars;
+		std::shared_ptr<const NativePBR::TextureSetSnapshot> textures;
+		std::shared_ptr<const DX12::PreparedMaterialSource> snapshot;
+	};
+	std::vector<RasterMaterialCacheEntry> rasterMaterialCache;
+	std::shared_ptr<const DX12::PreparedMaterialSource> ObserveRasterMaterial(RE::BSGeometry& geometry);
 	NativePBR::RawInputCapture rawInputCapture;
 	std::unique_ptr<DX12Native::DirectLightingTrace> fullNativeDirect;
 	void DispatchFullNativeIndirect();

@@ -1120,6 +1120,51 @@ void DX12NativeScene::InvalidateNativeInputVisibility()
 	}
 }
 
+std::shared_ptr<const DX12::PreparedMaterialSource> DX12NativeScene::ObserveRasterMaterial(RE::BSGeometry& geometry)
+{
+	CS_DRAW_ZONE("DX12::RasterInputs::MaterialSnapshot");
+	const auto& runtime = geometry.GetGeometryRuntimeData();
+	const auto* base = runtime.shaderProperty.get();
+	DX12::PreparedMaterialSource scalars;
+	uintptr_t materialIdentity = 0;
+	std::shared_ptr<const NativePBR::TextureSetSnapshot> textures;
+	if (base && base->GetRTTI() == globals::rtti::BSLightingShaderPropertyRTTI.get()) {
+		const auto* property = static_cast<const RE::BSLightingShaderProperty*>(base);
+		scalars.authoredShaderFlags = NativePBR::ReadAuthoredFlags(*property);
+		scalars.observedShaderFlags = static_cast<uint64_t>(property->flags.underlying());
+		NativePBR::ReadNifParameters(*property, scalars.nifThinSurface, scalars.nifFuzz);
+		if (property->material && property->material->GetType() == RE::BSShaderMaterial::Type::kLighting) {
+			const auto* material = static_cast<const RE::BSLightingShaderMaterialBase*>(property->material);
+			materialIdentity = reinterpret_cast<uintptr_t>(material);
+			scalars.alpha = material->materialAlpha;
+			scalars.clampMode = material->textureClampMode;
+			scalars.uvTransform = { material->texCoordOffset[0].x, material->texCoordOffset[0].y,
+				material->texCoordScale[0].x, material->texCoordScale[0].y };
+			auto* set = material->textureSet.get();
+			const auto* expected = REL::Relocation<const RE::NiRTTI*>{ RE::BSTextureSet::Ni_RTTI }.get();
+			if (set && expected && set->GetRTTI() && set->GetRTTI()->IsKindOf(expected))
+				textures = NativePBR::CaptureTextureSetSnapshot(set);
+		}
+	}
+	scalars.colorOffset = runtime.vertexDesc.HasFlag(RE::BSGraphics::Vertex::VF_COLOR) ? 0u : UINT32_MAX;
+	if (rasterMaterialCache.empty()) rasterMaterialCache.resize(4096);
+	const auto identity = reinterpret_cast<uintptr_t>(base);
+	auto& entry = rasterMaterialCache[(identity >> 4u) % rasterMaterialCache.size()];
+	if (entry.snapshot && entry.property == identity && entry.material == materialIdentity &&
+		entry.textures == textures && entry.scalars == scalars) {
+		++fullNativeRasterDraws.materialSnapshotHits;
+		return entry.snapshot;
+	}
+	++fullNativeRasterDraws.materialSnapshotMisses;
+	auto result = std::make_shared<DX12::PreparedMaterialSource>(scalars);
+	if (textures) {
+		result->textureSetEditorId = textures->editorId;
+		result->texturePaths = textures->paths;
+	}
+	entry = { identity, materialIdentity, std::move(scalars), std::move(textures), result };
+	return result;
+}
+
 void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 {
 	using namespace DX12Native::MaterialFrameContract;
@@ -1158,32 +1203,7 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 		const auto [entry, inserted] = draws.materialOrdinals.try_emplace(materialKey, uint32_t(draws.materialOrdinals.size()+1));
 		draws.activeMaterial = entry->second;
 		if (inserted) {
-			DX12::PreparedMaterialSource source;
-			const auto* base = runtime.shaderProperty.get();
-			if (base && base->GetRTTI() == globals::rtti::BSLightingShaderPropertyRTTI.get()) {
-				const auto* property = static_cast<const RE::BSLightingShaderProperty*>(base);
-				source.authoredShaderFlags = NativePBR::ReadAuthoredFlags(*property);
-				source.observedShaderFlags = static_cast<uint64_t>(property->flags.underlying());
-				NativePBR::ReadNifParameters(*property, source.nifThinSurface, source.nifFuzz);
-				if (property->material && property->material->GetType() == RE::BSShaderMaterial::Type::kLighting) {
-					const auto* material = static_cast<const RE::BSLightingShaderMaterialBase*>(property->material);
-					auto* textures = material->textureSet.get();
-					source.alpha = material->materialAlpha;
-					source.clampMode = material->textureClampMode;
-					source.uvTransform = { material->texCoordOffset[0].x, material->texCoordOffset[0].y,
-						material->texCoordScale[0].x, material->texCoordScale[0].y };
-					const auto* expected = REL::Relocation<const RE::NiRTTI*>{ RE::BSTextureSet::Ni_RTTI }.get();
-					if (textures && expected && textures->GetRTTI() && textures->GetRTTI()->IsKindOf(expected)) {
-						source.textureSetEditorId = NativePBR::ResolveTextureSet(textures);
-						for (uint32_t i=0;i<source.texturePaths.size();++i) {
-							const char* path = textures->GetTexturePath(static_cast<RE::BSTextureSet::Texture>(i));
-							if (path && std::string_view(path).size() <= 260) source.texturePaths[i] = path;
-						}
-					}
-				}
-			}
-			source.colorOffset = runtime.vertexDesc.HasFlag(RE::BSGraphics::Vertex::VF_COLOR) ? 0u : UINT32_MAX;
-			draws.materialSources.push_back(std::move(source));
+			draws.materialSources.push_back(ObserveRasterMaterial(geometry));
 		}
 	}
 	// A raster-only draw identity is assigned even without a scene/material generation.
@@ -1525,7 +1545,13 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 			Util::AsReal(targets[ALBEDO].texture), Util::AsReal(targets[SPECULAR].texture),
 			Util::AsReal(targets[REFLECTANCE].texture), Util::AsReal(targets[MASKS].texture) };
 		const auto world = globals::state ? GetWorldFrame(draws.stamp.frame, globals::state->frameCount) : nullptr;
-		rawInputCapture.Publish(*backend, Util::AsReal(targets[MASKS2].texture), inputs, draws.stamp, draws.drawRecords, draws.materialSources, draws.draws,
+		// Material ordinals and the RawInputFrame value-row contract are unchanged.
+		// Reuse row storage; unchanged metadata needs no new path allocations.
+		rasterMaterialRows.resize(draws.materialSources.size());
+		for (size_t i = 0; i < draws.materialSources.size(); ++i)
+			if (rasterMaterialRows[i] != *draws.materialSources[i])
+				rasterMaterialRows[i] = *draws.materialSources[i];
+		rawInputCapture.Publish(*backend, Util::AsReal(targets[MASKS2].texture), inputs, draws.stamp, draws.drawRecords, rasterMaterialRows, draws.draws,
 			world ? world->width : 0u, world ? world->height : 0u,
 			draws.allWritersKnown && draws.knownWriters != 0 && world != nullptr);
 	}
@@ -1688,6 +1714,8 @@ void DX12NativeScene::ApplyPendingLoadingReset()
 		}
 		globals::features::upscaling.nativeComposite.ResetShadowHistory();
 		fullNativeRasterDraws = {};
+		rasterMaterialCache = {};
+		rasterMaterialRows = {};
 		rawInputCapture.Reset();
 		if (characterCasters) characterCasters->Reset();
 		ResetFullNativeEnvironment();
@@ -1737,6 +1765,8 @@ void DX12NativeScene::OnRuntimeDisabled()
 	}
 	globals::features::upscaling.nativeComposite.ResetShadowHistory();
 	fullNativeRasterDraws = {};
+		rasterMaterialCache = {};
+		rasterMaterialRows = {};
 	ResetFullNativeEnvironment();
 	fullNativeDirect.reset();
 	if (globals::features::dx12Control.UsesExclusiveMaterials()) {
@@ -1878,6 +1908,7 @@ json DX12NativeScene::GetStatus() const
 			{ "draws", draws.draws }, { "candidateDraws", draws.candidates }, { "uniqueInstances", draws.uniqueInstances },
 			{ "ambiguousDraws", draws.ambiguous }, { "rejectedDraws", draws.rejected }, { "finalized", draws.finalized },
 			{ "casterLookupHits", draws.matchHits }, { "casterLookupMisses", draws.matchMisses },
+			{ "materialSnapshotHits", draws.materialSnapshotHits }, { "materialSnapshotMisses", draws.materialSnapshotMisses },
 			{ "integerIdentity", true }, { "rasterDrawRecords", draws.drawRecords.size() },
 			{ "rawInputPublished", bool(rawInputCapture.GetForFrame(draws.stamp.frame)) },
 			{ "rawInputFailure", rawInputCapture.Failure() },

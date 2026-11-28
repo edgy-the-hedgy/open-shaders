@@ -40,7 +40,9 @@ namespace DX12Native
         const auto* expected = REL::Relocation<const RE::NiRTTI*>{ RE::BSTextureSet::Ni_RTTI }.get();
         if (!textures || !expected || !textures->GetRTTI() || !textures->GetRTTI()->IsKindOf(expected)) return {};
         source.observedShaderFlags = static_cast<uint64_t>(property->flags.underlying());
-        source.textureSetEditorId = NativePBR::ResolveTextureSet(textures);
+        const auto textureSnapshot = NativePBR::CaptureTextureSetSnapshot(textures);
+        if (!textureSnapshot || textureSnapshot->oversized) return {};
+        source.textureSetEditorId = textureSnapshot->editorId;
         NativePBR::ReadNifParameters(*property, source.nifThinSurface, source.nifFuzz);
         source.alpha = material->materialAlpha;
         source.clampMode = material->textureClampMode;
@@ -49,14 +51,7 @@ namespace DX12Native
         if (!std::ranges::all_of(source.uvTransform, [](float v) { return std::isfinite(v); }) ||
             !std::isfinite(source.alpha)) return {};
         source.colorOffset = hasColor ? 0u : UINT32_MAX;
-        for (uint32_t i = 0; i < source.texturePaths.size(); ++i) {
-            const char* path = textures->GetTexturePath(static_cast<RE::BSTextureSet::Texture>(i));
-            if (path) {
-                const std::string_view value(path);
-                if (value.size() > 260) return {};
-                source.texturePaths[i] = value;
-            }
-        }
+        source.texturePaths = textureSnapshot->paths;
         return source;
     }
 

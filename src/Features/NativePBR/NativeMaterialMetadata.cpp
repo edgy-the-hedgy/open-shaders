@@ -10,6 +10,8 @@
 #include "Utils/StringUtils.h"
 
 #include <algorithm>
+#include <atomic>
+#include "Utils/TracyZones.h"
 #include <bit>
 #include <cmath>
 #include <mutex>
@@ -26,6 +28,7 @@ namespace NativePBR
 
 		// Engine form IDs are needed even when the legacy TruePBR feature is
 		// not installed. Intern strings so GetFormEditorID returns stable memory.
+		std::atomic<uint64_t> textureMetadataRevision{ 1 };
 		std::mutex editorMutex;
 		std::list<std::string> editorStrings;
 		std::unordered_map<uint32_t, const char*> editorIDs;
@@ -52,6 +55,7 @@ namespace NativePBR
 					if (it == editorIDs.end() || std::string_view(it->second) != editorId) {
 						editorStrings.emplace_back(editorId);
 						editorIDs[id] = editorStrings.back().c_str();
+					textureMetadataRevision.fetch_add(1, std::memory_order_release);
 					}
 				}
 				return func(form, editorId);
@@ -207,13 +211,20 @@ namespace NativePBR
 		if (signature.empty())
 			return;
 		std::scoped_lock lock(textureMutex);
-		if (textureSources.size() >= kMaxTextureSources && !textureSources.contains(converted))
+		bool changed = false;
+		if (textureSources.size() >= kMaxTextureSources && !textureSources.contains(converted)) {
 			textureSources.clear();
+			changed = true;
+		}
 		auto& entry = textureSources[converted];
-		if (entry.signature != signature)
+		if (entry.signature != signature) {
 			entry = { std::move(signature), id, false };
-		else if (entry.editorId != id)
+			changed = true;
+		} else if (entry.editorId != id && !entry.ambiguous) {
 			entry.ambiguous = true;
+			changed = true;
+		}
+		if (changed) textureMetadataRevision.fetch_add(1, std::memory_order_release);
 	}
 
 	std::string ResolveTextureSet(RE::BSTextureSet* textures)
@@ -230,6 +241,44 @@ namespace NativePBR
 		const auto it = textureSources.find(textures);
 		return !signature.empty() && it != textureSources.end() && !it->second.ambiguous && it->second.signature == signature ?
 			it->second.editorId : std::string{};
+	}
+
+	std::shared_ptr<const TextureSetSnapshot> CaptureTextureSetSnapshot(RE::BSTextureSet* textures)
+	{
+		CS_DRAW_ZONE("DX12::MaterialMetadata::TextureSnapshot");
+		if (!textures) return {};
+		struct Entry
+		{
+			uintptr_t identity = 0;
+			uint64_t revision = 0;
+			std::shared_ptr<const TextureSetSnapshot> snapshot;
+		};
+		// Thread-local engine acquisition cache. Only opaque identity values
+		// and owned strings survive a call; workers consume the snapshots.
+		static thread_local std::array<Entry, 1024> cache;
+		const auto identity = reinterpret_cast<uintptr_t>(textures);
+		auto& entry = cache[(identity >> 4u) % cache.size()];
+		const auto revision = textureMetadataRevision.load(std::memory_order_acquire);
+		std::array<std::string_view, 8> paths{};
+		bool oversized = false;
+		for (uint32_t i = 0; i < paths.size(); ++i) {
+			const auto* path = textures->GetTexturePath(static_cast<RE::BSTextureSet::Texture>(i));
+			if (path) paths[i] = path;
+			oversized |= paths[i].size() > 260;
+		}
+		if (!oversized && entry.identity == identity && entry.revision == revision && entry.snapshot &&
+			std::ranges::equal(paths, entry.snapshot->paths) &&
+			textureMetadataRevision.load(std::memory_order_acquire) == revision)
+			return entry.snapshot;
+		auto result = std::make_shared<TextureSetSnapshot>();
+		result->oversized = oversized;
+		result->editorId = ResolveTextureSet(textures);
+		for (size_t i = 0; i < paths.size(); ++i)
+			if (paths[i].size() <= 260) result->paths[i] = paths[i];
+		if (!oversized && textureMetadataRevision.load(std::memory_order_acquire) == revision)
+			entry = { identity, revision, result };
+		else entry = {};
+		return result;
 	}
 
 	void ReadNifParameters(const RE::BSLightingShaderProperty& property,
