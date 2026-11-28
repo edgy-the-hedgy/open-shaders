@@ -34,12 +34,32 @@ namespace DX12Native
 {
     // Frame-local world-space actor geometry. The posed vertex and primitive
     // part streams retire with the exact BLAS generation. Never use static scene IDs.
+    // Count recorded GPU allocations for their actual owner lifetime, including
+    // recordings discarded while a worker or an in-flight submission owns them.
+    inline std::atomic<uint64_t> pendingCharacterGpuBytes{ 0 }, recordedRigidGpuBytes{ 0 };
+    inline std::mutex characterRigidAllocationMutex;
+    struct PendingGpuReservation
+    {
+        std::atomic<uint64_t>& counter;
+        uint64_t bytes = 0;
+        explicit PendingGpuReservation(std::atomic<uint64_t>& owner) : counter(owner) {}
+        PendingGpuReservation(const PendingGpuReservation&) = delete;
+        PendingGpuReservation& operator=(const PendingGpuReservation&) = delete;
+        ~PendingGpuReservation() { Set(0); }
+        void Set(uint64_t value)
+        {
+            if (value >= bytes) counter.fetch_add(value - bytes, std::memory_order_relaxed);
+            else counter.fetch_sub(bytes - value, std::memory_order_relaxed);
+            bytes = value;
+        }
+    };
     struct RigidRecordedBuild
     {
+        PendingGpuReservation reservation{ recordedRigidGpuBytes };
         winrt::com_ptr<ID3D12Resource> positions, indices, scratch, blas;
         winrt::com_ptr<ID3D12CommandAllocator> allocator;
         winrt::com_ptr<ID3D12GraphicsCommandList4> commands;
-        uint64_t allocationBytes = 0;
+        uint64_t allocationBytes = 0, blasBytes = 0;
     };
 
     struct CharacterCasterFrame
@@ -541,6 +561,7 @@ namespace DX12Native
         {
             CS_DRAW_ZONE("DX12::RigidMover::Observe");
             if (moverScope != scope || moverGeometryRevision != geometryRevision) {
+                if (!moverMeshes.empty()) ++rigidRevisionInvalidations;
                 moverMeshes.clear(); moverShadingOrder.clear(); moverShadingCache = nullptr; moverMaterialWorker.Reset();
                 moverScope = scope; moverGeometryRevision = geometryRevision; moverFrame = UINT32_MAX;
             }
@@ -579,6 +600,7 @@ namespace DX12Native
             if (!Finite(transform)) return;
             auto found = moverMeshes.find(key);
             if (found == moverMeshes.end()) {
+                ++rigidMeshMisses;
                 // Do not grow a cache of unbounded uploads. At most eight new
                 // rigid mesh captures/builds per frame, as in Alan's path.
                 if (moverMeshes.size() >= kMaxCachedMeshes || newMoverMeshes >= kMaxNewMovers) return;
@@ -629,7 +651,7 @@ namespace DX12Native
                 else { ++deferredRigidPacks; return; }
                 found = moverMeshes.emplace(key, std::move(mesh)).first;
                 ++newMoverMeshes;
-            }
+            } else ++rigidMeshHits;
             auto& mesh = *found->second;
             mesh.lastFrame = frame;
             if (mesh.pending) {
@@ -644,6 +666,11 @@ namespace DX12Native
                 mesh.shadingIndices = std::move(packed.shadingIndices);
                 mesh.pending.reset();
             }
+            if (mesh.blas) {
+                ++rigidBlasReuses;
+                if (mesh.hasTransform && mesh.lastTransform != transform) ++rigidBlasTransformReuses;
+            }
+            mesh.lastTransform = transform; mesh.hasTransform = true;
             seenMovers.push_back(&geometry);
             movers.push_back({ found->second, transform, CaptureCharacterMaterial(geometry, HasColor(desc)) });
         }
@@ -676,7 +703,21 @@ namespace DX12Native
         uint64_t CancelledActorRecords() const { return cancelledActorRecords; }
         uint64_t ApproximateActorRecords() const { return approximateActorRecords; }
         uint64_t ActorCaptureAdmissionSkips() const { return actorCaptureAdmissionSkips; }
+        uint64_t ActorCaptureMemorySkips() const { return actorCaptureMemorySkips; }
         uint64_t RigidCaptureAdmissionSkips() const { return rigidCaptureAdmissionSkips; }
+        uint64_t RigidMeshHits() const { return rigidMeshHits; }
+        uint64_t RigidMeshMisses() const { return rigidMeshMisses; }
+        uint64_t RigidBlasReuses() const { return rigidBlasReuses; }
+        uint64_t RigidBlasTransformReuses() const { return rigidBlasTransformReuses; }
+        uint64_t RigidRevisionInvalidations() const { return rigidRevisionInvalidations; }
+        static uint64_t PendingActorGpuBytes() { return pendingCharacterGpuBytes.load(std::memory_order_relaxed); }
+        static uint64_t RecordedRigidGpuBytes() { return recordedRigidGpuBytes.load(std::memory_order_relaxed); }
+        uint64_t ResidentRigidBlasBytes() const
+        {
+            uint64_t bytes = 0;
+            for (const auto& [key, mesh] : moverMeshes) bytes += mesh->blasBytes;
+            return bytes;
+        }
         uint64_t PublishedActorRecords() const { return publishedActorRecords; }
         uint64_t ActorSnapshotBytes() const { return actorJob ? actorJob->snapshotBytes : 0; }
         static uint64_t PendingActorBytes() { return actorPreparationBytes.load(std::memory_order_relaxed); }
@@ -724,7 +765,11 @@ namespace DX12Native
         struct ActorRecordJob
         {
             std::atomic<bool> finished{ false };
-            std::shared_ptr<CharacterCasterFrame> result;
+            // The job, not its queued callback, owns the retired slot.
+            // A cancelled queued job immediately releases it. A running job
+            // retains the allocation counter until all of its work is gone.
+            PendingGpuReservation gpuReservation{ pendingCharacterGpuBytes };
+            std::shared_ptr<CharacterCasterFrame> selected, result;
             std::string failure;
             uint32_t frame = 0, scope = 0, interval = 1, slot = 0, rejected = 0;
             uint64_t snapshotBytes = 0, poseRevision = 0;
@@ -736,7 +781,7 @@ namespace DX12Native
         // Only owned CPU arrays, a retired slot and D3D12 COM objects enter
         // this function. It records but never executes a command list.
         static std::shared_ptr<CharacterCasterFrame> RecordActor(Snapshot& snapshot,
-            std::shared_ptr<CharacterCasterFrame> selected, uint64_t tracked,
+            std::shared_ptr<CharacterCasterFrame> selected, PendingGpuReservation& reservation,
             const winrt::com_ptr<ID3D12Device>& device12,
             const winrt::com_ptr<ID3D12RootSignature>& root,
             const winrt::com_ptr<ID3D12PipelineState>& pipeline,
@@ -799,12 +844,20 @@ namespace DX12Native
                     fits(selected->scratch, scratchBytes) && fits(selected->positions, positionBytes) &&
                     fits(selected->bind, snapshot.vertices.size() * sizeof(Vertex)) && fits(selected->palette, snapshot.bones.size() * sizeof(Bone)) &&
                     fits(selected->indices, snapshot.indices.size() * sizeof(uint32_t)) && fits(selected->instance, sizeof(D3D12_RAYTRACING_INSTANCE_DESC));
-                VideoMemoryBudget budget;
-                const auto allowance = budget.Query(device.get(), tracked);
-                if (!reuse && (!allowance.localBudget || required > allowance.effectiveBytes ||
-                    tracked > allowance.effectiveBytes - required))
-                    throw std::runtime_error("Character caster DXGI budget deferred");
-
+                // Serialise our two preparation allocation paths across the
+                // DXGI query/allocation window, not across CPU decoding or
+                // command recording. CurrentUsage already includes allocations.
+                std::unique_lock allocationLock(characterRigidAllocationMutex, std::defer_lock);
+                if (!reuse) {
+                    selected.reset();
+                    reservation.Set(0);
+                    allocationLock.lock();
+                    VideoMemoryBudget budget;
+                    const auto allowance = budget.Query(device.get(), 0);
+                    if (!allowance.localBudget || required > allowance.effectiveBytes)
+                        throw std::runtime_error("Character caster DXGI budget deferred");
+                    reservation.Set(required);
+                }
                 auto next = reuse ? std::move(selected) : std::make_shared<CharacterCasterFrame>();
                 next->frame = frame; next->scope = scope; next->allowedAge = ActorMaxPoseAge(interval); next->parts = snapshot.parts;
                 next->captureInterval = ActorCaptureInterval(interval); next->submittedFrame = UINT32_MAX;
@@ -843,6 +896,7 @@ namespace DX12Native
                     Eval::Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(next->allocator.put())));
                     Eval::Check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, next->allocator.get(), pipeline.get(), IID_PPV_ARGS(next->commands.put())));
                 }
+                if (allocationLock.owns_lock()) allocationLock.unlock();
                 auto* cmd = next->commands.get();
                 if (reuse) {
                     const auto writable = CD3DX12_RESOURCE_BARRIER::Transition(next->positions.get(),
@@ -910,6 +964,7 @@ namespace DX12Native
                 next->submittedFrame = frame;
                 next->readyValue = UINT64_MAX;
                 slots[job->slot] = next;
+                job->gpuReservation.Set(0); // slot now owns the accounting
                 ID3D12CommandList* lists[]{ next->commands.get() };
                 backend.commandQueue->ExecuteCommandLists(1, lists);
                 const auto value = ++nextFence;
@@ -937,16 +992,17 @@ namespace DX12Native
             PruneActor(frame, scope, interval);
             if (actorJob || !ActorCaptureDue(frame, lastActorCaptureFrame, interval,
                 lastActorCaptureScope == scope)) return;
+            // A cancelled running job retains its CPU lease. Do not acquire
+            // another expensive pose until that lease is released.
+            if (PendingActorBytes()) { ++deferredActorRecords; ++actorCaptureMemorySkips; return; }
             const auto gate = globals::shaderCache ? globals::shaderCache->GetRuntimeTaskGate() : nullptr;
             if (!gate) { ++deferredActorRecords; return; }
             try {
                 Initialize(backend);
                 if (completion->GetCompletedValue() == UINT64_MAX) return;
                 size_t index = slots.size();
-                uint64_t tracked = 0;
                 for (size_t i = 0; i < slots.size(); ++i) {
                     auto& slot = slots[i];
-                    if (slot) tracked += slot->allocationBytes;
                     if (slot && slot->readyValue == UINT64_MAX) {
                         const auto rescue = ++nextFence;
                         if (SUCCEEDED(backend.commandQueue->Signal(completion.get(), rescue))) slot->readyValue = rescue;
@@ -973,9 +1029,10 @@ namespace DX12Native
                 job->snapshot = std::move(snapshot);
                 // Transfer only a retired, exclusively owned slot. On rejection
                 // it can be restored because no task was admitted.
-                auto selected = std::move(slots[index]);
+                job->selected = std::move(slots[index]);
+                job->gpuReservation.Set(job->selected ? job->selected->allocationBytes : 0);
                 std::weak_ptr<ActorRecordJob> weakJob = job;
-                if (!gate->CompleteReservation(reservation, [weakJob, selected, tracked,
+                if (!gate->CompleteReservation(reservation, [weakJob,
                     device = backend.d3d12Device, root = root, pipeline = pipeline, completion = completion,
                     frame, scope, interval]() mutable {
                     const auto retained = weakJob.lock();
@@ -987,13 +1044,14 @@ namespace DX12Native
                         retained->rejected = snapshot.rejected;
                         if (snapshot.vertices.empty() || snapshot.indices.empty())
                             throw std::runtime_error("No admitted character parts");
-                        retained->result = RecordActor(snapshot, std::move(selected), tracked, device,
+                        retained->result = RecordActor(snapshot, std::move(retained->selected), retained->gpuReservation, device,
                             root, pipeline, completion, frame, scope, interval);
                     } catch (const std::exception& error) { retained->failure = error.what(); }
                     catch (...) { retained->failure = "Character recording failed"; }
                     retained->finished.store(true, std::memory_order_release);
                 })) {
-                    slots[index] = std::move(selected);
+                    slots[index] = std::move(job->selected);
+                    job->gpuReservation.Set(0);
                     ++deferredActorRecords;
                     return;
                 }
@@ -1131,6 +1189,7 @@ namespace DX12Native
                 backend.commandQueue->ExecuteCommandLists(UINT(lists.size()), lists.data());
                 for (const auto& mesh : built) {
                     mesh->blas = mesh->recorded->blas;
+                    mesh->blasBytes = mesh->recorded->blasBytes;
                     mesh->recorded.reset();
                 }
                 const auto value = ++nextFence;
@@ -1245,11 +1304,15 @@ namespace DX12Native
                     add(positions.size() * sizeof(positions.front()), D3D12_RESOURCE_FLAG_NONE);
                     add(indices.size() * sizeof(uint32_t), D3D12_RESOURCE_FLAG_NONE);
                     add(info.ResultDataMaxSizeInBytes, uav); add(info.ScratchDataSizeInBytes, uav);
+                    std::unique_lock allocationLock(characterRigidAllocationMutex);
                     VideoMemoryBudget budget;
                     if (required > budget.Query(device.get(), 0).effectiveBytes)
                         throw std::runtime_error("Rigid BLAS budget deferred");
                     auto record = std::make_shared<RigidRecordedBuild>();
                     record->allocationBytes = required;
+                    record->reservation.Set(required);
+                    const auto blasDesc = CD3DX12_RESOURCE_DESC::Buffer(info.ResultDataMaxSizeInBytes, uav);
+                    record->blasBytes = device->GetResourceAllocationInfo(0, 1, &blasDesc).SizeInBytes;
                     record->positions = Eval::Table(device.get(), positions);
                     record->indices = Eval::Table(device.get(), indices);
                     record->blas = Eval::Buffer(device.get(), info.ResultDataMaxSizeInBytes, D3D12_HEAP_TYPE_DEFAULT,
@@ -1258,6 +1321,7 @@ namespace DX12Native
                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS, uav);
                     Eval::Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(record->allocator.put())));
                     Eval::Check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, record->allocator.get(), nullptr, IID_PPV_ARGS(record->commands.put())));
+                    allocationLock.unlock();
                     geometry.Triangles.VertexBuffer.StartAddress = record->positions->GetGPUVirtualAddress();
                     geometry.Triangles.IndexBuffer = record->indices->GetGPUVirtualAddress();
                     D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build{};
@@ -1284,6 +1348,9 @@ namespace DX12Native
             std::vector<uint32_t> shadingIndices;
             std::vector<float> shading;
             winrt::com_ptr<ID3D12Resource> blas;
+            uint64_t blasBytes = 0;
+            Bone lastTransform{};
+            bool hasTransform = false;
             uint32_t lastFrame = 0;
         };
         struct RigidInstance { std::shared_ptr<RigidMesh> mesh; Bone transform; std::shared_ptr<const DX12::PreparedMaterialSource> material; };
@@ -1344,7 +1411,8 @@ namespace DX12Native
         uint32_t captureFrame = UINT32_MAX, captureScope = 0;
         uint32_t lastActorCaptureFrame = UINT32_MAX, lastActorCaptureScope = 0;
         uint64_t nextPoseRevision = 0, cancelledActorRecords = 0, approximateActorRecords = 0;
-        uint64_t actorCaptureAdmissionSkips = 0, rigidCaptureAdmissionSkips = 0;
+        uint64_t actorCaptureAdmissionSkips = 0, rigidCaptureAdmissionSkips = 0, actorCaptureMemorySkips = 0;
+        uint64_t rigidMeshHits = 0, rigidMeshMisses = 0, rigidBlasReuses = 0, rigidBlasTransformReuses = 0, rigidRevisionInvalidations = 0;
         uint64_t asyncActorRecords = 0, deferredActorRecords = 0, staleActorRecords = 0, publishedActorRecords = 0;
         CharacterMaterialWorker materialWorker, moverMaterialWorker;
         VideoMemoryBudget budget;
