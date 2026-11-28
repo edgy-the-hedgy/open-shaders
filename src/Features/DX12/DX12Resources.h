@@ -79,7 +79,9 @@ namespace DX12
 		// Raster-only vanilla terrain inputs; never retain engine texture pointers.
 		uint32_t rasterLandscapeLayers = 0;
 		std::array<std::array<std::string, 2>, 8> rasterLandscapeTextures{};
-		std::array<float, 6> rasterLandscapeSnow{}, rasterLandscapeSpecular{};
+		std::array<float, 8> rasterLandscapeSnow{}, rasterLandscapeSpecular{};
+		std::array<std::string,8> rasterLandscapeEditorIds{};
+		std::array<std::array<std::string,2>,8> rasterLandscapePbrPaths{};
 		std::vector<uint8_t> vertexBytes;
 		bool operator==(const PreparedMaterialSource&) const = default;
 		uint64_t ByteSize() const
@@ -91,6 +93,9 @@ namespace DX12
 				for (const auto& path : rasterEffect->texturePaths) bytes += path.size();
 			for (const auto& layer : rasterLandscapeTextures)
 				for (const auto& path : layer) bytes += path.size();
+			for (const auto& id:rasterLandscapeEditorIds) bytes+=id.size();
+			for (const auto& layer:rasterLandscapePbrPaths)
+				for (const auto& path:layer) bytes+=path.size();
 			return bytes;
 		}
 	};
