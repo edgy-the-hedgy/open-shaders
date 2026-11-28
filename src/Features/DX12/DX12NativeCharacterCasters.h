@@ -521,12 +521,12 @@ namespace DX12Native
         // Alan's rigid mover approach: local-space immutable mesh BLASes,
         // independent per-frame instance transforms. Capture missing meshes
         // immediately, so raw engine pointers are never read at submission.
-        void ObserveRigidMover(const GraphicsBackend& backend, RE::BSGeometry& geometry, uint32_t frame, uint32_t scope)
+        void ObserveRigidMover(const GraphicsBackend& backend, RE::BSGeometry& geometry, uint32_t frame, uint32_t scope, uint64_t geometryRevision)
         {
             CS_DRAW_ZONE("DX12::RigidMover::Observe");
-            if (moverScope != scope) {
+            if (moverScope != scope || moverGeometryRevision != geometryRevision) {
                 moverMeshes.clear(); moverShadingOrder.clear(); moverShadingCache = nullptr; moverMaterialWorker.Reset();
-                moverScope = scope; moverFrame = UINT32_MAX;
+                moverScope = scope; moverGeometryRevision = geometryRevision; moverFrame = UINT32_MAX;
             }
             if (moverFrame != frame) {
                 movers.clear(); seenMovers.clear(); moverFrame = frame; newMoverMeshes = 0;
@@ -549,7 +549,10 @@ namespace DX12Native
                 property->flags.any(Flag::kScreendoorAlphaFade) || property->flags.any(Flag::kRefraction) ||
                 property->flags.any(Flag::kTreeAnim) || property->flags.any(Flag::kDecal) ||
                 property->flags.any(Flag::kDynamicDecal)) return;
-            const MeshKey key{ reinterpret_cast<uintptr_t>(runtime.rendererData->rawVertexData),
+            // A cache entry retains this geometry on the engine thread.
+            // Do not infer allocation lifetime from shared raw addresses alone.
+            const MeshKey key{ reinterpret_cast<uintptr_t>(&geometry), reinterpret_cast<uintptr_t>(runtime.rendererData),
+                reinterpret_cast<uintptr_t>(runtime.rendererData->rawVertexData),
                 reinterpret_cast<uintptr_t>(runtime.rendererData->rawIndexData),
                 uintptr_t(counts.vertexCount), uintptr_t(counts.triangleCount), uintptr_t(desc.GetSize()),
                 desc.HasFlag(V::VF_UV) ? uintptr_t(desc.GetAttributeOffset(V::VA_TEXCOORD0)) : UINTPTR_MAX,
@@ -631,7 +634,8 @@ namespace DX12Native
             combined.reset(); current.reset(); materialWorker.Reset(); moverMaterialWorker.Reset();
             moverShadingOrder.clear(); moverShadingCache = nullptr;
             attemptedFrame = UINT32_MAX; attemptedScope = 0;
-            moverFrame = UINT32_MAX; moverScope = 0; movers.clear(); seenMovers.clear(); moverMeshes.clear();
+            moverFrame = UINT32_MAX; moverScope = 0; moverGeometryRevision = 0;
+            movers.clear(); seenMovers.clear(); moverMeshes.clear();
             actorJob.reset();
             captureFrame = UINT32_MAX; captureScope = 0;
         }
@@ -666,7 +670,7 @@ namespace DX12Native
             return bytes;
         }
 
-        void Publish(const GraphicsBackend& backend, uint32_t frame, uint32_t scope, uint32_t interval)
+        void Publish(const GraphicsBackend& backend, uint32_t frame, uint32_t scope, uint32_t interval, uint64_t geometryRevision)
         {
             ZoneScopedN("DX12::Characters::Publish");
             if (!scope || (attemptedFrame == frame && attemptedScope == scope)) return;
@@ -686,7 +690,8 @@ namespace DX12Native
             // never wait for it or promote a stale recording.
             PrepareActor(backend, frame, scope, interval);
             CollectActor(backend, frame, scope, interval);
-            PublishMovers(backend, frame, scope);
+            if (moverGeometryRevision == geometryRevision)
+                PublishMovers(backend, frame, scope);
             std::erase_if(moverMeshes, [&](const auto& entry) { return frame - entry.second->lastFrame > kMoverRetentionFrames; });
         }
 
@@ -843,20 +848,23 @@ namespace DX12Native
             return next;
         }
 
-        void CollectActor(const GraphicsBackend& backend, uint32_t frame, uint32_t scope, uint32_t interval)
+        void PruneActor(uint32_t frame, uint32_t scope, uint32_t interval)
         {
             if (current && (!current->Submitted(frame, scope) || (interval != 2u && current->frame != frame)))
                 current.reset();
-            if (!actorJob) return;
-            if (actorJob->scope != scope || actorJob->interval != interval ||
-                frame - actorJob->frame > (interval == 2u ? 1u : 0u)) {
+            if (actorJob && (actorJob->scope != scope || actorJob->interval != interval ||
+                frame - actorJob->frame > (interval == 2u ? 1u : 0u))) {
                 // A stale recording has never been executed. Dropping our
                 // reference is safe even if a worker still owns the job.
                 actorJob.reset();
                 ++staleActorRecords;
-                return;
             }
-            if (!actorJob->finished.load(std::memory_order_acquire)) return;
+        }
+
+        void CollectActor(const GraphicsBackend& backend, uint32_t frame, uint32_t scope, uint32_t interval)
+        {
+            PruneActor(frame, scope, interval);
+            if (!actorJob || !actorJob->finished.load(std::memory_order_acquire)) return;
             auto job = std::move(actorJob);
             rejectedParts = job->rejected;
             if (!job->result) { failure = job->failure; return; }
@@ -889,7 +897,7 @@ namespace DX12Native
             ZoneScopedN("DX12::Characters::SnapshotAcquisition");
             if (!scope || (captureFrame == frame && captureScope == scope)) return;
             captureFrame = frame; captureScope = scope;
-            CollectActor(backend, frame, scope, interval);
+            PruneActor(frame, scope, interval);
             if (actorJob || (current && current->Submitted(frame, scope) &&
                 (current->frame == frame || interval == 2u))) return;
             const auto gate = globals::shaderCache ? globals::shaderCache->GetRuntimeTaskGate() : nullptr;
@@ -1095,7 +1103,7 @@ namespace DX12Native
         }
 
         static constexpr uint32_t kMaxMovers = 512, kMaxNewMovers = 8, kMaxCachedMeshes = 512, kMoverRetentionFrames = 300;
-        using MeshKey = std::array<uintptr_t, 9>;
+        using MeshKey = std::array<uintptr_t, 11>;
         struct RigidSourcePacket
         {
             RE::BSGraphics::VertexDesc desc{};
@@ -1285,6 +1293,7 @@ namespace DX12Native
         std::array<std::shared_ptr<CharacterCasterFrame>, 4> moverSlots;
         std::shared_ptr<CharacterCasterFrame> combined;
         uint32_t moverScope = 0, newMoverMeshes = 0;
+        uint64_t moverGeometryRevision = 0;
         uint64_t asyncRigidPacks = 0, inlineRigidPacks = 0, deferredRigidPacks = 0;
         GraphicsBackend owner;
         std::shared_ptr<ActorRecordJob> actorJob;

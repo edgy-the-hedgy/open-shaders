@@ -859,7 +859,7 @@ void DX12NativeScene::OnOpaqueRasterReady()
 			!(globals::state->permutationData.ExtraShaderDescriptor &
 				static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)) &&
 			grid && !grid->requested.empty())
-			characterCasters->Publish(*backend, globals::game::graphicsState->GetFrameCount(), grid->requested.front().scope, characterUpdateInterval);
+			characterCasters->Publish(*backend, globals::game::graphicsState->GetFrameCount(), grid->requested.front().scope, characterUpdateInterval, grid->geometryRevision);
 		DispatchFullNativeMaterial(true);
 		DispatchFullNativeIndirect();
 		return;
@@ -1249,7 +1249,7 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 			if (ancestryRead && reference && reference->IsDynamicForm() && !reference->IsActor()) {
 				const auto moverGrid = globals::features::dx12Resources.GetGrid();
 				if (moverGrid && !moverGrid->requested.empty())
-					characterCasters->ObserveRigidMover(*backend, geometry, frame, moverGrid->requested.front().scope);
+					characterCasters->ObserveRigidMover(*backend, geometry, frame, moverGrid->requested.front().scope, moverGrid->geometryRevision);
 			}
 			}
 		}
