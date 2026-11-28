@@ -1618,10 +1618,10 @@ void DX12NativeScene::StampFullNativeIndexedDraw(uint32_t count, uint32_t start,
 	const bool strip=nativeInputTopology==D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
 	const bool list=nativeInputTopology==D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 	const uint32_t directBound=NativePBR::InputOnly::RasterTriangleBound(count,strip);
-	// GPU-driven foliage can issue a recognized original draw without a
-	// current engine geometry callback. Its draw/primitive identity and bound
-	// source views are still valid raster evidence, not a material or TLAS match.
-	const bool drawLocalFoliage = gpuCounted && !draws.activeGeometry && state->currentShader &&
+	// Recognized foliage can issue original bounded direct or GPU-driven draws
+	// without a geometry callback. The original draw and bound source SRVs
+	// establish raster-local evidence, never exact scene correspondence.
+	const bool drawLocalFoliage = !draws.activeGeometry && state->currentShader &&
 		(state->currentShader->shaderType.get() == Type::Grass || state->currentShader->shaderType.get() == Type::DistantTree);
 	if (!coherent || !attributes || !draws.opaqueReplacement || (!draws.activeGeometry && !drawLocalFoliage) ||
 		(!strip && !list) || (!gpuCounted && (!directBound || !instances))) {
