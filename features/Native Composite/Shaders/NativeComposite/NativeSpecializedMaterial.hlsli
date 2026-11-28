@@ -137,6 +137,66 @@ void NativeSpecializedSetGlint(inout NativeSpecializedEvaluation e,float4 parame
     e.payload.glint=parameters;
     e.valid|=SpecializedGlint;
 }
+void NativeSpecializedSetCoat(inout NativeSpecializedEvaluation e,float strength,float roughness,float f0)
+{
+    NativeSpecializedMarkPresent(e,SpecializedCoat);
+    if(!NativeSpecializedHalfValid(float2(roughness,f0))||!isfinite(strength)||strength<0.0||strength>1.0) return;
+    e.payload.coatColorStrength.y=(e.payload.coatColorStrength.y&65535u)|NativeSpecializedPackHalf2(float2(0.0,strength));
+    e.payload.coatNormalRoughnessF0.y=NativeSpecializedPackHalf2(float2(roughness,f0));
+    e.valid|=SpecializedCoat;
+}
+void NativeSpecializedSetColoredCoat(inout NativeSpecializedEvaluation e,float3 color)
+{
+    NativeSpecializedMarkPresent(e,SpecializedColoredCoat);
+    if(!NativeSpecializedHalfValid(color.xy)||!NativeSpecializedHalfValid(float2(color.z,0.0))) return;
+    e.payload.coatColorStrength.x=NativeSpecializedPackHalf2(color.xy);
+    e.payload.coatColorStrength.y=(e.payload.coatColorStrength.y&0xffff0000u)|NativeSpecializedPackHalf2(float2(color.z,0.0));
+    e.valid|=SpecializedColoredCoat;
+}
+void NativeSpecializedSetInterlayer(inout NativeSpecializedEvaluation e,float ior,float depth,float displacement,float opticalThickness)
+{
+    NativeSpecializedMarkPresent(e,SpecializedInterlayer);
+    if(ior<=0.0||!NativeSpecializedHalfValid(float2(ior,depth))||!NativeSpecializedHalfValid(float2(displacement,opticalThickness))) return;
+    e.payload.interlayer=uint2(NativeSpecializedPackHalf2(float2(ior,depth)),NativeSpecializedPackHalf2(float2(displacement,opticalThickness)));
+    e.valid|=SpecializedInterlayer;
+}
+void NativeSpecializedSetThin(inout NativeSpecializedEvaluation e,float3 normal,float balance,bool foliage)
+{
+    NativeSpecializedMarkPresent(e,SpecializedThin);
+    if(!NativeSpecializedDirectionValid(normal)||!isfinite(balance)||balance<0.0||balance>1.0) return;
+    e.payload.thinSurface.x=NativeSpecializedPackOct(normal);
+    e.payload.thinSurface.y=(e.payload.thinSurface.y&0xffff0000u)|NativeSpecializedPackHalf2(float2(balance,0.0));
+    e.payload.flags=(e.payload.flags&~SpecializedFoliageFlag)|(foliage?SpecializedFoliageFlag:0u);
+    e.valid|=SpecializedThin;
+}
+void NativeSpecializedSetFront(inout NativeSpecializedEvaluation e,float weight)
+{
+    NativeSpecializedMarkPresent(e,SpecializedFront);
+    if(!isfinite(weight)||weight<0.0||weight>1.0) return;
+    e.payload.thinSurface.y=(e.payload.thinSurface.y&65535u)|NativeSpecializedPackHalf2(float2(0.0,weight));
+    e.valid|=SpecializedFront;
+}
+void NativeSpecializedSetBack(inout NativeSpecializedEvaluation e,float weight,float roughnessScale)
+{
+    NativeSpecializedMarkPresent(e,SpecializedBack);
+    if(weight<0.0||weight>1.0||roughnessScale<0.0||!NativeSpecializedHalfValid(float2(weight,roughnessScale))) return;
+    e.payload.thinSurface.z=NativeSpecializedPackHalf2(float2(weight,roughnessScale));
+    e.valid|=SpecializedBack;
+}
+void NativeSpecializedSetSpecularControls(inout NativeSpecializedEvaluation e,float2 weight)
+{
+    NativeSpecializedMarkPresent(e,SpecializedSpecularControls);
+    if(!all(isfinite(weight))||any(weight<0.0)||any(weight>1.0)) return;
+    e.payload.thinSurface.w=NativeSpecializedPackHalf2(weight);
+    e.valid|=SpecializedSpecularControls;
+}
+void NativeSpecializedSetTransmission(inout NativeSpecializedEvaluation e,float3 color,float thickness)
+{
+    NativeSpecializedMarkPresent(e,SpecializedTransmission);
+    if(thickness<0.0||!NativeSpecializedHalfValid(color.xy)||!NativeSpecializedHalfValid(float2(color.z,thickness))) return;
+    e.payload.transmission=uint2(NativeSpecializedPackHalf2(color.xy),NativeSpecializedPackHalf2(float2(color.z,thickness)));
+    e.valid|=SpecializedTransmission;
+}
 NativeSpecializedDirectory NativeSpecializedSanitize(uint ordinal,uint present,uint valid,uint capacity)
 {
     NativeSpecializedDirectory d;

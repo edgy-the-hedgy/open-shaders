@@ -19,10 +19,11 @@ void main(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= InstanceCount) return;
     NativeCoatSample coat;
+    NATIVE_SPECIALIZED_LOCAL
     const float3x3 identity=float3x3(1,0,0,0,1,0,0,0,1);
     NativeParallaxShadowSample shadow;
     bool rawUsed;
-    Output[id.x] = EvaluateMaterial(InstanceCount,id.x, 0u, float3(1.0/3.0,1.0/3.0,1.0/3.0), float3(0,0,-1), float3(0,0,0), float3(0,0,0), 1.0, 0.0, identity, identity, false, false, false, 0.0, 0xffffffffu, 0.0, 0.0, (RawRasterSurface)0, rawUsed, coat, shadow);
+    Output[id.x] = EvaluateMaterial(InstanceCount,id.x, 0u, float3(1.0/3.0,1.0/3.0,1.0/3.0), float3(0,0,-1), float3(0,0,0), float3(0,0,0), 1.0, 0.0, identity, identity, false, false, false, 0.0, 0xffffffffu, 0.0, 0.0, (RawRasterSurface)0, rawUsed, coat, shadow NATIVE_SPECIALIZED_ARG);
 }
 
 Texture2D<float> ProbeDepth : register(t515);
@@ -64,6 +65,13 @@ RWByteAddressBuffer ScreenOutput : register(u2);
 // Separate identity plane: material ABI remains 32 bytes per sample.
 RWByteAddressBuffer RayIdentity : register(u3);
 RWByteAddressBuffer MaterialLobes : register(u4);
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+// u4 becomes the independent optional parallax plane.
+RWByteAddressBuffer SpecializedDirectoryOut : register(u5);
+RWByteAddressBuffer SpecializedPoolOut : register(u6);
+RWByteAddressBuffer SpecializedCounters : register(u7);
+cbuffer SpecializedInputs : register(b2) { uint SpecializedCapacity; };
+#endif
 uint2 PackHalf4(float4 value)
 {
     uint4 bits=f32tof16(clamp(value,-65504.0,65504.0));
@@ -270,8 +278,9 @@ Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float dista
         if (binding.materialIndex>=RasterRecordCount) { result.color.a=SurfaceMissingTextures; return result; }
         MaterialRecord material=RasterMaterialRecords[binding.materialIndex];
         NativeCoatSample unusedCoat; NativeParallaxShadowSample unusedShadow; bool sampled;
+        NATIVE_SPECIALIZED_LOCAL
         Sample surface=EvaluateMaterialTriangle(binding,material,tri,0u,float3(1,0,0),viewRay,0,0,1.0,distance,
-            identity,identity,false,false,false,MaterialMipBias,0xffffffffu,0.0,0.0,raw,sampled,unusedCoat,unusedShadow);
+            identity,identity,false,false,false,MaterialMipBias,0xffffffffu,0.0,0.0,raw,sampled,unusedCoat,unusedShadow NATIVE_SPECIALIZED_ARG);
         if (!sampled || !HasEvaluatedNativeBase(surface.color.a)) {
             result.color.a=SurfaceEvaluationFailed; return result;
         }
@@ -786,8 +795,9 @@ void ApplyCharacterRasterMaterial(RawRasterSurface raw,float3 viewRay,inout Samp
 // Direct evaluation of certified raster interpolants, independent of TLAS mapping.
 Sample EvaluateRasterLocal(RawRasterSurface raw, uint2 mapped, float3 viewRay, float distance,
     float3 worldPosition, float3 worldDx, float3 worldDy, float noise,
-    out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow)
+    out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow NATIVE_SPECIALIZED_OUT)
 {
+    NATIVE_SPECIALIZED_INIT
     rawUsed=false; coat=(NativeCoatSample)0; shadow=(NativeParallaxShadowSample)0;
     Sample result=(Sample)0; result.color.a=SurfaceUnsupportedMaterial;
     if (raw.auxiliaryKind==10u) return EvaluatePbrGrass(raw,viewRay,rawUsed,coat);
@@ -824,7 +834,7 @@ Sample EvaluateRasterLocal(RawRasterSurface raw, uint2 mapped, float3 viewRay, f
     if ((raw.auxiliaryKind==12u || raw.auxiliaryKind==13u) && ((raw.pixelDescriptor>>24u)&63u)==6u) binding.flags&=~1u;
     result=EvaluateMaterialTriangle(binding,material,tri,mapped.x,float3(1,0,0),viewRay,worldDx,worldDy,1.0,distance,
         identity,identity,ParallaxEnabled!=0u,false,ParallaxShadowEnabled!=0u,MaterialMipBias,
-        projectionRow,worldPosition,noise,raw,rawUsed,coat,shadow);
+        projectionRow,worldPosition,noise,raw,rawUsed,coat,shadow NATIVE_SPECIALIZED_ARG);
     if (!rawUsed || result.color.a==SurfaceInvalidReceiver) {
         result=(Sample)0; result.color.a=SurfaceEvaluationFailed;
         coat=(NativeCoatSample)0; shadow=(NativeParallaxShadowSample)0; return result;
@@ -873,8 +883,9 @@ Sample EvaluateRasterLocal(RawRasterSurface raw, uint2 mapped, float3 viewRay, f
     return result;
 }
 
-Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow, out bool rayIssued, out bool unresolvedUntraced)
+Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow, out bool rayIssued, out bool unresolvedUntraced NATIVE_SPECIALIZED_OUT)
 {
+    NATIVE_SPECIALIZED_INIT
     rawUsed=false; rayIssued=false; unresolvedUntraced=false;
     coat=(NativeCoatSample)0;
     shadow=(NativeParallaxShadowSample)0;
@@ -921,7 +932,7 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed,
             dy=abs(ay)>1e-6 ? dy-ny*(dot(visible.normal,dy)/ay) : 0.0;
         }
         result=EvaluateRasterLocal(visible,rasterMapped,delta,distance,origin+delta,dx,dy,
-            Random::InterleavedGradientNoise(float2(pixel),ProjectionFrame),rawUsed,coat,shadow);
+            Random::InterleavedGradientNoise(float2(pixel),ProjectionFrame),rawUsed,coat,shadow NATIVE_SPECIALIZED_ARG);
         if (HasEvaluatedNativeBase(result.color.a)) {
             // Optional correspondence never revokes an otherwise valid material.
             if (rayRange && HasRasterRayMapping!=0u && rasterMapped.x<InstanceCount && rasterMapped.y<0x80000000u && visible.materialIndex!=0xffffffffu) {
@@ -1009,7 +1020,7 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed,
     }
     result=EvaluateMaterial(InstanceCount,instance,primitive,float3(1.0-bary.x-bary.y,bary),
         mul(worldToObject,delta),rayOffsetX,rayOffsetY,hitDistance/distance,hitDistance,
-        worldToObject,objectToWorld,ParallaxEnabled!=0u,ParallaxWarpFixEnabled!=0u,ParallaxShadowEnabled!=0u,MaterialMipBias,projectionRow,origin+ray.Direction*hitDistance,Random::InterleavedGradientNoise(float2(pixel),ProjectionFrame),raw,rawUsed,coat,shadow);
+        worldToObject,objectToWorld,ParallaxEnabled!=0u,ParallaxWarpFixEnabled!=0u,ParallaxShadowEnabled!=0u,MaterialMipBias,projectionRow,origin+ray.Direction*hitDistance,Random::InterleavedGradientNoise(float2(pixel),ProjectionFrame),raw,rawUsed,coat,shadow NATIVE_SPECIALIZED_ARG);
     if (!traced && !rawUsed) {
         unresolvedUntraced=true;
         result=(Sample)0; result.color.a=SurfaceMissingGeometry;
@@ -1060,17 +1071,28 @@ void screenMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
     if (all(id.xy < GridSize)) {
         uint2 hitIdentity;
         NativeCoatSample coat;
+        NATIVE_SPECIALIZED_LOCAL
         NativeParallaxShadowSample shadow;
         bool rawUsed, rayIssued, unresolvedUntraced;
-        Sample result=EvaluateScreen(id.xy, hitIdentity, rawUsed, coat, shadow, rayIssued, unresolvedUntraced);
+        Sample result=EvaluateScreen(id.xy, hitIdentity, rawUsed, coat, shadow, rayIssued, unresolvedUntraced NATIVE_SPECIALIZED_ARG);
         uint ordinal = id.y*((GridSize.x+7u)&~7u)+id.x;
         uint offset=ordinal*NativeSurfaceStride;
         RayIdentity.Store2(ordinal*8u,hitIdentity);
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+        if(!HasEvaluatedNativeBase(result.color.a)) specialized=(NativeSpecializedEvaluation)0;
+        NativeSpecializedPublish(SpecializedDirectoryOut,SpecializedPoolOut,SpecializedCounters,ordinal,
+            SpecializedCapacity,specialized.present,specialized.valid,specialized.payload);
+#else
         uint lobeOffset=ordinal*NativeMaterialLobeStride;
         MaterialLobes.Store4(lobeOffset,uint4(PackHalf4(coat.normalRoughness),PackHalf4(coat.colorStrength)));
         MaterialLobes.Store4(lobeOffset+16u,uint4(PackHalf4(coat.f0Colored),PackHalf4(coat.subsurface)));
+#endif
         if (ParallaxShadowEnabled!=0u) {
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+            uint shadowOffset=ordinal*NativeParallaxShadowStride;
+#else
             uint shadowOffset=((GridSize.x+7u)&~7u)*GridSize.y*NativeMaterialLobeStride+ordinal*NativeParallaxShadowStride;
+#endif
             if (!HasEvaluatedNativeBase(result.color.a)) shadow=(NativeParallaxShadowSample)0;
             MaterialLobes.Store4(shadowOffset,uint4(asuint(shadow.uv),shadow.textureAndMode,asuint(shadow.height)));
             MaterialLobes.Store4(shadowOffset+16u,uint4(PackHalf4(shadow.tangentScale),PackHalf4(shadow.bitangentMip)));

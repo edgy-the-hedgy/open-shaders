@@ -38,3 +38,18 @@ foreach(_entry IN ITEMS publishMain readMain)
 endforeach()
 add_custom_target(native_specialized_material_validation DEPENDS ${_specialized_outputs})
 add_dependencies(native_shader_validation native_specialized_material_validation)
+
+# Build the actual screen evaluator with v2 output in isolation. This is not
+# staged or bound by the runtime until the synchronized consumer switch.
+set(_specialized_screen "${_specialized_include}/NativePBRProbe.hlsl6")
+set(_specialized_screen_out "${CMAKE_CURRENT_BINARY_DIR}/SpecializedMaterial-screen.dxil")
+add_custom_command(
+    OUTPUT "${_specialized_screen_out}"
+    COMMAND "${NATIVE_SHADOW_DXC}" -T cs_6_5 -E screenMain -HV 2021 -O3 -WX -Ges -Gis
+        -D NATIVE_SPECIALIZED_V2_PRODUCER=1 -I "${NATIVE_SHADER_SOURCE_ROOT}/package/Shaders"
+        -Fo "${_specialized_screen_out}" "${_specialized_screen}"
+    DEPENDS "${_specialized_screen}" ${_full_native_local_deps} ${_full_native_common_deps}
+    VERBATIM
+)
+add_custom_target(native_specialized_screen_validation DEPENDS "${_specialized_screen_out}")
+add_dependencies(native_shader_validation native_specialized_screen_validation)

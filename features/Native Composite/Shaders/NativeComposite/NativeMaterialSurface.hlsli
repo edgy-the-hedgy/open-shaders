@@ -2,6 +2,18 @@
 #define NATIVE_MATERIAL_SURFACE_HLSLI
 #include "NativeSurface.hlsli"
 #include "NativeRawRasterSurface.hlsli"
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+#include "NativeSpecializedMaterial.hlsli"
+#define NATIVE_SPECIALIZED_OUT , out NativeSpecializedEvaluation specialized
+#define NATIVE_SPECIALIZED_ARG , specialized
+#define NATIVE_SPECIALIZED_INIT specialized=(NativeSpecializedEvaluation)0;
+#define NATIVE_SPECIALIZED_LOCAL NativeSpecializedEvaluation specialized;
+#else
+#define NATIVE_SPECIALIZED_OUT
+#define NATIVE_SPECIALIZED_ARG
+#define NATIVE_SPECIALIZED_INIT
+#define NATIVE_SPECIALIZED_LOCAL
+#endif
 struct Sample { float4 color; float4 normal; float4 f0; float4 emission; };
 float3 SrgbToLinear(float3 v)
 {
@@ -162,8 +174,9 @@ struct NativeMaterialTriangle
     bool rasterLocal;
 };
 
-Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, NativeMaterialTriangle triData, uint instance, float3 weights, float3 rayObject, float3 rayOffsetX, float3 rayOffsetY, float rayScale, float viewDistance, float3x3 worldToObject, float3x3 objectToWorld, bool parallaxEnabled, bool warpFixEnabled, bool shadowEnabled, float mipBias, uint projectionRow, float3 worldPosition, float projectionNoise, RawRasterSurface raw, out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow)
+Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, NativeMaterialTriangle triData, uint instance, float3 weights, float3 rayObject, float3 rayOffsetX, float3 rayOffsetY, float rayScale, float viewDistance, float3x3 worldToObject, float3x3 objectToWorld, bool parallaxEnabled, bool warpFixEnabled, bool shadowEnabled, float mipBias, uint projectionRow, float3 worldPosition, float projectionNoise, RawRasterSurface raw, out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow NATIVE_SPECIALIZED_OUT)
 {
+    NATIVE_SPECIALIZED_INIT
     rawUsed = false;
     coat = (NativeCoatSample)0;
     shadow = (NativeParallaxShadowSample)0;
@@ -421,6 +434,20 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
     // specular maps and unsupported compressed model normals are not certified.
     // Keep the normal-mapped direct-light normal. The eye-center normal is
     // a separate environment direction, published in the unused lobe payload.
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+    // Authored presence is independent of the legacy capability mask.
+    uint authored=material.properties.x;
+    if((authored&1u)!=0u) NativeSpecializedMarkPresent(specialized,SpecializedSSS);
+    if((authored&2u)!=0u) NativeSpecializedMarkPresent(specialized,SpecializedCoat|SpecializedCoatNormal);
+    if((authored&4u)!=0u) NativeSpecializedMarkPresent(specialized,SpecializedColoredCoat);
+    if((authored&8u)!=0u) NativeSpecializedMarkPresent(specialized,SpecializedInterlayer);
+    if((authored&32u)!=0u) NativeSpecializedMarkPresent(specialized,SpecializedFuzz);
+    if((authored&384u)!=0u) NativeSpecializedMarkPresent(specialized,SpecializedThin|SpecializedFront|SpecializedBack|SpecializedSpecularControls|SpecializedTransmission);
+    if((material.controls.y&1u)!=0u) {
+        NativeSpecializedMarkPresent(specialized,SpecializedGlint);
+        if(projectionRow==0xffffffffu) NativeSpecializedSetGlint(specialized,material.glint);
+    }
+#endif
     if ((binding.flags & SurfaceSubsurfaceReadyBinding) != 0u) {
         float3 scatterColor = SrgbToLinear(max(material.subsurfaceColor.rgb,0.0));
         float thickness = saturate(material.coat.w);
@@ -429,6 +456,9 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
             scatterColor *= SrgbToLinear(max(feature0.rgb,0.0));
             thickness *= saturate(feature0.a);
         }
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+        NativeSpecializedSetSSS(specialized,scatterColor,thickness);
+#endif
         if (all(isfinite(scatterColor)) && isfinite(thickness)) coat.subsurface=float4(scatterColor,thickness);
         else result.color.a=SurfaceFeatureLimited;
     }
@@ -460,6 +490,16 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
                 coat.f0Colored=float4(saturate(material.thinSurface.xy),max(material.thinSurface.z,0.0),
                     (binding.flags & SurfaceFoliageReadyBinding)!=0u ? NativeFoliageTag : NativeThinTag);
                 coat.subsurface=float4(scatterColor,thickness);
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+                float3 worldFace=triData.rasterLocal ? face : mul(face,worldToObject);
+                NativeSpecializedSetThin(specialized,worldFace,saturate(material.surface.y),(binding.flags&SurfaceFoliageReadyBinding)!=0u);
+                // These authored XY values are specular controls, not transmission weights.
+                NativeSpecializedSetSpecularControls(specialized,saturate(material.thinSurface.xy));
+                NativeSpecializedSetFront(specialized,(1.0-thickness)*(1.0-saturate(material.surface.y)));
+                NativeSpecializedSetBack(specialized,(1.0-thickness)*saturate(material.surface.y),max(material.thinSurface.z,0.0));
+                if((material.properties.x&1u)!=0u) NativeSpecializedSetSSS(specialized,scatterColor,thickness);
+                // Physical transmission thickness is not supplied by this source.
+#endif
             }
         }
     }
@@ -488,6 +528,9 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
                 coat.f0Colored.w=NativeFuzzTag;
             }
             coat.colorStrength=float4(saturate(fuzzColor),weight);
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+            NativeSpecializedSetFuzz(specialized,saturate(fuzzColor),weight,clamp(fuzzRoughness,-1.0,1.0));
+#endif
         }
     }
     if ((binding.flags & SurfaceCoatReadyBinding) != 0u) {
@@ -521,8 +564,20 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
             coat.colorStrength=float4(coatColor,strength);
             coat.f0Colored=float4(saturate(material.coat.z).xxx,(material.properties.x & 4u) != 0u ? 1.0 : 0.0);
             if (interlayerActive) coat.subsurface.w=2.0+eta;
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+            NativeSpecializedSetCoat(specialized,strength,clamp(coatRoughness,0.045,1.0),saturate(material.coat.z));
+            NativeSpecializedSetCoatNormal(specialized,triData.rasterLocal?coatNormal:mul(coatNormal,worldToObject));
+            if((authored&4u)!=0u) NativeSpecializedSetColoredCoat(specialized,coatColor);
+            // The prior eta tag does not supply complete depth/optical thickness.
+#endif
         }
     }
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+    if(triData.rasterLocal && raw.auxiliaryKind==4u)
+        NativeSpecializedSetEyeNormal(specialized,asfloat(raw.auxiliary.xyz));
+    // Projected specialized blending remains unavailable.
+    if(projectionWeight>0.0) specialized.valid&=~specialized.present;
+#endif
     if (triData.rasterLocal && raw.auxiliaryKind==4u &&
         !HasNativeCoat(coat) && !HasNativeFuzz(coat) && !HasNativeThinSurface(coat) && !HasNativeSubsurface(coat)) {
         float3 eye=asfloat(raw.auxiliary.xyz);
@@ -539,8 +594,9 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
     return result;
 }
 
-Sample EvaluateMaterial(uint instanceCount, uint instance, uint primitive, float3 weights, float3 rayObject, float3 rayOffsetX, float3 rayOffsetY, float rayScale, float viewDistance, float3x3 worldToObject, float3x3 objectToWorld, bool parallaxEnabled, bool warpFixEnabled, bool shadowEnabled, float mipBias, uint projectionRow, float3 worldPosition, float projectionNoise, RawRasterSurface raw, out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow)
+Sample EvaluateMaterial(uint instanceCount, uint instance, uint primitive, float3 weights, float3 rayObject, float3 rayOffsetX, float3 rayOffsetY, float rayScale, float viewDistance, float3x3 worldToObject, float3x3 objectToWorld, bool parallaxEnabled, bool warpFixEnabled, bool shadowEnabled, float mipBias, uint projectionRow, float3 worldPosition, float projectionNoise, RawRasterSurface raw, out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow NATIVE_SPECIALIZED_OUT)
 {
+    NATIVE_SPECIALIZED_INIT
     rawUsed = false;
     coat = (NativeCoatSample)0;
     shadow = (NativeParallaxShadowSample)0;
@@ -571,7 +627,7 @@ Sample EvaluateMaterial(uint instanceCount, uint instance, uint primitive, float
     }
     return EvaluateMaterialTriangle(binding,material,triData,instance,weights,rayObject,rayOffsetX,rayOffsetY,
         rayScale,viewDistance,worldToObject,objectToWorld,parallaxEnabled,warpFixEnabled,shadowEnabled,mipBias,
-        projectionRow,worldPosition,projectionNoise,raw,rawUsed,coat,shadow);
+        projectionRow,worldPosition,projectionNoise,raw,rawUsed,coat,shadow NATIVE_SPECIALIZED_ARG);
 }
 
 #endif
