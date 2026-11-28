@@ -994,6 +994,7 @@ void DX12NativeScene::BeginFullNativeRasterInputs()
 	if (!globals::features::dx12Control.UsesExclusiveMaterials() || !globals::game::graphicsState) return;
 	ZoneScopedN("DX12::RasterInputs::Begin");
 	auto& draws = fullNativeRasterDraws;
+	nativeSourceRevisionCache.clear();
 	const auto oldInputs = draws.scene ? draws.scene->inputs : nullptr;
 	// Preserve capacity while resetting frame-local state and COM references.
 	FullNativeRasterDrawState next;
@@ -1852,12 +1853,43 @@ void DX12NativeScene::StampFullNativeIndexedDraw(uint32_t count, uint32_t start,
 		for (uint32_t i = 0; i < addressModes.size(); ++i)
 			addressModes[i] = static_cast<uint8_t>(shadow.PSTextureAddressMode[i].get());
 	}
+	using namespace DX12Native::TextureRevision;
+	const uint64_t revisionEpoch=epoch.load(std::memory_order_acquire);
+	const uint64_t revisionSerial=serial.load(std::memory_order_acquire);
+	if (nativeSourceRevisionEpoch!=revisionEpoch || nativeSourceRevisionSerial!=revisionSerial) {
+		nativeSourceRevisionCache.clear();
+		nativeSourceRevisionEpoch=revisionEpoch;
+		nativeSourceRevisionSerial=revisionSerial;
+	}
 	if (nativeSourceViewsDirty || !nativeSourceSnapshot || nativeSourceSnapshot->shaderClass != shaderClass ||
-		nativeSourceSnapshot->addressModes != addressModes) {
+		nativeSourceSnapshot->addressModes != addressModes ||
+		nativeSourceSnapshot->revisionEpoch!=revisionEpoch || nativeSourceSnapshot->revisionSerial!=revisionSerial) {
 		auto sources=std::make_shared<NativePBR::RasterSourceViews>();
 		sources->shaderClass=shaderClass;
 		sources->addressModes=addressModes;
 		sources->views=nativeSourceViews;
+		sources->revisionEpoch=revisionEpoch;
+		sources->revisionSerial=revisionSerial;
+		// All cached pointers are retained by immutable draw snapshots until
+		// this pass ends. Limit metadata work and memory even on large scenes.
+		for (uint32_t role=0;role<sources->revisions.size();++role) {
+			const uint32_t slot=role==16u ? 124u : role;
+			auto* view=sources->views[slot].get();
+			if (!view) continue;
+			if (auto found=nativeSourceRevisionCache.find(view);found!=nativeSourceRevisionCache.end())
+				sources->revisions[role]=found->second;
+			else {
+				const auto stamp=ReadView(view);
+				sources->revisions[role]=stamp;
+				if (nativeSourceRevisionCache.size()<4096u) nativeSourceRevisionCache.emplace(view,stamp);
+			}
+		}
+		// A concurrent write makes this observation uncertain. Do not publish
+		// the captured version as known; a later draw will reacquire it.
+		if (epoch.load(std::memory_order_acquire)!=revisionEpoch || serial.load(std::memory_order_acquire)!=revisionSerial) {
+			sources->revisions={};
+			nativeSourceRevisionCache.clear();
+		}
 		nativeSourceSnapshot=std::move(sources);
 		nativeSourceViewsDirty=false;
 	}
@@ -1942,6 +1974,13 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 			inputs.push_back({instance,observation.descriptor,observation.samplerModes,
 				{observation.constantOffsets[0]==UINT32_MAX ? nullptr : slot.views[0].get(),needsPixelConstants?slot.views[1].get():nullptr},observation.constantOffsets,observation.views,raster.rasterDraw});
 			inputs.back().extraSamplerModes=observation.extraData;
+			const auto& source=draws.drawSourceViews[raster.rasterDraw-1u];
+			const std::array<uint32_t,4> slots=terrain ? std::array<uint32_t,4>{13u,15u,UINT32_MAX,UINT32_MAX} : std::array<uint32_t,4>{3u,8u,10u,11u};
+			for (size_t role=0;role<slots.size();++role) {
+				const uint32_t original=slots[role];
+				if (source && original<source->views.size() && source->views[original].get()==observation.views[role].get())
+					inputs.back().revisions[role]=source->Revision(original);
+			}
 		}
 		// Non-Lighting shader classes use their actual bound PS SRVs. Import
 		// through the same typed mip transfer, but use reserved row kinds and
@@ -1992,6 +2031,7 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 				for (uint32_t role=0;role<2u;++role) {
 					const uint32_t slot=5u+role;
 					input.extraViews[role]=source->views[slot];
+					input.extraRevisions[role]=source->Revision(slot);
 					input.extraSamplerModes|=uint32_t(source->addressModes[slot]&3u)<<(2u*role);
 					if (input.extraViews[role]) {
 						D3D11_SHADER_RESOURCE_VIEW_DESC view{};
@@ -2029,6 +2069,7 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 				if (sampler>=source->addressModes.size() || source->addressModes[sampler]>3u) { supported=false; break; }
 				input.samplerModes|=uint32_t(source->addressModes[sampler])<<(2u*role);
 				input.views[role]=source->views[slot];
+				input.revisions[role]=source->Revision(slot);
 				if (!input.views[role]) continue;
 				D3D11_SHADER_RESOURCE_VIEW_DESC view{};
 				input.views[role]->GetDesc(&view);
@@ -2039,7 +2080,8 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 				reinterpret_cast<uintptr_t>(input.views[0].get()),reinterpret_cast<uintptr_t>(input.views[1].get()),
 				reinterpret_cast<uintptr_t>(input.views[2].get()),reinterpret_cast<uintptr_t>(input.views[3].get()),
 				reinterpret_cast<uintptr_t>(effectSource),input.descriptor};
-			if (const auto found=materialRows.find(key); found!=materialRows.end()) {
+			if (const auto found=materialRows.find(key); found!=materialRows.end() &&
+				inputs[found->second].revisions==input.revisions && inputs[found->second].extraRevisions==input.extraRevisions) {
 				inputs[found->second].rasterAliases.push_back(input.rasterDraw);
 				continue;
 			}
