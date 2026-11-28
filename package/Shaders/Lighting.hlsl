@@ -1472,6 +1472,10 @@ PS_OUTPUT main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool frontFace :
 	// remains available in the frame-local draw record for these permutations.
 	if (psout.IdentityUV.x != 0u) {
 #		if defined(LANDSCAPE)
+#			if defined(SNOW_DEFORMATION)
+	// The previously unused upper byte retains packed snow independently of seam weights.
+	psout.BasisFlags.w |= uint(round(saturate(input.LandBlendWeights2.z)*255.0)) << 24u;
+#			endif
 #			if defined(LANDSCAPE_SEAMS)
 	LandscapeSeams::Load(input.WorldPosition.xy + FrameBuffer::CameraPosAdjust[eyeIndex].xy, input.LandBlendWeights1, input.LandBlendWeights2);
 	if ((LandscapeSeams::Data.Flags & LandscapeSeams::FlagValid)!=0u && any(LandscapeSeams::ExtraWeights>0.0)) {
