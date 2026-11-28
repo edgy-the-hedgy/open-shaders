@@ -390,12 +390,22 @@ NativeInputOutput main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool fro
 	NativeInputOutput output=(NativeInputOutput)0;
 	float alpha=TexDiffuse.SampleBias(SampDiffuse,input.TexCoord.xy,SharedData::MipBias).a;
 	clip(alpha-AlphaTestRefRS);
+	// Match the baseline rest-position normal for wind-deformed trees.
+#	if defined(TREE_WIND)
+	float3x3 basis=NativeInputMRT::DerivativeBasis(input.RestWorldPosition,input.TexCoord.xy);
+	float3 geometricNormal=-cross(ddx_coarse(input.RestWorldPosition),ddy_coarse(input.RestWorldPosition));
+#	else
 	float3x3 basis=NativeInputMRT::DerivativeBasis(input.WorldPosition.xyz,input.TexCoord.xy);
+	float3 geometricNormal=-cross(ddx_coarse(input.WorldPosition.xyz),ddy_coarse(input.WorldPosition.xyz));
+#	endif
+	if (all(isfinite(geometricNormal)) && dot(geometricNormal,geometricNormal)>1e-8)
+		basis[2]=normalize(geometricNormal);
 	output.Diffuse.a=1;
 	output.MotionVectors=float4(MotionBlur::GetSSMotionVector(input.WorldPosition,input.PreviousWorldPosition),0,1);
 	output.NormalGlossiness=float4(GBuffer::EncodeNormal(normalize(FrameBuffer::WorldToView(basis[2],false))),0,1);
 	output.Masks2.a=1;
 	NativeInputMRT::Write(output,input.Position,input.TexCoord.xy,float4(1,1,1,1),basis,primitive,front,coverage,alpha,input.NativeInstance);
+	if (output.IdentityUV.x!=0u) output.BasisFlags.w |= 6u<<19u;
 	return output;
 }
 #	else
