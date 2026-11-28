@@ -98,5 +98,7 @@ json NativeIBL::Producer::GetDiagnostics()
 		{ "allocationBytes", lighting ? lighting->AllocationBytes() : 0 },
 		{ "submissions", lighting ? lighting->Submissions() : 0 },
 		{ "shProjections", lighting ? lighting->Projections() : 0 },
+		{ "indirectGpuMs", lighting ? lighting->GpuMilliseconds() : -1.0 },
+		{ "indirectTimingFrame", lighting ? lighting->TimingFrame() : 0u },
 		{ "failure", lighting ? lighting->Failure() : "" } };
 }

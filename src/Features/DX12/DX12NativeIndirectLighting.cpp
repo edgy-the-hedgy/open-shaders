@@ -119,6 +119,12 @@ namespace DX12Native
                     nextFence = rescue; slot->readyValue = rescue;
                 }
             }
+            if(slot->timingPending && GpuFenceRetired(slot->readyFence.get(),slot->readyValue)) {
+                slot->timingPending=false;
+                if(slot->readyFence->GetCompletedValue()!=UINT64_MAX && (gpuMilliseconds<0.0 || int32_t(slot->frame-timingFrame)>=0)) {
+                    gpuMilliseconds=slot->timing.Read(slot->timingReadback.get(),0); timingFrame=slot->frame;
+                }
+            }
             if (slot.use_count() == 1 && GpuFenceRetired(slot->readyFence.get(), slot->readyValue)) {
                 if (release) { slot.reset(); continue; }
                 slot->material.reset(); slot->environment.reset(); slot->characters.reset(); slot->ssrDirect.reset();
@@ -134,6 +140,8 @@ namespace DX12Native
         current.reset();
         baseCache.reset();
         skyCache.reset();
+        gpuMilliseconds=-1.0; timingFrame=0;
+        for(auto& slot:slots) if(slot) slot->timingPending=false;
         failure.clear();
     }
 
@@ -303,6 +311,15 @@ namespace DX12Native
             slot->screenSpaceReflections = hasSecondary && bool(slot->ssrDirect) && (available & IndirectSpecular);
             if (!hasSecondary) slot->ssrDirect.reset();
             slot->frame = slot->material->frame; slot->quality = SanitizeRTQuality(quality); slot->available = available;
+            slot->timingPending=false;
+            if(slot->frame%120u==0u && !slot->timingReadback) {
+                try {
+                    if(slot->timing.heap || slot->timing.Initialize(device,backend.commandQueue.get())) {
+                        slot->timingReadback=Eval::Buffer(device,16,D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_STATE_COPY_DEST);
+                    }
+                } catch(const std::exception&) { slot->timingReadback=nullptr; }
+            }
+            const bool timingSample=slot->frame%120u==0u && bool(slot->timingReadback);
             slot->characters = hasSecondary && characters && characters->Submitted(slot->frame, slot->material->scope) ? std::move(characters) : nullptr;
             slot->skyVisibilityTraced = false;
             slot->root = root; slot->pipeline = pipeline;
@@ -421,8 +438,10 @@ namespace DX12Native
             cmd->SetComputeRootShaderResourceView(20,actorEvaluation.bindings->GetGPUVirtualAddress());
             cmd->SetComputeRootShaderResourceView(21,characterView.movers?characterView.movers->GetGPUVirtualAddress():materialAddress);
             TransitionProjectionViews(cmd,projection.get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            if(timingSample) slot->timing.Begin(cmd);
             cmd->Dispatch((ShadowPhysicalWidth(ShadowLogicalExtent(width, slot->quality), slot->quality) + 7) / 8,
                 (ShadowLogicalExtent(height, slot->quality) + 7) / 8, 1);
+            if(timingSample) slot->timing.End(cmd,slot->timingReadback.get(),0);
             TransitionProjectionViews(cmd,projection.get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COMMON);
             Transition(cmd, slot->samples.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
             Transition(cmd, depth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
@@ -442,7 +461,7 @@ namespace DX12Native
             backend.commandQueue->ExecuteCommandLists(1, lists); submitted = true;
             const uint64_t value = nextFence + 1;
             Eval::Check(backend.commandQueue->Signal(completion.get(), value));
-            nextFence = value; slot->readyValue = value;
+            nextFence = value; slot->readyValue = value; slot->timingPending=timingSample;
             if (slot->baseSH) baseCache = slot->baseSH;
             if (slot->skySH) skyCache = slot->skySH;
             current = slot; ++submissions; projections += uint64_t(projectBase) + uint64_t(projectSky);

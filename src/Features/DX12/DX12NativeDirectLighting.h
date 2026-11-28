@@ -56,7 +56,8 @@ namespace DX12Native
 		winrt::com_ptr<ID3D12Fence> readyFence;
 		uint64_t readyValue = 0, allocationBytes = 0;
 		uint32_t frame = 0, width = 0, height = 0, rowPitch = 0;
-		bool statsPending = false;
+		bool statsPending = false, timingSample=false;
+		GpuTimestampPair timing;
 		bool directionalIncluded = false;
 		uint32_t visibilityRowPitch = 0;
 		bool staticVisibilityAvailable = false, dynamicVisibilityAvailable = false;
@@ -92,6 +93,8 @@ namespace DX12Native
 		struct Stats {
 			uint32_t frame = 0;
 			std::array<uint32_t, 8> counts{};
+			uint32_t timingFrame=0;
+			double gpuMilliseconds=-1.0;
 		};
 		const Stats& GetStats() const { return stats; }
 

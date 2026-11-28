@@ -70,6 +70,9 @@ namespace DX12Native
 			if (!GpuFenceRetired(slot->readyFence.get(), slot->readyValue)) continue;
 			if (slot->statsPending) {
 				slot->statsPending = false;
+				if(slot->timingSample && slot->readyFence->GetCompletedValue()!=UINT64_MAX && (stats.gpuMilliseconds<0.0 || int32_t(slot->frame-stats.timingFrame)>=0)) {
+					stats.gpuMilliseconds=slot->timing.Read(slot->readback.get(),kCounterBytes); stats.timingFrame=slot->frame;
+				}
 				if (slot->readyFence->GetCompletedValue() != UINT64_MAX &&
 					(stats.frame == 0 || int32_t(slot->frame - stats.frame) >= 0)) {
 					void* mapped = nullptr;
@@ -213,7 +216,7 @@ namespace DX12Native
 				replacement->lights = Eval::Buffer(device, kLightUploadBytes, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
 				replacement->counters = Eval::Buffer(device, kCounterBytes, D3D12_HEAP_TYPE_DEFAULT,
 					D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-				replacement->readback = Eval::Buffer(device, kCounterBytes, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST);
+				replacement->readback = Eval::Buffer(device, kCounterBytes+16, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST);
 				replacement->counterInit = Eval::Table(device, std::vector<uint32_t>(8, 0));
 				Eval::Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(replacement->allocator.put())));
 				Eval::Check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, replacement->allocator.get(), pipeline.get(), IID_PPV_ARGS(replacement->commands.put())));
@@ -225,6 +228,7 @@ namespace DX12Native
 			slot->readyFence = completion; slot->readyValue = UINT64_MAX; slot->statsPending = false;
 			slot->root = root; slot->pipeline = pipeline;
 			slot->frame = material->frame; slot->quality = SanitizeRTQuality(quality); slot->material = std::move(material);
+			slot->timingSample=slot->frame%120u==0u && (slot->timing.heap || slot->timing.Initialize(device,backend.commandQueue.get()));
 			slot->characters = characters && characters->Submitted(slot->frame, slot->material->scope) ? std::move(characters) : nullptr;
 			slot->staticVisibilityAvailable = slot->material->HasSecondaryGeometry();
 			slot->dynamicVisibilityAvailable = bool(slot->characters);
@@ -335,8 +339,10 @@ namespace DX12Native
 				const auto visibilityStart = CD3DX12_RESOURCE_BARRIER::Transition(slot->visibility.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 				command->ResourceBarrier(1, &visibilityStart);
 			}
+			if(slot->timingSample) slot->timing.Begin(command);
 			command->Dispatch((ShadowPhysicalWidth(ShadowLogicalExtent(width, slot->quality), slot->quality) + 7) / 8,
 				(ShadowLogicalExtent(height, slot->quality) + 7) / 8, 1);
+			if(slot->timingSample) slot->timing.End(command,slot->readback.get(),kCounterBytes);
 			const std::array end{
 				CD3DX12_RESOURCE_BARRIER::Transition(slot->samples.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON),
 				CD3DX12_RESOURCE_BARRIER::Transition(slot->visibility.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON),

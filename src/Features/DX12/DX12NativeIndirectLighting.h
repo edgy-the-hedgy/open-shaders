@@ -42,7 +42,9 @@ namespace DX12Native
         std::shared_ptr<const EnvironmentFrame> environment;
         std::shared_ptr<const DirectLightingFrame> ssrDirect;
         std::shared_ptr<const EnvironmentIrradiance> baseSH, skySH;
-        winrt::com_ptr<ID3D12Resource> samples, constants;
+        winrt::com_ptr<ID3D12Resource> samples, constants, timingReadback;
+        GpuTimestampPair timing;
+        bool timingPending=false;
         winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
         winrt::com_ptr<ID3D12CommandAllocator> allocator;
         winrt::com_ptr<ID3D12GraphicsCommandList> commands;
@@ -73,6 +75,8 @@ namespace DX12Native
         uint64_t AllocationBytes() const;
         uint64_t Submissions() const { return submissions; }
         uint64_t Projections() const { return projections; }
+        double GpuMilliseconds() const { return gpuMilliseconds; }
+        uint32_t TimingFrame() const { return timingFrame; }
     private:
         void Initialize(const GraphicsBackend&);
         GraphicsBackend owner;
@@ -84,6 +88,8 @@ namespace DX12Native
         std::shared_ptr<IndirectLightingFrame> current;
         std::shared_ptr<const EnvironmentIrradiance> baseCache, skyCache;
         uint64_t nextFence = 0, submissions = 0, projections = 0;
+        double gpuMilliseconds=-1.0;
+        uint32_t timingFrame=0;
         std::string failure;
     };
 }
