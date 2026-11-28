@@ -26,6 +26,16 @@ namespace NativePBR
 		bool oversized = false;
 	};
 	std::shared_ptr<const TextureSetSnapshot> CaptureTextureSetSnapshot(RE::BSTextureSet* textures);
+	struct GrassMaterialSource
+	{
+		uint64_t flags=0;
+		TextureSetSnapshot textures;
+		std::optional<std::array<float,4>> thin;
+		std::optional<std::array<float,2>> fuzz;
+	};
+	void PreserveGrassMaterialSource(const RE::BSLightingShaderProperty* source, RE::BSLightingShaderProperty* grass);
+	bool HasGrassMaterialSource(const RE::BSShaderProperty& property);
+	std::optional<GrassMaterialSource> ReadGrassMaterialSource(const RE::BSShaderProperty& property);
 	void ReadNifParameters(const RE::BSLightingShaderProperty& property,
 		std::optional<std::array<float, 4>>& thin, std::optional<std::array<float, 2>>& fuzz);
 }
