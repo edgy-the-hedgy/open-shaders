@@ -1016,6 +1016,8 @@ void DX12NativeScene::BeginFullNativeRasterInputs()
 	next.projection.clear();
 	next.projectionTextures.clear();
 	next.rasterProjectionTextures.clear();
+	next.grassConstants.clear();
+	next.grassConstantSnapshots=0;
 	draws = std::move(next);
 	const auto frame = globals::game::graphicsState->GetFrameCount();
 	const auto scene = acceleration.GetScene();
@@ -1451,7 +1453,7 @@ bool DX12NativeScene::CaptureProjectedConstants(ProjectedTextureObservation& obs
 {
 	using namespace DX12Native::MaterialFrameContract;
 	auto& draws = fullNativeRasterDraws;
-	if (draws.constantSnapshots >= kMaxProjectedConstantSnapshots || !globals::d3d::device || !globals::d3d::context)
+	if (draws.constantSnapshots >= kMaxProjectedConstantSnapshots/2u || !globals::d3d::device || !globals::d3d::context)
 		return false;
 	const auto& state = globals::game::shadowState->GetRuntimeData();
 	if (!state.currentVertexShader || !state.currentPixelShader)
@@ -1529,6 +1531,42 @@ bool DX12NativeScene::CaptureProjectedConstants(ProjectedTextureObservation& obs
 	return true;
 }
 
+void DX12NativeScene::CaptureRasterPbrGrass(uint32_t rasterDraw)
+{
+	auto& draws=fullNativeRasterDraws;
+	if (!rasterDraw || draws.grassConstantSnapshots>=kMaxProjectedConstantSnapshots/2u ||
+		!globals::d3d::device || !globals::d3d::context) return;
+	winrt::com_ptr<ID3D11Buffer> source;
+	globals::d3d::context->PSGetConstantBuffers(1,1,source.put());
+	if (!source) return;
+	D3D11_BUFFER_DESC desc{};
+	source->GetDesc(&desc);
+	if (!(desc.BindFlags&D3D11_BIND_CONSTANT_BUFFER) || desc.ByteWidth<80u ||
+		desc.ByteWidth>D3D11_REQ_CONSTANT_BUFFER_ELEMENT_COUNT*16u) return;
+	if (projectedConstantDevice.get()!=globals::d3d::device) {
+		projectedConstantPool={};
+		projectedConstantDevice.copy_from(globals::d3d::device);
+	}
+	const uint32_t index=kMaxProjectedConstantSnapshots-1u-draws.grassConstantSnapshots;
+	auto& slot=projectedConstantPool[index];
+	if (!slot.buffers[1] || !slot.views[1] || slot.byteWidths[1]!=desc.ByteWidth) {
+		D3D11_BUFFER_DESC copy{};
+		copy.ByteWidth=desc.ByteWidth; copy.Usage=D3D11_USAGE_DEFAULT;
+		copy.BindFlags=D3D11_BIND_SHADER_RESOURCE; copy.MiscFlags=D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
+		winrt::com_ptr<ID3D11Buffer> buffer;
+		if (FAILED(globals::d3d::device->CreateBuffer(&copy,nullptr,buffer.put()))) return;
+		D3D11_SHADER_RESOURCE_VIEW_DESC view{};
+		view.Format=DXGI_FORMAT_R32_TYPELESS; view.ViewDimension=D3D11_SRV_DIMENSION_BUFFEREX;
+		view.BufferEx.NumElements=copy.ByteWidth/4u; view.BufferEx.Flags=D3D11_BUFFEREX_SRV_FLAG_RAW;
+		winrt::com_ptr<ID3D11ShaderResourceView> srv;
+		if (FAILED(globals::d3d::device->CreateShaderResourceView(buffer.get(),&view,srv.put()))) return;
+		slot.buffers[1]=std::move(buffer); slot.views[1]=std::move(srv); slot.byteWidths[1]=copy.ByteWidth;
+	}
+	globals::d3d::context->CopyResource(slot.buffers[1].get(),source.get());
+	draws.grassConstants.emplace_back(rasterDraw,index);
+	++draws.grassConstantSnapshots;
+}
+
 void DX12NativeScene::CaptureRasterProjectedDraw(uint32_t rasterDraw, uint32_t sceneInstance)
 {
 	auto& draws=fullNativeRasterDraws;
@@ -1548,7 +1586,7 @@ void DX12NativeScene::CaptureRasterProjectedDraw(uint32_t rasterDraw, uint32_t s
 		const auto existing=draws.projectionTextures.find(sceneInstance);
 		if (existing!=draws.projectionTextures.end()) existing->second.repeatedConstants=true;
 	}
-	if (draws.constantSnapshots>=kMaxProjectedConstantSnapshots) return;
+	if (draws.constantSnapshots>=kMaxProjectedConstantSnapshots/2u) return;
 	ProjectedTextureObservation observation;
 	observation.descriptor=descriptor;
 	constexpr std::array<uint32_t,4> slots{3,8,10,11};
@@ -1678,6 +1716,8 @@ void DX12NativeScene::StampFullNativeIndexedDraw(uint32_t count, uint32_t start,
 	if (state->currentShader->shaderType.get()==Type::Lighting &&
 		(descriptor & uint32_t(Cache::LightingShaderFlags::ProjectedUV)))
 		CaptureRasterProjectedDraw(encoded,sceneInstance);
+	if (state->currentShader->shaderType.get()==Type::Grass &&
+		(descriptor&15u)==uint32_t(Cache::GrassShaderTechniques::TruePbr)) CaptureRasterPbrGrass(encoded);
 	state->UpdatePermutationBuffer();
 }
 
@@ -1773,7 +1813,28 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 				slots[0]=2u;
 				break;
 			}
-			case Type::Grass: input.instance=kRasterGrassRow; break;
+			case Type::Grass: {
+				if ((record.pixelDescriptor&15u)!=uint32_t(SIE::ShaderCache::GrassShaderTechniques::TruePbr)) {
+					input.instance=kRasterGrassRow; break;
+				}
+				const auto captured=std::ranges::lower_bound(draws.grassConstants,record.encodedIdentity,{},[](const auto& entry){return entry.first;});
+				if (captured==draws.grassConstants.end() || captured->first!=record.encodedIdentity) continue;
+				input.instance=kRasterPbrGrassRow;
+				input.constants[1]=projectedConstantPool[captured->second].views[1].get();
+				input.descriptor=captured->second; // distinct immutable constant snapshot; never alias by SRV alone
+				slots={0u,2u,3u,4u};
+				for (uint32_t role=0;role<2u;++role) {
+					const uint32_t slot=5u+role;
+					input.extraViews[role]=source->views[slot];
+					input.extraSamplerModes|=uint32_t(source->addressModes[slot]&3u)<<(2u*role);
+					if (input.extraViews[role]) {
+						D3D11_SHADER_RESOURCE_VIEW_DESC view{};
+						input.extraViews[role]->GetDesc(&view);
+						if (DirectX::IsSRGB(view.Format)) input.extraSamplerModes|=1u<<(8u+role);
+					}
+				}
+				break;
+			}
 			case Type::DistantTree: input.instance=kRasterDistantTreeRow; break;
 			case Type::Effect: {
 				if (!record.materialOrdinal || record.materialOrdinal>draws.materialSources.size()) continue;
