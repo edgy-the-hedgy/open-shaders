@@ -1494,7 +1494,7 @@ bool DX12NativeScene::CaptureProjectedConstants(ProjectedTextureObservation& obs
 {
 	using namespace DX12Native::MaterialFrameContract;
 	auto& draws = fullNativeRasterDraws;
-	if (draws.constantSnapshots + draws.grassConstantSnapshots >= kMaxProjectedConstantSnapshots || !globals::d3d::device || !globals::d3d::context)
+	if (!ConstantSnapshotFits(draws.constantSnapshots,draws.grassConstantSnapshots,kMaxProjectedConstantSnapshots) || !globals::d3d::device || !globals::d3d::context)
 		return false;
 	const auto& state = globals::game::shadowState->GetRuntimeData();
 	if (!state.currentVertexShader || !state.currentPixelShader)
@@ -1576,7 +1576,7 @@ bool DX12NativeScene::CaptureProjectedConstants(ProjectedTextureObservation& obs
 void DX12NativeScene::CaptureRasterPbrGrass(uint32_t rasterDraw)
 {
 	auto& draws=fullNativeRasterDraws;
-	if (!rasterDraw || draws.constantSnapshots+draws.grassConstantSnapshots>=kMaxProjectedConstantSnapshots ||
+	if (!rasterDraw || !DX12Native::MaterialFrameContract::ConstantSnapshotFits(draws.constantSnapshots,draws.grassConstantSnapshots,kMaxProjectedConstantSnapshots) ||
 		!globals::d3d::device || !globals::d3d::context) return;
 	winrt::com_ptr<ID3D11Buffer> source;
 	globals::d3d::context->PSGetConstantBuffers(1,1,source.put());
@@ -1628,7 +1628,7 @@ void DX12NativeScene::CaptureRasterProjectedDraw(uint32_t rasterDraw, uint32_t s
 		const auto existing=draws.projectionTextures.find(sceneInstance);
 		if (existing!=draws.projectionTextures.end()) existing->second.repeatedConstants=true;
 	}
-	if (draws.constantSnapshots+draws.grassConstantSnapshots>=kMaxProjectedConstantSnapshots) return;
+	if (!DX12Native::MaterialFrameContract::ConstantSnapshotFits(draws.constantSnapshots,draws.grassConstantSnapshots,kMaxProjectedConstantSnapshots)) return;
 	ProjectedTextureObservation observation;
 	observation.descriptor=descriptor;
 	constexpr std::array<uint32_t,4> slots{3,8,10,11};
