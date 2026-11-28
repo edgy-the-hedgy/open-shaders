@@ -283,6 +283,97 @@ Sample EvaluatePbrGrass(RawRasterSurface raw,float3 viewRay,out bool rawUsed,out
     return result;
 }
 
+// Native-only generated PBR grass: original base SRV plus independently
+// resident NIF/TXST maps. No dependency on legacy TruePBR shader hooks.
+Sample EvaluateRecipeGrass(RawRasterSurface raw, Binding binding, MaterialRecord material, float3 viewRay,
+    out bool rawUsed,out NativeCoatSample coat)
+{
+    Sample result=(Sample)0;
+    rawUsed=false; coat=(NativeCoatSample)0;
+    result.color.a=SurfaceMissingTextures;
+    if (any(material.identity.xy!=binding.identity) || any(material.identity.zw!=binding.revision) ||
+        (material.controls.y&(1u<<9u))!=0u || ProjectionRowCount==0u ||
+        raw.drawIdentity.x==0u || raw.drawIdentity.x>(HasRawInput&0x7fffffffu)) return result;
+    uint row=RasterProjectionLookup.Load((raw.drawIdentity.x-1u)*4u);
+    if (row>=ProjectionRowCount) return result;
+    uint4 metadata=ProjectionRecords.Load(int3(0,row,0));
+    uint4 textures=ProjectionRecords.Load(int3(7,row,0));
+    if (metadata.x!=0xfffffffeu || metadata.z!=row || textures.x>=NativeProjectionTextureCapacity) return result;
+    float bias=exp2(clamp(MaterialMipBias,-8.0,8.0));
+    float4 diffuse=NativeProjectionGrad(textures.x,metadata.w&3u,raw.uv,raw.dx*bias,raw.dy*bias);
+    float3 base=(metadata.w&256u)!=0u ? NativeProjectionEncode(diffuse.rgb) : diffuse.rgb;
+    float3 vc=(raw.auxiliary.x&(1u<<19u))!=0u ? 1.0 : raw.color.rgb;
+    float vertexAO=max(vc.r,max(vc.g,vc.b));
+    float2 settings=RawHalf2(raw.auxiliary.w);
+    base=max(base,0.0)*SrgbToLinear(vc/max(vertexAO,1e-5))*max(settings.x,0.0);
+    bool detail=(raw.auxiliary.x&(1u<<16u))!=0u;
+    bool newModel=(raw.auxiliary.x&(1u<<17u))!=0u;
+    bool sphere=(raw.auxiliary.x&(1u<<18u))!=0u;
+    float3 n=RawOct(raw.auxiliary.y);
+    float4 packed=float4(1,0,1,0);
+    if (detail) {
+        if (material.textures[0].z>=NativeTextureIndexLimit || material.textures[1].x>=NativeTextureIndexLimit) return result;
+        float3 mapped=NativeSurfaceTex(material.textures[0].z,raw.uv,material.properties.z,raw,MaterialMipBias).xyz*2.0-1.0;
+        if ((binding.flags&256u)!=0u) mapped.z=sqrt(saturate(1.0-dot(mapped.xy,mapped.xy)));
+        float3 t=raw.tangent-n*dot(raw.tangent,n);
+        if (dot(t,t)>1e-8 && dot(mapped,mapped)>1e-8) {
+            t=normalize(t);
+            float3 b=normalize(cross(n,t));
+            if (dot(b,raw.bitangent)<0.0) b=-b;
+            n=normalize(t*mapped.x+b*mapped.y+n*mapped.z);
+        }
+        packed=NativeSurfaceTex(material.textures[1].x,raw.uv,material.properties.z,raw,MaterialMipBias);
+        packed.x*=material.base.y; packed.w*=material.base.w;
+    }
+    if (newModel && !sphere) {
+        float3 clump=RawOct(raw.auxiliary.z);
+        n=normalize(n+(clump-n*dot(n,clump))*saturate(settings.y));
+    }
+    float metallic=saturate(packed.y);
+    float3 f0=lerp(saturate(packed.w).xxx,base,metallic);
+    float roughness=clamp(packed.x*((raw.front || !newModel)?1.0:max(material.thinSurface.z,0.0)),0.045,1.0);
+    if (newModel && (material.properties.x&1u)!=0u && (binding.flags&SurfaceThinSurfaceReadyBinding)!=0u) {
+        float3 scatter=max(material.subsurfaceColor.rgb,0.0);
+        float opacity=saturate(material.coat.w);
+        if (detail && material.textures[2].z!=0xffffffffu) {
+            float4 tex=NativeSurfaceTex(material.textures[2].z,raw.uv,material.properties.z,raw,MaterialMipBias);
+            scatter*=tex.rgb; opacity*=saturate(tex.a);
+        } else scatter*=base*(1.0-metallic);
+        float3 face=normalize(raw.normal);
+        if (dot(face,viewRay)>0.0) face=-face;
+        coat.normalRoughness=float4(face,saturate(material.surface.y));
+        coat.f0Colored=float4(saturate(raw.front?material.thinSurface.x:material.thinSurface.y),
+            material.thinSurface.y,material.thinSurface.z,NativeFoliageTag);
+        coat.subsurface=float4(scatter,opacity);
+    }
+    if (newModel && detail && (binding.flags&SurfaceFuzzReadyBinding)!=0u) {
+        float3 fuzz=max(material.fuzzColor.rgb,0.0); float weight=saturate(material.surface.x);
+        if (material.textures[3].x!=0xffffffffu) {
+            float4 tex=NativeSurfaceTex(material.textures[3].x,raw.uv,material.properties.z,raw,MaterialMipBias);
+            fuzz*=tex.rgb; weight*=saturate(tex.a);
+        }
+        float fuzzRoughness=material.surface.z;
+        if ((material.controls.y&4u)!=0u && material.textures[2].x!=0xffffffffu)
+            fuzzRoughness=NativeSurfaceTex(material.textures[2].x,raw.uv,material.properties.z,raw,MaterialMipBias).g;
+        if (HasNativeThinSurface(coat)) coat.f0Colored.w=EncodeNativeThinFuzz(fuzzRoughness,true);
+        else { coat.normalRoughness.w=clamp(fuzzRoughness,-1.0,1.0); coat.f0Colored.w=NativeFuzzTag; }
+        coat.colorStrength=float4(saturate(fuzz),weight);
+    }
+    float3 emission=0.0;
+    if (newModel && material.textures[1].z!=0xffffffffu)
+        emission=NativeSurfaceTex(material.textures[1].z,raw.uv,material.properties.z,raw,MaterialMipBias).rgb*SrgbToLinear(vc);
+    if (!all(isfinite(base)) || !all(isfinite(n)) || !all(isfinite(f0)) ||
+        !all(isfinite(emission)) || !all(isfinite(packed)) || !isfinite(roughness)) {
+        coat=(NativeCoatSample)0; result.color.a=SurfaceEvaluationFailed; return result;
+    }
+    result.color=float4(base,SurfaceFeatureLimited);
+    result.normal=float4(normalize(n),roughness);
+    result.f0=float4(f0,metallic);
+    result.emission=float4(max(emission,0.0),saturate(packed.z*vertexAO));
+    rawUsed=true;
+    return result;
+}
+
 // Shader-class-specific base evaluation using typed draw-local SRV transfers.
 // Row tags cannot be mistaken for a scene instance or a Lighting recipe.
 // No ray correspondence or TXST material ordinal is required.
@@ -419,6 +510,7 @@ Sample EvaluateRasterLocal(RawRasterSurface raw, uint2 mapped, float3 viewRay, f
     }
     if (binding.materialIndex>=RasterRecordCount) return result;
     MaterialRecord material=RasterMaterialRecords[binding.materialIndex];
+    if (raw.auxiliaryKind==11u) return EvaluateRecipeGrass(raw,binding,material,viewRay,rawUsed,coat);
     uint projectionRow=0xffffffffu;
     // The primary projector and MATO are acquired by the original draw.
     if (raw.auxiliaryKind==2u && ProjectionRowCount>0u &&
