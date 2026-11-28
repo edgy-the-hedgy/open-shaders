@@ -31,9 +31,17 @@ void main(uint3 id : SV_DispatchThreadID)
         ProjectionRecords[uint2(7,row)] = TextureIndices;
         return;
     }
-    ProjectionRecords[uint2(1,row)] = VertexConstants.Load4(Offsets.x);
-    ProjectionRecords[uint2(2,row)] = VertexConstants.Load4(Offsets.x+16u);
-    ProjectionRecords[uint2(3,row)] = VertexConstants.Load4(Offsets.x+32u);
+    // Skinned primary receivers carry the posed direction in raster evidence.
+    // No unposed VS matrix is needed or valid for secondary correspondence.
+    if (Offsets.x==0xffffffffu) {
+        ProjectionRecords[uint2(1,row)] = 0u;
+        ProjectionRecords[uint2(2,row)] = 0u;
+        ProjectionRecords[uint2(3,row)] = 0u;
+    } else {
+        ProjectionRecords[uint2(1,row)] = VertexConstants.Load4(Offsets.x);
+        ProjectionRecords[uint2(2,row)] = VertexConstants.Load4(Offsets.x+16u);
+        ProjectionRecords[uint2(3,row)] = VertexConstants.Load4(Offsets.x+32u);
+    }
     ProjectionRecords[uint2(4,row)] = PixelConstants.Load4(Offsets.y);
     ProjectionRecords[uint2(5,row)] = PixelConstants.Load4(Offsets.z);
     ProjectionRecords[uint2(6,row)] = PixelConstants.Load4(Offsets.w);
