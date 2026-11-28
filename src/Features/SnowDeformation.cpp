@@ -2,6 +2,7 @@
 #include "Utils/DebugSection.h"
 
 #include "Features/Skylighting.h"
+#include "Features/DX12/DX12Control.h"
 #include "Features/SnowCover.h"
 #include "Features/TerrainBlending.h"
 #include "Globals.h"
@@ -251,6 +252,23 @@ namespace
 		{ "COLOR", 0, 9, 0xF },
 		{ "COLOR", 1, 10, 0xF },
 		{ "TEXCOORD", 12, 11, 0x7 },
+	};
+
+	// The original native Lighting VS inserts its uint instance at r1.
+	constexpr ExpectedElement kNativeLightingLayout[] = {
+		{ "SV_POSITION",0,0,0xF },
+		{ "TEXCOORD",11,1,0x1,1 },
+		{ "TEXCOORD",0,2,0xF },
+		{ "TEXCOORD",1,3,0x7 },
+		{ "TEXCOORD",2,4,0x7 },
+		{ "TEXCOORD",3,5,0x7 },
+		{ "TEXCOORD",6,6,0xF },
+		{ "TEXCOORD",7,7,0xF },
+		{ "POSITION",1,8,0xF },
+		{ "POSITION",2,9,0xF },
+		{ "COLOR",0,10,0xF },
+		{ "COLOR",1,11,0xF },
+		{ "TEXCOORD",12,12,0x7 },
 	};
 
 	constexpr ExpectedElement kDepthLayout[] = {
@@ -966,6 +984,8 @@ bool SnowDeformation::EnsureShaders()
 		return true;
 
 	std::vector<std::pair<const char*, const char*>> lightingDefines;
+	if (!vr && globals::features::dx12Control.UsesExclusiveMaterials())
+		lightingDefines.push_back({ "FULL_NATIVE_INPUT", "" });
 	std::vector<std::pair<const char*, const char*>> depthDefines{ { "DEPTH_ONLY", "" } };
 	if (vr) {
 		lightingDefines.push_back({ "VR", "" });
@@ -2909,7 +2929,8 @@ SnowDeformation::Layout SnowDeformation::ValidateBoundVertexShader(DrawKind a_ki
 	const bool lighting = a_kind == DrawKind::Lighting;
 	auto& cache = lighting ? lightingLayouts : depthLayouts;
 	const bool vr = globals::game::isVR;
-	const auto layout = lighting ? (vr ? std::span<const ExpectedElement>(kLightingLayoutVR) : std::span<const ExpectedElement>(kLightingLayout)) :
+	const bool nativeLighting=lighting && !vr && globals::features::dx12Control.UsesExclusiveMaterials();
+	const auto layout = lighting ? (nativeLighting ? std::span<const ExpectedElement>(kNativeLightingLayout) : vr ? std::span<const ExpectedElement>(kLightingLayoutVR) : std::span<const ExpectedElement>(kLightingLayout)) :
 	                               (vr ? std::span<const ExpectedElement>(kDepthLayoutVR) : std::span<const ExpectedElement>(kDepthLayout));
 	const auto& terrainBlending = globals::features::terrainBlending;
 	allowedShaderCount = 0;
@@ -3373,6 +3394,18 @@ void SnowDeformation::ApplyDrawState()
 	context->DSSetShader(activeDS, nullptr, 0);
 	context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST);
 	stagesBound = true;
+}
+
+bool SnowDeformation::HasNativeLightingPatch() const
+{
+	if (!drawActive || !stagesBound || activeKind!=DrawKind::Lighting || globals::game::isVR ||
+		!globals::features::dx12Control.UsesExclusiveMaterials() || !activeHS || !activeDS ||
+		activeHS!=lightingHS.get() || activeDS!=lightingDS.get() || !globals::d3d::context) return false;
+	winrt::com_ptr<ID3D11HullShader> hs;
+	winrt::com_ptr<ID3D11DomainShader> ds;
+	globals::d3d::context->HSGetShader(hs.put(),nullptr,nullptr);
+	globals::d3d::context->DSGetShader(ds.put(),nullptr,nullptr);
+	return hs.get()==activeHS && ds.get()==activeDS;
 }
 
 void SnowDeformation::EndLandscapeDraw()
