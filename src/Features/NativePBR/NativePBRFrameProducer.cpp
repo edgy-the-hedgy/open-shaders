@@ -65,19 +65,47 @@ json NativePBR::FrameProducer::GetDiagnostics()
 {
 	const auto frame = globals::game::graphicsState ? globals::game::graphicsState->GetFrameCount() : UINT32_MAX;
 	const auto publication = Get(frame);
-	uint32_t missingMaterialDraws = 0;
+	uint32_t missingMaterialDraws=0, typedDraws=0, typedTransferReady=0, typedTransferMissing=0;
 	if (publication && publication->rawRasterEvidence) {
-		const auto& evidence = *publication->rawRasterEvidence;
-		for (const auto& draw : evidence.drawRecords) {
-			if (!draw.materialOrdinal || draw.materialOrdinal > evidence.materialSourceSnapshots.size() ||
-				!evidence.materialSourceSnapshots[draw.materialOrdinal - 1u])
-				++missingMaterialDraws;
+		const auto& evidence=*publication->rawRasterEvidence;
+		std::vector<uint32_t> typedMasks(evidence.drawRecords.size(),0u);
+		if (const auto& transfer=publication->projection) {
+			const auto record=[&](uint32_t draw,uint32_t row) {
+				if (!draw || draw>typedMasks.size() || row>=transfer->instances.size() ||
+					row>=transfer->residentRoleMasks.size()) return;
+				const auto kind=transfer->instances[row];
+				if (kind>=DX12Native::kRasterEffectRow && kind<=DX12Native::kRasterGrassRow)
+					typedMasks[draw-1u]=transfer->residentRoleMasks[row];
+			};
+			for (uint32_t row=0; row<transfer->rasterDraws.size(); ++row)
+				record(transfer->rasterDraws[row],row);
+			for (const auto& [draw,row]:transfer->rasterAliases) record(draw,row);
+		}
+		using Type=RE::BSShader::Type;
+		for (size_t i=0; i<evidence.drawRecords.size(); ++i) {
+			const auto& draw=evidence.drawRecords[i];
+			const auto* source=i<evidence.drawSourceViews.size() ? evidence.drawSourceViews[i].get() : nullptr;
+			if (source) {
+				const auto kind=static_cast<Type>(source->shaderClass);
+				if (kind==Type::Grass || kind==Type::DistantTree || kind==Type::Effect) {
+					++typedDraws;
+					const uint32_t required=(kind==Type::Effect && (draw.pixelDescriptor&(1u<<19u))) ? 3u : 1u;
+					if ((typedMasks[i]&required)==required) ++typedTransferReady;
+					else ++typedTransferMissing;
+					continue;
+				}
+			}
+			if (!draw.materialOrdinal || draw.materialOrdinal>evidence.materialSourceSnapshots.size() ||
+				!evidence.materialSourceSnapshots[draw.materialOrdinal-1u]) ++missingMaterialDraws;
 		}
 	}
 	return { { "materialPublished", bool(publication) },
 		{ "rasterMaterialSourceCount", publication ? publication->rasterMaterialSourceCount : 0u },
 		{ "rasterUnpreparedSources", publication ? publication->rasterUnpreparedSources : 0u },
 		{ "rasterMissingMaterialDraws", missingMaterialDraws },
+		{ "typedRasterDraws", typedDraws },
+		{ "typedRasterTransferReadyDraws", typedTransferReady },
+		{ "typedRasterTransferMissingDraws", typedTransferMissing },
 		{ "secondaryGeometryAvailable", publication && publication->HasSecondaryGeometry() }, { "materialRevision", publication ? publication->materialRevision : 0 },
 		{ "geometryRevision", publication ? publication->geometryRevision : 0 },
 		{ "rasterMaterialRevision", publication ? publication->rasterMaterialRevision : 0 },
