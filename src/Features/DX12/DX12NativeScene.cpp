@@ -1606,7 +1606,12 @@ void DX12NativeScene::StampFullNativeIndexedDraw(uint32_t count, uint32_t start,
 	const bool strip=nativeInputTopology==D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
 	const bool list=nativeInputTopology==D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 	const uint32_t directBound=NativePBR::InputOnly::RasterTriangleBound(count,strip);
-	if (!coherent || !attributes || !draws.opaqueReplacement || !draws.activeGeometry ||
+	// GPU-driven foliage can issue a recognized original draw without a
+	// current engine geometry callback. Its draw/primitive identity and bound
+	// source views are still valid raster evidence, not a material or TLAS match.
+	const bool drawLocalFoliage = gpuCounted && !draws.activeGeometry && state->currentShader &&
+		(state->currentShader->shaderType.get() == Type::Grass || state->currentShader->shaderType.get() == Type::DistantTree);
+	if (!coherent || !attributes || !draws.opaqueReplacement || (!draws.activeGeometry && !drawLocalFoliage) ||
 		(!strip && !list) || (!gpuCounted && (!directBound || !instances))) {
 		state->UpdatePermutationBuffer();
 		return;
@@ -1628,6 +1633,7 @@ void DX12NativeScene::StampFullNativeIndexedDraw(uint32_t count, uint32_t start,
 	}
 	const uint32_t encoded = uint32_t(draws.drawRecords.size()+1u);
 	++draws.nextRasterDraw;
+	if (drawLocalFoliage) ++draws.draws;
 	data.nativeRasterInstance = encoded;
 	data.nativeRasterPrimitiveCount = primitiveStride;
 	const uint32_t sceneInstance = exact ? draws.activeSceneInstance-1u : UINT32_MAX;
@@ -1653,7 +1659,7 @@ void DX12NativeScene::StampFullNativeIndexedDraw(uint32_t count, uint32_t start,
 		nativeSourceViewsDirty=false;
 	}
 	draws.drawSourceViews.push_back(nativeSourceSnapshot);
-	draws.drawRecords.push_back({ encoded, draws.activeGeometry, draws.activeMaterial, sceneInstance,
+	draws.drawRecords.push_back({ encoded, draws.activeGeometry, drawLocalFoliage ? 0u : draws.activeMaterial, sceneInstance,
 		primitiveStride, 0u, data.nativeRasterMaterialIndex, count, start, nativeInputIndexOffset, nativeInputIndexElementBytes,
 		base, descriptor, state->modifiedVertexDescriptor, data.ExtraShaderDescriptor, data.ExtraFeatureDescriptor,
 		instanceLimit, firstInstance, indexed ? 1u : 0u, (gpuCounted ? 1u : 0u) | (strip ? 2u : 0u) | (automatic ? 4u : 0u) });
