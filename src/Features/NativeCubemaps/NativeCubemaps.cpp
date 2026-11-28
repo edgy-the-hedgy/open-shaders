@@ -217,16 +217,49 @@ void NativeCubemaps::Producer::EndWaterSSR()
 }
 void NativeCubemaps::Producer::OnDraw()
 {
-    if (waterScopeDepth != 1 || waterScopeInvalid ||
+    if (!globals::features::dx12Control.WantsMaterialPreparation() ||
         !globals::features::dx12Control.NativeSSREnabled() || !globals::state ||
         !globals::game::graphicsState || !globals::state->currentShader ||
         globals::state->nativeFirstPersonDepth || globals::state->isMapMenuOpen ||
         (globals::state->permutationData.ExtraShaderDescriptor & uint32_t(State::ExtraShaderDescriptors::IsReflections))) return;
     const auto* shader = globals::state->currentShader;
-    if (shader->shaderType.get() != RE::BSShader::Type::ImageSpace ||
+    const auto frame = globals::game::graphicsState->GetFrameCount();
+    const auto pluginFrame = globals::state->frameCount;
+    // Use the same water stencil technique that writes the engine WaterMask.
+    // This is recorded before the image-space reflection pass, without a GPU
+    // query, readback, new render-pass hook or previous-frame visibility guess.
+    if (shader->shaderType.get() == RE::BSShader::Type::Water) {
+        const auto technique = (globals::state->currentPixelDescriptor >> 11u) & 0xFu;
+        if (technique == static_cast<uint32_t>(SIE::ShaderCache::WaterShaderTechniques::Stencil)) {
+            const auto* player = globals::game::player;
+            const auto* cell = player ? player->GetParentCell() : nullptr;
+            if (cell) waterDraw.Observe(frame,pluginFrame,cell->formID);
+        }
+        return;
+    }
+    if (waterScopeDepth != 1 || waterScopeInvalid ||
+        shader->shaderType.get() != RE::BSShader::Type::ImageSpace ||
         std::string_view(static_cast<const RE::BSImagespaceShader&>(*shader).originalShaderName) != "ISReflectionsRayTracing") return;
-    const auto world = globals::features::dx12NativeScene.GetWorldFrame(
-        globals::game::graphicsState->GetFrameCount(),globals::state->frameCount);
+    const auto* player = globals::game::player;
+    const auto* cell = player ? player->GetParentCell() : nullptr;
+    const auto cellID = cell ? cell->formID : 0u;
+    const bool visibleWater = waterDraw.Matches(frame,pluginFrame,cellID);
+    const bool cellEligible = cell && Policy::WaterCellEligible(cellID,cell->IsInteriorCell(),
+        cell->cellFlags.any(RE::TESObjectCELL::Flag::kHasWater),visibleWater);
+    waterFrameEligible = cellEligible && visibleWater;
+    if (!waterFrameEligible) {
+        if (!cellEligible) {
+            ++dryCellSkips;
+            // The destructor retires slots against all three GPU fences.
+            // Dry interiors must not retain water-specific allocations.
+            waterSSR.reset();
+        } else {
+            ++noWaterDrawSkips;
+            if (waterSSR) waterSSR->ResetHistory();
+        }
+        return;
+    }
+    const auto world = globals::features::dx12NativeScene.GetWorldFrame(frame,pluginFrame);
     const auto* backend=globals::features::dx12NativeScene.GetNativeBackend();
     if (!world || !backend || !globals::state->customPixelShader) return;
     if (!waterSSR) waterSSR = std::make_unique<WaterSSR>();
@@ -253,6 +286,9 @@ json NativeCubemaps::Producer::GetDiagnostics()
         {"skyPublished",publication && bool(publication->sky)}, {"defaultCubeLoaded",bool(defaultCube)}, {"inputAllocationBytes",inputs ? inputs->AllocationBytes() : 0},
         {"inputFailure",inputs ? inputs->Failure() : ""},
         {"processing",processing ? processing->GetDiagnostics() : json::object()},
+        {"waterAdmission",{{"frameEligible",waterFrameEligible},{"observedStencil",waterDraw.observed},
+            {"observedEngineFrame",waterDraw.engineFrame},{"observedPluginFrame",waterDraw.pluginFrame},
+            {"observedCell",waterDraw.cell},{"dryCellSkips",dryCellSkips},{"noWaterDrawSkips",noWaterDrawSkips}}},
         {"waterSSR",waterSSR ? waterSSR->Diagnostics() : json::object()},
         {"forwardEnvironment",forward ? forward->Diagnostics() : json::object()} };
 }
@@ -263,6 +299,7 @@ void NativeCubemaps::Producer::InvalidateGeneration()
     if(forward) forward->Reset();
     if(waterSSR) { waterSSR->End(); waterSSR->ResetHistory(); }
     waterScopeDepth=0; waterScopeInvalid=false;
+    waterDraw={}; waterFrameEligible=false;
     if(processing) processing->Reset();
     if(inputs) inputs->Reset();
     skyCapture.Invalidate(); skyFaces={}; skyStamp={};

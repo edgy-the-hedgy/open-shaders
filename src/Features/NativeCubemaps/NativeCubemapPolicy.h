@@ -68,6 +68,28 @@ namespace NativeCubemaps::Policy
         return std::abs(std::log2(std::max(current,0.0001f)/std::max(previous,0.0001f)))>=1.0f;
     }
 
+    // A stencil draw is positive evidence of water in the main view, including
+    // custom water in an interior whose CELL flag is missing. Exterior water
+    // can belong to an adjacent cell or LOD, not necessarily the player's cell.
+    struct WaterDrawEvidence
+    {
+        uint32_t engineFrame=0, pluginFrame=0, cell=0;
+        bool observed=false;
+        constexpr void Observe(uint32_t engine, uint32_t plugin, uint32_t cellID)
+        {
+            *this={engine,plugin,cellID,cellID!=0};
+        }
+        constexpr bool Matches(uint32_t engine, uint32_t plugin, uint32_t cellID) const
+        {
+            return observed && cellID!=0 && cell==cellID &&
+                engineFrame==engine && pluginFrame==plugin;
+        }
+    };
+    constexpr bool WaterCellEligible(uint32_t cellID, bool interior, bool hasWaterFlag, bool observedWater)
+    {
+        return cellID!=0 && (!interior || hasWaterFlag || observedWater);
+    }
+
     struct WaterHistoryIdentity
     {
         uint32_t engineFrame=0,pluginFrame=0,width=0,height=0,outWidth=0,outHeight=0,scope=0,quality=0,encoding=0;

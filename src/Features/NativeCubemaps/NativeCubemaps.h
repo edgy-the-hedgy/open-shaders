@@ -78,6 +78,9 @@ namespace NativeCubemaps
         std::unique_ptr<ForwardEnvironment> forward;
         uint32_t waterScopeDepth = 0;
         bool waterScopeInvalid = false;
+        Policy::WaterDrawEvidence waterDraw;
+        uint64_t dryCellSkips=0, noWaterDrawSkips=0;
+        bool waterFrameEligible=false;
         winrt::com_ptr<ID3D11Texture2D> raw, defaultCube;
         bool defaultAttempted=false;
         winrt::com_ptr<ID3D11UnorderedAccessView> rawUAV;

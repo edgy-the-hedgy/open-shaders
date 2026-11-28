@@ -105,3 +105,21 @@ TEST_CASE("Cubemap lighting discontinuities are separate from normal exposure ev
     REQUIRE(LightingDiscontinuity(0.0f,1.0f));
     REQUIRE(LightingDiscontinuity(1.0f,std::numeric_limits<float>::quiet_NaN()));
 }
+
+TEST_CASE("Water SSR requires current-frame main-view water evidence", "[dx12][cubemaps][water]")
+{
+    WaterDrawEvidence evidence;
+    REQUIRE_FALSE(evidence.Matches(1,2,3));
+    evidence.Observe(1,2,3);
+    REQUIRE(evidence.Matches(1,2,3));
+    REQUIRE_FALSE(evidence.Matches(2,2,3));
+    REQUIRE_FALSE(evidence.Matches(1,3,3));
+    REQUIRE_FALSE(evidence.Matches(1,2,4));
+    REQUIRE_FALSE(WaterCellEligible(0,false,true,true));
+    REQUIRE_FALSE(WaterCellEligible(3,true,false,false));
+    REQUIRE(WaterCellEligible(3,true,true,false));
+    REQUIRE(WaterCellEligible(3,true,false,true)); // Modded interior water.
+    REQUIRE(WaterCellEligible(3,false,false,false)); // Adjacent exterior/LOD.
+    evidence={};
+    REQUIRE_FALSE(evidence.Matches(1,2,3));
+}
