@@ -157,6 +157,13 @@ static const float SurfaceDepthMismatch = -2.0;
 static const float SurfaceEvaluationFailed = -3.0;
 static const float SurfaceUnsupportedMaterial = -4.0;
 static const float SurfaceMissingTextures = -5.0;
+// A positively identified, validated thin lobe can be evaluated even when
+// unrelated base-material techniques are feature-limited. Missing lobes do
+// not certify zero transmission for a feature-limited material.
+bool HasNativeTransmissionModel(float status, NativeCoatSample coat)
+{
+    return status==SurfaceEvaluatedBase || (status==SurfaceFeatureLimited && HasNativeThinSurface(coat));
+}
 static const uint SurfaceBaseOnlyBinding = 1u << 11;
 static const uint SurfaceMissingBaseTexturesBinding = 1u << 12;
 
