@@ -660,7 +660,7 @@ PS_OUTPUT main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool front : SV_
 		complexDetail=complex && input.IsFar<=0.5;
 #		endif
 		float3 vertexNormal=basis[2];
-		float roughness=1.0, brightness=1.0, specularStrength=0.0, scattering=0.0;
+		float roughness=1.0, brightness=1.0, specularStrength=0.0, scattering=0.0, balance=0.0;
 #		if defined(GRASS_LIGHTING)
 		if (all(isfinite(input.VertexNormal.xyz)) && dot(input.VertexNormal.xyz,input.VertexNormal.xyz)>1e-8)
 			vertexNormal=normalize(input.VertexNormal.xyz);
@@ -668,10 +668,11 @@ PS_OUTPUT main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool front : SV_
 		brightness=(!complex || SharedData::grassLightingSettings.OverrideComplexGrassSettings) ?
 			SharedData::grassLightingSettings.BasicGrassBrightness : 1.0;
 		specularStrength=SharedData::grassLightingSettings.SpecularStrength;
-		scattering=SharedData::grassLightingSettings.SubsurfaceScatteringAmount;
+		scattering=SharedData::grassLightingSettings.EnableNewLightingModel ? SharedData::grassLightingSettings.SubsurfaceScatteringAmount : 0.0;
+		balance=SharedData::grassLightingSettings.SubsurfaceBalance;
 #		endif
 		psout.BasisFlags.w |= 5u<<19u;
-		psout.MaterialTechnique=uint4((complex?1u:0u)|(complexDetail?2u:0u),
+		psout.MaterialTechnique=uint4((complex?1u:0u)|(complexDetail?2u:0u)|(f32tof16(saturate(balance))<<16u),
 			NativeInputMRT::PackOct(vertexNormal),NativeInputMRT::PackHalf2(float2(roughness,brightness)),
 			NativeInputMRT::PackHalf2(float2(specularStrength,scattering)));
 	}
