@@ -332,8 +332,7 @@ namespace DX12Native
 			const bool residentOld=old!=reusable.end() && old->immutable && !old->bridge;
 			if (!residentOld && transferred>=kMaxNewTextures) { ++frame.deferredTextures; return UINT32_MAX; }
 			if (old != reusable.end()) {
-				if (!residentOld && (transferredBytes>=kNewBytesPerPublication ||
-					old->bytes>kNewBytesPerPublication-transferredBytes)) { ++frame.deferredTextures; return UINT32_MAX; }
+				if (!residentOld && !MaterialFrameContract::TransferWorkFits(transferred,kMaxNewTextures,transferredBytes,old->bytes,kNewBytesPerPublication)) { ++frame.deferredTextures; return UINT32_MAX; }
 				entry = std::move(*old);
 				old->bytes = 0;
 				if (entry.immutable && !entry.bridge) { entry.uploaded = false; return publish(std::move(entry)); }
@@ -344,8 +343,8 @@ namespace DX12Native
 				const uint64_t nativeBytes = Allocation(nativeDesc), bridgeBytes = Allocation(bridgeDesc);
 				const auto allowance = budget.Query(owner.d3d12Device.get(), 0).effectiveBytes;
 				if (!nativeBytes || !bridgeBytes || nativeBytes > allowance || bridgeBytes > allowance - nativeBytes ||
-					(newBytes >= kNewBytesPerPublication || nativeBytes + bridgeBytes > kNewBytesPerPublication - newBytes) ||
-					(transferredBytes >= kNewBytesPerPublication || nativeBytes + bridgeBytes > kNewBytesPerPublication - transferredBytes)) {
+					!MaterialFrameContract::TransferWorkFits(allocated,kMaxNewTextures,newBytes,nativeBytes+bridgeBytes,kNewBytesPerPublication) ||
+					!MaterialFrameContract::TransferWorkFits(transferred,kMaxNewTextures,transferredBytes,nativeBytes+bridgeBytes,kNewBytesPerPublication)) {
 					++frame.deferredTextures;
 					return UINT32_MAX;
 				}
