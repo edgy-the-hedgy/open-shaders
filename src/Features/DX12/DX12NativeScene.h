@@ -217,6 +217,8 @@ private:
 	std::array<winrt::com_ptr<ID3D11ShaderResourceView>, NativePBR::RasterSourceViews::kTrackedSlots> nativeSourceViews;
 	std::shared_ptr<const NativePBR::RasterSourceViews> nativeSourceSnapshot;
 	bool nativeSourceViewsDirty = true;
+	std::unordered_map<ID3D11ShaderResourceView*,DX12Native::TextureRevision::ViewStamp> nativeSourceRevisionCache;
+	uint64_t nativeSourceRevisionEpoch=0,nativeSourceRevisionSerial=0;
 	uint32_t nativeMaterialTransferSequence = 0;
 	uint32_t terrainSnapshotStart=0, terrainSnapshotScope=0;
 	D3D11_PRIMITIVE_TOPOLOGY nativeInputTopology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
