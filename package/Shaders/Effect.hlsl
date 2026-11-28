@@ -64,6 +64,9 @@ struct VS_OUTPUT
 	float4 Position: SV_POSITION0;
 #if defined(FULL_NATIVE_INPUT)
 	nointerpolation uint NativeInstance: TEXCOORD11;
+#	if defined(NORMALS) || defined(MOTIONVECTORS_NORMALS)
+	float3 NativeWorldNormal: TEXCOORD12;
+#	endif
 #endif
 	float4 TexCoord0: TEXCOORD0;
 	float4 WorldPosition: POSITION1;
@@ -281,6 +284,9 @@ VS_OUTPUT main(VS_INPUT input
 	float3 worldNormal = normalize(mul(normal, boneRSMatrixTr));
 #		else
 	float3 worldNormal = normalize(mul(world3x3, normal));
+#		endif
+#		if defined(FULL_NATIVE_INPUT)
+	vsout.NativeWorldNormal=worldNormal;
 #		endif
 #	endif
 
@@ -1089,6 +1095,20 @@ PS_OUTPUT ShadeEffect(PS_INPUT input, bool sampleDistantShadow)
 	vertexColor=input.Color;
 #  endif
 	float3x3 basis=NativeInputMRT::DerivativeBasis(input.WorldPosition.xyz,input.TexCoord0.xy);
+#	if defined(NORMALS) || defined(MOTIONVECTORS_NORMALS)
+	// Capture the original posed normal, rather than guessing its space from the compatibility G-buffer.
+	float3 nativeNormal=input.NativeWorldNormal;
+	if (all(isfinite(nativeNormal)) && dot(nativeNormal,nativeNormal)>1e-8) {
+		nativeNormal=normalize(nativeNormal);
+		float3 tangent=basis[0]-nativeNormal*dot(nativeNormal,basis[0]);
+		if (dot(tangent,tangent)>1e-8) {
+			tangent=normalize(tangent);
+			float3 bitangent=normalize(cross(nativeNormal,tangent));
+			if (dot(bitangent,basis[1])<0.0) bitangent=-bitangent;
+			basis=float3x3(tangent,bitangent,nativeNormal);
+		}
+	}
+#	endif
 	float visibleAlpha=saturate(alpha*fogMul.w);
 	psout.Diffuse.a=visibleAlpha;
 #  if defined(MOTIONVECTORS_NORMALS)
@@ -1107,10 +1127,10 @@ PS_OUTPUT ShadeEffect(PS_INPUT input, bool sampleDistantShadow)
 	if (psout.IdentityUV.x!=0u) {
 		psout.BasisFlags.w |= 7u<<19u;
 		// Coverage is already resolved above. Publish the original lighting
-		// influence; advanced blend/membrane/projection techniques remain
+		// influence; advanced blend/membrane/blood techniques remain
 		// explicitly unsupported rather than borrowing a Lighting recipe.
 		uint supported=0u;
-#		if !defined(MEMBRANE) && !defined(BLOOD) && !defined(PROJECTED_UV) && !defined(MULTBLEND) && !defined(MULTBLEND_DECAL) && !defined(ADDBLEND) && !defined(IS_VOLUMETRIC_FOG)
+#		if !defined(MEMBRANE) && !defined(BLOOD) && !defined(MULTBLEND) && !defined(MULTBLEND_DECAL) && !defined(ADDBLEND) && !defined(IS_VOLUMETRIC_FOG)
 		supported=1u;
 #		endif
 		// The live original shader multiplier includes VC only when authored.
