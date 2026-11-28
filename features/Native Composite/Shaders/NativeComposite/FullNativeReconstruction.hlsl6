@@ -233,14 +233,13 @@ void main(uint3 id : SV_DispatchThreadID)
         directDiffuse = AccumulateStationary(directDiffuse, dd ? ContributionDirectDiffuse : 0u, oldOffset, ddLow, ddHigh);
         directSpecular = AccumulateStationary(directSpecular, ds ? ContributionDirectSpecular : 0u, oldOffset + 8u, dsLow, dsHigh);
         directTransmission = AccumulateStationary(directTransmission, dt ? ContributionTransmission : 0u, oldOffset + 16u, dtLow, dtHigh);
-        // Diffuse irradiance may evolve smoothly within an environment epoch.
-        // Specular and indirect transmission conservatively reject a new publication.
-        if (HasIndirectHistory != 0u) {
+        // A new source generation can change all three signals (including
+        // disappearance of the independently acquired sky). Reject old
+        // indirect samples; direct history remains independently eligible.
+        if (HasIndirectHistory != 0u && SameEnvironmentRevision != 0u) {
             indirectDiffuse = AccumulateStationary(indirectDiffuse, idiff ? ContributionIndirectDiffuse : 0u, oldOffset + 24u, idLow, idHigh);
-            if (SameEnvironmentRevision != 0u) {
-                indirectSpecular = AccumulateStationary(indirectSpecular, ispec ? ContributionIndirectSpecular : 0u, oldOffset + 32u, isLow, isHigh);
-                indirectTransmission = AccumulateStationary(indirectTransmission, it ? ContributionTransmission : 0u, oldOffset + 40u, itLow, itHigh);
-            }
+            indirectSpecular = AccumulateStationary(indirectSpecular, ispec ? ContributionIndirectSpecular : 0u, oldOffset + 32u, isLow, isHigh);
+            indirectTransmission = AccumulateStationary(indirectTransmission, it ? ContributionTransmission : 0u, oldOffset + 40u, itLow, itHigh);
         }
     }
     HistorySignals.Store2(historyOffset, PackOpaqueRadiance(directDiffuse, dd ? ContributionDirectDiffuse : 0u));

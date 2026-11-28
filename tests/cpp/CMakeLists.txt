@@ -103,6 +103,7 @@ add_executable(
     test_dx12_lightmath.cpp
     test_dx12_materialframe.cpp
     test_native_cubemap_policy.cpp
+    test_native_ibl_policy.cpp
     test_native_raster_policy.cpp
     test_native_surface_capability.cpp
     test_framelatch.cpp

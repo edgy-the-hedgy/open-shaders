@@ -140,18 +140,23 @@ float3 SkyIrradiance(float3 direction)
 float3 CubemapSpecularMiss(float3 direction, float roughness)
 {
     const float level = saturate(roughness) * float(EnvironmentMipCount - 1u);
-    float3 base = max(0.0, DecodeEnvironmentRadiance(Environment.SampleLevel(ClampClamp,-direction,level).rgb,ColorEncoding));
+    float3 base = DecodeEnvironmentRadiance(Environment.SampleLevel(ClampClamp,-direction,level).rgb,ColorEncoding);
+    if (!all(isfinite(base))) return base;
+    base = max(0.0, base);
     float3 radiance = SaturateColor(base, EnvironmentSaturation) * EnvironmentRatio() * EnvironmentScale;
     if (DALCMode >= 2u)
         radiance = base / max(0.001, Luminance(BaseMean())) * EngineAmbient(direction, DALCAmount);
     // The full exterior reflection cube includes environment + sky. Add only
     // the residual to avoid adding the base environment a second time.
     if (Interior == 0u && ReflectionMipCount != 0u) {
-        float3 full = max(0.0, DecodeEnvironmentRadiance(Reflections.SampleLevel(ClampClamp,-direction,
-            saturate(roughness)*float(ReflectionMipCount-1u)).rgb,ColorEncoding));
+        float3 full = DecodeEnvironmentRadiance(Reflections.SampleLevel(ClampClamp,-direction,
+            saturate(roughness)*float(ReflectionMipCount-1u)).rgb,ColorEncoding);
+        if (!all(isfinite(full))) return full;
+        full = max(0.0, full);
         radiance += SaturateColor(max(0.0, full-base), SkySaturation) * SkyScale;
     }
-    return all(isfinite(radiance)) ? max(0.0,radiance) : 0.0;
+    // PackOpaqueRadiance rejects nonfinite/overflow instead of certifying black.
+    return radiance;
 }
 
 float4 UnpackHalf4(uint2 value)

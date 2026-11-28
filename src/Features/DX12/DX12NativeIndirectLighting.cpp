@@ -1,4 +1,5 @@
 #include "DX12NativeIndirectLighting.h"
+#include "Features/NativeIBL/NativeIBLPolicy.h"
 #include "DX12GpuRetirement.h"
 #include "DX12FullNativeRasterEvidence.h"
 #include "GpuPass.h"
@@ -301,12 +302,9 @@ namespace DX12Native
             const auto& env = *slot->environment;
             // Stable content key for Worker 09: optional sources can disappear
             // without changing the producer\'s base-generation revision.
-            uint64_t content = 14695981039346656037ull;
-            const auto mix = [&](uint64_t value) { content ^= value; content *= 1099511628211ull; };
-            mix(env.stamp.epoch); mix(env.revision); mix(uint32_t(env.stamp.encoding));
-            mix(env.base->revision); mix(env.reflection ? env.reflection->revision : 0u);
-            mix(env.sky ? env.sky->revision : 0u);
-            slot->environmentContentRevision = content ? content : 1u;
+            slot->environmentContentRevision = NativeIBL::Policy::EnvironmentContentKey(
+                env.stamp.epoch, env.revision, uint32_t(env.stamp.encoding), env.base->revision,
+                env.reflection ? env.reflection->revision : 0u, env.sky ? env.sky->revision : 0u);
             const auto& raster = *slot->material->raster;
             auto* cmd = slot->commands.get();
             const UINT increment = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
