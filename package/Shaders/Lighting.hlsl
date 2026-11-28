@@ -1507,6 +1507,18 @@ PS_OUTPUT main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool frontFace :
 	psout.MaterialTechnique=uint4(NativeInputMRT::PackHalf2(TintColor.xy),
 		NativeInputMRT::PackHalf2(TintColor.zw),NativeInputMRT::PackHalf2(SpecularColor.xy),
 		NativeInputMRT::PackHalf2(SpecularColor.zw));
+#			if defined(CS_HAIR_SHADING)
+	// The advanced hair profile overrides vanilla gloss. Keep authored
+	// parameters, not evaluated hair appearance, in the same raw attachment.
+	if (SharedData::hairSpecularSettings.Enabled) {
+		psout.BasisFlags.w=(psout.BasisFlags.w & ~(15u<<19u)) | (13u<<19u);
+		psout.MaterialTechnique=uint4(
+			NativeInputMRT::PackHalf2(TintColor.xy),
+			NativeInputMRT::PackHalf2(float2(TintColor.z,SharedData::hairSpecularSettings.HairSaturation)),
+			NativeInputMRT::PackHalf2(float2(SharedData::hairSpecularSettings.BaseColorMult,SharedData::hairSpecularSettings.HairGlossiness)),
+			NativeInputMRT::PackHalf2(float2(SharedData::hairSpecularSettings.HairMode,SharedData::hairSpecularSettings.Transmission)));
+	}
+#			endif
 #		elif defined(MODELSPACENORMALS) && !defined(LODLANDNOISE) && !defined(LODLANDSCAPE)
 	// Carry authored specular scalars, not sampled material appearance.
 	float roughnessBlend=1.0, f0Multiplier=1.0, minF0=0.0, roughnessMultiplier=1.0;
