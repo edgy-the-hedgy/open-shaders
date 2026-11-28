@@ -373,6 +373,22 @@ PS_OUTPUT ShadeDistantTree(PS_INPUT input, bool sampleDistantShadow)
 
 	return psout;
 }
+#	if defined(FULL_NATIVE_INPUT) && defined(DEFERRED) && !defined(RENDER_DEPTH)
+#		include "Common/NativeInputMRT.hlsli"
+NativeInputOutput main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool front : SV_IsFrontFace, uint coverage : SV_Coverage)
+{
+	NativeInputOutput output=(NativeInputOutput)0;
+	float alpha=TexDiffuse.SampleBias(SampDiffuse,input.TexCoord.xy,SharedData::MipBias).a;
+	clip(alpha-AlphaTestRefRS);
+	float3x3 basis=NativeInputMRT::DerivativeBasis(input.WorldPosition.xyz,input.TexCoord.xy);
+	output.Diffuse.a=1;
+	output.MotionVectors=float4(MotionBlur::GetSSMotionVector(input.WorldPosition,input.PreviousWorldPosition),0,1);
+	output.NormalGlossiness=float4(GBuffer::EncodeNormal(normalize(FrameBuffer::WorldToView(basis[2],false))),0,1);
+	output.Masks2.a=1;
+	NativeInputMRT::Write(output,input.Position,input.TexCoord.xy,float4(1,1,1,1),basis,primitive,front,coverage,alpha);
+	return output;
+}
+#	else
 PS_OUTPUT main(PS_INPUT input)
 {
 	PS_OUTPUT output = ShadeDistantTree(input, true);
@@ -383,5 +399,6 @@ PS_OUTPUT main(PS_INPUT input)
 #	endif
 	return output;
 }
+#	endif
 
 #endif  // PSHADER

@@ -487,21 +487,11 @@ namespace globals
 	{
 		static void thunk(ID3D11DeviceContext* context, UINT count, UINT start, INT base)
 		{
-			// The capture route owns the original draw, not an additional replay.
-			bool issued = false;
-			const auto submit = [&] {
-				issued = true;
-				func(context, count, start, base);
-			};
-			if (context == globals::d3d::context && globals::state && globals::state->permutationData.nativeRasterInstance) {
-				try {
-					globals::features::dx12NativeScene.CaptureFullNativeInputDraw(context, count, submit);
-				} catch (...) {
-					// A failed capture must never submit an already-issued draw again.
-				}
+			if (context == globals::d3d::context && globals::state && globals::deferred && globals::deferred->deferredPass) {
+				try { globals::features::dx12NativeScene.StampFullNativeIndexedDraw(count, start, base); }
+				catch (...) { /* Never unwind into the engine. */ }
 			}
-			if (!issued)
-				submit();
+			func(context, count, start, base);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};

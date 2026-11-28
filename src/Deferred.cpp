@@ -166,16 +166,18 @@ void Deferred::SetupResources()
 			VRStereoOptimizations::SupportsGBufferFill())
 			gbufferBindFlags |= D3D11_BIND_UNORDERED_ACCESS;
 
-		// Albedo
-		SetupRenderTarget(ALBEDO, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R10G10B10A2_UNORM, gbufferBindFlags, "Deferred::Albedo");
+		const bool nativeInputs = globals::features::dx12Control.UsesExclusiveMaterials();
+		constexpr auto rawInputFormat = DXGI_FORMAT_R32G32B32A32_UINT;
+		// Albedo / raw identity+UV
+		SetupRenderTarget(ALBEDO, texDesc, srvDesc, rtvDesc, uavDesc, nativeInputs ? rawInputFormat : DXGI_FORMAT_R10G10B10A2_UNORM, gbufferBindFlags, "Deferred::Albedo");
 		// Specular
-		SetupRenderTarget(SPECULAR, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R11G11B10_FLOAT, gbufferBindFlags, "Deferred::Specular");
+		SetupRenderTarget(SPECULAR, texDesc, srvDesc, rtvDesc, uavDesc, nativeInputs ? rawInputFormat : DXGI_FORMAT_R11G11B10_FLOAT, gbufferBindFlags, "Deferred::Specular");
 		// Reflectance
-		SetupRenderTarget(REFLECTANCE, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R11G11B10_FLOAT, gbufferBindFlags, "Deferred::Reflectance");
+		SetupRenderTarget(REFLECTANCE, texDesc, srvDesc, rtvDesc, uavDesc, nativeInputs ? rawInputFormat : DXGI_FORMAT_R11G11B10_FLOAT, gbufferBindFlags, "Deferred::Reflectance");
 		// Normal + Roughness
 		SetupRenderTarget(NORMALROUGHNESS, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R10G10B10A2_UNORM, gbufferBindFlags, "Deferred::NormalRoughness");
 		// Masks
-		SetupRenderTarget(MASKS, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R11G11B10_FLOAT, gbufferBindFlags, "Deferred::Masks");
+		SetupRenderTarget(MASKS, texDesc, srvDesc, rtvDesc, uavDesc, nativeInputs ? rawInputFormat : DXGI_FORMAT_R11G11B10_FLOAT, gbufferBindFlags, "Deferred::Masks");
 		// Masks2 (vertexAO in r, material category in g; UNORM to allow blending)
 		// Preserve the existing AO and category channels. The extra channel is experimental identity evidence only.
 		const auto masks2Format = globals::features::dx12Control.UsesExclusiveMaterials() ?
@@ -369,6 +371,13 @@ void Deferred::BeginOpaqueInputs()
 	PrepassPasses();
 
 	OverrideBlendStates();
+	if (globals::features::dx12Control.UsesExclusiveMaterials()) {
+		globals::features::dx12NativeScene.BeginFullNativeRasterInputs();
+		const float clear[4]{};
+		auto& inputs = globals::game::renderer->GetRuntimeData().renderTargets;
+		for (auto id : { ALBEDO, SPECULAR, REFLECTANCE, MASKS })
+			globals::d3d::context->ClearRenderTargetView(Util::AsReal(inputs[id].RTV), clear);
+	}
 
 	// Classifies Eye 1 for SSGI/Shadows reuse too, not just VR's own stereo optimization.
 	if (globals::game::isVR && globals::features::vr.IsStereoOptimizationDispatchReady()) {
@@ -663,6 +672,7 @@ bool Deferred::ForwardMasks2Available() const
 
 void Deferred::BindForwardHairMasks()
 {
+	if (globals::features::dx12Control.UsesExclusiveMaterials()) return;
 	const std::uint32_t descriptor = globals::state->modifiedPixelDescriptor;
 	const auto technique = SIE::ShaderCache::GetLightingTechnique(descriptor);
 	const bool deferredDraw = (descriptor & static_cast<std::uint32_t>(SIE::ShaderCache::LightingShaderFlags::Deferred)) != 0;
@@ -746,6 +756,14 @@ void Deferred::OverrideBlendStates()
 								blendDesc.RenderTarget[i].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
 							}
 
+							if (globals::features::dx12Control.UsesExclusiveMaterials()) {
+								// Integer MRTs cannot blend. Blended writers invalidate raw identity
+								// in their shader instead of mixing integer attributes.
+								for (int i = 3; i < 7; ++i) {
+									blendDesc.RenderTarget[i].BlendEnable = false;
+									blendDesc.RenderTarget[i].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+								}
+							}
 							DX::ThrowIfFailed(device->CreateBlendState(&blendDesc, &deferredBlendStates[a][b][c][d]));
 						} else {
 							deferredBlendStates[a][b][c][d] = nullptr;

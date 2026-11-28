@@ -569,7 +569,10 @@ namespace TerrainBlending
 #	undef TERRAIN_BLENDING
 #endif
 
-#if defined(DEFERRED)
+#if defined(NATIVE_PBR_INPUT) && defined(DEFERRED)
+#	include "Common/NativeInputMRT.hlsli"
+typedef NativeInputOutput PS_OUTPUT;
+#elif defined(DEFERRED)
 struct PS_OUTPUT
 {
 	float4 Diffuse: SV_Target0;
@@ -1305,10 +1308,9 @@ bool UseSkylightingShadowVisibility()
 #	if defined(NATIVE_PBR_INPUT) && defined(DEFERRED)
 #		include "Common/NativeInputCoverage.hlsli"
 
-// Full Native deferred Lighting is strictly input-only, including draws not
-// admitted to the integer MRT capture. Unmatched draws preserve visibility,
-// motion and compatibility normals but cannot certify a native material owner.
-PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
+// Full Native deferred Lighting is strictly input-only. The original
+// raster operation writes the pass-level integer MRTs for all permutations.
+PS_OUTPUT main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool frontFace : SV_IsFrontFace, uint coverage : SV_Coverage)
 {
 	PS_OUTPUT psout = (PS_OUTPUT)0;
 	const uint eyeIndex = Stereo::GetEyeIndexPS(input.Position, VPOSOffset);
@@ -1344,19 +1346,39 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		lerp(FurShells::RootThreshold, FurShells::TipThreshold, input.FurShell), uv)*FurShells::GetLayerWeight(input.FurShell);
 	if (input.FurShell > 0.0 && (furRootCovered || furCoverage < screenNoise)) discard;
 #		endif
-	float3 geometricNormal;
+	float3x3 basis;
 #		if defined(SKINNED) || !defined(MODELSPACENORMALS)
-	geometricNormal = float3(input.TBN0.z, input.TBN1.z, input.TBN2.z);
+	basis = transpose(float3x3(input.TBN0, input.TBN1, input.TBN2));
 #		else
-	geometricNormal = cross(ddx(input.WorldPosition.xyz), ddy(input.WorldPosition.xyz));
+	basis = NativeInputMRT::DerivativeBasis(input.WorldPosition.xyz, uv);
 #		endif
+	float3 geometricNormal = basis[2];
 	if (dot(geometricNormal, geometricNormal) < 1e-8) geometricNormal = float3(0,0,1);
 	const float3 normalVS = normalize(FrameBuffer::WorldToView(normalize(geometricNormal) * (frontFace ? 1.0 : -1.0), false, eyeIndex));
 	const float2 motion = MotionBlur::GetSSMotionVector(input.WorldPosition, input.PreviousWorldPosition, eyeIndex);
 	psout.Diffuse.a = saturate(alpha);
 	psout.MotionVectors = float4(motion, 0, saturate(alpha));
 	psout.NormalGlossiness = float4(GBuffer::EncodeNormal(normalVS), 0, saturate(alpha));
-	psout.Masks2 = float4(0, 0, 0, saturate(alpha));
+	psout.Masks2 = float4(0, 0, 0, 1);
+	NativeInputMRT::Write(psout, input.Position, uv, input.Color, basis, primitive, frontFace, coverage, alpha);
+	// The auxiliary plane is technique-tagged. Live shader/material metadata
+	// remains available in the frame-local draw record for these permutations.
+#		if defined(LANDSCAPE)
+	psout.BasisFlags.w |= NativeInputMRT::AuxLandscape;
+	psout.MaterialTechnique = uint4(NativeInputMRT::PackHalf2(input.LandBlendWeights1.xy),
+		NativeInputMRT::PackHalf2(input.LandBlendWeights1.zw), NativeInputMRT::PackHalf2(input.LandBlendWeights2.xy),
+		NativeInputMRT::PackHalf2(input.LandBlendWeights2.zw));
+#		elif defined(PROJECTED_UV) && !defined(SKINNED)
+	psout.BasisFlags.w |= NativeInputMRT::AuxProjection;
+	psout.MaterialTechnique = uint4(asuint(input.TexProj), NativeInputMRT::PackHalf2(input.TexCoord0.zw));
+#		elif defined(EYE)
+	psout.BasisFlags.w |= NativeInputMRT::AuxEye;
+	psout.MaterialTechnique = uint4(asuint(input.EyeNormal), Permutation::NativeRasterMaterialIndex);
+#		elif defined(FUR_SHELLS)
+	psout.BasisFlags.w |= NativeInputMRT::AuxFur;
+	psout.MaterialTechnique = uint4(asuint(input.FurShell), NativeInputMRT::PackHalf2(input.FurRoot.xy),
+		NativeInputMRT::PackHalf2(input.FurRoot.zw), Permutation::NativeRasterMaterialIndex);
+#		endif
 	// No diffuse, specular, reflection or evaluated material color is written.
 #		if defined(FUR_SHELLS_DEPTH)
 	psout = (PS_OUTPUT)0;

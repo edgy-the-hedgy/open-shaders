@@ -7,6 +7,8 @@ struct RawRasterSurface
     float3 tangent, bitangent, normal;
     uint materialIndex, pixelDescriptor, extraDescriptor, extraFeatureDescriptor;
     float alpha;
+    uint auxiliaryKind;
+    uint4 auxiliary;
     bool covered, front, valid;
 };
 #endif

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT AND (LicenseRef-GPL-3.0-with-Modding-Exception WITH GPL-3.0-linking-source-exception)
 // Original code Copyright (c) 2022 Ilya Perapechka (MIT), modifications GPL-3.0 with Modding Exception (see EXCEPTIONS.md)
 
+#include "Common/FullNativeInput.hlsli"
 #include "Common/Color.hlsli"
 #include "Common/FrameBuffer.hlsli"
 #include "Common/GBuffer.hlsli"
@@ -451,7 +452,10 @@ VS_OUTPUT main(VS_INPUT input)
 
 typedef VS_OUTPUT PS_INPUT;
 
-#ifdef GRASS_LIGHTING
+ #if defined(FULL_NATIVE_INPUT) && !defined(RENDER_DEPTH)
+#	include "Common/NativeInputMRT.hlsli"
+typedef NativeInputOutput PS_OUTPUT;
+#elif defined(GRASS_LIGHTING)
 struct PS_OUTPUT
 {
 #	if defined(RENDER_DEPTH)
@@ -598,7 +602,40 @@ float GetLODBrightness(float tier)
 #		include "SnowCover/SnowCover.hlsli"
 #	endif
 
-#	ifdef GRASS_LIGHTING
+#	if defined(FULL_NATIVE_INPUT) && !defined(RENDER_DEPTH)
+PS_OUTPUT main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool front : SV_IsFrontFace, uint coverage : SV_Coverage)
+{
+	PS_OUTPUT psout = (PS_OUTPUT)0;
+	float2 uv=input.TexCoord.xy;
+#		if defined(GRASS_LIGHTING) && !defined(TRUE_PBR)
+	bool complex = false;
+#			if defined(GRASS_OPTIMIZATIONS)
+	complex = input.IsComplex > 0.5;
+	if (input.IsComplex < 0.0)
+#			endif
+	{
+		float w,h;
+		TexBaseSampler.GetDimensions(w,h);
+		float3 probe=TexBaseSampler.Load(int3(0,(int)h-1,0)).xyz*2.0-1.0;
+		complex=probe.z>0.0 && abs(length(probe)-1.0)<SharedData::grassLightingSettings.ComplexGrassThreshold;
+	}
+	if (complex) uv.y *= 0.5;
+#		endif
+	float alpha=input.Color.w*TexBaseSampler.SampleBias(SampBaseSampler,uv,SharedData::MipBias).a;
+#		if defined(DO_ALPHA_TEST)
+	clip(alpha-AlphaTestRefRS);
+#		endif
+	uint eye=Stereo::GetEyeIndexPS(input.HPosition,VPOSOffset);
+	float3x3 basis=NativeInputMRT::DerivativeBasis(input.WorldPosition,uv);
+	psout.Diffuse.a=1;
+	psout.MotionVectors=float4(MotionBlur::GetSSMotionVector(float4(input.WorldPosition,1),float4(input.PreviousWorldPosition,1),eye),0,1);
+	psout.NormalGlossiness=float4(GBuffer::EncodeNormal(normalize(FrameBuffer::WorldToView(basis[2],false,eye))),0,1);
+	psout.Masks2=float4(0,NeuralRenderingCategory::Encode(NeuralRenderingCategory::Foliage),0,1);
+	// Grass instancing is not a TLAS mapping. Write invalid raw identity until
+	// the draw/instance contract is published, while retaining visibility.
+	return psout;
+}
+#	elif defined(GRASS_LIGHTING)
 #		if defined(TRUE_PBR)
 cbuffer PerMaterial : register(b1)
 {

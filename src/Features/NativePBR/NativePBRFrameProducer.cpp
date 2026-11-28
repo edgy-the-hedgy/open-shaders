@@ -11,19 +11,6 @@ namespace
 	constexpr uint32_t kDeveloperCoverageInterval = 120;
 }
 
-void NativePBR::FrameProducer::CaptureInputDraw(const GraphicsBackend& backend, ID3D11DeviceContext* context, ID3D11Texture2D* mask,
-	ID3D11VertexShader* vs, ID3D11PixelShader* ps, DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,
-	const NativePBR::InputOnly::DrawMetadata& metadata, const std::function<void()>& draw)
-{
-	if (!rawInputs) rawInputs = std::make_unique<RawInputCapture>();
-	rawInputs->CaptureDraw(backend, context, mask, vs, ps, stamp, metadata, draw);
-}
-
-void NativePBR::FrameProducer::PublishRawInput(ID3D11Texture2D* mask, DX12Native::MaterialFrameContract::RasterIdentityStamp stamp)
-{
-	if (rawInputs) rawInputs->Publish(mask, stamp);
-}
-
 void NativePBR::FrameProducer::Poll(uint32_t frame)
 {
 	if (probe)
@@ -31,7 +18,7 @@ void NativePBR::FrameProducer::Poll(uint32_t frame)
 }
 
 void NativePBR::FrameProducer::Dispatch(const GraphicsBackend& backend, std::shared_ptr<const DX12Native::RasterFrame> raster,
-	std::shared_ptr<const DX12Native::TopLevel> scene, uint32_t frame, uint32_t width, uint32_t height, bool opaqueReady, uint32_t quality)
+	std::shared_ptr<const DX12Native::TopLevel> scene, uint32_t frame, uint32_t width, uint32_t height, bool opaqueReady, uint32_t quality, std::shared_ptr<const RawInputFrame> rawInputs)
 {
 	if (!scene || !scene->materialEvaluation)
 		return;
@@ -47,7 +34,7 @@ void NativePBR::FrameProducer::Dispatch(const GraphicsBackend& backend, std::sha
 		extended.loaded && extended.settings.EnableParallax != 0,
 		extended.loaded && extended.settings.EnableParallaxWarpingFix != 0,
 		extended.loaded && extended.settings.EnableShadows != 0,
-		globals::state->GetMaterialMipBias(Util::GetTemporal()), std::move(projected), GetRawInput(stamp), quality);
+		globals::state->GetMaterialMipBias(Util::GetTemporal()), std::move(projected), std::move(rawInputs), quality);
 }
 
 void NativePBR::FrameProducer::PublishProjection(const GraphicsBackend& backend, DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,
@@ -60,8 +47,6 @@ void NativePBR::FrameProducer::PublishProjection(const GraphicsBackend& backend,
 
 void NativePBR::FrameProducer::InvalidateGeneration()
 {
-	if (rawInputs)
-		rawInputs->Reset();
 	if (projection)
 		projection->Reset();
 	if (probe)
@@ -71,7 +56,6 @@ void NativePBR::FrameProducer::InvalidateGeneration()
 void NativePBR::FrameProducer::Release()
 {
 	ReleaseProjection();
-	rawInputs.reset();
 	probe.reset();
 }
 
@@ -83,7 +67,6 @@ json NativePBR::FrameProducer::GetDiagnostics()
 		{ "geometryRevision", publication ? publication->geometryRevision : 0 },
 		{ "width", publication ? publication->width : 0u }, { "height", publication ? publication->height : 0u },
 		{ "producerValue", publication ? publication->producerValue : 0 },
-		{ "rawInputFailure", rawInputs ? rawInputs->Failure() : "" },
 		{ "rawInputDraws", publication ? publication->rawInputDraws : 0u },
 		{ "rawInputEvaluatedPixels", probe ? probe->stats.rawInputPixels : 0u },
 		{ "primaryRayQueries", probe ? probe->stats.primaryRayQueries : 0u },

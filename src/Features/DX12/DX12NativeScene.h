@@ -83,7 +83,9 @@ struct DX12NativeScene final : OverlayFeature
 	void ObserveWorldCamera(const globals::FrameBuffer& camera);
 	const GraphicsBackend* GetNativeBackend() const { return backend ? &*backend : nullptr; }
 	std::shared_ptr<const DX12Native::NativeWorldFrame> GetWorldFrame(uint32_t engineFrame, uint32_t pluginFrame) const;
-	void CaptureFullNativeInputDraw(ID3D11DeviceContext* context, uint32_t indexCount, const std::function<void()>& draw);
+	void BeginFullNativeRasterInputs();
+	void StampFullNativeIndexedDraw(uint32_t indexCount, uint32_t startIndex, int32_t baseVertex);
+	std::shared_ptr<const NativePBR::RawInputFrame> GetRawInputs(uint32_t frame) const { return rawInputCapture.GetForFrame(frame); }
 	// Capture the completed fallback radiance before native final-color application.
 	void CaptureFullNativeEnvironment(ID3D11ShaderResourceView* sceneColor, uint32_t frame);
 	bool WantsDepthPrepassReadyHook() const override;
@@ -156,6 +158,10 @@ private:
 		std::shared_ptr<const DX12Native::TopLevel> scene;
 		DX12Native::MaterialFrameContract::RasterIdentityStamp stamp{};
 		std::vector<uint8_t> seen;
+		std::unordered_map<const void*, uint32_t> geometryOrdinals, materialOrdinals;
+		std::vector<NativePBR::RasterDrawRecord> drawRecords;
+		uint32_t activeGeometry = 0, activeMaterial = 0, nextRasterDraw = 0;
+		uint32_t activeSceneInstance = 0, activePrimitiveCount = 0;
 		// Sparse, frame-local observations indexed by the matched TLAS instance.
 		std::unordered_map<uint32_t, DX12Native::MaterialFrameContract::ProjectedPropertyObservation> projection;
 		std::unordered_map<uint32_t, ProjectedTextureObservation> projectionTextures;
@@ -166,6 +172,7 @@ private:
 		bool finalized = false;
 	};
 	FullNativeRasterDrawState fullNativeRasterDraws;
+	NativePBR::RawInputCapture rawInputCapture;
 	std::unique_ptr<DX12Native::DirectLightingTrace> fullNativeDirect;
 	void DispatchFullNativeIndirect();
 	void ResetFullNativeEnvironment();

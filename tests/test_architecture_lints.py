@@ -111,7 +111,7 @@ class ArchitectureLintTests(unittest.TestCase):
     def test_full_native_shader_inputs_share_one_boot_latched_cache_identity(self):
         cache = (ROOT / "src/ShaderCache.cpp").read_text(encoding="utf-8")
         self.assertIn('"FULL_NATIVE_INPUT"', cache)
-        self.assertIn('L"_full_native_input_v4"', cache)
+        self.assertIn('L"_full_native_input_v5"', cache)
         self.assertNotIn('L"_native_pbr_input_v1"', cache)
         for name in ("Lighting", "Effect", "Sky", "DistantTree"):
             source = (ROOT / f"package/Shaders/{name}.hlsl").read_text(encoding="utf-8")
@@ -138,46 +138,36 @@ class ArchitectureLintTests(unittest.TestCase):
         self.assertIn('"Shaders/NativeCubemaps/CaptureRaw.cs.hlsl"', verification)
 
 
-    def test_input_only_fxc_is_a_distinct_raw_shader_and_fenced_native_consumer(self):
-        raw = (ROOT / "features/Native PBR/Shaders/NativePBR/InputOnly.ps.hlsl").read_text(encoding="utf-8")
+    def test_native_input_is_published_by_original_pass(self):
+        raw = (ROOT / "package/Shaders/Common/NativeInputMRT.hlsli").read_text(encoding="utf-8")
         capture = (ROOT / "src/Features/NativePBR/NativeRawInputCapture.cpp").read_text(encoding="utf-8")
         probe = (ROOT / "src/Features/DX12/DX12NativeScreenProbe.h").read_text(encoding="utf-8")
         consumer = (ROOT / "features/Native Composite/Shaders/NativeComposite/NativeRawRasterInput.hlsli").read_text(encoding="utf-8")
-        self.assertIn("uint primitive : SV_PrimitiveID, bool front : SV_IsFrontFace", raw)
-        self.assertIn("ddx(input.uv)", raw)
-        self.assertIn("ddy(input.uv)", raw)
-        self.assertIn("#if defined(NATIVE_INPUT_ALPHA_TEST)", raw)
-        self.assertIn("CoverageTexture.SampleBias", raw)
-        self.assertIn("clip(alpha - CoverageThreshold)", raw)
-        self.assertIn("NativeInputCoverage::Alpha", raw)
         lighting = (ROOT / "package/Shaders/Lighting.hlsl").read_text(encoding="utf-8")
         begin = lighting.index("// Full Native deferred Lighting is strictly input-only")
         end = lighting.index("#\telse\nFUR_EARLY_DEPTH_STENCIL", begin)
         visibility = lighting[begin:end]
         self.assertIn("MotionBlur::GetSSMotionVector", visibility)
         self.assertIn("NativeInputCoverage::Alpha", visibility)
+        self.assertIn("NativeInputMRT::Write", visibility)
+        self.assertIn("AuxLandscape", visibility)
+        self.assertIn("AuxProjection", visibility)
         for forbidden in ("EvaluateBRDF", "NativeForwardEnvironment::Sample", "GetDynamicCubemap", "ParallaxUV", "ShadowSampling::"):
             self.assertNotIn(forbidden, visibility)
         self.assertNotIn("psout.Diffuse.xyz", visibility)
-        self.assertIn("uint4 materialTechnique : SV_Target6", raw)
-        self.assertIn("RawRasterMaterialTechnique", consumer)
-        self.assertIn("raw.materialIndex != Bindings[instance].materialIndex", (ROOT / "features/Native Composite/Shaders/NativeComposite/NativePBRProbe.hlsl6").read_text(encoding="utf-8"))
-        self.assertIn("StandaloneShaderClass::Pixel", capture)
-        self.assertNotIn("D3D11_DEPTH_WRITE_MASK_ZERO", capture)
-        self.assertNotIn("OMSetDepthStencilState(", capture)
-        self.assertIn("OMSetRenderTargets(kMRTs, rawTargets.data(), dsv.get())", capture)
-        self.assertIn("uint4 identityUV : SV_Target3", raw)
-        self.assertIn("uint4 colorGradDepth : SV_Target4", raw)
-        self.assertIn("uint4 basisFlags : SV_Target5", raw)
-        self.assertIn("MotionBlur::GetSSMotionVector", raw)
+        for target in ("IdentityUV : SV_Target3", "ColorGradDepth : SV_Target4", "BasisFlags : SV_Target5", "MaterialTechnique : SV_Target6"):
+            self.assertIn(target, raw)
+        self.assertIn("ddx(uv)", raw)
+        self.assertIn("ddy(uv)", raw)
+        self.assertIn("CopyResource(active->planes[i]->resource11, sources[i])", capture)
+        for obsolete in ("OMGetRenderTargets", "OMSetRenderTargets", "PSGetShader", "PSSetShader", "StandaloneShaderClass"):
+            self.assertNotIn(obsolete, capture)
         hooks = (ROOT / "src/Globals.cpp").read_text(encoding="utf-8")
         begin = hooks.index("struct ID3D11DeviceContext_DrawIndexedNativeInput")
         end = hooks.index("void InstallD3DHooks", begin)
         draw_hook = hooks[begin:end]
         self.assertEqual(draw_hook.count("func(context, count, start, base)"), 1)
-        self.assertIn("if (!issued)", draw_hook)
-        self.assertNotIn("ReplayFullNativeInput", draw_hook)
-        self.assertIn("OMSetRenderTargets(kMRTs, targets.data(), dsv.get())", capture)
+        self.assertIn("StampFullNativeIndexedDraw", draw_hook)
         self.assertIn("slot->rawInputs->readyFence", probe)
         self.assertIn("slot->rawInputs->evidence->readyFence", probe)
         self.assertNotIn("RawRasterTokenTable", consumer)
@@ -188,6 +178,10 @@ class ArchitectureLintTests(unittest.TestCase):
         self.assertIn("abs(rawDepth-depth)", consumer)
         self.assertIn("a.x-1u != instance", consumer)
         self.assertIn("RawRasterIdentityUV", consumer)
+        self.assertIn("0x80000000u | rasterOnly", scene)
+        deferred = (ROOT / "src/Deferred.cpp").read_text(encoding="utf-8")
+        self.assertIn("DXGI_FORMAT_R32G32B32A32_UINT", deferred)
+        self.assertIn("BeginFullNativeRasterInputs", deferred)
 
 if __name__ == "__main__":
     unittest.main()

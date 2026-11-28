@@ -37,9 +37,13 @@ RawRasterSurface ReadRawRaster(uint2 pixel, float depth, uint instance, uint pri
     result.color=float4(b.x&255u,(b.x>>8)&255u,(b.x>>16)&255u,b.x>>24)/255.0;
     result.tangent=RawOct(c.x); result.bitangent=RawOct(c.y); result.normal=RawOct(c.z);
     uint4 material = RawRasterMaterialTechnique.Load(int3(pixel,0));
-    result.materialIndex=material.x; result.pixelDescriptor=material.y;
-    result.extraDescriptor=material.z; result.extraFeatureDescriptor=material.w;
-    result.alpha=float(c.w >> 3u) / 65535.0;
+    result.auxiliaryKind=(c.w >> 19u)&15u;
+    result.auxiliary=material;
+    result.materialIndex=result.auxiliaryKind==0u ? material.x : 0xffffffffu;
+    result.pixelDescriptor=result.auxiliaryKind==0u ? material.y : 0u;
+    result.extraDescriptor=result.auxiliaryKind==0u ? material.z : 0u;
+    result.extraFeatureDescriptor=result.auxiliaryKind==0u ? material.w : 0u;
+    result.alpha=float((c.w >> 3u)&65535u) / 65535.0;
     result.covered=true;
     result.front=(c.w&1u)!=0u;
     result.valid=all(isfinite(result.uv)) && all(isfinite(result.dx)) && all(isfinite(result.dy)) &&
@@ -52,7 +56,7 @@ bool ReadRawRasterCandidate(uint2 pixel, float depth, uint hasRawInput, out uint
     raw = (RawRasterSurface)0;
     if (!hasRawInput) return false;
     uint4 a = RawRasterIdentityUV.Load(int3(pixel,0));
-    if (!a.x || (a.y & 0x80000000u) != 0u) return false;
+    if (!a.x || (a.x & 0x80000000u) != 0u || (a.y & 0x80000000u) != 0u) return false;
     identity = uint2(a.x - 1u, a.y);
     raw = ReadRawRaster(pixel, depth, identity.x, identity.y, hasRawInput);
     return raw.valid;

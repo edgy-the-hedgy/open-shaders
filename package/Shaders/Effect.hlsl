@@ -1392,6 +1392,24 @@ PS_OUTPUT ShadeEffect(PS_INPUT input, bool sampleDistantShadow)
 
 	return psout;
 }
+#	if defined(FULL_NATIVE_INPUT) && defined(DEFERRED)
+#		include "Common/NativeInputMRT.hlsli"
+NativeInputOutput main(PS_INPUT input)
+{
+	PS_OUTPUT effect=ShadeEffect(input,false);
+	NativeInputOutput output=(NativeInputOutput)0;
+	output.Diffuse=effect.Diffuse;
+#		if defined(MOTIONVECTORS_NORMALS)
+	output.MotionVectors=effect.MotionVectors;
+	output.NormalGlossiness=effect.NormalGlossiness;
+#		elif defined(NORMALS)
+	output.NormalGlossiness=effect.NormalGlossiness;
+#		endif
+	output.Masks2=effect.Masks2;
+	output.Masks2.z=0;
+	return output;
+}
+#	else
 PS_OUTPUT main(PS_INPUT input)
 {
 	PS_OUTPUT output = ShadeEffect(input, true);
@@ -1402,5 +1420,6 @@ PS_OUTPUT main(PS_INPUT input)
 #	endif
 	return output;
 }
+#	endif
 
 #endif

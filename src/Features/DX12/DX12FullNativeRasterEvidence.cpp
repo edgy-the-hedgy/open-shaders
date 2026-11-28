@@ -24,7 +24,6 @@ namespace DX12Native
 	{
 		CS_GPU_PASS("NativeComposite::CaptureFullNativeRasterEvidence");
 		if (!source ||
-			!stamp.scope || !stamp.geometryRevision || !stamp.materialRevision ||
 			!backend.d3d11Device || !backend.d3d11Context || !backend.d3d12Device || !backend.commandQueue)
 			return {};
 		std::shared_ptr<FullNativeRasterEvidence>* selected = nullptr;

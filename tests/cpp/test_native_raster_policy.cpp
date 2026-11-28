@@ -38,7 +38,7 @@ TEST_CASE("Disabled native raster strips stale route and input bits", "[dx12][ma
 TEST_CASE("Full Native input ABI is independent of fallback and runtime producer state", "[dx12][shaders]")
 {
 	using namespace DX12;
-	for (auto kind : { InputShaderKind::Lighting, InputShaderKind::Effect, InputShaderKind::Sky, InputShaderKind::DistantTree, InputShaderKind::Water }) {
+	for (auto kind : { InputShaderKind::Lighting, InputShaderKind::Effect, InputShaderKind::Sky, InputShaderKind::DistantTree, InputShaderKind::Water, InputShaderKind::Grass }) {
 		REQUIRE(HasFullNativeInput(FeatureBackend::FullNative, kind));
 		REQUIRE_FALSE(HasFullNativeInput(FeatureBackend::Baseline, kind));
 	}

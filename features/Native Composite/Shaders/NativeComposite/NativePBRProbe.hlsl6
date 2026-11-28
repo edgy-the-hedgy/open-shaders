@@ -174,7 +174,7 @@ Sample EvaluateScreen(uint2 pixelIndex, out uint2 hitIdentity, out bool rawUsed,
     }
     if (instance >= InstanceCount) { result.color.a=SurfaceEvaluationFailed; return result; }
     // The material index is a frame-stamped reference, never a second material authority.
-    if (raw.valid && raw.materialIndex != Bindings[instance].materialIndex) {
+    if (raw.valid && raw.materialIndex != 0xffffffffu && raw.materialIndex != Bindings[instance].materialIndex) {
         if (!traced) { unresolvedUntraced=true; return result; }
         raw.valid = false;
     }

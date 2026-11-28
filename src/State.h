@@ -628,7 +628,7 @@ public:
 		float GrassCanopyHeight;
 		uint nativeRasterInstance;
 		uint nativeRasterPrimitiveCount;
-		float canopyPadding;
+		uint nativeRasterMaterialIndex = UINT32_MAX;
 
 		float4 PerDrawFeatureData[2];
 
@@ -668,6 +668,7 @@ public:
 			       GrassCanopyHeight == other.GrassCanopyHeight &&
 			       nativeRasterInstance == other.nativeRasterInstance &&
 			       nativeRasterPrimitiveCount == other.nativeRasterPrimitiveCount &&
+			       nativeRasterMaterialIndex == other.nativeRasterMaterialIndex &&
 			       PerDrawFeatureData[0].x == other.PerDrawFeatureData[0].x &&
 			       PerDrawFeatureData[0].y == other.PerDrawFeatureData[0].y &&
 			       PerDrawFeatureData[0].z == other.PerDrawFeatureData[0].z &&

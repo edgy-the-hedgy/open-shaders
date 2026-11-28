@@ -50,7 +50,7 @@ namespace DX12
 	}
 
 	// Shared between shader permutation routing and disk-cache identity.
-	enum class InputShaderKind { Other, Lighting, Effect, Sky, DistantTree, Water };
+	enum class InputShaderKind { Other, Lighting, Effect, Sky, DistantTree, Water, Grass };
 	constexpr bool HasFullNativeInput(FeatureBackend backend, InputShaderKind kind)
 	{
 		return backend == FeatureBackend::FullNative && kind != InputShaderKind::Other;

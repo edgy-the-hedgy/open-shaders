@@ -766,6 +766,7 @@ namespace SIE
 			case Type::Sky: return Kind::Sky;
 			case Type::DistantTree: return Kind::DistantTree;
 			case Type::Water: return Kind::Water;
+			case Type::Grass: return Kind::Grass;
 			default: return Kind::Other;
 			}
 		}
@@ -2112,7 +2113,7 @@ namespace SIE
 			std::wstring suffix(suffixNarrow.begin(), suffixNarrow.end());
 			// The same boot-latched predicate selects input defines and disk identity.
 			if (HasFullNativeInput(shader.shaderType.get()))
-				suffix += L"_full_native_input_v4";
+				suffix += L"_full_native_input_v5";
 
 			const std::wstring wname(name.begin(), name.end());
 			switch (shaderClass) {

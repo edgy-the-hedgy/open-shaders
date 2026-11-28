@@ -156,7 +156,7 @@ namespace Permutation
 		float GrassCanopyHeight;
 		uint NativeRasterInstance;
 		uint NativeRasterPrimitiveCount;
-		float canopyPadding;
+		uint NativeRasterMaterialIndex;
 
 		float4 PerDrawFeatureData[2];
 	};
