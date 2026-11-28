@@ -39,7 +39,7 @@ namespace NativeLLF
 		json GetDiagnostics() override;
 		void OnSceneTransitionReset(bool opening) override { if (opening) { ResetParticleInput(); ResetSpatialInput(); } }
 		std::optional<ParticleInput::Observation> ObserveParticlePass(RE::BSRenderPass* pass);
-		std::shared_ptr<const DirectInputFrame> CollectDirectInputs(const DX12Native::TopLevel& scene, uint32_t frame, bool opaqueReady);
+		std::shared_ptr<const DirectInputFrame> CollectDirectInputs(std::shared_ptr<const DX12::Grid> grid, uint32_t scope, uint64_t geometryRevision, uint32_t frame, bool opaqueReady);
 
 	private:
 		struct SpatialWorkerState
@@ -55,6 +55,7 @@ namespace NativeLLF
 			std::vector<DX12::PreparedLight> lights;
 			std::vector<std::optional<Policy::AuthoredLight>> authored;
 			std::unordered_map<uint32_t, std::vector<size_t>> byReference;
+			std::vector<size_t> byX;
 		};
 		std::atomic<std::shared_ptr<const PreparedCache>> preparedCache;
 		// Immutable per-frame acquisition; retries must not rewalk engine light arrays.

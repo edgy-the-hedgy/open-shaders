@@ -125,7 +125,7 @@ bool ShadeNativeSecondarySurface(Sample s,NativeCoatSample coat,NativeParallaxSh
         float3 l=normalize(sunDirection.xyz);
         if((dot(n,l)>0.0||HasNativeThinSurface(coat)||HasNativeSubsurface(coat)||
             (HasNativeCoat(coat)&&dot(coat.normalRoughness.xyz,l)>0.0))&&
-            SecondaryVisible(world,biasNormal,l,3.402823e38,instanceCount,characters))
+            (sunRadiance.w!=0.0||SecondaryVisible(world,biasNormal,l,3.402823e38,instanceCount,characters)))
             AccumulateBRDF(s.color,s.f0,n,view,l,saturate(dot(n,l)),ndv,a2,max(sunRadiance.rgb,0.0),NativeHeightVisibility(height,NativeBaseDirection(l,coat),distance,heightNoise),coat,fuzz,foliage,diffuse,specular,transmission);
     }
 

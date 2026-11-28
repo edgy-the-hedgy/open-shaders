@@ -766,17 +766,19 @@ void DX12NativeScene::DispatchFullNativeMaterial(bool opaqueReady)
 		globals::features::nativePBR.Dispatch(*backend, raster.Get(frame), scene, frame, uint32_t(viewport.x), uint32_t(viewport.y), opaqueReady, FullNativeFrameQuality(frame), rawInputCapture.GetForFrame(frame));
 	}
 	const auto material = globals::features::nativePBR.Get(frame);
-	if (!material || !scene || !material->HasSecondaryGeometry() || material->scene != scene || !scene->inputs || !scene->inputs->residency)
+	if (!material)
 		return;
 	if (fullNativeDirect && fullNativeDirect->Get(frame))
 		return;
-	const auto lights = globals::features::nativeLLF.CollectDirectInputs(*scene, frame, opaqueReady);
+	const auto lightGrid = grid && !grid->requested.empty() && grid->requested.front().scope == material->scope &&
+		grid->geometryRevision == material->geometryRevision ? grid : nullptr;
+	const auto lights = globals::features::nativeLLF.CollectDirectInputs(lightGrid, material->scope, material->geometryRevision, frame, opaqueReady);
 	if (!lights)
 		return;
 	if (!fullNativeDirect)
 		fullNativeDirect = std::make_unique<DX12Native::DirectLightingTrace>();
-	// Selected direct coverage remains partial: sun and particle visibility are
-	// limited to the resident TLAS; spots require a valid live engine projection.
+	// Direct illumination is independent of secondary geometry; visibility evidence
+	// describes resident casters only, and spots require a valid live projection.
 	fullNativeDirect->Dispatch(*backend, material, lights->points, lights->available,
 		lights->directional, uint32_t(viewport.x), uint32_t(viewport.y),
 		globals::features::foliageLighting.loaded && globals::features::foliageLighting.GetCommonBufferData().EnableFoliageScattering != 0,

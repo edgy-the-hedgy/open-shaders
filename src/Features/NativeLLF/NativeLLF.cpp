@@ -157,19 +157,22 @@ std::shared_ptr<const NativeLLF::SpatialPolicy::Publication> NativeLLF::Producer
 std::shared_ptr<const NativeLLF::Producer::PreparedCache> NativeLLF::Producer::GetPreparedCache(std::shared_ptr<const DX12::Grid> grid)
 {
 	auto cached = preparedCache.load(std::memory_order_acquire);
-	if (cached && (cached->grid == grid || (cached->grid->resident == grid->resident &&
+	if (cached && (cached->grid == grid || (cached->grid && grid && cached->grid->resident == grid->resident &&
 		cached->grid->predictiveResident == grid->predictiveResident)))
 		return cached;
 	auto next = std::make_shared<PreparedCache>();
 	next->grid = std::move(grid);
-	next->lights = DX12Resources::CollectPreparedLights(*next->grid);
+	if (next->grid)
+		next->lights = DX12Resources::CollectPreparedLights(*next->grid);
 	next->authored.resize(next->lights.size());
 	for (size_t i = 0; i < next->lights.size(); ++i) {
 		const auto& light = next->lights[i];
 		next->byReference[light.referenceID].push_back(i);
+		if (std::isfinite(light.position.x)) next->byX.push_back(i);
 		if (light.flags & static_cast<uint32_t>(LLFCommon::TES_LIGHT_FLAGS_EXT::kInverseSquare))
 			next->authored[i] = ReadPlacedLight(light.referenceID);
 	}
+	std::ranges::sort(next->byX, {}, [&](size_t i) { return next->lights[i].position.x; });
 	preparedCache.store(next, std::memory_order_release);
 	return next;
 }
@@ -349,14 +352,14 @@ void NativeLLF::Producer::CaptureEmitter(const LightLimitFix::ParticleLightInfo&
 	flush();
 }
 
-std::shared_ptr<const NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInputs(const DX12Native::TopLevel& scene, uint32_t frame, bool opaqueReady)
+std::shared_ptr<const NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectDirectInputs(std::shared_ptr<const DX12::Grid> grid, uint32_t scope, uint64_t geometryRevision, uint32_t frame, bool opaqueReady)
 {
-	if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation() || !globals::state || !scene.inputs || !scene.inputs->residency)
+	if (!loaded || !globals::features::dx12Control.WantsMaterialPreparation() || !globals::state || !scope)
 		return {};
 	const auto pluginFrame = globals::state->frameCount;
 	if (const auto cached = directInputPublication.load(std::memory_order_acquire);
-		cached && cached->frame == frame && cached->scope == scene.scope &&
-		cached->pluginFrame == pluginFrame && cached->geometryRevision == scene.geometryRevision) {
+		cached && cached->frame == frame && cached->scope == scope &&
+		cached->pluginFrame == pluginFrame && cached->geometryRevision == geometryRevision) {
 		directInputCacheHits.fetch_add(1, std::memory_order_relaxed);
 		return cached;
 	}
@@ -370,14 +373,14 @@ std::shared_ptr<const NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectD
 	if (particleSettings.EnableParticleLights && !particleSnapshotReady && !opaqueReady)
 		return {};
 	BeginMetadataFrame();
-	const auto cachedPrepared = GetPreparedCache(scene.inputs->residency);
+	const auto cachedPrepared = GetPreparedCache(std::move(grid));
 	const auto& prepared = cachedPrepared->lights;
 	preparedInputCount.store(uint32_t(prepared.size()),std::memory_order_relaxed);
 	DirectInputFrame result;
 	result.frame = frame;
 	result.pluginFrame = pluginFrame;
-	result.scope = scene.scope;
-	result.geometryRevision = scene.geometryRevision;
+	result.scope = scope;
+	result.geometryRevision = geometryRevision;
 	auto& directLights = result.points;
 	directLights.reserve(std::min(prepared.size(), size_t(DX12::kMaxPreparedLights)));
 	const auto toLinear = [](float value, bool linear = false) { return DX12Native::LightMath::ToLinear(value, linear); };
@@ -433,6 +436,7 @@ std::shared_ptr<const NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectD
 			float bestDistance = std::numeric_limits<float>::infinity();
 			bool ambiguous = false;
 			const auto consider = [&](size_t i) {
+				if (i >= preparedCount) return;
 				const auto& candidate = prepared[i];
 				const float dx = rest.x - candidate.position.x, dy = rest.y - candidate.position.y, dz = rest.z - candidate.position.z;
 				const float d2 = dx * dx + dy * dy + dz * dz;
@@ -452,7 +456,15 @@ std::shared_ptr<const NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectD
 					if (auto bucket = preparedByReference.find(key); bucket != preparedByReference.end())
 						for (const auto i : bucket->second) consider(i);
 			} else {
-				for (size_t i = 0; i < preparedCount; ++i) consider(i);
+				// SameEmitterCandidate's largest possible tolerance is 32 world units.
+				// Binary-search the immutable prepared position index instead of a full scan.
+				const auto& byX = cachedPrepared->byX;
+				if (std::isfinite(rest.x)) {
+					auto it = std::ranges::lower_bound(byX, rest.x - 32.0f, {},
+						[&](size_t i) { return prepared[i].position.x; });
+					for (; it != byX.end() && prepared[*it].position.x <= rest.x + 32.0f; ++it)
+						consider(*it);
+				}
 			}
 			// A hidden, disabled, or invalid live source must not leave its prepared
 			// proxy emitting stale radiance. Never erase a previously admitted live match.
@@ -556,9 +568,9 @@ std::shared_ptr<const NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectD
 	// The worker receives only stable numeric source identities and rest positions.
 	// Reapply its grouping to this frame's radiance, radii and live positions.
 	SpatialPolicy::Signature signature;
-	signature.scope = scene.scope;
+	signature.scope = scope;
 	signature.frame = frame;
-	signature.revision = scene.geometryRevision;
+	signature.revision = geometryRevision;
 	signature.settings = globals::features::dx12NativeScene.GetFullNativeLightSettings();
 	std::vector<DX12Native::DirectPointLight> spatialPrepared, spatialRuntime, preparedExact, runtimeExact;
 	const auto key = [](const float3& position, uint32_t owner, uint64_t identity) {
@@ -612,7 +624,8 @@ std::shared_ptr<const NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectD
 		directLights.insert(directLights.end(), spatialRuntime.begin(), spatialRuntime.end());
 	}
 	directLights.resize(std::min(directLights.size(), size_t(DX12::kMaxPreparedLights)));
-	const auto nonParticleCount = directLights.size();
+	std::vector<DX12Native::DirectPointLight> particleLights;
+	constexpr size_t particleReserve = DX12::kMaxPreparedLights / 8u;
 	{
 		std::scoped_lock observationLock(observationMutex);
 		if (particleSnapshotReady && currentPluginFrame == globals::state->frameCount) {
@@ -620,7 +633,7 @@ std::shared_ptr<const NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectD
 			const float fadeStart = RE::Sky::GetLightLODStartFadeSquared();
 			const float fadeEnd = RE::Sky::GetLightLODEndFadeSquared();
 			for (const auto& particle : current) {
-				if (directLights.size() >= DX12::kMaxPreparedLights)
+				if (particleLights.size() >= particleReserve)
 					break;
 				const float3 offset{ particle.position.x - eye.x, particle.position.y - eye.y, particle.position.z - eye.z };
 				const float distanceSq = offset.Dot(offset);
@@ -633,25 +646,29 @@ std::shared_ptr<const NativeLLF::DirectInputFrame> NativeLLF::Producer::CollectD
 					fade = std::clamp(1.0f - (distance - fadeStart) / (fadeEnd - fadeStart), 0.0f, 1.0f);
 				if (!std::isfinite(fade) || fade <= 0.0f)
 					continue;
-				directLights.push_back({ particle.position,
+				particleLights.push_back({ particle.position,
 					{ toLinear(particle.color.x) * fade, toLinear(particle.color.y) * fade,
 						toLinear(particle.color.z) * fade }, particle.radius, 0.0f, 0.0f, false });
-				directLights.back().castsShadow = false; // Baseline particle emitters have no authored shadow type.
+				particleLights.back().castsShadow = false; // Baseline particle emitters have no authored shadow type.
 			}
 		}
 	}
+	// Reserve capacity only for actual admitted particles; preserve prepared/live ordering otherwise.
+	directLights.resize(std::min(directLights.size(), size_t(DX12::kMaxPreparedLights) - particleLights.size()));
+	const auto nonParticleCount = directLights.size();
+	directLights.insert(directLights.end(), particleLights.begin(), particleLights.end());
 	auto& directional = result.directional;
 	// Use the same directional values published by the existing raster
 	// constant-buffer producer. Missing/late snapshots never fabricate light.
 	float4 sunDirection{}, sunColor{};
-	if (globals::state->HasDirectionalShadows() && globals::state->GetNativeDirectionalLight(frame, globals::state->frameCount, sunDirection, sunColor) &&
+	if (globals::state->GetNativeDirectionalLight(frame, globals::state->frameCount, sunDirection, sunColor) &&
 		std::isfinite(sunDirection.x) && std::isfinite(sunDirection.y) && std::isfinite(sunDirection.z) &&
 		std::isfinite(sunColor.x) && std::isfinite(sunColor.y) && std::isfinite(sunColor.z)) {
 		const float lengthSquared = sunDirection.x * sunDirection.x + sunDirection.y * sunDirection.y + sunDirection.z * sunDirection.z;
 		if (lengthSquared > 1e-8f && std::isfinite(lengthSquared)) {
 			const float inverseLength = 1.0f / std::sqrt(lengthSquared);
 			directional.direction = { sunDirection.x * inverseLength, sunDirection.y * inverseLength, sunDirection.z * inverseLength, 1.0f };
-			directional.radiance = { toLinear(sunColor.x), toLinear(sunColor.y), toLinear(sunColor.z), 0.0f };
+			directional.radiance = { toLinear(sunColor.x), toLinear(sunColor.y), toLinear(sunColor.z), globals::state->HasDirectionalShadows() ? 0.0f : 1.0f };
 		}
 	}
 	compatibilityMetadataCount.store(compatibilityInputs, std::memory_order_relaxed);
