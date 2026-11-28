@@ -534,6 +534,87 @@ Sample EvaluateNonLightingRaster(RawRasterSurface raw, float3 viewRay, out bool 
     return result;
 }
 
+// Optional typed Lighting inputs are draw-local, never inferred from a TLAS.
+bool ReadTypedLightingRow(RawRasterSurface raw,out uint4 metadata,out uint4 textures)
+{
+    metadata=0u; textures=0xffffffffu;
+    if (!ProjectionRowCount || !raw.drawIdentity.x || raw.drawIdentity.x>(HasRawInput&0x7fffffffu)) return false;
+    uint row=RasterProjectionLookup.Load((raw.drawIdentity.x-1u)*4u);
+    if (row>=ProjectionRowCount) return false;
+    metadata=ProjectionRecords.Load(int3(0,row,0));
+    if (metadata.x!=0xfffffffbu || metadata.z!=row) return false;
+    textures=ProjectionRecords.Load(int3(7,row,0));
+    return true;
+}
+void ReplaceNativeRasterBase(inout Sample surface,float3 base)
+{
+    if (!all(isfinite(base))) return;
+    base=max(base,0.0);
+    surface.f0.rgb=max(surface.f0.rgb+(base-surface.color.rgb)*saturate(surface.f0.a),0.0);
+    surface.color.rgb=base;
+}
+void ApplyCharacterRasterMaterial(RawRasterSurface raw,float3 viewRay,inout Sample surface)
+{
+    uint technique=(raw.pixelDescriptor>>24u)&63u;
+    uint4 metadata,textures;
+    bool rowReady=ReadTypedLightingRow(raw,metadata,textures);
+    float bias=exp2(clamp(MaterialMipBias,-8.0,8.0));
+    // FaceGen mixes its original detail and tint maps in Skyrim's gamma domain.
+    // Transfer decoding retains the original typed-view sample values.
+    if (technique==4u) {
+        if (rowReady && textures.y<NativeProjectionTextureCapacity && textures.z<NativeProjectionTextureCapacity) {
+            float3 tint=NativeProjectionGrad(textures.y,(metadata.w>>2u)&3u,raw.uv,raw.dx*bias,raw.dy*bias).rgb;
+            float3 detail=NativeProjectionGrad(textures.z,(metadata.w>>4u)&3u,raw.uv,raw.dx*bias,raw.dy*bias).rgb;
+            float3 base=pow(max(surface.color.rgb,0.0),1.0/1.6);
+            tint=2.0*tint*base;
+            float3 mixed=(base*base+tint-tint*base)*3.984375*(detail+float3(1.0/255.0,0.0,1.0/255.0));
+            ReplaceNativeRasterBase(surface,pow(abs(mixed),1.6));
+        }
+        surface.color.a=SurfaceFeatureLimited;
+    }
+    if (raw.auxiliaryKind==12u && (technique==5u || technique==6u)) {
+        float2 rg=RawHalf2(raw.auxiliary.x), ba=RawHalf2(raw.auxiliary.y);
+        float3 tint=float3(rg,ba.x);
+        if (all(isfinite(tint))) {
+            if (technique==5u) {
+                float3 base=pow(max(surface.color.rgb,0.0),1.0/1.6);
+                tint=2.0*tint*base;
+                float3 mixed=float3(1.01171875,0.99609375,1.01171875)*(base*base+tint-tint*base);
+                ReplaceNativeRasterBase(surface,pow(abs(mixed),1.6));
+            } else {
+                ReplaceNativeRasterBase(surface,surface.color.rgb*lerp(1.0,SrgbToLinear(tint),saturate(raw.color.y)));
+            }
+        }
+        // Model-space hair/face material still uses actual separate gloss.
+        if ((raw.vertexDescriptor&4u)!=0u && (raw.pixelDescriptor&(1u<<9u))!=0u &&
+            rowReady && textures.x<NativeProjectionTextureCapacity) {
+            float2 specRG=RawHalf2(raw.auxiliary.z),specBShine=RawHalf2(raw.auxiliary.w);
+            float gloss=NativeProjectionGrad(textures.x,metadata.w&3u,raw.uv,raw.dx*bias,raw.dy*bias).r;
+            if (all(isfinite(float4(specRG,specBShine))) && isfinite(gloss)) {
+                surface.normal.w=clamp(pow(2.0/(max(specBShine.y,0.0)+2.0),0.25),0.045,1.0);
+                surface.f0.rgb=saturate(saturate(gloss)*float3(specRG,specBShine.x)/3.14159265);
+            }
+        }
+        surface.color.a=SurfaceFeatureLimited;
+    }
+    if (raw.auxiliaryKind==8u) {
+        float2 shellRoot=RawHalf2(raw.auxiliary.z),wetColor=RawHalf2(raw.auxiliary.w);
+        float2 shellUV=asfloat(raw.auxiliary.xy);
+        if (all(isfinite(float4(shellRoot,wetColor))) && all(isfinite(shellUV)) && shellRoot.x>0.0) {
+            float3 base=surface.color.rgb;
+            if (wetColor.y>0.0 && rowReady && textures.w<NativeProjectionTextureCapacity) {
+                float3 fur=NativeProjectionGrad(textures.w,(metadata.w>>6u)&3u,shellUV,raw.dx*bias,raw.dy*bias).rgb;
+                if ((metadata.w&2048u)==0u) fur=SrgbToLinear(fur);
+                if (all(isfinite(fur))) base=lerp(base,fur,saturate(wetColor.y));
+            }
+            float facing=abs(dot(normalize(raw.normal),normalize(-viewRay)));
+            float darkening=lerp(1.0,lerp(saturate(shellRoot.y),1.0,saturate(shellRoot.x)),smoothstep(0.0,0.5,facing));
+            ReplaceNativeRasterBase(surface,base*darkening*(1.0-0.5*saturate(wetColor.x)));
+        }
+        surface.color.a=SurfaceFeatureLimited;
+    }
+}
+
 // Direct evaluation of certified raster interpolants, independent of TLAS mapping.
 Sample EvaluateRasterLocal(RawRasterSurface raw, uint2 mapped, float3 viewRay, float distance,
     float3 worldPosition, float3 worldDx, float3 worldDy, float noise,
@@ -571,6 +652,8 @@ Sample EvaluateRasterLocal(RawRasterSurface raw, uint2 mapped, float3 viewRay, f
     tri.normals[0]=raw.normal; tri.tangents[0]=raw.tangent; tri.bitangents[0]=raw.bitangent;
     tri.colors[0]=raw.color; tri.uv[0]=raw.uv;
     const float3x3 identity=float3x3(1,0,0,0,1,0,0,0,1);
+    // Hair's vertex Y is the tint interpolation, not a generic RGB multiplier.
+    if (raw.auxiliaryKind==12u && ((raw.pixelDescriptor>>24u)&63u)==6u) binding.flags&=~1u;
     result=EvaluateMaterialTriangle(binding,material,tri,mapped.x,float3(1,0,0),viewRay,worldDx,worldDy,1.0,distance,
         identity,identity,ParallaxEnabled!=0u,false,ParallaxShadowEnabled!=0u,MaterialMipBias,
         projectionRow,worldPosition,noise,raw,rawUsed,coat,shadow);
@@ -610,6 +693,7 @@ Sample EvaluateRasterLocal(RawRasterSurface raw, uint2 mapped, float3 viewRay, f
             }
             result.color.a=SurfaceFeatureLimited;
         }
+        ApplyCharacterRasterMaterial(raw,viewRay,result);
         if ((binding.flags&SurfaceBaseOnlyBinding)!=0u) result.color.a=SurfaceFeatureLimited;
         if (HasNativeThinSurface(coat)) {
             coat.normalRoughness.xyz=dot(coat.normalRoughness.xyz,viewRay)>0.0 ? -coat.normalRoughness.xyz : coat.normalRoughness.xyz;
