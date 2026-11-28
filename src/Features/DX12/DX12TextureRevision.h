@@ -16,6 +16,18 @@ namespace DX12Native::TextureRevision
 		constexpr bool operator==(const Stamp& other) const { return MaterialFrameContract::ContentRevisionMatches(epoch,revision,other.epoch,other.revision); }
 		constexpr explicit operator bool() const { return epoch!=0; }
 	};
+	// Unlike pointer identity, this proves that a bound view's resource
+	// contents are unchanged between its original draw and later transfer.
+	struct ViewStamp {
+		Stamp content{};
+		bool immutable=false;
+		constexpr bool operator==(const ViewStamp& other) const {
+			return immutable==other.immutable && content.epoch==other.content.epoch && content.revision==other.content.revision;
+		}
+		constexpr bool Matches(const ViewStamp& live) const {
+			return immutable ? live.immutable : !live.immutable && content==live.content;
+		}
+	};
 	inline bool Eligible(const D3D11_TEXTURE2D_DESC& d)
 	{
 		return d.Usage==D3D11_USAGE_DEFAULT && d.BindFlags==D3D11_BIND_SHADER_RESOURCE &&
@@ -51,5 +63,23 @@ namespace DX12Native::TextureRevision
 		if (hr!=DXGI_ERROR_NOT_FOUND && (FAILED(hr) || size!=sizeof(version))) return {};
 		if (generation!=epoch.load(std::memory_order_acquire)) return {};
 		return {generation,version};
+	}
+	inline ViewStamp ReadView(ID3D11ShaderResourceView* view)
+	{
+		if (!view) return {};
+		ID3D11Resource* resource=nullptr;
+		view->GetResource(&resource);
+		if (!resource) return {};
+		D3D11_RESOURCE_DIMENSION type{};
+		resource->GetType(&type);
+		ViewStamp result{};
+		if (type==D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
+			D3D11_TEXTURE2D_DESC desc{};
+			static_cast<ID3D11Texture2D*>(resource)->GetDesc(&desc);
+			result.immutable=desc.Usage==D3D11_USAGE_IMMUTABLE;
+			if (!result.immutable) result.content=Read(resource,desc);
+		}
+		resource->Release();
+		return result;
 	}
 }
