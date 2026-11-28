@@ -10,6 +10,8 @@
 #include "Features/CloudShadows.h"
 #include "Features/DX12/DX12Control.h"
 #include "Features/DX12/DX12NativeScene.h"
+#include "Features/DX12/DX12TextureRevision.h"
+#include <d3d11_1.h>
 #include "Features/NativeLLF/NativeLLF.h"
 #include "Features/NativeCubemaps/NativeCubemaps.h"
 #include "Features/NativeIBL/NativeIBL.h"
@@ -387,6 +389,7 @@ namespace globals
 		{
 			HRESULT hr = func(This, pResource, Subresource, MapType, MapFlags, pMappedResource);
 			if (hr == S_OK) {
+				if (MapType!=D3D11_MAP_READ) DX12Native::TextureRevision::MarkWrite(pResource);
 				if (*globals::game::perFrame.get() == pResource)
 					globals::game::mappedFrameBuffer = pMappedResource;
 			}
@@ -408,6 +411,7 @@ namespace globals
 				CacheFramebuffer();
 			}
 			func(This, pResource, Subresource);
+			DX12Native::TextureRevision::MarkWrite(pResource);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -645,11 +649,103 @@ namespace globals
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
+	struct NativeRevisionTextureCopyRegion
+	{
+		static void thunk(ID3D11DeviceContext* c, ID3D11Resource* dst, UINT sub, UINT x, UINT y, UINT z, ID3D11Resource* src, UINT ss, const D3D11_BOX* box)
+		{
+			DX12Native::TextureRevision::MarkWrite(dst);
+			func(c,dst,sub,x,y,z,src,ss,box);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+	struct NativeRevisionTextureCopy
+	{
+		static void thunk(ID3D11DeviceContext* c, ID3D11Resource* dst, ID3D11Resource* src)
+		{
+			DX12Native::TextureRevision::MarkWrite(dst);
+			func(c,dst,src);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+	struct NativeRevisionTextureUpdate
+	{
+		static void thunk(ID3D11DeviceContext* c, ID3D11Resource* dst, UINT sub, const D3D11_BOX* box, const void* data, UINT pitch, UINT depth)
+		{
+			DX12Native::TextureRevision::MarkWrite(dst);
+			func(c,dst,sub,box,data,pitch,depth);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+	struct NativeRevisionTextureResolve
+	{
+		static void thunk(ID3D11DeviceContext* c, ID3D11Resource* dst, UINT ds, ID3D11Resource* src, UINT ss, DXGI_FORMAT format)
+		{
+			DX12Native::TextureRevision::MarkWrite(dst);
+			func(c,dst,ds,src,ss,format);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+	struct NativeRevisionTextureCopyRegion1
+	{
+		static void thunk(ID3D11DeviceContext1* c, ID3D11Resource* dst, UINT sub, UINT x, UINT y, UINT z, ID3D11Resource* src, UINT ss, const D3D11_BOX* box, UINT flags)
+		{
+			DX12Native::TextureRevision::MarkWrite(dst);
+			func(c,dst,sub,x,y,z,src,ss,box,flags);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+	struct NativeRevisionTextureUpdate1
+	{
+		static void thunk(ID3D11DeviceContext1* c, ID3D11Resource* dst, UINT sub, const D3D11_BOX* box, const void* data, UINT pitch, UINT depth, UINT flags)
+		{
+			DX12Native::TextureRevision::MarkWrite(dst);
+			func(c,dst,sub,box,data,pitch,depth,flags);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+	struct NativeRevisionTextureDiscard
+	{
+		static void thunk(ID3D11DeviceContext1* c, ID3D11Resource* dst)
+		{
+			DX12Native::TextureRevision::MarkWrite(dst);
+			func(c,dst);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+	struct NativeRevisionTextureDiscardView
+	{
+		static void thunk(ID3D11DeviceContext1* c, ID3D11View* view)
+		{
+			DX12Native::TextureRevision::MarkView(view);
+			func(c,view);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+	struct NativeRevisionTextureClearView
+	{
+		static void thunk(ID3D11DeviceContext1* c, ID3D11View* view, const FLOAT color[4], const D3D11_RECT* rects, UINT count)
+		{
+			DX12Native::TextureRevision::MarkView(view);
+			func(c,view,color,rects,count);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+	struct NativeRevisionTextureDiscardView1
+	{
+		static void thunk(ID3D11DeviceContext1* c, ID3D11View* view, const D3D11_RECT* rects, UINT count)
+		{
+			DX12Native::TextureRevision::MarkView(view);
+			func(c,view,rects,count);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
 	struct NativeInputExecuteList
 	{
 		static void thunk(ID3D11DeviceContext* c, ID3D11CommandList* list, BOOL restore)
 		{
 			if (c == globals::d3d::context) globals::features::dx12NativeScene.ResetNativeInputBindingState();
+			DX12Native::TextureRevision::InvalidateAll();
 			func(c,list,restore);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
@@ -706,6 +802,21 @@ namespace globals
 			stl::detour_vfunc<50, NativeInputClearRT>(a_context);
 			stl::detour_vfunc<53, NativeInputClearDepth>(a_context);
 			stl::detour_vfunc<58, NativeInputExecuteList>(a_context);
+			stl::detour_vfunc<46, NativeRevisionTextureCopyRegion>(a_context);
+			stl::detour_vfunc<47, NativeRevisionTextureCopy>(a_context);
+			stl::detour_vfunc<48, NativeRevisionTextureUpdate>(a_context);
+			stl::detour_vfunc<57, NativeRevisionTextureResolve>(a_context);
+			winrt::com_ptr<ID3D11DeviceContext1> context1;
+			if (SUCCEEDED(a_context->QueryInterface(IID_PPV_ARGS(context1.put())))) {
+				stl::detour_vfunc<115, NativeRevisionTextureCopyRegion1>(context1.get());
+				stl::detour_vfunc<116, NativeRevisionTextureUpdate1>(context1.get());
+				stl::detour_vfunc<117, NativeRevisionTextureDiscard>(context1.get());
+				stl::detour_vfunc<118, NativeRevisionTextureDiscardView>(context1.get());
+				stl::detour_vfunc<132, NativeRevisionTextureClearView>(context1.get());
+				stl::detour_vfunc<133, NativeRevisionTextureDiscardView1>(context1.get());
+			}
+			DX12Native::TextureRevision::InvalidateAll();
+			DX12Native::TextureRevision::enabled.store(true,std::memory_order_release);
 			stl::detour_vfunc<110, NativeInputClearState>(a_context);
 		}
 
