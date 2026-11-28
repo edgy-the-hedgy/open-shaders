@@ -18,6 +18,17 @@ namespace DX12Native::MaterialFrameContract
 	{
 		return frame - lastFailure >= cooldown;
 	}
+	// Round-robin admission of bounded transfer candidates. The initial
+	// cursor rotates per publication; empty classes never waste a slot.
+	inline constexpr uint32_t kTransferClassCount=4u;
+	constexpr uint32_t NextTransferClass(const std::array<uint32_t,kTransferClassCount>& remaining, uint32_t cursor)
+	{
+		for (uint32_t offset=0; offset<kTransferClassCount; ++offset) {
+			const uint32_t candidate=(cursor+offset)%kTransferClassCount;
+			if (remaining[candidate]) return candidate;
+		}
+		return UINT32_MAX;
+	}
 	inline constexpr uint32_t kMaterialAbiVersion = 1;
 	inline constexpr uint32_t kMaterialStride = 32;
 	inline constexpr uint32_t kRayIdentityStride = 8;
