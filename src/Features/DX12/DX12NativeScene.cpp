@@ -15,6 +15,7 @@
 #include "Features/FoliageLighting.h"
 #include "Features/SnowDeformation.h"
 #include "Features/LODBlending.h"
+#include "Features/TerrainVariation.h"
 
 #include "../LightLimitFix/ShadowCasterMath.h"
 #include "../LightLimitFix/Common.h"
@@ -1250,6 +1251,8 @@ std::shared_ptr<const DX12::PreparedMaterialSource> DX12NativeScene::ObserveRast
 				if (landscape->numLandscapeTextures <= 6u) {
 					scalars.rasterLandscapeLayers = 6u;
 					scalars.rasterLandscapeDisableVertexColors = globals::features::lodBlending.loaded && globals::features::lodBlending.settings.DisableTerrainVertexColors;
+					const auto& variation=globals::features::terrainVariation;
+					scalars.rasterLandscapeVariationFlags=variation.loaded ? (1u|(variation.settings.enableLODTerrainTilingFix?2u:0u)) : 0u;
 					const auto path = [](const RE::NiSourceTexture* texture) -> std::string {
 						if (!texture) return {};
 						const char* name = texture->name.c_str();
@@ -1625,7 +1628,9 @@ void DX12NativeScene::CaptureRasterTerrainDraw(uint32_t rasterDraw,uint32_t desc
 	const auto technique=Cache::GetLightingTechnique(descriptor);
 	const bool lod=technique==Cache::LightingShaderTechniques::MTLandLODBlend;
 	const bool snow=(descriptor & uint32_t(Cache::LightingShaderFlags::Snow))!=0u;
-	if ((!lod && !snow) || !rasterDraw) return;
+	const bool variation=globals::features::terrainVariation.loaded;
+	if ((!lod && !snow && !variation) || !rasterDraw) return;
+	const bool needsPixelConstants=lod||snow;
 	const uint32_t candidate=draws.terrainCandidates++;
 	if (!SnapshotPageContains(candidate,terrainSnapshotStart,kTerrainSnapshotCapacity) ||
 		draws.terrainConstantSnapshots>=kTerrainSnapshotCapacity ||
@@ -1651,9 +1656,10 @@ void DX12NativeScene::CaptureRasterTerrainDraw(uint32_t rasterDraw,uint32_t desc
 	winrt::com_ptr<ID3D11Buffer> boundVS,boundPS;
 	globals::d3d::context->VSGetConstantBuffers(uint32_t(geometryGroup),1,boundVS.put());
 	globals::d3d::context->PSGetConstantBuffers(uint32_t(materialGroup),1,boundPS.put());
-	if (!sources[0] || !sources[1] || boundVS.get()!=sources[0] || boundPS.get()!=sources[1]) return;
+	if (!sources[0] || boundVS.get()!=sources[0] || (needsPixelConstants && (!sources[1] || boundPS.get()!=sources[1]))) return;
+	const size_t sourceCount=needsPixelConstants?2u:1u;
 	std::array<D3D11_BUFFER_DESC,2> descriptions{};
-	for (size_t i=0;i<2;++i) {
+	for (size_t i=0;i<sourceCount;++i) {
 		sources[i]->GetDesc(&descriptions[i]);
 		if (!(descriptions[i].BindFlags&D3D11_BIND_CONSTANT_BUFFER) ||
 			descriptions[i].ByteWidth>D3D11_REQ_CONSTANT_BUFFER_ELEMENT_COUNT*16u) return;
@@ -1681,7 +1687,7 @@ void DX12NativeScene::CaptureRasterTerrainDraw(uint32_t rasterDraw,uint32_t desc
 	}
 	const uint32_t index=kOtherSnapshotCapacity+draws.terrainConstantSnapshots;
 	auto& slot=projectedConstantPool[index];
-	for (size_t i=0;i<2;++i) {
+	for (size_t i=0;i<sourceCount;++i) {
 		if (!slot.buffers[i] || !slot.views[i] || slot.byteWidths[i]!=descriptions[i].ByteWidth) {
 			D3D11_BUFFER_DESC desc{};
 			desc.ByteWidth=descriptions[i].ByteWidth;
@@ -1702,7 +1708,7 @@ void DX12NativeScene::CaptureRasterTerrainDraw(uint32_t rasterDraw,uint32_t desc
 			slot.byteWidths[i]=desc.ByteWidth;
 		}
 	}
-	for (size_t i=0;i<2;++i) globals::d3d::context->CopyResource(slot.buffers[i].get(),sources[i]);
+	for (size_t i=0;i<sourceCount;++i) globals::d3d::context->CopyResource(slot.buffers[i].get(),sources[i]);
 	observation.constantSlot=index;
 	observation.observed=true;
 	++draws.terrainConstantSnapshots;
@@ -1920,7 +1926,8 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 				observation.constantSlot-kOtherSnapshotCapacity>=draws.terrainConstantSnapshots) :
 				observation.constantSlot>=draws.constantSnapshots) continue;
 			const auto& slot=projectedConstantPool[observation.constantSlot];
-			if ((observation.constantOffsets[0]!=UINT32_MAX && !slot.views[0]) || !slot.views[1]) continue;
+			const bool needsPixelConstants=!terrain || observation.constantOffsets[2]!=UINT32_MAX || observation.constantOffsets[3]!=UINT32_MAX;
+			if ((observation.constantOffsets[0]!=UINT32_MAX && !slot.views[0]) || (needsPixelConstants && !slot.views[1])) continue;
 			uint32_t instance=observation.rowKind;
 			if (instance==UINT32_MAX && secondaryScene && raster.sceneInstance!=UINT32_MAX) {
 				const auto property=draws.projection.find(raster.sceneInstance);
@@ -1933,7 +1940,7 @@ void DX12NativeScene::FinishFullNativeRasterDraws()
 			const uint32_t lane=observation.rowKind==kRasterTerrainRow ? 6u : 0u;
 			classes[lane].push_back(inputs.size());
 			inputs.push_back({instance,observation.descriptor,observation.samplerModes,
-				{observation.constantOffsets[0]==UINT32_MAX ? nullptr : slot.views[0].get(),slot.views[1].get()},observation.constantOffsets,observation.views,raster.rasterDraw});
+				{observation.constantOffsets[0]==UINT32_MAX ? nullptr : slot.views[0].get(),needsPixelConstants?slot.views[1].get():nullptr},observation.constantOffsets,observation.views,raster.rasterDraw});
 			inputs.back().extraSamplerModes=observation.extraData;
 		}
 		// Non-Lighting shader classes use their actual bound PS SRVs. Import
