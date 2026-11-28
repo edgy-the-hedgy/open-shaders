@@ -39,12 +39,13 @@ void NativePBR::FrameProducer::Dispatch(const GraphicsBackend& backend, std::sha
 		globals::shaderCache ? globals::shaderCache->GetRuntimeTaskGate() : nullptr);
 }
 
-void NativePBR::FrameProducer::PublishProjection(const GraphicsBackend& backend, DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,
+bool NativePBR::FrameProducer::PublishProjection(const GraphicsBackend& backend, DX12Native::MaterialFrameContract::RasterIdentityStamp stamp,
 	std::span<const DX12Native::ProjectedInputDraw> inputs)
 {
 	if (!projection)
 		projection = std::make_unique<DX12Native::ProjectedInputCapture>();
 	projection->Publish(backend, stamp, inputs);
+	return bool(projection->GetSubmitted(stamp));
 }
 
 void NativePBR::FrameProducer::InvalidateGeneration()
