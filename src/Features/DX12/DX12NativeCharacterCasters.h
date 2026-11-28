@@ -14,6 +14,7 @@
 
 #include <DirectXPackedVector.h>
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -473,34 +474,49 @@ namespace DX12Native
                 // Do not grow a cache of unbounded uploads. At most eight new
                 // rigid mesh captures/builds per frame, as in Alan's path.
                 if (moverMeshes.size() >= kMaxCachedMeshes || newMoverMeshes >= kMaxNewMovers) return;
-                Snapshot snapshot;
-                if (!CapturePart(&geometry, snapshot) || snapshot.parts != 1) return;
+                // Engine acquisition remains synchronous and bounded. The task
+                // owns only decoded values, never the engine geometry or this.
+                auto snapshot = std::make_shared<Snapshot>();
+                if (!CapturePart(&geometry, *snapshot) || snapshot->parts != 1) return;
                 auto mesh = std::make_shared<RigidMesh>();
                 mesh->geometry = RE::NiPointer<RE::BSGeometry>(&geometry);
-                mesh->positions.reserve(snapshot.vertices.size());
-                for (const auto& vertex : snapshot.vertices) mesh->positions.push_back(vertex.position);
-                // Retain bounded immutable local shading data, independently of the
-                // BLAS staging arrays. No per-frame CPU skinning of rigid movers.
                 uint64_t retained = 0;
-                for (const auto& entry : moverMeshes)
-                    retained += entry.second->shading.size() * sizeof(float) + entry.second->shadingIndices.size() * sizeof(uint32_t);
-                const uint64_t bytes = uint64_t(snapshot.vertices.size()) * CharacterCasterFrame::kPosedVertexStride +
-                    uint64_t(snapshot.indices.size()) * sizeof(uint32_t);
-                if (bytes <= kMoverShadingBudget && retained <= kMoverShadingBudget - bytes) {
-                    mesh->shading.reserve(snapshot.vertices.size() * 18u);
-                    for (const auto& v : snapshot.vertices) {
-                        for (const auto& field : { std::span<const float>(v.position), std::span<const float>(v.normal),
-                            std::span<const float>(v.uv), std::span<const float>(v.color),
-                            std::span<const float>(v.tangent), std::span<const float>(v.bitangent) })
-                            mesh->shading.insert(mesh->shading.end(), field.begin(), field.end());
-                    }
-                    mesh->shadingIndices = snapshot.indices;
+                for (const auto& entry : moverMeshes) retained += entry.second->reservedShadingBytes;
+                const uint64_t bytes = uint64_t(snapshot->vertices.size()) * CharacterCasterFrame::kPosedVertexStride +
+                    uint64_t(snapshot->indices.size()) * sizeof(uint32_t);
+                const bool withShading = bytes <= kMoverShadingBudget && retained <= kMoverShadingBudget - bytes;
+                mesh->reservedShadingBytes = withShading ? bytes : 0;
+                mesh->pending = std::make_shared<RigidPackJob>();
+                const auto gate = globals::shaderCache ? globals::shaderCache->GetRuntimeTaskGate() : nullptr;
+                const auto job = mesh->pending;
+                // The shared gate admits only one runtime task. Preserve the
+                // existing immediate path when the gate is busy, rather than
+                // starving dynamic geometry while shader compilation is active.
+                if (gate && gate->TrySubmit([job, snapshot, withShading] {
+                    PackRigidMesh(job, *snapshot, withShading);
+                })) ++asyncRigidPacks;
+                else {
+                    ++inlineRigidPacks;
+                    PackRigidMesh(job, *snapshot, withShading);
                 }
-                mesh->indices = std::move(snapshot.indices);
                 found = moverMeshes.emplace(key, std::move(mesh)).first;
                 ++newMoverMeshes;
             }
-            found->second->lastFrame = frame;
+            auto& mesh = *found->second;
+            mesh.lastFrame = frame;
+            if (mesh.pending) {
+                if (!mesh.pending->finished.load(std::memory_order_acquire)) return;
+                if (!mesh.pending->result) {
+                    moverMeshes.erase(found);
+                    return;
+                }
+                auto& packed = *mesh.pending->result;
+                mesh.positions = std::move(packed.positions);
+                mesh.indices = std::move(packed.indices);
+                mesh.shading = std::move(packed.shading);
+                mesh.shadingIndices = std::move(packed.shadingIndices);
+                mesh.pending.reset();
+            }
             seenMovers.push_back(&geometry);
             movers.push_back({ found->second, transform, CaptureCharacterMaterial(geometry, HasColor(desc)) });
         }
@@ -520,6 +536,8 @@ namespace DX12Native
         }
         const std::string& Failure() const { return failure; }
         uint32_t RejectedParts() const { return rejectedParts; }
+        uint64_t AsyncRigidPacks() const { return asyncRigidPacks; }
+        uint64_t InlineRigidPacks() const { return inlineRigidPacks; }
 
         void Publish(const GraphicsBackend& backend, uint32_t frame, uint32_t scope, uint32_t interval)
         {
@@ -870,9 +888,47 @@ namespace DX12Native
 
         static constexpr uint32_t kMaxMovers = 512, kMaxNewMovers = 8, kMaxCachedMeshes = 512, kMoverRetentionFrames = 300;
         using MeshKey = std::array<uintptr_t, 9>;
+        struct PackedRigidMesh
+        {
+            std::vector<std::array<float, 3>> positions;
+            std::vector<uint32_t> indices, shadingIndices;
+            std::vector<float> shading;
+        };
+        struct RigidPackJob
+        {
+            std::atomic<bool> finished{ false };
+            // Written only by the worker, read only after acquire of finished.
+            std::unique_ptr<PackedRigidMesh> result;
+        };
+        static void PackRigidMesh(const std::shared_ptr<RigidPackJob>& job, Snapshot& snapshot, bool withShading) noexcept
+        {
+            ZoneScopedN("DX12::RigidMover::PackSnapshot");
+            try {
+                auto result = std::make_unique<PackedRigidMesh>();
+                result->positions.reserve(snapshot.vertices.size());
+                for (const auto& vertex : snapshot.vertices) result->positions.push_back(vertex.position);
+                if (withShading) {
+                    result->shading.reserve(snapshot.vertices.size() * 18u);
+                    for (const auto& v : snapshot.vertices) {
+                        for (const auto& field : { std::span<const float>(v.position), std::span<const float>(v.normal),
+                            std::span<const float>(v.uv), std::span<const float>(v.color),
+                            std::span<const float>(v.tangent), std::span<const float>(v.bitangent) })
+                            result->shading.insert(result->shading.end(), field.begin(), field.end());
+                    }
+                    result->shadingIndices = snapshot.indices;
+                }
+                result->indices = std::move(snapshot.indices);
+                job->result = std::move(result);
+            } catch (...) {
+                job->result.reset();
+            }
+            job->finished.store(true, std::memory_order_release);
+        }
         struct RigidMesh
         {
             RE::NiPointer<RE::BSGeometry> geometry;
+            std::shared_ptr<RigidPackJob> pending;
+            uint64_t reservedShadingBytes = 0;
             std::vector<std::array<float, 3>> positions;
             std::vector<uint32_t> indices, shadingIndices;
             std::vector<float> shading;
@@ -929,6 +985,7 @@ namespace DX12Native
         std::array<std::shared_ptr<CharacterCasterFrame>, 4> moverSlots;
         std::shared_ptr<CharacterCasterFrame> combined;
         uint32_t moverScope = 0, newMoverMeshes = 0;
+        uint64_t asyncRigidPacks = 0, inlineRigidPacks = 0;
         GraphicsBackend owner;
         Snapshot actorScratch;
         CharacterMaterialWorker materialWorker, moverMaterialWorker;

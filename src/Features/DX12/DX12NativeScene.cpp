@@ -1174,13 +1174,41 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 			static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
 		return;
 	const auto frame = globals::game::graphicsState->GetFrameCount();
+	auto& draws = fullNativeRasterDraws;
 	// Only known dynamic non-actor owners are admitted here. Actor attachments
 	// are already captured by the actor path; static geometry must not be duplicated.
 	if (characterCasters) {
 		const auto& rt = geometry.GetGeometryRuntimeData();
 		// Reject ineligible rigid movers before walking the live ancestry chain.
-		if (geometry.AsTriShape() && !geometry.AsDynamicTriShape() && !rt.skinInstance && !rt.alphaProperty &&
+		if (const auto* tri = geometry.AsTriShape(); tri && !geometry.AsDynamicTriShape() && !rt.skinInstance && !rt.alphaProperty &&
 			rt.rendererData && rt.rendererData->rawVertexData && rt.rendererData->rawIndexData) {
+			// An exact, already-published prepared static instance does not need
+			// duplicate mover admission. Revalidate the live source and transform
+			// against the revision-bound cache; misses still query real ancestry.
+			bool coveredStatic = false;
+			if (draws.active && !draws.finalized && draws.stamp.frame == frame && draws.scene &&
+				draws.scene->inputs && !draws.casterMatches.empty() && draws.scene == acceleration.GetScene()) {
+				const auto counts = tri->GetTrishapeRuntimeData();
+				const DX12::CasterSource live{ reinterpret_cast<uintptr_t>(&geometry),
+					reinterpret_cast<uintptr_t>(rt.rendererData->rawVertexData), reinterpret_cast<uintptr_t>(rt.rendererData->rawIndexData),
+					counts.vertexCount, uint32_t(counts.triangleCount) * 3u, rt.vertexDesc.GetSize(), 0 };
+				const auto& cached = draws.casterMatches[(live.geometry >> 4u) % draws.casterMatches.size()];
+				if (cached.match.Valid() && cached.match.ordinal < draws.scene->inputs->geometry.size()) {
+					const auto& shape = draws.scene->inputs->geometry[cached.match.ordinal];
+					if (shape && !shape->runtimeObjectKey && cached.source == live) {
+						std::array<float, 12> transform{};
+						for (uint32_t row = 0; row < 3; ++row)
+							for (uint32_t col = 0; col < 3; ++col)
+								transform[4 * row + col] = geometry.world.rotate.entry[row][col] * geometry.world.scale;
+						transform[3] = geometry.world.translate.x;
+						transform[7] = geometry.world.translate.y;
+						transform[11] = geometry.world.translate.z;
+						coveredStatic = DX12::SameCasterSource(cached.source, live, cached.transform, transform);
+					}
+				}
+			}
+			if (coveredStatic) ++draws.staticOwnerBypasses;
+			else {
 			CS_DRAW_ZONE("DX12::RigidMover::OwnerLookup");
 			bool ancestryRead = false;
 			const auto* reference = Util::FindSceneOwner(&geometry, false, &ancestryRead);
@@ -1189,9 +1217,9 @@ void DX12NativeScene::ObserveFullNativeRasterDraw(RE::BSGeometry& geometry)
 				if (moverGrid && !moverGrid->requested.empty())
 					characterCasters->ObserveRigidMover(geometry, frame, moverGrid->requested.front().scope);
 			}
+			}
 		}
 	}
-	auto& draws = fullNativeRasterDraws;
 	if (!draws.active || draws.finalized || draws.stamp.frame != frame) return;
 	++draws.draws;
 	const auto& runtime = geometry.GetGeometryRuntimeData();
@@ -1909,6 +1937,7 @@ json DX12NativeScene::GetStatus() const
 			{ "ambiguousDraws", draws.ambiguous }, { "rejectedDraws", draws.rejected }, { "finalized", draws.finalized },
 			{ "casterLookupHits", draws.matchHits }, { "casterLookupMisses", draws.matchMisses },
 			{ "materialSnapshotHits", draws.materialSnapshotHits }, { "materialSnapshotMisses", draws.materialSnapshotMisses },
+			{ "staticOwnerBypasses", draws.staticOwnerBypasses },
 			{ "integerIdentity", true }, { "rasterDrawRecords", draws.drawRecords.size() },
 			{ "rawInputPublished", bool(rawInputCapture.GetForFrame(draws.stamp.frame)) },
 			{ "rawInputFailure", rawInputCapture.Failure() },
@@ -1933,6 +1962,8 @@ json DX12NativeScene::GetStatus() const
 			{ "parts", characters ? characters->parts : 0u }, { "vertices", characters ? characters->vertices : 0u },
 			{ "triangles", characters ? characters->triangles : 0u },
 			{ "rejectedParts", characterCasters ? characterCasters->RejectedParts() : 0u },
+			{ "asyncRigidPacks", characterCasters ? characterCasters->AsyncRigidPacks() : 0ull },
+			{ "inlineRigidPacks", characterCasters ? characterCasters->InlineRigidPacks() : 0ull },
 			{ "failure", characterCasters ? characterCasters->Failure() : "" } };
 		const auto reconstructed = globals::features::upscaling.nativeComposite.GetFullNativeReconstruction(frame);
 		const auto finalColor = globals::features::upscaling.nativeComposite.GetFullNativeFinalColor(frame);

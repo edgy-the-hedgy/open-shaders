@@ -183,6 +183,7 @@ private:
 		std::vector<NativePBR::RasterDrawRecord> drawRecords;
 		std::vector<std::shared_ptr<const DX12::PreparedMaterialSource>> materialSources;
 		uint32_t materialSnapshotHits = 0, materialSnapshotMisses = 0;
+		uint32_t staticOwnerBypasses = 0;
 		uint32_t activeGeometry = 0, activeMaterial = 0, nextRasterDraw = 0;
 		uint32_t activeSceneInstance = 0, activePrimitiveCount = 0;
 		// Sparse, frame-local observations indexed by the matched TLAS instance.
