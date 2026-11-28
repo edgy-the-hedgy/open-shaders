@@ -386,11 +386,12 @@ Sample EvaluatePbrGrass(RawRasterSurface raw,float3 viewRay,out bool rawUsed,out
     float fuzzRoughness=asfloat(ProjectionRecords.Load(int3(5,row,0)).x);
     uint4 extra=ProjectionRecords.Load(int3(6,row,0));
     uint4 tex=ProjectionRecords.Load(int3(7,row,0));
-    if (!all(isfinite(p1)) || !all(isfinite(p2)) || !all(isfinite(p3)) ||
-        !all(isfinite(p4)) || !isfinite(fuzzRoughness) || tex.x>=NativeProjectionTextureCapacity) return result;
+    // Optional lobe parameters must not reject otherwise usable base inputs.
+    if (!all(isfinite(p1)) || tex.x>=NativeProjectionTextureCapacity) return result;
     bool detail=(raw.auxiliary.x&(1u<<16u))!=0u;
     bool newModel=(raw.auxiliary.x&(1u<<17u))!=0u;
     bool sphere=(raw.auxiliary.x&(1u<<18u))!=0u;
+    if (newModel && !raw.front && !isfinite(p4.w)) return result;
     float bias=exp2(clamp(MaterialMipBias,-8.0,8.0));
     float2 dx=raw.dx*bias,dy=raw.dy*bias,uv=raw.uv;
     float4 diffuse=NativeProjectionGrad(tex.x,meta.w&3u,uv,dx,dy);
@@ -421,32 +422,47 @@ Sample EvaluatePbrGrass(RawRasterSurface raw,float3 viewRay,out bool rawUsed,out
     float metallic=saturate(rmaos.y);
     float3 f0=lerp(saturate(rmaos.w).xxx,base,metallic);
     float roughness=clamp(rmaos.x*((raw.front || !newModel)?1.0:max(p4.w,0.0)),0.045,1.0);
-    if (newModel && (flags&(1u<<4u))!=0u) {
+    // v1 cannot publish independent presence/validity. Keep the base
+    // FeatureLimited and publish only lobes whose source data is usable.
+    bool thinMapped=detail && (flags&(1u<<2u))!=0u;
+    if (newModel && (flags&(1u<<4u))!=0u && all(isfinite(p2)) &&
+        all(isfinite(p4)) && (!thinMapped || tex.w<NativeProjectionTextureCapacity)) {
         float3 scatter=max(p2.rgb,0.0);
         float opacity=saturate(p2.a);
-        if (detail && (flags&(1u<<2u))!=0u) {
-            if (tex.w>=NativeProjectionTextureCapacity) return result;
+        bool thinValid=true;
+        if (thinMapped) {
             float4 featureTexel=NativeProjectionGrad(tex.w,(meta.w>>6u)&3u,uv,dx,dy);
+            thinValid=all(isfinite(featureTexel));
             scatter*=featureTexel.rgb;
             opacity*=saturate(featureTexel.a);
         } else scatter*=base*(1.0-metallic);
-        float3 face=normalize(raw.normal);
-        if (dot(face,viewRay)>0.0) face=-face;
-        coat.normalRoughness=float4(face,saturate(p4.x));
-        coat.f0Colored=float4(saturate(raw.front?p4.y:p4.z),saturate(p4.z),max(p4.w,0.0),NativeFoliageTag);
-        coat.subsurface=float4(scatter,opacity);
+        float3 face=raw.normal;
+        if (thinValid && all(isfinite(scatter)) && isfinite(opacity) &&
+            all(isfinite(face)) && dot(face,face)>1e-8) {
+            face=normalize(face);
+            if (dot(face,viewRay)>0.0) face=-face;
+            coat.normalRoughness=float4(face,saturate(p4.x));
+            coat.f0Colored=float4(saturate(raw.front?p4.y:p4.z),saturate(p4.z),max(p4.w,0.0),NativeFoliageTag);
+            coat.subsurface=float4(scatter,opacity);
+        }
     }
-    if (newModel && detail && (flags&(1u<<9u))!=0u) {
+    bool fuzzMapped=(flags&(1u<<3u))!=0u;
+    if (newModel && detail && (flags&(1u<<9u))!=0u &&
+        all(isfinite(p3)) && isfinite(fuzzRoughness) &&
+        (!fuzzMapped || extra.x<NativeProjectionTextureCapacity)) {
         float3 fuzz=max(p3.rgb,0.0); float weight=saturate(p3.a);
-        if ((flags&(1u<<3u))!=0u) {
-            if (extra.x>=NativeProjectionTextureCapacity) { coat=(NativeCoatSample)0; return result; }
+        bool fuzzValid=true;
+        if (fuzzMapped) {
             float4 featureTexel=NativeProjectionGrad(extra.x,extra.z&3u,uv,dx,dy);
+            fuzzValid=all(isfinite(featureTexel));
             fuzz*=featureTexel.rgb;
             weight*=saturate(featureTexel.a);
         }
-        if (HasNativeThinSurface(coat)) coat.f0Colored.w=EncodeNativeThinFuzz(fuzzRoughness,true);
-        else { coat.normalRoughness.w=clamp(fuzzRoughness,-1.0,1.0); coat.f0Colored.w=NativeFuzzTag; }
-        coat.colorStrength=float4(saturate(fuzz),weight);
+        if (fuzzValid && all(isfinite(fuzz)) && isfinite(weight)) {
+            if (HasNativeThinSurface(coat)) coat.f0Colored.w=EncodeNativeThinFuzz(fuzzRoughness,true);
+            else { coat.normalRoughness.w=clamp(fuzzRoughness,-1.0,1.0); coat.f0Colored.w=NativeFuzzTag; }
+            coat.colorStrength=float4(saturate(fuzz),weight);
+        }
     }
     float3 emission=0.0;
     if (newModel && (flags&1u)!=0u) {

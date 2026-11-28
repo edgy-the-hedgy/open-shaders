@@ -433,31 +433,35 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
         else result.color.a=SurfaceFeatureLimited;
     }
     if ((binding.flags & SurfaceThinSurfaceReadyBinding) != 0u) {
-        if (!triData.hasPositions && !triData.rasterLocal) { result.color.a=SurfaceFeatureLimited; return result; }
-        float3 scatterColor=0.0;
-        float thickness=1.0;
-        if ((material.properties.x & 1u)!=0u) {
-            scatterColor=SrgbToLinear(max(material.subsurfaceColor.rgb,0.0));
-            thickness=saturate(material.coat.w);
-            if (material.textures[2].z!=0xffffffffu) {
-                float4 feature0=NativeSurfaceTex(material.textures[2].z,uv,material.properties.z,raw,mipBias);
-                scatterColor*=SrgbToLinear(max(feature0.rgb,0.0));
-                thickness*=saturate(feature0.a);
-            } else scatterColor*=base*(1.0-metallic);
+        if (!triData.hasPositions && !triData.rasterLocal) {
+            result.color.a=SurfaceFeatureLimited;
+        } else {
+            float3 scatterColor=0.0;
+            float thickness=1.0;
+            if ((material.properties.x & 1u)!=0u) {
+                scatterColor=SrgbToLinear(max(material.subsurfaceColor.rgb,0.0));
+                thickness=saturate(material.coat.w);
+                if (material.textures[2].z!=0xffffffffu) {
+                    float4 feature0=NativeSurfaceTex(material.textures[2].z,uv,material.properties.z,raw,mipBias);
+                    scatterColor*=SrgbToLinear(max(feature0.rgb,0.0));
+                    thickness*=saturate(feature0.a);
+                } else scatterColor*=base*(1.0-metallic);
+            }
+            float3 p0=triData.positions[0];
+            float3 p1=triData.positions[1];
+            float3 p2=triData.positions[2];
+            float3 face=triData.rasterLocal ? raw.normal : cross(p1-p0,p2-p0);
+            if (triData.rasterLocal) result.color.a=SurfaceFeatureLimited;
+            if (!all(isfinite(face)) || dot(face,face)<1e-8 || !all(isfinite(scatterColor)) ||
+                !isfinite(thickness) || !isfinite(material.surface.y) || !all(isfinite(material.thinSurface.xyz))) {
+                result.color.a=SurfaceFeatureLimited;
+            } else {
+                coat.normalRoughness=float4(normalize(face),saturate(material.surface.y));
+                coat.f0Colored=float4(saturate(material.thinSurface.xy),max(material.thinSurface.z,0.0),
+                    (binding.flags & SurfaceFoliageReadyBinding)!=0u ? NativeFoliageTag : NativeThinTag);
+                coat.subsurface=float4(scatterColor,thickness);
+            }
         }
-        float3 p0=triData.positions[0];
-        float3 p1=triData.positions[1];
-        float3 p2=triData.positions[2];
-        float3 face=triData.rasterLocal ? raw.normal : cross(p1-p0,p2-p0);
-        if (triData.rasterLocal) result.color.a=SurfaceFeatureLimited;
-        if (!all(isfinite(face)) || dot(face,face)<1e-8 || !all(isfinite(scatterColor)) ||
-            !isfinite(thickness) || !isfinite(material.surface.y) || !all(isfinite(material.thinSurface.xyz))) {
-            result.color.a=SurfaceFeatureLimited; return result;
-        }
-        coat.normalRoughness=float4(normalize(face),saturate(material.surface.y));
-        coat.f0Colored=float4(saturate(material.thinSurface.xy),max(material.thinSurface.z,0.0),
-            (binding.flags & SurfaceFoliageReadyBinding)!=0u ? NativeFoliageTag : NativeThinTag);
-        coat.subsurface=float4(scatterColor,thickness);
     }
     if ((binding.flags & SurfaceFuzzReadyBinding) != 0u) {
         float3 fuzzColor=SrgbToLinear(max(material.fuzzColor.rgb,0.0));
@@ -468,20 +472,23 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
             fuzzColor*=SrgbToLinear(max(feature1.rgb,0.0));
             weight*=saturate(feature1.a);
         }
+        bool fuzzValid=true;
         if ((material.controls.y & 4u)!=0u) {
-            if (material.textures[2].x==0xffffffffu) { result.color.a=SurfaceFeatureLimited; return result; }
-            fuzzRoughness=NativeSurfaceTex(material.textures[2].x,uv,material.properties.z,raw,mipBias).g;
+            fuzzValid=material.textures[2].x<NativeTextureIndexLimit;
+            if (fuzzValid)
+                fuzzRoughness=NativeSurfaceTex(material.textures[2].x,uv,material.properties.z,raw,mipBias).g;
         }
-        if (!all(isfinite(fuzzColor)) || !isfinite(weight) || !isfinite(fuzzRoughness)) {
-            result.color.a=SurfaceFeatureLimited; return result;
-        }
-        if (HasNativeThinSurface(coat)) {
-            coat.f0Colored.w=EncodeNativeThinFuzz(fuzzRoughness,HasNativeFoliage(coat));
+        if (!fuzzValid || !all(isfinite(fuzzColor)) || !isfinite(weight) || !isfinite(fuzzRoughness)) {
+            result.color.a=SurfaceFeatureLimited;
         } else {
-            coat.normalRoughness=float4(0.0,0.0,0.0,clamp(fuzzRoughness,-1.0,1.0));
-            coat.f0Colored.w=NativeFuzzTag;
+            if (HasNativeThinSurface(coat)) {
+                coat.f0Colored.w=EncodeNativeThinFuzz(fuzzRoughness,HasNativeFoliage(coat));
+            } else {
+                coat.normalRoughness=float4(0.0,0.0,0.0,clamp(fuzzRoughness,-1.0,1.0));
+                coat.f0Colored.w=NativeFuzzTag;
+            }
+            coat.colorStrength=float4(saturate(fuzzColor),weight);
         }
-        coat.colorStrength=float4(saturate(fuzzColor),weight);
     }
     if ((binding.flags & SurfaceCoatReadyBinding) != 0u) {
         // Match the legacy feature0 color/strength and feature1 roughness/normal semantics.
@@ -490,6 +497,7 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
         float coatRoughness = material.coat.y;
         float2 coatUV=interlayer ? originalUV : uv;
         float3 coatNormal = interlayerActive ? entryNormal : normal;
+        bool coatValid=true;
         if (material.textures[2].z != 0xffffffffu) {
             float4 feature0 = NativeSurfaceTex(material.textures[2].z,coatUV,material.properties.z,raw,mipBias);
             coatColor *= SrgbToLinear(feature0.rgb);
@@ -501,17 +509,19 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
             if ((material.properties.x & 16u) != 0u) {
                 float3 mapped = feature1.xyz * 2.0 - 1.0;
                 float3 candidate = t*mapped.x + b*mapped.y + n*mapped.z;
-                if (!all(isfinite(candidate)) || dot(candidate,candidate) < 1e-8) { result.color.a=SurfaceFeatureLimited; return result; }
-                coatNormal = normalize(candidate);
+                coatValid=all(isfinite(candidate)) && dot(candidate,candidate)>=1e-8;
+                if (coatValid) coatNormal = normalize(candidate);
             }
         }
-        if (!all(isfinite(coatColor)) || !isfinite(strength) || !isfinite(coatRoughness) || !isfinite(material.coat.z)) {
-            result.color.a=SurfaceFeatureLimited; return result;
+        if (!coatValid || !all(isfinite(coatColor)) || !isfinite(strength) ||
+            !isfinite(coatRoughness) || !isfinite(material.coat.z)) {
+            result.color.a=SurfaceFeatureLimited;
+        } else {
+            coat.normalRoughness=float4(coatNormal,clamp(coatRoughness,0.045,1.0));
+            coat.colorStrength=float4(coatColor,strength);
+            coat.f0Colored=float4(saturate(material.coat.z).xxx,(material.properties.x & 4u) != 0u ? 1.0 : 0.0);
+            if (interlayerActive) coat.subsurface.w=2.0+eta;
         }
-        coat.normalRoughness=float4(coatNormal,clamp(coatRoughness,0.045,1.0));
-        coat.colorStrength=float4(coatColor,strength);
-        coat.f0Colored=float4(saturate(material.coat.z).xxx,(material.properties.x & 4u) != 0u ? 1.0 : 0.0);
-        if (interlayerActive) coat.subsurface.w=2.0+eta;
     }
     if (triData.rasterLocal && raw.auxiliaryKind==4u &&
         !HasNativeCoat(coat) && !HasNativeFuzz(coat) && !HasNativeThinSurface(coat) && !HasNativeSubsurface(coat)) {
