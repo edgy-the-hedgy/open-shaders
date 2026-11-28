@@ -148,6 +148,8 @@ private:
 		std::array<uint32_t, 2> byteWidths{};
 	};
 	static constexpr uint32_t kMaxProjectedConstantSnapshots = DX12Native::kMaxProjectedDraws;
+	static constexpr uint32_t kTerrainSnapshotCapacity=32u;
+	static constexpr uint32_t kOtherSnapshotCapacity=kMaxProjectedConstantSnapshots-kTerrainSnapshotCapacity;
 	std::unique_ptr<DX12Native::NativeCharacterCasters> characterCasters;
 	std::array<ProjectedConstantSlot, kMaxProjectedConstantSnapshots> projectedConstantPool;
 	winrt::com_ptr<ID3D11Device> projectedConstantDevice;
@@ -203,7 +205,7 @@ private:
 		std::vector<RasterProjectionObservation> rasterProjectionTextures;
 		uint32_t activeProjectedInstance = UINT32_MAX;
 		uint32_t constantSnapshots = 0, constantSnapshotFailures = 0;
-		uint32_t grassConstantSnapshots=0, terrainConstantSnapshots=0;
+		uint32_t grassConstantSnapshots=0, terrainConstantSnapshots=0, terrainCandidates=0;
 		std::vector<std::pair<uint32_t,uint32_t>> grassConstants;
 		uint32_t projectedDraws = 0, unmatchedProjectedDraws = 0;
 		uint32_t draws = 0, candidates = 0, uniqueInstances = 0, ambiguous = 0, rejected = 0;
@@ -216,6 +218,7 @@ private:
 	std::shared_ptr<const NativePBR::RasterSourceViews> nativeSourceSnapshot;
 	bool nativeSourceViewsDirty = true;
 	uint32_t nativeMaterialTransferSequence = 0;
+	uint32_t terrainSnapshotStart=0, terrainSnapshotScope=0;
 	D3D11_PRIMITIVE_TOPOLOGY nativeInputTopology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
 	UINT nativeInputIndexOffset = UINT_MAX, nativeInputIndexElementBytes = 0;
 	FullNativeRasterDrawState fullNativeRasterDraws;
