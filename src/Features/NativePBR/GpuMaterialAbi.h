@@ -49,6 +49,8 @@ namespace NativePBR
 	}
 	/** @brief Controls.y bit 8 switches the packed map from PBR RMAOS to legacy environment/complex channels. */
 	inline constexpr uint32_t kGpuLegacyComplexMask = 1u << 8;
+	inline constexpr uint32_t kGpuLegacyMaterial = 1u << 9;
+	inline constexpr uint32_t kGpuLegacyHeightAlpha = 1u << 10;
 	inline constexpr uint32_t kRayMaterialOptionParallax = 1u << 0;
 	inline constexpr uint32_t kRayMaterialOptionComplex = 1u << 1;
 	inline constexpr uint32_t kRayMaterialOptionSnowParallaxUV = 1u << 2;
@@ -73,14 +75,14 @@ namespace NativePBR
 	/** @brief Texture roles required by the current base surface evaluation. */
 	inline uint32_t GpuBaseRequestedTextureRoles(const Recipe& recipe)
 	{
-		return kGpuRequiredTextureRoles |
+		return (recipe.parameters.legacyMaterial && !recipe.parameters.legacyComplexMask ? 0x03u : kGpuRequiredTextureRoles) |
 			(recipe.textures[static_cast<size_t>(TextureRole::Emission)].canonicalPath.empty() ? 0u : TextureRoleBit(TextureRole::Emission));
 	}
 
 	/** @brief A red-only height map cannot supply the packed green fuzz roughness channel. */
 	inline bool GpuAcceptsRedOnlyTexture(const Recipe& recipe, TextureRole role)
 	{
-		return role == TextureRole::Displacement &&
+		return role == TextureRole::Displacement && !recipe.parameters.legacyHeightAlpha &&
 			!((ActiveOpaquePbrFlags(recipe) & uint32_t(PBRFlags::Fuzz)) != 0 &&
 				recipe.parameters.fuzzRoughnessTexture);
 	}
@@ -205,7 +207,9 @@ namespace NativePBR
 		result.controls = { residentRoles,
 			(source.glint.enabled ? 1u : 0u) | (source.projectedGlint.enabled ? 2u : 0u) |
 			(source.fuzzRoughnessTexture ? 4u : 0u) |
-			(source.legacyComplexMask && ActiveOpaquePbrFlags(a_recipe) == 0u ? kGpuLegacyComplexMask : 0u),
+			(source.legacyComplexMask && ActiveOpaquePbrFlags(a_recipe) == 0u ? kGpuLegacyComplexMask : 0u) |
+			(source.legacyMaterial ? kGpuLegacyMaterial : 0u) |
+			(source.legacyHeightAlpha ? kGpuLegacyHeightAlpha : 0u),
 			uint32_t(source.kind), ActiveOpaquePbrFlags(a_recipe) };
 		return result;
 	}

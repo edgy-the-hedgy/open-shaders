@@ -73,7 +73,8 @@ float NativeParallaxMarchMip(uint textureIndex, float2 dx, float2 dy, float view
     float farFloor=lerp(0.0,3.0,saturate((viewDistance-512.0)/1536.0));
     return min(floor(max(marchMip,farFloor)),float(max(levels,1u)-1u));
 }
-float2 NativeParallaxUV(uint textureIndex, uint mode, float2 coords, float3 viewTS, float scale, float mip, float flattenAmount, float heightMultiplier)
+float NativeHeightChannel(float4 value, bool alphaHeight) { return alphaHeight ? value.a : value.r; }
+float2 NativeParallaxUV(uint textureIndex, uint mode, float2 coords, float3 viewTS, float scale, float mip, float flattenAmount, float heightMultiplier, bool alphaHeight)
 {
     if (!isfinite(scale) || scale<=0.0 || !all(isfinite(viewTS)) || viewTS.z<=0.0) return coords;
     float2 slope=viewTS.xy/max(viewTS.z*0.7+0.3+flattenAmount,0.001);
@@ -88,7 +89,7 @@ float2 NativeParallaxUV(uint textureIndex, uint mode, float2 coords, float3 view
     [loop] for (uint k=1u;k<=steps;++k) {
         bound=1.0-float(k)*stepSize;
         float2 uv=coords+travel*(bound-0.5);
-        height=saturate(TexLevel(textureIndex,uv,mode,mip).r)*heightMultiplier;
+        height=saturate(NativeHeightChannel(TexLevel(textureIndex,uv,mode,mip),alphaHeight))*heightMultiplier;
         if (height>=bound) { hit=true; break; }
         previousBound=bound; previousHeight=height;
     }
@@ -97,7 +98,7 @@ float2 NativeParallaxUV(uint textureIndex, uint mode, float2 coords, float3 view
     float fineStep=stepSize/float(steps);
     [loop] for (uint j=1u;j<=steps;++j) {
         bound=start-float(j)*fineStep;
-        height=saturate(TexLevel(textureIndex,coords+travel*(bound-0.5),mode,mip).r)*heightMultiplier;
+        height=saturate(NativeHeightChannel(TexLevel(textureIndex,coords+travel*(bound-0.5),mode,mip),alphaHeight))*heightMultiplier;
         if (height>=bound) break;
         previousBound=bound; previousHeight=height;
     }
@@ -199,12 +200,24 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
     t = normalize(t);
     b = cross(n,t)*(dot(cross(n,t),b)<0.0 ? -1.0 : 1.0);
     float2 originalUV=uv;
+    const bool legacyMaterial=(material.controls.y & (1u<<9u))!=0u;
+    const bool legacyMask=(material.controls.y & (1u<<8u))!=0u;
+    const bool alphaHeight=(material.controls.y & (1u<<10u))!=0u;
+    bool complexMask=false;
+    if (legacyMask && material.textures[1].x!=0xffffffffu) {
+        const float epsilon=4.0/255.0;
+        float4 coarse=TexLevel(material.textures[1].x,uv,material.properties.z,15.0);
+        bool grayscale=abs(coarse.x-coarse.y)<epsilon && abs(coarse.x-coarse.z)<epsilon && abs(coarse.y-coarse.z)<epsilon;
+        bool heightOnly=all(coarse.xyz<epsilon)&&coarse.a>epsilon&&coarse.a<1.0-epsilon;
+        complexMask=coarse.a<1.0-epsilon&&(!grayscale||heightOnly);
+    }
     bool interlayer=(binding.flags & SurfaceCoatReadyBinding)!=0u && (material.properties.x & 8u)!=0u;
     float3 entryNormal=n;
     float eta=1.0;
     bool interlayerActive=false;
     if (parallaxEnabled && (binding.flags & SurfaceParallaxReadyBinding)!=0u && material.textures[2].x!=0xffffffffu &&
-        (binding.flags & 512u)==0u && dot(rayObject,rayObject)>1e-8 && triData.hasPositions) {
+        (binding.flags & 512u)==0u && dot(rayObject,rayObject)>1e-8 && triData.hasPositions &&
+        (!alphaHeight || complexMask)) {
         float3 view=normalize(-rayObject);
         if (interlayer) {
             float strength=saturate(material.coat.x);
@@ -255,12 +268,12 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
                 flattenAmount=NativeParallaxFlatten(normalize(normalWorld),normalize(normalX),normalize(normalY),
                     mul(objectToWorld,positionX),mul(objectToWorld,positionY),normalize(viewWorld));
         }
-        uv=NativeParallaxUV(material.textures[2].x,material.properties.z,uv,viewTS,material.base.z,mip,flattenAmount,interlayerActive ? 0.5 : 1.0);
+        uv=NativeParallaxUV(material.textures[2].x,material.properties.z,uv,viewTS,material.base.z,mip,flattenAmount,interlayerActive ? 0.5 : 1.0,alphaHeight);
         if (shadowEnabled && material.base.z>0.0 && material.base.z<=65504.0 && isfinite(material.base.z) &&
             viewTS.z>0.0 && all(isfinite(uv))) {
             float3 worldTangent=mul(t,worldToObject);
             float3 worldBitangent=mul(b,worldToObject);
-            float height=TexLevel(material.textures[2].x,uv,material.properties.z,shadowMip).r;
+            float height=NativeHeightChannel(TexLevel(material.textures[2].x,uv,material.properties.z,shadowMip),alphaHeight);
             if (all(isfinite(worldTangent)) && all(isfinite(worldBitangent)) && isfinite(height) &&
                 dot(worldTangent,worldTangent)>0.0 && dot(worldBitangent,worldBitangent)>0.0) {
                 shadow.uv=uv;
@@ -268,6 +281,7 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
                 shadow.textureAndMode=(material.textures[2].x+1u)|((material.properties.z&3u)<<16u);
                 shadow.height=saturate(height)*(interlayerActive ? 0.5 : 1.0);
                 if (interlayerActive) shadow.textureAndMode|=1u<<18u;
+                if (alphaHeight) shadow.textureAndMode|=1u<<19u;
                 shadow.tangentScale=float4(normalize(worldTangent),material.base.z);
                 shadow.bitangentMip=float4(normalize(worldBitangent),shadowMip);
             }
@@ -275,7 +289,9 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
     }
     float4 baseTexel = NativeSurfaceTex(material.textures[0].x,uv,material.properties.z,raw,mipBias);
     float4 normalTexel = NativeSurfaceTex(material.textures[0].z,uv,material.properties.z,raw,mipBias);
-    float4 packed = NativeSurfaceTex(material.textures[1].x,uv,material.properties.z,raw,mipBias);
+    float4 packed = material.textures[1].x!=0xffffffffu ? NativeSurfaceTex(material.textures[1].x,uv,material.properties.z,raw,mipBias) : float4(1.0,0.0,1.0,0.04);
+    float4 legacyPacked=packed;
+    if (legacyMaterial) packed=float4(1.0-saturate(normalTexel.a),0.0,1.0,1.0);
     float3 sampled = normalTexel.xyz*2.0-1.0;
     if ((binding.flags & 256u) != 0u) sampled.z = sqrt(saturate(1.0-dot(sampled.xy,sampled.xy)));
     if (dot(sampled,sampled)<1e-8) return result;
@@ -304,6 +320,16 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
     float metallic = saturate(packed.g);
     float roughness = clamp(packed.r,0.045,1.0);
     float3 f0 = lerp(saturate(packed.a).xxx,base,metallic);
+    if (legacyMask) {
+        const float strength=saturate(legacyPacked.r);
+        if (complexMask && legacyPacked.g>4.0/255.0) {
+            metallic=saturate(legacyPacked.b);
+            roughness=clamp(1.0-legacyPacked.g,0.045,1.0);
+            f0=lerp(float3(0.04,0.04,0.04),lerp(float3(1,1,1),base,metallic),strength);
+        } else {
+            f0=lerp(f0,float3(1,1,1),strength);
+        }
+    }
     float3 emission = 0;
     if (material.textures[1].z != 0xffffffffu) emission = NativeSurfaceTex(material.textures[1].z,uv,material.properties.z,raw,mipBias).rgb;
     if (!all(isfinite(base)) || !all(isfinite(normal)) || !all(isfinite(f0)) || !all(isfinite(emission))) return result;

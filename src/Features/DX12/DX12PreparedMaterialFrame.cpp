@@ -13,6 +13,8 @@ namespace DX12Native
 	{
 		using F = RE::BSShaderProperty::EShaderPropertyFlag;
 
+		constexpr uint64_t kEnvironmentMapping = 1ull << 7; // SLSF1_Environment_Mapping
+		constexpr uint64_t kParallax = 1ull << 11; // SLSF1_Parallax
 		bool HasFlag(uint64_t flags, F flag)
 		{
 			return (flags & static_cast<uint64_t>(flag)) != 0;
@@ -56,8 +58,13 @@ namespace DX12Native
 		uint64_t identity, uint64_t revision, const NativePBR::MaterialCatalogSnapshot* catalog,
 		std::string_view materialObject, size_t* resolvedTxst, size_t* resolvedMato)
 	{
-		if (!source.authoredShaderFlags || !HasFlag(*source.authoredShaderFlags, F::kMenuScreen)) return {};
+		if (!source.authoredShaderFlags) return {};
 		const auto flags = *source.authoredShaderFlags;
+		const bool pbr = HasFlag(flags, F::kMenuScreen);
+		const bool legacyEnvironment = !pbr && (flags & kEnvironmentMapping) != 0;
+		const bool legacyParallax = !pbr && (flags & kParallax) != 0;
+		if (!pbr && !legacyEnvironment && !legacyParallax) return {};
+		if (!pbr && HasFlag(flags, F::kMultiLayerParallax)) return {};
 		if (HasFlag(flags, F::kLODLandscape) || HasFlag(flags, F::kMultiTextureLandscape) ||
 			HasFlag(flags, F::kFace) || HasFlag(flags, F::kHairTint) || HasFlag(flags, F::kTreeAnim) ||
 			HasFlag(flags, F::kRefraction) || HasFlag(flags, F::kTempRefraction) ||
@@ -69,23 +76,36 @@ namespace DX12Native
 		material.clampMode = uint32_t(source.clampMode);
 		material.uvOffsetScale[0] = source.uvTransform;
 		material.uvOffsetScale[1] = source.uvTransform;
-		InterpretAuthoredFlags(flags, material);
-		for (size_t role = 0; role < slots.size(); ++role)
-			material.texturePaths[role] = source.texturePaths[slots[role]];
+		if (pbr) {
+			InterpretAuthoredFlags(flags, material);
+			for (size_t role = 0; role < slots.size(); ++role)
+				material.texturePaths[role] = source.texturePaths[slots[role]];
+		} else {
+			material.legacyMaterial = true;
+			material.legacyComplexMask = legacyEnvironment;
+			material.texturePaths[0] = source.texturePaths[0];
+			material.texturePaths[1] = source.texturePaths[1];
+			if (legacyEnvironment) material.texturePaths[2] = source.texturePaths[5];
+			if (legacyParallax && !source.texturePaths[3].empty()) material.texturePaths[4] = source.texturePaths[3];
+			else if (legacyEnvironment) {
+				material.texturePaths[4] = material.texturePaths[2];
+				material.legacyHeightAlpha = true;
+			}
+		}
 		material.texturePathsComplete = true;
-		if (catalog && !source.textureSetEditorId.empty()) {
+		if (pbr && catalog && !source.textureSetEditorId.empty()) {
 			if (const auto* config = catalog->FindTextureSet(source.textureSetEditorId)) {
 				material = NativePBR::InterpretTextureSet(material, *config);
 				if (resolvedTxst) ++*resolvedTxst;
 			}
 		}
-		if (!(material.pbrFlags & (uint32_t(PBRFlags::TwoLayer) | uint32_t(PBRFlags::HairMarschner)))) {
+		if (pbr && !(material.pbrFlags & (uint32_t(PBRFlags::TwoLayer) | uint32_t(PBRFlags::HairMarschner)))) {
 			if (source.nifThinSurface)
 				NativePBR::InterpretNifThinSurface(*source.nifThinSurface, material);
 			if (source.nifFuzz)
 				NativePBR::InterpretNifFuzz(*source.nifFuzz, material);
 		}
-		if (catalog && !materialObject.empty()) {
+		if (pbr && catalog && !materialObject.empty()) {
 			if (const auto* config = catalog->FindMaterialObject(materialObject)) {
 				const auto projected = NativePBR::InterpretMaterialObject(std::string(materialObject), *config);
 				material.projectedColor = projected.baseColorScale;
@@ -122,7 +142,7 @@ namespace DX12Native
 			++result->sources;
 			const auto& source = *shape->material;
 			// An observed legacy flag or a slot-5 path does not establish PBR authorship.
-			if (!source.authoredShaderFlags || !HasFlag(*source.authoredShaderFlags, F::kMenuScreen)) {
+			if (!source.authoredShaderFlags) {
 				++result->unknownAuthored;
 				continue;
 			}

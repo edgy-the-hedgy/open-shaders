@@ -312,7 +312,8 @@ namespace NativePBR
 			}
 			texture.observedResourceName = material.textureResourceNames[index];
 			texture.resource = material.textureResources[index];
-			texture.required = index <= static_cast<size_t>(TextureRole::Rmaos);
+			texture.required = index <= static_cast<size_t>(TextureRole::Normal) ||
+				(texture.role == TextureRole::Rmaos && (!material.legacyMaterial || material.legacyComplexMask));
 		}
 		if (!result.identity || !result.revision || !IsFinite(material) || material.clampMode > 3 ||
 			(material.kind != MaterialKind::Mesh && material.kind != MaterialKind::Landscape))
@@ -320,7 +321,7 @@ namespace NativePBR
 		if (material.kind == MaterialKind::Landscape)
 			result.issues |= UnsupportedLandscape;
 		else if (!material.texturePathsComplete || material.texturePaths[0].empty() ||
-				 material.texturePaths[1].empty() || material.texturePaths[2].empty())
+				 material.texturePaths[1].empty() || ((!material.legacyMaterial || material.legacyComplexMask) && material.texturePaths[2].empty()))
 			result.issues |= MissingRequiredTextures;
 		if (material.pbrFlags)
 			result.issues |= UnsupportedPbrFeatures;

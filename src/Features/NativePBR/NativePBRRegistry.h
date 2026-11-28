@@ -66,6 +66,7 @@ namespace NativePBR
 		// Directly interpreted from the prepared NIF's environment mapping flag;
 		// slot 5 is a vanilla complex/environment mask, not a PBR RMAOS map.
 		bool legacyComplexMask = false;
+		bool legacyMaterial = false, legacyHeightAlpha = false;
 		std::array<std::array<float, 4>, 2> uvOffsetScale{ { { 0, 0, 1, 1 }, { 0, 0, 1, 1 } } };
 		float materialAlpha = 1.0f;
 		float roughnessScale = 1.0f, displacementScale = 1.0f, specularLevel = 0.04f;

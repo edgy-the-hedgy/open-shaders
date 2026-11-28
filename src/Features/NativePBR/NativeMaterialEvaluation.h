@@ -462,7 +462,7 @@ namespace DX12Native
 				const auto residentMap = [&](NativePBR::TextureRole role) {
 					return (recordTable[it->second].controls[0] & NativePBR::TextureRoleBit(role)) != 0;
 				};
-				// Keep screen displacement feature-limited until runtime parity is verified.
+				// Native displacement is evaluated before shading. Admit only resident tangent-space height fields.
 				const bool layeredHeight = (capability.activeFlags & interlayer) &&
 					recipe.parameters.kind == NativePBR::MaterialKind::Mesh && recipe.parameters.displacementScale > 0.0f;
 				if (!projectedUv && NativePBR::SupportsOpaqueParallax(recipe) && residentMap(NativePBR::TextureRole::Displacement))
@@ -518,9 +518,10 @@ namespace DX12Native
 				}
 				if (capability.issues == NativePBR::ScreenProjection && !(flags & (uint64_t(1) << 12)))
 					binding.flags |= MaterialFrameContract::kSecondaryProjectionBinding;
-				if (capability.issues == NativePBR::ScreenDisplacement &&
-					(binding.flags & MaterialFrameContract::kParallaxReadyBinding) && !(flags & (uint64_t(1) << 12)))
+				if ((binding.flags & MaterialFrameContract::kParallaxReadyBinding) && !(flags & (uint64_t(1) << 12))) {
+					capability.issues &= ~NativePBR::ScreenDisplacement;
 					binding.flags |= MaterialFrameContract::kSecondaryParallaxBinding;
+				}
 				result->surfaceCapabilities.Observe(recipe, capability, authoredProjectedUv);
 				if (capability.issues) {
 					binding.flags |= MaterialFrameContract::kBaseOnlyBinding;

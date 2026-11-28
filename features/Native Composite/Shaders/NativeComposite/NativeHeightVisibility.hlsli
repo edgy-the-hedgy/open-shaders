@@ -15,7 +15,8 @@ float NativeHeightVisibility(NativeParallaxShadowSample sample, float3 light, fl
     uint taps=viewDistance<1024.0 ? 4u : 2u;
     float accumulated=0.0;
     [loop] for (uint tap=0u;tap<taps;++tap) {
-        float height=TexLevel(textureIndex,sample.uv+direction/(float(tap+1u)+noise),mode,sample.bitangentMip.w).r;
+        float4 texel=TexLevel(textureIndex,sample.uv+direction/(float(tap+1u)+noise),mode,sample.bitangentMip.w);
+        float height=(sample.textureAndMode & (1u<<19u))!=0u ? texel.a : texel.r;
         if (!isfinite(height)) return 1.0;
         float heightMultiplier=(sample.textureAndMode & (1u<<18u))!=0u ? 0.5 : 1.0;
         accumulated+=max(0.0,saturate(height)*heightMultiplier-sample.height);

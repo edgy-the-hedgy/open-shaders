@@ -28,10 +28,12 @@ namespace DX12Native
         if (!baseProperty || baseProperty->GetRTTI() != globals::rtti::BSLightingShaderPropertyRTTI.get() || runtime.alphaProperty)
             return source;
         const auto* property = static_cast<const RE::BSLightingShaderProperty*>(baseProperty);
-        if (!property->material || property->material->GetType() != RE::BSShaderMaterial::Type::kLighting ||
-            property->material->GetFeature() != RE::BSShaderMaterial::Feature::kDefault)
+        if (!property->material || property->material->GetType() != RE::BSShaderMaterial::Type::kLighting)
             return source;
         source.authoredShaderFlags = NativePBR::ReadAuthoredFlags(*property);
+        constexpr uint64_t kLegacyEnvironmentOrParallax = (1ull<<7u)|(1ull<<11u);
+        if (property->material->GetFeature() != RE::BSShaderMaterial::Feature::kDefault &&
+            (!source.authoredShaderFlags || !(*source.authoredShaderFlags & kLegacyEnvironmentOrParallax))) return {};
         if (!source.authoredShaderFlags || (!hasColor && (*source.authoredShaderFlags & (uint64_t(1) << 37)))) return {};
         const auto* material = static_cast<const RE::BSLightingShaderMaterialBase*>(property->material);
         auto* textures = material->textureSet.get();
