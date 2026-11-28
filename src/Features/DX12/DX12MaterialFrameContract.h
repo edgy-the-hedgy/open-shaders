@@ -33,6 +33,14 @@ namespace DX12Native::MaterialFrameContract
 	{
 		return count<maxCount && bytes<=maxBytes && requestBytes>0u && requestBytes<=maxBytes-bytes;
 	}
+	constexpr bool ContentRevisionMatches(uint64_t capturedEpoch,uint64_t capturedRevision,uint64_t liveEpoch,uint64_t liveRevision)
+	{
+		return capturedEpoch!=0 && capturedEpoch==liveEpoch && capturedRevision==liveRevision;
+	}
+	constexpr bool ConstantSnapshotFits(uint32_t projectorCount,uint32_t grassCount,uint32_t capacity)
+	{
+		return projectorCount<capacity && grassCount<capacity-projectorCount;
+	}
 	inline constexpr uint32_t kTypedTransferRowPresent=0x80000000u;
 	constexpr uint32_t TypedEffectRequiredRoles(uint32_t pixelDescriptor)
 	{
