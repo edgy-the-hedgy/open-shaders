@@ -2,6 +2,8 @@
 
 #include "Hooks.h"
 #include "RE/B/BSLightingShaderProperty.h"
+#include "RE/B/BSLightingShaderMaterialBase.h"
+#include "RE/N/NiSourceTexture.h"
 #include "RE/B/BSShaderTextureSet.h"
 #include "RE/B/BSTextureSet.h"
 #include "RE/B/BGSTextureSet.h"
@@ -24,6 +26,7 @@ namespace NativePBR
 	namespace
 	{
 		constexpr auto kAuthoredFlags = "OS.NativePBR.OriginalFlags.v1";
+		constexpr auto kGrassMaterialSource="OS.NativePBR.GrassSource.v1";
 		constexpr size_t kMaxTextureSources = 32768;
 
 		// Engine form IDs are needed even when the legacy TruePBR feature is
@@ -177,6 +180,87 @@ namespace NativePBR
 			stl::detour_thunk<NativeTextureSetConversion>(REL::RelocationID(20905, 21361));
 			stl::write_vfunc<0x1E, NativeNifPostLink>(RE::VTABLE_BSLightingShaderProperty[0]);
 		});
+	}
+
+	// Serialize the original NIF recipe into property-owned extra data.
+	// Generated grass can outlive the source property and texture-set pointer.
+	// No global pointer cache or legacy material replacement is needed.
+	void PreserveGrassMaterialSource(const RE::BSLightingShaderProperty* source, RE::BSLightingShaderProperty* grass)
+	{
+		if (!source || !grass || grass->HasExtraData(kGrassMaterialSource) || !source->material ||
+			source->material->GetType()!=RE::BSShaderMaterial::Type::kLighting) return;
+		const auto flags=ReadAuthoredFlags(*source);
+		if (!flags || !(*flags&static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kVertexLighting))) return;
+		const auto* material=static_cast<const RE::BSLightingShaderMaterialBase*>(source->material);
+		const auto snapshot=CaptureTextureSetSnapshot(material->textureSet.get());
+		if (!snapshot || snapshot->oversized || snapshot->paths[0].empty() ||
+			snapshot->paths[1].empty() || snapshot->paths[5].empty()) return;
+		GrassMaterialSource data{*flags,*snapshot,{},{}};
+		ReadNifParameters(*source,data.thin,data.fuzz);
+		if (grass->material && grass->material->GetType()==RE::BSShaderMaterial::Type::kLighting) {
+			const auto* generated=static_cast<const RE::BSLightingShaderMaterialBase*>(grass->material);
+			const auto* path=generated->diffuseTexture ? generated->diffuseTexture->name.c_str() : nullptr;
+			if (path && *path && std::string_view(path).size()<=260u) data.textures.paths[0]=path;
+		}
+		std::vector<int32_t> words{1,std::bit_cast<int32_t>(uint32_t(data.flags)),
+			std::bit_cast<int32_t>(uint32_t(data.flags>>32u)),int32_t(bool(data.thin))|int32_t(bool(data.fuzz))*2};
+		for (float value:data.thin.value_or(std::array<float,4>{})) words.push_back(std::bit_cast<int32_t>(value));
+		for (float value:data.fuzz.value_or(std::array<float,2>{})) words.push_back(std::bit_cast<int32_t>(value));
+		const auto append=[&](const std::string& path) {
+			words.push_back(int32_t(path.size()));
+			for (size_t i=0;i<path.size();i+=4u) {
+				uint32_t word=0;
+				for (size_t j=0;j<4u && i+j<path.size();++j) word|=uint32_t(uint8_t(path[i+j]))<<(8u*j);
+				words.push_back(std::bit_cast<int32_t>(word));
+			}
+		};
+		append(data.textures.editorId);
+		for (const auto& path:data.textures.paths) append(path);
+		RE::NiPointer<RE::NiIntegersExtraData> metadata{RE::NiIntegersExtraData::Create(kGrassMaterialSource,words)};
+		if (metadata) grass->AddExtraData(metadata.get());
+	}
+
+	bool HasGrassMaterialSource(const RE::BSShaderProperty& property)
+	{
+		return property.HasExtraData(kGrassMaterialSource);
+	}
+
+	std::optional<GrassMaterialSource> ReadGrassMaterialSource(const RE::BSShaderProperty& property)
+	{
+		const auto* data=netimmerse_cast<const RE::NiIntegersExtraData*>(property.GetExtraData(kGrassMaterialSource));
+		if (!data || !data->value || data->size<19u || data->size>604u || data->value[0]!=1) return {};
+		GrassMaterialSource result;
+		const auto* words=data->value;
+		result.flags=uint64_t(uint32_t(words[1]))|(uint64_t(uint32_t(words[2]))<<32u);
+		const uint32_t presence=uint32_t(words[3]);
+		if (presence&~3u) return {};
+		if (presence&1u) {
+			std::array<float,4> v{};
+			for (size_t i=0;i<v.size();++i) v[i]=std::bit_cast<float>(words[4u+i]);
+			if (!std::ranges::all_of(v,[](float x){return std::isfinite(x);})) return {};
+			result.thin=v;
+		}
+		if (presence&2u) {
+			std::array<float,2> v{};
+			for (size_t i=0;i<v.size();++i) v[i]=std::bit_cast<float>(words[8u+i]);
+			if (!std::ranges::all_of(v,[](float x){return std::isfinite(x);})) return {};
+			result.fuzz=v;
+		}
+		size_t cursor=10u;
+		const auto read=[&](std::string& path) {
+			if (cursor>=data->size) return false;
+			const uint32_t length=uint32_t(words[cursor++]);
+			if (length>260u || (length+3u)/4u>data->size-cursor) return false;
+			path.resize(length);
+			for (uint32_t i=0;i<length;++i) path[i]=char(uint32_t(words[cursor+i/4u])>>(8u*(i%4u)));
+			cursor+=(length+3u)/4u;
+			return path.find('\0')==std::string::npos;
+		};
+		if (!read(result.textures.editorId)) return {};
+		for (auto& path:result.textures.paths) if (!read(path)) return {};
+		if (cursor!=data->size || result.textures.paths[0].empty() ||
+			result.textures.paths[1].empty() || result.textures.paths[5].empty()) return {};
+		return result;
 	}
 
 	void PreserveAuthoredFlags(RE::BSLightingShaderProperty& property)
