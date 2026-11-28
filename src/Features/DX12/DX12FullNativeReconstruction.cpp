@@ -73,7 +73,7 @@ namespace DX12Native
 			return;
 		}
 		auto* device = backend.d3d12Device.get();
-		const auto shader = Util::FileHelpers::ReadBoundedBinary(Util::PathHelpers::GetShadersPath() / "NativeComposite" / "FullNativeReconstruction.dxil", 16 * VideoMemoryBudget::kMiB);
+		const auto shader = Util::FileHelpers::ReadBoundedBinary(Util::PathHelpers::GetShadersPath() / "NativeComposite" / "FullNativeReconstructionV2.dxil", 16 * VideoMemoryBudget::kMiB);
 		CD3DX12_DESCRIPTOR_RANGE depthRanges[6];
 		depthRanges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 3, 0, 0);
 		depthRanges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 6, 0, 1);
@@ -81,7 +81,7 @@ namespace DX12Native
 		depthRanges[3].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 11, 0, 3);
 		depthRanges[4].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 12, 0, 4);
 		depthRanges[5].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 13, 0, 5);
-		CD3DX12_ROOT_PARAMETER parameters[14];
+		CD3DX12_ROOT_PARAMETER parameters[19];
 		parameters[0].InitAsShaderResourceView(0);
 		parameters[1].InitAsShaderResourceView(1);
 		parameters[2].InitAsShaderResourceView(2);
@@ -96,7 +96,9 @@ namespace DX12Native
 		parameters[11].InitAsUnorderedAccessView(1);
 		parameters[12].InitAsUnorderedAccessView(2);
 		parameters[13].InitAsUnorderedAccessView(3);
-		CD3DX12_ROOT_SIGNATURE_DESC signature(14, parameters);
+		for(UINT n=0;n<4;++n) parameters[14+n].InitAsShaderResourceView(14+n);
+		parameters[18].InitAsConstants(4,1);
+		CD3DX12_ROOT_SIGNATURE_DESC signature(19, parameters);
 		winrt::com_ptr<ID3DBlob> blob, errors;
 		winrt::com_ptr<ID3D12RootSignature> newRoot;
 		winrt::com_ptr<ID3D12PipelineState> newPipeline;
@@ -295,6 +297,14 @@ namespace DX12Native
 			cmd->SetComputeRootUnorderedAccessView(11, slot->ownershipMask->GetGPUVirtualAddress());
 			cmd->SetComputeRootUnorderedAccessView(12, slot->environmentRadiance->GetGPUVirtualAddress());
 			cmd->SetComputeRootUnorderedAccessView(13, slot->historySignals->GetGPUVirtualAddress());
+			const auto& oldMaterial=previous?previous->material:slot->material;
+			cmd->SetComputeRootShaderResourceView(14,slot->material->specializedDirectory->GetGPUVirtualAddress());
+			cmd->SetComputeRootShaderResourceView(15,slot->material->specializedPool->GetGPUVirtualAddress());
+			cmd->SetComputeRootShaderResourceView(16,oldMaterial->specializedDirectory->GetGPUVirtualAddress());
+			cmd->SetComputeRootShaderResourceView(17,oldMaterial->specializedPool->GetGPUVirtualAddress());
+			const uint32_t specializedConstants[]{slot->material->specializedCapacity,oldMaterial->specializedCapacity,
+				slot->material->HasSpecialized()?1u:0u,previous&&oldMaterial->HasSpecialized()?1u:0u};
+			cmd->SetComputeRoot32BitConstants(18,4,specializedConstants,0);
 			const uint32_t constants[]{ slot->width, slot->height, slot->material->rowPitch,
 				slot->direct ? slot->direct->rowPitch : 0u, slot->indirect ? slot->indirect->rowPitch : 0u, available,
 				previous ? previous->material->rowPitch : 0u, previous ? 1u : 0u,

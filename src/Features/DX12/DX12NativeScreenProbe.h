@@ -6,6 +6,7 @@
 #include "DX12GpuRetirement.h"
 #include "DX12MaterialFrameContract.h"
 #include "Features/NativePBR/NativeRawInputCapture.h"
+#include "Features/NativePBR/SpecializedMaterialAbi.h"
 #include "../../../package/Shaders/Common/NativeShadowRT.hlsli"
 #include "Utils/FileSystem.h"
 #include "Utils/RuntimeTaskGate.h"
@@ -21,7 +22,9 @@ namespace DX12Native
 	{
 		using Eval = NativeMaterialEvaluation;
 		static constexpr uint32_t kWidth = 64, kHeight = 36;
-		static constexpr uint32_t kCounterCount = 12;
+		static constexpr uint32_t kCoverageCounterCount = 12;
+		static constexpr uint32_t kCounterCount = kCoverageCounterCount + NativePBR::SpecializedMaterial::CounterWords;
+		static constexpr uint64_t kSpecializedCounterOffset = kCoverageCounterCount * sizeof(uint32_t);
 		static constexpr uint64_t kCounterBytes = kCounterCount * sizeof(uint32_t);
 		static constexpr uint32_t kSampleStride = MaterialFrameContract::kMaterialStride; // 16 IEEE binary16 values, same component ordering as Eval::Sample.
 		struct Camera
@@ -36,8 +39,12 @@ namespace DX12Native
 		static_assert(sizeof(Camera) <= 256);
 		struct OutputAllocation
 		{
-			winrt::com_ptr<ID3D12Resource> resource, rayIdentity, materialLobes;
-			uint64_t bytes=0, identityBytes=0, lobeBytes=0, allocationBytes=0;
+			winrt::com_ptr<ID3D12Resource> resource, rayIdentity, materialLobes, specializedDirectory, specializedPool;
+			// materialLobes is now exclusively the independent parallax-shadow plane (or a 4-byte unused binding).
+			uint64_t bytes=0, identityBytes=0, lobeBytes=0, allocationBytes=0, specializedAllocationBytes=0;
+			uint64_t requestedShadowBytes=0, directoryBytes=0, payloadBytes=0;
+			uint32_t specializedCapacity=0;
+			bool specializedEnabled=false;
 			bool shaderReadable=false;
 		};
 		struct Submission
@@ -199,14 +206,14 @@ namespace DX12Native
 				return;
 			}
 			auto* device = backend.d3d12Device.get();
-			const auto shader = Util::FileHelpers::ReadBoundedBinary(Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativePBRScreenProbe.dxil", 16 * VideoMemoryBudget::kMiB);
+			const auto shader = Util::FileHelpers::ReadBoundedBinary(Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativePBRScreenProbeV2.dxil", 16 * VideoMemoryBudget::kMiB);
 			CD3DX12_DESCRIPTOR_RANGE range;
 			range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NativePBR::kGpuTextureDescriptorCapacity + 1, 3);
 			CD3DX12_DESCRIPTOR_RANGE projectionRange;
 			projectionRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1 + kProjectedTextureCapacity, 518);
 			CD3DX12_DESCRIPTOR_RANGE rawRange;
 			rawRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NativePBR::InputOnly::kPlaneCount + 1, 1031);
-			CD3DX12_ROOT_PARAMETER parameters[21];
+			CD3DX12_ROOT_PARAMETER parameters[25];
 			parameters[0].InitAsShaderResourceView(0);
 			parameters[1].InitAsShaderResourceView(1);
 			parameters[2].InitAsShaderResourceView(2);
@@ -232,6 +239,10 @@ namespace DX12Native
 			parameters[18].InitAsShaderResourceView(1040);
 			parameters[19].InitAsShaderResourceView(1041);
 			parameters[20].InitAsShaderResourceView(1042);
+			parameters[21].InitAsUnorderedAccessView(5);
+			parameters[22].InitAsUnorderedAccessView(6);
+			parameters[23].InitAsUnorderedAccessView(7);
+			parameters[24].InitAsConstants(2,2);
 			std::array<CD3DX12_STATIC_SAMPLER_DESC, 4> samplers;
 			for (uint32_t mode = 0; mode < 4; ++mode)
 				samplers[mode] = CD3DX12_STATIC_SAMPLER_DESC(mode, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
@@ -257,7 +268,9 @@ namespace DX12Native
 			uint32_t frame=0, sampled=0, evaluated=0, noHit=0, depthMismatch=0, missingMaterial=0, invalid=0, baseOnly=0;
 			uint32_t width=0, height=0, unsupportedMaterial=0, missingTextures=0, rawInputPixels=0;
 			uint32_t primaryRayQueries=0, rasterDerivedPixels=0, unresolvedUntracedPixels=0;
-			uint64_t outputBytes=0;
+			uint64_t outputBytes=0, specializedAllocationBytes=0, retainedOutputBytes=0;
+			uint32_t specializedRequested=0, specializedAllocated=0, specializedOverflow=0;
+			std::array<uint32_t,15> specializedPropertyOverflow{};
 			uint32_t reusedAllocations=0, submittedFrames=0;
 		};
 		struct MaterialFrame
@@ -267,8 +280,19 @@ namespace DX12Native
 			std::shared_ptr<const RasterFrame> raster;
 			std::shared_ptr<const TopLevel> scene;
 			winrt::com_ptr<ID3D12DescriptorHeap> descriptors;
-			winrt::com_ptr<ID3D12Resource> samples, rayIdentity, materialLobes;
+			winrt::com_ptr<ID3D12Resource> samples, rayIdentity, materialLobes, specializedDirectory, specializedPool;
 			uint32_t rayIdentityRowPitch = 0, materialLobeRowPitch = 0;
+			uint32_t specializedVersion=NativePBR::SpecializedMaterial::Version, specializedCapacity=0;
+			uint64_t specializedAllocationBytes=0;
+			bool specializedEnabled=false;
+			bool HasSpecialized() const
+			{
+				return specializedEnabled && allocation && specializedDirectory && specializedPool &&
+					allocation->specializedDirectory.get()==specializedDirectory.get() &&
+					allocation->specializedPool.get()==specializedPool.get() &&
+					NativePBR::SpecializedMaterial::ValidPublicationLayout(specializedVersion,width,height,rowPitch/kSampleStride,
+						specializedCapacity,allocation->directoryBytes,allocation->payloadBytes);
+			}
 			bool parallaxEnabled = false, parallaxShadows = false;
 			uint32_t rawInputDraws = 0;
 			std::shared_ptr<const NativePBR::RawInputFrame> rawRasterEvidence;
@@ -304,10 +328,7 @@ namespace DX12Native
 					!rayIdentity || allocation->rayIdentity.get() != rayIdentity.get() ||
 					!MaterialFrameContract::ValidLayout(width, height, rayIdentityRowPitch, MaterialFrameContract::kRayIdentityStride) ||
 					allocation->identityBytes < uint64_t(rayIdentityRowPitch) * height ||
-					!materialLobes || allocation->materialLobes.get() != materialLobes.get() ||
-					!MaterialFrameContract::ValidLayout(width, height, materialLobeRowPitch, MaterialFrameContract::kMaterialLobeStride) ||
-					allocation->lobeBytes < uint64_t(materialLobeRowPitch) * height +
-						(parallaxShadows ? uint64_t(rowPitch / kSampleStride) * height * MaterialFrameContract::kParallaxShadowStride : 0u) ||
+
 					!allocation->shaderReadable || !descriptors ||
 					!producerFence || !MaterialFrameContract::ValidProducerSignal(producerValue, producerFence->GetCompletedValue()) ||
 					!raster || raster->frame != frame || !raster->cameraValid || !raster->depth || !raster->depth->resource ||
@@ -329,8 +350,6 @@ namespace DX12Native
 				} else if (rasterMaterialRevision) return false;
 				const auto desc = samples->GetDesc();
 				const auto identityDesc = rayIdentity->GetDesc();
-				const auto lobeDesc = materialLobes->GetDesc();
-				if (lobeDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER || lobeDesc.Width < allocation->lobeBytes) return false;
 				return identityDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
 					identityDesc.Width >= uint64_t(rayIdentityRowPitch) * height && desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
 					desc.Width >= uint64_t(rowPitch) * height && allocation->bytes >= uint64_t(rowPitch) * height;
@@ -395,6 +414,8 @@ namespace DX12Native
 				result.frame=pending->frame; result.width=pending->width; result.height=pending->height;
 				result.sampled=result.width*result.height;
 				result.outputBytes=pending->output->bytes;
+				result.specializedAllocationBytes=pending->output->specializedAllocationBytes;
+				for(const auto& entry:outputPool) if(entry) result.retainedOutputBytes+=entry->allocationBytes;
 				result.reusedAllocations=reusedAllocations; result.submittedFrames=submittedFrames;
 				const D3D12_RANGE read{0,SIZE_T(kCounterBytes)};
 				void* mapped=nullptr;
@@ -405,6 +426,9 @@ namespace DX12Native
 					result.unsupportedMaterial=counts[6]; result.missingTextures=counts[7];
 					result.rawInputPixels=counts[8];
 					result.primaryRayQueries=counts[9]; result.rasterDerivedPixels=counts[10]; result.unresolvedUntracedPixels=counts[11];
+					result.specializedAllocated=counts[12]; result.specializedOverflow=counts[13];
+					result.specializedRequested=result.specializedAllocated+result.specializedOverflow;
+					for(size_t n=0;n<result.specializedPropertyOverflow.size();++n) result.specializedPropertyOverflow[n]=counts[14+n];
 					const D3D12_RANGE noWrite{};
 					pending->readback->Unmap(0,&noWrite);
 					if (uint64_t(result.evaluated)+result.noHit+result.depthMismatch+result.missingMaterial+result.invalid+result.baseOnly+result.unsupportedMaterial+result.missingTextures==result.sampled) {
@@ -508,39 +532,85 @@ namespace DX12Native
 				const uint32_t pitchPixels=(gridWidth+7u)&~7u;
 				const uint64_t bytes=uint64_t(pitchPixels)*gridHeight*kSampleStride;
 				const uint64_t identityBytes=uint64_t(pitchPixels)*gridHeight*MaterialFrameContract::kRayIdentityStride;
-				const bool shadowPlane=parallaxEnabled && parallaxShadowEnabled;
-				const uint64_t lobeBytes=uint64_t(pitchPixels)*gridHeight*(MaterialFrameContract::kMaterialLobeStride +
-					(shadowPlane ? MaterialFrameContract::kParallaxShadowStride : 0u));
-				// ByteAddressBuffer uses 32-bit byte offsets.
-				if (bytes>UINT32_MAX || lobeBytes>UINT32_MAX) { failure="Screen material byte address range exceeded"; return; }
+				const uint64_t requestedShadowBytes=parallaxEnabled && parallaxShadowEnabled ?
+					uint64_t(pitchPixels)*gridHeight*MaterialFrameContract::kParallaxShadowStride : 0u;
+				const auto layout=NativePBR::SpecializedMaterial::Plan(gridWidth,gridHeight);
+				if (bytes>UINT32_MAX || identityBytes>UINT32_MAX || requestedShadowBytes>UINT32_MAX) {
+					failure="Screen material byte address range exceeded"; return;
+				}
 				std::shared_ptr<OutputAllocation>* selected = nullptr;
-				uint64_t tracked = 0;
-				for (auto& entry : outputPool) {
-					if (entry) tracked += entry->allocationBytes;
-					if (!entry || entry.use_count() == 1) {
-						if (!selected || (entry && entry->bytes == bytes && entry->lobeBytes == lobeBytes)) selected = &entry;
+				uint64_t tracked=0;
+				for(auto& entry:outputPool) {
+					if(entry) tracked+=entry->allocationBytes;
+					if(!entry || entry.use_count()==1) {
+						if(!selected || (entry && entry->bytes==bytes && entry->identityBytes==identityBytes &&
+							entry->requestedShadowBytes==requestedShadowBytes && entry->directoryBytes==layout.directoryBytes &&
+							entry->specializedCapacity==layout.capacity)) selected=&entry;
 					}
 				}
-				if (!selected) { failure="Material frame pool busy"; return; }
-				auto& reusableOutput = *selected;
-				const bool reuse = reusableOutput && reusableOutput->bytes == bytes && reusableOutput->lobeBytes == lobeBytes;
-				for (const auto& inFlight : submissions)
-					if (inFlight) tracked += 6ull*65536;
-				const auto available = videoBudget.Query(device, tracked);
-				const auto desc=CD3DX12_RESOURCE_DESC::Buffer(bytes,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-				const auto identityDesc=CD3DX12_RESOURCE_DESC::Buffer(identityBytes,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-				const auto lobeDesc=CD3DX12_RESOURCE_DESC::Buffer(lobeBytes,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-				const auto sampleAllocation=device->GetResourceAllocationInfo(0,1,&desc).SizeInBytes;
-				const auto identityAllocation=device->GetResourceAllocationInfo(0,1,&identityDesc).SizeInBytes;
-				const auto lobeAllocation=device->GetResourceAllocationInfo(0,1,&lobeDesc).SizeInBytes;
-				if (sampleAllocation==UINT64_MAX || identityAllocation==UINT64_MAX || lobeAllocation==UINT64_MAX ||
-					sampleAllocation>UINT64_MAX-identityAllocation || sampleAllocation+identityAllocation>UINT64_MAX-lobeAllocation) {
-					failure="Screen material/identity allocation unsupported"; return;
+				if(!selected) { failure="Material frame pool busy"; return; }
+				auto& reusableOutput=*selected;
+				const bool matching=reusableOutput && reusableOutput->bytes==bytes &&
+					reusableOutput->identityBytes==identityBytes && reusableOutput->requestedShadowBytes==requestedShadowBytes;
+				const bool degraded=matching && (reusableOutput->directoryBytes!=layout.directoryBytes ||
+					reusableOutput->specializedCapacity!=layout.capacity ||
+					(requestedShadowBytes && reusableOutput->lobeBytes!=requestedShadowBytes));
+				// Retry degraded optional allocations at a bounded cadence, never each frame.
+				const bool reuse=matching && (!degraded || frame%120u!=0u);
+				if(!reuse && reusableOutput) { tracked-=reusableOutput->allocationBytes; reusableOutput.reset(); }
+				for(const auto& inFlight:submissions) if(inFlight) tracked+=6ull*65536;
+				const auto available=videoBudget.Query(device,tracked);
+				const uint64_t reserve=6ull*65536;
+				const auto fits=[&](uint64_t additional) {
+					return available.localBudget && tracked<=available.effectiveBytes &&
+						reserve<=available.effectiveBytes-tracked && additional<=available.effectiveBytes-tracked-reserve;
+				};
+				const auto allocationSize=[&](uint64_t size) {
+					const auto desc=CD3DX12_RESOURCE_DESC::Buffer(size,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+					return device->GetResourceAllocationInfo(0,1,&desc).SizeInBytes;
+				};
+				if(!reuse) {
+					auto replacement=std::make_shared<OutputAllocation>();
+					const auto allocate=[&](uint64_t size) {
+						const auto charge=allocationSize(size);
+						if(charge==UINT64_MAX || !fits(charge)) throw std::runtime_error("Screen probe deferred by DXGI budget");
+						auto resource=Eval::Buffer(device,size,D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+						tracked+=charge; replacement->allocationBytes+=charge;
+						return resource;
+					};
+					replacement->resource=allocate(bytes);
+					replacement->rayIdentity=allocate(identityBytes);
+					// Real, non-addressed backing for disabled root UAV/SRV bindings.
+					replacement->materialLobes=allocate(4);
+					replacement->specializedDirectory=allocate(4);
+					replacement->specializedPool=allocate(4);
+					const auto dummyCharge=allocationSize(4);
+					replacement->specializedAllocationBytes=2*dummyCharge;
+					const auto expand=[&](auto& resource,uint64_t size,bool specialized) {
+						if(!size) return false;
+						try {
+							const auto charge=allocationSize(size);
+							auto expanded=allocate(size);
+							resource=std::move(expanded);
+							tracked-=dummyCharge; replacement->allocationBytes-=dummyCharge;
+							if(specialized) replacement->specializedAllocationBytes+=charge-dummyCharge;
+							return true;
+						} catch(const std::exception&) { return false; }
+					};
+					replacement->bytes=bytes; replacement->identityBytes=identityBytes;
+					replacement->requestedShadowBytes=requestedShadowBytes;
+					if(expand(replacement->materialLobes,requestedShadowBytes,false)) replacement->lobeBytes=requestedShadowBytes;
+					if(layout.valid && expand(replacement->specializedDirectory,layout.directoryBytes,true)) {
+						replacement->specializedEnabled=true; replacement->directoryBytes=layout.directoryBytes;
+						if(expand(replacement->specializedPool,layout.payloadBytes,true)) {
+							replacement->specializedCapacity=uint32_t(layout.capacity);
+							replacement->payloadBytes=layout.payloadBytes;
+						}
+					}
+					reusableOutput=std::move(replacement);
 				}
-				const auto allocation=reuse?0:sampleAllocation+identityAllocation+lobeAllocation;
-				if (!available.localBudget || allocation==UINT64_MAX || tracked>available.effectiveBytes || allocation>available.effectiveBytes-tracked || available.effectiveBytes-tracked-allocation<6ull*65536) {
-					failure="Screen probe deferred by DXGI budget"; return;
-				}
+				if(!fits(0)) { failure="Screen probe deferred by DXGI budget"; return; }
+				const bool shadowPlane=requestedShadowBytes && reusableOutput->lobeBytes==requestedShadowBytes;
 				auto slot=std::make_shared<Submission>();
 				slot->raster=std::move(raster); slot->scene=std::move(scene);
 				slot->scope = rawInputs ? rawInputs->stamp.scope : slot->scene->scope;
@@ -590,25 +660,13 @@ namespace DX12Native
 				}
 				slot->transforms = transformTable;
 				slot->frame=frame; slot->width=gridWidth; slot->height=gridHeight; slot->fullResolution=fullResolution; slot->collectStats=collectStats; slot->fence=fence; slot->root=root; slot->pipeline=pipeline;
-				if (!reuse) {
-					auto replacement=std::make_shared<OutputAllocation>();
-					replacement->resource=Eval::Buffer(device,bytes,D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-					replacement->rayIdentity=Eval::Buffer(device,identityBytes,D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-					replacement->bytes=bytes;
-					replacement->identityBytes=identityBytes;
-					replacement->materialLobes=Eval::Buffer(device,lobeBytes,D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-					replacement->lobeBytes=lobeBytes;
-					replacement->allocationBytes=allocation;
-					reusableOutput=std::move(replacement);
-				}
 				slot->output=reusableOutput;
 				slot->counters=Eval::Buffer(device,kCounterBytes,D3D12_HEAP_TYPE_DEFAULT,
-					collectStats ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+					D3D12_RESOURCE_STATE_COPY_DEST,
 					D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-				if (collectStats) {
+				slot->counterInit=Eval::Table(device,std::vector<uint32_t>(kCounterCount,0));
+				if (collectStats)
 					slot->readback=Eval::Buffer(device,kCounterBytes,D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_STATE_COPY_DEST);
-					slot->counterInit=Eval::Table(device,std::vector<uint32_t>(kCounterCount,0));
-				}
 				slot->camera=Eval::Buffer(device,256,D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ);
 				const Camera constants{slot->raster->camera.CameraProjInverse,slot->raster->camera.CameraViewInverse,
 					slot->raster->camera.CameraPosAdjust,width,height,gridWidth,gridHeight,collectStats ? 1u : 0u,parallaxEnabled ? 1u : 0u,parallaxWarpFixEnabled ? 1u : 0u,shadowPlane ? 1u : 0u,std::isfinite(mipBias) ? mipBias : 0.0f,slot->projection ? slot->projection->rowCount : 0u,frame,slot->rawInputs ? slot->rawInputs->ConsumerDrawCount({frame,slot->scope,mappedScene ? slot->scene->geometryRevision : 0u,mappedScene ? evaluation.revision : 0u}) : 0u, SanitizeRTQuality(quality), transformCount,
@@ -686,8 +744,13 @@ namespace DX12Native
 				command->SetComputeRootShaderResourceView(18,(slot->rasterEvaluation ? slot->rasterEvaluation->rasterLandscapeRows : slot->projectionLookup)->GetGPUVirtualAddress());
 				command->SetComputeRootShaderResourceView(19,slot->rasterMaterialLookup->GetGPUVirtualAddress());
 				command->SetComputeRootShaderResourceView(20,slot->rasterProjectionLookup->GetGPUVirtualAddress());
+				command->SetComputeRootUnorderedAccessView(21,slot->output->specializedDirectory->GetGPUVirtualAddress());
+				command->SetComputeRootUnorderedAccessView(22,slot->output->specializedPool->GetGPUVirtualAddress());
+				command->SetComputeRootUnorderedAccessView(23,slot->counters->GetGPUVirtualAddress()+kSpecializedCounterOffset);
+				const uint32_t specializedConstants[]{slot->output->specializedCapacity,slot->output->specializedEnabled?1u:0u};
+				command->SetComputeRoot32BitConstants(24,2,specializedConstants,0);
 				Eval::RecordUploads(command, slot->rasterUploads);
-				if (collectStats) {
+				{
 					command->CopyBufferRegion(slot->counters.get(),0,slot->counterInit.get(),0,kCounterBytes);
 					const auto counterBarrier=CD3DX12_RESOURCE_BARRIER::Transition(slot->counters.get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 					command->ResourceBarrier(1,&counterBarrier);
@@ -710,10 +773,14 @@ namespace DX12Native
 					const std::array outputBarriers{
 						CD3DX12_RESOURCE_BARRIER::Transition(slot->output->resource.get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
 						CD3DX12_RESOURCE_BARRIER::Transition(slot->output->rayIdentity.get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-						CD3DX12_RESOURCE_BARRIER::Transition(slot->output->materialLobes.get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_UNORDERED_ACCESS)};
+						CD3DX12_RESOURCE_BARRIER::Transition(slot->output->materialLobes.get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+						CD3DX12_RESOURCE_BARRIER::Transition(slot->output->specializedDirectory.get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+						CD3DX12_RESOURCE_BARRIER::Transition(slot->output->specializedPool.get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_UNORDERED_ACCESS)};
 					command->ResourceBarrier(UINT(outputBarriers.size()),outputBarriers.data());
 				}
 				command->Dispatch((gridWidth+7)/8,(gridHeight+7)/8,1);
+				const auto publicationBarrier=CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
+				command->ResourceBarrier(1,&publicationBarrier);
 				if (slot->rawInputs) {
 					for (auto& barrier:rawBarriers) std::swap(barrier.Transition.StateBefore,barrier.Transition.StateAfter);
 					command->ResourceBarrier(UINT(rawBarriers.size()),rawBarriers.data());
@@ -724,6 +791,8 @@ namespace DX12Native
 					CD3DX12_RESOURCE_BARRIER::Transition(slot->output->resource.get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COMMON),
 					CD3DX12_RESOURCE_BARRIER::Transition(slot->output->rayIdentity.get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COMMON),
 					CD3DX12_RESOURCE_BARRIER::Transition(slot->output->materialLobes.get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COMMON),
+					CD3DX12_RESOURCE_BARRIER::Transition(slot->output->specializedDirectory.get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COMMON),
+					CD3DX12_RESOURCE_BARRIER::Transition(slot->output->specializedPool.get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COMMON),
 					CD3DX12_RESOURCE_BARRIER::Transition(slot->raster->depth->resource.get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COMMON)};
 				command->ResourceBarrier(UINT(end.size()),end.data());
 				if (collectStats) {
@@ -763,7 +832,12 @@ namespace DX12Native
 					materialFrame->rayIdentity=pending->output->rayIdentity;
 					materialFrame->rayIdentityRowPitch=pitchPixels*MaterialFrameContract::kRayIdentityStride;
 					materialFrame->materialLobes=pending->output->materialLobes;
-					materialFrame->materialLobeRowPitch=pitchPixels*MaterialFrameContract::kMaterialLobeStride;
+					materialFrame->materialLobeRowPitch=shadowPlane?pitchPixels*MaterialFrameContract::kParallaxShadowStride:0u;
+					materialFrame->specializedDirectory=pending->output->specializedDirectory;
+					materialFrame->specializedPool=pending->output->specializedPool;
+					materialFrame->specializedEnabled=pending->output->specializedEnabled;
+					materialFrame->specializedCapacity=pending->output->specializedCapacity;
+					materialFrame->specializedAllocationBytes=pending->output->specializedAllocationBytes;
 					materialFrame->parallaxEnabled=parallaxEnabled;
 					materialFrame->parallaxShadows=shadowPlane;
 					materialFrame->rawInputDraws=pending->rawInputs ? pending->rawInputs->draws : 0u;

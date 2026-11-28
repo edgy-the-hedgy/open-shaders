@@ -97,13 +97,13 @@ namespace DX12Native
 			return;
 		}
 		auto* device = backend.d3d12Device.get();
-		const auto shader = Util::FileHelpers::ReadBoundedBinary(Util::PathHelpers::GetShadersPath() / "NativeComposite" / "DirectLighting.dxil", 16 * VideoMemoryBudget::kMiB);
+		const auto shader = Util::FileHelpers::ReadBoundedBinary(Util::PathHelpers::GetShadersPath() / "NativeComposite" / "DirectLightingV2.dxil", 16 * VideoMemoryBudget::kMiB);
 		CD3DX12_DESCRIPTOR_RANGE ranges[4];
 		ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NativePBR::kGpuTextureDescriptorCapacity, 7, 0, 0);
 		ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 3, 0, NativePBR::kGpuTextureDescriptorCapacity);
 		ranges[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
 		ranges[3].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 520);
-		CD3DX12_ROOT_PARAMETER parameters[13];
+		CD3DX12_ROOT_PARAMETER parameters[16];
 		parameters[0].InitAsDescriptorTable(1, &ranges[2]);
 		parameters[1].InitAsShaderResourceView(1);
 		parameters[2].InitAsShaderResourceView(2);
@@ -117,13 +117,16 @@ namespace DX12Native
 		parameters[10].InitAsShaderResourceView(519);
 		parameters[11].InitAsDescriptorTable(1, &ranges[3]);
 		parameters[12].InitAsUnorderedAccessView(2);
+		parameters[13].InitAsShaderResourceView(521);
+		parameters[14].InitAsShaderResourceView(522);
+		parameters[15].InitAsConstants(2,1);
 		std::array<CD3DX12_STATIC_SAMPLER_DESC, 4> samplers;
 		for (uint32_t mode = 0; mode < 4; ++mode)
 			samplers[mode] = CD3DX12_STATIC_SAMPLER_DESC(mode, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
 				(mode & 2) ? D3D12_TEXTURE_ADDRESS_MODE_WRAP : D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
 				(mode & 1) ? D3D12_TEXTURE_ADDRESS_MODE_WRAP : D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
 				D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
-		const CD3DX12_ROOT_SIGNATURE_DESC signature(13, parameters, UINT(samplers.size()), samplers.data());
+		const CD3DX12_ROOT_SIGNATURE_DESC signature(16, parameters, UINT(samplers.size()), samplers.data());
 		winrt::com_ptr<ID3DBlob> blob, errors;
 		winrt::com_ptr<ID3D12RootSignature> newRoot;
 		winrt::com_ptr<ID3D12PipelineState> newPipeline;
@@ -312,6 +315,11 @@ namespace DX12Native
 			command->SetComputeRootShaderResourceView(10, slot->material->materialLobes->GetGPUVirtualAddress());
 			command->SetComputeRootDescriptorTable(11, {gpu.ptr + UINT64(cap + 2) * step});
 			command->SetComputeRootUnorderedAccessView(12, slot->visibility->GetGPUVirtualAddress());
+			const auto specialized=slot->material->HasSpecialized();
+			command->SetComputeRootShaderResourceView(13, slot->material->specializedDirectory->GetGPUVirtualAddress());
+			command->SetComputeRootShaderResourceView(14, slot->material->specializedPool->GetGPUVirtualAddress());
+			const uint32_t specializedConstants[]{slot->material->specializedCapacity,specialized?1u:0u};
+			command->SetComputeRoot32BitConstants(15,2,specializedConstants,0);
 			if (!fresh) {
 				const auto counterStart = CD3DX12_RESOURCE_BARRIER::Transition(slot->counters.get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
 				command->ResourceBarrier(1, &counterStart);

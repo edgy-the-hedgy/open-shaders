@@ -164,7 +164,7 @@ namespace DX12Native
         ranges[3].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 527, 0, 4 + NativePBR::kGpuTextureDescriptorCapacity);
         ranges[4].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,1+kProjectedTextureCapacity,530,0,5+NativePBR::kGpuTextureDescriptorCapacity);
         ranges[5].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,NativePBR::kGpuTextureDescriptorCapacity,4,1,kCharacterTextureOffset);
-        CD3DX12_ROOT_PARAMETER parameters[22];
+        CD3DX12_ROOT_PARAMETER parameters[24];
         parameters[0].InitAsShaderResourceView(0);
         parameters[1].InitAsDescriptorTable(6, ranges);
         parameters[2].InitAsShaderResourceView(2);
@@ -187,11 +187,13 @@ namespace DX12Native
         parameters[16].InitAsShaderResourceView(529);
         for (UINT i=0;i<4;++i) parameters[17+i].InitAsShaderResourceView(i,1);
         parameters[21].InitAsShaderResourceView(516,1);
+        parameters[22].InitAsShaderResourceView(0,2);
+        parameters[23].InitAsConstants(2,0,2);
         winrt::com_ptr<ID3D12RootSignature> pr, ir;
         winrt::com_ptr<ID3D12PipelineState> pp, ip;
         winrt::com_ptr<ID3D12Fence> fence;
         BuildPipeline(device, Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativeDiffuseSH.dxil", 3, projectionParameters, pr, pp);
-        BuildPipeline(device, Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativeIndirectLighting.dxil", 22, parameters, ir, ip);
+        BuildPipeline(device, Util::PathHelpers::GetShadersPath() / "NativeComposite" / "NativeIndirectLightingV2.dxil", 24, parameters, ir, ip);
         Eval::Check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(fence.put())));
         owner = backend;
         projectionRoot = std::move(pr); projectionPipeline = std::move(pp);
@@ -403,7 +405,10 @@ namespace DX12Native
             cmd->SetComputeRootShaderResourceView(7, scene ? scene->shadingGeometry->buffer->GetGPUVirtualAddress() : materialAddress);
             cmd->SetComputeRootShaderResourceView(8, sceneEvaluation.records->GetGPUVirtualAddress());
             cmd->SetComputeRootShaderResourceView(9, sceneEvaluation.bindings->GetGPUVirtualAddress());
-            cmd->SetComputeRootShaderResourceView(10, slot->material->materialLobes->GetGPUVirtualAddress());
+            cmd->SetComputeRootShaderResourceView(10, slot->material->specializedDirectory->GetGPUVirtualAddress());
+            cmd->SetComputeRootShaderResourceView(22, slot->material->specializedPool->GetGPUVirtualAddress());
+            const uint32_t specializedConstants[]{slot->material->specializedCapacity,slot->material->HasSpecialized()?1u:0u};
+            cmd->SetComputeRoot32BitConstants(23,2,specializedConstants,0);
             cmd->SetComputeRootDescriptorTable(11,gpu(kCharacterSceneDescriptor));
             cmd->SetComputeRootShaderResourceView(12, slot->screenSpaceReflections ? slot->ssrDirect->samples->GetGPUVirtualAddress() : materialAddress);
             cmd->SetComputeRootShaderResourceView(13, slot->material->rayIdentity->GetGPUVirtualAddress());

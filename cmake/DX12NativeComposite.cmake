@@ -62,12 +62,17 @@ if(NATIVE_SHADOW_DXC)
     file(GLOB _full_native_local_deps CONFIGURE_DEPENDS
         "${_full_native_source_dir}/Native*.hlsli"
     )
-    foreach(_shader IN ITEMS NativePBRProbe NativePBRScreenProbe DirectLighting NativeDiffuseSH NativeIndirectLighting NativeCubemapHistory NativeCubemapDetectLighting NativeCubemapFilter NativeWaterSSR FullNativeReconstruction CompositeFullNative)
+    foreach(_shader IN ITEMS NativePBRProbe NativePBRScreenProbeV2 DirectLightingV2 NativeDiffuseSH NativeIndirectLightingV2 NativeCubemapHistory NativeCubemapDetectLighting NativeCubemapFilter NativeWaterSSR FullNativeReconstructionV2 CompositeFullNative)
         set(_full_native_entry main)
         set(_full_native_source "${_full_native_source_dir}/${_shader}.hlsl6")
-        if(_shader STREQUAL "NativePBRScreenProbe")
+        set(_full_native_defines)
+        if(_shader STREQUAL "NativePBRScreenProbeV2")
             set(_full_native_source "${_full_native_source_dir}/NativePBRProbe.hlsl6")
             set(_full_native_entry screenMain)
+            set(_full_native_defines -D NATIVE_SPECIALIZED_V2_PRODUCER=1)
+        elseif(_shader MATCHES "^(DirectLighting|NativeIndirectLighting|FullNativeReconstruction)V2$")
+            set(_full_native_source "${_full_native_source_dir}/${CMAKE_MATCH_1}.hlsl6")
+            set(_full_native_defines -D NATIVE_SPECIALIZED_V2_RUNTIME=1)
         elseif(_shader STREQUAL "NativeCubemapHistory")
             set(_full_native_source "${_full_native_source_dir}/NativeCubemapFilter.hlsl6")
             set(_full_native_entry historyMain)
@@ -81,7 +86,7 @@ if(NATIVE_SHADOW_DXC)
             COMMAND ${CMAKE_COMMAND} -E make_directory "${_native_composite_dir}"
             COMMAND
                 "${NATIVE_SHADOW_DXC}" -T cs_6_5 -E ${_full_native_entry} -HV 2021 -O3
-                ${NATIVE_SHADER_VALIDATION_FLAGS} -Ges -Gis -I "${_full_native_common}"
+                ${NATIVE_SHADER_VALIDATION_FLAGS} ${_full_native_defines} -Ges -Gis -I "${_full_native_common}"
                 -Fo "${_full_native_output}" "${_full_native_source}"
             DEPENDS "${_full_native_source}" ${_full_native_local_deps} ${_full_native_common_deps}
             VERBATIM
