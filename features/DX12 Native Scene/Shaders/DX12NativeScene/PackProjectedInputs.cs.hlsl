@@ -13,6 +13,15 @@ void main(uint3 id : SV_DispatchThreadID)
 {
     const uint row = Metadata.z;
     ProjectionRecords[uint2(0,row)] = Metadata;
+    // Reserved non-scene row kinds: grass, distant tree and effect.
+    // Offsets carries authored Effect tint rather than constant-buffer offsets.
+    if (Metadata.x >= 0xfffffffcu && Metadata.x <= 0xfffffffeu) {
+        ProjectionRecords[uint2(1,row)] = Offsets;
+        [unroll] for (uint column=2u; column<7u; ++column)
+            ProjectionRecords[uint2(column,row)] = 0u;
+        ProjectionRecords[uint2(7,row)] = TextureIndices;
+        return;
+    }
     ProjectionRecords[uint2(1,row)] = VertexConstants.Load4(Offsets.x);
     ProjectionRecords[uint2(2,row)] = VertexConstants.Load4(Offsets.x+16u);
     ProjectionRecords[uint2(3,row)] = VertexConstants.Load4(Offsets.x+32u);
