@@ -3510,7 +3510,9 @@ namespace SIE
 			return {};
 		if (!runtimeTaskGate)
 			runtimeTaskGate = std::make_shared<Util::RuntimeTaskGate>(
-				[this](Util::RuntimePreparationLane lane, std::function<void()> work) { return TrySubmitRuntimeTask(lane, std::move(work)); });
+				[this](Util::RuntimePreparationLane lane, std::function<void()> work) { return TrySubmitRuntimeTask(lane, std::move(work)); },
+				[this](Util::RuntimePreparationLane lane) { return ReserveRuntimeTask(lane); },
+				[this](uint64_t id, std::function<void()> work) { return CompleteRuntimeReservation(id, std::move(work)); });
 		return runtimeTaskGate;
 	}
 
@@ -3556,6 +3558,49 @@ namespace SIE
 		}
 		compilationSet.conditionVariable.notify_all();
 		return true;
+	}
+
+	uint64_t ShaderCache::ReserveRuntimeTask(Util::RuntimePreparationLane lane)
+	{
+		if (!Util::ValidRuntimePreparationLane(lane)) return 0;
+		std::scoped_lock lock(compilationSet.compilationMutex);
+		const auto index = static_cast<size_t>(lane);
+		if (!Util::CanQueueRuntimePreparation(runtimeTaskAdmissionClosed,
+				static_cast<uint32_t>(compilationSet.pendingRuntimePreparation.size())) ||
+			!Util::RuntimePreparationLaneHasCapacity(lane, compilationSet.runtimePreparationQueuedByLane[index])) {
+			TracyPlot("CS::RuntimePreparationRejected", int64_t(++compilationSet.runtimePreparationRejected));
+			return 0;
+		}
+		const auto id = ++compilationSet.nextRuntimeReservation;
+		try {
+			compilationSet.pendingRuntimePreparation.push_back({ {}, 0, lane, id });
+			++compilationSet.runtimePreparationQueuedByLane[index];
+			TracyPlot("CS::RuntimePreparationQueued", int64_t(compilationSet.pendingRuntimePreparation.size()));
+			return id;
+		} catch (...) { return 0; }
+	}
+
+	bool ShaderCache::CompleteRuntimeReservation(uint64_t id, std::function<void()> work)
+	{
+		bool accepted = false;
+		{
+			std::scoped_lock lock(compilationSet.compilationMutex);
+			auto& queue = compilationSet.pendingRuntimePreparation;
+			const auto it = std::ranges::find_if(queue, [id](const auto& task) { return task.reservation == id; });
+			if (it == queue.end()) return false;
+			if (work && !runtimeTaskAdmissionClosed) {
+				it->work = std::move(work);
+				it->queuedQpc = Util::GetQpcTicks();
+				it->reservation = 0;
+				accepted = true;
+			} else {
+				--compilationSet.runtimePreparationQueuedByLane[static_cast<size_t>(it->lane)];
+				queue.erase(it);
+				TracyPlot("CS::RuntimePreparationQueued", int64_t(queue.size()));
+			}
+		}
+		compilationSet.conditionVariable.notify_all();
+		return accepted;
 	}
 
 	void ShaderCache::StopCompilation()
@@ -5825,14 +5870,15 @@ namespace SIE
 		auto shaderCache = globals::shaderCache;
 		const auto nextRuntime = [&] {
 			return std::ranges::find_if(pendingRuntimePreparation, [&](const auto& task) {
-				return runtimePreparationRunningByLane[static_cast<size_t>(task.lane)] == 0;
+				return task.work && runtimePreparationRunningByLane[static_cast<size_t>(task.lane)] == 0;
 			});
 		};
 		const auto canDispatchRuntime = [&] {
 			return nextRuntime() != pendingRuntimePreparation.end() && Util::CanDispatchRuntimePreparation(
 				runtimePreparationRunning, dispatchedTasksInFlight.load(std::memory_order_relaxed),
 				shaderCache->backgroundCompilation ? shaderCache->backgroundCompilationThreadCount : shaderCache->compilationThreadCount,
-				!demandedTasks.empty(), !availableTasks.empty() || !pendingAuxTasks.empty());
+				!demandedTasks.empty(), !availableTasks.empty() || !pendingAuxTasks.empty(),
+				Util::RuntimePreparationFairTurn(shaderDispatchBurst));
 		};
 		if (!conditionVariable.wait(
 				lock, stoken,
@@ -5853,8 +5899,9 @@ namespace SIE
 			lastCalculation = lastReset;
 		}
 
-		// FIFO native work shares existing pool slots and cannot bypass demanded
-		// shaders. During background compilation at least one slot remains for shaders.
+		// Demand shaders normally win; a finite dispatch burst guarantees a
+		// native turn even with a continuously replenished demand queue.
+		// With multiple slots, retain shader capacity.
 		if (canDispatchRuntime()) {
 			const auto it = nextRuntime();
 			auto pending = std::move(*it);
@@ -5863,6 +5910,7 @@ namespace SIE
 			--runtimePreparationQueuedByLane[lane];
 			++runtimePreparationRunningByLane[lane];
 			++runtimePreparationRunning;
+			shaderDispatchBurst = 0;
 			dispatchedTasksInFlight.fetch_add(1, std::memory_order_relaxed);
 			TracyPlot("CS::RuntimePreparationQueued", int64_t(pendingRuntimePreparation.size()));
 			TracyPlot("CS::RuntimePreparationRunning", int64_t(runtimePreparationRunning));
@@ -5901,6 +5949,7 @@ namespace SIE
 			}
 
 			tasksInProgress.insert(task);
+			if (shaderDispatchBurst < Util::kShaderDispatchBurst) ++shaderDispatchBurst;
 			dispatchedTasksInFlight.fetch_add(1, std::memory_order_relaxed);
 			return std::variant<ShaderCompilationTask, std::function<void()>>(std::in_place_index<0>, task);
 		}
@@ -5908,6 +5957,7 @@ namespace SIE
 		if (!pendingAuxTasks.empty()) {
 			auto work = std::move(pendingAuxTasks.front());
 			pendingAuxTasks.pop_front();
+			if (shaderDispatchBurst < Util::kShaderDispatchBurst) ++shaderDispatchBurst;
 			dispatchedTasksInFlight.fetch_add(1, std::memory_order_relaxed);
 			return std::variant<ShaderCompilationTask, std::function<void()>>(std::in_place_index<1>, std::move(work));
 		}

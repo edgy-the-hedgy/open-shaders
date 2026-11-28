@@ -529,12 +529,15 @@ namespace SIE
 			std::function<void()> work;
 			int64_t queuedQpc = 0;
 			Util::RuntimePreparationLane lane = Util::RuntimePreparationLane::General;
+			uint64_t reservation = 0;
 		};
 		// Independent from shader generations; all fields guarded by compilationMutex.
 		std::deque<RuntimePreparationTask> pendingRuntimePreparation;
 		uint32_t runtimePreparationRunning = 0;
 		std::array<uint32_t, Util::kRuntimePreparationLaneCount> runtimePreparationQueuedByLane{}, runtimePreparationRunningByLane{};
 		uint64_t runtimePreparationRejected = 0;
+		uint64_t nextRuntimeReservation = 0;
+		uint32_t shaderDispatchBurst = 0;
 		std::condition_variable_any conditionVariable;
 	};
 
@@ -1449,6 +1452,8 @@ namespace SIE
 		bool runtimeTaskAdmissionClosed = false;
 		std::shared_ptr<Util::RuntimeTaskGate> runtimeTaskGate;
 		bool TrySubmitRuntimeTask(Util::RuntimePreparationLane lane, std::function<void()> a_work);
+		uint64_t ReserveRuntimeTask(Util::RuntimePreparationLane lane);
+		bool CompleteRuntimeReservation(uint64_t id, std::function<void()> work);
 		void CloseRuntimeTaskAdmission();
 		ankerl::unordered_dense::map<std::string, ShaderCacheResult> shaderMap{};
 		std::mutex mapMutex;                                                                      // guard for shaderMap

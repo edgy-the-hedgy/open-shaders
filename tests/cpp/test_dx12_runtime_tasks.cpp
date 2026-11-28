@@ -48,6 +48,12 @@ TEST_CASE("Native preparation FIFO reserves shader capacity and bounds concurren
 	CHECK_FALSE(CanDispatchRuntimePreparation(3, 3, 8, false, false));
 	CHECK_FALSE(CanDispatchRuntimePreparation(1, 1, 2, false, true));
 	CHECK_FALSE(CanDispatchRuntimePreparation(0, 0, 8, true, false));
+	CHECK_FALSE(Util::RuntimePreparationFairTurn(15));
+	CHECK(Util::RuntimePreparationFairTurn(16));
+	CHECK(CanDispatchRuntimePreparation(0, 0, 1, true, true, true));
+	CHECK(CanDispatchRuntimePreparation(0, 1, 2, true, true, true));
+	CHECK_FALSE(CanDispatchRuntimePreparation(1, 1, 2, true, true, true));
+	CHECK_FALSE(CanDispatchRuntimePreparation(0, 2, 2, true, true, true));
 	CHECK_FALSE(CanDispatchRuntimePreparation(0, 4, 4, false, false));
 }
 
