@@ -143,6 +143,52 @@ Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float dista
     weights[6]=max(w3.x,0.0); weights[7]=max(w3.y,0.0);
     float total=dot(max(float4(w0,w1),0.0),1.0)+dot(max(float4(w2,w3),0.0),1.0);
     if (total<=1e-6 || !isfinite(total)) return result;
+    // March a single weighted height field, not eight independently shifted UVs.
+    // Only resident authored displacement contributes; flat layers retain weight.
+    uint heightIndex[8], heightMode[8];
+    float heightMip[8], heightScale[8];
+    float weightedScale=0.0;
+    [unroll] for (uint k=0u;k<8u;++k) {
+        heightIndex[k]=0xffffffffu; heightMode[k]=0u; heightMip[k]=0.0; heightScale[k]=0.0;
+        if (weights[k]<=1e-6) continue;
+        uint bi=k<4u ? row0[k] : row1[k-4u];
+        if (bi>=RasterBindingCount) { result.color.a=SurfaceMissingTextures; return result; }
+        Binding binding=RasterMaterialBindings[bi];
+        if (binding.materialIndex>=RasterRecordCount) { result.color.a=SurfaceMissingTextures; return result; }
+        MaterialRecord material=RasterMaterialRecords[binding.materialIndex];
+        if (ParallaxEnabled!=0u && material.textures[2].x<NativeTextureIndexLimit &&
+            isfinite(material.base.z) && material.base.z>0.0) {
+            heightIndex[k]=material.textures[2].x; heightMode[k]=material.properties.z;
+            float shadowMip;
+            heightMip[k]=NativeParallaxMarchMip(heightIndex[k],raw.dx,raw.dy,distance,raw.valid,MaterialMipBias,shadowMip);
+            heightScale[k]=min(material.base.z,8.0)*weights[k]/total;
+            weightedScale+=heightScale[k];
+        }
+    }
+    if (weightedScale>1e-6) {
+        float3 viewTS=float3(dot(viewRay,raw.tangent),dot(viewRay,raw.bitangent),dot(viewRay,raw.normal));
+        if (all(isfinite(viewTS)) && viewTS.z>0.0) {
+            float2 travel=viewTS.xy/max(viewTS.z*0.7+0.3,0.001)*0.1*weightedScale;
+            float previous=1.0, previousHeight=1.0;
+            [loop] for (uint step=1u;step<=16u;++step) {
+                float bound=1.0-float(step)/16.0;
+                float2 candidate=raw.uv+travel*(bound-0.5);
+                float height=0.0;
+                [unroll] for (uint j=0u;j<8u;++j) {
+                    if (heightIndex[j]!=0xffffffffu)
+                        height+=saturate(TexLevel(heightIndex[j],candidate,heightMode[j],heightMip[j]).r)*heightScale[j]/weightedScale;
+                }
+                if (height>=bound) {
+                    float d0=previous-previousHeight,d1=bound-height;
+                    float hit=abs(d0-d1)>1e-6 ? lerp(previous,bound,saturate(d0/(d0-d1))) : bound;
+                    float2 shifted=raw.uv+travel*(saturate(hit)-0.5);
+                    if (all(isfinite(shifted))) raw.uv=shifted;
+                    break;
+                }
+                previous=bound; previousHeight=height;
+            }
+        }
+    }
     NativeMaterialTriangle tri=(NativeMaterialTriangle)0;
     tri.rasterLocal=true; tri.hasTangents=true;
     tri.normals[0]=raw.normal; tri.tangents[0]=raw.tangent; tri.bitangents[0]=raw.bitangent;
