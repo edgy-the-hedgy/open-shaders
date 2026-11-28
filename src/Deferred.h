@@ -89,6 +89,9 @@ public:
 
 	/** @brief Begins deferred rendering by binding GBuffer targets and overriding blend states. */
 	void StartDeferred();
+	/** @brief Begins the Full Native raster input route using the input MRT ABI. */
+	void BeginNativeInputs();
+	bool IsOpaqueInputPass() const { return deferredPass; }
 
 	/** @brief Replaces engine blend states with deferred-compatible variants for GBuffer output. */
 	void OverrideBlendStates();
@@ -159,13 +162,15 @@ public:
 
 	Util::LazyShader<ID3D11ComputeShader> mainCompositeCS;
 	Util::LazyShader<ID3D11ComputeShader> mainCompositeInteriorCS;
+	Util::LazyShader<ID3D11ComputeShader> nativeInputCompatibilityCS;
 
 	// Directional shadow structured buffer (t98): cascade splits and projections.
 	Buffer* directionalShadowLights = nullptr;
 
+	// Geometry/input ABI flag, not an indication that legacy lighting is active.
 	bool deferredPass = false;
 
-	/// Set once DeferredPasses copies the finished opaque depth, cleared at frame start;
+	/// Set once either opaque route copies the finished depth, cleared at frame start;
 	/// Util::GetCurrentSceneDepthSRV returns that final depth while set.
 	bool sceneDepthFinal = false;
 
@@ -173,6 +178,12 @@ public:
 	ID3D11SamplerState* pointSampler = nullptr;
 
 private:
+	void BeginOpaqueInputs();
+	void FinalizeOpaqueDepth();
+	void PublishOpaqueRasterInputs();
+	void FinalizeNativeInputs();
+	void FinishNativeInputs();
+
 	template <typename T>
 	void SetShadowCascadeParameters(T& lightData, DirectionalShadowLightData& dd);
 

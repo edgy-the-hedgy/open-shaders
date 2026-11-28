@@ -2283,7 +2283,7 @@ void State::ModifyShaderLookup(const RE::BSShader& a_shader, uint& a_vertexDescr
 
 				a_pixelDescriptor &= ~((uint32_t)SIE::ShaderCache::LightingShaderFlags::Snow);
 
-				if (deferred->deferredPass || a_forceDeferred)
+				if (deferred->IsOpaqueInputPass() || a_forceDeferred)
 					a_pixelDescriptor |= (uint32_t)SIE::ShaderCache::LightingShaderFlags::Deferred;
 
 				{
@@ -2323,19 +2323,19 @@ void State::ModifyShaderLookup(const RE::BSShader& a_shader, uint& a_vertexDescr
 				a_vertexDescriptor &= flags;
 				a_pixelDescriptor &= flags;
 
-				if (deferred->deferredPass || a_forceDeferred)
+				if (deferred->IsOpaqueInputPass() || a_forceDeferred)
 					a_pixelDescriptor |= (uint32_t)SIE::ShaderCache::EffectShaderFlags::Deferred;
 			}
 			break;
 		case RE::BSShader::Type::DistantTree:
 			{
-				if (deferred->deferredPass || a_forceDeferred)
+				if (deferred->IsOpaqueInputPass() || a_forceDeferred)
 					a_pixelDescriptor |= (uint32_t)SIE::ShaderCache::DistantTreeShaderFlags::Deferred;
 			}
 			break;
 		case RE::BSShader::Type::Sky:
 			{
-				if (deferred->deferredPass || a_forceDeferred)
+				if (deferred->IsOpaqueInputPass() || a_forceDeferred)
 					a_pixelDescriptor |= 256;
 			}
 			break;

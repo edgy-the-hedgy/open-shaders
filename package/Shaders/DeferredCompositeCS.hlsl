@@ -11,6 +11,41 @@
 #include "Common/VR.hlsli"
 #include "Common/WindField.hlsli"
 
+#if defined(NATIVE_INPUT_COMPATIBILITY)
+
+// Full Native engine compatibility only: no color UAV, lighting or feature inputs.
+Texture2D<unorm float3> NormalRoughnessTexture : register(t2);
+#if defined(TERRAIN_BLENDING)
+Texture2D<float> DepthTexture : register(t4);
+#else
+Texture2D<SCENE_DEPTH_FORMAT> DepthTexture : register(t4);
+#endif
+RWTexture2D<float4> NormalTAAMaskSpecularMaskRW : register(u1);
+RWTexture2D<float2> MotionVectorsRW : register(u2);
+
+[numthreads(8, 8, 1)] void main(uint3 dispatchID : SV_DispatchThreadID)
+{
+	if (any(dispatchID.xy >= uint2(SharedData::BufferDim.xy)))
+		return;
+
+	float3 normalVS = GBuffer::DecodeNormal(NormalRoughnessTexture[dispatchID.xy].xy);
+	NormalTAAMaskSpecularMaskRW[dispatchID.xy] = float4(GBuffer::EncodeNormalVanilla(normalVS), 0.0, 0.0);
+
+	float depth = DepthTexture[dispatchID.xy];
+	if (depth == FrameBuffer::FarPlaneDepth()) {
+		float2 uv = float2(dispatchID.xy + 0.5) * SharedData::BufferDim.zw;
+		uv *= FrameBuffer::DynamicResolutionParams2.xy;
+		uint eyeIndex = Stereo::GetEyeIndexFromTexCoord(uv);
+		uv = Stereo::ConvertFromStereoUV(uv, eyeIndex);
+		float4 positionWS = float4(2 * float2(uv.x, -uv.y + 1) - 1, depth, 1);
+		positionWS = mul(FrameBuffer::CameraViewProjInverse[eyeIndex], positionWS);
+		positionWS.xyz /= positionWS.w;
+		MotionVectorsRW[dispatchID.xy] = MotionBlur::GetSSMotionVector(positionWS, positionWS, eyeIndex);
+	}
+}
+
+#else
+
 Texture2D<float3> SpecularTexture : register(t0);
 Texture2D<unorm float3> AlbedoTexture : register(t1);
 Texture2D<unorm float3> NormalRoughnessTexture : register(t2);
@@ -378,3 +413,5 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 	MainRW[dispatchID.xy] = float4(color, 1.0);
 	NormalTAAMaskSpecularMaskRW[dispatchID.xy] = float4(GBuffer::EncodeNormalVanilla(normalVS), 0.0, 0.0);
 }
+
+#endif // NATIVE_INPUT_COMPATIBILITY

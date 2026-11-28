@@ -300,6 +300,18 @@ void Deferred::PrepassPasses()
 
 void Deferred::StartDeferred()
 {
+	if (globals::features::dx12Control.RunsDeferredComposite())
+		BeginOpaqueInputs();
+}
+
+void Deferred::BeginNativeInputs()
+{
+	if (!globals::features::dx12Control.RunsDeferredComposite())
+		BeginOpaqueInputs();
+}
+
+void Deferred::BeginOpaqueInputs()
+{
 	sceneDepthFinal = false;
 	if (!globals::state->inWorld)
 		return;
@@ -372,8 +384,79 @@ void Deferred::StartDeferred()
 #endif
 }
 
+void Deferred::FinalizeOpaqueDepth()
+{
+	auto renderer = globals::game::renderer;
+	auto depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+	auto finalDepthCopy = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
+	// Water edge fade and refraction require the complete final opaque depth.
+	globals::d3d::context->CopyResource(Util::AsReal(finalDepthCopy.texture), Util::AsReal(depth.texture));
+	sceneDepthFinal = true;
+}
+
+void Deferred::PublishOpaqueRasterInputs()
+{
+	static const bool hasOpaqueRasterHooks = !Feature::GetOpaqueRasterReadyHookFeatures().empty();
+	if (hasOpaqueRasterHooks)
+		Feature::ApplyOpaqueRasterReadyHooks();
+}
+
+void Deferred::FinalizeNativeInputs()
+{
+	CS_GPU_PASS("NativeInputs::Compatibility");
+	auto context = globals::d3d::context;
+	auto& targets = globals::game::renderer->GetRuntimeData().renderTargets;
+	auto& normals = targets[forwardRenderTargets[2]];
+	auto& motionVectors = targets[RE::RENDER_TARGETS::kMOTION_VECTOR];
+
+	// Input MRT normals use the CS encoding. Publish engine-compatible normals
+	// and sky motion without binding or writing scene color.
+	std::vector<std::pair<const char*, const char*>> defines{ { "NATIVE_INPUT_COMPATIBILITY", nullptr } };
+	if (globals::features::terrainBlending.loaded)
+		defines.push_back({ "TERRAIN_BLENDING", nullptr });
+	if (auto* shader = nativeInputCompatibilityCS.Get(L"Data\\Shaders\\DeferredCompositeCS.hlsl", defines, "cs_5_0")) {
+		ID3D11Buffer* perFrame = *globals::game::perFrame;
+		context->CSSetConstantBuffers(12, 1, &perFrame);
+		globals::state->BindSharedDataCS(context);
+		ID3D11ShaderResourceView* normalSRV = Util::AsReal(targets[NORMALROUGHNESS].SRV);
+		ID3D11ShaderResourceView* depthSRV = Util::GetCurrentSceneDepthSRV(false);
+		context->CSSetShaderResources(2, 1, &normalSRV);
+		context->CSSetShaderResources(4, 1, &depthSRV);
+		ID3D11UnorderedAccessView* uavs[2]{ Util::AsReal(normals.UAV), Util::AsReal(motionVectors.UAV) };
+		context->CSSetUnorderedAccessViews(1, ARRAYSIZE(uavs), uavs, nullptr);
+		context->CSSetShader(shader, nullptr, 0);
+		const auto dispatchCount = Util::GetScreenDispatchCount(true);
+		context->Dispatch(dispatchCount.x, dispatchCount.y, 1);
+		ID3D11ShaderResourceView* nullSRV = nullptr;
+		context->CSSetShaderResources(2, 1, &nullSRV);
+		context->CSSetShaderResources(4, 1, &nullSRV);
+		ID3D11UnorderedAccessView* nullUAVs[2]{};
+		context->CSSetUnorderedAccessViews(1, ARRAYSIZE(nullUAVs), nullUAVs, nullptr);
+		context->CSSetShader(nullptr, nullptr, 0);
+	}
+	ID3D11Buffer* nullBuffer = nullptr;
+	context->CSSetConstantBuffers(12, 1, &nullBuffer);
+}
+
+void Deferred::FinishNativeInputs()
+{
+	CS_GPU_PASS("NativeInputs::Finish");
+	FinalizeOpaqueDepth();
+	FinalizeNativeInputs();
+	PublishOpaqueRasterInputs();
+
+	// Never enter the legacy composite when native publication is unavailable.
+	if (globals::features::dx12Control.WantsMaterialPreparation() && globals::game::graphicsState) {
+		auto& main = globals::game::renderer->GetRuntimeData().renderTargets[forwardRenderTargets[0]];
+		const auto frame = globals::game::graphicsState->GetFrameCount();
+		globals::features::upscaling.nativeComposite.ApplyFullNativeOpaque(frame, Util::AsReal(main.UAV));
+	}
+}
+
 void Deferred::DeferredPasses()
 {
+	if (!globals::features::dx12Control.RunsDeferredComposite())
+		return;
 	CS_GPU_PASS("Deferred::DeferredPasses");
 
 	auto renderer = globals::game::renderer;
@@ -408,30 +491,12 @@ void Deferred::DeferredPasses()
 
 	auto main = renderer->GetRuntimeData().renderTargets[forwardRenderTargets[0]];
 	auto normals = renderer->GetRuntimeData().renderTargets[forwardRenderTargets[2]];
-	auto depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
-	auto finalDepthCopy = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
-	// Water samples this texture for edge fade and refraction; a partial or
-	// dynamic-resolution-sized copy here left it stale and caused hard water intersections.
-	context->CopyResource(Util::AsReal(finalDepthCopy.texture), Util::AsReal(depth.texture));
-	sceneDepthFinal = true;
+	FinalizeOpaqueDepth();
 	auto reflectance = renderer->GetRuntimeData().renderTargets[REFLECTANCE];
 
 	auto motionVectors = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
 
-	static const bool hasOpaqueRasterHooks = !Feature::GetOpaqueRasterReadyHookFeatures().empty();
-	if (hasOpaqueRasterHooks)
-		Feature::ApplyOpaqueRasterReadyHooks();
-
-	// The geometry/input capture above is shared; the legacy lighting composite is not.
-	if (!globals::features::dx12Control.RunsDeferredComposite()) {
-		ID3D11Buffer* nullBuffer = nullptr;
-		context->CSSetConstantBuffers(12, 1, &nullBuffer);
-		if (globals::features::dx12Control.WantsMaterialPreparation() && globals::game::graphicsState) {
-			const auto frame = globals::game::graphicsState->GetFrameCount();
-			globals::features::upscaling.nativeComposite.ApplyFullNativeOpaque(frame, Util::AsReal(main.UAV));
-		}
-		return;
-	}
+	PublishOpaqueRasterInputs();
 
 	bool interior = Util::IsInterior();
 
@@ -574,7 +639,10 @@ void Deferred::EndDeferred()
 	auto context = globals::d3d::context;
 	context->OMSetRenderTargets(0, nullptr, nullptr);  // Unbind all bound render targets
 
-	DeferredPasses();  // Perform deferred passes and composite forward buffers
+	if (globals::features::dx12Control.RunsDeferredComposite())
+		DeferredPasses();
+	else
+		FinishNativeInputs();
 
 	stateUpdateFlags.set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);  // Run OMSetRenderTargets again
 
@@ -801,10 +869,13 @@ void Deferred::ClearShaderCache()
 {
 	mainCompositeCS.Reset();
 	mainCompositeInteriorCS.Reset();
+	nativeInputCompatibilityCS.Reset();
 }
 
 ID3D11ComputeShader* Deferred::GetComputeMainComposite()
 {
+	if (!globals::features::dx12Control.RunsDeferredComposite())
+		return nullptr;
 	std::vector<std::pair<const char*, const char*>> defines;
 
 	if (globals::features::dynamicCubemaps.loaded)
@@ -835,6 +906,8 @@ ID3D11ComputeShader* Deferred::GetComputeMainComposite()
 
 ID3D11ComputeShader* Deferred::GetComputeMainCompositeInterior()
 {
+	if (!globals::features::dx12Control.RunsDeferredComposite())
+		return nullptr;
 	std::vector<std::pair<const char*, const char*>> defines;
 	defines.push_back({ "INTERIOR", nullptr });
 
@@ -905,7 +978,10 @@ void Deferred::Hooks::Main_RenderWorld_Start::thunk(RE::BSBatchRenderer* This, u
 {
 	if (globals::shaderCache->IsEnabled() && globals::state->inWorld) {
 		// Here is where the first opaque objects start rendering
-		globals::deferred->StartDeferred();
+		if (globals::features::dx12Control.RunsDeferredComposite())
+			globals::deferred->StartDeferred();
+		else
+			globals::deferred->BeginNativeInputs();
 	}
 
 	func(This, StartRange, EndRanges, RenderFlags, GeometryGroup);  // RenderBatches

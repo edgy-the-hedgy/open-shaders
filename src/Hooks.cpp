@@ -1020,7 +1020,7 @@ namespace Hooks
 	};
 
 	// kNORMAL_TAAMASK_SSRMASK and its swap need UAV bind because DeferredCompositeCS
-	// writes vanilla-encoded normals through UAV1 (`normals.UAV` in Deferred::DeferredPasses),
+	// or the Full Native compatibility kernel writes vanilla-encoded normals through UAV1,
 	// which feeds the post-pass vanilla SSAO chain (ISSAORawAO -> ISSAOComposite). Without
 	// these hooks the UAV is null, the CS write is silently dropped, and vanilla SSAO reads
 	// uninitialized data and produces hard wedge-shaped shadow artifacts.
