@@ -159,8 +159,8 @@ DX12Native::EnvironmentSource NativeCubemaps::Producer::GetDefaultSource(const G
     return defaultCube?DX12Native::EnvironmentSource{defaultCube.get(),1,currentStamp}:DX12Native::EnvironmentSource{};
 }
 
-void NativeCubemaps::Producer::Capture(const GraphicsBackend& backend, ID3D11ShaderResourceView* sceneColor, uint32_t frame,
-    std::shared_ptr<const DX12Native::FullNativeReconstructionFrame> native)
+void NativeCubemaps::Producer::Capture(const GraphicsBackend&, ID3D11ShaderResourceView*, uint32_t,
+    std::shared_ptr<const DX12Native::FullNativeReconstructionFrame>)
 {
     // Cube acquisition intentionally suspended; RT reflections use the scene directly.
 }
@@ -179,7 +179,7 @@ std::function<void()> NativeCubemaps::Producer::OnReflectionsRenderBegin()
     return nullptr;
 }
 
-DX12Native::EnvironmentSource NativeCubemaps::Producer::GetSkySource(const DX12Native::EnvironmentStamp& requested) const
+DX12Native::EnvironmentSource NativeCubemaps::Producer::GetSkySource(const DX12Native::EnvironmentStamp&) const
 {
     return {};
 }

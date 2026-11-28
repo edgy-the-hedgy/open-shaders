@@ -3191,7 +3191,7 @@ void Upscaling::PublishNativeFrameParameters(uint32_t width, uint32_t height)
 	nativePreparedFrame = std::move(publication);
 }
 
-void Upscaling::PublishNativeUpscalerInputs(UpscaleMethod method, uint32_t width, uint32_t height, ID3D11Resource* engineMotion)
+void Upscaling::PublishNativeUpscalerInputs(uint32_t width, uint32_t height)
 {
 	using namespace DX12Native;
 	PublishNativeFrameParameters(width, height);
@@ -3357,7 +3357,7 @@ void Upscaling::Upscale()
 		ID3D11ComputeShader* shader = nullptr;
 		context->CSSetShader(shader, nullptr, 0);
 		if (encodeCS && !globals::game::isVR && nativeEncoded)
-			PublishNativeUpscalerInputs(upscaleMethod, eyeRenderWidth, eyeRenderHeight, Util::AsReal(motionVector.texture));
+			PublishNativeUpscalerInputs(eyeRenderWidth, eyeRenderHeight);
 	};
 
 	if (!foveatedRouteCandidate)
