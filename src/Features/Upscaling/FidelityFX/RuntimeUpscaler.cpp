@@ -1032,39 +1032,27 @@ bool FidelityFX::EnsureRuntimeUpscalerSharedResources(uint32_t a_contextCount, u
 	const D3D11_TEXTURE2D_DESC desiredTransparencyDesc = MakeSharedTextureDesc(a_transparencyDesc, a_fullRenderWidth, a_fullRenderHeight, 0);
 	const D3D11_TEXTURE2D_DESC desiredOutputDesc = MakeSharedTextureDesc(a_outputDesc, a_fullDisplayWidth, a_fullDisplayHeight, D3D11_BIND_UNORDERED_ACCESS);
 
+	const bool exclusiveInputs = globals::features::dx12Control.UsesExclusiveMaterials();
+	const auto valid = [](WrappedResource* resource) {
+		return resource && resource->resource11 && resource->resource.get();
+	};
 	bool missingRequiredResource = false;
 	for (uint32_t i = 0; i < a_contextCount; ++i) {
-		if (!runtimeColorShared[i] ||
-			!runtimeDepthShared[i] ||
-			!runtimeMotionShared[i] ||
-			!runtimeReactiveShared[i] ||
-			!runtimeTransparencyShared[i] ||
-			!runtimeOutputShared[i] ||
-			!runtimeColorShared[i]->resource11 ||
-			!runtimeDepthShared[i]->resource11 ||
-			!runtimeMotionShared[i]->resource11 ||
-			!runtimeReactiveShared[i]->resource11 ||
-			!runtimeTransparencyShared[i]->resource11 ||
-			!runtimeOutputShared[i]->resource11 ||
-			!runtimeColorShared[i]->resource.get() ||
-			!runtimeDepthShared[i]->resource.get() ||
-			!runtimeMotionShared[i]->resource.get() ||
-			!runtimeReactiveShared[i]->resource.get() ||
-			!runtimeTransparencyShared[i]->resource.get() ||
-			!runtimeOutputShared[i]->resource.get()) {
+		if (!valid(runtimeOutputShared[i]) ||
+			(!exclusiveInputs && (!valid(runtimeColorShared[i]) || !valid(runtimeDepthShared[i]) ||
+				!valid(runtimeMotionShared[i]) || !valid(runtimeReactiveShared[i]) || !valid(runtimeTransparencyShared[i])))) {
 			missingRequiredResource = true;
 			break;
 		}
 	}
-
-	const bool needsRecreate =
-		missingRequiredResource ||
-		!SameTextureDesc(runtimeColorSharedDesc, desiredColorDesc) ||
-		!SameTextureDesc(runtimeDepthSharedDesc, desiredDepthDesc) ||
-		!SameTextureDesc(runtimeMotionSharedDesc, desiredMotionDesc) ||
-		!SameTextureDesc(runtimeReactiveSharedDesc, desiredReactiveDesc) ||
-		!SameTextureDesc(runtimeTransparencySharedDesc, desiredTransparencyDesc) ||
-		!SameTextureDesc(runtimeOutputSharedDesc, desiredOutputDesc);
+	const bool needsRecreate = missingRequiredResource ||
+		!SameTextureDesc(runtimeOutputSharedDesc, desiredOutputDesc) ||
+		(!exclusiveInputs && (
+			!SameTextureDesc(runtimeColorSharedDesc, desiredColorDesc) ||
+			!SameTextureDesc(runtimeDepthSharedDesc, desiredDepthDesc) ||
+			!SameTextureDesc(runtimeMotionSharedDesc, desiredMotionDesc) ||
+			!SameTextureDesc(runtimeReactiveSharedDesc, desiredReactiveDesc) ||
+			!SameTextureDesc(runtimeTransparencySharedDesc, desiredTransparencyDesc)));
 
 	if (!needsRecreate) {
 		for (uint32_t i = a_contextCount; i < std::size(runtimeColorShared); ++i) {
@@ -1090,11 +1078,13 @@ bool FidelityFX::EnsureRuntimeUpscalerSharedResources(uint32_t a_contextCount, u
 
 	try {
 		for (uint32_t i = 0; i < a_contextCount; ++i) {
-			runtimeColorShared[i] = new WrappedResource(desiredColorDesc, swapChain.d3d11Device.get(), swapChain.d3d12Device.get(), std::format("RuntimeUpscaler::ColorShared{}", i));
-			runtimeDepthShared[i] = new WrappedResource(desiredDepthDesc, swapChain.d3d11Device.get(), swapChain.d3d12Device.get(), std::format("RuntimeUpscaler::DepthShared{}", i));
-			runtimeMotionShared[i] = new WrappedResource(desiredMotionDesc, swapChain.d3d11Device.get(), swapChain.d3d12Device.get(), std::format("RuntimeUpscaler::MotionShared{}", i));
-			runtimeReactiveShared[i] = new WrappedResource(desiredReactiveDesc, swapChain.d3d11Device.get(), swapChain.d3d12Device.get(), std::format("RuntimeUpscaler::ReactiveShared{}", i));
-			runtimeTransparencyShared[i] = new WrappedResource(desiredTransparencyDesc, swapChain.d3d11Device.get(), swapChain.d3d12Device.get(), std::format("RuntimeUpscaler::TransparencyShared{}", i));
+			if (!exclusiveInputs) {
+				runtimeColorShared[i] = new WrappedResource(desiredColorDesc, swapChain.d3d11Device.get(), swapChain.d3d12Device.get(), std::format("RuntimeUpscaler::ColorShared{}", i));
+				runtimeDepthShared[i] = new WrappedResource(desiredDepthDesc, swapChain.d3d11Device.get(), swapChain.d3d12Device.get(), std::format("RuntimeUpscaler::DepthShared{}", i));
+				runtimeMotionShared[i] = new WrappedResource(desiredMotionDesc, swapChain.d3d11Device.get(), swapChain.d3d12Device.get(), std::format("RuntimeUpscaler::MotionShared{}", i));
+				runtimeReactiveShared[i] = new WrappedResource(desiredReactiveDesc, swapChain.d3d11Device.get(), swapChain.d3d12Device.get(), std::format("RuntimeUpscaler::ReactiveShared{}", i));
+				runtimeTransparencyShared[i] = new WrappedResource(desiredTransparencyDesc, swapChain.d3d11Device.get(), swapChain.d3d12Device.get(), std::format("RuntimeUpscaler::TransparencyShared{}", i));
+			}
 			runtimeOutputShared[i] = new WrappedResource(desiredOutputDesc, swapChain.d3d11Device.get(), swapChain.d3d12Device.get(), std::format("RuntimeUpscaler::OutputShared{}", i));
 		}
 	} catch (const std::exception& e) {
@@ -1184,12 +1174,12 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 	auto isValidShared = [](WrappedResource* a_resource) {
 		return a_resource && a_resource->resource11 && a_resource->resource.get();
 	};
-	if (!isValidShared(runtimeColorShared[a_contextIndex]) ||
-		!isValidShared(runtimeDepthShared[a_contextIndex]) ||
-		!isValidShared(runtimeMotionShared[a_contextIndex]) ||
-		!isValidShared(runtimeReactiveShared[a_contextIndex]) ||
-		!isValidShared(runtimeTransparencyShared[a_contextIndex]) ||
-		!isValidShared(runtimeOutputShared[a_contextIndex])) {
+	if (!isValidShared(runtimeOutputShared[a_contextIndex]) ||
+		(!fullNative && (!isValidShared(runtimeColorShared[a_contextIndex]) ||
+			!isValidShared(runtimeDepthShared[a_contextIndex]) ||
+			!isValidShared(runtimeMotionShared[a_contextIndex]) ||
+			!isValidShared(runtimeReactiveShared[a_contextIndex]) ||
+			!isValidShared(runtimeTransparencyShared[a_contextIndex])))) {
 		return false;
 	}
 

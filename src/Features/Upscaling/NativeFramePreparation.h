@@ -47,7 +47,7 @@ namespace DX12Native
 		// optional native world/geometry evidence or duplicate DX11 identities.
 		bool HasCompositeInputs(uint32_t currentFrame, uint32_t w, uint32_t h, ID3D12Device* device) const
 		{
-			if (!MatchesFrame(currentFrame,w,h) || !encoderProduced || !color || !color->color ||
+			if (!MatchesFrame(currentFrame,w,h) || !encoderProduced || !color || !color->valid || !color->color ||
 				!color->producerFence || !color->producerValue || color->producerValue == UINT64_MAX ||
 				color->frame != frame || color->width != w || color->height != h ||
 				!guides || !guides->complete || guides->device.get()!=device)
