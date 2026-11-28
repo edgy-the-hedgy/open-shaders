@@ -454,6 +454,17 @@ Sample EvaluateMaterialTriangle(Binding binding, MaterialRecord material, Native
     if((authored&8u)!=0u) NativeSpecializedMarkPresent(specialized,SpecializedInterlayer);
     if((authored&32u)!=0u) NativeSpecializedMarkPresent(specialized,SpecializedFuzz);
     if((authored&384u)!=0u) NativeSpecializedMarkPresent(specialized,SpecializedThin|SpecializedFront|SpecializedBack|SpecializedSpecularControls|SpecializedTransmission);
+    // Only certify absence for a resolved, ordinary raster recipe without
+    // a projected layer. Unimplemented character/terrain techniques stay unknown.
+    if(resolved && triData.rasterLocal && raw.auxiliaryKind==0u && projectionRow==0xffffffffu) {
+        if((authored&1u)==0u) NativeSpecializedKnownMissing(specialized,SpecializedSSS);
+        if((authored&2u)==0u) NativeSpecializedKnownMissing(specialized,SpecializedCoat|SpecializedCoatNormal);
+        if((authored&4u)==0u) NativeSpecializedKnownMissing(specialized,SpecializedColoredCoat);
+        if((authored&8u)==0u) NativeSpecializedKnownMissing(specialized,SpecializedInterlayer);
+        if((authored&32u)==0u) NativeSpecializedKnownMissing(specialized,SpecializedFuzz);
+        if((authored&384u)==0u) NativeSpecializedKnownMissing(specialized,SpecializedThin|SpecializedFront|SpecializedBack|SpecializedSpecularControls|SpecializedTransmission);
+        if((material.controls.y&3u)==0u) NativeSpecializedKnownMissing(specialized,SpecializedGlint);
+    }
     if((material.controls.y&1u)!=0u) {
         NativeSpecializedMarkPresent(specialized,SpecializedGlint);
         if(projectionRow==0xffffffffu) NativeSpecializedSetGlint(specialized,material.glint);

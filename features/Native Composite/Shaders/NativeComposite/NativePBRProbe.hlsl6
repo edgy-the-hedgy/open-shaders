@@ -171,8 +171,9 @@ float2 NativeTerrainLodHash(float2 p)
 // Six authored base layers and up to two borrowed seam layers. Original LOD,
 // snow and displacement inputs are consumed; advanced terrain lobes remain limited.
 Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float distance,float3 worldPosition,float noise,
-    out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow)
+    out bool rawUsed, out NativeCoatSample coat, out NativeParallaxShadowSample shadow NATIVE_SPECIALIZED_OUT)
 {
+    NATIVE_SPECIALIZED_INIT
     rawUsed=false; coat=(NativeCoatSample)0; shadow=(NativeParallaxShadowSample)0;
     Sample result=(Sample)0; result.color.a=SurfaceUnsupportedMaterial;
     uint address=(raw.materialOrdinal-1u)*48u;
@@ -278,9 +279,20 @@ Sample EvaluateRasterLandscape(RawRasterSurface raw, float3 viewRay, float dista
         if (binding.materialIndex>=RasterRecordCount) { result.color.a=SurfaceMissingTextures; return result; }
         MaterialRecord material=RasterMaterialRecords[binding.materialIndex];
         NativeCoatSample unusedCoat; NativeParallaxShadowSample unusedShadow; bool sampled;
-        NATIVE_SPECIALIZED_LOCAL
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+        NativeSpecializedEvaluation layerSpecialized;
+#endif
         Sample surface=EvaluateMaterialTriangle(binding,material,tri,0u,float3(1,0,0),viewRay,0,0,1.0,distance,
-            identity,identity,false,false,false,MaterialMipBias,0xffffffffu,0.0,0.0,raw,sampled,unusedCoat,unusedShadow NATIVE_SPECIALIZED_ARG);
+            identity,identity,false,false,false,MaterialMipBias,0xffffffffu,0.0,0.0,raw,sampled,unusedCoat,unusedShadow
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+            ,layerSpecialized
+#endif
+        );
+#ifdef NATIVE_SPECIALIZED_V2_PRODUCER
+        // Keep authored evidence for all contributing layers. Weighted
+        // specialized values and snow interaction remain unevaluated.
+        specialized.present|=layerSpecialized.present;
+#endif
         if (!sampled || !HasEvaluatedNativeBase(surface.color.a)) {
             result.color.a=SurfaceEvaluationFailed; return result;
         }
@@ -854,7 +866,7 @@ Sample EvaluateRasterLocal(RawRasterSurface raw, uint2 mapped, float3 viewRay, f
     if (preparedRow>=RasterPreparedSourceCount) { result.color.a=SurfaceMissingTextures; return result; }
     raw.materialOrdinal=preparedRow+1u;
     if (raw.auxiliaryKind==1u)
-        return EvaluateRasterLandscape(raw,viewRay,distance,worldPosition,noise,rawUsed,coat,shadow);
+        return EvaluateRasterLandscape(raw,viewRay,distance,worldPosition,noise,rawUsed,coat,shadow NATIVE_SPECIALIZED_ARG);
     Binding binding=RasterMaterialBindings[raw.materialOrdinal-1u];
     if (binding.materialIndex==0xffffffffu) {
         if ((binding.flags&SurfaceMissingBaseTexturesBinding)!=0u) result.color.a=SurfaceMissingTextures;
@@ -1134,6 +1146,7 @@ void screenMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
         RayIdentity.Store2(ordinal*8u,hitIdentity);
 #ifdef NATIVE_SPECIALIZED_V2_PRODUCER
         if(!HasEvaluatedNativeBase(result.color.a)) specialized=(NativeSpecializedEvaluation)0;
+        else if((specialized.present&~specialized.valid)!=0u) result.color.a=SurfaceFeatureLimited;
         NativeSpecializedPublish(SpecializedDirectoryOut,SpecializedPoolOut,SpecializedCounters,ordinal,
             SpecializedCapacity,specialized.present,specialized.valid,specialized.payload);
 #else
