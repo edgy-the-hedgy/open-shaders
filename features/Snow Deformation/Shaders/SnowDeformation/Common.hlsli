@@ -200,6 +200,9 @@ struct ControlPoint
 	nointerpolation uint EyeIndex: EYEIDX0;
 #	endif
 #	if !defined(DEPTH_ONLY)
+#		if defined(FULL_NATIVE_INPUT) && !defined(VR)
+	nointerpolation uint NativeInstance: TEXCOORD11;
+#		endif
 	float4 TexCoord0: TEXCOORD0;
 	float3 TBN0: TEXCOORD1;
 	float3 TBN1: TEXCOORD2;
