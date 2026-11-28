@@ -141,7 +141,7 @@ namespace DX12Native
 		const uint64_t bytes = uint64_t(material->width) * material->height * kLightingStride;
 		if (!available || !bytes || bytes > UINT32_MAX / 2u)
 			return;
-		const RasterIdentityStamp rayStamp{ material->frame, material->scope, material->geometryRevision, material->materialRevision };
+		const RasterIdentityStamp rasterStamp{ material->frame, material->scope, 0, 0 };
 		const StationaryHistoryIdentity stamp{ material->frame, pluginFrame, material->width, material->height,
 			material->scope, available, material->geometryRevision, material->materialRevision,
 			indirect ? indirect->environmentContentRevision : 0u, resetHistory,
@@ -237,7 +237,7 @@ namespace DX12Native
 				slot->indirect->coverage == LightingCoverage::CompleteRasterReplacement &&
 				(available & kOpaqueRequired) == kOpaqueRequired;
 			const auto& raw = slot->material->rawRasterEvidence;
-			slot->rasterEvidence = raw && raw->Matches(rayStamp, slot->width, slot->height) ? raw : nullptr;
+			slot->rasterEvidence = raw && raw->Matches(rasterStamp, slot->width, slot->height) ? raw : nullptr;
 			if (slot->rasterEvidence && (slot->rasterEvidence->width < slot->width || slot->rasterEvidence->height < slot->height))
 				slot->rasterEvidence.reset();
 			slot->historyIdentity = stamp;

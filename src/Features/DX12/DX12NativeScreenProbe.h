@@ -199,8 +199,7 @@ namespace DX12Native
 					return false;
 				// Secondary geometry can be absent; its validity is not primary
 				// material validity. Consumers must call HasSecondaryGeometry().
-				if (scene && !HasSecondaryGeometry()) return false;
-				if (rasterMaterialEvaluation) {
+ 				if (rasterMaterialEvaluation) {
 					if (!rasterMaterialRevision || rasterMaterialEvaluation->revision != rasterMaterialRevision ||
 						!rawRasterEvidence || !rasterMaterialEvaluation->records || !rasterMaterialEvaluation->bindings ||
 						!rasterMaterialEvaluation->rasterLandscapeRows ||

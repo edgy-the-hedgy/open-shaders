@@ -800,20 +800,17 @@ void DX12NativeScene::DispatchFullNativeIndirect()
 		globals::features::dx12Resources.IsLoading() || !nativeSessionStarted || globals::state->nativeFirstPersonDepth ||
 		(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
 		return;
-	const auto grid = globals::features::dx12Resources.GetGrid();
-	if (!grid || grid->requested.empty() || !grid->requested.front().scope)
-		return;
 	const auto frame = globals::game::graphicsState->GetFrameCount();
 	if (!backend)
 		return;
 	const auto world = GetWorldFrame(frame, globals::state->frameCount);
 	const auto material = GetFullNativeMaterial(frame);
-	if (!world || !material || material->scope != grid->requested.front().scope)
+	if (!world || !material || !material->scope)
 		return;
 	if (!globals::features::dx12Control.UsesLegacyReflectionCapture() &&
 		globals::features::nativeCubemaps.loaded && globals::features::nativeIBL.loaded) {
 		bool environmentChanged = false;
-		const auto stamp = globals::features::nativeCubemaps.Prepare(grid->requested.front().scope, frame, environmentChanged);
+		const auto stamp = globals::features::nativeCubemaps.Prepare(material->scope, frame, environmentChanged);
 		if (environmentChanged)
 			globals::features::nativeIBL.InvalidateGeneration();
 		globals::features::nativeIBL.Dispatch(*backend, material, globals::features::nativeCubemaps.Get(), stamp,

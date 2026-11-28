@@ -207,7 +207,9 @@ bool SSREvidence(uint2 p, out uint2 identity)
 }
 float3 ResolveRayReflection(uint2 receiver,float3 world,float3 normal,float3 direction,float roughness,uint lobe,float3 fallback)
 {
-    if (SSREnabled==0 || roughness>=0.99) return fallback;
+    // Zero static instances explicitly means the primary material frame has
+    // no ray scene. Environment-only evaluation never touches a null TLAS.
+    [branch] if (SSREnabled==0 || InstanceCount==0u || roughness>=0.99) return fallback;
     // A raster token corroborates receiver identity when present. Material
     // correspondence and final opaque ownership are validated separately.
     // Receiver screen evidence is optional; only screen hit reuse needs it.

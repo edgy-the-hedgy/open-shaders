@@ -39,6 +39,8 @@ namespace DX12Native
         static_assert(sizeof(Constants) == 544);
         constexpr uint64_t kSHBytes = 48;
         constexpr UINT kCharacterTextureOffset = 6 + NativePBR::kGpuTextureDescriptorCapacity + kProjectedTextureCapacity;
+        constexpr UINT kSceneDescriptor = kCharacterTextureOffset + NativePBR::kGpuTextureDescriptorCapacity;
+        constexpr UINT kCharacterSceneDescriptor = kSceneDescriptor + 1u;
 
         void BuildPipeline(ID3D12Device* device, const std::filesystem::path& path, UINT count, CD3DX12_ROOT_PARAMETER* parameters,
             winrt::com_ptr<ID3D12RootSignature>& root, winrt::com_ptr<ID3D12PipelineState>& pipeline)
@@ -169,12 +171,15 @@ namespace DX12Native
         parameters[3].InitAsShaderResourceView(3);
         parameters[4].InitAsUnorderedAccessView(0);
         parameters[5].InitAsConstantBufferView(0);
-        parameters[6].InitAsShaderResourceView(6);
+        CD3DX12_DESCRIPTOR_RANGE sceneRange, characterSceneRange;
+        sceneRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,1,6);
+        characterSceneRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,1,523);
+        parameters[6].InitAsDescriptorTable(1,&sceneRange);
         parameters[7].InitAsShaderResourceView(7);
         parameters[8].InitAsShaderResourceView(8);
         parameters[9].InitAsShaderResourceView(9);
         parameters[10].InitAsShaderResourceView(522);
-        parameters[11].InitAsShaderResourceView(523);
+        parameters[11].InitAsDescriptorTable(1,&characterSceneRange);
         parameters[12].InitAsShaderResourceView(524);
         parameters[13].InitAsShaderResourceView(525);
         parameters[14].InitAsShaderResourceView(526);
@@ -199,7 +204,7 @@ namespace DX12Native
         std::shared_ptr<const DirectLightingFrame> ssrDirect)
     {
         CS_GPU_PASS("NativeLighting::Indirect");
-        if (!material || !environment || !enabled || !material->HasSecondaryGeometry()) return;
+        if (!material || !environment || !enabled) return;
         if (current && current->material == material) return;
         Poll(material->frame);
         if (!material->IsCoherent(material->frame, material->width, material->height) ||
@@ -281,7 +286,7 @@ namespace DX12Native
                 replacement->samples->SetName(L"NativeLighting::IndirectDiffuseSpecular");
                 replacement->constants = Eval::Buffer(device, 768, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
                 D3D12_DESCRIPTOR_HEAP_DESC heap{};
-                heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; heap.NumDescriptors = kCharacterTextureOffset + NativePBR::kGpuTextureDescriptorCapacity; heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+                heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; heap.NumDescriptors = kCharacterSceneDescriptor + 1u; heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
                 Eval::Check(device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(replacement->descriptors.put())));
                 Eval::Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(replacement->allocator.put())));
                 Eval::Check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, replacement->allocator.get(), pipeline.get(), IID_PPV_ARGS(replacement->commands.put())));
@@ -292,9 +297,11 @@ namespace DX12Native
             }
             slot->material = std::move(material); slot->environment = std::move(environment);
             slot->ssrDirect = std::move(ssrDirect);
-            slot->screenSpaceReflections = bool(slot->ssrDirect) && (available & IndirectSpecular);
+            const bool hasSecondary = slot->material->HasSecondaryGeometry();
+            slot->screenSpaceReflections = hasSecondary && bool(slot->ssrDirect) && (available & IndirectSpecular);
+            if (!hasSecondary) slot->ssrDirect.reset();
             slot->frame = slot->material->frame; slot->quality = SanitizeRTQuality(quality); slot->available = available;
-            slot->characters = characters && characters->Submitted(slot->frame, slot->material->scope) ? std::move(characters) : nullptr;
+            slot->characters = hasSecondary && characters && characters->Submitted(slot->frame, slot->material->scope) ? std::move(characters) : nullptr;
             slot->skyVisibilityTraced = false;
             slot->root = root; slot->pipeline = pipeline;
             slot->projectionRoot = projectionRoot; slot->projectionPipeline = projectionPipeline;
@@ -318,10 +325,21 @@ namespace DX12Native
             CubeView(device, env.base.get(), cpu(1));
             CubeView(device, env.reflection ? env.reflection.get() : env.base.get(), cpu(2));
             CubeView(device, env.sky ? env.sky.get() : env.base.get(), cpu(3));
-            slot->material->scene->materialEvaluation->WriteTextureViews(device, cpu(4));
+            const auto* scene = hasSecondary ? slot->material->scene.get() : nullptr;
+            const auto& sceneEvaluation = scene ? *scene->materialEvaluation : *slot->material->rasterMaterialEvaluation;
+            sceneEvaluation.WriteTextureViews(device, cpu(4));
+            // Environment-only frames bind legal null acceleration descriptors.
+            // No ray instruction is executed in that mode.
+            D3D12_SHADER_RESOURCE_VIEW_DESC accelerationView{};
+            accelerationView.ViewDimension=D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+            accelerationView.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            accelerationView.RaytracingAccelerationStructure.Location=scene ? scene->acceleration->GetGPUVirtualAddress() : 0u;
+            device->CreateShaderResourceView(nullptr,&accelerationView,cpu(kSceneDescriptor));
+            if (slot->characters) accelerationView.RaytracingAccelerationStructure.Location=slot->characters->acceleration->GetGPUVirtualAddress();
+            device->CreateShaderResourceView(nullptr,&accelerationView,cpu(kCharacterSceneDescriptor));
             const auto characterView = slot->characters ? slot->characters->Reflections() : CharacterCasterFrame::ReflectionView{};
             const auto* actor = characterView.actor;
-            const auto& actorEvaluation = characterView.evaluation ? *characterView.evaluation : *slot->material->scene->materialEvaluation;
+            const auto& actorEvaluation = characterView.evaluation ? *characterView.evaluation : sceneEvaluation;
             actorEvaluation.WriteTextureViews(device, cpu(kCharacterTextureOffset));
             const auto projection=slot->screenSpaceReflections && slot->material->projection && slot->material->projectionLookup &&
                 slot->material->projection->Ready(stamp)?slot->material->projection:nullptr;
@@ -353,7 +371,7 @@ namespace DX12Native
                 width, height, slot->material->rowPitch, slot->rowPitch, enabled, available, env.base ? env.base->mipCount : 0u,
                 env.reflection ? env.reflection->mipCount : 0u, environmentScale, skyScale,
                 env.stamp.interior ? 1u : 0u, uint32_t(env.stamp.encoding), ambient,
-                raster.camera.CameraPosAdjust, slot->material->scene->materialEvaluation->instanceCount, slot->characters ? 1u : 0u, slot->quality, slot->frame,
+                raster.camera.CameraPosAdjust, scene ? sceneEvaluation.instanceCount : 0u, slot->characters ? 1u : 0u, slot->quality, slot->frame,
                 raster.camera.CameraProj, raster.camera.CameraView, slot->screenSpaceReflections ? 1u : 0u,
                 slot->screenSpaceReflections ? slot->ssrDirect->rowPitch : 0u, slot->material->rayIdentityRowPitch,
                 0u,
@@ -381,13 +399,12 @@ namespace DX12Native
             cmd->SetComputeRootShaderResourceView(3, slot->skySH ? slot->skySH->coefficients->GetGPUVirtualAddress() : materialAddress);
             cmd->SetComputeRootUnorderedAccessView(4, slot->samples->GetGPUVirtualAddress());
             cmd->SetComputeRootConstantBufferView(5, slot->constants->GetGPUVirtualAddress());
-            const auto& scene = *slot->material->scene;
-            cmd->SetComputeRootShaderResourceView(6, scene.acceleration->GetGPUVirtualAddress());
-            cmd->SetComputeRootShaderResourceView(7, scene.shadingGeometry->buffer->GetGPUVirtualAddress());
-            cmd->SetComputeRootShaderResourceView(8, scene.materialEvaluation->records->GetGPUVirtualAddress());
-            cmd->SetComputeRootShaderResourceView(9, scene.materialEvaluation->bindings->GetGPUVirtualAddress());
+            cmd->SetComputeRootDescriptorTable(6,gpu(kSceneDescriptor));
+            cmd->SetComputeRootShaderResourceView(7, scene ? scene->shadingGeometry->buffer->GetGPUVirtualAddress() : materialAddress);
+            cmd->SetComputeRootShaderResourceView(8, sceneEvaluation.records->GetGPUVirtualAddress());
+            cmd->SetComputeRootShaderResourceView(9, sceneEvaluation.bindings->GetGPUVirtualAddress());
             cmd->SetComputeRootShaderResourceView(10, slot->material->materialLobes->GetGPUVirtualAddress());
-            cmd->SetComputeRootShaderResourceView(11, slot->characters ? slot->characters->acceleration->GetGPUVirtualAddress() : scene.acceleration->GetGPUVirtualAddress());
+            cmd->SetComputeRootDescriptorTable(11,gpu(kCharacterSceneDescriptor));
             cmd->SetComputeRootShaderResourceView(12, slot->screenSpaceReflections ? slot->ssrDirect->samples->GetGPUVirtualAddress() : materialAddress);
             cmd->SetComputeRootShaderResourceView(13, slot->material->rayIdentity->GetGPUVirtualAddress());
             cmd->SetComputeRootShaderResourceView(14, materialAddress);
