@@ -1492,8 +1492,17 @@ PS_OUTPUT main(PS_INPUT input, uint primitive : SV_PrimitiveID, bool frontFace :
 	psout.MaterialTechnique = uint4(asuint(input.EyeNormal), Permutation::NativeRasterMaterialIndex);
 #		elif defined(FUR_SHELLS)
 	psout.BasisFlags.w |= NativeInputMRT::AuxFur;
-	psout.MaterialTechnique = uint4(asuint(input.FurShell), NativeInputMRT::PackHalf2(input.FurRoot.xy),
-		NativeInputMRT::PackHalf2(input.FurRoot.zw), Permutation::NativeRasterMaterialIndex);
+	// Root coverage was already resolved by the original raster operation.
+	// Publish only coordinates and authored controls for native shell material evaluation.
+	const float2 shellUV=FurShells::GetClumpedUv(uv,input.FurShell,GetFurWet());
+	psout.MaterialTechnique = uint4(asuint(shellUV),
+		NativeInputMRT::PackHalf2(float2(input.FurShell,FurShells::RootDarkening)),
+		NativeInputMRT::PackHalf2(float2(GetFurWet(),FurShells::ShellColor)));
+#		elif defined(FACEGEN_RGB_TINT) || defined(HAIR)
+	psout.BasisFlags.w |= 12u<<19u;
+	psout.MaterialTechnique=uint4(NativeInputMRT::PackHalf2(TintColor.xy),
+		NativeInputMRT::PackHalf2(TintColor.zw),NativeInputMRT::PackHalf2(SpecularColor.xy),
+		NativeInputMRT::PackHalf2(SpecularColor.zw));
 #		elif defined(MODELSPACENORMALS) && !defined(LODLANDNOISE) && !defined(LODLANDSCAPE)
 	// Carry authored specular scalars, not sampled material appearance.
 	float roughnessBlend=1.0, f0Multiplier=1.0, minF0=0.0, roughnessMultiplier=1.0;
