@@ -90,6 +90,8 @@ namespace DX12Native
 		};
 		std::shared_ptr<RasterPreparation> rasterJob;
 		std::shared_ptr<const Eval> rasterCache;
+		std::shared_ptr<const Eval> unavailableRaster;
+		std::weak_ptr<const Eval> unavailableSeed;
 		std::shared_ptr<const NativePBR::MaterialCatalogSnapshot> rasterCatalog;
 		std::vector<Source> rasterSources;
 		uint64_t nextRasterRevision = 0;
@@ -124,6 +126,27 @@ namespace DX12Native
 		{
 			return !scene || (prepared && prepared->poolTextures.size()>=scene->poolTextures.size() &&
 				std::equal(scene->poolTextures.begin(),scene->poolTextures.end(),prepared->poolTextures.begin()));
+		}
+
+		// Keep a small, non-addressable GPU backing for pending/failed Lighting
+		// preparation. It permits independent typed-SRV materials to execute
+		// and all other raster receivers to report their real missing status.
+		std::shared_ptr<const Eval> UnavailableRasterBindings(ID3D12Device* device, const std::shared_ptr<const Eval>& seed)
+		{
+			if (unavailableRaster && unavailableSeed.lock()==seed &&
+				(seed || unavailableRaster->poolTextures.empty())) return unavailableRaster;
+			auto result=std::make_shared<Eval>();
+			result->revision=++nextRasterRevision;
+			if (seed) result->poolTextures=seed->poolTextures;
+			result->records=Eval::Table(device,std::vector<NativePBR::GpuMaterialRecord>(1));
+			result->bindings=Eval::Table(device,std::vector<NativePBR::GpuDrawBinding>{
+				NativePBR::PackGpuDrawBinding(0,0,UINT32_MAX,0)});
+			std::array<uint32_t,12> landscape{};
+			for (uint32_t i=0; i<8u; ++i) landscape[i]=UINT32_MAX;
+			result->rasterLandscapeRows=Eval::Table(device,std::vector<std::array<uint32_t,12>>{landscape});
+			unavailableSeed=seed;
+			unavailableRaster=result;
+			return result;
 		}
 
 		void QueueRasterPreparation(const GraphicsBackend& backend, const std::shared_ptr<Util::RuntimeTaskGate>& gate,
@@ -338,6 +361,7 @@ namespace DX12Native
 			stats={}; failure.clear(); lastFrame=UINT32_MAX; published.reset();
 			transformScene.reset(); transformTable = nullptr; transformCount = 0;
 			rasterJob.reset(); rasterCache.reset(); rasterCatalog.reset(); rasterSources.clear();
+			unavailableRaster.reset(); unavailableSeed.reset();
 			rasterCacheScope=0; lastRasterFailure=UINT32_MAX;
 			reusedAllocations=0; submittedFrames=0;
 			for (auto& pending : submissions) if (pending) pending->discard=true;
@@ -464,7 +488,10 @@ namespace DX12Native
 								return false;
 							}())
 						QueueRasterPreparation(backend,taskGate,scope,frame,sources,desiredSeed,catalog);
-					if (!selectedRaster) { failure="Waiting for asynchronous raster material residency"; return; }
+					if (!selectedRaster) {
+						selectedRaster=UnavailableRasterBindings(device,desiredSeed);
+						rasterRemap.assign(sources.size(),UINT32_MAX);
+					}
 					// A newer scene may need a different descriptor prefix.
 					// Retain primary material authority with its old compatible
 					// texture namespace; enable new secondary inputs once prepared.
